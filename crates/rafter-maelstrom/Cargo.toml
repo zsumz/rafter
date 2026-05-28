@@ -1,0 +1,21 @@
+[package]
+name = "rafter-maelstrom"
+version = "0.1.0"
+description = "Maelstrom linearizable key/value test node for Rafter."
+readme = "README.md"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+rafter = { path = "../rafter" }
+rafter-codec = { path = "../rafter-codec" }
+rafter-runtime = { path = "../rafter-runtime" }
+rafter-storage = { path = "../rafter-storage" }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[lints]
+workspace = true

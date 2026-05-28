@@ -1,0 +1,16 @@
+[package]
+name = "rafter-transport-tcp"
+version = "0.1.0"
+description = "Blocking demo-only TCP transport for Rafter peer messages."
+readme = "README.md"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rafter = { path = "../rafter" }
+rafter-codec = { path = "../rafter-codec" }
+
+[lints]
+workspace = true

@@ -1,0 +1,21 @@
+[package]
+name = "rafter-multiraft"
+version = "0.1.0"
+description = "Many-group host layer for Rafter."
+readme = "README.md"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rafter-app = { path = "../rafter-app" }
+rafter-runtime-api = { path = "../rafter-runtime-api" }
+
+[dev-dependencies]
+rafter = { path = "../rafter" }
+rafter-runtime = { path = "../rafter-runtime" }
+rafter-storage = { path = "../rafter-storage" }
+
+[lints]
+workspace = true

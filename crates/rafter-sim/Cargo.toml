@@ -1,0 +1,15 @@
+[package]
+name = "rafter-sim"
+version = "0.1.0"
+description = "Deterministic simulation and model-checking harness for Rafter."
+readme = "README.md"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+rafter = { path = "../rafter" }
+
+[lints]
+workspace = true

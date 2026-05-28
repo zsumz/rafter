@@ -1,0 +1,9 @@
+/target
+/bench-compare/target
+/fuzz/target
+**/*.rs.bk
+# TLC model-checker state directories
+specs/tla/**/states/
+tools/cache/
+# Maelstrom/Jepsen run artifacts
+/store/
