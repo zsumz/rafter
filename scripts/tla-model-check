@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# Run TLC against the Raft TLA+ specification.
+#
+# Usage:
+#   scripts/tla-model-check               # CI-bounded config (RaftCi.cfg, seconds)
+#   scripts/tla-model-check --nightly     # nightly 3-voter bounds (RaftNightly.cfg)
+#   scripts/tla-model-check --full        # full local bounds (Raft.cfg, hours+)
+#   scripts/tla-model-check --trace-sample # TLC-check generated Rust trace sample
+#   scripts/tla-model-check --print-config [--nightly|--full]
+#
+# Downloads the tla2tools.jar release pinned by tools/tla/VERSION into
+# tools/cache/ and verifies it against tools/tla/SHA256SUMS before running.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+config="RaftCi.cfg"
+module="Raft.tla"
+print_config=false
+
+usage() {
+    sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --ci)
+            config="RaftCi.cfg"
+            ;;
+        --nightly)
+            config="RaftNightly.cfg"
+            ;;
+        --full)
+            config="Raft.cfg"
+            ;;
+        --trace-sample)
+            config="RaftTraceSample.cfg"
+            module="RaftTraceSample.tla"
+            ;;
+        --print-config)
+            print_config=true
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "error: unknown option: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
+
+if [[ "$print_config" == true ]]; then
+    echo "$config"
+    exit 0
+fi
+
+cache_dir="${repo_root}/tools/cache"
+jar="${cache_dir}/tla2tools.jar"
+version="$(cat "${repo_root}/tools/tla/VERSION")"
+expected="$(awk '$1 !~ /^#/ && $2 == "tla2tools.jar" { print $1 }' "${repo_root}/tools/tla/SHA256SUMS")"
+
+verify() {
+    local actual
+    actual="$(openssl dgst -sha256 "$jar" | awk '{ print $NF }')"
+    [[ "$actual" == "$expected" ]]
+}
+
+if [[ ! -f "$jar" ]] || ! verify; then
+    mkdir -p "$cache_dir"
+    echo "downloading tla2tools.jar ${version}"
+    curl -fsSL \
+        -o "$jar" \
+        "https://github.com/tlaplus/tlaplus/releases/download/${version}/tla2tools.jar"
+    if ! verify; then
+        echo "error: tla2tools.jar sha256 mismatch against tools/tla/SHA256SUMS" >&2
+        exit 1
+    fi
+fi
+
+cd "${repo_root}/specs/tla/raft"
+echo "running TLC with ${config}"
+exec java -XX:+UseParallelGC -cp "$jar" tlc2.TLC -config "$config" "$module"

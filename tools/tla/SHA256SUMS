@@ -1,0 +1,4 @@
+# tla2tools.jar from https://github.com/tlaplus/tlaplus/releases/download/v1.8.0/
+# Upstream re-uploaded the v1.8.0 asset on 2026-07-03; this pins that rebuild
+# (previous build 2026-05-26 was 237332bdcc79a35c7d26efa7b82c77c85c2744591c5598673a8a45085ff2a4fb).
+9e27b5e19a69ae1f56aabf8403a6ed5598dbfa6e638908e5278ac39736c1543d  tla2tools.jar
