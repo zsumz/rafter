@@ -1,0 +1,66 @@
+[package]
+name = "rafter-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+arbitrary = "1"
+libfuzzer-sys = "0.4"
+
+[dependencies.rafter]
+path = "../crates/rafter"
+
+[dependencies.rafter-codec]
+path = "../crates/rafter-codec"
+
+[dependencies.rafter-sim]
+path = "../crates/rafter-sim"
+
+[dependencies.rafter-storage]
+path = "../crates/rafter-storage"
+
+[[bin]]
+name = "codec_decode"
+path = "fuzz_targets/codec_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "storage_snapshot_decode"
+path = "fuzz_targets/storage_snapshot_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "node_message_sequences"
+path = "fuzz_targets/node_message_sequences.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "cluster_schedules"
+path = "fuzz_targets/cluster_schedules.rs"
+test = false
+doc = false
+bench = false
+
+# Not a fuzz target: regenerates the committed seed corpora under corpus/.
+# Run with: cargo +nightly run --bin gen-seeds
+[[bin]]
+name = "gen-seeds"
+path = "seeds.rs"
+test = false
+doc = false
+bench = false
+
+# Deliberately its own (empty) workspace: fuzzing is dev tooling with
+# external dependencies (libfuzzer-sys, arbitrary) and must never attach to
+# the zero-dependency root workspace.
+[workspace]

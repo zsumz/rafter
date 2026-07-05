@@ -1,0 +1,9 @@
+# cargo-fuzz build and run artifacts. Committed seed inputs (corpus/*/seed-*)
+# stay tracked; fuzzer-grown corpus entries do not.
+target/
+artifacts/
+coverage/
+logs/
+Cargo.lock
+corpus/*/*
+!corpus/*/seed-*
