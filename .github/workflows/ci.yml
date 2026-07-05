@@ -1,0 +1,163 @@
+# Per-PR lane: fmt, clippy -D warnings, workspace tests, model-check fast
+# profile, TLC with the CI-bounded config, fuzz smoke.
+#
+# "A PR cannot merge red" is enforced by branch protection, which lives in
+# repository settings, not in this file. Branch protection on `main` must
+# list these required status checks:
+#
+#   lint, test, model-check-fast, tlc-ci, fuzz-smoke
+#
+# The Rust toolchain is pinned to the workspace rust-version in Cargo.toml
+# (currently 1.88). Keep the dtolnay/rust-toolchain@<version> refs below in
+# sync with Cargo.toml when bumping rust-version.
+
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# Cancel superseded runs of the same PR; never cancel runs on main.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+defaults:
+  run:
+    # bash -eo pipefail, so piped commands cannot hide failures.
+    shell: bash
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: rustfmt
+        run: cargo fmt --all -- --check
+      - name: clippy
+        # Workspace lints set clippy::{all,pedantic} = warn; -D warnings
+        # escalates them (and rustc warnings) to errors.
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: dependency boundary tests
+        run: cargo test --workspace dependency_boundary
+      - name: source boundary tests
+        run: cargo test -p rafter source_boundary
+      - name: file-size guard
+        run: cargo test -p rafter file_size_guard -- --nocapture
+      - name: test-location guard
+        run: cargo test -p rafter --test test_location_guard -- --nocapture
+      - name: public API/docs guard
+        run: cargo test -p rafter --test public_api_docs_guard -- --nocapture
+      - name: workspace tests
+        run: cargo test --workspace
+      - name: replicated KV process lifecycle
+        run: cargo test -p rafter-runtime --test replicated_kv_example -- --ignored --exact replicated_kv_process_per_node_tcp_survives_kill_restart --nocapture
+
+  model-check-fast:
+    name: model-check-fast
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: model check (fast profile)
+        # Per-commit profile; ~3 s locally in release after the build.
+        run: cargo run --release -p rafter-sim --bin rafter-model-check-fast -- --profile fast
+
+  tlc-ci:
+    name: tlc-ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      # scripts/tla-model-check downloads tla2tools.jar pinned by
+      # tools/tla/VERSION and verifies it against tools/tla/SHA256SUMS before
+      # every run, so a cache hit is an optimization, never a trust decision.
+      - name: Cache tla2tools.jar
+        uses: actions/cache@v4
+        with:
+          path: tools/cache
+          key: tla2tools-${{ hashFiles('tools/tla/VERSION', 'tools/tla/SHA256SUMS') }}
+      - name: TLC (CI-bounded config RaftCi.cfg)
+        # RaftCi.cfg: 2 nodes, 2 terms, log length 2, symmetry reduction.
+        # The current spec generates roughly 130M states at these bounds. A
+        # 2026-07-07 hosted runner was still draining the queue at the old
+        # 20-minute cap, so keep enough headroom for runner variance while
+        # preserving a bounded per-PR lane.
+        run: scripts/tla-model-check
+      - name: TLC Rust trace sample
+        run: scripts/tla-model-check --trace-sample
+
+  fuzz-smoke:
+    name: fuzz-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      # Keep this directory guard so the workflow remains usable on older
+      # release branches that predate the fuzz workspace.
+      - name: Check for fuzz targets
+        id: fuzz-dir
+        run: |
+          if [ -d fuzz ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "fuzz/ not present on this ref; skipping fuzz smoke"
+          fi
+      - uses: dtolnay/rust-toolchain@nightly
+        if: steps.fuzz-dir.outputs.exists == 'true'
+      - uses: Swatinem/rust-cache@v2
+        if: steps.fuzz-dir.outputs.exists == 'true'
+        with:
+          cache-on-failure: true
+      - name: Install cargo-fuzz
+        if: steps.fuzz-dir.outputs.exists == 'true'
+        run: command -v cargo-fuzz >/dev/null || cargo install cargo-fuzz --locked
+      - name: Fuzz smoke (10k runs or 60 s per target)
+        if: steps.fuzz-dir.outputs.exists == 'true'
+        run: |
+          for target in codec_decode storage_snapshot_decode node_message_sequences cluster_schedules; do
+            cargo +nightly fuzz run "$target" -- -runs=10000 -max_total_time=60
+          done
+      - name: Upload crash artifacts
+        if: failure() && steps.fuzz-dir.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-smoke-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore

@@ -1,0 +1,202 @@
+# Weekly lane: the Rust extra-deep model-check profile plus full-bounds TLC
+# (Raft.cfg — 3 nodes, 3 terms, log length 3) with a disk-backed state
+# directory and checkpoint recovery.
+#
+# scripts/tla-model-check pins and sha256-verifies tla2tools.jar but does not
+# forward extra TLC flags, so this workflow mirrors its download/verify logic
+# and invokes TLC directly to add -metadir/-checkpoint/-recover.
+#
+# Checkpoint recovery strategy (BEST EFFORT, explicitly):
+#   * TLC writes a checkpoint of the disk-backed run every 30 minutes into
+#     specs/tla/raft/states/<run-timestamp>/. Locally measured: the full
+#     config generates ~30M states/min with the checkpoint directory already
+#     at 2.4 GB after 2.5 minutes, so a full run is hours-to-weeks of compute
+#     and tens of GB of state.
+#   * The states directory is carried between weekly runs with
+#     actions/cache. GitHub caches are capped at 10 GB per repository with
+#     LRU eviction, so once the checkpoint outgrows what the cache will
+#     hold, save/restore quietly degrades and the next run starts fresh.
+#     That is accepted: recovery is an optimization, not a correctness claim.
+#   * The cache key includes a hash of Raft.tla/Raft.cfg — a spec or bounds
+#     change invalidates old checkpoints (TLC cannot recover across a
+#     changed model) and forces a fresh exploration.
+#   * If -recover fails (truncated/mid-write checkpoint from a killed run),
+#     the job falls back to a fresh full-bounds run — unless TLC exited with
+#     a real counterexample verdict, which is surfaced immediately.
+#   * GitHub-hosted jobs hard-cap at 360 minutes, so a single weekly run is
+#     bounded by the TLC step timeout below and resumes the following week
+#     from its last checkpoint. A timed-out step fails the job (honest red:
+#     the full check did not complete), but the checkpoint is still saved.
+
+name: Weekly
+
+on:
+  schedule:
+    - cron: "0 7 * * 6" # 07:00 UTC Saturday
+  workflow_dispatch:
+
+concurrency:
+  group: weekly-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  model-check-extra-deep:
+    name: model-check-extra-deep
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: model check (raft-weekly)
+        run: |
+          cargo run --release -p rafter-sim --bin rafter-model-check-fast -- \
+            --profile raft-weekly 2>&1 | tee model-check-raft-weekly.log
+      - name: Upload log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-check-raft-weekly-log
+          path: model-check-raft-weekly.log
+          if-no-files-found: ignore
+
+  tlc-full:
+    name: tlc-full
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Cache tla2tools.jar
+        uses: actions/cache@v4
+        with:
+          path: tools/cache
+          key: tla2tools-${{ hashFiles('tools/tla/VERSION', 'tools/tla/SHA256SUMS') }}
+
+      # Restore the newest previous states directory. The exact key never
+      # matches (it embeds run_id), so the prefix restore-key always picks
+      # the most recent saved checkpoint for this spec+config hash.
+      - name: Restore TLC states from previous run
+        uses: actions/cache/restore@v4
+        with:
+          path: specs/tla/raft/states
+          key: tlc-full-states-${{ hashFiles('specs/tla/raft/Raft.tla', 'specs/tla/raft/Raft.cfg', 'tools/tla/VERSION') }}-${{ github.run_id }}
+          restore-keys: |
+            tlc-full-states-${{ hashFiles('specs/tla/raft/Raft.tla', 'specs/tla/raft/Raft.cfg', 'tools/tla/VERSION') }}-
+
+      - name: Fetch and verify tla2tools.jar
+        # Mirrors scripts/tla-model-check: download the release pinned by
+        # tools/tla/VERSION, verify against tools/tla/SHA256SUMS. A cache hit
+        # is an optimization, never a trust decision — the hash is always
+        # checked before use.
+        run: |
+          jar=tools/cache/tla2tools.jar
+          version="$(cat tools/tla/VERSION)"
+          expected="$(awk '$1 !~ /^#/ && $2 == "tla2tools.jar" { print $1 }' tools/tla/SHA256SUMS)"
+          verify() {
+            local actual
+            actual="$(openssl dgst -sha256 "$jar" | awk '{ print $NF }')"
+            [[ "$actual" == "$expected" ]]
+          }
+          if [[ ! -f "$jar" ]] || ! verify; then
+            mkdir -p tools/cache
+            echo "downloading tla2tools.jar ${version}"
+            curl -fsSL -o "$jar" \
+              "https://github.com/tlaplus/tlaplus/releases/download/${version}/tla2tools.jar"
+            if ! verify; then
+              echo "error: tla2tools.jar sha256 mismatch against tools/tla/SHA256SUMS" >&2
+              exit 1
+            fi
+          fi
+
+      - name: TLC full bounds (Raft.cfg) with checkpointing
+        timeout-minutes: 300 # leaves headroom inside the job timeout to prune and save the cache
+        run: |
+          cd specs/tla/raft
+          jar="$GITHUB_WORKSPACE/tools/cache/tla2tools.jar"
+
+          run_tlc() {
+            java -Xmx4g -XX:+UseParallelGC -cp "$jar" tlc2.TLC \
+              -config Raft.cfg \
+              -metadir states \
+              -checkpoint 30 \
+              -gzip \
+              -workers auto \
+              "$@" Raft.tla
+          }
+
+          # Newest checkpoint directory from a previous run, if any. TLC
+          # names run directories with a timestamp (e.g. 26-07-05-07-23-17.581),
+          # so mtime-sorted ls is safe here despite SC2012.
+          # shellcheck disable=SC2012
+          latest="$(ls -1dt states/*/ 2>/dev/null | head -n 1 || true)"
+          latest="${latest%/}"
+
+          if [[ -n "$latest" ]]; then
+            echo "attempting best-effort recovery from checkpoint: $latest"
+            set +e
+            run_tlc -recover "$latest" 2>&1 | tee "$GITHUB_WORKSPACE/tlc-full.log"
+            code=$?
+            set -e
+            case "$code" in
+              0)
+                exit 0
+                ;;
+              10 | 11 | 12 | 13 | 14)
+                # Real TLC verdicts (assumption/deadlock/safety/liveness/
+                # assertion violation) — surface them, do not mask with a
+                # fresh run.
+                exit "$code"
+                ;;
+              *)
+                echo "recovery unusable (exit $code); starting a fresh full-bounds run"
+                ;;
+            esac
+          fi
+
+          run_tlc 2>&1 | tee "$GITHUB_WORKSPACE/tlc-full.log"
+
+      - name: Prune states to the newest checkpoint
+        # Keep only the most recent run directory so the cache entry stays as
+        # small as possible (still potentially multi-GB — see header note on
+        # the 10 GB repository cache cap).
+        if: always()
+        run: |
+          if [[ -d specs/tla/raft/states ]]; then
+            cd specs/tla/raft/states
+            # TLC run directories are timestamps (no spaces, no leading
+            # dashes), so mtime-sorted ls is safe here despite SC2012.
+            # shellcheck disable=SC2012
+            ls -1dt -- */ 2>/dev/null | tail -n +2 | xargs -r rm -rf --
+            du -sh . || true
+          fi
+
+      - name: Save TLC states for next run
+        # Runs on success, failure, and step timeout so next week's run can
+        # recover from the latest checkpoint.
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: specs/tla/raft/states
+          key: tlc-full-states-${{ hashFiles('specs/tla/raft/Raft.tla', 'specs/tla/raft/Raft.cfg', 'tools/tla/VERSION') }}-${{ github.run_id }}
+
+      - name: Upload TLC log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tlc-full-log
+          path: tlc-full.log
+          if-no-files-found: ignore

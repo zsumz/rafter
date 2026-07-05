@@ -1,0 +1,233 @@
+# Nightly lane: curated deep/soak regression profiles, the fresh-seeded
+# nightly model-check profile, nightly 3-voter TLC, the burn-in script, long
+# fuzz runs, and the nightly-scale ignored test.
+#
+# Profiles come from `rafter-model-check-fast --list-profiles`:
+#   fast (per-commit) | raft-deep, raft-soak (local-minutes) |
+#   raft-nightly (scheduled) | raft-weekly (weekly-scheduled)
+# The fast profile is covered per-PR in ci.yml. `raft-deep` and `raft-soak`
+# are fixed-seed curated regression legs even when scheduled here; fresh soak
+# entropy comes from `raft-nightly` and `raft-weekly`.
+# The weekly-scheduled Rust profile runs in weekly.yml.
+#
+# Toolchain pinned to the workspace rust-version in Cargo.toml (1.88); keep
+# the dtolnay/rust-toolchain refs in sync when bumping it.
+
+name: Nightly
+
+on:
+  schedule:
+    - cron: "0 9 * * *" # 09:00 UTC daily
+  workflow_dispatch:
+
+# One nightly at a time; a manual dispatch queues behind a running one
+# instead of cancelling multi-hour work.
+concurrency:
+  group: nightly-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+defaults:
+  run:
+    # bash -eo pipefail, so `cmd | tee log` still fails the step when cmd fails.
+    shell: bash
+
+jobs:
+  model-check:
+    name: model-check (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 180 # raft-nightly targets 100M+ unique states in release mode
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [raft-deep, raft-soak, raft-nightly]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: model check (${{ matrix.profile }})
+        run: |
+          cargo run --release -p rafter-sim --bin rafter-model-check-fast -- \
+            --profile ${{ matrix.profile }} 2>&1 | tee "model-check-${{ matrix.profile }}.log"
+      - name: Upload log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-check-${{ matrix.profile }}-log
+          path: model-check-${{ matrix.profile }}.log
+          if-no-files-found: ignore
+
+  tlc-nightly:
+    name: tlc-nightly
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      # scripts/tla-model-check downloads tla2tools.jar pinned by
+      # tools/tla/VERSION and verifies it against tools/tla/SHA256SUMS before
+      # every run, so a cache hit is an optimization, never a trust decision.
+      - name: Cache tla2tools.jar
+        uses: actions/cache@v4
+        with:
+          path: tools/cache
+          key: tla2tools-${{ hashFiles('tools/tla/VERSION', 'tools/tla/SHA256SUMS') }}
+      - name: TLC nightly bounds (RaftNightly.cfg)
+        run: scripts/tla-model-check --nightly 2>&1 | tee tlc-nightly.log
+      - name: Upload TLC nightly log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tlc-nightly-log
+          path: tlc-nightly.log
+          if-no-files-found: ignore
+
+  burn-in:
+    name: burn-in
+    runs-on: ubuntu-latest
+    # The nightly burn-in mode runs the raft-nightly model-check profile in a
+    # release build plus the rafter-storage test suite. GitHub-hosted jobs
+    # hard-cap at 360 minutes.
+    timeout-minutes: 350
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Raft burn-in (nightly mode)
+        run: scripts/raft-burn-in nightly --run-id "gha-${{ github.run_id }}"
+      # The script writes per-step logs, summary.tsv, and run.json under
+      # target/raft-burn-in/<run-id>/.
+      - name: Upload burn-in logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: burn-in-logs
+          path: target/raft-burn-in/
+          if-no-files-found: ignore
+
+  maelstrom-lin-kv:
+    name: maelstrom-lin-kv
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Install Maelstrom analysis tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends graphviz gnuplot-nox
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Install Maelstrom
+        run: |
+          version=v0.2.4
+          archive=/tmp/maelstrom.tar.bz2
+          expected=301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799
+          curl -fsSL -o "$archive" \
+            "https://github.com/jepsen-io/maelstrom/releases/download/${version}/maelstrom.tar.bz2"
+          actual="$(sha256sum "$archive" | awk '{ print $1 }')"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "maelstrom sha256 mismatch: expected $expected got $actual" >&2
+            exit 1
+          fi
+          tar -xjf "$archive" -C /tmp
+          echo "/tmp/maelstrom" >> "$GITHUB_PATH"
+      - name: Maelstrom lin-kv partitions
+        run: scripts/maelstrom-lin-kv
+      - name: Maelstrom lin-kv partitions plus leader restart
+        run: scripts/maelstrom-lin-kv-leader-restart
+      - name: Upload Maelstrom store
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maelstrom-lin-kv-store
+          path: store/
+          if-no-files-found: ignore
+
+  fuzz-long:
+    name: fuzz-long (${{ matrix.target }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 90 # 30 min of fuzzing + toolchain, cargo-fuzz install, and sanitizer build
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - codec_decode
+          - storage_snapshot_decode
+          - node_message_sequences
+          - cluster_schedules
+    steps:
+      - uses: actions/checkout@v4
+      # Keep this directory guard so the workflow remains usable on older
+      # release branches that predate the fuzz workspace.
+      - name: Check for fuzz targets
+        id: fuzz-dir
+        run: |
+          if [ -d fuzz ]; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+            echo "fuzz/ not present on this ref; skipping long fuzz"
+          fi
+      - uses: dtolnay/rust-toolchain@nightly
+        if: steps.fuzz-dir.outputs.exists == 'true'
+      - uses: Swatinem/rust-cache@v2
+        if: steps.fuzz-dir.outputs.exists == 'true'
+        with:
+          cache-on-failure: true
+      - name: Install cargo-fuzz
+        if: steps.fuzz-dir.outputs.exists == 'true'
+        run: command -v cargo-fuzz >/dev/null || cargo install cargo-fuzz --locked
+      - name: Fuzz ${{ matrix.target }} for 30 minutes
+        if: steps.fuzz-dir.outputs.exists == 'true'
+        run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=1800
+      - name: Upload crash artifacts
+        if: failure() && steps.fuzz-dir.outputs.exists == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-long-${{ matrix.target }}-artifacts
+          path: fuzz/artifacts/
+          if-no-files-found: ignore
+
+  multi-gigabyte-test:
+    name: multi-gigabyte-test
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Ignored nightly-scale test
+        # Runs exactly node::tests::replication_snapshot_streaming::
+        # multi_gigabyte_snapshot_transfer_stays_bounded, which is
+        # #[ignore]d as nightly-scale (streams a 4.5 GiB synthetic payload;
+        # ~3 s in release locally).
+        run: |
+          cargo test -p rafter --release -- --ignored multi_gigabyte 2>&1 | tee multi-gigabyte.log
+      - name: Upload log
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: multi-gigabyte-test-log
+          path: multi-gigabyte.log
+          if-no-files-found: ignore
