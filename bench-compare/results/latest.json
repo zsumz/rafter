@@ -1,0 +1,104 @@
+{
+  "harness": "bench-compare",
+  "machine": "Apple M4 Pro",
+  "os": "macOS 15.1.1",
+  "rustc": "rustc 1.96.0 (ac68faa20 2026-05-25)",
+  "results": [
+    {
+      "harness": "bench-compare",
+      "library": "rafter",
+      "version": "path:../crates (workspace @ HEAD)",
+      "commit_latency_definition": "proposal batch submitted to leader step -> leader emits Apply for that index",
+      "workloads": [
+        {
+          "name": "serial",
+          "proposals": 2000,
+          "payload_bytes": 512,
+          "max_in_flight": 1,
+          "elapsed_ms": 9.642,
+          "proposals_per_s": 207434,
+          "commit_latency_us": {
+            "p50": 4.2,
+            "p99": 7.0
+          }
+        },
+        {
+          "name": "pipelined",
+          "proposals": 20000,
+          "payload_bytes": 512,
+          "max_in_flight": 64,
+          "elapsed_ms": 83.119,
+          "proposals_per_s": 240619,
+          "commit_latency_us": {
+            "p50": 212.0,
+            "p99": 368.7
+          }
+        }
+      ]
+    },
+    {
+      "harness": "bench-compare",
+      "library": "raft-rs",
+      "version": "0.7.0 (crate `raft`, prost-codec)",
+      "commit_latency_definition": "propose() on leader -> leader takes the committed entry from ready/light-ready",
+      "workloads": [
+        {
+          "name": "serial",
+          "proposals": 2000,
+          "payload_bytes": 512,
+          "max_in_flight": 1,
+          "elapsed_ms": 7.085,
+          "proposals_per_s": 282288,
+          "commit_latency_us": {
+            "p50": 2.2,
+            "p99": 4.5
+          }
+        },
+        {
+          "name": "pipelined",
+          "proposals": 20000,
+          "payload_bytes": 512,
+          "max_in_flight": 64,
+          "elapsed_ms": 38.748,
+          "proposals_per_s": 516160,
+          "commit_latency_us": {
+            "p50": 94.6,
+            "p99": 166.0
+          }
+        }
+      ]
+    },
+    {
+      "harness": "bench-compare",
+      "library": "openraft",
+      "version": "0.9.24 (features: storage-v2; current-thread tokio)",
+      "commit_latency_definition": "client_write submitted -> client_write response (committed and applied on leader)",
+      "workloads": [
+        {
+          "name": "serial",
+          "proposals": 2000,
+          "payload_bytes": 512,
+          "max_in_flight": 1,
+          "elapsed_ms": 25.62,
+          "proposals_per_s": 78064,
+          "commit_latency_us": {
+            "p50": 12.5,
+            "p99": 17.9
+          }
+        },
+        {
+          "name": "pipelined",
+          "proposals": 20000,
+          "payload_bytes": 512,
+          "max_in_flight": 64,
+          "elapsed_ms": 34.33,
+          "proposals_per_s": 582582,
+          "commit_latency_us": {
+            "p50": 94.9,
+            "p99": 135.4
+          }
+        }
+      ]
+    }
+  ]
+}
