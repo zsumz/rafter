@@ -1,0 +1,312 @@
+use super::{
+    ApplyEntry, ApplyResult, BTreeMap, ClientRequestId, Debug, GroupError,
+    LeadershipTransferRejection, LocalProposalId, LogIndex, MembershipChange, MembershipConfig,
+    MembershipEvent, NodeId, PeerEnvelope, PersistedRaftRuntime, Proposal, ProposalBegin,
+    ProposalEvent, RaftGroupMetrics, ReadBarrierRequest, ReadEvent, ReadId, ReadOutcome, ReadProof,
+    ReadProofOutcome, ReplicatedStateMachine, SnapshotEvent,
+};
+
+/// Fatal health state for a Raft group.
+///
+/// This enum is exhaustive: a group is either healthy or permanently poisoned
+/// until the caller replaces it through an explicit recovery path.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum GroupFatalState {
+    Healthy,
+    Poisoned { reason: String },
+}
+
+/// Proposal and read waiters drained when a group enters a fatal poison state.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct PoisonedWaiters {
+    pub proposals: Vec<(LocalProposalId, Option<ClientRequestId>)>,
+    pub reads: Vec<ReadId>,
+}
+
+impl PoisonedWaiters {
+    /// Returns `true` when no proposal or read waiters were drained by poison.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.proposals.is_empty() && self.reads.is_empty()
+    }
+}
+
+/// Synchronous driver for one local Raft node and one replicated state machine.
+///
+/// A `RaftGroup` is the live mutable owner of its Raft node, application state
+/// machine, pending local waiters, and local ID watermarks. It is intentionally
+/// not `Clone`; drive exactly one instance for a given local node.
+#[derive(Debug)]
+pub struct RaftGroup<G, A, R> {
+    pub(super) group_id: G,
+    pub(super) node_id: NodeId,
+    pub(super) raft: R,
+    pub(super) app: A,
+    pub(super) pending_proposals: BTreeMap<LocalProposalId, Option<ClientRequestId>>,
+    pub(super) last_seen_local_proposal_id: Option<LocalProposalId>,
+    pub(super) pending_reads: BTreeMap<ReadId, PendingRead>,
+    pub(super) pending_query_reads: BTreeMap<ReadId, PendingQueryRead>,
+    pub(super) completed_query_reads: BTreeMap<ReadId, CompletedQueryRead<G>>,
+    pub(super) last_seen_read_id: Option<ReadId>,
+    pub(super) last_applied_index: LogIndex,
+    pub(super) fatal_state: GroupFatalState,
+    pub(super) poisoned_waiters: PoisonedWaiters,
+}
+
+pub(super) type RuntimeGroupError<A, R> =
+    GroupError<<A as ReplicatedStateMachine>::Error, <R as PersistedRaftRuntime>::Error>;
+pub(super) type GroupResult<A, R, T> = Result<T, RuntimeGroupError<A, R>>;
+pub(super) type StepReportResult<G, A, R> =
+    GroupResult<A, R, GroupStepReport<G, <A as ReplicatedStateMachine>::CommandResult>>;
+pub(super) type ProposalBeginResult<G, A, R> =
+    GroupResult<A, R, ProposalBegin<G, <A as ReplicatedStateMachine>::CommandResult>>;
+pub(super) type ProposalBeginReportResult<G, A, R> =
+    GroupResult<A, R, ProposalBeginReport<G, <A as ReplicatedStateMachine>::CommandResult>>;
+pub(super) type ReadBarrierBeginReportResult<G, A, R> =
+    GroupResult<A, R, ReadBarrierBeginReport<G, <A as ReplicatedStateMachine>::CommandResult>>;
+pub(super) type ReadOutcomeResult<G, A, R> =
+    GroupResult<A, R, ReadOutcome<G, <A as ReplicatedStateMachine>::QueryResult>>;
+pub(super) type ApplyEntryResult<A, R> =
+    GroupResult<A, R, ApplyEntry<<A as ReplicatedStateMachine>::Command>>;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct PendingRead {
+    pub(super) min_applied_index: Option<LogIndex>,
+    pub(super) read_index: Option<LogIndex>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct PendingQueryRead {
+    pub(super) min_applied_index: Option<LogIndex>,
+    pub(super) context: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct CompletedQueryRead<G> {
+    pub(super) proof: ReadProof<G>,
+    pub(super) min_applied_index: Option<LogIndex>,
+    pub(super) context: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct MembershipStepContext {
+    pub(super) previous_effective: MembershipConfig,
+    pub(super) previous_committed: MembershipConfig,
+    pub(super) membership_request: bool,
+}
+
+/// Inputs accepted by the synchronous group driver.
+///
+/// This enum is exhaustive for the public input kinds currently accepted by
+/// `RaftGroup`; new driver operations may add variants before 1.0.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[allow(clippy::large_enum_variant)]
+pub enum GroupInput<G, C> {
+    Tick,
+    PeerMessage { envelope: PeerEnvelope<G> },
+    Proposal { proposal: Proposal<C> },
+    ReadBarrier { request: ReadBarrierRequest<G> },
+    TransferLeadership { target: NodeId },
+    Membership { change: MembershipChange },
+}
+
+/// Explicit side effects from one group step.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct GroupStepReport<G, R> {
+    pub group_id: G,
+    pub peer_messages: Vec<PeerEnvelope<G>>,
+    pub applied: Vec<ApplyResult<R>>,
+    pub proposal_events: Vec<ProposalEvent<R>>,
+    pub read_events: Vec<ReadEvent<G>>,
+    pub leadership_transfer_events: Vec<LeadershipTransferEvent>,
+    pub snapshot_events: Vec<SnapshotEvent<G>>,
+    pub membership_events: Vec<MembershipEvent<G>>,
+    pub metrics: Option<RaftGroupMetrics<G>>,
+}
+
+/// Full-fidelity result of beginning a local proposal.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProposalBeginReport<G, R> {
+    pub begin: ProposalBegin<G, R>,
+    pub report: GroupStepReport<G, R>,
+}
+
+/// Full-fidelity result of beginning a read-index barrier.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReadBarrierBeginReport<G, R> {
+    pub outcome: ReadProofOutcome<G>,
+    pub report: GroupStepReport<G, R>,
+}
+
+/// Leadership-transfer lifecycle events surfaced by the app layer.
+///
+/// This enum is exhaustive for the leadership-transfer outcomes emitted by
+/// the current app layer.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LeadershipTransferEvent {
+    Started {
+        target: NodeId,
+    },
+    Rejected {
+        target: NodeId,
+        reason: LeadershipTransferRejection,
+        leader_hint: Option<NodeId>,
+    },
+}
+
+impl<G, R> GroupStepReport<G, R> {
+    pub(super) fn new(group_id: G) -> Self {
+        Self {
+            group_id,
+            peer_messages: Vec::new(),
+            applied: Vec::new(),
+            proposal_events: Vec::new(),
+            read_events: Vec::new(),
+            leadership_transfer_events: Vec::new(),
+            snapshot_events: Vec::new(),
+            membership_events: Vec::new(),
+            metrics: None,
+        }
+    }
+}
+
+pub(super) fn report_has_proposal_lifecycle<G, R>(
+    local_proposal_id: LocalProposalId,
+    report: &GroupStepReport<G, R>,
+) -> bool {
+    report.proposal_events.iter().any(|event| {
+        matches!(
+            event,
+            ProposalEvent::Appended {
+                local_proposal_id: id,
+                ..
+            } | ProposalEvent::Applied {
+                local_proposal_id: id,
+                ..
+            } | ProposalEvent::Rejected {
+                local_proposal_id: id,
+                ..
+            } | ProposalEvent::UnknownOutcome {
+                local_proposal_id: id,
+                ..
+            } if *id == local_proposal_id
+        )
+    })
+}
+
+impl<G, A, R> RaftGroup<G, A, R> {
+    /// Creates a group with an empty local applied floor.
+    ///
+    /// Restart paths should prefer [`RaftGroup::with_applied_index`] and pass
+    /// the state machine's durable applied index alongside a runtime recovered
+    /// with the same applied-through floor.
+    pub fn new(group_id: G, node_id: NodeId, raft: R, app: A) -> Self {
+        Self::with_applied_index(group_id, node_id, raft, app, LogIndex::ZERO)
+    }
+
+    /// Creates a group whose local applied floor is known at construction.
+    ///
+    /// Use this constructor on restart after reading
+    /// [`ReplicatedStateMachine::applied_index`] from durable application
+    /// state. The group still validates the state machine's reported applied
+    /// index before every apply batch and poisons itself rather than replaying
+    /// entries that the application already says are durable.
+    pub fn with_applied_index(
+        group_id: G,
+        node_id: NodeId,
+        raft: R,
+        app: A,
+        applied_index: LogIndex,
+    ) -> Self {
+        Self {
+            group_id,
+            node_id,
+            raft,
+            app,
+            pending_proposals: BTreeMap::new(),
+            last_seen_local_proposal_id: None,
+            pending_reads: BTreeMap::new(),
+            pending_query_reads: BTreeMap::new(),
+            completed_query_reads: BTreeMap::new(),
+            last_seen_read_id: None,
+            last_applied_index: applied_index,
+            fatal_state: GroupFatalState::Healthy,
+            poisoned_waiters: PoisonedWaiters::default(),
+        }
+    }
+
+    /// Returns this group's caller-defined group ID.
+    #[must_use]
+    pub fn group_id(&self) -> &G {
+        &self.group_id
+    }
+
+    /// Returns the local Raft node ID owned by this group.
+    #[must_use]
+    pub fn node_id(&self) -> NodeId {
+        self.node_id
+    }
+
+    /// Highest local proposal ID consumed by this group, if any.
+    ///
+    /// `rafter-app` requires strictly increasing `LocalProposalId`s for the
+    /// lifetime of a group. IDs less than or equal to this watermark will be
+    /// rejected.
+    #[must_use]
+    pub fn local_proposal_id_watermark(&self) -> Option<LocalProposalId> {
+        self.last_seen_local_proposal_id
+    }
+
+    /// Highest read-index ID consumed by this group, if any.
+    ///
+    /// `rafter-app` requires strictly increasing `ReadId`s for read-index
+    /// operations over the lifetime of a group. IDs less than or equal to this
+    /// watermark will be rejected.
+    #[must_use]
+    pub fn read_id_watermark(&self) -> Option<ReadId> {
+        self.last_seen_read_id
+    }
+
+    /// Returns the group's fatal health state.
+    #[must_use]
+    pub fn fatal_state(&self) -> &GroupFatalState {
+        &self.fatal_state
+    }
+
+    /// Returns shared access to the owned replicated state machine.
+    #[must_use]
+    pub fn state_machine(&self) -> &A {
+        &self.app
+    }
+
+    /// Returns mutable access to the owned state machine.
+    ///
+    /// This is intended for caller-owned maintenance hooks and test fixtures.
+    /// Do not mutate the durable applied floor behind the group; restart paths
+    /// should use [`RaftGroup::with_applied_index`] to seed that boundary.
+    pub fn state_machine_mut(&mut self) -> &mut A {
+        &mut self.app
+    }
+
+    /// Returns a shared reference to the owned persisted runtime.
+    ///
+    /// This is useful for inspection and for fake runtimes in integration
+    /// tests. Protocol progress should still flow through [`RaftGroup::step`]
+    /// and the other group APIs.
+    #[must_use]
+    pub fn runtime(&self) -> &R {
+        &self.raft
+    }
+
+    /// Returns waiters that were drained when the group entered poison.
+    #[must_use]
+    pub fn poisoned_waiters(&self) -> &PoisonedWaiters {
+        &self.poisoned_waiters
+    }
+
+    /// Drains and returns waiters that were resolved by poison handling.
+    #[must_use]
+    pub fn drain_poisoned_waiters(&mut self) -> PoisonedWaiters {
+        std::mem::take(&mut self.poisoned_waiters)
+    }
+}
