@@ -1,0 +1,894 @@
+#![allow(clippy::wildcard_imports)]
+
+mod support;
+
+use support::*;
+
+#[test]
+fn begin_proposal_rejects_duplicate_pending_local_proposal_id() {
+    let proposal_id = LocalProposalId(80);
+    let client_request_id = Some(ClientRequestId {
+        client_id: 8,
+        sequence: 1,
+    });
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([vec![append_output(proposal_id, 3)]]),
+    );
+    begin_pending_proposal(&mut group, proposal_id, client_request_id, 3);
+
+    let error = group
+        .begin_proposal_outcome(Proposal {
+            local_proposal_id: proposal_id,
+            client_request_id: Some(ClientRequestId {
+                client_id: 8,
+                sequence: 2,
+            }),
+            command: b"duplicate".to_vec(),
+        })
+        .expect_err("duplicate pending proposal ID is rejected");
+
+    assert!(matches!(
+        error,
+        GroupError::NonMonotonicLocalProposalId {
+            local_proposal_id,
+            last_seen_local_proposal_id,
+        } if local_proposal_id == proposal_id
+            && last_seen_local_proposal_id == proposal_id
+    ));
+    assert_eq!(group.metrics().pending_proposals, 1);
+    assert_eq!(group.runtime().step_inputs.len(), 1);
+
+    let report = group
+        .apply_raft_outputs(vec![apply_output(2, b"original", Some(proposal_id))])
+        .expect("original pending proposal can still complete");
+    assert_eq!(
+        report.proposal_events,
+        vec![ProposalEvent::Applied {
+            local_proposal_id: proposal_id,
+            index: LogIndex(2),
+            term: Term(1),
+            result: b"original".to_vec(),
+        }]
+    );
+    assert_eq!(group.metrics().pending_proposals, 0);
+
+    let reuse_error = group
+        .begin_proposal_outcome(Proposal {
+            local_proposal_id: proposal_id,
+            client_request_id: None,
+            command: b"reused".to_vec(),
+        })
+        .expect_err("terminal proposal ID remains single-use");
+    assert!(matches!(
+        reuse_error,
+        GroupError::NonMonotonicLocalProposalId {
+            local_proposal_id,
+            last_seen_local_proposal_id,
+        } if local_proposal_id == proposal_id
+            && last_seen_local_proposal_id == proposal_id
+    ));
+    assert_eq!(group.runtime().step_inputs.len(), 1);
+}
+
+#[test]
+fn group_step_proposal_rejects_duplicate_pending_local_proposal_id() {
+    let proposal_id = LocalProposalId(81);
+    let client_request_id = Some(ClientRequestId {
+        client_id: 8,
+        sequence: 10,
+    });
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([vec![append_output(proposal_id, 2)]]),
+    );
+    begin_pending_proposal(&mut group, proposal_id, client_request_id, 2);
+
+    let error = group
+        .step(GroupInput::Proposal {
+            proposal: Proposal {
+                local_proposal_id: proposal_id,
+                client_request_id: Some(ClientRequestId {
+                    client_id: 8,
+                    sequence: 11,
+                }),
+                command: b"duplicate".to_vec(),
+            },
+        })
+        .expect_err("duplicate pending proposal ID is rejected");
+
+    assert!(matches!(
+        error,
+        GroupError::NonMonotonicLocalProposalId {
+            local_proposal_id,
+            last_seen_local_proposal_id,
+        } if local_proposal_id == proposal_id
+            && last_seen_local_proposal_id == proposal_id
+    ));
+    assert_eq!(group.metrics().pending_proposals, 1);
+    assert_eq!(group.runtime().step_inputs.len(), 1);
+    assert_eq!(group.metrics().pending_proposals, 1);
+}
+
+#[test]
+fn lower_local_proposal_id_is_rejected_after_higher_seen() {
+    let first_id = LocalProposalId(90);
+    let lower_id = LocalProposalId(89);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([vec![RaftOutput::LocalProposalAppended {
+            proposal_id: first_id,
+            index: LogIndex(2),
+            term: Term(1),
+        }]]),
+    );
+
+    group
+        .begin_proposal_outcome(Proposal {
+            local_proposal_id: first_id,
+            client_request_id: None,
+            command: b"first".to_vec(),
+        })
+        .expect("first higher ID starts");
+
+    let error = group
+        .begin_proposal_outcome(Proposal {
+            local_proposal_id: lower_id,
+            client_request_id: None,
+            command: b"lower".to_vec(),
+        })
+        .expect_err("lower proposal ID is rejected by monotonic policy");
+
+    assert!(matches!(
+        error,
+        GroupError::NonMonotonicLocalProposalId {
+            local_proposal_id,
+            last_seen_local_proposal_id,
+        } if local_proposal_id == lower_id
+            && last_seen_local_proposal_id == first_id
+    ));
+    assert_eq!(group.runtime().step_inputs.len(), 1);
+    assert_eq!(group.metrics().pending_proposals, 1);
+}
+
+#[test]
+fn command_encode_failure_does_not_consume_local_proposal_id() {
+    let proposal_id = LocalProposalId(91);
+    let mut group = scripted_group(RecordingStateMachine {
+        fail_encode: true,
+        ..RecordingStateMachine::default()
+    });
+
+    let error = group
+        .begin_proposal_outcome(Proposal {
+            local_proposal_id: proposal_id,
+            client_request_id: None,
+            command: b"encode fails".to_vec(),
+        })
+        .expect_err("encode failure rejects proposal");
+
+    assert!(matches!(
+        error,
+        GroupError::StateMachine {
+            operation: StateMachineOperation::EncodeCommand,
+            ref source,
+        } if source == "encode failed"
+    ));
+    assert_eq!(group.local_proposal_id_watermark(), None);
+    assert_eq!(group.metrics().pending_proposals, 0);
+    assert!(group.runtime().step_inputs.is_empty());
+
+    group.state_machine_mut().fail_encode = false;
+    group
+        .begin_proposal_outcome(Proposal {
+            local_proposal_id: proposal_id,
+            client_request_id: None,
+            command: b"retry after encode fixed".to_vec(),
+        })
+        .expect_err("runtime returns no lifecycle event, but ID was reusable after encode failure");
+    assert_eq!(group.local_proposal_id_watermark(), Some(proposal_id));
+    assert_eq!(group.runtime().step_inputs.len(), 1);
+}
+
+#[test]
+fn runtime_step_error_consumes_local_proposal_id() {
+    let proposal_id = LocalProposalId(92);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_errors([TestRuntimeError::Forced]),
+    );
+
+    let error = group
+        .begin_proposal_outcome(Proposal {
+            local_proposal_id: proposal_id,
+            client_request_id: None,
+            command: b"runtime fails".to_vec(),
+        })
+        .expect_err("runtime error is returned");
+
+    assert!(matches!(error, GroupError::Runtime(_)));
+    assert_eq!(group.local_proposal_id_watermark(), Some(proposal_id));
+    assert_eq!(group.metrics().pending_proposals, 0);
+    assert_eq!(group.runtime().step_inputs.len(), 1);
+
+    let reuse = group
+        .begin_proposal_outcome(Proposal {
+            local_proposal_id: proposal_id,
+            client_request_id: None,
+            command: b"reuse after runtime error".to_vec(),
+        })
+        .expect_err("runtime-submitted local proposal ID is consumed");
+    assert!(matches!(
+        reuse,
+        GroupError::NonMonotonicLocalProposalId {
+            local_proposal_id,
+            last_seen_local_proposal_id,
+        } if local_proposal_id == proposal_id
+            && last_seen_local_proposal_id == proposal_id
+    ));
+}
+
+#[test]
+fn begin_proposal_clears_pending_when_proposal_does_not_start() {
+    let proposal_id = LocalProposalId(82);
+    let mut group = scripted_group(RecordingStateMachine::default());
+
+    let error = group
+        .begin_proposal_outcome(Proposal {
+            local_proposal_id: proposal_id,
+            client_request_id: Some(ClientRequestId {
+                client_id: 8,
+                sequence: 20,
+            }),
+            command: b"no event".to_vec(),
+        })
+        .expect_err("no lifecycle event is rejected");
+
+    assert!(matches!(
+        error,
+        GroupError::ProposalDidNotStart {
+            local_proposal_id
+        } if local_proposal_id == proposal_id
+    ));
+    assert_eq!(group.metrics().pending_proposals, 0);
+    assert_eq!(group.local_proposal_id_watermark(), Some(proposal_id));
+    assert_eq!(group.runtime().step_inputs.len(), 1);
+
+    let reuse = group
+        .begin_proposal_outcome(Proposal {
+            local_proposal_id: proposal_id,
+            client_request_id: None,
+            command: b"reuse after did not start".to_vec(),
+        })
+        .expect_err("proposal-did-not-start local ID is consumed");
+    assert!(matches!(
+        reuse,
+        GroupError::NonMonotonicLocalProposalId {
+            local_proposal_id,
+            last_seen_local_proposal_id,
+        } if local_proposal_id == proposal_id
+            && last_seen_local_proposal_id == proposal_id
+    ));
+}
+
+#[test]
+fn group_step_proposal_clears_pending_when_proposal_does_not_start() {
+    let proposal_id = LocalProposalId(83);
+    let mut group = scripted_group(RecordingStateMachine::default());
+
+    let error = group
+        .step(GroupInput::Proposal {
+            proposal: Proposal {
+                local_proposal_id: proposal_id,
+                client_request_id: Some(ClientRequestId {
+                    client_id: 8,
+                    sequence: 21,
+                }),
+                command: b"no event".to_vec(),
+            },
+        })
+        .expect_err("no lifecycle event is rejected");
+
+    assert!(matches!(
+        error,
+        GroupError::ProposalDidNotStart {
+            local_proposal_id
+        } if local_proposal_id == proposal_id
+    ));
+    assert_eq!(group.metrics().pending_proposals, 0);
+    assert_eq!(group.runtime().step_inputs.len(), 1);
+}
+
+#[test]
+fn begin_proposal_surfaces_synchronous_unknown_outcome() {
+    let proposal_id = LocalProposalId(84);
+    let client_request_id = Some(ClientRequestId {
+        client_id: 8,
+        sequence: 22,
+    });
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([vec![RaftOutput::LocalProposalDropped {
+            proposal_id,
+            index: LogIndex(2),
+            term: Term(1),
+            reason: rafter::LocalProposalDropReason::LeadershipLost,
+        }]]),
+    );
+
+    let begin = group
+        .begin_proposal_outcome(Proposal {
+            local_proposal_id: proposal_id,
+            client_request_id,
+            command: b"unknown".to_vec(),
+        })
+        .expect("unknown outcome is a proposal lifecycle result");
+
+    assert!(matches!(
+        begin,
+        ProposalBegin::UnknownOutcome {
+            group_id: 7,
+            local_proposal_id,
+            client_request_id: returned_client_request_id,
+            reason: ProposalUnknownOutcomeReason::LocalProposalDropped {
+                index: LogIndex(2),
+                term: Term(1),
+                reason: rafter::LocalProposalDropReason::LeadershipLost,
+            },
+            peer_messages,
+        } if local_proposal_id == proposal_id
+            && returned_client_request_id == client_request_id
+            && peer_messages.is_empty()
+    ));
+    assert_eq!(group.metrics().pending_proposals, 0);
+}
+
+#[test]
+fn apply_batch_preserves_committed_order() {
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([
+            vec![append_output(LocalProposalId(10), 2)],
+            vec![append_output(LocalProposalId(11), 3)],
+        ]),
+    );
+    begin_pending_proposal(&mut group, LocalProposalId(10), None, 2);
+    begin_pending_proposal(&mut group, LocalProposalId(11), None, 3);
+
+    let report = group
+        .apply_raft_outputs(vec![
+            apply_output(2, b"first", Some(LocalProposalId(10))),
+            apply_output(3, b"second", Some(LocalProposalId(11))),
+        ])
+        .expect("batch applies");
+
+    assert_eq!(
+        group.state_machine().batches,
+        vec![vec![LogIndex(2), LogIndex(3)]]
+    );
+    assert_eq!(
+        group.state_machine().applied,
+        vec![b"first".to_vec(), b"second".to_vec()]
+    );
+    assert_eq!(
+        report
+            .applied
+            .iter()
+            .map(|result| result.index)
+            .collect::<Vec<_>>(),
+        vec![LogIndex(2), LogIndex(3)]
+    );
+    assert_eq!(
+        report
+            .proposal_events
+            .iter()
+            .filter_map(|event| match event {
+                ProposalEvent::Applied {
+                    local_proposal_id, ..
+                } => Some(*local_proposal_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>(),
+        vec![LocalProposalId(10), LocalProposalId(11)]
+    );
+}
+
+#[test]
+fn dropped_local_proposal_becomes_unknown_outcome_and_clears_pending() {
+    let proposal_id = LocalProposalId(70);
+    let client_request_id = Some(ClientRequestId {
+        client_id: 9,
+        sequence: 3,
+    });
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([vec![append_output(proposal_id, 2)]]),
+    );
+    begin_pending_proposal(&mut group, proposal_id, client_request_id, 2);
+
+    let report = group
+        .apply_raft_outputs(vec![RaftOutput::LocalProposalDropped {
+            proposal_id,
+            index: LogIndex(2),
+            term: Term(1),
+            reason: rafter::LocalProposalDropReason::LeadershipLost,
+        }])
+        .expect("drop output maps to proposal event");
+
+    assert_eq!(
+        report.proposal_events,
+        vec![ProposalEvent::UnknownOutcome {
+            local_proposal_id: proposal_id,
+            client_request_id,
+            reason: ProposalUnknownOutcomeReason::LocalProposalDropped {
+                index: LogIndex(2),
+                term: Term(1),
+                reason: rafter::LocalProposalDropReason::LeadershipLost,
+            },
+        }]
+    );
+    assert_eq!(group.metrics().pending_proposals, 0);
+}
+
+#[test]
+fn appended_local_proposal_event_requires_pending_proposal() {
+    let proposal_id = LocalProposalId(80);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([vec![append_output(proposal_id, 2)]]),
+    );
+    begin_pending_proposal(&mut group, proposal_id, None, 2);
+
+    let report = group
+        .apply_raft_outputs(vec![append_output(proposal_id, 2)])
+        .expect("pending append is reported");
+
+    assert_eq!(
+        report.proposal_events,
+        vec![ProposalEvent::Appended {
+            local_proposal_id: proposal_id,
+            index: LogIndex(2),
+            term: Term(1),
+        }]
+    );
+    assert_eq!(group.metrics().pending_proposals, 1);
+}
+
+#[test]
+fn stale_local_proposal_apply_after_apply_is_reported_without_lifecycle_event() {
+    let proposal_id = LocalProposalId(77);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([vec![append_output(proposal_id, 2)]]),
+    );
+    begin_pending_proposal(&mut group, proposal_id, None, 2);
+
+    let applied = group
+        .apply_raft_outputs(vec![apply_output(2, b"original", Some(proposal_id))])
+        .expect("proposal applies");
+    assert_eq!(
+        applied.proposal_events,
+        vec![ProposalEvent::Applied {
+            local_proposal_id: proposal_id,
+            index: LogIndex(2),
+            term: Term(1),
+            result: b"original".to_vec(),
+        }]
+    );
+
+    let stale = group
+        .apply_raft_outputs(vec![apply_output(3, b"stale", Some(proposal_id))])
+        .expect("stale apply result is still reported");
+
+    assert!(stale.proposal_events.is_empty());
+    assert_eq!(stale.applied.len(), 1);
+    assert_eq!(stale.applied[0].local_proposal_id, Some(proposal_id));
+    assert_eq!(stale.applied[0].result, b"stale".to_vec());
+    assert_eq!(group.metrics().pending_proposals, 0);
+}
+
+#[test]
+fn stale_local_proposal_append_after_apply_is_ignored() {
+    let proposal_id = LocalProposalId(81);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([vec![append_output(proposal_id, 2)]]),
+    );
+    begin_pending_proposal(&mut group, proposal_id, None, 2);
+
+    group
+        .apply_raft_outputs(vec![apply_output(2, b"original", Some(proposal_id))])
+        .expect("proposal applies");
+
+    let stale = group
+        .apply_raft_outputs(vec![append_output(proposal_id, 3)])
+        .expect("stale append is ignored");
+
+    assert!(stale.proposal_events.is_empty());
+    assert_eq!(group.metrics().pending_proposals, 0);
+}
+
+#[test]
+fn stale_local_proposal_apply_after_rejection_is_reported_without_lifecycle_event() {
+    let proposal_id = LocalProposalId(78);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([vec![append_output(proposal_id, 2)]]),
+    );
+    begin_pending_proposal(&mut group, proposal_id, None, 2);
+
+    group
+        .apply_raft_outputs(vec![RaftOutput::RejectProposal {
+            proposal_id: Some(proposal_id),
+            reason: ProposalRejection::NotLeader {
+                role: Role::Follower,
+                term: Term(1),
+                payload_len: 0,
+            },
+        }])
+        .expect("proposal is rejected");
+
+    let stale = group
+        .apply_raft_outputs(vec![apply_output(2, b"stale", Some(proposal_id))])
+        .expect("stale apply result is still reported");
+
+    assert!(stale.proposal_events.is_empty());
+    assert_eq!(stale.applied.len(), 1);
+    assert_eq!(stale.applied[0].local_proposal_id, Some(proposal_id));
+    assert_eq!(stale.applied[0].result, b"stale".to_vec());
+    assert_eq!(group.metrics().pending_proposals, 0);
+}
+
+#[test]
+fn stale_local_proposal_append_after_rejection_is_ignored() {
+    let proposal_id = LocalProposalId(82);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([vec![append_output(proposal_id, 2)]]),
+    );
+    begin_pending_proposal(&mut group, proposal_id, None, 2);
+
+    group
+        .apply_raft_outputs(vec![RaftOutput::RejectProposal {
+            proposal_id: Some(proposal_id),
+            reason: ProposalRejection::NotLeader {
+                role: Role::Follower,
+                term: Term(1),
+                payload_len: 0,
+            },
+        }])
+        .expect("proposal is rejected");
+
+    let stale = group
+        .apply_raft_outputs(vec![append_output(proposal_id, 2)])
+        .expect("stale append is ignored");
+
+    assert!(stale.proposal_events.is_empty());
+    assert_eq!(group.metrics().pending_proposals, 0);
+}
+
+#[test]
+fn stale_local_proposal_apply_after_unknown_outcome_is_reported_without_lifecycle_event() {
+    let proposal_id = LocalProposalId(79);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([vec![append_output(proposal_id, 2)]]),
+    );
+    begin_pending_proposal(&mut group, proposal_id, None, 2);
+
+    group
+        .apply_raft_outputs(vec![RaftOutput::LocalProposalDropped {
+            proposal_id,
+            index: LogIndex(2),
+            term: Term(1),
+            reason: rafter::LocalProposalDropReason::LeadershipLost,
+        }])
+        .expect("proposal becomes unknown outcome");
+
+    let stale = group
+        .apply_raft_outputs(vec![apply_output(2, b"stale", Some(proposal_id))])
+        .expect("stale apply result is still reported");
+
+    assert!(stale.proposal_events.is_empty());
+    assert_eq!(stale.applied.len(), 1);
+    assert_eq!(stale.applied[0].local_proposal_id, Some(proposal_id));
+    assert_eq!(stale.applied[0].result, b"stale".to_vec());
+    assert_eq!(group.metrics().pending_proposals, 0);
+}
+
+#[test]
+fn stale_local_proposal_append_after_unknown_outcome_is_ignored() {
+    let proposal_id = LocalProposalId(83);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([vec![append_output(proposal_id, 2)]]),
+    );
+    begin_pending_proposal(&mut group, proposal_id, None, 2);
+
+    group
+        .apply_raft_outputs(vec![RaftOutput::LocalProposalDropped {
+            proposal_id,
+            index: LogIndex(2),
+            term: Term(1),
+            reason: rafter::LocalProposalDropReason::LeadershipLost,
+        }])
+        .expect("proposal becomes unknown outcome");
+
+    let stale = group
+        .apply_raft_outputs(vec![append_output(proposal_id, 3)])
+        .expect("stale append is ignored");
+
+    assert!(stale.proposal_events.is_empty());
+    assert_eq!(group.metrics().pending_proposals, 0);
+}
+
+#[test]
+fn stale_lower_local_proposal_append_does_not_affect_higher_pending_proposal() {
+    let stale_id = LocalProposalId(84);
+    let higher_id = LocalProposalId(85);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([vec![append_output(higher_id, 3)]]),
+    );
+    begin_pending_proposal(&mut group, higher_id, None, 3);
+
+    let stale = group
+        .apply_raft_outputs(vec![append_output(stale_id, 2)])
+        .expect("stale lower append is ignored");
+
+    assert!(stale.proposal_events.is_empty());
+    assert_eq!(group.metrics().pending_proposals, 1);
+}
+
+#[test]
+fn stale_local_proposal_drop_after_apply_is_ignored() {
+    let proposal_id = LocalProposalId(71);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([vec![append_output(proposal_id, 2)]]),
+    );
+    begin_pending_proposal(&mut group, proposal_id, None, 2);
+
+    let applied = group
+        .apply_raft_outputs(vec![apply_output(2, b"applied", Some(proposal_id))])
+        .expect("proposal applies");
+    assert_eq!(
+        applied.proposal_events,
+        vec![ProposalEvent::Applied {
+            local_proposal_id: proposal_id,
+            index: LogIndex(2),
+            term: Term(1),
+            result: b"applied".to_vec(),
+        }]
+    );
+    assert_eq!(group.metrics().pending_proposals, 0);
+
+    let stale_drop = group
+        .apply_raft_outputs(vec![RaftOutput::LocalProposalDropped {
+            proposal_id,
+            index: LogIndex(2),
+            term: Term(1),
+            reason: rafter::LocalProposalDropReason::LeadershipLost,
+        }])
+        .expect("stale drop is ignored");
+
+    assert!(stale_drop.proposal_events.is_empty());
+    assert_eq!(group.metrics().pending_proposals, 0);
+}
+
+#[test]
+fn stale_local_proposal_drop_after_rejection_is_ignored() {
+    let proposal_id = LocalProposalId(72);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([vec![append_output(proposal_id, 2)]]),
+    );
+    begin_pending_proposal(&mut group, proposal_id, None, 2);
+
+    let rejected = group
+        .apply_raft_outputs(vec![RaftOutput::RejectProposal {
+            proposal_id: Some(proposal_id),
+            reason: ProposalRejection::NotLeader {
+                role: Role::Follower,
+                term: Term(1),
+                payload_len: 0,
+            },
+        }])
+        .expect("proposal rejection is reported");
+    assert_eq!(
+        rejected.proposal_events,
+        vec![ProposalEvent::Rejected {
+            local_proposal_id: proposal_id,
+            reason: ProposalRejection::NotLeader {
+                role: Role::Follower,
+                term: Term(1),
+                payload_len: 0,
+            },
+        }]
+    );
+    assert_eq!(group.metrics().pending_proposals, 0);
+
+    let stale_drop = group
+        .apply_raft_outputs(vec![RaftOutput::LocalProposalDropped {
+            proposal_id,
+            index: LogIndex(3),
+            term: Term(1),
+            reason: rafter::LocalProposalDropReason::LeadershipLost,
+        }])
+        .expect("stale drop is ignored");
+
+    assert!(stale_drop.proposal_events.is_empty());
+    assert_eq!(group.metrics().pending_proposals, 0);
+}
+
+#[test]
+fn reused_local_proposal_id_is_rejected_and_stale_drop_is_ignored() {
+    let proposal_id = LocalProposalId(73);
+    let higher_id = LocalProposalId(75);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([
+            vec![RaftOutput::LocalProposalAppended {
+                proposal_id,
+                index: LogIndex(2),
+                term: Term(1),
+            }],
+            vec![RaftOutput::LocalProposalAppended {
+                proposal_id: higher_id,
+                index: LogIndex(3),
+                term: Term(1),
+            }],
+        ]),
+    );
+
+    let begin = group
+        .begin_proposal_outcome(Proposal {
+            local_proposal_id: proposal_id,
+            client_request_id: None,
+            command: b"first".to_vec(),
+        })
+        .expect("first proposal starts");
+    assert!(matches!(
+        begin,
+        ProposalBegin::Appended {
+            local_proposal_id,
+            ..
+        } if local_proposal_id == proposal_id
+    ));
+    group
+        .apply_raft_outputs(vec![apply_output(2, b"first", Some(proposal_id))])
+        .expect("first proposal applies");
+
+    let reuse_error = group
+        .begin_proposal_outcome(Proposal {
+            local_proposal_id: proposal_id,
+            client_request_id: None,
+            command: b"reuse".to_vec(),
+        })
+        .expect_err("local proposal IDs are single-use");
+    assert!(matches!(
+        reuse_error,
+        GroupError::NonMonotonicLocalProposalId {
+            local_proposal_id,
+            last_seen_local_proposal_id,
+        } if local_proposal_id == proposal_id
+            && last_seen_local_proposal_id == proposal_id
+    ));
+    assert_eq!(group.metrics().pending_proposals, 0);
+
+    let higher = group
+        .begin_proposal_outcome(Proposal {
+            local_proposal_id: higher_id,
+            client_request_id: None,
+            command: b"higher".to_vec(),
+        })
+        .expect("higher fresh local proposal ID is accepted");
+    assert!(matches!(
+        higher,
+        ProposalBegin::Appended {
+            local_proposal_id,
+            index: LogIndex(3),
+            ..
+        } if local_proposal_id == higher_id
+    ));
+    assert_eq!(group.metrics().pending_proposals, 1);
+
+    let stale_drop = group
+        .apply_raft_outputs(vec![RaftOutput::LocalProposalDropped {
+            proposal_id,
+            index: LogIndex(2),
+            term: Term(1),
+            reason: rafter::LocalProposalDropReason::LeadershipLost,
+        }])
+        .expect("stale drop is ignored after rejected reuse");
+
+    assert!(stale_drop.proposal_events.is_empty());
+    assert_eq!(group.metrics().pending_proposals, 1);
+}
+
+#[test]
+fn reused_local_proposal_id_is_rejected_and_stale_rejection_is_ignored() {
+    let proposal_id = LocalProposalId(74);
+    let higher_id = LocalProposalId(76);
+    let rejection = ProposalRejection::NotLeader {
+        role: Role::Follower,
+        term: Term(1),
+        payload_len: 0,
+    };
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([
+            vec![RaftOutput::RejectProposal {
+                proposal_id: Some(proposal_id),
+                reason: rejection.clone(),
+            }],
+            vec![RaftOutput::LocalProposalAppended {
+                proposal_id: higher_id,
+                index: LogIndex(3),
+                term: Term(1),
+            }],
+        ]),
+    );
+
+    let begin = group
+        .begin_proposal_outcome(Proposal {
+            local_proposal_id: proposal_id,
+            client_request_id: None,
+            command: b"first".to_vec(),
+        })
+        .expect("first proposal is rejected");
+    assert!(matches!(
+        begin,
+        ProposalBegin::Rejected {
+            local_proposal_id,
+            reason,
+            ..
+        } if local_proposal_id == proposal_id && reason == rejection
+    ));
+
+    let reuse_error = group
+        .step(GroupInput::Proposal {
+            proposal: Proposal {
+                local_proposal_id: proposal_id,
+                client_request_id: None,
+                command: b"reuse".to_vec(),
+            },
+        })
+        .expect_err("local proposal IDs are single-use");
+    assert!(matches!(
+        reuse_error,
+        GroupError::NonMonotonicLocalProposalId {
+            local_proposal_id,
+            last_seen_local_proposal_id,
+        } if local_proposal_id == proposal_id
+            && last_seen_local_proposal_id == proposal_id
+    ));
+    assert_eq!(group.metrics().pending_proposals, 0);
+
+    let higher = group
+        .begin_proposal_outcome(Proposal {
+            local_proposal_id: higher_id,
+            client_request_id: None,
+            command: b"higher".to_vec(),
+        })
+        .expect("higher fresh local proposal ID is accepted");
+    assert!(matches!(
+        higher,
+        ProposalBegin::Appended {
+            local_proposal_id,
+            index: LogIndex(3),
+            ..
+        } if local_proposal_id == higher_id
+    ));
+    assert_eq!(group.metrics().pending_proposals, 1);
+
+    let stale_rejection = group
+        .apply_raft_outputs(vec![RaftOutput::RejectProposal {
+            proposal_id: Some(proposal_id),
+            reason: rejection,
+        }])
+        .expect("stale rejection is ignored after rejected reuse");
+
+    assert!(stale_rejection.proposal_events.is_empty());
+    assert_eq!(group.metrics().pending_proposals, 1);
+}
