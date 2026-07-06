@@ -1,0 +1,580 @@
+#![allow(dead_code, unused_imports)]
+
+use std::{
+    collections::{BTreeMap, VecDeque},
+    error::Error,
+    fmt,
+};
+
+pub(crate) use rafter::{
+    AppendEntries, AppendEntriesResponse, ApplicationSnapshotKind, ApplicationSnapshotMetadata,
+    ApplicationSnapshotVersion, Input as RaftInput, LeadershipTransferRejection, LocalProposalId,
+    LogIndex, MembershipConfig, MembershipSet, Message, Node as RaftNode, NodeConfig, NodeId,
+    Output as RaftOutput, PreVoteResponse, PromotionBarrier, ProposalRejection, RaftSnapshot,
+    RaftSnapshotMetadata, ReadId, ReadIndexCancelReason, ReadIndexRejection, ReplicationProgress,
+    RequestVoteResponse, Role, SharedPayload, SnapshotChunkSend, SnapshotGroupId,
+    StagedSnapshotChunk, Term,
+};
+pub(crate) use rafter_app::error::{GroupError, StateMachineOperation};
+pub(crate) use rafter_app::group::{
+    GroupFatalState, GroupInput, LeadershipTransferEvent, PoisonedWaiters, RaftGroup,
+};
+pub(crate) use rafter_app::membership::{MembershipChange, MembershipEvent, NodeInfo};
+pub(crate) use rafter_app::proposal::{
+    ClientRequestId, Proposal, ProposalBegin, ProposalEvent, ProposalUnknownOutcomeReason,
+};
+pub(crate) use rafter_app::read::{
+    ReadBarrierRequest, ReadConsistency, ReadEvent, ReadOutcome, ReadProof, ReadProofOutcome,
+    ReadRequest,
+};
+pub(crate) use rafter_app::snapshot::SnapshotEvent;
+pub(crate) use rafter_app::state_machine::{
+    ApplicationSnapshot, ApplyBatch, ApplyResult, ReadBarrier, ReplicatedStateMachine,
+};
+pub(crate) use rafter_app::transport::PeerEnvelope;
+pub(crate) use rafter_runtime_api::PersistedRaftRuntime;
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) enum ApplyMode {
+    #[default]
+    Normal,
+    Fail,
+    DropLastResult,
+    WrongIndex,
+    WrongTerm,
+    WrongLocalProposalId,
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct RecordingStateMachine {
+    pub(crate) applied_index: LogIndex,
+    pub(crate) applied: Vec<Vec<u8>>,
+    pub(crate) batches: Vec<Vec<LogIndex>>,
+    pub(crate) apply_mode: ApplyMode,
+    pub(crate) fail_encode: bool,
+    pub(crate) fail_decode: bool,
+    pub(crate) fail_install_snapshot: bool,
+    pub(crate) reported_applied_index: Option<LogIndex>,
+    pub(crate) installed_snapshots: Vec<ApplicationSnapshot>,
+}
+
+impl ReplicatedStateMachine for RecordingStateMachine {
+    type Command = Vec<u8>;
+    type CommandResult = Vec<u8>;
+    type Query = Vec<u8>;
+    type QueryResult = Option<Vec<u8>>;
+    type Error = String;
+
+    fn applied_index(&self) -> Result<LogIndex, Self::Error> {
+        Ok(self.reported_applied_index.unwrap_or(self.applied_index))
+    }
+
+    fn encode_command(&self, command: &Self::Command) -> Result<Vec<u8>, Self::Error> {
+        if self.fail_encode {
+            return Err("encode failed".to_owned());
+        }
+        Ok(command.clone())
+    }
+
+    fn decode_command(&self, payload: &[u8]) -> Result<Self::Command, Self::Error> {
+        if self.fail_decode {
+            return Err("decode failed".to_owned());
+        }
+        Ok(payload.to_vec())
+    }
+
+    fn apply_batch(
+        &mut self,
+        batch: ApplyBatch<Self::Command>,
+    ) -> Result<Vec<ApplyResult<Self::CommandResult>>, Self::Error> {
+        if self.apply_mode == ApplyMode::Fail {
+            return Err("apply failed".to_owned());
+        }
+
+        self.batches
+            .push(batch.entries.iter().map(|entry| entry.index).collect());
+        let mut results = Vec::new();
+        for entry in batch.entries {
+            self.applied_index = entry.index;
+            self.applied.push(entry.command.clone());
+            let mut result = ApplyResult {
+                index: entry.index,
+                term: entry.term,
+                result: entry.command,
+                local_proposal_id: entry.local_proposal_id,
+            };
+            match self.apply_mode {
+                ApplyMode::WrongIndex => {
+                    result.index = result.index.next();
+                }
+                ApplyMode::WrongTerm => {
+                    result.term = result.term.next();
+                }
+                ApplyMode::WrongLocalProposalId => {
+                    result.local_proposal_id = Some(LocalProposalId(999));
+                }
+                ApplyMode::Normal | ApplyMode::Fail | ApplyMode::DropLastResult => {}
+            }
+            results.push(result);
+        }
+        if self.apply_mode == ApplyMode::DropLastResult {
+            results.pop();
+        }
+        Ok(results)
+    }
+
+    fn read(
+        &self,
+        query: Self::Query,
+        _barrier: ReadBarrier,
+    ) -> Result<Self::QueryResult, Self::Error> {
+        Ok(Some(query))
+    }
+
+    fn build_snapshot(&mut self, at: LogIndex) -> Result<ApplicationSnapshot, Self::Error> {
+        Ok(ApplicationSnapshot {
+            applied_index: at,
+            payload: Vec::new(),
+            raft_snapshot: None,
+        })
+    }
+
+    fn install_snapshot(&mut self, snapshot: ApplicationSnapshot) -> Result<(), Self::Error> {
+        if self.fail_install_snapshot {
+            return Err("install snapshot failed".to_owned());
+        }
+        self.applied_index = snapshot.applied_index;
+        self.installed_snapshots.push(snapshot);
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum TestRuntimeError {
+    Forced,
+}
+
+impl fmt::Display for TestRuntimeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Forced => formatter.write_str("forced runtime error"),
+        }
+    }
+}
+
+impl Error for TestRuntimeError {}
+
+#[derive(Clone, Debug)]
+pub(crate) struct KernelRuntime {
+    node: RaftNode,
+}
+
+impl KernelRuntime {
+    pub(crate) fn new(id: u64, peers: &[u64]) -> Self {
+        Self {
+            node: RaftNode::new(
+                NodeConfig::new(NodeId(id), peers.iter().copied().map(NodeId).collect(), 1)
+                    .expect("test node config is valid"),
+            ),
+        }
+    }
+}
+
+impl PersistedRaftRuntime for KernelRuntime {
+    type Error = TestRuntimeError;
+
+    fn id(&self) -> NodeId {
+        self.node.id()
+    }
+
+    fn leader_hint(&self) -> Option<NodeId> {
+        self.node.leader_hint()
+    }
+
+    fn role(&self) -> Role {
+        self.node.role()
+    }
+
+    fn current_term(&self) -> Term {
+        self.node.current_term()
+    }
+
+    fn commit_index(&self) -> LogIndex {
+        self.node.commit_index()
+    }
+
+    fn last_log_index(&self) -> LogIndex {
+        self.node.last_log_index()
+    }
+
+    fn snapshot_index(&self) -> LogIndex {
+        self.node.snapshot_index()
+    }
+
+    fn membership(&self) -> MembershipConfig {
+        self.node.effective_membership()
+    }
+
+    fn committed_membership(&self) -> MembershipConfig {
+        self.node.committed_membership()
+    }
+
+    fn replication(&self) -> Vec<ReplicationProgress> {
+        self.node.leader_replication_progress()
+    }
+
+    fn step(&mut self, input: RaftInput) -> Result<Vec<RaftOutput>, Self::Error> {
+        Ok(self.node.step(input))
+    }
+
+    fn term_at_index(&self, index: LogIndex) -> Option<Term> {
+        self.node.term_at_index(index)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ScriptedRuntime {
+    pub(crate) node_id: NodeId,
+    pub(crate) leader_hint: Option<NodeId>,
+    pub(crate) role: Role,
+    pub(crate) current_term: Term,
+    pub(crate) commit_index: LogIndex,
+    pub(crate) last_log_index: LogIndex,
+    pub(crate) snapshot_index: LogIndex,
+    pub(crate) membership: MembershipConfig,
+    pub(crate) committed_membership: MembershipConfig,
+    pub(crate) replication: Vec<ReplicationProgress>,
+    pub(crate) terms: BTreeMap<LogIndex, Term>,
+    pub(crate) step_memberships: VecDeque<(MembershipConfig, MembershipConfig)>,
+    pub(crate) step_inputs: Vec<RaftInput>,
+    pub(crate) step_outputs: VecDeque<Vec<RaftOutput>>,
+    pub(crate) step_errors: VecDeque<TestRuntimeError>,
+}
+
+impl ScriptedRuntime {
+    pub(crate) fn with_terms(terms: impl IntoIterator<Item = (LogIndex, Term)>) -> Self {
+        Self {
+            node_id: NodeId(1),
+            leader_hint: Some(NodeId(1)),
+            role: Role::Leader,
+            current_term: Term(1),
+            commit_index: LogIndex::ZERO,
+            last_log_index: LogIndex::ZERO,
+            snapshot_index: LogIndex::ZERO,
+            membership: membership(&[1], &[]),
+            committed_membership: membership(&[1], &[]),
+            replication: Vec::new(),
+            terms: terms.into_iter().collect(),
+            step_memberships: VecDeque::new(),
+            step_inputs: Vec::new(),
+            step_outputs: VecDeque::new(),
+            step_errors: VecDeque::new(),
+        }
+    }
+
+    pub(crate) fn with_step_outputs(outputs: impl IntoIterator<Item = Vec<RaftOutput>>) -> Self {
+        let mut runtime = Self::with_terms([
+            (LogIndex(2), Term(1)),
+            (LogIndex(3), Term(1)),
+            (LogIndex(4), Term(1)),
+            (LogIndex(5), Term(1)),
+        ]);
+        runtime.current_term = Term(2);
+        runtime.step_outputs = outputs.into_iter().collect();
+        runtime
+    }
+
+    pub(crate) fn with_step_errors(errors: impl IntoIterator<Item = TestRuntimeError>) -> Self {
+        let mut runtime = Self::with_step_outputs([]);
+        runtime.step_errors = errors.into_iter().collect();
+        runtime
+    }
+}
+
+impl PersistedRaftRuntime for ScriptedRuntime {
+    type Error = TestRuntimeError;
+
+    fn id(&self) -> NodeId {
+        self.node_id
+    }
+
+    fn leader_hint(&self) -> Option<NodeId> {
+        self.leader_hint
+    }
+
+    fn role(&self) -> Role {
+        self.role
+    }
+
+    fn current_term(&self) -> Term {
+        self.current_term
+    }
+
+    fn commit_index(&self) -> LogIndex {
+        self.commit_index
+    }
+
+    fn last_log_index(&self) -> LogIndex {
+        self.last_log_index
+    }
+
+    fn snapshot_index(&self) -> LogIndex {
+        self.snapshot_index
+    }
+
+    fn membership(&self) -> MembershipConfig {
+        self.membership.clone()
+    }
+
+    fn committed_membership(&self) -> MembershipConfig {
+        self.committed_membership.clone()
+    }
+
+    fn replication(&self) -> Vec<ReplicationProgress> {
+        self.replication.clone()
+    }
+
+    fn step(&mut self, input: RaftInput) -> Result<Vec<RaftOutput>, Self::Error> {
+        if let RaftInput::AddLearner { learner_id } = &input {
+            self.last_log_index = self.last_log_index.next();
+            self.terms.insert(self.last_log_index, self.current_term);
+            self.membership = membership(&[1], &[learner_id.0]);
+        }
+        if let Some((membership, committed_membership)) = self.step_memberships.pop_front() {
+            self.membership = membership;
+            self.committed_membership = committed_membership;
+        }
+        self.step_inputs.push(input);
+        if let Some(error) = self.step_errors.pop_front() {
+            return Err(error);
+        }
+        Ok(self.step_outputs.pop_front().unwrap_or_default())
+    }
+
+    fn term_at_index(&self, index: LogIndex) -> Option<Term> {
+        self.terms.get(&index).copied()
+    }
+}
+
+pub(crate) fn runtime(id: u64, peers: &[u64]) -> KernelRuntime {
+    KernelRuntime::new(id, peers)
+}
+
+pub(crate) fn group(
+    id: u64,
+    peers: &[u64],
+) -> RaftGroup<u64, RecordingStateMachine, KernelRuntime> {
+    RaftGroup::new(
+        7,
+        NodeId(id),
+        runtime(id, peers),
+        RecordingStateMachine::default(),
+    )
+}
+
+pub(crate) fn membership(voters: &[u64], learners: &[u64]) -> MembershipConfig {
+    MembershipConfig::stable(membership_set(voters, learners))
+}
+
+pub(crate) fn membership_set(voters: &[u64], learners: &[u64]) -> MembershipSet {
+    MembershipSet::new(
+        voters.iter().copied().map(NodeId).collect(),
+        learners.iter().copied().map(NodeId).collect(),
+    )
+    .expect("test membership is valid")
+}
+
+pub(crate) fn scripted_group(
+    app: RecordingStateMachine,
+) -> RaftGroup<u64, RecordingStateMachine, ScriptedRuntime> {
+    scripted_group_with_runtime(
+        app,
+        ScriptedRuntime::with_terms([
+            (LogIndex(2), Term(1)),
+            (LogIndex(3), Term(1)),
+            (LogIndex(4), Term(1)),
+        ]),
+    )
+}
+
+pub(crate) fn scripted_group_with_runtime(
+    app: RecordingStateMachine,
+    runtime: ScriptedRuntime,
+) -> RaftGroup<u64, RecordingStateMachine, ScriptedRuntime> {
+    RaftGroup::new(7, NodeId(1), runtime, app)
+}
+
+pub(crate) fn apply_output(
+    index: u64,
+    payload: &[u8],
+    local_proposal_id: Option<LocalProposalId>,
+) -> RaftOutput {
+    RaftOutput::Apply {
+        index: LogIndex(index),
+        term: Term(1),
+        payload: SharedPayload::from(payload),
+        local_proposal_id,
+    }
+}
+
+pub(crate) fn append_output(proposal_id: LocalProposalId, index: u64) -> RaftOutput {
+    RaftOutput::LocalProposalAppended {
+        proposal_id,
+        index: LogIndex(index),
+        term: Term(1),
+    }
+}
+
+pub(crate) fn begin_pending_proposal(
+    group: &mut RaftGroup<u64, RecordingStateMachine, ScriptedRuntime>,
+    local_proposal_id: LocalProposalId,
+    client_request_id: Option<ClientRequestId>,
+    index: u64,
+) {
+    let begin = group
+        .begin_proposal_outcome(Proposal {
+            local_proposal_id,
+            client_request_id,
+            command: format!("proposal-{}", local_proposal_id.0).into_bytes(),
+        })
+        .expect("test proposal starts");
+    assert!(matches!(
+        begin,
+        ProposalBegin::Appended {
+            local_proposal_id: actual_id,
+            index: actual_index,
+            ..
+        } if actual_id == local_proposal_id && actual_index == LogIndex(index)
+    ));
+}
+
+pub(crate) fn begin_pending_read_barrier(
+    group: &mut RaftGroup<u64, RecordingStateMachine, ScriptedRuntime>,
+    read_id: ReadId,
+    min_applied_index: Option<LogIndex>,
+) {
+    let outcome = group
+        .begin_read_barrier_outcome(read_request(read_id, min_applied_index))
+        .expect("test read barrier starts");
+    assert!(matches!(
+        outcome,
+        ReadProofOutcome::Pending { read_id: actual_id, .. }
+            | ReadProofOutcome::FreshnessUnavailable {
+                read_id: actual_id,
+                ..
+            } if actual_id == read_id
+    ));
+}
+
+pub(crate) fn assert_read_metrics(
+    group: &RaftGroup<u64, RecordingStateMachine, ScriptedRuntime>,
+    pending_read_barriers: usize,
+    pending_query_reads: usize,
+    completed_query_reads: usize,
+    reserved_reads: usize,
+) {
+    let metrics = group.metrics();
+    assert_eq!(metrics.pending_reads, pending_read_barriers);
+    assert_eq!(metrics.pending_read_barriers, pending_read_barriers);
+    assert_eq!(metrics.pending_query_reads, pending_query_reads);
+    assert_eq!(metrics.completed_query_reads, completed_query_reads);
+    assert_eq!(metrics.reserved_reads, reserved_reads);
+}
+
+pub(crate) fn assert_non_monotonic_read_id(
+    error: &GroupError<String, TestRuntimeError>,
+    read_id: ReadId,
+    last_seen_read_id: ReadId,
+) {
+    assert!(matches!(
+        error,
+        GroupError::NonMonotonicReadId {
+            read_id: actual,
+            last_seen_read_id: actual_last_seen,
+        } if *actual == read_id && *actual_last_seen == last_seen_read_id
+    ));
+}
+
+pub(crate) fn test_snapshot(index: u64) -> RaftSnapshot {
+    let application = ApplicationSnapshotMetadata::new(
+        ApplicationSnapshotKind::new("kv").expect("snapshot kind is valid"),
+        ApplicationSnapshotVersion::new(1).expect("snapshot version is valid"),
+    );
+    let metadata = RaftSnapshotMetadata::new(
+        SnapshotGroupId::new("group-7").expect("snapshot group id is valid"),
+        NodeId(1),
+        LogIndex(index),
+        Term(2),
+        Term(2),
+        application,
+    )
+    .expect("snapshot metadata is valid");
+    RaftSnapshot::from_payload(metadata, b"snapshot")
+}
+
+pub(crate) fn staged_snapshot_chunk(snapshot: &RaftSnapshot) -> StagedSnapshotChunk {
+    StagedSnapshotChunk {
+        leader_id: NodeId(1),
+        transfer_id: snapshot.transfer_id(),
+        metadata: snapshot.metadata.clone(),
+        total_payload_len: snapshot.application_payload_len,
+        application_payload_crc32: snapshot.application_payload_crc32,
+        offset: 0,
+        bytes: b"snapshot".to_vec(),
+        done: true,
+    }
+}
+
+pub(crate) fn snapshot_chunk_send(snapshot: &RaftSnapshot) -> SnapshotChunkSend {
+    SnapshotChunkSend {
+        term: Term(2),
+        leader_id: NodeId(1),
+        transfer_id: snapshot.transfer_id(),
+        metadata: snapshot.metadata.clone(),
+        total_payload_len: snapshot.application_payload_len,
+        application_payload_crc32: snapshot.application_payload_crc32,
+        offset: 0,
+        len: u32::try_from(snapshot.application_payload_len)
+            .expect("test snapshot payload length fits in one chunk"),
+        done: true,
+    }
+}
+
+pub(crate) fn read_request(
+    read_id: ReadId,
+    min_applied_index: Option<LogIndex>,
+) -> ReadBarrierRequest<u64> {
+    ReadBarrierRequest {
+        group_id: 7,
+        read_id,
+        min_applied_index,
+        context: Vec::new(),
+    }
+}
+
+pub(crate) fn read_helper_request(
+    read_id: ReadId,
+    consistency: ReadConsistency,
+    min_applied_index: Option<LogIndex>,
+) -> ReadRequest<u64, Vec<u8>> {
+    match consistency {
+        ReadConsistency::Local => ReadRequest::Local {
+            group_id: 7,
+            query: b"query".to_vec(),
+            min_applied_index,
+        },
+        ReadConsistency::Linearizable => ReadRequest::Linearizable {
+            group_id: 7,
+            read_id,
+            query: b"query".to_vec(),
+            min_applied_index,
+            context: Vec::new(),
+        },
+        ReadConsistency::LeaseRead => ReadRequest::Lease {
+            group_id: 7,
+            query: b"query".to_vec(),
+            min_applied_index,
+        },
+        _ => unreachable!("test helper only handles known read consistency variants"),
+    }
+}
