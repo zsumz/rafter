@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if ! command -v maelstrom >/dev/null 2>&1; then
+  echo "maelstrom not found on PATH" >&2
+  echo "Install Maelstrom, then rerun this script." >&2
+  exit 127
+fi
+if ! command -v dot >/dev/null 2>&1; then
+  echo "Graphviz dot not found on PATH" >&2
+  echo "Install Graphviz for Maelstrom analysis, then rerun this script." >&2
+  exit 127
+fi
+if ! command -v gnuplot >/dev/null 2>&1; then
+  echo "gnuplot not found on PATH" >&2
+  echo "Install Gnuplot for Maelstrom latency graphs, then rerun this script." >&2
+  exit 127
+fi
+
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT="${RAFTER_MAELSTROM_ROOT:-$(mktemp -d "${TMPDIR:-/tmp}/rafter-maelstrom.XXXXXX")}"
+export RAFTER_MAELSTROM_ROOT="$ROOT"
+export RAFTER_MAELSTROM_CHILD="${RAFTER_MAELSTROM_CHILD:-${REPO_ROOT}/target/debug/rafter-maelstrom}"
+export RAFTER_MAELSTROM_LEADER_RESTARTS="${RAFTER_MAELSTROM_LEADER_RESTARTS:-1}"
+export RAFTER_MAELSTROM_LEADER_RESTART_DELAY_MS="${RAFTER_MAELSTROM_LEADER_RESTART_DELAY_MS:-250}"
+export RAFTER_MAELSTROM_LEADER_DOWN_MS="${RAFTER_MAELSTROM_LEADER_DOWN_MS:-500}"
+
+cargo build --manifest-path "${REPO_ROOT}/Cargo.toml" -p rafter-maelstrom --bins
+
+maelstrom test \
+  --workload lin-kv \
+  --bin "${REPO_ROOT}/target/debug/rafter-maelstrom-leader-restart-proxy" \
+  --node-count 3 \
+  --time-limit 20 \
+  --rate 100 \
+  --concurrency 6 \
+  --nemesis partition \
+  --nemesis-interval 1 \
+  "$@"
