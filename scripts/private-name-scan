@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/private-name-scan [--include-assets] PATTERN...
+       : "${RAFTER_PRIVATE_NAME_PATTERNS:?set patterns outside the repo}"
+       scripts/private-name-scan
+
+Scans release-facing text surfaces for private downstream names or other
+private patterns. The default scan is intentionally text-aware: it covers
+release markdown, manifests, Rust source, scripts, and workflows while
+excluding binary or base64-heavy assets such as SVGs. Use --include-assets only
+for a separate human-reviewed asset pass because encoded image data can produce
+false positives.
+USAGE
+}
+
+include_assets=0
+patterns=()
+
+while (($#)); do
+  case "$1" in
+    --include-assets)
+      include_assets=1
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      patterns+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if ((${#patterns[@]} == 0)) && [[ -n "${RAFTER_PRIVATE_NAME_PATTERNS:-}" ]]; then
+  while IFS= read -r pattern || [[ -n "$pattern" ]]; do
+    patterns+=("$pattern")
+  done < <(printf '%s' "${RAFTER_PRIVATE_NAME_PATTERNS}" | tr ',;' '\n')
+fi
+
+clean_patterns=()
+for pattern in "${patterns[@]}"; do
+  pattern="${pattern#"${pattern%%[![:space:]]*}"}"
+  pattern="${pattern%"${pattern##*[![:space:]]}"}"
+  if [[ -n "$pattern" ]]; then
+    clean_patterns+=("$pattern")
+  fi
+done
+patterns=("${clean_patterns[@]}")
+
+if ((${#patterns[@]} == 0)); then
+  usage >&2
+  echo >&2
+  echo "private-name scan requires at least one pattern" >&2
+  exit 2
+fi
+
+targets=(
+  README.md
+  Cargo.toml
+  Cargo.lock
+  crates
+  fuzz
+  scripts
+  .github
+)
+
+globs=(
+  --glob 'README.md'
+  --glob 'Cargo.toml'
+  --glob 'Cargo.lock'
+  --glob 'crates/**/*.rs'
+  --glob 'crates/**/Cargo.toml'
+  --glob 'fuzz/**/*.rs'
+  --glob 'fuzz/**/Cargo.toml'
+  --glob 'scripts/**'
+  --glob '.github/**'
+)
+
+if ((include_assets)); then
+  echo "warning: asset scan is enabled; review base64/binary-looking matches manually" >&2
+  targets+=(rafter-logo.svg)
+else
+  globs+=(
+    --glob '!*.svg'
+    --glob '!*.png'
+    --glob '!*.jpg'
+    --glob '!*.jpeg'
+    --glob '!*.gif'
+    --glob '!*.webp'
+    --glob '!*.ico'
+  )
+fi
+
+existing_targets=()
+for target in "${targets[@]}"; do
+  if [[ -e "$target" ]]; then
+    existing_targets+=("$target")
+  fi
+done
+
+matched=0
+for pattern in "${patterns[@]}"; do
+  if rg --fixed-strings --line-number --color never "${globs[@]}" -- "$pattern" "${existing_targets[@]}"; then
+    matched=1
+  fi
+done
+
+if ((matched)); then
+  echo "private-name scan found matches" >&2
+  exit 1
+fi
+
+echo "private-name scan found no matches across text release surfaces"
