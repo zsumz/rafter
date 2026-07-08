@@ -1,0 +1,202 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CARGO="${CARGO:-cargo}"
+MODE=local
+RUN_ID=""
+SEED_ARGS=()
+
+usage() {
+  cat <<'USAGE'
+Usage: scripts/raft-burn-in [local|nightly|weekly] [options]
+
+Modes:
+  local     Short production-style pass for pre-merge Raft hardening evidence.
+  nightly   Longer scheduled/release-candidate pass.
+  weekly    Extra-deep scheduled model-checking pass.
+
+Options:
+  --run-id ID       Use an explicit target/raft-burn-in/<ID> run directory.
+  --seed SEEDS      Replay model-check soak seed(s), e.g. 0x1234 or 0x1,0x2.
+
+Environment:
+  CARGO             Cargo executable. Defaults to cargo.
+
+Artifacts:
+  target/raft-burn-in/<run-id>/
+USAGE
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    local|nightly|weekly)
+      MODE="$1"
+      ;;
+    --run-id)
+      shift
+      if [[ $# -eq 0 ]]; then
+        echo "--run-id requires a value" >&2
+        exit 2
+      fi
+      RUN_ID="$1"
+      ;;
+    --seed)
+      shift
+      if [[ $# -eq 0 ]]; then
+        echo "--seed requires a value" >&2
+        exit 2
+      fi
+      SEED_ARGS+=(--seed "$1")
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "unknown argument: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+  shift
+done
+
+if [[ -z "$RUN_ID" ]]; then
+  RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$MODE"
+fi
+
+RUN_DIR="$ROOT/target/raft-burn-in/$RUN_ID"
+SUMMARY="$RUN_DIR/summary.tsv"
+README="$RUN_DIR/README.md"
+mkdir -p "$RUN_DIR"
+
+case "$MODE" in
+  local)
+    MODEL_PROFILE=raft-soak
+    MINIMUM_DURATION="one successful local pass before merging risky Raft/storage changes"
+    MODEL_CHECK_CARGO_ARGS=(run --locked -p rafter-sim --bin rafter-model-check-fast)
+    ;;
+  nightly)
+    MODEL_PROFILE=raft-nightly
+    MINIMUM_DURATION="three successful nightly runs or 30 aggregate burn-in minutes before release-readiness claims"
+    MODEL_CHECK_CARGO_ARGS=(run --locked --release -p rafter-sim --bin rafter-model-check-fast)
+    ;;
+  weekly)
+    MODEL_PROFILE=raft-weekly
+    MINIMUM_DURATION="one successful weekly extra-deep run before release-readiness claims"
+    MODEL_CHECK_CARGO_ARGS=(run --locked --release -p rafter-sim --bin rafter-model-check-fast)
+    ;;
+  *)
+    echo "unknown mode: $MODE" >&2
+    exit 2
+    ;;
+esac
+
+json_string() {
+  local value="$1"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  value="${value//$'\n'/\\n}"
+  value="${value//$'\r'/\\r}"
+  value="${value//$'\t'/\\t}"
+  printf '"%s"' "$value"
+}
+
+command_line() {
+  local rendered=""
+  local arg
+  for arg in "$@"; do
+    rendered+="$(printf '%q' "$arg") "
+  done
+  printf '%s' "${rendered% }"
+}
+
+write_readme() {
+  {
+    printf '# Raft Burn-In Run\n\n'
+    printf -- '- run_id: `%s`\n' "$RUN_ID"
+    printf -- '- mode: `%s`\n' "$MODE"
+    printf -- '- model_check_profile: `%s`\n' "$MODEL_PROFILE"
+    if [[ "${#SEED_ARGS[@]}" -gt 0 ]]; then
+      printf -- '- replay_seed_args: `%s`\n' "$(command_line "${SEED_ARGS[@]}")"
+    elif [[ "$MODE" == "local" ]]; then
+      printf -- '- replay_seed_args: none; local raft-soak uses curated fixed seeds by default\n'
+    else
+      printf -- '- replay_seed_args: none; scheduled profiles generate fresh soak seeds and print them for replay\n'
+    fi
+    printf -- '- minimum_duration_rule: %s\n\n' "$MINIMUM_DURATION"
+    printf 'Logs:\n\n'
+    printf -- '- `model-check-%s.log`\n' "$MODEL_PROFILE"
+    printf -- '- `storage-tests.log`\n'
+    printf -- '- `summary.tsv`\n'
+  } > "$README"
+}
+
+write_metadata() {
+  {
+    printf '{\n'
+    printf '  "run_id": '
+    json_string "$RUN_ID"
+    printf ',\n'
+    printf '  "mode": '
+    json_string "$MODE"
+    printf ',\n'
+    printf '  "model_check_profile": '
+    json_string "$MODEL_PROFILE"
+    printf ',\n'
+    printf '  "replay_seed_args": '
+    if [[ "${#SEED_ARGS[@]}" -gt 0 ]]; then
+      json_string "$(command_line "${SEED_ARGS[@]}")"
+    else
+      json_string ""
+    fi
+    printf ',\n'
+    printf '  "minimum_duration_rule": '
+    json_string "$MINIMUM_DURATION"
+    printf '\n}\n'
+  } > "$RUN_DIR/run.json"
+}
+
+run_step() {
+  local name="$1"
+  shift
+  local log_file="$RUN_DIR/$name.log"
+  local start end duration status
+  start="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  printf '==> step=%s start=%s\n' "$name" "$start" | tee "$log_file"
+  printf '==> command=%s\n' "$(command_line "$@")" | tee -a "$log_file"
+
+  local started_seconds="$SECONDS"
+  set +e
+  (cd "$ROOT" && "$@") 2>&1 | tee -a "$log_file"
+  local code="${PIPESTATUS[0]}"
+  set -e
+
+  duration="$((SECONDS - started_seconds))"
+  end="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if [[ "$code" -eq 0 ]]; then
+    status=pass
+  else
+    status=fail
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$name" "$status" "$duration" "$start" "$end" "$(command_line "$@")" >> "$SUMMARY"
+  printf '==> step=%s status=%s duration_seconds=%s end=%s\n' \
+    "$name" "$status" "$duration" "$end" | tee -a "$log_file"
+
+  if [[ "$code" -ne 0 ]]; then
+    return "$code"
+  fi
+}
+
+write_readme
+write_metadata
+printf 'step\tstatus\tduration_seconds\tstarted_at\tfinished_at\tcommand\n' > "$SUMMARY"
+
+run_step "model-check-$MODEL_PROFILE" \
+  "$CARGO" "${MODEL_CHECK_CARGO_ARGS[@]}" -- --profile "$MODEL_PROFILE" "${SEED_ARGS[@]}"
+
+run_step storage-tests "$CARGO" test --locked -p rafter-storage
+
+printf 'raft burn-in complete: %s\n' "$RUN_DIR"
