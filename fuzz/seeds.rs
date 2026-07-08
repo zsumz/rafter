@@ -15,7 +15,7 @@ use rafter::{
     InstallSnapshotResponse, JointMembership, LogEntry, LogIndex, MembershipConfig, MembershipSet,
     Message, NodeId, PreVoteResponse, RaftSnapshotMetadata, RequestVote, SnapshotTransferId, Term,
 };
-use rafter_storage::{crc32, encode_raft_snapshot, PersistedRaftSnapshot};
+use rafter_storage::{decode_raft_snapshot, encode_raft_snapshot, PersistedRaftSnapshot};
 
 fn corpus_dir(target: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -156,54 +156,19 @@ fn codec_seeds() {
     );
 }
 
-/// Hand-builds a version 1 or version 2 snapshot envelope (both carry a u32
-/// payload length; v1 additionally predates the membership field) so the
-/// fuzzer starts with checksum-valid inputs on every rung of the decode
-/// ladder. The current encoder only emits v3.
-fn legacy_snapshot_envelope(version: u8, payload: &[u8]) -> Vec<u8> {
-    assert!(version == 1 || version == 2);
-    let mut bytes = Vec::new();
-    bytes.extend_from_slice(b"RFSN");
-    bytes.push(version);
-    // group_id: u16 length-prefixed string
-    bytes.extend_from_slice(&(2u16).to_be_bytes());
-    bytes.extend_from_slice(b"g1");
-    // writer_node_id, last_included_index, last_included_term, hard_state_term
-    bytes.extend_from_slice(&2u64.to_be_bytes());
-    bytes.extend_from_slice(&4u64.to_be_bytes());
-    bytes.extend_from_slice(&2u64.to_be_bytes());
-    bytes.extend_from_slice(&3u64.to_be_bytes());
-    // application kind + version
-    bytes.extend_from_slice(&(2u16).to_be_bytes());
-    bytes.extend_from_slice(b"kv");
-    bytes.extend_from_slice(&(1u16).to_be_bytes());
-    if version == 2 {
-        // committed membership present: stable, voters [1,2,3], learners [4]
-        bytes.push(1); // MEMBERSHIP_PRESENT
-        bytes.push(0); // MEMBERSHIP_STABLE
-        bytes.extend_from_slice(&(3u16).to_be_bytes());
-        for voter in [1u64, 2, 3] {
-            bytes.extend_from_slice(&voter.to_be_bytes());
-        }
-        bytes.extend_from_slice(&(1u16).to_be_bytes());
-        bytes.extend_from_slice(&4u64.to_be_bytes());
-    }
-    // u32 payload length (v1/v2), payload, payload crc, envelope crc
-    bytes.extend_from_slice(&(u32::try_from(payload.len()).unwrap()).to_be_bytes());
-    bytes.extend_from_slice(payload);
-    bytes.extend_from_slice(&crc32(payload).to_be_bytes());
-    let envelope_crc = crc32(&bytes);
-    bytes.extend_from_slice(&envelope_crc.to_be_bytes());
-    bytes
-}
-
 fn storage_seeds() {
     let target = "storage_snapshot_decode";
+    let encode = |snapshot: &PersistedRaftSnapshot| -> Vec<u8> {
+        let bytes = encode_raft_snapshot(snapshot).expect("current snapshot seed encodes");
+        let decoded = decode_raft_snapshot(&bytes).expect("current snapshot seed decodes");
+        assert_eq!(snapshot, &decoded, "current snapshot seed round-trips");
+        bytes
+    };
 
     write_seed(
         target,
-        "seed-v3-minimal",
-        &encode_raft_snapshot(&PersistedRaftSnapshot {
+        "seed-minimal",
+        &encode(&PersistedRaftSnapshot {
             metadata: snapshot_metadata(false),
             application_payload: Vec::new(),
         }),
@@ -211,8 +176,8 @@ fn storage_seeds() {
 
     write_seed(
         target,
-        "seed-v3-payload",
-        &encode_raft_snapshot(&PersistedRaftSnapshot {
+        "seed-payload",
+        &encode(&PersistedRaftSnapshot {
             metadata: snapshot_metadata(false),
             application_payload: b"hello rafter".to_vec(),
         }),
@@ -220,8 +185,8 @@ fn storage_seeds() {
 
     write_seed(
         target,
-        "seed-v3-stable-membership",
-        &encode_raft_snapshot(&PersistedRaftSnapshot {
+        "seed-stable-membership",
+        &encode(&PersistedRaftSnapshot {
             metadata: snapshot_metadata(true),
             application_payload: b"kv".to_vec(),
         }),
@@ -229,8 +194,8 @@ fn storage_seeds() {
 
     write_seed(
         target,
-        "seed-v3-joint-membership",
-        &encode_raft_snapshot(&PersistedRaftSnapshot {
+        "seed-joint-membership",
+        &encode(&PersistedRaftSnapshot {
             metadata: snapshot_metadata(false).with_committed_membership(MembershipConfig::joint(
                 voters_123_learner_4(),
                 voters_235(),
@@ -238,14 +203,6 @@ fn storage_seeds() {
             application_payload: b"joint".to_vec(),
         }),
     );
-
-    let v2 = legacy_snapshot_envelope(2, b"legacy-v2");
-    rafter_storage::decode_raft_snapshot(&v2).expect("hand-built v2 envelope decodes");
-    write_seed(target, "seed-v2-stable-membership", &v2);
-
-    let v1 = legacy_snapshot_envelope(1, b"legacy-v1");
-    rafter_storage::decode_raft_snapshot(&v1).expect("hand-built v1 envelope decodes");
-    write_seed(target, "seed-v1-minimal", &v1);
 }
 
 fn main() {

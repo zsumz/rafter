@@ -3,9 +3,9 @@
 //! Invariants:
 //! - decode never panics on any input: it returns `Ok` or a typed `Err`.
 //! - Round-trip law on success: re-encoding the decoded message must both
-//!   succeed and decode back to an equal message. The re-encoded bytes may
-//!   legitimately differ from the input (e.g. a v2/v3 frame re-encodes at the
-//!   current version), but `decode(encode(m)) == m` must hold.
+//!   succeed and decode back to an equal message. Current pre-release seeds
+//!   use the single supported peer-frame version; mutated unsupported versions
+//!   are expected to return typed errors.
 
 #![no_main]
 
