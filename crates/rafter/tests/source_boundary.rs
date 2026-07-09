@@ -78,7 +78,7 @@ const RAFTER_FORBIDDEN: &[ForbiddenSource] = &[
         reason: "core Raft must not depend on multi-Raft integration",
     },
     ForbiddenSource {
-        token: "rafter_transport_tcp",
+        token: "rafter_transport_tcp_insecure",
         reason: "core Raft must not depend on transport examples",
     },
     ForbiddenSource {
@@ -117,7 +117,7 @@ const RAFTER_APP_FORBIDDEN: &[ForbiddenSource] = &[
         reason: "app layer must not depend on multi-Raft integration",
     },
     ForbiddenSource {
-        token: "rafter_transport_tcp",
+        token: "rafter_transport_tcp_insecure",
         reason: "app layer must not depend on transport examples",
     },
 ];
@@ -160,7 +160,7 @@ const RUNTIME_API_FORBIDDEN: &[ForbiddenSource] = &[
         reason: "runtime API must not depend on multi-Raft integration",
     },
     ForbiddenSource {
-        token: "rafter_transport_tcp",
+        token: "rafter_transport_tcp_insecure",
         reason: "runtime API must not depend on transport examples",
     },
     ForbiddenSource {

@@ -1,6 +1,6 @@
 [package]
 name = "rafter"
-version = "0.1.0"
+version = "0.0.1"
 description = "Deterministic, sans-IO Raft protocol core."
 readme = "README.md"
 edition.workspace = true

@@ -1,6 +1,6 @@
-# rafter-transport-tcp
+# rafter-transport-tcp-insecure
 
-Blocking demo-only TCP transport for Rafter peer messages.
+Blocking insecure demo-only TCP transport for Rafter peer messages.
 
 This crate adds a small std-only TCP helper around `rafter-codec` frames. It
 opens one connection per outbound message, uses a length-prefixed frame, and

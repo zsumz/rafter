@@ -1,21 +1,16 @@
 [package]
-name = "rafter-maelstrom"
+name = "rafter-transport-tcp-insecure"
 version = "0.0.1"
-description = "Maelstrom linearizable key/value test node for Rafter."
+description = "Blocking insecure demo-only TCP transport for Rafter peer messages."
 readme = "README.md"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
-publish = false
 
 [dependencies]
 rafter = { path = "../rafter", version = "0.0.1" }
 rafter-codec = { path = "../rafter-codec", version = "0.0.1" }
-rafter-runtime = { path = "../rafter-runtime", version = "0.0.1" }
-rafter-storage = { path = "../rafter-storage", version = "0.0.1" }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 
 [lints]
 workspace = true

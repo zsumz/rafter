@@ -8,7 +8,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use rafter::{Input, LogIndex, Message, NodeId, Output, ReadId, Role};
-use rafter_transport_tcp::{InsecureTcpTransport, ReconnectBackoff};
+use rafter_transport_tcp_insecure::{InsecureTcpTransport, ReconnectBackoff};
 
 use super::{
     app_state::{load_app_state, persist_app_state},

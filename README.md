@@ -100,9 +100,9 @@ For application-facing groups, see `rafter-app`, `rafter-service`, and
 | [`rafter-app`](./crates/rafter-app/README.md) | synchronous embedded replicated-state-machine layer |
 | [`rafter-service`](./crates/rafter-service/README.md) | async managed handle and integration traits |
 | [`rafter-multiraft`](./crates/rafter-multiraft/README.md) | many-group host for sharded systems |
-| [`rafter-sim`](./crates/rafter-sim/README.md) | deterministic simulation, replay, and model checking |
-| [`rafter-transport-tcp`](./crates/rafter-transport-tcp/README.md) | insecure demo-only TCP frame helper for examples and tests |
-| [`rafter-maelstrom`](./crates/rafter-maelstrom/README.md) | Maelstrom linearizable KV test node |
+| [`rafter-sim`](./crates/rafter-sim/README.md) | workspace-only deterministic simulation, replay, and model checking |
+| [`rafter-transport-tcp-insecure`](./crates/rafter-transport-tcp-insecure/README.md) | insecure demo-only TCP frame helper for examples and tests |
+| [`rafter-maelstrom`](./crates/rafter-maelstrom/README.md) | publish-disabled Maelstrom linearizable KV test node |
 
 
 ## Testing
@@ -158,4 +158,6 @@ while the embedding surface settles.
 
 ## License
 
-Apache-2.0. See [LICENSE](./LICENSE).
+Copyright 2026 zsumz.
+
+Licensed under Apache-2.0. See [LICENSE](./LICENSE) and [NOTICE](./NOTICE).

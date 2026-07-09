@@ -10,7 +10,7 @@ members = [
     "crates/rafter-sim",
     "crates/rafter-storage",
     "crates/rafter-maelstrom",
-    "crates/rafter-transport-tcp",
+    "crates/rafter-transport-tcp-insecure",
 ]
 resolver = "2"
 

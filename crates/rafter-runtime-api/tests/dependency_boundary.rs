@@ -14,7 +14,7 @@ fn rafter_runtime_api_dependency_boundary_depends_only_on_core() {
         "rafter-service",
         "rafter-multiraft",
         "rafter-codec",
-        "rafter-transport-tcp",
+        "rafter-transport-tcp-insecure",
     ] {
         assert_no_dependency(
             &dependencies,

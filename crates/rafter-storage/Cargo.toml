@@ -1,6 +1,6 @@
 [package]
 name = "rafter-storage"
-version = "0.1.0"
+version = "0.0.1"
 description = "Durable storage traits and file-backed stores for Rafter."
 readme = "README.md"
 edition.workspace = true
@@ -9,7 +9,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-rafter = { path = "../rafter" }
+rafter = { path = "../rafter", version = "0.0.1" }
 
 [lints]
 workspace = true

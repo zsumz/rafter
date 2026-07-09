@@ -14,7 +14,7 @@ fn rafter_app_dependency_boundary_uses_runtime_api_not_concrete_runtime() {
         "rafter-storage",
         "rafter-service",
         "rafter-multiraft",
-        "rafter-transport-tcp",
+        "rafter-transport-tcp-insecure",
     ] {
         assert_no_dependency(&dependencies, forbidden, "rafter-app normal dependencies");
     }

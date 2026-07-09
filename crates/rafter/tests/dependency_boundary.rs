@@ -252,7 +252,7 @@ fn expected_workspace_crates() -> BTreeSet<String> {
         "rafter-service",
         "rafter-sim",
         "rafter-storage",
-        "rafter-transport-tcp",
+        "rafter-transport-tcp-insecure",
     ])
 }
 
@@ -265,7 +265,7 @@ fn allowed_normal_workspace_deps(crate_name: &str) -> BTreeSet<String> {
         "rafter-multiraft" => &["rafter-app", "rafter-runtime-api"],
         "rafter-runtime" => &["rafter", "rafter-runtime-api", "rafter-storage"],
         "rafter-service" => &["rafter", "rafter-app", "rafter-runtime-api"],
-        "rafter-transport-tcp" => &["rafter", "rafter-codec"],
+        "rafter-transport-tcp-insecure" => &["rafter", "rafter-codec"],
         unexpected => panic!("missing normal dependency policy for `{unexpected}`"),
     })
 }
@@ -297,7 +297,7 @@ fn allowed_dev_workspace_deps(crate_name: &str) -> BTreeMap<String, &'static str
             ),
         ],
         "rafter-runtime" => &[(
-            "rafter-transport-tcp",
+            "rafter-transport-tcp-insecure",
             "runtime examples may use the demo TCP transport without making runtime depend on transport",
         )],
         "rafter-service" => &[
@@ -316,7 +316,7 @@ fn allowed_dev_workspace_deps(crate_name: &str) -> BTreeMap<String, &'static str
         | "rafter-runtime-api"
         | "rafter-sim"
         | "rafter-storage"
-        | "rafter-transport-tcp" => &[],
+        | "rafter-transport-tcp-insecure" => &[],
         unexpected => panic!("missing dev dependency policy for `{unexpected}`"),
     };
 
