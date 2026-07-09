@@ -38,6 +38,7 @@ pub(super) struct ExplorationState {
 
 impl ExplorationState {
     pub(super) fn new(cluster: Cluster) -> Self {
+        let initial_value = initial_register_value(&cluster);
         let commit_floor_by_node = cluster
             .nodes
             .iter()
@@ -59,7 +60,7 @@ impl ExplorationState {
             lossy_restarts_issued: 0,
             commit_floor_by_node,
             committed_configuration_floor_by_node,
-            client_history: ClientHistory::default(),
+            client_history: ClientHistory::with_initial_value(initial_value),
             forbidden_applied_payloads: BTreeSet::new(),
             required_applied_payloads: BTreeMap::new(),
             required_committed_configurations: BTreeMap::new(),
@@ -295,6 +296,7 @@ impl ExplorationState {
         proposal_id: ProposalId,
         stale_leader: bool,
     ) {
+        let started_at = self.client_history.next_event();
         let status = if stale_leader {
             ClientWriteStatus::Unknown {
                 reason: ClientWriteUnknownReason::StaleLeader,
@@ -308,6 +310,7 @@ impl ExplorationState {
                 proposal_id,
                 node_id,
                 payload: super::helpers::proposal_payload(proposal_id).into(),
+                started_at,
                 status,
             },
         );
@@ -319,18 +322,21 @@ impl ExplorationState {
         request_id: u64,
         committed_floor: LogIndex,
     ) {
+        let started_at = self.client_history.next_event();
         self.client_history.reads.insert(
             request_id,
             ClientRead {
                 node_id,
                 request_id,
                 committed_floor,
+                started_at,
                 outcome: ClientReadOutcome::Pending,
             },
         );
     }
 
     pub(super) fn refresh_client_history(&mut self) {
+        let mut next_event = self.client_history.next_event;
         for write in self.client_history.writes.values_mut() {
             if matches!(write.status, ClientWriteStatus::Completed { .. }) {
                 continue;
@@ -344,12 +350,15 @@ impl ExplorationState {
                 write.status = ClientWriteStatus::Completed {
                     node_id: applied.node_id,
                     index: applied.index,
+                    completed_at: next_event,
                 };
+                next_event += 1;
             }
         }
 
+        let applied = &self.cluster.applied;
         for read in self.client_history.reads.values_mut() {
-            if matches!(read.outcome, ClientReadOutcome::Completed { .. }) {
+            if matches!(&read.outcome, ClientReadOutcome::Completed { .. }) {
                 continue;
             }
             let Some(grant) =
@@ -364,11 +373,19 @@ impl ExplorationState {
                 local_applied_index: self.cluster.local_applied_index(read.node_id),
             };
             read.outcome = if proof.local_applied_index >= proof.read_index {
-                ClientReadOutcome::Completed { proof }
+                let result = register_value_at(applied, read.node_id, proof.read_index);
+                let outcome = ClientReadOutcome::Completed {
+                    proof,
+                    result,
+                    completed_at: next_event,
+                };
+                next_event += 1;
+                outcome
             } else {
                 ClientReadOutcome::ProofGranted { proof }
             };
         }
+        self.client_history.next_event = next_event;
     }
 
     pub(super) fn reset_commit_floor(&mut self, node_id: NodeId) {
@@ -406,8 +423,25 @@ impl ExplorationState {
 
 #[derive(Clone, Debug, Default, Hash)]
 pub(super) struct ClientHistory {
+    pub(super) initial_value: Option<SharedPayload>,
+    pub(super) next_event: u64,
     pub(super) writes: BTreeMap<ProposalId, ClientWrite>,
     pub(super) reads: BTreeMap<u64, ClientRead>,
+}
+
+impl ClientHistory {
+    fn with_initial_value(initial_value: Option<SharedPayload>) -> Self {
+        Self {
+            initial_value,
+            ..Self::default()
+        }
+    }
+
+    fn next_event(&mut self) -> u64 {
+        let event = self.next_event;
+        self.next_event += 1;
+        event
+    }
 }
 
 #[derive(Clone, Debug, Hash)]
@@ -415,14 +449,21 @@ pub(super) struct ClientWrite {
     pub(super) proposal_id: ProposalId,
     pub(super) node_id: NodeId,
     pub(super) payload: SharedPayload,
+    pub(super) started_at: u64,
     pub(super) status: ClientWriteStatus,
 }
 
-#[derive(Clone, Debug, Hash)]
+#[derive(Clone, Copy, Debug, Hash)]
 pub(super) enum ClientWriteStatus {
     Pending,
-    Completed { node_id: NodeId, index: LogIndex },
-    Unknown { reason: ClientWriteUnknownReason },
+    Completed {
+        node_id: NodeId,
+        index: LogIndex,
+        completed_at: u64,
+    },
+    Unknown {
+        reason: ClientWriteUnknownReason,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Hash)]
@@ -435,20 +476,47 @@ pub(super) struct ClientRead {
     pub(super) node_id: NodeId,
     pub(super) request_id: u64,
     pub(super) committed_floor: LogIndex,
+    pub(super) started_at: u64,
     pub(super) outcome: ClientReadOutcome,
 }
 
-#[derive(Clone, Copy, Debug, Hash)]
+#[derive(Clone, Debug, Hash)]
 pub(super) enum ClientReadOutcome {
     Pending,
-    ProofGranted { proof: ClientReadProof },
-    Completed { proof: ClientReadProof },
+    ProofGranted {
+        proof: ClientReadProof,
+    },
+    Completed {
+        proof: ClientReadProof,
+        result: Option<SharedPayload>,
+        completed_at: u64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Hash)]
 pub(super) struct ClientReadProof {
     pub(super) read_index: LogIndex,
     pub(super) local_applied_index: LogIndex,
+}
+
+fn register_value_at(
+    applied: &[crate::Applied],
+    node_id: NodeId,
+    read_index: LogIndex,
+) -> Option<SharedPayload> {
+    applied
+        .iter()
+        .filter(|applied| applied.node_id == node_id && applied.index <= read_index)
+        .max_by_key(|applied| applied.index)
+        .map(|applied| applied.payload.clone())
+}
+
+fn initial_register_value(cluster: &Cluster) -> Option<SharedPayload> {
+    cluster
+        .applied()
+        .iter()
+        .max_by_key(|applied| applied.index)
+        .map(|applied| applied.payload.clone())
 }
 
 /// The snapshot every healthy node must converge on: the descriptor the

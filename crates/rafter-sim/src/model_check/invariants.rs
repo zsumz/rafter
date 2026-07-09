@@ -6,6 +6,9 @@ use rafter::{
 
 use crate::Cluster;
 
+use super::linearizability::{
+    check_client_history_linearizable, CLIENT_HISTORY_LINEARIZABILITY_INVARIANT,
+};
 use super::state::{ClientReadOutcome, ClientWriteStatus};
 use super::{
     summarize, Action, CommitSafetyExplorer, ElectionSafetyExplorer, ExplorationState, Failure,
@@ -13,6 +16,8 @@ use super::{
 };
 
 pub(super) fn check_election_safety(cluster: &Cluster, trace: &[Action]) -> Result<(), Failure> {
+    check_internal_derived_state(cluster, trace)?;
+
     let mut leaders_by_term = BTreeMap::<Term, Vec<NodeId>>::new();
     for (node_id, node) in &cluster.nodes {
         if node.role() == Role::Leader {
@@ -49,6 +54,7 @@ pub(super) fn check_commit_safety(
     check_membership_quorum_validity(&state.cluster, trace)?;
     check_no_overlapping_uncommitted_configurations(&state.cluster, trace)?;
     check_client_history_read_write_invariants(state, trace)?;
+    check_client_history_linearizability(state, trace)?;
     check_forbidden_applied_payloads(state, trace)?;
     check_required_applied_payloads(state, trace)?;
     check_required_committed_configurations(state, trace)
@@ -58,6 +64,7 @@ pub(super) fn check_restart_snapshot_safety(
     state: &RestartSnapshotState,
     trace: &[Action],
 ) -> Result<(), Failure> {
+    check_internal_derived_state(&state.state.cluster, trace)?;
     check_applied_payload_agreement(&state.state.cluster, trace)?;
     check_committed_prefixes(&state.state.cluster, trace)?;
 
@@ -284,6 +291,22 @@ fn committed_configuration_regression(
     }
 }
 
+fn check_internal_derived_state(cluster: &Cluster, trace: &[Action]) -> Result<(), Failure> {
+    for (node_id, node) in &cluster.nodes {
+        if let Err(error) = node.validate_derived_state() {
+            return Err(Failure {
+                invariant: INTERNAL_DERIVED_STATE_INVARIANT,
+                message: format!("{node_id}: {error}"),
+                trace: trace.to_vec(),
+                state: summarize(cluster),
+            });
+        }
+    }
+    Ok(())
+}
+
+const INTERNAL_DERIVED_STATE_INVARIANT: &str = "raft internal derived state";
+
 /// The committed-floor check: a granted read barrier must cover every entry
 /// that any node had committed before the barrier was registered. A grant below
 /// its registration floor means an isolated or stale leader certified a read
@@ -507,11 +530,10 @@ fn check_client_history_read_write_invariants(
     }
 
     for read in state.client_history.reads.values() {
-        let proof = match read.outcome {
+        let proof = match &read.outcome {
             ClientReadOutcome::Pending => continue,
-            ClientReadOutcome::ProofGranted { proof } | ClientReadOutcome::Completed { proof } => {
-                proof
-            }
+            ClientReadOutcome::ProofGranted { proof }
+            | ClientReadOutcome::Completed { proof, .. } => *proof,
         };
         if proof.read_index < read.committed_floor {
             return Err(Failure {
@@ -524,7 +546,8 @@ fn check_client_history_read_write_invariants(
                 state: summarize(&state.cluster),
             });
         }
-        if let ClientReadOutcome::Completed { proof } = read.outcome {
+        if let ClientReadOutcome::Completed { proof, .. } = &read.outcome {
+            let proof = *proof;
             if proof.local_applied_index < proof.read_index {
                 return Err(Failure {
                     invariant: READ_BARRIER_INVARIANT,
@@ -560,6 +583,18 @@ fn check_client_history_read_write_invariants(
     }
 
     Ok(())
+}
+
+fn check_client_history_linearizability(
+    state: &ExplorationState,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    check_client_history_linearizable(&state.client_history).map_err(|message| Failure {
+        invariant: CLIENT_HISTORY_LINEARIZABILITY_INVARIANT,
+        message,
+        trace: trace.to_vec(),
+        state: summarize(&state.cluster),
+    })
 }
 
 fn check_forbidden_applied_payloads(
@@ -747,11 +782,14 @@ mod tests {
                 node_id: NodeId(1),
                 request_id: 10,
                 committed_floor: LogIndex(5),
+                started_at: 0,
                 outcome: ClientReadOutcome::Completed {
                     proof: ClientReadProof {
                         read_index: LogIndex(5),
                         local_applied_index: LogIndex(4),
                     },
+                    result: None,
+                    completed_at: 1,
                 },
             },
         );
@@ -777,6 +815,7 @@ mod tests {
                 proposal_id: crate::model_check::ProposalId(7),
                 node_id: NodeId(1),
                 payload: b"unknown".to_vec().into(),
+                started_at: 0,
                 status: ClientWriteStatus::Unknown {
                     reason: ClientWriteUnknownReason::StaleLeader,
                 },

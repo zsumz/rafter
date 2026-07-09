@@ -197,6 +197,7 @@ pub(super) fn apply_soak_action(state: &mut ExplorationState, operation: SoakOpe
         }
     }
     state.refresh_commit_floors();
+    state.refresh_client_history();
 }
 
 fn remove_learner_target(current: MembershipConfig, learner_id: NodeId) -> Option<MembershipSet> {

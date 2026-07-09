@@ -9,7 +9,7 @@ repository.workspace = true
 rust-version.workspace = true
 
 [dependencies]
-rafter = { path = "../rafter" }
+rafter = { path = "../rafter", features = ["internal-test-hooks"] }
 
 [lints]
 workspace = true

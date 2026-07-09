@@ -30,6 +30,8 @@ mod invariants;
 
 use invariants::run_replay_check;
 
+mod linearizability;
+
 mod scheduling;
 
 use scheduling::{enabled_soak_actions, soak_preferred_kind, Operation, SoakOperation};

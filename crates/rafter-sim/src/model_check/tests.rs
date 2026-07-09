@@ -13,6 +13,9 @@ use rafter::{LogIndex, Message, NodeId};
 use std::collections::BTreeSet;
 use std::time::Duration;
 
+#[path = "tests/linearizability.rs"]
+mod linearizability;
+
 #[test]
 fn bounded_raft_election_safety_passes_for_three_node_cluster() {
     let summary = check_raft_election_safety(
@@ -296,10 +299,11 @@ fn client_history_records_write_completion_and_read_proof() {
     state.cluster.deliver_all();
     state.refresh_client_history();
     let read = &state.client_history.reads[&77];
-    match read.outcome {
-        ClientReadOutcome::Completed { proof } => {
+    match &read.outcome {
+        ClientReadOutcome::Completed { proof, result, .. } => {
             assert!(proof.read_index >= read.committed_floor);
             assert!(proof.local_applied_index >= proof.read_index);
+            assert!(result.is_some());
         }
         ClientReadOutcome::ProofGranted { proof } => {
             assert!(proof.read_index >= read.committed_floor);

@@ -531,6 +531,20 @@ impl Node {
             .get(offset)
             .and_then(LogEntry::configuration_entry)
     }
+
+    #[cfg(any(test, feature = "internal-test-hooks"))]
+    #[doc(hidden)]
+    pub fn validate_derived_state(&self) -> Result<(), String> {
+        let expected = configuration_offsets_of(&self.persistent.log);
+        if self.configuration_offsets == expected {
+            return Ok(());
+        }
+
+        Err(format!(
+            "configuration_offsets mismatch: stored {:?}, expected {:?}",
+            self.configuration_offsets, expected
+        ))
+    }
 }
 
 impl Node {
