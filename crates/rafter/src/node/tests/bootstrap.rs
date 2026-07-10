@@ -60,11 +60,17 @@ fn log_entries_from_returns_opaque_suffixes() {
     .expect("bootstrap state is valid");
 
     assert_eq!(node.log_entries_from(LogIndex::ZERO), Vec::new());
+    assert!(node.log_entries_slice_from(LogIndex::ZERO).is_empty());
     assert_eq!(
         node.log_entries_from(LogIndex(2)),
         vec![LogEntry::application(Term(7), b"append".to_vec())]
     );
+    assert_eq!(
+        node.log_entries_slice_from(LogIndex(2)),
+        &[LogEntry::application(Term(7), b"append".to_vec())]
+    );
     assert_eq!(node.log_entries_from(LogIndex(3)), Vec::new());
+    assert!(node.log_entries_slice_from(LogIndex(3)).is_empty());
 }
 
 #[test]
@@ -247,7 +253,7 @@ fn applied_floor_suppresses_reapply_below_it() {
             leader_id: NodeId(1),
             prev_log_index: LogIndex(3),
             prev_log_term: Term(1),
-            entries: Vec::new(),
+            entries: Vec::new().into(),
             leader_commit: LogIndex(3),
             sequence: 1,
         }),

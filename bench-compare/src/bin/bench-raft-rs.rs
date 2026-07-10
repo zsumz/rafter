@@ -11,7 +11,9 @@ use std::collections::{BTreeMap, VecDeque};
 use std::time::Instant;
 
 use bench_compare::{
-    payload, report_json, WorkloadMetrics, PIPELINED_PROPOSALS, PIPELINE_DEPTH, SERIAL_PROPOSALS,
+    payload_of_size, report_json, WorkloadMetrics, LARGE_PAYLOAD_BYTES,
+    LARGE_PAYLOAD_PIPELINE_DEPTH, LARGE_PAYLOAD_PROPOSALS, PAYLOAD_BYTES, PIPELINED_PROPOSALS,
+    PIPELINE_DEPTH, SERIAL_PROPOSALS,
 };
 use raft::prelude::{Config, Message, Snapshot};
 use raft::storage::MemStorage;
@@ -21,22 +23,38 @@ const VOTERS: [u64; 3] = [1, 2, 3];
 const LEADER: u64 = 1;
 
 fn main() {
-    let serial = proposal_workload("serial", SERIAL_PROPOSALS, 1);
-    let pipelined = proposal_workload("pipelined", PIPELINED_PROPOSALS, PIPELINE_DEPTH);
+    let serial = proposal_workload("serial", SERIAL_PROPOSALS, PAYLOAD_BYTES, 1);
+    let pipelined = proposal_workload(
+        "pipelined",
+        PIPELINED_PROPOSALS,
+        PAYLOAD_BYTES,
+        PIPELINE_DEPTH,
+    );
+    let large_payload = proposal_workload(
+        "large_payload",
+        LARGE_PAYLOAD_PROPOSALS,
+        LARGE_PAYLOAD_BYTES,
+        LARGE_PAYLOAD_PIPELINE_DEPTH,
+    );
     println!(
         "{}",
         report_json(
             "raft-rs",
             "0.7.0 (crate `raft`, prost-codec)",
             "propose() on leader -> leader takes the committed entry from ready/light-ready",
-            &[serial, pipelined],
+            &[serial, pipelined, large_payload],
         )
     );
 }
 
 /// Drives `total` proposals through the elected leader in submission bursts
 /// of at most `window`, pumping the cluster to quiescence after each burst.
-fn proposal_workload(name: &'static str, total: usize, window: usize) -> WorkloadMetrics {
+fn proposal_workload(
+    name: &'static str,
+    total: usize,
+    payload_bytes: usize,
+    window: usize,
+) -> WorkloadMetrics {
     let mut cluster = Cluster::elect();
 
     let mut latencies = Vec::with_capacity(total);
@@ -53,7 +71,7 @@ fn proposal_workload(name: &'static str, total: usize, window: usize) -> Workloa
             for _ in 0..batch {
                 let index = leader.raft.raft_log.last_index() + 1;
                 leader
-                    .propose(vec![], payload())
+                    .propose(vec![], payload_of_size(payload_bytes))
                     .expect("leader accepts proposal");
                 assert_eq!(
                     leader.raft.raft_log.last_index(),
@@ -78,9 +96,16 @@ fn proposal_workload(name: &'static str, total: usize, window: usize) -> Workloa
     WorkloadMetrics {
         name,
         proposals: total,
+        payload_bytes,
         max_in_flight: window,
         elapsed,
         latencies,
+        shape: None,
+        service_shape: None,
+        read_shape: None,
+        codec_shape: None,
+        multiraft_shape: None,
+        failover_shape: None,
     }
 }
 

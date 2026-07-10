@@ -345,6 +345,10 @@ impl NodeConfig {
         self.static_membership.clone()
     }
 
+    pub(super) const fn static_membership_ref(&self) -> &MembershipConfig {
+        &self.static_membership
+    }
+
     /// Returns the static quorum size.
     #[must_use]
     pub fn quorum_size(&self) -> usize {

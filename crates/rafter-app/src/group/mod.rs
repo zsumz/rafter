@@ -9,9 +9,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 
 use rafter::{
-    Input as RaftInput, LeadershipTransferRejection, LocalProposalDropReason, LocalProposalId,
-    LogIndex, MembershipConfig, Message, NodeId, Output as RaftOutput, ProposalRejection,
-    RaftSnapshot, ReadId, ReadIndexCancelReason, ReadIndexRejection, SharedPayload, Term,
+    ClientProposalInput, Input as RaftInput, LeadershipTransferRejection, LocalProposalDropReason,
+    LocalProposalId, LogIndex, MembershipConfig, Message, NodeId, Output as RaftOutput,
+    ProposalRejection, RaftSnapshot, ReadId, ReadIndexCancelReason, ReadIndexRejection,
+    SharedPayload, Term,
 };
 use rafter_runtime_api::PersistedRaftRuntime;
 
@@ -44,12 +45,13 @@ mod validation;
 
 pub use types::{
     GroupFatalState, GroupInput, GroupStepReport, LeadershipTransferEvent, PoisonedWaiters,
-    ProposalBeginReport, RaftGroup, ReadBarrierBeginReport,
+    ProposalBatchBeginReport, ProposalBeginReport, RaftGroup, ReadBarrierBeginReport,
+    StepReportOptions,
 };
 
 use types::{
     report_has_proposal_lifecycle, ApplyEntryResult, CompletedQueryRead, GroupResult,
-    MembershipStepContext, PendingQueryRead, PendingRead, ProposalBeginReportResult,
-    ProposalBeginResult, ReadBarrierBeginReportResult, ReadOutcomeResult, RuntimeGroupError,
-    StepReportResult,
+    MembershipStepContext, PendingQueryRead, PendingRead, ProposalBatchBeginReportResult,
+    ProposalBeginReportResult, ProposalBeginResult, ReadBarrierBeginReportResult,
+    ReadOutcomeResult, RuntimeGroupError, StepReportResult,
 };

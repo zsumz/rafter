@@ -29,7 +29,7 @@ fn follower_conflict_repair_replaces_durable_suffix_from_first_index() {
                 leader_id: RaftNodeId(1),
                 prev_log_index: LogIndex::ZERO,
                 prev_log_term: Term::default(),
-                entries: vec![LogEntry::application(Term(2), b"replacement".to_vec())],
+                entries: vec![LogEntry::application(Term(2), b"replacement".to_vec())].into(),
                 leader_commit: LogIndex::ZERO,
             }),
         })
@@ -79,7 +79,8 @@ fn follower_conflict_repair_replaces_durable_uncommitted_suffix() {
                 entries: vec![LogEntry::application(
                     Term(2),
                     b"replacement-suffix".to_vec(),
-                )],
+                )]
+                .into(),
                 leader_commit: LogIndex(1),
             }),
         })
@@ -144,7 +145,8 @@ fn file_backed_follower_conflict_repair_survives_restart() {
                     entries: vec![LogEntry::application(
                         Term(2),
                         b"replacement-suffix".to_vec(),
-                    )],
+                    )]
+                    .into(),
                     leader_commit: LogIndex(1),
                 }),
             })
@@ -203,7 +205,7 @@ fn rejoin_splice_with_commit_past_the_conflict_repairs_instead_of_poisoning() {
                 leader_id: RaftNodeId(1),
                 prev_log_index: LogIndex(1),
                 prev_log_term: Term(1),
-                entries: vec![LogEntry::application(Term(2), b"committed-truth".to_vec())],
+                entries: vec![LogEntry::application(Term(2), b"committed-truth".to_vec())].into(),
                 leader_commit: LogIndex(2),
             }),
         })

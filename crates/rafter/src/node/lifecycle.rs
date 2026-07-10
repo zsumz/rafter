@@ -1,6 +1,6 @@
 use crate::{LogEntry, Term};
 
-use super::state::{LeaderState, Progress};
+use super::state::LeaderState;
 use super::{LocalProposalDropReason, Node, Output, ReadIndexCancelReason, Role};
 
 impl Node {
@@ -40,14 +40,12 @@ impl Node {
         self.append_log_entry(LogEntry::noop(self.current_term()));
         let noop_index = self.last_log_index();
 
-        for replica in self.effective_membership().replica_ids() {
-            self.leader
-                .progress
-                .insert(replica, Progress::probing(noop_index));
-        }
-        self.leader
-            .progress
-            .insert(self.id(), Progress::local(noop_index));
+        self.leader.progress.reset(
+            &self.effective_membership(),
+            self.id(),
+            noop_index,
+            noop_index,
+        );
         self.advance_commit_index()
     }
 
@@ -67,9 +65,11 @@ impl Node {
         self.leader
             .pending_reads
             .drain(..)
-            .map(|pending| Output::ReadIndexCanceled {
-                read_id: pending.read_id,
-                reason,
+            .flat_map(|pending| {
+                pending
+                    .read_ids
+                    .into_iter()
+                    .map(move |read_id| Output::ReadIndexCanceled { read_id, reason })
             })
             .collect()
     }

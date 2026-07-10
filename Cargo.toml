@@ -2,6 +2,7 @@
 members = [
     "crates/rafter",
     "crates/rafter-codec",
+    "crates/rafter-crc32",
     "crates/rafter-runtime-api",
     "crates/rafter-app",
     "crates/rafter-service",

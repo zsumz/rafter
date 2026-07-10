@@ -44,6 +44,7 @@ use rafter::{
     MembershipValidationError, Message, PreVote, PreVoteResponse, RequestVote, RequestVoteResponse,
     SnapshotIdError, SnapshotMetadataError, TimeoutNow,
 };
+use rafter_crc32::crc32;
 
 mod cursor;
 
@@ -225,15 +226,40 @@ impl Error for DecodePeerMessageError {
 /// Returns [`EncodePeerMessageError`] when a variable-length field cannot be
 /// represented in the peer message format.
 pub fn encode_message(message: &Message) -> Result<Vec<u8>, EncodePeerMessageError> {
-    let mut writer = Writer::new();
-    writer.bytes(&MAGIC);
-    writer.u8(VERSION);
-    encode_message_payload(&mut writer, message)?;
-
-    let mut encoded = writer.finish();
-    let checksum = crc32(&encoded);
-    encoded.extend_from_slice(&checksum.to_be_bytes());
+    let mut encoded = Vec::new();
+    encode_message_into(&mut encoded, message)?;
     Ok(encoded)
+}
+
+/// Encodes a Raft peer message into a caller-owned reusable buffer.
+///
+/// The buffer is cleared before encoding. On success it contains exactly one
+/// current-version peer message frame; on error it is cleared again so callers
+/// never accidentally send a partial frame.
+///
+/// # Errors
+///
+/// Returns [`EncodePeerMessageError`] when a variable-length field cannot be
+/// represented in the peer message format.
+pub fn encode_message_into(
+    output: &mut Vec<u8>,
+    message: &Message,
+) -> Result<(), EncodePeerMessageError> {
+    let capacity = encoded_len_hint(message);
+    let payload_result = {
+        let mut writer = Writer::with_capacity(output, capacity);
+        writer.bytes(&MAGIC);
+        writer.u8(VERSION);
+        encode_message_payload(&mut writer, message)
+    };
+    if let Err(error) = payload_result {
+        output.clear();
+        return Err(error);
+    }
+
+    let checksum = crc32(output);
+    output.extend_from_slice(&checksum.to_be_bytes());
+    Ok(())
 }
 
 fn encode_message_payload(
@@ -324,6 +350,114 @@ fn encode_message_payload(
     Ok(())
 }
 
+fn encoded_len_hint(message: &Message) -> usize {
+    MAGIC
+        .len()
+        .saturating_add(1)
+        .saturating_add(encoded_message_payload_len_hint(message))
+        .saturating_add(4)
+}
+
+fn encoded_message_payload_len_hint(message: &Message) -> usize {
+    match message {
+        Message::RequestVote(_) | Message::PreVote(_) => 1 + 8 + 8 + 8 + 8,
+        Message::RequestVoteResponse(_) | Message::PreVoteResponse(_) => 1 + 8 + 8 + 1,
+        Message::TimeoutNow(_) => 1 + 8 + 8,
+        Message::AppendEntries(request) => {
+            let mut len = 1 + 8 + 8 + 8 + 8 + 4 + 8 + 8;
+            for entry in &request.entries {
+                add_len(&mut len, log_entry_len_hint(entry));
+            }
+            len
+        }
+        Message::AppendEntriesResponse(_) => 1 + 8 + 8 + 1 + 8 + 8,
+        Message::InstallSnapshot(_) => 1,
+        Message::InstallSnapshotResponse(response) => {
+            let mut len = 1 + 8 + 8 + 1 + 8 + 1 + 8;
+            if response.transfer_id.is_some() {
+                add_len(&mut len, 8);
+            }
+            len
+        }
+        Message::InstallSnapshotChunk(request) => {
+            let mut len = 1 + 8 + 8 + 8;
+            add_len(&mut len, snapshot_metadata_len_hint(&request.metadata));
+            add_len(&mut len, 8 + 4 + 8);
+            add_len(&mut len, blob_len_hint(request.chunk.len()));
+            add_len(&mut len, 1);
+            len
+        }
+    }
+}
+
+fn log_entry_len_hint(entry: &LogEntry) -> usize {
+    let mut len = 8 + 1;
+    match &entry.kind {
+        LogEntryKind::Application(payload) => add_len(&mut len, blob_len_hint(payload.len())),
+        LogEntryKind::Configuration(ConfigurationEntry::Stable { membership, .. }) => {
+            add_len(&mut len, 8);
+            add_len(&mut len, membership_set_len_hint(membership));
+        }
+        LogEntryKind::Configuration(ConfigurationEntry::Joint { membership, .. }) => {
+            add_len(&mut len, 8);
+            add_len(&mut len, membership_set_len_hint(membership.old()));
+            add_len(
+                &mut len,
+                membership_set_len_hint(membership.new_membership()),
+            );
+        }
+        LogEntryKind::Noop => {}
+    }
+    len
+}
+
+fn snapshot_metadata_len_hint(metadata: &rafter::RaftSnapshotMetadata) -> usize {
+    let mut len = string_len_hint(metadata.group_id.as_str().len())
+        .saturating_add(8 + 8 + 8 + 8)
+        .saturating_add(string_len_hint(metadata.application.kind.as_str().len()))
+        .saturating_add(2)
+        .saturating_add(1);
+    if let Some(committed) = &metadata.committed_configuration {
+        add_len(&mut len, 1);
+        if committed.configuration.is_some() {
+            add_len(&mut len, 8 + 8);
+        }
+        add_len(&mut len, membership_config_len_hint(&committed.membership));
+    }
+    len
+}
+
+fn membership_config_len_hint(membership: &rafter::MembershipConfig) -> usize {
+    match membership {
+        rafter::MembershipConfig::Stable(stable) => 1 + membership_set_len_hint(stable),
+        rafter::MembershipConfig::Joint(joint) => {
+            let mut len = 1;
+            add_len(&mut len, membership_set_len_hint(joint.old()));
+            add_len(&mut len, membership_set_len_hint(joint.new_membership()));
+            len
+        }
+    }
+}
+
+fn membership_set_len_hint(membership: &rafter::MembershipSet) -> usize {
+    2_usize
+        .saturating_add(membership.voters().len().saturating_mul(8))
+        .saturating_add(2)
+        .saturating_add(membership.learners().len().saturating_mul(8))
+}
+
+fn string_len_hint(len: usize) -> usize {
+    2_usize.saturating_add(len.min(u16::MAX as usize))
+}
+
+fn blob_len_hint(len: usize) -> usize {
+    4_usize.saturating_add(len.min(u32::MAX as usize))
+}
+
+fn add_len(total: &mut usize, len: usize) {
+    *total = total.saturating_add(len);
+}
+
 /// Decodes a Raft peer message from the current peer wire format.
 ///
 /// # Errors
@@ -407,18 +541,6 @@ pub fn decode_message(payload: &[u8]) -> Result<Message, DecodePeerMessageError>
     Ok(message)
 }
 
-fn crc32(bytes: &[u8]) -> u32 {
-    let mut crc = 0xffff_ffff_u32;
-    for byte in bytes {
-        crc ^= u32::from(*byte);
-        for _ in 0..8 {
-            let mask = 0u32.wrapping_sub(crc & 1);
-            crc = (crc >> 1) ^ (0xedb8_8320 & mask);
-        }
-    }
-    !crc
-}
-
 fn encode_log_entry(writer: &mut Writer, entry: &LogEntry) -> Result<(), EncodePeerMessageError> {
     writer.term(entry.term);
     match &entry.kind {
@@ -471,7 +593,7 @@ fn decode_append_entries(reader: &mut Reader<'_>) -> Result<Message, DecodePeerM
         leader_id,
         prev_log_index,
         prev_log_term,
-        entries,
+        entries: entries.into(),
         leader_commit,
         sequence,
     }))
@@ -502,7 +624,7 @@ fn decode_log_entry(reader: &mut Reader<'_>) -> Result<LogEntry, DecodePeerMessa
     let term = reader.term()?;
 
     match reader.u8()? {
-        ENTRY_APPLICATION => Ok(LogEntry::application(term, reader.blob()?)),
+        ENTRY_APPLICATION => Ok(LogEntry::application(term, reader.shared_blob_payload()?)),
         ENTRY_CONFIGURATION_STABLE => {
             let config_id = ConfigurationId(reader.u64()?);
             let membership = reader.membership_set()?;

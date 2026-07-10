@@ -13,6 +13,20 @@ fn in_memory_raft_log_segment_preserves_append_order() {
 }
 
 #[test]
+fn in_memory_raft_log_segment_appends_borrowed_entries() {
+    let mut segment = InMemoryRaftLogSegment::new();
+    let entries = vec![entry(1, b"create"), entry(2, b"append")];
+
+    assert_eq!(
+        segment.append_entries_borrowed(entries.iter().map(BorrowedPersistedRaftLogEntry::from)),
+        Ok(())
+    );
+
+    assert_eq!(segment.next_index(), LogIndex(3));
+    assert_eq!(segment.replay_entries(), entries);
+}
+
+#[test]
 fn in_memory_raft_log_segment_rejects_non_contiguous_append() {
     let mut segment = InMemoryRaftLogSegment::new();
 

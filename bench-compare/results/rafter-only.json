@@ -1,0 +1,2046 @@
+{
+  "harness": "bench-compare",
+  "machine": "aarch64",
+  "os": "Linux 6.10.14-linuxkit",
+  "rustc": "rustc 1.96.1 (31fca3adb 2026-06-26)",
+  "run_count": 5,
+  "aggregation": {
+    "kind": "median_of_runs",
+    "runs": 5,
+    "unit": "one process invocation per benchmark binary",
+    "summary": "results contains median values; runs contains raw per-run reports"
+  },
+  "results": [
+    {
+      "harness": "bench-compare",
+      "library": "rafter",
+      "version": "path:../crates (workspace @ HEAD)",
+      "commit_latency_definition": "proposal batch submitted to leader step -> leader emits Apply for that index",
+      "workloads": [
+        {
+          "name": "serial",
+          "proposals": 2000,
+          "payload_bytes": 512,
+          "max_in_flight": 1,
+          "elapsed_ms": 2.363,
+          "proposals_per_s": 846396,
+          "commit_latency_us": {
+            "p50": 0.9,
+            "p99": 4.3
+          },
+          "run_summary": {
+            "elapsed_ms": {
+              "min": 2.285,
+              "median": 2.363,
+              "max": 2.635
+            },
+            "proposals_per_s": {
+              "min": 759085,
+              "median": 846396,
+              "max": 875369
+            }
+          },
+          "shape": {
+            "append_entries": 4000,
+            "append_entries_per_append_message": 1.0,
+            "append_messages": 4000,
+            "append_messages_per_proposal": 2.0,
+            "commit_evaluations": 2000,
+            "commit_evaluations_per_committed_entry": 1.0,
+            "leader_broadcast_rounds": 2000,
+            "leader_broadcast_rounds_per_proposal_batch": 1.0,
+            "log_entry_materializations_per_proposal": 2.0,
+            "outputs": 13998,
+            "outputs_per_proposal": 6.999,
+            "proposal_batches": 2000
+          }
+        },
+        {
+          "name": "pipelined",
+          "proposals": 20000,
+          "payload_bytes": 512,
+          "max_in_flight": 64,
+          "elapsed_ms": 8.871,
+          "proposals_per_s": 2254505,
+          "commit_latency_us": {
+            "p50": 24.7,
+            "p99": 105.9
+          },
+          "run_summary": {
+            "elapsed_ms": {
+              "min": 8.443,
+              "median": 8.871,
+              "max": 11.092
+            },
+            "proposals_per_s": {
+              "min": 1803054,
+              "median": 2254505,
+              "max": 2368955
+            }
+          },
+          "shape": {
+            "append_entries": 40000,
+            "append_entries_per_append_message": 63.898,
+            "append_messages": 626,
+            "append_messages_per_proposal": 0.0313,
+            "commit_evaluations": 313,
+            "commit_evaluations_per_committed_entry": 0.01565,
+            "leader_broadcast_rounds": 313,
+            "leader_broadcast_rounds_per_proposal_batch": 1.0,
+            "log_entry_materializations_per_proposal": 2.0,
+            "outputs": 61188,
+            "outputs_per_proposal": 3.059,
+            "proposal_batches": 313
+          }
+        },
+        {
+          "name": "large_payload",
+          "proposals": 256,
+          "payload_bytes": 524224,
+          "max_in_flight": 16,
+          "elapsed_ms": 28.212,
+          "proposals_per_s": 9074,
+          "commit_latency_us": {
+            "p50": 1828.7,
+            "p99": 3567.7
+          },
+          "run_summary": {
+            "elapsed_ms": {
+              "min": 25.474,
+              "median": 28.212,
+              "max": 68.926
+            },
+            "proposals_per_s": {
+              "min": 3714,
+              "median": 9074,
+              "max": 10049
+            }
+          },
+          "shape": {
+            "append_entries": 512,
+            "append_entries_per_append_message": 1.0,
+            "append_messages": 512,
+            "append_messages_per_proposal": 2.0,
+            "commit_evaluations": 256,
+            "commit_evaluations_per_committed_entry": 1.0,
+            "leader_broadcast_rounds": 16,
+            "leader_broadcast_rounds_per_proposal_batch": 1.0,
+            "log_entry_materializations_per_proposal": 2.0,
+            "outputs": 1776,
+            "outputs_per_proposal": 6.938,
+            "proposal_batches": 16
+          }
+        },
+        {
+          "name": "read_index_load",
+          "proposals": 4096,
+          "payload_bytes": 512,
+          "max_in_flight": 32,
+          "elapsed_ms": 1.982,
+          "proposals_per_s": 2066990,
+          "commit_latency_us": {
+            "p50": 10.4,
+            "p99": 128.4
+          },
+          "run_summary": {
+            "elapsed_ms": {
+              "min": 1.876,
+              "median": 1.982,
+              "max": 2.049
+            },
+            "proposals_per_s": {
+              "min": 1999024,
+              "median": 2066990,
+              "max": 2183127
+            }
+          },
+          "shape": {
+            "append_entries": 8192,
+            "append_entries_per_append_message": 16.0,
+            "append_messages": 512,
+            "append_messages_per_proposal": 0.125,
+            "commit_evaluations": 128,
+            "commit_evaluations_per_committed_entry": 0.03125,
+            "leader_broadcast_rounds": 256,
+            "leader_broadcast_rounds_per_proposal_batch": 2.0,
+            "log_entry_materializations_per_proposal": 2.0,
+            "outputs": 13376,
+            "outputs_per_proposal": 3.266,
+            "proposal_batches": 128
+          },
+          "read_shape": {
+            "confirmation_rounds": 128,
+            "confirmation_rounds_per_request": 1.0,
+            "read_grants": 128,
+            "read_grants_per_request": 1.0,
+            "read_latency_us": {
+              "p50": 8.0,
+              "p99": 89.0
+            },
+            "read_requests": 128
+          }
+        },
+        {
+          "name": "read_index_batch",
+          "proposals": 4096,
+          "payload_bytes": 0,
+          "max_in_flight": 64,
+          "elapsed_ms": 0.339,
+          "proposals_per_s": 12088551,
+          "commit_latency_us": {
+            "p50": 4.0,
+            "p99": 6.8
+          },
+          "run_summary": {
+            "elapsed_ms": {
+              "min": 0.334,
+              "median": 0.339,
+              "max": 0.397
+            },
+            "proposals_per_s": {
+              "min": 10317380,
+              "median": 12088551,
+              "max": 12272659
+            }
+          },
+          "read_shape": {
+            "confirmation_rounds": 64,
+            "confirmation_rounds_per_request": 0.016,
+            "read_grants": 4096,
+            "read_grants_per_request": 1.0,
+            "read_latency_us": {
+              "p50": 4.0,
+              "p99": 6.8
+            },
+            "read_requests": 4096
+          }
+        },
+        {
+          "name": "lease_read",
+          "proposals": 4096,
+          "payload_bytes": 0,
+          "max_in_flight": 1,
+          "elapsed_ms": 0.525,
+          "proposals_per_s": 7796336,
+          "commit_latency_us": {
+            "p50": 0.1,
+            "p99": 0.2
+          },
+          "run_summary": {
+            "elapsed_ms": {
+              "min": 0.487,
+              "median": 0.525,
+              "max": 0.544
+            },
+            "proposals_per_s": {
+              "min": 7526534,
+              "median": 7796336,
+              "max": 8406362
+            }
+          },
+          "read_shape": {
+            "confirmation_rounds": 0,
+            "confirmation_rounds_per_request": 0.0,
+            "read_grants": 4096,
+            "read_grants_per_request": 1.0,
+            "read_latency_us": {
+              "p50": 0.1,
+              "p99": 0.2
+            },
+            "read_requests": 4096
+          }
+        },
+        {
+          "name": "leader_failover_queued",
+          "proposals": 4096,
+          "payload_bytes": 512,
+          "max_in_flight": 64,
+          "elapsed_ms": 4.236,
+          "proposals_per_s": 966884,
+          "commit_latency_us": {
+            "p50": 56.6,
+            "p99": 147.0
+          },
+          "run_summary": {
+            "elapsed_ms": {
+              "min": 4.05,
+              "median": 4.236,
+              "max": 5.734
+            },
+            "proposals_per_s": {
+              "min": 714382,
+              "median": 966884,
+              "max": 1011420
+            }
+          },
+          "failover_shape": {
+            "election_ticks": 64,
+            "election_ticks_per_failover": 1.0,
+            "failovers": 64,
+            "old_leader_applies": 0,
+            "prefailover_append_messages_per_failover": 1.0,
+            "queued_proposals": 4096,
+            "queued_proposals_per_failover": 64.0,
+            "successor_applies": 4096,
+            "successor_applies_per_queued_proposal": 1.0,
+            "successor_prefailover_append_messages": 64
+          }
+        }
+      ]
+    },
+    {
+      "harness": "bench-compare",
+      "library": "rafter-service",
+      "version": "path:../crates (workspace @ HEAD)",
+      "commit_latency_definition": "write_batch submitted to in-memory service -> every tracked write applies",
+      "workloads": [
+        {
+          "name": "tracked_write",
+          "proposals": 2048,
+          "payload_bytes": 512,
+          "max_in_flight": 32,
+          "elapsed_ms": 1.432,
+          "proposals_per_s": 1430209,
+          "commit_latency_us": {
+            "p50": 17.8,
+            "p99": 72.8
+          },
+          "run_summary": {
+            "elapsed_ms": {
+              "min": 1.359,
+              "median": 1.432,
+              "max": 2.383
+            },
+            "proposals_per_s": {
+              "min": 859601,
+              "median": 1430209,
+              "max": 1507268
+            }
+          },
+          "service_shape": {
+            "applied_writes": 2048,
+            "applied_writes_per_tracked_proposal": 1.0,
+            "runtime_batches_per_write_batch": 1.0,
+            "runtime_step_batches": 64,
+            "tracked_proposals": 2048,
+            "tracked_proposals_per_runtime_batch": 32.0,
+            "write_batches": 64
+          }
+        }
+      ]
+    },
+    {
+      "harness": "bench-compare",
+      "library": "rafter-codec",
+      "version": "path:../crates (workspace @ HEAD)",
+      "commit_latency_definition": "one operation is encode_message + decode_message for one AppendEntries frame",
+      "workloads": [
+        {
+          "name": "append_64x512",
+          "proposals": 4096,
+          "payload_bytes": 512,
+          "max_in_flight": 64,
+          "elapsed_ms": 503.898,
+          "proposals_per_s": 8129,
+          "commit_latency_us": {
+            "p50": 115.1,
+            "p99": 177.3
+          },
+          "run_summary": {
+            "elapsed_ms": {
+              "min": 493.155,
+              "median": 503.898,
+              "max": 510.911
+            },
+            "proposals_per_s": {
+              "min": 8017,
+              "median": 8129,
+              "max": 8306
+            }
+          },
+          "codec_shape": {
+            "allocation_events": 12288,
+            "allocations_per_frame": 3.0,
+            "encoded_bytes": 137879552,
+            "encoded_bytes_per_entry": 526.0,
+            "encoded_bytes_per_frame": 33662.0,
+            "encoded_mb_per_s": 260.9,
+            "entries": 262144,
+            "entries_per_frame": 64.0,
+            "frames": 4096
+          }
+        },
+        {
+          "name": "append_1_large",
+          "proposals": 256,
+          "payload_bytes": 524224,
+          "max_in_flight": 1,
+          "elapsed_ms": 481.256,
+          "proposals_per_s": 532,
+          "commit_latency_us": {
+            "p50": 1824.0,
+            "p99": 2407.6
+          },
+          "run_summary": {
+            "elapsed_ms": {
+              "min": 467.387,
+              "median": 481.256,
+              "max": 502.288
+            },
+            "proposals_per_s": {
+              "min": 510,
+              "median": 532,
+              "max": 548
+            }
+          },
+          "codec_shape": {
+            "allocation_events": 768,
+            "allocations_per_frame": 3.0,
+            "encoded_bytes": 134220544,
+            "encoded_bytes_per_entry": 524299.0,
+            "encoded_bytes_per_frame": 524299.0,
+            "encoded_mb_per_s": 266.0,
+            "entries": 256,
+            "entries_per_frame": 1.0,
+            "frames": 256
+          }
+        }
+      ]
+    },
+    {
+      "harness": "bench-compare",
+      "library": "rafter-multiraft",
+      "version": "path:../crates (workspace @ HEAD)",
+      "commit_latency_definition": "proposal batch submitted through TypedMultiRaftHost -> every tracked write applies",
+      "workloads": [
+        {
+          "name": "round_robin_batches",
+          "proposals": 32768,
+          "payload_bytes": 512,
+          "max_in_flight": 16,
+          "elapsed_ms": 12.675,
+          "proposals_per_s": 2585212,
+          "commit_latency_us": {
+            "p50": 5.1,
+            "p99": 23.9
+          },
+          "run_summary": {
+            "elapsed_ms": {
+              "min": 11.883,
+              "median": 12.675,
+              "max": 14.903
+            },
+            "proposals_per_s": {
+              "min": 2198758,
+              "median": 2585212,
+              "max": 2757514
+            }
+          },
+          "multiraft_shape": {
+            "applied_proposals": 32768,
+            "applied_proposals_per_tracked_proposal": 1.0,
+            "group_batches": 2048,
+            "groups": 32,
+            "rounds": 64,
+            "runtime_batches_per_group_batch": 1.0,
+            "runtime_step_batches": 2048,
+            "tracked_proposals": 32768,
+            "tracked_proposals_per_runtime_batch": 16.0
+          }
+        }
+      ]
+    }
+  ],
+  "runs": [
+    {
+      "run": 1,
+      "execution_order": [
+        "bench-rafter",
+        "bench-rafter-service",
+        "bench-rafter-codec",
+        "bench-rafter-multiraft"
+      ],
+      "results": [
+        {
+          "harness": "bench-compare",
+          "library": "rafter",
+          "version": "path:../crates (workspace @ HEAD)",
+          "commit_latency_definition": "proposal batch submitted to leader step -> leader emits Apply for that index",
+          "workloads": [
+            {
+              "name": "serial",
+              "proposals": 2000,
+              "payload_bytes": 512,
+              "max_in_flight": 1,
+              "elapsed_ms": 2.635,
+              "proposals_per_s": 759085,
+              "commit_latency_us": {
+                "p50": 0.9,
+                "p99": 5.0
+              },
+              "shape": {
+                "proposal_batches": 2000,
+                "append_messages": 4000,
+                "append_entries": 4000,
+                "commit_evaluations": 2000,
+                "leader_broadcast_rounds": 2000,
+                "outputs": 13998,
+                "append_messages_per_proposal": 2.0,
+                "append_entries_per_append_message": 1.0,
+                "log_entry_materializations_per_proposal": 2.0,
+                "commit_evaluations_per_committed_entry": 1.0,
+                "leader_broadcast_rounds_per_proposal_batch": 1.0,
+                "outputs_per_proposal": 6.999
+              }
+            },
+            {
+              "name": "pipelined",
+              "proposals": 20000,
+              "payload_bytes": 512,
+              "max_in_flight": 64,
+              "elapsed_ms": 11.092,
+              "proposals_per_s": 1803054,
+              "commit_latency_us": {
+                "p50": 28.9,
+                "p99": 154.4
+              },
+              "shape": {
+                "proposal_batches": 313,
+                "append_messages": 626,
+                "append_entries": 40000,
+                "commit_evaluations": 313,
+                "leader_broadcast_rounds": 313,
+                "outputs": 61188,
+                "append_messages_per_proposal": 0.0313,
+                "append_entries_per_append_message": 63.898,
+                "log_entry_materializations_per_proposal": 2.0,
+                "commit_evaluations_per_committed_entry": 0.01565,
+                "leader_broadcast_rounds_per_proposal_batch": 1.0,
+                "outputs_per_proposal": 3.059
+              }
+            },
+            {
+              "name": "large_payload",
+              "proposals": 256,
+              "payload_bytes": 524224,
+              "max_in_flight": 16,
+              "elapsed_ms": 68.926,
+              "proposals_per_s": 3714,
+              "commit_latency_us": {
+                "p50": 3255.0,
+                "p99": 11812.0
+              },
+              "shape": {
+                "proposal_batches": 16,
+                "append_messages": 512,
+                "append_entries": 512,
+                "commit_evaluations": 256,
+                "leader_broadcast_rounds": 16,
+                "outputs": 1776,
+                "append_messages_per_proposal": 2.0,
+                "append_entries_per_append_message": 1.0,
+                "log_entry_materializations_per_proposal": 2.0,
+                "commit_evaluations_per_committed_entry": 1.0,
+                "leader_broadcast_rounds_per_proposal_batch": 1.0,
+                "outputs_per_proposal": 6.938
+              }
+            },
+            {
+              "name": "read_index_load",
+              "proposals": 4096,
+              "payload_bytes": 512,
+              "max_in_flight": 32,
+              "elapsed_ms": 2.002,
+              "proposals_per_s": 2046380,
+              "commit_latency_us": {
+                "p50": 10.6,
+                "p99": 128.4
+              },
+              "shape": {
+                "proposal_batches": 128,
+                "append_messages": 512,
+                "append_entries": 8192,
+                "commit_evaluations": 128,
+                "leader_broadcast_rounds": 256,
+                "outputs": 13376,
+                "append_messages_per_proposal": 0.125,
+                "append_entries_per_append_message": 16.0,
+                "log_entry_materializations_per_proposal": 2.0,
+                "commit_evaluations_per_committed_entry": 0.03125,
+                "leader_broadcast_rounds_per_proposal_batch": 2.0,
+                "outputs_per_proposal": 3.266
+              },
+              "read_shape": {
+                "read_requests": 128,
+                "read_grants": 128,
+                "confirmation_rounds": 128,
+                "read_grants_per_request": 1.0,
+                "confirmation_rounds_per_request": 1.0,
+                "read_latency_us": {
+                  "p50": 8.0,
+                  "p99": 92.2
+                }
+              }
+            },
+            {
+              "name": "read_index_batch",
+              "proposals": 4096,
+              "payload_bytes": 0,
+              "max_in_flight": 64,
+              "elapsed_ms": 0.397,
+              "proposals_per_s": 10317380,
+              "commit_latency_us": {
+                "p50": 4.6,
+                "p99": 15.5
+              },
+              "read_shape": {
+                "read_requests": 4096,
+                "read_grants": 4096,
+                "confirmation_rounds": 64,
+                "read_grants_per_request": 1.0,
+                "confirmation_rounds_per_request": 0.016,
+                "read_latency_us": {
+                  "p50": 4.6,
+                  "p99": 15.5
+                }
+              }
+            },
+            {
+              "name": "lease_read",
+              "proposals": 4096,
+              "payload_bytes": 0,
+              "max_in_flight": 1,
+              "elapsed_ms": 0.525,
+              "proposals_per_s": 7796336,
+              "commit_latency_us": {
+                "p50": 0.1,
+                "p99": 0.2
+              },
+              "read_shape": {
+                "read_requests": 4096,
+                "read_grants": 4096,
+                "confirmation_rounds": 0,
+                "read_grants_per_request": 1.0,
+                "confirmation_rounds_per_request": 0.0,
+                "read_latency_us": {
+                  "p50": 0.1,
+                  "p99": 0.2
+                }
+              }
+            },
+            {
+              "name": "leader_failover_queued",
+              "proposals": 4096,
+              "payload_bytes": 512,
+              "max_in_flight": 64,
+              "elapsed_ms": 4.05,
+              "proposals_per_s": 1011420,
+              "commit_latency_us": {
+                "p50": 54.8,
+                "p99": 152.5
+              },
+              "failover_shape": {
+                "failovers": 64,
+                "queued_proposals": 4096,
+                "successor_prefailover_append_messages": 64,
+                "old_leader_applies": 0,
+                "successor_applies": 4096,
+                "election_ticks": 64,
+                "queued_proposals_per_failover": 64.0,
+                "prefailover_append_messages_per_failover": 1.0,
+                "successor_applies_per_queued_proposal": 1.0,
+                "election_ticks_per_failover": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "harness": "bench-compare",
+          "library": "rafter-service",
+          "version": "path:../crates (workspace @ HEAD)",
+          "commit_latency_definition": "write_batch submitted to in-memory service -> every tracked write applies",
+          "workloads": [
+            {
+              "name": "tracked_write",
+              "proposals": 2048,
+              "payload_bytes": 512,
+              "max_in_flight": 32,
+              "elapsed_ms": 2.383,
+              "proposals_per_s": 859601,
+              "commit_latency_us": {
+                "p50": 27.7,
+                "p99": 204.5
+              },
+              "service_shape": {
+                "write_batches": 64,
+                "runtime_step_batches": 64,
+                "tracked_proposals": 2048,
+                "applied_writes": 2048,
+                "runtime_batches_per_write_batch": 1.0,
+                "tracked_proposals_per_runtime_batch": 32.0,
+                "applied_writes_per_tracked_proposal": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "harness": "bench-compare",
+          "library": "rafter-codec",
+          "version": "path:../crates (workspace @ HEAD)",
+          "commit_latency_definition": "one operation is encode_message + decode_message for one AppendEntries frame",
+          "workloads": [
+            {
+              "name": "append_64x512",
+              "proposals": 4096,
+              "payload_bytes": 512,
+              "max_in_flight": 64,
+              "elapsed_ms": 504.641,
+              "proposals_per_s": 8117,
+              "commit_latency_us": {
+                "p50": 115.1,
+                "p99": 182.5
+              },
+              "codec_shape": {
+                "frames": 4096,
+                "entries": 262144,
+                "encoded_bytes": 137879552,
+                "allocation_events": 12288,
+                "entries_per_frame": 64.0,
+                "encoded_bytes_per_frame": 33662.0,
+                "encoded_bytes_per_entry": 526.0,
+                "encoded_mb_per_s": 260.6,
+                "allocations_per_frame": 3.0
+              }
+            },
+            {
+              "name": "append_1_large",
+              "proposals": 256,
+              "payload_bytes": 524224,
+              "max_in_flight": 1,
+              "elapsed_ms": 467.387,
+              "proposals_per_s": 548,
+              "commit_latency_us": {
+                "p50": 1790.0,
+                "p99": 2164.2
+              },
+              "codec_shape": {
+                "frames": 256,
+                "entries": 256,
+                "encoded_bytes": 134220544,
+                "allocation_events": 768,
+                "entries_per_frame": 1.0,
+                "encoded_bytes_per_frame": 524299.0,
+                "encoded_bytes_per_entry": 524299.0,
+                "encoded_mb_per_s": 273.9,
+                "allocations_per_frame": 3.0
+              }
+            }
+          ]
+        },
+        {
+          "harness": "bench-compare",
+          "library": "rafter-multiraft",
+          "version": "path:../crates (workspace @ HEAD)",
+          "commit_latency_definition": "proposal batch submitted through TypedMultiRaftHost -> every tracked write applies",
+          "workloads": [
+            {
+              "name": "round_robin_batches",
+              "proposals": 32768,
+              "payload_bytes": 512,
+              "max_in_flight": 16,
+              "elapsed_ms": 14.903,
+              "proposals_per_s": 2198758,
+              "commit_latency_us": {
+                "p50": 5.2,
+                "p99": 24.8
+              },
+              "multiraft_shape": {
+                "groups": 32,
+                "rounds": 64,
+                "group_batches": 2048,
+                "runtime_step_batches": 2048,
+                "tracked_proposals": 32768,
+                "applied_proposals": 32768,
+                "runtime_batches_per_group_batch": 1.0,
+                "tracked_proposals_per_runtime_batch": 16.0,
+                "applied_proposals_per_tracked_proposal": 1.0
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run": 2,
+      "execution_order": [
+        "bench-rafter-service",
+        "bench-rafter-codec",
+        "bench-rafter-multiraft",
+        "bench-rafter"
+      ],
+      "results": [
+        {
+          "harness": "bench-compare",
+          "library": "rafter",
+          "version": "path:../crates (workspace @ HEAD)",
+          "commit_latency_definition": "proposal batch submitted to leader step -> leader emits Apply for that index",
+          "workloads": [
+            {
+              "name": "serial",
+              "proposals": 2000,
+              "payload_bytes": 512,
+              "max_in_flight": 1,
+              "elapsed_ms": 2.46,
+              "proposals_per_s": 812856,
+              "commit_latency_us": {
+                "p50": 0.9,
+                "p99": 3.5
+              },
+              "shape": {
+                "proposal_batches": 2000,
+                "append_messages": 4000,
+                "append_entries": 4000,
+                "commit_evaluations": 2000,
+                "leader_broadcast_rounds": 2000,
+                "outputs": 13998,
+                "append_messages_per_proposal": 2.0,
+                "append_entries_per_append_message": 1.0,
+                "log_entry_materializations_per_proposal": 2.0,
+                "commit_evaluations_per_committed_entry": 1.0,
+                "leader_broadcast_rounds_per_proposal_batch": 1.0,
+                "outputs_per_proposal": 6.999
+              }
+            },
+            {
+              "name": "pipelined",
+              "proposals": 20000,
+              "payload_bytes": 512,
+              "max_in_flight": 64,
+              "elapsed_ms": 10.042,
+              "proposals_per_s": 1991643,
+              "commit_latency_us": {
+                "p50": 26.4,
+                "p99": 166.3
+              },
+              "shape": {
+                "proposal_batches": 313,
+                "append_messages": 626,
+                "append_entries": 40000,
+                "commit_evaluations": 313,
+                "leader_broadcast_rounds": 313,
+                "outputs": 61188,
+                "append_messages_per_proposal": 0.0313,
+                "append_entries_per_append_message": 63.898,
+                "log_entry_materializations_per_proposal": 2.0,
+                "commit_evaluations_per_committed_entry": 0.01565,
+                "leader_broadcast_rounds_per_proposal_batch": 1.0,
+                "outputs_per_proposal": 3.059
+              }
+            },
+            {
+              "name": "large_payload",
+              "proposals": 256,
+              "payload_bytes": 524224,
+              "max_in_flight": 16,
+              "elapsed_ms": 47.885,
+              "proposals_per_s": 5346,
+              "commit_latency_us": {
+                "p50": 3676.6,
+                "p99": 5006.8
+              },
+              "shape": {
+                "proposal_batches": 16,
+                "append_messages": 512,
+                "append_entries": 512,
+                "commit_evaluations": 256,
+                "leader_broadcast_rounds": 16,
+                "outputs": 1776,
+                "append_messages_per_proposal": 2.0,
+                "append_entries_per_append_message": 1.0,
+                "log_entry_materializations_per_proposal": 2.0,
+                "commit_evaluations_per_committed_entry": 1.0,
+                "leader_broadcast_rounds_per_proposal_batch": 1.0,
+                "outputs_per_proposal": 6.938
+              }
+            },
+            {
+              "name": "read_index_load",
+              "proposals": 4096,
+              "payload_bytes": 512,
+              "max_in_flight": 32,
+              "elapsed_ms": 1.925,
+              "proposals_per_s": 2127378,
+              "commit_latency_us": {
+                "p50": 10.2,
+                "p99": 112.9
+              },
+              "shape": {
+                "proposal_batches": 128,
+                "append_messages": 512,
+                "append_entries": 8192,
+                "commit_evaluations": 128,
+                "leader_broadcast_rounds": 256,
+                "outputs": 13376,
+                "append_messages_per_proposal": 0.125,
+                "append_entries_per_append_message": 16.0,
+                "log_entry_materializations_per_proposal": 2.0,
+                "commit_evaluations_per_committed_entry": 0.03125,
+                "leader_broadcast_rounds_per_proposal_batch": 2.0,
+                "outputs_per_proposal": 3.266
+              },
+              "read_shape": {
+                "read_requests": 128,
+                "read_grants": 128,
+                "confirmation_rounds": 128,
+                "read_grants_per_request": 1.0,
+                "confirmation_rounds_per_request": 1.0,
+                "read_latency_us": {
+                  "p50": 7.8,
+                  "p99": 76.3
+                }
+              }
+            },
+            {
+              "name": "read_index_batch",
+              "proposals": 4096,
+              "payload_bytes": 0,
+              "max_in_flight": 64,
+              "elapsed_ms": 0.334,
+              "proposals_per_s": 12272659,
+              "commit_latency_us": {
+                "p50": 4.0,
+                "p99": 6.8
+              },
+              "read_shape": {
+                "read_requests": 4096,
+                "read_grants": 4096,
+                "confirmation_rounds": 64,
+                "read_grants_per_request": 1.0,
+                "confirmation_rounds_per_request": 0.016,
+                "read_latency_us": {
+                  "p50": 4.0,
+                  "p99": 6.8
+                }
+              }
+            },
+            {
+              "name": "lease_read",
+              "proposals": 4096,
+              "payload_bytes": 0,
+              "max_in_flight": 1,
+              "elapsed_ms": 0.544,
+              "proposals_per_s": 7526534,
+              "commit_latency_us": {
+                "p50": 0.1,
+                "p99": 0.2
+              },
+              "read_shape": {
+                "read_requests": 4096,
+                "read_grants": 4096,
+                "confirmation_rounds": 0,
+                "read_grants_per_request": 1.0,
+                "confirmation_rounds_per_request": 0.0,
+                "read_latency_us": {
+                  "p50": 0.1,
+                  "p99": 0.2
+                }
+              }
+            },
+            {
+              "name": "leader_failover_queued",
+              "proposals": 4096,
+              "payload_bytes": 512,
+              "max_in_flight": 64,
+              "elapsed_ms": 5.734,
+              "proposals_per_s": 714382,
+              "commit_latency_us": {
+                "p50": 56.1,
+                "p99": 986.7
+              },
+              "failover_shape": {
+                "failovers": 64,
+                "queued_proposals": 4096,
+                "successor_prefailover_append_messages": 64,
+                "old_leader_applies": 0,
+                "successor_applies": 4096,
+                "election_ticks": 64,
+                "queued_proposals_per_failover": 64.0,
+                "prefailover_append_messages_per_failover": 1.0,
+                "successor_applies_per_queued_proposal": 1.0,
+                "election_ticks_per_failover": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "harness": "bench-compare",
+          "library": "rafter-service",
+          "version": "path:../crates (workspace @ HEAD)",
+          "commit_latency_definition": "write_batch submitted to in-memory service -> every tracked write applies",
+          "workloads": [
+            {
+              "name": "tracked_write",
+              "proposals": 2048,
+              "payload_bytes": 512,
+              "max_in_flight": 32,
+              "elapsed_ms": 1.359,
+              "proposals_per_s": 1507268,
+              "commit_latency_us": {
+                "p50": 16.8,
+                "p99": 64.3
+              },
+              "service_shape": {
+                "write_batches": 64,
+                "runtime_step_batches": 64,
+                "tracked_proposals": 2048,
+                "applied_writes": 2048,
+                "runtime_batches_per_write_batch": 1.0,
+                "tracked_proposals_per_runtime_batch": 32.0,
+                "applied_writes_per_tracked_proposal": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "harness": "bench-compare",
+          "library": "rafter-codec",
+          "version": "path:../crates (workspace @ HEAD)",
+          "commit_latency_definition": "one operation is encode_message + decode_message for one AppendEntries frame",
+          "workloads": [
+            {
+              "name": "append_64x512",
+              "proposals": 4096,
+              "payload_bytes": 512,
+              "max_in_flight": 64,
+              "elapsed_ms": 493.155,
+              "proposals_per_s": 8306,
+              "commit_latency_us": {
+                "p50": 112.9,
+                "p99": 162.3
+              },
+              "codec_shape": {
+                "frames": 4096,
+                "entries": 262144,
+                "encoded_bytes": 137879552,
+                "allocation_events": 12288,
+                "entries_per_frame": 64.0,
+                "encoded_bytes_per_frame": 33662.0,
+                "encoded_bytes_per_entry": 526.0,
+                "encoded_mb_per_s": 266.6,
+                "allocations_per_frame": 3.0
+              }
+            },
+            {
+              "name": "append_1_large",
+              "proposals": 256,
+              "payload_bytes": 524224,
+              "max_in_flight": 1,
+              "elapsed_ms": 470.908,
+              "proposals_per_s": 544,
+              "commit_latency_us": {
+                "p50": 1798.2,
+                "p99": 2407.6
+              },
+              "codec_shape": {
+                "frames": 256,
+                "entries": 256,
+                "encoded_bytes": 134220544,
+                "allocation_events": 768,
+                "entries_per_frame": 1.0,
+                "encoded_bytes_per_frame": 524299.0,
+                "encoded_bytes_per_entry": 524299.0,
+                "encoded_mb_per_s": 271.8,
+                "allocations_per_frame": 3.0
+              }
+            }
+          ]
+        },
+        {
+          "harness": "bench-compare",
+          "library": "rafter-multiraft",
+          "version": "path:../crates (workspace @ HEAD)",
+          "commit_latency_definition": "proposal batch submitted through TypedMultiRaftHost -> every tracked write applies",
+          "workloads": [
+            {
+              "name": "round_robin_batches",
+              "proposals": 32768,
+              "payload_bytes": 512,
+              "max_in_flight": 16,
+              "elapsed_ms": 11.883,
+              "proposals_per_s": 2757514,
+              "commit_latency_us": {
+                "p50": 5.0,
+                "p99": 21.0
+              },
+              "multiraft_shape": {
+                "groups": 32,
+                "rounds": 64,
+                "group_batches": 2048,
+                "runtime_step_batches": 2048,
+                "tracked_proposals": 32768,
+                "applied_proposals": 32768,
+                "runtime_batches_per_group_batch": 1.0,
+                "tracked_proposals_per_runtime_batch": 16.0,
+                "applied_proposals_per_tracked_proposal": 1.0
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run": 3,
+      "execution_order": [
+        "bench-rafter-codec",
+        "bench-rafter-multiraft",
+        "bench-rafter",
+        "bench-rafter-service"
+      ],
+      "results": [
+        {
+          "harness": "bench-compare",
+          "library": "rafter",
+          "version": "path:../crates (workspace @ HEAD)",
+          "commit_latency_definition": "proposal batch submitted to leader step -> leader emits Apply for that index",
+          "workloads": [
+            {
+              "name": "serial",
+              "proposals": 2000,
+              "payload_bytes": 512,
+              "max_in_flight": 1,
+              "elapsed_ms": 2.301,
+              "proposals_per_s": 869313,
+              "commit_latency_us": {
+                "p50": 0.8,
+                "p99": 4.3
+              },
+              "shape": {
+                "proposal_batches": 2000,
+                "append_messages": 4000,
+                "append_entries": 4000,
+                "commit_evaluations": 2000,
+                "leader_broadcast_rounds": 2000,
+                "outputs": 13998,
+                "append_messages_per_proposal": 2.0,
+                "append_entries_per_append_message": 1.0,
+                "log_entry_materializations_per_proposal": 2.0,
+                "commit_evaluations_per_committed_entry": 1.0,
+                "leader_broadcast_rounds_per_proposal_batch": 1.0,
+                "outputs_per_proposal": 6.999
+              }
+            },
+            {
+              "name": "pipelined",
+              "proposals": 20000,
+              "payload_bytes": 512,
+              "max_in_flight": 64,
+              "elapsed_ms": 8.443,
+              "proposals_per_s": 2368955,
+              "commit_latency_us": {
+                "p50": 24.0,
+                "p99": 98.0
+              },
+              "shape": {
+                "proposal_batches": 313,
+                "append_messages": 626,
+                "append_entries": 40000,
+                "commit_evaluations": 313,
+                "leader_broadcast_rounds": 313,
+                "outputs": 61188,
+                "append_messages_per_proposal": 0.0313,
+                "append_entries_per_append_message": 63.898,
+                "log_entry_materializations_per_proposal": 2.0,
+                "commit_evaluations_per_committed_entry": 0.01565,
+                "leader_broadcast_rounds_per_proposal_batch": 1.0,
+                "outputs_per_proposal": 3.059
+              }
+            },
+            {
+              "name": "large_payload",
+              "proposals": 256,
+              "payload_bytes": 524224,
+              "max_in_flight": 16,
+              "elapsed_ms": 25.474,
+              "proposals_per_s": 10049,
+              "commit_latency_us": {
+                "p50": 1629.7,
+                "p99": 2062.3
+              },
+              "shape": {
+                "proposal_batches": 16,
+                "append_messages": 512,
+                "append_entries": 512,
+                "commit_evaluations": 256,
+                "leader_broadcast_rounds": 16,
+                "outputs": 1776,
+                "append_messages_per_proposal": 2.0,
+                "append_entries_per_append_message": 1.0,
+                "log_entry_materializations_per_proposal": 2.0,
+                "commit_evaluations_per_committed_entry": 1.0,
+                "leader_broadcast_rounds_per_proposal_batch": 1.0,
+                "outputs_per_proposal": 6.938
+              }
+            },
+            {
+              "name": "read_index_load",
+              "proposals": 4096,
+              "payload_bytes": 512,
+              "max_in_flight": 32,
+              "elapsed_ms": 1.982,
+              "proposals_per_s": 2066990,
+              "commit_latency_us": {
+                "p50": 10.4,
+                "p99": 133.6
+              },
+              "shape": {
+                "proposal_batches": 128,
+                "append_messages": 512,
+                "append_entries": 8192,
+                "commit_evaluations": 128,
+                "leader_broadcast_rounds": 256,
+                "outputs": 13376,
+                "append_messages_per_proposal": 0.125,
+                "append_entries_per_append_message": 16.0,
+                "log_entry_materializations_per_proposal": 2.0,
+                "commit_evaluations_per_committed_entry": 0.03125,
+                "leader_broadcast_rounds_per_proposal_batch": 2.0,
+                "outputs_per_proposal": 3.266
+              },
+              "read_shape": {
+                "read_requests": 128,
+                "read_grants": 128,
+                "confirmation_rounds": 128,
+                "read_grants_per_request": 1.0,
+                "confirmation_rounds_per_request": 1.0,
+                "read_latency_us": {
+                  "p50": 7.6,
+                  "p99": 89.0
+                }
+              }
+            },
+            {
+              "name": "read_index_batch",
+              "proposals": 4096,
+              "payload_bytes": 0,
+              "max_in_flight": 64,
+              "elapsed_ms": 0.339,
+              "proposals_per_s": 12088551,
+              "commit_latency_us": {
+                "p50": 3.9,
+                "p99": 6.0
+              },
+              "read_shape": {
+                "read_requests": 4096,
+                "read_grants": 4096,
+                "confirmation_rounds": 64,
+                "read_grants_per_request": 1.0,
+                "confirmation_rounds_per_request": 0.016,
+                "read_latency_us": {
+                  "p50": 3.9,
+                  "p99": 6.0
+                }
+              }
+            },
+            {
+              "name": "lease_read",
+              "proposals": 4096,
+              "payload_bytes": 0,
+              "max_in_flight": 1,
+              "elapsed_ms": 0.487,
+              "proposals_per_s": 8406362,
+              "commit_latency_us": {
+                "p50": 0.1,
+                "p99": 0.1
+              },
+              "read_shape": {
+                "read_requests": 4096,
+                "read_grants": 4096,
+                "confirmation_rounds": 0,
+                "read_grants_per_request": 1.0,
+                "confirmation_rounds_per_request": 0.0,
+                "read_latency_us": {
+                  "p50": 0.1,
+                  "p99": 0.1
+                }
+              }
+            },
+            {
+              "name": "leader_failover_queued",
+              "proposals": 4096,
+              "payload_bytes": 512,
+              "max_in_flight": 64,
+              "elapsed_ms": 4.299,
+              "proposals_per_s": 952724,
+              "commit_latency_us": {
+                "p50": 57.1,
+                "p99": 147.0
+              },
+              "failover_shape": {
+                "failovers": 64,
+                "queued_proposals": 4096,
+                "successor_prefailover_append_messages": 64,
+                "old_leader_applies": 0,
+                "successor_applies": 4096,
+                "election_ticks": 64,
+                "queued_proposals_per_failover": 64.0,
+                "prefailover_append_messages_per_failover": 1.0,
+                "successor_applies_per_queued_proposal": 1.0,
+                "election_ticks_per_failover": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "harness": "bench-compare",
+          "library": "rafter-service",
+          "version": "path:../crates (workspace @ HEAD)",
+          "commit_latency_definition": "write_batch submitted to in-memory service -> every tracked write applies",
+          "workloads": [
+            {
+              "name": "tracked_write",
+              "proposals": 2048,
+              "payload_bytes": 512,
+              "max_in_flight": 32,
+              "elapsed_ms": 1.432,
+              "proposals_per_s": 1430209,
+              "commit_latency_us": {
+                "p50": 17.8,
+                "p99": 69.7
+              },
+              "service_shape": {
+                "write_batches": 64,
+                "runtime_step_batches": 64,
+                "tracked_proposals": 2048,
+                "applied_writes": 2048,
+                "runtime_batches_per_write_batch": 1.0,
+                "tracked_proposals_per_runtime_batch": 32.0,
+                "applied_writes_per_tracked_proposal": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "harness": "bench-compare",
+          "library": "rafter-codec",
+          "version": "path:../crates (workspace @ HEAD)",
+          "commit_latency_definition": "one operation is encode_message + decode_message for one AppendEntries frame",
+          "workloads": [
+            {
+              "name": "append_64x512",
+              "proposals": 4096,
+              "payload_bytes": 512,
+              "max_in_flight": 64,
+              "elapsed_ms": 510.911,
+              "proposals_per_s": 8017,
+              "commit_latency_us": {
+                "p50": 117.2,
+                "p99": 200.3
+              },
+              "codec_shape": {
+                "frames": 4096,
+                "entries": 262144,
+                "encoded_bytes": 137879552,
+                "allocation_events": 12288,
+                "entries_per_frame": 64.0,
+                "encoded_bytes_per_frame": 33662.0,
+                "encoded_bytes_per_entry": 526.0,
+                "encoded_mb_per_s": 257.4,
+                "allocations_per_frame": 3.0
+              }
+            },
+            {
+              "name": "append_1_large",
+              "proposals": 256,
+              "payload_bytes": 524224,
+              "max_in_flight": 1,
+              "elapsed_ms": 481.256,
+              "proposals_per_s": 532,
+              "commit_latency_us": {
+                "p50": 1824.0,
+                "p99": 2782.0
+              },
+              "codec_shape": {
+                "frames": 256,
+                "entries": 256,
+                "encoded_bytes": 134220544,
+                "allocation_events": 768,
+                "entries_per_frame": 1.0,
+                "encoded_bytes_per_frame": 524299.0,
+                "encoded_bytes_per_entry": 524299.0,
+                "encoded_mb_per_s": 266.0,
+                "allocations_per_frame": 3.0
+              }
+            }
+          ]
+        },
+        {
+          "harness": "bench-compare",
+          "library": "rafter-multiraft",
+          "version": "path:../crates (workspace @ HEAD)",
+          "commit_latency_definition": "proposal batch submitted through TypedMultiRaftHost -> every tracked write applies",
+          "workloads": [
+            {
+              "name": "round_robin_batches",
+              "proposals": 32768,
+              "payload_bytes": 512,
+              "max_in_flight": 16,
+              "elapsed_ms": 12.128,
+              "proposals_per_s": 2701828,
+              "commit_latency_us": {
+                "p50": 5.0,
+                "p99": 22.4
+              },
+              "multiraft_shape": {
+                "groups": 32,
+                "rounds": 64,
+                "group_batches": 2048,
+                "runtime_step_batches": 2048,
+                "tracked_proposals": 32768,
+                "applied_proposals": 32768,
+                "runtime_batches_per_group_batch": 1.0,
+                "tracked_proposals_per_runtime_batch": 16.0,
+                "applied_proposals_per_tracked_proposal": 1.0
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run": 4,
+      "execution_order": [
+        "bench-rafter-multiraft",
+        "bench-rafter",
+        "bench-rafter-service",
+        "bench-rafter-codec"
+      ],
+      "results": [
+        {
+          "harness": "bench-compare",
+          "library": "rafter",
+          "version": "path:../crates (workspace @ HEAD)",
+          "commit_latency_definition": "proposal batch submitted to leader step -> leader emits Apply for that index",
+          "workloads": [
+            {
+              "name": "serial",
+              "proposals": 2000,
+              "payload_bytes": 512,
+              "max_in_flight": 1,
+              "elapsed_ms": 2.363,
+              "proposals_per_s": 846396,
+              "commit_latency_us": {
+                "p50": 0.8,
+                "p99": 4.3
+              },
+              "shape": {
+                "proposal_batches": 2000,
+                "append_messages": 4000,
+                "append_entries": 4000,
+                "commit_evaluations": 2000,
+                "leader_broadcast_rounds": 2000,
+                "outputs": 13998,
+                "append_messages_per_proposal": 2.0,
+                "append_entries_per_append_message": 1.0,
+                "log_entry_materializations_per_proposal": 2.0,
+                "commit_evaluations_per_committed_entry": 1.0,
+                "leader_broadcast_rounds_per_proposal_batch": 1.0,
+                "outputs_per_proposal": 6.999
+              }
+            },
+            {
+              "name": "pipelined",
+              "proposals": 20000,
+              "payload_bytes": 512,
+              "max_in_flight": 64,
+              "elapsed_ms": 8.871,
+              "proposals_per_s": 2254505,
+              "commit_latency_us": {
+                "p50": 23.9,
+                "p99": 105.9
+              },
+              "shape": {
+                "proposal_batches": 313,
+                "append_messages": 626,
+                "append_entries": 40000,
+                "commit_evaluations": 313,
+                "leader_broadcast_rounds": 313,
+                "outputs": 61188,
+                "append_messages_per_proposal": 0.0313,
+                "append_entries_per_append_message": 63.898,
+                "log_entry_materializations_per_proposal": 2.0,
+                "commit_evaluations_per_committed_entry": 0.01565,
+                "leader_broadcast_rounds_per_proposal_batch": 1.0,
+                "outputs_per_proposal": 3.059
+              }
+            },
+            {
+              "name": "large_payload",
+              "proposals": 256,
+              "payload_bytes": 524224,
+              "max_in_flight": 16,
+              "elapsed_ms": 28.212,
+              "proposals_per_s": 9074,
+              "commit_latency_us": {
+                "p50": 1828.7,
+                "p99": 2845.2
+              },
+              "shape": {
+                "proposal_batches": 16,
+                "append_messages": 512,
+                "append_entries": 512,
+                "commit_evaluations": 256,
+                "leader_broadcast_rounds": 16,
+                "outputs": 1776,
+                "append_messages_per_proposal": 2.0,
+                "append_entries_per_append_message": 1.0,
+                "log_entry_materializations_per_proposal": 2.0,
+                "commit_evaluations_per_committed_entry": 1.0,
+                "leader_broadcast_rounds_per_proposal_batch": 1.0,
+                "outputs_per_proposal": 6.938
+              }
+            },
+            {
+              "name": "read_index_load",
+              "proposals": 4096,
+              "payload_bytes": 512,
+              "max_in_flight": 32,
+              "elapsed_ms": 1.876,
+              "proposals_per_s": 2183127,
+              "commit_latency_us": {
+                "p50": 10.4,
+                "p99": 107.0
+              },
+              "shape": {
+                "proposal_batches": 128,
+                "append_messages": 512,
+                "append_entries": 8192,
+                "commit_evaluations": 128,
+                "leader_broadcast_rounds": 256,
+                "outputs": 13376,
+                "append_messages_per_proposal": 0.125,
+                "append_entries_per_append_message": 16.0,
+                "log_entry_materializations_per_proposal": 2.0,
+                "commit_evaluations_per_committed_entry": 0.03125,
+                "leader_broadcast_rounds_per_proposal_batch": 2.0,
+                "outputs_per_proposal": 3.266
+              },
+              "read_shape": {
+                "read_requests": 128,
+                "read_grants": 128,
+                "confirmation_rounds": 128,
+                "read_grants_per_request": 1.0,
+                "confirmation_rounds_per_request": 1.0,
+                "read_latency_us": {
+                  "p50": 8.0,
+                  "p99": 71.4
+                }
+              }
+            },
+            {
+              "name": "read_index_batch",
+              "proposals": 4096,
+              "payload_bytes": 0,
+              "max_in_flight": 64,
+              "elapsed_ms": 0.347,
+              "proposals_per_s": 11813942,
+              "commit_latency_us": {
+                "p50": 4.0,
+                "p99": 7.1
+              },
+              "read_shape": {
+                "read_requests": 4096,
+                "read_grants": 4096,
+                "confirmation_rounds": 64,
+                "read_grants_per_request": 1.0,
+                "confirmation_rounds_per_request": 0.016,
+                "read_latency_us": {
+                  "p50": 4.0,
+                  "p99": 7.1
+                }
+              }
+            },
+            {
+              "name": "lease_read",
+              "proposals": 4096,
+              "payload_bytes": 0,
+              "max_in_flight": 1,
+              "elapsed_ms": 0.534,
+              "proposals_per_s": 7670412,
+              "commit_latency_us": {
+                "p50": 0.1,
+                "p99": 0.2
+              },
+              "read_shape": {
+                "read_requests": 4096,
+                "read_grants": 4096,
+                "confirmation_rounds": 0,
+                "read_grants_per_request": 1.0,
+                "confirmation_rounds_per_request": 0.0,
+                "read_latency_us": {
+                  "p50": 0.1,
+                  "p99": 0.2
+                }
+              }
+            },
+            {
+              "name": "leader_failover_queued",
+              "proposals": 4096,
+              "payload_bytes": 512,
+              "max_in_flight": 64,
+              "elapsed_ms": 4.236,
+              "proposals_per_s": 966884,
+              "commit_latency_us": {
+                "p50": 56.6,
+                "p99": 80.9
+              },
+              "failover_shape": {
+                "failovers": 64,
+                "queued_proposals": 4096,
+                "successor_prefailover_append_messages": 64,
+                "old_leader_applies": 0,
+                "successor_applies": 4096,
+                "election_ticks": 64,
+                "queued_proposals_per_failover": 64.0,
+                "prefailover_append_messages_per_failover": 1.0,
+                "successor_applies_per_queued_proposal": 1.0,
+                "election_ticks_per_failover": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "harness": "bench-compare",
+          "library": "rafter-service",
+          "version": "path:../crates (workspace @ HEAD)",
+          "commit_latency_definition": "write_batch submitted to in-memory service -> every tracked write applies",
+          "workloads": [
+            {
+              "name": "tracked_write",
+              "proposals": 2048,
+              "payload_bytes": 512,
+              "max_in_flight": 32,
+              "elapsed_ms": 1.397,
+              "proposals_per_s": 1465999,
+              "commit_latency_us": {
+                "p50": 17.2,
+                "p99": 72.8
+              },
+              "service_shape": {
+                "write_batches": 64,
+                "runtime_step_batches": 64,
+                "tracked_proposals": 2048,
+                "applied_writes": 2048,
+                "runtime_batches_per_write_batch": 1.0,
+                "tracked_proposals_per_runtime_batch": 32.0,
+                "applied_writes_per_tracked_proposal": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "harness": "bench-compare",
+          "library": "rafter-codec",
+          "version": "path:../crates (workspace @ HEAD)",
+          "commit_latency_definition": "one operation is encode_message + decode_message for one AppendEntries frame",
+          "workloads": [
+            {
+              "name": "append_64x512",
+              "proposals": 4096,
+              "payload_bytes": 512,
+              "max_in_flight": 64,
+              "elapsed_ms": 501.601,
+              "proposals_per_s": 8166,
+              "commit_latency_us": {
+                "p50": 115.1,
+                "p99": 177.3
+              },
+              "codec_shape": {
+                "frames": 4096,
+                "entries": 262144,
+                "encoded_bytes": 137879552,
+                "allocation_events": 12288,
+                "entries_per_frame": 64.0,
+                "encoded_bytes_per_frame": 33662.0,
+                "encoded_bytes_per_entry": 526.0,
+                "encoded_mb_per_s": 262.1,
+                "allocations_per_frame": 3.0
+              }
+            },
+            {
+              "name": "append_1_large",
+              "proposals": 256,
+              "payload_bytes": 524224,
+              "max_in_flight": 1,
+              "elapsed_ms": 487.487,
+              "proposals_per_s": 525,
+              "commit_latency_us": {
+                "p50": 1865.7,
+                "p99": 2383.2
+              },
+              "codec_shape": {
+                "frames": 256,
+                "entries": 256,
+                "encoded_bytes": 134220544,
+                "allocation_events": 768,
+                "entries_per_frame": 1.0,
+                "encoded_bytes_per_frame": 524299.0,
+                "encoded_bytes_per_entry": 524299.0,
+                "encoded_mb_per_s": 262.6,
+                "allocations_per_frame": 3.0
+              }
+            }
+          ]
+        },
+        {
+          "harness": "bench-compare",
+          "library": "rafter-multiraft",
+          "version": "path:../crates (workspace @ HEAD)",
+          "commit_latency_definition": "proposal batch submitted through TypedMultiRaftHost -> every tracked write applies",
+          "workloads": [
+            {
+              "name": "round_robin_batches",
+              "proposals": 32768,
+              "payload_bytes": 512,
+              "max_in_flight": 16,
+              "elapsed_ms": 14.655,
+              "proposals_per_s": 2235897,
+              "commit_latency_us": {
+                "p50": 5.3,
+                "p99": 23.9
+              },
+              "multiraft_shape": {
+                "groups": 32,
+                "rounds": 64,
+                "group_batches": 2048,
+                "runtime_step_batches": 2048,
+                "tracked_proposals": 32768,
+                "applied_proposals": 32768,
+                "runtime_batches_per_group_batch": 1.0,
+                "tracked_proposals_per_runtime_batch": 16.0,
+                "applied_proposals_per_tracked_proposal": 1.0
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "run": 5,
+      "execution_order": [
+        "bench-rafter",
+        "bench-rafter-service",
+        "bench-rafter-codec",
+        "bench-rafter-multiraft"
+      ],
+      "results": [
+        {
+          "harness": "bench-compare",
+          "library": "rafter",
+          "version": "path:../crates (workspace @ HEAD)",
+          "commit_latency_definition": "proposal batch submitted to leader step -> leader emits Apply for that index",
+          "workloads": [
+            {
+              "name": "serial",
+              "proposals": 2000,
+              "payload_bytes": 512,
+              "max_in_flight": 1,
+              "elapsed_ms": 2.285,
+              "proposals_per_s": 875369,
+              "commit_latency_us": {
+                "p50": 0.9,
+                "p99": 2.6
+              },
+              "shape": {
+                "proposal_batches": 2000,
+                "append_messages": 4000,
+                "append_entries": 4000,
+                "commit_evaluations": 2000,
+                "leader_broadcast_rounds": 2000,
+                "outputs": 13998,
+                "append_messages_per_proposal": 2.0,
+                "append_entries_per_append_message": 1.0,
+                "log_entry_materializations_per_proposal": 2.0,
+                "commit_evaluations_per_committed_entry": 1.0,
+                "leader_broadcast_rounds_per_proposal_batch": 1.0,
+                "outputs_per_proposal": 6.999
+              }
+            },
+            {
+              "name": "pipelined",
+              "proposals": 20000,
+              "payload_bytes": 512,
+              "max_in_flight": 64,
+              "elapsed_ms": 8.835,
+              "proposals_per_s": 2263820,
+              "commit_latency_us": {
+                "p50": 24.7,
+                "p99": 99.7
+              },
+              "shape": {
+                "proposal_batches": 313,
+                "append_messages": 626,
+                "append_entries": 40000,
+                "commit_evaluations": 313,
+                "leader_broadcast_rounds": 313,
+                "outputs": 61188,
+                "append_messages_per_proposal": 0.0313,
+                "append_entries_per_append_message": 63.898,
+                "log_entry_materializations_per_proposal": 2.0,
+                "commit_evaluations_per_committed_entry": 0.01565,
+                "leader_broadcast_rounds_per_proposal_batch": 1.0,
+                "outputs_per_proposal": 3.059
+              }
+            },
+            {
+              "name": "large_payload",
+              "proposals": 256,
+              "payload_bytes": 524224,
+              "max_in_flight": 16,
+              "elapsed_ms": 27.385,
+              "proposals_per_s": 9348,
+              "commit_latency_us": {
+                "p50": 1817.5,
+                "p99": 3567.7
+              },
+              "shape": {
+                "proposal_batches": 16,
+                "append_messages": 512,
+                "append_entries": 512,
+                "commit_evaluations": 256,
+                "leader_broadcast_rounds": 16,
+                "outputs": 1776,
+                "append_messages_per_proposal": 2.0,
+                "append_entries_per_append_message": 1.0,
+                "log_entry_materializations_per_proposal": 2.0,
+                "commit_evaluations_per_committed_entry": 1.0,
+                "leader_broadcast_rounds_per_proposal_batch": 1.0,
+                "outputs_per_proposal": 6.938
+              }
+            },
+            {
+              "name": "read_index_load",
+              "proposals": 4096,
+              "payload_bytes": 512,
+              "max_in_flight": 32,
+              "elapsed_ms": 2.049,
+              "proposals_per_s": 1999024,
+              "commit_latency_us": {
+                "p50": 10.8,
+                "p99": 136.7
+              },
+              "shape": {
+                "proposal_batches": 128,
+                "append_messages": 512,
+                "append_entries": 8192,
+                "commit_evaluations": 128,
+                "leader_broadcast_rounds": 256,
+                "outputs": 13376,
+                "append_messages_per_proposal": 0.125,
+                "append_entries_per_append_message": 16.0,
+                "log_entry_materializations_per_proposal": 2.0,
+                "commit_evaluations_per_committed_entry": 0.03125,
+                "leader_broadcast_rounds_per_proposal_batch": 2.0,
+                "outputs_per_proposal": 3.266
+              },
+              "read_shape": {
+                "read_requests": 128,
+                "read_grants": 128,
+                "confirmation_rounds": 128,
+                "read_grants_per_request": 1.0,
+                "confirmation_rounds_per_request": 1.0,
+                "read_latency_us": {
+                  "p50": 8.1,
+                  "p99": 91.3
+                }
+              }
+            },
+            {
+              "name": "read_index_batch",
+              "proposals": 4096,
+              "payload_bytes": 0,
+              "max_in_flight": 64,
+              "elapsed_ms": 0.334,
+              "proposals_per_s": 12248218,
+              "commit_latency_us": {
+                "p50": 4.0,
+                "p99": 6.3
+              },
+              "read_shape": {
+                "read_requests": 4096,
+                "read_grants": 4096,
+                "confirmation_rounds": 64,
+                "read_grants_per_request": 1.0,
+                "confirmation_rounds_per_request": 0.016,
+                "read_latency_us": {
+                  "p50": 4.0,
+                  "p99": 6.3
+                }
+              }
+            },
+            {
+              "name": "lease_read",
+              "proposals": 4096,
+              "payload_bytes": 0,
+              "max_in_flight": 1,
+              "elapsed_ms": 0.514,
+              "proposals_per_s": 7961127,
+              "commit_latency_us": {
+                "p50": 0.1,
+                "p99": 0.1
+              },
+              "read_shape": {
+                "read_requests": 4096,
+                "read_grants": 4096,
+                "confirmation_rounds": 0,
+                "read_grants_per_request": 1.0,
+                "confirmation_rounds_per_request": 0.0,
+                "read_latency_us": {
+                  "p50": 0.1,
+                  "p99": 0.1
+                }
+              }
+            },
+            {
+              "name": "leader_failover_queued",
+              "proposals": 4096,
+              "payload_bytes": 512,
+              "max_in_flight": 64,
+              "elapsed_ms": 4.227,
+              "proposals_per_s": 969085,
+              "commit_latency_us": {
+                "p50": 56.6,
+                "p99": 75.8
+              },
+              "failover_shape": {
+                "failovers": 64,
+                "queued_proposals": 4096,
+                "successor_prefailover_append_messages": 64,
+                "old_leader_applies": 0,
+                "successor_applies": 4096,
+                "election_ticks": 64,
+                "queued_proposals_per_failover": 64.0,
+                "prefailover_append_messages_per_failover": 1.0,
+                "successor_applies_per_queued_proposal": 1.0,
+                "election_ticks_per_failover": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "harness": "bench-compare",
+          "library": "rafter-service",
+          "version": "path:../crates (workspace @ HEAD)",
+          "commit_latency_definition": "write_batch submitted to in-memory service -> every tracked write applies",
+          "workloads": [
+            {
+              "name": "tracked_write",
+              "proposals": 2048,
+              "payload_bytes": 512,
+              "max_in_flight": 32,
+              "elapsed_ms": 1.514,
+              "proposals_per_s": 1352336,
+              "commit_latency_us": {
+                "p50": 19.5,
+                "p99": 73.9
+              },
+              "service_shape": {
+                "write_batches": 64,
+                "runtime_step_batches": 64,
+                "tracked_proposals": 2048,
+                "applied_writes": 2048,
+                "runtime_batches_per_write_batch": 1.0,
+                "tracked_proposals_per_runtime_batch": 32.0,
+                "applied_writes_per_tracked_proposal": 1.0
+              }
+            }
+          ]
+        },
+        {
+          "harness": "bench-compare",
+          "library": "rafter-codec",
+          "version": "path:../crates (workspace @ HEAD)",
+          "commit_latency_definition": "one operation is encode_message + decode_message for one AppendEntries frame",
+          "workloads": [
+            {
+              "name": "append_64x512",
+              "proposals": 4096,
+              "payload_bytes": 512,
+              "max_in_flight": 64,
+              "elapsed_ms": 503.898,
+              "proposals_per_s": 8129,
+              "commit_latency_us": {
+                "p50": 117.5,
+                "p99": 167.0
+              },
+              "codec_shape": {
+                "frames": 4096,
+                "entries": 262144,
+                "encoded_bytes": 137879552,
+                "allocation_events": 12288,
+                "entries_per_frame": 64.0,
+                "encoded_bytes_per_frame": 33662.0,
+                "encoded_bytes_per_entry": 526.0,
+                "encoded_mb_per_s": 260.9,
+                "allocations_per_frame": 3.0
+              }
+            },
+            {
+              "name": "append_1_large",
+              "proposals": 256,
+              "payload_bytes": 524224,
+              "max_in_flight": 1,
+              "elapsed_ms": 502.288,
+              "proposals_per_s": 510,
+              "commit_latency_us": {
+                "p50": 1906.7,
+                "p99": 3447.5
+              },
+              "codec_shape": {
+                "frames": 256,
+                "entries": 256,
+                "encoded_bytes": 134220544,
+                "allocation_events": 768,
+                "entries_per_frame": 1.0,
+                "encoded_bytes_per_frame": 524299.0,
+                "encoded_bytes_per_entry": 524299.0,
+                "encoded_mb_per_s": 254.8,
+                "allocations_per_frame": 3.0
+              }
+            }
+          ]
+        },
+        {
+          "harness": "bench-compare",
+          "library": "rafter-multiraft",
+          "version": "path:../crates (workspace @ HEAD)",
+          "commit_latency_definition": "proposal batch submitted through TypedMultiRaftHost -> every tracked write applies",
+          "workloads": [
+            {
+              "name": "round_robin_batches",
+              "proposals": 32768,
+              "payload_bytes": 512,
+              "max_in_flight": 16,
+              "elapsed_ms": 12.675,
+              "proposals_per_s": 2585212,
+              "commit_latency_us": {
+                "p50": 5.1,
+                "p99": 24.1
+              },
+              "multiraft_shape": {
+                "groups": 32,
+                "rounds": 64,
+                "group_batches": 2048,
+                "runtime_step_batches": 2048,
+                "tracked_proposals": 32768,
+                "applied_proposals": 32768,
+                "runtime_batches_per_group_batch": 1.0,
+                "tracked_proposals_per_runtime_batch": 16.0,
+                "applied_proposals_per_tracked_proposal": 1.0
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

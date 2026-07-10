@@ -150,7 +150,7 @@ fn same_term_append_entries_step_down_preserves_recorded_vote() {
             leader_id: NodeId(2),
             prev_log_index: LogIndex::ZERO,
             prev_log_term: Term::default(),
-            entries: Vec::new(),
+            entries: Vec::new().into(),
             leader_commit: LogIndex::ZERO,
         }),
     });
@@ -302,7 +302,7 @@ fn public_transitions_do_not_decrease_current_term() {
             leader_id: NodeId(3),
             prev_log_index: LogIndex::ZERO,
             prev_log_term: Term::default(),
-            entries: Vec::new(),
+            entries: Vec::new().into(),
             leader_commit: LogIndex::ZERO,
         }),
         Message::AppendEntriesResponse(AppendEntriesResponse {

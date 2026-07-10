@@ -36,8 +36,18 @@ impl GroupDriver<u64> for RecordingDriver {
         &mut self,
         input: GroupInput<u64, Vec<u8>>,
     ) -> Result<GroupStepReport<u64, Vec<u8>>, String> {
-        if matches!(input, GroupInput::Proposal { .. }) {
-            self.applied_count += 1;
+        match &input {
+            GroupInput::Proposal { .. } => {
+                self.applied_count += 1;
+            }
+            GroupInput::ProposalBatch { proposals } => {
+                self.applied_count += proposals.len() as u64;
+            }
+            GroupInput::Tick
+            | GroupInput::PeerMessage { .. }
+            | GroupInput::ReadBarrier { .. }
+            | GroupInput::TransferLeadership { .. }
+            | GroupInput::Membership { .. } => {}
         }
         self.steps.push(input);
         Ok(report(self.group_id))
@@ -218,6 +228,25 @@ fn writes_in_one_group_do_not_affect_another() {
     )
     .expect("proposal routes");
 
+    host.step_group(
+        &1,
+        GroupInput::ProposalBatch {
+            proposals: vec![
+                Proposal {
+                    local_proposal_id: LocalProposalId(11),
+                    client_request_id: None,
+                    command: b"batch-1".to_vec(),
+                },
+                Proposal {
+                    local_proposal_id: LocalProposalId(12),
+                    client_request_id: None,
+                    command: b"batch-2".to_vec(),
+                },
+            ],
+        },
+    )
+    .expect("proposal batch routes");
+
     let metrics = host.metrics().expect("metrics");
     assert_eq!(
         metrics
@@ -225,7 +254,7 @@ fn writes_in_one_group_do_not_affect_another() {
             .iter()
             .map(|metrics| (metrics.group_id, metrics.applied_index))
             .collect::<Vec<_>>(),
-        vec![(1, LogIndex(1)), (2, LogIndex::ZERO)]
+        vec![(1, LogIndex(3)), (2, LogIndex::ZERO)]
     );
 }
 

@@ -3,14 +3,16 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::{
     AppendEntries, AppendEntriesResponse, ConfigurationEntry, ConfigurationId, ConfigurationPhase,
     JointMembership, LocalProposalId, LogEntry, LogIndex, MembershipConfig, MembershipSet,
-    MembershipValidationError, Message, NodeId, PromotionBarrier,
+    MembershipValidationError, Message, NodeId, PromotionBarrier, SharedEntries,
 };
 
+mod append;
+mod proposal;
 mod snapshot;
 
 pub use snapshot::PendingSnapshotTransferResumeError;
 
-use super::state::LocalProposal;
+use super::commit::CommitTracker;
 use super::state::{Progress, ProgressMode};
 use super::{
     ConfigurationProposalRejection, LocalProposalDropReason, Node, Output, ProposalRejection, Role,
@@ -39,7 +41,7 @@ impl Node {
     pub(super) fn handle_append_entries(
         &mut self,
         leader_id: NodeId,
-        request: AppendEntries,
+        request: &AppendEntries,
     ) -> Vec<Output> {
         let sequence = request.sequence;
         if request.term < self.current_term() {
@@ -71,7 +73,7 @@ impl Node {
 
         let Some(splice_outputs) = self.splice_entries_after(
             request.prev_log_index,
-            request.entries,
+            &request.entries,
             confirmed_commit_index,
         ) else {
             outputs.push(self.append_entries_response(leader_id, false, LogIndex::ZERO, sequence));
@@ -89,7 +91,7 @@ impl Node {
             // confirms little, but a higher leader_commit must never drag an
             // already-committed index backwards.
             self.volatile.commit_index = confirmed_commit_index;
-            outputs.extend(self.apply_committed());
+            self.apply_committed_into(&mut outputs);
             outputs.push(self.append_entries_response(leader_id, true, match_index, sequence));
             return outputs;
         }
@@ -114,30 +116,40 @@ impl Node {
         // Any same-term response proves the follower still recognizes this
         // leader: it counts for check-quorum, for the read lease, and, via
         // its echoed round, for pending read barriers.
-        self.leader.quorum_acks.insert(follower_id);
+        self.record_quorum_ack(follower_id);
         self.acknowledge_read_lease(follower_id, response.sequence);
         let mut read_grants = self.acknowledge_read_barriers(follower_id, response.sequence);
 
         if response.success {
             let snapshot_index = self.snapshot_index();
             let reported_match_index = std::cmp::min(response.match_index, self.last_log_index());
-            let progress = self.follower_progress_mut(follower_id);
-            progress.match_index = progress.match_index.max(reported_match_index);
-            let acknowledged = progress.match_index;
-            progress.inflights.free_through(acknowledged);
-            // A successful append acknowledgement at or beyond the snapshot
-            // boundary confirms the follower has the log — including one
-            // that arrives mid-snapshot, which cancels the transfer. Below
-            // the boundary it proves only a compacted prefix: a stale
-            // pre-snapshot ack must not reset a live transfer's cursor.
-            if !matches!(progress.mode, ProgressMode::Snapshot { .. })
-                || acknowledged >= snapshot_index
-            {
-                progress.confirm_replicating();
-            }
-            progress.next_index = progress.next_index.max(acknowledged.next());
+            let commit_index = self.volatile.commit_index;
+            let Some(can_advance_commit) =
+                self.try_follower_progress_mut(follower_id).map(|progress| {
+                    let old_match_index = progress.match_index;
+                    progress.match_index = progress.match_index.max(reported_match_index);
+                    let acknowledged = progress.match_index;
+                    progress.inflights.free_through(acknowledged);
+                    // A successful append acknowledgement at or beyond the snapshot
+                    // boundary confirms the follower has the log — including one
+                    // that arrives mid-snapshot, which cancels the transfer. Below
+                    // the boundary it proves only a compacted prefix: a stale
+                    // pre-snapshot ack must not reset a live transfer's cursor.
+                    if !matches!(progress.mode, ProgressMode::Snapshot { .. })
+                        || acknowledged >= snapshot_index
+                    {
+                        progress.confirm_replicating();
+                    }
+                    progress.next_index = progress.next_index.max(acknowledged.next());
+                    successful_ack_can_advance_commit(old_match_index, acknowledged, commit_index)
+                })
+            else {
+                return read_grants;
+            };
             read_grants.extend(self.maybe_complete_leadership_transfer(follower_id));
-            read_grants.extend(self.advance_commit_index());
+            if can_advance_commit {
+                self.advance_commit_index_into(&mut read_grants);
+            }
             // Freed window slots pull the next batches immediately: catch-up
             // is acknowledgement-paced, not heartbeat-paced.
             self.replicate_to_peer(follower_id, false, &mut read_grants);
@@ -145,77 +157,14 @@ impl Node {
         }
 
         let snapshot_index = self.snapshot_index();
-        let progress = self.follower_progress_mut(follower_id);
+        let Some(progress) = self.try_follower_progress_mut(follower_id) else {
+            return read_grants;
+        };
         if !matches!(progress.mode, ProgressMode::Snapshot { .. }) {
             progress.collapse_into_probe(snapshot_index);
         }
         self.replicate_to_peer(follower_id, true, &mut read_grants);
         read_grants
-    }
-
-    pub(super) fn client_proposal(
-        &mut self,
-        payload: Vec<u8>,
-        local_proposal_id: Option<LocalProposalId>,
-    ) -> Vec<Output> {
-        let payload_len = payload.len();
-
-        if self.role() != Role::Leader {
-            return Self::reject_proposal(
-                local_proposal_id,
-                ProposalRejection::NotLeader {
-                    role: self.role(),
-                    term: self.current_term(),
-                    payload_len,
-                },
-            );
-        }
-        if let Some(transfer) = self.leader.pending_transfer.as_ref() {
-            return Self::reject_proposal(
-                local_proposal_id,
-                ProposalRejection::LeadershipTransferInProgress {
-                    target: transfer.target,
-                },
-            );
-        }
-
-        if LogEntry::application_replication_bytes(payload_len)
-            > self.config.max_append_entries_bytes()
-        {
-            return Self::reject_proposal(
-                local_proposal_id,
-                ProposalRejection::PayloadTooLarge {
-                    payload_len,
-                    max_payload_len: LogEntry::max_application_payload_len(
-                        self.config.max_append_entries_bytes(),
-                    ),
-                },
-            );
-        }
-
-        let term = self.current_term();
-        let entry = LogEntry::application(term, payload);
-        self.append_log_entry(entry);
-        let index = self.last_log_index();
-        if let Some(id) = local_proposal_id {
-            self.volatile
-                .local_proposals
-                .insert(index, LocalProposal { term, id });
-        }
-        self.record_local_progress();
-
-        let mut outputs = local_proposal_id.map_or_else(Vec::new, |proposal_id| {
-            vec![Output::LocalProposalAppended {
-                proposal_id,
-                index,
-                term,
-            }]
-        });
-        outputs.extend(self.advance_commit_index());
-        if self.role() == Role::Leader {
-            outputs.extend(self.broadcast_append_entries());
-        }
-        outputs
     }
 
     pub(super) fn add_learner(&mut self, learner_id: NodeId) -> Vec<Output> {
@@ -424,18 +373,21 @@ impl Node {
         if !self.config.lease_reads() {
             return;
         }
-        if !self.leader.lease.record_ack(follower_id, sequence) {
+        let membership = self.effective_membership();
+        let self_id = self.id();
+        if !self
+            .leader
+            .lease
+            .record_ack(follower_id, sequence, &membership, self_id)
+        {
             return;
         }
-        let confirmed = self.has_effective_quorum(
-            self.leader
-                .lease
-                .acks
-                .iter()
-                .copied()
-                .chain(std::iter::once(self.id())),
-        );
-        if confirmed {
+        if self
+            .leader
+            .lease
+            .acks
+            .has_quorum_with_self(&membership, self_id)
+        {
             let now = self.leader.ticks;
             let next_sequence = self.leader.heartbeat_sequence + 1;
             self.leader.lease.confirm_and_rearm(now, next_sequence);
@@ -472,13 +424,13 @@ impl Node {
         if self.leader.quorum_check_elapsed < self.config.election_timeout_ticks() {
             return None;
         }
-        let heard = self
+        let membership = self.effective_membership();
+        let self_id = self.id();
+        if self
             .leader
             .quorum_acks
-            .iter()
-            .copied()
-            .chain(std::iter::once(self.id()));
-        if self.has_effective_quorum(heard) {
+            .has_quorum_with_self(&membership, self_id)
+        {
             self.leader.quorum_acks.clear();
             self.leader.quorum_check_elapsed = 0;
             return None;
@@ -491,122 +443,40 @@ impl Node {
         Some(outputs)
     }
 
-    pub(super) fn broadcast_append_entries(&mut self) -> Vec<Output> {
-        self.leader.heartbeat_sequence += 1;
-        self.leader.heartbeat_elapsed = 0;
-        let peers: Vec<NodeId> = self
-            .effective_membership()
-            .replica_ids()
-            .into_iter()
-            .filter(|peer| *peer != self.id())
-            .collect();
-        let mut outputs = Vec::new();
-        for peer in peers {
-            self.replicate_to_peer(peer, true, &mut outputs);
-        }
-        outputs
+    pub(super) fn try_follower_progress_mut(&mut self, peer: NodeId) -> Option<&mut Progress> {
+        self.refresh_leader_progress_index();
+        self.leader.progress.get_mut(peer)
     }
 
-    /// Sends whatever `peer`'s progress mode admits. With `ensure_message`,
-    /// at least one message goes out — an empty heartbeat when the window is
-    /// full or nothing is pending — so a broadcast round reaches every
-    /// follower; check-quorum and read barriers depend on that.
-    pub(super) fn replicate_to_peer(
-        &mut self,
-        peer: NodeId,
-        ensure_message: bool,
-        outputs: &mut Vec<Output>,
-    ) {
-        let snapshot_index = self.snapshot_index();
-        let last_log_index = self.last_log_index();
-        let max_batches = self.config.max_inflight_appends();
-        let max_bytes = self.config.max_inflight_bytes();
-
-        let progress = self.follower_progress_mut(peer);
-        // A follower behind the snapshot boundary needs the snapshot, not
-        // the log; the transfer pauses append pipelining until it installs.
-        if progress.next_index <= snapshot_index
-            && !matches!(progress.mode, ProgressMode::Snapshot { .. })
-        {
-            progress.mode = ProgressMode::Snapshot { next_offset: 0 };
-            progress.inflights.clear();
+    pub(super) fn refresh_leader_progress_index(&mut self) {
+        if self.role() != Role::Leader {
+            return;
         }
-        let mode = progress.mode.clone();
-
-        match mode {
-            ProgressMode::Snapshot { .. } => {
-                // Every nudge re-sends the cursor chunk: lost chunks are
-                // retried by the next tick, and acknowledgements advance the
-                // cursor through the snapshot response path.
-                if let Some(snapshot) = self.persistent.snapshot.as_ref() {
-                    outputs.push(self.install_snapshot_chunk_to(peer, snapshot));
-                }
-            }
-            ProgressMode::Probe { awaiting_response } => {
-                if awaiting_response {
-                    if ensure_message {
-                        let next_index = self.follower_progress_mut(peer).next_index;
-                        outputs.push(self.append_entries_message(peer, next_index, Vec::new()));
-                    }
-                } else {
-                    let next_index = self
-                        .follower_progress_mut(peer)
-                        .next_index
-                        .max(snapshot_index.next());
-                    let entries = self.log_entries_from_bounded(
-                        next_index,
-                        self.config.max_append_entries_bytes(),
-                    );
-                    outputs.push(self.append_entries_message(peer, next_index, entries));
-                    let progress = self.follower_progress_mut(peer);
-                    progress.next_index = next_index;
-                    progress.mode = ProgressMode::Probe {
-                        awaiting_response: true,
-                    };
-                }
-            }
-            ProgressMode::Replicate => {
-                let mut sent = false;
-                loop {
-                    let progress = &self.leader.progress[&peer];
-                    if progress.inflights.is_full(max_batches, max_bytes)
-                        || progress.next_index > last_log_index
-                    {
-                        break;
-                    }
-                    let next_index = progress.next_index;
-                    let entries = self.log_entries_from_bounded(
-                        next_index,
-                        self.config.max_append_entries_bytes(),
-                    );
-                    let Some(last) = entries.len().checked_sub(1) else {
-                        break;
-                    };
-                    let batch_bytes: usize = entries.iter().map(LogEntry::replication_bytes).sum();
-                    let last_sent = LogIndex(next_index.0 + last as u64);
-                    outputs.push(self.append_entries_message(peer, next_index, entries));
-                    let progress = self.follower_progress_mut(peer);
-                    progress.inflights.record(last_sent, batch_bytes);
-                    progress.next_index = last_sent.next();
-                    sent = true;
-                }
-                if !sent && ensure_message {
-                    let next_index = self.follower_progress_mut(peer).next_index;
-                    outputs.push(self.append_entries_message(peer, next_index, Vec::new()));
-                }
-            }
+        let self_id = self.id();
+        let first_sendable_index = self.snapshot_index().next();
+        let local_match_index = self.last_log_index();
+        if self.configuration_offsets.is_empty() {
+            let membership = self
+                .persistent
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.metadata.committed_membership())
+                .unwrap_or_else(|| self.config.static_membership_ref());
+            self.leader.progress.rebuild(
+                membership,
+                self_id,
+                first_sendable_index,
+                local_match_index,
+            );
+            return;
         }
-    }
-
-    /// The progress entry for `peer`, lazily seeded for replicas that joined
-    /// after this term began: nothing confirmed, probing from the first
-    /// index this leader can still send.
-    pub(super) fn follower_progress_mut(&mut self, peer: NodeId) -> &mut Progress {
-        let first_sendable = self.snapshot_index().next();
-        self.leader
-            .progress
-            .entry(peer)
-            .or_insert_with(|| Progress::probing(first_sendable))
+        let membership = self.effective_membership();
+        self.leader.progress.rebuild(
+            &membership,
+            self_id,
+            first_sendable_index,
+            local_match_index,
+        );
     }
 
     fn validate_configuration_proposal_preflight(&self) -> Result<(), ProposalRejection> {
@@ -628,6 +498,26 @@ impl Node {
             ));
         }
         Ok(())
+    }
+
+    fn record_quorum_ack(&mut self, follower_id: NodeId) {
+        let self_id = self.id();
+        if self.configuration_offsets.is_empty() {
+            let membership = self
+                .persistent
+                .snapshot
+                .as_ref()
+                .and_then(|snapshot| snapshot.metadata.committed_membership())
+                .unwrap_or_else(|| self.config.static_membership_ref());
+            self.leader
+                .quorum_acks
+                .insert(follower_id, membership, self_id);
+            return;
+        }
+        let membership = self.effective_membership();
+        self.leader
+            .quorum_acks
+            .insert(follower_id, &membership, self_id);
     }
 
     fn stable_effective_membership(&self) -> Result<MembershipSet, ConfigurationProposalRejection> {
@@ -681,22 +571,21 @@ impl Node {
         self.append_log_entry(entry);
         self.record_local_progress();
 
-        let mut outputs = self.advance_commit_index();
+        let mut outputs = Vec::new();
+        self.advance_commit_index_into(&mut outputs);
         if self.role() == Role::Leader {
-            outputs.extend(self.broadcast_append_entries());
+            self.broadcast_append_entries_into(&mut outputs);
         }
         outputs
     }
 
     fn record_local_progress(&mut self) {
         let last_log_index = self.last_log_index();
-        let local = self
-            .leader
-            .progress
-            .entry(self.config.id())
-            .or_insert_with(|| Progress::local(last_log_index));
-        local.match_index = last_log_index;
-        local.next_index = last_log_index.next();
+        self.refresh_leader_progress_index();
+        if let Some(local) = self.leader.progress.get_mut(self.id()) {
+            local.match_index = last_log_index;
+            local.next_index = last_log_index.next();
+        }
     }
 
     fn validate_configuration_promotion_barriers(
@@ -754,7 +643,7 @@ impl Node {
             let actual_match_index = self
                 .leader
                 .progress
-                .get(promoted_node)
+                .get(*promoted_node)
                 .map(|progress| progress.match_index)
                 .unwrap_or_default();
             if actual_match_index < barrier.required_match_index {
@@ -776,27 +665,6 @@ impl Node {
         }
 
         Ok(())
-    }
-
-    fn append_entries_message(
-        &self,
-        peer: NodeId,
-        next_index: LogIndex,
-        entries: Vec<LogEntry>,
-    ) -> Output {
-        let prev_log_index = LogIndex(next_index.0.saturating_sub(1));
-        Output::Send {
-            to: peer,
-            message: Message::AppendEntries(AppendEntries {
-                term: self.current_term(),
-                leader_id: self.id(),
-                prev_log_index,
-                prev_log_term: self.term_at(prev_log_index).unwrap_or_default(),
-                entries,
-                leader_commit: self.volatile.commit_index,
-                sequence: self.leader.heartbeat_sequence,
-            }),
-        }
     }
 
     fn append_entries_response(
@@ -828,7 +696,7 @@ impl Node {
     fn splice_entries_after(
         &mut self,
         prev_log_index: LogIndex,
-        entries: Vec<LogEntry>,
+        entries: &SharedEntries,
         configuration_commit_floor: LogIndex,
     ) -> Option<Vec<Output>> {
         // Indexes ascend, so a committed conflict is always encountered
@@ -864,7 +732,7 @@ impl Node {
                 index > configuration_commit_floor && index < first_index
             })
             .count();
-        let incoming_configurations = entries[first_offset..]
+        let incoming_configurations = entries.as_slice()[first_offset..]
             .iter()
             .enumerate()
             .filter(|(offset, entry)| {
@@ -881,41 +749,41 @@ impl Node {
         } else {
             Vec::new()
         };
-        for entry in entries.into_iter().skip(first_offset) {
+        for entry in entries.iter().skip(first_offset).cloned() {
             self.append_log_entry(entry);
         }
         Some(outputs)
     }
 
     pub(super) fn advance_commit_index(&mut self) -> Vec<Output> {
-        // One membership resolution serves every candidate: the log cannot
-        // change while candidates are scanned.
-        let membership = self.effective_membership();
-        for candidate in ((self.volatile.commit_index.0 + 1)..=self.last_log_index().0).rev() {
-            let index = LogIndex(candidate);
-            if self.term_at(index) != Some(self.current_term()) {
-                continue;
-            }
+        let mut outputs = Vec::new();
+        self.advance_commit_index_into(&mut outputs);
+        outputs
+    }
 
-            let replicated = self
-                .leader
-                .progress
-                .iter()
-                .filter_map(|(node_id, progress)| {
-                    (progress.match_index >= index).then_some(*node_id)
-                });
-
-            if membership.has_quorum(replicated) {
-                self.volatile.commit_index = index;
-                return self.apply_committed();
-            }
+    pub(super) fn advance_commit_index_into(&mut self, outputs: &mut Vec<Output>) {
+        self.refresh_leader_progress_index();
+        let Some(candidate) = CommitTracker::new(&self.leader.progress).candidate() else {
+            return;
+        };
+        if candidate <= self.volatile.commit_index {
+            return;
+        }
+        if self.term_at(candidate) != Some(self.current_term()) {
+            return;
         }
 
-        Vec::new()
+        self.volatile.commit_index = candidate;
+        self.apply_committed_into(outputs);
     }
 
     fn apply_committed(&mut self) -> Vec<Output> {
         let mut outputs = Vec::new();
+        self.apply_committed_into(&mut outputs);
+        outputs
+    }
+
+    fn apply_committed_into(&mut self, outputs: &mut Vec<Output>) {
         while self.volatile.applied_index < self.volatile.commit_index {
             let index = self.volatile.applied_index.next();
             let Some(entry) = self.entry_at(index) else {
@@ -933,7 +801,7 @@ impl Node {
             let local_proposal_id = self
                 .volatile
                 .local_proposals
-                .remove(&index)
+                .remove(index)
                 .and_then(|proposal| (proposal.term == entry_term).then_some(proposal.id));
             if let Some(payload) = application_payload {
                 outputs.push(Output::Apply {
@@ -948,7 +816,6 @@ impl Node {
                 }
             }
         }
-        outputs
     }
 }
 
@@ -958,6 +825,38 @@ fn validated_derived_membership(
     result.map_err(|error| ConfigurationProposalRejection::InvalidMembership { error })
 }
 
+fn successful_ack_can_advance_commit(
+    old_match_index: LogIndex,
+    acknowledged: LogIndex,
+    commit_index: LogIndex,
+) -> bool {
+    acknowledged > old_match_index && acknowledged > commit_index
+}
+
 fn request_match_index(prev_log_index: LogIndex, entry_count: usize) -> LogIndex {
     LogIndex(prev_log_index.0 + entry_count as u64)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn commit_advance_requires_new_evidence() {
+        assert!(successful_ack_can_advance_commit(
+            LogIndex(2),
+            LogIndex(5),
+            LogIndex(4),
+        ));
+        assert!(!successful_ack_can_advance_commit(
+            LogIndex(5),
+            LogIndex(5),
+            LogIndex(4),
+        ));
+        assert!(!successful_ack_can_advance_commit(
+            LogIndex(2),
+            LogIndex(4),
+            LogIndex(4),
+        ));
+    }
 }

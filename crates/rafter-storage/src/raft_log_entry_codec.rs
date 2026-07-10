@@ -79,6 +79,42 @@ impl PersistedRaftLogEntry {
     }
 }
 
+/// Borrowed persisted log entry used when a caller already owns kernel log
+/// entries and only needs to stamp durable indexes while encoding them.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct BorrowedPersistedRaftLogEntry<'a> {
+    /// Durable Raft log index assigned by the log segment.
+    pub index: LogIndex,
+    /// Raft term stored with the entry.
+    pub term: Term,
+    /// Application payload or configuration-membership entry.
+    pub kind: &'a LogEntryKind,
+}
+
+impl<'a> BorrowedPersistedRaftLogEntry<'a> {
+    /// Builds a borrowed persisted log entry view.
+    #[must_use]
+    pub const fn new(index: LogIndex, term: Term, kind: &'a LogEntryKind) -> Self {
+        Self { index, term, kind }
+    }
+}
+
+impl<'a> From<&'a PersistedRaftLogEntry> for BorrowedPersistedRaftLogEntry<'a> {
+    fn from(entry: &'a PersistedRaftLogEntry) -> Self {
+        Self::new(entry.index, entry.term, &entry.kind)
+    }
+}
+
+impl From<BorrowedPersistedRaftLogEntry<'_>> for PersistedRaftLogEntry {
+    fn from(entry: BorrowedPersistedRaftLogEntry<'_>) -> Self {
+        Self {
+            index: entry.index,
+            term: entry.term,
+            kind: entry.kind.clone(),
+        }
+    }
+}
+
 /// Error returned when a Raft log entry cannot be encoded into the persisted
 /// envelope format.
 ///
@@ -198,12 +234,25 @@ impl Error for DecodeRaftLogEntryError {
 pub fn encode_raft_log_entry(
     entry: &PersistedRaftLogEntry,
 ) -> Result<Vec<u8>, EncodeRaftLogEntryError> {
+    encode_borrowed_raft_log_entry(BorrowedPersistedRaftLogEntry::from(entry))
+}
+
+/// Encodes one borrowed persisted Raft log entry into a versioned, checksummed
+/// envelope.
+///
+/// # Errors
+///
+/// Returns [`EncodeRaftLogEntryError::PayloadTooLarge`] when the payload cannot
+/// be represented in the envelope format.
+pub fn encode_borrowed_raft_log_entry(
+    entry: BorrowedPersistedRaftLogEntry<'_>,
+) -> Result<Vec<u8>, EncodeRaftLogEntryError> {
     let mut writer = Writer::new();
     writer.bytes(&RAFT_LOG_ENTRY_MAGIC);
     writer.u8(RAFT_LOG_ENTRY_VERSION);
     writer.u64(entry.index.0);
     writer.u64(entry.term.0);
-    write_log_entry_kind(&mut writer, &entry.kind)?;
+    write_log_entry_kind(&mut writer, entry.kind)?;
 
     let checksum = crc32(writer.as_slice());
     writer.u32(checksum);

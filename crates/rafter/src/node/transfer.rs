@@ -87,7 +87,7 @@ impl Node {
     fn target_is_caught_up(&self, target: NodeId) -> bool {
         self.leader
             .progress
-            .get(&target)
+            .get(target)
             .map(|progress| progress.match_index)
             .unwrap_or_default()
             == self.last_log_index()

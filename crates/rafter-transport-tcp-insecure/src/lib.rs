@@ -33,7 +33,7 @@ use std::time::Duration;
 
 use rafter::{Message, NodeId};
 use rafter_codec::{
-    decode_message, encode_message, DecodePeerMessageError, EncodePeerMessageError,
+    decode_message, encode_message_into, DecodePeerMessageError, EncodePeerMessageError,
 };
 
 /// Default maximum accepted frame payload: 1 MiB after the length prefix.
@@ -202,13 +202,28 @@ pub fn write_message_frame(
     writer: &mut impl Write,
     message: &Message,
 ) -> Result<(), WriteFrameError> {
-    let payload = encode_message(message).map_err(WriteFrameError::Encode)?;
-    let len = u32::try_from(payload.len())
-        .map_err(|_| WriteFrameError::FrameTooLarge { len: payload.len() })?;
+    let mut scratch = Vec::new();
+    write_message_frame_into(writer, &mut scratch, message)
+}
+
+/// Writes one length-prefixed peer-message frame using a reusable encode buffer.
+///
+/// # Errors
+///
+/// Returns [`WriteFrameError`] if encoding fails, the encoded payload is too
+/// large for the u32 length prefix, or the writer fails.
+pub fn write_message_frame_into(
+    writer: &mut impl Write,
+    scratch: &mut Vec<u8>,
+    message: &Message,
+) -> Result<(), WriteFrameError> {
+    encode_message_into(scratch, message).map_err(WriteFrameError::Encode)?;
+    let len = u32::try_from(scratch.len())
+        .map_err(|_| WriteFrameError::FrameTooLarge { len: scratch.len() })?;
     writer
         .write_all(&len.to_be_bytes())
         .map_err(WriteFrameError::Io)?;
-    writer.write_all(&payload).map_err(WriteFrameError::Io)
+    writer.write_all(scratch).map_err(WriteFrameError::Io)
 }
 
 /// Reads one length-prefixed `rafter-codec` peer-message frame.
@@ -326,15 +341,41 @@ impl InsecureTcpTransport {
     /// Sends a peer message to `peer`, retrying failed connects according to
     /// the configured backoff.
     ///
+    /// This compatibility helper allocates a fresh encode buffer per send. Use
+    /// [`Self::send_with_scratch`] on hot paths that can retain a reusable
+    /// buffer between sends.
+    ///
     /// # Errors
     ///
     /// Returns [`TcpTransportError::UnknownPeer`] when no address is configured,
     /// [`TcpTransportError::Connect`] after all connect attempts fail, or
     /// [`TcpTransportError::Write`] when the connected stream cannot be written.
     pub fn send(&self, peer: NodeId, message: &Message) -> Result<(), TcpTransportError> {
+        let mut scratch = Vec::new();
+        self.send_with_scratch(peer, message, &mut scratch)
+    }
+
+    /// Sends a peer message using a caller-owned reusable encode buffer.
+    ///
+    /// The buffer is cleared and reused by `rafter-codec`; retaining it across
+    /// a send loop avoids allocating one frame buffer for every outbound
+    /// message.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`TcpTransportError::UnknownPeer`] when no address is configured,
+    /// [`TcpTransportError::Connect`] after all connect attempts fail, or
+    /// [`TcpTransportError::Write`] when the connected stream cannot be written.
+    pub fn send_with_scratch(
+        &self,
+        peer: NodeId,
+        message: &Message,
+        scratch: &mut Vec<u8>,
+    ) -> Result<(), TcpTransportError> {
         let addr = self.peer_address(peer)?;
         let mut stream = self.connect_with_backoff(peer, addr)?;
-        write_message_frame(&mut stream, message).map_err(TcpTransportError::Write)?;
+        write_message_frame_into(&mut stream, scratch, message)
+            .map_err(TcpTransportError::Write)?;
         stream.shutdown(Shutdown::Write).ok();
         Ok(())
     }

@@ -47,7 +47,8 @@ fn derived_state_is_valid_after_append() {
             entries: vec![
                 LogEntry::application(Term(2), b"one".to_vec()),
                 LogEntry::configuration(Term(2), stable_configuration(20)),
-            ],
+            ]
+            .into(),
             leader_commit: LogIndex::ZERO,
         }),
     });
@@ -74,7 +75,8 @@ fn derived_state_is_valid_after_truncate() {
             entries: vec![
                 LogEntry::configuration(Term(2), stable_configuration(30)),
                 LogEntry::application(Term(2), b"old-tail".to_vec()),
-            ],
+            ]
+            .into(),
             leader_commit: LogIndex::ZERO,
         }),
     });
@@ -87,7 +89,7 @@ fn derived_state_is_valid_after_truncate() {
             leader_id: NodeId(1),
             prev_log_index: LogIndex::ZERO,
             prev_log_term: Term::default(),
-            entries: vec![LogEntry::application(Term(3), b"new-tail".to_vec())],
+            entries: vec![LogEntry::application(Term(3), b"new-tail".to_vec())].into(),
             leader_commit: LogIndex::ZERO,
         }),
     });

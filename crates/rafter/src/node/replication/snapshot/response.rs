@@ -19,7 +19,7 @@ impl Node {
 
         // A same-term snapshot response still proves the follower recognizes
         // this leader for check-quorum purposes.
-        self.leader.quorum_acks.insert(follower_id);
+        self.record_quorum_ack(follower_id);
 
         // A response naming a transfer is only meaningful for the snapshot
         // the leader currently holds; delayed duplicates from older
@@ -48,7 +48,9 @@ impl Node {
                     } else {
                         0
                     };
-                    let progress = self.follower_progress_mut(follower_id);
+                    let Some(progress) = self.try_follower_progress_mut(follower_id) else {
+                        return Vec::new();
+                    };
                     // Acks may arrive out of order; the send offset for the
                     // current transfer only ever advances.
                     let current_offset = match progress.mode {
@@ -68,11 +70,19 @@ impl Node {
 
             let reported_snapshot_index =
                 std::cmp::min(response.last_included_index, self.last_log_index());
-            let progress = self.follower_progress_mut(follower_id);
-            progress.match_index = progress.match_index.max(reported_snapshot_index);
-            let acknowledged = progress.match_index;
-            progress.confirm_replicating();
-            progress.next_index = progress.next_index.max(acknowledged.next());
+            if self
+                .try_follower_progress_mut(follower_id)
+                .map(|progress| {
+                    progress.match_index = progress.match_index.max(reported_snapshot_index);
+                    let acknowledged = progress.match_index;
+                    progress.confirm_replicating();
+                    progress.next_index = progress.next_index.max(acknowledged.next());
+                    acknowledged
+                })
+                .is_none()
+            {
+                return Vec::new();
+            }
             let mut outputs = self.maybe_complete_leadership_transfer(follower_id);
             outputs.extend(self.advance_commit_index());
             // The installed snapshot confirmed the follower's position; fill
@@ -89,7 +99,9 @@ impl Node {
             }
         });
         let snapshot_index = self.snapshot_index();
-        let progress = self.follower_progress_mut(follower_id);
+        let Some(progress) = self.try_follower_progress_mut(follower_id) else {
+            return Vec::new();
+        };
         if let Some(next_offset) = rewound_offset {
             // The follower rejected the transfer state we assumed: resume
             // from the offset it reports (or from scratch for a different

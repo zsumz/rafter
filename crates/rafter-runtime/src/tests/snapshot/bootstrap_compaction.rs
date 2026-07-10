@@ -34,7 +34,7 @@ fn runtime_hydrates_snapshot_with_retained_full_log_without_compacting_storage()
                 leader_id: RaftNodeId(1),
                 prev_log_index: LogIndex(3),
                 prev_log_term: Term(3),
-                entries: vec![LogEntry::application(Term(3), b"new-suffix".to_vec())],
+                entries: vec![LogEntry::application(Term(3), b"new-suffix".to_vec())].into(),
                 leader_commit: LogIndex(2),
             }),
         })

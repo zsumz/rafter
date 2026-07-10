@@ -87,36 +87,6 @@ where
         self.network.extend(report.peer_messages);
     }
 
-    pub(super) fn poisoned_write_error_from_primary(
-        &mut self,
-        local_proposal_id: LocalProposalId,
-        options: WriteOptions,
-    ) -> Option<WriteError> {
-        let group = self.groups.get_mut(&self.primary_node_id)?;
-        if !group
-            .poisoned_waiters()
-            .proposals
-            .iter()
-            .any(|(id, _)| *id == local_proposal_id)
-        {
-            return None;
-        }
-        let waiters = group.drain_poisoned_waiters();
-        let client_request_id = waiters
-            .proposals
-            .into_iter()
-            .find_map(|(id, client_request_id)| {
-                (id == local_proposal_id).then_some(client_request_id)
-            })
-            .flatten()
-            .or(options.client_request_id);
-        Some(WriteError::UnknownOutcome {
-            local_proposal_id,
-            client_request_id,
-            reason: UnknownOutcomeReason::GroupPoisoned,
-        })
-    }
-
     pub(super) fn poisoned_read_error_from_primary(
         &mut self,
         read_id: ReadId,
@@ -181,12 +151,22 @@ where
         }
     }
 
-    pub(super) fn next_local_proposal_id(&mut self) -> Result<LocalProposalId, WriteError> {
-        let id = self
+    pub(super) fn reserve_local_proposal_ids(
+        &mut self,
+        count: usize,
+    ) -> Result<Vec<LocalProposalId>, WriteError> {
+        if count == 0 {
+            return Ok(Vec::new());
+        }
+        let count = u64::try_from(count).map_err(|_| WriteError::LocalProposalIdExhausted)?;
+        let first = self
             .next_proposal_id
             .ok_or(WriteError::LocalProposalIdExhausted)?;
-        self.next_proposal_id = id.checked_add(1);
-        Ok(LocalProposalId(id))
+        let last = first
+            .checked_add(count - 1)
+            .ok_or(WriteError::LocalProposalIdExhausted)?;
+        self.next_proposal_id = last.checked_add(1);
+        Ok((first..=last).map(LocalProposalId).collect())
     }
 
     pub(super) fn next_read_id(&mut self) -> Result<ReadId, ReadError> {

@@ -128,7 +128,7 @@ fn append_after_repair_lands_at_the_correct_index() {
                 leader_id: RaftNodeId(1),
                 prev_log_index: LogIndex(2),
                 prev_log_term: Term(1),
-                entries: vec![LogEntry::application(Term(1), b"post-repair".to_vec())],
+                entries: vec![LogEntry::application(Term(1), b"post-repair".to_vec())].into(),
                 leader_commit: LogIndex(2),
             }),
         })
@@ -186,7 +186,7 @@ fn reopen_completes_compaction_when_snapshot_boundary_is_past_the_log_tail() {
                 leader_id: RaftNodeId(1),
                 prev_log_index: LogIndex(3),
                 prev_log_term: Term(1),
-                entries: vec![LogEntry::application(Term(1), b"acked".to_vec())],
+                entries: vec![LogEntry::application(Term(1), b"acked".to_vec())].into(),
                 leader_commit: LogIndex(3),
             }),
         })
@@ -252,7 +252,7 @@ fn append_behind_the_snapshot_boundary_is_refused_not_mislabelled() {
                 leader_id: RaftNodeId(1),
                 prev_log_index: LogIndex(3),
                 prev_log_term: Term(1),
-                entries: vec![LogEntry::application(Term(1), b"would-mislabel".to_vec())],
+                entries: vec![LogEntry::application(Term(1), b"would-mislabel".to_vec())].into(),
                 leader_commit: LogIndex(3),
             }),
         })

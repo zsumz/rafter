@@ -39,6 +39,13 @@ fn node_hydrates_from_snapshot_boundary_and_log_suffix() {
             LogEntry::application(Term(8), b"tail".to_vec()),
         ]
     );
+    assert_eq!(
+        node.log_entries_slice_from(LogIndex(5)),
+        &[
+            LogEntry::application(Term(7), b"after-snapshot".to_vec()),
+            LogEntry::application(Term(8), b"tail".to_vec()),
+        ]
+    );
 }
 
 #[test]
@@ -251,7 +258,8 @@ fn follower_rejects_second_uncommitted_configuration_after_snapshot_membership()
             entries: vec![LogEntry::configuration(
                 Term(8),
                 ConfigurationEntry::stable(ConfigurationId(10), new),
-            )],
+            )]
+            .into(),
             leader_commit: LogIndex(5),
         }),
     });
@@ -355,7 +363,8 @@ fn append_entries_matches_immediately_after_snapshot_boundary() {
             entries: vec![LogEntry::application(
                 Term(8),
                 b"first-suffix-entry".to_vec(),
-            )],
+            )]
+            .into(),
             leader_commit: LogIndex(6),
         }),
     });
@@ -405,7 +414,7 @@ fn append_entries_rejects_previous_log_before_snapshot_boundary() {
             leader_id: NodeId(2),
             prev_log_index: LogIndex(4),
             prev_log_term: Term(6),
-            entries: Vec::new(),
+            entries: Vec::new().into(),
             leader_commit: LogIndex(4),
         }),
     });

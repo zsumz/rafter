@@ -45,7 +45,7 @@ fn heartbeat_from(leader_id: u64, term: u64) -> Input {
             leader_id: NodeId(leader_id),
             prev_log_index: LogIndex::ZERO,
             prev_log_term: Term::default(),
-            entries: Vec::new(),
+            entries: Vec::new().into(),
             leader_commit: LogIndex::ZERO,
         }),
     }

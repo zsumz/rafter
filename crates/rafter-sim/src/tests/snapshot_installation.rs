@@ -166,7 +166,8 @@ fn simulator_newer_snapshot_term_fences_stale_leader() {
             entries: vec![LogEntry::application(
                 Term(1),
                 b"stale leader write".to_vec(),
-            )],
+            )]
+            .into(),
             leader_commit: LogIndex(3),
         }),
     );

@@ -73,7 +73,7 @@ fn append_entries_with(entries: Vec<LogEntry>) -> Message {
         leader_id: NodeId(1),
         prev_log_index: LogIndex(10),
         prev_log_term: Term(7),
-        entries,
+        entries: entries.into(),
         leader_commit: LogIndex(11),
     })
 }

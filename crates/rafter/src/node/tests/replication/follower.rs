@@ -13,7 +13,7 @@ fn follower_accepts_current_term_heartbeat() {
             leader_id: NodeId(1),
             prev_log_index: LogIndex::ZERO,
             prev_log_term: Term::default(),
-            entries: Vec::new(),
+            entries: Vec::new().into(),
             leader_commit: LogIndex::ZERO,
         }),
     });
@@ -36,7 +36,7 @@ fn follower_rejects_stale_heartbeat() {
             leader_id: NodeId(1),
             prev_log_index: LogIndex::ZERO,
             prev_log_term: Term::default(),
-            entries: Vec::new(),
+            entries: Vec::new().into(),
             leader_commit: LogIndex::ZERO,
         }),
     });
@@ -57,7 +57,7 @@ fn follower_rejects_append_entries_when_sender_disagrees_with_leader_id() {
             leader_id: NodeId(3),
             prev_log_index: LogIndex::ZERO,
             prev_log_term: Term::default(),
-            entries: Vec::new(),
+            entries: Vec::new().into(),
             leader_commit: LogIndex::ZERO,
         }),
     });
@@ -79,7 +79,7 @@ fn follower_appends_entries_after_matching_prefix() {
             leader_id: NodeId(1),
             prev_log_index: LogIndex::ZERO,
             prev_log_term: Term::default(),
-            entries: vec![LogEntry::application(Term(2), b"first".to_vec())],
+            entries: vec![LogEntry::application(Term(2), b"first".to_vec())].into(),
             leader_commit: LogIndex(1),
         }),
     });
@@ -125,7 +125,8 @@ fn follower_append_response_reports_last_request_entry_index() {
             entries: vec![
                 LogEntry::application(Term(3), b"second".to_vec()),
                 LogEntry::application(Term(3), b"third".to_vec()),
-            ],
+            ]
+            .into(),
             leader_commit: LogIndex::ZERO,
         }),
     });
@@ -148,7 +149,7 @@ fn follower_empty_heartbeat_response_reports_prev_log_index_not_tail() {
             leader_id: NodeId(1),
             prev_log_index: LogIndex(1),
             prev_log_term: Term(2),
-            entries: Vec::new(),
+            entries: Vec::new().into(),
             leader_commit: LogIndex::ZERO,
         }),
     });
@@ -169,7 +170,7 @@ fn follower_rejects_append_entries_with_mismatched_previous_log() {
             leader_id: NodeId(1),
             prev_log_index: LogIndex(2),
             prev_log_term: Term(2),
-            entries: Vec::new(),
+            entries: Vec::new().into(),
             leader_commit: LogIndex::ZERO,
         }),
     });
@@ -191,7 +192,7 @@ fn follower_truncates_divergent_uncommitted_suffix() {
             leader_id: NodeId(1),
             prev_log_index: LogIndex(1),
             prev_log_term: Term(2),
-            entries: vec![LogEntry::application(Term(3), b"replacement".to_vec())],
+            entries: vec![LogEntry::application(Term(3), b"replacement".to_vec())].into(),
             leader_commit: LogIndex(2),
         }),
     });
@@ -247,7 +248,7 @@ fn follower_rejects_append_that_would_truncate_committed_entry() {
             leader_id: NodeId(1),
             prev_log_index: LogIndex::ZERO,
             prev_log_term: Term::default(),
-            entries: vec![LogEntry::application(Term(3), b"replacement".to_vec())],
+            entries: vec![LogEntry::application(Term(3), b"replacement".to_vec())].into(),
             leader_commit: LogIndex(1),
         }),
     });
@@ -282,7 +283,8 @@ fn empty_append_never_commits_the_followers_unconfirmed_suffix() {
             entries: vec![
                 LogEntry::application(Term(1), b"shared".to_vec()),
                 LogEntry::application(Term(1), b"garbage".to_vec()),
-            ],
+            ]
+            .into(),
             leader_commit: LogIndex(0),
         }),
     });
@@ -299,7 +301,7 @@ fn empty_append_never_commits_the_followers_unconfirmed_suffix() {
             prev_log_index: LogIndex(1),
             prev_log_term: Term(1),
             sequence: 1,
-            entries: Vec::new(),
+            entries: Vec::new().into(),
             leader_commit: LogIndex(2),
         }),
     });
@@ -343,7 +345,7 @@ fn a_probe_with_a_high_leader_commit_never_regresses_the_commit_index() {
             prev_log_index: LogIndex(0),
             prev_log_term: Term(0),
             sequence: 1,
-            entries: vec![LogEntry::application(Term(1), b"one".to_vec())],
+            entries: vec![LogEntry::application(Term(1), b"one".to_vec())].into(),
             leader_commit: LogIndex(1),
         }),
     });
@@ -361,7 +363,7 @@ fn a_probe_with_a_high_leader_commit_never_regresses_the_commit_index() {
             prev_log_index: LogIndex(0),
             prev_log_term: Term(0),
             sequence: 2,
-            entries: Vec::new(),
+            entries: Vec::new().into(),
             leader_commit: LogIndex(3),
         }),
     });

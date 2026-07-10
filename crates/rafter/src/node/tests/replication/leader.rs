@@ -1,5 +1,6 @@
 use super::support::*;
 use super::*;
+use crate::ReadId;
 
 #[test]
 fn leader_proposal_replication_commits_after_quorum_ack() {
@@ -133,6 +134,158 @@ fn tracked_client_proposal_matches_untracked_protocol_behavior() {
 }
 
 #[test]
+fn proposal_batch_preserves_input_order_and_contiguous_indexes() {
+    let mut leader = node(1, &[2, 3]);
+    let _ = elect_leader(&mut leader);
+    acknowledge_append(&mut leader, NodeId(2), LogIndex(1));
+    acknowledge_append(&mut leader, NodeId(3), LogIndex(1));
+
+    let max_payload_len =
+        LogEntry::max_application_payload_len(leader.config.max_append_entries_bytes());
+    let oversized = vec![b'x'; max_payload_len + 1];
+    let outputs = leader.step_proposal_batch(vec![
+        ClientProposalInput {
+            proposal_id: Some(LocalProposalId(7)),
+            payload: b"first".to_vec(),
+        },
+        ClientProposalInput {
+            proposal_id: Some(LocalProposalId(8)),
+            payload: oversized.clone(),
+        },
+        ClientProposalInput {
+            proposal_id: Some(LocalProposalId(9)),
+            payload: b"second".to_vec(),
+        },
+    ]);
+
+    assert_eq!(leader.last_log_index(), LogIndex(3));
+    assert_eq!(
+        leader
+            .log_entries_from(LogIndex(2))
+            .iter()
+            .filter_map(LogEntry::application_payload)
+            .collect::<Vec<_>>(),
+        vec![b"first".as_slice(), b"second".as_slice()]
+    );
+    assert_eq!(
+        &outputs[..3],
+        [
+            Output::LocalProposalAppended {
+                proposal_id: LocalProposalId(7),
+                index: LogIndex(2),
+                term: leader.current_term(),
+            },
+            Output::RejectProposal {
+                proposal_id: Some(LocalProposalId(8)),
+                reason: ProposalRejection::PayloadTooLarge {
+                    payload_len: oversized.len(),
+                    max_payload_len,
+                },
+            },
+            Output::LocalProposalAppended {
+                proposal_id: LocalProposalId(9),
+                index: LogIndex(3),
+                term: leader.current_term(),
+            },
+        ]
+    );
+    assert_eq!(
+        leader
+            .volatile
+            .local_proposals
+            .keys()
+            .copied()
+            .collect::<Vec<_>>(),
+        vec![LogIndex(2), LogIndex(3)]
+    );
+}
+
+#[test]
+fn step_batch_coalesces_consecutive_proposals_into_one_follower_window_fill() {
+    let mut leader = node(1, &[2, 3]);
+    let _ = elect_leader(&mut leader);
+    acknowledge_append(&mut leader, NodeId(2), LogIndex(1));
+    acknowledge_append(&mut leader, NodeId(3), LogIndex(1));
+
+    let inputs = (0..64)
+        .map(|index| Input::ClientProposal {
+            payload: vec![u8::try_from(index).expect("test index fits byte"); 512],
+        })
+        .collect();
+    let outputs = leader.step_batch(inputs);
+
+    assert_eq!(leader.last_log_index(), LogIndex(65));
+    for follower in [NodeId(2), NodeId(3)] {
+        let batches = append_entries_batches_to(&outputs, follower);
+        assert_eq!(
+            batches.len(),
+            1,
+            "one proposal batch fills follower {follower}'s window once"
+        );
+        assert_eq!(batches[0].prev_log_index, LogIndex(1));
+        assert_eq!(batches[0].entries.len(), 64);
+        assert_eq!(
+            batches[0]
+                .entries
+                .iter()
+                .filter_map(LogEntry::application_payload)
+                .count(),
+            64
+        );
+    }
+}
+
+#[test]
+fn step_batch_stops_proposal_coalescing_at_read_barriers() {
+    let mut leader = node(1, &[2, 3]);
+    let _ = elect_leader(&mut leader);
+    acknowledge_append(&mut leader, NodeId(2), LogIndex(1));
+    acknowledge_append(&mut leader, NodeId(3), LogIndex(1));
+    assert_eq!(leader.commit_index(), LogIndex(1));
+
+    let outputs = leader.step_batch(vec![
+        Input::ClientProposal {
+            payload: b"before-read".to_vec(),
+        },
+        Input::ReadIndex { read_id: ReadId(9) },
+        Input::ClientProposal {
+            payload: b"after-read".to_vec(),
+        },
+    ]);
+
+    assert_eq!(leader.last_log_index(), LogIndex(3));
+    assert_eq!(leader.pending_read_count(), 1);
+    let batches = append_entries_batches_to(&outputs, NodeId(2));
+    assert_eq!(
+        batches.len(),
+        3,
+        "proposal batches on either side of a read barrier must be separate rounds"
+    );
+    assert_eq!(
+        batches[0]
+            .entries
+            .iter()
+            .filter_map(LogEntry::application_payload)
+            .collect::<Vec<_>>(),
+        vec![b"before-read".as_slice()]
+    );
+    assert!(
+        batches[1].entries.is_empty(),
+        "the read barrier owns its quorum-confirming heartbeat round"
+    );
+    assert_eq!(
+        batches[2]
+            .entries
+            .iter()
+            .filter_map(LogEntry::application_payload)
+            .collect::<Vec<_>>(),
+        vec![b"after-read".as_slice()]
+    );
+    assert!(batches[0].sequence < batches[1].sequence);
+    assert!(batches[1].sequence < batches[2].sequence);
+}
+
+#[test]
 fn overwritten_tracked_proposal_does_not_apply_stale_local_id() {
     let mut node = node(1, &[2, 3]);
     let _ = elect_leader(&mut node);
@@ -143,7 +296,7 @@ fn overwritten_tracked_proposal_does_not_apply_stale_local_id() {
         proposal_id: LocalProposalId(7),
         payload: b"local-uncommitted".to_vec(),
     });
-    assert!(node.volatile.local_proposals.contains_key(&LogIndex(2)));
+    assert!(node.volatile.local_proposals.contains_key(LogIndex(2)));
 
     let replacement_term = node.current_term().next();
     let outputs = node.step(Input::Message {
@@ -157,7 +310,8 @@ fn overwritten_tracked_proposal_does_not_apply_stale_local_id() {
             entries: vec![LogEntry::application(
                 replacement_term,
                 b"remote-replacement".to_vec(),
-            )],
+            )]
+            .into(),
             leader_commit: LogIndex(2),
         }),
     });
@@ -388,7 +542,7 @@ fn heartbeat_with_divergent_follower_tail_reports_matched_prefix_only() {
             leader_id: NodeId(1),
             prev_log_index: LogIndex(2),
             prev_log_term: leader.current_term(),
-            entries: Vec::new(),
+            entries: Vec::new().into(),
             leader_commit: LogIndex(2),
         }),
     });
@@ -463,6 +617,56 @@ fn single_voter_leader_proposal_commits_immediately() {
     );
 }
 
+#[test]
+fn single_voter_proposal_batch_emits_annotations_before_batch_applies() {
+    let mut leader = node(1, &[]);
+
+    assert!(leader.step(Input::Tick).is_empty());
+    assert!(leader.step(Input::Tick).is_empty());
+    assert!(leader.step(Input::Tick).is_empty());
+    assert_eq!(leader.role(), Role::Leader);
+
+    let outputs = leader.step_proposal_batch(vec![
+        ClientProposalInput {
+            proposal_id: Some(LocalProposalId(11)),
+            payload: b"one".to_vec(),
+        },
+        ClientProposalInput {
+            proposal_id: Some(LocalProposalId(12)),
+            payload: b"two".to_vec(),
+        },
+    ]);
+
+    assert_eq!(leader.commit_index(), LogIndex(3));
+    assert_eq!(
+        outputs,
+        vec![
+            Output::LocalProposalAppended {
+                proposal_id: LocalProposalId(11),
+                index: LogIndex(2),
+                term: Term(1),
+            },
+            Output::LocalProposalAppended {
+                proposal_id: LocalProposalId(12),
+                index: LogIndex(3),
+                term: Term(1),
+            },
+            Output::Apply {
+                index: LogIndex(2),
+                term: Term(1),
+                payload: b"one".to_vec().into(),
+                local_proposal_id: Some(LocalProposalId(11)),
+            },
+            Output::Apply {
+                index: LogIndex(3),
+                term: Term(1),
+                payload: b"two".to_vec().into(),
+                local_proposal_id: Some(LocalProposalId(12)),
+            },
+        ]
+    );
+}
+
 fn node_with_max_append_entries_bytes(id: u64, peers: &[u64], max_bytes: usize) -> Node {
     Node::new(
         NodeConfig::new(NodeId(id), peers.iter().copied().map(NodeId).collect(), 3)
@@ -519,15 +723,23 @@ fn oversized_entry_still_replicates_as_single_entry_batch() {
         .log
         .push(LogEntry::application(Term(1), vec![0xab; 700 * 1024]));
 
-    let batch = leader.log_entries_from_bounded(LogIndex(2), 512);
+    let batch = leader
+        .log_batch_from_bounded(LogIndex(2), 512)
+        .expect("oversized entry still forms one batch");
     assert_eq!(
-        batch.len(),
+        batch.entries.len(),
         1,
         "an oversized entry must ship alone, never stall the batch"
     );
+    assert_eq!(batch.first_index, LogIndex(2));
+    assert_eq!(batch.last_index, LogIndex(2));
+    assert_eq!(
+        batch.replication_bytes,
+        batch.entries[0].replication_bytes()
+    );
 
-    let followup = leader.log_entries_from_bounded(LogIndex(3), 512);
-    assert!(followup.is_empty(), "no second entry exists");
+    let followup = leader.log_batch_from_bounded(LogIndex(3), 512);
+    assert!(followup.is_none(), "no second entry exists");
 }
 
 #[test]
@@ -541,9 +753,24 @@ fn budget_bounds_batches_beyond_the_first_entry() {
             .push(LogEntry::application(Term(1), payload.to_vec()));
     }
 
-    let first = leader.log_entries_from_bounded(LogIndex(2), 1);
-    assert_eq!(first.len(), 1, "budget smaller than any entry ships one");
+    let first = leader
+        .log_batch_from_bounded(LogIndex(2), 1)
+        .expect("budget smaller than any entry ships one");
+    assert_eq!(
+        first.entries.len(),
+        1,
+        "budget smaller than any entry ships one"
+    );
 
-    let all = leader.log_entries_from_bounded(LogIndex(2), 512 * 1024);
-    assert_eq!(all.len(), 3, "a generous budget ships every entry");
+    let all = leader
+        .log_batch_from_bounded(LogIndex(2), 512 * 1024)
+        .expect("generous budget ships entries");
+    assert_eq!(all.entries.len(), 3, "a generous budget ships every entry");
+    assert_eq!(
+        all.replication_bytes,
+        all.entries
+            .iter()
+            .map(LogEntry::replication_bytes)
+            .sum::<usize>()
+    );
 }

@@ -5,7 +5,6 @@ mod memory;
 mod open;
 
 use std::{
-    collections::BTreeMap,
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Path, PathBuf},
@@ -15,17 +14,15 @@ use rafter::LogIndex;
 
 use crate::{
     durable_fs::sync_parent_directory, raft_log_compaction::encode_raft_log_compaction_marker,
-    PersistedRaftLogEntry,
+    BorrowedPersistedRaftLogEntry, PersistedRaftLogEntry,
 };
 
-use continuity::{
-    entries_by_index, reject_truncate_bounds, validate_contiguous, NonContiguousRaftEntry,
-};
+use continuity::{reject_truncate_bounds, ContiguousLogEntries, NonContiguousRaftEntry};
 pub use error::{
     OpenRaftLogSegmentError, RaftLogReplayError, RaftLogSegmentAppendError,
     RaftLogSegmentCompactError, RaftLogSegmentTruncateError,
 };
-use frames::{append_raft_log_frames, scan_raft_log_frames};
+use frames::{append_borrowed_raft_log_frame, append_raft_log_frames, scan_raft_log_frames};
 pub use memory::InMemoryRaftLogSegment;
 
 /// Durable append-only Raft log segment with suffix truncation and prefix
@@ -43,6 +40,30 @@ pub trait RaftLogSegment {
         &mut self,
         entries: &[PersistedRaftLogEntry],
     ) -> Result<(), RaftLogSegmentAppendError>;
+
+    /// Appends borrowed persisted Raft log entries to the segment.
+    ///
+    /// This lets durable runtimes stamp log indexes onto borrowed kernel
+    /// entries without first materializing a separate persisted-entry batch.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RaftLogSegmentAppendError::NonContiguous`] when the batch does
+    /// not start at the segment's next expected log index.
+    fn append_entries_borrowed<'a, I>(
+        &mut self,
+        entries: I,
+    ) -> Result<(), RaftLogSegmentAppendError>
+    where
+        Self: Sized,
+        I: IntoIterator<Item = BorrowedPersistedRaftLogEntry<'a>>,
+    {
+        let entries = entries
+            .into_iter()
+            .map(PersistedRaftLogEntry::from)
+            .collect::<Vec<_>>();
+        self.append_entries(&entries)
+    }
 
     /// Removes persisted entries at `from_index` and later.
     ///
@@ -84,7 +105,7 @@ pub struct FileRaftLogSegment {
     file: File,
     path: PathBuf,
     compacted_through: LogIndex,
-    entries: BTreeMap<LogIndex, PersistedRaftLogEntry>,
+    entries: ContiguousLogEntries,
 }
 
 impl FileRaftLogSegment {
@@ -100,14 +121,35 @@ impl RaftLogSegment for FileRaftLogSegment {
         &mut self,
         entries: &[PersistedRaftLogEntry],
     ) -> Result<(), RaftLogSegmentAppendError> {
-        validate_contiguous(entries, self.next_index()).map_err(
-            |NonContiguousRaftEntry { expected, actual }| {
-                RaftLogSegmentAppendError::NonContiguous { expected, actual }
-            },
-        )?;
+        self.append_entries_borrowed(entries.iter().map(BorrowedPersistedRaftLogEntry::from))
+    }
 
+    fn append_entries_borrowed<'a, I>(
+        &mut self,
+        entries: I,
+    ) -> Result<(), RaftLogSegmentAppendError>
+    where
+        I: IntoIterator<Item = BorrowedPersistedRaftLogEntry<'a>>,
+    {
         let mut bytes = Vec::new();
-        append_raft_log_frames(&mut bytes, entries).map_err(RaftLogSegmentAppendError::Encode)?;
+        let mut owned_entries = Vec::new();
+        let mut expected_index = self.next_index();
+        for entry in entries {
+            if entry.index != expected_index {
+                return Err(RaftLogSegmentAppendError::NonContiguous {
+                    expected: expected_index,
+                    actual: entry.index,
+                });
+            }
+            append_borrowed_raft_log_frame(&mut bytes, entry)
+                .map_err(RaftLogSegmentAppendError::Encode)?;
+            owned_entries.push(PersistedRaftLogEntry::from(entry));
+            expected_index = expected_index.next();
+        }
+        if owned_entries.is_empty() {
+            return Ok(());
+        }
+
         self.file
             .write_all(&bytes)
             .and_then(|()| self.file.sync_data())
@@ -116,9 +158,7 @@ impl RaftLogSegment for FileRaftLogSegment {
                 message: error.to_string(),
             })?;
 
-        for entry in entries {
-            self.entries.insert(entry.index, entry.clone());
-        }
+        self.entries.extend_owned_validated(owned_entries);
         Ok(())
     }
 
@@ -128,30 +168,18 @@ impl RaftLogSegment for FileRaftLogSegment {
             return Ok(());
         }
 
-        let retained = self
-            .entries
-            .values()
-            .filter(|entry| entry.index < from_index)
-            .cloned()
-            .collect::<Vec<_>>();
+        let retained = self.entries.entries_before(from_index);
         self.rewrite_entries(&retained)?;
-        self.entries = retained
-            .into_iter()
-            .map(|entry| (entry.index, entry))
-            .collect();
+        self.entries.truncate_suffix(from_index);
         Ok(())
     }
 
     fn replay_entries(&self) -> Vec<PersistedRaftLogEntry> {
-        self.entries.values().cloned().collect()
+        self.entries.replay_entries()
     }
 
     fn next_index(&self) -> LogIndex {
-        self.entries
-            .keys()
-            .next_back()
-            .copied()
-            .map_or_else(|| self.first_available_index(), LogIndex::next)
+        self.entries.next_index()
     }
 
     fn compacted_through(&self) -> LogIndex {
@@ -167,17 +195,9 @@ impl RaftLogSegment for FileRaftLogSegment {
         }
 
         self.write_compaction_marker(through_index)?;
-        let retained = self
-            .entries
-            .values()
-            .filter(|entry| entry.index > through_index)
-            .cloned()
-            .collect::<Vec<_>>();
+        let retained = self.entries.entries_after(through_index);
         self.rewrite_entries_for_compaction(&retained)?;
-        self.entries = retained
-            .into_iter()
-            .map(|entry| (entry.index, entry))
-            .collect();
+        self.entries.compact_prefix_through(through_index);
         self.compacted_through = through_index;
         Ok(())
     }
@@ -239,10 +259,6 @@ impl FileRaftLogSegment {
     fn temp_rewrite_path(&self) -> PathBuf {
         self.path
             .with_extension(format!("rewrite-{}.tmp", std::process::id()))
-    }
-
-    fn first_available_index(&self) -> LogIndex {
-        self.compacted_through.next()
     }
 
     fn write_compaction_marker(

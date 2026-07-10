@@ -57,6 +57,19 @@ fn heartbeat_round(outputs: &[Output]) -> u64 {
         .expect("leader tick broadcasts a heartbeat")
 }
 
+fn heartbeat_rounds_to(outputs: &[Output], to: NodeId) -> Vec<u64> {
+    outputs
+        .iter()
+        .filter_map(|output| match output {
+            Output::Send {
+                to: target,
+                message: Message::AppendEntries(AppendEntries { sequence, .. }),
+            } if *target == to => Some(*sequence),
+            _ => None,
+        })
+        .collect()
+}
+
 fn read_index(read_id: u64) -> Input {
     Input::ReadIndex {
         read_id: ReadId(read_id),
@@ -132,6 +145,37 @@ fn read_index_broadcasts_confirmation_round_immediately() {
 
     let outputs = ack(&mut leader, 2, round);
     assert_eq!(granted(&outputs), vec![(ReadId(42), LogIndex(1))]);
+    assert_eq!(leader.pending_read_count(), 0);
+}
+
+#[test]
+fn step_batch_groups_consecutive_read_barriers_into_one_confirmation_round() {
+    let mut leader = leader_with_current_term_commit();
+
+    let outputs = leader.step_batch(vec![read_index(1), read_index(2), read_index(3)]);
+
+    assert_eq!(
+        leader.pending_read_count(),
+        3,
+        "pending-read observability still counts barriers, not rounds"
+    );
+    let rounds = heartbeat_rounds_to(&outputs, NodeId(2));
+    assert_eq!(
+        rounds.len(),
+        1,
+        "one read batch owns one quorum-confirming heartbeat round per follower"
+    );
+
+    let outputs = ack(&mut leader, 2, rounds[0]);
+    assert_eq!(
+        granted(&outputs),
+        vec![
+            (ReadId(1), LogIndex(1)),
+            (ReadId(2), LogIndex(1)),
+            (ReadId(3), LogIndex(1)),
+        ],
+        "grouped read barriers grant in registration order"
+    );
     assert_eq!(leader.pending_read_count(), 0);
 }
 
@@ -306,7 +350,7 @@ fn pending_reads_are_cleared_on_step_down() {
             leader_id: NodeId(3),
             prev_log_index: LogIndex::ZERO,
             prev_log_term: Term::default(),
-            entries: Vec::new(),
+            entries: Vec::new().into(),
             leader_commit: LogIndex::ZERO,
             sequence: 1,
         }),
@@ -410,7 +454,7 @@ fn check_quorum_stepdown_drops_tracked_local_proposals() {
         proposal_id,
         payload: b"uncommitted".to_vec(),
     });
-    assert!(leader.volatile.local_proposals.contains_key(&LogIndex(2)));
+    assert!(leader.volatile.local_proposals.contains_key(LogIndex(2)));
 
     let mut outputs = Vec::new();
     for _ in 0..leader.config.election_timeout_ticks() {
@@ -512,4 +556,48 @@ fn pending_reads_are_capped() {
             reason: ReadIndexRejection::TooManyPendingReads,
         }]
     ));
+}
+
+#[test]
+fn pending_read_cap_counts_grouped_read_ids() {
+    let mut leader = leader_with_current_term_commit();
+    let inputs = (0..1027).map(read_index).collect();
+
+    let outputs = leader.step_batch(inputs);
+
+    assert_eq!(leader.pending_read_count(), 1024);
+    let first_rejection = outputs
+        .iter()
+        .position(|output| matches!(output, Output::ReadIndexRejected { .. }))
+        .expect("suffix read barriers are rejected");
+    assert!(
+        outputs[..first_rejection]
+            .iter()
+            .any(|output| matches!(output, Output::Send { .. })),
+        "accepted-prefix heartbeat effects precede rejected-suffix annotations"
+    );
+    assert_eq!(
+        outputs[first_rejection..],
+        [
+            Output::ReadIndexRejected {
+                read_id: ReadId(1024),
+                reason: ReadIndexRejection::TooManyPendingReads,
+            },
+            Output::ReadIndexRejected {
+                read_id: ReadId(1025),
+                reason: ReadIndexRejection::TooManyPendingReads,
+            },
+            Output::ReadIndexRejected {
+                read_id: ReadId(1026),
+                reason: ReadIndexRejection::TooManyPendingReads,
+            },
+        ],
+        "rejected suffix preserves input order"
+    );
+    let rounds = heartbeat_rounds_to(&outputs, NodeId(2));
+    assert_eq!(
+        rounds.len(),
+        1,
+        "the accepted prefix shares one confirmation round"
+    );
 }

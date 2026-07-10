@@ -7,9 +7,9 @@ use std::{
 };
 
 pub(crate) use rafter::{
-    Input as RaftInput, LeadershipTransferRejection, LocalProposalId, LogIndex, MembershipConfig,
-    MembershipSet, Message, NodeConfig, NodeId, Output as RaftOutput, ReadId,
-    ReadIndexCancelReason, ReadIndexRejection, ReplicationProgress, RequestVote, Role,
+    ClientProposalInput, Input as RaftInput, LeadershipTransferRejection, LocalProposalId,
+    LogIndex, MembershipConfig, MembershipSet, Message, NodeConfig, NodeId, Output as RaftOutput,
+    ReadId, ReadIndexCancelReason, ReadIndexRejection, ReplicationProgress, RequestVote, Role,
     SharedPayload, Term,
 };
 pub(crate) use rafter_app::{
@@ -24,7 +24,8 @@ use rafter_runtime::{DurableRaftNode, RaftRuntimeError};
 use rafter_runtime_api::PersistedRaftRuntime;
 pub(crate) use rafter_service::{
     InMemoryRaftDriver, ManagedDriverError, MetricsError, RaftHandle, ReadConsistency, ReadError,
-    ShutdownError, TransferLeadershipError, UnknownOutcomeReason, WriteError,
+    ShutdownError, TransferLeadershipError, UnknownOutcomeReason, WriteBatchEntry, WriteError,
+    WriteReceipt,
 };
 use rafter_storage::InMemoryRaftHardStateStore;
 
@@ -310,6 +311,21 @@ impl PersistedRaftRuntime for ScriptedReadRuntime {
         }
     }
 
+    fn step_proposal_batch(
+        &mut self,
+        proposals: Vec<ClientProposalInput>,
+    ) -> Result<Vec<RaftOutput>, RaftRuntimeError> {
+        self.step_batch(proposal_inputs_from_client(proposals))
+    }
+
+    fn step_batch(&mut self, inputs: Vec<RaftInput>) -> Result<Vec<RaftOutput>, RaftRuntimeError> {
+        let mut outputs = Vec::new();
+        for input in inputs {
+            outputs.extend(self.step(input)?);
+        }
+        Ok(outputs)
+    }
+
     fn term_at_index(&self, index: LogIndex) -> Option<Term> {
         (index <= self.last_log_index()).then_some(Term(1))
     }
@@ -406,9 +422,39 @@ impl PersistedRaftRuntime for ScriptedWriteRuntime {
         }
     }
 
+    fn step_proposal_batch(
+        &mut self,
+        proposals: Vec<ClientProposalInput>,
+    ) -> Result<Vec<RaftOutput>, RaftRuntimeError> {
+        self.step_batch(proposal_inputs_from_client(proposals))
+    }
+
+    fn step_batch(&mut self, inputs: Vec<RaftInput>) -> Result<Vec<RaftOutput>, RaftRuntimeError> {
+        let mut outputs = Vec::new();
+        for input in inputs {
+            outputs.extend(self.step(input)?);
+        }
+        Ok(outputs)
+    }
+
     fn term_at_index(&self, index: LogIndex) -> Option<Term> {
         (index <= self.last_log_index()).then_some(Term(1))
     }
+}
+
+fn proposal_inputs_from_client(proposals: Vec<ClientProposalInput>) -> Vec<RaftInput> {
+    proposals
+        .into_iter()
+        .map(|proposal| match proposal.proposal_id {
+            Some(proposal_id) => RaftInput::TrackedClientProposal {
+                proposal_id,
+                payload: proposal.payload,
+            },
+            None => RaftInput::ClientProposal {
+                payload: proposal.payload,
+            },
+        })
+        .collect()
 }
 
 fn self_message() -> RaftOutput {

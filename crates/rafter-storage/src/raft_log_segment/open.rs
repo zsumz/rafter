@@ -1,5 +1,4 @@
 use std::{
-    collections::BTreeMap,
     fs::{File, OpenOptions},
     io::Read,
     path::Path,
@@ -8,13 +7,12 @@ use std::{
 use rafter::LogIndex;
 
 use super::{
-    compaction_marker_path, entries_by_index, frames::RaftLogFrameScan, scan_raft_log_frames,
+    compaction_marker_path, frames::RaftLogFrameScan, scan_raft_log_frames, ContiguousLogEntries,
     FileRaftLogSegment, NonContiguousRaftEntry, OpenRaftLogSegmentError,
 };
 use crate::{
     durable_fs::{sync_parent_directory, ParentDirectorySyncBatch},
     raft_log_compaction::decode_raft_log_compaction_marker,
-    PersistedRaftLogEntry,
 };
 
 impl FileRaftLogSegment {
@@ -154,7 +152,7 @@ fn replay_entries_for_open(
     scan: RaftLogFrameScan,
     compacted_through: LogIndex,
     mode: OpenMode,
-) -> Result<(BTreeMap<LogIndex, PersistedRaftLogEntry>, Option<usize>), OpenRaftLogSegmentError> {
+) -> Result<(ContiguousLogEntries, Option<usize>), OpenRaftLogSegmentError> {
     match mode {
         OpenMode::Strict => {
             replay_entries_strict(scan, compacted_through).map(|entries| (entries, None))
@@ -170,7 +168,7 @@ fn replay_entries_for_open(
 fn replay_entries_strict(
     scan: RaftLogFrameScan,
     compacted_through: LogIndex,
-) -> Result<BTreeMap<LogIndex, PersistedRaftLogEntry>, OpenRaftLogSegmentError> {
+) -> Result<ContiguousLogEntries, OpenRaftLogSegmentError> {
     if let Some(error) = scan.error {
         return Err(OpenRaftLogSegmentError::Replay(error));
     }
@@ -180,7 +178,7 @@ fn replay_entries_strict(
         .map(|frame| frame.entry)
         .filter(|entry| entry.index > compacted_through)
         .collect::<Vec<_>>();
-    entries_by_index(&entries, compacted_through.next()).map_err(
+    ContiguousLogEntries::from_entries(compacted_through.next(), entries).map_err(
         |NonContiguousRaftEntry { expected, actual }| OpenRaftLogSegmentError::NonContiguous {
             expected,
             actual,
@@ -192,7 +190,7 @@ fn replay_entries_repairing_uncommitted_tail(
     scan: RaftLogFrameScan,
     compacted_through: LogIndex,
     durable_commit_index: LogIndex,
-) -> Result<(BTreeMap<LogIndex, PersistedRaftLogEntry>, Option<usize>), OpenRaftLogSegmentError> {
+) -> Result<(ContiguousLogEntries, Option<usize>), OpenRaftLogSegmentError> {
     let mut expected = compacted_through.next();
     let mut entries = Vec::new();
     let mut truncate_at = None;
@@ -224,7 +222,7 @@ fn replay_entries_repairing_uncommitted_tail(
         }
     }
 
-    let entries = entries_by_index(&entries, compacted_through.next()).map_err(
+    let entries = ContiguousLogEntries::from_entries(compacted_through.next(), entries).map_err(
         |NonContiguousRaftEntry { expected, actual }| OpenRaftLogSegmentError::NonContiguous {
             expected,
             actual,

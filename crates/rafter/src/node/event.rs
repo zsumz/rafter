@@ -110,6 +110,19 @@ pub enum Input {
     },
 }
 
+/// One client proposal inside an explicit kernel proposal batch.
+///
+/// The optional proposal ID is local-only correlation metadata. It is not part
+/// of the replicated log entry and must not affect protocol behavior.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ClientProposalInput {
+    /// Optional local-only correlation ID for this proposal.
+    pub proposal_id: Option<LocalProposalId>,
+    /// Opaque application bytes to append if the local leader accepts the
+    /// proposal.
+    pub payload: Vec<u8>,
+}
+
 impl Input {
     /// Builds an add-learner membership input.
     #[must_use]

@@ -115,7 +115,11 @@ dependencies = [
  "openraft",
  "raft",
  "rafter",
+ "rafter-app",
+ "rafter-codec",
+ "rafter-multiraft",
  "rafter-runtime",
+ "rafter-service",
  "rafter-storage",
  "slog",
  "tokio",
@@ -943,21 +947,67 @@ dependencies = [
 
 [[package]]
 name = "rafter"
-version = "0.1.0"
+version = "0.0.1"
+
+[[package]]
+name = "rafter-app"
+version = "0.0.1"
+dependencies = [
+ "rafter",
+ "rafter-runtime-api",
+]
+
+[[package]]
+name = "rafter-codec"
+version = "0.0.1"
+dependencies = [
+ "rafter",
+ "rafter-crc32",
+]
+
+[[package]]
+name = "rafter-crc32"
+version = "0.0.1"
+
+[[package]]
+name = "rafter-multiraft"
+version = "0.0.1"
+dependencies = [
+ "rafter-app",
+ "rafter-runtime-api",
+]
 
 [[package]]
 name = "rafter-runtime"
-version = "0.1.0"
+version = "0.0.1"
 dependencies = [
  "rafter",
+ "rafter-runtime-api",
  "rafter-storage",
 ]
 
 [[package]]
-name = "rafter-storage"
-version = "0.1.0"
+name = "rafter-runtime-api"
+version = "0.0.1"
 dependencies = [
  "rafter",
+]
+
+[[package]]
+name = "rafter-service"
+version = "0.0.1"
+dependencies = [
+ "rafter",
+ "rafter-app",
+ "rafter-runtime-api",
+]
+
+[[package]]
+name = "rafter-storage"
+version = "0.0.1"
+dependencies = [
+ "rafter",
+ "rafter-crc32",
 ]
 
 [[package]]

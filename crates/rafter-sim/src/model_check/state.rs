@@ -85,7 +85,7 @@ impl ExplorationState {
                 prev_log_index: LogIndex(1),
                 prev_log_term: Term(1),
                 sequence: 0,
-                entries: Vec::new(),
+                entries: Vec::new().into(),
                 leader_commit: LogIndex(1),
             }),
         );
@@ -99,7 +99,7 @@ impl ExplorationState {
                 prev_log_index: LogIndex::ZERO,
                 prev_log_term: Term(0),
                 sequence: 1,
-                entries: Vec::new(),
+                entries: Vec::new().into(),
                 leader_commit: LogIndex(3),
             }),
         );
@@ -125,7 +125,7 @@ impl ExplorationState {
                     prev_log_index: LogIndex(2),
                     prev_log_term: Term(2),
                     sequence: 0,
-                    entries: Vec::new(),
+                    entries: Vec::new().into(),
                     leader_commit: LogIndex(2),
                 }),
             );
@@ -151,7 +151,7 @@ impl ExplorationState {
                 prev_log_index: LogIndex(1),
                 prev_log_term: Term(1),
                 sequence: 0,
-                entries: Vec::new(),
+                entries: Vec::new().into(),
                 leader_commit: LogIndex(1),
             }),
         );
@@ -165,7 +165,7 @@ impl ExplorationState {
                 prev_log_index: LogIndex(1),
                 prev_log_term: Term(1),
                 sequence: 1,
-                entries: Vec::new(),
+                entries: Vec::new().into(),
                 leader_commit: LogIndex(2),
             }),
         );

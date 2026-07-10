@@ -183,6 +183,40 @@ fn proposals_are_rejected_during_transfer_and_resume_after_expiry() {
 }
 
 #[test]
+fn proposal_batch_is_rejected_during_transfer_without_appending() {
+    let mut leader = leader_with_acknowledged_follower();
+    let before = leader.last_log_index();
+    let _ = leader.step(Input::TransferLeadership { target: NodeId(2) });
+
+    let outputs = leader.step_batch(vec![
+        Input::TrackedClientProposal {
+            proposal_id: LocalProposalId(20),
+            payload: b"first-blocked".to_vec(),
+        },
+        Input::TrackedClientProposal {
+            proposal_id: LocalProposalId(21),
+            payload: b"second-blocked".to_vec(),
+        },
+    ]);
+
+    assert_eq!(leader.last_log_index(), before);
+    assert!(leader.volatile.local_proposals.is_empty());
+    assert_eq!(
+        outputs,
+        vec![
+            Output::RejectProposal {
+                proposal_id: Some(LocalProposalId(20)),
+                reason: ProposalRejection::LeadershipTransferInProgress { target: NodeId(2) },
+            },
+            Output::RejectProposal {
+                proposal_id: Some(LocalProposalId(21)),
+                reason: ProposalRejection::LeadershipTransferInProgress { target: NodeId(2) },
+            },
+        ]
+    );
+}
+
+#[test]
 fn duplicate_transfer_requests_are_rejected_while_pending() {
     let mut leader = leader_with_acknowledged_follower();
     let _ = leader.step(Input::TransferLeadership { target: NodeId(2) });

@@ -65,6 +65,26 @@ where
         RaftHandle::new(group_id, self.clone())
     }
 
+    /// Proposes a bounded batch of writes through the primary group.
+    ///
+    /// The driver reserves a contiguous local proposal ID range, submits the
+    /// commands through one app-layer proposal batch, and then drives the
+    /// in-memory network until every write has either applied or reached a
+    /// managed error/unknown-outcome boundary. The returned vector preserves
+    /// input order and contains one result per supplied entry.
+    #[must_use]
+    pub fn write_batch(
+        &self,
+        group_id: G,
+        writes: Vec<WriteBatchEntry<A::Command>>,
+    ) -> DriverFuture<Vec<Result<WriteReceipt<A::CommandResult>, WriteError>>> {
+        let inner = self.inner.clone();
+        Box::pin(async move {
+            let mut state = lock_state(&inner);
+            state.write_batch(&group_id, writes)
+        })
+    }
+
     /// Drives one tick on the primary node.
     ///
     /// # Errors
