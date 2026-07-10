@@ -56,7 +56,9 @@ fn pipelining_leader(entry_count: u64, configure: impl FnOnce(NodeConfig) -> Nod
 /// `match_index` acknowledged and a clean window — the state a successful
 /// probe acknowledgement leaves behind.
 fn seed_replicating(leader: &mut Node, follower: NodeId, match_index: LogIndex) {
-    *leader.follower_progress_mut(follower) = Progress {
+    *leader
+        .try_follower_progress_mut(follower)
+        .expect("active follower") = Progress {
         match_index,
         next_index: match_index.next(),
         mode: ProgressMode::Replicate,
@@ -65,7 +67,11 @@ fn seed_replicating(leader: &mut Node, follower: NodeId, match_index: LogIndex) 
 }
 
 fn follower_progress(leader: &Node, follower: NodeId) -> &Progress {
-    &leader.leader.progress[&follower]
+    leader
+        .leader
+        .progress
+        .get(follower)
+        .expect("active follower")
 }
 
 fn replication_state(leader: &Node, follower: NodeId) -> ReplicationState {
@@ -390,7 +396,9 @@ fn a_rejection_collapses_the_window_and_walks_back_no_further_than_the_match_flo
 fn probe_mode_sends_one_bounded_probe_then_empty_heartbeats_until_the_ack() {
     let mut leader = pipelining_leader(3, |config| config);
     // Follower 2 collapsed to probing from the log start.
-    *leader.follower_progress_mut(NodeId(2)) = Progress::probing(LogIndex(1));
+    *leader
+        .try_follower_progress_mut(NodeId(2))
+        .expect("active follower") = Progress::probing(LogIndex(1));
 
     let outputs = leader.step(Input::Tick);
     let probes = appends_to(&outputs, NodeId(2));
@@ -469,7 +477,10 @@ fn snapshot_mode_pauses_pipelining_and_resumes_with_a_window_fill_after_installa
     .expect("leader hydrates from snapshot");
     leader.become_leader();
     // Follower 2's send position lies behind the compacted prefix.
-    leader.follower_progress_mut(NodeId(2)).next_index = LogIndex(2);
+    leader
+        .try_follower_progress_mut(NodeId(2))
+        .expect("active follower")
+        .next_index = LogIndex(2);
 
     // The broadcast notices the follower needs the snapshot, not the log:
     // chunks flow and append pipelining pauses entirely.
@@ -532,6 +543,54 @@ fn snapshot_mode_pauses_pipelining_and_resumes_with_a_window_fill_after_installa
 }
 
 #[test]
+fn snapshot_peer_does_not_break_shared_append_fanout_to_log_peers() {
+    let snapshot = test_snapshot(3, 4, 5, b"mixed-mode snapshot");
+    let mut leader = Node::from_bootstrap(
+        NodeConfig::new(NodeId(1), vec![NodeId(2), NodeId(3), NodeId(4)], 3)
+            .expect("test Raft node config is valid"),
+        BootstrapState {
+            current_term: Term(5),
+            voted_for: None,
+            commit_index: LogIndex::ZERO,
+            committed_configuration: None,
+            snapshot: Some(snapshot),
+            log: vec![bootstrap_entry(4, 5, &payload(4))],
+        },
+    )
+    .expect("leader hydrates from snapshot");
+    leader.become_leader();
+    seed_replicating(&mut leader, NodeId(2), LogIndex(3));
+    seed_replicating(&mut leader, NodeId(3), LogIndex(3));
+    leader
+        .try_follower_progress_mut(NodeId(4))
+        .expect("active follower")
+        .next_index = LogIndex(2);
+
+    let outputs = leader.step(Input::Tick);
+
+    assert!(
+        appends_to(&outputs, NodeId(4)).is_empty(),
+        "a compacted follower receives snapshot chunks, not cached log batches"
+    );
+    assert_eq!(snapshot_chunks_to(&outputs, NodeId(4)).len(), 1);
+    let follower_two_entries = appends_to(&outputs, NodeId(2))
+        .first()
+        .expect("follower 2 receives the retained suffix")
+        .entries
+        .clone();
+    let follower_three_entries = appends_to(&outputs, NodeId(3))
+        .first()
+        .expect("follower 3 receives the retained suffix")
+        .entries
+        .clone();
+    assert!(!follower_two_entries.is_empty());
+    assert!(
+        follower_two_entries.shares_allocation(&follower_three_entries),
+        "snapshot-mode peers must not prevent log peers from sharing one suffix batch"
+    );
+}
+
+#[test]
 fn leader_replication_progress_reports_the_state_of_every_mode() {
     let snapshot = test_snapshot(3, 4, 5, b"observability snapshot");
     let mut leader = Node::from_bootstrap(
@@ -552,7 +611,9 @@ fn leader_replication_progress_reports_the_state_of_every_mode() {
     // Follower 2 keeps the fresh-leadership probe; follower 3 has confirmed
     // its position; follower 4 is mid-snapshot.
     seed_replicating(&mut leader, NodeId(3), LogIndex(4));
-    let behind = leader.follower_progress_mut(NodeId(4));
+    let behind = leader
+        .try_follower_progress_mut(NodeId(4))
+        .expect("active follower");
     behind.next_index = LogIndex(3);
     behind.mode = ProgressMode::Snapshot { next_offset: 7 };
 
@@ -583,8 +644,8 @@ fn leader_replication_progress_reports_the_state_of_every_mode() {
 
 /// C3's zero-copy claim, asserted by allocation identity rather than
 /// assumed: batching a suffix and fanning it out to every follower shares
-/// the log's payload allocation — the clone in batch construction bumps a
-/// reference count, it never copies content.
+/// the append-entry slice and each entry's payload allocation. The clone in
+/// batch fan-out bumps a reference count; it never copies content.
 #[test]
 fn fan_out_shares_the_log_payload_allocation_across_followers() {
     let mut leader = pipelining_leader(1, |config| config);
@@ -592,27 +653,38 @@ fn fan_out_shares_the_log_payload_allocation_across_followers() {
     seed_replicating(&mut leader, NodeId(3), LogIndex::ZERO);
 
     let outputs = leader.step(Input::Tick);
-    let sent_payloads: Vec<crate::SharedPayload> = outputs
+    let sent_entries: Vec<crate::SharedEntries> = outputs
         .iter()
         .filter_map(|output| match output {
             Output::Send {
                 message: Message::AppendEntries(AppendEntries { entries, .. }),
                 ..
-            } => entries.first().map(|entry| match &entry.kind {
+            } if !entries.is_empty() => Some(entries.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        sent_entries.len(),
+        2,
+        "both followers receive the suffix entry"
+    );
+    assert!(
+        sent_entries[0].shares_allocation(&sent_entries[1]),
+        "both follower batches share one append-entry slice"
+    );
+
+    let sent_payloads: Vec<crate::SharedPayload> = sent_entries
+        .iter()
+        .filter_map(|entries| {
+            entries.first().map(|entry| match &entry.kind {
                 crate::LogEntryKind::Application(payload) => payload.clone(),
                 crate::LogEntryKind::Configuration(_) => {
                     panic!("test log holds application entries")
                 }
                 crate::LogEntryKind::Noop => panic!("test batch should not start with a no-op"),
-            }),
-            _ => None,
+            })
         })
         .collect();
-    assert_eq!(
-        sent_payloads.len(),
-        2,
-        "both followers receive the suffix entry"
-    );
 
     let log_payload = match &leader.log_entries_from(LogIndex(1))[0].kind {
         crate::LogEntryKind::Application(payload) => payload.clone(),

@@ -94,7 +94,7 @@ fn follower_append_step(criterion: &mut Criterion) {
         prev_log_index: LogIndex(0),
         prev_log_term: Term(0),
         sequence: 1,
-        entries,
+        entries: entries.into(),
         leader_commit: LogIndex(0),
     });
     let follower_config = NodeConfig::new(NodeId(2), vec![NodeId(1), NodeId(3)], 1_000_000)

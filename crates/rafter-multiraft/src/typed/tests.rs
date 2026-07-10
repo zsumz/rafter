@@ -64,6 +64,20 @@ impl TypedGroupDriver<u64> for RecordingTypedDriver {
                 report.applied.push(apply_result);
                 Ok(report)
             }
+            GroupInput::ProposalBatch { proposals } => {
+                let mut report = report(self.group_id);
+                for proposal in proposals {
+                    self.applied_count += 1;
+                    let TestCommand::Put(value) = proposal.command;
+                    report.applied.push(ApplyResult {
+                        index: LogIndex(self.applied_count),
+                        term: Term(1),
+                        result: TestResult::Stored(value),
+                        local_proposal_id: Some(proposal.local_proposal_id),
+                    });
+                }
+                Ok(report)
+            }
         }
     }
 
@@ -174,6 +188,34 @@ fn typed_groups_run_independently() {
         .expect("typed proposal applies");
     assert_eq!(report.applied[0].result, TestResult::Stored(99));
 
+    let report = host
+        .step_group(
+            &1,
+            GroupInput::ProposalBatch {
+                proposals: vec![
+                    Proposal {
+                        local_proposal_id: rafter::LocalProposalId(8),
+                        client_request_id: None,
+                        command: TestCommand::Put(100),
+                    },
+                    Proposal {
+                        local_proposal_id: rafter::LocalProposalId(9),
+                        client_request_id: None,
+                        command: TestCommand::Put(101),
+                    },
+                ],
+            },
+        )
+        .expect("typed proposal batch applies");
+    assert_eq!(
+        report
+            .applied
+            .iter()
+            .map(|result| result.result.clone())
+            .collect::<Vec<_>>(),
+        vec![TestResult::Stored(100), TestResult::Stored(101)]
+    );
+
     let metrics = host.metrics().expect("metrics");
     assert_eq!(
         metrics
@@ -181,7 +223,7 @@ fn typed_groups_run_independently() {
             .iter()
             .map(|group| (group.group_id, group.applied_index))
             .collect::<Vec<_>>(),
-        vec![(1, LogIndex(1)), (2, LogIndex::ZERO)]
+        vec![(1, LogIndex(3)), (2, LogIndex::ZERO)]
     );
 }
 

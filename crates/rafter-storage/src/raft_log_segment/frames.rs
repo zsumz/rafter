@@ -1,5 +1,6 @@
 use crate::{
-    decode_raft_log_entry, encode_raft_log_entry, EncodeRaftLogEntryError, PersistedRaftLogEntry,
+    decode_raft_log_entry, encode_borrowed_raft_log_entry, encode_raft_log_entry,
+    BorrowedPersistedRaftLogEntry, EncodeRaftLogEntryError, PersistedRaftLogEntry,
 };
 
 use super::RaftLogReplayError;
@@ -23,10 +24,25 @@ pub(super) fn append_raft_log_frame(
     entry: &PersistedRaftLogEntry,
 ) -> Result<(), EncodeRaftLogEntryError> {
     let encoded = encode_raft_log_entry(entry)?;
+    append_encoded_frame(output, &encoded)
+}
+
+pub(super) fn append_borrowed_raft_log_frame(
+    output: &mut Vec<u8>,
+    entry: BorrowedPersistedRaftLogEntry<'_>,
+) -> Result<(), EncodeRaftLogEntryError> {
+    let encoded = encode_borrowed_raft_log_entry(entry)?;
+    append_encoded_frame(output, &encoded)
+}
+
+fn append_encoded_frame(
+    output: &mut Vec<u8>,
+    encoded: &[u8],
+) -> Result<(), EncodeRaftLogEntryError> {
     let len = u32::try_from(encoded.len())
         .map_err(|_| EncodeRaftLogEntryError::PayloadTooLarge { len: encoded.len() })?;
     output.extend_from_slice(&len.to_be_bytes());
-    output.extend_from_slice(&encoded);
+    output.extend_from_slice(encoded);
     Ok(())
 }
 

@@ -19,7 +19,7 @@ fn append_batch() -> Message {
         prev_log_index: LogIndex(41),
         prev_log_term: Term(3),
         sequence: 7,
-        entries,
+        entries: entries.into(),
         leader_commit: LogIndex(41),
     })
 }

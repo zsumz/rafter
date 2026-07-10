@@ -17,7 +17,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use bench_compare::{
-    payload, report_json, WorkloadMetrics, PIPELINED_PROPOSALS, PIPELINE_DEPTH, SERIAL_PROPOSALS,
+    payload_of_size, report_json, WorkloadMetrics, LARGE_PAYLOAD_BYTES,
+    LARGE_PAYLOAD_PIPELINE_DEPTH, LARGE_PAYLOAD_PROPOSALS, PAYLOAD_BYTES, PIPELINED_PROPOSALS,
+    PIPELINE_DEPTH, SERIAL_PROPOSALS,
 };
 use openraft::error::{InstallSnapshotError, RPCError, RaftError, RemoteError};
 use openraft::network::RPCOption;
@@ -50,13 +52,26 @@ fn main() {
         .build()
         .expect("current-thread tokio runtime");
     let report = runtime.block_on(async {
-        let serial = proposal_workload("serial", SERIAL_PROPOSALS, 1).await;
-        let pipelined = proposal_workload("pipelined", PIPELINED_PROPOSALS, PIPELINE_DEPTH).await;
+        let serial = proposal_workload("serial", SERIAL_PROPOSALS, PAYLOAD_BYTES, 1).await;
+        let pipelined = proposal_workload(
+            "pipelined",
+            PIPELINED_PROPOSALS,
+            PAYLOAD_BYTES,
+            PIPELINE_DEPTH,
+        )
+        .await;
+        let large_payload = proposal_workload(
+            "large_payload",
+            LARGE_PAYLOAD_PROPOSALS,
+            LARGE_PAYLOAD_BYTES,
+            LARGE_PAYLOAD_PIPELINE_DEPTH,
+        )
+        .await;
         report_json(
             "openraft",
             "0.9.24 (features: storage-v2; current-thread tokio)",
             "client_write submitted -> client_write response (committed and applied on leader)",
-            &[serial, pipelined],
+            &[serial, pipelined, large_payload],
         )
     });
     println!("{report}");
@@ -65,7 +80,12 @@ fn main() {
 /// Drives `total` proposals through the elected leader in submission bursts
 /// of at most `window` concurrent `client_write` calls, waiting for every
 /// write in a burst to be acknowledged before submitting the next burst.
-async fn proposal_workload(name: &'static str, total: usize, window: usize) -> WorkloadMetrics {
+async fn proposal_workload(
+    name: &'static str,
+    total: usize,
+    payload_bytes: usize,
+    window: usize,
+) -> WorkloadMetrics {
     let cluster = Cluster::start().await;
     let leader = cluster.leader();
 
@@ -83,7 +103,7 @@ async fn proposal_workload(name: &'static str, total: usize, window: usize) -> W
         for _ in 0..total {
             let submitted = Instant::now();
             leader
-                .client_write(payload())
+                .client_write(payload_of_size(payload_bytes))
                 .await
                 .expect("client_write commits");
             latencies.push(submitted.elapsed());
@@ -101,7 +121,7 @@ async fn proposal_workload(name: &'static str, total: usize, window: usize) -> W
             for _ in 0..batch {
                 let raft = leader.clone();
                 joins.spawn(async move {
-                    raft.client_write(payload())
+                    raft.client_write(payload_of_size(payload_bytes))
                         .await
                         .expect("client_write commits");
                     submitted.elapsed()
@@ -118,9 +138,16 @@ async fn proposal_workload(name: &'static str, total: usize, window: usize) -> W
     WorkloadMetrics {
         name,
         proposals: total,
+        payload_bytes,
         max_in_flight: window,
         elapsed,
         latencies,
+        shape: None,
+        service_shape: None,
+        read_shape: None,
+        codec_shape: None,
+        multiraft_shape: None,
+        failover_shape: None,
     }
 }
 

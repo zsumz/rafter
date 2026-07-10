@@ -30,37 +30,33 @@
 
 ## Model
 
-Rafter is built as a stack of small crates:
-
 ```txt
-rafter              deterministic Raft kernel
-rafter-runtime-api  persist-before-output runtime trait boundary
-rafter-storage      file-backed and in-memory durable stores
-rafter-runtime      persist-before-output durable node wrapper
-rafter-app          synchronous embedded state-machine layer
-rafter-service      async managed handle and transport traits
-rafter-multiraft    many-group host for sharded systems
-rafter-codec        versioned peer-message wire format
-rafter-sim          deterministic simulation and model checking
+rafter              pure Raft kernel
+rafter-runtime-api  persist-before-output runtime boundary
+rafter-storage      hard-state, log, and snapshot stores
+rafter-runtime      durable node wrapper
+rafter-app          embedded state-machine layer
+rafter-service      async handle and transport traits
+rafter-multiraft    many-group host
+rafter-codec        peer-message wire format
+rafter-sim          simulation and model checking
 ```
 
-Use the lower crates when you want full control over storage, networking,
-authorization, scheduling, and recovery. Use the higher crates when you want
-more application-facing structure while keeping those boundaries explicit.
+Use the lower crates when you want full control. Use the higher crates when you
+want application structure without surrendering storage, transport, scheduling,
+identity, or recovery policy.
 
 ## API Layers
 
-| If you are... | Start with | This layer owns | This layer does not own |
-| --- | --- | --- | --- |
-| Writing a simulator, custom runtime, or raw protocol integration | `rafter` | deterministic Raft state transitions and explicit outputs | storage, networking, durability fences, authentication, or app-state apply |
-| Defining or using a persist-before-output runtime boundary | `rafter-runtime-api` / `rafter-runtime` | the runtime trait contract and a durable node implementation | application state, transport delivery, auth, or recovery policy above Raft storage |
-| Building a database or shard-group state machine | `rafter-app` | synchronous proposal, read, membership, apply, poison, and report orchestration | concrete runtime/storage crates, networking, auth, or app snapshot format |
-| Wanting a managed async app-facing handle | `rafter-service` | async handles, managed driver shape, watch/membership helpers, and transport contracts | production transport implementation, durable app state, or cluster identity management |
-| Hosting many caller-defined groups per process | `rafter-multiraft` | many-group dispatch helpers and typed group routing | group identity allocation, network routing, concrete runtime/storage, or app semantics |
+| Layer | Reach for it when |
+| --- | --- |
+| `rafter` | You want the deterministic protocol kernel and explicit outputs. |
+| `rafter-runtime` | You want a durable persist-before-output node. |
+| `rafter-app` | You want an embedded replicated state machine. |
+| `rafter-service` | You want async handles and transport traits. |
+| `rafter-multiraft` | You want many caller-defined Raft groups in one host. |
 
 ## Example
-
-The core crate is driven by explicit inputs and returns explicit outputs:
 
 ```rust
 use rafter::{Input, Node, NodeConfig, NodeId, Output};
@@ -72,11 +68,11 @@ let mut node = Node::new(config);
 for output in node.step(Input::Tick) {
     match output {
         Output::Send { to, message } => {
-            // Route this message through your transport.
+            // route through your transport
             let _ = (to, message);
         }
         Output::Apply { index, payload, .. } => {
-            // Apply a committed command to your state machine.
+            // apply to your state machine
             let _ = (index, payload);
         }
         _ => {}
@@ -84,26 +80,16 @@ for output in node.step(Input::Tick) {
 }
 ```
 
-For durable embeddings, start with `rafter-runtime` and `rafter-storage`.
-For application-facing groups, see `rafter-app`, `rafter-service`, and
-`rafter-multiraft`.
-
 ## Crates
 
-| crate | purpose |
+| Need | Crate |
 | --- | --- |
-| [`rafter`](./crates/rafter/README.md) | deterministic Raft protocol core |
-| [`rafter-runtime-api`](./crates/rafter-runtime-api/README.md) | persist-before-output runtime trait boundary |
-| [`rafter-storage`](./crates/rafter-storage/README.md) | durable hard-state, log, and snapshot stores |
-| [`rafter-runtime`](./crates/rafter-runtime/README.md) | persist-before-output runtime wrapper and group commit |
-| [`rafter-codec`](./crates/rafter-codec/README.md) | versioned peer-message codec |
-| [`rafter-app`](./crates/rafter-app/README.md) | synchronous embedded replicated-state-machine layer |
-| [`rafter-service`](./crates/rafter-service/README.md) | async managed handle and integration traits |
-| [`rafter-multiraft`](./crates/rafter-multiraft/README.md) | many-group host for sharded systems |
-| [`rafter-sim`](./crates/rafter-sim/README.md) | workspace-only deterministic simulation, replay, and model checking |
-| [`rafter-transport-tcp-insecure`](./crates/rafter-transport-tcp-insecure/README.md) | insecure demo-only TCP frame helper for examples and tests |
-| [`rafter-maelstrom`](./crates/rafter-maelstrom/README.md) | publish-disabled Maelstrom linearizable KV test node |
-
+| Protocol kernel | [`rafter`](./crates/rafter/README.md) |
+| Durable node | [`rafter-runtime`](./crates/rafter-runtime/README.md) + [`rafter-storage`](./crates/rafter-storage/README.md) |
+| Embedded state machine | [`rafter-app`](./crates/rafter-app/README.md) |
+| Async managed handle | [`rafter-service`](./crates/rafter-service/README.md) |
+| Many Raft groups | [`rafter-multiraft`](./crates/rafter-multiraft/README.md) |
+| Simulation | [`rafter-sim`](./crates/rafter-sim/README.md) |
 
 ## Testing
 
@@ -114,50 +100,48 @@ cargo run --release -p rafter-sim --bin rafter-model-check-fast
 scripts/maelstrom-lin-kv
 ```
 
-The repository also carries fuzz seeds, TLA+ specs, Maelstrom workloads, and a
-simulation harness that can replay and explore bounded failure schedules.
-
 ## Benchmarks
 
-`bench-compare/` compares the in-memory protocol path against raft-rs and
-openraft using the same three-node workloads. `rafter-bench-cluster` measures
-Rafter's file-backed durable path, including group commit and snapshot
-transfer. These are separate claims; compare durable results across
-libraries only when the storage and fsync boundaries match.
+Three-node in-memory protocol benchmark, 512-byte payloads, aarch64 Linux.
+Lower latency is better; higher throughput is better.
+
+| Library | Serial props/s | Serial p99 us | Pipelined props/s | Pipelined p99 us |
+| --- | ---: | ---: | ---: | ---: |
+| `rafter` | 777,013 | 3.9 | 1,988,986 | 142.3 |
+| `raft-rs` | 379,723 | 7.4 | 653,298 | 234.3 |
+| `openraft` | 111,254 | 19.2 | 540,752 | 172.3 |
+
+Results come from [`bench-compare/results/latest.json`](./bench-compare/results/latest.json).
+Run them locally with:
 
 ```sh
 scripts/bench-compare.sh
 cargo run --release -p rafter-runtime --bin rafter-bench-cluster
 ```
 
-Benchmark numbers are hardware-sensitive. Treat the checked-in methodology and
-raw JSON as evidence, not a permanent scoreboard.
+The comparison harness measures the in-memory protocol path. The
+`rafter-bench-cluster` binary measures Rafter's durable runtime path, including
+file-backed storage and group commit.
 
-## Production Boundary
+## Boundaries
 
-Rafter is not a database, a transport security layer, or a complete server.
+Rafter is not a database, a transport security layer, or a server framework.
 Production embeddings still own:
 
 ```txt
 application state durability
-applied-index recovery policy
-authenticated peer identity
+applied-index recovery
+peer identity and authorization
 removed-peer fencing
-transport encryption and replay protection
-application snapshot validation
+transport encryption
+snapshot validation
 ```
-
-The crates keep those responsibilities visible instead of hiding them behind a
-global runtime.
 
 ## Status
 
 Rafter is pre-1.0. The core invariants, durable formats, simulation coverage,
-and Maelstrom tests are treated seriously, but APIs are still expected to move
-while the embedding surface settles.
+and Maelstrom tests are treated seriously; APIs are still expected to move.
 
 ## License
-
-Copyright 2026 zsumz.
 
 Licensed under Apache-2.0. See [LICENSE](./LICENSE) and [NOTICE](./NOTICE).

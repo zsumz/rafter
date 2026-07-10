@@ -27,6 +27,26 @@ fn length_prefixed_frame_round_trips_a_peer_message() {
 }
 
 #[test]
+fn length_prefixed_frame_reuses_encode_buffer() {
+    let message = Message::RequestVote(RequestVote {
+        term: Term(7),
+        candidate_id: NodeId(1),
+        last_log_index: LogIndex(9),
+        last_log_term: Term(6),
+    });
+    let mut bytes = Vec::new();
+    let mut scratch = vec![0; 256];
+    let original_ptr = scratch.as_ptr();
+
+    write_message_frame_into(&mut bytes, &mut scratch, &message).expect("frame writes");
+
+    assert_eq!(scratch.as_ptr(), original_ptr);
+    let decoded =
+        read_message_frame(&mut Cursor::new(bytes), DEFAULT_MAX_FRAME_LEN).expect("frame reads");
+    assert_eq!(decoded, message);
+}
+
+#[test]
 fn burst_frames_decode_in_send_order_from_one_buffer() {
     let messages = vec![
         Message::RequestVote(RequestVote {
@@ -116,7 +136,7 @@ fn message_sender_reads_every_peer_message_sender_field() {
         leader_id: NodeId(1),
         prev_log_index: LogIndex::ZERO,
         prev_log_term: Term::default(),
-        entries: Vec::new(),
+        entries: Vec::new().into(),
         leader_commit: LogIndex::ZERO,
         sequence: 3,
     });
@@ -221,10 +241,15 @@ fn tcp_transport_sends_one_length_prefixed_frame() {
         last_log_index: LogIndex::ZERO,
         last_log_term: Term::default(),
     });
+    let mut scratch = vec![0; 256];
+    let original_ptr = scratch.as_ptr();
 
-    sender.send(NodeId(2), &message).expect("message sends");
+    sender
+        .send_with_scratch(NodeId(2), &message, &mut scratch)
+        .expect("message sends");
     let inbound = receiver.receive().expect("message receives");
 
+    assert_eq!(scratch.as_ptr(), original_ptr);
     assert_eq!(inbound.from, NodeId(1));
     assert_eq!(inbound.message, message);
 }

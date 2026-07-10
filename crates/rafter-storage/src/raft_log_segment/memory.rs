@@ -1,11 +1,9 @@
-use std::collections::BTreeMap;
-
 use rafter::LogIndex;
 
-use crate::PersistedRaftLogEntry;
+use crate::{BorrowedPersistedRaftLogEntry, PersistedRaftLogEntry};
 
 use super::{
-    reject_truncate_bounds, validate_contiguous, RaftLogSegment, RaftLogSegmentAppendError,
+    reject_truncate_bounds, ContiguousLogEntries, RaftLogSegment, RaftLogSegmentAppendError,
     RaftLogSegmentCompactError, RaftLogSegmentTruncateError,
 };
 
@@ -14,7 +12,7 @@ use super::{
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct InMemoryRaftLogSegment {
     compacted_through: LogIndex,
-    entries: BTreeMap<LogIndex, PersistedRaftLogEntry>,
+    entries: ContiguousLogEntries,
 }
 
 impl InMemoryRaftLogSegment {
@@ -30,24 +28,36 @@ impl RaftLogSegment for InMemoryRaftLogSegment {
         &mut self,
         entries: &[PersistedRaftLogEntry],
     ) -> Result<(), RaftLogSegmentAppendError> {
-        validate_contiguous(entries, self.next_index()).map_err(
+        self.entries.append(entries).map_err(
             |super::NonContiguousRaftEntry { expected, actual }| {
                 RaftLogSegmentAppendError::NonContiguous { expected, actual }
             },
         )?;
-        for entry in entries {
-            self.entries.insert(entry.index, entry.clone());
-        }
+        Ok(())
+    }
+
+    fn append_entries_borrowed<'a, I>(
+        &mut self,
+        entries: I,
+    ) -> Result<(), RaftLogSegmentAppendError>
+    where
+        I: IntoIterator<Item = BorrowedPersistedRaftLogEntry<'a>>,
+    {
+        let entries = entries
+            .into_iter()
+            .map(PersistedRaftLogEntry::from)
+            .collect::<Vec<_>>();
+        self.entries.append_owned(entries).map_err(
+            |super::NonContiguousRaftEntry { expected, actual }| {
+                RaftLogSegmentAppendError::NonContiguous { expected, actual }
+            },
+        )?;
         Ok(())
     }
 
     fn truncate_suffix(&mut self, from_index: LogIndex) -> Result<(), RaftLogSegmentTruncateError> {
         reject_truncate_bounds(from_index, self.compacted_through, self.next_index())?;
-        if from_index == self.first_available_index() {
-            self.entries.clear();
-            return Ok(());
-        }
-        self.entries.retain(|index, _| *index < from_index);
+        self.entries.truncate_suffix(from_index);
         Ok(())
     }
 
@@ -60,12 +70,12 @@ impl RaftLogSegment for InMemoryRaftLogSegment {
         }
 
         self.compacted_through = through_index;
-        self.entries.retain(|index, _| *index > through_index);
+        self.entries.compact_prefix_through(through_index);
         Ok(())
     }
 
     fn replay_entries(&self) -> Vec<PersistedRaftLogEntry> {
-        self.entries.values().cloned().collect()
+        self.entries.replay_entries()
     }
 
     fn compacted_through(&self) -> LogIndex {
@@ -73,16 +83,6 @@ impl RaftLogSegment for InMemoryRaftLogSegment {
     }
 
     fn next_index(&self) -> LogIndex {
-        self.entries
-            .keys()
-            .next_back()
-            .copied()
-            .map_or_else(|| self.first_available_index(), LogIndex::next)
-    }
-}
-
-impl InMemoryRaftLogSegment {
-    fn first_available_index(&self) -> LogIndex {
-        self.compacted_through.next()
+        self.entries.next_index()
     }
 }

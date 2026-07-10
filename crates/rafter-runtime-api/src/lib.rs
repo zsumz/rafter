@@ -7,8 +7,8 @@
 use std::error::Error;
 
 use rafter::{
-    Input as RaftInput, LogIndex, MembershipConfig, NodeId as RaftNodeId, Output as RaftOutput,
-    ReplicationProgress, Role as RaftRole, Term,
+    ClientProposalInput, Input as RaftInput, LogIndex, MembershipConfig, NodeId as RaftNodeId,
+    Output as RaftOutput, ReplicationProgress, Role as RaftRole, Term,
 };
 
 /// Persist-before-output runtime contract consumed by application layers.
@@ -68,6 +68,37 @@ pub trait PersistedRaftRuntime {
     /// state required by the input step or when the runtime is already in a
     /// fatal error state.
     fn step(&mut self, input: RaftInput) -> Result<Vec<RaftOutput>, Self::Error>;
+
+    /// Steps one contiguous client-proposal batch under one runtime
+    /// durability boundary.
+    ///
+    /// This is the hot-path proposal API. It lets application layers carry a
+    /// write batch as proposal-shaped data instead of wrapping it in a
+    /// generic input stream that the kernel must rediscover.
+    ///
+    /// # Errors
+    ///
+    /// Returns an implementation-defined error when the runtime cannot satisfy
+    /// its documented proposal-batch persistence and output-release contract.
+    fn step_proposal_batch(
+        &mut self,
+        proposals: Vec<ClientProposalInput>,
+    ) -> Result<Vec<RaftOutput>, Self::Error>;
+
+    /// Steps several inputs under one runtime durability boundary.
+    ///
+    /// Implementations must choose and document their batch semantics
+    /// explicitly. A runtime that commits any side effects for earlier inputs
+    /// and then returns an error for a later input can otherwise black-hole the
+    /// earlier outputs. Durable implementations should therefore release no
+    /// outputs until every accepted input in the batch satisfies the
+    /// implementation's persistence contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns an implementation-defined error when the runtime cannot satisfy
+    /// its documented batch persistence and output-release contract.
+    fn step_batch(&mut self, inputs: Vec<RaftInput>) -> Result<Vec<RaftOutput>, Self::Error>;
 
     /// Looks up the local term at a log index covered by the retained log or
     /// snapshot boundary.

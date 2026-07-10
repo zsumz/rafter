@@ -69,7 +69,7 @@ fn follower_append_entries_are_persisted_before_success_response_escapes() {
                 leader_id: RaftNodeId(1),
                 prev_log_index: LogIndex::ZERO,
                 prev_log_term: Term::default(),
-                entries: vec![LogEntry::application(Term(2), b"append".to_vec())],
+                entries: vec![LogEntry::application(Term(2), b"append".to_vec())].into(),
                 leader_commit: LogIndex::ZERO,
             }),
         })

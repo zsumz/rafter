@@ -13,7 +13,10 @@ fn snapshot_transfer_status_reports_follower_progress_and_rejections() {
     let payload = large_snapshot_payload();
     let (mut leader, source) = leader_with_snapshot_payload(payload.clone());
     let mut follower = node(2, &[1, 3]);
-    leader.follower_progress_mut(NodeId(2)).next_index = LogIndex(3);
+    leader
+        .try_follower_progress_mut(NodeId(2))
+        .expect("active follower")
+        .next_index = LogIndex(3);
 
     let first_chunk = install_snapshot_chunk_from_output(
         &leader.step(Input::Message {
@@ -72,7 +75,10 @@ fn snapshot_transfer_status_reports_follower_progress_and_rejections() {
 fn snapshot_transfer_status_reports_leader_progress() {
     let payload = large_snapshot_payload();
     let (mut leader, source) = leader_with_snapshot_payload(payload.clone());
-    leader.follower_progress_mut(NodeId(2)).next_index = LogIndex(3);
+    leader
+        .try_follower_progress_mut(NodeId(2))
+        .expect("active follower")
+        .next_index = LogIndex(3);
 
     let first_outputs = leader.step(Input::Message {
         from: NodeId(2),
@@ -158,7 +164,10 @@ fn chunked_install_snapshot_applies_only_after_final_chunk() {
     let payload_len = payload.len() as u64;
     let (mut leader, source) = leader_with_snapshot_payload(payload.clone());
     let mut follower = node(2, &[1, 3]);
-    leader.follower_progress_mut(NodeId(2)).next_index = LogIndex(3);
+    leader
+        .try_follower_progress_mut(NodeId(2))
+        .expect("active follower")
+        .next_index = LogIndex(3);
 
     let first_outputs = leader.step(Input::Message {
         from: NodeId(2),
@@ -245,7 +254,10 @@ fn duplicate_snapshot_chunk_is_acknowledged_without_advancing_twice() {
     let payload = large_snapshot_payload();
     let (mut leader, source) = leader_with_snapshot_payload(payload.clone());
     let mut follower = node(2, &[1, 3]);
-    leader.follower_progress_mut(NodeId(2)).next_index = LogIndex(3);
+    leader
+        .try_follower_progress_mut(NodeId(2))
+        .expect("active follower")
+        .next_index = LogIndex(3);
     let first_chunk = install_snapshot_chunk_from_output(
         &leader.step(Input::Message {
             from: NodeId(2),
@@ -288,7 +300,9 @@ fn out_of_order_snapshot_chunk_requests_expected_offset() {
     let payload = large_snapshot_payload();
     let (mut leader, source) = leader_with_snapshot_payload(payload);
     let mut follower = node(2, &[1, 3]);
-    let progress = leader.follower_progress_mut(NodeId(2));
+    let progress = leader
+        .try_follower_progress_mut(NodeId(2))
+        .expect("active follower");
     progress.next_index = LogIndex(3);
     progress.mode = ProgressMode::Snapshot {
         next_offset: 65_536,
@@ -322,7 +336,10 @@ fn mixed_snapshot_transfer_id_is_rejected_deterministically() {
     let payload = large_snapshot_payload();
     let (mut leader, source) = leader_with_snapshot_payload(payload);
     let mut follower = node(2, &[1, 3]);
-    leader.follower_progress_mut(NodeId(2)).next_index = LogIndex(3);
+    leader
+        .try_follower_progress_mut(NodeId(2))
+        .expect("active follower")
+        .next_index = LogIndex(3);
     let mut chunk = install_snapshot_chunk_from_output(
         &leader.step(Input::Message {
             from: NodeId(2),
@@ -360,7 +377,10 @@ fn changed_snapshot_payload_checksum_is_rejected_mid_transfer() {
 
     let (mut leader, source) = leader_with_snapshot_payload(first_payload);
     let mut follower = node(2, &[1, 3]);
-    leader.follower_progress_mut(NodeId(2)).next_index = LogIndex(3);
+    leader
+        .try_follower_progress_mut(NodeId(2))
+        .expect("active follower")
+        .next_index = LogIndex(3);
     let first_chunk = install_snapshot_chunk_from_output(
         &leader.step(Input::Message {
             from: NodeId(2),
@@ -425,7 +445,10 @@ fn changed_snapshot_payload_checksum_is_rejected_mid_transfer() {
 fn resolved_snapshot_chunk_mirrors_directive_and_slices_payload() {
     let payload = large_snapshot_payload();
     let (mut leader, source) = leader_with_snapshot_payload(payload.clone());
-    leader.follower_progress_mut(NodeId(2)).next_index = LogIndex(3);
+    leader
+        .try_follower_progress_mut(NodeId(2))
+        .expect("active follower")
+        .next_index = LogIndex(3);
 
     let outputs = leader.step(Input::Message {
         from: NodeId(2),
@@ -469,7 +492,10 @@ fn unresolvable_snapshot_chunk_directive_is_dropped() {
     }
 
     let (mut leader, _source) = leader_with_snapshot_payload(large_snapshot_payload());
-    leader.follower_progress_mut(NodeId(2)).next_index = LogIndex(3);
+    leader
+        .try_follower_progress_mut(NodeId(2))
+        .expect("active follower")
+        .next_index = LogIndex(3);
     let chunk = snapshot_chunk_send_from_output(
         &leader.step(Input::Message {
             from: NodeId(2),

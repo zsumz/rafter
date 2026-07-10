@@ -229,6 +229,305 @@ fn runtime_step_error_consumes_local_proposal_id() {
 }
 
 #[test]
+fn begin_proposal_batch_submits_one_runtime_batch_and_preserves_order() {
+    let first_id = LocalProposalId(100);
+    let second_id = LocalProposalId(101);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([vec![
+            append_output(first_id, 2),
+            append_output(second_id, 3),
+        ]]),
+    );
+
+    let batch = group
+        .begin_proposal_batch(vec![
+            Proposal {
+                local_proposal_id: first_id,
+                client_request_id: None,
+                command: b"first".to_vec(),
+            },
+            Proposal {
+                local_proposal_id: second_id,
+                client_request_id: Some(ClientRequestId {
+                    client_id: 12,
+                    sequence: 1,
+                }),
+                command: b"second".to_vec(),
+            },
+        ])
+        .expect("proposal batch starts");
+
+    assert!(group.runtime().step_batches.is_empty());
+    assert_eq!(group.runtime().proposal_batches.len(), 1);
+    assert_eq!(
+        group.runtime().proposal_batches[0],
+        vec![
+            ClientProposalInput {
+                proposal_id: Some(first_id),
+                payload: b"first".to_vec(),
+            },
+            ClientProposalInput {
+                proposal_id: Some(second_id),
+                payload: b"second".to_vec(),
+            },
+        ]
+    );
+    assert_eq!(
+        batch.report.proposal_events,
+        vec![
+            ProposalEvent::Appended {
+                local_proposal_id: first_id,
+                index: LogIndex(2),
+                term: Term(1),
+            },
+            ProposalEvent::Appended {
+                local_proposal_id: second_id,
+                index: LogIndex(3),
+                term: Term(1),
+            },
+        ]
+    );
+    assert_eq!(
+        batch
+            .begins
+            .iter()
+            .map(|begin| match begin {
+                ProposalBegin::Appended {
+                    local_proposal_id,
+                    index,
+                    ..
+                } => (*local_proposal_id, *index),
+                other => panic!("expected appended begin, got {other:?}"),
+            })
+            .collect::<Vec<_>>(),
+        vec![(first_id, LogIndex(2)), (second_id, LogIndex(3))]
+    );
+    assert_eq!(group.local_proposal_id_watermark(), Some(second_id));
+    assert_eq!(group.metrics().pending_proposals, 2);
+}
+
+#[test]
+fn group_step_proposal_batch_submits_one_runtime_batch_and_preserves_order() {
+    let first_id = LocalProposalId(110);
+    let second_id = LocalProposalId(111);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([vec![
+            append_output(first_id, 2),
+            append_output(second_id, 3),
+        ]]),
+    );
+
+    let report = group
+        .step(GroupInput::ProposalBatch {
+            proposals: vec![
+                Proposal {
+                    local_proposal_id: first_id,
+                    client_request_id: None,
+                    command: b"first".to_vec(),
+                },
+                Proposal {
+                    local_proposal_id: second_id,
+                    client_request_id: Some(ClientRequestId {
+                        client_id: 12,
+                        sequence: 2,
+                    }),
+                    command: b"second".to_vec(),
+                },
+            ],
+        })
+        .expect("proposal batch starts through group input");
+
+    assert!(group.runtime().step_batches.is_empty());
+    assert_eq!(group.runtime().proposal_batches.len(), 1);
+    assert_eq!(
+        group.runtime().proposal_batches[0],
+        vec![
+            ClientProposalInput {
+                proposal_id: Some(first_id),
+                payload: b"first".to_vec(),
+            },
+            ClientProposalInput {
+                proposal_id: Some(second_id),
+                payload: b"second".to_vec(),
+            },
+        ]
+    );
+    assert_eq!(
+        report.proposal_events,
+        vec![
+            ProposalEvent::Appended {
+                local_proposal_id: first_id,
+                index: LogIndex(2),
+                term: Term(1),
+            },
+            ProposalEvent::Appended {
+                local_proposal_id: second_id,
+                index: LogIndex(3),
+                term: Term(1),
+            },
+        ]
+    );
+    assert_eq!(group.local_proposal_id_watermark(), Some(second_id));
+    assert_eq!(group.metrics().pending_proposals, 2);
+}
+
+#[test]
+fn step_report_options_can_omit_metrics_without_changing_events() {
+    let outputs = vec![
+        append_output(LocalProposalId(120), 2),
+        append_output(LocalProposalId(121), 3),
+        apply_output(2, b"first", Some(LocalProposalId(120))),
+        apply_output(3, b"second", Some(LocalProposalId(121))),
+    ];
+    let input = GroupInput::ProposalBatch {
+        proposals: vec![
+            Proposal {
+                local_proposal_id: LocalProposalId(120),
+                client_request_id: None,
+                command: b"first".to_vec(),
+            },
+            Proposal {
+                local_proposal_id: LocalProposalId(121),
+                client_request_id: None,
+                command: b"second".to_vec(),
+            },
+        ],
+    };
+    let mut full_group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([outputs.clone()]),
+    );
+    let mut lean_group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([outputs]),
+    );
+
+    let mut full = full_group.step(input.clone()).expect("full step succeeds");
+    let lean = lean_group
+        .step_with_options(input, StepReportOptions::without_metrics())
+        .expect("lean step succeeds");
+
+    assert!(full.metrics.is_some());
+    assert!(lean.metrics.is_none());
+    full.metrics = None;
+    assert_eq!(lean, full);
+}
+
+#[test]
+fn begin_proposal_batch_with_no_proposals_does_not_step_runtime() {
+    let mut group = scripted_group(RecordingStateMachine::default());
+
+    let batch = group
+        .begin_proposal_batch(Vec::new())
+        .expect("empty proposal batch is accepted");
+
+    assert!(batch.begins.is_empty());
+    assert!(batch.report.proposal_events.is_empty());
+    assert!(group.runtime().step_batches.is_empty());
+    assert!(group.runtime().proposal_batches.is_empty());
+    assert_eq!(group.local_proposal_id_watermark(), None);
+}
+
+#[test]
+fn begin_proposal_batch_rejects_non_monotonic_ids_before_runtime_submission() {
+    let mut group = scripted_group(RecordingStateMachine::default());
+
+    let error = group
+        .begin_proposal_batch(vec![
+            Proposal {
+                local_proposal_id: LocalProposalId(12),
+                client_request_id: None,
+                command: b"first".to_vec(),
+            },
+            Proposal {
+                local_proposal_id: LocalProposalId(11),
+                client_request_id: None,
+                command: b"lower".to_vec(),
+            },
+        ])
+        .expect_err("non-monotonic batch is rejected");
+
+    assert!(matches!(
+        error,
+        GroupError::NonMonotonicLocalProposalId {
+            local_proposal_id: LocalProposalId(11),
+            last_seen_local_proposal_id: LocalProposalId(12),
+        }
+    ));
+    assert_eq!(group.local_proposal_id_watermark(), None);
+    assert_eq!(group.metrics().pending_proposals, 0);
+    assert!(group.runtime().step_batches.is_empty());
+    assert!(group.runtime().proposal_batches.is_empty());
+}
+
+#[test]
+fn runtime_batch_error_consumes_local_proposal_ids_and_clears_pending() {
+    let first_id = LocalProposalId(102);
+    let second_id = LocalProposalId(103);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_errors([TestRuntimeError::Forced]),
+    );
+
+    let error = group
+        .begin_proposal_batch(vec![
+            Proposal {
+                local_proposal_id: first_id,
+                client_request_id: None,
+                command: b"first".to_vec(),
+            },
+            Proposal {
+                local_proposal_id: second_id,
+                client_request_id: None,
+                command: b"second".to_vec(),
+            },
+        ])
+        .expect_err("runtime batch error is returned");
+
+    assert!(matches!(error, GroupError::Runtime(_)));
+    assert_eq!(group.local_proposal_id_watermark(), Some(second_id));
+    assert_eq!(group.metrics().pending_proposals, 0);
+    assert_eq!(group.runtime().proposal_batches.len(), 1);
+}
+
+#[test]
+fn begin_proposal_batch_clears_batch_pending_when_any_proposal_does_not_start() {
+    let first_id = LocalProposalId(104);
+    let second_id = LocalProposalId(105);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([vec![append_output(first_id, 2)]]),
+    );
+
+    let error = group
+        .begin_proposal_batch(vec![
+            Proposal {
+                local_proposal_id: first_id,
+                client_request_id: None,
+                command: b"first".to_vec(),
+            },
+            Proposal {
+                local_proposal_id: second_id,
+                client_request_id: None,
+                command: b"missing lifecycle".to_vec(),
+            },
+        ])
+        .expect_err("missing one lifecycle output rejects the whole begin batch");
+
+    assert!(matches!(
+        error,
+        GroupError::ProposalDidNotStart {
+            local_proposal_id
+        } if local_proposal_id == second_id
+    ));
+    assert_eq!(group.local_proposal_id_watermark(), Some(second_id));
+    assert_eq!(group.metrics().pending_proposals, 0);
+    assert_eq!(group.runtime().proposal_batches.len(), 1);
+}
+
+#[test]
 fn begin_proposal_clears_pending_when_proposal_does_not_start() {
     let proposal_id = LocalProposalId(82);
     let mut group = scripted_group(RecordingStateMachine::default());

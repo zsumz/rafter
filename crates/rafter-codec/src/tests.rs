@@ -2,9 +2,10 @@ use super::*;
 use rafter::{
     AppendEntries, AppendEntriesResponse, ApplicationSnapshotKind, ApplicationSnapshotMetadata,
     ApplicationSnapshotVersion, ConfigurationEntry, ConfigurationId, InstallSnapshotChunk,
-    InstallSnapshotResponse, JointMembership, LogEntry, LogIndex, MembershipConfig, MembershipSet,
-    Message, NodeId, PreVote, PreVoteResponse, RaftSnapshot, RaftSnapshotMetadata, RequestVote,
-    RequestVoteResponse, SnapshotGroupId, SnapshotMetadataError, SnapshotTransferId, Term,
+    InstallSnapshotResponse, JointMembership, LogEntry, LogEntryKind, LogIndex, MembershipConfig,
+    MembershipSet, Message, NodeId, PreVote, PreVoteResponse, RaftSnapshot, RaftSnapshotMetadata,
+    RequestVote, RequestVoteResponse, SnapshotGroupId, SnapshotMetadataError, SnapshotTransferId,
+    Term,
 };
 
 #[test]
@@ -70,9 +71,41 @@ fn append_entries_round_trips_with_opaque_payloads() {
         entries: vec![
             LogEntry::application(Term(8), b"stream command bytes".to_vec()),
             LogEntry::application(Term(8), vec![0, 159, 146, 150, 255]),
-        ],
+        ]
+        .into(),
         leader_commit: LogIndex(11),
     }));
+}
+
+#[test]
+fn decoded_append_entries_payloads_share_the_frame_allocation() {
+    let message = Message::AppendEntries(AppendEntries {
+        sequence: 0,
+        term: Term(8),
+        leader_id: NodeId(1),
+        prev_log_index: LogIndex(10),
+        prev_log_term: Term(7),
+        entries: vec![
+            LogEntry::application(Term(8), b"first payload".to_vec()),
+            LogEntry::application(Term(8), b"second payload".to_vec()),
+        ]
+        .into(),
+        leader_commit: LogIndex(11),
+    });
+    let encoded = encode_message(&message).expect("message encodes");
+    let decoded = decode_message(&encoded).expect("message decodes");
+    let Message::AppendEntries(decoded) = decoded else {
+        panic!("message remains append entries");
+    };
+    let first = application_payload(&decoded.entries[0]);
+    let second = application_payload(&decoded.entries[1]);
+
+    assert_eq!(first, b"first payload");
+    assert_eq!(second, b"second payload");
+    assert!(
+        first.shares_allocation(second),
+        "decoded application payloads share the immutable frame allocation"
+    );
 }
 
 #[test]
@@ -99,7 +132,8 @@ fn append_entries_round_trips_with_configuration_entries() {
                 Term(8),
                 ConfigurationEntry::joint(ConfigurationId(2), JointMembership::new(old, new)),
             ),
-        ],
+        ]
+        .into(),
         leader_commit: LogIndex(11),
     }));
 }
@@ -112,7 +146,7 @@ fn append_entries_round_trips_with_noop_entries() {
         leader_id: NodeId(1),
         prev_log_index: LogIndex(10),
         prev_log_term: Term(7),
-        entries: vec![LogEntry::noop(Term(8))],
+        entries: vec![LogEntry::noop(Term(8))].into(),
         leader_commit: LogIndex(10),
     }));
 }
@@ -325,6 +359,39 @@ fn round_trip(message: Message) {
     assert_eq!(decode_message(&encoded), Ok(message));
 }
 
+#[test]
+fn encode_message_into_matches_owned_encoder_and_reuses_buffer() {
+    let message = append_entries();
+    let expected = encode_message(&message).expect("message encodes");
+    let mut encoded = vec![0; expected.len() + 128];
+    let original_ptr = encoded.as_ptr();
+
+    encode_message_into(&mut encoded, &message).expect("message encodes into buffer");
+
+    assert_eq!(encoded, expected);
+    assert_eq!(encoded.as_ptr(), original_ptr);
+}
+
+#[test]
+fn encode_message_into_clears_buffer_on_error() {
+    let message = Message::InstallSnapshot(rafter::InstallSnapshot {
+        term: Term(9),
+        leader_id: NodeId(1),
+        metadata: test_snapshot().metadata,
+        application_payload: b"snapshot bytes".to_vec(),
+    });
+    let mut encoded = vec![1, 2, 3];
+
+    assert!(matches!(
+        encode_message_into(&mut encoded, &message),
+        Err(EncodePeerMessageError::UnsupportedMessage {
+            message: "InstallSnapshot",
+            ..
+        })
+    ));
+    assert!(encoded.is_empty());
+}
+
 fn vote_request() -> Message {
     Message::RequestVote(RequestVote {
         term: Term(7),
@@ -344,9 +411,19 @@ fn append_entries() -> Message {
         entries: vec![LogEntry::application(
             Term(8),
             b"stream command bytes".to_vec(),
-        )],
+        )]
+        .into(),
         leader_commit: LogIndex(11),
     })
+}
+
+fn application_payload(entry: &LogEntry) -> &rafter::SharedPayload {
+    match &entry.kind {
+        LogEntryKind::Application(payload) => payload,
+        LogEntryKind::Configuration(_) | LogEntryKind::Noop => {
+            panic!("test entry should be application payload")
+        }
+    }
 }
 
 fn first_append_entry_kind_offset() -> usize {
@@ -420,7 +497,7 @@ fn configuration_entry_size_accounting_is_upper_bound_of_encoding() {
             leader_id: NodeId(1),
             prev_log_index: LogIndex(10),
             prev_log_term: Term(7),
-            entries,
+            entries: entries.into(),
             leader_commit: LogIndex(11),
         })
     };

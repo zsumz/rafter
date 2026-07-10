@@ -62,6 +62,8 @@ pub(super) type ProposalBeginResult<G, A, R> =
     GroupResult<A, R, ProposalBegin<G, <A as ReplicatedStateMachine>::CommandResult>>;
 pub(super) type ProposalBeginReportResult<G, A, R> =
     GroupResult<A, R, ProposalBeginReport<G, <A as ReplicatedStateMachine>::CommandResult>>;
+pub(super) type ProposalBatchBeginReportResult<G, A, R> =
+    GroupResult<A, R, ProposalBatchBeginReport<G, <A as ReplicatedStateMachine>::CommandResult>>;
 pub(super) type ReadBarrierBeginReportResult<G, A, R> =
     GroupResult<A, R, ReadBarrierBeginReport<G, <A as ReplicatedStateMachine>::CommandResult>>;
 pub(super) type ReadOutcomeResult<G, A, R> =
@@ -105,9 +107,45 @@ pub enum GroupInput<G, C> {
     Tick,
     PeerMessage { envelope: PeerEnvelope<G> },
     Proposal { proposal: Proposal<C> },
+    ProposalBatch { proposals: Vec<Proposal<C>> },
     ReadBarrier { request: ReadBarrierRequest<G> },
     TransferLeadership { target: NodeId },
     Membership { change: MembershipChange },
+}
+
+/// Controls which observability fields are materialized in a group step report.
+///
+/// Metrics are an observation snapshot, not protocol state. Disabling them
+/// keeps every protocol output, waiter outcome, apply result, and lifecycle
+/// event intact while avoiding a metrics walk on hot paths that publish their
+/// own metrics snapshot at a coarser boundary.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct StepReportOptions {
+    pub include_metrics: bool,
+}
+
+impl StepReportOptions {
+    /// Build a full-fidelity report, including a fresh metrics snapshot.
+    #[must_use]
+    pub const fn full() -> Self {
+        Self {
+            include_metrics: true,
+        }
+    }
+
+    /// Build a protocol/lifecycle report without the metrics snapshot.
+    #[must_use]
+    pub const fn without_metrics() -> Self {
+        Self {
+            include_metrics: false,
+        }
+    }
+}
+
+impl Default for StepReportOptions {
+    fn default() -> Self {
+        Self::full()
+    }
 }
 
 /// Explicit side effects from one group step.
@@ -128,6 +166,13 @@ pub struct GroupStepReport<G, R> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProposalBeginReport<G, R> {
     pub begin: ProposalBegin<G, R>,
+    pub report: GroupStepReport<G, R>,
+}
+
+/// Full-fidelity result of beginning a local proposal batch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProposalBatchBeginReport<G, R> {
+    pub begins: Vec<ProposalBegin<G, R>>,
     pub report: GroupStepReport<G, R>,
 }
 
@@ -245,6 +290,15 @@ impl<G, A, R> RaftGroup<G, A, R> {
     #[must_use]
     pub fn node_id(&self) -> NodeId {
         self.node_id
+    }
+
+    /// Returns the latest leader hint known by the underlying Raft runtime.
+    #[must_use]
+    pub fn leader_hint(&self) -> Option<NodeId>
+    where
+        R: PersistedRaftRuntime,
+    {
+        self.raft.leader_hint()
     }
 
     /// Highest local proposal ID consumed by this group, if any.

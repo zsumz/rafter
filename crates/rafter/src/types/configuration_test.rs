@@ -1,6 +1,6 @@
 use crate::{
-    ConfigurationEntry, ConfigurationId, ConfigurationPhase, JointMembership, LogEntryKind,
-    MembershipConfig, MembershipSet, NodeId,
+    ConfigurationEntry, ConfigurationId, ConfigurationPhase, JointMembership, LogEntry,
+    LogEntryKind, MembershipConfig, MembershipSet, NodeId,
 };
 
 #[test]
@@ -52,6 +52,17 @@ fn log_entry_kind_keeps_application_payloads_separate_from_configuration_entries
             .phase(),
         ConfigurationPhase::Stable
     );
+}
+
+#[test]
+fn application_log_entry_kind_accepts_borrowed_payloads() {
+    let payload = [13, 21, 34, 55];
+
+    let kind = LogEntryKind::application(payload.as_slice());
+    let entry = LogEntry::application(crate::Term(1), payload.as_slice());
+
+    assert_eq!(kind.application_payload(), Some(payload.as_slice()));
+    assert_eq!(entry.application_payload(), Some(payload.as_slice()));
 }
 
 #[test]

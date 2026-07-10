@@ -1,6 +1,6 @@
 use std::fmt;
 
-use super::{JointMembership, LogIndex, MembershipConfig, MembershipSet, NodeId};
+use super::{JointMembership, LogIndex, MembershipConfig, MembershipSet, NodeId, SharedPayload};
 
 /// Monotonic identity for committed membership configurations.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -140,7 +140,10 @@ impl ConfigurationEntry {
 impl LogEntryKind {
     /// Builds an application entry from opaque payload bytes.
     #[must_use]
-    pub fn application(payload: Vec<u8>) -> Self {
+    pub fn application<P>(payload: P) -> Self
+    where
+        P: Into<SharedPayload>,
+    {
         Self::Application(payload.into())
     }
 

@@ -180,7 +180,7 @@ fn message(u: &mut Unstructured<'_>) -> Option<Message> {
             prev_log_index: log_index(u)?,
             prev_log_term: term(u)?,
             sequence: small(u)?,
-            entries: log_entries(u)?,
+            entries: log_entries(u)?.into(),
             leader_commit: log_index(u)?,
         }),
         6 => Message::AppendEntriesResponse(AppendEntriesResponse {

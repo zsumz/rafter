@@ -7,6 +7,30 @@ pub struct WriteOptions {
     pub client_request_id: Option<ClientRequestId>,
 }
 
+/// One command in an explicit managed write batch.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WriteBatchEntry<C> {
+    pub command: C,
+    pub options: WriteOptions,
+}
+
+impl<C> WriteBatchEntry<C> {
+    /// Creates a batch entry with default write options.
+    #[must_use]
+    pub fn new(command: C) -> Self {
+        Self {
+            command,
+            options: WriteOptions::default(),
+        }
+    }
+
+    /// Creates a batch entry with caller-supplied write options.
+    #[must_use]
+    pub fn with_options(command: C, options: WriteOptions) -> Self {
+        Self { command, options }
+    }
+}
+
 /// Receipt returned only after the proposed command has committed and applied.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WriteReceipt<R = ()> {

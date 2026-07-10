@@ -24,8 +24,8 @@ pub mod transport;
 pub mod watch;
 
 pub use driver::{
-    DriverCommandSender, InMemoryRaftDriver, ManagedDriverError, QueryReceipt, WriteOptions,
-    WriteReceipt,
+    DriverCommandSender, InMemoryRaftDriver, ManagedDriverError, QueryReceipt, WriteBatchEntry,
+    WriteOptions, WriteReceipt,
 };
 pub use error::{
     MetricsError, ReadError, ShutdownError, TransferLeadershipError, UnknownOutcomeReason,

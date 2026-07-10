@@ -8,16 +8,17 @@ use std::{
 
 pub(crate) use rafter::{
     AppendEntries, AppendEntriesResponse, ApplicationSnapshotKind, ApplicationSnapshotMetadata,
-    ApplicationSnapshotVersion, Input as RaftInput, LeadershipTransferRejection, LocalProposalId,
-    LogIndex, MembershipConfig, MembershipSet, Message, Node as RaftNode, NodeConfig, NodeId,
-    Output as RaftOutput, PreVoteResponse, PromotionBarrier, ProposalRejection, RaftSnapshot,
-    RaftSnapshotMetadata, ReadId, ReadIndexCancelReason, ReadIndexRejection, ReplicationProgress,
-    RequestVoteResponse, Role, SharedPayload, SnapshotChunkSend, SnapshotGroupId,
-    StagedSnapshotChunk, Term,
+    ApplicationSnapshotVersion, ClientProposalInput, Input as RaftInput,
+    LeadershipTransferRejection, LocalProposalId, LogIndex, MembershipConfig, MembershipSet,
+    Message, Node as RaftNode, NodeConfig, NodeId, Output as RaftOutput, PreVoteResponse,
+    PromotionBarrier, ProposalRejection, RaftSnapshot, RaftSnapshotMetadata, ReadId,
+    ReadIndexCancelReason, ReadIndexRejection, ReplicationProgress, RequestVoteResponse, Role,
+    SharedPayload, SnapshotChunkSend, SnapshotGroupId, StagedSnapshotChunk, Term,
 };
 pub(crate) use rafter_app::error::{GroupError, StateMachineOperation};
 pub(crate) use rafter_app::group::{
     GroupFatalState, GroupInput, LeadershipTransferEvent, PoisonedWaiters, RaftGroup,
+    StepReportOptions,
 };
 pub(crate) use rafter_app::membership::{MembershipChange, MembershipEvent, NodeInfo};
 pub(crate) use rafter_app::proposal::{
@@ -227,6 +228,17 @@ impl PersistedRaftRuntime for KernelRuntime {
         Ok(self.node.step(input))
     }
 
+    fn step_proposal_batch(
+        &mut self,
+        proposals: Vec<ClientProposalInput>,
+    ) -> Result<Vec<RaftOutput>, Self::Error> {
+        Ok(self.node.step_proposal_batch(proposals))
+    }
+
+    fn step_batch(&mut self, inputs: Vec<RaftInput>) -> Result<Vec<RaftOutput>, Self::Error> {
+        Ok(self.node.step_batch(inputs))
+    }
+
     fn term_at_index(&self, index: LogIndex) -> Option<Term> {
         self.node.term_at_index(index)
     }
@@ -247,6 +259,8 @@ pub(crate) struct ScriptedRuntime {
     pub(crate) terms: BTreeMap<LogIndex, Term>,
     pub(crate) step_memberships: VecDeque<(MembershipConfig, MembershipConfig)>,
     pub(crate) step_inputs: Vec<RaftInput>,
+    pub(crate) step_batches: Vec<Vec<RaftInput>>,
+    pub(crate) proposal_batches: Vec<Vec<ClientProposalInput>>,
     pub(crate) step_outputs: VecDeque<Vec<RaftOutput>>,
     pub(crate) step_errors: VecDeque<TestRuntimeError>,
 }
@@ -267,6 +281,8 @@ impl ScriptedRuntime {
             terms: terms.into_iter().collect(),
             step_memberships: VecDeque::new(),
             step_inputs: Vec::new(),
+            step_batches: Vec::new(),
+            proposal_batches: Vec::new(),
             step_outputs: VecDeque::new(),
             step_errors: VecDeque::new(),
         }
@@ -351,8 +367,42 @@ impl PersistedRaftRuntime for ScriptedRuntime {
         Ok(self.step_outputs.pop_front().unwrap_or_default())
     }
 
+    fn step_proposal_batch(
+        &mut self,
+        proposals: Vec<ClientProposalInput>,
+    ) -> Result<Vec<RaftOutput>, Self::Error> {
+        self.step_inputs
+            .extend(proposals.iter().map(proposal_input_from_client));
+        self.proposal_batches.push(proposals);
+        if let Some(error) = self.step_errors.pop_front() {
+            return Err(error);
+        }
+        Ok(self.step_outputs.pop_front().unwrap_or_default())
+    }
+
+    fn step_batch(&mut self, inputs: Vec<RaftInput>) -> Result<Vec<RaftOutput>, Self::Error> {
+        self.step_batches.push(inputs.clone());
+        self.step_inputs.extend(inputs);
+        if let Some(error) = self.step_errors.pop_front() {
+            return Err(error);
+        }
+        Ok(self.step_outputs.pop_front().unwrap_or_default())
+    }
+
     fn term_at_index(&self, index: LogIndex) -> Option<Term> {
         self.terms.get(&index).copied()
+    }
+}
+
+fn proposal_input_from_client(proposal: &ClientProposalInput) -> RaftInput {
+    match proposal.proposal_id {
+        Some(proposal_id) => RaftInput::TrackedClientProposal {
+            proposal_id,
+            payload: proposal.payload.clone(),
+        },
+        None => RaftInput::ClientProposal {
+            payload: proposal.payload.clone(),
+        },
     }
 }
 

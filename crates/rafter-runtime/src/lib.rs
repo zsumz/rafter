@@ -16,21 +16,21 @@
 #[cfg(test)]
 use rafter::BootstrapValidationError;
 use rafter::{
-    CommittedConfiguration, ConfigurationEntry, Input as RaftInput, LocalProposalId, LogEntry,
-    LogIndex, MembershipConfig, Message, Node as RaftNode, NodeId as RaftNodeId,
-    Output as RaftOutput, RaftSnapshot, RaftSnapshotMetadata, ReadId, ReplicationProgress,
-    Role as RaftRole, SnapshotChunkRequest, SnapshotChunkSource, SnapshotCommittedConfiguration,
-    SnapshotTransferStatus, Term,
+    ClientProposalInput, CommittedConfiguration, ConfigurationEntry, Input as RaftInput,
+    LocalProposalId, LogEntry, LogIndex, MembershipConfig, Message, Node as RaftNode,
+    NodeId as RaftNodeId, Output as RaftOutput, RaftSnapshot, RaftSnapshotMetadata, ReadId,
+    ReplicationProgress, Role as RaftRole, SnapshotChunkRequest, SnapshotChunkSource,
+    SnapshotCommittedConfiguration, SnapshotTransferStatus, Term,
 };
 use rafter_storage::{
-    InMemoryRaftHardStateStore, InMemoryRaftLogSegment, InMemoryRaftSnapshotStore,
-    PersistedRaftLogEntry, PersistedRaftSnapshot, RaftHardState, RaftHardStateStore,
+    BorrowedPersistedRaftLogEntry, InMemoryRaftHardStateStore, InMemoryRaftLogSegment,
+    InMemoryRaftSnapshotStore, PersistedRaftSnapshot, RaftHardState, RaftHardStateStore,
     RaftLogSegment, RaftSnapshotStore,
 };
 #[cfg(test)]
 use rafter_storage::{
-    RaftHardStateStoreWriteError, RaftLogSegmentAppendError, RaftLogSegmentCompactError,
-    RaftLogSegmentTruncateError, RaftSnapshotStoreWriteError,
+    PersistedRaftLogEntry, RaftHardStateStoreWriteError, RaftLogSegmentAppendError,
+    RaftLogSegmentCompactError, RaftLogSegmentTruncateError, RaftSnapshotStoreWriteError,
 };
 
 mod construction;
@@ -122,7 +122,7 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
     /// After a fatal persistence failure the runtime remains poisoned until
     /// restart and suppresses all later outputs.
     pub fn step(&mut self, input: RaftInput) -> Result<Vec<RaftOutput>, RaftRuntimeError> {
-        self.step_batch(vec![input])
+        self.step_and_persist(|node| node.step(input))
     }
 
     /// Proposes an application payload with a local-only proposal ID.
@@ -164,6 +164,28 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
         self.step(RaftInput::ReadIndex { read_id })
     }
 
+    /// Drives one deterministic proposal batch and persists its combined
+    /// effects before releasing outputs.
+    ///
+    /// This is the proposal-shaped sibling of [`DurableRaftNode::step_batch`]:
+    /// it preserves the same all-or-nothing runtime durability fence while
+    /// avoiding a generic input stream for the hot write path.
+    ///
+    /// # Errors
+    ///
+    /// Returns a persistence error when changed durable state cannot be
+    /// written; the runtime is then poisoned until restart and no output from
+    /// the failed batch is released.
+    pub fn step_proposal_batch(
+        &mut self,
+        proposals: Vec<ClientProposalInput>,
+    ) -> Result<Vec<RaftOutput>, RaftRuntimeError> {
+        if proposals.is_empty() {
+            return Ok(Vec::new());
+        }
+        self.step_and_persist(|node| node.step_proposal_batch(proposals))
+    }
+
     /// Drives several deterministic Raft inputs and persists their combined
     /// effects with one durable flush per store — group commit.
     ///
@@ -196,6 +218,19 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
         &mut self,
         inputs: Vec<RaftInput>,
     ) -> Result<Vec<RaftOutput>, RaftRuntimeError> {
+        if inputs.len() == 1 {
+            return match inputs.into_iter().next() {
+                Some(input) => self.step(input),
+                None => unreachable!("len was checked"),
+            };
+        }
+        self.step_and_persist(|node| node.step_batch(inputs))
+    }
+
+    fn step_and_persist(
+        &mut self,
+        step: impl FnOnce(&mut RaftNode) -> Vec<RaftOutput>,
+    ) -> Result<Vec<RaftOutput>, RaftRuntimeError> {
         if let Some(cause) = &self.fatal_error {
             return Err(RaftRuntimeError::Poisoned {
                 cause: cause.clone(),
@@ -204,10 +239,7 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
 
         let persisted_before = self.hard_state_store.current();
         let commit_floor = self.node.commit_index();
-        let mut outputs = Vec::new();
-        for input in inputs {
-            outputs.extend(self.node.step(input));
-        }
+        let outputs = step(&mut self.node);
         let current = hard_state_for_node(&self.node);
         let pre_log_hard_state =
             hard_state_for_node_capped_at(&self.node, durable_last_log_index(&self.log_segment));
@@ -592,6 +624,13 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
     /// payload bytes from the snapshot store; unresolvable directives are
     /// dropped like lost messages.
     fn resolve_snapshot_chunk_sends(&self, outputs: Vec<RaftOutput>) -> Vec<RaftOutput> {
+        if !outputs
+            .iter()
+            .any(|output| matches!(output, RaftOutput::SendSnapshotChunk { .. }))
+        {
+            return outputs;
+        }
+
         outputs
             .into_iter()
             .filter_map(|output| match output {
@@ -645,23 +684,16 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
                 snapshot_index,
             });
         }
-        let entries = self
-            .node
-            .log_entries_from(first_new_index)
-            .into_iter()
-            .enumerate()
-            .map(|(offset, entry)| {
-                let index = LogIndex(first_new_index.0 + offset as u64);
-                PersistedRaftLogEntry {
-                    index,
-                    term: entry.term,
-                    kind: entry.kind,
-                }
-            })
-            .collect::<Vec<_>>();
+        let entries = self.node.log_entries_slice_from(first_new_index);
         if !entries.is_empty() {
             self.log_segment
-                .append_entries(&entries)
+                .append_entries_borrowed(entries.iter().enumerate().map(|(offset, entry)| {
+                    BorrowedPersistedRaftLogEntry::new(
+                        LogIndex(first_new_index.0 + offset as u64),
+                        entry.term,
+                        &entry.kind,
+                    )
+                }))
                 .map_err(RaftRuntimeError::LogAppend)?;
         }
         self.persisted_tail = Some(log_repair::PersistedTail::of_node(&self.node));
@@ -723,6 +755,17 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
 
     fn step(&mut self, input: RaftInput) -> Result<Vec<RaftOutput>, RaftRuntimeError> {
         DurableRaftNode::step(self, input)
+    }
+
+    fn step_proposal_batch(
+        &mut self,
+        proposals: Vec<ClientProposalInput>,
+    ) -> Result<Vec<RaftOutput>, RaftRuntimeError> {
+        DurableRaftNode::step_proposal_batch(self, proposals)
+    }
+
+    fn step_batch(&mut self, inputs: Vec<RaftInput>) -> Result<Vec<RaftOutput>, RaftRuntimeError> {
+        DurableRaftNode::step_batch(self, inputs)
     }
 
     fn term_at_index(&self, index: LogIndex) -> Option<Term> {

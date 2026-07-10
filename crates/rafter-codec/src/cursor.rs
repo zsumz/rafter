@@ -1,24 +1,24 @@
+use std::{ops::Range, sync::Arc};
+
 use rafter::{
     ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion,
     CommittedConfiguration, ConfigurationId, LogIndex, MembershipConfig, MembershipSet, NodeId,
-    RaftSnapshotMetadata, SnapshotCommittedConfiguration, SnapshotGroupId, SnapshotTransferId,
-    Term,
+    RaftSnapshotMetadata, SharedPayload, SnapshotCommittedConfiguration, SnapshotGroupId,
+    SnapshotTransferId, Term,
 };
 
 use crate::{DecodePeerMessageError, EncodePeerMessageError};
 
 #[derive(Debug)]
-pub(super) struct Writer {
-    bytes: Vec<u8>,
+pub(super) struct Writer<'a> {
+    bytes: &'a mut Vec<u8>,
 }
 
-impl Writer {
-    pub(super) fn new() -> Self {
-        Self { bytes: Vec::new() }
-    }
-
-    pub(super) fn finish(self) -> Vec<u8> {
-        self.bytes
+impl<'a> Writer<'a> {
+    pub(super) fn with_capacity(bytes: &'a mut Vec<u8>, capacity: usize) -> Self {
+        bytes.clear();
+        bytes.reserve(capacity);
+        Self { bytes }
     }
 
     pub(super) fn bytes(&mut self, bytes: &[u8]) {
@@ -179,6 +179,7 @@ impl Writer {
 pub(super) struct Reader<'a> {
     payload: &'a [u8],
     position: usize,
+    shared_payload: Option<Arc<[u8]>>,
 }
 
 impl<'a> Reader<'a> {
@@ -186,6 +187,7 @@ impl<'a> Reader<'a> {
         Self {
             payload,
             position: 0,
+            shared_payload: None,
         }
     }
 
@@ -278,8 +280,24 @@ impl<'a> Reader<'a> {
     }
 
     pub(super) fn blob(&mut self) -> Result<Vec<u8>, DecodePeerMessageError> {
+        Ok(self.blob_bytes()?.to_vec())
+    }
+
+    pub(super) fn blob_bytes(&mut self) -> Result<&'a [u8], DecodePeerMessageError> {
         let len = self.u32()? as usize;
-        Ok(self.take(len)?.to_vec())
+        self.take(len)
+    }
+
+    pub(super) fn shared_blob_payload(&mut self) -> Result<SharedPayload, DecodePeerMessageError> {
+        let len = self.u32()? as usize;
+        let range = self.take_range(len)?;
+        let bytes = self.shared_frame();
+        SharedPayload::from_shared_range(bytes, range.clone()).ok_or({
+            DecodePeerMessageError::UnexpectedEof {
+                needed: range.end,
+                remaining: self.payload.len(),
+            }
+        })
     }
 
     pub(super) fn snapshot_metadata(
@@ -359,6 +377,11 @@ impl<'a> Reader<'a> {
     }
 
     fn take(&mut self, len: usize) -> Result<&'a [u8], DecodePeerMessageError> {
+        let range = self.take_range(len)?;
+        Ok(&self.payload[range])
+    }
+
+    fn take_range(&mut self, len: usize) -> Result<Range<usize>, DecodePeerMessageError> {
         let remaining = self.payload.len() - self.position;
         if remaining < len {
             return Err(DecodePeerMessageError::UnexpectedEof {
@@ -369,6 +392,12 @@ impl<'a> Reader<'a> {
 
         let start = self.position;
         self.position += len;
-        Ok(&self.payload[start..self.position])
+        Ok(start..self.position)
+    }
+
+    fn shared_frame(&mut self) -> Arc<[u8]> {
+        self.shared_payload
+            .get_or_insert_with(|| Arc::from(self.payload))
+            .clone()
     }
 }

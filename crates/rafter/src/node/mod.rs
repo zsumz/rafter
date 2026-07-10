@@ -1,4 +1,5 @@
 mod bootstrap;
+mod commit;
 mod config;
 mod election;
 mod event;
@@ -12,7 +13,7 @@ mod transfer;
 #[cfg(test)]
 mod tests;
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use crate::{
     CommittedConfiguration, ConfigurationEntry, FollowerSnapshotTransferStatus,
@@ -24,11 +25,12 @@ use crate::{
 pub use bootstrap::{BootstrapLogEntry, BootstrapState, BootstrapValidationError};
 pub use config::{NodeConfig, NodeConfigError};
 pub use event::{
-    ConfigurationProposalRejection, Input, LeadershipTransferRejection, LocalProposalDropReason,
-    Output, ProposalRejection, ReadIndexCancelReason, ReadIndexRejection, Role,
+    ClientProposalInput, ConfigurationProposalRejection, Input, LeadershipTransferRejection,
+    LocalProposalDropReason, Output, ProposalRejection, ReadIndexCancelReason, ReadIndexRejection,
+    Role,
 };
 pub use replication::PendingSnapshotTransferResumeError;
-use state::{LeaderState, PersistentState, VolatileState};
+use state::{LeaderState, LocalProposalTracker, MembershipIndex, PersistentState, VolatileState};
 
 /// Pure deterministic Raft state machine.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -200,20 +202,10 @@ impl Node {
         if self.role() != Role::Leader {
             return Vec::new();
         }
-        self.effective_membership()
-            .replica_ids()
-            .into_iter()
-            .filter(|follower_id| *follower_id != self.id())
-            .map(|follower_id| {
-                let Some(progress) = self.leader.progress.get(&follower_id) else {
-                    let next_index = self.snapshot_index().next();
-                    return ReplicationProgress {
-                        follower_id,
-                        match_index: LogIndex::ZERO,
-                        next_index,
-                        state: ReplicationState::Probing,
-                    };
-                };
+        self.leader
+            .progress
+            .iter_followers()
+            .map(|(follower_id, progress)| {
                 let state = match progress.mode {
                     state::ProgressMode::Probe { .. } => ReplicationState::Probing,
                     state::ProgressMode::Replicate => ReplicationState::Replicating,
@@ -234,10 +226,18 @@ impl Node {
     /// Returns the currently effective membership.
     #[must_use]
     pub fn effective_membership(&self) -> MembershipConfig {
-        self.effective_configuration_entry()
-            .map(|entry| entry.membership_config())
-            .or_else(|| self.snapshot_committed_membership())
-            .unwrap_or_else(|| self.config.static_membership())
+        self.effective_configuration_entry().map_or_else(
+            || self.effective_base_membership_ref().clone(),
+            |entry| entry.membership_config(),
+        )
+    }
+
+    pub(super) fn effective_base_membership_ref(&self) -> &MembershipConfig {
+        self.persistent
+            .snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.metadata.committed_membership())
+            .unwrap_or_else(|| self.config.static_membership_ref())
     }
 
     /// Membership committed at `index`, as recoverable from the retained
@@ -371,8 +371,7 @@ impl Node {
                 let total_bytes = snapshot.application_payload_len;
                 self.leader
                     .progress
-                    .iter()
-                    .filter(|(follower_id, _)| **follower_id != self.id())
+                    .iter_followers()
                     .filter_map(|(follower_id, progress)| {
                         let next_offset = match progress.mode {
                             state::ProgressMode::Snapshot { next_offset } => next_offset,
@@ -380,7 +379,7 @@ impl Node {
                             _ => return None,
                         };
                         Some(LeaderSnapshotTransferStatus {
-                            follower_id: *follower_id,
+                            follower_id,
                             transfer_id: snapshot.transfer_id(),
                             last_included_index: snapshot.metadata.last_included_index,
                             total_bytes,
@@ -414,11 +413,17 @@ impl Node {
         match input {
             Input::Tick => self.tick(),
             Input::Message { from, message } => self.receive(from, message),
-            Input::ClientProposal { payload } => self.client_proposal(payload, None),
+            Input::ClientProposal { payload } => self.step_client_proposal(ClientProposalInput {
+                proposal_id: None,
+                payload,
+            }),
             Input::TrackedClientProposal {
                 proposal_id,
                 payload,
-            } => self.client_proposal(payload, Some(proposal_id)),
+            } => self.step_client_proposal(ClientProposalInput {
+                proposal_id: Some(proposal_id),
+                payload,
+            }),
             Input::AddLearner { learner_id } => self.add_learner(learner_id),
             Input::PromoteLearner {
                 learner_id,
@@ -443,6 +448,83 @@ impl Node {
         }
     }
 
+    /// Applies several input events while coalescing adjacent client
+    /// proposals into one deterministic proposal batch and adjacent read
+    /// barriers into one deterministic confirmation round.
+    ///
+    /// Messages, membership changes, ticks, and leadership transfer requests
+    /// retain their original one-step semantics. They also form batch
+    /// boundaries because they can change the term, role, quorum, heartbeat
+    /// sequencing, or output ordering obligations that deterministic batching
+    /// must not cross.
+    #[must_use]
+    pub fn step_batch(&mut self, inputs: Vec<Input>) -> Vec<Output> {
+        let mut inputs = inputs.into_iter();
+        let Some(first) = inputs.next() else {
+            return Vec::new();
+        };
+        let Some(second) = inputs.next() else {
+            return self.step(first);
+        };
+
+        let mut outputs = Vec::new();
+        let mut proposals = Vec::new();
+        let mut reads = Vec::new();
+
+        for input in std::iter::once(first)
+            .chain(std::iter::once(second))
+            .chain(inputs)
+        {
+            match input {
+                Input::ClientProposal { payload } => {
+                    if !reads.is_empty() {
+                        outputs.extend(self.read_index_batch(std::mem::take(&mut reads)));
+                    }
+                    proposals.push(ClientProposalInput {
+                        proposal_id: None,
+                        payload,
+                    });
+                }
+                Input::TrackedClientProposal {
+                    proposal_id,
+                    payload,
+                } => {
+                    if !reads.is_empty() {
+                        outputs.extend(self.read_index_batch(std::mem::take(&mut reads)));
+                    }
+                    proposals.push(ClientProposalInput {
+                        proposal_id: Some(proposal_id),
+                        payload,
+                    });
+                }
+                Input::ReadIndex { read_id } => {
+                    if !proposals.is_empty() {
+                        outputs.extend(self.step_proposal_batch(std::mem::take(&mut proposals)));
+                    }
+                    reads.push(read_id);
+                }
+                input => {
+                    if !proposals.is_empty() {
+                        outputs.extend(self.step_proposal_batch(std::mem::take(&mut proposals)));
+                    }
+                    if !reads.is_empty() {
+                        outputs.extend(self.read_index_batch(std::mem::take(&mut reads)));
+                    }
+                    outputs.extend(self.step(input));
+                }
+            }
+        }
+
+        if !proposals.is_empty() {
+            outputs.extend(self.step_proposal_batch(proposals));
+        }
+        if !reads.is_empty() {
+            outputs.extend(self.read_index_batch(reads));
+        }
+
+        outputs
+    }
+
     fn receive(&mut self, from: NodeId, message: Message) -> Vec<Output> {
         // Membership does not gate message processing wholesale: servers
         // outside the receiver's configuration may still carry relevant
@@ -453,7 +535,7 @@ impl Node {
         }
 
         match message {
-            Message::AppendEntries(request) => self.handle_append_entries(from, request),
+            Message::AppendEntries(request) => self.handle_append_entries(from, &request),
             Message::AppendEntriesResponse(response) => {
                 self.handle_append_entries_response(from, response)
             }
@@ -478,7 +560,11 @@ impl Node {
     where
         I: IntoIterator<Item = NodeId>,
     {
-        self.effective_membership().has_quorum(acknowledgements)
+        if self.configuration_offsets.is_empty() {
+            return MembershipIndex::new(self.effective_base_membership_ref(), self.id())
+                .has_quorum(acknowledgements);
+        }
+        MembershipIndex::new(&self.effective_membership(), self.id()).has_quorum(acknowledgements)
     }
 
     fn uncommitted_configuration_indexes(&self) -> Vec<LogIndex> {
@@ -565,7 +651,7 @@ impl Node {
     ) -> Vec<Output> {
         self.configuration_offsets = configuration_offsets_of(&log);
         self.persistent.log = log;
-        let mut retained = BTreeMap::new();
+        let mut retained = LocalProposalTracker::default();
         let mut outputs = Vec::new();
         let snapshot_index = self.snapshot_index();
         for (index, proposal) in std::mem::take(&mut self.volatile.local_proposals) {

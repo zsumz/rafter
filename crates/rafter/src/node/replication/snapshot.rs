@@ -28,7 +28,7 @@ impl Node {
         let offset = match self
             .leader
             .progress
-            .get(&peer)
+            .get(peer)
             .map(|progress| &progress.mode)
         {
             Some(super::super::state::ProgressMode::Snapshot { next_offset }) => *next_offset,

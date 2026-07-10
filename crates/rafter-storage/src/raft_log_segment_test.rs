@@ -23,6 +23,24 @@ fn file_raft_log_segment_replays_entries_after_reopen() {
 }
 
 #[test]
+fn file_raft_log_segment_appends_borrowed_entries() {
+    let path = test_segment_path("borrowed-append");
+    let entries = vec![entry(1, b"create"), entry(2, b"append")];
+    {
+        let mut segment = FileRaftLogSegment::open(&path).expect("segment opens");
+        segment
+            .append_entries_borrowed(entries.iter().map(BorrowedPersistedRaftLogEntry::from))
+            .expect("borrowed entries append");
+    }
+
+    let reopened = FileRaftLogSegment::open(&path).expect("segment reopens");
+
+    assert_eq!(reopened.next_index(), LogIndex(3));
+    assert_eq!(reopened.replay_entries(), entries);
+    remove_test_file(path);
+}
+
+#[test]
 fn file_raft_log_segment_truncates_suffix_and_replays_after_reopen() {
     let path = test_segment_path("truncate");
     {

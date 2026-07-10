@@ -1,6 +1,14 @@
-use crate::{LogEntry, LogIndex, Term};
+use crate::{LogEntry, LogIndex, SharedEntries, Term};
 
 use super::{LocalProposalDropReason, Node};
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct LogBatch {
+    pub(super) first_index: LogIndex,
+    pub(super) last_index: LogIndex,
+    pub(super) entries: SharedEntries,
+    pub(super) replication_bytes: usize,
+}
 
 impl Node {
     /// Returns the index of the installed snapshot boundary, or zero.
@@ -25,26 +33,39 @@ impl Node {
     /// Returns a clone of the log suffix starting at `first_index`.
     ///
     /// Raft log indexes are one-based. `LogIndex::ZERO` and indexes beyond the
-    /// local tail return an empty suffix.
+    /// local tail return an empty suffix. Use [`Node::log_entries_slice_from`]
+    /// when the caller only needs to inspect or rematerialize the retained
+    /// suffix without taking ownership of log entries.
     #[must_use]
     pub fn log_entries_from(&self, first_index: LogIndex) -> Vec<LogEntry> {
+        self.log_entries_slice_from(first_index).to_vec()
+    }
+
+    /// Borrows the retained log suffix starting at `first_index`.
+    ///
+    /// Raft log indexes are one-based. `LogIndex::ZERO` and indexes beyond the
+    /// local tail return an empty suffix. If `first_index` is below the local
+    /// snapshot boundary, the returned slice starts at the first retained log
+    /// entry after that boundary.
+    #[must_use]
+    pub fn log_entries_slice_from(&self, first_index: LogIndex) -> &[LogEntry] {
         if first_index == LogIndex::ZERO || first_index > self.last_log_index() {
-            return Vec::new();
+            return &[];
         }
 
         let first_available = self.first_available_log_index();
         let first_index = std::cmp::max(first_index, first_available);
         let start = log_offset(first_index.0 - first_available.0);
-        self.persistent.log[start..].to_vec()
+        &self.persistent.log[start..]
     }
 
-    pub(super) fn log_entries_from_bounded(
+    pub(super) fn log_batch_from_bounded(
         &self,
         first_index: LogIndex,
         max_replication_bytes: usize,
-    ) -> Vec<LogEntry> {
+    ) -> Option<LogBatch> {
         if first_index == LogIndex::ZERO || first_index > self.last_log_index() {
-            return Vec::new();
+            return None;
         }
 
         let first_available = self.first_available_log_index();
@@ -67,7 +88,13 @@ impl Node {
             bytes = next_bytes;
         }
 
-        entries
+        let last_index = LogIndex(first_index.0 + entries.len().checked_sub(1)? as u64);
+        Some(LogBatch {
+            first_index,
+            last_index,
+            entries: entries.into(),
+            replication_bytes: bytes,
+        })
     }
 
     pub(super) fn entry_at(&self, index: LogIndex) -> Option<&LogEntry> {
@@ -109,7 +136,7 @@ impl Node {
         index: LogIndex,
         reason: LocalProposalDropReason,
     ) -> Vec<super::Output> {
-        let dropped_proposals = self.volatile.local_proposals.split_off(&index);
+        let dropped_proposals = self.volatile.local_proposals.split_off(index);
         let outputs = dropped_proposals
             .into_iter()
             .map(

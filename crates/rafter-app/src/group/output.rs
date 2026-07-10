@@ -1,8 +1,9 @@
 use super::{
     report_has_proposal_lifecycle, ApplyEntry, Debug, GroupError, GroupInput, GroupResult,
     GroupStepReport, LeadershipTransferEvent, MembershipConfig, MembershipStepContext, Message,
-    NodeId, PeerEnvelope, PersistedRaftRuntime, ProposalEvent, RaftGroup, RaftGroupMetrics,
-    RaftInput, RaftOutput, ReplicatedStateMachine, SnapshotEvent, StepReportResult,
+    NodeId, PeerEnvelope, PersistedRaftRuntime, Proposal, ProposalEvent, RaftGroup,
+    RaftGroupMetrics, RaftInput, RaftOutput, ReplicatedStateMachine, SnapshotEvent,
+    StepReportOptions, StepReportResult,
 };
 
 impl<G, A, R> RaftGroup<G, A, R>
@@ -48,6 +49,27 @@ where
     /// the state machine fails while encoding, applying, reading, or installing
     /// snapshot data.
     pub fn step(&mut self, input: GroupInput<G, A::Command>) -> StepReportResult<G, A, R> {
+        self.step_with_options(input, StepReportOptions::default())
+    }
+
+    /// Steps one group input with explicit report materialization options.
+    ///
+    /// This preserves the same protocol and application semantics as
+    /// [`RaftGroup::step`]. `options` only controls whether observability-only
+    /// fields such as the metrics snapshot are materialized in the returned
+    /// report.
+    ///
+    /// # Errors
+    ///
+    /// Returns a group error when the group is poisoned, an input targets the
+    /// wrong group or node, the runtime rejects the underlying Raft input, or
+    /// the state machine fails while encoding, applying, reading, or installing
+    /// snapshot data.
+    pub fn step_with_options(
+        &mut self,
+        input: GroupInput<G, A::Command>,
+        options: StepReportOptions,
+    ) -> StepReportResult<G, A, R> {
         self.reject_if_poisoned()?;
         let previous_effective = self.raft.membership();
         let previous_committed = self.raft.committed_membership();
@@ -57,11 +79,12 @@ where
                     .raft
                     .step(RaftInput::Tick)
                     .map_err(GroupError::Runtime)?;
-                self.apply_raft_outputs_after_step(
+                self.apply_raft_outputs_after_step_with_options(
                     outputs,
                     previous_effective,
                     previous_committed,
                     false,
+                    options,
                 )
             }
             GroupInput::PeerMessage { envelope } => {
@@ -73,41 +96,40 @@ where
                         message: envelope.message,
                     })
                     .map_err(GroupError::Runtime)?;
-                self.apply_raft_outputs_after_step(
+                self.apply_raft_outputs_after_step_with_options(
                     outputs,
                     previous_effective,
                     previous_committed,
                     false,
+                    options,
                 )
             }
             GroupInput::Proposal { proposal } => {
-                let local_proposal_id = proposal.local_proposal_id;
-                let outputs = self.step_proposal(&proposal)?;
-                let report = self.apply_raft_outputs_after_step(
-                    outputs,
-                    previous_effective,
-                    previous_committed,
-                    false,
-                )?;
-                if !report_has_proposal_lifecycle(local_proposal_id, &report) {
-                    self.pending_proposals.remove(&local_proposal_id);
-                    return Err(GroupError::ProposalDidNotStart { local_proposal_id });
-                }
-                Ok(report)
+                self.step_proposal_input(&proposal, previous_effective, previous_committed, options)
             }
-            GroupInput::ReadBarrier { request } => {
-                self.step_read_barrier_input(&request, previous_effective, previous_committed)
-            }
+            GroupInput::ProposalBatch { proposals } => self.step_proposal_batch_input(
+                proposals,
+                previous_effective,
+                previous_committed,
+                options,
+            ),
+            GroupInput::ReadBarrier { request } => self.step_read_barrier_input(
+                &request,
+                previous_effective,
+                previous_committed,
+                options,
+            ),
             GroupInput::TransferLeadership { target } => {
                 let outputs = self
                     .raft
                     .step(RaftInput::TransferLeadership { target })
                     .map_err(GroupError::Runtime)?;
-                let mut report = self.apply_raft_outputs_after_step(
+                let mut report = self.apply_raft_outputs_after_step_with_options(
                     outputs,
                     previous_effective,
                     previous_committed,
                     false,
+                    options,
                 )?;
                 if !report
                     .leadership_transfer_events
@@ -125,15 +147,63 @@ where
                     .raft
                     .step(Self::membership_change_input(change))
                     .map_err(GroupError::Runtime)?;
-                self.apply_raft_outputs_after_step(
+                self.apply_raft_outputs_after_step_with_options(
                     outputs,
                     previous_effective,
                     previous_committed,
                     true,
+                    options,
                 )
             }
         }
     }
+
+    fn step_proposal_input(
+        &mut self,
+        proposal: &Proposal<A::Command>,
+        previous_effective: MembershipConfig,
+        previous_committed: MembershipConfig,
+        options: StepReportOptions,
+    ) -> StepReportResult<G, A, R> {
+        let local_proposal_id = proposal.local_proposal_id;
+        let outputs = self.step_proposal(proposal)?;
+        let report = self.apply_raft_outputs_after_step_with_options(
+            outputs,
+            previous_effective,
+            previous_committed,
+            false,
+            options,
+        )?;
+        if !report_has_proposal_lifecycle(local_proposal_id, &report) {
+            self.pending_proposals.remove(&local_proposal_id);
+            return Err(GroupError::ProposalDidNotStart { local_proposal_id });
+        }
+        Ok(report)
+    }
+
+    fn step_proposal_batch_input(
+        &mut self,
+        proposals: Vec<Proposal<A::Command>>,
+        previous_effective: MembershipConfig,
+        previous_committed: MembershipConfig,
+        options: StepReportOptions,
+    ) -> StepReportResult<G, A, R> {
+        let local_proposal_ids = proposals
+            .iter()
+            .map(|proposal| proposal.local_proposal_id)
+            .collect::<Vec<_>>();
+        let outputs = self.step_proposals(proposals)?;
+        let report = self.apply_raft_outputs_after_step_with_options(
+            outputs,
+            previous_effective,
+            previous_committed,
+            false,
+            options,
+        )?;
+        self.ensure_proposal_batch_lifecycles(&local_proposal_ids, &report)?;
+        Ok(report)
+    }
+
     /// Applies outputs already produced by the durable Raft runtime.
     ///
     /// This is an advanced direct path for callers that drive
@@ -166,13 +236,31 @@ where
         previous_committed: MembershipConfig,
         membership_request: bool,
     ) -> StepReportResult<G, A, R> {
-        self.apply_raft_outputs_with_membership_context(
+        self.apply_raft_outputs_after_step_with_options(
+            outputs,
+            previous_effective,
+            previous_committed,
+            membership_request,
+            StepReportOptions::default(),
+        )
+    }
+
+    pub(super) fn apply_raft_outputs_after_step_with_options(
+        &mut self,
+        outputs: Vec<RaftOutput>,
+        previous_effective: MembershipConfig,
+        previous_committed: MembershipConfig,
+        membership_request: bool,
+        options: StepReportOptions,
+    ) -> StepReportResult<G, A, R> {
+        self.apply_raft_outputs_with_membership_context_and_options(
             outputs,
             Some(MembershipStepContext {
                 previous_effective,
                 previous_committed,
                 membership_request,
             }),
+            options,
         )
     }
 
@@ -180,6 +268,19 @@ where
         &mut self,
         outputs: Vec<RaftOutput>,
         membership_context: Option<MembershipStepContext>,
+    ) -> StepReportResult<G, A, R> {
+        self.apply_raft_outputs_with_membership_context_and_options(
+            outputs,
+            membership_context,
+            StepReportOptions::default(),
+        )
+    }
+
+    pub(super) fn apply_raft_outputs_with_membership_context_and_options(
+        &mut self,
+        outputs: Vec<RaftOutput>,
+        membership_context: Option<MembershipStepContext>,
+        options: StepReportOptions,
     ) -> StepReportResult<G, A, R> {
         let membership_request = membership_context
             .as_ref()
@@ -196,7 +297,9 @@ where
         if let Some(context) = membership_context {
             self.record_membership_changes(&context, &mut report);
         }
-        report.metrics = Some(self.metrics());
+        if options.include_metrics {
+            report.metrics = Some(self.metrics());
+        }
         Ok(report)
     }
 

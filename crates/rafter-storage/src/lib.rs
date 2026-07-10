@@ -55,7 +55,8 @@ pub use raft_hard_state_store::{
     RaftHardStateStore, RaftHardStateStoreWriteError,
 };
 pub use raft_log_entry_codec::{
-    decode_raft_log_entry, encode_raft_log_entry, DecodeRaftLogEntryError, EncodeRaftLogEntryError,
+    decode_raft_log_entry, encode_borrowed_raft_log_entry, encode_raft_log_entry,
+    BorrowedPersistedRaftLogEntry, DecodeRaftLogEntryError, EncodeRaftLogEntryError,
     PersistedRaftLogEntry, RAFT_LOG_ENTRY_MAGIC, RAFT_LOG_ENTRY_VERSION,
 };
 pub use raft_log_segment::{

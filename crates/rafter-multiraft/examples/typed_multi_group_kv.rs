@@ -155,6 +155,29 @@ impl TypedGroupDriver<ShardId> for TypedKvShardDriver {
                 });
                 Ok(report)
             }
+            GroupInput::ProposalBatch { proposals } => {
+                let mut report = self.report();
+                for proposal in proposals {
+                    let apply_result = self.apply_command(proposal);
+                    let local_proposal_id = apply_result
+                        .local_proposal_id
+                        .expect("local proposals carry local ids");
+                    report.proposal_events.push(ProposalEvent::Applied {
+                        local_proposal_id,
+                        index: apply_result.index,
+                        term: apply_result.term,
+                        result: apply_result.result.clone(),
+                    });
+                    report.applied.push(apply_result);
+                }
+                report.peer_messages.push(PeerEnvelope {
+                    group_id: self.group_id,
+                    from: NodeId(1),
+                    to: NodeId(2),
+                    message: vote_message(NodeId(1)),
+                });
+                Ok(report)
+            }
             GroupInput::PeerMessage { envelope } => {
                 if envelope.group_id != self.group_id {
                     return Err("wrong group".to_owned());

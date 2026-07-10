@@ -376,7 +376,12 @@ dependencies = [
  "criterion",
  "proptest",
  "rafter",
+ "rafter-crc32",
 ]
+
+[[package]]
+name = "rafter-crc32"
+version = "0.0.1"
 
 [[package]]
 name = "rafter-maelstrom"
@@ -441,6 +446,7 @@ name = "rafter-storage"
 version = "0.0.1"
 dependencies = [
  "rafter",
+ "rafter-crc32",
 ]
 
 [[package]]

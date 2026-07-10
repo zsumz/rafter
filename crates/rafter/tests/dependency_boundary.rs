@@ -245,6 +245,7 @@ fn expected_workspace_crates() -> BTreeSet<String> {
         "rafter",
         "rafter-app",
         "rafter-codec",
+        "rafter-crc32",
         "rafter-maelstrom",
         "rafter-multiraft",
         "rafter-runtime",
@@ -258,9 +259,10 @@ fn expected_workspace_crates() -> BTreeSet<String> {
 
 fn allowed_normal_workspace_deps(crate_name: &str) -> BTreeSet<String> {
     set(match crate_name {
-        "rafter" => &[],
+        "rafter" | "rafter-crc32" => &[],
         "rafter-app" => &["rafter", "rafter-runtime-api"],
-        "rafter-codec" | "rafter-runtime-api" | "rafter-sim" | "rafter-storage" => &["rafter"],
+        "rafter-codec" | "rafter-storage" => &["rafter", "rafter-crc32"],
+        "rafter-runtime-api" | "rafter-sim" => &["rafter"],
         "rafter-maelstrom" => &["rafter", "rafter-codec", "rafter-runtime", "rafter-storage"],
         "rafter-multiraft" => &["rafter-app", "rafter-runtime-api"],
         "rafter-runtime" => &["rafter", "rafter-runtime-api", "rafter-storage"],
@@ -312,6 +314,7 @@ fn allowed_dev_workspace_deps(crate_name: &str) -> BTreeMap<String, &'static str
         ],
         "rafter"
         | "rafter-codec"
+        | "rafter-crc32"
         | "rafter-maelstrom"
         | "rafter-runtime-api"
         | "rafter-sim"

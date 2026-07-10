@@ -183,6 +183,7 @@ where
             GroupInput::ReadBarrier { request } => Some(&request.group_id),
             GroupInput::Tick
             | GroupInput::Proposal { .. }
+            | GroupInput::ProposalBatch { .. }
             | GroupInput::Membership { .. }
             | GroupInput::TransferLeadership { .. } => None,
         };

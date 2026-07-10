@@ -201,7 +201,7 @@ fn corrupted_frames_never_panic_and_the_cluster_reconverges() {
             if let rafter::Message::AppendEntries(request) = message {
                 request.prev_log_index = LogIndex(7);
                 request.prev_log_term = Term(9);
-                request.entries.clear();
+                request.entries = rafter::SharedEntries::default();
                 request.leader_commit = LogIndex(42);
             }
         },

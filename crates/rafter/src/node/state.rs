@@ -1,11 +1,15 @@
-use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::collections::{vec_deque, VecDeque};
 
 use crate::{
-    CommittedConfiguration, LocalProposalId, LogEntry, LogIndex, NodeId, PendingSnapshotTransfer,
-    RaftSnapshot, RaftSnapshotMetadata, ReadId, SnapshotTransferId, Term,
+    CommittedConfiguration, LocalProposalId, LogEntry, LogIndex, MembershipConfig, NodeId,
+    PendingSnapshotTransfer, RaftSnapshot, RaftSnapshotMetadata, ReadId, SnapshotTransferId, Term,
 };
 
 use super::Role;
+
+mod membership;
+
+pub(super) use membership::{AcknowledgementSet, MembershipIndex, ProgressSet, SlotSet};
 
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub(super) struct PersistentState {
@@ -23,7 +27,7 @@ pub(super) struct VolatileState {
     pub applied_index: LogIndex,
     /// Local-only proposal correlation. This is volatile by design: it is not
     /// replicated, persisted, snapshotted, or restored after restart.
-    pub local_proposals: BTreeMap<LogIndex, LocalProposal>,
+    pub local_proposals: LocalProposalTracker,
     pub incoming_snapshot: Option<IncomingSnapshotTransfer>,
     /// The node this replica believes is the current leader, set on accepted
     /// leader traffic and consulted by the pre-vote leader-stickiness rule
@@ -37,7 +41,7 @@ impl Default for VolatileState {
             role: Role::Follower,
             commit_index: LogIndex::ZERO,
             applied_index: LogIndex::ZERO,
-            local_proposals: BTreeMap::new(),
+            local_proposals: LocalProposalTracker::default(),
             incoming_snapshot: None,
             leader_hint: None,
         }
@@ -51,7 +55,7 @@ impl VolatileState {
             role: Role::Follower,
             commit_index: index,
             applied_index: index,
-            local_proposals: BTreeMap::new(),
+            local_proposals: LocalProposalTracker::default(),
             incoming_snapshot: None,
             leader_hint: None,
         }
@@ -64,11 +68,177 @@ pub(super) struct LocalProposal {
     pub id: LocalProposalId,
 }
 
+/// Volatile local proposal correlation ordered by log index.
+///
+/// The common path appends proposals at strictly increasing indexes and
+/// removes them as apply advances. This tracker keeps that natural shape
+/// without making protocol state depend on it: it is never persisted,
+/// replicated, or restored.
+#[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
+pub(super) struct LocalProposalTracker {
+    proposals: VecDeque<(LogIndex, LocalProposal)>,
+}
+
+impl LocalProposalTracker {
+    pub(super) fn insert(&mut self, index: LogIndex, proposal: LocalProposal) {
+        match self.proposals.back_mut() {
+            None => {
+                self.proposals.push_back((index, proposal));
+            }
+            Some((last_index, last_proposal)) if *last_index == index => {
+                *last_proposal = proposal;
+            }
+            Some((last_index, _)) if *last_index < index => {
+                self.proposals.push_back((index, proposal));
+            }
+            Some(_) => self.insert_out_of_order(index, proposal),
+        }
+    }
+
+    fn insert_out_of_order(&mut self, index: LogIndex, proposal: LocalProposal) {
+        let position = self
+            .proposals
+            .iter()
+            .position(|(existing_index, _)| *existing_index >= index);
+        match position {
+            Some(position) if self.proposals[position].0 == index => {
+                self.proposals[position].1 = proposal;
+            }
+            Some(position) => {
+                self.proposals.insert(position, (index, proposal));
+            }
+            None => self.proposals.push_back((index, proposal)),
+        }
+    }
+
+    pub(super) fn remove(&mut self, index: LogIndex) -> Option<LocalProposal> {
+        if self
+            .proposals
+            .front()
+            .is_some_and(|(current, _)| *current == index)
+        {
+            return self.proposals.pop_front().map(|(_, proposal)| proposal);
+        }
+        let position = self
+            .proposals
+            .iter()
+            .position(|(current, _)| *current == index)?;
+        self.proposals
+            .remove(position)
+            .map(|(_, proposal)| proposal)
+    }
+
+    pub(super) fn split_off(&mut self, index: LogIndex) -> Self {
+        let position = self
+            .proposals
+            .iter()
+            .position(|(proposal_index, _)| *proposal_index >= index)
+            .unwrap_or(self.proposals.len());
+        Self {
+            proposals: self.proposals.split_off(position),
+        }
+    }
+
+    #[cfg(test)]
+    pub(super) fn contains_key(&self, index: LogIndex) -> bool {
+        self.proposals
+            .iter()
+            .any(|(proposal_index, _)| *proposal_index == index)
+    }
+
+    #[cfg(test)]
+    pub(super) fn keys(&self) -> impl Iterator<Item = &LogIndex> {
+        self.proposals.iter().map(|(index, _)| index)
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_empty(&self) -> bool {
+        self.proposals.is_empty()
+    }
+}
+
+impl IntoIterator for LocalProposalTracker {
+    type Item = (LogIndex, LocalProposal);
+    type IntoIter = vec_deque::IntoIter<Self::Item>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.proposals.into_iter()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LocalProposal, LocalProposalTracker};
+    use crate::{LocalProposalId, LogIndex, Term};
+
+    fn proposal(id: u64) -> LocalProposal {
+        LocalProposal {
+            term: Term(1),
+            id: LocalProposalId(id),
+        }
+    }
+
+    #[test]
+    fn local_proposal_tracker_keeps_index_order() {
+        let mut tracker = LocalProposalTracker::default();
+
+        tracker.insert(LogIndex(3), proposal(3));
+        tracker.insert(LogIndex(1), proposal(1));
+        tracker.insert(LogIndex(2), proposal(2));
+        tracker.insert(LogIndex(2), proposal(20));
+
+        let entries = tracker.into_iter().collect::<Vec<_>>();
+        assert_eq!(
+            entries,
+            vec![
+                (LogIndex(1), proposal(1)),
+                (LogIndex(2), proposal(20)),
+                (LogIndex(3), proposal(3)),
+            ]
+        );
+    }
+
+    #[test]
+    fn local_proposal_tracker_removes_by_index() {
+        let mut tracker = LocalProposalTracker::default();
+        tracker.insert(LogIndex(1), proposal(1));
+        tracker.insert(LogIndex(2), proposal(2));
+        tracker.insert(LogIndex(3), proposal(3));
+
+        assert_eq!(tracker.remove(LogIndex(1)), Some(proposal(1)));
+        assert_eq!(tracker.remove(LogIndex(3)), Some(proposal(3)));
+        assert_eq!(tracker.remove(LogIndex(9)), None);
+        assert_eq!(
+            tracker.into_iter().collect::<Vec<_>>(),
+            vec![(LogIndex(2), proposal(2))]
+        );
+    }
+
+    #[test]
+    fn local_proposal_tracker_split_off_returns_suffix() {
+        let mut tracker = LocalProposalTracker::default();
+        tracker.insert(LogIndex(1), proposal(1));
+        tracker.insert(LogIndex(2), proposal(2));
+        tracker.insert(LogIndex(4), proposal(4));
+
+        let suffix = tracker.split_off(LogIndex(3));
+
+        assert_eq!(
+            tracker.into_iter().collect::<Vec<_>>(),
+            vec![(LogIndex(1), proposal(1)), (LogIndex(2), proposal(2))]
+        );
+        assert_eq!(
+            suffix.into_iter().collect::<Vec<_>>(),
+            vec![(LogIndex(4), proposal(4))]
+        );
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub(super) struct LeaderState {
     /// Per-replica replication progress — the Progress discipline: match and
     /// next indexes, the send mode, and the in-flight append window.
-    pub progress: BTreeMap<NodeId, Progress>,
+    pub progress: ProgressSet,
     /// Ticks observed since this term's leadership began; the leader's own
     /// clock for the read lease. Never persisted, never compared across
     /// nodes — cross-node safety rests on the documented bounded tick-rate
@@ -86,9 +256,9 @@ pub(super) struct LeaderState {
     /// replication.
     pub heartbeat_elapsed: u64,
     /// Followers heard from since the last check-quorum evaluation.
-    pub quorum_acks: BTreeSet<NodeId>,
+    pub quorum_acks: AcknowledgementSet,
     pub quorum_check_elapsed: u64,
-    pub pending_reads: Vec<PendingReadIndex>,
+    pub pending_reads: Vec<PendingReadRound>,
 }
 
 /// One replica's replication state as the leader sees it (thesis 10.2.1 and
@@ -238,18 +408,24 @@ impl Inflights {
 pub(super) struct LeaderLease {
     pub pending_basis_tick: u64,
     pub pending_sequence: u64,
-    pub acks: BTreeSet<NodeId>,
+    pub acks: AcknowledgementSet,
     pub confirmed_basis_tick: Option<u64>,
 }
 
 impl LeaderLease {
     /// Records `follower`'s acknowledgement of `sequence`; returns true when
     /// this acknowledgement is usable for the pending checkpoint.
-    pub fn record_ack(&mut self, follower: NodeId, sequence: u64) -> bool {
+    pub fn record_ack(
+        &mut self,
+        follower: NodeId,
+        sequence: u64,
+        membership: &MembershipConfig,
+        self_id: NodeId,
+    ) -> bool {
         if sequence < self.pending_sequence {
             return false;
         }
-        self.acks.insert(follower);
+        self.acks.insert(follower, membership, self_id);
         true
     }
 
@@ -274,14 +450,18 @@ impl LeaderLease {
     }
 }
 
-/// A registered read barrier awaiting quorum confirmation of leadership at
-/// or after its registration round (thesis 6.4).
+/// A group of read barriers awaiting quorum confirmation of leadership at or
+/// after their shared registration round (thesis 6.4).
+///
+/// Consecutive read barriers submitted in one deterministic step batch share
+/// the same heartbeat sequence, read index, and acknowledgement set. Grants
+/// still emit one output per read id in registration order.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
-pub(super) struct PendingReadIndex {
-    pub read_id: ReadId,
+pub(super) struct PendingReadRound {
+    pub read_ids: Vec<ReadId>,
     pub read_index: LogIndex,
     pub registered_sequence: u64,
-    pub acks: BTreeSet<NodeId>,
+    pub acks: AcknowledgementSet,
 }
 
 /// An in-flight leadership transfer; volatile, abandoned on step-down or

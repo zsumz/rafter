@@ -70,7 +70,7 @@ fn first_persisted_divergence<L: RaftLogSegment>(
         .into_iter()
         .filter(|persisted| persisted.index > node.snapshot_index())
         .find_map(|persisted| {
-            let node_entry = node.log_entries_from(persisted.index).into_iter().next();
+            let node_entry = node.log_entries_slice_from(persisted.index).first();
             match node_entry {
                 Some(entry) if entry.term == persisted.term && entry.kind == persisted.kind => None,
                 _ => Some(persisted.index),

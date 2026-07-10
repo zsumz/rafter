@@ -1,9 +1,10 @@
 use super::{
-    report_has_proposal_lifecycle, Debug, GroupError, GroupResult, GroupStepReport,
-    LocalProposalDropReason, LocalProposalId, LogIndex, PersistedRaftRuntime, Proposal,
-    ProposalBegin, ProposalBeginReport, ProposalBeginReportResult, ProposalBeginResult,
-    ProposalEvent, ProposalUnknownOutcomeReason, RaftGroup, RaftInput, RaftOutput,
-    ReplicatedStateMachine, StateMachineOperation, Term,
+    report_has_proposal_lifecycle, ClientProposalInput, Debug, GroupError, GroupResult,
+    GroupStepReport, LocalProposalDropReason, LocalProposalId, LogIndex, PersistedRaftRuntime,
+    Proposal, ProposalBatchBeginReport, ProposalBatchBeginReportResult, ProposalBegin,
+    ProposalBeginReport, ProposalBeginReportResult, ProposalBeginResult, ProposalEvent,
+    ProposalUnknownOutcomeReason, RaftGroup, RaftInput, RaftOutput, ReplicatedStateMachine,
+    StateMachineOperation, Term,
 };
 
 impl<G, A, R> RaftGroup<G, A, R>
@@ -65,6 +66,47 @@ where
         )?;
         let begin = self.proposal_begin_from_report(local_proposal_id, &report)?;
         Ok(ProposalBeginReport { begin, report })
+    }
+
+    /// Begins a batch of local tracked proposals in one runtime batch.
+    ///
+    /// The batch is preflighted before touching the runtime: proposal IDs
+    /// must be strictly increasing above this group's watermark and every
+    /// command must encode successfully. Once preflight succeeds, every
+    /// proposal ID in the batch is consumed and submitted to the persisted
+    /// runtime under one [`PersistedRaftRuntime::step_proposal_batch`] call.
+    ///
+    /// # Errors
+    ///
+    /// Returns a group error when the group is poisoned, the batch violates
+    /// local proposal ID monotonicity, command encoding fails, the runtime
+    /// rejects the batched step, applying synchronously committed entries
+    /// fails, or the runtime produces no proposal lifecycle event for any
+    /// supplied local proposal ID.
+    pub fn begin_proposal_batch(
+        &mut self,
+        proposals: Vec<Proposal<A::Command>>,
+    ) -> ProposalBatchBeginReportResult<G, A, R> {
+        self.reject_if_poisoned()?;
+        let previous_effective = self.raft.membership();
+        let previous_committed = self.raft.committed_membership();
+        let local_proposal_ids = proposals
+            .iter()
+            .map(|proposal| proposal.local_proposal_id)
+            .collect::<Vec<_>>();
+        let outputs = self.step_proposals(proposals)?;
+        let report = self.apply_raft_outputs_after_step(
+            outputs,
+            previous_effective,
+            previous_committed,
+            false,
+        )?;
+        self.ensure_proposal_batch_lifecycles(&local_proposal_ids, &report)?;
+        let mut begins = Vec::with_capacity(local_proposal_ids.len());
+        for local_proposal_id in local_proposal_ids {
+            begins.push(self.proposal_begin_from_report(local_proposal_id, &report)?);
+        }
+        Ok(ProposalBatchBeginReport { begins, report })
     }
 
     pub(super) fn proposal_begin_from_report(
@@ -148,6 +190,26 @@ where
         }
         Err(GroupError::ProposalDidNotStart { local_proposal_id })
     }
+
+    pub(super) fn ensure_proposal_batch_lifecycles(
+        &mut self,
+        local_proposal_ids: &[LocalProposalId],
+        report: &GroupStepReport<G, A::CommandResult>,
+    ) -> GroupResult<A, R, ()> {
+        let Some(local_proposal_id) = local_proposal_ids
+            .iter()
+            .copied()
+            .find(|id| !report_has_proposal_lifecycle(*id, report))
+        else {
+            return Ok(());
+        };
+
+        for pending_id in local_proposal_ids {
+            self.pending_proposals.remove(pending_id);
+        }
+        Err(GroupError::ProposalDidNotStart { local_proposal_id })
+    }
+
     pub(super) fn step_proposal(
         &mut self,
         proposal: &Proposal<A::Command>,
@@ -181,6 +243,60 @@ where
             }
         }
     }
+
+    pub(super) fn step_proposals(
+        &mut self,
+        proposals: Vec<Proposal<A::Command>>,
+    ) -> GroupResult<A, R, Vec<RaftOutput>> {
+        if proposals.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut last_seen = self.last_seen_local_proposal_id;
+        let mut batch = Vec::with_capacity(proposals.len());
+        let mut pending = Vec::with_capacity(proposals.len());
+
+        for proposal in proposals {
+            if let Some(last_seen_local_proposal_id) = last_seen {
+                if proposal.local_proposal_id <= last_seen_local_proposal_id {
+                    return Err(GroupError::NonMonotonicLocalProposalId {
+                        local_proposal_id: proposal.local_proposal_id,
+                        last_seen_local_proposal_id,
+                    });
+                }
+            }
+            let payload = self
+                .app
+                .encode_command(&proposal.command)
+                .map_err(|source| GroupError::StateMachine {
+                    operation: StateMachineOperation::EncodeCommand,
+                    source,
+                })?;
+            last_seen = Some(proposal.local_proposal_id);
+            batch.push(ClientProposalInput {
+                proposal_id: Some(proposal.local_proposal_id),
+                payload,
+            });
+            pending.push((proposal.local_proposal_id, proposal.client_request_id));
+        }
+
+        self.last_seen_local_proposal_id = last_seen;
+        for (local_proposal_id, client_request_id) in pending.iter().copied() {
+            self.pending_proposals
+                .insert(local_proposal_id, client_request_id);
+        }
+
+        match self.raft.step_proposal_batch(batch) {
+            Ok(outputs) => Ok(outputs),
+            Err(error) => {
+                for (local_proposal_id, _) in pending {
+                    self.pending_proposals.remove(&local_proposal_id);
+                }
+                Err(GroupError::Runtime(error))
+            }
+        }
+    }
+
     pub(super) fn record_unknown_proposal_outcome(
         &mut self,
         proposal_id: LocalProposalId,

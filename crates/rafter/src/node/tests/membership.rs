@@ -34,7 +34,7 @@ fn uncommitted_joint_configuration_becomes_effective_from_local_log() {
             leader_id: NodeId(1),
             prev_log_index: LogIndex::ZERO,
             prev_log_term: Term::default(),
-            entries: vec![LogEntry::configuration(Term(2), joint.clone())],
+            entries: vec![LogEntry::configuration(Term(2), joint.clone())].into(),
             leader_commit: LogIndex::ZERO,
         }),
     });
@@ -66,7 +66,7 @@ fn committed_membership_ignores_uncommitted_configuration_suffix() {
                 leader_id: NodeId(1),
                 prev_log_index: LogIndex::ZERO,
                 prev_log_term: Term::default(),
-                entries: vec![LogEntry::configuration(Term(2), joint.clone())],
+                entries: vec![LogEntry::configuration(Term(2), joint.clone())].into(),
                 leader_commit: LogIndex::ZERO,
             }),
         }),
@@ -96,7 +96,7 @@ fn follower_rejects_second_uncommitted_configuration_entry() {
                 leader_id: NodeId(1),
                 prev_log_index: LogIndex::ZERO,
                 prev_log_term: Term::default(),
-                entries: vec![LogEntry::configuration(Term(2), joint)],
+                entries: vec![LogEntry::configuration(Term(2), joint)].into(),
                 leader_commit: LogIndex::ZERO,
             }),
         }),
@@ -113,7 +113,7 @@ fn follower_rejects_second_uncommitted_configuration_entry() {
             leader_id: NodeId(1),
             prev_log_index: LogIndex(1),
             prev_log_term: Term(2),
-            entries: vec![LogEntry::configuration(Term(2), final_stable)],
+            entries: vec![LogEntry::configuration(Term(2), final_stable)].into(),
             leader_commit: LogIndex::ZERO,
         }),
     });
@@ -137,7 +137,7 @@ fn follower_accepts_next_configuration_when_frame_commits_previous() {
                 leader_id: NodeId(1),
                 prev_log_index: LogIndex::ZERO,
                 prev_log_term: Term::default(),
-                entries: vec![LogEntry::configuration(Term(2), joint.clone())],
+                entries: vec![LogEntry::configuration(Term(2), joint.clone())].into(),
                 leader_commit: LogIndex::ZERO,
             }),
         }),
@@ -154,7 +154,7 @@ fn follower_accepts_next_configuration_when_frame_commits_previous() {
             leader_id: NodeId(1),
             prev_log_index: LogIndex(1),
             prev_log_term: Term(2),
-            entries: vec![LogEntry::configuration(Term(2), final_stable.clone())],
+            entries: vec![LogEntry::configuration(Term(2), final_stable.clone())].into(),
             leader_commit: LogIndex(1),
         }),
     });
@@ -226,7 +226,7 @@ fn non_voting_future_learner_accepts_configuration_and_grant_is_uncounted() {
             leader_id: NodeId(1),
             prev_log_index: LogIndex::ZERO,
             prev_log_term: Term::default(),
-            entries: vec![LogEntry::configuration(Term(1), learner_configuration())],
+            entries: vec![LogEntry::configuration(Term(1), learner_configuration())].into(),
             leader_commit: LogIndex(1),
         }),
     });
@@ -313,7 +313,10 @@ fn newly_added_learner_receives_retained_suffix_from_boundary() {
 #[test]
 fn learner_receives_snapshot_replication() {
     let (mut leader, source) = leader_with_snapshot_and_learner_suffix();
-    leader.follower_progress_mut(NodeId(4)).next_index = LogIndex(2);
+    leader
+        .try_follower_progress_mut(NodeId(4))
+        .expect("active follower")
+        .next_index = LogIndex(2);
 
     let outputs = leader.step(Input::Message {
         from: NodeId(4),
@@ -619,6 +622,58 @@ fn stable_configuration_entry_commits_with_stable_majority() {
     assert!(outputs
         .iter()
         .all(|output| !matches!(output, Output::Apply { .. })));
+}
+
+#[test]
+fn prior_term_quorum_candidate_waits_for_current_term_entry() {
+    let mut leader = leader_with_log(vec![BootstrapLogEntry::application(
+        LogIndex(1),
+        Term(1),
+        b"prior-term".to_vec(),
+    )]);
+    assert_eq!(leader.last_log_index(), LogIndex(2));
+
+    let outputs = acknowledge(&mut leader, NodeId(2), LogIndex(1));
+    assert_eq!(leader.commit_index(), LogIndex::ZERO);
+    assert!(outputs
+        .iter()
+        .all(|output| !matches!(output, Output::Apply { .. })));
+    let outputs = acknowledge(&mut leader, NodeId(3), LogIndex(1));
+
+    assert_eq!(
+        leader.commit_index(),
+        LogIndex::ZERO,
+        "a quorum-threshold prior-term candidate is not enough to advance commit"
+    );
+    assert!(outputs
+        .iter()
+        .all(|output| !matches!(output, Output::Apply { .. })));
+
+    let outputs = acknowledge(&mut leader, NodeId(2), LogIndex(2));
+    assert_eq!(leader.commit_index(), LogIndex::ZERO);
+    assert!(outputs
+        .iter()
+        .all(|output| !matches!(output, Output::Apply { .. })));
+    let outputs = acknowledge(&mut leader, NodeId(3), LogIndex(2));
+
+    assert_eq!(leader.commit_index(), LogIndex(2));
+    assert_eq!(
+        outputs.iter().find_map(|output| match output {
+            Output::Apply { index, payload, .. } => Some((*index, payload.as_slice())),
+            Output::LocalProposalAppended { .. }
+            | Output::LocalProposalDropped { .. }
+            | Output::Send { .. }
+            | Output::ApplySnapshot { .. }
+            | Output::SendSnapshotChunk { .. }
+            | Output::StageSnapshotChunk { .. }
+            | Output::RejectProposal { .. }
+            | Output::LeadershipTransferRejected { .. }
+            | Output::ReadIndexGranted { .. }
+            | Output::ReadIndexRejected { .. }
+            | Output::ReadIndexCanceled { .. } => None,
+        }),
+        Some((LogIndex(1), &b"prior-term"[..]))
+    );
 }
 
 #[test]

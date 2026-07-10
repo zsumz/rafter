@@ -4,7 +4,7 @@ use super::{
     RaftInput, ReadBarrier, ReadBarrierBeginReport, ReadBarrierBeginReportResult,
     ReadBarrierRequest, ReadConsistency, ReadEvent, ReadId, ReadIndexCancelReason,
     ReadIndexRejection, ReadOutcome, ReadOutcomeResult, ReadProof, ReadProofOutcome, ReadRequest,
-    ReplicatedStateMachine, StateMachineOperation, StepReportResult,
+    ReplicatedStateMachine, StateMachineOperation, StepReportOptions, StepReportResult,
 };
 
 impl<G, A, R> RaftGroup<G, A, R>
@@ -19,6 +19,7 @@ where
         request: &ReadBarrierRequest<G>,
         previous_effective: MembershipConfig,
         previous_committed: MembershipConfig,
+        options: StepReportOptions,
     ) -> StepReportResult<G, A, R> {
         self.validate_read_barrier_request(request)?;
         let read_id = request.read_id;
@@ -41,7 +42,13 @@ where
                 return Err(GroupError::Runtime(error));
             }
         };
-        self.apply_raft_outputs_after_step(outputs, previous_effective, previous_committed, false)
+        self.apply_raft_outputs_after_step_with_options(
+            outputs,
+            previous_effective,
+            previous_committed,
+            false,
+            options,
+        )
     }
 
     /// Begins a read-index barrier and returns its immediate proof outcome.

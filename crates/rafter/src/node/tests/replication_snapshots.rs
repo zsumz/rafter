@@ -70,7 +70,7 @@ fn local_snapshot_covering_tracked_proposal_emits_dropped_event() {
         proposal_id,
         payload: b"covered".to_vec(),
     });
-    assert!(node.volatile.local_proposals.contains_key(&LogIndex(2)));
+    assert!(node.volatile.local_proposals.contains_key(LogIndex(2)));
 
     let snapshot = test_snapshot(2, 1, 1, b"covered snapshot");
     let outputs = node.install_local_snapshot(snapshot);
@@ -286,7 +286,10 @@ fn follower_install_snapshot_retains_matching_suffix_after_boundary() {
 #[test]
 fn leader_sends_install_snapshot_when_follower_is_behind_compacted_prefix() {
     let (mut leader, source) = leader_with_snapshot_payload(b"snapshot bytes".to_vec());
-    leader.follower_progress_mut(NodeId(2)).next_index = LogIndex(4);
+    leader
+        .try_follower_progress_mut(NodeId(2))
+        .expect("active follower")
+        .next_index = LogIndex(4);
 
     let outputs = leader.step(Input::Message {
         from: NodeId(2),
@@ -316,7 +319,10 @@ fn leader_sends_install_snapshot_when_follower_is_behind_compacted_prefix() {
 #[test]
 fn leader_sends_log_suffix_after_successful_install_snapshot_response() {
     let mut leader = leader_with_snapshot_and_suffix();
-    leader.follower_progress_mut(NodeId(2)).next_index = LogIndex(3);
+    leader
+        .try_follower_progress_mut(NodeId(2))
+        .expect("active follower")
+        .next_index = LogIndex(3);
 
     let outputs = leader.step(Input::Message {
         from: NodeId(2),
@@ -346,6 +352,7 @@ fn leader_sends_log_suffix_after_successful_install_snapshot_response() {
             LogEntry::application(Term(5), b"suffix-four".to_vec()),
             LogEntry::noop(Term(5)),
         ]
+        .into()
     );
 }
 
@@ -354,7 +361,9 @@ fn stale_install_snapshot_response_does_not_regress_replication_state() {
     let mut leader = leader_with_snapshot_and_suffix();
     leader.volatile.commit_index = LogIndex(5);
     leader.volatile.applied_index = LogIndex(5);
-    let progress = leader.follower_progress_mut(NodeId(2));
+    let progress = leader
+        .try_follower_progress_mut(NodeId(2))
+        .expect("active follower");
     progress.match_index = LogIndex(5);
     progress.next_index = LogIndex(6);
     progress.mode = ProgressMode::Replicate;
@@ -371,7 +380,11 @@ fn stale_install_snapshot_response_does_not_regress_replication_state() {
         }),
     });
 
-    let progress = &leader.leader.progress[&NodeId(2)];
+    let progress = leader
+        .leader
+        .progress
+        .get(NodeId(2))
+        .expect("active follower");
     assert_eq!(progress.match_index, LogIndex(5));
     assert_eq!(progress.next_index, LogIndex(6));
     assert!(outputs.is_empty());
@@ -382,7 +395,10 @@ fn overstated_install_snapshot_response_is_clamped_to_leader_tail() {
     let mut leader = leader_with_snapshot_and_suffix();
     leader.volatile.commit_index = LogIndex(5);
     leader.volatile.applied_index = LogIndex(5);
-    leader.follower_progress_mut(NodeId(2)).next_index = LogIndex(3);
+    leader
+        .try_follower_progress_mut(NodeId(2))
+        .expect("active follower")
+        .next_index = LogIndex(3);
 
     let outputs = leader.step(Input::Message {
         from: NodeId(2),
@@ -396,7 +412,11 @@ fn overstated_install_snapshot_response_is_clamped_to_leader_tail() {
         }),
     });
 
-    let progress = &leader.leader.progress[&NodeId(2)];
+    let progress = leader
+        .leader
+        .progress
+        .get(NodeId(2))
+        .expect("active follower");
     assert_eq!(progress.match_index, LogIndex(5));
     assert_eq!(progress.next_index, LogIndex(6));
     assert!(outputs.is_empty());
@@ -445,7 +465,9 @@ fn delayed_duplicate_response_for_older_transfer_is_ignored() {
     let mut leader = leader_with_snapshot_and_suffix();
     leader.volatile.commit_index = LogIndex(4);
     leader.volatile.applied_index = LogIndex(4);
-    let progress = leader.follower_progress_mut(NodeId(2));
+    let progress = leader
+        .try_follower_progress_mut(NodeId(2))
+        .expect("active follower");
     progress.match_index = LogIndex(4);
     progress.next_index = LogIndex(5);
     progress.mode = ProgressMode::Replicate;
@@ -466,7 +488,11 @@ fn delayed_duplicate_response_for_older_transfer_is_ignored() {
         outputs.is_empty(),
         "a delayed duplicate naming an obsolete transfer must not restream"
     );
-    let progress = &leader.leader.progress[&NodeId(2)];
+    let progress = leader
+        .leader
+        .progress
+        .get(NodeId(2))
+        .expect("active follower");
     assert_eq!(
         progress.next_index,
         LogIndex(5),
@@ -482,7 +508,9 @@ fn delayed_duplicate_response_for_older_transfer_is_ignored() {
 #[test]
 fn duplicate_ack_within_current_transfer_does_not_regress_offset() {
     let mut leader = leader_with_snapshot_and_suffix();
-    let progress = leader.follower_progress_mut(NodeId(2));
+    let progress = leader
+        .try_follower_progress_mut(NodeId(2))
+        .expect("active follower");
     progress.next_index = LogIndex(1);
     progress.mode = ProgressMode::Snapshot { next_offset: 10 };
     let current_transfer = leader.snapshot_transfer_status().leader[0].transfer_id;
@@ -500,7 +528,12 @@ fn duplicate_ack_within_current_transfer_does_not_regress_offset() {
     });
 
     assert_eq!(
-        leader.leader.progress[&NodeId(2)].mode,
+        leader
+            .leader
+            .progress
+            .get(NodeId(2))
+            .expect("active follower")
+            .mode,
         ProgressMode::Snapshot { next_offset: 10 },
         "an out-of-order ack for the current transfer must not rewind the send offset"
     );

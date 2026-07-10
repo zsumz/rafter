@@ -9,7 +9,10 @@ use std::{
 use rafter::{LocalProposalId, LogIndex, NodeId, ProposalRejection, ReadId, Role};
 use rafter_app::{
     error::{GroupError, StateMachineOperation},
-    group::{GroupFatalState, GroupInput, GroupStepReport, LeadershipTransferEvent, RaftGroup},
+    group::{
+        GroupFatalState, GroupInput, GroupStepReport, LeadershipTransferEvent, RaftGroup,
+        StepReportOptions,
+    },
     metrics::RaftGroupMetrics,
     proposal::{Proposal, ProposalEvent, ProposalUnknownOutcomeReason},
     read::{ReadConsistency, ReadOutcome, ReadRequest},
@@ -43,9 +46,9 @@ pub use driver_trait::{DriverCommandSender, DriverFuture};
 pub use in_memory::InMemoryRaftDriver;
 pub use mapping::ManagedDriverError;
 pub use metrics::metrics_watch_from_current;
-pub use options::{QueryReceipt, WriteOptions, WriteReceipt};
+pub use options::{QueryReceipt, WriteBatchEntry, WriteOptions, WriteReceipt};
 
-use mapping::ManagedOperationError;
+use mapping::{write_error_from_group, ManagedOperationError};
 use state::{lock_state, InMemoryRaftState};
 
 type DriverStepReport<G, A> = GroupStepReport<G, <A as ReplicatedStateMachine>::CommandResult>;

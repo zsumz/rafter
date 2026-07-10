@@ -12,6 +12,19 @@
 //! ordering, applied-index ownership, authenticated transport identity, and
 //! removed-peer fencing.
 //!
+//! # Public Message Buffers
+//!
+//! [`AppendEntries::entries`] is [`SharedEntries`], an immutable shared slice of
+//! [`LogEntry`] values. Consumers should inspect it with [`SharedEntries::iter`],
+//! [`SharedEntries::as_slice`], or normal slice coercions. Call
+//! [`SharedEntries::to_vec`] only at boundaries that genuinely need owned,
+//! mutable entries.
+//!
+//! This is an in-process allocation-sharing boundary, not a Raft wire-format
+//! distinction. A leader may share one bounded log slice across several
+//! `AppendEntries` outputs in the same deterministic broadcast round, while each
+//! recipient still observes normal ordered Raft log entries.
+//!
 //! # Integrity Model
 //!
 //! Snapshot and message checksums in this project are accidental-corruption
@@ -55,13 +68,13 @@ mod types;
 pub use message::{
     AppendEntries, AppendEntriesResponse, InstallSnapshot, InstallSnapshotChunk,
     InstallSnapshotResponse, LogEntry, Message, PreVote, PreVoteResponse, RequestVote,
-    RequestVoteResponse, TimeoutNow,
+    RequestVoteResponse, SharedEntries, TimeoutNow,
 };
 pub use node::{
-    BootstrapLogEntry, BootstrapState, BootstrapValidationError, ConfigurationProposalRejection,
-    Input, LeadershipTransferRejection, LocalProposalDropReason, Node, NodeConfig, NodeConfigError,
-    Output, PendingSnapshotTransferResumeError, ProposalRejection, ReadIndexCancelReason,
-    ReadIndexRejection, Role,
+    BootstrapLogEntry, BootstrapState, BootstrapValidationError, ClientProposalInput,
+    ConfigurationProposalRejection, Input, LeadershipTransferRejection, LocalProposalDropReason,
+    Node, NodeConfig, NodeConfigError, Output, PendingSnapshotTransferResumeError,
+    ProposalRejection, ReadIndexCancelReason, ReadIndexRejection, Role,
 };
 pub use types::{
     ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion,

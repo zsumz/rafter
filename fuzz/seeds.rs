@@ -109,7 +109,8 @@ fn codec_seeds() {
                         JointMembership::new(voters_123_learner_4(), voters_235()),
                     ),
                 ),
-            ],
+            ]
+            .into(),
             leader_commit: LogIndex(3),
         })),
     );

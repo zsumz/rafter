@@ -1,0 +1,168 @@
+# Benchmark evidence lane. PRs get a cheap smoke check that validates the
+# harness. Main, scheduled, and manually dispatched runs produce median-of-N
+# artifacts suitable for review, including deterministic shape-counter
+# consistency checks. Branch protection should not require absolute throughput
+# from this workflow.
+#
+# Benchmark evidence is pinned to the compiler recorded by the checked-in
+# benchmark artifacts. This is separate from the workspace rust-version, which
+# is the crate compatibility floor.
+
+name: Benchmarks
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/benchmarks.yml"
+      - "bench-compare/**"
+      - "scripts/bench-compare.sh"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/benchmarks.yml"
+      - "bench-compare/**"
+      - "scripts/bench-compare.sh"
+      - "crates/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+  schedule:
+    - cron: "0 11 * * 1" # 11:00 UTC Monday
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: "Isolated runs per benchmark binary for evidence jobs"
+        required: true
+        default: "5"
+
+concurrency:
+  group: benchmarks-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: "1"
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  smoke:
+    name: benchmark-smoke
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96.1
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Rafter-only smoke benchmark
+        run: |
+          mkdir -p target/bench-compare
+          BENCH_COMPARE_RUNS=1 \
+            BENCH_COMPARE_MODE=rafter-only \
+            OUT=target/bench-compare/rafter-only-smoke.json \
+            scripts/bench-compare.sh
+      - name: Summarize smoke result
+        if: always()
+        run: |
+          if [[ -f target/bench-compare/rafter-only-smoke.json ]]; then
+            {
+              echo "### Rafter-only smoke benchmark"
+              echo
+              echo '```text'
+              jq -r '
+                .results[]
+                | .library as $library
+                | .workloads[]
+                | [$library, .name, (.proposals_per_s|tostring)]
+                | @tsv
+              ' target/bench-compare/rafter-only-smoke.json
+              echo '```'
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload smoke artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-compare-smoke
+          path: target/bench-compare/rafter-only-smoke.json
+          if-no-files-found: ignore
+
+  evidence:
+    name: benchmark-evidence
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 75
+    env:
+      BENCH_RUNS: ${{ github.event_name == 'workflow_dispatch' && inputs.runs || '5' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.96.1
+      - name: Install protoc for full comparison
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends protobuf-compiler
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Rafter-only benchmark evidence
+        run: |
+          mkdir -p target/bench-compare
+          BENCH_COMPARE_RUNS="$BENCH_RUNS" \
+            BENCH_COMPARE_MODE=rafter-only \
+            OUT=target/bench-compare/rafter-only.json \
+            scripts/bench-compare.sh
+      - name: Full comparison benchmark evidence
+        run: |
+          BENCH_COMPARE_RUNS="$BENCH_RUNS" \
+            OUT=target/bench-compare/latest.json \
+            scripts/bench-compare.sh
+      - name: Summarize benchmark evidence
+        if: always()
+        run: |
+          summarize() {
+            local title="$1"
+            local file="$2"
+            if [[ ! -f "$file" ]]; then
+              return
+            fi
+            echo "### $title"
+            echo
+            echo '```text'
+            jq -r '
+              .results[]
+              | .library as $library
+              | .workloads[]
+              | [
+                  $library,
+                  .name,
+                  ("median=" + (.proposals_per_s|tostring)),
+                  ("min=" + (.run_summary.proposals_per_s.min|tostring)),
+                  ("max=" + (.run_summary.proposals_per_s.max|tostring))
+                ]
+              | @tsv
+            ' "$file"
+            echo '```'
+            echo
+          }
+          {
+            summarize "Rafter-only median benchmark evidence" target/bench-compare/rafter-only.json
+            summarize "Full comparison median benchmark evidence" target/bench-compare/latest.json
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload benchmark evidence artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-compare-evidence
+          path: |
+            target/bench-compare/rafter-only.json
+            target/bench-compare/latest.json
+          if-no-files-found: ignore
