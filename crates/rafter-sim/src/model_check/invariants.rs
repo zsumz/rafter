@@ -6,13 +6,14 @@ use rafter::{
 
 use crate::Cluster;
 
+use super::catalog;
 use super::linearizability::{
     check_client_history_linearizable, CLIENT_HISTORY_LINEARIZABILITY_INVARIANT,
 };
 use super::state::{ClientReadOutcome, ClientWriteStatus};
 use super::{
-    summarize, Action, CommitSafetyExplorer, ElectionSafetyExplorer, ExplorationState, Failure,
-    ReplayCheck, RestartSafetyExplorer, RestartSnapshotState,
+    summarize, Action, ElectionSafetyExplorer, ExplorationState, Failure, ReplayCheck,
+    RestartSnapshotState,
 };
 
 pub(super) fn check_election_safety(cluster: &Cluster, trace: &[Action]) -> Result<(), Failure> {
@@ -75,7 +76,7 @@ pub(super) fn check_restart_snapshot_safety(
     for applied in &state.state.cluster.applied {
         if applied.payload == expected.payload {
             return Err(Failure {
-                invariant: RestartSafetyExplorer::INVARIANT,
+                invariant: catalog::SS_05_SNAPSHOT_SEMANTIC_EQUIVALENCE,
                 message: "snapshot bytes were exposed as an applied log entry".to_string(),
                 trace: trace.to_vec(),
                 state: summarize(&state.state.cluster),
@@ -87,7 +88,7 @@ pub(super) fn check_restart_snapshot_safety(
         if let Some(pending) = node.pending_snapshot_transfer() {
             if pending.is_complete() {
                 return Err(Failure {
-                    invariant: RestartSafetyExplorer::INVARIANT,
+                    invariant: catalog::SS_04_SNAPSHOT_TRANSFER_INTEGRITY,
                     message: format!("{node_id} retained a complete pending snapshot transfer"),
                     trace: trace.to_vec(),
                     state: summarize(&state.state.cluster),
@@ -95,7 +96,7 @@ pub(super) fn check_restart_snapshot_safety(
             }
             if pending.received_bytes() > pending.total_payload_len {
                 return Err(Failure {
-                    invariant: RestartSafetyExplorer::INVARIANT,
+                    invariant: catalog::SS_04_SNAPSHOT_TRANSFER_INTEGRITY,
                     message: format!(
                         "{node_id} pending snapshot bytes {} exceed total {}",
                         pending.received_bytes(),
@@ -107,7 +108,7 @@ pub(super) fn check_restart_snapshot_safety(
             }
             if pending.metadata.last_included_index <= node.snapshot_index() {
                 return Err(Failure {
-                    invariant: RestartSafetyExplorer::INVARIANT,
+                    invariant: catalog::SS_04_SNAPSHOT_TRANSFER_INTEGRITY,
                     message: format!(
                         "{node_id} retained a stale pending snapshot at {} after installing {}",
                         pending.metadata.last_included_index,
@@ -132,7 +133,7 @@ pub(super) fn check_restart_snapshot_safety(
                 != Some(expected.payload.as_slice())
         {
             return Err(Failure {
-                invariant: RestartSafetyExplorer::INVARIANT,
+                invariant: catalog::SS_01_ATOMIC_MONOTONE_SNAPSHOT_STATE,
                 message: format!("{node_id} installed expected metadata with different bytes"),
                 trace: trace.to_vec(),
                 state: summarize(&state.state.cluster),
@@ -146,7 +147,7 @@ pub(super) fn check_restart_snapshot_safety(
                 .any(|payload| entry.kind.application_payload() == Some(payload.as_slice()))
             {
                 return Err(Failure {
-                    invariant: RestartSafetyExplorer::INVARIANT,
+                    invariant: catalog::SS_05_SNAPSHOT_SEMANTIC_EQUIVALENCE,
                     message: format!(
                         "{node_id} resurrected divergent suffix at log index {}",
                         entry.index
@@ -182,7 +183,7 @@ fn check_applied_payload_agreement(cluster: &Cluster, trace: &[Action]) -> Resul
         if let Some(previous) = payload_by_index.get(&applied.index) {
             if previous != &applied.payload {
                 return Err(Failure {
-                    invariant: CommitSafetyExplorer::INVARIANT,
+                    invariant: catalog::AP_02_STATE_MACHINE_SAFETY,
                     message: format!("different payloads applied at log index {}", applied.index),
                     trace: trace.to_vec(),
                     state: summarize(cluster),
@@ -202,7 +203,7 @@ fn check_applied_payload_agreement(cluster: &Cluster, trace: &[Action]) -> Resul
                 || previous.payload != install.payload
             {
                 return Err(Failure {
-                    invariant: CommitSafetyExplorer::INVARIANT,
+                    invariant: catalog::SS_05_SNAPSHOT_SEMANTIC_EQUIVALENCE,
                     message: format!(
                         "{} and {} installed disagreeing snapshots at index {}",
                         previous_node, install.node_id, install.last_included_index
@@ -229,7 +230,7 @@ fn check_commit_index_monotonicity(
         let commit_index = state.cluster.commit_index(*node_id);
         if commit_index < *floor {
             return Err(Failure {
-                invariant: CommitSafetyExplorer::INVARIANT,
+                invariant: catalog::CM_01_COMMIT_INDEX_MONOTONICITY_AND_BOUNDS,
                 message: format!(
                     "{node_id} commit index regressed from observed floor {floor} to {commit_index}"
                 ),
@@ -282,7 +283,7 @@ fn committed_configuration_regression(
     actual: Option<CommittedConfiguration>,
 ) -> Failure {
     Failure {
-        invariant: CommitSafetyExplorer::INVARIANT,
+        invariant: catalog::MB_04_MONOTONE_CONFIGURATION_TRANSITION_AND_IDENTITY,
         message: format!(
             "{node_id} committed configuration regressed from observed floor {floor:?} to {actual:?}"
         ),
@@ -295,7 +296,7 @@ fn check_internal_derived_state(cluster: &Cluster, trace: &[Action]) -> Result<(
     for (node_id, node) in &cluster.nodes {
         if let Err(error) = node.validate_derived_state() {
             return Err(Failure {
-                invariant: INTERNAL_DERIVED_STATE_INVARIANT,
+                invariant: catalog::ST_01_STATE_WELL_FORMEDNESS,
                 message: format!("{node_id}: {error}"),
                 trace: trace.to_vec(),
                 state: summarize(cluster),
@@ -304,8 +305,6 @@ fn check_internal_derived_state(cluster: &Cluster, trace: &[Action]) -> Result<(
     }
     Ok(())
 }
-
-const INTERNAL_DERIVED_STATE_INVARIANT: &str = "raft internal derived state";
 
 /// The committed-floor check: a granted read barrier must cover every entry
 /// that any node had committed before the barrier was registered. A grant below
@@ -321,7 +320,7 @@ pub(super) fn check_read_barrier_safety(
         });
         let Some(registration) = registration else {
             return Err(Failure {
-                invariant: READ_BARRIER_INVARIANT,
+                invariant: catalog::RD_03_READ_BARRIER_COVERS_COMMITTED_FLOOR,
                 message: format!(
                     "{} granted read barrier {} that was never registered",
                     grant.node_id, grant.request_id
@@ -332,7 +331,7 @@ pub(super) fn check_read_barrier_safety(
         };
         if grant.read_index < registration.committed_floor {
             return Err(Failure {
-                invariant: READ_BARRIER_INVARIANT,
+                invariant: catalog::RD_03_READ_BARRIER_COVERS_COMMITTED_FLOOR,
                 message: format!(
                     "{} granted read barrier {} at index {} below the committed floor {} at registration",
                     grant.node_id,
@@ -348,8 +347,6 @@ pub(super) fn check_read_barrier_safety(
     Ok(())
 }
 
-pub(super) const READ_BARRIER_INVARIANT: &str = "raft read barrier committed-floor invariant";
-
 fn check_applied_order(cluster: &Cluster, trace: &[Action]) -> Result<(), Failure> {
     let mut last_applied_by_node = BTreeMap::<NodeId, LogIndex>::new();
     let mut installs = cluster.snapshot_installs().iter().peekable();
@@ -363,7 +360,7 @@ fn check_applied_order(cluster: &Cluster, trace: &[Action]) -> Result<(), Failur
                 .or_insert(LogIndex::ZERO);
             if install.last_included_index <= *cursor {
                 return Err(Failure {
-                    invariant: CommitSafetyExplorer::INVARIANT,
+                    invariant: catalog::AP_01_ORDERED_EXACTLY_ONCE_COMMITTED_APPLICATION,
                     message: format!(
                         "{} installed a snapshot at index {} at or below its applied index {}",
                         install.node_id, install.last_included_index, cursor
@@ -381,7 +378,7 @@ fn check_applied_order(cluster: &Cluster, trace: &[Action]) -> Result<(), Failur
             .unwrap_or(LogIndex::ZERO);
         if applied.index <= previous {
             return Err(Failure {
-                invariant: CommitSafetyExplorer::INVARIANT,
+                invariant: catalog::AP_01_ORDERED_EXACTLY_ONCE_COMMITTED_APPLICATION,
                 message: format!(
                     "{} applied index {} at or below prior applied/snapshot index {}",
                     applied.node_id, applied.index, previous
@@ -398,7 +395,7 @@ fn check_applied_order(cluster: &Cluster, trace: &[Action]) -> Result<(), Failur
             .or_insert(LogIndex::ZERO);
         if install.last_included_index <= *cursor {
             return Err(Failure {
-                invariant: CommitSafetyExplorer::INVARIANT,
+                invariant: catalog::AP_01_ORDERED_EXACTLY_ONCE_COMMITTED_APPLICATION,
                 message: format!(
                     "{} installed a snapshot at index {} at or below its applied index {}",
                     install.node_id, install.last_included_index, cursor
@@ -420,7 +417,7 @@ fn check_committed_prefixes(cluster: &Cluster, trace: &[Action]) -> Result<(), F
         let last_log_index = node.last_log_index();
         if commit_index > last_log_index {
             return Err(Failure {
-                invariant: CommitSafetyExplorer::INVARIANT,
+                invariant: catalog::CM_01_COMMIT_INDEX_MONOTONICITY_AND_BOUNDS,
                 message: format!(
                     "{node_id} commit index {commit_index} is beyond local last log index {last_log_index}"
                 ),
@@ -439,7 +436,7 @@ fn check_committed_prefixes(cluster: &Cluster, trace: &[Action]) -> Result<(), F
             if let Some(previous) = committed_by_index.get(&log_index) {
                 if previous != &entry {
                     return Err(Failure {
-                        invariant: CommitSafetyExplorer::INVARIANT,
+                        invariant: catalog::LG_04_COMMITTED_PREFIX_STABILITY,
                         message: format!("committed prefix diverged at log index {log_index}"),
                         trace: trace.to_vec(),
                         state: summarize(cluster),
@@ -458,7 +455,7 @@ fn check_membership_quorum_validity(cluster: &Cluster, trace: &[Action]) -> Resu
         match node.effective_membership() {
             MembershipConfig::Stable(stable) if stable.voters().is_empty() => {
                 return Err(Failure {
-                    invariant: CommitSafetyExplorer::INVARIANT,
+                    invariant: catalog::MB_01_MEMBERSHIP_WELL_FORMEDNESS,
                     message: format!("{node_id} has an empty stable voter set"),
                     trace: trace.to_vec(),
                     state: summarize(cluster),
@@ -469,7 +466,7 @@ fn check_membership_quorum_validity(cluster: &Cluster, trace: &[Action]) -> Resu
                     || joint.new_membership().voters().is_empty() =>
             {
                 return Err(Failure {
-                    invariant: CommitSafetyExplorer::INVARIANT,
+                    invariant: catalog::MB_01_MEMBERSHIP_WELL_FORMEDNESS,
                     message: format!("{node_id} has an empty joint voter set"),
                     trace: trace.to_vec(),
                     state: summarize(cluster),
@@ -494,7 +491,7 @@ fn check_no_overlapping_uncommitted_configurations(
             .count();
         if uncommitted_configurations > 1 {
             return Err(Failure {
-                invariant: CommitSafetyExplorer::INVARIANT,
+                invariant: catalog::MB_03_SERIALIZED_CONFIGURATION_CHANGES,
                 message: format!(
                     "{node_id} has {uncommitted_configurations} uncommitted configuration entries"
                 ),
@@ -516,7 +513,7 @@ fn check_client_history_read_write_invariants(
             if let Some(previous) = completed_by_index.insert(index, write.proposal_id) {
                 if previous != write.proposal_id {
                     return Err(Failure {
-                        invariant: CommitSafetyExplorer::INVARIANT,
+                        invariant: catalog::RD_06_CLIENT_HISTORY_LINEARIZABILITY,
                         message: format!(
                             "client writes {} and {} both completed at log index {index}",
                             previous.0, write.proposal_id.0
@@ -537,7 +534,7 @@ fn check_client_history_read_write_invariants(
         };
         if proof.read_index < read.committed_floor {
             return Err(Failure {
-                invariant: READ_BARRIER_INVARIANT,
+                invariant: catalog::RD_03_READ_BARRIER_COVERS_COMMITTED_FLOOR,
                 message: format!(
                     "{} read {} proof index {} is below registration floor {}",
                     read.node_id, read.request_id, proof.read_index, read.committed_floor
@@ -550,7 +547,7 @@ fn check_client_history_read_write_invariants(
             let proof = *proof;
             if proof.local_applied_index < proof.read_index {
                 return Err(Failure {
-                    invariant: READ_BARRIER_INVARIANT,
+                    invariant: catalog::RD_04_APPLY_BEFORE_SERVING_A_READ,
                     message: format!(
                         "{} completed read {} at local applied {} below required index {}",
                         read.node_id, read.request_id, proof.local_applied_index, proof.read_index
@@ -565,7 +562,7 @@ fn check_client_history_read_write_invariants(
                 };
                 if index <= read.committed_floor && index > proof.read_index {
                     return Err(Failure {
-                        invariant: READ_BARRIER_INVARIANT,
+                        invariant: catalog::RD_03_READ_BARRIER_COVERS_COMMITTED_FLOOR,
                         message: format!(
                             "{} completed read {} at {} without covering completed write {} at {}",
                             read.node_id,
@@ -604,7 +601,7 @@ fn check_forbidden_applied_payloads(
     for applied in &state.cluster.applied {
         if state.forbidden_applied_payloads.contains(&applied.payload) {
             return Err(Failure {
-                invariant: CommitSafetyExplorer::INVARIANT,
+                invariant: catalog::LG_04_COMMITTED_PREFIX_STABILITY,
                 message: format!("forbidden payload applied at log index {}", applied.index),
                 trace: trace.to_vec(),
                 state: summarize(&state.cluster),
@@ -628,7 +625,7 @@ fn check_required_applied_payloads(
             continue;
         }
         return Err(Failure {
-            invariant: CommitSafetyExplorer::INVARIANT,
+            invariant: catalog::AP_01_ORDERED_EXACTLY_ONCE_COMMITTED_APPLICATION,
             message: format!(
                 "{node_id} committed required payload at index {index} without emitting Apply"
             ),
@@ -652,7 +649,7 @@ fn check_required_committed_configurations(
             continue;
         }
         return Err(Failure {
-            invariant: CommitSafetyExplorer::INVARIANT,
+            invariant: catalog::MB_04_MONOTONE_CONFIGURATION_TRANSITION_AND_IDENTITY,
             message: format!(
                 "{node_id} committed required configuration at index {index} as {actual:?}, expected {expected:?}"
             ),
@@ -672,12 +669,9 @@ mod tests {
     use crate::{Applied, SnapshotInstalled};
 
     fn one_node_cluster() -> Cluster {
-        Cluster::new(vec![NodeConfig::new(
-            NodeId(1),
-            vec![NodeId(2), NodeId(3)],
-            3,
-        )
-        .expect("test config is valid")])
+        let config = NodeConfig::new(NodeId(1), vec![NodeId(2), NodeId(3)], 3)
+            .expect("test config is valid");
+        Cluster::new(vec![config])
     }
 
     #[test]
@@ -699,10 +693,57 @@ mod tests {
         });
 
         let failure = check_applied_order(&cluster, &[]).expect_err("rewind must be detected");
+        assert_eq!(
+            failure.invariant(),
+            catalog::AP_01_ORDERED_EXACTLY_ONCE_COMMITTED_APPLICATION
+        );
         assert!(
             failure.message.contains("installed a snapshot at index 2"),
             "unexpected failure message: {}",
             failure.message
+        );
+    }
+
+    #[test]
+    fn application_loss_restart_preserves_immutable_event_history_positions() {
+        let mut cluster = one_node_cluster();
+        cluster.applied.push(Applied {
+            node_id: NodeId(1),
+            index: LogIndex(1),
+            payload: b"node-one-before-loss".to_vec().into(),
+        });
+        cluster.applied.push(Applied {
+            node_id: NodeId(2),
+            index: LogIndex(1),
+            payload: b"node-two-before-snapshot".to_vec().into(),
+        });
+        cluster.snapshot_installs.push(SnapshotInstalled {
+            node_id: NodeId(2),
+            last_included_index: LogIndex(2),
+            last_included_term: Term(1),
+            payload: b"node-two-snapshot".to_vec(),
+            applied_records_before_install: 2,
+        });
+        cluster.applied.push(Applied {
+            node_id: NodeId(2),
+            index: LogIndex(3),
+            payload: b"node-two-after-snapshot".to_vec().into(),
+        });
+        let before_applied = cluster.applied().to_vec();
+        let before_installs = cluster.snapshot_installs().to_vec();
+
+        cluster
+            .restart_node_from_bootstrap_losing_application_state(
+                NodeId(1),
+                cluster.bootstrap_state(NodeId(1)),
+            )
+            .expect("empty application-loss restart is valid");
+
+        assert_eq!(cluster.applied(), before_applied.as_slice());
+        assert_eq!(cluster.snapshot_installs(), before_installs.as_slice());
+        assert!(
+            check_applied_order(&cluster, &[]).is_ok(),
+            "unchanged snapshot positions should still describe the immutable event stream"
         );
     }
 
@@ -724,6 +765,10 @@ mod tests {
 
         let failure =
             check_applied_order(&cluster, &[]).expect_err("apply below boundary must be detected");
+        assert_eq!(
+            failure.invariant(),
+            catalog::AP_01_ORDERED_EXACTLY_ONCE_COMMITTED_APPLICATION
+        );
         assert!(
             failure
                 .message
@@ -750,6 +795,10 @@ mod tests {
 
         let failure = check_read_barrier_safety(&cluster, &[])
             .expect_err("a grant below the committed floor must be detected");
+        assert_eq!(
+            failure.invariant(),
+            catalog::RD_03_READ_BARRIER_COVERS_COMMITTED_FLOOR
+        );
         assert!(
             failure.message.contains("below the committed floor 5"),
             "unexpected failure message: {}",
@@ -769,6 +818,10 @@ mod tests {
 
         let failure = check_read_barrier_safety(&cluster, &[])
             .expect_err("an unregistered grant must be detected");
+        assert_eq!(
+            failure.invariant(),
+            catalog::RD_03_READ_BARRIER_COVERS_COMMITTED_FLOOR
+        );
         assert!(failure.message.contains("never registered"));
     }
 
@@ -796,6 +849,10 @@ mod tests {
 
         let failure = check_client_history_read_write_invariants(&state, &[])
             .expect_err("a completed read below its local apply floor must fail");
+        assert_eq!(
+            failure.invariant(),
+            catalog::RD_04_APPLY_BEFORE_SERVING_A_READ
+        );
         assert!(
             failure
                 .message
@@ -841,6 +898,10 @@ mod tests {
 
         let failure = check_applied_payload_agreement(&cluster, &[])
             .expect_err("disagreeing snapshots must be detected");
+        assert_eq!(
+            failure.invariant(),
+            catalog::SS_05_SNAPSHOT_SEMANTIC_EQUIVALENCE
+        );
         assert!(
             failure.message.contains("disagreeing snapshots at index 4"),
             "unexpected failure message: {}",

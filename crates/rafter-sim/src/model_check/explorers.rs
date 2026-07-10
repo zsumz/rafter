@@ -10,6 +10,7 @@ use crate::Cluster;
 
 use super::{
     application::{apply_to_cluster, apply_to_restart_snapshot_state, apply_to_state},
+    catalog,
     invariants::{
         check_commit_safety, check_election_safety, check_read_barrier_safety,
         check_restart_snapshot_safety,
@@ -27,7 +28,7 @@ pub(super) struct ElectionSafetyExplorer {
 }
 
 impl ElectionSafetyExplorer {
-    pub(super) const INVARIANT: &'static str = "raft election safety";
+    pub(super) const INVARIANT: &'static str = catalog::EL_05_ELECTION_SAFETY_OVER_HISTORY;
 
     pub(super) fn new(bounds: Bounds) -> Self {
         Self {
@@ -76,8 +77,6 @@ pub(super) struct CommitSafetyExplorer {
 }
 
 impl CommitSafetyExplorer {
-    pub(super) const INVARIANT: &'static str = "raft commit safety";
-
     pub(super) fn new(bounds: Bounds) -> Self {
         Self {
             budget: ExplorationBudget::new(bounds),
@@ -211,8 +210,6 @@ pub(super) struct RestartSafetyExplorer {
 }
 
 impl RestartSafetyExplorer {
-    pub(super) const INVARIANT: &'static str = "raft restart and snapshot safety";
-
     pub(super) fn new(bounds: Bounds) -> Self {
         Self {
             budget: ExplorationBudget::new(bounds),

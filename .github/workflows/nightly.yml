@@ -42,7 +42,7 @@ jobs:
   model-check:
     name: model-check (${{ matrix.profile }})
     runs-on: ubuntu-latest
-    timeout-minutes: 180 # raft-nightly targets 100M+ unique states in release mode
+    timeout-minutes: 180 # raft-nightly clears a 100M+ unique-state regression floor in release mode
     strategy:
       fail-fast: false
       matrix:
@@ -84,7 +84,27 @@ jobs:
           path: tools/cache
           key: tla2tools-${{ hashFiles('tools/tla/VERSION', 'tools/tla/SHA256SUMS') }}
       - name: TLC nightly bounds (RaftNightly.cfg)
-        run: scripts/tla-model-check --nightly 2>&1 | tee tlc-nightly.log
+        run: |
+          set +e
+          timeout --signal=TERM --kill-after=30s 115m \
+            scripts/tla-model-check --nightly 2>&1 | tee tlc-nightly.log
+          code=${PIPESTATUS[0]}
+          set -e
+          case "$code" in
+            0)
+              ;;
+            124)
+              echo "TLC nightly exhausted the 115-minute soft budget before completing RaftNightly.cfg; failing because this lane has no checkpoint recovery."
+              exit "$code"
+              ;;
+            137)
+              echo "TLC nightly was killed by the runner; treating exit 137 as a failure."
+              exit "$code"
+              ;;
+            *)
+              exit "$code"
+              ;;
+          esac
       - name: Upload TLC nightly log
         if: always()
         uses: actions/upload-artifact@v4

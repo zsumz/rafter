@@ -2,11 +2,9 @@ use rafter::{MembershipConfig, MembershipSet, Node, NodeId};
 
 use crate::Cluster;
 
+use super::catalog;
 use super::helpers::{proposal_payload, summarize};
-use super::{
-    Action, ExplorationState, Failure, Operation, RestartSafetyExplorer, RestartSnapshotState,
-    SoakOperation,
-};
+use super::{Action, ExplorationState, Failure, Operation, RestartSnapshotState, SoakOperation};
 
 pub(super) fn apply_to_state(state: &mut ExplorationState, operation: Operation) {
     if let Operation::Propose {
@@ -233,7 +231,7 @@ pub(super) fn restart_node(
         .cluster
         .restart_node_from_bootstrap(node_id, before.clone())
         .map_err(|error| Failure {
-            invariant: RestartSafetyExplorer::INVARIANT,
+            invariant: catalog::PS_03_EXACT_DURABLE_RESTART,
             message: format!("{node_id} failed to restart from bootstrap state: {error:?}"),
             trace: trace.to_vec(),
             state: summarize(&state.cluster),
@@ -242,7 +240,7 @@ pub(super) fn restart_node(
     if let Some(pending) = before_pending.clone() {
         let Some(node) = state.cluster.nodes.get_mut(&node_id) else {
             return Err(Failure {
-                invariant: RestartSafetyExplorer::INVARIANT,
+                invariant: catalog::PS_03_EXACT_DURABLE_RESTART,
                 message: format!("{node_id} restart lost the node record"),
                 trace: trace.to_vec(),
                 state: summarize(&state.cluster),
@@ -251,7 +249,7 @@ pub(super) fn restart_node(
         let resume_result = node.resume_pending_snapshot_transfer(pending);
         if let Err(error) = resume_result {
             return Err(Failure {
-                invariant: RestartSafetyExplorer::INVARIANT,
+                invariant: catalog::SS_04_SNAPSHOT_TRANSFER_INTEGRITY,
                 message: format!("{node_id} failed to resume pending snapshot transfer: {error:?}"),
                 trace: trace.to_vec(),
                 state: summarize(&state.cluster),
@@ -267,7 +265,7 @@ pub(super) fn restart_node(
     let after = state.cluster.bootstrap_state(node_id);
     if after != before {
         return Err(Failure {
-            invariant: RestartSafetyExplorer::INVARIANT,
+            invariant: catalog::PS_03_EXACT_DURABLE_RESTART,
             message: format!("{node_id} restart changed bootstrap state"),
             trace: trace.to_vec(),
             state: summarize(&state.cluster),
@@ -281,7 +279,7 @@ pub(super) fn restart_node(
         .and_then(Node::pending_snapshot_transfer);
     if after_pending != before_pending {
         return Err(Failure {
-            invariant: RestartSafetyExplorer::INVARIANT,
+            invariant: catalog::SS_04_SNAPSHOT_TRANSFER_INTEGRITY,
             message: format!("{node_id} restart changed pending snapshot transfer"),
             trace: trace.to_vec(),
             state: summarize(&state.cluster),

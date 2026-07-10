@@ -158,6 +158,29 @@ fn seeded_leadership_noop_safety_passes_for_targeted_cases() {
 }
 
 #[test]
+fn shallow_restart_check_reports_coverage_not_reached() {
+    let failure = check_raft_restart_and_snapshot_safety(Bounds::new(0))
+        .expect_err("depth zero cannot reach a restart witness");
+
+    assert_eq!(failure.kind(), FailureKind::CoverageNotReached);
+    assert_eq!(failure.invariant(), catalog::PS_03_EXACT_DURABLE_RESTART);
+    assert!(failure.message().contains("did not reach a restart action"));
+}
+
+#[test]
+fn shallow_leadership_noop_check_reports_coverage_not_reached() {
+    let failure = check_raft_leadership_noop_safety(Bounds::new(0))
+        .expect_err("depth zero cannot reach the seeded apply witness");
+
+    assert_eq!(failure.kind(), FailureKind::CoverageNotReached);
+    assert_eq!(
+        failure.invariant(),
+        catalog::AP_01_ORDERED_EXACTLY_ONCE_COMMITTED_APPLICATION
+    );
+    assert!(failure.message().contains("did not reach required Apply"));
+}
+
+#[test]
 fn seeded_single_voter_prior_application_noop_requires_apply() {
     let mut state = ExplorationState::seeded_single_voter_prior_application_noop();
 

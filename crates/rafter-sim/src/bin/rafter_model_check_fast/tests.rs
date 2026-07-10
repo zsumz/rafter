@@ -1,4 +1,4 @@
-use rafter_sim::SimSeed;
+use rafter_sim::{model_check::FailureKind, SimSeed};
 
 use super::{failure_timeline_lines, parse_profile, Profile, ProfileRun, ProfileSelection};
 
@@ -84,6 +84,7 @@ fn replay_seed_errors_are_not_silent_noops() {
 fn failure_timeline_lines_include_failure_and_trace_context() {
     let lines = failure_timeline_lines(
         "raft-commit",
+        FailureKind::InvariantViolation,
         "commit_safety",
         "committed prefix diverged",
         [
@@ -95,7 +96,7 @@ fn failure_timeline_lines_include_failure_and_trace_context() {
     assert_eq!(
         lines,
         vec![
-            "ERROR test model failure name=raft-commit invariant=commit_safety error_message=\"committed prefix diverged\"",
+            "ERROR test model failure name=raft-commit failure_kind=invariant-violation invariant=commit_safety error_message=\"committed prefix diverged\"",
             "DEBUG test trace step step=0 action=\"tick n1\"",
             "DEBUG test trace step step=1 action=\"deliver n1->n2\"",
         ]

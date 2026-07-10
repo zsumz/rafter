@@ -34,8 +34,10 @@ pub enum DiskFault {
 /// node's clean [`BootstrapState`] and emits alternate bootstrap states that
 /// represent dirty disk recovery shapes. It deliberately does not add a
 /// storage dependency to `rafter-sim`; tests re-open the simulated node through
-/// [`crate::Cluster::restart_node_from_bootstrap`] and keep driving the
-/// running protocol.
+/// [`crate::Cluster::restart_node_from_bootstrap_losing_application_state`]
+/// and keep driving the running protocol, because these dirty images model
+/// storage repair after application state may have been lost with the damaged
+/// durable protocol state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FaultInjectingDisk {
     clean: BootstrapState,

@@ -1,4 +1,4 @@
-use rafter::{Input, NodeId, Output};
+use rafter::{Input, LogIndex, NodeId, Output};
 
 use crate::{Applied, Cluster, ReadGranted, SnapshotInstalled};
 
@@ -150,6 +150,7 @@ impl Cluster {
         for output in outputs {
             match output {
                 Output::Apply { index, payload, .. } => {
+                    self.record_durable_applied(from, index);
                     self.applied.push(Applied {
                         node_id: from,
                         index,
@@ -157,6 +158,7 @@ impl Cluster {
                     });
                 }
                 Output::ApplySnapshot { snapshot } => {
+                    self.record_durable_applied(from, snapshot.metadata.last_included_index);
                     // The kernel emits the descriptor only; the content is
                     // the staged transfer completed earlier in this batch.
                     let payload = self.take_installed_snapshot_payload(from, &snapshot);
@@ -239,6 +241,11 @@ impl Cluster {
             let floor = self.delivered_ack_floor.entry(node_id).or_default();
             *floor = (*floor).max(index);
         }
+    }
+
+    fn record_durable_applied(&mut self, node_id: NodeId, index: LogIndex) {
+        let floor = self.durable_applied.entry(node_id).or_default();
+        *floor = (*floor).max(index);
     }
 
     fn enqueue(&mut self, envelope: Envelope) {

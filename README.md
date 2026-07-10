@@ -100,6 +100,13 @@ cargo run --release -p rafter-sim --bin rafter-model-check-fast
 scripts/maelstrom-lin-kv
 ```
 
+The repository also carries fuzz seeds, TLA+ specs, Maelstrom workloads, and a
+simulation harness that can replay and explore bounded failure schedules.
+The Raft verification contract lives in
+[`docs/raft-invariants.md`](./docs/raft-invariants.md), generated from the
+machine-readable catalog at
+[`verification/raft-invariants.yaml`](./verification/raft-invariants.yaml).
+
 ## Benchmarks
 
 Three-node in-memory protocol benchmark, 512-byte payloads, aarch64 Linux.
