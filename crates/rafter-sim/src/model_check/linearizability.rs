@@ -2,11 +2,12 @@ use std::collections::BTreeSet;
 
 use rafter::SharedPayload;
 
+use super::catalog;
 use super::state::{ClientHistory, ClientReadOutcome, ClientWriteStatus};
 use super::ProposalId;
 
 pub(super) const CLIENT_HISTORY_LINEARIZABILITY_INVARIANT: &str =
-    "raft client history linearizability";
+    catalog::RD_06_CLIENT_HISTORY_LINEARIZABILITY;
 
 pub(super) fn check_client_history_linearizable(history: &ClientHistory) -> Result<(), String> {
     let operations = completed_operations(history);

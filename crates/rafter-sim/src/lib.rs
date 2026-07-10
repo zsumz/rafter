@@ -135,6 +135,9 @@ pub struct Cluster {
     network: VecDeque<QueuedEnvelope>,
     rng: SimRng,
     applied: Vec<Applied>,
+    /// Per-node durable application floor. Plain restarts preserve this
+    /// state-machine durability and replay only committed entries above it.
+    durable_applied: BTreeMap<NodeId, LogIndex>,
     snapshot_installs: Vec<SnapshotInstalled>,
     /// Per-node durable snapshot payload stores. The kernel holds only
     /// descriptors; leader chunk directives resolve against the sending
@@ -150,10 +153,10 @@ pub struct Cluster {
     /// Directional blocked pairs: a sustained partition drops traffic at
     /// enqueue until healed, so it holds across elections.
     blocked_pairs: BTreeSet<(NodeId, NodeId)>,
-    /// The highest match index each node has CONFIRMED to a leader — the
-    /// acknowledgement envelope was actually delivered, not merely sent.
-    /// Everything above this floor is loss the protocol must tolerate,
-    /// because no leader ever counted it.
+    /// The highest match index each follower has CONFIRMED to a leader — the
+    /// acknowledgement envelope was actually delivered, not merely sent. A
+    /// legal lossy restart also preserves the node's local committed prefix;
+    /// everything above those floors is loss the protocol must tolerate.
     delivered_ack_floor: BTreeMap<NodeId, LogIndex>,
     /// Bootstrap states captured by [`Cluster::mark_synced`] for the
     /// design-note lossy restart shape.
@@ -202,6 +205,10 @@ impl Cluster {
             .keys()
             .map(|node_id| (*node_id, InMemorySnapshotChunkSource::new()))
             .collect();
+        let durable_applied = nodes
+            .keys()
+            .map(|node_id| (*node_id, LogIndex::ZERO))
+            .collect();
 
         Self {
             clock: SimClock::default(),
@@ -210,6 +217,7 @@ impl Cluster {
             network: VecDeque::new(),
             rng: SimRng::new(seed),
             applied: Vec::new(),
+            durable_applied,
             snapshot_installs: Vec::new(),
             snapshot_sources,
             snapshot_staging: BTreeMap::new(),
@@ -457,12 +465,76 @@ impl Cluster {
                 snapshot.transfer_id()
             );
         }
-        let node = Node::from_bootstrap(config, bootstrap)?;
+        let mut node = Node::from_bootstrap_applied_through(
+            config,
+            bootstrap,
+            self.durable_applied_floor(node_id),
+        )?;
+        let outputs = node.drain_committed_outputs();
         self.nodes.insert(node_id, node);
         // A process restart loses the volatile staging area; explicit resume
         // paths (the model checker's durable-transfer restart) reinstate it
         // alongside the kernel's pending-transfer record.
         self.snapshot_staging.remove(&node_id);
+        self.record_outputs(node_id, outputs);
+        Ok(())
+    }
+
+    fn durable_applied_floor(&self, node_id: NodeId) -> LogIndex {
+        self.durable_applied
+            .get(&node_id)
+            .copied()
+            .unwrap_or(LogIndex::ZERO)
+    }
+
+    /// Restarts `node_id` from `bootstrap` after losing the simulated
+    /// application state for that node.
+    ///
+    /// This is for durability-violation and storage-repair scenarios. Normal
+    /// process restarts should use [`Cluster::restart_node_from_bootstrap`],
+    /// which preserves the simulator's durable application floor.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`BootstrapValidationError`] when the supplied state is not
+    /// valid for the node's static configuration.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `node_id` is not part of this simulated cluster, or when
+    /// the bootstrap state carries a snapshot descriptor whose payload was
+    /// never registered in the node's snapshot store.
+    pub fn restart_node_from_bootstrap_losing_application_state(
+        &mut self,
+        node_id: NodeId,
+        bootstrap: BootstrapState,
+    ) -> Result<(), BootstrapValidationError> {
+        let config = self
+            .configs
+            .get(&node_id)
+            .expect("simulated node config must exist in cluster")
+            .clone();
+        if let Some(snapshot) = bootstrap.snapshot.as_ref() {
+            assert!(
+                self.snapshot_payload(node_id, snapshot).is_some(),
+                "snapshot payload for transfer {} must be seeded in {node_id}'s snapshot store \
+                 before restarting with its descriptor",
+                snapshot.transfer_id()
+            );
+        }
+        let snapshot_boundary = bootstrap
+            .snapshot
+            .as_ref()
+            .map_or(LogIndex::ZERO, |snapshot| {
+                snapshot.metadata.last_included_index
+            });
+
+        let mut node = Node::from_bootstrap_applied_through(config, bootstrap, snapshot_boundary)?;
+        let outputs = node.drain_committed_outputs();
+        self.nodes.insert(node_id, node);
+        self.snapshot_staging.remove(&node_id);
+        self.durable_applied.insert(node_id, snapshot_boundary);
+        self.record_outputs(node_id, outputs);
         Ok(())
     }
 
@@ -479,8 +551,10 @@ impl Cluster {
     }
 
     /// Restarts `node_id` from its [`Cluster::mark_synced`] point with its
-    /// LIVE hard state — a crash that lost the log tail written after the
-    /// mark while term and vote survived.
+    /// LIVE term/vote and lost application state — a crash that lost the log
+    /// tail written after the mark while term and vote survived. This is the
+    /// explicit amnesia model for assumption-violating durability tests;
+    /// ordinary restarts preserve the simulator's durable application floor.
     ///
     /// # Panics
     ///
@@ -501,16 +575,19 @@ impl Cluster {
             snapshot: mark.snapshot,
             log: mark.log,
         };
-        self.restart_node_from_bootstrap(node_id, bootstrap)
+        self.restart_node_from_bootstrap_losing_application_state(node_id, bootstrap)
             .expect("marked lossy restart composes a valid bootstrap state");
     }
 
     /// Restarts `node_id` losing exactly the log tail no leader ever heard
-    /// acknowledged: the log rewinds to the delivered-acknowledgement floor
-    /// (never below the snapshot boundary), hard state and snapshot
+    /// acknowledged and that the node has not locally committed: the log
+    /// rewinds to the delivered-acknowledgement floor, the local commit floor,
+    /// or the snapshot boundary, whichever is highest. Hard state, the local
+    /// commit floor, the committed configuration identity, and the snapshot
     /// survive. Legal by construction — every lost entry's acknowledgement
-    /// envelope was still in flight or dropped — so schedules may apply it
-    /// freely without weakening the safety invariants.
+    /// envelope was still in flight or dropped, and no local committed prefix
+    /// is erased — so schedules may apply it freely without weakening the
+    /// safety invariants.
     ///
     /// # Panics
     ///
@@ -523,14 +600,15 @@ impl Cluster {
             .get(&node_id)
             .copied()
             .unwrap_or(LogIndex::ZERO)
+            .max(live.commit_index)
             .max(live.snapshot.as_ref().map_or(LogIndex::ZERO, |snapshot| {
                 snapshot.metadata.last_included_index
             }));
         let bootstrap = BootstrapState {
             current_term: live.current_term,
             voted_for: live.voted_for,
-            commit_index: LogIndex::ZERO,
-            committed_configuration: None,
+            commit_index: live.commit_index,
+            committed_configuration: live.committed_configuration,
             snapshot: live.snapshot,
             log: live
                 .log

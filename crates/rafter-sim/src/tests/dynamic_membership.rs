@@ -38,6 +38,36 @@ fn add_voter_transition_preserves_committed_prefix() {
 }
 
 #[test]
+fn lossy_restart_preserves_committed_membership_state() {
+    let mut cluster = learner_four_node_cluster(SimSeed(0x1055_1e55));
+    elect_node_one(&mut cluster);
+
+    cluster.propose(NodeId(1), b"before-lossy-restart".to_vec());
+    cluster.deliver_all();
+    commit_add_voter_transition(&mut cluster, ConfigurationId(70));
+
+    let committed_prefix = cluster.log_entries_from(NodeId(1), LogIndex(1));
+    let committed_index = cluster.commit_index(NodeId(1));
+    let committed_configuration = cluster
+        .committed_configuration_state(NodeId(1))
+        .expect("committed configuration should be known after membership change");
+
+    cluster.restart_node_lossy(NodeId(1));
+    cluster.restart_node_lossy(NodeId(1));
+
+    assert_eq!(cluster.commit_index(NodeId(1)), committed_index);
+    assert_eq!(
+        cluster.committed_configuration_state(NodeId(1)),
+        Some(committed_configuration),
+    );
+    assert_eq!(
+        cluster.log_entries_from(NodeId(1), LogIndex(1)),
+        committed_prefix,
+        "lossy restart must not erase the committed membership prefix"
+    );
+}
+
+#[test]
 fn remove_voter_transition_preserves_prefix_and_steps_down_removed_leader() {
     let mut cluster = direct_election_stable_four_voter_cluster(SimSeed(0xfeed), NodeId(2));
     elect_node_two(&mut cluster);

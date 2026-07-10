@@ -75,6 +75,8 @@ jobs:
         run: cargo test -p rafter --test test_location_guard -- --nocapture
       - name: public API/docs guard
         run: cargo test -p rafter --test public_api_docs_guard -- --nocapture
+      - name: invariant docs guard
+        run: python3 scripts/render-raft-invariants-doc --check
       - name: workspace tests
         run: cargo test --workspace
       - name: replicated KV process lifecycle

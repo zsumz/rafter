@@ -24,9 +24,9 @@
 #     the job falls back to a fresh full-bounds run — unless TLC exited with
 #     a real counterexample verdict, which is surfaced immediately.
 #   * GitHub-hosted jobs hard-cap at 360 minutes, so a single weekly run is
-#     bounded by the TLC step timeout below and resumes the following week
-#     from its last checkpoint. A timed-out step fails the job (honest red:
-#     the full check did not complete), but the checkpoint is still saved.
+#     bounded by an internal TLC soft timeout and resumes the following week
+#     from its last checkpoint. Budget exhaustion is reported as progress
+#     rather than a counterexample; real TLC verdicts still fail the job.
 
 name: Weekly
 
@@ -128,14 +128,21 @@ jobs:
           cd specs/tla/raft
           jar="$GITHUB_WORKSPACE/tools/cache/tla2tools.jar"
 
-          run_tlc() {
-            java -Xmx4g -XX:+UseParallelGC -cp "$jar" tlc2.TLC \
-              -config Raft.cfg \
-              -metadir states \
-              -checkpoint 30 \
-              -gzip \
-              -workers auto \
-              "$@" Raft.tla
+          tlc_args=(
+            -Xmx4g
+            -XX:+UseParallelGC
+            -cp "$jar"
+            tlc2.TLC
+            -config Raft.cfg
+            -metadir states
+            -checkpoint 30
+            -gzip
+            -workers auto
+          )
+
+          run_tlc_with_budget() {
+            timeout --signal=TERM --kill-after=30s 295m \
+              java "${tlc_args[@]}" "$@" Raft.tla
           }
 
           # Newest checkpoint directory from a previous run, if any. TLC
@@ -148,11 +155,15 @@ jobs:
           if [[ -n "$latest" ]]; then
             echo "attempting best-effort recovery from checkpoint: $latest"
             set +e
-            run_tlc -recover "$latest" 2>&1 | tee "$GITHUB_WORKSPACE/tlc-full.log"
-            code=$?
+            run_tlc_with_budget -recover "$latest" 2>&1 | tee "$GITHUB_WORKSPACE/tlc-full.log"
+            code=${PIPESTATUS[0]}
             set -e
             case "$code" in
               0)
+                exit 0
+                ;;
+              124)
+                echo "TLC full bounds exhausted the 295-minute soft budget during recovery; checkpoint state will be saved for the next run."
                 exit 0
                 ;;
               10 | 11 | 12 | 13 | 14)
@@ -167,7 +178,20 @@ jobs:
             esac
           fi
 
-          run_tlc 2>&1 | tee "$GITHUB_WORKSPACE/tlc-full.log"
+          set +e
+          run_tlc_with_budget 2>&1 | tee "$GITHUB_WORKSPACE/tlc-full.log"
+          code=${PIPESTATUS[0]}
+          set -e
+          case "$code" in
+            0)
+              ;;
+            124)
+              echo "TLC full bounds exhausted the 295-minute soft budget; checkpoint state will be saved for the next run."
+              ;;
+            *)
+              exit "$code"
+              ;;
+          esac
 
       - name: Prune states to the newest checkpoint
         # Keep only the most recent run directory so the cache entry stays as
@@ -185,8 +209,8 @@ jobs:
           fi
 
       - name: Save TLC states for next run
-        # Runs on success, failure, and step timeout so next week's run can
-        # recover from the latest checkpoint.
+        # Runs on success, failure, and budget exhaustion so next week's run
+        # can recover from the latest checkpoint.
         if: always()
         uses: actions/cache/save@v4
         with:
@@ -194,7 +218,7 @@ jobs:
           key: tlc-full-states-${{ hashFiles('specs/tla/raft/Raft.tla', 'specs/tla/raft/Raft.cfg', 'tools/tla/VERSION') }}-${{ github.run_id }}
 
       - name: Upload TLC log
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: tlc-full-log

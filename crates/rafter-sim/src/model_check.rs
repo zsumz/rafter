@@ -7,7 +7,8 @@ use crate::Cluster;
 mod types;
 
 pub use types::{
-    Action, Bounds, Failure, MessageKind, NodeSummary, ProposalId, StateSummary, Summary,
+    Action, Bounds, Failure, FailureKind, MessageKind, NodeSummary, ProposalId, StateSummary,
+    Summary,
 };
 
 mod tla;
@@ -25,6 +26,8 @@ pub use replay::{replay_raft_trace, ReplayCheck, ReplayError, ReplayExpectation,
 mod helpers;
 
 use helpers::{proposal_payload, summarize, three_node_configs};
+
+mod catalog;
 
 mod invariants;
 
@@ -54,7 +57,6 @@ use explorers::{
     CommitSafetyExplorer, ElectionSafetyExplorer, ReadIndexSafetyExplorer, RestartSafetyExplorer,
 };
 
-const SOAK_LIVENESS_INVARIANT: &str = "raft randomized soak liveness";
 const MIN_SOAK_LIVENESS_ROUNDS: usize = 128;
 
 /// Exhaustively explores bounded Raft tick and ready-message delivery schedules.
@@ -127,7 +129,7 @@ pub fn check_raft_joint_membership_restart_and_snapshot_safety(
     explorer.explore(&state, &mut trace, 0)?;
     if !explorer.observed_restart {
         return Err(Failure {
-            invariant: RestartSafetyExplorer::INVARIANT,
+            invariant: catalog::PS_03_EXACT_DURABLE_RESTART,
             message: "bounded joint-membership exploration did not reach a restart action"
                 .to_string(),
             trace: Vec::new(),
@@ -136,7 +138,7 @@ pub fn check_raft_joint_membership_restart_and_snapshot_safety(
     }
     if !explorer.observed_pending_snapshot {
         return Err(Failure {
-            invariant: RestartSafetyExplorer::INVARIANT,
+            invariant: catalog::SS_04_SNAPSHOT_TRANSFER_INTEGRITY,
             message:
                 "bounded joint-membership exploration did not reach a pending snapshot transfer"
                     .to_string(),
@@ -146,7 +148,7 @@ pub fn check_raft_joint_membership_restart_and_snapshot_safety(
     }
     if !explorer.observed_installed_snapshot {
         return Err(Failure {
-            invariant: RestartSafetyExplorer::INVARIANT,
+            invariant: catalog::SS_01_ATOMIC_MONOTONE_SNAPSHOT_STATE,
             message: "bounded joint-membership exploration did not reach an installed snapshot"
                 .to_string(),
             trace: Vec::new(),
@@ -227,7 +229,7 @@ pub fn check_raft_leadership_noop_safety(bounds: Bounds) -> Result<Summary, Fail
     for (key, summary) in &required_applies {
         if !explorer.observed_required_applies().contains(key) {
             return Err(Failure {
-                invariant: CommitSafetyExplorer::INVARIANT,
+                invariant: catalog::AP_01_ORDERED_EXACTLY_ONCE_COMMITTED_APPLICATION,
                 message: format!(
                     "leadership no-op seed did not reach required Apply for {} at {} within depth {}",
                     key.0,
@@ -242,7 +244,7 @@ pub fn check_raft_leadership_noop_safety(bounds: Bounds) -> Result<Summary, Fail
     for (key, summary) in &required_configurations {
         if !explorer.observed_required_configurations().contains(key) {
             return Err(Failure {
-                invariant: CommitSafetyExplorer::INVARIANT,
+                invariant: catalog::MB_04_MONOTONE_CONFIGURATION_TRANSITION_AND_IDENTITY,
                 message: format!(
                     "leadership no-op seed did not reach required committed configuration for {} at {} within depth {}",
                     key.0,
@@ -257,7 +259,7 @@ pub fn check_raft_leadership_noop_safety(bounds: Bounds) -> Result<Summary, Fail
     for (key, summary) in &required_commits {
         if !explorer.observed_required_commits().contains(key) {
             return Err(Failure {
-                invariant: CommitSafetyExplorer::INVARIANT,
+                invariant: catalog::CM_01_COMMIT_INDEX_MONOTONICITY_AND_BOUNDS,
                 message: format!(
                     "leadership no-op seed did not reach required commit for {} at {} within depth {}",
                     key.0,
@@ -322,7 +324,7 @@ pub fn check_raft_restart_and_snapshot_safety(bounds: Bounds) -> Result<Summary,
     restart_explorer.explore(&restart_state, &mut restart_trace, 0)?;
     if !restart_explorer.observed_restart {
         return Err(Failure {
-            invariant: RestartSafetyExplorer::INVARIANT,
+            invariant: catalog::PS_03_EXACT_DURABLE_RESTART,
             message: "bounded exploration did not reach a restart action".to_string(),
             trace: Vec::new(),
             state: summarize(&restart_state.state.cluster),
@@ -337,7 +339,7 @@ pub fn check_raft_restart_and_snapshot_safety(bounds: Bounds) -> Result<Summary,
     snapshot_explorer.explore(&snapshot_state, &mut snapshot_trace, 0)?;
     if !snapshot_explorer.observed_pending_snapshot {
         return Err(Failure {
-            invariant: RestartSafetyExplorer::INVARIANT,
+            invariant: catalog::SS_04_SNAPSHOT_TRANSFER_INTEGRITY,
             message: "bounded exploration did not reach a pending snapshot transfer".to_string(),
             trace: Vec::new(),
             state: summarize(&snapshot_state.state.cluster),
@@ -345,7 +347,7 @@ pub fn check_raft_restart_and_snapshot_safety(bounds: Bounds) -> Result<Summary,
     }
     if !snapshot_explorer.observed_installed_snapshot {
         return Err(Failure {
-            invariant: RestartSafetyExplorer::INVARIANT,
+            invariant: catalog::SS_01_ATOMIC_MONOTONE_SNAPSHOT_STATE,
             message: "bounded exploration did not reach an installed snapshot".to_string(),
             trace: Vec::new(),
             state: summarize(&snapshot_state.state.cluster),
@@ -445,6 +447,7 @@ fn run_soak_liveness_check(
             state,
             config,
             trace,
+            catalog::LV_01_POST_HEAL_LEADER_CONVERGENCE,
             format!("no leader elected within {budget} post-heal convergence rounds"),
         ));
     };
@@ -483,7 +486,14 @@ fn run_soak_liveness_check(
             format!("no liveness proposal was accepted within {budget} post-heal rounds")
         }
     };
-    Err(soak_liveness_failure(state, config, trace, message))
+    let invariant = if state.cluster.leaders().is_empty() {
+        catalog::LV_01_POST_HEAL_LEADER_CONVERGENCE
+    } else {
+        catalog::LV_02_PROPOSAL_PROGRESS
+    };
+    Err(soak_liveness_failure(
+        state, config, trace, invariant, message,
+    ))
 }
 
 fn drive_until_quiescent_leader(
@@ -633,6 +643,7 @@ fn soak_liveness_failure(
     state: &ExplorationState,
     config: SoakConfig,
     trace: &[SoakAction],
+    invariant: &'static str,
     message: String,
 ) -> SoakFailure {
     SoakFailure {
@@ -640,7 +651,7 @@ fn soak_liveness_failure(
         step: trace.len(),
         trace: trace.to_vec(),
         failure: Box::new(Failure {
-            invariant: SOAK_LIVENESS_INVARIANT,
+            invariant,
             message,
             trace: Vec::new(),
             state: summarize(&state.cluster),

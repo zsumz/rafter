@@ -317,7 +317,40 @@ pub struct StateSummary {
     pub nodes: Vec<NodeSummary>,
 }
 
-/// Failure returned when a bounded exploration finds an invariant violation.
+/// Top-level class for a model-check failure.
+///
+/// This enum is exhaustive because model-check triage currently uses this
+/// closed set of failure classes.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FailureKind {
+    /// An explored state or transition contradicted the named invariant.
+    InvariantViolation,
+    /// The configured exploration did not reach a required witness scenario.
+    CoverageNotReached,
+    /// The simulator harness could not apply or resume its own modeled action.
+    HarnessError,
+}
+
+impl FailureKind {
+    /// Returns the stable machine-readable label for this failure kind.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::InvariantViolation => "invariant-violation",
+            Self::CoverageNotReached => "coverage-not-reached",
+            Self::HarnessError => "harness-error",
+        }
+    }
+}
+
+impl fmt::Display for FailureKind {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+/// Failure returned when a bounded exploration finds an invariant violation,
+/// coverage miss, or harness error.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Failure {
     pub(super) invariant: &'static str,
@@ -327,6 +360,12 @@ pub struct Failure {
 }
 
 impl Failure {
+    /// Returns the class of failure.
+    #[must_use]
+    pub fn kind(&self) -> FailureKind {
+        classify_failure(self.message())
+    }
+
     /// Returns the invariant that failed.
     #[must_use]
     pub const fn invariant(&self) -> &'static str {
@@ -359,3 +398,29 @@ impl fmt::Display for Failure {
 }
 
 impl Error for Failure {}
+
+fn classify_failure(message: &str) -> FailureKind {
+    if is_coverage_not_reached(message) {
+        FailureKind::CoverageNotReached
+    } else if is_harness_error(message) {
+        FailureKind::HarnessError
+    } else {
+        FailureKind::InvariantViolation
+    }
+}
+
+fn is_coverage_not_reached(message: &str) -> bool {
+    message.contains("did not reach a restart action")
+        || message.contains("did not reach a pending snapshot transfer")
+        || message.contains("did not reach an installed snapshot")
+        || message.contains("did not reach required Apply")
+        || message.contains("did not reach required committed configuration")
+        || message.contains("did not reach required commit")
+        || message.contains("no liveness proposal was accepted within")
+}
+
+fn is_harness_error(message: &str) -> bool {
+    message.contains("failed to restart from bootstrap state")
+        || message.contains("restart lost the node record")
+        || message.contains("failed to resume pending snapshot transfer")
+}

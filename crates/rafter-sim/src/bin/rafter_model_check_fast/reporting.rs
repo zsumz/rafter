@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-use rafter_sim::model_check::{Failure, SoakFailure, SoakSummary, Summary};
+use rafter_sim::model_check::{Failure, FailureKind, SoakFailure, SoakSummary, Summary};
 
 pub(crate) fn print_raft_summary(name: &str, summary: Summary, duration: Duration) {
     println!(
@@ -27,6 +27,7 @@ pub(crate) fn print_raft_failure(name: &str, failure: &Failure) {
     eprintln!("model-check {name} failed: {failure}");
     for line in failure_timeline_lines(
         name,
+        failure.kind(),
         failure.invariant(),
         failure.message(),
         failure
@@ -46,6 +47,7 @@ pub(crate) fn print_soak_failure(name: &str, failure: &SoakFailure) {
     eprintln!("step={}", failure.step());
     for line in failure_timeline_lines(
         name,
+        failure.failure().kind(),
         failure.failure().invariant(),
         failure.failure().message(),
         failure
@@ -61,13 +63,15 @@ pub(crate) fn print_soak_failure(name: &str, failure: &SoakFailure) {
 
 pub(crate) fn failure_timeline_lines(
     name: &str,
+    failure_kind: FailureKind,
     invariant: &str,
     message: &str,
     trace: impl IntoIterator<Item = (usize, String)>,
 ) -> Vec<String> {
     let mut lines = vec![format!(
-        "ERROR test model failure name={} invariant={} error_message={}",
+        "ERROR test model failure name={} failure_kind={} invariant={} error_message={}",
         field_value(name),
+        failure_kind,
         field_value(invariant),
         field_value(message)
     )];
