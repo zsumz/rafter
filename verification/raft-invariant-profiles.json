@@ -14,25 +14,108 @@
   ],
   "profiles": {
     "pr": {
-      "description": "Every direct and end-to-end registry record required by the deterministic pull-request gate.",
+      "description": "All direct tests, simulator, and TLA evidence required by the deterministic pull-request gate; nondeterministic Maelstrom scheduling is reserved for scheduled profiles.",
       "evidence_policy": "all_matching_registry_evidence",
-      "required_layers": ["tests", "simulator", "tla", "maelstrom"],
+      "required_layers": ["tests", "simulator", "tla"],
       "required_strengths": ["direct", "e2e"],
-      "canonical_minimum_independent_layers": 2
+      "canonical_minimum_independent_layers": 2,
+      "runners": {
+        "tests": {
+          "producer": "rafter-invariants-tests-v2",
+          "command": ["cargo", "run", "-p", "rafter-invariants", "--", "run", "--profile", "pr", "--layer", "tests"],
+          "configuration": {"build": "locked-no-default-features", "discovery": "libtest-executable", "execution": "exact-single-threaded", "scale": "pr"},
+          "minimum_observed_checks": 57,
+          "require_peak_rss": true
+        },
+        "simulator": {
+          "producer": "rafter-invariants-simulator-v2",
+          "command": ["cargo", "run", "-p", "rafter-invariants", "--", "run", "--profile", "pr", "--layer", "simulator"],
+          "configuration": {"build": "release-locked", "completion": "frontier-or-explicit-floor", "model_profile": "fast", "seed_policy": "none-exhaustive", "state_floors": "profile-defined"},
+          "minimum_observed_checks": 12,
+          "require_peak_rss": true
+        },
+        "tla": {
+          "producer": "rafter-invariants-tla-v2",
+          "command": ["cargo", "run", "-p", "rafter-invariants", "--", "run", "--profile", "pr", "--layer", "tla"],
+          "configuration": {"config": "RaftCi.cfg", "fp": "0", "seed": "2026071101", "soft_timeout": "40m", "workers": "4"},
+          "minimum_observed_checks": 1,
+          "require_peak_rss": true
+        }
+      }
     },
     "nightly": {
       "description": "Every direct and end-to-end registry record rerun with the nightly runner bounds.",
       "evidence_policy": "all_matching_registry_evidence",
       "required_layers": ["tests", "simulator", "tla", "maelstrom"],
       "required_strengths": ["direct", "e2e"],
-      "canonical_minimum_independent_layers": 2
+      "canonical_minimum_independent_layers": 2,
+      "runners": {
+        "tests": {
+          "producer": "rafter-invariants-tests-v2",
+          "command": ["cargo", "run", "-p", "rafter-invariants", "--", "run", "--profile", "nightly", "--layer", "tests"],
+          "configuration": {"build": "locked-no-default-features", "discovery": "libtest-executable", "execution": "exact-single-threaded", "scale": "nightly"},
+          "minimum_observed_checks": 57,
+          "require_peak_rss": true
+        },
+        "simulator": {
+          "producer": "rafter-invariants-simulator-v2",
+          "command": ["cargo", "run", "-p", "rafter-invariants", "--", "run", "--profile", "nightly", "--layer", "simulator"],
+          "configuration": {"build": "release-locked", "completion": "frontier-or-explicit-floor", "model_profile": "raft-nightly", "seed_count": "6", "seed_policy": "source-derived-v1", "soak_steps": "1024", "state_floors": "per-leg"},
+          "minimum_observed_checks": 11,
+          "require_peak_rss": true
+        },
+        "tla": {
+          "producer": "rafter-invariants-tla-v2",
+          "command": ["cargo", "run", "-p", "rafter-invariants", "--", "run", "--profile", "nightly", "--layer", "tla"],
+          "configuration": {"config": "RaftNightly.cfg", "fp": "0", "seed": "2026071102", "soft_timeout": "115m", "workers": "4"},
+          "minimum_observed_checks": 1,
+          "require_peak_rss": true
+        },
+        "maelstrom": {
+          "producer": "rafter-invariants-maelstrom-v2",
+          "command": ["cargo", "run", "-p", "rafter-invariants", "--", "run", "--profile", "nightly", "--layer", "maelstrom"],
+          "configuration": {"duration_seconds": "45", "replay": "retained-store", "scenarios": "base,membership,restart,app-crash,snapshot", "scheduler_seed": "unavailable", "trials": "1"},
+          "minimum_observed_checks": 5,
+          "require_peak_rss": true
+        }
+      }
     },
     "weekly": {
       "description": "Every direct and end-to-end registry record rerun with the weekly deep runner bounds.",
       "evidence_policy": "all_matching_registry_evidence",
       "required_layers": ["tests", "simulator", "tla", "maelstrom"],
       "required_strengths": ["direct", "e2e"],
-      "canonical_minimum_independent_layers": 2
+      "canonical_minimum_independent_layers": 2,
+      "runners": {
+        "tests": {
+          "producer": "rafter-invariants-tests-v2",
+          "command": ["cargo", "run", "-p", "rafter-invariants", "--", "run", "--profile", "weekly", "--layer", "tests"],
+          "configuration": {"build": "locked-no-default-features", "discovery": "libtest-executable", "execution": "exact-single-threaded", "scale": "weekly"},
+          "minimum_observed_checks": 57,
+          "require_peak_rss": true
+        },
+        "simulator": {
+          "producer": "rafter-invariants-simulator-v2",
+          "command": ["cargo", "run", "-p", "rafter-invariants", "--", "run", "--profile", "weekly", "--layer", "simulator"],
+          "configuration": {"build": "release-locked", "completion": "frontier-or-explicit-floor", "model_profile": "raft-weekly", "seed_count": "10", "seed_policy": "source-derived-v1", "soak_steps": "4096", "state_floors": "per-leg"},
+          "minimum_observed_checks": 12,
+          "require_peak_rss": true
+        },
+        "tla": {
+          "producer": "rafter-invariants-tla-v2",
+          "command": ["cargo", "run", "-p", "rafter-invariants", "--", "run", "--profile", "weekly", "--layer", "tla"],
+          "configuration": {"config": "RaftNightly.cfg", "fp": "0", "seed": "2026071103", "soft_timeout": "115m", "unsymmetrized_exploration": "non-gating", "workers": "4"},
+          "minimum_observed_checks": 1,
+          "require_peak_rss": true
+        },
+        "maelstrom": {
+          "producer": "rafter-invariants-maelstrom-v2",
+          "command": ["cargo", "run", "-p", "rafter-invariants", "--", "run", "--profile", "weekly", "--layer", "maelstrom"],
+          "configuration": {"duration_seconds": "60", "replay": "retained-store", "scenarios": "base,membership,restart,app-crash,snapshot", "scheduler_seed": "unavailable", "trials": "3"},
+          "minimum_observed_checks": 15,
+          "require_peak_rss": true
+        }
+      }
     }
   }
 }

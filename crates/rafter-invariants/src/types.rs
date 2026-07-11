@@ -1,7 +1,9 @@
+use std::collections::BTreeMap;
+
 use serde::{Deserialize, Serialize};
 
 /// Current version of the machine-readable receipt and report contract.
-pub const RESULT_SCHEMA_VERSION: u32 = 1;
+pub const RESULT_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -11,7 +13,63 @@ pub struct ResultBundle {
     pub runner: String,
     pub profile: String,
     pub source_ref: String,
+    pub execution: ExecutionReceipt,
     pub results: Vec<EvidenceResult>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+/// Deterministic execution provenance shared by every result in a bundle.
+pub struct ExecutionReceipt {
+    pub producer: String,
+    pub command: Vec<String>,
+    pub configuration: BTreeMap<String, String>,
+    pub source: SourceReceipt,
+    pub checks: Vec<CheckReceipt>,
+    pub duration_ms: u64,
+    pub peak_rss_kib: u64,
+    pub artifacts: Vec<ArtifactRef>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+/// Immutable source and toolchain identity used to produce a bundle.
+pub struct SourceReceipt {
+    pub commit: String,
+    pub tree: String,
+    pub cargo_lock_sha256: String,
+    pub rustc: String,
+    pub target: String,
+    pub build_profile: String,
+    pub features: Vec<String>,
+    pub clean: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+/// One actually invoked deterministic check and its observed completion state.
+pub struct CheckReceipt {
+    pub execution_id: String,
+    pub check_id: String,
+    pub evidence_ids: Vec<String>,
+    pub completion: CheckCompletion,
+    pub observations: BTreeMap<String, u64>,
+    pub duration_ms: u64,
+    pub peak_rss_kib: u64,
+    pub artifacts: Vec<ArtifactRef>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+/// Exhaustive reasons why a deterministic check stopped.
+pub enum CheckCompletion {
+    Completed,
+    FrontierExhausted,
+    Counterexample,
+    CoverageNotReached,
+    BudgetExhausted,
+    Timeout,
+    HarnessError,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -20,6 +78,7 @@ pub struct ResultBundle {
 pub struct EvidenceResult {
     pub invariant_id: String,
     pub evidence_id: String,
+    pub execution_id: String,
     pub status: EvidenceStatus,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub classification: Option<FailureClassification>,
@@ -48,12 +107,14 @@ pub enum FailureClassification {
     HarnessError,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(deny_unknown_fields)]
 /// Replayable log, trace, counterexample, or related evidence artifact.
 pub struct ArtifactRef {
     pub kind: String,
     pub path: String,
+    pub sha256: String,
+    pub size_bytes: u64,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
@@ -63,6 +124,7 @@ pub struct VerdictReport {
     pub profile: String,
     pub source_ref: String,
     pub summary: VerdictSummary,
+    pub artifacts: Vec<ArtifactRef>,
     pub invariants: Vec<InvariantVerdict>,
 }
 

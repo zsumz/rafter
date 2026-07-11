@@ -6,6 +6,8 @@ use std::{
 
 use serde::Deserialize;
 
+use crate::registry_parse::{parse_evidence, parse_invariants};
+
 #[derive(Clone, Debug)]
 /// Reviewed invariant IDs and their declared executable evidence.
 pub struct Catalog {
@@ -22,16 +24,30 @@ pub struct EvidenceDescriptor {
     pub strength: String,
     pub path: String,
     pub symbol: String,
+    pub negative_fixture: Option<String>,
+    pub test: Option<TestIdentity>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Exact Cargo target and libtest identity for tests-layer evidence.
+pub struct TestIdentity {
+    pub package: String,
+    pub target_kind: String,
+    pub target: String,
+    pub test_name: String,
 }
 
 impl EvidenceDescriptor {
     /// Returns the stable aggregate key for this evidence declaration.
     #[must_use]
     pub fn evidence_id(&self) -> String {
-        format!(
-            "{}/{}/{}#{}",
-            self.invariant_id, self.layer, self.path, self.symbol
-        )
+        let base = format!(
+            "{}/{}/{}/{}#{}",
+            self.invariant_id, self.layer, self.strength, self.path, self.symbol
+        );
+        self.negative_fixture
+            .as_ref()
+            .map_or(base.clone(), |fixture| format!("{base}@{fixture}"))
     }
 }
 
@@ -53,11 +69,23 @@ pub struct ProfileContract {
     pub required_layers: Vec<String>,
     pub required_strengths: Vec<String>,
     pub canonical_minimum_independent_layers: usize,
+    pub runners: BTreeMap<String, RunnerContract>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+/// Required deterministic producer identity and bounds for one layer.
+pub struct RunnerContract {
+    pub producer: String,
+    pub command: Vec<String>,
+    pub configuration: BTreeMap<String, String>,
+    pub minimum_observed_checks: usize,
+    pub require_peak_rss: bool,
 }
 
 #[derive(Debug)]
 /// Error reading or validating the invariant catalog and profile manifest.
-pub struct CatalogError(String);
+pub struct CatalogError(pub(super) String);
 
 impl fmt::Display for CatalogError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -79,6 +107,15 @@ impl Catalog {
             .map_err(|error| CatalogError(format!("read {}: {error}", path.display())))?;
         let (ids, canonical_ids) = parse_invariants(&source)?;
         let evidence = parse_evidence(&source)?;
+        let evidence_ids = evidence
+            .iter()
+            .map(EvidenceDescriptor::evidence_id)
+            .collect::<BTreeSet<_>>();
+        if evidence_ids.len() != evidence.len() {
+            return Err(CatalogError(
+                "registry evidence declarations must have unique identities".to_owned(),
+            ));
+        }
         Ok(Self {
             ids,
             canonical_ids,
@@ -170,106 +207,25 @@ impl ProfileManifest {
                 || contract.required_layers.is_empty()
                 || contract.required_strengths.is_empty()
                 || contract.canonical_minimum_independent_layers < 2
+                || contract.runners.keys().collect::<BTreeSet<_>>()
+                    != contract.required_layers.iter().collect::<BTreeSet<_>>()
             {
                 return Err(CatalogError(format!(
                     "profile {profile} must document nonempty evidence requirements"
                 )));
             }
+            for (layer, runner) in &contract.runners {
+                if runner.producer.trim().is_empty()
+                    || runner.command.is_empty()
+                    || runner.configuration.is_empty()
+                    || runner.minimum_observed_checks == 0
+                {
+                    return Err(CatalogError(format!(
+                        "profile {profile} runner {layer} has an incomplete execution contract"
+                    )));
+                }
+            }
         }
         Ok(())
-    }
-}
-
-fn parse_invariants(source: &str) -> Result<(Vec<String>, BTreeSet<String>), CatalogError> {
-    let records = parse_section_records(source, "invariants:");
-    let ids = records
-        .iter()
-        .filter_map(|record| record.get("id").cloned())
-        .collect::<Vec<_>>();
-    if ids.is_empty() {
-        return Err(CatalogError(
-            "registry contains no invariant IDs".to_owned(),
-        ));
-    }
-    let canonical_ids = records
-        .iter()
-        .filter(|record| record.get("tier").is_some_and(|tier| tier == "canonical"))
-        .filter_map(|record| record.get("id").cloned())
-        .collect();
-    Ok((ids, canonical_ids))
-}
-
-fn parse_evidence(source: &str) -> Result<Vec<EvidenceDescriptor>, CatalogError> {
-    parse_section_records(source, "evidence:")
-        .into_iter()
-        .enumerate()
-        .map(|(index, record)| {
-            let required = |field: &str| {
-                record.get(field).cloned().ok_or_else(|| {
-                    CatalogError(format!(
-                        "evidence record {} is missing required field {field}",
-                        index + 1
-                    ))
-                })
-            };
-            Ok(EvidenceDescriptor {
-                invariant_id: required("id")?,
-                layer: required("layer")?,
-                strength: required("strength")?,
-                path: required("path")?,
-                symbol: required("symbol")?,
-            })
-        })
-        .collect()
-}
-
-fn parse_section_records(source: &str, section: &str) -> Vec<BTreeMap<String, String>> {
-    let mut records = Vec::new();
-    let mut current = None::<BTreeMap<String, String>>;
-    let mut active = false;
-    for raw_line in source.lines() {
-        let indent = raw_line.chars().take_while(|ch| *ch == ' ').count();
-        let line = raw_line.trim();
-        if indent == 0 {
-            if active {
-                if let Some(record) = current.take() {
-                    records.push(record);
-                }
-            }
-            active = line == section;
-            continue;
-        }
-        if !active || line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        if indent == 2 && line.starts_with("- id: ") {
-            if let Some(record) = current.take() {
-                records.push(record);
-            }
-            let mut record = BTreeMap::new();
-            record.insert("id".to_owned(), yaml_value(&line[6..]));
-            current = Some(record);
-        } else if indent == 4 {
-            if let Some((key, value)) = line.split_once(": ") {
-                if let Some(record) = current.as_mut() {
-                    record.insert(key.to_owned(), yaml_value(value));
-                }
-            }
-        }
-    }
-    if active {
-        if let Some(record) = current {
-            records.push(record);
-        }
-    }
-    records
-}
-
-fn yaml_value(value: &str) -> String {
-    let value = value.trim();
-    if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
-        value[1..value.len() - 1].replace("\\\"", "\"")
-    } else {
-        value.to_owned()
     }
 }
