@@ -4,7 +4,7 @@ use std::{
     time::Instant,
 };
 
-use super::super::{Bounds, Summary};
+use super::super::{state::ExplorationState, Bounds, RestartSnapshotState, Summary};
 
 #[derive(Debug)]
 pub(super) struct ExplorationBudget {
@@ -12,6 +12,7 @@ pub(super) struct ExplorationBudget {
     started_at: Instant,
     best_remaining_depth_by_state: BTreeMap<StateKey, usize>,
     unique_states: BTreeSet<StateKey>,
+    unique_protocol_states: BTreeSet<StateKey>,
     explored_states: usize,
     explored_actions: usize,
 }
@@ -23,6 +24,7 @@ impl ExplorationBudget {
             started_at: Instant::now(),
             best_remaining_depth_by_state: BTreeMap::new(),
             unique_states: BTreeSet::new(),
+            unique_protocol_states: BTreeSet::new(),
             explored_states: 0,
             explored_actions: 0,
         }
@@ -32,12 +34,13 @@ impl ExplorationBudget {
         Summary {
             explored_states: self.explored_states,
             unique_states: self.unique_states.len(),
+            unique_protocol_states: self.unique_protocol_states.len(),
             explored_actions: self.explored_actions,
             max_depth: self.bounds.depth,
         }
     }
 
-    pub(super) fn enter(&mut self, state: &impl Hash, depth: usize) -> bool {
+    pub(super) fn enter(&mut self, state: &impl StateIdentity, depth: usize) -> bool {
         self.explored_states += 1;
         if self.wall_clock_exhausted() {
             return false;
@@ -65,6 +68,8 @@ impl ExplorationBudget {
         self.best_remaining_depth_by_state
             .insert(key, remaining_depth);
         self.unique_states.insert(key);
+        self.unique_protocol_states
+            .insert(StateKey::from_protocol_state(state));
         true
     }
 
@@ -79,9 +84,34 @@ impl ExplorationBudget {
     }
 }
 
+pub(super) trait StateIdentity: Hash {
+    fn hash_protocol_state<H: Hasher>(&self, state: &mut H);
+}
+
+impl StateIdentity for ExplorationState {
+    fn hash_protocol_state<H: Hasher>(&self, state: &mut H) {
+        self.cluster.hash(state);
+        self.proposals_issued.hash(state);
+        self.restarts_issued.hash(state);
+        self.read_indexes_issued.hash(state);
+        self.membership_changes_issued.hash(state);
+        self.transfers_issued.hash(state);
+        self.partitions_issued.hash(state);
+        self.lossy_restarts_issued.hash(state);
+    }
+}
+
+impl StateIdentity for RestartSnapshotState {
+    fn hash_protocol_state<H: Hasher>(&self, state: &mut H) {
+        self.state.hash_protocol_state(state);
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{Bounds, ExplorationBudget};
+    use std::hash::{Hash, Hasher};
+
+    use super::{Bounds, ExplorationBudget, StateIdentity};
 
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     enum ToyState {
@@ -89,6 +119,24 @@ mod tests {
         Detour,
         Shared,
         Descendant,
+    }
+
+    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+    struct ToyVerifierState {
+        protocol: u8,
+        verifier_history: u8,
+    }
+
+    impl StateIdentity for ToyState {
+        fn hash_protocol_state<H: Hasher>(&self, state: &mut H) {
+            self.hash(state);
+        }
+    }
+
+    impl StateIdentity for ToyVerifierState {
+        fn hash_protocol_state<H: Hasher>(&self, state: &mut H) {
+            self.protocol.hash(state);
+        }
     }
 
     #[test]
@@ -107,7 +155,58 @@ mod tests {
         );
         assert!(entered.contains(&ToyState::Descendant));
         assert_eq!(budget.summary().unique_states(), 4);
+        assert_eq!(budget.summary().unique_protocol_states(), 4);
         assert!(budget.summary().explored_states() > budget.summary().unique_states());
+    }
+
+    #[test]
+    fn protocol_count_collapses_verifier_history_divergence() {
+        let mut budget = ExplorationBudget::new(Bounds::new(1));
+
+        assert!(budget.enter(
+            &ToyVerifierState {
+                protocol: 7,
+                verifier_history: 1,
+            },
+            0,
+        ));
+        assert!(budget.enter(
+            &ToyVerifierState {
+                protocol: 7,
+                verifier_history: 2,
+            },
+            0,
+        ));
+
+        let summary = budget.summary();
+        assert_eq!(summary.unique_states(), 2);
+        assert_eq!(summary.unique_verifier_states(), 2);
+        assert_eq!(summary.unique_protocol_states(), 1);
+    }
+
+    #[test]
+    fn unique_state_cap_still_applies_to_verifier_states() {
+        let mut budget = ExplorationBudget::new(Bounds::new(1).with_max_unique_states(1));
+
+        assert!(budget.enter(
+            &ToyVerifierState {
+                protocol: 7,
+                verifier_history: 1,
+            },
+            0,
+        ));
+        assert!(!budget.enter(
+            &ToyVerifierState {
+                protocol: 7,
+                verifier_history: 2,
+            },
+            0,
+        ));
+
+        let summary = budget.summary();
+        assert_eq!(summary.unique_states(), 1);
+        assert_eq!(summary.unique_verifier_states(), 1);
+        assert_eq!(summary.unique_protocol_states(), 1);
     }
 
     fn explore_toy_graph(
@@ -153,6 +252,12 @@ impl StateKey {
     pub(super) fn from_hash(state: &impl Hash) -> Self {
         let mut hasher = StateKeyHasher::new();
         state.hash(&mut hasher);
+        hasher.finish_key()
+    }
+
+    pub(super) fn from_protocol_state(state: &impl StateIdentity) -> Self {
+        let mut hasher = StateKeyHasher::new();
+        state.hash_protocol_state(&mut hasher);
         hasher.finish_key()
     }
 }
