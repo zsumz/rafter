@@ -86,8 +86,10 @@ impl Cluster {
             match output {
                 Output::Apply { index, payload, .. } => {
                     self.record_durable_applied(from, index);
+                    let application_epoch = self.application_epoch(from);
                     self.applied.push(Applied {
                         node_id: from,
+                        application_epoch,
                         index,
                         payload,
                     });
@@ -97,8 +99,10 @@ impl Cluster {
                     // The kernel emits the descriptor only; the content is
                     // the staged transfer completed earlier in this batch.
                     let payload = self.take_installed_snapshot_payload(from, &snapshot);
+                    let application_epoch = self.application_epoch(from);
                     self.snapshot_installs.push(SnapshotInstalled {
                         node_id: from,
+                        application_epoch,
                         last_included_index: snapshot.metadata.last_included_index,
                         last_included_term: snapshot.metadata.last_included_term,
                         committed_membership: snapshot.metadata.committed_membership().cloned(),
@@ -131,8 +135,10 @@ impl Cluster {
                     read_id,
                     read_index,
                 } => {
+                    let application_epoch = self.application_epoch(from);
                     self.read_grants.push(ReadGranted {
                         node_id: from,
+                        application_epoch,
                         request_id: read_id.0,
                         read_index,
                         local_applied_index: self.local_applied_index(from),

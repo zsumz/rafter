@@ -13,6 +13,7 @@ fn client_history_detects_completed_read_before_local_apply_floor() {
             started_at: 0,
             outcome: ClientReadOutcome::Completed {
                 proof: ClientReadProof {
+                    application_epoch: 0,
                     read_index: LogIndex(5),
                     local_applied_index: LogIndex(4),
                 },

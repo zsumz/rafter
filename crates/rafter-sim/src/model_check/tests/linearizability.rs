@@ -94,6 +94,7 @@ fn insert_completed_read(
             started_at,
             outcome: ClientReadOutcome::Completed {
                 proof: ClientReadProof {
+                    application_epoch: 0,
                     read_index,
                     local_applied_index: read_index,
                 },

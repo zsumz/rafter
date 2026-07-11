@@ -65,6 +65,7 @@ fn simulator_streams_multi_chunk_snapshot_and_installs_assembled_payload() {
         cluster.snapshot_installs(),
         [SnapshotInstalled {
             node_id: NodeId(2),
+            application_epoch: 0,
             last_included_index: LogIndex(2),
             last_included_term: Term(1),
             committed_membership: snapshot.metadata.committed_membership().cloned(),

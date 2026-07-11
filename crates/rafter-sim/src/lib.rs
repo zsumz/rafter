@@ -44,6 +44,9 @@ pub struct Cluster {
     network: VecDeque<QueuedEnvelope>,
     rng: SimRng,
     applied: Vec<Applied>,
+    /// Per-node application incarnation. Explicit application-state-loss
+    /// restarts advance this while ordinary process restarts preserve it.
+    application_epochs: BTreeMap<NodeId, u64>,
     /// Per-node durable application floor. Plain restarts preserve this
     /// state-machine durability and replay only committed entries above it.
     durable_applied: BTreeMap<NodeId, LogIndex>,
@@ -99,6 +102,7 @@ impl Cluster {
             .keys()
             .map(|node_id| (*node_id, LogIndex::ZERO))
             .collect();
+        let application_epochs = nodes.keys().map(|node_id| (*node_id, 0)).collect();
 
         Self {
             clock: SimClock::default(),
@@ -107,6 +111,7 @@ impl Cluster {
             network: VecDeque::new(),
             rng: SimRng::new(seed),
             applied: Vec::new(),
+            application_epochs,
             durable_applied,
             snapshot_installs: Vec::new(),
             snapshot_sources,

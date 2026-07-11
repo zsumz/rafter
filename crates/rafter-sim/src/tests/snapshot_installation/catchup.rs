@@ -47,6 +47,7 @@ fn simulator_installs_snapshot_when_follower_is_behind_compacted_prefix() {
         cluster.snapshot_installs(),
         [SnapshotInstalled {
             node_id: NodeId(2),
+            application_epoch: 0,
             last_included_index: LogIndex(2),
             last_included_term: Term(1),
             committed_membership: snapshot.metadata.committed_membership().cloned(),
