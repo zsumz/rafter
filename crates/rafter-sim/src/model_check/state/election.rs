@@ -1,6 +1,8 @@
 use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
 
-use rafter::{BootstrapState, LogIndex, MembershipConfig, Message, NodeId, Term};
+use rafter::{
+    BootstrapState, LogIndex, MembershipConfig, Message, NodeId, RequestVoteResponse, Term,
+};
 
 use crate::{Cluster, Envelope};
 
@@ -13,6 +15,7 @@ pub(crate) struct ElectionHistory {
     pub(crate) term_regressions: BTreeSet<TermRegression>,
     pub(crate) vote_conflicts: BTreeSet<VoteConflict>,
     pub(crate) vote_losses: BTreeSet<VoteLoss>,
+    pub(crate) vote_grants: Vec<VoteGrantObservation>,
     pub(crate) grants_by_candidate: BTreeMap<(Term, NodeId), BTreeSet<NodeId>>,
     pub(crate) elected_by_term: BTreeMap<Term, ElectionCertificate>,
     pub(crate) conflicting_elections: BTreeSet<ElectionConflict>,
@@ -104,6 +107,19 @@ pub(crate) struct VoteLoss {
 }
 
 #[derive(Clone, Debug, Hash)]
+pub(crate) struct VoteGrantObservation {
+    pub(crate) voter_id: NodeId,
+    pub(crate) candidate_id: NodeId,
+    pub(crate) term: Term,
+    pub(crate) candidate_last_log_index: LogIndex,
+    pub(crate) candidate_last_log_term: Term,
+    pub(crate) voter_last_log_index: LogIndex,
+    pub(crate) voter_last_log_term: Term,
+    pub(crate) voter_membership: MembershipConfig,
+    pub(crate) durable_vote: Option<NodeId>,
+}
+
+#[derive(Clone, Debug, Hash)]
 pub(crate) struct ElectionCertificate {
     pub(crate) leader_id: NodeId,
     pub(crate) term: Term,
@@ -129,14 +145,16 @@ impl ExplorationState {
         &mut self,
         before: &Cluster,
         delivered: Option<&Envelope>,
+        emitted: &[Envelope],
     ) {
         if let Some(envelope) = delivered {
-            self.record_request_vote_grant(envelope);
+            self.record_request_vote_response_grant(envelope);
+            self.record_request_vote_grant(before, envelope, emitted);
         }
         self.record_leader_transitions(before);
     }
 
-    fn record_request_vote_grant(&mut self, envelope: &Envelope) {
+    fn record_request_vote_response_grant(&mut self, envelope: &Envelope) {
         let Message::RequestVoteResponse(response) = &envelope.message else {
             return;
         };
@@ -148,6 +166,49 @@ impl ExplorationState {
             .entry((response.term, envelope.to))
             .or_default()
             .insert(envelope.from);
+    }
+
+    fn record_request_vote_grant(
+        &mut self,
+        before: &Cluster,
+        envelope: &Envelope,
+        emitted: &[Envelope],
+    ) {
+        let Message::RequestVote(request) = &envelope.message else {
+            return;
+        };
+        let Some(response) = granted_vote_response_to_candidate(
+            emitted,
+            envelope.to,
+            request.candidate_id,
+            request.term,
+        ) else {
+            return;
+        };
+        if response.voter_id != envelope.to {
+            return;
+        }
+        let voter_bootstrap = before.bootstrap_state(envelope.to);
+        let voter_last_log_term = last_log_term_from_bootstrap(&voter_bootstrap);
+        let durable_vote = self
+            .cluster
+            .nodes
+            .get(&envelope.to)
+            .and_then(|node| (node.current_term() == response.term).then(|| node.voted_for()))
+            .flatten();
+        self.election_history
+            .vote_grants
+            .push(VoteGrantObservation {
+                voter_id: envelope.to,
+                candidate_id: request.candidate_id,
+                term: response.term,
+                candidate_last_log_index: request.last_log_index,
+                candidate_last_log_term: request.last_log_term,
+                voter_last_log_index: before.last_log_index(envelope.to),
+                voter_last_log_term,
+                voter_membership: before.effective_membership(envelope.to),
+                durable_vote,
+            });
     }
 
     fn record_leader_transitions(&mut self, before: &Cluster) {
@@ -168,7 +229,12 @@ impl ExplorationState {
                 .get(&(term, *node_id))
                 .cloned()
                 .unwrap_or_default();
-            if after_node.voted_for() == Some(*node_id) {
+            if self
+                .election_history
+                .votes_by_node_term
+                .get(&(*node_id, term))
+                == Some(node_id)
+            {
                 granted_by.insert(*node_id);
             }
 
@@ -183,6 +249,23 @@ impl ExplorationState {
             self.election_history.record_election(certificate);
         }
     }
+}
+
+fn granted_vote_response_to_candidate(
+    emitted: &[Envelope],
+    voter_id: NodeId,
+    candidate_id: NodeId,
+    term: Term,
+) -> Option<&RequestVoteResponse> {
+    emitted.iter().find_map(|envelope| {
+        if envelope.from != voter_id || envelope.to != candidate_id {
+            return None;
+        }
+        let Message::RequestVoteResponse(response) = &envelope.message else {
+            return None;
+        };
+        (response.vote_granted && response.term == term).then_some(response)
+    })
 }
 
 fn last_log_term_from_bootstrap(bootstrap: &BootstrapState) -> Term {

@@ -20,6 +20,7 @@ pub(in crate::model_check) fn apply_to_state(state: &mut ExplorationState, opera
             matches!(
                 &queued.message,
                 rafter::Message::PreVoteResponse(_)
+                    | rafter::Message::RequestVote(_)
                     | rafter::Message::RequestVoteResponse(_)
                     | rafter::Message::TimeoutNow(_)
                     | rafter::Message::AppendEntries(_)
@@ -62,7 +63,8 @@ pub(in crate::model_check) fn apply_to_state(state: &mut ExplorationState, opera
     }
     let effects = apply_to_cluster(&mut state.cluster, operation);
     if let Some((before, delivered)) = transition_context {
-        state.record_election_observation(&before, delivered.as_ref());
+        state.observe_election_authority();
+        state.record_election_observation(&before, delivered.as_ref(), &effects.emitted);
         state.record_log_transition(&before, delivered.as_ref(), &effects.emitted);
     }
     state.observe_election_authority();

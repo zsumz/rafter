@@ -143,6 +143,8 @@ named temporal or witness-based verdicts.
 | `EL-02` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `durable_vote_history_detects_lost_vote_same_term` |
 | `EL-02` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#restarted_node_preserves_persisted_vote` |
 | `EL-02` | tests | direct | `crates/rafter/src/node/tests/election/voting.rs#follower_grants_one_vote_per_term` |
+| `EL-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `vote_grant_oracle_rejects_non_voter_candidate` |
+| `EL-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `vote_grant_oracle_rejects_stale_candidate_log` |
 | `EL-03` | tests | direct | `crates/rafter/src/node/tests/election/voting.rs#stale_vote_request_is_rejected` |
 | `EL-03` | tests | direct | `crates/rafter/src/node/tests/membership/authority.rs#vote_request_from_candidate_outside_effective_membership_is_rejected` |
 | `EL-04` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#granted_vote_is_persisted_before_vote_response_escapes` |
@@ -297,11 +299,11 @@ Statement: A binding vote is granted only to an eligible candidate whose log is 
 
 Evidence now:
 - TLA+: P: RequestVote action
-- Simulator: none
+- Simulator: D: RequestVote grant oracle records voter membership and log freshness
 - Tests: D: election/membership tests
 - Maelstrom: none
 
-Next: Add an explicit vote-grant oracle recording voter log and effective membership at grant time.
+Next: Retain RequestVote grant observations for membership and log freshness.
 
 #### `EL-04` Durable authority before output
 
