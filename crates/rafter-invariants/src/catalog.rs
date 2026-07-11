@@ -26,6 +26,7 @@ pub struct EvidenceDescriptor {
     pub symbol: String,
     pub negative_fixture: Option<String>,
     pub test: Option<TestIdentity>,
+    pub simulator: Option<SimulatorIdentity>,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -35,6 +36,20 @@ pub struct TestIdentity {
     pub target_kind: String,
     pub target: String,
     pub test_name: String,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// Exact simulator legs, coverage floors, and detector qualification.
+pub struct SimulatorIdentity {
+    pub checks: Vec<String>,
+    pub required_observation: String,
+    pub minimum_observation: usize,
+    pub minimum_protocol_states: Option<usize>,
+    pub minimum_verifier_states: Option<usize>,
+    pub minimum_runs_per_check: Option<usize>,
+    pub minimum_steps: Option<usize>,
+    pub required_liveness_feature: Option<String>,
+    pub negative_test: Option<TestIdentity>,
 }
 
 impl TestIdentity {

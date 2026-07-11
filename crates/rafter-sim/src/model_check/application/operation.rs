@@ -1,6 +1,6 @@
 use super::super::{
-    helpers::proposal_payload, scheduling::Operation, Action, ExplorationState, Failure,
-    RestartSnapshotState,
+    helpers::proposal_payload, observations::Observation, scheduling::Operation, Action,
+    ExplorationState, Failure, RestartSnapshotState,
 };
 use super::cluster::apply_to_cluster;
 use super::restart::restart_node;
@@ -77,6 +77,7 @@ pub(in crate::model_check) fn apply_to_state(state: &mut ExplorationState, opera
     state.record_leader_completeness_observation();
     state.refresh_commit_floors();
     state.refresh_client_history();
+    state.observe_state_coverage();
 }
 
 pub(in crate::model_check) fn apply_to_restart_snapshot_state(
@@ -96,5 +97,22 @@ pub(in crate::model_check) fn apply_to_restart_snapshot_state(
             apply_to_state(&mut state.state, operation);
         }
     }
+    if let Some(expected) = &state.expected_snapshot {
+        let installed_expected = state.state.cluster.nodes.keys().any(|node_id| {
+            let bootstrap = state.state.cluster.bootstrap_state(*node_id);
+            bootstrap.snapshot.as_ref() == Some(&expected.snapshot)
+                && state
+                    .state
+                    .cluster
+                    .snapshot_payload(*node_id, &expected.snapshot)
+                    == Some(expected.payload.as_slice())
+        });
+        if installed_expected {
+            state
+                .state
+                .mark_observation(Observation::ExpectedSnapshotInstallsChecked);
+        }
+    }
+    state.state.observe_state_coverage();
     Ok(())
 }

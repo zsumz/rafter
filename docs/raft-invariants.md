@@ -192,7 +192,7 @@ named temporal or witness-based verdicts.
 | `AP-01` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_applied_order`; negative fixture `applied_order_detects_apply_at_or_below_snapshot_boundary` |
 | `AP-01` | tests | direct | `crates/rafter/src/node/tests/bootstrap/application.rs#committed_entries_above_applied_floor_drain_immediately_after_bootstrap` |
 | `AP-02` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
-| `AP-02` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_applied_payload_agreement`; negative fixture `applied_agreement_detects_disagreeing_snapshots_at_same_boundary` |
+| `AP-02` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_applied_payload_agreement`; negative fixture `replayed_index_must_match_prior_command_across_epochs` |
 | `AP-02` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/applied_agreement.rs#applied_agreement_detects_disagreeing_snapshots_at_same_boundary` |
 | `AP-02` | tla | direct | `specs/tla/raft/Raft.tla#StateMachineSafety` |
 | `MB-01` | tests | direct | `crates/rafter/tests/properties.rs#membership_constructor_validation_matches_the_documented_invariant` |
@@ -252,7 +252,7 @@ named temporal or witness-based verdicts.
 | `SS-05` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_applied_payload_agreement`; negative fixture `applied_agreement_detects_snapshot_membership_mismatch_at_same_boundary` |
 | `SS-05` | tests | direct | `crates/rafter-sim/src/tests/snapshot_installation/catchup.rs#simulator_discards_divergent_suffix_when_installing_snapshot` |
 | `LV-01` | simulator | direct | `crates/rafter-sim/src/model_check/liveness.rs#run_soak_liveness_check`; negative fixture exemption `bounded liveness driver, not an invariant checker` |
-| `LV-02` | simulator | direct | `crates/rafter-sim/src/model_check/liveness.rs#issue_liveness_proposal`; negative fixture exemption `bounded liveness driver, not an invariant checker` |
+| `LV-02` | simulator | direct | `crates/rafter-sim/src/model_check/liveness.rs#run_soak_liveness_check`; negative fixture exemption `bounded liveness driver, not an invariant checker` |
 | `LV-03` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features.rs#run_read_barrier_liveness_check`; negative fixture exemption `bounded read-barrier liveness driver, not an invariant checker` |
 | `LV-03` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features.rs#run_membership_transition_liveness_check`; negative fixture exemption `bounded membership-transition liveness driver, not an invariant checker` |
 | `LV-03` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features.rs#run_leadership_transfer_liveness_check`; negative fixture exemption `bounded leadership-transfer liveness driver, not an invariant checker` |

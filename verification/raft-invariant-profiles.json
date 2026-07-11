@@ -28,10 +28,10 @@
           "require_peak_rss": true
         },
         "simulator": {
-          "producer": "rafter-invariants-simulator-v2",
+          "producer": "rafter-invariants-simulator-v4",
           "command": ["cargo", "run", "-p", "rafter-invariants", "--", "run", "--profile", "pr", "--layer", "simulator"],
-          "configuration": {"build": "release-locked", "completion": "frontier-or-explicit-floor", "model_profile": "fast", "seed_policy": "none-exhaustive", "state_floors": "profile-defined"},
-          "minimum_observed_checks": 12,
+          "configuration": {"build": "release-and-test-locked", "completion": "frontier-and-semantic-floor", "model_profile": "fast+raft-soak", "seed_policy": "curated-0x9103-through-0x9106", "snapshot_catchup_probe": "required", "soak_steps": "320", "state_floors": "per-evidence"},
+          "minimum_observed_checks": 39,
           "require_peak_rss": true
         },
         "tla": {

@@ -36,6 +36,15 @@ pub(crate) fn check_election_history(
     state: &ExplorationState,
     trace: &[Action],
 ) -> Result<(), Failure> {
+    check_term_and_vote_history(state, trace)?;
+    check_vote_grants(state, trace)?;
+    check_authority_transitions(state, trace)?;
+    check_pre_vote_history(state, trace)?;
+    check_election_outcomes(state, trace)?;
+    check_election_certificates(state, trace)
+}
+
+fn check_term_and_vote_history(state: &ExplorationState, trace: &[Action]) -> Result<(), Failure> {
     if let Some(regression) = state.election_history.term_regressions.iter().next() {
         return Err(Failure {
             kind: crate::model_check::FailureKind::InvariantViolation,
@@ -75,6 +84,10 @@ pub(crate) fn check_election_history(
         });
     }
 
+    Ok(())
+}
+
+fn check_vote_grants(state: &ExplorationState, trace: &[Action]) -> Result<(), Failure> {
     for grant in &state.election_history.vote_grants {
         if !grant.voter_membership.contains_voter(grant.candidate_id) {
             return Err(Failure {
@@ -124,6 +137,10 @@ pub(crate) fn check_election_history(
         }
     }
 
+    Ok(())
+}
+
+fn check_authority_transitions(state: &ExplorationState, trace: &[Action]) -> Result<(), Failure> {
     if let Some(violation) = state
         .election_history
         .authority_transition_violations
@@ -155,6 +172,10 @@ pub(crate) fn check_election_history(
         });
     }
 
+    Ok(())
+}
+
+fn check_pre_vote_history(state: &ExplorationState, trace: &[Action]) -> Result<(), Failure> {
     if let Some(violation) = state.election_history.pre_vote_violations.first() {
         let reason = match violation.reason {
             super::super::state::PreVoteViolationKind::RequestMutatedAuthority => {
@@ -187,6 +208,10 @@ pub(crate) fn check_election_history(
         });
     }
 
+    Ok(())
+}
+
+fn check_election_outcomes(state: &ExplorationState, trace: &[Action]) -> Result<(), Failure> {
     if let Some(conflict) = state.election_history.conflicting_elections.iter().next() {
         return Err(Failure {
             kind: crate::model_check::FailureKind::InvariantViolation,
@@ -217,6 +242,10 @@ pub(crate) fn check_election_history(
         });
     }
 
+    Ok(())
+}
+
+fn check_election_certificates(state: &ExplorationState, trace: &[Action]) -> Result<(), Failure> {
     for (term, certificate) in &state.election_history.elected_by_term {
         if certificate.term != *term {
             return Err(Failure {

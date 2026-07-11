@@ -5,7 +5,8 @@ use std::{
 };
 
 use super::super::{
-    state::ExplorationState, Bounds, ExplorationCompletion, RestartSnapshotState, Summary,
+    observations::ObservationSet, state::ExplorationState, Bounds, ExplorationCompletion,
+    RestartSnapshotState, Summary,
 };
 
 #[derive(Debug)]
@@ -19,6 +20,7 @@ pub(super) struct ExplorationBudget {
     explored_actions: usize,
     reached_depth: usize,
     completion: ExplorationCompletion,
+    observations: ObservationSet,
 }
 
 impl ExplorationBudget {
@@ -33,6 +35,7 @@ impl ExplorationBudget {
             explored_actions: 0,
             reached_depth: 0,
             completion: ExplorationCompletion::FrontierExhausted,
+            observations: ObservationSet::default(),
         }
     }
 
@@ -45,11 +48,13 @@ impl ExplorationBudget {
             configured_depth: self.bounds.depth,
             reached_depth: self.reached_depth,
             completion: self.completion,
+            observations: self.observations,
         }
     }
 
     pub(super) fn enter(&mut self, state: &impl StateIdentity, depth: usize) -> bool {
         self.explored_states += 1;
+        self.observations.union_with(state.observations());
         if self.wall_clock_exhausted() {
             self.completion = ExplorationCompletion::WallClockLimit;
             return false;
@@ -97,6 +102,8 @@ impl ExplorationBudget {
 
 pub(super) trait StateIdentity: Hash {
     fn hash_protocol_state<H: Hasher>(&self, state: &mut H);
+
+    fn observations(&self) -> ObservationSet;
 }
 
 impl StateIdentity for ExplorationState {
@@ -110,11 +117,19 @@ impl StateIdentity for ExplorationState {
         self.partitions_issued.hash(state);
         self.lossy_restarts_issued.hash(state);
     }
+
+    fn observations(&self) -> ObservationSet {
+        self.observations
+    }
 }
 
 impl StateIdentity for RestartSnapshotState {
     fn hash_protocol_state<H: Hasher>(&self, state: &mut H) {
         self.state.hash_protocol_state(state);
+    }
+
+    fn observations(&self) -> ObservationSet {
+        self.state.observations
     }
 }
 
@@ -145,11 +160,19 @@ mod tests {
         fn hash_protocol_state<H: Hasher>(&self, state: &mut H) {
             self.hash(state);
         }
+
+        fn observations(&self) -> super::ObservationSet {
+            super::ObservationSet::default()
+        }
     }
 
     impl StateIdentity for ToyVerifierState {
         fn hash_protocol_state<H: Hasher>(&self, state: &mut H) {
             self.protocol.hash(state);
+        }
+
+        fn observations(&self) -> super::ObservationSet {
+            super::ObservationSet::default()
         }
     }
 

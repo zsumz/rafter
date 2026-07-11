@@ -118,4 +118,28 @@ impl SoakConfig {
     pub const fn steps(self) -> usize {
         self.steps
     }
+
+    /// Returns whether bounded read-barrier progress is required.
+    #[must_use]
+    pub const fn checks_read_progress(self) -> bool {
+        self.max_read_indexes > 0
+    }
+
+    /// Returns whether bounded membership-transition progress is required.
+    #[must_use]
+    pub const fn checks_membership_progress(self) -> bool {
+        self.max_membership_changes > 0
+    }
+
+    /// Returns whether bounded leadership-transfer progress is required.
+    #[must_use]
+    pub const fn checks_transfer_progress(self) -> bool {
+        self.max_transfers > 0
+    }
+
+    /// Returns whether bounded snapshot catch-up progress is required.
+    #[must_use]
+    pub const fn checks_snapshot_progress(self) -> bool {
+        self.snapshot_catchup_probe
+    }
 }

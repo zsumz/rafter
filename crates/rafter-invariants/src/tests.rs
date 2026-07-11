@@ -48,6 +48,81 @@ fn source_receipt(commit: &str) -> SourceReceipt {
     }
 }
 
+fn synthetic_check_id(descriptor: &EvidenceDescriptor) -> String {
+    if descriptor.layer == "simulator" {
+        return format!("simulator/{}", descriptor.evidence_id());
+    }
+    descriptor
+        .test
+        .as_ref()
+        .map_or_else(|| descriptor.evidence_id(), TestIdentity::check_id)
+}
+
+fn synthetic_observations(
+    descriptor: &EvidenceDescriptor,
+) -> std::collections::BTreeMap<String, u64> {
+    if descriptor.layer == "tests" {
+        return std::collections::BTreeMap::from([
+            ("discovered".to_owned(), 1),
+            ("executed".to_owned(), 1),
+            ("passed".to_owned(), 1),
+        ]);
+    }
+    let Some(identity) = &descriptor.simulator else {
+        return std::collections::BTreeMap::new();
+    };
+    let mut observations = std::collections::BTreeMap::from([
+        ("detector_qualified".to_owned(), 1),
+        (
+            identity.required_observation.clone(),
+            identity.minimum_observation as u64,
+        ),
+    ]);
+    if let (Some(protocol), Some(verifier)) = (
+        identity.minimum_protocol_states,
+        identity.minimum_verifier_states,
+    ) {
+        observations.insert("unique_protocol_states".to_owned(), protocol as u64);
+        observations.insert("unique_verifier_states".to_owned(), verifier as u64);
+    }
+    for check in &identity.checks {
+        let runs = identity.minimum_runs_per_check.unwrap_or(1) as u64;
+        observations.insert(format!("passes:{check}"), runs);
+        observations.insert(format!("runs:{check}"), runs);
+        if let Some(steps) = identity.minimum_steps {
+            observations.insert(format!("steps:{check}"), steps as u64);
+        }
+    }
+    observations
+}
+
+fn synthetic_artifacts(descriptor: &EvidenceDescriptor) -> Vec<ArtifactRef> {
+    match descriptor.layer.as_str() {
+        "tests" => vec![
+            artifact_kind("artifacts/tests.log", "test-log"),
+            artifact_kind("artifacts/tests.bin", "test-binary"),
+        ],
+        "simulator" => {
+            let mut artifacts = vec![
+                artifact_kind("artifacts/simulator.log", "simulator-log"),
+                artifact_kind("artifacts/simulator.bin", "simulator-binary"),
+            ];
+            if descriptor
+                .simulator
+                .as_ref()
+                .is_some_and(|identity| identity.negative_test.is_some())
+            {
+                artifacts.extend([
+                    artifact_kind("artifacts/detector.log", "test-log"),
+                    artifact_kind("artifacts/detector.bin", "test-binary"),
+                ]);
+            }
+            artifacts
+        }
+        runner => vec![artifact(&format!("artifacts/{runner}.log"))],
+    }
+}
+
 fn passing_bundles(catalog: &Catalog, manifest: &ProfileManifest) -> Vec<ResultBundle> {
     let required = catalog.required_evidence(&manifest.profiles["pr"]);
     let mut by_runner = std::collections::BTreeMap::<String, Vec<EvidenceDescriptor>>::new();
@@ -63,10 +138,7 @@ fn passing_bundles(catalog: &Catalog, manifest: &ProfileManifest) -> Vec<ResultB
             let runner_contract = &manifest.profiles["pr"].runners[&runner];
             let mut groups = std::collections::BTreeMap::<String, Vec<EvidenceDescriptor>>::new();
             for descriptor in evidence {
-                let check_id = descriptor
-                    .test
-                    .as_ref()
-                    .map_or_else(|| descriptor.evidence_id(), TestIdentity::check_id);
+                let check_id = synthetic_check_id(&descriptor);
                 groups.entry(check_id).or_default().push(descriptor);
             }
             let mut results = Vec::new();
@@ -79,7 +151,7 @@ fn passing_bundles(catalog: &Catalog, manifest: &ProfileManifest) -> Vec<ResultB
                         .iter()
                         .map(EvidenceDescriptor::evidence_id)
                         .collect::<Vec<_>>();
-                    results.extend(descriptors.into_iter().map(|descriptor| {
+                    results.extend(descriptors.iter().cloned().map(|descriptor| {
                         let evidence_id = descriptor.evidence_id();
                         EvidenceResult {
                             invariant_id: descriptor.invariant_id,
@@ -96,25 +168,10 @@ fn passing_bundles(catalog: &Catalog, manifest: &ProfileManifest) -> Vec<ResultB
                         check_id,
                         evidence_ids,
                         completion: CheckCompletion::Completed,
-                        observations: if runner == "tests" {
-                            std::collections::BTreeMap::from([
-                                ("discovered".to_owned(), 1),
-                                ("executed".to_owned(), 1),
-                                ("passed".to_owned(), 1),
-                            ])
-                        } else {
-                            std::collections::BTreeMap::new()
-                        },
+                        observations: synthetic_observations(&descriptors[0]),
                         duration_ms: 1,
                         peak_rss_kib: 1,
-                        artifacts: if runner == "tests" {
-                            vec![
-                                artifact_kind("artifacts/tests.log", "test-log"),
-                                artifact_kind("artifacts/tests.bin", "test-binary"),
-                            ]
-                        } else {
-                            vec![artifact(&format!("artifacts/{runner}.log"))]
-                        },
+                        artifacts: synthetic_artifacts(&descriptors[0]),
                     }
                 })
                 .collect();
@@ -254,6 +311,43 @@ fn tests_check_fanout_must_match_registry() {
         .issues
         .iter()
         .any(|issue| issue.message.contains("exactly match the registry"))));
+}
+
+#[test]
+fn simulator_pass_requires_its_registry_semantic_witness() {
+    let (catalog, manifest) = loaded();
+    let mut bundles = passing_bundles(&catalog, &manifest);
+    let simulator = bundles
+        .iter_mut()
+        .find(|bundle| bundle.runner == "simulator")
+        .expect("simulator bundle exists");
+    let check = &mut simulator.execution.checks[0];
+    let evidence_id = check.evidence_ids[0].clone();
+    let descriptor = catalog
+        .evidence
+        .iter()
+        .find(|descriptor| descriptor.evidence_id() == evidence_id)
+        .expect("simulator evidence exists");
+    let required_observation = descriptor
+        .simulator
+        .as_ref()
+        .expect("simulator identity exists")
+        .required_observation
+        .clone();
+    check.observations.remove(&required_observation);
+
+    let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
+    assert!(report.summary.green < 44);
+    let verdict = report
+        .invariants
+        .iter()
+        .find(|verdict| verdict.invariant_id == descriptor.invariant_id)
+        .expect("affected invariant verdict exists");
+    assert_eq!(verdict.status, VerdictStatus::Red);
+    assert!(verdict
+        .issues
+        .iter()
+        .any(|issue| issue.message.contains("lacks semantic coverage")));
 }
 
 #[test]

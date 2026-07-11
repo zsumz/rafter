@@ -2,6 +2,7 @@ mod bounded;
 mod read;
 mod restart;
 mod seeded;
+mod witnesses;
 
 pub use bounded::{
     check_raft_commit_safety, check_raft_election_safety, check_raft_membership_safety,
@@ -11,3 +12,4 @@ pub use restart::{
     check_raft_joint_membership_restart_and_snapshot_safety, check_raft_restart_and_snapshot_safety,
 };
 pub use seeded::{check_raft_leadership_noop_safety, check_raft_seeded_commit_safety};
+pub use witnesses::check_raft_semantic_witness_safety;

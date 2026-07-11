@@ -4,6 +4,7 @@ use super::super::{
     catalog,
     helpers::summarize,
     invariants::{check_applied_floor_recovery, check_exact_durable_restart, AppliedFloorRecovery},
+    observations::Observation,
     Action, ExplorationState, Failure, FailureKind,
 };
 
@@ -113,11 +114,28 @@ pub(in crate::model_check) fn restart_node(
         &after_digest,
         trace,
     )?;
+    mark_restart_observations(state, &before, &after, before_applied_floor);
 
     state.reset_commit_floor(node_id);
     state.observe_election_authority();
+    state.observe_state_coverage();
 
     Ok(())
+}
+
+fn mark_restart_observations(
+    state: &mut ExplorationState,
+    before: &BootstrapState,
+    after: &BootstrapState,
+    applied_floor: LogIndex,
+) {
+    state.mark_observation(Observation::DurableRestartComparisons);
+    if applied_floor > LogIndex::ZERO {
+        state.mark_observation(Observation::RestartRecoveriesWithNonzeroAppliedFloor);
+    }
+    if before.voted_for.is_some() && after.current_term == before.current_term {
+        state.mark_observation(Observation::SameTermVotedRestarts);
+    }
 }
 
 fn restart_failure(

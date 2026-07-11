@@ -28,6 +28,8 @@ mod invariants;
 
 mod linearizability;
 
+mod observations;
+
 mod scheduling;
 
 mod state;
@@ -51,6 +53,7 @@ pub use checks::{
     check_raft_joint_membership_restart_and_snapshot_safety, check_raft_leadership_noop_safety,
     check_raft_membership_safety, check_raft_read_index_safety,
     check_raft_restart_and_snapshot_safety, check_raft_seeded_commit_safety,
+    check_raft_semantic_witness_safety,
 };
 
 mod soak_runner;

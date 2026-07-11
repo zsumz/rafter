@@ -6,11 +6,13 @@ use crate::{Cluster, Envelope};
 
 mod client;
 mod commit;
+mod coverage;
 mod election;
 mod logical_log;
 mod restart_snapshot;
 mod seeds;
 
+use super::observations::ObservationSet;
 use client::initial_register_value;
 pub(super) use client::{ClientHistory, ClientReadOutcome, ClientWriteStatus};
 #[cfg(test)]
@@ -47,6 +49,7 @@ pub(super) struct ExplorationState {
     pub(super) election_history: ElectionHistory,
     pub(super) logical_log_history: LogicalLogHistory,
     pub(super) commit_history: CommitHistory,
+    pub(super) observations: ObservationSet,
 }
 
 impl ExplorationState {
@@ -81,17 +84,22 @@ impl ExplorationState {
             election_history: ElectionHistory::default(),
             logical_log_history: LogicalLogHistory::default(),
             commit_history: CommitHistory::default(),
+            observations: ObservationSet::default(),
         };
         state.election_history.record_seeded_leaders(&state.cluster);
         state.observe_election_authority();
         state.refresh_log_history();
         state.refresh_committed_prefixes();
+        state.observe_state_coverage();
         state
     }
 
     pub(super) fn refresh_commit_floors(&mut self) {
+        let mut commit_advanced = false;
+        let mut configuration_advanced = false;
         for (node_id, node) in &self.cluster.nodes {
             let floor = self.commit_floor_by_node.entry(*node_id).or_default();
+            commit_advanced |= node.commit_index() > *floor;
             *floor = (*floor).max(node.commit_index());
             let config_floor = self
                 .committed_configuration_floor_by_node
@@ -99,11 +107,23 @@ impl ExplorationState {
                 .or_insert(None);
             if let Some(actual) = node.committed_configuration_state() {
                 match config_floor {
-                    None => *config_floor = Some(actual),
-                    Some(floor) if actual.index > floor.index => *config_floor = Some(actual),
+                    None => {
+                        configuration_advanced = true;
+                        *config_floor = Some(actual);
+                    }
+                    Some(floor) if actual.index > floor.index => {
+                        configuration_advanced = true;
+                        *config_floor = Some(actual);
+                    }
                     Some(_) => {}
                 }
             }
+        }
+        if commit_advanced {
+            self.mark_observation(super::observations::Observation::CommitFloorAdvances);
+        }
+        if configuration_advanced {
+            self.mark_observation(super::observations::Observation::CommittedConfigurationAdvances);
         }
     }
 
@@ -113,16 +133,18 @@ impl ExplorationState {
         delivered: Option<&Envelope>,
         emitted: &[Envelope],
     ) {
-        self.logical_log_history.record_append_entries_delivery(
+        let observations = self.logical_log_history.record_append_entries_delivery(
             before,
             &self.cluster,
             delivered,
             emitted,
         );
+        self.observations.union_with(observations);
     }
 
     pub(super) fn refresh_log_history(&mut self) {
-        self.logical_log_history.observe_cluster(&self.cluster);
+        let observations = self.logical_log_history.observe_cluster(&self.cluster);
+        self.observations.union_with(observations);
     }
 
     fn require_applied_payload(

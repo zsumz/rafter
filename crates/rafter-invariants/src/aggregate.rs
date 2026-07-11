@@ -1,10 +1,4 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    fmt, fs,
-    path::{Component, Path, PathBuf},
-};
-
-use sha2::{Digest, Sha256};
+use std::{collections::BTreeMap, fmt, fs, path::PathBuf};
 
 use crate::{
     catalog::{Catalog, ProfileManifest},
@@ -18,6 +12,12 @@ use crate::{
 #[derive(Debug)]
 /// Error loading or configuring deterministic evidence aggregation.
 pub struct AggregateError(String);
+
+impl AggregateError {
+    pub(super) const fn new(message: String) -> Self {
+        Self(message)
+    }
+}
 
 impl fmt::Display for AggregateError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -49,91 +49,10 @@ pub fn load_bundles(paths: &[PathBuf]) -> Result<Vec<ResultBundle>, AggregateErr
                     ))
                 },
             )?;
-            verify_bundle_artifacts(&bundle, Path::new("."))?;
+            crate::artifact_verify::verify(&bundle, std::path::Path::new("."))?;
             Ok(bundle)
         })
         .collect()
-}
-
-fn verify_bundle_artifacts(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateError> {
-    let mut artifacts = bundle.execution.artifacts.iter().collect::<BTreeSet<_>>();
-    artifacts.extend(
-        bundle
-            .execution
-            .checks
-            .iter()
-            .flat_map(|check| check.artifacts.iter()),
-    );
-    artifacts.extend(
-        bundle
-            .results
-            .iter()
-            .flat_map(|result| result.artifacts.iter()),
-    );
-    for artifact in artifacts {
-        let path = Path::new(&artifact.path);
-        if path.is_absolute()
-            || path
-                .components()
-                .any(|component| !matches!(component, Component::Normal(_)))
-        {
-            return Err(AggregateError(format!(
-                "artifact path must be repository-relative: {}",
-                artifact.path
-            )));
-        }
-        let bytes = fs::read(root.join(path))
-            .map_err(|error| AggregateError(format!("read artifact {}: {error}", artifact.path)))?;
-        let digest = format!("{:x}", Sha256::digest(&bytes));
-        if artifact.size_bytes != bytes.len() as u64 || artifact.sha256 != digest {
-            return Err(AggregateError(format!(
-                "artifact integrity mismatch: {}",
-                artifact.path
-            )));
-        }
-    }
-    if bundle.runner == "tests" {
-        verify_test_logs(bundle, root)?;
-    }
-    Ok(())
-}
-
-fn verify_test_logs(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateError> {
-    for check in &bundle.execution.checks {
-        let passing = bundle.results.iter().any(|result| {
-            result.execution_id == check.execution_id && result.status == EvidenceStatus::Pass
-        });
-        if !passing {
-            continue;
-        }
-        let test_name = check
-            .check_id
-            .rsplit_once('#')
-            .map(|(_, test_name)| test_name)
-            .ok_or_else(|| AggregateError(format!("invalid tests check ID {}", check.check_id)))?;
-        let log = check
-            .artifacts
-            .iter()
-            .find(|artifact| artifact.kind == "test-log")
-            .ok_or_else(|| AggregateError(format!("test log missing for {}", check.check_id)))?;
-        let source = fs::read_to_string(root.join(&log.path)).map_err(|error| {
-            AggregateError(format!("read exact test log {}: {error}", log.path))
-        })?;
-        if !source.lines().any(|line| line.trim() == "running 1 test")
-            || !source
-                .lines()
-                .any(|line| line.trim() == format!("test {test_name} ... ok"))
-            || !source
-                .lines()
-                .any(|line| line.contains("1 passed; 0 failed; 0 ignored"))
-        {
-            return Err(AggregateError(format!(
-                "test log does not prove one exact pass for {}",
-                check.check_id
-            )));
-        }
-    }
-    Ok(())
 }
 
 /// Produces one fail-closed verdict for every reviewed invariant.

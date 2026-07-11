@@ -71,12 +71,13 @@ fn run_raft_soak_profile_for_configs(
             .with_max_transfers(profile.max_transfers)
             .with_max_partitions(profile.max_partitions)
             .with_max_lossy_restarts(profile.max_lossy_restarts)
+            .with_snapshot_catchup_probe()
             .with_tick_skew(rafter::NodeId(1), profile.tick_skew_weight);
         let started = Instant::now();
         let summary = run_raft_random_soak(configs.to_owned(), config).inspect_err(|failure| {
             print_soak_failure(name, failure);
         })?;
-        print_soak_summary(name, &summary, started.elapsed());
+        print_soak_summary(name, &summary, config, started.elapsed());
     }
     Ok(())
 }

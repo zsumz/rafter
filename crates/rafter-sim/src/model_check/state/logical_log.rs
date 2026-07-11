@@ -5,6 +5,7 @@ use rafter::{LogIndex, Message, NodeId, SnapshotTransferId, Term};
 use crate::{Cluster, Envelope};
 
 use super::super::catalog;
+use super::super::observations::{Observation, ObservationSet};
 
 mod types;
 
@@ -21,7 +22,8 @@ pub(crate) struct LogicalLogHistory {
 }
 
 impl LogicalLogHistory {
-    pub(super) fn observe_cluster(&mut self, cluster: &Cluster) {
+    pub(super) fn observe_cluster(&mut self, cluster: &Cluster) -> ObservationSet {
+        let mut observations = ObservationSet::default();
         let views = cluster
             .nodes
             .keys()
@@ -46,7 +48,11 @@ impl LogicalLogHistory {
             }
             let key = (*node_id, node.current_term());
             if let Some(previous) = self.leader_logs_by_term.get(&key) {
-                if !self.log_extends(previous, view) {
+                if self.log_extends(previous, view) {
+                    if logical_last_index(view) > logical_last_index(previous) {
+                        observations.mark(Observation::SameTermLeaderLogGrowth);
+                    }
+                } else {
                     self.violations.insert(LogicalLogViolation {
                         invariant: catalog::LG_01_LEADER_APPEND_ONLY,
                         message: format!(
@@ -60,6 +66,7 @@ impl LogicalLogHistory {
         }
 
         self.last_views_by_node = views;
+        observations
     }
 
     fn observe_prefixes(&mut self, node_id: NodeId, view: &LogicalLogView) {
@@ -192,12 +199,13 @@ impl LogicalLogHistory {
         after: &Cluster,
         delivered: Option<&Envelope>,
         emitted: &[Envelope],
-    ) {
+    ) -> ObservationSet {
+        let mut observations = ObservationSet::default();
         let Some(envelope) = delivered else {
-            return;
+            return observations;
         };
         let Message::AppendEntries(request) = &envelope.message else {
-            return;
+            return observations;
         };
         let Some(response) = emitted.iter().find_map(|emitted| {
             if emitted.from != envelope.to || emitted.to != envelope.from {
@@ -213,10 +221,13 @@ impl LogicalLogHistory {
                 _ => None,
             }
         }) else {
-            return;
+            return observations;
         };
         if !response.success {
-            return;
+            return observations;
+        }
+        if !request.entries.is_empty() {
+            observations.mark(Observation::SuccessfulNonemptyAppendObservations);
         }
 
         let before_view = LogicalLogView::from_cluster(before, envelope.to);
@@ -257,6 +268,7 @@ impl LogicalLogHistory {
             });
             break;
         }
+        observations
     }
 
     pub(super) fn prefix_from_view(
@@ -294,4 +306,17 @@ impl LogicalLogHistory {
         }
         Some(prefix)
     }
+}
+
+fn logical_last_index(view: &LogicalLogView) -> LogIndex {
+    let snapshot_index = view
+        .snapshot
+        .as_ref()
+        .map_or(LogIndex::ZERO, |snapshot| snapshot.index);
+    view.entries
+        .keys()
+        .next_back()
+        .copied()
+        .unwrap_or(snapshot_index)
+        .max(snapshot_index)
 }
