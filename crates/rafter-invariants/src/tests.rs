@@ -36,7 +36,10 @@ fn source_receipt(commit: &str) -> SourceReceipt {
         tree: "tree".to_owned(),
         cargo_lock_sha256: "0".repeat(64),
         cargo: "cargo test".to_owned(),
+        cargo_sha256: "0".repeat(64),
+        cargo_config_sha256: "0".repeat(64),
         rustc: "rustc test".to_owned(),
+        rustc_sha256: "0".repeat(64),
         target: "test-target".to_owned(),
         build_profile: "test".to_owned(),
         features: Vec::new(),
@@ -116,7 +119,7 @@ fn passing_bundles(catalog: &Catalog, manifest: &ProfileManifest) -> Vec<ResultB
                 })
                 .collect();
             ResultBundle {
-                schema_version: 3,
+                schema_version: 4,
                 runner: runner.clone(),
                 profile: "pr".to_owned(),
                 source_ref: "abc".to_owned(),
@@ -277,7 +280,7 @@ fn canonical_invariant_with_one_layer_stays_red() {
 #[test]
 fn result_bundle_rejects_unknown_fields() {
     let source = r#"{
-        "schema_version": 3,
+        "schema_version": 4,
         "runner": "tests",
         "profile": "pr",
         "source_ref": "abc",
@@ -287,7 +290,10 @@ fn result_bundle_rejects_unknown_fields() {
           "configuration": {"suite": "test"},
           "source": {
             "commit": "abc", "tree": "tree", "cargo_lock_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-            "cargo": "cargo test", "rustc": "rustc test", "target": "test-target", "build_profile": "test", "features": [],
+            "cargo": "cargo test", "cargo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "cargo_config_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "rustc": "rustc test", "rustc_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "target": "test-target", "build_profile": "test", "features": [],
             "environment_sha256": "0000000000000000000000000000000000000000000000000000000000000000", "clean": true
           },
           "checks": [],
@@ -305,7 +311,7 @@ fn result_bundle_rejects_unknown_fields() {
 fn stale_bundle_is_red_never_green() {
     let (catalog, manifest) = loaded();
     let bundle = ResultBundle {
-        schema_version: 3,
+        schema_version: 4,
         runner: "tests".to_owned(),
         profile: "pr".to_owned(),
         source_ref: "old".to_owned(),

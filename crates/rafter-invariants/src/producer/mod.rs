@@ -1,8 +1,11 @@
 mod artifact;
 mod process;
-mod source;
+pub(crate) mod source;
+mod test_compile;
 mod test_exec;
 mod tests;
+#[cfg(test)]
+mod unit_tests;
 
 use std::{error::Error, fs, path::PathBuf};
 
@@ -59,10 +62,13 @@ pub fn produce(options: &ProducerOptions) -> Result<ProducerOutcome, Box<dyn Err
         )?,
         layer => return Err(format!("producer for layer {layer} is not implemented").into()),
     };
-    let all_passed = bundle
-        .results
-        .iter()
-        .all(|result| result.status == crate::EvidenceStatus::Pass);
+    let all_passed = !bundle.results.is_empty()
+        && bundle.execution.checks.len()
+            >= contract.runners[&options.layer].minimum_observed_checks
+        && bundle
+            .results
+            .iter()
+            .all(|result| result.status == crate::EvidenceStatus::Pass);
     let path = write_bundle(&bundle, &options.output_dir)?;
     Ok(ProducerOutcome { path, all_passed })
 }

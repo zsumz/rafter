@@ -4,6 +4,7 @@ mod aggregate;
 mod catalog;
 mod producer;
 mod receipt;
+mod receipt_tests;
 mod registry_parse;
 mod render;
 mod types;
