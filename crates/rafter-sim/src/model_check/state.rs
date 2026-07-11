@@ -17,7 +17,7 @@ pub(super) use client::{ClientHistory, ClientReadOutcome, ClientWriteStatus};
 pub(super) use client::{ClientRead, ClientReadProof, ClientWrite, ClientWriteUnknownReason};
 pub(super) use commit::CommitHistory;
 #[cfg(test)]
-pub(super) use commit::CommitHistoryViolation;
+pub(super) use commit::CommitTransitionContext;
 #[cfg(test)]
 pub(super) use election::ElectionCertificate;
 #[cfg(test)]

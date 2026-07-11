@@ -6,7 +6,7 @@ use super::cluster::apply_to_cluster;
 use super::restart::restart_node;
 
 pub(in crate::model_check) fn apply_to_state(state: &mut ExplorationState, operation: Operation) {
-    let before_commit = state.commit_observation_floor();
+    let commit_context = state.commit_transition_context();
     let delivered = match &operation {
         Operation::DeliverReadyAt(position) => state
             .cluster
@@ -66,7 +66,7 @@ pub(in crate::model_check) fn apply_to_state(state: &mut ExplorationState, opera
         state.record_log_transition(&before, delivered.as_ref(), &effects.emitted);
     }
     state.refresh_log_history();
-    state.record_commit_observation(&before_commit);
+    state.record_commit_observation(&commit_context);
     state.record_leader_completeness_observation();
     state.refresh_commit_floors();
     state.refresh_client_history();
