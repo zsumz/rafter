@@ -261,6 +261,150 @@ fn authority_fencing_oracle_rejects_stale_response_leadership() {
 }
 
 #[test]
+fn pre_vote_observation_accepts_non_binding_request() {
+    let before = one_node_cluster();
+    let mut state = ExplorationState::new(before.clone());
+    let delivered = Envelope {
+        from: NodeId(2),
+        to: NodeId(1),
+        message: Message::PreVote(PreVote {
+            term: Term(1),
+            candidate_id: NodeId(2),
+            last_log_index: LogIndex::ZERO,
+            last_log_term: Term::default(),
+        }),
+    };
+    let emitted = [Envelope {
+        from: NodeId(1),
+        to: NodeId(2),
+        message: Message::PreVoteResponse(PreVoteResponse {
+            term: Term(1),
+            voter_id: NodeId(1),
+            vote_granted: true,
+        }),
+    }];
+
+    state.record_election_observation(&before, Some(&delivered), &emitted);
+
+    assert!(
+        state.election_history.pre_vote_violations.is_empty(),
+        "non-binding pre-vote request must not produce a recorder violation"
+    );
+    check_election_history(&state, &[]).expect("non-binding pre-vote request should pass");
+}
+
+#[test]
+fn pre_vote_oracle_rejects_request_term_mutation() {
+    let before = one_node_cluster();
+    let mut after = one_node_cluster();
+    after
+        .restart_node_from_bootstrap(NodeId(1), bootstrap_state(Term(1), &[]))
+        .expect("after bootstrap is valid");
+    let mut state = ExplorationState::new(after);
+    let delivered = Envelope {
+        from: NodeId(2),
+        to: NodeId(1),
+        message: Message::PreVote(PreVote {
+            term: Term(1),
+            candidate_id: NodeId(2),
+            last_log_index: LogIndex::ZERO,
+            last_log_term: Term::default(),
+        }),
+    };
+
+    state.record_election_observation(&before, Some(&delivered), &[]);
+
+    let failure = check_election_history(&state, &[])
+        .expect_err("pre-vote request must not mutate durable authority");
+    assert_eq!(failure.invariant(), catalog::EL_08_PRE_VOTE_NON_BINDING);
+    assert!(
+        failure
+            .message
+            .contains("pre-vote request mutated authority"),
+        "unexpected failure message: {}",
+        failure.message
+    );
+}
+
+#[test]
+fn pre_vote_oracle_rejects_stale_response_authority_advance() {
+    let mut before = one_node_cluster();
+    before
+        .restart_node_from_bootstrap(NodeId(1), bootstrap_state(Term(3), &[]))
+        .expect("before bootstrap is valid");
+    let mut after = one_node_cluster();
+    after
+        .restart_node_from_bootstrap(NodeId(1), bootstrap_state(Term(4), &[]))
+        .expect("after bootstrap is valid");
+    let mut state = ExplorationState::new(after);
+    let delivered = Envelope {
+        from: NodeId(2),
+        to: NodeId(1),
+        message: Message::PreVoteResponse(PreVoteResponse {
+            term: Term(3),
+            voter_id: NodeId(2),
+            vote_granted: true,
+        }),
+    };
+
+    state.record_election_observation(&before, Some(&delivered), &[]);
+
+    let failure = check_election_history(&state, &[])
+        .expect_err("stale pre-vote response must not advance authority");
+    assert_eq!(failure.invariant(), catalog::EL_08_PRE_VOTE_NON_BINDING);
+    assert!(
+        failure
+            .message
+            .contains("stale pre-vote response advanced authority"),
+        "unexpected failure message: {}",
+        failure.message
+    );
+}
+
+#[test]
+fn pre_vote_partition_heal_does_not_disrupt_leader_in_model_check() {
+    let mut state = ExplorationState::new(pre_vote_three_node_cluster());
+
+    for _ in 0..3 {
+        apply_to_state(&mut state, Operation::Tick(NodeId(1)));
+    }
+    deliver_all_pending_in_state(&mut state);
+    assert_eq!(state.cluster.leaders(), vec![NodeId(1)]);
+
+    for _ in 0..18 {
+        apply_to_state(&mut state, Operation::Tick(NodeId(3)));
+    }
+    assert_eq!(state.cluster.role(NodeId(3)), rafter::Role::PreCandidate);
+    assert_eq!(state.cluster.current_term(NodeId(3)), Term(1));
+
+    let delivered = deliver_pending_matching_in_state(&mut state, |envelope| {
+        envelope.from == NodeId(3) && matches!(envelope.message, Message::PreVote(_))
+    });
+    assert!(
+        delivered > 0,
+        "partition-heal scenario should deliver stale pre-votes"
+    );
+    deliver_all_pending_in_state(&mut state);
+
+    assert_eq!(state.cluster.role(NodeId(3)), rafter::Role::PreCandidate);
+    assert_eq!(state.cluster.leaders(), vec![NodeId(1)]);
+
+    apply_to_state(&mut state, Operation::Tick(NodeId(1)));
+    deliver_all_pending_in_state(&mut state);
+
+    assert_eq!(state.cluster.leaders(), vec![NodeId(1)]);
+    assert_eq!(state.cluster.role(NodeId(3)), rafter::Role::Follower);
+    for node_id in [1, 2, 3] {
+        assert_eq!(state.cluster.current_term(NodeId(node_id)), Term(1));
+    }
+    assert!(
+        state.election_history.pre_vote_violations.is_empty(),
+        "legitimate partition-heal pre-vote traffic should stay non-disruptive"
+    );
+    check_election_history(&state, &[]).expect("pre-vote partition heal should pass EL-08");
+}
+
+#[test]
 fn vote_grant_observation_accepts_eligible_request() {
     let state = request_vote_grant_state(
         NodeId(2),
@@ -587,4 +731,38 @@ fn request_vote_grant_state(
     }];
     state.record_election_observation(&before, Some(&delivered), &emitted);
     state
+}
+
+fn pre_vote_three_node_cluster() -> Cluster {
+    Cluster::new(vec![
+        NodeConfig::new(NodeId(1), vec![NodeId(2), NodeId(3)], 3).expect("node-1 config is valid"),
+        NodeConfig::new(NodeId(2), vec![NodeId(1), NodeId(3)], 9).expect("node-2 config is valid"),
+        NodeConfig::new(NodeId(3), vec![NodeId(1), NodeId(2)], 9).expect("node-3 config is valid"),
+    ])
+}
+
+fn deliver_all_pending_in_state(state: &mut ExplorationState) {
+    while state.cluster.pending().next().is_some() {
+        apply_to_state(state, Operation::DeliverReadyAt(0));
+    }
+}
+
+fn deliver_pending_matching_in_state(
+    state: &mut ExplorationState,
+    mut predicate: impl FnMut(&Envelope) -> bool,
+) -> usize {
+    let mut delivered = 0;
+    loop {
+        let position = state
+            .cluster
+            .pending()
+            .enumerate()
+            .find_map(|(position, envelope)| predicate(envelope).then_some(position));
+        let Some(position) = position else {
+            break;
+        };
+        apply_to_state(state, Operation::DeliverReadyAt(position));
+        delivered += 1;
+    }
+    delivered
 }

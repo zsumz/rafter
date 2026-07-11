@@ -17,6 +17,7 @@ pub(crate) struct ElectionHistory {
     pub(crate) vote_losses: BTreeSet<VoteLoss>,
     pub(crate) vote_grants: Vec<VoteGrantObservation>,
     pub(crate) authority_transition_violations: Vec<AuthorityTransitionViolation>,
+    pub(crate) pre_vote_violations: Vec<PreVoteViolation>,
     pub(crate) grants_by_candidate: BTreeMap<(Term, NodeId), BTreeSet<NodeId>>,
     pub(crate) elected_by_term: BTreeMap<Term, ElectionCertificate>,
     pub(crate) conflicting_elections: BTreeSet<ElectionConflict>,
@@ -139,6 +140,27 @@ pub(crate) enum AuthorityTransitionViolationKind {
 }
 
 #[derive(Clone, Debug, Hash)]
+pub(crate) struct PreVoteViolation {
+    pub(crate) node_id: NodeId,
+    pub(crate) message_kind: &'static str,
+    pub(crate) message_term: Term,
+    pub(crate) before_term: Term,
+    pub(crate) after_term: Term,
+    pub(crate) before_vote: Option<NodeId>,
+    pub(crate) after_vote: Option<NodeId>,
+    pub(crate) before_role: rafter::Role,
+    pub(crate) after_role: rafter::Role,
+    pub(crate) reason: PreVoteViolationKind,
+}
+
+#[derive(Clone, Copy, Debug, Hash)]
+pub(crate) enum PreVoteViolationKind {
+    RequestMutatedAuthority,
+    RequestDisruptedLeader,
+    StaleResponseAdvancedAuthority,
+}
+
+#[derive(Clone, Debug, Hash)]
 pub(crate) struct ElectionCertificate {
     pub(crate) leader_id: NodeId,
     pub(crate) term: Term,
@@ -167,11 +189,91 @@ impl ExplorationState {
         emitted: &[Envelope],
     ) {
         if let Some(envelope) = delivered {
+            self.record_pre_vote_transition(before, envelope);
             self.record_authority_transition(before, envelope);
             self.record_request_vote_response_grant(envelope);
             self.record_request_vote_grant(before, envelope, emitted);
         }
         self.record_leader_transitions(before);
+    }
+
+    fn record_pre_vote_transition(&mut self, before: &Cluster, envelope: &Envelope) {
+        let Some(before_node) = before.nodes.get(&envelope.to) else {
+            return;
+        };
+        let Some(after_node) = self.cluster.nodes.get(&envelope.to) else {
+            return;
+        };
+        match &envelope.message {
+            Message::PreVote(request) => {
+                if before_node.current_term() != after_node.current_term()
+                    || before_node.voted_for() != after_node.voted_for()
+                {
+                    self.election_history
+                        .pre_vote_violations
+                        .push(PreVoteViolation {
+                            node_id: envelope.to,
+                            message_kind: "PreVote",
+                            message_term: request.term,
+                            before_term: before_node.current_term(),
+                            after_term: after_node.current_term(),
+                            before_vote: before_node.voted_for(),
+                            after_vote: after_node.voted_for(),
+                            before_role: before_node.role(),
+                            after_role: after_node.role(),
+                            reason: PreVoteViolationKind::RequestMutatedAuthority,
+                        });
+                }
+                if before_node.role() == rafter::Role::Leader
+                    && after_node.role() != rafter::Role::Leader
+                {
+                    self.election_history
+                        .pre_vote_violations
+                        .push(PreVoteViolation {
+                            node_id: envelope.to,
+                            message_kind: "PreVote",
+                            message_term: request.term,
+                            before_term: before_node.current_term(),
+                            after_term: after_node.current_term(),
+                            before_vote: before_node.voted_for(),
+                            after_vote: after_node.voted_for(),
+                            before_role: before_node.role(),
+                            after_role: after_node.role(),
+                            reason: PreVoteViolationKind::RequestDisruptedLeader,
+                        });
+                }
+            }
+            Message::PreVoteResponse(response) => {
+                let response_is_stale = response.term <= before_node.current_term();
+                let created_campaign_authority = !matches!(
+                    before_node.role(),
+                    rafter::Role::Candidate | rafter::Role::Leader
+                ) && matches!(
+                    after_node.role(),
+                    rafter::Role::Candidate | rafter::Role::Leader
+                );
+                let advanced_authority = after_node.current_term() != before_node.current_term()
+                    || after_node.voted_for() != before_node.voted_for()
+                    || created_campaign_authority;
+                if response.vote_granted && response_is_stale && advanced_authority {
+                    self.election_history
+                        .pre_vote_violations
+                        .push(PreVoteViolation {
+                            node_id: envelope.to,
+                            message_kind: "PreVoteResponse",
+                            message_term: response.term,
+                            before_term: before_node.current_term(),
+                            after_term: after_node.current_term(),
+                            before_vote: before_node.voted_for(),
+                            after_vote: after_node.voted_for(),
+                            before_role: before_node.role(),
+                            after_role: after_node.role(),
+                            reason: PreVoteViolationKind::StaleResponseAdvancedAuthority,
+                        });
+                }
+            }
+            _ => {}
+        }
     }
 
     fn record_authority_transition(&mut self, before: &Cluster, envelope: &Envelope) {

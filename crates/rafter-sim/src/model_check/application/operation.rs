@@ -19,7 +19,8 @@ pub(in crate::model_check) fn apply_to_state(state: &mut ExplorationState, opera
         || delivered.as_ref().is_some_and(|queued| {
             matches!(
                 &queued.message,
-                rafter::Message::PreVoteResponse(_)
+                rafter::Message::PreVote(_)
+                    | rafter::Message::PreVoteResponse(_)
                     | rafter::Message::RequestVote(_)
                     | rafter::Message::RequestVoteResponse(_)
                     | rafter::Message::TimeoutNow(_)
