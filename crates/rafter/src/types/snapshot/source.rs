@@ -1,3 +1,5 @@
+//! Runtime-provided access to application snapshot payload bytes.
+
 use std::collections::BTreeMap;
 use std::{error::Error, fmt};
 
@@ -114,7 +116,12 @@ impl fmt::Display for InMemorySnapshotSourceError {
         match self {
             Self::PayloadLengthMismatch { declared, actual } => write!(
                 formatter,
-                "snapshot payload of {actual} bytes does not match the declared payload length {declared}"
+                concat!(
+                    "snapshot payload of {actual} bytes does not match the declared ",
+                    "payload length {declared}"
+                ),
+                actual = actual,
+                declared = declared,
             ),
         }
     }

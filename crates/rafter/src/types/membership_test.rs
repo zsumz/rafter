@@ -1,3 +1,5 @@
+//! Stable and joint membership validation and quorum semantics.
+
 use crate::{MembershipConfig, MembershipSet, MembershipValidationError, NodeConfig, NodeId};
 
 #[test]

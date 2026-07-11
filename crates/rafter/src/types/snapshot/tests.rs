@@ -1,3 +1,6 @@
+//! Snapshot metadata, identity, transfer, and source vocabulary.
+
+use super::super::{LogIndex, MembershipConfig, MembershipSet, NodeId, Term};
 use super::*;
 
 #[test]

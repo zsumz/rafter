@@ -1,3 +1,5 @@
+//! Configuration entry phases, identities, and application payload separation.
+
 use crate::{
     ConfigurationEntry, ConfigurationId, ConfigurationPhase, JointMembership, LogEntry,
     LogEntryKind, MembershipConfig, MembershipSet, NodeId,

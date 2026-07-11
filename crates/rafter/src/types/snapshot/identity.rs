@@ -1,3 +1,5 @@
+//! Validated snapshot group and application-format identities.
+
 use std::{error::Error, fmt};
 
 /// Stable identifier for a Raft snapshot group.

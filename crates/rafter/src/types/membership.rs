@@ -1,3 +1,5 @@
+//! Stable and joint membership sets plus quorum-oriented validation.
+
 use std::{collections::BTreeSet, error::Error, fmt};
 
 use super::NodeId;
