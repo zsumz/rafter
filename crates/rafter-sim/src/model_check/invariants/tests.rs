@@ -6,7 +6,7 @@ use rafter::{
     RequestVoteResponse, SharedEntries, Term,
 };
 
-use super::super::helpers::bootstrap_state;
+use super::super::helpers::{bootstrap_state, bootstrap_with_snapshot, test_snapshot};
 use super::super::state::{
     ClientRead, ClientReadProof, ClientWrite, ClientWriteUnknownReason, CommitTransitionContext,
     ElectionCertificate, ElectionConflict, LogicalLogViolation,
@@ -132,6 +132,7 @@ fn append_success(match_index: LogIndex) -> AppendEntriesResponse {
 mod log_history;
 
 mod commit_history;
+mod commit_history_snapshot;
 mod commit_history_transition;
 
 mod snapshot_application;

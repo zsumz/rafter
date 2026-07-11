@@ -256,7 +256,7 @@ fn leader_context(
     context
 }
 
-fn voter_configs(voters: &[u64]) -> Vec<NodeConfig> {
+pub(super) fn voter_configs(voters: &[u64]) -> Vec<NodeConfig> {
     voters.iter().map(|id| voter_config(*id, voters)).collect()
 }
 
@@ -278,7 +278,7 @@ fn voter_config(id: u64, voters: &[u64]) -> NodeConfig {
     NodeConfig::new(NodeId(id), peers, 3).expect("voter config is valid")
 }
 
-fn bootstrap_with_log(
+pub(super) fn bootstrap_with_log(
     current_term: Term,
     commit_index: LogIndex,
     log: Vec<BootstrapLogEntry>,
@@ -294,6 +294,6 @@ fn bootstrap_with_log(
     }
 }
 
-fn app_entry(index: u64, term: Term, payload: &[u8]) -> BootstrapLogEntry {
+pub(super) fn app_entry(index: u64, term: Term, payload: &[u8]) -> BootstrapLogEntry {
     BootstrapLogEntry::application(LogIndex(index), term, payload.to_vec())
 }
