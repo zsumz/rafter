@@ -18,8 +18,12 @@ fn loaded() -> (Catalog, ProfileManifest) {
 }
 
 fn artifact(path: &str) -> ArtifactRef {
+    artifact_kind(path, "log")
+}
+
+fn artifact_kind(path: &str, kind: &str) -> ArtifactRef {
     ArtifactRef {
-        kind: "log".to_owned(),
+        kind: kind.to_owned(),
         path: path.to_owned(),
         sha256: "0".repeat(64),
         size_bytes: 1,
@@ -31,50 +35,88 @@ fn source_receipt(commit: &str) -> SourceReceipt {
         commit: commit.to_owned(),
         tree: "tree".to_owned(),
         cargo_lock_sha256: "0".repeat(64),
+        cargo: "cargo test".to_owned(),
         rustc: "rustc test".to_owned(),
         target: "test-target".to_owned(),
         build_profile: "test".to_owned(),
         features: Vec::new(),
+        environment_sha256: "0".repeat(64),
         clean: true,
     }
 }
 
 fn passing_bundles(catalog: &Catalog, manifest: &ProfileManifest) -> Vec<ResultBundle> {
     let required = catalog.required_evidence(&manifest.profiles["pr"]);
-    let mut by_runner = std::collections::BTreeMap::<String, Vec<EvidenceResult>>::new();
-    for (index, evidence) in required.values().flatten().enumerate() {
+    let mut by_runner = std::collections::BTreeMap::<String, Vec<EvidenceDescriptor>>::new();
+    for evidence in required.values().flatten() {
         by_runner
             .entry(evidence.layer.clone())
             .or_default()
-            .push(EvidenceResult {
-                invariant_id: evidence.invariant_id.clone(),
-                evidence_id: evidence.evidence_id(),
-                execution_id: format!("execution-{index}"),
-                status: EvidenceStatus::Pass,
-                classification: None,
-                message: None,
-                artifacts: Vec::new(),
-            });
+            .push(evidence.clone());
     }
     by_runner
         .into_iter()
-        .map(|(runner, results)| {
+        .map(|(runner, evidence)| {
             let runner_contract = &manifest.profiles["pr"].runners[&runner];
-            let checks = results
-                .iter()
-                .map(|result| CheckReceipt {
-                    execution_id: result.execution_id.clone(),
-                    check_id: result.evidence_id.clone(),
-                    evidence_ids: vec![result.evidence_id.clone()],
-                    completion: CheckCompletion::Completed,
-                    observations: std::collections::BTreeMap::new(),
-                    duration_ms: 1,
-                    peak_rss_kib: 1,
-                    artifacts: vec![artifact(&format!("artifacts/{runner}.log"))],
+            let mut groups = std::collections::BTreeMap::<String, Vec<EvidenceDescriptor>>::new();
+            for descriptor in evidence {
+                let check_id = descriptor
+                    .test
+                    .as_ref()
+                    .map_or_else(|| descriptor.evidence_id(), TestIdentity::check_id);
+                groups.entry(check_id).or_default().push(descriptor);
+            }
+            let mut results = Vec::new();
+            let checks = groups
+                .into_iter()
+                .enumerate()
+                .map(|(index, (check_id, descriptors))| {
+                    let execution_id = format!("{runner}-execution-{index}");
+                    let evidence_ids = descriptors
+                        .iter()
+                        .map(EvidenceDescriptor::evidence_id)
+                        .collect::<Vec<_>>();
+                    results.extend(descriptors.into_iter().map(|descriptor| {
+                        let evidence_id = descriptor.evidence_id();
+                        EvidenceResult {
+                            invariant_id: descriptor.invariant_id,
+                            evidence_id,
+                            execution_id: execution_id.clone(),
+                            status: EvidenceStatus::Pass,
+                            classification: None,
+                            message: None,
+                            artifacts: Vec::new(),
+                        }
+                    }));
+                    CheckReceipt {
+                        execution_id,
+                        check_id,
+                        evidence_ids,
+                        completion: CheckCompletion::Completed,
+                        observations: if runner == "tests" {
+                            std::collections::BTreeMap::from([
+                                ("discovered".to_owned(), 1),
+                                ("executed".to_owned(), 1),
+                                ("passed".to_owned(), 1),
+                            ])
+                        } else {
+                            std::collections::BTreeMap::new()
+                        },
+                        duration_ms: 1,
+                        peak_rss_kib: 1,
+                        artifacts: if runner == "tests" {
+                            vec![
+                                artifact_kind("artifacts/tests.log", "test-log"),
+                                artifact_kind("artifacts/tests.bin", "test-binary"),
+                            ]
+                        } else {
+                            vec![artifact(&format!("artifacts/{runner}.log"))]
+                        },
+                    }
                 })
                 .collect();
             ResultBundle {
-                schema_version: 2,
+                schema_version: 3,
                 runner: runner.clone(),
                 profile: "pr".to_owned(),
                 source_ref: "abc".to_owned(),
@@ -176,6 +218,42 @@ fn result_must_reference_its_actual_check() {
 }
 
 #[test]
+fn tests_pass_requires_registry_check_identity_and_exact_observations() {
+    let (catalog, manifest) = loaded();
+    let mut bundles = passing_bundles(&catalog, &manifest);
+    let tests = bundles
+        .iter_mut()
+        .find(|bundle| bundle.runner == "tests")
+        .expect("tests bundle exists");
+    tests.execution.checks[0].observations.clear();
+
+    let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
+    assert_eq!(report.summary.green, 0);
+    assert!(report.invariants.iter().all(|verdict| verdict
+        .issues
+        .iter()
+        .any(|issue| issue.message.contains("exact observations"))));
+}
+
+#[test]
+fn tests_check_fanout_must_match_registry() {
+    let (catalog, manifest) = loaded();
+    let mut bundles = passing_bundles(&catalog, &manifest);
+    let tests = bundles
+        .iter_mut()
+        .find(|bundle| bundle.runner == "tests")
+        .expect("tests bundle exists");
+    tests.execution.checks[0].check_id = "tests/forged".to_owned();
+
+    let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
+    assert_eq!(report.summary.green, 0);
+    assert!(report.invariants.iter().all(|verdict| verdict
+        .issues
+        .iter()
+        .any(|issue| issue.message.contains("exactly match the registry"))));
+}
+
+#[test]
 fn canonical_invariant_with_one_layer_stays_red() {
     let (mut catalog, manifest) = loaded();
     catalog
@@ -199,7 +277,7 @@ fn canonical_invariant_with_one_layer_stays_red() {
 #[test]
 fn result_bundle_rejects_unknown_fields() {
     let source = r#"{
-        "schema_version": 2,
+        "schema_version": 3,
         "runner": "tests",
         "profile": "pr",
         "source_ref": "abc",
@@ -209,7 +287,8 @@ fn result_bundle_rejects_unknown_fields() {
           "configuration": {"suite": "test"},
           "source": {
             "commit": "abc", "tree": "tree", "cargo_lock_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-            "rustc": "rustc test", "target": "test-target", "build_profile": "test", "features": [], "clean": true
+            "cargo": "cargo test", "rustc": "rustc test", "target": "test-target", "build_profile": "test", "features": [],
+            "environment_sha256": "0000000000000000000000000000000000000000000000000000000000000000", "clean": true
           },
           "checks": [],
           "duration_ms": 1,
@@ -226,7 +305,7 @@ fn result_bundle_rejects_unknown_fields() {
 fn stale_bundle_is_red_never_green() {
     let (catalog, manifest) = loaded();
     let bundle = ResultBundle {
-        schema_version: 2,
+        schema_version: 3,
         runner: "tests".to_owned(),
         profile: "pr".to_owned(),
         source_ref: "old".to_owned(),

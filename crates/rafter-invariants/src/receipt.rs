@@ -49,7 +49,7 @@ pub(super) fn collect_results(
             ));
             continue;
         };
-        if let Err(message) = validate_execution(bundle, runner_contract) {
+        if let Err(message) = validate_execution(bundle, runner_contract, expected) {
             harness_errors.push(format!("runner {}: {message}", bundle.runner));
             continue;
         }
@@ -99,6 +99,7 @@ fn collect_bundle_results(
 fn validate_execution(
     bundle: &ResultBundle,
     contract: &RunnerContract,
+    expected: &BTreeMap<String, &EvidenceDescriptor>,
 ) -> Result<(), &'static str> {
     if bundle.execution.producer != contract.producer {
         return Err("producer identity does not match profile contract");
@@ -113,9 +114,11 @@ fn validate_execution(
         || !bundle.execution.source.clean
         || bundle.execution.source.tree.trim().is_empty()
         || !is_sha256(&bundle.execution.source.cargo_lock_sha256)
+        || bundle.execution.source.cargo.trim().is_empty()
         || bundle.execution.source.rustc.trim().is_empty()
         || bundle.execution.source.target.trim().is_empty()
         || bundle.execution.source.build_profile.trim().is_empty()
+        || !is_sha256(&bundle.execution.source.environment_sha256)
     {
         return Err("source/toolchain provenance is incomplete or does not match source_ref");
     }
@@ -176,6 +179,68 @@ fn validate_execution(
             || !completion_allows(check.completion, result.status)
         {
             return Err("result status disagrees with its check completion");
+        }
+    }
+    if bundle.runner == "tests" {
+        validate_test_checks(bundle, expected)?;
+    }
+    Ok(())
+}
+
+fn validate_test_checks(
+    bundle: &ResultBundle,
+    expected: &BTreeMap<String, &EvidenceDescriptor>,
+) -> Result<(), &'static str> {
+    let mut required = BTreeMap::<String, BTreeSet<String>>::new();
+    for (evidence_id, descriptor) in expected {
+        if let Some(identity) = &descriptor.test {
+            required
+                .entry(identity.check_id())
+                .or_default()
+                .insert(evidence_id.clone());
+        }
+    }
+    let observed = bundle
+        .execution
+        .checks
+        .iter()
+        .map(|check| {
+            (
+                check.check_id.clone(),
+                check.evidence_ids.iter().cloned().collect::<BTreeSet<_>>(),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    if observed.len() != bundle.execution.checks.len() || observed != required {
+        return Err("tests check identities and evidence fanout must exactly match the registry");
+    }
+    for check in &bundle.execution.checks {
+        let statuses = bundle
+            .results
+            .iter()
+            .filter(|result| result.execution_id == check.execution_id)
+            .map(|result| result.status)
+            .collect::<BTreeSet<_>>();
+        if statuses.len() != 1 {
+            return Err("one tests execution cannot report conflicting result statuses");
+        }
+        if statuses.contains(&EvidenceStatus::Pass)
+            && (check.observations
+                != BTreeMap::from([
+                    ("discovered".to_owned(), 1),
+                    ("executed".to_owned(), 1),
+                    ("passed".to_owned(), 1),
+                ])
+                || !check
+                    .artifacts
+                    .iter()
+                    .any(|artifact| artifact.kind == "test-log")
+                || !check
+                    .artifacts
+                    .iter()
+                    .any(|artifact| artifact.kind == "test-binary"))
+        {
+            return Err("passing tests check lacks exact observations, log, or binary artifact");
         }
     }
     Ok(())

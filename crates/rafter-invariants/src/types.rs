@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 /// Current version of the machine-readable receipt and report contract.
-pub const RESULT_SCHEMA_VERSION: u32 = 2;
+pub const RESULT_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -38,10 +38,12 @@ pub struct SourceReceipt {
     pub commit: String,
     pub tree: String,
     pub cargo_lock_sha256: String,
+    pub cargo: String,
     pub rustc: String,
     pub target: String,
     pub build_profile: String,
     pub features: Vec<String>,
+    pub environment_sha256: String,
     pub clean: bool,
 }
 
@@ -59,7 +61,7 @@ pub struct CheckReceipt {
     pub artifacts: Vec<ArtifactRef>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 /// Exhaustive reasons why a deterministic check stopped.
 pub enum CheckCompletion {
@@ -88,7 +90,7 @@ pub struct EvidenceResult {
     pub artifacts: Vec<ArtifactRef>,
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 /// Exhaustive evidence execution outcomes.
 pub enum EvidenceStatus {

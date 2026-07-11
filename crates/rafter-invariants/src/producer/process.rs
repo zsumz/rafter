@@ -1,11 +1,15 @@
 use std::{
     collections::BTreeMap,
+    env,
     error::Error,
     ffi::OsString,
-    path::Path,
+    path::{Path, PathBuf},
     process::{Command, ExitStatus},
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
+
+static TELEMETRY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug)]
 pub(super) struct ProcessOutput {
@@ -23,7 +27,9 @@ pub(super) fn timed(
     current_dir: &Path,
 ) -> Result<ProcessOutput, Box<dyn Error>> {
     let started = Instant::now();
+    let telemetry_path = telemetry_path()?;
     let mut command = Command::new("/usr/bin/time");
+    command.arg("-o").arg(&telemetry_path);
     if cfg!(target_os = "macos") {
         command.arg("-l");
     } else if cfg!(target_os = "linux") {
@@ -34,10 +40,13 @@ pub(super) fn timed(
     let output = command
         .arg(program)
         .args(arguments)
+        .env_clear()
         .envs(environment)
         .current_dir(current_dir)
         .output()?;
-    let peak_rss_kib = parse_peak_rss(&output.stderr)
+    let telemetry = std::fs::read(&telemetry_path)?;
+    std::fs::remove_file(&telemetry_path)?;
+    let peak_rss_kib = parse_peak_rss(&telemetry)
         .ok_or("/usr/bin/time did not report maximum resident set size")?;
     Ok(ProcessOutput {
         status: output.status,
@@ -46,6 +55,29 @@ pub(super) fn timed(
         duration: started.elapsed(),
         peak_rss_kib,
     })
+}
+
+pub(super) fn base_environment() -> BTreeMap<String, String> {
+    const ALLOWED: &[&str] = &[
+        "CARGO_HOME",
+        "DEVELOPER_DIR",
+        "HOME",
+        "PATH",
+        "RUSTUP_HOME",
+        "SDKROOT",
+        "SYSTEMROOT",
+    ];
+    ALLOWED
+        .iter()
+        .filter_map(|name| env::var(name).ok().map(|value| ((*name).to_owned(), value)))
+        .collect()
+}
+
+fn telemetry_path() -> Result<PathBuf, Box<dyn Error>> {
+    let directory = Path::new("target/rafter-invariants/telemetry");
+    std::fs::create_dir_all(directory)?;
+    let sequence = TELEMETRY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    Ok(directory.join(format!("{}-{sequence}.time", std::process::id())))
 }
 
 fn parse_peak_rss(stderr: &[u8]) -> Option<u64> {
