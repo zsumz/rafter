@@ -1,4 +1,6 @@
 pub(super) const ST_01_STATE_WELL_FORMEDNESS: &str = "ST-01 state well-formedness";
+pub(super) const EL_01_TERM_MONOTONICITY: &str = "EL-01 term monotonicity";
+pub(super) const EL_02_ONE_DURABLE_VOTE_PER_TERM: &str = "EL-02 one durable vote per term";
 pub(super) const EL_05_ELECTION_SAFETY_OVER_HISTORY: &str = "EL-05 election safety over history";
 pub(super) const EL_06_LEADER_HAS_VALID_ELECTION_QUORUM: &str =
     "EL-06 leader has valid election quorum";
