@@ -1,6 +1,6 @@
 use super::super::*;
 use super::fixtures::pre_vote_grant;
-use rafter::{Message, RequestVote};
+use rafter::{AppendEntries, Message, RequestVote};
 
 #[test]
 fn election_persists_term_and_vote_before_vote_requests_escape() {
@@ -78,6 +78,77 @@ fn granted_vote_is_persisted_before_vote_response_escapes() {
 }
 
 #[test]
+fn higher_term_vote_rejection_persists_term_before_response_escapes() {
+    let mut runtime = durable_node(1, &[2, 3], InMemoryRaftHardStateStore::new());
+
+    let outputs = runtime
+        .step(RaftInput::Message {
+            from: RaftNodeId(4),
+            message: Message::RequestVote(RequestVote {
+                term: Term(3),
+                candidate_id: RaftNodeId(4),
+                last_log_index: LogIndex::ZERO,
+                last_log_term: Term::default(),
+            }),
+        })
+        .expect("hard state writes");
+
+    assert_eq!(
+        runtime.hard_state_store.current(),
+        RaftHardState {
+            current_term: Term(3),
+            voted_for: None,
+            commit_index: LogIndex::ZERO,
+            committed_configuration: None,
+        }
+    );
+    assert!(matches!(
+        outputs.as_slice(),
+        [RaftOutput::Send {
+            message: Message::RequestVoteResponse(response),
+            ..
+        }] if !response.vote_granted && response.term == Term(3)
+    ));
+}
+
+#[test]
+fn higher_term_append_persists_term_before_response_escapes() {
+    let mut runtime = durable_node(1, &[2, 3], InMemoryRaftHardStateStore::new());
+
+    let outputs = runtime
+        .step(RaftInput::Message {
+            from: RaftNodeId(2),
+            message: Message::AppendEntries(AppendEntries {
+                sequence: 9,
+                term: Term(3),
+                leader_id: RaftNodeId(2),
+                prev_log_index: LogIndex::ZERO,
+                prev_log_term: Term::default(),
+                entries: Vec::new().into(),
+                leader_commit: LogIndex::ZERO,
+            }),
+        })
+        .expect("hard state writes");
+
+    assert_eq!(
+        runtime.hard_state_store.current(),
+        RaftHardState {
+            current_term: Term(3),
+            voted_for: None,
+            commit_index: LogIndex::ZERO,
+            committed_configuration: None,
+        }
+    );
+    assert!(matches!(
+        outputs.as_slice(),
+        [RaftOutput::Send {
+            message: Message::AppendEntriesResponse(response),
+            ..
+        }] if response.success && response.term == Term(3)
+    ));
+}
+
+#[test]
 fn hard_state_write_failure_suppresses_vote_requests() {
     let mut runtime = durable_node(
         1,
@@ -112,6 +183,96 @@ fn hard_state_write_failure_suppresses_vote_requests() {
         .step(RaftInput::Tick)
         .expect_err("a poisoned runtime refuses further inputs");
     assert!(matches!(error, RaftRuntimeError::Poisoned { .. }));
+}
+
+#[test]
+fn hard_state_write_failure_suppresses_granted_vote_response() {
+    let mut runtime = durable_node(
+        1,
+        &[2, 3],
+        FailingHardStateStore {
+            current: RaftHardState::default(),
+        },
+    );
+
+    let error = runtime
+        .step(RaftInput::Message {
+            from: RaftNodeId(2),
+            message: Message::RequestVote(RequestVote {
+                term: Term(3),
+                candidate_id: RaftNodeId(2),
+                last_log_index: LogIndex::ZERO,
+                last_log_term: Term::default(),
+            }),
+        })
+        .expect_err("hard-state write fails before granted vote response escapes");
+
+    assert!(matches!(error, RaftRuntimeError::HardStateWrite(_)));
+    assert_eq!(runtime.hard_state_store.current(), RaftHardState::default());
+    assert_poisoned_after_failure(&mut runtime, |cause| {
+        matches!(cause, RaftRuntimeFatalError::HardStateWrite(_))
+    });
+}
+
+#[test]
+fn hard_state_write_failure_suppresses_higher_term_vote_rejection() {
+    let mut runtime = durable_node(
+        1,
+        &[2, 3],
+        FailingHardStateStore {
+            current: RaftHardState::default(),
+        },
+    );
+
+    let error = runtime
+        .step(RaftInput::Message {
+            from: RaftNodeId(4),
+            message: Message::RequestVote(RequestVote {
+                term: Term(3),
+                candidate_id: RaftNodeId(4),
+                last_log_index: LogIndex::ZERO,
+                last_log_term: Term::default(),
+            }),
+        })
+        .expect_err("hard-state write fails before denied vote response escapes");
+
+    assert!(matches!(error, RaftRuntimeError::HardStateWrite(_)));
+    assert_eq!(runtime.hard_state_store.current(), RaftHardState::default());
+    assert_poisoned_after_failure(&mut runtime, |cause| {
+        matches!(cause, RaftRuntimeFatalError::HardStateWrite(_))
+    });
+}
+
+#[test]
+fn hard_state_write_failure_suppresses_higher_term_append_response() {
+    let mut runtime = durable_node(
+        1,
+        &[2, 3],
+        FailingHardStateStore {
+            current: RaftHardState::default(),
+        },
+    );
+
+    let error = runtime
+        .step(RaftInput::Message {
+            from: RaftNodeId(2),
+            message: Message::AppendEntries(AppendEntries {
+                sequence: 9,
+                term: Term(3),
+                leader_id: RaftNodeId(2),
+                prev_log_index: LogIndex::ZERO,
+                prev_log_term: Term::default(),
+                entries: Vec::new().into(),
+                leader_commit: LogIndex::ZERO,
+            }),
+        })
+        .expect_err("hard-state write fails before append response escapes");
+
+    assert!(matches!(error, RaftRuntimeError::HardStateWrite(_)));
+    assert_eq!(runtime.hard_state_store.current(), RaftHardState::default());
+    assert_poisoned_after_failure(&mut runtime, |cause| {
+        matches!(cause, RaftRuntimeFatalError::HardStateWrite(_))
+    });
 }
 
 #[test]
