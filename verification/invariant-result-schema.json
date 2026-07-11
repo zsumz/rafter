@@ -4,34 +4,83 @@
   "title": "Rafter invariant evidence result bundle",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema_version", "runner", "profile", "source_ref", "results"],
+  "required": ["schema_version", "runner", "profile", "source_ref", "execution", "results"],
   "properties": {
-    "schema_version": { "const": 1 },
+    "schema_version": { "const": 2 },
     "runner": { "enum": ["tests", "simulator", "tla", "maelstrom"] },
     "profile": { "enum": ["pr", "nightly", "weekly"] },
     "source_ref": { "type": "string", "minLength": 1 },
+    "execution": { "$ref": "#/$defs/execution" },
     "results": {
       "type": "array",
       "items": { "$ref": "#/$defs/result" }
     }
   },
   "$defs": {
+    "execution": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer", "command", "configuration", "source", "checks", "duration_ms", "peak_rss_kib", "artifacts"],
+      "properties": {
+        "producer": { "type": "string", "minLength": 1 },
+        "command": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+        "configuration": { "type": "object", "minProperties": 1, "additionalProperties": { "type": "string" } },
+        "source": { "$ref": "#/$defs/source" },
+        "checks": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/check" } },
+        "duration_ms": { "type": "integer", "minimum": 0 },
+        "peak_rss_kib": { "type": "integer", "minimum": 1 },
+        "artifacts": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/artifact" } }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["commit", "tree", "cargo_lock_sha256", "rustc", "target", "build_profile", "features", "clean"],
+      "properties": {
+        "commit": { "type": "string", "minLength": 1 },
+        "tree": { "type": "string", "minLength": 1 },
+        "cargo_lock_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "rustc": { "type": "string", "minLength": 1 },
+        "target": { "type": "string", "minLength": 1 },
+        "build_profile": { "type": "string", "minLength": 1 },
+        "features": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+        "clean": { "const": true }
+      }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["execution_id", "check_id", "evidence_ids", "completion", "observations", "duration_ms", "peak_rss_kib", "artifacts"],
+      "properties": {
+        "execution_id": { "type": "string", "minLength": 1 },
+        "check_id": { "type": "string", "minLength": 1 },
+        "evidence_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
+        "completion": { "enum": ["completed", "frontier_exhausted", "counterexample", "coverage_not_reached", "budget_exhausted", "timeout", "harness_error"] },
+        "observations": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+        "duration_ms": { "type": "integer", "minimum": 0 },
+        "peak_rss_kib": { "type": "integer", "minimum": 1 },
+        "artifacts": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/artifact" } }
+      }
+    },
     "artifact": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["kind", "path"],
+      "required": ["kind", "path", "sha256", "size_bytes"],
       "properties": {
         "kind": { "type": "string", "minLength": 1 },
-        "path": { "type": "string", "minLength": 1 }
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "size_bytes": { "type": "integer", "minimum": 1 }
       }
     },
     "result": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["invariant_id", "evidence_id", "status"],
+      "required": ["invariant_id", "evidence_id", "execution_id", "status"],
       "properties": {
         "invariant_id": { "type": "string", "pattern": "^[A-Z]{2}-[0-9]{2}$" },
         "evidence_id": { "type": "string", "minLength": 1 },
+        "execution_id": { "type": "string", "minLength": 1 },
         "status": { "enum": ["pass", "fail", "incomplete", "error"] },
         "classification": {
           "enum": ["invariant_violation", "coverage_not_reached", "harness_error"]
@@ -39,6 +88,7 @@
         "message": { "type": "string" },
         "artifacts": {
           "type": "array",
+          "minItems": 1,
           "items": { "$ref": "#/$defs/artifact" }
         }
       },
@@ -50,21 +100,21 @@
         {
           "if": { "properties": { "status": { "const": "fail" } } },
           "then": {
-            "required": ["classification", "message"],
+            "required": ["classification", "message", "artifacts"],
             "properties": { "classification": { "const": "invariant_violation" } }
           }
         },
         {
           "if": { "properties": { "status": { "const": "incomplete" } } },
           "then": {
-            "required": ["classification", "message"],
+            "required": ["classification", "message", "artifacts"],
             "properties": { "classification": { "const": "coverage_not_reached" } }
           }
         },
         {
           "if": { "properties": { "status": { "const": "error" } } },
           "then": {
-            "required": ["classification", "message"],
+            "required": ["classification", "message", "artifacts"],
             "properties": { "classification": { "const": "harness_error" } }
           }
         }

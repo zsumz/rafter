@@ -225,9 +225,12 @@ named temporal or witness-based verdicts.
 | `PS-01` | tests | direct | `crates/rafter-runtime/src/tests/persistence_contract.rs#all_raft_outputs_have_declared_runtime_persistence_dependency` |
 | `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/group_commit/failure.rs#a_failed_batch_releases_no_output_and_poisons_the_runtime` |
 | `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/commit_failure.rs#final_hard_state_write_failure_suppresses_apply_and_success_response` |
+| `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#hard_state_write_failure_suppresses_vote_requests` |
 | `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/persistence_contract.rs#ps02_failure_matrix_covers_each_runtime_store_operation` |
+| `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/persistence_ordering.rs#log_append_failure_suppresses_apply_outputs` |
 | `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_snapshot_promote_failure_suppresses_apply_and_success_response` |
 | `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_snapshot_compaction_failure_suppresses_apply_and_success_response` |
+| `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_snapshot_write_failure_poisons_runtime_until_restart` |
 | `PS-03` | maelstrom | e2e | `scripts/maelstrom-lin-kv-repeated-restart#RAFTER_MAELSTROM_RESTART_MODE` |
 | `PS-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_exact_durable_restart`; negative fixture `exact_durable_restart_detects_digest_change` |
 | `PS-03` | tests | direct | `crates/rafter-runtime/src/tests/local_ids/recovery.rs#restart_replays_committed_tracked_entry_without_local_id` |

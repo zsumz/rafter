@@ -1,7 +1,14 @@
-use std::{collections::BTreeMap, fmt, fs, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    fmt, fs,
+    path::{Component, Path, PathBuf},
+};
+
+use sha2::{Digest, Sha256};
 
 use crate::{
     catalog::{Catalog, ProfileManifest},
+    receipt::collect_results,
     types::{
         EvidenceResult, EvidenceStatus, FailureClassification, InvariantVerdict, ResultBundle,
         VerdictIssue, VerdictReport, VerdictStatus, VerdictSummary, RESULT_SCHEMA_VERSION,
@@ -32,10 +39,52 @@ pub fn load_bundles(paths: &[PathBuf]) -> Result<Vec<ResultBundle>, AggregateErr
         .map(|path| {
             let source = fs::read_to_string(path)
                 .map_err(|error| AggregateError(format!("read {}: {error}", path.display())))?;
-            serde_json::from_str(&source)
-                .map_err(|error| AggregateError(format!("parse {}: {error}", path.display())))
+            let bundle = serde_json::from_str(&source)
+                .map_err(|error| AggregateError(format!("parse {}: {error}", path.display())))?;
+            verify_bundle_artifacts(&bundle, Path::new("."))?;
+            Ok(bundle)
         })
         .collect()
+}
+
+fn verify_bundle_artifacts(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateError> {
+    let mut artifacts = bundle.execution.artifacts.iter().collect::<Vec<_>>();
+    artifacts.extend(
+        bundle
+            .execution
+            .checks
+            .iter()
+            .flat_map(|check| check.artifacts.iter()),
+    );
+    artifacts.extend(
+        bundle
+            .results
+            .iter()
+            .flat_map(|result| result.artifacts.iter()),
+    );
+    for artifact in artifacts {
+        let path = Path::new(&artifact.path);
+        if path.is_absolute()
+            || path
+                .components()
+                .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            return Err(AggregateError(format!(
+                "artifact path must be repository-relative: {}",
+                artifact.path
+            )));
+        }
+        let bytes = fs::read(root.join(path))
+            .map_err(|error| AggregateError(format!("read artifact {}: {error}", artifact.path)))?;
+        let digest = format!("{:x}", Sha256::digest(&bytes));
+        if artifact.size_bytes != bytes.len() as u64 || artifact.sha256 != digest {
+            return Err(AggregateError(format!(
+                "artifact integrity mismatch: {}",
+                artifact.path
+            )));
+        }
+    }
+    Ok(())
 }
 
 /// Produces one fail-closed verdict for every reviewed invariant.
@@ -65,7 +114,8 @@ pub fn aggregate(
         .map(|evidence| (evidence.evidence_id(), evidence))
         .collect::<BTreeMap<_, _>>();
 
-    let (accepted, harness_errors) = collect_results(bundles, &expected, profile, source_ref);
+    let (accepted, harness_errors, artifacts) =
+        collect_results(bundles, &expected, contract, profile, source_ref);
     let invariants = catalog
         .ids
         .iter()
@@ -93,71 +143,9 @@ pub fn aggregate(
             green,
             red: invariants.len() - green,
         },
+        artifacts,
         invariants,
     })
-}
-
-fn collect_results(
-    bundles: &[ResultBundle],
-    expected: &BTreeMap<String, &crate::EvidenceDescriptor>,
-    profile: &str,
-    source_ref: &str,
-) -> (BTreeMap<String, EvidenceResult>, Vec<String>) {
-    let mut accepted = BTreeMap::<String, EvidenceResult>::new();
-    let mut harness_errors = Vec::new();
-    for bundle in bundles {
-        if bundle.schema_version != RESULT_SCHEMA_VERSION {
-            harness_errors.push(format!(
-                "runner {} used unsupported result schema {}",
-                bundle.runner, bundle.schema_version
-            ));
-            continue;
-        }
-        if bundle.profile != profile {
-            harness_errors.push(format!(
-                "runner {} reported profile {} instead of {profile}",
-                bundle.runner, bundle.profile
-            ));
-            continue;
-        }
-        if bundle.source_ref != source_ref {
-            harness_errors.push(format!(
-                "runner {} evidence is stale: source {} != {source_ref}",
-                bundle.runner, bundle.source_ref
-            ));
-            continue;
-        }
-        for result in &bundle.results {
-            let Some(descriptor) = expected.get(&result.evidence_id) else {
-                harness_errors.push(format!(
-                    "runner {} reported unknown evidence {}",
-                    bundle.runner, result.evidence_id
-                ));
-                continue;
-            };
-            if result.invariant_id != descriptor.invariant_id || bundle.runner != descriptor.layer {
-                harness_errors.push(format!(
-                    "evidence {} identity does not match registry invariant/layer",
-                    result.evidence_id
-                ));
-                continue;
-            }
-            if let Err(message) = validate_result(result) {
-                harness_errors.push(format!("evidence {}: {message}", result.evidence_id));
-                continue;
-            }
-            if accepted
-                .insert(result.evidence_id.clone(), result.clone())
-                .is_some()
-            {
-                harness_errors.push(format!(
-                    "duplicate result for evidence {}",
-                    result.evidence_id
-                ));
-            }
-        }
-    }
-    (accepted, harness_errors)
 }
 
 fn invariant_verdict(
@@ -227,27 +215,6 @@ fn invariant_verdict(
         passed_evidence: passed,
         issues,
     }
-}
-
-fn validate_result(result: &EvidenceResult) -> Result<(), &'static str> {
-    let expected = match result.status {
-        EvidenceStatus::Pass => None,
-        EvidenceStatus::Fail => Some(FailureClassification::InvariantViolation),
-        EvidenceStatus::Incomplete => Some(FailureClassification::CoverageNotReached),
-        EvidenceStatus::Error => Some(FailureClassification::HarnessError),
-    };
-    if result.classification != expected {
-        return Err("status and classification disagree");
-    }
-    if result.status != EvidenceStatus::Pass
-        && result
-            .message
-            .as_deref()
-            .is_none_or(|message| message.trim().is_empty())
-    {
-        return Err("non-pass result must include a message");
-    }
-    Ok(())
 }
 
 fn issue_from_result(result: &EvidenceResult) -> VerdictIssue {
