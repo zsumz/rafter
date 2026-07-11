@@ -1,6 +1,9 @@
 use rafter_sim::{model_check::FailureKind, SimSeed};
 
-use super::{failure_timeline_lines, parse_profile, Profile, ProfileRun, ProfileSelection};
+use super::{
+    failure_timeline_lines, parse_profile, raft_summary_line_for_counts, Profile, ProfileRun,
+    ProfileSelection,
+};
 
 #[test]
 fn default_profile_stays_fast_for_ci() {
@@ -100,5 +103,23 @@ fn failure_timeline_lines_include_failure_and_trace_context() {
             "DEBUG test trace step step=0 action=\"tick n1\"",
             "DEBUG test trace step step=1 action=\"deliver n1->n2\"",
         ]
+    );
+}
+
+#[test]
+fn raft_summary_line_reports_protocol_and_verifier_state_counts() {
+    let line = raft_summary_line_for_counts(
+        "raft-commit",
+        4,
+        7,
+        10,
+        12,
+        3,
+        std::time::Duration::from_millis(25),
+    );
+
+    assert_eq!(
+        line,
+        "model-check raft-commit: unique_states=7 unique_protocol_states=4 unique_verifier_states=7 explored_states=10 explored_actions=12 pruned_states=3 pruning_rate=0.300000 max_depth=3 duration_ms=25",
     );
 }

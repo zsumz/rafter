@@ -56,6 +56,11 @@ pub(in crate::model_check::liveness) fn drive_until_quiescent_leader(
             if stable_observations >= 2 {
                 return Ok(Some(leader));
             }
+        } else if let Some(leader) = single_leader(state) {
+            if stable_leader != Some(leader) {
+                stable_leader = Some(leader);
+                stable_observations = 0;
+            }
         } else {
             stable_leader = None;
             stable_observations = 0;
@@ -154,8 +159,16 @@ pub(in crate::model_check::liveness) fn soak_liveness_round_budget(
 pub(in crate::model_check::liveness) fn quiescent_leader(
     state: &ExplorationState,
 ) -> Option<NodeId> {
+    state
+        .cluster
+        .network
+        .is_empty()
+        .then(|| single_leader(state))?
+}
+
+fn single_leader(state: &ExplorationState) -> Option<NodeId> {
     let leaders = state.cluster.leaders();
-    (leaders.len() == 1 && state.cluster.network.is_empty()).then(|| leaders[0])
+    (leaders.len() == 1).then(|| leaders[0])
 }
 
 pub(in crate::model_check::liveness) fn has_partition(cluster: &Cluster) -> bool {
@@ -211,4 +224,50 @@ fn liveness_payload_visible(state: &ExplorationState, payload: &[u8]) -> bool {
                 .iter()
                 .any(|entry| entry.kind.application_payload() == Some(payload))
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        model_check::{
+            helpers::{config, deliver_all_in_state, elect_node_one_in_state},
+            state::ExplorationState,
+        },
+        Cluster, SimSeed,
+    };
+
+    fn three_node_fast_configs() -> Vec<rafter::NodeConfig> {
+        vec![
+            config(1, &[2, 3], 2),
+            config(2, &[1, 3], 2),
+            config(3, &[1, 2], 2),
+        ]
+    }
+
+    #[test]
+    fn quiescent_leader_monitor_survives_heartbeat_between_observations() {
+        let config = SoakConfig::new(SimSeed(0x1ead), 0);
+        let mut state = ExplorationState::new(Cluster::new_with_seed(
+            three_node_fast_configs(),
+            config.seed,
+        ));
+        elect_node_one_in_state(&mut state);
+        deliver_all_in_state(&mut state);
+        assert_eq!(quiescent_leader(&state), Some(NodeId(1)));
+
+        let mut trace = Vec::new();
+        let mut observed_actions = BTreeSet::new();
+        let leader =
+            drive_until_quiescent_leader(&mut state, config, &mut trace, &mut observed_actions, 12)
+                .expect("leader convergence monitor should preserve same-leader observations");
+
+        assert_eq!(leader, Some(NodeId(1)));
+        assert!(
+            trace
+                .iter()
+                .any(|action| matches!(action, SoakAction::Tick(NodeId(1)))),
+            "regression should exercise a leader tick between quiescent observations"
+        );
+    }
 }

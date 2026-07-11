@@ -15,7 +15,7 @@ use runner::run_profile;
 #[cfg(test)]
 pub(crate) use profile::{Profile, ProfileRun};
 #[cfg(test)]
-pub(crate) use reporting::failure_timeline_lines;
+pub(crate) use reporting::{failure_timeline_lines, raft_summary_line_for_counts};
 
 fn main() -> Result<(), Box<dyn Error>> {
     match parse_profile(env::args().skip(1))? {
