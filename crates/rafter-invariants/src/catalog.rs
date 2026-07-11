@@ -37,6 +37,17 @@ pub struct TestIdentity {
     pub test_name: String,
 }
 
+impl TestIdentity {
+    /// Returns the stable check identity required in a tests-layer receipt.
+    #[must_use]
+    pub fn check_id(&self) -> String {
+        format!(
+            "tests/{}/{}/{}#{}",
+            self.package, self.target_kind, self.target, self.test_name
+        )
+    }
+}
+
 impl EvidenceDescriptor {
     /// Returns the stable aggregate key for this evidence declaration.
     #[must_use]

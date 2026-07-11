@@ -18,6 +18,13 @@ pub struct ProducerOptions {
     pub output_dir: PathBuf,
 }
 
+#[derive(Clone, Debug)]
+/// Written producer receipt and whether every evidence result passed.
+pub struct ProducerOutcome {
+    pub path: PathBuf,
+    pub all_passed: bool,
+}
+
 /// Executes one profile layer and writes its strict result bundle.
 ///
 /// # Errors
@@ -25,7 +32,7 @@ pub struct ProducerOptions {
 /// Returns an error when the repository is dirty, the producer contract is
 /// invalid, the selected layer is unsupported, or the receipt cannot be
 /// written. Individual check failures are represented inside the receipt.
-pub fn produce(options: &ProducerOptions) -> Result<PathBuf, Box<dyn Error>> {
+pub fn produce(options: &ProducerOptions) -> Result<ProducerOutcome, Box<dyn Error>> {
     artifact::validate_output_dir(&options.output_dir)?;
     let catalog = Catalog::load(&options.registry)?;
     let manifest = ProfileManifest::load(&options.manifest)?;
@@ -52,7 +59,12 @@ pub fn produce(options: &ProducerOptions) -> Result<PathBuf, Box<dyn Error>> {
         )?,
         layer => return Err(format!("producer for layer {layer} is not implemented").into()),
     };
-    write_bundle(&bundle, &options.output_dir)
+    let all_passed = bundle
+        .results
+        .iter()
+        .all(|result| result.status == crate::EvidenceStatus::Pass);
+    let path = write_bundle(&bundle, &options.output_dir)?;
+    Ok(ProducerOutcome { path, all_passed })
 }
 
 fn write_bundle(bundle: &ResultBundle, output_dir: &PathBuf) -> Result<PathBuf, Box<dyn Error>> {

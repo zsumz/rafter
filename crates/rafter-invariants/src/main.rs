@@ -97,15 +97,15 @@ fn run(cli: Cli) -> Result<bool, Box<dyn std::error::Error>> {
             manifest,
             output_dir,
         } => {
-            let path = produce(&ProducerOptions {
+            let outcome = produce(&ProducerOptions {
                 profile,
                 layer,
                 registry,
                 manifest,
                 output_dir,
             })?;
-            println!("wrote {}", path.display());
-            Ok(true)
+            println!("wrote {}", outcome.path.display());
+            Ok(outcome.all_passed)
         }
     }
 }

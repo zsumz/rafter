@@ -42,7 +42,7 @@ pub(super) fn evaluate(
     let program = executable
         .to_str()
         .ok_or("test executable path is not valid UTF-8")?;
-    let environment = BTreeMap::new();
+    let environment = process::base_environment();
     let listed = process::timed(
         program,
         &["--list".into(), "--format".into(), "terse".into()],
@@ -66,7 +66,7 @@ pub(super) fn evaluate(
     let discovery_ms =
         process::duration_ms(listed.duration) + process::duration_ms(ignored.duration);
     if !listed.status.success() || !ignored.status.success() {
-        let artifact = write_log(output_dir, profile, execution_id, &log)?;
+        let artifact = write_log(output_dir, profile, source_ref, execution_id, &log)?;
         return Ok(error_outcome(
             "libtest discovery process failed".to_owned(),
             artifact,
@@ -78,7 +78,7 @@ pub(super) fn evaluate(
     let matches = usize::from(discovered.contains(&identity.test_name));
     let ignored_matches = usize::from(ignored_tests.contains(&identity.test_name));
     if matches != 1 {
-        let artifact = write_log(output_dir, profile, execution_id, &log)?;
+        let artifact = write_log(output_dir, profile, source_ref, execution_id, &log)?;
         return Ok(TestOutcome {
             completion: CheckCompletion::CoverageNotReached,
             status: EvidenceStatus::Incomplete,
@@ -121,12 +121,16 @@ fn execute_exact(
     discovery_rss: u64,
 ) -> Result<TestOutcome, Box<dyn Error>> {
     let temporary = Path::new("target/rafter-invariants/tmp").join(execution_id);
+    if temporary.exists() {
+        fs::remove_dir_all(&temporary)?;
+    }
     fs::create_dir_all(&temporary)?;
     let seed = artifact::deterministic_u64(
         "rafter-tests/v1",
         &format!("{profile}\0{source_ref}\0{}", identity.test_name),
     );
-    let mut run_environment = BTreeMap::from([
+    let mut run_environment = process::base_environment();
+    run_environment.extend([
         ("PROPTEST_RNG_SEED".to_owned(), seed.to_string()),
         (
             "PROPTEST_DISABLE_FAILURE_PERSISTENCE".to_owned(),
@@ -150,7 +154,7 @@ fn execute_exact(
     }
     let executed = process::timed(program, &arguments, &run_environment, Path::new("."))?;
     log.extend(process::combined_log("exact libtest execution", &executed));
-    let artifact = write_log(output_dir, profile, execution_id, &log)?;
+    let artifact = write_log(output_dir, profile, source_ref, execution_id, &log)?;
     let peak_rss_kib = discovery_rss.max(executed.peak_rss_kib);
     let duration_ms = discovery_ms + process::duration_ms(executed.duration);
     let exact_pass = exact_pass(&executed.stdout, &identity.test_name);
@@ -176,13 +180,27 @@ fn execute_exact(
             peak_rss_kib,
             artifacts: vec![artifact],
         })
-    } else {
+    } else if confirmed_test_failure(&executed.stdout, &identity.test_name) {
         Ok(TestOutcome {
             completion: CheckCompletion::Counterexample,
             status: EvidenceStatus::Fail,
             classification: Some(FailureClassification::InvariantViolation),
             message: Some(format!("exact test {} failed", identity.test_name)),
             observations: observations(1, 1, 0),
+            duration_ms,
+            peak_rss_kib,
+            artifacts: vec![artifact],
+        })
+    } else {
+        Ok(TestOutcome {
+            completion: CheckCompletion::HarnessError,
+            status: EvidenceStatus::Error,
+            classification: Some(FailureClassification::HarnessError),
+            message: Some(format!(
+                "exact test process {} terminated without a confirmed libtest assertion failure",
+                identity.test_name
+            )),
+            observations: observations(1, 0, 0),
             duration_ms,
             peak_rss_kib,
             artifacts: vec![artifact],
@@ -209,6 +227,16 @@ fn exact_pass(output: &[u8], test_name: &str) -> bool {
             .any(|line| line.contains("1 passed; 0 failed; 0 ignored"))
 }
 
+fn confirmed_test_failure(output: &[u8], test_name: &str) -> bool {
+    let output = String::from_utf8_lossy(output);
+    output
+        .lines()
+        .any(|line| line.trim() == format!("test {test_name} ... FAILED"))
+        && output
+            .lines()
+            .any(|line| line.contains("0 passed; 1 failed"))
+}
+
 fn observations(discovered: usize, executed: usize, passed: usize) -> BTreeMap<String, u64> {
     BTreeMap::from([
         ("discovered".to_owned(), discovered as u64),
@@ -220,12 +248,16 @@ fn observations(discovered: usize, executed: usize, passed: usize) -> BTreeMap<S
 fn write_log(
     output_dir: &Path,
     profile: &str,
+    source_ref: &str,
     execution_id: &str,
     bytes: &[u8],
 ) -> Result<ArtifactRef, Box<dyn Error>> {
+    let source_prefix = source_ref.get(..12).unwrap_or(source_ref);
     artifact::write(
         output_dir,
-        Path::new(&format!("{profile}-tests/checks/{execution_id}.log")),
+        Path::new(&format!(
+            "{profile}-tests/{source_prefix}/checks/{execution_id}.log"
+        )),
         "test-log",
         bytes,
     )
@@ -246,7 +278,7 @@ fn error_outcome(message: String, artifact: ArtifactRef, peak_rss_kib: u64) -> T
 
 #[cfg(test)]
 mod tests {
-    use super::{exact_pass, listed_tests};
+    use super::{confirmed_test_failure, exact_pass, listed_tests};
 
     #[test]
     fn exact_pass_rejects_zero_test_success() {
@@ -259,5 +291,17 @@ mod tests {
         let tests = listed_tests(b"module::one: test\nmodule::two: test\n");
         assert!(tests.contains("module::one"));
         assert!(!tests.contains("one"));
+    }
+
+    #[test]
+    fn abnormal_exit_is_not_a_confirmed_invariant_failure() {
+        assert!(confirmed_test_failure(
+            b"test module::test ... FAILED\ntest result: FAILED. 0 passed; 1 failed",
+            "module::test"
+        ));
+        assert!(!confirmed_test_failure(
+            b"dyld: Library not loaded",
+            "module::test"
+        ));
     }
 }

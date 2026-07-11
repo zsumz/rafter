@@ -21,7 +21,7 @@
       "canonical_minimum_independent_layers": 2,
       "runners": {
         "tests": {
-          "producer": "rafter-invariants-tests-v2",
+          "producer": "rafter-invariants-tests-v3",
           "command": ["cargo", "run", "-p", "rafter-invariants", "--", "run", "--profile", "pr", "--layer", "tests"],
           "configuration": {"build": "locked-no-default-features", "discovery": "libtest-executable", "execution": "exact-single-threaded", "scale": "pr"},
           "minimum_observed_checks": 57,
@@ -51,7 +51,7 @@
       "canonical_minimum_independent_layers": 2,
       "runners": {
         "tests": {
-          "producer": "rafter-invariants-tests-v2",
+          "producer": "rafter-invariants-tests-v3",
           "command": ["cargo", "run", "-p", "rafter-invariants", "--", "run", "--profile", "nightly", "--layer", "tests"],
           "configuration": {"build": "locked-no-default-features", "discovery": "libtest-executable", "execution": "exact-single-threaded", "scale": "nightly"},
           "minimum_observed_checks": 57,
@@ -88,7 +88,7 @@
       "canonical_minimum_independent_layers": 2,
       "runners": {
         "tests": {
-          "producer": "rafter-invariants-tests-v2",
+          "producer": "rafter-invariants-tests-v3",
           "command": ["cargo", "run", "-p", "rafter-invariants", "--", "run", "--profile", "weekly", "--layer", "tests"],
           "configuration": {"build": "locked-no-default-features", "discovery": "libtest-executable", "execution": "exact-single-threaded", "scale": "weekly"},
           "minimum_observed_checks": 57,

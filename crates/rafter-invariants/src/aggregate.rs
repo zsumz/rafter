@@ -1,5 +1,5 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fmt, fs,
     path::{Component, Path, PathBuf},
 };
@@ -48,7 +48,7 @@ pub fn load_bundles(paths: &[PathBuf]) -> Result<Vec<ResultBundle>, AggregateErr
 }
 
 fn verify_bundle_artifacts(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateError> {
-    let mut artifacts = bundle.execution.artifacts.iter().collect::<Vec<_>>();
+    let mut artifacts = bundle.execution.artifacts.iter().collect::<BTreeSet<_>>();
     artifacts.extend(
         bundle
             .execution
@@ -81,6 +81,47 @@ fn verify_bundle_artifacts(bundle: &ResultBundle, root: &Path) -> Result<(), Agg
             return Err(AggregateError(format!(
                 "artifact integrity mismatch: {}",
                 artifact.path
+            )));
+        }
+    }
+    if bundle.runner == "tests" {
+        verify_test_logs(bundle, root)?;
+    }
+    Ok(())
+}
+
+fn verify_test_logs(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateError> {
+    for check in &bundle.execution.checks {
+        let passing = bundle.results.iter().any(|result| {
+            result.execution_id == check.execution_id && result.status == EvidenceStatus::Pass
+        });
+        if !passing {
+            continue;
+        }
+        let test_name = check
+            .check_id
+            .rsplit_once('#')
+            .map(|(_, test_name)| test_name)
+            .ok_or_else(|| AggregateError(format!("invalid tests check ID {}", check.check_id)))?;
+        let log = check
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.kind == "test-log")
+            .ok_or_else(|| AggregateError(format!("test log missing for {}", check.check_id)))?;
+        let source = fs::read_to_string(root.join(&log.path)).map_err(|error| {
+            AggregateError(format!("read exact test log {}: {error}", log.path))
+        })?;
+        if !source.lines().any(|line| line.trim() == "running 1 test")
+            || !source
+                .lines()
+                .any(|line| line.trim() == format!("test {test_name} ... ok"))
+            || !source
+                .lines()
+                .any(|line| line.contains("1 passed; 0 failed; 0 ignored"))
+        {
+            return Err(AggregateError(format!(
+                "test log does not prove one exact pass for {}",
+                check.check_id
             )));
         }
     }

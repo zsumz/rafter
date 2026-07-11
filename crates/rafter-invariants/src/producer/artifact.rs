@@ -33,6 +33,16 @@ pub(super) fn write(
     Ok(reference(&path, kind, bytes))
 }
 
+pub(super) fn existing(path: &Path, kind: &str) -> Result<ArtifactRef, Box<dyn Error>> {
+    let root = fs::canonicalize(".")?;
+    let canonical = fs::canonicalize(path)?;
+    let relative = canonical
+        .strip_prefix(&root)
+        .map_err(|_| "artifact is outside the repository worktree")?;
+    let bytes = fs::read(&canonical)?;
+    Ok(reference(relative, kind, &bytes))
+}
+
 fn reference(path: &Path, kind: &str, bytes: &[u8]) -> ArtifactRef {
     ArtifactRef {
         kind: kind.to_owned(),

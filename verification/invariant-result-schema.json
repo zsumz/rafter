@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "runner", "profile", "source_ref", "execution", "results"],
   "properties": {
-    "schema_version": { "const": 2 },
+    "schema_version": { "const": 3 },
     "runner": { "enum": ["tests", "simulator", "tla", "maelstrom"] },
     "profile": { "enum": ["pr", "nightly", "weekly"] },
     "source_ref": { "type": "string", "minLength": 1 },
@@ -35,15 +35,17 @@
     "source": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["commit", "tree", "cargo_lock_sha256", "rustc", "target", "build_profile", "features", "clean"],
+      "required": ["commit", "tree", "cargo_lock_sha256", "cargo", "rustc", "target", "build_profile", "features", "environment_sha256", "clean"],
       "properties": {
         "commit": { "type": "string", "minLength": 1 },
         "tree": { "type": "string", "minLength": 1 },
         "cargo_lock_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "cargo": { "type": "string", "minLength": 1 },
         "rustc": { "type": "string", "minLength": 1 },
         "target": { "type": "string", "minLength": 1 },
         "build_profile": { "type": "string", "minLength": 1 },
         "features": { "type": "array", "uniqueItems": true, "items": { "type": "string" } },
+        "environment_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "clean": { "const": true }
       }
     },
