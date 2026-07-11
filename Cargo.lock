@@ -580,6 +580,7 @@ name = "rafter-sim"
 version = "0.0.1"
 dependencies = [
  "rafter",
+ "serde_json",
 ]
 
 [[package]]
