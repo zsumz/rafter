@@ -10,6 +10,7 @@ use super::ExplorationState;
 
 #[derive(Clone, Debug, Default, Hash)]
 pub(crate) struct ElectionHistory {
+    pub(crate) uncertified_seeded_leaders: BTreeSet<(NodeId, Term)>,
     pub(crate) term_floor_by_node: BTreeMap<NodeId, Term>,
     pub(crate) votes_by_node_term: BTreeMap<(NodeId, Term), NodeId>,
     pub(crate) term_regressions: BTreeSet<TermRegression>,
@@ -24,6 +25,13 @@ pub(crate) struct ElectionHistory {
 }
 
 impl ElectionHistory {
+    pub(in crate::model_check) fn record_seeded_leaders(&mut self, cluster: &Cluster) {
+        self.uncertified_seeded_leaders
+            .extend(cluster.nodes.iter().filter_map(|(node_id, node)| {
+                (node.role() == rafter::Role::Leader).then_some((*node_id, node.current_term()))
+            }));
+    }
+
     pub(in crate::model_check) fn observe_authority_state(&mut self, cluster: &Cluster) {
         for (node_id, node) in &cluster.nodes {
             let observed_term = node.current_term();

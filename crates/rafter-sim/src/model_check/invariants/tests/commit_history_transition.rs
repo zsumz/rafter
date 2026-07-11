@@ -68,7 +68,7 @@ fn diagnostic_commit_certificates_do_not_change_the_state_hash() {
     leader.effective_membership = stable_membership(&[1], &[]);
     leader.old_commit = LogIndex::ZERO;
 
-    with_certificate.record_commit_observation(&context);
+    with_certificate.record_commit_observation(&context, None);
 
     assert!(
         with_certificate.commit_history.certificates.contains_key(&(

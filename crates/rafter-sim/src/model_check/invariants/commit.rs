@@ -1,3 +1,5 @@
+use rafter::BootstrapState;
+
 use super::{catalog, summarize, Action, Failure};
 use super::{
     BTreeMap, Cluster, CommittedConfiguration, ExplorationState, LogEntry, LogIndex,
@@ -158,24 +160,36 @@ pub(super) fn check_no_overlapping_uncommitted_configurations(
 ) -> Result<(), Failure> {
     for node_id in cluster.nodes.keys() {
         let bootstrap = cluster.bootstrap_state(*node_id);
-        let uncommitted_configurations = bootstrap
-            .log
-            .iter()
-            .filter(|entry| entry.index > bootstrap.commit_index && entry.kind.is_configuration())
-            .count();
-        if uncommitted_configurations > 1 {
-            return Err(Failure {
-                kind: crate::model_check::FailureKind::InvariantViolation,
-                invariant: catalog::MB_03_SERIALIZED_CONFIGURATION_CHANGES,
-                message: format!(
-                    "{node_id} has {uncommitted_configurations} uncommitted configuration entries"
-                ),
-                trace: trace.to_vec(),
-                state: summarize(cluster),
-            });
-        }
+        check_no_overlapping_uncommitted_configurations_in_bootstrap(
+            cluster, *node_id, &bootstrap, trace,
+        )?;
     }
     Ok(())
+}
+
+pub(super) fn check_no_overlapping_uncommitted_configurations_in_bootstrap(
+    cluster: &Cluster,
+    node_id: NodeId,
+    bootstrap: &BootstrapState,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    let uncommitted_configurations = bootstrap
+        .log
+        .iter()
+        .filter(|entry| entry.index > bootstrap.commit_index && entry.kind.is_configuration())
+        .count();
+    if uncommitted_configurations <= 1 {
+        return Ok(());
+    }
+    Err(Failure {
+        kind: crate::model_check::FailureKind::InvariantViolation,
+        invariant: catalog::MB_03_SERIALIZED_CONFIGURATION_CHANGES,
+        message: format!(
+            "{node_id} has {uncommitted_configurations} uncommitted configuration entries"
+        ),
+        trace: trace.to_vec(),
+        state: summarize(cluster),
+    })
 }
 
 pub(super) fn check_required_committed_configurations(

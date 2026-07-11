@@ -133,7 +133,7 @@ fn assert_negative_fixture_policy(workspace: &Path, record: &Evidence, source: &
                 )
             };
             assert!(
-                fixture_source.contains(detector),
+                fixture_exercises_detector(&fixture_source, negative_fixture, detector),
                 "{} simulator direct negative fixture `{}` must exercise detector `{}` in {}",
                 record.id,
                 negative_fixture,
@@ -197,6 +197,80 @@ fn assert_negative_fixture_policy(workspace: &Path, record: &Evidence, source: &
             record.strength,
         );
     }
+}
+
+fn fixture_exercises_detector(source: &str, fixture: &str, detector: &str) -> bool {
+    let functions = top_level_function_names(source);
+    let mut pending = vec![fixture.to_owned()];
+    let mut visited = BTreeSet::new();
+    while let Some(function) = pending.pop() {
+        if !visited.insert(function.clone()) {
+            continue;
+        }
+        let Some(body) = top_level_function_body(source, &function) else {
+            continue;
+        };
+        if body.contains(detector) {
+            return true;
+        }
+        pending.extend(
+            functions
+                .iter()
+                .filter(|candidate| body.contains(&format!("{candidate}(")))
+                .cloned(),
+        );
+    }
+    false
+}
+
+fn top_level_function_names(source: &str) -> Vec<String> {
+    source
+        .lines()
+        .filter(|line| !line.starts_with(char::is_whitespace))
+        .filter_map(|line| line.split_once("fn ").map(|(_, rest)| rest))
+        .filter_map(|rest| rest.split_once('(').map(|(name, _)| name.trim().to_owned()))
+        .collect()
+}
+
+fn top_level_function_body<'a>(source: &'a str, name: &str) -> Option<&'a str> {
+    let signature = format!("fn {name}(");
+    let start = source
+        .match_indices(&signature)
+        .find(|(offset, _)| {
+            let line_start = source[..*offset].rfind('\n').map_or(0, |index| index + 1);
+            !source[line_start..*offset].starts_with(char::is_whitespace)
+        })?
+        .0;
+    let remainder = &source[start + signature.len()..];
+    let end = remainder
+        .match_indices("\nfn ")
+        .chain(remainder.match_indices("\npub fn "))
+        .chain(remainder.match_indices("\npub(super) fn "))
+        .map(|(offset, _)| offset)
+        .min()
+        .unwrap_or(remainder.len());
+    Some(&source[start..start + signature.len() + end])
+}
+
+#[test]
+fn negative_fixture_guard_scopes_detector_to_named_test() {
+    let source =
+        "#[test]\nfn target_fixture() { reporter(); }\n\n#[test]\nfn neighbor() { detector(); }\n";
+    assert!(!fixture_exercises_detector(
+        source,
+        "target_fixture",
+        "detector"
+    ));
+}
+
+#[test]
+fn negative_fixture_guard_follows_local_fixture_helpers() {
+    let source = "#[test]\nfn target_fixture() { helper(); }\n\nfn helper() { detector(); }\n";
+    assert!(fixture_exercises_detector(
+        source,
+        "target_fixture",
+        "detector"
+    ));
 }
 
 fn evidence_strength_for_coverage(coverage: &str) -> Option<&'static str> {

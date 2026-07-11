@@ -7,6 +7,20 @@ use super::restart::restart_node;
 
 pub(in crate::model_check) fn apply_to_state(state: &mut ExplorationState, operation: Operation) {
     let commit_context = state.commit_transition_context();
+    let configuration_proposer = match &operation {
+        Operation::AddLearner { to, .. }
+        | Operation::RemoveLearner { to, .. }
+        | Operation::PromoteLearner { to, .. }
+        | Operation::RemoveVoter { to, .. }
+        | Operation::EnterJoint { to, .. }
+        | Operation::LeaveJoint { to } => Some(*to),
+        Operation::Tick(_)
+        | Operation::Restart(_)
+        | Operation::Propose { .. }
+        | Operation::ReadIndex { .. }
+        | Operation::Transfer { .. }
+        | Operation::DeliverReadyAt(_) => None,
+    };
     let delivered = match &operation {
         Operation::DeliverReadyAt(position) => state
             .cluster
@@ -15,18 +29,7 @@ pub(in crate::model_check) fn apply_to_state(state: &mut ExplorationState, opera
             .map(|queued| queued.envelope.clone()),
         _ => None,
     };
-    let needs_transition_context = matches!(&operation, Operation::Tick(_))
-        || delivered.as_ref().is_some_and(|queued| {
-            matches!(
-                &queued.message,
-                rafter::Message::PreVote(_)
-                    | rafter::Message::PreVoteResponse(_)
-                    | rafter::Message::RequestVote(_)
-                    | rafter::Message::RequestVoteResponse(_)
-                    | rafter::Message::TimeoutNow(_)
-                    | rafter::Message::AppendEntries(_)
-            )
-        });
+    let needs_transition_context = matches!(&operation, Operation::Tick(_)) || delivered.is_some();
     let transition_context =
         needs_transition_context.then(|| (state.cluster.clone(), delivered.clone()));
 
@@ -70,7 +73,7 @@ pub(in crate::model_check) fn apply_to_state(state: &mut ExplorationState, opera
     }
     state.observe_election_authority();
     state.refresh_log_history();
-    state.record_commit_observation(&commit_context);
+    state.record_commit_observation(&commit_context, configuration_proposer);
     state.record_leader_completeness_observation();
     state.refresh_commit_floors();
     state.refresh_client_history();
