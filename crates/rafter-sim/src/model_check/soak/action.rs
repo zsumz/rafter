@@ -30,6 +30,33 @@ pub enum SoakActionKind {
     LossyRestart,
 }
 
+impl SoakActionKind {
+    /// Returns the stable machine-readable action-family label.
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Tick => "tick",
+            Self::Propose => "propose",
+            Self::Deliver => "deliver",
+            Self::Delay => "delay",
+            Self::Drop => "drop",
+            Self::Duplicate => "duplicate",
+            Self::Restart => "restart",
+            Self::ReadIndex => "read-index",
+            Self::AddLearner => "add-learner",
+            Self::RemoveLearner => "remove-learner",
+            Self::PromoteLearner => "promote-learner",
+            Self::RemoveVoter => "remove-voter",
+            Self::EnterJoint => "enter-joint",
+            Self::LeaveJoint => "leave-joint",
+            Self::Transfer => "transfer",
+            Self::Partition => "partition",
+            Self::Heal => "heal",
+            Self::LossyRestart => "lossy-restart",
+        }
+    }
+}
+
 /// Replayable-enough randomized simulator action.
 ///
 /// This enum is exhaustive because randomized soak traces are recorded using
