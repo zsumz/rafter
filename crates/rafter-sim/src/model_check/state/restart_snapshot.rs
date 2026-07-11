@@ -3,7 +3,7 @@ use rafter::{MembershipConfig, MembershipSet, Message, NodeId, RaftSnapshot, Sha
 use crate::Cluster;
 
 use super::super::helpers::{
-    bootstrap_state, bootstrap_with_snapshot, elect_node_one_with_node_three,
+    bootstrap_state, bootstrap_with_snapshot, elect_node_one_with_node_three_in_state,
     large_snapshot_payload, test_snapshot, test_snapshot_with_committed_membership,
     three_node_configs,
 };
@@ -83,8 +83,9 @@ impl RestartSnapshotState {
                 bootstrap_with_snapshot(Term(2), snapshot.clone(), &[]),
             )
             .expect("voter bootstrap is valid");
-        elect_node_one_with_node_three(&mut cluster);
-        cluster.drop_matching(|envelope| {
+        let mut state = ExplorationState::new(cluster);
+        elect_node_one_with_node_three_in_state(&mut state);
+        state.cluster.drop_matching(|envelope| {
             matches!(
                 envelope.message,
                 Message::RequestVote(_) | Message::RequestVoteResponse(_)
@@ -93,7 +94,7 @@ impl RestartSnapshotState {
         });
 
         Self {
-            state: ExplorationState::new(cluster),
+            state,
             expected_snapshot: Some(ExpectedSnapshot {
                 snapshot,
                 payload: payload.into(),

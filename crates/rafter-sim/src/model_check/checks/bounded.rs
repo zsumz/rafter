@@ -52,9 +52,8 @@ pub fn check_raft_membership_safety(
     configs: Vec<NodeConfig>,
     bounds: Bounds,
 ) -> Result<Summary, Failure> {
-    let mut cluster = Cluster::new(configs);
-    helpers::elect_node_one(&mut cluster);
-    let state = ExplorationState::new(cluster);
+    let mut state = ExplorationState::new(Cluster::new(configs));
+    helpers::elect_node_one_in_state(&mut state);
     let mut explorer = CommitSafetyExplorer::new(bounds);
     let mut trace = Vec::new();
     explorer.explore(&state, &mut trace, 0)?;

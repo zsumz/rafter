@@ -21,10 +21,6 @@ const DIRECT_CLUSTER_TRANSITION_ALLOWLIST: &[(&str, &str)] = &[
         "the central transition adapter is the only production boundary that may call Cluster directly",
     ),
     (
-        "src/model_check/checks/read.rs",
-        "seed fixture setup happens before ExplorationState exists",
-    ),
-    (
         "src/model_check/helpers.rs",
         "shared cluster fixture setup happens before ExplorationState exists",
     ),

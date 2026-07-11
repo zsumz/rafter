@@ -205,6 +205,14 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
         reason: SIM_MODEL_CHECK_INVARIANT,
     },
     WarningAllow {
+        kind: WarningKind::LibraryPanic,
+        path: "crates/rafter-sim/src/model_check/helpers.rs",
+        symbol: None,
+        text: Some("expected one ready message to deliver"),
+        classification_label: SIM_INVARIANT_LABEL,
+        reason: SIM_MODEL_CHECK_INVARIANT,
+    },
+    WarningAllow {
         kind: WarningKind::LibraryExpect,
         path: "crates/rafter-sim/src/model_check/helpers.rs",
         symbol: None,
