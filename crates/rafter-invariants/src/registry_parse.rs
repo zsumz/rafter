@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::catalog::{CatalogError, EvidenceDescriptor, TestIdentity};
+use crate::catalog::{CatalogError, EvidenceDescriptor, SimulatorIdentity, TestIdentity};
 
 pub(super) fn parse_invariants(
     source: &str,
@@ -54,6 +54,11 @@ fn parse_evidence_record(
     } else {
         None
     };
+    let simulator = if layer == "simulator" {
+        Some(parse_simulator_identity(record, &required)?)
+    } else {
+        None
+    };
     Ok(EvidenceDescriptor {
         invariant_id: required("id")?,
         layer,
@@ -62,7 +67,69 @@ fn parse_evidence_record(
         symbol: required("symbol")?,
         negative_fixture: record.get("negative_fixture").cloned(),
         test,
+        simulator,
     })
+}
+
+fn parse_simulator_identity(
+    record: &BTreeMap<String, String>,
+    required: &impl Fn(&str) -> Result<String, CatalogError>,
+) -> Result<SimulatorIdentity, CatalogError> {
+    let checks = required("simulator_check")?
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect::<Vec<_>>();
+    let negative_test = if record.contains_key("negative_fixture") {
+        Some(TestIdentity {
+            package: required("negative_fixture_package")?,
+            target_kind: required("negative_fixture_target_kind")?,
+            target: required("negative_fixture_target")?,
+            test_name: required("negative_fixture_test_name")?,
+        })
+    } else {
+        None
+    };
+    let identity = SimulatorIdentity {
+        checks,
+        required_observation: required("required_observation")?,
+        minimum_observation: parse_usize(&required("minimum_observation")?)?,
+        minimum_protocol_states: optional_usize(record, "minimum_protocol_states")?,
+        minimum_verifier_states: optional_usize(record, "minimum_verifier_states")?,
+        minimum_runs_per_check: optional_usize(record, "minimum_runs_per_check")?,
+        minimum_steps: optional_usize(record, "minimum_steps")?,
+        required_liveness_feature: record.get("required_liveness_feature").cloned(),
+        negative_test,
+    };
+    let safety = identity.required_liveness_feature.is_none()
+        && identity.minimum_protocol_states.is_some()
+        && identity.minimum_verifier_states.is_some();
+    let liveness = identity.required_liveness_feature.is_some()
+        && identity.minimum_runs_per_check.is_some()
+        && identity.minimum_steps.is_some();
+    if identity.checks.is_empty() || identity.minimum_observation == 0 || !(safety || liveness) {
+        return Err(CatalogError(
+            "simulator evidence has an incomplete execution contract".to_owned(),
+        ));
+    }
+    Ok(identity)
+}
+
+fn optional_usize(
+    record: &BTreeMap<String, String>,
+    field: &str,
+) -> Result<Option<usize>, CatalogError> {
+    record
+        .get(field)
+        .map(|value| parse_usize(value))
+        .transpose()
+}
+
+fn parse_usize(value: &str) -> Result<usize, CatalogError> {
+    value
+        .parse()
+        .map_err(|error| CatalogError(format!("invalid integer {value}: {error}")))
 }
 
 fn parse_section_records(source: &str, section: &str) -> Vec<BTreeMap<String, String>> {
