@@ -69,6 +69,15 @@ impl Cluster {
         self.node(node_id).applied_index()
     }
 
+    /// Returns `node_id`'s current simulated application incarnation.
+    #[must_use]
+    pub fn application_epoch(&self, node_id: NodeId) -> u64 {
+        self.application_epochs
+            .get(&node_id)
+            .copied()
+            .unwrap_or_default()
+    }
+
     /// Returns the simulator-wide stream of applied application payloads.
     #[must_use]
     pub fn applied(&self) -> &[Applied] {
@@ -143,6 +152,7 @@ impl Cluster {
                     committed_configuration: snapshot.metadata.committed_configuration_state(),
                 }),
             log: bootstrap.log,
+            application_epoch: self.application_epoch(node_id),
             applied_through: self.durable_applied_floor(node_id),
         }
     }

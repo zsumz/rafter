@@ -6,12 +6,14 @@ fn applied_order_detects_snapshot_rewinding_applied_entries() {
     for index in 1..=3 {
         cluster.applied.push(Applied {
             node_id: NodeId(1),
+            application_epoch: 0,
             index: LogIndex(index),
             payload: vec![u8::try_from(index).unwrap_or(u8::MAX)].into(),
         });
     }
     cluster.snapshot_installs.push(SnapshotInstalled {
         node_id: NodeId(1),
+        application_epoch: 0,
         last_included_index: LogIndex(2),
         last_included_term: Term(1),
         committed_membership: None,
@@ -32,54 +34,11 @@ fn applied_order_detects_snapshot_rewinding_applied_entries() {
 }
 
 #[test]
-fn application_loss_restart_preserves_immutable_event_history_positions() {
-    let mut cluster = one_node_cluster();
-    cluster.applied.push(Applied {
-        node_id: NodeId(1),
-        index: LogIndex(1),
-        payload: b"node-one-before-loss".to_vec().into(),
-    });
-    cluster.applied.push(Applied {
-        node_id: NodeId(2),
-        index: LogIndex(1),
-        payload: b"node-two-before-snapshot".to_vec().into(),
-    });
-    cluster.snapshot_installs.push(SnapshotInstalled {
-        node_id: NodeId(2),
-        last_included_index: LogIndex(2),
-        last_included_term: Term(1),
-        committed_membership: None,
-        payload: b"node-two-snapshot".to_vec(),
-        applied_records_before_install: 2,
-    });
-    cluster.applied.push(Applied {
-        node_id: NodeId(2),
-        index: LogIndex(3),
-        payload: b"node-two-after-snapshot".to_vec().into(),
-    });
-    let before_applied = cluster.applied().to_vec();
-    let before_installs = cluster.snapshot_installs().to_vec();
-
-    cluster
-        .restart_node_from_bootstrap_losing_application_state(
-            NodeId(1),
-            cluster.bootstrap_state(NodeId(1)),
-        )
-        .expect("empty application-loss restart is valid");
-
-    assert_eq!(cluster.applied(), before_applied.as_slice());
-    assert_eq!(cluster.snapshot_installs(), before_installs.as_slice());
-    assert!(
-        check_applied_order(&cluster, &[]).is_ok(),
-        "unchanged snapshot positions should still describe the immutable event stream"
-    );
-}
-
-#[test]
 fn applied_order_detects_apply_at_or_below_snapshot_boundary() {
     let mut cluster = one_node_cluster();
     cluster.snapshot_installs.push(SnapshotInstalled {
         node_id: NodeId(1),
+        application_epoch: 0,
         last_included_index: LogIndex(5),
         last_included_term: Term(1),
         committed_membership: None,
@@ -88,6 +47,7 @@ fn applied_order_detects_apply_at_or_below_snapshot_boundary() {
     });
     cluster.applied.push(Applied {
         node_id: NodeId(1),
+        application_epoch: 0,
         index: LogIndex(3),
         payload: b"stale".to_vec().into(),
     });

@@ -109,6 +109,8 @@ impl Cluster {
         let outputs = node.drain_committed_outputs();
         self.nodes.insert(node_id, node);
         self.snapshot_staging.remove(&node_id);
+        let next_epoch = self.application_epoch(node_id).saturating_add(1);
+        self.application_epochs.insert(node_id, next_epoch);
         self.durable_applied.insert(node_id, snapshot_boundary);
         self.record_outputs(node_id, outputs);
         Ok(())

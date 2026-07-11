@@ -61,6 +61,7 @@ fn failed_application_loss_restart_leaves_running_cluster_unchanged() {
     let invalid = disk.hard_state_log_reorder(LogIndex(1));
     let mut scenario = cluster.clone();
     let before_bootstrap = scenario.bootstrap_state(FAULTED_FOLLOWER);
+    let before_epoch = scenario.application_epoch(FAULTED_FOLLOWER);
     let before_applied = scenario.applied().to_vec();
     let before_installs = scenario.snapshot_installs().to_vec();
 
@@ -69,6 +70,11 @@ fn failed_application_loss_restart_leaves_running_cluster_unchanged() {
 
     assert!(result.is_err());
     assert_eq!(scenario.bootstrap_state(FAULTED_FOLLOWER), before_bootstrap);
+    assert_eq!(
+        scenario.application_epoch(FAULTED_FOLLOWER),
+        before_epoch,
+        "failed application-loss restart must not advance the application epoch"
+    );
     assert_eq!(scenario.applied(), before_applied.as_slice());
     assert_eq!(scenario.snapshot_installs(), before_installs.as_slice());
 

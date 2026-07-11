@@ -81,6 +81,7 @@ pub(crate) enum ClientReadOutcome {
 
 #[derive(Clone, Copy, Debug, Hash)]
 pub(crate) struct ClientReadProof {
+    pub(crate) application_epoch: u64,
     pub(crate) read_index: LogIndex,
     pub(crate) local_applied_index: LogIndex,
 }
@@ -88,11 +89,16 @@ pub(crate) struct ClientReadProof {
 pub(super) fn register_value_at(
     applied: &[Applied],
     node_id: NodeId,
+    application_epoch: u64,
     read_index: LogIndex,
 ) -> Option<SharedPayload> {
     applied
         .iter()
-        .filter(|applied| applied.node_id == node_id && applied.index <= read_index)
+        .filter(|applied| {
+            applied.node_id == node_id
+                && applied.application_epoch == application_epoch
+                && applied.index <= read_index
+        })
         .max_by_key(|applied| applied.index)
         .map(|applied| applied.payload.clone())
 }
@@ -101,6 +107,7 @@ pub(super) fn initial_register_value(cluster: &Cluster) -> Option<SharedPayload>
     cluster
         .applied()
         .iter()
+        .filter(|applied| applied.application_epoch == cluster.application_epoch(applied.node_id))
         .max_by_key(|applied| applied.index)
         .map(|applied| applied.payload.clone())
 }
@@ -185,11 +192,17 @@ impl ExplorationState {
                 continue;
             };
             let proof = ClientReadProof {
+                application_epoch: grant.application_epoch,
                 read_index: grant.read_index,
                 local_applied_index: self.cluster.local_applied_index(read.node_id),
             };
             read.outcome = if proof.local_applied_index >= proof.read_index {
-                let result = register_value_at(applied, read.node_id, proof.read_index);
+                let result = register_value_at(
+                    applied,
+                    read.node_id,
+                    proof.application_epoch,
+                    proof.read_index,
+                );
                 let outcome = ClientReadOutcome::Completed {
                     proof,
                     result,

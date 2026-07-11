@@ -10,6 +10,7 @@ fn exact_durable_restart_detects_digest_change() {
         committed_configuration: None,
         snapshot: None,
         log: Vec::new(),
+        application_epoch: 0,
         applied_through: LogIndex(3),
     };
     let mut after = before.clone();
@@ -32,6 +33,7 @@ fn applied_floor_recovery_rejects_replay_at_or_below_floor() {
     let cluster = one_node_cluster();
     let recovered = [Applied {
         node_id: NodeId(1),
+        application_epoch: 0,
         index: LogIndex(2),
         payload: b"already-applied".to_vec().into(),
     }];
@@ -69,6 +71,7 @@ fn read_barrier_invariant_detects_grant_below_registration_floor() {
     });
     cluster.read_grants.push(crate::ReadGranted {
         node_id: NodeId(1),
+        application_epoch: 0,
         request_id: 7,
         read_index: LogIndex(3),
         local_applied_index: LogIndex(3),
@@ -92,6 +95,7 @@ fn read_barrier_invariant_detects_unregistered_grant() {
     let mut cluster = one_node_cluster();
     cluster.read_grants.push(crate::ReadGranted {
         node_id: NodeId(1),
+        application_epoch: 0,
         request_id: 9,
         read_index: LogIndex(1),
         local_applied_index: LogIndex(1),

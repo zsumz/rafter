@@ -29,6 +29,7 @@ fn proposal_commits_on_leader_after_quorum_replication() {
         cluster.applied(),
         &[Applied {
             node_id: NodeId(1),
+            application_epoch: 0,
             index: LogIndex(2),
             payload: b"incident-opened".to_vec().into(),
         }]
@@ -52,16 +53,19 @@ fn committed_entry_reaches_followers_on_next_heartbeat() {
         &[
             Applied {
                 node_id: NodeId(1),
+                application_epoch: 0,
                 index: LogIndex(2),
                 payload: b"incident-opened".to_vec().into(),
             },
             Applied {
                 node_id: NodeId(2),
+                application_epoch: 0,
                 index: LogIndex(2),
                 payload: b"incident-opened".to_vec().into(),
             },
             Applied {
                 node_id: NodeId(3),
+                application_epoch: 0,
                 index: LogIndex(2),
                 payload: b"incident-opened".to_vec().into(),
             },
@@ -167,26 +171,31 @@ fn committed_prefix_is_stable_across_failover() {
         &[
             Applied {
                 node_id: NodeId(1),
+                application_epoch: 0,
                 index: LogIndex(2),
                 payload: b"old-committed".to_vec().into(),
             },
             Applied {
                 node_id: NodeId(2),
+                application_epoch: 0,
                 index: LogIndex(2),
                 payload: b"old-committed".to_vec().into(),
             },
             Applied {
                 node_id: NodeId(3),
+                application_epoch: 0,
                 index: LogIndex(2),
                 payload: b"old-committed".to_vec().into(),
             },
             Applied {
                 node_id: NodeId(2),
+                application_epoch: 0,
                 index: LogIndex(4),
                 payload: b"new-committed".to_vec().into(),
             },
             Applied {
                 node_id: NodeId(3),
+                application_epoch: 0,
                 index: LogIndex(4),
                 payload: b"new-committed".to_vec().into(),
             },

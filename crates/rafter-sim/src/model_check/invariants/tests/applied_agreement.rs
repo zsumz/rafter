@@ -6,6 +6,7 @@ fn applied_agreement_detects_disagreeing_snapshots_at_same_boundary() {
     for (node, payload) in [(1, b"state-a".to_vec()), (2, b"state-b".to_vec())] {
         cluster.snapshot_installs.push(SnapshotInstalled {
             node_id: NodeId(node),
+            application_epoch: 0,
             last_included_index: LogIndex(4),
             last_included_term: Term(1),
             committed_membership: None,
@@ -36,6 +37,7 @@ fn applied_agreement_detects_snapshot_membership_mismatch_at_same_boundary() {
     ] {
         cluster.snapshot_installs.push(SnapshotInstalled {
             node_id: NodeId(node),
+            application_epoch: 0,
             last_included_index: LogIndex(4),
             last_included_term: Term(1),
             committed_membership: Some(membership),

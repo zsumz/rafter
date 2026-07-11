@@ -135,6 +135,7 @@ mod commit_history;
 mod commit_history_snapshot;
 mod commit_history_transition;
 
+mod application_epoch;
 mod snapshot_application;
 
 mod persistence_read;

@@ -7,6 +7,7 @@ use rafter::{
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct Applied {
     pub node_id: NodeId,
+    pub application_epoch: u64,
     pub index: LogIndex,
     pub payload: SharedPayload,
 }
@@ -17,6 +18,7 @@ pub struct Applied {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct SnapshotInstalled {
     pub node_id: NodeId,
+    pub application_epoch: u64,
     pub last_included_index: LogIndex,
     pub last_included_term: Term,
     pub committed_membership: Option<MembershipConfig>,
@@ -38,6 +40,7 @@ pub struct DurableStateDigest {
     pub committed_configuration: Option<CommittedConfiguration>,
     pub snapshot: Option<DurableSnapshotDigest>,
     pub log: Vec<BootstrapLogEntry>,
+    pub application_epoch: u64,
     pub applied_through: LogIndex,
 }
 
@@ -70,6 +73,7 @@ pub(crate) struct StagedSnapshotTransfer {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ReadGranted {
     pub node_id: NodeId,
+    pub application_epoch: u64,
     pub request_id: u64,
     pub read_index: LogIndex,
     pub local_applied_index: LogIndex,
