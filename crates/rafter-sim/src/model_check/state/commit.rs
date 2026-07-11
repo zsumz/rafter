@@ -8,6 +8,7 @@ use rafter::{LogEntry, LogIndex, MembershipConfig, NodeId, Role, Term};
 use crate::Cluster;
 
 use super::super::catalog;
+use super::super::observations::{Observation, ObservationSet};
 use super::election::ElectionHistory;
 use super::logical_log::{LogPrefixWitness, LogicalLogHistory, LogicalLogView};
 use super::ExplorationState;
@@ -35,7 +36,8 @@ impl CommitHistory {
         cluster: &Cluster,
         configuration_proposer: Option<NodeId>,
         _logical_logs: &LogicalLogHistory,
-    ) {
+    ) -> ObservationSet {
+        let mut observations = ObservationSet::default();
         for context in before.values() {
             if context.role != Role::Leader {
                 continue;
@@ -64,7 +66,9 @@ impl CommitHistory {
             };
             let candidate_entry = view.entry_at(new_commit).cloned();
 
-            if candidate_term != context.term {
+            if candidate_term == context.term {
+                observations.mark(Observation::CurrentTermCommitCertificates);
+            } else {
                 self.violations.insert(CommitHistoryViolation {
                     invariant: catalog::CM_03_LEADERS_ONLY_COMMIT_CURRENT_TERM_ENTRIES,
                     message: format!(
@@ -74,11 +78,19 @@ impl CommitHistory {
                 });
             }
 
-            let membership = if configuration_proposer == Some(context.node_id) {
+            let used_post_append_membership = configuration_proposer == Some(context.node_id);
+            let membership = if used_post_append_membership {
                 node.effective_membership()
             } else {
                 context.effective_membership.clone()
             };
+            if matches!(&membership, MembershipConfig::Joint(_)) {
+                observations.mark(if used_post_append_membership {
+                    Observation::PostAppendJointCommitCertificates
+                } else {
+                    Observation::PreTransitionJointCommitCertificates
+                });
+            }
             let stored_by = nodes_storing_entry(
                 cluster,
                 new_commit,
@@ -107,6 +119,7 @@ impl CommitHistory {
                 },
             );
         }
+        observations
     }
 
     pub(super) fn observe_committed_prefixes(
@@ -147,7 +160,8 @@ impl CommitHistory {
         cluster: &Cluster,
         logical_logs: &LogicalLogHistory,
         election_history: &ElectionHistory,
-    ) {
+    ) -> ObservationSet {
+        let mut observations = ObservationSet::default();
         for certificate in election_history.elected_by_term.values() {
             let key = (certificate.leader_id, certificate.term);
             let checked_through = self
@@ -168,6 +182,7 @@ impl CommitHistory {
                 if committed_term >= certificate.term {
                     continue;
                 }
+                observations.mark(Observation::LaterTermLeaderPriorPrefixChecks);
                 if logical_logs.prefix_from_view(&leader_view, prefix.through)
                     == Some(prefix.clone())
                 {
@@ -184,6 +199,7 @@ impl CommitHistory {
             self.leader_completeness_checked_through
                 .insert(key, rechecked_through);
         }
+        observations
     }
 }
 
@@ -263,12 +279,13 @@ impl ExplorationState {
         before: &BTreeMap<NodeId, CommitTransitionContext>,
         configuration_proposer: Option<NodeId>,
     ) {
-        self.commit_history.record_commit_transitions(
+        let observations = self.commit_history.record_commit_transitions(
             before,
             &self.cluster,
             configuration_proposer,
             &self.logical_log_history,
         );
+        self.observations.union_with(observations);
         self.refresh_committed_prefixes();
     }
 
@@ -278,11 +295,12 @@ impl ExplorationState {
     }
 
     pub(in crate::model_check) fn record_leader_completeness_observation(&mut self) {
-        self.commit_history.record_leader_completeness(
+        let observations = self.commit_history.record_leader_completeness(
             &self.cluster,
             &self.logical_log_history,
             &self.election_history,
         );
+        self.observations.union_with(observations);
     }
 
     pub(in crate::model_check) fn reset_commit_floor(&mut self, node_id: NodeId) {

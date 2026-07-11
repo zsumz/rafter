@@ -6,6 +6,7 @@ use rafter::{
 
 use crate::{Cluster, Envelope};
 
+use super::super::observations::{Observation, ObservationSet};
 use super::ExplorationState;
 
 #[derive(Clone, Debug, Default, Hash)]
@@ -32,7 +33,11 @@ impl ElectionHistory {
             }));
     }
 
-    pub(in crate::model_check) fn observe_authority_state(&mut self, cluster: &Cluster) {
+    pub(in crate::model_check) fn observe_authority_state(
+        &mut self,
+        cluster: &Cluster,
+    ) -> ObservationSet {
+        let mut observations = ObservationSet::default();
         for (node_id, node) in &cluster.nodes {
             let observed_term = node.current_term();
             match self.term_floor_by_node.entry(*node_id) {
@@ -49,6 +54,7 @@ impl ElectionHistory {
                         });
                     } else if observed_term > floor {
                         entry.insert(observed_term);
+                        observations.mark(Observation::TermAdvances);
                     }
                 }
             }
@@ -67,7 +73,9 @@ impl ElectionHistory {
                             second_vote: voted_for,
                         });
                     }
-                    Entry::Occupied(_) => {}
+                    Entry::Occupied(_) => {
+                        observations.mark(Observation::SameTermVoteReobservations);
+                    }
                 }
             } else if let Some(previous_vote) = self.votes_by_node_term.get(&vote_key) {
                 self.vote_losses.insert(VoteLoss {
@@ -77,6 +85,7 @@ impl ElectionHistory {
                 });
             }
         }
+        observations
     }
 
     pub(in crate::model_check) fn record_election(&mut self, certificate: ElectionCertificate) {
@@ -187,7 +196,8 @@ pub(crate) struct ElectionConflict {
 
 impl ExplorationState {
     pub(in crate::model_check) fn observe_election_authority(&mut self) {
-        self.election_history.observe_authority_state(&self.cluster);
+        let observations = self.election_history.observe_authority_state(&self.cluster);
+        self.observations.union_with(observations);
     }
 
     pub(in crate::model_check) fn record_election_observation(
@@ -209,6 +219,15 @@ impl ExplorationState {
         let Some(before_node) = before.nodes.get(&envelope.to) else {
             return;
         };
+        match &envelope.message {
+            Message::PreVote(_) => {
+                self.mark_observation(Observation::PreVoteRequestDeliveries);
+            }
+            Message::PreVoteResponse(response) if response.term <= before_node.current_term() => {
+                self.mark_observation(Observation::StalePreVoteResponses);
+            }
+            _ => {}
+        }
         let Some(after_node) = self.cluster.nodes.get(&envelope.to) else {
             return;
         };
@@ -291,6 +310,15 @@ impl ExplorationState {
         let Some(before_node) = before.nodes.get(&envelope.to) else {
             return;
         };
+
+        if message_authority.must_fence_higher_term
+            && message_authority.term > before_node.current_term()
+        {
+            self.mark_observation(Observation::HigherTermAuthorityDeliveries);
+        }
+        if message_authority.is_response && message_authority.term < before_node.current_term() {
+            self.mark_observation(Observation::StaleAuthorityResponses);
+        }
         let Some(after_node) = self.cluster.nodes.get(&envelope.to) else {
             return;
         };
@@ -357,6 +385,26 @@ impl ExplorationState {
         let Message::RequestVote(request) = &envelope.message else {
             return;
         };
+        let Some(response) =
+            vote_response_to_candidate(emitted, envelope.to, request.candidate_id, request.term)
+        else {
+            return;
+        };
+        let voter_bootstrap = before.bootstrap_state(envelope.to);
+        let voter_last_log_term = last_log_term_from_bootstrap(&voter_bootstrap);
+        let voter_membership = before.effective_membership(envelope.to);
+        if !voter_membership.contains_voter(request.candidate_id) {
+            self.mark_observation(Observation::NonvoterVoteDecisions);
+        }
+        let candidate_log_is_stale = request.last_log_term < voter_last_log_term
+            || (request.last_log_term == voter_last_log_term
+                && request.last_log_index < before.last_log_index(envelope.to));
+        if candidate_log_is_stale {
+            self.mark_observation(Observation::StaleLogVoteDecisions);
+        }
+        if !response.vote_granted {
+            return;
+        }
         let Some(response) = granted_vote_response_to_candidate(
             emitted,
             envelope.to,
@@ -368,8 +416,6 @@ impl ExplorationState {
         if response.voter_id != envelope.to {
             return;
         }
-        let voter_bootstrap = before.bootstrap_state(envelope.to);
-        let voter_last_log_term = last_log_term_from_bootstrap(&voter_bootstrap);
         let durable_vote = self
             .cluster
             .nodes
@@ -386,7 +432,7 @@ impl ExplorationState {
                 candidate_last_log_term: request.last_log_term,
                 voter_last_log_index: before.last_log_index(envelope.to),
                 voter_last_log_term,
-                voter_membership: before.effective_membership(envelope.to),
+                voter_membership,
                 durable_vote,
             });
     }
@@ -427,6 +473,7 @@ impl ExplorationState {
                 last_log_term: last_log_term_from_bootstrap(&before.bootstrap_state(*node_id)),
             };
             self.election_history.record_election(certificate);
+            self.mark_observation(Observation::ElectionCertificates);
         }
     }
 }
@@ -436,30 +483,38 @@ struct AuthorityMessage {
     kind: &'static str,
     term: Term,
     must_fence_higher_term: bool,
+    is_response: bool,
 }
 
 fn authority_message(message: &Message) -> Option<AuthorityMessage> {
-    let (kind, term, must_fence_higher_term) = match message {
-        Message::AppendEntries(request) => ("AppendEntries", request.term, true),
-        Message::AppendEntriesResponse(response) => ("AppendEntriesResponse", response.term, true),
-        Message::InstallSnapshot(request) => ("InstallSnapshot", request.term, true),
-        Message::InstallSnapshotChunk(request) => ("InstallSnapshotChunk", request.term, true),
-        Message::InstallSnapshotResponse(response) => {
-            ("InstallSnapshotResponse", response.term, true)
+    let (kind, term, must_fence_higher_term, is_response) = match message {
+        Message::AppendEntries(request) => ("AppendEntries", request.term, true, false),
+        Message::AppendEntriesResponse(response) => {
+            ("AppendEntriesResponse", response.term, true, true)
         }
-        Message::TimeoutNow(request) => ("TimeoutNow", request.term, false),
-        Message::RequestVote(request) => ("RequestVote", request.term, true),
-        Message::RequestVoteResponse(response) => ("RequestVoteResponse", response.term, true),
+        Message::InstallSnapshot(request) => ("InstallSnapshot", request.term, true, false),
+        Message::InstallSnapshotChunk(request) => {
+            ("InstallSnapshotChunk", request.term, true, false)
+        }
+        Message::InstallSnapshotResponse(response) => {
+            ("InstallSnapshotResponse", response.term, true, true)
+        }
+        Message::TimeoutNow(request) => ("TimeoutNow", request.term, false, false),
+        Message::RequestVote(request) => ("RequestVote", request.term, true, false),
+        Message::RequestVoteResponse(response) => {
+            ("RequestVoteResponse", response.term, true, true)
+        }
         Message::PreVote(_) | Message::PreVoteResponse(_) => return None,
     };
     Some(AuthorityMessage {
         kind,
         term,
         must_fence_higher_term,
+        is_response,
     })
 }
 
-fn granted_vote_response_to_candidate(
+fn vote_response_to_candidate(
     emitted: &[Envelope],
     voter_id: NodeId,
     candidate_id: NodeId,
@@ -472,8 +527,18 @@ fn granted_vote_response_to_candidate(
         let Message::RequestVoteResponse(response) = &envelope.message else {
             return None;
         };
-        (response.vote_granted && response.term == term).then_some(response)
+        (response.term == term).then_some(response)
     })
+}
+
+fn granted_vote_response_to_candidate(
+    emitted: &[Envelope],
+    voter_id: NodeId,
+    candidate_id: NodeId,
+    term: Term,
+) -> Option<&RequestVoteResponse> {
+    vote_response_to_candidate(emitted, voter_id, candidate_id, term)
+        .filter(|response| response.vote_granted)
 }
 
 fn last_log_term_from_bootstrap(bootstrap: &BootstrapState) -> Term {
