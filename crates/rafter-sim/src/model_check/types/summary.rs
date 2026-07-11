@@ -1,3 +1,5 @@
+use super::super::observations::ObservationSet;
+
 /// Summary for a successful bounded model-checking run.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Summary {
@@ -8,6 +10,7 @@ pub struct Summary {
     pub(in crate::model_check) configured_depth: usize,
     pub(in crate::model_check) reached_depth: usize,
     pub(in crate::model_check) completion: ExplorationCompletion,
+    pub(in crate::model_check) observations: ObservationSet,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -71,6 +74,11 @@ impl Summary {
         self.completion
     }
 
+    /// Returns the semantic detector branches exercised by this run.
+    pub fn observation_labels(self) -> impl Iterator<Item = &'static str> {
+        self.observations.labels()
+    }
+
     pub(in crate::model_check) const fn combined(self, other: Self) -> Self {
         Self {
             explored_states: self.explored_states + other.explored_states,
@@ -88,6 +96,11 @@ impl Summary {
                 other.reached_depth
             },
             completion: self.completion.combined(other.completion),
+            observations: {
+                let mut observations = self.observations;
+                observations.union_with(other.observations);
+                observations
+            },
         }
     }
 }
