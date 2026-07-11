@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use rafter::{LogIndex, Message, NodeId, Term};
+use rafter::{LogIndex, Message, NodeId, SnapshotTransferId, Term};
 
 use crate::{Cluster, Envelope};
 
@@ -14,6 +14,8 @@ pub(crate) use types::{LogPrefixWitness, LogicalLogView, LogicalLogViolation};
 pub(crate) struct LogicalLogHistory {
     pub(crate) leader_logs_by_term: BTreeMap<(NodeId, Term), LogicalLogView>,
     pub(crate) prefixes_by_index_term: BTreeMap<(LogIndex, Term), LogPrefixWitness>,
+    pub(crate) snapshot_prefixes_by_transfer: BTreeMap<SnapshotTransferId, LogPrefixWitness>,
+    last_views_by_node: BTreeMap<NodeId, LogicalLogView>,
     pub(crate) violations: BTreeSet<LogicalLogViolation>,
 }
 
@@ -23,24 +25,27 @@ impl LogicalLogHistory {
             .nodes
             .keys()
             .copied()
-            .map(|node_id| (node_id, LogicalLogView::from_cluster(cluster, node_id)))
+            .map(|node_id| {
+                let view = LogicalLogView::from_cluster(cluster, node_id);
+                (node_id, self.attach_snapshot_prefix(node_id, view))
+            })
             .collect::<BTreeMap<_, _>>();
 
         for (node_id, view) in &views {
             self.observe_prefixes(*node_id, view);
         }
 
-        for (node_id, view) in views {
+        for (node_id, view) in &views {
             let node = cluster
                 .nodes
-                .get(&node_id)
+                .get(node_id)
                 .expect("observed node must exist");
             if node.role() != rafter::Role::Leader {
                 continue;
             }
-            let key = (node_id, node.current_term());
+            let key = (*node_id, node.current_term());
             if let Some(previous) = self.leader_logs_by_term.get(&key) {
-                if !self.log_extends(previous, &view) {
+                if !self.log_extends(previous, view) {
                     self.violations.insert(LogicalLogViolation {
                         invariant: catalog::LG_01_LEADER_APPEND_ONLY,
                         message: format!(
@@ -50,8 +55,10 @@ impl LogicalLogHistory {
                     });
                 }
             }
-            self.leader_logs_by_term.insert(key, view);
+            self.leader_logs_by_term.insert(key, view.clone());
         }
+
+        self.last_views_by_node = views;
     }
 
     fn observe_prefixes(&mut self, node_id: NodeId, view: &LogicalLogView) {
@@ -82,6 +89,61 @@ impl LogicalLogHistory {
             return;
         }
         self.prefixes_by_index_term.insert(key, prefix);
+    }
+
+    fn attach_snapshot_prefix(
+        &mut self,
+        node_id: NodeId,
+        mut view: LogicalLogView,
+    ) -> LogicalLogView {
+        let Some(snapshot) = view.snapshot.as_ref() else {
+            return view;
+        };
+        let transfer_id = snapshot.transfer_id;
+        let index = snapshot.index;
+        let term = snapshot.term;
+        let prefix = self
+            .snapshot_prefixes_by_transfer
+            .get(&transfer_id)
+            .cloned()
+            .or_else(|| {
+                self.last_views_by_node
+                    .get(&node_id)
+                    .and_then(|previous| self.prefix_from_view(previous, index))
+            });
+
+        let Some(prefix) = prefix else {
+            return view;
+        };
+        self.insert_snapshot_prefix(node_id, transfer_id, index, term, prefix.clone());
+        if let Some(snapshot) = view.snapshot.as_mut() {
+            snapshot.prefix = Some(Box::new(prefix));
+        }
+        view
+    }
+
+    fn insert_snapshot_prefix(
+        &mut self,
+        node_id: NodeId,
+        transfer_id: SnapshotTransferId,
+        index: LogIndex,
+        term: Term,
+        prefix: LogPrefixWitness,
+    ) {
+        self.insert_prefix(node_id, index, term, prefix.clone());
+        if let Some(previous) = self.snapshot_prefixes_by_transfer.get(&transfer_id) {
+            if previous != &prefix {
+                self.violations.insert(LogicalLogViolation {
+                    invariant: catalog::LG_03_LOG_MATCHING,
+                    message: format!(
+                        "{node_id} observed snapshot transfer {transfer_id} with a different logical prefix"
+                    ),
+                });
+            }
+            return;
+        }
+        self.snapshot_prefixes_by_transfer
+            .insert(transfer_id, prefix);
     }
 
     fn log_extends(&self, previous: &LogicalLogView, current: &LogicalLogView) -> bool {
@@ -187,16 +249,23 @@ impl LogicalLogHistory {
             return Some(LogPrefixWitness::default());
         }
 
-        let mut prefix = match view.snapshot {
-            Some(snapshot) if snapshot.index > LogIndex::ZERO => self
-                .prefixes_by_index_term
-                .get(&(snapshot.index, snapshot.term))
-                .cloned()?,
+        let mut prefix = match view.snapshot.as_ref() {
+            Some(snapshot) if snapshot.index > LogIndex::ZERO => {
+                let prefix = snapshot.prefix.as_deref().cloned().or_else(|| {
+                    self.snapshot_prefixes_by_transfer
+                        .get(&snapshot.transfer_id)
+                        .cloned()
+                })?;
+                if index <= prefix.through {
+                    return prefix.slice_through(index);
+                }
+                prefix
+            }
             _ => LogPrefixWitness::default(),
         };
 
         if index < prefix.through {
-            return None;
+            return prefix.slice_through(index);
         }
         for raw_index in prefix.through.0 + 1..=index.0 {
             let index = LogIndex(raw_index);

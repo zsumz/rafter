@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use rafter::{BootstrapState, LogEntry, LogIndex, Term};
+use rafter::{BootstrapState, LogEntry, LogIndex, SnapshotTransferId, Term};
 
 use crate::Cluster;
 use rafter::NodeId;
@@ -18,9 +18,14 @@ impl LogicalLogView {
     }
 
     fn from_bootstrap(bootstrap: BootstrapState) -> Self {
-        let snapshot = bootstrap.snapshot.map(|snapshot| LogicalSnapshotBoundary {
-            index: snapshot.metadata.last_included_index,
-            term: snapshot.metadata.last_included_term,
+        let snapshot = bootstrap.snapshot.map(|snapshot| {
+            let transfer_id = snapshot.transfer_id();
+            LogicalSnapshotBoundary {
+                transfer_id,
+                index: snapshot.metadata.last_included_index,
+                term: snapshot.metadata.last_included_term,
+                prefix: None,
+            }
         });
         let entries = bootstrap
             .log
@@ -46,7 +51,7 @@ impl LogicalLogView {
         if index == LogIndex::ZERO && self.snapshot.is_none() {
             return Some(Term::default());
         }
-        if let Some(snapshot) = self.snapshot {
+        if let Some(snapshot) = self.snapshot.as_ref() {
             if index == snapshot.index {
                 return Some(snapshot.term);
             }
@@ -59,20 +64,39 @@ impl LogicalLogView {
 
     pub(crate) fn snapshot_covers(&self, index: LogIndex) -> bool {
         self.snapshot
+            .as_ref()
             .is_some_and(|snapshot| snapshot.index >= index && index > LogIndex::ZERO)
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub(crate) struct LogicalSnapshotBoundary {
+    pub(crate) transfer_id: SnapshotTransferId,
     pub(crate) index: LogIndex,
     pub(crate) term: Term,
+    pub(crate) prefix: Option<Box<LogPrefixWitness>>,
 }
 
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
 pub(crate) struct LogPrefixWitness {
     pub(crate) through: LogIndex,
     pub(crate) entries: Vec<LogEntry>,
+}
+
+impl LogPrefixWitness {
+    pub(crate) fn slice_through(&self, index: LogIndex) -> Option<Self> {
+        if index > self.through {
+            return None;
+        }
+        let len = usize::try_from(index.0).ok()?;
+        if len > self.entries.len() {
+            return None;
+        }
+        Some(Self {
+            through: index,
+            entries: self.entries[..len].to_vec(),
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]

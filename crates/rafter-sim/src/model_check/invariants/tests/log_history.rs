@@ -128,20 +128,45 @@ fn log_matching_detects_equal_index_term_with_different_prefixes() {
 
 #[test]
 fn log_matching_detects_snapshot_boundary_hiding_mismatched_prefix() {
-    let mut state = ExplorationState::new(one_node_cluster());
+    let mut cluster = two_node_cluster();
+    cluster
+        .restart_node_from_bootstrap(
+            NodeId(2),
+            bootstrap_state(
+                Term(2),
+                &[(1, Term(1), b"one-b"), (2, Term(2), b"same-term")],
+            ),
+        )
+        .expect("node-2 visible bootstrap is valid");
+    let mut state = ExplorationState::new(cluster);
+
+    let (snapshot, payload) = test_snapshot(2, 2, 2, 2, b"snapshot through two");
     state
-        .logical_log_history
-        .violations
-        .insert(LogicalLogViolation {
-            invariant: catalog::LG_03_LOG_MATCHING,
-            message: "snapshot boundary hid a mismatching retained prefix".to_string(),
-        });
+        .cluster
+        .seed_snapshot_payload(NodeId(2), &snapshot, payload);
+    state
+        .cluster
+        .restart_node_from_bootstrap(NodeId(2), bootstrap_with_snapshot(Term(2), snapshot, &[]))
+        .expect("node-2 compacted bootstrap is valid");
+    state.refresh_log_history();
+
+    state
+        .cluster
+        .restart_node_from_bootstrap(
+            NodeId(1),
+            bootstrap_state(
+                Term(2),
+                &[(1, Term(1), b"one-a"), (2, Term(2), b"same-term")],
+            ),
+        )
+        .expect("node-1 visible bootstrap is valid");
+    state.refresh_log_history();
 
     let failure = check_log_history(&state, &[])
         .expect_err("snapshot-hidden prefix mismatch must be reported");
     assert_eq!(failure.invariant(), catalog::LG_03_LOG_MATCHING);
     assert!(
-        failure.message.contains("snapshot boundary"),
+        failure.message.contains("different prefix"),
         "unexpected failure message: {}",
         failure.message
     );
