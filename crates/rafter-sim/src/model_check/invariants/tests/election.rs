@@ -163,6 +163,104 @@ fn modeled_lossy_restart_preserves_observed_durable_vote() {
 }
 
 #[test]
+fn authority_fencing_observation_accepts_higher_term_append_entries() {
+    let mut state = ExplorationState::new(two_node_cluster());
+    state.cluster.queue_message(
+        NodeId(2),
+        NodeId(1),
+        Message::AppendEntries(AppendEntries {
+            term: Term(3),
+            leader_id: NodeId(2),
+            prev_log_index: LogIndex::ZERO,
+            prev_log_term: Term::default(),
+            sequence: 7,
+            entries: SharedEntries::default(),
+            leader_commit: LogIndex::ZERO,
+        }),
+    );
+
+    apply_to_state(&mut state, Operation::DeliverReadyAt(0));
+
+    assert_eq!(state.cluster.current_term(NodeId(1)), Term(3));
+    assert_eq!(state.cluster.role(NodeId(1)), rafter::Role::Follower);
+    check_election_history(&state, &[]).expect("higher-term append should fence cleanly");
+}
+
+#[test]
+fn authority_fencing_oracle_rejects_unfenced_higher_term_response() {
+    let mut before = two_node_cluster();
+    elect_node_one(&mut before);
+    assert_eq!(before.role(NodeId(1)), rafter::Role::Leader);
+    let mut state = ExplorationState::new(before.clone());
+    let delivered = Envelope {
+        from: NodeId(2),
+        to: NodeId(1),
+        message: Message::AppendEntriesResponse(AppendEntriesResponse {
+            term: before.current_term(NodeId(1)).next(),
+            follower_id: NodeId(2),
+            success: false,
+            match_index: LogIndex::ZERO,
+            sequence: 11,
+        }),
+    };
+
+    state.record_election_observation(&before, Some(&delivered), &[]);
+
+    let failure =
+        check_election_history(&state, &[]).expect_err("higher-term authority must fence a leader");
+    assert_eq!(
+        failure.invariant(),
+        catalog::EL_07_TERM_AND_AUTHORITY_FENCING
+    );
+    assert!(
+        failure
+            .message
+            .contains("did not fence higher-term authority"),
+        "unexpected failure message: {}",
+        failure.message
+    );
+}
+
+#[test]
+fn authority_fencing_oracle_rejects_stale_response_leadership() {
+    let mut before = two_node_cluster();
+    before
+        .restart_node_from_bootstrap(NodeId(1), bootstrap_state(Term(3), &[]))
+        .expect("before bootstrap is valid");
+    assert_eq!(before.role(NodeId(1)), rafter::Role::Follower);
+    let mut after = before.clone();
+    elect_node_one(&mut after);
+    assert_eq!(after.role(NodeId(1)), rafter::Role::Leader);
+    assert!(after.current_term(NodeId(1)) > before.current_term(NodeId(1)));
+    let mut state = ExplorationState::new(after);
+    let delivered = Envelope {
+        from: NodeId(2),
+        to: NodeId(1),
+        message: Message::RequestVoteResponse(RequestVoteResponse {
+            term: Term(2),
+            voter_id: NodeId(2),
+            vote_granted: true,
+        }),
+    };
+
+    state.record_election_observation(&before, Some(&delivered), &[]);
+
+    let failure = check_election_history(&state, &[])
+        .expect_err("stale-term traffic must not create leadership");
+    assert_eq!(
+        failure.invariant(),
+        catalog::EL_07_TERM_AND_AUTHORITY_FENCING
+    );
+    assert!(
+        failure
+            .message
+            .contains("let stale-term traffic create leadership"),
+        "unexpected failure message: {}",
+        failure.message
+    );
+}
+
+#[test]
 fn vote_grant_observation_accepts_eligible_request() {
     let state = request_vote_grant_state(
         NodeId(2),

@@ -5,6 +5,7 @@ pub(super) const EL_03_SAFE_VOTE_ELIGIBILITY: &str = "EL-03 safe vote eligibilit
 pub(super) const EL_05_ELECTION_SAFETY_OVER_HISTORY: &str = "EL-05 election safety over history";
 pub(super) const EL_06_LEADER_HAS_VALID_ELECTION_QUORUM: &str =
     "EL-06 leader has valid election quorum";
+pub(super) const EL_07_TERM_AND_AUTHORITY_FENCING: &str = "EL-07 term and authority fencing";
 pub(super) const LG_01_LEADER_APPEND_ONLY: &str = "LG-01 leader append-only";
 pub(super) const LG_02_TRUTHFUL_APPEND_ENTRIES_ACCEPTANCE: &str =
     "LG-02 truthful AppendEntries acceptance";
