@@ -155,6 +155,38 @@ pub(crate) fn check_election_history(
         });
     }
 
+    if let Some(violation) = state.election_history.pre_vote_violations.first() {
+        let reason = match violation.reason {
+            super::super::state::PreVoteViolationKind::RequestMutatedAuthority => {
+                "pre-vote request mutated authority"
+            }
+            super::super::state::PreVoteViolationKind::RequestDisruptedLeader => {
+                "pre-vote request disrupted a leader"
+            }
+            super::super::state::PreVoteViolationKind::StaleResponseAdvancedAuthority => {
+                "stale pre-vote response advanced authority"
+            }
+        };
+        return Err(Failure {
+            kind: crate::model_check::FailureKind::InvariantViolation,
+            invariant: catalog::EL_08_PRE_VOTE_NON_BINDING,
+            message: format!(
+                "{} {reason}: delivered {} term {} from term {} {} vote {:?} to term {} {} vote {:?}",
+                violation.node_id,
+                violation.message_kind,
+                violation.message_term,
+                violation.before_term,
+                violation.before_role,
+                violation.before_vote,
+                violation.after_term,
+                violation.after_role,
+                violation.after_vote,
+            ),
+            trace: trace.to_vec(),
+            state: summarize(&state.cluster),
+        });
+    }
+
     if let Some(conflict) = state.election_history.conflicting_elections.iter().next() {
         return Err(Failure {
             kind: crate::model_check::FailureKind::InvariantViolation,

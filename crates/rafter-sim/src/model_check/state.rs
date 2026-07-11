@@ -18,10 +18,10 @@ pub(super) use client::{ClientRead, ClientReadProof, ClientWrite, ClientWriteUnk
 pub(super) use commit::CommitHistory;
 #[cfg(test)]
 pub(super) use commit::CommitTransitionContext;
-pub(super) use election::AuthorityTransitionViolationKind;
 #[cfg(test)]
 pub(super) use election::ElectionCertificate;
 pub(super) use election::ElectionHistory;
+pub(super) use election::{AuthorityTransitionViolationKind, PreVoteViolationKind};
 pub(super) use logical_log::LogicalLogHistory;
 pub(super) use restart_snapshot::{ExpectedSnapshot, RestartSnapshotState};
 

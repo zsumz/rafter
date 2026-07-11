@@ -163,6 +163,8 @@ named temporal or witness-based verdicts.
 | `EL-07` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `authority_fencing_oracle_rejects_stale_response_leadership` |
 | `EL-07` | tests | direct | `crates/rafter/src/node/tests/transfer/timeout.rs#stale_term_timeout_now_is_ignored` |
 | `EL-07` | tla | direct | `specs/tla/raft/Raft.tla#StaleLeaderFencing` |
+| `EL-08` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `pre_vote_oracle_rejects_request_term_mutation` |
+| `EL-08` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `pre_vote_oracle_rejects_stale_response_authority_advance` |
 | `EL-08` | tests | direct | `crates/rafter/src/node/tests/pre_vote.rs#pre_vote_grant_is_not_persisted_and_does_not_set_voted_for` |
 | `LG-01` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_log_history`; negative fixture `leader_append_only_detects_leader_term_truncation` |
 | `LG-02` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_log_history`; negative fixture `append_entries_oracle_detects_success_without_storing_final_entry` |
@@ -377,11 +379,11 @@ Statement: Pre-vote does not mutate durable term/vote, and an isolated stale nod
 
 Evidence now:
 - TLA+: none
-- Simulator: P: pre-vote profiles/soak
+- Simulator: D: pre-vote non-binding transition oracle plus partition-heal model-check scenario
 - Tests: D: pre_vote + runtime hard-state tests
 - Maelstrom: P: naturally exercised, not observed
 
-Next: Add pre-vote state/history predicates to the simulator and a dedicated partition-heal scenario.
+Next: Retain the pre-vote state/history predicates, detector-level negative fixtures, and instrumented partition-heal scenario.
 
 ### Log Replication
 
