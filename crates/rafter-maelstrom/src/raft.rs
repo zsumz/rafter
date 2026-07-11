@@ -1,0 +1,176 @@
+use rafter::{Input, LogIndex, Message, NodeId, Output};
+use rafter_codec::{decode_message, encode_message};
+use serde_json::{json, Value};
+
+use crate::{
+    app::{
+        apply_mutation, maybe_crash_after_app_persist_before_reply, persist_app_state,
+        ClientResult, Command, ERROR_TEMPORARILY_UNAVAILABLE,
+    },
+    protocol::{decode_hex, encode_hex, Envelope},
+    InitializedNode,
+};
+
+mod snapshots;
+
+impl InitializedNode {
+    pub(crate) fn handle_raft(&mut self, envelope: &Envelope) {
+        let Some(from) = self.name_to_id.get(&envelope.src).copied() else {
+            eprintln!("ignoring raft message from unknown node {}", envelope.src);
+            return;
+        };
+        let Some(frame) = envelope.body.get("frame").and_then(Value::as_str) else {
+            eprintln!("ignoring raft message without frame");
+            return;
+        };
+        let bytes = match decode_hex(frame) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                eprintln!("ignoring raft message with invalid hex: {error}");
+                return;
+            }
+        };
+        match decode_message(&bytes) {
+            Ok(message) => {
+                self.observe_leader(&message);
+                self.step(Input::Message { from, message });
+            }
+            Err(error) => eprintln!("ignoring raft message with invalid frame: {error}"),
+        }
+    }
+
+    pub(crate) fn step(&mut self, input: Input) {
+        let outputs = match self.node.step(input) {
+            Ok(outputs) => outputs,
+            Err(error) => {
+                eprintln!("runtime step failed: {error}");
+                return;
+            }
+        };
+        self.report_role_transition();
+        self.handle_outputs(outputs);
+    }
+
+    fn report_role_transition(&mut self) {
+        let role = self.node.role();
+        if role == self.last_reported_role {
+            return;
+        }
+        self.last_reported_role = role;
+        eprintln!(
+            "rafter-maelstrom role node={} role={} term={}",
+            self.name,
+            role,
+            self.node.current_term()
+        );
+    }
+
+    fn handle_outputs(&mut self, outputs: Vec<Output>) {
+        for output in outputs {
+            match output {
+                Output::Send { to, message } => self.send_raft(to, &message),
+                Output::Apply { index, payload, .. } => {
+                    self.apply_command(index, payload.as_slice());
+                }
+                Output::ApplySnapshot { snapshot } => self.apply_snapshot(&snapshot),
+                Output::ReadIndexGranted {
+                    read_id,
+                    read_index,
+                } => {
+                    let request_id = read_id.0;
+                    if let Some(read) = self.pending_reads.get_mut(&request_id) {
+                        read.read_index = read_index;
+                    }
+                    self.flush_reads();
+                }
+                Output::ReadIndexRejected { read_id, reason } => {
+                    let request_id = read_id.0;
+                    if let Some(read) = self.pending_reads.remove(&request_id) {
+                        self.deliver_result(
+                            &read.origin,
+                            &read.client,
+                            read.in_reply_to,
+                            ClientResult::Error {
+                                code: ERROR_TEMPORARILY_UNAVAILABLE,
+                                text: reason.to_string(),
+                            },
+                        );
+                    }
+                }
+                Output::ReadIndexCanceled { read_id, reason } => {
+                    let request_id = read_id.0;
+                    if let Some(read) = self.pending_reads.remove(&request_id) {
+                        self.deliver_result(
+                            &read.origin,
+                            &read.client,
+                            read.in_reply_to,
+                            ClientResult::Error {
+                                code: ERROR_TEMPORARILY_UNAVAILABLE,
+                                text: format!("{reason:?}"),
+                            },
+                        );
+                    }
+                }
+                Output::RejectProposal { reason, .. } => eprintln!("proposal rejected: {reason}"),
+                Output::LeadershipTransferRejected { target, reason } => {
+                    eprintln!("leadership transfer to {target} rejected: {reason}");
+                }
+                Output::LocalProposalAppended { .. }
+                | Output::LocalProposalDropped { .. }
+                | Output::StageSnapshotChunk { .. }
+                | Output::SendSnapshotChunk { .. } => {}
+            }
+        }
+    }
+
+    fn apply_command(&mut self, index: LogIndex, payload: &[u8]) {
+        let command: Command = match serde_json::from_slice(payload) {
+            Ok(command) => command,
+            Err(error) => {
+                eprintln!("ignoring invalid committed command: {error}");
+                return;
+            }
+        };
+        let result = apply_mutation(&mut self.app.kv, &command.request);
+        self.app.applied = index;
+        if let Err(error) = persist_app_state(&self.root, &self.app) {
+            eprintln!("failed to persist app state: {error}");
+            return;
+        }
+        maybe_crash_after_app_persist_before_reply(&self.root);
+        self.deliver_result(
+            &command.origin,
+            &command.client,
+            command.in_reply_to,
+            result,
+        );
+        self.flush_reads();
+        self.maybe_compact_snapshot();
+    }
+
+    fn send_raft(&mut self, to: NodeId, message: &Message) {
+        let frame = match encode_message(message) {
+            Ok(frame) => encode_hex(&frame),
+            Err(error) => {
+                eprintln!("failed to encode raft message: {error}");
+                return;
+            }
+        };
+        self.send_to_node(to, json!({ "type": "raft", "frame": frame }));
+    }
+
+    fn observe_leader(&mut self, message: &Message) {
+        match message {
+            Message::AppendEntries(request) => self.known_leader = Some(request.leader_id),
+            Message::InstallSnapshot(request) => self.known_leader = Some(request.leader_id),
+            Message::InstallSnapshotChunk(request) => self.known_leader = Some(request.leader_id),
+            Message::TimeoutNow(request) => self.known_leader = Some(request.leader_id),
+            Message::RequestVote(_)
+            | Message::RequestVoteResponse(_)
+            | Message::PreVote(_)
+            | Message::PreVoteResponse(_)
+            | Message::AppendEntriesResponse(_)
+            | Message::InstallSnapshotResponse(_) => {}
+        }
+    }
+}
