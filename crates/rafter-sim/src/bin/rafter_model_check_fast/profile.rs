@@ -61,7 +61,7 @@ impl Profile {
     pub(crate) const fn bounds_summary(self) -> &'static str {
         match self {
             Self::Fast => {
-                "election=7, commit=8x2+prod7, membership=5x1+joint_restart_snapshot, seeded=1, noop_seeded=8, restart=8/12, prevote=7, read=6, lease_read=6"
+                "election=7, commit=8x2+prod7, membership=5x1+joint_restart_snapshot, seeded=1, noop_seeded=8, restart=8/12, prevote=7, semantic_witnesses=bounded, read=6, lease_read=6"
             }
             Self::RaftDeep => {
                 "election=7, commit=9x2+prod8, membership=6x2+joint_restart_snapshot, seeded=2, noop_seeded=8, restart=9/12, prevote=7, read=7, lease_read=7"

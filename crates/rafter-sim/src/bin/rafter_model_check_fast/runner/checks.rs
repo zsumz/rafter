@@ -4,8 +4,8 @@ use rafter_sim::model_check::{
     check_raft_commit_safety, check_raft_election_safety,
     check_raft_joint_membership_restart_and_snapshot_safety, check_raft_leadership_noop_safety,
     check_raft_membership_safety, check_raft_read_index_safety,
-    check_raft_restart_and_snapshot_safety, check_raft_seeded_commit_safety, Bounds,
-    ExplorationCompletion, Failure, Summary,
+    check_raft_restart_and_snapshot_safety, check_raft_seeded_commit_safety,
+    check_raft_semantic_witness_safety, Bounds, ExplorationCompletion, Failure, Summary,
 };
 use rafter_sim::SimSeed;
 
@@ -67,6 +67,10 @@ pub(super) fn run_fast_profile() -> Result<(), Box<dyn Error>> {
     run_raft_check("raft-election-prevote", || {
         check_raft_election_safety(three_node_pre_vote_configs(2), Bounds::new(7))
     })?;
+    run_raft_check(
+        "raft-semantic-witnesses",
+        check_raft_semantic_witness_safety,
+    )?;
     run_raft_check("raft-read-index", || {
         check_raft_read_index_safety(
             three_node_configs(2),
