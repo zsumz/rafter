@@ -6,7 +6,10 @@ use rafter::{
 
 use crate::{Cluster, Envelope};
 
-use super::{NodeSummary, ProposalId, StateSummary};
+use super::{
+    application::apply_to_state, scheduling::Operation, state::ExplorationState, NodeSummary,
+    ProposalId, StateSummary,
+};
 
 pub(super) fn proposal_payload(proposal_id: ProposalId) -> Vec<u8> {
     format!("model-proposal-{}", proposal_id.0).into_bytes()
@@ -75,6 +78,7 @@ fn production_config(id: u64, peers: &[u64], election_timeout_ticks: u64) -> Nod
     .expect("production model-check Raft node config must be valid")
 }
 
+#[cfg(test)]
 pub(super) fn elect_node_one(cluster: &mut Cluster) {
     for _ in 0..32 {
         if cluster.role(NodeId(1)) == Role::Leader {
@@ -86,20 +90,62 @@ pub(super) fn elect_node_one(cluster: &mut Cluster) {
     panic!("node-1 did not become leader within the model-check election budget");
 }
 
-pub(super) fn elect_node_one_with_node_three(cluster: &mut Cluster) {
-    for _ in 0..3 {
-        cluster.tick(NodeId(1));
+pub(super) fn elect_node_one_in_state(state: &mut ExplorationState) {
+    for _ in 0..32 {
+        if state.cluster.role(NodeId(1)) == Role::Leader {
+            return;
+        }
+        apply_to_state(state, Operation::Tick(NodeId(1)));
+        deliver_all_in_state(state);
     }
-    deliver_one(cluster, request_vote(NodeId(1), NodeId(3)));
-    deliver_one(cluster, request_vote_response(NodeId(3), NodeId(1)));
-    debug_assert_eq!(cluster.role(NodeId(1)), Role::Leader);
+    panic!("node-1 did not become leader within the model-check election budget");
 }
 
-pub(super) fn deliver_one(cluster: &mut Cluster, mut predicate: impl FnMut(&Envelope) -> bool) {
-    assert!(
-        cluster.deliver_one_matching(&mut predicate),
-        "expected one ready message to deliver"
+pub(super) fn elect_node_one_with_node_three_in_state(state: &mut ExplorationState) {
+    for _ in 0..3 {
+        apply_to_state(state, Operation::Tick(NodeId(1)));
+    }
+    deliver_one_in_state(state, request_vote(NodeId(1), NodeId(3)));
+    deliver_one_in_state(state, request_vote_response(NodeId(3), NodeId(1)));
+    debug_assert_eq!(state.cluster.role(NodeId(1)), Role::Leader);
+}
+
+pub(super) fn propose_to_node_one_and_deliver_in_state(state: &mut ExplorationState) {
+    apply_to_state(
+        state,
+        Operation::Propose {
+            to: NodeId(1),
+            proposal_id: ProposalId(state.proposals_issued + 1),
+            stale_leader: false,
+        },
     );
+    deliver_all_in_state(state);
+}
+
+pub(super) fn deliver_all_in_state(state: &mut ExplorationState) {
+    while let Some(position) = first_ready_position(state) {
+        apply_to_state(state, Operation::DeliverReadyAt(position));
+    }
+}
+
+fn deliver_one_in_state(
+    state: &mut ExplorationState,
+    mut predicate: impl FnMut(&Envelope) -> bool,
+) {
+    let Some(position) = state.cluster.network.iter().position(|queued| {
+        queued.ready_at <= state.cluster.clock.now() && predicate(&queued.envelope)
+    }) else {
+        panic!("expected one ready message to deliver");
+    };
+    apply_to_state(state, Operation::DeliverReadyAt(position));
+}
+
+fn first_ready_position(state: &ExplorationState) -> Option<usize> {
+    state
+        .cluster
+        .network
+        .iter()
+        .position(|queued| queued.ready_at <= state.cluster.clock.now())
 }
 
 pub(super) fn request_vote(from: NodeId, to: NodeId) -> impl FnMut(&Envelope) -> bool {

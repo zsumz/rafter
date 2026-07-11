@@ -6,8 +6,10 @@ use rafter::{
 use crate::Cluster;
 
 use super::super::helpers::{
-    bootstrap_state, config, elect_node_one_with_node_three, three_node_configs,
+    bootstrap_state, config, deliver_all_in_state, elect_node_one_with_node_three_in_state,
+    three_node_configs,
 };
+use super::super::{application::apply_to_state, scheduling::Operation};
 use super::ExplorationState;
 
 impl ExplorationState {
@@ -206,11 +208,16 @@ impl ExplorationState {
     }
 
     pub(in crate::model_check) fn seeded_leadership_transfer_noop_commit() -> Self {
-        let mut cluster = Cluster::new(three_node_configs());
-        elect_node_one_with_node_three(&mut cluster);
-        cluster.deliver_all();
-        cluster.transfer_leadership(NodeId(1), NodeId(2));
-        let mut state = Self::new(cluster);
+        let mut state = Self::new(Cluster::new(three_node_configs()));
+        elect_node_one_with_node_three_in_state(&mut state);
+        deliver_all_in_state(&mut state);
+        apply_to_state(
+            &mut state,
+            Operation::Transfer {
+                from: NodeId(1),
+                target: NodeId(2),
+            },
+        );
         state.require_commit_index(NodeId(2), LogIndex(2));
         state
     }

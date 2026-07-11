@@ -1,7 +1,10 @@
 use rafter::{LogIndex, Message, NodeId};
 
 use super::super::application::apply_to_state;
-use super::super::helpers::{config, elect_node_one, summarize, three_node_configs};
+use super::super::helpers::{
+    config, deliver_all_in_state, elect_node_one_in_state,
+    propose_to_node_one_and_deliver_in_state, summarize, three_node_configs,
+};
 use super::super::scheduling::Operation;
 use super::super::state::{ClientReadOutcome, ClientWriteStatus, ExplorationState};
 use super::super::{
@@ -126,10 +129,18 @@ fn seeded_joint_self_quorum_prior_application_noop_applies_suffix() {
 fn seeded_leadership_transfer_reaches_target_noop_commit() {
     let mut state = ExplorationState::seeded_leadership_transfer_noop_commit();
 
-    state.cluster.deliver_all();
+    deliver_all_in_state(&mut state);
 
     assert_eq!(state.cluster.role(NodeId(2)), rafter::Role::Leader);
     assert!(state.cluster.commit_index(NodeId(2)) >= LogIndex(2));
+    assert!(
+        state
+            .election_history
+            .elected_by_term
+            .values()
+            .any(|certificate| certificate.leader_id == NodeId(2)),
+        "instrumented seeded transfer should record the target leader certificate"
+    );
 }
 
 #[test]
@@ -188,11 +199,9 @@ fn seeded_divergent_suffix_probe_confirms_only_the_shared_prefix() {
 
 #[test]
 fn client_history_records_write_completion_and_read_proof() {
-    let mut cluster = Cluster::new(three_node_configs());
-    elect_node_one(&mut cluster);
-    cluster.propose(NodeId(1), b"history-seed".to_vec());
-    cluster.deliver_all();
-    let mut state = ExplorationState::new(cluster);
+    let mut state = ExplorationState::new(Cluster::new(three_node_configs()));
+    elect_node_one_in_state(&mut state);
+    propose_to_node_one_and_deliver_in_state(&mut state);
 
     apply_to_state(
         &mut state,

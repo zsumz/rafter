@@ -1,4 +1,4 @@
-use rafter::{NodeConfig, NodeId};
+use rafter::NodeConfig;
 
 use crate::Cluster;
 
@@ -21,11 +21,9 @@ pub fn check_raft_read_index_safety(
     configs: Vec<NodeConfig>,
     bounds: Bounds,
 ) -> Result<Summary, Failure> {
-    let mut cluster = Cluster::new(configs);
-    helpers::elect_node_one(&mut cluster);
-    cluster.propose(NodeId(1), b"read-index-seed".to_vec());
-    cluster.deliver_all();
-    let state = ExplorationState::new(cluster);
+    let mut state = ExplorationState::new(Cluster::new(configs));
+    helpers::elect_node_one_in_state(&mut state);
+    helpers::propose_to_node_one_and_deliver_in_state(&mut state);
     let mut explorer = ReadIndexSafetyExplorer::new(bounds);
     let mut trace = Vec::new();
     explorer.explore(&state, &mut trace, 0)?;
