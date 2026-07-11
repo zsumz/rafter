@@ -15,6 +15,7 @@ pub(crate) struct LogicalLogHistory {
     pub(crate) leader_logs_by_term: BTreeMap<(NodeId, Term), LogicalLogView>,
     pub(crate) prefixes_by_index_term: BTreeMap<(LogIndex, Term), LogPrefixWitness>,
     pub(crate) snapshot_prefixes_by_transfer: BTreeMap<SnapshotTransferId, LogPrefixWitness>,
+    pub(crate) unwitnessed_snapshots: BTreeSet<(NodeId, SnapshotTransferId, LogIndex, Term)>,
     last_views_by_node: BTreeMap<NodeId, LogicalLogView>,
     pub(crate) violations: BTreeSet<LogicalLogViolation>,
 }
@@ -113,8 +114,12 @@ impl LogicalLogHistory {
             });
 
         let Some(prefix) = prefix else {
+            self.unwitnessed_snapshots
+                .insert((node_id, transfer_id, index, term));
             return view;
         };
+        self.unwitnessed_snapshots
+            .remove(&(node_id, transfer_id, index, term));
         self.insert_snapshot_prefix(node_id, transfer_id, index, term, prefix.clone());
         if let Some(snapshot) = view.snapshot.as_mut() {
             snapshot.prefix = Some(Box::new(prefix));
@@ -165,6 +170,20 @@ impl LogicalLogHistory {
             return false;
         }
         true
+    }
+
+    #[cfg(test)]
+    pub(crate) fn last_view(&self, node_id: NodeId) -> Option<&LogicalLogView> {
+        self.last_views_by_node.get(&node_id)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observed_log_extends(
+        &self,
+        previous: &LogicalLogView,
+        current: &LogicalLogView,
+    ) -> bool {
+        self.log_extends(previous, current)
     }
 
     pub(super) fn record_append_entries_delivery(

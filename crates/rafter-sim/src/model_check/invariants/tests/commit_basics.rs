@@ -67,3 +67,37 @@ fn committed_configuration_monotonicity_detects_regression() {
         failure.message
     );
 }
+
+#[test]
+fn serialized_configuration_checker_detects_two_uncommitted_configurations() {
+    let cluster = one_node_cluster();
+    let membership =
+        MembershipSet::new(vec![NodeId(1)], Vec::new()).expect("fixture membership is valid");
+    let mut bootstrap = bootstrap_state(Term(2), &[]);
+    for (index, config_id) in [(1, 41), (2, 42)] {
+        bootstrap.log.push(BootstrapLogEntry::configuration(
+            LogIndex(index),
+            Term(2),
+            ConfigurationEntry::stable(ConfigurationId(config_id), membership.clone()),
+        ));
+    }
+
+    let failure = check_no_overlapping_uncommitted_configurations_in_bootstrap(
+        &cluster,
+        NodeId(1),
+        &bootstrap,
+        &[],
+    )
+    .expect_err("two uncommitted configurations must violate MB-03");
+    assert_eq!(
+        failure.invariant(),
+        catalog::MB_03_SERIALIZED_CONFIGURATION_CHANGES
+    );
+    assert!(
+        failure
+            .message
+            .contains("2 uncommitted configuration entries"),
+        "unexpected failure message: {}",
+        failure.message
+    );
+}

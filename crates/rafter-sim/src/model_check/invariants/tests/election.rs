@@ -1,6 +1,7 @@
 use super::*;
 use crate::model_check::{
     application::{apply_soak_action, apply_to_state, restart_node},
+    helpers::elect_node_one_in_state,
     scheduling::{Operation, SoakOperation},
 };
 
@@ -25,6 +26,29 @@ fn authority_history_records_seeded_term_and_vote() {
             .votes_by_node_term
             .get(&(NodeId(1), Term(4))),
         Some(&NodeId(2))
+    );
+}
+
+#[test]
+fn pre_elected_constructor_state_is_coverage_not_reached() {
+    let mut cluster = two_node_cluster();
+    elect_node_one(&mut cluster);
+    let state = ExplorationState::new(cluster);
+
+    let failure = check_election_history(&state, &[])
+        .expect_err("an unobserved seeded election cannot count as verified history");
+    assert_eq!(
+        failure.kind(),
+        crate::model_check::FailureKind::CoverageNotReached
+    );
+    assert_eq!(
+        failure.invariant(),
+        catalog::EL_05_ELECTION_SAFETY_OVER_HISTORY
+    );
+    assert!(
+        failure.message.contains("when exploration history began"),
+        "unexpected failure message: {}",
+        failure.message
     );
 }
 
@@ -184,6 +208,36 @@ fn authority_fencing_observation_accepts_higher_term_append_entries() {
     assert_eq!(state.cluster.current_term(NodeId(1)), Term(3));
     assert_eq!(state.cluster.role(NodeId(1)), rafter::Role::Follower);
     check_election_history(&state, &[]).expect("higher-term append should fence cleanly");
+}
+
+#[test]
+fn instrumented_delivery_observes_higher_term_append_entries_response() {
+    let mut state = ExplorationState::new(two_node_cluster());
+    elect_node_one_in_state(&mut state);
+    state.cluster.drop_matching(|_| true);
+    let higher_term = state.cluster.current_term(NodeId(1)).next();
+    state.cluster.queue_message(
+        NodeId(2),
+        NodeId(1),
+        Message::AppendEntriesResponse(AppendEntriesResponse {
+            term: higher_term,
+            follower_id: NodeId(2),
+            success: false,
+            match_index: LogIndex::ZERO,
+            sequence: 91,
+        }),
+    );
+
+    apply_to_state(&mut state, Operation::DeliverReadyAt(0));
+
+    assert_eq!(state.cluster.current_term(NodeId(1)), higher_term);
+    assert_eq!(state.cluster.role(NodeId(1)), rafter::Role::Follower);
+    assert_eq!(
+        state.election_history.term_floor_by_node.get(&NodeId(1)),
+        Some(&higher_term),
+        "the instrumented boundary must observe response-driven authority changes"
+    );
+    check_election_history(&state, &[]).expect("higher-term response should fence cleanly");
 }
 
 #[test]

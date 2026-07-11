@@ -124,7 +124,7 @@ named temporal or witness-based verdicts.
 | --- | --- |
 | `EL-05` | Retain election certificates by term and keep the simulator negative fixture. |
 | `EL-06` | Retain election certificate quorum validation and keep negative fixtures for voter and joint-quorum mistakes. |
-| `LG-01` | Retain leader-term logical log observations and the append-only negative fixture. |
+| `LG-01` | Retain the independent core property plus leader-term logical log observations and the append-only negative fixture. |
 | `LG-02` | Retain the AppendEntries transition oracle and negative fixtures for false success responses. |
 | `LG-03` | Retain full logical-log prefix witnesses, including snapshot-boundary negative coverage. |
 | `LG-05` | Retain leader-completeness checks over committed prefixes and election certificates. |
@@ -167,6 +167,7 @@ named temporal or witness-based verdicts.
 | `EL-08` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `pre_vote_oracle_rejects_stale_response_authority_advance` |
 | `EL-08` | tests | direct | `crates/rafter/src/node/tests/pre_vote.rs#pre_vote_grant_is_not_persisted_and_does_not_set_voted_for` |
 | `LG-01` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_log_history`; negative fixture `leader_append_only_detects_leader_term_truncation` |
+| `LG-01` | tests | direct | `crates/rafter/tests/leader_append_only_property.rs#leader_same_term_log_is_prefix_monotone_across_generated_inputs` |
 | `LG-02` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_log_history`; negative fixture `append_entries_oracle_detects_success_without_storing_final_entry` |
 | `LG-02` | tests | direct | `crates/rafter/src/node/tests/replication/follower.rs#follower_rejects_append_that_would_truncate_committed_entry` |
 | `LG-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_log_history`; negative fixture `log_matching_detects_equal_index_term_with_different_prefixes` |
@@ -182,6 +183,7 @@ named temporal or witness-based verdicts.
 | `CM-01` | tests | direct | `crates/rafter/src/node/tests/replication/follower.rs#a_probe_with_a_high_leader_commit_never_regresses_the_commit_index` |
 | `CM-02` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
 | `CM-02` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_commit_history`; negative fixture `commit_certificate_uses_pre_transition_joint_quorum_for_candidate_below_config` |
+| `CM-02` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_commit_history`; negative fixture `commit_certificate_uses_post_append_joint_quorum_for_same_operation_commit` |
 | `CM-02` | tla | direct | `specs/tla/raft/Raft.tla#CommittedEntriesHaveQuorum` |
 | `CM-03` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
 | `CM-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_commit_history`; negative fixture `commit_certificate_detects_prior_term_candidate_commit` |
@@ -195,7 +197,7 @@ named temporal or witness-based verdicts.
 | `AP-02` | tla | direct | `specs/tla/raft/Raft.tla#StateMachineSafety` |
 | `MB-01` | tests | direct | `crates/rafter/tests/properties.rs#membership_constructor_validation_matches_the_documented_invariant` |
 | `MB-02` | tests | direct | `crates/rafter/tests/properties.rs#membership_joint_quorum_holds_iff_both_half_majorities_hold` |
-| `MB-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_no_overlapping_uncommitted_configurations`; negative fixture exemption `bootstrap validation rejects overlapping uncommitted configurations first` |
+| `MB-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_no_overlapping_uncommitted_configurations`; negative fixture `serialized_configuration_checker_detects_two_uncommitted_configurations` |
 | `MB-03` | tests | direct | `crates/rafter/src/node/tests/membership/serialization.rs#follower_rejects_second_uncommitted_configuration_entry` |
 | `MB-04` | maelstrom | e2e | `scripts/maelstrom-lin-kv-membership-change#RAFTER_MAELSTROM_MEMBERSHIP_PLAN` |
 | `MB-04` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_committed_configuration_monotonicity`; negative fixture `committed_configuration_monotonicity_detects_regression` |
@@ -396,10 +398,10 @@ Statement: While leader in a term, a node never overwrites or deletes entries in
 Evidence now:
 - TLA+: P: transition semantics
 - Simulator: D: leader-term logical log observations
-- Tests: P: replication scenarios
+- Tests: D: generated core-input prefix-monotonicity property
 - Maelstrom: none
 
-Next: Retain leader-term logical log observations and the append-only negative fixture.
+Next: Retain the independent core property plus leader-term logical log observations and the append-only negative fixture.
 
 #### `LG-02` Truthful AppendEntries acceptance
 

@@ -21,6 +21,8 @@ use applied::{
 };
 pub(super) use client::check_read_barrier_safety;
 use client::{check_client_history_linearizability, check_client_history_read_write_invariants};
+#[cfg(test)]
+use commit::check_no_overlapping_uncommitted_configurations_in_bootstrap;
 use commit::{
     check_commit_index_monotonicity, check_committed_configuration_monotonicity,
     check_committed_prefixes, check_membership_quorum_validity,

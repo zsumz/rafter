@@ -197,3 +197,75 @@ fn log_matching_detects_snapshot_boundary_hiding_mismatched_prefix() {
         failure.message
     );
 }
+
+#[test]
+fn seeded_snapshot_without_prefix_is_coverage_not_reached() {
+    let (snapshot, payload) = test_snapshot(1, 2, 1, 2, b"unwitnessed snapshot");
+    let mut cluster = one_node_cluster();
+    cluster.seed_snapshot_payload(NodeId(1), &snapshot, payload);
+    cluster
+        .restart_node_from_bootstrap(NodeId(1), bootstrap_with_snapshot(Term(2), snapshot, &[]))
+        .expect("snapshot bootstrap is valid");
+    let state = ExplorationState::new(cluster);
+
+    let failure = check_log_history(&state, &[])
+        .expect_err("a seeded snapshot without prefix provenance cannot pass green");
+    assert_eq!(
+        failure.kind(),
+        crate::model_check::FailureKind::CoverageNotReached
+    );
+    assert_eq!(failure.invariant(), catalog::LG_03_LOG_MATCHING);
+    assert!(
+        failure.message.contains("has no logical-prefix witness"),
+        "unexpected failure message: {}",
+        failure.message
+    );
+}
+
+#[test]
+fn logical_leader_log_accepts_compaction_with_matching_prefix_witness() {
+    let mut cluster = one_node_cluster();
+    cluster
+        .restart_node_from_bootstrap(
+            NodeId(1),
+            bootstrap_state(
+                Term(2),
+                &[
+                    (1, Term(1), b"prefix"),
+                    (2, Term(2), b"boundary"),
+                    (3, Term(2), b"suffix"),
+                ],
+            ),
+        )
+        .expect("visible log bootstrap is valid");
+    let mut state = ExplorationState::new(cluster);
+    let previous = state
+        .logical_log_history
+        .last_view(NodeId(1))
+        .expect("visible view is observed")
+        .clone();
+    let (snapshot, payload) = test_snapshot(1, 2, 2, 2, b"snapshot through two");
+    state
+        .cluster
+        .seed_snapshot_payload(NodeId(1), &snapshot, payload);
+    state
+        .cluster
+        .restart_node_from_bootstrap(
+            NodeId(1),
+            bootstrap_with_snapshot(Term(2), snapshot, &[(3, Term(2), b"suffix")]),
+        )
+        .expect("compacted bootstrap is valid");
+    state.refresh_log_history();
+    let current = state
+        .logical_log_history
+        .last_view(NodeId(1))
+        .expect("compacted view is observed");
+
+    assert!(
+        state
+            .logical_log_history
+            .observed_log_extends(&previous, current),
+        "matching snapshot prefix must preserve the logical leader log"
+    );
+    check_log_history(&state, &[]).expect("witnessed compaction must remain green");
+}

@@ -200,6 +200,23 @@ pub(crate) fn check_election_history(
         });
     }
 
+    if let Some((leader_id, term)) = state
+        .election_history
+        .uncertified_seeded_leaders
+        .iter()
+        .next()
+    {
+        return Err(Failure {
+            kind: crate::model_check::FailureKind::CoverageNotReached,
+            invariant: catalog::EL_05_ELECTION_SAFETY_OVER_HISTORY,
+            message: format!(
+                "{leader_id} was already leader in term {term} when exploration history began"
+            ),
+            trace: trace.to_vec(),
+            state: summarize(&state.cluster),
+        });
+    }
+
     for (term, certificate) in &state.election_history.elected_by_term {
         if certificate.term != *term {
             return Err(Failure {

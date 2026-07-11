@@ -33,6 +33,7 @@ impl CommitHistory {
         &mut self,
         before: &BTreeMap<NodeId, CommitTransitionContext>,
         cluster: &Cluster,
+        configuration_proposer: Option<NodeId>,
         _logical_logs: &LogicalLogHistory,
     ) {
         for context in before.values() {
@@ -73,7 +74,11 @@ impl CommitHistory {
                 });
             }
 
-            let membership = context.effective_membership.clone();
+            let membership = if configuration_proposer == Some(context.node_id) {
+                node.effective_membership()
+            } else {
+                context.effective_membership.clone()
+            };
             let stored_by = nodes_storing_entry(
                 cluster,
                 new_commit,
@@ -256,10 +261,12 @@ impl ExplorationState {
     pub(in crate::model_check) fn record_commit_observation(
         &mut self,
         before: &BTreeMap<NodeId, CommitTransitionContext>,
+        configuration_proposer: Option<NodeId>,
     ) {
         self.commit_history.record_commit_transitions(
             before,
             &self.cluster,
+            configuration_proposer,
             &self.logical_log_history,
         );
         self.refresh_committed_prefixes();

@@ -1,9 +1,10 @@
 use std::collections::BTreeSet;
 
 use rafter::{
-    AppendEntries, AppendEntriesResponse, CommittedConfiguration, ConfigurationId, LogEntry,
-    MembershipConfig, MembershipSet, Message, NodeConfig, NodeId, PendingSnapshotTransfer, PreVote,
-    PreVoteResponse, RequestVote, RequestVoteResponse, SharedEntries, Term,
+    AppendEntries, AppendEntriesResponse, BootstrapLogEntry, CommittedConfiguration,
+    ConfigurationEntry, ConfigurationId, LogEntry, MembershipConfig, MembershipSet, Message,
+    NodeConfig, NodeId, PendingSnapshotTransfer, PreVote, PreVoteResponse, RequestVote,
+    RequestVoteResponse, SharedEntries, Term,
 };
 
 use super::super::helpers::{

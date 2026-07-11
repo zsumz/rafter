@@ -1,6 +1,6 @@
 use rafter::{
     BootstrapLogEntry, BootstrapState, CommittedConfiguration, ConfigurationEntry, ConfigurationId,
-    LogIndex, NodeConfig, NodeId, Role, Term,
+    JointMembership, LogIndex, NodeConfig, NodeId, Role, Term,
 };
 
 use super::*;
@@ -38,7 +38,7 @@ fn commit_certificate_uses_pre_transition_joint_quorum_for_candidate_below_confi
         LogIndex::ZERO,
     );
 
-    state.record_commit_observation(&context);
+    state.record_commit_observation(&context, None);
 
     let failure = check_commit_history(&state, &[])
         .expect_err("old-side-only storage must not satisfy the joint quorum");
@@ -86,7 +86,7 @@ fn commit_certificate_rejects_learner_storage_as_voter_quorum() {
         LogIndex::ZERO,
     );
 
-    state.record_commit_observation(&context);
+    state.record_commit_observation(&context, None);
 
     let failure = check_commit_history(&state, &[])
         .expect_err("a learner replica must not count toward voter quorum");
@@ -131,7 +131,7 @@ fn commit_certificate_records_self_removing_leader_after_stepdown() {
     );
 
     assert_ne!(state.cluster.role(NodeId(1)), Role::Leader);
-    state.record_commit_observation(&context);
+    state.record_commit_observation(&context, None);
 
     check_commit_history(&state, &[])
         .expect("self-removing leader commit should still have a valid certificate");
@@ -166,7 +166,7 @@ fn commit_certificate_detects_prior_term_candidate_commit() {
         LogIndex::ZERO,
     );
 
-    state.record_commit_observation(&context);
+    state.record_commit_observation(&context, None);
 
     let failure =
         check_commit_history(&state, &[]).expect_err("prior-term candidate commit must fail");
@@ -176,6 +176,58 @@ fn commit_certificate_detects_prior_term_candidate_commit() {
     );
     assert!(
         failure.message.contains("term 2 while leading term 3"),
+        "unexpected failure message: {}",
+        failure.message
+    );
+}
+
+#[test]
+fn commit_certificate_uses_post_append_joint_quorum_for_same_operation_commit() {
+    let config_id = ConfigurationId(43);
+    let old = MembershipSet::new(vec![NodeId(1)], Vec::new()).expect("old membership is valid");
+    let new = MembershipSet::new(vec![NodeId(1), NodeId(2), NodeId(3)], Vec::new())
+        .expect("new membership is valid");
+    let configuration =
+        ConfigurationEntry::joint(config_id, JointMembership::new(old.clone(), new));
+    let mut state = state_with_bootstraps(
+        voter_configs(&[1]),
+        &[{
+            (
+                1,
+                bootstrap_with_log(
+                    Term(2),
+                    LogIndex(1),
+                    vec![BootstrapLogEntry::configuration(
+                        LogIndex(1),
+                        Term(2),
+                        configuration,
+                    )],
+                    Some(CommittedConfiguration {
+                        index: LogIndex(1),
+                        config_id,
+                    }),
+                ),
+            )
+        }],
+    );
+    let context = leader_context(
+        &state,
+        1,
+        Term(2),
+        MembershipConfig::stable(old),
+        LogIndex::ZERO,
+    );
+
+    state.record_commit_observation(&context, Some(NodeId(1)));
+
+    let failure = check_commit_history(&state, &[])
+        .expect_err("same-operation joint commit must require the new-side majority");
+    assert_eq!(
+        failure.invariant(),
+        catalog::CM_02_COMMIT_REQUIRES_EFFECTIVE_QUORUM
+    );
+    assert!(
+        failure.message.contains("without an effective quorum"),
         "unexpected failure message: {}",
         failure.message
     );

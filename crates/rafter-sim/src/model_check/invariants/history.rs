@@ -10,6 +10,22 @@ pub(crate) fn check_log_history(state: &ExplorationState, trace: &[Action]) -> R
             state: summarize(&state.cluster),
         });
     }
+    if let Some((node_id, transfer_id, index, term)) = state
+        .logical_log_history
+        .unwitnessed_snapshots
+        .iter()
+        .next()
+    {
+        return Err(Failure {
+            kind: crate::model_check::FailureKind::CoverageNotReached,
+            invariant: super::catalog::LG_03_LOG_MATCHING,
+            message: format!(
+                "{node_id} snapshot {transfer_id} at ({index}, term {term}) has no logical-prefix witness"
+            ),
+            trace: trace.to_vec(),
+            state: summarize(&state.cluster),
+        });
+    }
     Ok(())
 }
 

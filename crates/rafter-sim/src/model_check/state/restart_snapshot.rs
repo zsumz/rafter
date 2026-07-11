@@ -56,13 +56,13 @@ impl RestartSnapshotState {
         } else {
             (snapshot, payload)
         };
-        cluster.seed_snapshot_payload(NodeId(1), &snapshot, payload.clone());
+        let visible_prefix = &[
+            (1, Term(1), b"old prefix".as_slice()),
+            (2, Term(1), b"snapshot boundary".as_slice()),
+        ];
         cluster
-            .restart_node_from_bootstrap(
-                NodeId(1),
-                bootstrap_with_snapshot(Term(2), snapshot.clone(), &[]),
-            )
-            .expect("leader bootstrap is valid");
+            .restart_node_from_bootstrap(NodeId(1), bootstrap_state(Term(2), visible_prefix))
+            .expect("visible leader bootstrap is valid");
         cluster
             .restart_node_from_bootstrap(
                 NodeId(2),
@@ -76,14 +76,23 @@ impl RestartSnapshotState {
                 ),
             )
             .expect("divergent follower bootstrap is valid");
-        cluster.seed_snapshot_payload(NodeId(3), &snapshot, payload.clone());
         cluster
-            .restart_node_from_bootstrap(
-                NodeId(3),
-                bootstrap_with_snapshot(Term(2), snapshot.clone(), &[]),
-            )
-            .expect("voter bootstrap is valid");
+            .restart_node_from_bootstrap(NodeId(3), bootstrap_state(Term(2), visible_prefix))
+            .expect("visible voter bootstrap is valid");
         let mut state = ExplorationState::new(cluster);
+        for node_id in [NodeId(1), NodeId(3)] {
+            state
+                .cluster
+                .seed_snapshot_payload(node_id, &snapshot, payload.clone());
+            state
+                .cluster
+                .restart_node_from_bootstrap(
+                    node_id,
+                    bootstrap_with_snapshot(Term(2), snapshot.clone(), &[]),
+                )
+                .expect("compacted voter bootstrap is valid");
+        }
+        state.refresh_log_history();
         elect_node_one_with_node_three_in_state(&mut state);
         state.cluster.drop_matching(|envelope| {
             matches!(
