@@ -58,6 +58,14 @@ impl Cluster {
 
     /// Delivers one random ready message and returns its envelope.
     pub fn deliver_random_ready(&mut self) -> Option<Envelope> {
+        let position = self.random_ready_position()?;
+        let queued = self.network.remove(position)?;
+        let delivered = queued.envelope.clone();
+        self.deliver(queued.envelope);
+        Some(delivered)
+    }
+
+    pub(crate) fn random_ready_position(&mut self) -> Option<usize> {
         let positions: Vec<_> = self
             .network
             .iter()
@@ -66,15 +74,11 @@ impl Cluster {
                 (queued.ready_at <= self.clock.now()).then_some(position)
             })
             .collect();
-        if positions.is_empty() {
-            return None;
-        }
+        (!positions.is_empty()).then(|| positions[self.rng.index(positions.len())])
+    }
 
-        let position = positions[self.rng.index(positions.len())];
-        let queued = self.network.remove(position)?;
-        let delivered = queued.envelope.clone();
-        self.deliver(queued.envelope);
-        Some(delivered)
+    pub(crate) fn pending_envelope_at(&self, position: usize) -> Option<&Envelope> {
+        self.network.get(position).map(|queued| &queued.envelope)
     }
 
     pub(crate) fn record_outputs(&mut self, from: NodeId, outputs: Vec<Output>) {

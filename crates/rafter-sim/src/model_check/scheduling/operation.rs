@@ -52,6 +52,10 @@ pub(in crate::model_check) enum Operation {
     LeaveJoint {
         to: NodeId,
     },
+    Transfer {
+        from: NodeId,
+        target: NodeId,
+    },
     DeliverReadyAt(usize),
 }
 

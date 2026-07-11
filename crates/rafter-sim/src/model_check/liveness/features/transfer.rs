@@ -7,7 +7,9 @@ use super::super::driver::{
     soak_liveness_failure,
 };
 use crate::model_check::{
+    application::apply_to_state,
     catalog,
+    scheduling::Operation,
     soak::{SoakAction, SoakActionKind, SoakConfig, SoakFailure},
     state::ExplorationState,
 };
@@ -77,11 +79,11 @@ fn leadership_transfer_liveness_target(state: &ExplorationState, leader: NodeId)
 }
 
 fn issue_liveness_transfer(state: &mut ExplorationState, leader: NodeId, target: NodeId) {
-    state.cluster.transfer_leadership(leader, target);
-    state.transfers_issued += 1;
-    state.refresh_commit_floors();
-    state.refresh_client_history();
-    state.refresh_log_history();
-    state.refresh_committed_prefixes();
-    state.record_leader_completeness_observation();
+    apply_to_state(
+        state,
+        Operation::Transfer {
+            from: leader,
+            target,
+        },
+    );
 }

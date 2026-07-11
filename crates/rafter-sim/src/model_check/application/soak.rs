@@ -89,8 +89,7 @@ pub(in crate::model_check) fn apply_soak_action(
             apply_to_state(state, Operation::LeaveJoint { to });
         }
         SoakOperation::Transfer { from, target } => {
-            state.cluster.transfer_leadership(from, target);
-            state.transfers_issued += 1;
+            apply_to_state(state, Operation::Transfer { from, target });
         }
         SoakOperation::Partition { a, b } => {
             let _ = state.cluster.partition_between(a, b);
