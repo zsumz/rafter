@@ -17,11 +17,82 @@ const SIM_LITERAL_INVARIANT: &str =
     "static rafter-sim literal fixture is expected to satisfy typed constructor validation";
 const SIM_MODEL_CHECK_INVARIANT: &str =
     "bounded model-check setup invariant; impossible setup failure should fail the verification run loudly";
+const MAELSTROM_INVARIANT_LABEL: &str = "maelstrom-harness-invariant";
+const MAELSTROM_SERIALIZATION_INVARIANT: &str =
+    "Maelstrom harness payloads are fixed internal values and should fail loudly if they stop serializing";
+const MAELSTROM_PROTOCOL_INVARIANT: &str =
+    "Maelstrom harness protocol bookkeeping is internally bounded and should fail loudly on impossible state";
+const MAELSTROM_LITERAL_INVARIANT: &str =
+    "static Maelstrom snapshot fixture is expected to satisfy typed constructor validation";
 
 const WARNING_ALLOWLIST: &[WarningAllow] = &[
     WarningAllow {
         kind: WarningKind::LibraryExpect,
-        path: "crates/rafter-sim/src/lib.rs",
+        path: "crates/rafter-maelstrom/src/app.rs",
+        symbol: None,
+        text: Some(r#".expect("JSON value serializes")"#),
+        classification_label: MAELSTROM_INVARIANT_LABEL,
+        reason: MAELSTROM_SERIALIZATION_INVARIANT,
+    },
+    WarningAllow {
+        kind: WarningKind::LibraryExpect,
+        path: "crates/rafter-maelstrom/src/client.rs",
+        symbol: None,
+        text: Some(r#".expect("command serializes")"#),
+        classification_label: MAELSTROM_INVARIANT_LABEL,
+        reason: MAELSTROM_SERIALIZATION_INVARIANT,
+    },
+    WarningAllow {
+        kind: WarningKind::LibraryExpect,
+        path: "crates/rafter-maelstrom/src/client.rs",
+        symbol: None,
+        text: Some(r#".expect("pending read exists")"#),
+        classification_label: MAELSTROM_INVARIANT_LABEL,
+        reason: MAELSTROM_PROTOCOL_INVARIANT,
+    },
+    WarningAllow {
+        kind: WarningKind::LibraryExpect,
+        path: "crates/rafter-maelstrom/src/protocol.rs",
+        symbol: None,
+        text: Some(r#".expect("node count fits u64")"#),
+        classification_label: MAELSTROM_INVARIANT_LABEL,
+        reason: MAELSTROM_PROTOCOL_INVARIANT,
+    },
+    WarningAllow {
+        kind: WarningKind::LibraryExpect,
+        path: "crates/rafter-maelstrom/src/raft/snapshots.rs",
+        symbol: None,
+        text: Some(r#"SnapshotGroupId::new(SNAPSHOT_GROUP_ID).expect("valid snapshot group id")"#),
+        classification_label: MAELSTROM_INVARIANT_LABEL,
+        reason: MAELSTROM_LITERAL_INVARIANT,
+    },
+    WarningAllow {
+        kind: WarningKind::LibraryExpect,
+        path: "crates/rafter-maelstrom/src/raft/snapshots.rs",
+        symbol: None,
+        text: Some(r#"ApplicationSnapshotKind::new(SNAPSHOT_KIND).expect("valid snapshot kind")"#),
+        classification_label: MAELSTROM_INVARIANT_LABEL,
+        reason: MAELSTROM_LITERAL_INVARIANT,
+    },
+    WarningAllow {
+        kind: WarningKind::LibraryExpect,
+        path: "crates/rafter-maelstrom/src/raft/snapshots.rs",
+        symbol: None,
+        text: Some(r#"ApplicationSnapshotVersion::new(1).expect("valid snapshot version")"#),
+        classification_label: MAELSTROM_INVARIANT_LABEL,
+        reason: MAELSTROM_LITERAL_INVARIANT,
+    },
+    WarningAllow {
+        kind: WarningKind::LibraryExpect,
+        path: "crates/rafter-maelstrom/src/raft_node.rs",
+        symbol: None,
+        text: Some(r#".expect("snapshot read chunk fits u32")"#),
+        classification_label: MAELSTROM_INVARIANT_LABEL,
+        reason: MAELSTROM_PROTOCOL_INVARIANT,
+    },
+    WarningAllow {
+        kind: WarningKind::LibraryExpect,
+        path: "crates/rafter-sim/src/restart.rs",
         symbol: None,
         text: Some(r#".expect("simulated node config must exist in cluster")"#),
         classification_label: SIM_INVARIANT_LABEL,
@@ -29,7 +100,7 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
     },
     WarningAllow {
         kind: WarningKind::LibraryExpect,
-        path: "crates/rafter-sim/src/lib.rs",
+        path: "crates/rafter-sim/src/restart.rs",
         symbol: None,
         text: Some(r#".expect("a synced mark must be captured before a marked restart")"#),
         classification_label: SIM_INVARIANT_LABEL,
@@ -37,7 +108,7 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
     },
     WarningAllow {
         kind: WarningKind::LibraryExpect,
-        path: "crates/rafter-sim/src/lib.rs",
+        path: "crates/rafter-sim/src/restart.rs",
         symbol: None,
         text: Some(r#".expect("marked lossy restart composes a valid bootstrap state")"#),
         classification_label: SIM_INVARIANT_LABEL,
@@ -45,7 +116,7 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
     },
     WarningAllow {
         kind: WarningKind::LibraryExpect,
-        path: "crates/rafter-sim/src/lib.rs",
+        path: "crates/rafter-sim/src/restart.rs",
         symbol: None,
         text: Some(r#".expect("floor-truncated lossy restart composes a valid bootstrap state")"#),
         classification_label: SIM_INVARIANT_LABEL,
@@ -53,7 +124,7 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
     },
     WarningAllow {
         kind: WarningKind::LibraryExpect,
-        path: "crates/rafter-sim/src/lib.rs",
+        path: "crates/rafter-sim/src/snapshot.rs",
         symbol: None,
         text: Some(r#".expect("seeded snapshot payload must match its descriptor length")"#),
         classification_label: SIM_INVARIANT_LABEL,
@@ -61,7 +132,7 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
     },
     WarningAllow {
         kind: WarningKind::LibraryPanic,
-        path: "crates/rafter-sim/src/lib.rs",
+        path: "crates/rafter-sim/src/snapshot.rs",
         symbol: None,
         text: Some("staged a chunk of transfer"),
         classification_label: SIM_INVARIANT_LABEL,
@@ -69,7 +140,7 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
     },
     WarningAllow {
         kind: WarningKind::LibraryPanic,
-        path: "crates/rafter-sim/src/lib.rs",
+        path: "crates/rafter-sim/src/snapshot.rs",
         symbol: None,
         text: Some("applied snapshot transfer"),
         classification_label: SIM_INVARIANT_LABEL,
@@ -77,7 +148,7 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
     },
     WarningAllow {
         kind: WarningKind::LibraryExpect,
-        path: "crates/rafter-sim/src/lib.rs",
+        path: "crates/rafter-sim/src/snapshot.rs",
         symbol: None,
         text: Some(
             r#".expect("completed staged payload length was validated against the descriptor")"#,
@@ -87,7 +158,7 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
     },
     WarningAllow {
         kind: WarningKind::LibraryExpect,
-        path: "crates/rafter-sim/src/lib.rs",
+        path: "crates/rafter-sim/src/inspection.rs",
         symbol: None,
         text: Some(r#".expect("simulated node must exist in cluster")"#),
         classification_label: SIM_INVARIANT_LABEL,
@@ -95,9 +166,9 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
     },
     WarningAllow {
         kind: WarningKind::LibraryExpect,
-        path: "crates/rafter-sim/src/model_check/application.rs",
+        path: "crates/rafter-sim/src/model_check/application/soak.rs",
         symbol: None,
-        text: Some(r#".expect("soak restart from captured bootstrap state must be valid")"#),
+        text: Some(r#".expect("soak restart from captured durable state must be valid")"#),
         classification_label: SIM_INVARIANT_LABEL,
         reason: SIM_BOOTSTRAP_INVARIANT,
     },
@@ -167,7 +238,15 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
     },
     WarningAllow {
         kind: WarningKind::LibraryExpect,
-        path: "crates/rafter-sim/src/model_check/scheduling.rs",
+        path: "crates/rafter-sim/src/model_check/liveness/features/snapshot.rs",
+        symbol: None,
+        text: Some(r#".expect("snapshot liveness fixture declares expected snapshot")"#),
+        classification_label: SIM_INVARIANT_LABEL,
+        reason: SIM_MODEL_CHECK_INVARIANT,
+    },
+    WarningAllow {
+        kind: WarningKind::LibraryExpect,
+        path: "crates/rafter-sim/src/model_check/scheduling/membership.rs",
         symbol: None,
         text: Some(r#".expect("enabled membership action keeps at least one voter")"#),
         classification_label: SIM_INVARIANT_LABEL,
@@ -175,7 +254,15 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
     },
     WarningAllow {
         kind: WarningKind::LibraryExpect,
-        path: "crates/rafter-sim/src/model_check/state.rs",
+        path: "crates/rafter-sim/src/model_check/state/logical_log.rs",
+        symbol: None,
+        text: Some(r#".expect("observed node must exist")"#),
+        classification_label: SIM_INVARIANT_LABEL,
+        reason: SIM_CLUSTER_INVARIANT,
+    },
+    WarningAllow {
+        kind: WarningKind::LibraryExpect,
+        path: "crates/rafter-sim/src/model_check/state/seeds.rs",
         symbol: None,
         text: Some(r#".expect("pre-committed follower seed is valid")"#),
         classification_label: SIM_INVARIANT_LABEL,
@@ -183,7 +270,7 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
     },
     WarningAllow {
         kind: WarningKind::LibraryExpect,
-        path: "crates/rafter-sim/src/model_check/state.rs",
+        path: "crates/rafter-sim/src/model_check/state/seeds.rs",
         symbol: None,
         text: Some(r#".expect("committed leader-side seed is valid")"#),
         classification_label: SIM_INVARIANT_LABEL,
@@ -191,7 +278,7 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
     },
     WarningAllow {
         kind: WarningKind::LibraryExpect,
-        path: "crates/rafter-sim/src/model_check/state.rs",
+        path: "crates/rafter-sim/src/model_check/state/seeds.rs",
         symbol: None,
         text: Some(r#".expect("pre-diverged follower seed is valid")"#),
         classification_label: SIM_INVARIANT_LABEL,
@@ -199,7 +286,7 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
     },
     WarningAllow {
         kind: WarningKind::LibraryExpect,
-        path: "crates/rafter-sim/src/model_check/state.rs",
+        path: "crates/rafter-sim/src/model_check/state/seeds.rs",
         symbol: None,
         text: Some(r#".expect("single-voter prior application seed is valid")"#),
         classification_label: SIM_INVARIANT_LABEL,
@@ -207,7 +294,7 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
     },
     WarningAllow {
         kind: WarningKind::LibraryExpect,
-        path: "crates/rafter-sim/src/model_check/state.rs",
+        path: "crates/rafter-sim/src/model_check/state/seeds.rs",
         symbol: None,
         text: Some(
             r#"MembershipSet::new(vec![NodeId(1)], Vec::new()).expect("membership is valid")"#,
@@ -217,7 +304,7 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
     },
     WarningAllow {
         kind: WarningKind::LibraryExpect,
-        path: "crates/rafter-sim/src/model_check/state.rs",
+        path: "crates/rafter-sim/src/model_check/state/seeds.rs",
         symbol: None,
         text: Some(r#".expect("single-voter prior configuration seed is valid")"#),
         classification_label: SIM_INVARIANT_LABEL,
@@ -225,7 +312,7 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
     },
     WarningAllow {
         kind: WarningKind::LibraryExpect,
-        path: "crates/rafter-sim/src/model_check/state.rs",
+        path: "crates/rafter-sim/src/model_check/state/seeds.rs",
         symbol: None,
         text: Some(r#".expect("joint self-quorum prior application seed is valid")"#),
         classification_label: SIM_INVARIANT_LABEL,
@@ -233,7 +320,7 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
     },
     WarningAllow {
         kind: WarningKind::LibraryExpect,
-        path: "crates/rafter-sim/src/model_check/state.rs",
+        path: "crates/rafter-sim/src/model_check/state/restart_snapshot.rs",
         symbol: None,
         text: Some(r#".expect("old snapshot membership is valid")"#),
         classification_label: SIM_INVARIANT_LABEL,
@@ -241,7 +328,7 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
     },
     WarningAllow {
         kind: WarningKind::LibraryExpect,
-        path: "crates/rafter-sim/src/model_check/state.rs",
+        path: "crates/rafter-sim/src/model_check/state/restart_snapshot.rs",
         symbol: None,
         text: Some(r#".expect("new snapshot membership is valid")"#),
         classification_label: SIM_INVARIANT_LABEL,
@@ -249,7 +336,7 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
     },
     WarningAllow {
         kind: WarningKind::LibraryExpect,
-        path: "crates/rafter-sim/src/model_check/state.rs",
+        path: "crates/rafter-sim/src/model_check/state/restart_snapshot.rs",
         symbol: None,
         text: Some(r#".expect("leader bootstrap is valid")"#),
         classification_label: SIM_INVARIANT_LABEL,
@@ -257,7 +344,7 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
     },
     WarningAllow {
         kind: WarningKind::LibraryExpect,
-        path: "crates/rafter-sim/src/model_check/state.rs",
+        path: "crates/rafter-sim/src/model_check/state/restart_snapshot.rs",
         symbol: None,
         text: Some(r#".expect("divergent follower bootstrap is valid")"#),
         classification_label: SIM_INVARIANT_LABEL,
@@ -265,7 +352,7 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
     },
     WarningAllow {
         kind: WarningKind::LibraryExpect,
-        path: "crates/rafter-sim/src/model_check/state.rs",
+        path: "crates/rafter-sim/src/model_check/state/restart_snapshot.rs",
         symbol: None,
         text: Some(r#".expect("voter bootstrap is valid")"#),
         classification_label: SIM_INVARIANT_LABEL,
