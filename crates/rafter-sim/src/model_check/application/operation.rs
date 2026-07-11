@@ -57,6 +57,9 @@ pub(in crate::model_check) fn apply_to_state(state: &mut ExplorationState, opera
     ) {
         state.membership_changes_issued += 1;
     }
+    if matches!(operation, Operation::Transfer { .. }) {
+        state.transfers_issued += 1;
+    }
     let effects = apply_to_cluster(&mut state.cluster, operation);
     if let Some((before, delivered)) = transition_context {
         state.record_election_observation(&before, delivered.as_ref());

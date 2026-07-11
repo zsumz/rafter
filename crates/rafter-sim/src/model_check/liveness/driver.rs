@@ -6,8 +6,10 @@ use crate::Cluster;
 
 use super::MIN_SOAK_LIVENESS_ROUNDS;
 use crate::model_check::{
+    application::apply_to_state,
     helpers::{proposal_payload, summarize},
     invariants::run_replay_check,
+    scheduling::Operation,
     soak::{SoakAction, SoakActionKind, SoakConfig, SoakFailure},
     state::{ClientWriteStatus, ExplorationState},
     Failure, MessageKind, ProposalId, ReplayCheck,
@@ -71,7 +73,11 @@ pub(in crate::model_check::liveness) fn drive_soak_liveness_round(
     observed_actions: &mut BTreeSet<SoakActionKind>,
     round: usize,
 ) {
-    if let Some(envelope) = state.cluster.deliver_random_ready() {
+    if let Some(position) = state.cluster.random_ready_position() {
+        let Some(envelope) = state.cluster.pending_envelope_at(position).cloned() else {
+            return;
+        };
+        apply_to_state(state, Operation::DeliverReadyAt(position));
         trace.push(SoakAction::Deliver {
             from: envelope.from,
             to: envelope.to,
@@ -81,12 +87,10 @@ pub(in crate::model_check::liveness) fn drive_soak_liveness_round(
     } else {
         let node_ids = state.cluster.nodes.keys().copied().collect::<Vec<_>>();
         let node_id = node_ids[round % node_ids.len()];
-        state.cluster.tick(node_id);
+        apply_to_state(state, Operation::Tick(node_id));
         trace.push(SoakAction::Tick(node_id));
         observed_actions.insert(SoakActionKind::Tick);
     }
-    state.refresh_commit_floors();
-    state.refresh_client_history();
 }
 
 pub(in crate::model_check::liveness) fn check_soak_safety(
@@ -113,9 +117,14 @@ pub(in crate::model_check::liveness) fn issue_liveness_proposal(
 ) -> Option<ProposalId> {
     let proposal_id = ProposalId(state.proposals_issued + 1);
     let payload = proposal_payload(proposal_id);
-    state.cluster.propose(leader, payload.clone());
-    state.refresh_commit_floors();
-    state.refresh_client_history();
+    apply_to_state(
+        state,
+        Operation::Propose {
+            to: leader,
+            proposal_id,
+            stale_leader: false,
+        },
+    );
     trace.push(SoakAction::Propose {
         to: leader,
         proposal_id,
@@ -126,9 +135,6 @@ pub(in crate::model_check::liveness) fn issue_liveness_proposal(
         return None;
     }
 
-    state.record_client_proposal(leader, proposal_id, false);
-    state.proposals_issued += 1;
-    state.refresh_client_history();
     Some(proposal_id)
 }
 

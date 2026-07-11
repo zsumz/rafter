@@ -90,7 +90,9 @@ impl ExplorationState {
                 .get(&(term, *node_id))
                 .cloned()
                 .unwrap_or_default();
-            granted_by.insert(*node_id);
+            if after_node.voted_for() == Some(*node_id) {
+                granted_by.insert(*node_id);
+            }
 
             let certificate = ElectionCertificate {
                 leader_id: *node_id,

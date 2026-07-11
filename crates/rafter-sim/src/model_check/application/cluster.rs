@@ -40,6 +40,7 @@ pub(in crate::model_check::application) fn apply_to_cluster(
             promotion_barriers,
         } => cluster.enter_joint(to, target, promotion_barriers),
         Operation::LeaveJoint { to } => cluster.leave_joint(to),
+        Operation::Transfer { from, target } => cluster.transfer_leadership(from, target),
         Operation::DeliverReadyAt(position) => {
             if let Some(queued) = cluster.network.remove(position) {
                 let retained_len = cluster.network.len();

@@ -113,6 +113,7 @@ fn membership_trace(operation: &Operation) -> Action {
         | Operation::Restart(_)
         | Operation::Propose { .. }
         | Operation::ReadIndex { .. }
+        | Operation::Transfer { .. }
         | Operation::DeliverReadyAt(_) => unreachable!("operation is not a membership action"),
     }
 }
@@ -159,6 +160,7 @@ pub(super) fn soak_membership_operation(operation: Operation) -> SoakOperation {
         | Operation::Restart(_)
         | Operation::Propose { .. }
         | Operation::ReadIndex { .. }
+        | Operation::Transfer { .. }
         | Operation::DeliverReadyAt(_) => unreachable!("operation is not a membership action"),
     }
 }
