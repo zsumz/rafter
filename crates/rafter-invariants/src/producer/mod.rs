@@ -1,5 +1,7 @@
 mod artifact;
 mod process;
+mod simulator;
+mod simulator_model;
 pub(crate) mod source;
 mod test_compile;
 mod test_exec;
@@ -51,9 +53,16 @@ pub fn produce(options: &ProducerOptions) -> Result<ProducerOutcome, Box<dyn Err
         )
         .into());
     }
-    let source = source::capture()?;
+    let source = source::capture_for_layer(&options.layer)?;
     let bundle = match options.layer.as_str() {
         "tests" => tests::run(
+            &catalog,
+            contract,
+            &options.profile,
+            source,
+            &options.output_dir,
+        )?,
+        "simulator" => simulator::run(
             &catalog,
             contract,
             &options.profile,

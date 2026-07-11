@@ -12,7 +12,17 @@ use crate::SourceReceipt;
 
 use super::process;
 
-pub(super) fn capture() -> Result<SourceReceipt, Box<dyn Error>> {
+pub(super) fn capture_for_layer(layer: &str) -> Result<SourceReceipt, Box<dyn Error>> {
+    match layer {
+        "tests" => capture("test", vec!["no-default-features".to_owned()]),
+        "simulator" => capture("release-and-test", vec!["internal-test-hooks".to_owned()]),
+        "tla" => capture("tla", Vec::new()),
+        "maelstrom" => capture("release", Vec::new()),
+        _ => Err(format!("unsupported source profile for layer {layer}").into()),
+    }
+}
+
+fn capture(build_profile: &str, features: Vec<String>) -> Result<SourceReceipt, Box<dyn Error>> {
     let status = command_output(
         "git",
         &["status", "--porcelain=v1", "--untracked-files=all"],
@@ -47,15 +57,15 @@ pub(super) fn capture() -> Result<SourceReceipt, Box<dyn Error>> {
         rustc,
         rustc_sha256: tool_sha256("rustc")?,
         target,
-        build_profile: "test".to_owned(),
-        features: vec!["no-default-features".to_owned()],
+        build_profile: build_profile.to_owned(),
+        features,
         environment_sha256: format!("{:x}", Sha256::digest(encoded_environment)),
         clean: true,
     })
 }
 
 pub(super) fn verify(expected: &SourceReceipt) -> Result<(), Box<dyn Error>> {
-    let observed = capture()?;
+    let observed = capture(&expected.build_profile, expected.features.clone())?;
     if &observed != expected {
         return Err("source or toolchain identity changed during evidence execution".into());
     }
@@ -63,7 +73,7 @@ pub(super) fn verify(expected: &SourceReceipt) -> Result<(), Box<dyn Error>> {
 }
 
 pub(crate) fn verify_checkout(expected: &SourceReceipt) -> Result<(), Box<dyn Error>> {
-    let observed = capture()?;
+    let observed = capture(&expected.build_profile, expected.features.clone())?;
     if observed.commit != expected.commit
         || observed.tree != expected.tree
         || observed.cargo_lock_sha256 != expected.cargo_lock_sha256
