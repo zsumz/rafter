@@ -8,6 +8,7 @@ members = [
     "crates/rafter-service",
     "crates/rafter-multiraft",
     "crates/rafter-runtime",
+    "crates/rafter-invariants",
     "crates/rafter-sim",
     "crates/rafter-storage",
     "crates/rafter-maelstrom",
