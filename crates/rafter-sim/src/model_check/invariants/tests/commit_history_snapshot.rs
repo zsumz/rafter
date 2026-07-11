@@ -41,10 +41,12 @@ fn leader_completeness_accepts_committed_prefix_hidden_by_witnessed_snapshot() {
         .restart_node_from_bootstrap(NodeId(1), bootstrap_with_snapshot(Term(3), snapshot, &[]))
         .expect("compacted bootstrap is valid");
     state.refresh_log_history();
-    state.election_history.elected_by_term.insert(
-        Term(3),
-        election_certificate(3, 1, stable_membership(&[1], &[]), &[1]),
-    );
+    state.election_history.record_election(election_certificate(
+        3,
+        1,
+        stable_membership(&[1], &[]),
+        &[1],
+    ));
 
     state.record_leader_completeness_observation();
 
@@ -75,10 +77,12 @@ fn leader_completeness_rejects_unwitnessed_snapshot_with_matching_boundary() {
         )
         .expect("visible committed bootstrap is valid");
     let mut state = ExplorationState::new(cluster);
-    state.election_history.elected_by_term.insert(
-        Term(3),
-        election_certificate(3, 1, stable_membership(&[1, 2], &[]), &[1, 2]),
-    );
+    state.election_history.record_election(election_certificate(
+        3,
+        1,
+        stable_membership(&[1, 2], &[]),
+        &[1, 2],
+    ));
 
     state.record_leader_completeness_observation();
 
@@ -149,10 +153,12 @@ fn snapshot_transfer_propagates_logical_prefix_witness_to_installed_follower() {
         "node 2 should install the leader's witnessed snapshot transfer"
     );
 
-    state.election_history.elected_by_term.insert(
-        Term(4),
-        election_certificate(4, 2, stable_membership(&[1, 2, 3], &[]), &[1, 2]),
-    );
+    state.election_history.record_election(election_certificate(
+        4,
+        2,
+        stable_membership(&[1, 2, 3], &[]),
+        &[1, 2],
+    ));
     state.record_leader_completeness_observation();
 
     check_commit_history(&state, &[])

@@ -160,6 +160,7 @@ fn set_evidence_field(record: &mut Evidence, key: &str, value: String) {
         "symbol" => record.symbol = value,
         "negative_fixture" => record.negative_fixture = Some(value),
         "negative_fixture_path" => record.negative_fixture_path = Some(value),
+        "negative_fixture_detector" => record.negative_fixture_detector = Some(value),
         "negative_fixture_exemption" => record.negative_fixture_exemption = Some(value),
         _ => {}
     }

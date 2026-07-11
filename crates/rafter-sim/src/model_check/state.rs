@@ -20,12 +20,8 @@ pub(super) use commit::CommitHistory;
 pub(super) use commit::CommitTransitionContext;
 #[cfg(test)]
 pub(super) use election::ElectionCertificate;
-#[cfg(test)]
-pub(super) use election::ElectionConflict;
 pub(super) use election::ElectionHistory;
 pub(super) use logical_log::LogicalLogHistory;
-#[cfg(test)]
-pub(super) use logical_log::LogicalLogViolation;
 pub(super) use restart_snapshot::{ExpectedSnapshot, RestartSnapshotState};
 
 #[derive(Clone, Debug, Hash)]

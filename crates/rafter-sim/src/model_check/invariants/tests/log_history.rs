@@ -2,14 +2,28 @@ use super::*;
 
 #[test]
 fn leader_append_only_detects_leader_term_truncation() {
-    let mut state = ExplorationState::new(one_node_cluster());
+    let mut cluster = Cluster::new(three_node_configs());
+    elect_node_one(&mut cluster);
+    let mut state = ExplorationState::new(cluster);
+    let leader_id = NodeId(1);
+    let leader_term = state.cluster.current_term(leader_id);
+
+    let mut previous = state
+        .logical_log_history
+        .leader_logs_by_term
+        .get(&(leader_id, leader_term))
+        .expect("leader observation should be recorded")
+        .clone();
+    let stale_tail_index = state.cluster.last_log_index(leader_id).next();
+    previous.entries.insert(
+        stale_tail_index,
+        LogEntry::application(leader_term, b"stale-leader-tail".to_vec()),
+    );
     state
         .logical_log_history
-        .violations
-        .insert(LogicalLogViolation {
-            invariant: catalog::LG_01_LEADER_APPEND_ONLY,
-            message: "node-1 leader term 4 rewrote or deleted its own log".to_string(),
-        });
+        .leader_logs_by_term
+        .insert((leader_id, leader_term), previous);
+    state.refresh_log_history();
 
     let failure =
         check_log_history(&state, &[]).expect_err("leader append-only violation must be reported");
@@ -49,12 +63,23 @@ fn append_entries_oracle_rejects_success_without_matching_prev() {
 fn append_entries_oracle_detects_success_without_storing_final_entry() {
     let entry = LogEntry::application(Term(2), b"two".to_vec());
     let request = append_request(Term(1), vec![entry]);
-    let state = append_entries_transition_state(
-        &[(1, Term(1), b"one")],
-        &[(1, Term(1), b"one")],
-        request,
-        append_success(LogIndex(2)),
-    );
+    let mut before = two_node_cluster();
+    before
+        .restart_node_from_bootstrap(NodeId(2), bootstrap_state(Term(2), &[(1, Term(1), b"one")]))
+        .expect("before follower bootstrap is valid");
+    let after = before.clone();
+    let delivered = Envelope {
+        from: NodeId(1),
+        to: NodeId(2),
+        message: Message::AppendEntries(request),
+    };
+    let emitted = [Envelope {
+        from: NodeId(2),
+        to: NodeId(1),
+        message: Message::AppendEntriesResponse(append_success(LogIndex(2))),
+    }];
+    let mut state = ExplorationState::new(after);
+    state.record_log_transition(&before, Some(&delivered), &emitted);
 
     let failure = check_log_history(&state, &[])
         .expect_err("success without storing the final entry must be detected");
@@ -114,7 +139,8 @@ fn log_matching_detects_equal_index_term_with_different_prefixes() {
             ),
         )
         .expect("node-2 bootstrap is valid");
-    let state = ExplorationState::new(cluster);
+    let mut state = ExplorationState::new(cluster);
+    state.refresh_log_history();
 
     let failure = check_log_history(&state, &[])
         .expect_err("log matching must detect equal index/term with different prefixes");

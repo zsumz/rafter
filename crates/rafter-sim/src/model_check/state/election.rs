@@ -14,7 +14,7 @@ pub(crate) struct ElectionHistory {
 }
 
 impl ElectionHistory {
-    pub(super) fn record_election(&mut self, certificate: ElectionCertificate) {
+    pub(in crate::model_check) fn record_election(&mut self, certificate: ElectionCertificate) {
         if let Some(previous) = self.elected_by_term.get(&certificate.term) {
             if previous.leader_id != certificate.leader_id {
                 self.conflicting_elections.insert(ElectionConflict {

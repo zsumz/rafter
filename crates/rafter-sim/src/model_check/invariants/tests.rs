@@ -6,10 +6,12 @@ use rafter::{
     RequestVoteResponse, SharedEntries, Term,
 };
 
-use super::super::helpers::{bootstrap_state, bootstrap_with_snapshot, test_snapshot};
+use super::super::helpers::{
+    bootstrap_state, bootstrap_with_snapshot, elect_node_one, test_snapshot, three_node_configs,
+};
 use super::super::state::{
     ClientRead, ClientReadProof, ClientWrite, ClientWriteUnknownReason, CommitTransitionContext,
-    ElectionCertificate, ElectionConflict, LogicalLogViolation,
+    ElectionCertificate,
 };
 use super::*;
 use crate::{Applied, Cluster, DurableStateDigest, Envelope, SnapshotInstalled};
@@ -57,12 +59,9 @@ fn election_certificate(
     }
 }
 
-fn state_with_certificate(certificate: ElectionCertificate) -> ExplorationState {
+fn state_with_recorded_certificate(certificate: ElectionCertificate) -> ExplorationState {
     let mut state = ExplorationState::new(one_node_cluster());
-    state
-        .election_history
-        .elected_by_term
-        .insert(certificate.term, certificate);
+    state.election_history.record_election(certificate);
     state
 }
 

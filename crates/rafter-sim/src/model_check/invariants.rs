@@ -34,7 +34,10 @@ pub(super) use persistence::{
 pub(super) use snapshot::check_restart_snapshot_safety;
 use snapshot::check_snapshot_log_geometry;
 #[cfg(test)]
-use snapshot::{check_snapshot_log_geometry_shape, check_snapshot_transfer_integrity};
+use snapshot::{
+    check_snapshot_log_geometry_shape, check_snapshot_metadata_payload_integrity,
+    check_snapshot_transfer_integrity,
+};
 
 pub(super) fn check_commit_safety(
     state: &ExplorationState,
