@@ -1,0 +1,39 @@
+# shellcheck shell=bash
+
+rafter_maelstrom_repo_root() {
+  local script_dir="$1"
+  (cd "${script_dir}/.." && pwd)
+}
+
+rafter_maelstrom_require_command() {
+  local command_name="$1"
+  local missing_message="$2"
+  local install_message="$3"
+
+  if ! command -v "$command_name" >/dev/null 2>&1; then
+    echo "$missing_message" >&2
+    echo "$install_message" >&2
+    exit 127
+  fi
+}
+
+rafter_maelstrom_require_tools() {
+  rafter_maelstrom_require_command \
+    maelstrom \
+    "maelstrom not found on PATH" \
+    "Install Maelstrom, then rerun this script."
+  rafter_maelstrom_require_command \
+    dot \
+    "Graphviz dot not found on PATH" \
+    "Install Graphviz for Maelstrom analysis, then rerun this script."
+  rafter_maelstrom_require_command \
+    gnuplot \
+    "gnuplot not found on PATH" \
+    "Install Gnuplot for Maelstrom latency graphs, then rerun this script."
+}
+
+rafter_maelstrom_export_root() {
+  local root
+  root="${RAFTER_MAELSTROM_ROOT:-$(mktemp -d "${TMPDIR:-/tmp}/rafter-maelstrom.XXXXXX")}"
+  export RAFTER_MAELSTROM_ROOT="$root"
+}
