@@ -2,16 +2,13 @@ use super::*;
 
 #[test]
 fn election_history_detects_second_leader_in_same_term() {
-    let certificate = election_certificate(4, 1, stable_membership(&[1, 2, 3], &[]), &[1, 2]);
-    let mut state = state_with_certificate(certificate);
-    state
-        .election_history
-        .conflicting_elections
-        .insert(ElectionConflict {
-            term: Term(4),
-            first_leader: NodeId(1),
-            second_leader: NodeId(2),
-        });
+    let membership = stable_membership(&[1, 2, 3], &[]);
+    let first = election_certificate(4, 1, membership.clone(), &[1, 2]);
+    let second = election_certificate(4, 2, membership, &[2, 3]);
+    let mut state = ExplorationState::new(one_node_cluster());
+
+    state.election_history.record_election(first);
+    state.election_history.record_election(second);
 
     let failure = check_election_history(&state, &[])
         .expect_err("second leader in one term must be detected");
@@ -31,7 +28,7 @@ fn election_history_detects_second_leader_in_same_term() {
 #[test]
 fn election_certificate_rejects_learner_grant() {
     let certificate = election_certificate(2, 1, stable_membership(&[1, 2, 3], &[4]), &[1, 2, 4]);
-    let state = state_with_certificate(certificate);
+    let state = state_with_recorded_certificate(certificate);
 
     let failure = check_election_history(&state, &[])
         .expect_err("learner grants must not appear in an election certificate");
@@ -49,7 +46,7 @@ fn election_certificate_rejects_learner_grant() {
 #[test]
 fn election_certificate_requires_joint_quorum() {
     let certificate = election_certificate(3, 1, joint_membership(&[1, 2, 3], &[1, 4, 5]), &[1, 2]);
-    let state = state_with_certificate(certificate);
+    let state = state_with_recorded_certificate(certificate);
 
     let failure = check_election_history(&state, &[])
         .expect_err("joint elections must satisfy both majorities");
@@ -67,7 +64,7 @@ fn election_certificate_requires_joint_quorum() {
 #[test]
 fn election_certificate_rejects_non_voter_leader() {
     let certificate = election_certificate(5, 4, stable_membership(&[1, 2, 3], &[4]), &[1, 2, 4]);
-    let state = state_with_certificate(certificate);
+    let state = state_with_recorded_certificate(certificate);
 
     let failure =
         check_election_history(&state, &[]).expect_err("non-voter leaders must be detected");

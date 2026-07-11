@@ -121,6 +121,25 @@ fn assert_negative_fixture_policy(workspace: &Path, record: &Evidence, source: &
                 .as_deref()
                 .unwrap_or(record.path.as_str()),
         );
+        if record.layer == "simulator" && record.strength == "direct" {
+            let Some(detector) = record.negative_fixture_detector.as_ref() else {
+                panic!(
+                    "{} simulator direct negative fixture `{}` must name negative_fixture_detector",
+                    record.id, negative_fixture
+                )
+            };
+            assert!(
+                fixture_source.contains(detector),
+                "{} simulator direct negative fixture `{}` must exercise detector `{}` in {}",
+                record.id,
+                negative_fixture,
+                detector,
+                record
+                    .negative_fixture_path
+                    .as_deref()
+                    .unwrap_or(record.path.as_str()),
+            );
+        }
     }
 
     if let Some(exemption) = &record.negative_fixture_exemption {
@@ -152,6 +171,23 @@ fn assert_negative_fixture_policy(workspace: &Path, record: &Evidence, source: &
         assert!(
             record.negative_fixture.is_some(),
             "{} {} {} must not declare negative_fixture_path without negative_fixture",
+            record.id,
+            record.layer,
+            record.strength,
+        );
+    }
+
+    if record.negative_fixture_detector.is_some() {
+        assert!(
+            record.layer == "simulator" && record.strength == "direct",
+            "{} {} {} negative_fixture_detector is only meaningful for simulator direct evidence",
+            record.id,
+            record.layer,
+            record.strength,
+        );
+        assert!(
+            record.negative_fixture.is_some(),
+            "{} {} {} must not declare negative_fixture_detector without negative_fixture",
             record.id,
             record.layer,
             record.strength,

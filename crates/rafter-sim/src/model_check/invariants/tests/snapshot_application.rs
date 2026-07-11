@@ -82,7 +82,7 @@ fn snapshot_metadata_payload_integrity_detects_expected_metadata_with_different_
         .cluster
         .seed_snapshot_payload(NodeId(1), &expected.snapshot, corrupted);
 
-    let failure = check_restart_snapshot_safety(&state, &[])
+    let failure = check_snapshot_metadata_payload_integrity(&state, NodeId(1), &expected, &[])
         .expect_err("expected metadata with different bytes must fail SS-01");
     assert_eq!(
         failure.invariant(),

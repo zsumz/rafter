@@ -82,6 +82,7 @@ struct Evidence {
     symbol: String,
     negative_fixture: Option<String>,
     negative_fixture_path: Option<String>,
+    negative_fixture_detector: Option<String>,
     negative_fixture_exemption: Option<String>,
 }
 
