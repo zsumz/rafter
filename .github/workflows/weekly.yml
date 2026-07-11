@@ -2,9 +2,9 @@
 # (Raft.cfg — 3 nodes, 3 terms, log length 3) with a disk-backed state
 # directory and checkpoint recovery.
 #
-# scripts/tla-model-check pins and sha256-verifies tla2tools.jar but does not
-# forward extra TLC flags, so this workflow mirrors its download/verify logic
-# and invokes TLC directly to add -metadir/-checkpoint/-recover.
+# scripts/tla-model-check fetches and verifies the pinned immutable release
+# asset. This workflow invokes TLC directly only to add checkpoint/recovery
+# flags after using the shared fetch path.
 #
 # Checkpoint recovery strategy (BEST EFFORT, explicitly):
 #   * TLC writes a checkpoint of the disk-backed run every 30 minutes into
@@ -84,7 +84,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: tools/cache
-          key: tla2tools-${{ hashFiles('tools/tla/VERSION', 'tools/tla/SHA256SUMS') }}
+          key: tla2tools-${{ hashFiles('tools/tla/VERSION', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS') }}
 
       # Restore the newest previous states directory. The exact key never
       # matches (it embeds run_id), so the prefix restore-key always picks
@@ -93,34 +93,12 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: specs/tla/raft/states
-          key: tlc-full-states-${{ hashFiles('specs/tla/raft/Raft.tla', 'specs/tla/raft/Raft.cfg', 'tools/tla/VERSION') }}-${{ github.run_id }}
+          key: tlc-full-states-${{ hashFiles('specs/tla/raft/Raft.tla', 'specs/tla/raft/Raft.cfg', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS') }}-${{ github.run_id }}
           restore-keys: |
-            tlc-full-states-${{ hashFiles('specs/tla/raft/Raft.tla', 'specs/tla/raft/Raft.cfg', 'tools/tla/VERSION') }}-
+            tlc-full-states-${{ hashFiles('specs/tla/raft/Raft.tla', 'specs/tla/raft/Raft.cfg', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS') }}-
 
       - name: Fetch and verify tla2tools.jar
-        # Mirrors scripts/tla-model-check: download the release pinned by
-        # tools/tla/VERSION, verify against tools/tla/SHA256SUMS. A cache hit
-        # is an optimization, never a trust decision — the hash is always
-        # checked before use.
-        run: |
-          jar=tools/cache/tla2tools.jar
-          version="$(cat tools/tla/VERSION)"
-          expected="$(awk '$1 !~ /^#/ && $2 == "tla2tools.jar" { print $1 }' tools/tla/SHA256SUMS)"
-          verify() {
-            local actual
-            actual="$(openssl dgst -sha256 "$jar" | awk '{ print $NF }')"
-            [[ "$actual" == "$expected" ]]
-          }
-          if [[ ! -f "$jar" ]] || ! verify; then
-            mkdir -p tools/cache
-            echo "downloading tla2tools.jar ${version}"
-            curl -fsSL -o "$jar" \
-              "https://github.com/tlaplus/tlaplus/releases/download/${version}/tla2tools.jar"
-            if ! verify; then
-              echo "error: tla2tools.jar sha256 mismatch against tools/tla/SHA256SUMS" >&2
-              exit 1
-            fi
-          fi
+        run: scripts/tla-model-check --fetch-tool
 
       - name: TLC full bounds (Raft.cfg) with checkpointing
         timeout-minutes: 300 # leaves headroom inside the job timeout to prune and save the cache
@@ -215,7 +193,7 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: specs/tla/raft/states
-          key: tlc-full-states-${{ hashFiles('specs/tla/raft/Raft.tla', 'specs/tla/raft/Raft.cfg', 'tools/tla/VERSION') }}-${{ github.run_id }}
+          key: tlc-full-states-${{ hashFiles('specs/tla/raft/Raft.tla', 'specs/tla/raft/Raft.cfg', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS') }}-${{ github.run_id }}
 
       - name: Upload TLC log
         if: always()

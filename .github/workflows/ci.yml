@@ -107,13 +107,13 @@ jobs:
           distribution: temurin
           java-version: "21"
       # scripts/tla-model-check downloads tla2tools.jar pinned by
-      # tools/tla/VERSION and verifies it against tools/tla/SHA256SUMS before
-      # every run, so a cache hit is an optimization, never a trust decision.
+      # the immutable asset ID and SHA-256 before every run, so a cache hit is
+      # an optimization, never a trust decision.
       - name: Cache tla2tools.jar
         uses: actions/cache@v4
         with:
           path: tools/cache
-          key: tla2tools-${{ hashFiles('tools/tla/VERSION', 'tools/tla/SHA256SUMS') }}
+          key: tla2tools-${{ hashFiles('tools/tla/VERSION', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS') }}
       - name: TLC (CI-bounded config RaftCi.cfg)
         # RaftCi.cfg: 2 nodes, 2 terms, log length 2, symmetry reduction.
         # The current spec generates roughly 130M states at these bounds. A

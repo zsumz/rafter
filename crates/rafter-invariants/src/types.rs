@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 /// Current version of the machine-readable receipt and report contract.
-pub const RESULT_SCHEMA_VERSION: u32 = 4;
+pub const RESULT_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -46,8 +46,17 @@ pub struct SourceReceipt {
     pub target: String,
     pub build_profile: String,
     pub features: Vec<String>,
+    pub tools: BTreeMap<String, ToolReceipt>,
     pub environment_sha256: String,
     pub clean: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+/// Version and executable digest for a non-Rust evidence tool.
+pub struct ToolReceipt {
+    pub version: String,
+    pub sha256: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

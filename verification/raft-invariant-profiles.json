@@ -21,23 +21,23 @@
       "canonical_minimum_independent_layers": 2,
       "runners": {
         "tests": {
-          "producer": "rafter-invariants-tests-v4",
+          "producer": "rafter-invariants-tests-v5",
           "command": ["cargo", "run", "-p", "rafter-invariants", "--", "run", "--profile", "pr", "--layer", "tests"],
           "configuration": {"build": "locked-no-default-features", "discovery": "libtest-executable", "execution": "exact-single-threaded", "scale": "pr"},
           "minimum_observed_checks": 57,
           "require_peak_rss": true
         },
         "simulator": {
-          "producer": "rafter-invariants-simulator-v4",
+          "producer": "rafter-invariants-simulator-v5",
           "command": ["cargo", "run", "-p", "rafter-invariants", "--", "run", "--profile", "pr", "--layer", "simulator"],
           "configuration": {"build": "release-and-test-locked", "completion": "frontier-and-semantic-floor", "model_profile": "fast+raft-soak", "seed_policy": "curated-0x9103-through-0x9106", "snapshot_catchup_probe": "required", "soak_steps": "320", "state_floors": "per-evidence"},
           "minimum_observed_checks": 39,
           "require_peak_rss": true
         },
         "tla": {
-          "producer": "rafter-invariants-tla-v2",
+          "producer": "rafter-invariants-tla-v3",
           "command": ["cargo", "run", "-p", "rafter-invariants", "--", "run", "--profile", "pr", "--layer", "tla"],
-          "configuration": {"config": "RaftCi.cfg", "fp": "0", "seed": "2026071101", "soft_timeout": "40m", "workers": "4"},
+          "configuration": {"config": "RaftCi.cfg", "detector_negative": "required", "fp": "0", "java_major": "21", "minimum_distinct_states": "120000000", "module": "Raft.tla", "seed": "2026071101", "soft_timeout": "40m", "tool_asset_id": "471380474", "tool_mode": "required", "tool_sha256": "33de7da9ce1b7fffb9d1c184021178dbb051747be48504e65c584c423721a32e", "trace_sample": "required", "workers": "4"},
           "minimum_observed_checks": 1,
           "require_peak_rss": true
         }
@@ -51,7 +51,7 @@
       "canonical_minimum_independent_layers": 2,
       "runners": {
         "tests": {
-          "producer": "rafter-invariants-tests-v4",
+          "producer": "rafter-invariants-tests-v5",
           "command": ["cargo", "run", "-p", "rafter-invariants", "--", "run", "--profile", "nightly", "--layer", "tests"],
           "configuration": {"build": "locked-no-default-features", "discovery": "libtest-executable", "execution": "exact-single-threaded", "scale": "nightly"},
           "minimum_observed_checks": 57,
@@ -65,9 +65,9 @@
           "require_peak_rss": true
         },
         "tla": {
-          "producer": "rafter-invariants-tla-v2",
+          "producer": "rafter-invariants-tla-v3",
           "command": ["cargo", "run", "-p", "rafter-invariants", "--", "run", "--profile", "nightly", "--layer", "tla"],
-          "configuration": {"config": "RaftNightly.cfg", "fp": "0", "seed": "2026071102", "soft_timeout": "115m", "workers": "4"},
+          "configuration": {"config": "RaftNightly.cfg", "detector_negative": "required", "fp": "0", "java_major": "21", "minimum_distinct_states": "120000000", "module": "Raft.tla", "seed": "2026071102", "soft_timeout": "115m", "tool_asset_id": "471380474", "tool_mode": "required", "tool_sha256": "33de7da9ce1b7fffb9d1c184021178dbb051747be48504e65c584c423721a32e", "trace_sample": "required", "workers": "4"},
           "minimum_observed_checks": 1,
           "require_peak_rss": true
         },
@@ -88,7 +88,7 @@
       "canonical_minimum_independent_layers": 2,
       "runners": {
         "tests": {
-          "producer": "rafter-invariants-tests-v4",
+          "producer": "rafter-invariants-tests-v5",
           "command": ["cargo", "run", "-p", "rafter-invariants", "--", "run", "--profile", "weekly", "--layer", "tests"],
           "configuration": {"build": "locked-no-default-features", "discovery": "libtest-executable", "execution": "exact-single-threaded", "scale": "weekly"},
           "minimum_observed_checks": 57,
@@ -102,9 +102,9 @@
           "require_peak_rss": true
         },
         "tla": {
-          "producer": "rafter-invariants-tla-v2",
+          "producer": "rafter-invariants-tla-v3",
           "command": ["cargo", "run", "-p", "rafter-invariants", "--", "run", "--profile", "weekly", "--layer", "tla"],
-          "configuration": {"config": "RaftNightly.cfg", "fp": "0", "seed": "2026071103", "soft_timeout": "115m", "unsymmetrized_exploration": "non-gating", "workers": "4"},
+          "configuration": {"config": "RaftNightly.cfg", "detector_negative": "required", "fp": "0", "java_major": "21", "minimum_distinct_states": "120000000", "module": "Raft.tla", "seed": "2026071103", "soft_timeout": "115m", "tool_asset_id": "471380474", "tool_mode": "required", "tool_sha256": "33de7da9ce1b7fffb9d1c184021178dbb051747be48504e65c584c423721a32e", "trace_sample": "required", "unsymmetrized_exploration": "non-gating", "workers": "4"},
           "minimum_observed_checks": 1,
           "require_peak_rss": true
         },

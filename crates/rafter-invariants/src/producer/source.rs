@@ -8,21 +8,29 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use crate::SourceReceipt;
+use crate::{SourceReceipt, ToolReceipt};
 
 use super::process;
 
 pub(super) fn capture_for_layer(layer: &str) -> Result<SourceReceipt, Box<dyn Error>> {
     match layer {
-        "tests" => capture("test", vec!["no-default-features".to_owned()]),
-        "simulator" => capture("release-and-test", vec!["internal-test-hooks".to_owned()]),
-        "tla" => capture("tla", Vec::new()),
-        "maelstrom" => capture("release", Vec::new()),
+        "tests" => capture("test", vec!["no-default-features".to_owned()], &[]),
+        "simulator" => capture(
+            "release-and-test",
+            vec!["internal-test-hooks".to_owned()],
+            &[],
+        ),
+        "tla" => capture("tla", Vec::new(), &["java"]),
+        "maelstrom" => capture("release", Vec::new(), &[]),
         _ => Err(format!("unsupported source profile for layer {layer}").into()),
     }
 }
 
-fn capture(build_profile: &str, features: Vec<String>) -> Result<SourceReceipt, Box<dyn Error>> {
+fn capture(
+    build_profile: &str,
+    features: Vec<String>,
+    additional_tools: &[&str],
+) -> Result<SourceReceipt, Box<dyn Error>> {
     let status = command_output(
         "git",
         &["status", "--porcelain=v1", "--untracked-files=all"],
@@ -42,6 +50,19 @@ fn capture(build_profile: &str, features: Vec<String>) -> Result<SourceReceipt, 
         .to_owned();
     let cargo_lock = fs::read("Cargo.lock")?;
     let environment = process::base_environment();
+    let tools = additional_tools
+        .iter()
+        .map(|name| {
+            let version = command_output(name, &["--version"], false)?;
+            Ok((
+                (*name).to_owned(),
+                ToolReceipt {
+                    version,
+                    sha256: executable_sha256(name)?,
+                },
+            ))
+        })
+        .collect::<Result<_, Box<dyn Error>>>()?;
     let encoded_environment = environment
         .iter()
         .map(|(key, value)| format!("{key}={value}"))
@@ -59,13 +80,19 @@ fn capture(build_profile: &str, features: Vec<String>) -> Result<SourceReceipt, 
         target,
         build_profile: build_profile.to_owned(),
         features,
+        tools,
         environment_sha256: format!("{:x}", Sha256::digest(encoded_environment)),
         clean: true,
     })
 }
 
 pub(super) fn verify(expected: &SourceReceipt) -> Result<(), Box<dyn Error>> {
-    let observed = capture(&expected.build_profile, expected.features.clone())?;
+    let names = expected
+        .tools
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let observed = capture(&expected.build_profile, expected.features.clone(), &names)?;
     if &observed != expected {
         return Err("source or toolchain identity changed during evidence execution".into());
     }
@@ -73,7 +100,12 @@ pub(super) fn verify(expected: &SourceReceipt) -> Result<(), Box<dyn Error>> {
 }
 
 pub(crate) fn verify_checkout(expected: &SourceReceipt) -> Result<(), Box<dyn Error>> {
-    let observed = capture(&expected.build_profile, expected.features.clone())?;
+    let names = expected
+        .tools
+        .keys()
+        .map(String::as_str)
+        .collect::<Vec<_>>();
+    let observed = capture(&expected.build_profile, expected.features.clone(), &names)?;
     if observed.commit != expected.commit
         || observed.tree != expected.tree
         || observed.cargo_lock_sha256 != expected.cargo_lock_sha256
@@ -83,6 +115,7 @@ pub(crate) fn verify_checkout(expected: &SourceReceipt) -> Result<(), Box<dyn Er
         || observed.rustc != expected.rustc
         || observed.rustc_sha256 != expected.rustc_sha256
         || observed.target != expected.target
+        || observed.tools != expected.tools
         || observed.environment_sha256 != expected.environment_sha256
     {
         return Err("evidence source identity does not match the active checkout".into());
@@ -122,6 +155,11 @@ fn tool_sha256(name: &str) -> Result<String, Box<dyn Error>> {
     } else {
         find_tool(name).ok_or_else(|| format!("{name} is not present on PATH"))?
     };
+    Ok(format!("{:x}", Sha256::digest(fs::read(path)?)))
+}
+
+fn executable_sha256(name: &str) -> Result<String, Box<dyn Error>> {
+    let path = find_tool(name).ok_or_else(|| format!("{name} is not present on PATH"))?;
     Ok(format!("{:x}", Sha256::digest(fs::read(path)?)))
 }
 
