@@ -4,7 +4,9 @@ use std::{
     time::Instant,
 };
 
-use super::super::{state::ExplorationState, Bounds, RestartSnapshotState, Summary};
+use super::super::{
+    state::ExplorationState, Bounds, ExplorationCompletion, RestartSnapshotState, Summary,
+};
 
 #[derive(Debug)]
 pub(super) struct ExplorationBudget {
@@ -15,6 +17,8 @@ pub(super) struct ExplorationBudget {
     unique_protocol_states: BTreeSet<StateKey>,
     explored_states: usize,
     explored_actions: usize,
+    reached_depth: usize,
+    completion: ExplorationCompletion,
 }
 
 impl ExplorationBudget {
@@ -27,6 +31,8 @@ impl ExplorationBudget {
             unique_protocol_states: BTreeSet::new(),
             explored_states: 0,
             explored_actions: 0,
+            reached_depth: 0,
+            completion: ExplorationCompletion::FrontierExhausted,
         }
     }
 
@@ -36,13 +42,16 @@ impl ExplorationBudget {
             unique_states: self.unique_states.len(),
             unique_protocol_states: self.unique_protocol_states.len(),
             explored_actions: self.explored_actions,
-            max_depth: self.bounds.depth,
+            configured_depth: self.bounds.depth,
+            reached_depth: self.reached_depth,
+            completion: self.completion,
         }
     }
 
     pub(super) fn enter(&mut self, state: &impl StateIdentity, depth: usize) -> bool {
         self.explored_states += 1;
         if self.wall_clock_exhausted() {
+            self.completion = ExplorationCompletion::WallClockLimit;
             return false;
         }
 
@@ -62,6 +71,7 @@ impl ExplorationBudget {
             .max_unique_states
             .is_some_and(|max| is_new_state && self.unique_states.len() >= max)
         {
+            self.completion = ExplorationCompletion::UniqueStateLimit;
             return false;
         }
 
@@ -70,6 +80,7 @@ impl ExplorationBudget {
         self.unique_states.insert(key);
         self.unique_protocol_states
             .insert(StateKey::from_protocol_state(state));
+        self.reached_depth = self.reached_depth.max(depth);
         true
     }
 
@@ -109,7 +120,10 @@ impl StateIdentity for RestartSnapshotState {
 
 #[cfg(test)]
 mod tests {
-    use std::hash::{Hash, Hasher};
+    use std::{
+        hash::{Hash, Hasher},
+        time::Duration,
+    };
 
     use super::{Bounds, ExplorationBudget, StateIdentity};
 
@@ -157,6 +171,7 @@ mod tests {
         assert_eq!(budget.summary().unique_states(), 4);
         assert_eq!(budget.summary().unique_protocol_states(), 4);
         assert!(budget.summary().explored_states() > budget.summary().unique_states());
+        assert_eq!(budget.summary().reached_depth(), 2);
     }
 
     #[test]
@@ -207,6 +222,22 @@ mod tests {
         assert_eq!(summary.unique_states(), 1);
         assert_eq!(summary.unique_verifier_states(), 1);
         assert_eq!(summary.unique_protocol_states(), 1);
+        assert_eq!(
+            summary.completion(),
+            super::ExplorationCompletion::UniqueStateLimit
+        );
+    }
+
+    #[test]
+    fn wall_clock_exhaustion_is_reported() {
+        let mut budget = ExplorationBudget::new(Bounds::new(1).with_max_wall_clock(Duration::ZERO));
+
+        assert!(!budget.enter(&ToyState::Root, 0));
+        assert_eq!(
+            budget.summary().completion(),
+            super::ExplorationCompletion::WallClockLimit
+        );
+        assert_eq!(budget.summary().reached_depth(), 0);
     }
 
     fn explore_toy_graph(

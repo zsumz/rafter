@@ -1,11 +1,11 @@
-use std::{error::Error, time::Instant};
+use std::{error::Error, io, time::Instant};
 
 use rafter_sim::model_check::{
     check_raft_commit_safety, check_raft_election_safety,
     check_raft_joint_membership_restart_and_snapshot_safety, check_raft_leadership_noop_safety,
     check_raft_membership_safety, check_raft_read_index_safety,
-    check_raft_restart_and_snapshot_safety, check_raft_seeded_commit_safety, Bounds, Failure,
-    Summary,
+    check_raft_restart_and_snapshot_safety, check_raft_seeded_commit_safety, Bounds,
+    ExplorationCompletion, Failure, Summary,
 };
 use rafter_sim::SimSeed;
 
@@ -148,7 +148,7 @@ pub(super) fn run_raft_deep_profile(
 pub(super) fn run_raft_check(
     name: &str,
     check: impl FnOnce() -> Result<Summary, Failure>,
-) -> Result<Summary, Failure> {
+) -> Result<Summary, Box<dyn Error>> {
     let started = Instant::now();
     let result = check();
     let duration = started.elapsed();
@@ -156,5 +156,16 @@ pub(super) fn run_raft_check(
         print_raft_failure(name, failure);
     })?;
     print_raft_summary(name, summary, duration);
+    if summary.completion() != ExplorationCompletion::FrontierExhausted {
+        eprintln!(
+            "ERROR test model coverage name={name} completion={} configured_depth={} reached_depth={}",
+            summary.completion(),
+            summary.max_depth(),
+            summary.reached_depth()
+        );
+        return Err(
+            io::Error::other(format!("model-check {name} did not exhaust its frontier")).into(),
+        );
+    }
     Ok(summary)
 }

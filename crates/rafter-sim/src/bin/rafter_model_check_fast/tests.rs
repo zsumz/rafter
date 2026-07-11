@@ -120,6 +120,6 @@ fn raft_summary_line_reports_protocol_and_verifier_state_counts() {
 
     assert_eq!(
         line,
-        "model-check raft-commit: unique_states=7 unique_protocol_states=4 unique_verifier_states=7 explored_states=10 explored_actions=12 pruned_states=3 pruning_rate=0.300000 max_depth=3 duration_ms=25",
+        "model-check raft-commit: unique_states=7 unique_protocol_states=4 unique_verifier_states=7 explored_states=10 explored_actions=12 pruned_states=3 pruning_rate=0.300000 configured_depth=3 reached_depth=3 completion=frontier_exhausted duration_ms=25",
     );
 }

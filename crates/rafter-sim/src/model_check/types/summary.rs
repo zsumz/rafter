@@ -5,7 +5,17 @@ pub struct Summary {
     pub(in crate::model_check) unique_states: usize,
     pub(in crate::model_check) unique_protocol_states: usize,
     pub(in crate::model_check) explored_actions: usize,
-    pub(in crate::model_check) max_depth: usize,
+    pub(in crate::model_check) configured_depth: usize,
+    pub(in crate::model_check) reached_depth: usize,
+    pub(in crate::model_check) completion: ExplorationCompletion,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Exhaustive reasons why a bounded state-space exploration stopped.
+pub enum ExplorationCompletion {
+    FrontierExhausted,
+    UniqueStateLimit,
+    WallClockLimit,
 }
 
 impl Summary {
@@ -46,7 +56,19 @@ impl Summary {
     /// Returns the maximum configured action depth.
     #[must_use]
     pub const fn max_depth(self) -> usize {
-        self.max_depth
+        self.configured_depth
+    }
+
+    /// Returns the deepest state actually admitted by the exploration.
+    #[must_use]
+    pub const fn reached_depth(self) -> usize {
+        self.reached_depth
+    }
+
+    /// Returns whether the frontier closed or an exploration budget stopped it.
+    #[must_use]
+    pub const fn completion(self) -> ExplorationCompletion {
+        self.completion
     }
 
     pub(in crate::model_check) const fn combined(self, other: Self) -> Self {
@@ -55,11 +77,38 @@ impl Summary {
             unique_states: self.unique_states + other.unique_states,
             unique_protocol_states: self.unique_protocol_states + other.unique_protocol_states,
             explored_actions: self.explored_actions + other.explored_actions,
-            max_depth: if self.max_depth > other.max_depth {
-                self.max_depth
+            configured_depth: if self.configured_depth > other.configured_depth {
+                self.configured_depth
             } else {
-                other.max_depth
+                other.configured_depth
             },
+            reached_depth: if self.reached_depth > other.reached_depth {
+                self.reached_depth
+            } else {
+                other.reached_depth
+            },
+            completion: self.completion.combined(other.completion),
         }
     }
 }
+
+impl ExplorationCompletion {
+    const fn combined(self, other: Self) -> Self {
+        match (self, other) {
+            (Self::WallClockLimit, _) | (_, Self::WallClockLimit) => Self::WallClockLimit,
+            (Self::UniqueStateLimit, _) | (_, Self::UniqueStateLimit) => Self::UniqueStateLimit,
+            _ => Self::FrontierExhausted,
+        }
+    }
+}
+
+impl fmt::Display for ExplorationCompletion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::FrontierExhausted => "frontier_exhausted",
+            Self::UniqueStateLimit => "unique_state_limit",
+            Self::WallClockLimit => "wall_clock_limit",
+        })
+    }
+}
+use std::fmt;
