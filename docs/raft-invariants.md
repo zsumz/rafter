@@ -161,12 +161,12 @@ named temporal or witness-based verdicts.
 | `LG-04` | tests | direct | `crates/rafter-runtime/src/tests/conflict_repair.rs#file_backed_follower_conflict_repair_survives_restart` |
 | `LG-04` | tla | direct | `specs/tla/raft/Raft.tla#CommittedPrefixStability` |
 | `LG-05` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
-| `LG-05` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_commit_history`; negative fixture `leader_completeness_detects_later_leader_missing_committed_entry` |
+| `LG-05` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_commit_history`; negative fixture `leader_completeness_rechecks_when_committed_ledger_grows_after_election` |
 | `LG-05` | tla | direct | `specs/tla/raft/Raft.tla#LeaderCompleteness` |
 | `CM-01` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_commit_index_monotonicity`; negative fixture `commit_index_monotonicity_detects_floor_regression` |
 | `CM-01` | tests | direct | `crates/rafter/src/node/tests/replication/follower.rs#a_probe_with_a_high_leader_commit_never_regresses_the_commit_index` |
 | `CM-02` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
-| `CM-02` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_commit_history`; negative fixture `commit_certificate_detects_joint_quorum_missing_new_half` |
+| `CM-02` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_commit_history`; negative fixture `commit_certificate_uses_pre_transition_joint_quorum_for_candidate_below_config` |
 | `CM-02` | tla | direct | `specs/tla/raft/Raft.tla#CommittedEntriesHaveQuorum` |
 | `CM-03` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
 | `CM-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_commit_history`; negative fixture `commit_certificate_detects_prior_term_candidate_commit` |

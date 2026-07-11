@@ -1,6 +1,9 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    hash::{Hash, Hasher},
+};
 
-use rafter::{LogEntry, LogIndex, MembershipConfig, NodeId, Term};
+use rafter::{LogEntry, LogIndex, MembershipConfig, NodeId, Role, Term};
 
 use crate::Cluster;
 
@@ -9,54 +12,68 @@ use super::election::ElectionHistory;
 use super::logical_log::{LogPrefixWitness, LogicalLogHistory, LogicalLogView};
 use super::ExplorationState;
 
-#[derive(Clone, Debug, Default, Hash)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct CommitHistory {
     pub(crate) certificates: BTreeMap<(NodeId, Term, LogIndex), CommitCertificate>,
     pub(crate) committed_prefixes: BTreeMap<LogIndex, LogPrefixWitness>,
-    pub(crate) leader_completeness_checked: BTreeSet<(NodeId, Term)>,
+    pub(crate) leader_completeness_checked_through: BTreeMap<(NodeId, Term), LogIndex>,
     pub(crate) violations: BTreeSet<CommitHistoryViolation>,
+}
+
+impl Hash for CommitHistory {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.committed_prefixes.hash(state);
+        self.leader_completeness_checked_through.hash(state);
+        self.violations.hash(state);
+    }
 }
 
 impl CommitHistory {
     pub(super) fn record_commit_transitions(
         &mut self,
-        before_commit: &BTreeMap<NodeId, LogIndex>,
+        before: &BTreeMap<NodeId, CommitTransitionContext>,
         cluster: &Cluster,
         _logical_logs: &LogicalLogHistory,
     ) {
-        for (node_id, node) in &cluster.nodes {
-            if node.role() != rafter::Role::Leader {
+        for context in before.values() {
+            if context.role != Role::Leader {
                 continue;
             }
-            let old_commit = before_commit.get(node_id).copied().unwrap_or_default();
+            let Some(node) = cluster.nodes.get(&context.node_id) else {
+                continue;
+            };
             let new_commit = node.commit_index();
-            if new_commit <= old_commit {
+            if new_commit <= context.old_commit {
+                continue;
+            }
+            if node.current_term() != context.term {
                 continue;
             }
 
-            let view = LogicalLogView::from_cluster(cluster, *node_id);
+            let view = LogicalLogView::from_cluster(cluster, context.node_id);
             let Some(candidate_term) = view.term_at(new_commit) else {
                 self.violations.insert(CommitHistoryViolation {
                     invariant: catalog::CM_02_COMMIT_REQUIRES_EFFECTIVE_QUORUM,
                     message: format!(
-                        "{node_id} committed through {new_commit} without a local candidate term"
+                        "{} committed through {new_commit} without a local candidate term",
+                        context.node_id
                     ),
                 });
                 continue;
             };
             let candidate_entry = view.entry_at(new_commit).cloned();
 
-            if candidate_term != node.current_term() {
+            if candidate_term != context.term {
                 self.violations.insert(CommitHistoryViolation {
                     invariant: catalog::CM_03_LEADERS_ONLY_COMMIT_CURRENT_TERM_ENTRIES,
                     message: format!(
-                        "{node_id} advanced commit to {new_commit} for term {candidate_term} while leading term {}",
-                        node.current_term()
+                        "{} advanced commit to {new_commit} for term {candidate_term} while leading term {}",
+                        context.node_id, context.term
                     ),
                 });
             }
 
-            let membership = node.membership_at_index(new_commit);
+            let membership = context.effective_membership.clone();
             let stored_by = nodes_storing_entry(
                 cluster,
                 new_commit,
@@ -67,16 +84,17 @@ impl CommitHistory {
                 self.violations.insert(CommitHistoryViolation {
                     invariant: catalog::CM_02_COMMIT_REQUIRES_EFFECTIVE_QUORUM,
                     message: format!(
-                        "{node_id} committed {new_commit} without an effective quorum; stored_by={stored_by:?}, membership={membership:?}"
+                        "{} committed {new_commit} without an effective quorum; stored_by={stored_by:?}, membership={membership:?}",
+                        context.node_id
                     ),
                 });
             }
 
             self.certificates.insert(
-                (*node_id, node.current_term(), new_commit),
+                (context.node_id, context.term, new_commit),
                 CommitCertificate {
-                    leader_id: *node_id,
-                    leader_term: node.current_term(),
+                    leader_id: context.node_id,
+                    leader_term: context.term,
                     committed_through: new_commit,
                     candidate_term,
                     membership,
@@ -127,11 +145,18 @@ impl CommitHistory {
     ) {
         for certificate in election_history.elected_by_term.values() {
             let key = (certificate.leader_id, certificate.term);
-            if self.leader_completeness_checked.contains(&key) {
-                continue;
-            }
+            let checked_through = self
+                .leader_completeness_checked_through
+                .get(&key)
+                .copied()
+                .unwrap_or_default();
+            let mut rechecked_through = checked_through;
             let leader_view = LogicalLogView::from_cluster(cluster, certificate.leader_id);
             for prefix in self.committed_prefixes.values() {
+                if prefix.through <= checked_through {
+                    continue;
+                }
+                rechecked_through = rechecked_through.max(prefix.through);
                 let Some(committed_term) = prefix.entries.last().map(|entry| entry.term) else {
                     continue;
                 };
@@ -151,7 +176,8 @@ impl CommitHistory {
                     ),
                 });
             }
-            self.leader_completeness_checked.insert(key);
+            self.leader_completeness_checked_through
+                .insert(key, rechecked_through);
         }
     }
 }
@@ -181,6 +207,15 @@ fn nodes_storing_entry(
 }
 
 #[derive(Clone, Debug, Hash)]
+pub(crate) struct CommitTransitionContext {
+    pub(crate) node_id: NodeId,
+    pub(crate) term: Term,
+    pub(crate) role: Role,
+    pub(crate) effective_membership: MembershipConfig,
+    pub(crate) old_commit: LogIndex,
+}
+
+#[derive(Clone, Debug, Hash)]
 pub(crate) struct CommitCertificate {
     pub(crate) leader_id: NodeId,
     pub(crate) leader_term: Term,
@@ -197,20 +232,33 @@ pub(crate) struct CommitHistoryViolation {
 }
 
 impl ExplorationState {
-    pub(in crate::model_check) fn commit_observation_floor(&self) -> BTreeMap<NodeId, LogIndex> {
+    pub(in crate::model_check) fn commit_transition_context(
+        &self,
+    ) -> BTreeMap<NodeId, CommitTransitionContext> {
         self.cluster
             .nodes
             .iter()
-            .map(|(node_id, node)| (*node_id, node.commit_index()))
+            .map(|(node_id, node)| {
+                (
+                    *node_id,
+                    CommitTransitionContext {
+                        node_id: *node_id,
+                        term: node.current_term(),
+                        role: node.role(),
+                        effective_membership: node.effective_membership(),
+                        old_commit: node.commit_index(),
+                    },
+                )
+            })
             .collect()
     }
 
     pub(in crate::model_check) fn record_commit_observation(
         &mut self,
-        before_commit: &BTreeMap<NodeId, LogIndex>,
+        before: &BTreeMap<NodeId, CommitTransitionContext>,
     ) {
         self.commit_history.record_commit_transitions(
-            before_commit,
+            before,
             &self.cluster,
             &self.logical_log_history,
         );

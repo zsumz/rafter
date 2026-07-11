@@ -8,7 +8,7 @@ use rafter::{
 
 use super::super::helpers::bootstrap_state;
 use super::super::state::{
-    ClientRead, ClientReadProof, ClientWrite, ClientWriteUnknownReason, CommitHistoryViolation,
+    ClientRead, ClientReadProof, ClientWrite, ClientWriteUnknownReason, CommitTransitionContext,
     ElectionCertificate, ElectionConflict, LogicalLogViolation,
 };
 use super::*;
@@ -132,6 +132,7 @@ fn append_success(match_index: LogIndex) -> AppendEntriesResponse {
 mod log_history;
 
 mod commit_history;
+mod commit_history_transition;
 
 mod snapshot_application;
 
