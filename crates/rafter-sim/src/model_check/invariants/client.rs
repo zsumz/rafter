@@ -30,7 +30,7 @@ pub(crate) fn check_read_barrier_safety(
         };
         if grant.read_index < registration.committed_floor {
             return Err(Failure {
-            kind: crate::model_check::FailureKind::InvariantViolation,
+                kind: crate::model_check::FailureKind::InvariantViolation,
                 invariant: catalog::RD_03_READ_BARRIER_COVERS_COMMITTED_FLOOR,
                 message: format!(
                     "{} granted read barrier {} at index {} below the committed floor {} at registration",

@@ -11,7 +11,9 @@ the row granularity.
 
 Repository: `zsumz/rafter`
 
-Audited ref: `ca400ace5744dd03be05508eb61e6ac6f70440e0`
+Catalog origin ref: `ca400ace5744dd03be05508eb61e6ac6f70440e0`
+
+Last verified ref: `invariants-work`
 
 Audit date: `2026-07-10`
 
@@ -134,13 +136,13 @@ named temporal or witness-based verdicts.
 | ID | Layer | Strength | Reference |
 | --- | --- | --- | --- |
 | `ST-01` | tests | direct | `crates/rafter/src/node/tests/derived_state.rs#derived_state_is_valid_after_bootstrap` |
-| `EL-01` | tests | direct | `crates/rafter-runtime/src/tests/hard_state.rs#election_persists_term_and_vote_before_vote_requests_escape` |
+| `EL-01` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#election_persists_term_and_vote_before_vote_requests_escape` |
 | `EL-01` | tests | direct | `crates/rafter/src/node/tests/election/voting.rs#public_transitions_do_not_decrease_current_term` |
-| `EL-02` | tests | direct | `crates/rafter-runtime/src/tests/hard_state.rs#restarted_node_preserves_persisted_vote` |
+| `EL-02` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#restarted_node_preserves_persisted_vote` |
 | `EL-02` | tests | direct | `crates/rafter/src/node/tests/election/voting.rs#follower_grants_one_vote_per_term` |
 | `EL-03` | tests | direct | `crates/rafter/src/node/tests/election/voting.rs#stale_vote_request_is_rejected` |
 | `EL-03` | tests | direct | `crates/rafter/src/node/tests/membership/authority.rs#vote_request_from_candidate_outside_effective_membership_is_rejected` |
-| `EL-04` | tests | direct | `crates/rafter-runtime/src/tests/hard_state.rs#granted_vote_is_persisted_before_vote_response_escapes` |
+| `EL-04` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#granted_vote_is_persisted_before_vote_response_escapes` |
 | `EL-05` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `election_history_detects_second_leader_in_same_term` |
 | `EL-05` | tla | direct | `specs/tla/raft/Raft.tla#ElectionSafety` |
 | `EL-06` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `election_certificate_rejects_learner_grant` |
@@ -202,17 +204,17 @@ named temporal or witness-based verdicts.
 | `RD-06` | simulator | direct | `crates/rafter-sim/src/model_check/linearizability.rs#check_client_history_linearizable`; negative fixture `linearizer_rejects_read_that_misses_completed_write` |
 | `RD-06` | tests | direct | `crates/rafter-sim/src/model_check/tests/linearizability.rs#linearizer_rejects_read_that_misses_completed_write` |
 | `PS-01` | maelstrom | e2e | `scripts/maelstrom-lin-kv-common#RAFTER_MAELSTROM_ROOT` |
-| `PS-01` | tests | direct | `crates/rafter-runtime/src/tests/hard_state.rs#election_persists_term_and_vote_before_vote_requests_escape` |
+| `PS-01` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#election_persists_term_and_vote_before_vote_requests_escape` |
 | `PS-01` | tests | direct | `crates/rafter-runtime/src/tests/persistence_contract.rs#all_raft_outputs_have_declared_runtime_persistence_dependency` |
 | `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/group_commit/failure.rs#a_failed_batch_releases_no_output_and_poisons_the_runtime` |
-| `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/hard_state.rs#final_hard_state_write_failure_suppresses_apply_and_success_response` |
+| `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/commit_failure.rs#final_hard_state_write_failure_suppresses_apply_and_success_response` |
 | `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/persistence_contract.rs#ps02_failure_matrix_covers_each_runtime_store_operation` |
 | `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_snapshot_promote_failure_suppresses_apply_and_success_response` |
 | `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_snapshot_compaction_failure_suppresses_apply_and_success_response` |
 | `PS-03` | maelstrom | e2e | `scripts/maelstrom-lin-kv-repeated-restart#RAFTER_MAELSTROM_RESTART_MODE` |
 | `PS-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_exact_durable_restart`; negative fixture `exact_durable_restart_detects_digest_change` |
 | `PS-03` | tests | direct | `crates/rafter-runtime/src/tests/local_ids/recovery.rs#restart_replays_committed_tracked_entry_without_local_id` |
-| `PS-03` | tests | direct | `crates/rafter-sim/src/model_check/tests/soak.rs#ordinary_restart_preserves_durable_state_digest` |
+| `PS-03` | tests | direct | `crates/rafter-sim/src/model_check/tests/soak/core.rs#ordinary_restart_preserves_durable_state_digest` |
 | `PS-04` | maelstrom | e2e | `scripts/maelstrom-lin-kv-app-persist-crash#RAFTER_MAELSTROM_CRASH_AFTER_APP_PERSIST_ONCE` |
 | `PS-04` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_applied_floor_recovery`; negative fixture `applied_floor_recovery_rejects_replay_at_or_below_floor` |
 | `PS-04` | tests | direct | `crates/rafter-maelstrom/src/app/tests.rs#persisted_app_state_round_trips_applied_floor` |

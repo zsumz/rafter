@@ -84,7 +84,7 @@ pub(super) fn check_committed_prefixes(cluster: &Cluster, trace: &[Action]) -> R
         let last_log_index = node.last_log_index();
         if commit_index > last_log_index {
             return Err(Failure {
-            kind: crate::model_check::FailureKind::InvariantViolation,
+                kind: crate::model_check::FailureKind::InvariantViolation,
                 invariant: catalog::CM_01_COMMIT_INDEX_MONOTONICITY_AND_BOUNDS,
                 message: format!(
                     "{node_id} commit index {commit_index} is beyond local last log index {last_log_index}"

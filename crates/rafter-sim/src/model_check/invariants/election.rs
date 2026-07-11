@@ -95,7 +95,7 @@ pub(crate) fn check_election_history(
             .has_quorum(certificate.granted_by.iter().copied())
         {
             return Err(Failure {
-            kind: crate::model_check::FailureKind::InvariantViolation,
+                kind: crate::model_check::FailureKind::InvariantViolation,
                 invariant: catalog::EL_06_LEADER_HAS_VALID_ELECTION_QUORUM,
                 message: format!(
                     "{} election certificate for term {} lacks an effective quorum; grants={:?}, membership={:?}, last_log=({}, {})",
