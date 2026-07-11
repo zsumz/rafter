@@ -148,6 +148,12 @@ named temporal or witness-based verdicts.
 | `EL-03` | tests | direct | `crates/rafter/src/node/tests/election/voting.rs#stale_vote_request_is_rejected` |
 | `EL-03` | tests | direct | `crates/rafter/src/node/tests/membership/authority.rs#vote_request_from_candidate_outside_effective_membership_is_rejected` |
 | `EL-04` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#granted_vote_is_persisted_before_vote_response_escapes` |
+| `EL-04` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#higher_term_vote_rejection_persists_term_before_response_escapes` |
+| `EL-04` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#higher_term_append_persists_term_before_response_escapes` |
+| `EL-04` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#hard_state_write_failure_suppresses_vote_requests` |
+| `EL-04` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#hard_state_write_failure_suppresses_granted_vote_response` |
+| `EL-04` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#hard_state_write_failure_suppresses_higher_term_vote_rejection` |
+| `EL-04` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#hard_state_write_failure_suppresses_higher_term_append_response` |
 | `EL-05` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `election_history_detects_second_leader_in_same_term` |
 | `EL-05` | tla | direct | `specs/tla/raft/Raft.tla#ElectionSafety` |
 | `EL-06` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `election_certificate_rejects_learner_grant` |
@@ -314,10 +320,10 @@ Statement: Term and vote changes are durable before RequestVote or a granted vot
 Evidence now:
 - TLA+: none
 - Simulator: none
-- Tests: D: rafter-runtime hard_state tests
+- Tests: D: runtime hard_state ordering and failure-injection tests for known hard-state-changing vote and append-response sends
 - Maelstrom: P: durable runtime exercised
 
-Next: Keep this as a runtime invariant; add failure-injection coverage for every authority-bearing output class.
+Next: Keep this as a runtime invariant; add subtype-specific failure-injection tests when new hard-state-changing authority sends are introduced.
 
 #### `EL-05` Election safety over history
 
