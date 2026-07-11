@@ -75,6 +75,55 @@ pub(crate) fn check_election_history(
         });
     }
 
+    for grant in &state.election_history.vote_grants {
+        if !grant.voter_membership.contains_voter(grant.candidate_id) {
+            return Err(Failure {
+                kind: crate::model_check::FailureKind::InvariantViolation,
+                invariant: catalog::EL_03_SAFE_VOTE_ELIGIBILITY,
+                message: format!(
+                    "{} granted term {} vote to non-voter {} in membership {:?}",
+                    grant.voter_id, grant.term, grant.candidate_id, grant.voter_membership
+                ),
+                trace: trace.to_vec(),
+                state: summarize(&state.cluster),
+            });
+        }
+        if (
+            grant.candidate_last_log_term,
+            grant.candidate_last_log_index,
+        ) < (grant.voter_last_log_term, grant.voter_last_log_index)
+        {
+            return Err(Failure {
+                kind: crate::model_check::FailureKind::InvariantViolation,
+                invariant: catalog::EL_03_SAFE_VOTE_ELIGIBILITY,
+                message: format!(
+                    "{} granted term {} vote to {} with stale candidate log ({}, {}) below voter log ({}, {})",
+                    grant.voter_id,
+                    grant.term,
+                    grant.candidate_id,
+                    grant.candidate_last_log_index,
+                    grant.candidate_last_log_term,
+                    grant.voter_last_log_index,
+                    grant.voter_last_log_term,
+                ),
+                trace: trace.to_vec(),
+                state: summarize(&state.cluster),
+            });
+        }
+        if grant.durable_vote != Some(grant.candidate_id) {
+            return Err(Failure {
+                kind: crate::model_check::FailureKind::InvariantViolation,
+                invariant: catalog::EL_02_ONE_DURABLE_VOTE_PER_TERM,
+                message: format!(
+                    "{} granted term {} vote to {} but durable vote is {:?}",
+                    grant.voter_id, grant.term, grant.candidate_id, grant.durable_vote
+                ),
+                trace: trace.to_vec(),
+                state: summarize(&state.cluster),
+            });
+        }
+    }
+
     if let Some(conflict) = state.election_history.conflicting_elections.iter().next() {
         return Err(Failure {
             kind: crate::model_check::FailureKind::InvariantViolation,

@@ -43,15 +43,8 @@ pub(in crate::model_check::application) fn apply_to_cluster(
         Operation::Transfer { from, target } => cluster.transfer_leadership(from, target),
         Operation::DeliverReadyAt(position) => {
             if let Some(queued) = cluster.network.remove(position) {
-                let retained_len = cluster.network.len();
-                cluster.deliver(queued.envelope);
                 return AppliedOperationEffects {
-                    emitted: cluster
-                        .network
-                        .iter()
-                        .skip(retained_len)
-                        .map(|queued| queued.envelope.clone())
-                        .collect(),
+                    emitted: cluster.deliver(queued.envelope),
                 };
             }
         }

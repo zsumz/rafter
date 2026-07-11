@@ -81,7 +81,8 @@ impl Cluster {
         self.network.get(position).map(|queued| &queued.envelope)
     }
 
-    pub(crate) fn record_outputs(&mut self, from: NodeId, outputs: Vec<Output>) {
+    pub(crate) fn record_outputs(&mut self, from: NodeId, outputs: Vec<Output>) -> Vec<Envelope> {
+        let mut emitted = Vec::new();
         for output in outputs {
             match output {
                 Output::Apply { index, payload, .. } => {
@@ -121,11 +122,13 @@ impl Cluster {
                         .get(&from)
                         .and_then(|source| chunk.resolve(source));
                     if let Some(message) = resolved {
-                        self.enqueue(Envelope {
+                        let envelope = Envelope {
                             from,
                             to,
                             message: rafter::Message::InstallSnapshotChunk(message),
-                        });
+                        };
+                        emitted.push(envelope.clone());
+                        self.enqueue(envelope);
                     }
                 }
                 Output::StageSnapshotChunk { chunk } => {
@@ -151,19 +154,22 @@ impl Cluster {
                 | Output::ReadIndexRejected { .. }
                 | Output::ReadIndexCanceled { .. } => {}
                 Output::Send { to, message } => {
-                    self.enqueue(Envelope { from, to, message });
+                    let envelope = Envelope { from, to, message };
+                    emitted.push(envelope.clone());
+                    self.enqueue(envelope);
                 }
             }
         }
+        emitted
     }
 
-    pub(crate) fn deliver(&mut self, envelope: Envelope) {
+    pub(crate) fn deliver(&mut self, envelope: Envelope) -> Vec<Envelope> {
         self.record_delivered_acknowledgement(&envelope);
         let outputs = self.node_mut(envelope.to).step(Input::Message {
             from: envelope.from,
             message: envelope.message,
         });
-        self.record_outputs(envelope.to, outputs);
+        self.record_outputs(envelope.to, outputs)
     }
 
     /// A delivered success acknowledgement raises the sender's durable-loss

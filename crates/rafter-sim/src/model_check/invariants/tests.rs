@@ -3,7 +3,7 @@ use std::collections::BTreeSet;
 use rafter::{
     AppendEntries, AppendEntriesResponse, CommittedConfiguration, ConfigurationId, LogEntry,
     MembershipConfig, MembershipSet, Message, NodeConfig, NodeId, PendingSnapshotTransfer,
-    RequestVoteResponse, SharedEntries, Term,
+    RequestVote, RequestVoteResponse, SharedEntries, Term,
 };
 
 use super::super::helpers::{

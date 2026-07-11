@@ -1,7 +1,7 @@
 use super::*;
 use crate::model_check::{
-    application::{apply_soak_action, restart_node},
-    scheduling::SoakOperation,
+    application::{apply_soak_action, apply_to_state, restart_node},
+    scheduling::{Operation, SoakOperation},
 };
 
 #[test]
@@ -163,6 +163,189 @@ fn modeled_lossy_restart_preserves_observed_durable_vote() {
 }
 
 #[test]
+fn vote_grant_observation_accepts_eligible_request() {
+    let state = request_vote_grant_state(
+        NodeId(2),
+        &[(1, Term(2), b"voter-entry")],
+        RequestVote {
+            term: Term(4),
+            candidate_id: NodeId(2),
+            last_log_index: LogIndex(1),
+            last_log_term: Term(2),
+        },
+        Some(NodeId(2)),
+    );
+
+    check_election_history(&state, &[]).expect("eligible vote grant should pass");
+    let grant = state
+        .election_history
+        .vote_grants
+        .last()
+        .expect("vote grant observation should be recorded");
+    assert_eq!(grant.candidate_id, NodeId(2));
+    assert_eq!(grant.voter_id, NodeId(1));
+    assert_eq!(grant.term, Term(4));
+    assert_eq!(grant.candidate_last_log_index, LogIndex(1));
+    assert_eq!(grant.candidate_last_log_term, Term(2));
+    assert_eq!(grant.voter_last_log_index, LogIndex(1));
+    assert_eq!(grant.voter_last_log_term, Term(2));
+    assert!(grant.voter_membership.contains_voter(NodeId(2)));
+    assert_eq!(grant.durable_vote, Some(NodeId(2)));
+}
+
+#[test]
+fn vote_grant_observation_records_partition_dropped_response() {
+    let mut state = ExplorationState::new(two_node_cluster());
+    state.cluster.queue_message(
+        NodeId(2),
+        NodeId(1),
+        Message::RequestVote(RequestVote {
+            term: Term(1),
+            candidate_id: NodeId(2),
+            last_log_index: LogIndex::ZERO,
+            last_log_term: Term::default(),
+        }),
+    );
+    state.cluster.blocked_pairs.insert((NodeId(1), NodeId(2)));
+
+    apply_to_state(&mut state, Operation::DeliverReadyAt(0));
+
+    assert!(
+        state.cluster.pending().all(|envelope| !matches!(
+            &envelope.message,
+            Message::RequestVoteResponse(RequestVoteResponse {
+                vote_granted: true,
+                ..
+            })
+        )),
+        "granted response should be dropped by the simulated partition"
+    );
+    let grant = state
+        .election_history
+        .vote_grants
+        .last()
+        .expect("dropped granted response should still be observed");
+    assert_eq!(grant.voter_id, NodeId(1));
+    assert_eq!(grant.candidate_id, NodeId(2));
+    assert_eq!(grant.term, Term(1));
+    assert_eq!(grant.durable_vote, Some(NodeId(2)));
+    check_election_history(&state, &[]).expect("eligible dropped-response grant should pass");
+}
+
+#[test]
+fn vote_grant_observation_ignores_denied_response() {
+    let before = one_node_cluster();
+    let mut state = ExplorationState::new(before.clone());
+    let delivered = Envelope {
+        from: NodeId(2),
+        to: NodeId(1),
+        message: Message::RequestVote(RequestVote {
+            term: Term(4),
+            candidate_id: NodeId(2),
+            last_log_index: LogIndex::ZERO,
+            last_log_term: Term::default(),
+        }),
+    };
+    let emitted = [Envelope {
+        from: NodeId(1),
+        to: NodeId(2),
+        message: Message::RequestVoteResponse(RequestVoteResponse {
+            term: Term(4),
+            voter_id: NodeId(1),
+            vote_granted: false,
+        }),
+    }];
+
+    state.record_election_observation(&before, Some(&delivered), &emitted);
+
+    assert!(
+        state.election_history.vote_grants.is_empty(),
+        "denied RequestVote responses must not create grant observations"
+    );
+}
+
+#[test]
+fn vote_grant_oracle_rejects_non_voter_candidate() {
+    let state = request_vote_grant_state(
+        NodeId(4),
+        &[],
+        RequestVote {
+            term: Term(4),
+            candidate_id: NodeId(4),
+            last_log_index: LogIndex::ZERO,
+            last_log_term: Term::default(),
+        },
+        Some(NodeId(4)),
+    );
+
+    let failure = check_election_history(&state, &[])
+        .expect_err("grant to candidate outside membership must be rejected");
+    assert_eq!(failure.invariant(), catalog::EL_03_SAFE_VOTE_ELIGIBILITY);
+    assert!(
+        failure
+            .message
+            .contains("node-1 granted term 4 vote to non-voter node-4"),
+        "unexpected failure message: {}",
+        failure.message
+    );
+}
+
+#[test]
+fn vote_grant_oracle_rejects_stale_candidate_log() {
+    let state = request_vote_grant_state(
+        NodeId(2),
+        &[(1, Term(2), b"voter-entry")],
+        RequestVote {
+            term: Term(4),
+            candidate_id: NodeId(2),
+            last_log_index: LogIndex(1),
+            last_log_term: Term(1),
+        },
+        Some(NodeId(2)),
+    );
+
+    let failure = check_election_history(&state, &[])
+        .expect_err("grant to stale candidate log must be rejected");
+    assert_eq!(failure.invariant(), catalog::EL_03_SAFE_VOTE_ELIGIBILITY);
+    assert!(
+        failure
+            .message
+            .contains("with stale candidate log (1, 1) below voter log (1, 2)"),
+        "unexpected failure message: {}",
+        failure.message
+    );
+}
+
+#[test]
+fn vote_grant_oracle_requires_durable_vote_for_candidate() {
+    let state = request_vote_grant_state(
+        NodeId(2),
+        &[],
+        RequestVote {
+            term: Term(4),
+            candidate_id: NodeId(2),
+            last_log_index: LogIndex::ZERO,
+            last_log_term: Term::default(),
+        },
+        None,
+    );
+
+    let failure = check_election_history(&state, &[])
+        .expect_err("grant response must leave a durable vote for the candidate");
+    assert_eq!(
+        failure.invariant(),
+        catalog::EL_02_ONE_DURABLE_VOTE_PER_TERM
+    );
+    assert!(
+        failure
+            .message
+            .contains("node-1 granted term 4 vote to node-2 but durable vote is None"),
+        "unexpected failure message: {}",
+        failure.message
+    );
+}
+
+#[test]
 fn election_history_detects_second_leader_in_same_term() {
     let membership = stable_membership(&[1, 2, 3], &[]);
     let first = election_certificate(4, 1, membership.clone(), &[1, 2]);
@@ -257,8 +440,8 @@ fn election_history_deduplicates_duplicate_grants() {
         }),
     };
 
-    state.record_election_observation(&before, Some(&envelope));
-    state.record_election_observation(&before, Some(&envelope));
+    state.record_election_observation(&before, Some(&envelope), &[]);
+    state.record_election_observation(&before, Some(&envelope), &[]);
 
     assert_eq!(
         state
@@ -269,4 +452,41 @@ fn election_history_deduplicates_duplicate_grants() {
             .len(),
         1
     );
+}
+
+fn request_vote_grant_state(
+    candidate_id: NodeId,
+    voter_entries: &[(u64, Term, &[u8])],
+    request: RequestVote,
+    durable_vote: Option<NodeId>,
+) -> ExplorationState {
+    let mut before = one_node_cluster();
+    before
+        .restart_node_from_bootstrap(NodeId(1), bootstrap_state(Term(3), voter_entries))
+        .expect("before voter bootstrap is valid");
+
+    let mut after_bootstrap = bootstrap_state(request.term, voter_entries);
+    after_bootstrap.voted_for = durable_vote;
+    let mut after = one_node_cluster();
+    after
+        .restart_node_from_bootstrap(NodeId(1), after_bootstrap)
+        .expect("after voter bootstrap is valid");
+
+    let mut state = ExplorationState::new(after);
+    let delivered = Envelope {
+        from: candidate_id,
+        to: NodeId(1),
+        message: Message::RequestVote(request),
+    };
+    let emitted = [Envelope {
+        from: NodeId(1),
+        to: candidate_id,
+        message: Message::RequestVoteResponse(RequestVoteResponse {
+            term: request.term,
+            voter_id: NodeId(1),
+            vote_granted: true,
+        }),
+    }];
+    state.record_election_observation(&before, Some(&delivered), &emitted);
+    state
 }
