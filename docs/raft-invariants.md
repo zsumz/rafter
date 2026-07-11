@@ -159,6 +159,8 @@ named temporal or witness-based verdicts.
 | `EL-06` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `election_certificate_rejects_learner_grant` |
 | `EL-06` | tests | direct | `crates/rafter/src/node/tests/election/campaign.rs#candidate_becomes_leader_after_quorum` |
 | `EL-06` | tests | direct | `crates/rafter/src/node/tests/membership/authority.rs#learner_grant_does_not_create_quorum` |
+| `EL-07` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `authority_fencing_oracle_rejects_unfenced_higher_term_response` |
+| `EL-07` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `authority_fencing_oracle_rejects_stale_response_leadership` |
 | `EL-07` | tests | direct | `crates/rafter/src/node/tests/transfer/timeout.rs#stale_term_timeout_now_is_ignored` |
 | `EL-07` | tla | direct | `specs/tla/raft/Raft.tla#StaleLeaderFencing` |
 | `EL-08` | tests | direct | `crates/rafter/src/node/tests/pre_vote.rs#pre_vote_grant_is_not_persisted_and_does_not_set_voted_for` |
@@ -361,11 +363,11 @@ Statement: Higher-term authority makes a node update term and step down; stale-t
 
 Evidence now:
 - TLA+: D: StaleLeaderFencing (abstract)
-- Simulator: P: explored behavior
+- Simulator: D: cross-message term/leadership authority transition oracle
 - Tests: D: election/read/transfer tests
 - Maelstrom: P: partitions and leader restart
 
-Next: Add a single cross-message simulator oracle keyed by message term and pre/post authority state.
+Next: Retain the cross-message simulator oracle keyed by message term and pre/post authority state; keep read/transfer consequences covered by their direct tests.
 
 #### `EL-08` Pre-vote is non-binding and non-disruptive
 

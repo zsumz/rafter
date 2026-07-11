@@ -124,6 +124,37 @@ pub(crate) fn check_election_history(
         }
     }
 
+    if let Some(violation) = state
+        .election_history
+        .authority_transition_violations
+        .first()
+    {
+        let reason = match violation.reason {
+            super::super::state::AuthorityTransitionViolationKind::HigherTermNotFenced => {
+                "did not fence higher-term authority"
+            }
+            super::super::state::AuthorityTransitionViolationKind::StaleTermCreatedLeader => {
+                "let stale-term traffic create leadership"
+            }
+        };
+        return Err(Failure {
+            kind: crate::model_check::FailureKind::InvariantViolation,
+            invariant: catalog::EL_07_TERM_AND_AUTHORITY_FENCING,
+            message: format!(
+                "{} {reason}: delivered {} term {} from term {} {} to term {} {}",
+                violation.node_id,
+                violation.message_kind,
+                violation.message_term,
+                violation.before_term,
+                violation.before_role,
+                violation.after_term,
+                violation.after_role,
+            ),
+            trace: trace.to_vec(),
+            state: summarize(&state.cluster),
+        });
+    }
+
     if let Some(conflict) = state.election_history.conflicting_elections.iter().next() {
         return Err(Failure {
             kind: crate::model_check::FailureKind::InvariantViolation,

@@ -16,6 +16,7 @@ pub(crate) struct ElectionHistory {
     pub(crate) vote_conflicts: BTreeSet<VoteConflict>,
     pub(crate) vote_losses: BTreeSet<VoteLoss>,
     pub(crate) vote_grants: Vec<VoteGrantObservation>,
+    pub(crate) authority_transition_violations: Vec<AuthorityTransitionViolation>,
     pub(crate) grants_by_candidate: BTreeMap<(Term, NodeId), BTreeSet<NodeId>>,
     pub(crate) elected_by_term: BTreeMap<Term, ElectionCertificate>,
     pub(crate) conflicting_elections: BTreeSet<ElectionConflict>,
@@ -120,6 +121,24 @@ pub(crate) struct VoteGrantObservation {
 }
 
 #[derive(Clone, Debug, Hash)]
+pub(crate) struct AuthorityTransitionViolation {
+    pub(crate) node_id: NodeId,
+    pub(crate) message_kind: &'static str,
+    pub(crate) message_term: Term,
+    pub(crate) before_term: Term,
+    pub(crate) after_term: Term,
+    pub(crate) before_role: rafter::Role,
+    pub(crate) after_role: rafter::Role,
+    pub(crate) reason: AuthorityTransitionViolationKind,
+}
+
+#[derive(Clone, Copy, Debug, Hash)]
+pub(crate) enum AuthorityTransitionViolationKind {
+    HigherTermNotFenced,
+    StaleTermCreatedLeader,
+}
+
+#[derive(Clone, Debug, Hash)]
 pub(crate) struct ElectionCertificate {
     pub(crate) leader_id: NodeId,
     pub(crate) term: Term,
@@ -148,10 +167,61 @@ impl ExplorationState {
         emitted: &[Envelope],
     ) {
         if let Some(envelope) = delivered {
+            self.record_authority_transition(before, envelope);
             self.record_request_vote_response_grant(envelope);
             self.record_request_vote_grant(before, envelope, emitted);
         }
         self.record_leader_transitions(before);
+    }
+
+    fn record_authority_transition(&mut self, before: &Cluster, envelope: &Envelope) {
+        let Some(message_authority) = authority_message(&envelope.message) else {
+            return;
+        };
+        let Some(before_node) = before.nodes.get(&envelope.to) else {
+            return;
+        };
+        let Some(after_node) = self.cluster.nodes.get(&envelope.to) else {
+            return;
+        };
+
+        let higher_term_not_fenced = message_authority.must_fence_higher_term
+            && message_authority.term > before_node.current_term()
+            && (after_node.current_term() < message_authority.term
+                || (before_node.role() == rafter::Role::Leader
+                    && after_node.role() == rafter::Role::Leader));
+        if higher_term_not_fenced {
+            self.election_history.authority_transition_violations.push(
+                AuthorityTransitionViolation {
+                    node_id: envelope.to,
+                    message_kind: message_authority.kind,
+                    message_term: message_authority.term,
+                    before_term: before_node.current_term(),
+                    after_term: after_node.current_term(),
+                    before_role: before_node.role(),
+                    after_role: after_node.role(),
+                    reason: AuthorityTransitionViolationKind::HigherTermNotFenced,
+                },
+            );
+        }
+
+        let stale_term_created_leader = message_authority.term < before_node.current_term()
+            && before_node.role() != rafter::Role::Leader
+            && after_node.role() == rafter::Role::Leader;
+        if stale_term_created_leader {
+            self.election_history.authority_transition_violations.push(
+                AuthorityTransitionViolation {
+                    node_id: envelope.to,
+                    message_kind: message_authority.kind,
+                    message_term: message_authority.term,
+                    before_term: before_node.current_term(),
+                    after_term: after_node.current_term(),
+                    before_role: before_node.role(),
+                    after_role: after_node.role(),
+                    reason: AuthorityTransitionViolationKind::StaleTermCreatedLeader,
+                },
+            );
+        }
     }
 
     fn record_request_vote_response_grant(&mut self, envelope: &Envelope) {
@@ -249,6 +319,34 @@ impl ExplorationState {
             self.election_history.record_election(certificate);
         }
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct AuthorityMessage {
+    kind: &'static str,
+    term: Term,
+    must_fence_higher_term: bool,
+}
+
+fn authority_message(message: &Message) -> Option<AuthorityMessage> {
+    let (kind, term, must_fence_higher_term) = match message {
+        Message::AppendEntries(request) => ("AppendEntries", request.term, true),
+        Message::AppendEntriesResponse(response) => ("AppendEntriesResponse", response.term, true),
+        Message::InstallSnapshot(request) => ("InstallSnapshot", request.term, true),
+        Message::InstallSnapshotChunk(request) => ("InstallSnapshotChunk", request.term, true),
+        Message::InstallSnapshotResponse(response) => {
+            ("InstallSnapshotResponse", response.term, true)
+        }
+        Message::TimeoutNow(request) => ("TimeoutNow", request.term, false),
+        Message::RequestVote(request) => ("RequestVote", request.term, true),
+        Message::RequestVoteResponse(response) => ("RequestVoteResponse", response.term, true),
+        Message::PreVote(_) | Message::PreVoteResponse(_) => return None,
+    };
+    Some(AuthorityMessage {
+        kind,
+        term,
+        must_fence_higher_term,
+    })
 }
 
 fn granted_vote_response_to_candidate(
