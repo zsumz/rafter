@@ -121,6 +121,12 @@ fn validate_execution(
         || !is_sha256(&bundle.execution.source.rustc_sha256)
         || bundle.execution.source.target.trim().is_empty()
         || bundle.execution.source.build_profile.trim().is_empty()
+        || bundle
+            .execution
+            .source
+            .tools
+            .values()
+            .any(|tool| tool.version.trim().is_empty() || !is_sha256(&tool.sha256))
         || !is_sha256(&bundle.execution.source.environment_sha256)
     {
         return Err("source/toolchain provenance is incomplete or does not match source_ref");
@@ -188,6 +194,8 @@ fn validate_execution(
         crate::receipt_tests::validate(bundle, expected)?;
     } else if bundle.runner == "simulator" {
         crate::receipt_simulator::validate(bundle, expected)?;
+    } else if bundle.runner == "tla" {
+        crate::receipt_tla::validate(bundle, expected, contract)?;
     }
     Ok(())
 }

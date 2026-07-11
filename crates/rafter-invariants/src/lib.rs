@@ -2,11 +2,13 @@
 
 mod aggregate;
 mod artifact_verify;
+mod artifact_verify_tla;
 mod catalog;
 mod producer;
 mod receipt;
 mod receipt_simulator;
 mod receipt_tests;
+mod receipt_tla;
 mod registry_parse;
 mod render;
 mod types;
@@ -19,8 +21,8 @@ pub use producer::{produce, ProducerOptions, ProducerOutcome};
 pub use render::{render_junit, render_markdown};
 pub use types::{
     ArtifactRef, CheckCompletion, CheckReceipt, EvidenceResult, EvidenceStatus, ExecutionReceipt,
-    FailureClassification, InvariantVerdict, ResultBundle, SourceReceipt, VerdictReport,
-    VerdictStatus,
+    FailureClassification, InvariantVerdict, ResultBundle, SourceReceipt, ToolReceipt,
+    VerdictReport, VerdictStatus,
 };
 
 #[cfg(test)]

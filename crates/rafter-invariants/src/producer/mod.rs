@@ -6,9 +6,16 @@ pub(crate) mod source;
 mod test_compile;
 mod test_exec;
 mod tests;
+mod tla;
+mod tla_contract;
+mod tla_exec;
+pub(crate) mod tla_output;
 #[cfg(test)]
 mod unit_tests;
 
+pub(crate) use process::ProcessLog;
+
+use std::collections::BTreeSet;
 use std::{error::Error, fs, path::PathBuf};
 
 use crate::{Catalog, ProfileManifest, ResultBundle};
@@ -69,9 +76,30 @@ pub fn produce(options: &ProducerOptions) -> Result<ProducerOutcome, Box<dyn Err
             source,
             &options.output_dir,
         )?,
+        "tla" => tla::run(
+            &catalog,
+            contract,
+            &options.profile,
+            source,
+            &options.output_dir,
+        )?,
         layer => return Err(format!("producer for layer {layer} is not implemented").into()),
     };
-    let all_passed = !bundle.results.is_empty()
+    let expected_ids = catalog
+        .required_evidence(contract)
+        .into_values()
+        .flatten()
+        .filter(|descriptor| descriptor.layer == options.layer)
+        .map(|descriptor| descriptor.evidence_id())
+        .collect::<BTreeSet<_>>();
+    let result_ids = bundle
+        .results
+        .iter()
+        .map(|result| result.evidence_id.clone())
+        .collect::<BTreeSet<_>>();
+    let all_passed = !expected_ids.is_empty()
+        && result_ids == expected_ids
+        && bundle.results.len() == result_ids.len()
         && bundle.execution.checks.len()
             >= contract.runners[&options.layer].minimum_observed_checks
         && bundle

@@ -3,11 +3,14 @@ use std::{
     env,
     error::Error,
     ffi::OsString,
+    fs::File,
     path::{Path, PathBuf},
-    process::{Command, ExitStatus},
+    process::{Command, ExitStatus, Stdio},
     sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
+
+use serde::{Deserialize, Serialize};
 
 static TELEMETRY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -18,6 +21,20 @@ pub(super) struct ProcessOutput {
     pub stderr: Vec<u8>,
     pub duration: Duration,
     pub peak_rss_kib: u64,
+    pub timed_out: bool,
+}
+
+#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProcessLog {
+    pub schema_version: u32,
+    pub label: String,
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
+    pub duration_ms: u64,
+    pub peak_rss_kib: u64,
+    pub stdout: String,
+    pub stderr: String,
 }
 
 pub(super) fn timed(
@@ -54,6 +71,57 @@ pub(super) fn timed(
         stderr: output.stderr,
         duration: started.elapsed(),
         peak_rss_kib,
+        timed_out: false,
+    })
+}
+
+pub(super) fn timed_with_timeout(
+    program: &str,
+    arguments: &[OsString],
+    environment: &BTreeMap<String, String>,
+    current_dir: &Path,
+    timeout: Duration,
+) -> Result<ProcessOutput, Box<dyn Error>> {
+    let started = Instant::now();
+    let output_prefix = telemetry_path()?.with_extension("");
+    let stdout_path = output_prefix.with_extension("stdout");
+    let stderr_path = output_prefix.with_extension("stderr");
+    let stdout_file = File::create(&stdout_path)?;
+    let stderr_file = File::create(&stderr_path)?;
+    let mut child = Command::new(program)
+        .args(arguments)
+        .env_clear()
+        .envs(environment)
+        .current_dir(current_dir)
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file))
+        .spawn()?;
+    let mut peak_rss_kib = 0;
+    let (status, timed_out) = loop {
+        peak_rss_kib = peak_rss_kib.max(process_rss_kib(child.id()).unwrap_or_default());
+        if let Some(status) = child.try_wait()? {
+            break (status, false);
+        }
+        if started.elapsed() >= timeout {
+            child.kill()?;
+            break (child.wait()?, true);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let stdout = std::fs::read(&stdout_path)?;
+    let stderr = std::fs::read(&stderr_path)?;
+    std::fs::remove_file(stdout_path)?;
+    std::fs::remove_file(stderr_path)?;
+    if peak_rss_kib == 0 {
+        return Err("process RSS polling did not observe the child".into());
+    }
+    Ok(ProcessOutput {
+        status,
+        stdout,
+        stderr,
+        duration: started.elapsed(),
+        peak_rss_kib,
+        timed_out,
     })
 }
 
@@ -98,10 +166,23 @@ fn parse_peak_rss(stderr: &[u8]) -> Option<u64> {
     }
 }
 
+fn process_rss_kib(pid: u32) -> Option<u64> {
+    let output = Command::new("ps")
+        .args(["-o", "rss=", "-p", &pid.to_string()])
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().parse().ok())
+        .flatten()
+}
+
 pub(super) fn combined_log(label: &str, output: &ProcessOutput) -> Vec<u8> {
     format!(
-        "label: {label}\nexit_code: {:?}\nduration_ms: {}\npeak_rss_kib: {}\n\n--- stdout ---\n{}\n--- stderr ---\n{}",
+        "label: {label}\nexit_code: {:?}\ntimed_out: {}\nduration_ms: {}\npeak_rss_kib: {}\n\n--- stdout ---\n{}\n--- stderr ---\n{}",
         output.status.code(),
+        output.timed_out,
         output.duration.as_millis(),
         output.peak_rss_kib,
         String::from_utf8_lossy(&output.stdout),
@@ -110,13 +191,28 @@ pub(super) fn combined_log(label: &str, output: &ProcessOutput) -> Vec<u8> {
     .into_bytes()
 }
 
+pub(super) fn json_log(label: &str, output: &ProcessOutput) -> Result<Vec<u8>, Box<dyn Error>> {
+    Ok(serde_json::to_vec_pretty(&ProcessLog {
+        schema_version: 1,
+        label: label.to_owned(),
+        exit_code: output.status.code(),
+        timed_out: output.timed_out,
+        duration_ms: duration_ms(output.duration),
+        peak_rss_kib: output.peak_rss_kib,
+        stdout: String::from_utf8(output.stdout.clone())?,
+        stderr: String::from_utf8(output.stderr.clone())?,
+    })?)
+}
+
 pub(super) fn duration_ms(duration: Duration) -> u64 {
     u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::parse_peak_rss;
+    use std::{collections::BTreeMap, ffi::OsString, path::Path, time::Duration};
+
+    use super::{parse_peak_rss, process_rss_kib, timed_with_timeout, ProcessLog};
 
     #[test]
     fn parses_platform_peak_rss() {
@@ -126,5 +222,41 @@ mod tests {
             b"\tMaximum resident set size (kbytes): 1024\n".as_slice()
         };
         assert_eq!(parse_peak_rss(input), Some(1024));
+    }
+
+    #[test]
+    fn timed_child_is_killed_at_its_soft_timeout() {
+        if process_rss_kib(std::process::id()).is_none() {
+            return;
+        }
+        let output = timed_with_timeout(
+            "sleep",
+            &[OsString::from("5")],
+            &BTreeMap::new(),
+            Path::new("."),
+            Duration::from_millis(10),
+        )
+        .expect("timed child produces telemetry");
+
+        assert!(output.timed_out);
+        assert!(!output.status.success());
+        assert!(output.duration < Duration::from_secs(2));
+        assert!(output.peak_rss_kib > 0);
+    }
+
+    #[test]
+    fn structured_process_log_rejects_unknown_fields() {
+        let source = r#"{
+            "schema_version": 1,
+            "label": "model-check",
+            "exit_code": 0,
+            "timed_out": false,
+            "duration_ms": 1,
+            "peak_rss_kib": 1,
+            "stdout": "",
+            "stderr": "",
+            "trusted": true
+        }"#;
+        assert!(serde_json::from_str::<ProcessLog>(source).is_err());
     }
 }

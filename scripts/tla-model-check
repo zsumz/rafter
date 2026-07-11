@@ -6,19 +6,23 @@
 #   scripts/tla-model-check --nightly     # nightly 3-voter bounds (RaftNightly.cfg)
 #   scripts/tla-model-check --full        # full local bounds (Raft.cfg, hours+)
 #   scripts/tla-model-check --trace-sample # TLC-check generated Rust trace sample
+#   scripts/tla-model-check --fetch-tool  # fetch and verify the pinned TLC jar
 #   scripts/tla-model-check --print-config [--nightly|--full]
 #
-# Downloads the tla2tools.jar release pinned by tools/tla/VERSION into
-# tools/cache/ and verifies it against tools/tla/SHA256SUMS before running.
+# Downloads the immutable GitHub release asset pinned by tools/tla/ASSET_ID
+# into tools/cache/ and verifies it against tools/tla/SHA256SUMS before running.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 config="RaftCi.cfg"
 module="Raft.tla"
 print_config=false
+fetch_tool=false
+workers=4
+seed=2026071101
 
 usage() {
-    sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -28,13 +32,19 @@ while [[ $# -gt 0 ]]; do
             ;;
         --nightly)
             config="RaftNightly.cfg"
+            seed=2026071102
             ;;
         --full)
             config="Raft.cfg"
+            seed=2026071103
             ;;
         --trace-sample)
             config="RaftTraceSample.cfg"
             module="RaftTraceSample.tla"
+            workers=1
+            ;;
+        --fetch-tool)
+            fetch_tool=true
             ;;
         --print-config)
             print_config=true
@@ -60,26 +70,48 @@ fi
 cache_dir="${repo_root}/tools/cache"
 jar="${cache_dir}/tla2tools.jar"
 version="$(cat "${repo_root}/tools/tla/VERSION")"
+asset_id="$(cat "${repo_root}/tools/tla/ASSET_ID")"
 expected="$(awk '$1 !~ /^#/ && $2 == "tla2tools.jar" { print $1 }' "${repo_root}/tools/tla/SHA256SUMS")"
 
+if [[ ! "$asset_id" =~ ^[0-9]+$ ]]; then
+    echo "error: tools/tla/ASSET_ID must contain one numeric GitHub asset ID" >&2
+    exit 1
+fi
+if [[ ! "$expected" =~ ^[0-9a-f]{64}$ ]]; then
+    echo "error: tools/tla/SHA256SUMS must contain one tla2tools.jar SHA-256" >&2
+    exit 1
+fi
+
 verify() {
+    local candidate="${1:-$jar}"
     local actual
-    actual="$(openssl dgst -sha256 "$jar" | awk '{ print $NF }')"
+    actual="$(openssl dgst -sha256 "$candidate" | awk '{ print $NF }')"
     [[ "$actual" == "$expected" ]]
 }
 
 if [[ ! -f "$jar" ]] || ! verify; then
     mkdir -p "$cache_dir"
-    echo "downloading tla2tools.jar ${version}"
+    download="${jar}.download.$$"
+    trap 'rm -f "$download"' EXIT
+    echo "downloading tla2tools.jar ${version} asset ${asset_id}"
     curl -fsSL \
-        -o "$jar" \
-        "https://github.com/tlaplus/tlaplus/releases/download/${version}/tla2tools.jar"
-    if ! verify; then
+        -H "Accept: application/octet-stream" \
+        -o "$download" \
+        "https://api.github.com/repos/tlaplus/tlaplus/releases/assets/${asset_id}"
+    if ! verify "$download"; then
         echo "error: tla2tools.jar sha256 mismatch against tools/tla/SHA256SUMS" >&2
         exit 1
     fi
+    mv "$download" "$jar"
+    trap - EXIT
+fi
+
+if [[ "$fetch_tool" == true ]]; then
+    echo "$jar"
+    exit 0
 fi
 
 cd "${repo_root}/specs/tla/raft"
 echo "running TLC with ${config}"
-exec java -XX:+UseParallelGC -cp "$jar" tlc2.TLC -config "$config" "$module"
+exec java -XX:+UseParallelGC -cp "$jar" tlc2.TLC \
+    -workers "$workers" -seed "$seed" -fp 0 -config "$config" "$module"

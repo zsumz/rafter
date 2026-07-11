@@ -43,6 +43,7 @@ fn source_receipt(commit: &str) -> SourceReceipt {
         target: "test-target".to_owned(),
         build_profile: "test".to_owned(),
         features: Vec::new(),
+        tools: std::collections::BTreeMap::new(),
         environment_sha256: "0".repeat(64),
         clean: true,
     }
@@ -52,6 +53,9 @@ fn synthetic_check_id(descriptor: &EvidenceDescriptor) -> String {
     if descriptor.layer == "simulator" {
         return format!("simulator/{}", descriptor.evidence_id());
     }
+    if descriptor.layer == "tla" {
+        return "tla/RaftCi.cfg#Spec".to_owned();
+    }
     descriptor
         .test
         .as_ref()
@@ -59,8 +63,9 @@ fn synthetic_check_id(descriptor: &EvidenceDescriptor) -> String {
 }
 
 fn synthetic_observations(
-    descriptor: &EvidenceDescriptor,
+    descriptors: &[EvidenceDescriptor],
 ) -> std::collections::BTreeMap<String, u64> {
+    let descriptor = &descriptors[0];
     if descriptor.layer == "tests" {
         return std::collections::BTreeMap::from([
             ("discovered".to_owned(), 1),
@@ -69,6 +74,24 @@ fn synthetic_observations(
         ]);
     }
     let Some(identity) = &descriptor.simulator else {
+        if descriptor.layer == "tla" {
+            let mut observations = std::collections::BTreeMap::from([
+                ("configured_invariants".to_owned(), 9),
+                ("tool_pin_verified".to_owned(), 1),
+                ("trace_sample_passed".to_owned(), 1),
+                ("detector_negative_passed".to_owned(), 1),
+                ("generated_states".to_owned(), 130_000_000),
+                ("distinct_states".to_owned(), 120_000_000),
+                ("states_left_on_queue".to_owned(), 0),
+                ("search_depth".to_owned(), 1),
+            ]);
+            observations.extend(
+                descriptors
+                    .iter()
+                    .map(|descriptor| (format!("checked:{}", descriptor.symbol), 1)),
+            );
+            return observations;
+        }
         return std::collections::BTreeMap::new();
     };
     let mut observations = std::collections::BTreeMap::from([
@@ -119,6 +142,24 @@ fn synthetic_artifacts(descriptor: &EvidenceDescriptor) -> Vec<ArtifactRef> {
             }
             artifacts
         }
+        "tla" => [
+            "tla-log",
+            "tla-trace-log",
+            "tla-detector-log",
+            "tla-tool",
+            "tla-spec",
+            "tla-trace-spec",
+            "tla-detector-spec",
+            "tla-runner",
+            "tla-tool-asset-id",
+            "tla-tool-checksums",
+            "tla-config",
+            "tla-trace-config",
+            "tla-detector-config",
+        ]
+        .into_iter()
+        .map(|kind| artifact_kind(&format!("artifacts/{kind}"), kind))
+        .collect(),
         runner => vec![artifact(&format!("artifacts/{runner}.log"))],
     }
 }
@@ -163,20 +204,35 @@ fn passing_bundles(catalog: &Catalog, manifest: &ProfileManifest) -> Vec<ResultB
                             artifacts: Vec::new(),
                         }
                     }));
+                    let completion = if runner == "tla" {
+                        CheckCompletion::FrontierExhausted
+                    } else {
+                        CheckCompletion::Completed
+                    };
                     CheckReceipt {
                         execution_id,
                         check_id,
                         evidence_ids,
-                        completion: CheckCompletion::Completed,
-                        observations: synthetic_observations(&descriptors[0]),
+                        completion,
+                        observations: synthetic_observations(&descriptors),
                         duration_ms: 1,
                         peak_rss_kib: 1,
                         artifacts: synthetic_artifacts(&descriptors[0]),
                     }
                 })
                 .collect();
+            let mut source = source_receipt("abc");
+            if runner == "tla" {
+                source.tools.insert(
+                    "java".to_owned(),
+                    ToolReceipt {
+                        version: "java 21 test".to_owned(),
+                        sha256: "0".repeat(64),
+                    },
+                );
+            }
             ResultBundle {
-                schema_version: 4,
+                schema_version: 5,
                 runner: runner.clone(),
                 profile: "pr".to_owned(),
                 source_ref: "abc".to_owned(),
@@ -184,7 +240,7 @@ fn passing_bundles(catalog: &Catalog, manifest: &ProfileManifest) -> Vec<ResultB
                     producer: runner_contract.producer.clone(),
                     command: runner_contract.command.clone(),
                     configuration: runner_contract.configuration.clone(),
-                    source: source_receipt("abc"),
+                    source,
                     checks,
                     duration_ms: 1,
                     peak_rss_kib: 1,
@@ -351,6 +407,46 @@ fn simulator_pass_requires_its_registry_semantic_witness() {
 }
 
 #[test]
+fn tla_pass_requires_every_framed_predicate_observation() {
+    let (catalog, manifest) = loaded();
+    let mut bundles = passing_bundles(&catalog, &manifest);
+    let tla = bundles
+        .iter_mut()
+        .find(|bundle| bundle.runner == "tla")
+        .expect("TLA bundle exists");
+    tla.execution.checks[0]
+        .observations
+        .remove("checked:ElectionSafety");
+
+    let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
+    assert_eq!(report.summary.green, 0);
+    assert_eq!(report.summary.red, 44);
+    assert!(report.invariants.iter().all(|verdict| verdict
+        .issues
+        .iter()
+        .any(|issue| issue.message.contains("terminal frames"))));
+}
+
+#[test]
+fn tla_generic_completed_status_cannot_claim_pass() {
+    let (catalog, manifest) = loaded();
+    let mut bundles = passing_bundles(&catalog, &manifest);
+    let tla = bundles
+        .iter_mut()
+        .find(|bundle| bundle.runner == "tla")
+        .expect("TLA bundle exists");
+    tla.execution.checks[0].completion = CheckCompletion::Completed;
+
+    let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
+    assert_eq!(report.summary.green, 0);
+    assert_eq!(report.summary.red, 44);
+    assert!(report.invariants.iter().all(|verdict| verdict
+        .issues
+        .iter()
+        .any(|issue| issue.message.contains("generic completed"))));
+}
+
+#[test]
 fn canonical_invariant_with_one_layer_stays_red() {
     let (mut catalog, manifest) = loaded();
     catalog
@@ -374,7 +470,7 @@ fn canonical_invariant_with_one_layer_stays_red() {
 #[test]
 fn result_bundle_rejects_unknown_fields() {
     let source = r#"{
-        "schema_version": 4,
+        "schema_version": 5,
         "runner": "tests",
         "profile": "pr",
         "source_ref": "abc",
@@ -387,7 +483,7 @@ fn result_bundle_rejects_unknown_fields() {
             "cargo": "cargo test", "cargo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
             "cargo_config_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
             "rustc": "rustc test", "rustc_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-            "target": "test-target", "build_profile": "test", "features": [],
+            "target": "test-target", "build_profile": "test", "features": [], "tools": {},
             "environment_sha256": "0000000000000000000000000000000000000000000000000000000000000000", "clean": true
           },
           "checks": [],
@@ -405,7 +501,7 @@ fn result_bundle_rejects_unknown_fields() {
 fn stale_bundle_is_red_never_green() {
     let (catalog, manifest) = loaded();
     let bundle = ResultBundle {
-        schema_version: 4,
+        schema_version: 5,
         runner: "tests".to_owned(),
         profile: "pr".to_owned(),
         source_ref: "old".to_owned(),
