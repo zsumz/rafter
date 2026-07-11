@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/zsumz/rafter/verification/invariant-result-schema.json",
+  "title": "Rafter invariant evidence result bundle",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "runner", "profile", "source_ref", "results"],
+  "properties": {
+    "schema_version": { "const": 1 },
+    "runner": { "enum": ["tests", "simulator", "tla", "maelstrom"] },
+    "profile": { "enum": ["pr", "nightly", "weekly"] },
+    "source_ref": { "type": "string", "minLength": 1 },
+    "results": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/result" }
+    }
+  },
+  "$defs": {
+    "artifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "path"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 }
+      }
+    },
+    "result": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["invariant_id", "evidence_id", "status"],
+      "properties": {
+        "invariant_id": { "type": "string", "pattern": "^[A-Z]{2}-[0-9]{2}$" },
+        "evidence_id": { "type": "string", "minLength": 1 },
+        "status": { "enum": ["pass", "fail", "incomplete", "error"] },
+        "classification": {
+          "enum": ["invariant_violation", "coverage_not_reached", "harness_error"]
+        },
+        "message": { "type": "string" },
+        "artifacts": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/artifact" }
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "pass" } } },
+          "then": { "not": { "required": ["classification"] } }
+        },
+        {
+          "if": { "properties": { "status": { "const": "fail" } } },
+          "then": {
+            "required": ["classification", "message"],
+            "properties": { "classification": { "const": "invariant_violation" } }
+          }
+        },
+        {
+          "if": { "properties": { "status": { "const": "incomplete" } } },
+          "then": {
+            "required": ["classification", "message"],
+            "properties": { "classification": { "const": "coverage_not_reached" } }
+          }
+        },
+        {
+          "if": { "properties": { "status": { "const": "error" } } },
+          "then": {
+            "required": ["classification", "message"],
+            "properties": { "classification": { "const": "harness_error" } }
+          }
+        }
+      ]
+    }
+  }
+}
