@@ -183,6 +183,8 @@ def render_evidence_references(evidence: list[dict[str, str]]) -> list[str]:
         reference = f"`{record['path']}#{record['symbol']}`"
         if negative := record.get("negative_fixture"):
             reference = f"{reference}; negative fixture `{negative}`"
+        if exemption := record.get("negative_fixture_exemption"):
+            reference = f"{reference}; negative fixture exemption `{exemption}`"
         lines.append(
             f"| `{record['id']}` | {record['layer']} | {record['strength']} | {reference} |"
         )
