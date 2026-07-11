@@ -136,8 +136,11 @@ named temporal or witness-based verdicts.
 | ID | Layer | Strength | Reference |
 | --- | --- | --- | --- |
 | `ST-01` | tests | direct | `crates/rafter/src/node/tests/derived_state.rs#derived_state_is_valid_after_bootstrap` |
+| `EL-01` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `term_monotonicity_history_detects_regression_from_observation` |
 | `EL-01` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#election_persists_term_and_vote_before_vote_requests_escape` |
 | `EL-01` | tests | direct | `crates/rafter/src/node/tests/election/voting.rs#public_transitions_do_not_decrease_current_term` |
+| `EL-02` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `durable_vote_history_rejects_second_vote_in_term` |
+| `EL-02` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `durable_vote_history_detects_lost_vote_same_term` |
 | `EL-02` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#restarted_node_preserves_persisted_vote` |
 | `EL-02` | tests | direct | `crates/rafter/src/node/tests/election/voting.rs#follower_grants_one_vote_per_term` |
 | `EL-03` | tests | direct | `crates/rafter/src/node/tests/election/voting.rs#stale_vote_request_is_rejected` |
@@ -266,11 +269,11 @@ Statement: A node's current term never decreases, including across restart.
 
 Evidence now:
 - TLA+: P: transition semantics
-- Simulator: none
+- Simulator: D: per-node term floors observed by ElectionHistory
 - Tests: D: election + runtime hard-state tests
 - Maelstrom: none
 
-Next: Track a per-node term floor in ExplorationState and fail on regression.
+Next: Retain per-node simulator term floors plus runtime restart coverage.
 
 #### `EL-02` One durable vote per term
 
@@ -280,11 +283,11 @@ Statement: A server grants at most one binding vote in a term, and the recorded 
 
 Evidence now:
 - TLA+: P: votedFor semantics
-- Simulator: none
+- Simulator: D: durable vote history by node and term
 - Tests: D: election and runtime restart tests
 - Maelstrom: none
 
-Next: Add vote history to the simulator, including lossy-restart schedules.
+Next: Retain simulator vote history across ordinary and lossy restarts.
 
 #### `EL-03` Safe vote eligibility
 

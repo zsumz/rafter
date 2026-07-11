@@ -102,6 +102,7 @@ pub(in crate::model_check) fn apply_soak_action(
             state.reset_commit_floor(node_id);
         }
     }
+    state.observe_election_authority();
     state.refresh_commit_floors();
     state.refresh_client_history();
     state.refresh_log_history();

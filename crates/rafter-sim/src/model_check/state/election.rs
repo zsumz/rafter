@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
 
 use rafter::{BootstrapState, LogIndex, MembershipConfig, Message, NodeId, Term};
 
@@ -8,12 +8,64 @@ use super::ExplorationState;
 
 #[derive(Clone, Debug, Default, Hash)]
 pub(crate) struct ElectionHistory {
+    pub(crate) term_floor_by_node: BTreeMap<NodeId, Term>,
+    pub(crate) votes_by_node_term: BTreeMap<(NodeId, Term), NodeId>,
+    pub(crate) term_regressions: BTreeSet<TermRegression>,
+    pub(crate) vote_conflicts: BTreeSet<VoteConflict>,
+    pub(crate) vote_losses: BTreeSet<VoteLoss>,
     pub(crate) grants_by_candidate: BTreeMap<(Term, NodeId), BTreeSet<NodeId>>,
     pub(crate) elected_by_term: BTreeMap<Term, ElectionCertificate>,
     pub(crate) conflicting_elections: BTreeSet<ElectionConflict>,
 }
 
 impl ElectionHistory {
+    pub(in crate::model_check) fn observe_authority_state(&mut self, cluster: &Cluster) {
+        for (node_id, node) in &cluster.nodes {
+            let observed_term = node.current_term();
+            match self.term_floor_by_node.entry(*node_id) {
+                Entry::Vacant(entry) => {
+                    entry.insert(observed_term);
+                }
+                Entry::Occupied(mut entry) => {
+                    let floor = *entry.get();
+                    if observed_term < floor {
+                        self.term_regressions.insert(TermRegression {
+                            node_id: *node_id,
+                            previous_floor: floor,
+                            observed: observed_term,
+                        });
+                    } else if observed_term > floor {
+                        entry.insert(observed_term);
+                    }
+                }
+            }
+
+            let vote_key = (*node_id, observed_term);
+            if let Some(voted_for) = node.voted_for() {
+                match self.votes_by_node_term.entry(vote_key) {
+                    Entry::Vacant(entry) => {
+                        entry.insert(voted_for);
+                    }
+                    Entry::Occupied(entry) if *entry.get() != voted_for => {
+                        self.vote_conflicts.insert(VoteConflict {
+                            node_id: *node_id,
+                            term: observed_term,
+                            first_vote: *entry.get(),
+                            second_vote: voted_for,
+                        });
+                    }
+                    Entry::Occupied(_) => {}
+                }
+            } else if let Some(previous_vote) = self.votes_by_node_term.get(&vote_key) {
+                self.vote_losses.insert(VoteLoss {
+                    node_id: *node_id,
+                    term: observed_term,
+                    previous_vote: *previous_vote,
+                });
+            }
+        }
+    }
+
     pub(in crate::model_check) fn record_election(&mut self, certificate: ElectionCertificate) {
         if let Some(previous) = self.elected_by_term.get(&certificate.term) {
             if previous.leader_id != certificate.leader_id {
@@ -27,6 +79,28 @@ impl ElectionHistory {
         }
         self.elected_by_term.insert(certificate.term, certificate);
     }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct TermRegression {
+    pub(crate) node_id: NodeId,
+    pub(crate) previous_floor: Term,
+    pub(crate) observed: Term,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct VoteConflict {
+    pub(crate) node_id: NodeId,
+    pub(crate) term: Term,
+    pub(crate) first_vote: NodeId,
+    pub(crate) second_vote: NodeId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct VoteLoss {
+    pub(crate) node_id: NodeId,
+    pub(crate) term: Term,
+    pub(crate) previous_vote: NodeId,
 }
 
 #[derive(Clone, Debug, Hash)]
@@ -47,6 +121,10 @@ pub(crate) struct ElectionConflict {
 }
 
 impl ExplorationState {
+    pub(in crate::model_check) fn observe_election_authority(&mut self) {
+        self.election_history.observe_authority_state(&self.cluster);
+    }
+
     pub(in crate::model_check) fn record_election_observation(
         &mut self,
         before: &Cluster,

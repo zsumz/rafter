@@ -81,6 +81,7 @@ impl ExplorationState {
             logical_log_history: LogicalLogHistory::default(),
             commit_history: CommitHistory::default(),
         };
+        state.observe_election_authority();
         state.refresh_log_history();
         state.refresh_committed_prefixes();
         state

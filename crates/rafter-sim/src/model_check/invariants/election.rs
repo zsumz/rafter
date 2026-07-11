@@ -36,6 +36,45 @@ pub(crate) fn check_election_history(
     state: &ExplorationState,
     trace: &[Action],
 ) -> Result<(), Failure> {
+    if let Some(regression) = state.election_history.term_regressions.iter().next() {
+        return Err(Failure {
+            kind: crate::model_check::FailureKind::InvariantViolation,
+            invariant: catalog::EL_01_TERM_MONOTONICITY,
+            message: format!(
+                "{} term regressed from observed floor {} to {}",
+                regression.node_id, regression.previous_floor, regression.observed
+            ),
+            trace: trace.to_vec(),
+            state: summarize(&state.cluster),
+        });
+    }
+
+    if let Some(conflict) = state.election_history.vote_conflicts.iter().next() {
+        return Err(Failure {
+            kind: crate::model_check::FailureKind::InvariantViolation,
+            invariant: catalog::EL_02_ONE_DURABLE_VOTE_PER_TERM,
+            message: format!(
+                "{} recorded conflicting durable votes in term {}: {} then {}",
+                conflict.node_id, conflict.term, conflict.first_vote, conflict.second_vote
+            ),
+            trace: trace.to_vec(),
+            state: summarize(&state.cluster),
+        });
+    }
+
+    if let Some(loss) = state.election_history.vote_losses.iter().next() {
+        return Err(Failure {
+            kind: crate::model_check::FailureKind::InvariantViolation,
+            invariant: catalog::EL_02_ONE_DURABLE_VOTE_PER_TERM,
+            message: format!(
+                "{} lost durable vote for {} in term {}",
+                loss.node_id, loss.previous_vote, loss.term
+            ),
+            trace: trace.to_vec(),
+            state: summarize(&state.cluster),
+        });
+    }
+
     if let Some(conflict) = state.election_history.conflicting_elections.iter().next() {
         return Err(Failure {
             kind: crate::model_check::FailureKind::InvariantViolation,

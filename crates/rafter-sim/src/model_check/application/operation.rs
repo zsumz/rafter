@@ -65,6 +65,7 @@ pub(in crate::model_check) fn apply_to_state(state: &mut ExplorationState, opera
         state.record_election_observation(&before, delivered.as_ref());
         state.record_log_transition(&before, delivered.as_ref(), &effects.emitted);
     }
+    state.observe_election_authority();
     state.refresh_log_history();
     state.record_commit_observation(&commit_context);
     state.record_leader_completeness_observation();

@@ -115,6 +115,7 @@ pub(in crate::model_check) fn restart_node(
     )?;
 
     state.reset_commit_floor(node_id);
+    state.observe_election_authority();
 
     Ok(())
 }
