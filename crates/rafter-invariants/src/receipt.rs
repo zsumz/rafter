@@ -186,6 +186,8 @@ fn validate_execution(
     }
     if bundle.runner == "tests" {
         crate::receipt_tests::validate(bundle, expected)?;
+    } else if bundle.runner == "simulator" {
+        crate::receipt_simulator::validate(bundle, expected)?;
     }
     Ok(())
 }
