@@ -1,4 +1,5 @@
 /target
+/artifacts/invariants/
 /bench-compare/target
 /fuzz/target
 **/*.rs.bk

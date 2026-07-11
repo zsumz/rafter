@@ -6,7 +6,8 @@ use std::{
 
 use clap::{Parser, Subcommand};
 use rafter_invariants::{
-    aggregate, load_bundles, render_junit, render_markdown, Catalog, ProfileManifest, VerdictStatus,
+    aggregate, load_bundles, produce, render_junit, render_markdown, Catalog, ProducerOptions,
+    ProfileManifest, VerdictStatus,
 };
 
 #[derive(Debug, Parser)]
@@ -15,6 +16,16 @@ use rafter_invariants::{
 struct Cli {
     #[command(subcommand)]
     command: Commands,
+}
+
+struct CheckOptions {
+    profile: String,
+    registry: PathBuf,
+    manifest: PathBuf,
+    results: Vec<PathBuf>,
+    results_dir: PathBuf,
+    output_dir: PathBuf,
+    source_ref: Option<String>,
 }
 
 #[derive(Debug, Subcommand)]
@@ -35,6 +46,18 @@ enum Commands {
         #[arg(long)]
         source_ref: Option<String>,
     },
+    Run {
+        #[arg(long)]
+        profile: String,
+        #[arg(long)]
+        layer: String,
+        #[arg(long, default_value = "verification/raft-invariants.yaml")]
+        registry: PathBuf,
+        #[arg(long, default_value = "verification/raft-invariant-profiles.json")]
+        manifest: PathBuf,
+        #[arg(long, default_value = "artifacts/invariants")]
+        output_dir: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -49,7 +72,46 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<bool, Box<dyn std::error::Error>> {
-    let Commands::Check {
+    match cli.command {
+        Commands::Check {
+            profile,
+            registry,
+            manifest,
+            results,
+            results_dir,
+            output_dir,
+            source_ref,
+        } => check(CheckOptions {
+            profile,
+            registry,
+            manifest,
+            results,
+            results_dir,
+            output_dir,
+            source_ref,
+        }),
+        Commands::Run {
+            profile,
+            layer,
+            registry,
+            manifest,
+            output_dir,
+        } => {
+            let path = produce(&ProducerOptions {
+                profile,
+                layer,
+                registry,
+                manifest,
+                output_dir,
+            })?;
+            println!("wrote {}", path.display());
+            Ok(true)
+        }
+    }
+}
+
+fn check(options: CheckOptions) -> Result<bool, Box<dyn std::error::Error>> {
+    let CheckOptions {
         profile,
         registry,
         manifest,
@@ -57,7 +119,7 @@ fn run(cli: Cli) -> Result<bool, Box<dyn std::error::Error>> {
         results_dir,
         output_dir,
         source_ref,
-    } = cli.command;
+    } = options;
     if results.is_empty() {
         results = json_files(&results_dir)?;
     }
