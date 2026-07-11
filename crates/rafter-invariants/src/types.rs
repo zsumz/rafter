@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 /// Current version of the machine-readable receipt and report contract.
-pub const RESULT_SCHEMA_VERSION: u32 = 3;
+pub const RESULT_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -39,7 +39,10 @@ pub struct SourceReceipt {
     pub tree: String,
     pub cargo_lock_sha256: String,
     pub cargo: String,
+    pub cargo_sha256: String,
+    pub cargo_config_sha256: String,
     pub rustc: String,
+    pub rustc_sha256: String,
     pub target: String,
     pub build_profile: String,
     pub features: Vec<String>,

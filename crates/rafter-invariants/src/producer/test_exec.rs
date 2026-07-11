@@ -8,7 +8,7 @@ use std::{
 
 use crate::{ArtifactRef, CheckCompletion, EvidenceStatus, FailureClassification, TestIdentity};
 
-use super::{artifact, process, tests::CompiledTarget};
+use super::{artifact, process, test_compile::CompiledTarget};
 
 pub(super) struct TestOutcome {
     pub completion: CheckCompletion,
@@ -208,7 +208,7 @@ fn execute_exact(
     }
 }
 
-fn listed_tests(output: &[u8]) -> BTreeSet<String> {
+pub(super) fn listed_tests(output: &[u8]) -> BTreeSet<String> {
     String::from_utf8_lossy(output)
         .lines()
         .filter_map(|line| line.strip_suffix(": test"))
@@ -216,7 +216,7 @@ fn listed_tests(output: &[u8]) -> BTreeSet<String> {
         .collect()
 }
 
-fn exact_pass(output: &[u8], test_name: &str) -> bool {
+pub(super) fn exact_pass(output: &[u8], test_name: &str) -> bool {
     let output = String::from_utf8_lossy(output);
     output.lines().any(|line| line.trim() == "running 1 test")
         && output
@@ -227,7 +227,7 @@ fn exact_pass(output: &[u8], test_name: &str) -> bool {
             .any(|line| line.contains("1 passed; 0 failed; 0 ignored"))
 }
 
-fn confirmed_test_failure(output: &[u8], test_name: &str) -> bool {
+pub(super) fn confirmed_test_failure(output: &[u8], test_name: &str) -> bool {
     let output = String::from_utf8_lossy(output);
     output
         .lines()
@@ -273,35 +273,5 @@ fn error_outcome(message: String, artifact: ArtifactRef, peak_rss_kib: u64) -> T
         duration_ms: 0,
         peak_rss_kib,
         artifacts: vec![artifact],
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{confirmed_test_failure, exact_pass, listed_tests};
-
-    #[test]
-    fn exact_pass_rejects_zero_test_success() {
-        let zero = b"running 0 tests\ntest result: ok. 0 passed; 0 failed; 0 ignored";
-        assert!(!exact_pass(zero, "module::test"));
-    }
-
-    #[test]
-    fn terse_discovery_uses_exact_identity() {
-        let tests = listed_tests(b"module::one: test\nmodule::two: test\n");
-        assert!(tests.contains("module::one"));
-        assert!(!tests.contains("one"));
-    }
-
-    #[test]
-    fn abnormal_exit_is_not_a_confirmed_invariant_failure() {
-        assert!(confirmed_test_failure(
-            b"test module::test ... FAILED\ntest result: FAILED. 0 passed; 1 failed",
-            "module::test"
-        ));
-        assert!(!confirmed_test_failure(
-            b"dyld: Library not loaded",
-            "module::test"
-        ));
     }
 }

@@ -115,7 +115,10 @@ fn validate_execution(
         || bundle.execution.source.tree.trim().is_empty()
         || !is_sha256(&bundle.execution.source.cargo_lock_sha256)
         || bundle.execution.source.cargo.trim().is_empty()
+        || !is_sha256(&bundle.execution.source.cargo_sha256)
+        || !is_sha256(&bundle.execution.source.cargo_config_sha256)
         || bundle.execution.source.rustc.trim().is_empty()
+        || !is_sha256(&bundle.execution.source.rustc_sha256)
         || bundle.execution.source.target.trim().is_empty()
         || bundle.execution.source.build_profile.trim().is_empty()
         || !is_sha256(&bundle.execution.source.environment_sha256)
@@ -182,66 +185,7 @@ fn validate_execution(
         }
     }
     if bundle.runner == "tests" {
-        validate_test_checks(bundle, expected)?;
-    }
-    Ok(())
-}
-
-fn validate_test_checks(
-    bundle: &ResultBundle,
-    expected: &BTreeMap<String, &EvidenceDescriptor>,
-) -> Result<(), &'static str> {
-    let mut required = BTreeMap::<String, BTreeSet<String>>::new();
-    for (evidence_id, descriptor) in expected {
-        if let Some(identity) = &descriptor.test {
-            required
-                .entry(identity.check_id())
-                .or_default()
-                .insert(evidence_id.clone());
-        }
-    }
-    let observed = bundle
-        .execution
-        .checks
-        .iter()
-        .map(|check| {
-            (
-                check.check_id.clone(),
-                check.evidence_ids.iter().cloned().collect::<BTreeSet<_>>(),
-            )
-        })
-        .collect::<BTreeMap<_, _>>();
-    if observed.len() != bundle.execution.checks.len() || observed != required {
-        return Err("tests check identities and evidence fanout must exactly match the registry");
-    }
-    for check in &bundle.execution.checks {
-        let statuses = bundle
-            .results
-            .iter()
-            .filter(|result| result.execution_id == check.execution_id)
-            .map(|result| result.status)
-            .collect::<BTreeSet<_>>();
-        if statuses.len() != 1 {
-            return Err("one tests execution cannot report conflicting result statuses");
-        }
-        if statuses.contains(&EvidenceStatus::Pass)
-            && (check.observations
-                != BTreeMap::from([
-                    ("discovered".to_owned(), 1),
-                    ("executed".to_owned(), 1),
-                    ("passed".to_owned(), 1),
-                ])
-                || !check
-                    .artifacts
-                    .iter()
-                    .any(|artifact| artifact.kind == "test-log")
-                || !check
-                    .artifacts
-                    .iter()
-                    .any(|artifact| artifact.kind == "test-binary"))
-        {
-            return Err("passing tests check lacks exact observations, log, or binary artifact");
-        }
+        crate::receipt_tests::validate(bundle, expected)?;
     }
     Ok(())
 }

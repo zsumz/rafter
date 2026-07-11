@@ -39,8 +39,16 @@ pub fn load_bundles(paths: &[PathBuf]) -> Result<Vec<ResultBundle>, AggregateErr
         .map(|path| {
             let source = fs::read_to_string(path)
                 .map_err(|error| AggregateError(format!("read {}: {error}", path.display())))?;
-            let bundle = serde_json::from_str(&source)
+            let bundle: ResultBundle = serde_json::from_str(&source)
                 .map_err(|error| AggregateError(format!("parse {}: {error}", path.display())))?;
+            crate::producer::source::verify_checkout(&bundle.execution.source).map_err(
+                |error| {
+                    AggregateError(format!(
+                        "verify source identity for {}: {error}",
+                        path.display()
+                    ))
+                },
+            )?;
             verify_bundle_artifacts(&bundle, Path::new("."))?;
             Ok(bundle)
         })
