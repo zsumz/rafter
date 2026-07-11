@@ -86,3 +86,93 @@ fn runtime_snapshot_write_failure_poisons_runtime_until_restart() {
         matches!(cause, RaftRuntimeFatalError::SnapshotWrite(_))
     });
 }
+
+#[test]
+fn runtime_snapshot_promote_failure_suppresses_apply_and_success_response() {
+    let snapshot = raft_snapshot(3, 4, 5, b"snapshot promote fails");
+    let mut runtime = DurableRaftNode::with_storage_and_snapshot_store(
+        raft_config(2, &[1, 3]),
+        hard_state_store(5, None),
+        InMemoryRaftLogSegment::new(),
+        FailingPromoteSnapshotStore(InMemoryRaftSnapshotStore::new()),
+    )
+    .expect("runtime hydrates with promote-failing snapshot store");
+
+    let error = runtime
+        .step(RaftInput::Message {
+            from: RaftNodeId(1),
+            message: Message::InstallSnapshot(rafter::InstallSnapshot {
+                term: Term(5),
+                leader_id: RaftNodeId(1),
+                metadata: snapshot.metadata.clone(),
+                application_payload: snapshot.application_payload.clone(),
+            }),
+        })
+        .expect_err("snapshot promotion fails before outputs escape");
+    assert!(matches!(
+        error,
+        RaftRuntimeError::SnapshotWrite(RaftSnapshotStoreWriteError::Io {
+            operation: "promote test staged snapshot",
+            ..
+        })
+    ));
+
+    assert_eq!(runtime.snapshot_store.current_snapshot(), None);
+    assert_eq!(
+        runtime
+            .snapshot_store
+            .current_pending_snapshot_transfer()
+            .map(|transfer| transfer.received_len),
+        Some(snapshot.application_payload.len() as u64)
+    );
+    assert_eq!(runtime.log_segment.compacted_through(), LogIndex::ZERO);
+
+    assert_poisoned_after_failure(&mut runtime, |cause| {
+        matches!(cause, RaftRuntimeFatalError::SnapshotWrite(_))
+    });
+}
+
+#[test]
+fn runtime_snapshot_compaction_failure_suppresses_apply_and_success_response() {
+    let log_segment = FailingCompactRaftLogSegment {
+        entries: vec![persisted_entry(1, 2, b"local-prefix")],
+    };
+    let snapshot = raft_snapshot(3, 4, 5, b"snapshot compact fails");
+    let mut runtime = DurableRaftNode::with_storage_and_snapshot_store(
+        raft_config(2, &[1, 3]),
+        hard_state_store(5, None),
+        log_segment,
+        InMemoryRaftSnapshotStore::new(),
+    )
+    .expect("runtime hydrates with compaction-failing log segment");
+
+    let error = runtime
+        .step(RaftInput::Message {
+            from: RaftNodeId(1),
+            message: Message::InstallSnapshot(rafter::InstallSnapshot {
+                term: Term(5),
+                leader_id: RaftNodeId(1),
+                metadata: snapshot.metadata.clone(),
+                application_payload: snapshot.application_payload.clone(),
+            }),
+        })
+        .expect_err("snapshot compaction fails before outputs escape");
+    assert!(matches!(
+        error,
+        RaftRuntimeError::LogCompact(RaftLogSegmentCompactError::Io {
+            operation: "compact test raft log entries",
+            ..
+        })
+    ));
+
+    assert_eq!(runtime.snapshot_store.current(), Some(&snapshot));
+    assert_eq!(
+        runtime.log_segment.replay_entries(),
+        vec![persisted_entry(1, 2, b"local-prefix")]
+    );
+    assert_eq!(runtime.log_segment.compacted_through(), LogIndex::ZERO);
+
+    assert_poisoned_after_failure(&mut runtime, |cause| {
+        matches!(cause, RaftRuntimeFatalError::LogCompact(_))
+    });
+}

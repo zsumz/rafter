@@ -120,14 +120,14 @@ named temporal or witness-based verdicts.
 
 | ID | Work |
 | --- | --- |
-| `EL-05` | Record role transitions/election certificates by term; current-state-only checking is weaker than the temporal property. |
-| `EL-06` | Record election certificates and validate them against membership at election time. |
-| `LG-01` | Track each leader-term log prefix and assert it is prefix-monotone. |
-| `LG-02` | Add a message-delivery oracle comparing the accepted frame with post-state and emitted response. |
-| `LG-03` | Add a full-log pairwise oracle, including uncommitted suffixes and snapshot boundaries. |
-| `LG-05` | Add leader-election history plus committed-entry floors and check at every election transition. |
-| `CM-02` | Record per-index storage witnesses and membership-at-index in the simulator. |
-| `CM-03` | Add a generic commit-transition oracle rather than relying only on hand-seeded cases. |
+| `EL-05` | Retain election certificates by term and keep the simulator negative fixture. |
+| `EL-06` | Retain election certificate quorum validation and keep negative fixtures for voter and joint-quorum mistakes. |
+| `LG-01` | Retain leader-term logical log observations and the append-only negative fixture. |
+| `LG-02` | Retain the AppendEntries transition oracle and negative fixtures for false success responses. |
+| `LG-03` | Retain full logical-log prefix witnesses, including snapshot-boundary negative coverage. |
+| `LG-05` | Retain leader-completeness checks over committed prefixes and election certificates. |
+| `CM-02` | Retain storage-derived commit certificates and quorum negative fixtures. |
+| `CM-03` | Retain current-term commit transition checks and negative fixture. |
 
 ## Evidence References
 
@@ -141,40 +141,49 @@ named temporal or witness-based verdicts.
 | `EL-03` | tests | direct | `crates/rafter/src/node/tests/election/voting.rs#stale_vote_request_is_rejected` |
 | `EL-03` | tests | direct | `crates/rafter/src/node/tests/membership/authority.rs#vote_request_from_candidate_outside_effective_membership_is_rejected` |
 | `EL-04` | tests | direct | `crates/rafter-runtime/src/tests/hard_state.rs#granted_vote_is_persisted_before_vote_response_escapes` |
+| `EL-05` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `election_history_detects_second_leader_in_same_term` |
 | `EL-05` | tla | direct | `specs/tla/raft/Raft.tla#ElectionSafety` |
+| `EL-06` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `election_certificate_rejects_learner_grant` |
 | `EL-06` | tests | direct | `crates/rafter/src/node/tests/election/campaign.rs#candidate_becomes_leader_after_quorum` |
 | `EL-06` | tests | direct | `crates/rafter/src/node/tests/membership/authority.rs#learner_grant_does_not_create_quorum` |
 | `EL-07` | tests | direct | `crates/rafter/src/node/tests/transfer/timeout.rs#stale_term_timeout_now_is_ignored` |
 | `EL-07` | tla | direct | `specs/tla/raft/Raft.tla#StaleLeaderFencing` |
 | `EL-08` | tests | direct | `crates/rafter/src/node/tests/pre_vote.rs#pre_vote_grant_is_not_persisted_and_does_not_set_voted_for` |
+| `LG-01` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_log_history`; negative fixture `leader_append_only_detects_leader_term_truncation` |
+| `LG-02` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_log_history`; negative fixture `append_entries_oracle_detects_success_without_storing_final_entry` |
 | `LG-02` | tests | direct | `crates/rafter/src/node/tests/replication/follower.rs#follower_rejects_append_that_would_truncate_committed_entry` |
+| `LG-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_log_history`; negative fixture `log_matching_detects_equal_index_term_with_different_prefixes` |
 | `LG-03` | tla | direct | `specs/tla/raft/Raft.tla#LogMatching` |
 | `LG-04` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
-| `LG-04` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_committed_prefixes` |
+| `LG-04` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_committed_prefixes`; negative fixture `committed_prefix_checker_detects_divergent_committed_entries` |
 | `LG-04` | tests | direct | `crates/rafter-runtime/src/tests/conflict_repair.rs#file_backed_follower_conflict_repair_survives_restart` |
 | `LG-04` | tla | direct | `specs/tla/raft/Raft.tla#CommittedPrefixStability` |
 | `LG-05` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
+| `LG-05` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_commit_history`; negative fixture `leader_completeness_detects_later_leader_missing_committed_entry` |
 | `LG-05` | tla | direct | `specs/tla/raft/Raft.tla#LeaderCompleteness` |
-| `CM-01` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_commit_index_monotonicity` |
+| `CM-01` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_commit_index_monotonicity`; negative fixture `commit_index_monotonicity_detects_floor_regression` |
 | `CM-01` | tests | direct | `crates/rafter/src/node/tests/replication/follower.rs#a_probe_with_a_high_leader_commit_never_regresses_the_commit_index` |
 | `CM-02` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
+| `CM-02` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_commit_history`; negative fixture `commit_certificate_detects_joint_quorum_missing_new_half` |
 | `CM-02` | tla | direct | `specs/tla/raft/Raft.tla#CommittedEntriesHaveQuorum` |
 | `CM-03` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
+| `CM-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_commit_history`; negative fixture `commit_certificate_detects_prior_term_candidate_commit` |
 | `CM-03` | tests | direct | `crates/rafter/src/node/tests/election/campaign.rs#single_voter_leadership_noop_does_not_drop_prior_term_apply` |
-| `AP-01` | maelstrom | e2e | `crates/rafter-maelstrom/src/main.rs#DurableRaftNode::with_storage_and_snapshot_store_applied_through` |
+| `AP-01` | maelstrom | e2e | `crates/rafter-maelstrom/src/raft_node.rs#DurableRaftNode::with_storage_and_snapshot_store_applied_through` |
 | `AP-01` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_applied_order`; negative fixture `applied_order_detects_apply_at_or_below_snapshot_boundary` |
 | `AP-01` | tests | direct | `crates/rafter/src/node/tests/bootstrap/application.rs#committed_entries_above_applied_floor_drain_immediately_after_bootstrap` |
 | `AP-02` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
 | `AP-02` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_applied_payload_agreement`; negative fixture `applied_agreement_detects_disagreeing_snapshots_at_same_boundary` |
-| `AP-02` | tests | direct | `crates/rafter-sim/src/model_check/invariants.rs#applied_agreement_detects_disagreeing_snapshots_at_same_boundary` |
+| `AP-02` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/applied_agreement.rs#applied_agreement_detects_disagreeing_snapshots_at_same_boundary` |
 | `AP-02` | tla | direct | `specs/tla/raft/Raft.tla#StateMachineSafety` |
 | `MB-01` | tests | direct | `crates/rafter/tests/properties.rs#membership_constructor_validation_matches_the_documented_invariant` |
 | `MB-02` | tests | direct | `crates/rafter/tests/properties.rs#membership_joint_quorum_holds_iff_both_half_majorities_hold` |
-| `MB-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_no_overlapping_uncommitted_configurations` |
+| `MB-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_no_overlapping_uncommitted_configurations`; negative fixture exemption `bootstrap validation rejects overlapping uncommitted configurations first` |
 | `MB-03` | tests | direct | `crates/rafter/src/node/tests/membership/serialization.rs#follower_rejects_second_uncommitted_configuration_entry` |
-| `MB-04` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_committed_configuration_monotonicity` |
+| `MB-04` | maelstrom | e2e | `scripts/maelstrom-lin-kv-membership-change#RAFTER_MAELSTROM_MEMBERSHIP_PLAN` |
+| `MB-04` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_committed_configuration_monotonicity`; negative fixture `committed_configuration_monotonicity_detects_regression` |
 | `MB-04` | tests | direct | `crates/rafter/src/node/tests/membership/transition.rs#change_membership_derives_joint_configuration_for_voter_changes` |
-| `MB-05` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/bootstrap_compaction.rs#runtime_local_compaction_fills_committed_dynamic_membership_metadata` |
+| `MB-05` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/bootstrap_compaction/local.rs#runtime_local_compaction_fills_committed_dynamic_membership_metadata` |
 | `MB-06` | tests | direct | `crates/rafter/src/node/tests/membership/learner.rs#learner_receives_log_replication_without_counting_for_commit` |
 | `MB-07` | tests | direct | `crates/rafter/src/node/tests/transfer/handoff.rs#transfer_to_caught_up_target_sends_timeout_now_immediately` |
 | `RD-01` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--nemesis partition` |
@@ -182,32 +191,50 @@ named temporal or witness-based verdicts.
 | `RD-02` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
 | `RD-02` | tests | direct | `crates/rafter/src/node/tests/read/barrier.rs#delayed_ack_from_an_older_round_never_confirms_a_barrier` |
 | `RD-03` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
-| `RD-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_read_barrier_safety`; negative fixture `read_barrier_invariant_detects_grant_below_registration_floor` |
-| `RD-03` | tests | direct | `crates/rafter-sim/src/model_check/invariants.rs#read_barrier_invariant_detects_grant_below_registration_floor` |
+| `RD-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/client.rs#check_read_barrier_safety`; negative fixture `read_barrier_invariant_detects_grant_below_registration_floor` |
+| `RD-03` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/persistence_read.rs#read_barrier_invariant_detects_grant_below_registration_floor` |
 | `RD-03` | tla | direct | `specs/tla/raft/Raft.tla#ReadBarrierLinearizability` |
 | `RD-04` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
-| `RD-04` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_client_history_read_write_invariants`; negative fixture `client_history_detects_completed_read_before_local_apply_floor` |
+| `RD-04` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/client.rs#check_client_history_read_write_invariants`; negative fixture `client_history_detects_completed_read_before_local_apply_floor` |
 | `RD-04` | tests | direct | `crates/rafter-app/tests/group_read.rs#linearizable_read_helper_returns_result_when_barrier_grants` |
 | `RD-05` | tests | direct | `crates/rafter/src/node/tests/read/lease.rs#a_confirmed_lease_grants_barriers_without_a_round_trip` |
 | `RD-06` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
-| `RD-06` | simulator | direct | `crates/rafter-sim/src/model_check/linearizability.rs#check_client_history_linearizable` |
+| `RD-06` | simulator | direct | `crates/rafter-sim/src/model_check/linearizability.rs#check_client_history_linearizable`; negative fixture `linearizer_rejects_read_that_misses_completed_write` |
 | `RD-06` | tests | direct | `crates/rafter-sim/src/model_check/tests/linearizability.rs#linearizer_rejects_read_that_misses_completed_write` |
-| `PS-01` | maelstrom | e2e | `scripts/maelstrom-lin-kv-leader-restart#RAFTER_MAELSTROM_ROOT` |
+| `PS-01` | maelstrom | e2e | `scripts/maelstrom-lin-kv-common#RAFTER_MAELSTROM_ROOT` |
 | `PS-01` | tests | direct | `crates/rafter-runtime/src/tests/hard_state.rs#election_persists_term_and_vote_before_vote_requests_escape` |
-| `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/group_commit.rs#a_failed_batch_releases_no_output_and_poisons_the_runtime` |
-| `PS-03` | maelstrom | e2e | `scripts/maelstrom-lin-kv-leader-restart#rafter-maelstrom-leader-restart-proxy` |
-| `PS-03` | tests | direct | `crates/rafter-runtime/src/tests/local_ids.rs#restart_replays_committed_tracked_entry_without_local_id` |
-| `PS-04` | maelstrom | e2e | `crates/rafter-maelstrom/src/main.rs#persist_app_state` |
+| `PS-01` | tests | direct | `crates/rafter-runtime/src/tests/persistence_contract.rs#all_raft_outputs_have_declared_runtime_persistence_dependency` |
+| `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/group_commit/failure.rs#a_failed_batch_releases_no_output_and_poisons_the_runtime` |
+| `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/hard_state.rs#final_hard_state_write_failure_suppresses_apply_and_success_response` |
+| `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/persistence_contract.rs#ps02_failure_matrix_covers_each_runtime_store_operation` |
+| `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_snapshot_promote_failure_suppresses_apply_and_success_response` |
+| `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_snapshot_compaction_failure_suppresses_apply_and_success_response` |
+| `PS-03` | maelstrom | e2e | `scripts/maelstrom-lin-kv-repeated-restart#RAFTER_MAELSTROM_RESTART_MODE` |
+| `PS-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_exact_durable_restart`; negative fixture `exact_durable_restart_detects_digest_change` |
+| `PS-03` | tests | direct | `crates/rafter-runtime/src/tests/local_ids/recovery.rs#restart_replays_committed_tracked_entry_without_local_id` |
+| `PS-03` | tests | direct | `crates/rafter-sim/src/model_check/tests/soak.rs#ordinary_restart_preserves_durable_state_digest` |
+| `PS-04` | maelstrom | e2e | `scripts/maelstrom-lin-kv-app-persist-crash#RAFTER_MAELSTROM_CRASH_AFTER_APP_PERSIST_ONCE` |
+| `PS-04` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_applied_floor_recovery`; negative fixture `applied_floor_recovery_rejects_replay_at_or_below_floor` |
+| `PS-04` | tests | direct | `crates/rafter-maelstrom/src/app/tests.rs#persisted_app_state_round_trips_applied_floor` |
+| `PS-04` | tests | direct | `crates/rafter-maelstrom/src/app/tests.rs#app_persist_crash_point_fires_once_per_root` |
 | `PS-04` | tests | direct | `crates/rafter/src/node/tests/bootstrap/application.rs#applied_floor_suppresses_reapply_below_it` |
-| `SS-01` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_restart_snapshot_safety` |
+| `SS-01` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_metadata_payload_integrity`; negative fixture `snapshot_metadata_payload_integrity_detects_expected_metadata_with_different_bytes` |
 | `SS-01` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_persists_installed_snapshot_and_compacts_log_past_local_tail` |
-| `SS-02` | tests | direct | `crates/rafter-runtime/src/tests/crash_window.rs#reopen_completes_compaction_after_crash_between_snapshot_and_compaction` |
-| `SS-03` | tests | direct | `crates/rafter-runtime/src/tests/crash_window.rs#append_behind_the_snapshot_boundary_is_refused_not_mislabelled` |
-| `SS-04` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_restart_snapshot_safety` |
+| `SS-02` | tests | direct | `crates/rafter-runtime/src/tests/crash_window/repair.rs#reopen_completes_compaction_after_crash_between_snapshot_and_compaction` |
+| `SS-02` | tests | direct | `crates/rafter-runtime/src/tests/crash_window/repair.rs#file_backed_reopen_persists_repaired_compaction_after_snapshot_crash_window` |
+| `SS-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_log_geometry`; negative fixture `snapshot_log_geometry_detects_retained_suffix_length_mismatch` |
+| `SS-03` | tests | direct | `crates/rafter-runtime/src/tests/crash_window/boundary.rs#append_behind_the_snapshot_boundary_is_refused_not_mislabelled` |
+| `SS-04` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_transfer_integrity`; negative fixture `snapshot_transfer_integrity_rejects_complete_pending_transfer` |
 | `SS-04` | tests | direct | `crates/rafter/src/node/tests/snapshot/chunks/receive.rs#out_of_order_snapshot_chunk_requests_expected_offset` |
-| `SS-05` | tests | direct | `crates/rafter-sim/src/tests/snapshot_installation.rs#simulator_discards_divergent_suffix_when_installing_snapshot` |
-| `LV-01` | simulator | direct | `crates/rafter-sim/src/model_check.rs#run_soak_liveness_check` |
-| `LV-02` | simulator | direct | `crates/rafter-sim/src/model_check.rs#issue_liveness_proposal` |
+| `SS-05` | maelstrom | e2e | `scripts/maelstrom-lin-kv-forced-snapshot#RAFTER_MAELSTROM_SNAPSHOT_EVERY` |
+| `SS-05` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_applied_payload_agreement`; negative fixture `applied_agreement_detects_snapshot_membership_mismatch_at_same_boundary` |
+| `SS-05` | tests | direct | `crates/rafter-sim/src/tests/snapshot_installation/catchup.rs#simulator_discards_divergent_suffix_when_installing_snapshot` |
+| `LV-01` | simulator | direct | `crates/rafter-sim/src/model_check/liveness.rs#run_soak_liveness_check`; negative fixture exemption `bounded liveness driver, not an invariant checker` |
+| `LV-02` | simulator | direct | `crates/rafter-sim/src/model_check/liveness.rs#issue_liveness_proposal`; negative fixture exemption `bounded liveness driver, not an invariant checker` |
+| `LV-03` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features.rs#run_read_barrier_liveness_check`; negative fixture exemption `bounded read-barrier liveness driver, not an invariant checker` |
+| `LV-03` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features.rs#run_membership_transition_liveness_check`; negative fixture exemption `bounded membership-transition liveness driver, not an invariant checker` |
+| `LV-03` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features.rs#run_leadership_transfer_liveness_check`; negative fixture exemption `bounded leadership-transfer liveness driver, not an invariant checker` |
+| `LV-03` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features.rs#run_snapshot_catchup_liveness_check`; negative fixture exemption `bounded snapshot-catch-up liveness driver, not an invariant checker` |
 
 ## Catalog
 
@@ -293,11 +320,11 @@ Statement: Across the entire execution, at most one node is elected leader in a 
 
 Evidence now:
 - TLA+: D: ElectionSafety
-- Simulator: P: checks leaders in current state only
+- Simulator: D: election certificates by term
 - Tests: P: bounded election tests
 - Maelstrom: none
 
-Next: Record role transitions/election certificates by term; current-state-only checking is weaker than the temporal property.
+Next: Retain election certificates by term and keep the simulator negative fixture.
 
 #### `EL-06` Leader has a valid election quorum
 
@@ -307,11 +334,11 @@ Statement: Only an effective voter may campaign/become leader, and election requ
 
 Evidence now:
 - TLA+: P: election transition
-- Simulator: P: explored behavior
+- Simulator: D: election certificate quorum validation
 - Tests: D: membership/election properties
 - Maelstrom: none
 
-Next: Record election certificates and validate them against membership at election time.
+Next: Retain election certificate quorum validation and keep negative fixtures for voter and joint-quorum mistakes.
 
 #### `EL-07` Term and authority fencing
 
@@ -351,11 +378,11 @@ Statement: While leader in a term, a node never overwrites or deletes entries in
 
 Evidence now:
 - TLA+: P: transition semantics
-- Simulator: none
+- Simulator: D: leader-term logical log observations
 - Tests: P: replication scenarios
 - Maelstrom: none
 
-Next: Track each leader-term log prefix and assert it is prefix-monotone.
+Next: Retain leader-term logical log observations and the append-only negative fixture.
 
 #### `LG-02` Truthful AppendEntries acceptance
 
@@ -365,11 +392,11 @@ Statement: A follower accepts AppendEntries only when the previous index/term ma
 
 Evidence now:
 - TLA+: P: Append transition
-- Simulator: none
+- Simulator: D: AppendEntries delivery oracle
 - Tests: D: replication/conflict tests
 - Maelstrom: none
 
-Next: Add a message-delivery oracle comparing the accepted frame with post-state and emitted response.
+Next: Retain the AppendEntries transition oracle and negative fixtures for false success responses.
 
 #### `LG-03` Log matching
 
@@ -379,11 +406,11 @@ Statement: If two logs contain an entry with the same index and term, their pref
 
 Evidence now:
 - TLA+: D: LogMatching
-- Simulator: P: only committed-index agreement
+- Simulator: D: full logical-log prefix witnesses
 - Tests: P: replication scenarios
 - Maelstrom: none
 
-Next: Add a full-log pairwise oracle, including uncommitted suffixes and snapshot boundaries.
+Next: Retain full logical-log prefix witnesses, including snapshot-boundary negative coverage.
 
 #### `LG-04` Committed-prefix stability
 
@@ -407,11 +434,11 @@ Statement: Every leader elected in a later term contains every entry committed i
 
 Evidence now:
 - TLA+: D: LeaderCompleteness
-- Simulator: none
+- Simulator: D: committed-prefix ledger checked on leader election
 - Tests: P: leadership no-op/failover scenarios
 - Maelstrom: E2E: indirect
 
-Next: Add leader-election history plus committed-entry floors and check at every election transition.
+Next: Retain leader-completeness checks over committed prefixes and election certificates.
 
 ### Commitment and Application
 
@@ -437,11 +464,11 @@ Statement: An entry is considered committed only after the quorum required by th
 
 Evidence now:
 - TLA+: D: CommittedEntriesHaveQuorum
-- Simulator: none
+- Simulator: D: commit certificates from actual storage witnesses
 - Tests: P: membership/replication tests
 - Maelstrom: E2E: indirect
 
-Next: Record per-index storage witnesses and membership-at-index in the simulator.
+Next: Retain storage-derived commit certificates and quorum negative fixtures.
 
 #### `CM-03` Current-term commit rule
 
@@ -451,11 +478,11 @@ Statement: A leader advances commit by counting replicas only for an entry from 
 
 Evidence now:
 - TLA+: P: Commit action
-- Simulator: P: seeded leadership-no-op cases
+- Simulator: D: leader commit-transition oracle
 - Tests: D: election/commit tests
 - Maelstrom: E2E: indirect
 
-Next: Add a generic commit-transition oracle rather than relying only on hand-seeded cases.
+Next: Retain current-term commit transition checks and negative fixture.
 
 #### `AP-01` Ordered, exactly-once committed application
 
@@ -539,9 +566,9 @@ Evidence now:
 - TLA+: P: membership actions
 - Simulator: D: committed-config floors; partial transition shape
 - Tests: D: membership tests
-- Maelstrom: none
+- Maelstrom: E2E: scheduled remove-voter workload
 
-Next: Add explicit transition-shape and config-ID history checks.
+Next: Retain scheduled remove-voter E2E coverage and add explicit transition-shape/config-ID history checks.
 
 #### `MB-05` Membership recovery consistency
 
@@ -682,10 +709,10 @@ Statement: Hard state, log, committed configuration, and snapshot mutations are 
 Evidence now:
 - TLA+: none
 - Simulator: none
-- Tests: D: rafter-runtime persistence-order tests
+- Tests: D: rafter-runtime persistence-order tests + exhaustive output dependency guard
 - Maelstrom: E2E: file stores + app persistence
 
-Next: Enumerate every output class and add a coverage guard so new outputs declare durability prerequisites.
+Next: Retain the exhaustive output dependency guard and keep failure-injection coverage aligned with each dependency.
 
 #### `PS-02` Persistence failure is fail-stop
 
@@ -696,10 +723,10 @@ Statement: A failed durable write suppresses dependent outputs and poisons the i
 Evidence now:
 - TLA+: none
 - Simulator: none
-- Tests: D: runtime failure-injection tests
+- Tests: D: runtime failure-injection tests + checked store-operation matrix
 - Maelstrom: none
 
-Next: Add one table-driven failure test per store operation/output dependency.
+Next: Retain the checked store-operation matrix and add failure-injection rows when new runtime persistence operations appear.
 
 #### `PS-03` Exact durable restart
 
@@ -709,11 +736,11 @@ Statement: Restart reconstructs the durable term, vote, log, commit/configuratio
 
 Evidence now:
 - TLA+: P: abstract Restart
-- Simulator: P: restart explorer
+- Simulator: D: restart explorer + durable-state digest checker
 - Tests: D: runtime/storage restart tests
-- Maelstrom: E2E: leader-restart workload
+- Maelstrom: E2E: repeated scheduled restart workload
 
-Next: Add arbitrary-node/repeated restarts to Maelstrom and a simulator durable-state digest.
+Next: Retain the direct restart digest checker and arbitrary-node repeated restart E2E coverage.
 
 #### `PS-04` Applied-floor recovery
 
@@ -723,11 +750,11 @@ Statement: Recovery emits no Apply at or below the application's durable applied
 
 Evidence now:
 - TLA+: none
-- Simulator: P: required-apply seeds
-- Tests: D: bootstrap/runtime recovery tests
-- Maelstrom: E2E: persisted app.applied
+- Simulator: D: applied-floor replay checker
+- Tests: D: bootstrap/runtime recovery tests + Maelstrom app.applied/crashpoint tests
+- Maelstrom: E2E: app-persist crashpoint workload
 
-Next: Add crash points around app persistence/client reply and compare recovered state with acknowledged history.
+Next: Retain applied-floor replay checker, app-persist crashpoint tests, and the app-persist crashpoint E2E workload.
 
 #### `SS-01` Atomic monotone snapshot state
 
@@ -737,11 +764,11 @@ Statement: Snapshot creation/install advances a monotone boundary atomically, an
 
 Evidence now:
 - TLA+: none
-- Simulator: D: metadata/bytes and boundary checks
+- Simulator: D: metadata/payload integrity and boundary checks
 - Tests: D: snapshot tests
 - Maelstrom: none
 
-Next: Give boundary monotonicity and metadata integrity explicit IDs/negative fixtures.
+Next: Retain explicit metadata/payload fixture; keep boundary monotonicity covered with snapshot geometry checks.
 
 #### `SS-02` Crash-safe snapshot/compaction ordering
 
@@ -752,10 +779,10 @@ Statement: A crash between snapshot persistence and log compaction repairs on re
 Evidence now:
 - TLA+: none
 - Simulator: none
-- Tests: D: runtime crash_window tests
+- Tests: D: runtime crash_window tests, including file-backed reopen repair
 - Maelstrom: none
 
-Next: Keep runtime/storage scope; add file-backed fault injection in scheduled CI.
+Next: Keep runtime/storage scope; keep file-backed reopen coverage in scheduled CI.
 
 #### `SS-03` Snapshot/log index geometry
 
@@ -765,11 +792,11 @@ Statement: Covered prefixes are hidden or compacted, the next append index is sn
 
 Evidence now:
 - TLA+: none
-- Simulator: P: restart/snapshot exploration
+- Simulator: D: retained suffix geometry checks
 - Tests: D: runtime crash-window/bootstrap tests
 - Maelstrom: none
 
-Next: Add geometry fields to simulator state summary and a direct invariant.
+Next: Retain simulator geometry summary fields and direct retained-suffix negative fixture.
 
 #### `SS-04` Snapshot-transfer integrity
 
@@ -783,7 +810,7 @@ Evidence now:
 - Tests: D: chunk/streaming tests + fuzz
 - Maelstrom: none
 
-Next: Existing direct checks are strong; split them into atomic IDs and negative fixtures.
+Next: Retain the direct transfer-integrity helper and negative fixture; add persisted pending-transfer E2E only if needed.
 
 #### `SS-05` Snapshot semantic equivalence
 
@@ -793,11 +820,11 @@ Statement: Snapshot bytes are never emitted as a log command; covered divergent 
 
 Evidence now:
 - TLA+: none
-- Simulator: P: snapshot term/payload agreement; membership equality still pending
+- Simulator: D: snapshot term/payload/membership agreement
 - Tests: D: snapshot/restart tests
-- Maelstrom: none
+- Maelstrom: E2E: forced snapshot workload
 
-Next: Add membership equality to same-boundary agreement and a forced-snapshot end-to-end workload.
+Next: Retain same-boundary snapshot equivalence checks and forced-snapshot end-to-end coverage.
 
 ### Liveness Obligations
 
@@ -837,8 +864,8 @@ Statement: Under stable conditions, read barriers, snapshot catch-up, membership
 
 Evidence now:
 - TLA+: none
-- Simulator: P: actions exercised, no unified progress oracle
+- Simulator: D: read-barrier, snapshot-catch-up, membership-transition, and leadership-transfer bounded progress monitors
 - Tests: P: feature scenario tests
 - Maelstrom: none
 
-Next: Add operation-specific bounded progress monitors; do not fold them into safety checks.
+Next: Retain operation-specific bounded progress monitors and keep them separate from safety checks.

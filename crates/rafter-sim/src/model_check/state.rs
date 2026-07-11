@@ -1,19 +1,32 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use rafter::{
-    AppendEntries, BootstrapLogEntry, BootstrapState, CommittedConfiguration, ConfigurationEntry,
-    ConfigurationId, JointMembership, LogIndex, MembershipConfig, MembershipSet, Message,
-    NodeConfig, NodeId, RaftSnapshot, SharedPayload, Term,
-};
+use rafter::{CommittedConfiguration, LogIndex, NodeId, SharedPayload};
 
-use crate::Cluster;
+use crate::{Cluster, Envelope};
 
-use super::helpers::{
-    bootstrap_state, bootstrap_with_snapshot, config, elect_node_one_with_node_three,
-    large_snapshot_payload, test_snapshot, test_snapshot_with_committed_membership,
-    three_node_configs,
-};
-use super::ProposalId;
+mod client;
+mod commit;
+mod election;
+mod logical_log;
+mod restart_snapshot;
+mod seeds;
+
+use client::initial_register_value;
+pub(super) use client::{ClientHistory, ClientReadOutcome, ClientWriteStatus};
+#[cfg(test)]
+pub(super) use client::{ClientRead, ClientReadProof, ClientWrite, ClientWriteUnknownReason};
+pub(super) use commit::CommitHistory;
+#[cfg(test)]
+pub(super) use commit::CommitHistoryViolation;
+#[cfg(test)]
+pub(super) use election::ElectionCertificate;
+#[cfg(test)]
+pub(super) use election::ElectionConflict;
+pub(super) use election::ElectionHistory;
+pub(super) use logical_log::LogicalLogHistory;
+#[cfg(test)]
+pub(super) use logical_log::LogicalLogViolation;
+pub(super) use restart_snapshot::{ExpectedSnapshot, RestartSnapshotState};
 
 #[derive(Clone, Debug, Hash)]
 pub(super) struct ExplorationState {
@@ -34,6 +47,9 @@ pub(super) struct ExplorationState {
     pub(super) required_committed_configurations:
         BTreeMap<(NodeId, LogIndex), CommittedConfiguration>,
     pub(super) required_commit_indexes: BTreeSet<(NodeId, LogIndex)>,
+    pub(super) election_history: ElectionHistory,
+    pub(super) logical_log_history: LogicalLogHistory,
+    pub(super) commit_history: CommitHistory,
 }
 
 impl ExplorationState {
@@ -49,7 +65,7 @@ impl ExplorationState {
             .iter()
             .map(|(node_id, node)| (*node_id, node.committed_configuration_state()))
             .collect();
-        Self {
+        let mut state = Self {
             cluster,
             proposals_issued: 0,
             restarts_issued: 0,
@@ -65,210 +81,12 @@ impl ExplorationState {
             required_applied_payloads: BTreeMap::new(),
             required_committed_configurations: BTreeMap::new(),
             required_commit_indexes: BTreeSet::new(),
-        }
-    }
-
-    pub(super) fn seeded_low_empty_probe(configs: Vec<NodeConfig>) -> Self {
-        let mut cluster = Cluster::new(configs);
-        cluster
-            .restart_node_from_bootstrap(
-                NodeId(2),
-                bootstrap_state(Term(1), &[(1, Term(1), b"committed-one")]),
-            )
-            .expect("pre-committed follower seed is valid");
-        cluster.deliver_message(
-            NodeId(1),
-            NodeId(2),
-            Message::AppendEntries(AppendEntries {
-                term: Term(1),
-                leader_id: NodeId(1),
-                prev_log_index: LogIndex(1),
-                prev_log_term: Term(1),
-                sequence: 0,
-                entries: Vec::new().into(),
-                leader_commit: LogIndex(1),
-            }),
-        );
-        cluster.drop_matching(|_| true);
-        cluster.queue_message(
-            NodeId(1),
-            NodeId(2),
-            Message::AppendEntries(AppendEntries {
-                term: Term(1),
-                leader_id: NodeId(1),
-                prev_log_index: LogIndex::ZERO,
-                prev_log_term: Term(0),
-                sequence: 1,
-                entries: Vec::new().into(),
-                leader_commit: LogIndex(3),
-            }),
-        );
-        Self::new(cluster)
-    }
-
-    pub(super) fn seeded_divergent_suffix_probe(configs: Vec<NodeConfig>) -> Self {
-        let mut cluster = Cluster::new(configs);
-        let leader_entries = &[
-            (1, Term(1), b"committed-one".as_slice()),
-            (2, Term(2), b"leader-two".as_slice()),
-        ];
-        for node_id in [NodeId(1), NodeId(3)] {
-            cluster
-                .restart_node_from_bootstrap(node_id, bootstrap_state(Term(2), leader_entries))
-                .expect("committed leader-side seed is valid");
-            cluster.deliver_message(
-                NodeId(1),
-                node_id,
-                Message::AppendEntries(AppendEntries {
-                    term: Term(2),
-                    leader_id: NodeId(1),
-                    prev_log_index: LogIndex(2),
-                    prev_log_term: Term(2),
-                    sequence: 0,
-                    entries: Vec::new().into(),
-                    leader_commit: LogIndex(2),
-                }),
-            );
-        }
-        cluster
-            .restart_node_from_bootstrap(
-                NodeId(2),
-                bootstrap_state(
-                    Term(2),
-                    &[
-                        (1, Term(1), b"committed-one"),
-                        (2, Term(2), b"divergent-two"),
-                    ],
-                ),
-            )
-            .expect("pre-diverged follower seed is valid");
-        cluster.deliver_message(
-            NodeId(1),
-            NodeId(2),
-            Message::AppendEntries(AppendEntries {
-                term: Term(2),
-                leader_id: NodeId(1),
-                prev_log_index: LogIndex(1),
-                prev_log_term: Term(1),
-                sequence: 0,
-                entries: Vec::new().into(),
-                leader_commit: LogIndex(1),
-            }),
-        );
-        cluster.drop_matching(|_| true);
-        cluster.queue_message(
-            NodeId(1),
-            NodeId(2),
-            Message::AppendEntries(AppendEntries {
-                term: Term(2),
-                leader_id: NodeId(1),
-                prev_log_index: LogIndex(1),
-                prev_log_term: Term(1),
-                sequence: 1,
-                entries: Vec::new().into(),
-                leader_commit: LogIndex(2),
-            }),
-        );
-
-        let mut state = Self::new(cluster);
-        state
-            .forbidden_applied_payloads
-            .insert(b"divergent-two".to_vec().into());
-        state
-    }
-
-    pub(super) fn seeded_single_voter_prior_application_noop() -> Self {
-        let payload = b"leadership-noop-prior-app".to_vec();
-        let mut cluster = Cluster::new(vec![config(1, &[], 1)]);
-        cluster
-            .restart_node_from_bootstrap(
-                NodeId(1),
-                bootstrap_state(Term(1), &[(1, Term(1), payload.as_slice())]),
-            )
-            .expect("single-voter prior application seed is valid");
-
-        let mut state = Self::new(cluster);
-        state.require_applied_payload(NodeId(1), LogIndex(1), payload.into());
-        state
-    }
-
-    pub(super) fn seeded_single_voter_prior_configuration_noop() -> Self {
-        let config_id = ConfigurationId(7);
-        let membership =
-            MembershipSet::new(vec![NodeId(1)], Vec::new()).expect("membership is valid");
-        let configuration = ConfigurationEntry::stable(config_id, membership);
-        let mut cluster = Cluster::new(vec![config(1, &[], 1)]);
-        cluster
-            .restart_node_from_bootstrap(
-                NodeId(1),
-                BootstrapState {
-                    current_term: Term(1),
-                    voted_for: None,
-                    commit_index: LogIndex::ZERO,
-                    committed_configuration: None,
-                    snapshot: None,
-                    log: vec![BootstrapLogEntry::configuration(
-                        LogIndex(1),
-                        Term(1),
-                        configuration,
-                    )],
-                },
-            )
-            .expect("single-voter prior configuration seed is valid");
-
-        let mut state = Self::new(cluster);
-        state.require_committed_configuration(
-            NodeId(1),
-            CommittedConfiguration {
-                index: LogIndex(1),
-                config_id,
-            },
-        );
-        state
-    }
-
-    pub(super) fn seeded_joint_self_quorum_prior_application_noop() -> Self {
-        let payload = b"joint-self-quorum-prior-app".to_vec();
-        let config_id = ConfigurationId(9);
-        let membership =
-            MembershipSet::new(vec![NodeId(1)], Vec::new()).expect("membership is valid");
-        let configuration = ConfigurationEntry::joint(
-            config_id,
-            JointMembership::new(membership.clone(), membership),
-        );
-        let mut cluster = Cluster::new(vec![config(1, &[], 1)]);
-        cluster
-            .restart_node_from_bootstrap(
-                NodeId(1),
-                BootstrapState {
-                    current_term: Term(1),
-                    voted_for: None,
-                    commit_index: LogIndex(1),
-                    committed_configuration: Some(CommittedConfiguration {
-                        index: LogIndex(1),
-                        config_id,
-                    }),
-                    snapshot: None,
-                    log: vec![
-                        BootstrapLogEntry::configuration(LogIndex(1), Term(1), configuration),
-                        BootstrapLogEntry::application(LogIndex(2), Term(1), payload.clone()),
-                    ],
-                },
-            )
-            .expect("joint self-quorum prior application seed is valid");
-
-        let mut state = Self::new(cluster);
-        state.require_applied_payload(NodeId(1), LogIndex(2), payload.into());
-        state
-    }
-
-    pub(super) fn seeded_leadership_transfer_noop_commit() -> Self {
-        let mut cluster = Cluster::new(three_node_configs());
-        elect_node_one_with_node_three(&mut cluster);
-        cluster.deliver_all();
-        cluster.transfer_leadership(NodeId(1), NodeId(2));
-        let mut state = Self::new(cluster);
-        state.require_commit_index(NodeId(2), LogIndex(2));
+            election_history: ElectionHistory::default(),
+            logical_log_history: LogicalLogHistory::default(),
+            commit_history: CommitHistory::default(),
+        };
+        state.refresh_log_history();
+        state.refresh_committed_prefixes();
         state
     }
 
@@ -290,111 +108,22 @@ impl ExplorationState {
         }
     }
 
-    pub(super) fn record_client_proposal(
+    pub(super) fn record_log_transition(
         &mut self,
-        node_id: NodeId,
-        proposal_id: ProposalId,
-        stale_leader: bool,
+        before: &Cluster,
+        delivered: Option<&Envelope>,
+        emitted: &[Envelope],
     ) {
-        let started_at = self.client_history.next_event();
-        let status = if stale_leader {
-            ClientWriteStatus::Unknown {
-                reason: ClientWriteUnknownReason::StaleLeader,
-            }
-        } else {
-            ClientWriteStatus::Pending
-        };
-        self.client_history.writes.insert(
-            proposal_id,
-            ClientWrite {
-                proposal_id,
-                node_id,
-                payload: super::helpers::proposal_payload(proposal_id).into(),
-                started_at,
-                status,
-            },
+        self.logical_log_history.record_append_entries_delivery(
+            before,
+            &self.cluster,
+            delivered,
+            emitted,
         );
     }
 
-    pub(super) fn record_client_read(
-        &mut self,
-        node_id: NodeId,
-        request_id: u64,
-        committed_floor: LogIndex,
-    ) {
-        let started_at = self.client_history.next_event();
-        self.client_history.reads.insert(
-            request_id,
-            ClientRead {
-                node_id,
-                request_id,
-                committed_floor,
-                started_at,
-                outcome: ClientReadOutcome::Pending,
-            },
-        );
-    }
-
-    pub(super) fn refresh_client_history(&mut self) {
-        let mut next_event = self.client_history.next_event;
-        for write in self.client_history.writes.values_mut() {
-            if matches!(write.status, ClientWriteStatus::Completed { .. }) {
-                continue;
-            }
-            if let Some(applied) = self
-                .cluster
-                .applied()
-                .iter()
-                .find(|applied| applied.payload == write.payload)
-            {
-                write.status = ClientWriteStatus::Completed {
-                    node_id: applied.node_id,
-                    index: applied.index,
-                    completed_at: next_event,
-                };
-                next_event += 1;
-            }
-        }
-
-        let applied = &self.cluster.applied;
-        for read in self.client_history.reads.values_mut() {
-            if matches!(&read.outcome, ClientReadOutcome::Completed { .. }) {
-                continue;
-            }
-            let Some(grant) =
-                self.cluster.read_grants().iter().find(|grant| {
-                    grant.node_id == read.node_id && grant.request_id == read.request_id
-                })
-            else {
-                continue;
-            };
-            let proof = ClientReadProof {
-                read_index: grant.read_index,
-                local_applied_index: self.cluster.local_applied_index(read.node_id),
-            };
-            read.outcome = if proof.local_applied_index >= proof.read_index {
-                let result = register_value_at(applied, read.node_id, proof.read_index);
-                let outcome = ClientReadOutcome::Completed {
-                    proof,
-                    result,
-                    completed_at: next_event,
-                };
-                next_event += 1;
-                outcome
-            } else {
-                ClientReadOutcome::ProofGranted { proof }
-            };
-        }
-        self.client_history.next_event = next_event;
-    }
-
-    pub(super) fn reset_commit_floor(&mut self, node_id: NodeId) {
-        if let Some(node) = self.cluster.nodes.get(&node_id) {
-            self.commit_floor_by_node
-                .insert(node_id, node.commit_index());
-            self.committed_configuration_floor_by_node
-                .insert(node_id, node.committed_configuration_state());
-        }
+    pub(super) fn refresh_log_history(&mut self) {
+        self.logical_log_history.observe_cluster(&self.cluster);
     }
 
     fn require_applied_payload(
@@ -418,200 +147,5 @@ impl ExplorationState {
 
     fn require_commit_index(&mut self, node_id: NodeId, index: LogIndex) {
         self.required_commit_indexes.insert((node_id, index));
-    }
-}
-
-#[derive(Clone, Debug, Default, Hash)]
-pub(super) struct ClientHistory {
-    pub(super) initial_value: Option<SharedPayload>,
-    pub(super) next_event: u64,
-    pub(super) writes: BTreeMap<ProposalId, ClientWrite>,
-    pub(super) reads: BTreeMap<u64, ClientRead>,
-}
-
-impl ClientHistory {
-    fn with_initial_value(initial_value: Option<SharedPayload>) -> Self {
-        Self {
-            initial_value,
-            ..Self::default()
-        }
-    }
-
-    fn next_event(&mut self) -> u64 {
-        let event = self.next_event;
-        self.next_event += 1;
-        event
-    }
-}
-
-#[derive(Clone, Debug, Hash)]
-pub(super) struct ClientWrite {
-    pub(super) proposal_id: ProposalId,
-    pub(super) node_id: NodeId,
-    pub(super) payload: SharedPayload,
-    pub(super) started_at: u64,
-    pub(super) status: ClientWriteStatus,
-}
-
-#[derive(Clone, Copy, Debug, Hash)]
-pub(super) enum ClientWriteStatus {
-    Pending,
-    Completed {
-        node_id: NodeId,
-        index: LogIndex,
-        completed_at: u64,
-    },
-    Unknown {
-        reason: ClientWriteUnknownReason,
-    },
-}
-
-#[derive(Clone, Copy, Debug, Hash)]
-pub(super) enum ClientWriteUnknownReason {
-    StaleLeader,
-}
-
-#[derive(Clone, Debug, Hash)]
-pub(super) struct ClientRead {
-    pub(super) node_id: NodeId,
-    pub(super) request_id: u64,
-    pub(super) committed_floor: LogIndex,
-    pub(super) started_at: u64,
-    pub(super) outcome: ClientReadOutcome,
-}
-
-#[derive(Clone, Debug, Hash)]
-pub(super) enum ClientReadOutcome {
-    Pending,
-    ProofGranted {
-        proof: ClientReadProof,
-    },
-    Completed {
-        proof: ClientReadProof,
-        result: Option<SharedPayload>,
-        completed_at: u64,
-    },
-}
-
-#[derive(Clone, Copy, Debug, Hash)]
-pub(super) struct ClientReadProof {
-    pub(super) read_index: LogIndex,
-    pub(super) local_applied_index: LogIndex,
-}
-
-fn register_value_at(
-    applied: &[crate::Applied],
-    node_id: NodeId,
-    read_index: LogIndex,
-) -> Option<SharedPayload> {
-    applied
-        .iter()
-        .filter(|applied| applied.node_id == node_id && applied.index <= read_index)
-        .max_by_key(|applied| applied.index)
-        .map(|applied| applied.payload.clone())
-}
-
-fn initial_register_value(cluster: &Cluster) -> Option<SharedPayload> {
-    cluster
-        .applied()
-        .iter()
-        .max_by_key(|applied| applied.index)
-        .map(|applied| applied.payload.clone())
-}
-
-/// The snapshot every healthy node must converge on: the descriptor the
-/// kernel tracks plus the payload bytes the content invariants compare,
-/// which the kernel no longer carries.
-#[derive(Clone, Debug, Hash)]
-pub(super) struct ExpectedSnapshot {
-    pub(super) snapshot: RaftSnapshot,
-    pub(super) payload: SharedPayload,
-}
-
-#[derive(Clone, Debug, Hash)]
-pub(super) struct RestartSnapshotState {
-    pub(super) state: ExplorationState,
-    pub(super) expected_snapshot: Option<ExpectedSnapshot>,
-    pub(super) divergent_payloads: Vec<SharedPayload>,
-}
-
-impl RestartSnapshotState {
-    pub(super) fn new(state: ExplorationState) -> Self {
-        Self {
-            state,
-            expected_snapshot: None,
-            divergent_payloads: Vec::new(),
-        }
-    }
-
-    pub(super) fn snapshot_transfer() -> Self {
-        Self::snapshot_transfer_with_committed_membership(None)
-    }
-
-    pub(super) fn joint_snapshot_transfer() -> Self {
-        let old = MembershipSet::new(vec![NodeId(1), NodeId(2), NodeId(3)], Vec::new())
-            .expect("old snapshot membership is valid");
-        let new = MembershipSet::new(vec![NodeId(1), NodeId(3)], Vec::new())
-            .expect("new snapshot membership is valid");
-        Self::snapshot_transfer_with_committed_membership(Some(MembershipConfig::joint(old, new)))
-    }
-
-    fn snapshot_transfer_with_committed_membership(
-        committed_membership: Option<MembershipConfig>,
-    ) -> Self {
-        let mut cluster = Cluster::new(three_node_configs());
-        let (snapshot, payload) = test_snapshot(1, 2, 1, 2, &large_snapshot_payload());
-        let (snapshot, payload) = if let Some(membership) = committed_membership {
-            test_snapshot_with_committed_membership(1, 2, 1, 2, &payload, membership)
-        } else {
-            (snapshot, payload)
-        };
-        cluster.seed_snapshot_payload(NodeId(1), &snapshot, payload.clone());
-        cluster
-            .restart_node_from_bootstrap(
-                NodeId(1),
-                bootstrap_with_snapshot(Term(2), snapshot.clone(), &[]),
-            )
-            .expect("leader bootstrap is valid");
-        cluster
-            .restart_node_from_bootstrap(
-                NodeId(2),
-                bootstrap_state(
-                    Term(2),
-                    &[
-                        (1, Term(1), b"old prefix"),
-                        (2, Term(2), b"divergent boundary"),
-                        (3, Term(2), b"divergent suffix"),
-                    ],
-                ),
-            )
-            .expect("divergent follower bootstrap is valid");
-        cluster.seed_snapshot_payload(NodeId(3), &snapshot, payload.clone());
-        cluster
-            .restart_node_from_bootstrap(
-                NodeId(3),
-                bootstrap_with_snapshot(Term(2), snapshot.clone(), &[]),
-            )
-            .expect("voter bootstrap is valid");
-        elect_node_one_with_node_three(&mut cluster);
-        cluster.drop_matching(|envelope| {
-            matches!(
-                envelope.message,
-                Message::RequestVote(_) | Message::RequestVoteResponse(_)
-            ) || envelope.from == NodeId(3)
-                || envelope.to == NodeId(3)
-        });
-
-        Self {
-            state: ExplorationState::new(cluster),
-            expected_snapshot: Some(ExpectedSnapshot {
-                snapshot,
-                payload: payload.into(),
-            }),
-            divergent_payloads: vec![
-                b"divergent boundary".to_vec().into(),
-                b"divergent suffix".to_vec().into(),
-            ],
-        }
     }
 }

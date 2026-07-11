@@ -1,0 +1,144 @@
+use super::{catalog, summarize, Action, Failure};
+use super::{
+    check_client_history_linearizable, BTreeMap, ClientReadOutcome, ClientWriteStatus, Cluster,
+    ExplorationState, CLIENT_HISTORY_LINEARIZABILITY_INVARIANT,
+};
+
+/// The committed-floor check: a granted read barrier must cover every entry
+/// that any node had committed before the barrier was registered. A grant below
+/// its registration floor means an isolated or stale leader certified a read
+/// that misses acknowledged writes (thesis 6.4).
+pub(crate) fn check_read_barrier_safety(
+    cluster: &Cluster,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    for grant in cluster.read_grants() {
+        let registration = cluster.read_registrations().iter().find(|registration| {
+            registration.node_id == grant.node_id && registration.request_id == grant.request_id
+        });
+        let Some(registration) = registration else {
+            return Err(Failure {
+                kind: crate::model_check::FailureKind::InvariantViolation,
+                invariant: catalog::RD_03_READ_BARRIER_COVERS_COMMITTED_FLOOR,
+                message: format!(
+                    "{} granted read barrier {} that was never registered",
+                    grant.node_id, grant.request_id
+                ),
+                trace: trace.to_vec(),
+                state: summarize(cluster),
+            });
+        };
+        if grant.read_index < registration.committed_floor {
+            return Err(Failure {
+            kind: crate::model_check::FailureKind::InvariantViolation,
+                invariant: catalog::RD_03_READ_BARRIER_COVERS_COMMITTED_FLOOR,
+                message: format!(
+                    "{} granted read barrier {} at index {} below the committed floor {} at registration",
+                    grant.node_id,
+                    grant.request_id,
+                    grant.read_index,
+                    registration.committed_floor
+                ),
+                trace: trace.to_vec(),
+                state: summarize(cluster),
+            });
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn check_client_history_read_write_invariants(
+    state: &ExplorationState,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    let mut completed_by_index = BTreeMap::new();
+    for write in state.client_history.writes.values() {
+        if let ClientWriteStatus::Completed { index, .. } = write.status {
+            if let Some(previous) = completed_by_index.insert(index, write.proposal_id) {
+                if previous != write.proposal_id {
+                    return Err(Failure {
+                        kind: crate::model_check::FailureKind::InvariantViolation,
+                        invariant: catalog::RD_06_CLIENT_HISTORY_LINEARIZABILITY,
+                        message: format!(
+                            "client writes {} and {} both completed at log index {index}",
+                            previous.0, write.proposal_id.0
+                        ),
+                        trace: trace.to_vec(),
+                        state: summarize(&state.cluster),
+                    });
+                }
+            }
+        }
+    }
+
+    for read in state.client_history.reads.values() {
+        let proof = match &read.outcome {
+            ClientReadOutcome::Pending => continue,
+            ClientReadOutcome::ProofGranted { proof }
+            | ClientReadOutcome::Completed { proof, .. } => *proof,
+        };
+        if proof.read_index < read.committed_floor {
+            return Err(Failure {
+                kind: crate::model_check::FailureKind::InvariantViolation,
+                invariant: catalog::RD_03_READ_BARRIER_COVERS_COMMITTED_FLOOR,
+                message: format!(
+                    "{} read {} proof index {} is below registration floor {}",
+                    read.node_id, read.request_id, proof.read_index, read.committed_floor
+                ),
+                trace: trace.to_vec(),
+                state: summarize(&state.cluster),
+            });
+        }
+        if let ClientReadOutcome::Completed { proof, .. } = &read.outcome {
+            let proof = *proof;
+            if proof.local_applied_index < proof.read_index {
+                return Err(Failure {
+                    kind: crate::model_check::FailureKind::InvariantViolation,
+                    invariant: catalog::RD_04_APPLY_BEFORE_SERVING_A_READ,
+                    message: format!(
+                        "{} completed read {} at local applied {} below required index {}",
+                        read.node_id, read.request_id, proof.local_applied_index, proof.read_index
+                    ),
+                    trace: trace.to_vec(),
+                    state: summarize(&state.cluster),
+                });
+            }
+            for write in state.client_history.writes.values() {
+                let ClientWriteStatus::Completed { index, .. } = write.status else {
+                    continue;
+                };
+                if index <= read.committed_floor && index > proof.read_index {
+                    return Err(Failure {
+                        kind: crate::model_check::FailureKind::InvariantViolation,
+                        invariant: catalog::RD_03_READ_BARRIER_COVERS_COMMITTED_FLOOR,
+                        message: format!(
+                            "{} completed read {} at {} without covering completed write {} at {}",
+                            read.node_id,
+                            read.request_id,
+                            proof.read_index,
+                            write.proposal_id.0,
+                            index
+                        ),
+                        trace: trace.to_vec(),
+                        state: summarize(&state.cluster),
+                    });
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub(super) fn check_client_history_linearizability(
+    state: &ExplorationState,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    check_client_history_linearizable(&state.client_history).map_err(|message| Failure {
+        kind: crate::model_check::FailureKind::InvariantViolation,
+        invariant: CLIENT_HISTORY_LINEARIZABILITY_INVARIANT,
+        message,
+        trace: trace.to_vec(),
+        state: summarize(&state.cluster),
+    })
+}

@@ -229,13 +229,19 @@ pub(super) fn summarize(cluster: &Cluster) -> StateSummary {
         nodes: cluster
             .nodes
             .iter()
-            .map(|(node_id, node)| NodeSummary {
-                node_id: *node_id,
-                term: node.current_term(),
-                role: node.role(),
-                commit_index: node.commit_index(),
-                snapshot_index: node.snapshot_index(),
-                last_log_index: node.last_log_index(),
+            .map(|(node_id, node)| {
+                let snapshot_index = node.snapshot_index();
+                let first_log_index = snapshot_index.next();
+                NodeSummary {
+                    node_id: *node_id,
+                    term: node.current_term(),
+                    role: node.role(),
+                    commit_index: node.commit_index(),
+                    snapshot_index,
+                    first_log_index,
+                    last_log_index: node.last_log_index(),
+                    retained_log_len: node.log_entries_from(first_log_index).len(),
+                }
             })
             .collect(),
     }

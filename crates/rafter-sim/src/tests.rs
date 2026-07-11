@@ -1,4 +1,5 @@
 use super::*;
+use rafter::{BootstrapLogEntry, CommittedConfiguration, LogEntry, Role, Term};
 
 mod disk_faults;
 mod dynamic_membership;

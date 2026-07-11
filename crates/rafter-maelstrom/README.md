@@ -12,4 +12,8 @@ Run it through the repository scripts rather than depending on it as a library:
 ```sh
 scripts/maelstrom-lin-kv
 scripts/maelstrom-lin-kv-leader-restart
+scripts/maelstrom-lin-kv-repeated-restart
+scripts/maelstrom-lin-kv-app-persist-crash
+scripts/maelstrom-lin-kv-forced-snapshot
+scripts/maelstrom-lin-kv-membership-change
 ```
