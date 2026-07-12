@@ -13,13 +13,19 @@ use super::profile::{Profile, ProfileRun, SoakProfile, SCHEDULE_CLASSES};
 
 pub(crate) fn run_profile(run: ProfileRun) -> Result<(), Box<dyn Error>> {
     let profile = run.profile;
+    let targets = profile.exhaustive_targets();
     println!(
-        "model-check profile={} expected_runtime={} exhaustive_target_unique_states={} bounds=\"{}\" schedule_classes={}",
+        "model-check profile={} expected_runtime={} exhaustive_target_protocol_states={} exhaustive_target_verifier_states={} bounds=\"{}\" schedule_classes={}",
         profile.name(),
         profile.expected_runtime(),
-        profile
-            .exhaustive_target_unique_states()
-            .map_or_else(|| "none".to_string(), |states| states.to_string()),
+        targets.map_or_else(
+            || "none".to_string(),
+            |targets| targets.protocol_states.to_string()
+        ),
+        targets.map_or_else(
+            || "none".to_string(),
+            |targets| targets.verifier_states.to_string()
+        ),
         profile.bounds_summary(),
         SCHEDULE_CLASSES
     );

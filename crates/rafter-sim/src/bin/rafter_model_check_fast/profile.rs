@@ -22,6 +22,12 @@ pub(crate) enum Profile {
     RaftWeekly,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ExhaustiveTargets {
+    pub(crate) protocol_states: usize,
+    pub(crate) verifier_states: usize,
+}
+
 impl Profile {
     pub(crate) const ALL: [Self; 5] = [
         Self::Fast,
@@ -50,10 +56,16 @@ impl Profile {
         }
     }
 
-    pub(crate) const fn exhaustive_target_unique_states(self) -> Option<usize> {
+    pub(crate) const fn exhaustive_targets(self) -> Option<ExhaustiveTargets> {
         match self {
-            Self::RaftNightly => Some(100_000_000),
-            Self::RaftWeekly => Some(250_000_000),
+            Self::RaftNightly => Some(ExhaustiveTargets {
+                protocol_states: 100_000_000,
+                verifier_states: 100_000_000,
+            }),
+            Self::RaftWeekly => Some(ExhaustiveTargets {
+                protocol_states: 250_000_000,
+                verifier_states: 250_000_000,
+            }),
             Self::Fast | Self::RaftDeep | Self::RaftSoak => None,
         }
     }
@@ -68,10 +80,10 @@ impl Profile {
             }
             Self::RaftSoak => "soak-only: 4 curated seeds x 320 steps + lease + membership",
             Self::RaftNightly => {
-                "election=8, commit=11x3+prod8, membership=7x3+joint_restart_snapshot, seeded=2, noop_seeded=8, restart=10/12, read=8, lease_read=7, per-check wall_clock=20m unique_cap=120M, soak=6 fresh seeds x1024 + lease + membership (--seed replays)"
+                "election=8, commit=11x3+window1+prevote+prod8, membership=7x3+joint_restart_snapshot, seeded=2, noop_seeded=8, restart=10/12, read=8, lease_read=7, per-check wall_clock=20m unique_cap=120M, soak=6 fresh seeds x1024 + lease + membership (--seed replays)"
             }
             Self::RaftWeekly => {
-                "election=9, commit=11x4+prod9, membership=8x4+joint_restart_snapshot, seeded=3, noop_seeded=8, restart=11/12, prevote=8, read=8, lease_read=8, per-check wall_clock=60m unique_cap=300M, soak=10 fresh seeds x4096 + lease + membership (--seed replays)"
+                "election=9, commit=11x4+window1+prevote+checkquorum+prod9, membership=8x4[minimal+prevote+checkquorum]+joint_restart_snapshot, seeded=3, noop_seeded=8, restart=11/12, prevote=8, read=8, lease_read=8, per-check wall_clock=60m unique_cap=300M, soak=10 fresh seeds x4096 + lease + membership (--seed replays)"
             }
         }
     }
@@ -102,14 +114,21 @@ impl Error for CliError {}
 
 pub(crate) fn print_profiles() {
     for profile in Profile::ALL {
-        let target = profile
-            .exhaustive_target_unique_states()
-            .map_or_else(|| "none".to_string(), |states| states.to_string());
+        let targets = profile.exhaustive_targets();
+        let protocol_target = targets.map_or_else(
+            || "none".to_string(),
+            |targets| targets.protocol_states.to_string(),
+        );
+        let verifier_target = targets.map_or_else(
+            || "none".to_string(),
+            |targets| targets.verifier_states.to_string(),
+        );
         println!(
-            "{} expected_runtime={} exhaustive_target_unique_states={} bounds=\"{}\" schedule_classes={}",
+            "{} expected_runtime={} exhaustive_target_protocol_states={} exhaustive_target_verifier_states={} bounds=\"{}\" schedule_classes={}",
             profile.name(),
             profile.expected_runtime(),
-            target,
+            protocol_target,
+            verifier_target,
             profile.bounds_summary(),
             SCHEDULE_CLASSES
         );

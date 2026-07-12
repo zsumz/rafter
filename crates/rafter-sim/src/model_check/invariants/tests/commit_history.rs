@@ -38,7 +38,7 @@ fn commit_certificate_uses_pre_transition_joint_quorum_for_candidate_below_confi
         LogIndex::ZERO,
     );
 
-    state.record_commit_observation(&context, None);
+    state.record_commit_observation(&context, None, None);
 
     let failure = check_commit_history(&state, &[])
         .expect_err("old-side-only storage must not satisfy the joint quorum");
@@ -86,7 +86,7 @@ fn commit_certificate_rejects_learner_storage_as_voter_quorum() {
         LogIndex::ZERO,
     );
 
-    state.record_commit_observation(&context, None);
+    state.record_commit_observation(&context, None, None);
 
     let failure = check_commit_history(&state, &[])
         .expect_err("a learner replica must not count toward voter quorum");
@@ -131,7 +131,7 @@ fn commit_certificate_records_self_removing_leader_after_stepdown() {
     );
 
     assert_ne!(state.cluster.role(NodeId(1)), Role::Leader);
-    state.record_commit_observation(&context, None);
+    state.record_commit_observation(&context, None, None);
 
     check_commit_history(&state, &[])
         .expect("self-removing leader commit should still have a valid certificate");
@@ -166,7 +166,7 @@ fn commit_certificate_detects_prior_term_candidate_commit() {
         LogIndex::ZERO,
     );
 
-    state.record_commit_observation(&context, None);
+    state.record_commit_observation(&context, None, None);
 
     let failure =
         check_commit_history(&state, &[]).expect_err("prior-term candidate commit must fail");
@@ -218,7 +218,7 @@ fn commit_certificate_uses_post_append_joint_quorum_for_same_operation_commit() 
         LogIndex::ZERO,
     );
 
-    state.record_commit_observation(&context, Some(NodeId(1)));
+    state.record_commit_observation(&context, Some(NodeId(1)), None);
 
     let failure = check_commit_history(&state, &[])
         .expect_err("same-operation joint commit must require the new-side majority");
@@ -262,6 +262,7 @@ fn leader_completeness_rechecks_when_committed_ledger_grows_after_election() {
             ),
         )
         .expect("late committed prefix bootstrap is valid");
+    state.commit_history.committed_in_terms = vec![Term(3)];
     state.refresh_log_history();
     state.refresh_committed_prefixes();
     state.record_leader_completeness_observation();
@@ -276,7 +277,7 @@ fn leader_completeness_rechecks_when_committed_ledger_grows_after_election() {
     );
 }
 
-fn state_with_bootstraps(
+pub(super) fn state_with_bootstraps(
     configs: Vec<NodeConfig>,
     bootstraps: &[(u64, BootstrapState)],
 ) -> ExplorationState {

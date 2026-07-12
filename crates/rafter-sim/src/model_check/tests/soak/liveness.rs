@@ -11,7 +11,7 @@ use crate::{Cluster, SimSeed};
 struct HistoryCounts {
     elections: usize,
     log_prefixes: usize,
-    committed_prefixes: usize,
+    committed_prefix_entries: usize,
     commit_certificates: usize,
 }
 
@@ -20,7 +20,11 @@ impl HistoryCounts {
         Self {
             elections: state.election_history.elected_by_term.len(),
             log_prefixes: state.logical_log_history.prefixes_by_index_term.len(),
-            committed_prefixes: state.commit_history.committed_prefixes.len(),
+            committed_prefix_entries: state
+                .commit_history
+                .committed_prefix
+                .as_ref()
+                .map_or(0, |prefix| prefix.entries.len()),
             commit_certificates: state.commit_history.certificates.len(),
         }
     }
@@ -114,7 +118,7 @@ fn liveness_phase_updates_p0_histories_through_instrumented_transitions() {
         "liveness convergence should refresh logical-log prefix witnesses"
     );
     assert!(
-        after.committed_prefixes > before.committed_prefixes,
+        after.committed_prefix_entries > before.committed_prefix_entries,
         "liveness convergence should refresh committed-prefix history"
     );
     assert!(
