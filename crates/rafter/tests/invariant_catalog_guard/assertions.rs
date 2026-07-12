@@ -4,10 +4,10 @@ use std::{
 };
 
 use super::{
-    doc_checks::assert_tla_invariant_counts_match, parse::declared_count, Entry, COVERAGE_LAYERS,
-    EXPECTED_CANONICAL, EXPECTED_LIVENESS, EXPECTED_SAFETY, EXPECTED_TLA_PREDICATES,
-    EXPECTED_TOTAL, EXPECTED_WELL_FORMEDNESS, ID_PREFIX_TO_KIND, VALID_FAMILIES, VALID_KINDS,
-    VALID_TIERS,
+    doc_checks::assert_tla_invariant_counts_match, parse::declared_count, Clause, Entry,
+    COVERAGE_LAYERS, EXPECTED_CANONICAL, EXPECTED_LIVENESS, EXPECTED_SAFETY,
+    EXPECTED_TLA_PREDICATES, EXPECTED_TOTAL, EXPECTED_WELL_FORMEDNESS, ID_PREFIX_TO_KIND,
+    VALID_FAMILIES, VALID_KINDS, VALID_TIERS,
 };
 
 pub(super) fn assert_declared_counts_match(registry: &str, entries: &[Entry], workspace: &Path) {
@@ -99,9 +99,21 @@ pub(super) fn assert_entries_are_well_formed(entries: &[Entry]) {
         assert!(
             !entry.title.trim().is_empty()
                 && !entry.statement.trim().is_empty()
-                && !entry.required_action.trim().is_empty(),
-            "{} must have title, statement, and required_action",
+                && !entry.scope.trim().is_empty()
+                && !entry.assumptions.trim().is_empty()
+                && !entry.action_class.trim().is_empty()
+                && !entry.next_action.trim().is_empty(),
+            "{} must have title, statement, scope, assumptions, action_class, and next_action",
             entry.id,
+        );
+        assert!(
+            matches!(
+                entry.action_class.as_str(),
+                "completion_blocker" | "future_strengthening"
+            ),
+            "{} has invalid action_class {}",
+            entry.id,
+            entry.action_class,
         );
         assert!(
             matches!(entry.priority.as_str(), "p0" | "p1" | "p2"),
@@ -148,6 +160,52 @@ pub(super) fn assert_entries_are_well_formed(entries: &[Entry]) {
                 entry.id,
             );
         }
+    }
+}
+
+pub(super) fn assert_clauses_are_well_formed(entries: &[Entry], clauses: &[Clause]) {
+    let parents = entries
+        .iter()
+        .map(|entry| entry.id.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut ids = BTreeSet::new();
+    for clause in clauses {
+        assert!(
+            ids.insert(clause.id.as_str()),
+            "{} is duplicated",
+            clause.id
+        );
+        assert!(
+            parents.contains(clause.invariant_id.as_str()),
+            "{} has unknown parent {}",
+            clause.id,
+            clause.invariant_id,
+        );
+        assert!(
+            clause.id.starts_with(&format!("{}.", clause.invariant_id)),
+            "{} must be namespaced by parent {}",
+            clause.id,
+            clause.invariant_id,
+        );
+        assert!(
+            !clause.statement.trim().is_empty()
+                && !clause.scope.trim().is_empty()
+                && !clause.assumptions.trim().is_empty(),
+            "{} must document statement, scope, and assumptions",
+            clause.id,
+        );
+        assert!(
+            clause.required,
+            "{} normative clause must be required",
+            clause.id
+        );
+    }
+    for entry in entries {
+        assert!(
+            clauses.iter().any(|clause| clause.invariant_id == entry.id),
+            "{} must own at least one normative clause",
+            entry.id,
+        );
     }
 }
 
