@@ -132,6 +132,7 @@ fn append_success(match_index: LogIndex) -> AppendEntriesResponse {
 mod log_history;
 
 mod commit_history;
+mod commit_history_ledger;
 mod commit_history_snapshot;
 mod commit_history_transition;
 

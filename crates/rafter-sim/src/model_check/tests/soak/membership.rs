@@ -35,6 +35,23 @@ fn randomized_membership_soak_exercises_dynamic_membership_actions() {
 }
 
 #[test]
+fn later_commit_does_not_retroactively_fail_nightly_leader_completeness() {
+    let config = SoakConfig::new(SimSeed(0x1f12_1013_6bdc_c08b), 1024)
+        .with_max_proposals(64)
+        .with_max_restarts(32)
+        .with_max_read_indexes(4)
+        .with_max_membership_changes(16)
+        .with_max_transfers(2)
+        .with_max_partitions(2)
+        .with_max_lossy_restarts(2)
+        .with_snapshot_catchup_probe()
+        .with_tick_skew(NodeId(1), 3);
+
+    run_raft_random_soak(four_node_future_learner_configs(), config)
+        .expect("commit-time provenance must preserve the replayed nightly trace");
+}
+
+#[test]
 fn enabled_membership_soak_actions_cover_joint_transition_phases() {
     let mut cluster = Cluster::new(four_node_future_learner_configs());
     elect_node_one(&mut cluster);

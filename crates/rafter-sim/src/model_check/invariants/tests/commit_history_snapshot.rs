@@ -27,8 +27,9 @@ fn leader_completeness_accepts_committed_prefix_hidden_by_witnessed_snapshot() {
     assert!(
         state
             .commit_history
-            .committed_prefixes
-            .contains_key(&LogIndex(1)),
+            .committed_prefix
+            .as_ref()
+            .is_some_and(|prefix| prefix.through >= LogIndex(1)),
         "test setup must record the committed prefix before compaction"
     );
 

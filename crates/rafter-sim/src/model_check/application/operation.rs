@@ -29,6 +29,21 @@ pub(in crate::model_check) fn apply_to_state(state: &mut ExplorationState, opera
             .map(|queued| queued.envelope.clone()),
         _ => None,
     };
+    let follower_commit_authority = delivered.as_ref().and_then(|envelope| {
+        let term = match &envelope.message {
+            rafter::Message::AppendEntries(request) => request.term,
+            rafter::Message::InstallSnapshot(request) => request.term,
+            rafter::Message::InstallSnapshotChunk(request) => request.term,
+            rafter::Message::AppendEntriesResponse(_)
+            | rafter::Message::InstallSnapshotResponse(_)
+            | rafter::Message::PreVote(_)
+            | rafter::Message::PreVoteResponse(_)
+            | rafter::Message::TimeoutNow(_)
+            | rafter::Message::RequestVote(_)
+            | rafter::Message::RequestVoteResponse(_) => return None,
+        };
+        Some((envelope.to, term))
+    });
     let needs_transition_context = matches!(&operation, Operation::Tick(_)) || delivered.is_some();
     let transition_context =
         needs_transition_context.then(|| (state.cluster.clone(), delivered.clone()));
@@ -73,7 +88,11 @@ pub(in crate::model_check) fn apply_to_state(state: &mut ExplorationState, opera
     }
     state.observe_election_authority();
     state.refresh_log_history();
-    state.record_commit_observation(&commit_context, configuration_proposer);
+    state.record_commit_observation(
+        &commit_context,
+        configuration_proposer,
+        follower_commit_authority,
+    );
     state.record_leader_completeness_observation();
     state.refresh_commit_floors();
     state.refresh_client_history();

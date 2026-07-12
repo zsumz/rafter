@@ -20,6 +20,24 @@ pub(crate) fn four_node_future_learner_configs(election_timeout_ticks: u64) -> V
     ]
 }
 
+pub(crate) fn four_node_future_learner_pre_vote_configs(
+    election_timeout_ticks: u64,
+) -> Vec<NodeConfig> {
+    four_node_future_learner_configs(election_timeout_ticks)
+        .into_iter()
+        .map(|config| config.with_pre_vote(true))
+        .collect()
+}
+
+pub(crate) fn four_node_future_learner_check_quorum_configs(
+    election_timeout_ticks: u64,
+) -> Vec<NodeConfig> {
+    four_node_future_learner_configs(election_timeout_ticks)
+        .into_iter()
+        .map(|config| config.with_check_quorum(true))
+        .collect()
+}
+
 fn config(id: u64, peers: &[u64], election_timeout_ticks: u64) -> NodeConfig {
     NodeConfig::new(
         NodeId(id),
@@ -46,6 +64,13 @@ pub(crate) fn three_node_pre_vote_configs(election_timeout_ticks: u64) -> Vec<No
     three_node_configs(election_timeout_ticks)
         .into_iter()
         .map(|config| config.with_pre_vote(true))
+        .collect()
+}
+
+pub(crate) fn three_node_check_quorum_configs(election_timeout_ticks: u64) -> Vec<NodeConfig> {
+    three_node_configs(election_timeout_ticks)
+        .into_iter()
+        .map(|config| config.with_check_quorum(true))
         .collect()
 }
 

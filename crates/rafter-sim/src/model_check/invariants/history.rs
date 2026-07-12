@@ -42,5 +42,14 @@ pub(crate) fn check_commit_history(
             state: summarize(&state.cluster),
         });
     }
+    if let Some(index) = state.commit_history.unwitnessed_commit_terms.iter().next() {
+        return Err(Failure {
+            kind: crate::model_check::FailureKind::HarnessError,
+            invariant: super::catalog::LG_05_LEADER_COMPLETENESS,
+            message: format!("committed prefix index {index} has no commit-authority term witness"),
+            trace: trace.to_vec(),
+            state: summarize(&state.cluster),
+        });
+    }
     Ok(())
 }

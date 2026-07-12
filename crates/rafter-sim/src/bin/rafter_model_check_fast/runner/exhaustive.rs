@@ -9,27 +9,45 @@ const WEEKLY_EXHAUSTIVE_MAX_WALL_CLOCK: Duration = Duration::from_secs(3_600);
 const NIGHTLY_EXHAUSTIVE_MAX_UNIQUE_STATES: usize = 120_000_000;
 const WEEKLY_EXHAUSTIVE_MAX_UNIQUE_STATES: usize = 300_000_000;
 
-pub(super) fn assert_exhaustive_target(
+pub(super) fn assert_exhaustive_targets(
     profile: Profile,
-    unique_states: usize,
+    unique_protocol_states: usize,
+    unique_verifier_states: usize,
 ) -> Result<(), Box<dyn Error>> {
-    let Some(target) = profile.exhaustive_target_unique_states() else {
+    let Some(targets) = profile.exhaustive_targets() else {
         return Ok(());
     };
     println!(
-        "model-check profile-total profile={} unique_states={} target_unique_states={}",
+        "model-check profile-total profile={} unique_protocol_states={} unique_verifier_states={} target_protocol_states={} target_verifier_states={}",
         profile.name(),
-        unique_states,
-        target
+        unique_protocol_states,
+        unique_verifier_states,
+        targets.protocol_states,
+        targets.verifier_states
     );
-    if unique_states < target {
+    if unique_protocol_states < targets.protocol_states {
         return Err(format!(
-            "{} explored {unique_states} unique states, below target {target}",
-            profile.name()
+            "{} explored {unique_protocol_states} unique protocol states, below target {}",
+            profile.name(),
+            targets.protocol_states,
+        )
+        .into());
+    }
+    if unique_verifier_states < targets.verifier_states {
+        return Err(format!(
+            "{} explored {unique_verifier_states} unique verifier states, below target {}",
+            profile.name(),
+            targets.verifier_states,
         )
         .into());
     }
     Ok(())
+}
+
+#[cfg(test)]
+fn target_values(profile: Profile) -> (usize, usize) {
+    let targets = profile.exhaustive_targets().expect("scheduled target");
+    (targets.protocol_states, targets.verifier_states)
 }
 
 pub(super) fn scheduled_exhaustive_bounds(profile: Profile, bounds: Bounds) -> Bounds {
@@ -49,16 +67,26 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exhaustive_target_gate_uses_unique_state_counts() {
-        let target = Profile::RaftNightly
-            .exhaustive_target_unique_states()
-            .expect("nightly has an exhaustive target");
+    fn exhaustive_target_gate_requires_protocol_and_verifier_state_counts() {
+        assert_eq!(
+            target_values(Profile::RaftNightly),
+            (100_000_000, 100_000_000)
+        );
+        assert_eq!(
+            target_values(Profile::RaftWeekly),
+            (250_000_000, 250_000_000)
+        );
+        assert_eq!(Profile::Fast.exhaustive_targets(), None);
+        let target = 100_000_000;
 
-        assert!(assert_exhaustive_target(Profile::RaftNightly, target).is_ok());
-        let error = assert_exhaustive_target(Profile::RaftNightly, target - 1)
-            .expect_err("below-target unique states should fail");
+        assert!(assert_exhaustive_targets(Profile::RaftNightly, target, target).is_ok());
+        let protocol_error = assert_exhaustive_targets(Profile::RaftNightly, target - 1, target)
+            .expect_err("below-target protocol states should fail");
+        let verifier_error = assert_exhaustive_targets(Profile::RaftNightly, target, target - 1)
+            .expect_err("below-target verifier states should fail");
 
-        assert!(error.to_string().contains("unique states"));
+        assert!(protocol_error.to_string().contains("protocol states"));
+        assert!(verifier_error.to_string().contains("verifier states"));
     }
 
     #[test]

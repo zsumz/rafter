@@ -89,7 +89,7 @@ impl ExplorationState {
         state.election_history.record_seeded_leaders(&state.cluster);
         state.observe_election_authority();
         state.refresh_log_history();
-        state.refresh_committed_prefixes();
+        state.refresh_seeded_commit_history();
         state.observe_state_coverage();
         state
     }

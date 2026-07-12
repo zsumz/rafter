@@ -14,7 +14,6 @@ pub(super) struct ExplorationBudget {
     pub(super) bounds: Bounds,
     started_at: Instant,
     best_remaining_depth_by_state: BTreeMap<StateKey, usize>,
-    unique_states: BTreeSet<StateKey>,
     unique_protocol_states: BTreeSet<StateKey>,
     explored_states: usize,
     explored_actions: usize,
@@ -29,7 +28,6 @@ impl ExplorationBudget {
             bounds,
             started_at: Instant::now(),
             best_remaining_depth_by_state: BTreeMap::new(),
-            unique_states: BTreeSet::new(),
             unique_protocol_states: BTreeSet::new(),
             explored_states: 0,
             explored_actions: 0,
@@ -42,7 +40,7 @@ impl ExplorationBudget {
     pub(super) fn summary(&self) -> Summary {
         Summary {
             explored_states: self.explored_states,
-            unique_states: self.unique_states.len(),
+            unique_states: self.best_remaining_depth_by_state.len(),
             unique_protocol_states: self.unique_protocol_states.len(),
             explored_actions: self.explored_actions,
             configured_depth: self.bounds.depth,
@@ -70,11 +68,11 @@ impl ExplorationBudget {
             return false;
         }
 
-        let is_new_state = !self.unique_states.contains(&key);
+        let is_new_state = !self.best_remaining_depth_by_state.contains_key(&key);
         if self
             .bounds
             .max_unique_states
-            .is_some_and(|max| is_new_state && self.unique_states.len() >= max)
+            .is_some_and(|max| is_new_state && self.best_remaining_depth_by_state.len() >= max)
         {
             self.completion = ExplorationCompletion::UniqueStateLimit;
             return false;
@@ -82,7 +80,6 @@ impl ExplorationBudget {
 
         self.best_remaining_depth_by_state
             .insert(key, remaining_depth);
-        self.unique_states.insert(key);
         self.unique_protocol_states
             .insert(StateKey::from_protocol_state(state));
         self.reached_depth = self.reached_depth.max(depth);

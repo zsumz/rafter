@@ -93,6 +93,7 @@ impl RestartSnapshotState {
                 .expect("compacted voter bootstrap is valid");
         }
         state.refresh_log_history();
+        state.refresh_seeded_commit_history();
         elect_node_one_with_node_three_in_state(&mut state);
         state.cluster.drop_matching(|envelope| {
             matches!(
