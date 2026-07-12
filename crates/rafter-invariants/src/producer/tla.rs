@@ -156,12 +156,17 @@ fn evaluate(
     {
         return error("TLC exited without a successful completion verdict");
     }
-    let minimum = required_configuration(configuration, "minimum_distinct_states")
+    let minimum_generated = required_configuration(configuration, "minimum_generated_states")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(u64::MAX);
+    let minimum_distinct = required_configuration(configuration, "minimum_distinct_states")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
         .unwrap_or(u64::MAX);
     if summary.states_left != 0
-        || summary.distinct_states < minimum
+        || summary.generated_states < minimum_generated
+        || summary.distinct_states < minimum_distinct
         || summary.search_depth == 0
         || symbols.is_empty()
     {

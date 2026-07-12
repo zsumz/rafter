@@ -95,9 +95,12 @@ fn validate_pass(
     {
         return Err("frontier-exhausted TLA check must pass all eight predicates");
     }
-    let minimum = contract.configuration["minimum_distinct_states"]
+    let minimum_generated = contract.configuration["minimum_generated_states"]
         .parse::<u64>()
-        .map_err(|_| "TLA state floor is invalid")?;
+        .map_err(|_| "TLA generated-state floor is invalid")?;
+    let minimum_distinct = contract.configuration["minimum_distinct_states"]
+        .parse::<u64>()
+        .map_err(|_| "TLA distinct-state floor is invalid")?;
     let mut expected_observations = BTreeSet::from([
         "configured_invariants".to_owned(),
         "tool_pin_verified".to_owned(),
@@ -114,7 +117,8 @@ fn validate_pass(
         || observed(check, "tool_pin_verified") != 1
         || observed(check, "trace_sample_passed") != 1
         || observed(check, "detector_negative_passed") != 1
-        || observed(check, "distinct_states") < minimum
+        || observed(check, "generated_states") < minimum_generated
+        || observed(check, "distinct_states") < minimum_distinct
         || observed(check, "generated_states") < observed(check, "distinct_states")
         || observed(check, "states_left_on_queue") != 0
         || observed(check, "search_depth") == 0

@@ -7,7 +7,7 @@ fn complete_execution(exit_succeeded: bool) -> TlaExecution {
     TlaExecution {
         main: Some(TlcSummary {
             generated_states: 130_000_001,
-            distinct_states: 120_000_001,
+            distinct_states: 16_284_977,
             states_left: 0,
             search_depth: 19,
             completed_without_error: true,
@@ -32,12 +32,44 @@ fn complete_execution(exit_succeeded: bool) -> TlaExecution {
 fn successful_frames_with_nonzero_exit_are_a_harness_error() {
     let execution = complete_execution(false);
     let symbols = ["ElectionSafety".to_owned()].into_iter().collect();
-    let configuration =
-        BTreeMap::from([("minimum_distinct_states".to_owned(), "120000000".to_owned())]);
+    let configuration = BTreeMap::from([
+        (
+            "minimum_generated_states".to_owned(),
+            "120000000".to_owned(),
+        ),
+        ("minimum_distinct_states".to_owned(), "16000000".to_owned()),
+    ]);
 
     assert!(matches!(
         evaluate(&execution, &symbols, &configuration),
         TlaVerdict::Error(_)
+    ));
+}
+
+#[test]
+fn coverage_floor_uses_generated_and_distinct_state_counters() {
+    let execution = complete_execution(true);
+    let symbols = ["ElectionSafety".to_owned()].into_iter().collect();
+    let passing = BTreeMap::from([
+        (
+            "minimum_generated_states".to_owned(),
+            "120000000".to_owned(),
+        ),
+        ("minimum_distinct_states".to_owned(), "16000000".to_owned()),
+    ]);
+    assert!(matches!(
+        evaluate(&execution, &symbols, &passing),
+        TlaVerdict::Pass
+    ));
+
+    let mut too_high = passing;
+    too_high.insert(
+        "minimum_generated_states".to_owned(),
+        "140000000".to_owned(),
+    );
+    assert!(matches!(
+        evaluate(&execution, &symbols, &too_high),
+        TlaVerdict::Incomplete(_, _)
     ));
 }
 
