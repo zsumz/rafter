@@ -195,8 +195,12 @@ fn check(options: CheckOptions) -> Result<bool, Box<dyn std::error::Error>> {
             VerdictStatus::Red => "RED",
         };
         println!(
-            "{label} {} {}/{} evidence checks",
-            verdict.invariant_id, verdict.passed_evidence, verdict.required_evidence
+            "{label} {} {}/{} clauses, {}/{} evidence checks",
+            verdict.invariant_id,
+            verdict.passed_clauses,
+            verdict.required_clauses,
+            verdict.passed_evidence,
+            verdict.required_evidence
         );
     }
     println!(

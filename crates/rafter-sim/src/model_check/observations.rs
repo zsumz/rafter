@@ -3,6 +3,7 @@ use std::hash::{Hash, Hasher};
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u8)]
 pub(super) enum Observation {
+    WellFormedStatesChecked,
     TermAdvances,
     SameTermVoteReobservations,
     SameTermVotedRestarts,
@@ -37,7 +38,8 @@ pub(super) enum Observation {
     SameBoundarySnapshotInstallPairs,
 }
 
-const ALL: [Observation; 32] = [
+const ALL: [Observation; 33] = [
+    Observation::WellFormedStatesChecked,
     Observation::TermAdvances,
     Observation::SameTermVoteReobservations,
     Observation::SameTermVotedRestarts,
@@ -75,6 +77,7 @@ const ALL: [Observation; 32] = [
 impl Observation {
     pub(super) const fn label(self) -> &'static str {
         match self {
+            Self::WellFormedStatesChecked => "well_formed_states_checked",
             Self::TermAdvances => "term_advances",
             Self::SameTermVoteReobservations => "same_term_vote_reobservations",
             Self::SameTermVotedRestarts => "same_term_voted_restarts",

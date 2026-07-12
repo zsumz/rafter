@@ -12,13 +12,15 @@ mod evidence_checks;
 #[path = "invariant_catalog_guard/parse.rs"]
 mod parse;
 
-use assertions::{assert_declared_counts_match, assert_entries_are_well_formed};
+use assertions::{
+    assert_clauses_are_well_formed, assert_declared_counts_match, assert_entries_are_well_formed,
+};
 use doc_checks::{
     assert_generated_doc_mentions_every_entry, assert_model_check_catalog_labels_are_registered,
     assert_rendered_doc_is_current,
 };
 use evidence_checks::assert_evidence_is_machine_checkable;
-use parse::{parse_entries, parse_evidence};
+use parse::{parse_clauses, parse_entries, parse_evidence};
 
 const EXPECTED_TOTAL: usize = 44;
 const EXPECTED_CANONICAL: usize = 5;
@@ -68,14 +70,28 @@ struct Entry {
     tier: String,
     title: String,
     statement: String,
-    required_action: String,
+    scope: String,
+    assumptions: String,
+    action_class: String,
+    next_action: String,
     priority: String,
     current_coverage: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Default)]
+struct Clause {
+    id: String,
+    invariant_id: String,
+    statement: String,
+    scope: String,
+    assumptions: String,
+    required: bool,
+}
+
+#[derive(Debug, Default)]
 struct Evidence {
     id: String,
+    clauses: Vec<String>,
     layer: String,
     strength: String,
     path: String,
@@ -97,11 +113,13 @@ fn invariant_catalog_is_complete_and_documented() {
         .unwrap_or_else(|error| panic!("read {}: {error}", doc_path.display()));
 
     let entries = parse_entries(&registry);
+    let clauses = parse_clauses(&registry);
     let evidence = parse_evidence(&registry);
     assert_eq!(entries.len(), EXPECTED_TOTAL, "unexpected catalog size");
     assert_declared_counts_match(&registry, &entries, &workspace);
     assert_entries_are_well_formed(&entries);
-    assert_evidence_is_machine_checkable(&workspace, &entries, &evidence);
+    assert_clauses_are_well_formed(&entries, &clauses);
+    assert_evidence_is_machine_checkable(&workspace, &entries, &clauses, &evidence);
     assert_rendered_doc_is_current(&workspace);
     assert_generated_doc_mentions_every_entry(&doc, &entries);
     assert_model_check_catalog_labels_are_registered(&workspace, &entries);

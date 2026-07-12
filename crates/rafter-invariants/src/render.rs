@@ -6,19 +6,21 @@ use crate::{InvariantVerdict, VerdictReport, VerdictStatus};
 #[must_use]
 pub fn render_markdown(report: &VerdictReport) -> String {
     let mut output = format!(
-        "# Rafter invariant report: {}\n\nSource: `{}`\n\nVerdict: **{}/{} green**\n\n| Invariant | Verdict | Evidence | Detail |\n| --- | --- | ---: | --- |\n",
+        "# Rafter invariant report: {}\n\nSource: `{}`\n\nVerdict: **{}/{} green**\n\n| Invariant | Verdict | Clauses | Evidence | Detail |\n| --- | --- | ---: | ---: | --- |\n",
         report.profile, report.source_ref, report.summary.green, report.summary.total
     );
     for verdict in &report.invariants {
         let detail = verdict.issues.first().map_or_else(
-            || "all required evidence passed".to_owned(),
+            || "all required clauses and evidence passed".to_owned(),
             |issue| issue.message.clone(),
         );
         let _ = writeln!(
             output,
-            "| `{}` | {} | {}/{} | {} |",
+            "| `{}` | {} | {}/{} | {}/{} | {} |",
             verdict.invariant_id,
             verdict_label(verdict),
+            verdict.passed_clauses,
+            verdict.required_clauses,
             verdict.passed_evidence,
             verdict.required_evidence,
             markdown_cell(&detail)

@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use rafter::{LogIndex, NodeId, SharedPayload};
+use rafter::{LogIndex, NodeId, Role, SharedPayload, Term};
 
 use crate::{Applied, Cluster};
 
@@ -42,6 +42,11 @@ pub(crate) struct ClientWrite {
 #[derive(Clone, Copy, Debug, Hash)]
 pub(crate) enum ClientWriteStatus {
     Pending,
+    Accepted {
+        node_id: NodeId,
+        index: LogIndex,
+        term: Term,
+    },
     Completed {
         node_id: NodeId,
         index: LogIndex,
@@ -50,11 +55,20 @@ pub(crate) enum ClientWriteStatus {
     Unknown {
         reason: ClientWriteUnknownReason,
     },
+    Rejected,
+    Dropped {
+        reason: ClientWriteDropReason,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Hash)]
 pub(crate) enum ClientWriteUnknownReason {
     StaleLeader,
+}
+
+#[derive(Clone, Copy, Debug, Hash)]
+pub(crate) enum ClientWriteDropReason {
+    AuthorityLost,
 }
 
 #[derive(Clone, Debug, Hash)]
@@ -160,6 +174,12 @@ impl ExplorationState {
 
     pub(in crate::model_check) fn refresh_client_history(&mut self) {
         let mut next_event = self.client_history.next_event;
+        self.refresh_client_writes(&mut next_event);
+        self.refresh_client_reads(&mut next_event);
+        self.client_history.next_event = next_event;
+    }
+
+    fn refresh_client_writes(&mut self, next_event: &mut u64) {
         for write in self.client_history.writes.values_mut() {
             if matches!(write.status, ClientWriteStatus::Completed { .. }) {
                 continue;
@@ -173,12 +193,62 @@ impl ExplorationState {
                 write.status = ClientWriteStatus::Completed {
                     node_id: applied.node_id,
                     index: applied.index,
-                    completed_at: next_event,
+                    completed_at: *next_event,
                 };
-                next_event += 1;
+                *next_event += 1;
+                continue;
+            }
+            match write.status {
+                ClientWriteStatus::Pending => {
+                    let accepted = self
+                        .cluster
+                        .bootstrap_state(write.node_id)
+                        .log
+                        .into_iter()
+                        .find(|entry| {
+                            entry.kind.application_payload() == Some(write.payload.as_slice())
+                        });
+                    write.status = accepted.map_or(ClientWriteStatus::Rejected, |entry| {
+                        ClientWriteStatus::Accepted {
+                            node_id: write.node_id,
+                            index: entry.index,
+                            term: entry.term,
+                        }
+                    });
+                }
+                ClientWriteStatus::Accepted {
+                    node_id,
+                    index,
+                    term,
+                } => {
+                    let authority_lost = self.cluster.role(node_id) != Role::Leader
+                        || self.cluster.current_term(node_id) != term
+                        || self
+                            .cluster
+                            .bootstrap_state(node_id)
+                            .log
+                            .iter()
+                            .find(|entry| entry.index == index)
+                            .is_none_or(|entry| {
+                                entry.term != term
+                                    || entry.kind.application_payload()
+                                        != Some(write.payload.as_slice())
+                            });
+                    if authority_lost {
+                        write.status = ClientWriteStatus::Dropped {
+                            reason: ClientWriteDropReason::AuthorityLost,
+                        };
+                    }
+                }
+                ClientWriteStatus::Completed { .. }
+                | ClientWriteStatus::Unknown { .. }
+                | ClientWriteStatus::Rejected
+                | ClientWriteStatus::Dropped { .. } => {}
             }
         }
+    }
 
+    fn refresh_client_reads(&mut self, next_event: &mut u64) {
         let applied = &self.cluster.applied;
         for read in self.client_history.reads.values_mut() {
             if matches!(&read.outcome, ClientReadOutcome::Completed { .. }) {
@@ -206,14 +276,13 @@ impl ExplorationState {
                 let outcome = ClientReadOutcome::Completed {
                     proof,
                     result,
-                    completed_at: next_event,
+                    completed_at: *next_event,
                 };
-                next_event += 1;
+                *next_event += 1;
                 outcome
             } else {
                 ClientReadOutcome::ProofGranted { proof }
             };
         }
-        self.client_history.next_event = next_event;
     }
 }

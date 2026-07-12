@@ -49,7 +49,6 @@ scheduling properties that are not per-group Raft consensus properties.
 ## Layer Legend
 
 - D: direct executable oracle.
-- P: partial, indirect, or scenario coverage.
 - E2E: client-visible end-to-end consequence.
 - none: not covered, or not the right layer for that predicate.
 
@@ -120,137 +119,302 @@ scheduling properties that are not per-group Raft consensus properties.
 These are the first closures because they turn broad green checks into
 named temporal or witness-based verdicts.
 
-| ID | Work |
-| --- | --- |
-| `EL-05` | Retain election certificates by term and keep the simulator negative fixture. |
-| `EL-06` | Retain election certificate quorum validation and keep negative fixtures for voter and joint-quorum mistakes. |
-| `LG-01` | Retain the independent core property plus leader-term logical log observations and the append-only negative fixture. |
-| `LG-02` | Retain the AppendEntries transition oracle and negative fixtures for false success responses. |
-| `LG-03` | Retain full logical-log prefix witnesses, including snapshot-boundary negative coverage. |
-| `LG-05` | Retain leader-completeness checks over committed prefixes and election certificates. |
-| `CM-02` | Retain storage-derived commit certificates and quorum negative fixtures. |
-| `CM-03` | Retain current-term commit transition checks and negative fixture. |
+| ID | Class | Work |
+| --- | --- | --- |
+| `EL-05` | future_strengthening | Retain election certificates by term and keep the simulator negative fixture. |
+| `EL-06` | future_strengthening | Retain election certificate quorum validation and keep negative fixtures for voter and joint-quorum mistakes. |
+| `LG-01` | future_strengthening | Retain the independent core property plus leader-term logical log observations and the append-only negative fixture. |
+| `LG-02` | future_strengthening | Retain the AppendEntries transition oracle and negative fixtures for false success responses. |
+| `LG-03` | future_strengthening | Retain full logical-log prefix witnesses, including snapshot-boundary negative coverage. |
+| `LG-05` | future_strengthening | Retain leader-completeness checks over committed prefixes and election certificates. |
+| `CM-02` | future_strengthening | Retain storage-derived commit certificates and quorum negative fixtures. |
+| `CM-03` | future_strengthening | Retain current-term commit transition checks and negative fixture. |
 
 ## Evidence References
 
-| ID | Layer | Strength | Reference |
-| --- | --- | --- | --- |
-| `ST-01` | tests | direct | `crates/rafter/src/node/tests/derived_state.rs#derived_state_is_valid_after_bootstrap` |
-| `EL-01` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `term_monotonicity_history_detects_regression_from_observation` |
-| `EL-01` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#election_persists_term_and_vote_before_vote_requests_escape` |
-| `EL-01` | tests | direct | `crates/rafter/src/node/tests/election/voting.rs#public_transitions_do_not_decrease_current_term` |
-| `EL-02` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `durable_vote_history_rejects_second_vote_in_term` |
-| `EL-02` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `durable_vote_history_detects_lost_vote_same_term` |
-| `EL-02` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#restarted_node_preserves_persisted_vote` |
-| `EL-02` | tests | direct | `crates/rafter/src/node/tests/election/voting.rs#follower_grants_one_vote_per_term` |
-| `EL-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `vote_grant_oracle_rejects_non_voter_candidate` |
-| `EL-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `vote_grant_oracle_rejects_stale_candidate_log` |
-| `EL-03` | tests | direct | `crates/rafter/src/node/tests/election/voting.rs#stale_vote_request_is_rejected` |
-| `EL-03` | tests | direct | `crates/rafter/src/node/tests/membership/authority.rs#vote_request_from_candidate_outside_effective_membership_is_rejected` |
-| `EL-04` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#granted_vote_is_persisted_before_vote_response_escapes` |
-| `EL-04` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#higher_term_vote_rejection_persists_term_before_response_escapes` |
-| `EL-04` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#higher_term_append_persists_term_before_response_escapes` |
-| `EL-04` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#hard_state_write_failure_suppresses_vote_requests` |
-| `EL-04` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#hard_state_write_failure_suppresses_granted_vote_response` |
-| `EL-04` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#hard_state_write_failure_suppresses_higher_term_vote_rejection` |
-| `EL-04` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#hard_state_write_failure_suppresses_higher_term_append_response` |
-| `EL-05` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `election_history_detects_second_leader_in_same_term` |
-| `EL-05` | tla | direct | `specs/tla/raft/Raft.tla#ElectionSafety` |
-| `EL-06` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `election_certificate_rejects_learner_grant` |
-| `EL-06` | tests | direct | `crates/rafter/src/node/tests/election/campaign.rs#candidate_becomes_leader_after_quorum` |
-| `EL-06` | tests | direct | `crates/rafter/src/node/tests/membership/authority.rs#learner_grant_does_not_create_quorum` |
-| `EL-07` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `authority_fencing_oracle_rejects_unfenced_higher_term_response` |
-| `EL-07` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `authority_fencing_oracle_rejects_stale_response_leadership` |
-| `EL-07` | tests | direct | `crates/rafter/src/node/tests/transfer/timeout.rs#stale_term_timeout_now_is_ignored` |
-| `EL-07` | tla | direct | `specs/tla/raft/Raft.tla#StaleLeaderFencing` |
-| `EL-08` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `pre_vote_oracle_rejects_request_term_mutation` |
-| `EL-08` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `pre_vote_oracle_rejects_stale_response_authority_advance` |
-| `EL-08` | tests | direct | `crates/rafter/src/node/tests/pre_vote.rs#pre_vote_grant_is_not_persisted_and_does_not_set_voted_for` |
-| `LG-01` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_log_history`; negative fixture `leader_append_only_detects_leader_term_truncation` |
-| `LG-01` | tests | direct | `crates/rafter/tests/leader_append_only_property.rs#leader_same_term_log_is_prefix_monotone_across_generated_inputs` |
-| `LG-02` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_log_history`; negative fixture `append_entries_oracle_detects_success_without_storing_final_entry` |
-| `LG-02` | tests | direct | `crates/rafter/src/node/tests/replication/follower.rs#follower_rejects_append_that_would_truncate_committed_entry` |
-| `LG-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_log_history`; negative fixture `log_matching_detects_equal_index_term_with_different_prefixes` |
-| `LG-03` | tla | direct | `specs/tla/raft/Raft.tla#LogMatching` |
-| `LG-04` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
-| `LG-04` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_committed_prefixes`; negative fixture `committed_prefix_checker_detects_divergent_committed_entries` |
-| `LG-04` | tests | direct | `crates/rafter-runtime/src/tests/conflict_repair.rs#file_backed_follower_conflict_repair_survives_restart` |
-| `LG-04` | tla | direct | `specs/tla/raft/Raft.tla#CommittedPrefixStability` |
-| `LG-05` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_commit_history`; negative fixture `leader_completeness_rechecks_when_committed_ledger_grows_after_election` |
-| `LG-05` | tla | direct | `specs/tla/raft/Raft.tla#LeaderCompleteness` |
-| `CM-01` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_commit_index_monotonicity`; negative fixture `commit_index_monotonicity_detects_floor_regression` |
-| `CM-01` | tests | direct | `crates/rafter/src/node/tests/replication/follower.rs#a_probe_with_a_high_leader_commit_never_regresses_the_commit_index` |
-| `CM-02` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_commit_history`; negative fixture `commit_certificate_uses_pre_transition_joint_quorum_for_candidate_below_config` |
-| `CM-02` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_commit_history`; negative fixture `commit_certificate_uses_post_append_joint_quorum_for_same_operation_commit` |
-| `CM-02` | tla | direct | `specs/tla/raft/Raft.tla#CommittedEntriesHaveQuorum` |
-| `CM-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_commit_history`; negative fixture `commit_certificate_detects_prior_term_candidate_commit` |
-| `CM-03` | tests | direct | `crates/rafter/src/node/tests/election/campaign.rs#single_voter_leadership_noop_does_not_drop_prior_term_apply` |
-| `AP-01` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_applied_order`; negative fixture `applied_order_detects_apply_at_or_below_snapshot_boundary` |
-| `AP-01` | tests | direct | `crates/rafter/src/node/tests/bootstrap/application.rs#committed_entries_above_applied_floor_drain_immediately_after_bootstrap` |
-| `AP-02` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
-| `AP-02` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_applied_payload_agreement`; negative fixture `replayed_index_must_match_prior_command_across_epochs` |
-| `AP-02` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/applied_agreement.rs#applied_agreement_detects_disagreeing_snapshots_at_same_boundary` |
-| `AP-02` | tla | direct | `specs/tla/raft/Raft.tla#StateMachineSafety` |
-| `MB-01` | tests | direct | `crates/rafter/tests/properties.rs#membership_constructor_validation_matches_the_documented_invariant` |
-| `MB-02` | tests | direct | `crates/rafter/tests/properties.rs#membership_joint_quorum_holds_iff_both_half_majorities_hold` |
-| `MB-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_no_overlapping_uncommitted_configurations`; negative fixture `serialized_configuration_checker_detects_two_uncommitted_configurations` |
-| `MB-03` | tests | direct | `crates/rafter/src/node/tests/membership/serialization.rs#follower_rejects_second_uncommitted_configuration_entry` |
-| `MB-04` | maelstrom | e2e | `scripts/maelstrom-lin-kv-membership-change#RAFTER_MAELSTROM_MEMBERSHIP_PLAN` |
-| `MB-04` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_committed_configuration_monotonicity`; negative fixture `committed_configuration_monotonicity_detects_regression` |
-| `MB-04` | tests | direct | `crates/rafter/src/node/tests/membership/transition.rs#change_membership_derives_joint_configuration_for_voter_changes` |
-| `MB-05` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/bootstrap_compaction/local.rs#runtime_local_compaction_fills_committed_dynamic_membership_metadata` |
-| `MB-06` | tests | direct | `crates/rafter/src/node/tests/membership/learner.rs#learner_receives_log_replication_without_counting_for_commit` |
-| `MB-07` | tests | direct | `crates/rafter/src/node/tests/transfer/handoff.rs#transfer_to_caught_up_target_sends_timeout_now_immediately` |
-| `RD-01` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--nemesis partition` |
-| `RD-01` | tests | direct | `crates/rafter/src/node/tests/read/authority.rs#read_rejected_without_current_term_commit` |
-| `RD-02` | tests | direct | `crates/rafter/src/node/tests/read/barrier.rs#delayed_ack_from_an_older_round_never_confirms_a_barrier` |
-| `RD-03` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
-| `RD-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/client.rs#check_read_barrier_safety`; negative fixture `read_barrier_invariant_detects_grant_below_registration_floor` |
-| `RD-03` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/persistence_read.rs#read_barrier_invariant_detects_grant_below_registration_floor` |
-| `RD-03` | tla | direct | `specs/tla/raft/Raft.tla#ReadBarrierLinearizability` |
-| `RD-04` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
-| `RD-04` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/client.rs#check_client_history_read_write_invariants`; negative fixture `client_history_detects_completed_read_before_local_apply_floor` |
-| `RD-04` | tests | direct | `crates/rafter-app/tests/group_read.rs#linearizable_read_helper_returns_result_when_barrier_grants` |
-| `RD-05` | tests | direct | `crates/rafter/src/node/tests/read/lease.rs#a_confirmed_lease_grants_barriers_without_a_round_trip` |
-| `RD-06` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
-| `RD-06` | simulator | direct | `crates/rafter-sim/src/model_check/linearizability.rs#check_client_history_linearizable`; negative fixture `linearizer_rejects_read_that_misses_completed_write` |
-| `RD-06` | tests | direct | `crates/rafter-sim/src/model_check/tests/linearizability.rs#linearizer_rejects_read_that_misses_completed_write` |
-| `PS-01` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#election_persists_term_and_vote_before_vote_requests_escape` |
-| `PS-01` | tests | direct | `crates/rafter-runtime/src/tests/persistence_contract.rs#all_raft_outputs_have_declared_runtime_persistence_dependency` |
-| `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/group_commit/failure.rs#a_failed_batch_releases_no_output_and_poisons_the_runtime` |
-| `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/commit_failure.rs#final_hard_state_write_failure_suppresses_apply_and_success_response` |
-| `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#hard_state_write_failure_suppresses_vote_requests` |
-| `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/persistence_contract.rs#ps02_failure_matrix_covers_each_runtime_store_operation` |
-| `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/persistence_ordering.rs#log_append_failure_suppresses_apply_outputs` |
-| `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_snapshot_promote_failure_suppresses_apply_and_success_response` |
-| `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_snapshot_compaction_failure_suppresses_apply_and_success_response` |
-| `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_snapshot_write_failure_poisons_runtime_until_restart` |
-| `PS-03` | maelstrom | e2e | `scripts/maelstrom-lin-kv-repeated-restart#RAFTER_MAELSTROM_RESTART_MODE` |
-| `PS-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_exact_durable_restart`; negative fixture `exact_durable_restart_detects_digest_change` |
-| `PS-03` | tests | direct | `crates/rafter-runtime/src/tests/local_ids/recovery.rs#restart_replays_committed_tracked_entry_without_local_id` |
-| `PS-03` | tests | direct | `crates/rafter-sim/src/model_check/tests/soak/core.rs#ordinary_restart_preserves_durable_state_digest` |
-| `PS-04` | maelstrom | e2e | `scripts/maelstrom-lin-kv-app-persist-crash#RAFTER_MAELSTROM_CRASH_AFTER_APP_PERSIST_ONCE` |
-| `PS-04` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_applied_floor_recovery`; negative fixture `applied_floor_recovery_rejects_replay_at_or_below_floor` |
-| `PS-04` | tests | direct | `crates/rafter-maelstrom/src/app/tests.rs#persisted_app_state_round_trips_applied_floor` |
-| `PS-04` | tests | direct | `crates/rafter-maelstrom/src/app/tests.rs#app_persist_crash_point_fires_once_per_root` |
-| `PS-04` | tests | direct | `crates/rafter/src/node/tests/bootstrap/application.rs#applied_floor_suppresses_reapply_below_it` |
-| `SS-01` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_metadata_payload_integrity`; negative fixture `snapshot_metadata_payload_integrity_detects_expected_metadata_with_different_bytes` |
-| `SS-01` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_persists_installed_snapshot_and_compacts_log_past_local_tail` |
-| `SS-02` | tests | direct | `crates/rafter-runtime/src/tests/crash_window/repair.rs#reopen_completes_compaction_after_crash_between_snapshot_and_compaction` |
-| `SS-02` | tests | direct | `crates/rafter-runtime/src/tests/crash_window/repair.rs#file_backed_reopen_persists_repaired_compaction_after_snapshot_crash_window` |
-| `SS-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_log_geometry`; negative fixture `snapshot_log_geometry_detects_retained_suffix_length_mismatch` |
-| `SS-03` | tests | direct | `crates/rafter-runtime/src/tests/crash_window/boundary.rs#append_behind_the_snapshot_boundary_is_refused_not_mislabelled` |
-| `SS-04` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_transfer_integrity`; negative fixture `snapshot_transfer_integrity_rejects_complete_pending_transfer` |
-| `SS-04` | tests | direct | `crates/rafter/src/node/tests/snapshot/chunks/receive.rs#out_of_order_snapshot_chunk_requests_expected_offset` |
-| `SS-05` | maelstrom | e2e | `scripts/maelstrom-lin-kv-forced-snapshot#RAFTER_MAELSTROM_SNAPSHOT_EVERY` |
-| `SS-05` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_applied_payload_agreement`; negative fixture `applied_agreement_detects_snapshot_membership_mismatch_at_same_boundary` |
-| `SS-05` | tests | direct | `crates/rafter-sim/src/tests/snapshot_installation/catchup.rs#simulator_discards_divergent_suffix_when_installing_snapshot` |
-| `LV-01` | simulator | direct | `crates/rafter-sim/src/model_check/liveness.rs#run_soak_liveness_check`; negative fixture exemption `bounded liveness driver, not an invariant checker` |
-| `LV-02` | simulator | direct | `crates/rafter-sim/src/model_check/liveness.rs#run_soak_liveness_check`; negative fixture exemption `bounded liveness driver, not an invariant checker` |
-| `LV-03` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features.rs#run_read_barrier_liveness_check`; negative fixture exemption `bounded read-barrier liveness driver, not an invariant checker` |
-| `LV-03` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features.rs#run_membership_transition_liveness_check`; negative fixture exemption `bounded membership-transition liveness driver, not an invariant checker` |
-| `LV-03` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features.rs#run_leadership_transfer_liveness_check`; negative fixture exemption `bounded leadership-transfer liveness driver, not an invariant checker` |
-| `LV-03` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features.rs#run_snapshot_catchup_liveness_check`; negative fixture exemption `bounded snapshot-catch-up liveness driver, not an invariant checker` |
+| ID | Clauses | Layer | Strength | Reference |
+| --- | --- | --- | --- | --- |
+| `ST-01` | `ST-01.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/applied.rs#check_internal_derived_state`; negative fixture `derived_state_rejects_log_geometry_overflow` |
+| `ST-01` | `ST-01.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/applied.rs#check_internal_derived_state`; negative fixture `derived_state_rejects_commit_beyond_log` |
+| `ST-01` | `ST-01.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/applied.rs#check_internal_derived_state`; negative fixture `derived_state_rejects_apply_beyond_commit` |
+| `ST-01` | `ST-01.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/applied.rs#check_internal_derived_state`; negative fixture `derived_state_rejects_non_leader_pending_read_round` |
+| `ST-01` | `ST-01.d` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/applied.rs#check_internal_derived_state`; negative fixture `derived_state_rejects_stale_configuration_offsets` |
+| `ST-01` | `ST-01.d` | tests | direct | `crates/rafter/src/node/tests/derived_state.rs#derived_state_is_valid_after_bootstrap` |
+| `EL-01` | `EL-01.a,EL-01.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `term_monotonicity_history_detects_regression_from_observation` |
+| `EL-01` | `EL-01.a` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#election_persists_term_and_vote_before_vote_requests_escape` |
+| `EL-01` | `EL-01.a` | tests | direct | `crates/rafter/src/node/tests/election/voting.rs#public_transitions_do_not_decrease_current_term` |
+| `EL-02` | `EL-02.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `durable_vote_history_rejects_second_vote_in_term` |
+| `EL-02` | `EL-02.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `durable_vote_history_detects_lost_vote_same_term` |
+| `EL-02` | `EL-02.b` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#restarted_node_preserves_persisted_vote` |
+| `EL-02` | `EL-02.a` | tests | direct | `crates/rafter/src/node/tests/election/voting.rs#follower_grants_one_vote_per_term` |
+| `EL-03` | `EL-03.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `vote_grant_oracle_rejects_non_voter_candidate` |
+| `EL-03` | `EL-03.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `vote_grant_oracle_rejects_stale_candidate_log` |
+| `EL-03` | `EL-03.b` | tests | direct | `crates/rafter/src/node/tests/election/voting.rs#stale_vote_request_is_rejected` |
+| `EL-03` | `EL-03.a` | tests | direct | `crates/rafter/src/node/tests/membership/authority.rs#vote_request_from_candidate_outside_effective_membership_is_rejected` |
+| `EL-04` | `EL-04.b` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#granted_vote_is_persisted_before_vote_response_escapes` |
+| `EL-04` | `EL-04.a` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#higher_term_vote_rejection_persists_term_before_response_escapes` |
+| `EL-04` | `EL-04.a` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#higher_term_append_persists_term_before_response_escapes` |
+| `EL-04` | `EL-04.c` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#hard_state_write_failure_suppresses_vote_requests` |
+| `EL-04` | `EL-04.c` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#hard_state_write_failure_suppresses_granted_vote_response` |
+| `EL-04` | `EL-04.c` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#hard_state_write_failure_suppresses_higher_term_vote_rejection` |
+| `EL-04` | `EL-04.c` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#hard_state_write_failure_suppresses_higher_term_append_response` |
+| `EL-05` | `EL-05.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `election_history_detects_second_leader_in_same_term` |
+| `EL-05` | `EL-05.a` | tla | direct | `specs/tla/raft/Raft.tla#ElectionSafety` |
+| `EL-06` | `EL-06.a,EL-06.b,EL-06.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `election_certificate_rejects_learner_grant` |
+| `EL-06` | `EL-06.b` | tests | direct | `crates/rafter/src/node/tests/election/campaign.rs#candidate_becomes_leader_after_quorum` |
+| `EL-06` | `EL-06.a,EL-06.b` | tests | direct | `crates/rafter/src/node/tests/membership/authority.rs#learner_grant_does_not_create_quorum` |
+| `EL-07` | `EL-07.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `authority_fencing_oracle_rejects_unfenced_higher_term_response` |
+| `EL-07` | `EL-07.b,EL-07.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `authority_fencing_oracle_rejects_stale_response_leadership` |
+| `EL-07` | `EL-07.d` | tests | direct | `crates/rafter/src/node/tests/read/authority.rs#pending_reads_are_cleared_on_step_down` |
+| `EL-07` | `EL-07.e` | tests | direct | `crates/rafter/src/node/tests/transfer/timeout.rs#stale_term_timeout_now_is_ignored` |
+| `EL-07` | `EL-07.a,EL-07.b` | tla | direct | `specs/tla/raft/Raft.tla#StaleLeaderFencing` |
+| `EL-08` | `EL-08.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `pre_vote_oracle_rejects_request_term_mutation` |
+| `EL-08` | `EL-08.b,EL-08.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `pre_vote_oracle_rejects_stale_response_authority_advance` |
+| `EL-08` | `EL-08.a` | tests | direct | `crates/rafter/src/node/tests/pre_vote.rs#pre_vote_grant_is_not_persisted_and_does_not_set_voted_for` |
+| `LG-01` | `LG-01.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_log_history`; negative fixture `leader_append_only_detects_leader_term_truncation` |
+| `LG-01` | `LG-01.a` | tests | direct | `crates/rafter/tests/leader_append_only_property.rs#leader_same_term_log_is_prefix_monotone_across_generated_inputs` |
+| `LG-02` | `LG-02.a,LG-02.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_log_history`; negative fixture `append_entries_oracle_detects_success_without_storing_final_entry` |
+| `LG-02` | `LG-02.a` | tests | direct | `crates/rafter/src/node/tests/replication/follower.rs#follower_rejects_append_that_would_truncate_committed_entry` |
+| `LG-03` | `LG-03.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_log_history`; negative fixture `log_matching_detects_equal_index_term_with_different_prefixes` |
+| `LG-03` | `LG-03.a` | tla | direct | `specs/tla/raft/Raft.tla#LogMatching` |
+| `LG-04` | `LG-04.a,LG-04.b` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
+| `LG-04` | `LG-04.a,LG-04.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_committed_prefixes`; negative fixture `committed_prefix_checker_detects_divergent_committed_entries` |
+| `LG-04` | `LG-04.a,LG-04.b` | tests | direct | `crates/rafter-runtime/src/tests/conflict_repair.rs#file_backed_follower_conflict_repair_survives_restart` |
+| `LG-04` | `LG-04.a,LG-04.b` | tla | direct | `specs/tla/raft/Raft.tla#CommittedPrefixStability` |
+| `LG-05` | `LG-05.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_commit_history`; negative fixture `leader_completeness_rechecks_when_committed_ledger_grows_after_election` |
+| `LG-05` | `LG-05.a` | tla | direct | `specs/tla/raft/Raft.tla#LeaderCompleteness` |
+| `CM-01` | `CM-01.a,CM-01.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_commit_index_monotonicity`; negative fixture `commit_index_monotonicity_detects_floor_regression` |
+| `CM-01` | `CM-01.a` | tests | direct | `crates/rafter/src/node/tests/replication/follower.rs#a_probe_with_a_high_leader_commit_never_regresses_the_commit_index` |
+| `CM-02` | `CM-02.a,CM-02.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_commit_history`; negative fixture `commit_certificate_uses_pre_transition_joint_quorum_for_candidate_below_config` |
+| `CM-02` | `CM-02.a,CM-02.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_commit_history`; negative fixture `commit_certificate_uses_post_append_joint_quorum_for_same_operation_commit` |
+| `CM-02` | `CM-02.a,CM-02.b` | tla | direct | `specs/tla/raft/Raft.tla#CommittedEntriesHaveQuorum` |
+| `CM-03` | `CM-03.a,CM-03.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_commit_history`; negative fixture `commit_certificate_detects_prior_term_candidate_commit` |
+| `CM-03` | `CM-03.b` | tests | direct | `crates/rafter/src/node/tests/election/campaign.rs#single_voter_leadership_noop_does_not_drop_prior_term_apply` |
+| `AP-01` | `AP-01.a,AP-01.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_applied_order`; negative fixture `applied_order_detects_apply_at_or_below_snapshot_boundary` |
+| `AP-01` | `AP-01.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/applied.rs#check_applied_order`; negative fixture `applied_order_detects_apply_before_commit` |
+| `AP-01` | `AP-01.c` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/application_epoch.rs#applied_order_detects_apply_before_commit` |
+| `AP-01` | `AP-01.d` | tests | direct | `crates/rafter/src/node/tests/bootstrap/application.rs#committed_entries_above_applied_floor_drain_immediately_after_bootstrap` |
+| `AP-02` | `AP-02.a,AP-02.b` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
+| `AP-02` | `AP-02.a,AP-02.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_applied_payload_agreement`; negative fixture `replayed_index_must_match_prior_command_across_epochs` |
+| `AP-02` | `AP-02.a,AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/applied_agreement.rs#applied_agreement_detects_disagreeing_snapshots_at_same_boundary` |
+| `AP-02` | `AP-02.a,AP-02.b` | tla | direct | `specs/tla/raft/Raft.tla#StateMachineSafety` |
+| `MB-01` | `MB-01.a,MB-01.b,MB-01.c,MB-01.d` | tests | direct | `crates/rafter/tests/properties.rs#membership_constructor_validation_matches_the_documented_invariant` |
+| `MB-02` | `MB-02.a,MB-02.b,MB-02.c` | tests | direct | `crates/rafter/tests/properties.rs#membership_joint_quorum_holds_iff_both_half_majorities_hold` |
+| `MB-03` | `MB-03.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_no_overlapping_uncommitted_configurations`; negative fixture `serialized_configuration_checker_detects_two_uncommitted_configurations` |
+| `MB-03` | `MB-03.a` | tests | direct | `crates/rafter/src/node/tests/membership/serialization.rs#follower_rejects_second_uncommitted_configuration_entry` |
+| `MB-04` | `MB-04.a` | maelstrom | e2e | `scripts/maelstrom-lin-kv-membership-change#RAFTER_MAELSTROM_MEMBERSHIP_PLAN` |
+| `MB-04` | `MB-04.b,MB-04.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_committed_configuration_monotonicity`; negative fixture `committed_configuration_monotonicity_detects_regression` |
+| `MB-04` | `MB-04.a` | tests | direct | `crates/rafter/src/node/tests/membership/transition.rs#change_membership_derives_joint_configuration_for_voter_changes` |
+| `MB-05` | `MB-05.a,MB-05.b,MB-05.c,MB-05.d` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/bootstrap_compaction/local.rs#runtime_local_compaction_fills_committed_dynamic_membership_metadata` |
+| `MB-06` | `MB-06.b` | tests | direct | `crates/rafter/src/node/tests/membership/authority.rs#learner_grant_does_not_create_quorum` |
+| `MB-06` | `MB-06.c,MB-06.f` | tests | direct | `crates/rafter/src/node/tests/membership/learner.rs#learner_receives_log_replication_without_counting_for_commit` |
+| `MB-06` | `MB-06.a` | tests | direct | `crates/rafter/src/node/tests/membership/learner.rs#learner_does_not_start_election_and_its_grant_is_uncounted` |
+| `MB-06` | `MB-06.f` | tests | direct | `crates/rafter/src/node/tests/membership/learner.rs#learner_receives_snapshot_replication` |
+| `MB-06` | `MB-06.d` | tests | direct | `crates/rafter/src/node/tests/membership/learner/quorum.rs#learner_acknowledgement_cannot_satisfy_read_index_quorum_but_voter_can` |
+| `MB-06` | `MB-06.e` | tests | direct | `crates/rafter/src/node/tests/membership/learner/quorum.rs#learner_acknowledgement_cannot_confirm_read_lease_but_voter_can` |
+| `MB-07` | `MB-07.b` | tests | direct | `crates/rafter-sim/src/tests/dynamic_membership/transitions.rs#remove_voter_transition_preserves_prefix_and_steps_down_removed_leader` |
+| `MB-07` | `MB-07.b` | tests | direct | `crates/rafter/src/node/tests/membership/authority.rs#removed_candidate_steps_down_instead_of_winning` |
+| `MB-07` | `MB-07.a` | tests | direct | `crates/rafter/src/node/tests/membership/learner.rs#learner_promotion_requires_explicit_barrier` |
+| `MB-07` | `MB-07.a` | tests | direct | `crates/rafter/src/node/tests/membership/learner.rs#lagging_learner_cannot_be_promoted_with_barrier_alone` |
+| `MB-07` | `MB-07.b` | tests | direct | `crates/rafter/src/node/tests/membership/learner/quorum.rs#removed_voter_acknowledgement_cannot_satisfy_commit_read_index_or_lease_quorum` |
+| `MB-07` | `MB-07.c` | tests | direct | `crates/rafter/src/node/tests/transfer/handoff.rs#transfer_to_caught_up_target_sends_timeout_now_immediately` |
+| `RD-01` | `RD-01.a,RD-01.b` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--nemesis partition` |
+| `RD-01` | `RD-01.a` | tests | direct | `crates/rafter-sim/src/tests/single_group_failures/failover.rs#simulator_isolated_leader_grants_no_reads_while_majority_moves_on` |
+| `RD-01` | `RD-01.b` | tests | direct | `crates/rafter/src/node/tests/read/authority.rs#read_rejected_without_current_term_commit` |
+| `RD-01` | `RD-01.a` | tests | direct | `crates/rafter/src/node/tests/read/authority.rs#read_rejected_on_follower` |
+| `RD-01` | `RD-01.c` | tests | direct | `crates/rafter/src/node/tests/read/authority.rs#pending_reads_are_cleared_on_step_down` |
+| `RD-01` | `RD-01.d` | tests | direct | `crates/rafter/src/node/tests/transfer/handoff.rs#starting_transfer_cancels_pending_reads_and_stale_ack_cannot_grant` |
+| `RD-02` | `RD-02.b,RD-02.d` | tests | direct | `crates/rafter/src/node/tests/read/barrier.rs#delayed_ack_from_an_older_round_never_confirms_a_barrier` |
+| `RD-02` | `RD-02.a` | tests | direct | `crates/rafter/src/node/tests/read/barrier.rs#read_index_broadcasts_confirmation_round_immediately` |
+| `RD-02` | `RD-02.c` | tests | direct | `crates/rafter/src/node/tests/read/barrier.rs#zero_sequence_echo_never_confirms_a_barrier` |
+| `RD-03` | `RD-03.a,RD-03.b` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
+| `RD-03` | `RD-03.a,RD-03.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/client.rs#check_read_barrier_safety`; negative fixture `read_barrier_invariant_detects_grant_below_registration_floor` |
+| `RD-03` | `RD-03.a,RD-03.b` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/persistence_read.rs#read_barrier_invariant_detects_grant_below_registration_floor` |
+| `RD-03` | `RD-03.a,RD-03.b` | tla | direct | `specs/tla/raft/Raft.tla#ReadBarrierLinearizability` |
+| `RD-04` | `RD-04.a` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
+| `RD-04` | `RD-04.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/client.rs#check_client_history_read_write_invariants`; negative fixture `client_history_detects_completed_read_before_local_apply_floor` |
+| `RD-04` | `RD-04.a` | tests | direct | `crates/rafter-app/tests/group_read.rs#linearizable_read_helper_returns_result_when_barrier_grants` |
+| `RD-05` | `RD-05.b` | tests | direct | `crates/rafter/src/node/tests/read/lease.rs#a_confirmed_lease_grants_barriers_without_a_round_trip` |
+| `RD-05` | `RD-05.a` | tests | direct | `crates/rafter/src/node/tests/read/lease.rs#the_lease_opt_in_is_inert_without_its_safety_foundation` |
+| `RD-05` | `RD-05.c` | tests | direct | `crates/rafter/src/node/tests/read/lease.rs#the_lease_boundary_is_the_half_election_window` |
+| `RD-05` | `RD-05.d` | tests | direct | `crates/rafter/src/node/tests/read/lease.rs#acknowledgements_of_rounds_before_the_checkpoint_do_not_confirm_it` |
+| `RD-05` | `RD-05.e` | tests | direct | `crates/rafter/src/node/tests/read/lease.rs#the_lease_lapses_without_quorum_acknowledgements` |
+| `RD-06` | `RD-06.a,RD-06.b` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
+| `RD-06` | `RD-06.a` | simulator | direct | `crates/rafter-sim/src/model_check/linearizability.rs#check_client_history_linearizable`; negative fixture `linearizer_rejects_read_that_misses_completed_write` |
+| `RD-06` | `RD-06.a` | tests | direct | `crates/rafter-sim/src/model_check/tests/linearizability.rs#linearizer_rejects_read_that_misses_completed_write` |
+| `RD-06` | `RD-06.b` | tests | direct | `crates/rafter-sim/src/model_check/tests/linearizability.rs#linearizer_can_include_unknown_write_to_explain_later_read` |
+| `PS-01` | `PS-01.a` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#election_persists_term_and_vote_before_vote_requests_escape` |
+| `PS-01` | `PS-01.a,PS-01.b,PS-01.c,PS-01.d` | tests | direct | `crates/rafter-runtime/src/tests/persistence_contract.rs#all_raft_outputs_have_declared_runtime_persistence_dependency` |
+| `PS-02` | `PS-02.a,PS-02.b,PS-02.c` | tests | direct | `crates/rafter-runtime/src/tests/group_commit/failure.rs#a_failed_batch_releases_no_output_and_poisons_the_runtime` |
+| `PS-02` | `PS-02.a,PS-02.b,PS-02.c` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/commit_failure.rs#final_hard_state_write_failure_suppresses_apply_and_success_response` |
+| `PS-02` | `PS-02.a,PS-02.b,PS-02.c` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#hard_state_write_failure_suppresses_vote_requests` |
+| `PS-02` | `PS-02.a,PS-02.b,PS-02.c` | tests | direct | `crates/rafter-runtime/src/tests/persistence_contract.rs#ps02_failure_matrix_covers_each_runtime_store_operation` |
+| `PS-02` | `PS-02.a,PS-02.b,PS-02.c` | tests | direct | `crates/rafter-runtime/src/tests/persistence_ordering.rs#log_append_failure_suppresses_apply_outputs` |
+| `PS-02` | `PS-02.a,PS-02.b,PS-02.c` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_snapshot_promote_failure_suppresses_apply_and_success_response` |
+| `PS-02` | `PS-02.a,PS-02.b,PS-02.c` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_snapshot_compaction_failure_suppresses_apply_and_success_response` |
+| `PS-02` | `PS-02.a,PS-02.b,PS-02.c` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_snapshot_write_failure_poisons_runtime_until_restart` |
+| `PS-03` | `PS-03.a,PS-03.b,PS-03.c,PS-03.d,PS-03.e` | maelstrom | e2e | `scripts/maelstrom-lin-kv-repeated-restart#RAFTER_MAELSTROM_RESTART_MODE` |
+| `PS-03` | `PS-03.a,PS-03.b,PS-03.c,PS-03.d,PS-03.e` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_exact_durable_restart`; negative fixture `exact_durable_restart_detects_digest_change` |
+| `PS-03` | `PS-03.a,PS-03.b,PS-03.c,PS-03.d,PS-03.e` | tests | direct | `crates/rafter-runtime/src/tests/local_ids/recovery.rs#restart_replays_committed_tracked_entry_without_local_id` |
+| `PS-03` | `PS-03.a,PS-03.b,PS-03.c,PS-03.d,PS-03.e` | tests | direct | `crates/rafter-sim/src/model_check/tests/soak/core.rs#ordinary_restart_preserves_durable_state_digest` |
+| `PS-04` | `PS-04.a,PS-04.b` | maelstrom | e2e | `scripts/maelstrom-lin-kv-app-persist-crash#RAFTER_MAELSTROM_CRASH_AFTER_APP_PERSIST_ONCE` |
+| `PS-04` | `PS-04.a,PS-04.b,PS-04.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_applied_floor_recovery`; negative fixture `applied_floor_recovery_rejects_replay_at_or_below_floor` |
+| `PS-04` | `PS-04.c` | tests | direct | `crates/rafter-maelstrom/src/app/tests.rs#persisted_app_state_round_trips_applied_floor` |
+| `PS-04` | `PS-04.a,PS-04.b` | tests | direct | `crates/rafter-maelstrom/src/app/tests.rs#app_persist_crash_point_fires_once_per_root` |
+| `PS-04` | `PS-04.a` | tests | direct | `crates/rafter/src/node/tests/bootstrap/application.rs#applied_floor_suppresses_reapply_below_it` |
+| `SS-01` | `SS-01.a,SS-01.b,SS-01.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_metadata_payload_integrity`; negative fixture `snapshot_metadata_payload_integrity_detects_expected_metadata_with_different_bytes` |
+| `SS-01` | `SS-01.a,SS-01.b,SS-01.c` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_persists_installed_snapshot_and_compacts_log_past_local_tail` |
+| `SS-02` | `SS-02.b` | tests | direct | `crates/rafter-runtime/src/tests/crash_window/reopen.rs#reopen_rejects_log_compacted_past_the_snapshot` |
+| `SS-02` | `SS-02.a` | tests | direct | `crates/rafter-runtime/src/tests/crash_window/repair.rs#reopen_completes_compaction_after_crash_between_snapshot_and_compaction` |
+| `SS-02` | `SS-02.a` | tests | direct | `crates/rafter-runtime/src/tests/crash_window/repair.rs#file_backed_reopen_persists_repaired_compaction_after_snapshot_crash_window` |
+| `SS-03` | `SS-03.a,SS-03.b,SS-03.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_log_geometry`; negative fixture `snapshot_log_geometry_detects_retained_suffix_length_mismatch` |
+| `SS-03` | `SS-03.c` | tests | direct | `crates/rafter-runtime/src/tests/crash_window/boundary.rs#append_behind_the_snapshot_boundary_is_refused_not_mislabelled` |
+| `SS-04` | `SS-04.a,SS-04.b,SS-04.c,SS-04.d` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_transfer_integrity`; negative fixture `snapshot_transfer_integrity_rejects_complete_pending_transfer` |
+| `SS-04` | `SS-04.b,SS-04.c` | tests | direct | `crates/rafter/src/node/tests/snapshot/chunks/receive.rs#out_of_order_snapshot_chunk_requests_expected_offset` |
+| `SS-05` | `SS-05.a,SS-05.b,SS-05.c` | maelstrom | e2e | `scripts/maelstrom-lin-kv-forced-snapshot#RAFTER_MAELSTROM_SNAPSHOT_EVERY` |
+| `SS-05` | `SS-05.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_applied_payload_agreement`; negative fixture `applied_agreement_detects_snapshot_membership_mismatch_at_same_boundary` |
+| `SS-05` | `SS-05.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_restart_snapshot_safety`; negative fixture `restart_snapshot_safety_rejects_snapshot_bytes_as_log_apply` |
+| `SS-05` | `SS-05.a` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/snapshot_application.rs#restart_snapshot_safety_rejects_snapshot_bytes_as_log_apply` |
+| `SS-05` | `SS-05.b` | tests | direct | `crates/rafter-sim/src/tests/snapshot_installation/catchup.rs#simulator_discards_divergent_suffix_when_installing_snapshot` |
+| `LV-01` | `LV-01.a,LV-01.b` | simulator | direct | `crates/rafter-sim/src/model_check/liveness.rs#run_soak_liveness_check`; negative fixture exemption `bounded liveness driver, not an invariant checker` |
+| `LV-01` | `LV-01.a,LV-01.b` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features/leader.rs#run_quorum_only_leader_liveness_check`; negative fixture `quorum_only_leader_monitor_reports_starved_schedule_bound` |
+| `LV-01` | `LV-01.a,LV-01.b` | tests | direct | `crates/rafter-sim/src/model_check/liveness/features/leader_tests.rs#quorum_only_leader_monitor_elects_and_serves_with_minority_unavailable` |
+| `LV-02` | `LV-02.a` | simulator | direct | `crates/rafter-sim/src/model_check/liveness.rs#run_soak_liveness_check`; negative fixture exemption `bounded liveness driver, not an invariant checker` |
+| `LV-02` | `LV-02.b` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features/proposal.rs#run_proposal_termination_liveness_check`; negative fixture `proposal_termination_monitor_reports_exhausted_bound` |
+| `LV-02` | `LV-02.b` | tests | direct | `crates/rafter-sim/src/model_check/liveness/features/proposal_tests.rs#proposal_termination_monitor_observes_authority_loss` |
+| `LV-03` | `LV-03.a` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features.rs#run_read_barrier_liveness_check`; negative fixture exemption `bounded read-barrier liveness driver, not an invariant checker` |
+| `LV-03` | `LV-03.c` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features.rs#run_membership_transition_liveness_check`; negative fixture exemption `bounded membership-transition liveness driver, not an invariant checker` |
+| `LV-03` | `LV-03.d` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features.rs#run_leadership_transfer_liveness_check`; negative fixture exemption `bounded leadership-transfer liveness driver, not an invariant checker` |
+| `LV-03` | `LV-03.b` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features.rs#run_snapshot_catchup_liveness_check`; negative fixture exemption `bounded snapshot-catch-up liveness driver, not an invariant checker` |
+
+## Normative Clauses
+
+| Clause | Parent | Normative statement |
+| --- | --- | --- |
+| `ST-01.a` | `ST-01` | Log indexes are contiguous above the snapshot boundary. |
+| `ST-01.b` | `ST-01` | Commit and applied indexes remain within the locally represented logical log. |
+| `ST-01.c` | `ST-01` | Membership and pending-read records are internally valid. |
+| `ST-01.d` | `ST-01` | Derived configuration indexes and identities agree with the retained log and snapshot. |
+| `EL-01.a` | `EL-01` | A node's current term never decreases during live protocol transitions. |
+| `EL-01.b` | `EL-01` | A node's current term never decreases across restart. |
+| `EL-02.a` | `EL-02` | A server grants at most one binding vote in each term. |
+| `EL-02.b` | `EL-02` | A recorded binding vote survives restart. |
+| `EL-03.a` | `EL-03` | A binding vote is granted only to a candidate eligible in the effective membership. |
+| `EL-03.b` | `EL-03` | A binding vote is granted only when the candidate log is at least as up to date as the voter's log. |
+| `EL-04.a` | `EL-04` | A new term is durable before authority-bearing output for that term escapes. |
+| `EL-04.b` | `EL-04` | A binding vote is durable before the granted vote response escapes. |
+| `EL-04.c` | `EL-04` | Failure to persist term or vote suppresses every dependent authority-bearing output. |
+| `EL-05.a` | `EL-05` | Across immutable execution history, at most one node is elected leader in a term. |
+| `EL-06.a` | `EL-06` | Only an effective voter may campaign or become leader. |
+| `EL-06.b` | `EL-06` | Election requires a quorum of the effective stable configuration. |
+| `EL-06.c` | `EL-06` | Election under joint membership requires majorities of both voter sets. |
+| `EL-07.a` | `EL-07` | Observed higher-term authority updates the local term and removes leader or candidate authority. |
+| `EL-07.b` | `EL-07` | Stale-term traffic cannot establish leadership. |
+| `EL-07.c` | `EL-07` | Stale-term traffic cannot lower durable authority state. |
+| `EL-07.d` | `EL-07` | Stale-term traffic cannot confirm a pending read. |
+| `EL-07.e` | `EL-07` | Stale-term traffic cannot confirm a leadership transfer. |
+| `EL-08.a` | `EL-08` | Pre-vote does not mutate durable term or vote. |
+| `EL-08.b` | `EL-08` | An isolated stale node cannot inflate binding terms through pre-vote. |
+| `EL-08.c` | `EL-08` | An isolated stale node cannot disrupt a healthy leader through pre-vote. |
+| `LG-01.a` | `LG-01` | While leader in one term, a node never overwrites or deletes any part of its logical log. |
+| `LG-02.a` | `LG-02` | A follower accepts AppendEntries only when the previous index and term match its logical log or snapshot boundary. |
+| `LG-02.b` | `LG-02` | A successful AppendEntries response names a match index whose stored suffix is identical to the leader's suffix. |
+| `LG-03.a` | `LG-03` | Logs sharing an index and term have identical logical prefixes through that index. |
+| `LG-04.a` | `LG-04` | A committed entry is never truncated or overwritten. |
+| `LG-04.b` | `LG-04` | Replicas that report an index committed agree on the entry at that index. |
+| `LG-05.a` | `LG-05` | Every leader elected in a later term contains every entry committed in an earlier term. |
+| `CM-01.a` | `CM-01` | A node's commit index never decreases. |
+| `CM-01.b` | `CM-01` | A node's commit index never exceeds its locally retained or snapshot-covered last index. |
+| `CM-02.a` | `CM-02` | Commit requires storage by the quorum of the membership effective for the entry. |
+| `CM-02.b` | `CM-02` | Commit under joint membership requires storage by majorities of both voter sets. |
+| `CM-03.a` | `CM-03` | A leader advances commit by counting replicas only at an entry from its current term. |
+| `CM-03.b` | `CM-03` | Earlier-term entries become committed only through a current-term commit point. |
+| `AP-01.a` | `AP-01` | Apply and snapshot cursors advance monotonically. |
+| `AP-01.b` | `AP-01` | No logical log index is applied more than once within an application epoch. |
+| `AP-01.c` | `AP-01` | No logical log index is applied before it is committed. |
+| `AP-01.d` | `AP-01` | Recovery replays exactly the committed suffix above the durable applied floor, in order. |
+| `AP-02.a` | `AP-02` | Replicas applying the same logical index apply the same command or configuration payload. |
+| `AP-02.b` | `AP-02` | Replicas applying the same logical index perform the same deterministic state transition. |
+| `MB-01.a` | `MB-01` | Every stable configuration has a nonempty voter set. |
+| `MB-01.b` | `MB-01` | Every joint configuration has nonempty old and new voter sets. |
+| `MB-01.c` | `MB-01` | Every voter and learner identity is valid and unique within its role set. |
+| `MB-01.d` | `MB-01` | Voter and learner role sets are disjoint. |
+| `MB-02.a` | `MB-02` | A stable quorum is a strict majority of voters. |
+| `MB-02.b` | `MB-02` | A joint quorum is a strict majority of each voter half. |
+| `MB-02.c` | `MB-02` | Duplicate and nonmember acknowledgements cannot manufacture a quorum. |
+| `MB-03.a` | `MB-03` | A logical log contains at most one uncommitted configuration entry. |
+| `MB-04.a` | `MB-04` | Configuration changes follow the legal stable-to-joint-to-stable transition shape. |
+| `MB-04.b` | `MB-04` | The committed configuration index never decreases. |
+| `MB-04.c` | `MB-04` | A committed configuration index never acquires a conflicting configuration identity. |
+| `MB-05.a` | `MB-05` | Effective and committed membership are derived consistently from the retained log. |
+| `MB-05.b` | `MB-05` | Effective and committed membership are derived consistently from the installed snapshot. |
+| `MB-05.c` | `MB-05` | Effective and committed membership are derived consistently from bootstrap state. |
+| `MB-05.d` | `MB-05` | Membership derivation remains consistent across restart and compaction. |
+| `MB-06.a` | `MB-06` | Learners never campaign or become leader. |
+| `MB-06.b` | `MB-06` | Learners never count toward an election quorum. |
+| `MB-06.c` | `MB-06` | Learners never count toward a commit quorum. |
+| `MB-06.d` | `MB-06` | Learners never count toward a ReadIndex quorum. |
+| `MB-06.e` | `MB-06` | Learners never count toward a lease quorum. |
+| `MB-06.f` | `MB-06` | Learners remain eligible for log replication and snapshot catch-up. |
+| `MB-07.a` | `MB-07` | Learner promotion requires a valid catch-up barrier. |
+| `MB-07.b` | `MB-07` | Removed voters and removed leaders cannot retain quorum authority. |
+| `MB-07.c` | `MB-07` | A leadership-transfer target is an eligible, caught-up voter. |
+| `RD-01.a` | `RD-01` | Only the current leader may initiate or grant ReadIndex. |
+| `RD-01.b` | `RD-01` | ReadIndex requires a committed entry from the leader's current term. |
+| `RD-01.c` | `RD-01` | Pending reads are canceled when leadership authority is lost. |
+| `RD-01.d` | `RD-01` | Pending reads are canceled when leadership transfer begins. |
+| `RD-02.a` | `RD-02` | A non-lease read is confirmed only by a quorum round at or after its registration round. |
+| `RD-02.b` | `RD-02` | A delayed acknowledgement from an older round cannot confirm a read. |
+| `RD-02.c` | `RD-02` | A zero-sequence acknowledgement cannot confirm a registered read. |
+| `RD-02.d` | `RD-02` | An acknowledgement observed before registration cannot confirm a read. |
+| `RD-03.a` | `RD-03` | Every read grant corresponds to a registered request. |
+| `RD-03.b` | `RD-03` | Every read grant's read index is at least the cluster-wide committed floor observed at registration. |
+| `RD-04.a` | `RD-04` | The application returns a read result only after local applied index reaches the granted read index. |
+| `RD-05.a` | `RD-05` | Lease reads require both pre-vote and check-quorum. |
+| `RD-05.b` | `RD-05` | Only a fresh quorum checkpoint may establish or renew a lease. |
+| `RD-05.c` | `RD-05` | Every lease grant is bounded by the configured lease window. |
+| `RD-05.d` | `RD-05` | Stale acknowledgements cannot establish or renew a lease. |
+| `RD-05.e` | `RD-05` | An isolated leader cannot serve lease reads after the bounded lease expires. |
+| `RD-06.a` | `RD-06` | Completed reads and writes admit a legal real-time-respecting sequential history. |
+| `RD-06.b` | `RD-06` | Unknown write outcomes are retained as possible operations rather than treated as absent. |
+| `PS-01.a` | `PS-01` | Hard-state mutations are durable before dependent outputs escape. |
+| `PS-01.b` | `PS-01` | Log mutations are durable before dependent outputs escape. |
+| `PS-01.c` | `PS-01` | Committed-configuration mutations are durable before dependent outputs escape. |
+| `PS-01.d` | `PS-01` | Snapshot mutations are durable before dependent outputs escape. |
+| `PS-02.a` | `PS-02` | A failed durable write suppresses every dependent output. |
+| `PS-02.b` | `PS-02` | A failed durable write poisons the in-memory runtime until reopen. |
+| `PS-02.c` | `PS-02` | Execution cannot continue from protocol state that is ahead of durable state. |
+| `PS-03.a` | `PS-03` | Restart reconstructs the durable term and vote exactly. |
+| `PS-03.b` | `PS-03` | Restart reconstructs the durable logical log exactly. |
+| `PS-03.c` | `PS-03` | Restart reconstructs durable commit and configuration state exactly. |
+| `PS-03.d` | `PS-03` | Restart reconstructs the durable snapshot exactly. |
+| `PS-03.e` | `PS-03` | Restart neither loses nor reindexes an acknowledged entry. |
+| `PS-04.a` | `PS-04` | Recovery emits no Apply at or below the application's durable applied floor. |
+| `PS-04.b` | `PS-04` | Recovery replays every committed entry above the durable applied floor in order. |
+| `PS-04.c` | `PS-04` | The durable applied floor never exceeds commit or the logical log coverage boundary. |
+| `SS-01.a` | `SS-01` | Snapshot creation and installation advance a monotone snapshot boundary. |
+| `SS-01.b` | `SS-01` | Snapshot boundary, bytes, and metadata become visible atomically. |
+| `SS-01.c` | `SS-01` | Snapshot term, membership identity, configuration identity, and application identity match the installed bytes and state. |
+| `SS-02.a` | `SS-02` | Reopen after a crash between snapshot persistence and compaction repairs to the same logical state as clean completion. |
+| `SS-02.b` | `SS-02` | Compaction ahead of the durable snapshot boundary is rejected. |
+| `SS-03.a` | `SS-03` | Entries covered by a snapshot are hidden or compacted from the retained log. |
+| `SS-03.b` | `SS-03` | The next retained append index after a snapshot is snapshot index plus one. |
+| `SS-03.c` | `SS-03` | No entry is persisted behind the snapshot boundary. |
+| `SS-04.a` | `SS-04` | All chunks in a transfer retain one snapshot identity. |
+| `SS-04.b` | `SS-04` | Snapshot chunks obey valid offsets, ordering, and byte bounds. |
+| `SS-04.c` | `SS-04` | A snapshot installs only after the complete byte range is present. |
+| `SS-04.d` | `SS-04` | Stale or already-complete pending snapshot transfers are not retained. |
+| `SS-05.a` | `SS-05` | Snapshot bytes are never emitted as a log command. |
+| `SS-05.b` | `SS-05` | A divergent suffix covered by an installed snapshot never reappears. |
+| `SS-05.c` | `SS-05` | Replicas at the same snapshot boundary agree on term, membership, and application state. |
+| `LV-01.a` | `LV-01` | After faults stop and a quorum is mutually reachable, a leader is elected within the documented bound. |
+| `LV-01.b` | `LV-01` | The converged leader remains usable through the documented stable observation window. |
+| `LV-02.a` | `LV-02` | A proposal accepted by a stable leader with a reachable quorum commits and applies within the documented bound. |
+| `LV-02.b` | `LV-02` | When authority is lost, every accepted proposal terminates explicitly as committed, rejected, canceled, or unknown within the documented bound. |
+| `LV-03.a` | `LV-03` | A read barrier completes or terminates explicitly under stable conditions within its documented bound. |
+| `LV-03.b` | `LV-03` | Snapshot catch-up completes or terminates explicitly under stable conditions within its documented bound. |
+| `LV-03.c` | `LV-03` | A membership transition completes or terminates explicitly under stable conditions within its documented bound. |
+| `LV-03.d` | `LV-03` | A leadership transfer completes or terminates explicitly under stable conditions within its documented bound. |
 
 ## Catalog
 
@@ -262,13 +426,23 @@ Kind: well-formedness. Tier: meta.
 
 Statement: Protocol state is internally well formed: log indexes are contiguous above the snapshot boundary; commit/applied indexes are in range; memberships and read records are valid; derived configuration indexes equal the log.
 
-Evidence now:
-- TLA+: TypeOK
-- Simulator: P: validate_derived_state only
-- Tests: D: bootstrap/property/derived-state tests
-- Maelstrom: none
+Scope: One Raft node's protocol and derived state at bootstrap and after every instrumented transition.
 
-Next: Expand the simulator oracle from configuration offsets to a full TypeOK-style state validator.
+Assumptions: Node IDs, log indexes, terms, and configuration identities are created through supported APIs; verifier history is immutable.
+
+Required clauses:
+- `ST-01.a`: Log indexes are contiguous above the snapshot boundary.
+- `ST-01.b`: Commit and applied indexes remain within the locally represented logical log.
+- `ST-01.c`: Membership and pending-read records are internally valid.
+- `ST-01.d`: Derived configuration indexes and identities agree with the retained log and snapshot.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain the TypeOK-style simulator validator and its log, cursor, read-record, membership, and configuration corruption fixtures.
 
 ### Terms, Votes, and Leadership
 
@@ -278,13 +452,21 @@ Kind: safety. Tier: feature.
 
 Statement: A node's current term never decreases, including across restart.
 
-Evidence now:
-- TLA+: P: transition semantics
-- Simulator: D: per-node term floors observed by ElectionHistory
-- Tests: D: election + runtime hard-state tests
-- Maelstrom: none
+Scope: One Raft group across election, message-delivery, partition, and restart transitions.
 
-Next: Retain per-node simulator term floors plus runtime restart coverage.
+Assumptions: Messages may be delayed, duplicated, reordered, or dropped; durable writes report success only after persistence.
+
+Required clauses:
+- `EL-01.a`: A node's current term never decreases during live protocol transitions.
+- `EL-01.b`: A node's current term never decreases across restart.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain per-node simulator term floors plus runtime restart coverage.
 
 #### `EL-02` One durable vote per term
 
@@ -292,13 +474,21 @@ Kind: safety. Tier: feature.
 
 Statement: A server grants at most one binding vote in a term, and the recorded vote survives restart.
 
-Evidence now:
-- TLA+: P: votedFor semantics
-- Simulator: D: durable vote history by node and term
-- Tests: D: election and runtime restart tests
-- Maelstrom: none
+Scope: One Raft group across election, message-delivery, partition, and restart transitions.
 
-Next: Retain simulator vote history across ordinary and lossy restarts.
+Assumptions: Messages may be delayed, duplicated, reordered, or dropped; durable writes report success only after persistence.
+
+Required clauses:
+- `EL-02.a`: A server grants at most one binding vote in each term.
+- `EL-02.b`: A recorded binding vote survives restart.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain simulator vote history across ordinary and lossy restarts.
 
 #### `EL-03` Safe vote eligibility
 
@@ -306,13 +496,21 @@ Kind: safety. Tier: feature.
 
 Statement: A binding vote is granted only to an eligible candidate whose log is at least as up to date as the voter's log.
 
-Evidence now:
-- TLA+: P: RequestVote action
-- Simulator: D: RequestVote grant oracle records voter membership and log freshness
-- Tests: D: election/membership tests
-- Maelstrom: none
+Scope: One Raft group across election, message-delivery, partition, and restart transitions.
 
-Next: Retain RequestVote grant observations for membership and log freshness.
+Assumptions: Messages may be delayed, duplicated, reordered, or dropped; durable writes report success only after persistence.
+
+Required clauses:
+- `EL-03.a`: A binding vote is granted only to a candidate eligible in the effective membership.
+- `EL-03.b`: A binding vote is granted only when the candidate log is at least as up to date as the voter's log.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain RequestVote grant observations for membership and log freshness.
 
 #### `EL-04` Durable authority before output
 
@@ -320,13 +518,22 @@ Kind: safety. Tier: feature.
 
 Statement: Term and vote changes are durable before RequestVote or a granted vote response, or any other authority-bearing output, escapes.
 
-Evidence now:
-- TLA+: none
-- Simulator: none
-- Tests: D: runtime hard_state ordering and failure-injection tests for known hard-state-changing vote and append-response sends
-- Maelstrom: P: durable runtime exercised
+Scope: One Raft group across election, message-delivery, partition, and restart transitions.
 
-Next: Keep this as a runtime invariant; add subtype-specific failure-injection tests when new hard-state-changing authority sends are introduced.
+Assumptions: Messages may be delayed, duplicated, reordered, or dropped; durable writes report success only after persistence.
+
+Required clauses:
+- `EL-04.a`: A new term is durable before authority-bearing output for that term escapes.
+- `EL-04.b`: A binding vote is durable before the granted vote response escapes.
+- `EL-04.c`: Failure to persist term or vote suppresses every dependent authority-bearing output.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: none (no direct registry evidence in this layer)
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Keep this as a runtime invariant; add subtype-specific failure-injection tests when new hard-state-changing authority sends are introduced.
 
 #### `EL-05` Election safety over history
 
@@ -334,13 +541,20 @@ Kind: safety. Tier: canonical.
 
 Statement: Across the entire execution, at most one node is elected leader in a term.
 
-Evidence now:
-- TLA+: D: ElectionSafety
-- Simulator: D: election certificates by term
-- Tests: P: bounded election tests
-- Maelstrom: none
+Scope: One Raft group across election, message-delivery, partition, and restart transitions.
 
-Next: Retain election certificates by term and keep the simulator negative fixture.
+Assumptions: Messages may be delayed, duplicated, reordered, or dropped; durable writes report success only after persistence.
+
+Required clauses:
+- `EL-05.a`: Across immutable execution history, at most one node is elected leader in a term.
+
+Evidence now:
+- TLA+: D: clause-bound executable evidence; see evidence references
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: none (no direct registry evidence in this layer)
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain election certificates by term and keep the simulator negative fixture.
 
 #### `EL-06` Leader has a valid election quorum
 
@@ -348,13 +562,22 @@ Kind: safety. Tier: feature.
 
 Statement: Only an effective voter may campaign/become leader, and election requires the effective quorum; joint membership requires both majorities.
 
-Evidence now:
-- TLA+: P: election transition
-- Simulator: D: election certificate quorum validation
-- Tests: D: membership/election properties
-- Maelstrom: none
+Scope: One Raft group across election, message-delivery, partition, and restart transitions.
 
-Next: Retain election certificate quorum validation and keep negative fixtures for voter and joint-quorum mistakes.
+Assumptions: Messages may be delayed, duplicated, reordered, or dropped; durable writes report success only after persistence.
+
+Required clauses:
+- `EL-06.a`: Only an effective voter may campaign or become leader.
+- `EL-06.b`: Election requires a quorum of the effective stable configuration.
+- `EL-06.c`: Election under joint membership requires majorities of both voter sets.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain election certificate quorum validation and keep negative fixtures for voter and joint-quorum mistakes.
 
 #### `EL-07` Term and authority fencing
 
@@ -362,13 +585,24 @@ Kind: safety. Tier: feature.
 
 Statement: Higher-term authority makes a node update term and step down; stale-term traffic cannot establish leadership, lower durable state, or confirm reads/transfers.
 
-Evidence now:
-- TLA+: D: StaleLeaderFencing (abstract)
-- Simulator: D: cross-message term/leadership authority transition oracle
-- Tests: D: election/read/transfer tests
-- Maelstrom: P: partitions and leader restart
+Scope: One Raft group across election, message-delivery, partition, and restart transitions.
 
-Next: Retain the cross-message simulator oracle keyed by message term and pre/post authority state; keep read/transfer consequences covered by their direct tests.
+Assumptions: Messages may be delayed, duplicated, reordered, or dropped; durable writes report success only after persistence.
+
+Required clauses:
+- `EL-07.a`: Observed higher-term authority updates the local term and removes leader or candidate authority.
+- `EL-07.b`: Stale-term traffic cannot establish leadership.
+- `EL-07.c`: Stale-term traffic cannot lower durable authority state.
+- `EL-07.d`: Stale-term traffic cannot confirm a pending read.
+- `EL-07.e`: Stale-term traffic cannot confirm a leadership transfer.
+
+Evidence now:
+- TLA+: D: clause-bound executable evidence; see evidence references
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain the cross-message simulator oracle keyed by message term and pre/post authority state; keep read/transfer consequences covered by their direct tests.
 
 #### `EL-08` Pre-vote is non-binding and non-disruptive
 
@@ -376,13 +610,22 @@ Kind: safety. Tier: feature.
 
 Statement: Pre-vote does not mutate durable term/vote, and an isolated stale node cannot inflate terms or disrupt a healthy leader.
 
-Evidence now:
-- TLA+: none
-- Simulator: D: pre-vote non-binding transition oracle plus partition-heal model-check scenario
-- Tests: D: pre_vote + runtime hard-state tests
-- Maelstrom: P: naturally exercised, not observed
+Scope: One Raft group across election, message-delivery, partition, and restart transitions.
 
-Next: Retain the pre-vote state/history predicates, detector-level negative fixtures, and instrumented partition-heal scenario.
+Assumptions: Messages may be delayed, duplicated, reordered, or dropped; durable writes report success only after persistence.
+
+Required clauses:
+- `EL-08.a`: Pre-vote does not mutate durable term or vote.
+- `EL-08.b`: An isolated stale node cannot inflate binding terms through pre-vote.
+- `EL-08.c`: An isolated stale node cannot disrupt a healthy leader through pre-vote.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain the pre-vote state/history predicates, detector-level negative fixtures, and instrumented partition-heal scenario.
 
 ### Log Replication
 
@@ -392,13 +635,20 @@ Kind: safety. Tier: canonical.
 
 Statement: While leader in a term, a node never overwrites or deletes entries in its own log.
 
-Evidence now:
-- TLA+: P: transition semantics
-- Simulator: D: leader-term logical log observations
-- Tests: D: generated core-input prefix-monotonicity property
-- Maelstrom: none
+Scope: The complete logical logs of one Raft group, including snapshot-covered prefixes.
 
-Next: Retain the independent core property plus leader-term logical log observations and the append-only negative fixture.
+Assumptions: Logical-prefix witnesses are sound across snapshot creation, transfer, installation, compaction, and restart.
+
+Required clauses:
+- `LG-01.a`: While leader in one term, a node never overwrites or deletes any part of its logical log.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain the independent core property plus leader-term logical log observations and the append-only negative fixture.
 
 #### `LG-02` Truthful AppendEntries acceptance
 
@@ -406,13 +656,21 @@ Kind: safety. Tier: feature.
 
 Statement: A follower accepts AppendEntries only when the previous index/term matches its log or snapshot boundary; a success response's match index names the stored leader-identical suffix.
 
-Evidence now:
-- TLA+: P: Append transition
-- Simulator: D: AppendEntries delivery oracle
-- Tests: D: replication/conflict tests
-- Maelstrom: none
+Scope: The complete logical logs of one Raft group, including snapshot-covered prefixes.
 
-Next: Retain the AppendEntries transition oracle and negative fixtures for false success responses.
+Assumptions: Logical-prefix witnesses are sound across snapshot creation, transfer, installation, compaction, and restart.
+
+Required clauses:
+- `LG-02.a`: A follower accepts AppendEntries only when the previous index and term match its logical log or snapshot boundary.
+- `LG-02.b`: A successful AppendEntries response names a match index whose stored suffix is identical to the leader's suffix.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain the AppendEntries transition oracle and negative fixtures for false success responses.
 
 #### `LG-03` Log matching
 
@@ -420,13 +678,20 @@ Kind: safety. Tier: canonical.
 
 Statement: If two logs contain an entry with the same index and term, their prefixes through that index are identical.
 
-Evidence now:
-- TLA+: D: LogMatching
-- Simulator: D: full logical-log prefix witnesses
-- Tests: P: replication scenarios
-- Maelstrom: none
+Scope: The complete logical logs of one Raft group, including snapshot-covered prefixes.
 
-Next: Retain full logical-log prefix witnesses, including snapshot-boundary negative coverage.
+Assumptions: Logical-prefix witnesses are sound across snapshot creation, transfer, installation, compaction, and restart.
+
+Required clauses:
+- `LG-03.a`: Logs sharing an index and term have identical logical prefixes through that index.
+
+Evidence now:
+- TLA+: D: clause-bound executable evidence; see evidence references
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: none (no direct registry evidence in this layer)
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain full logical-log prefix witnesses, including snapshot-boundary negative coverage.
 
 #### `LG-04` Committed-prefix stability
 
@@ -434,13 +699,21 @@ Kind: safety. Tier: feature.
 
 Statement: A committed entry is never truncated or overwritten, and every replica that reports the index committed has the same entry.
 
-Evidence now:
-- TLA+: D: CommittedPrefixStability
-- Simulator: D: committed prefixes + forbidden payload seeds
-- Tests: D: conflict-repair/seeded tests
-- Maelstrom: E2E: client history catches visible violations
+Scope: The complete logical logs of one Raft group, including snapshot-covered prefixes.
 
-Next: Retain the direct checker; give it its own invariant ID and negative fixture.
+Assumptions: Logical-prefix witnesses are sound across snapshot creation, transfer, installation, compaction, and restart.
+
+Required clauses:
+- `LG-04.a`: A committed entry is never truncated or overwritten.
+- `LG-04.b`: Replicas that report an index committed agree on the entry at that index.
+
+Evidence now:
+- TLA+: D: clause-bound executable evidence; see evidence references
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: E2E: source-bound client-visible evidence; see evidence references
+
+Next (future_strengthening): Retain the dedicated committed-prefix checker, stable ID, and detector-level negative fixture.
 
 #### `LG-05` Leader completeness
 
@@ -448,13 +721,20 @@ Kind: safety. Tier: canonical.
 
 Statement: Every leader elected in a later term contains every entry committed in an earlier term.
 
-Evidence now:
-- TLA+: D: LeaderCompleteness
-- Simulator: D: committed-prefix ledger checked on leader election
-- Tests: P: leadership no-op/failover scenarios
-- Maelstrom: none (client histories do not expose leader election certificates)
+Scope: The complete logical logs of one Raft group, including snapshot-covered prefixes.
 
-Next: Retain leader-completeness checks over committed prefixes and election certificates.
+Assumptions: Logical-prefix witnesses are sound across snapshot creation, transfer, installation, compaction, and restart.
+
+Required clauses:
+- `LG-05.a`: Every leader elected in a later term contains every entry committed in an earlier term.
+
+Evidence now:
+- TLA+: D: clause-bound executable evidence; see evidence references
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: none (no direct registry evidence in this layer)
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain leader-completeness checks over committed prefixes and election certificates.
 
 ### Commitment and Application
 
@@ -464,13 +744,21 @@ Kind: safety. Tier: feature.
 
 Statement: A node's commit index never decreases and never exceeds its locally retained or snapshot-covered last index.
 
-Evidence now:
-- TLA+: P: TypeOK/transition semantics
-- Simulator: D
-- Tests: D: commit/restart/bootstrap tests
-- Maelstrom: P: indirect
+Scope: Commit transitions and storage witnesses for one Raft group under stable or joint membership.
 
-Next: Already direct; split a stable invariant ID from the broad commit-safety suite.
+Assumptions: Storage witnesses reflect actual durable replicas and use the membership effective for the committed entry.
+
+Required clauses:
+- `CM-01.a`: A node's commit index never decreases.
+- `CM-01.b`: A node's commit index never exceeds its locally retained or snapshot-covered last index.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain the stable commit-index ID, transition history, and independent core regression.
 
 #### `CM-02` Commit requires the correct quorum
 
@@ -478,13 +766,21 @@ Kind: safety. Tier: feature.
 
 Statement: An entry is considered committed only after the quorum required by the membership effective for that entry stores it; joint configurations require both majorities.
 
-Evidence now:
-- TLA+: D: CommittedEntriesHaveQuorum
-- Simulator: D: commit certificates from actual storage witnesses
-- Tests: P: membership/replication tests
-- Maelstrom: none (client histories do not expose commit quorum witnesses)
+Scope: Commit transitions and storage witnesses for one Raft group under stable or joint membership.
 
-Next: Retain storage-derived commit certificates and quorum negative fixtures.
+Assumptions: Storage witnesses reflect actual durable replicas and use the membership effective for the committed entry.
+
+Required clauses:
+- `CM-02.a`: Commit requires storage by the quorum of the membership effective for the entry.
+- `CM-02.b`: Commit under joint membership requires storage by majorities of both voter sets.
+
+Evidence now:
+- TLA+: D: clause-bound executable evidence; see evidence references
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: none (no direct registry evidence in this layer)
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain storage-derived commit certificates and quorum negative fixtures.
 
 #### `CM-03` Current-term commit rule
 
@@ -492,13 +788,21 @@ Kind: safety. Tier: feature.
 
 Statement: A leader advances commit by counting replicas only for an entry from its current term; earlier-term entries become committed through that current-term commit.
 
-Evidence now:
-- TLA+: P: Commit action
-- Simulator: D: leader commit-transition oracle
-- Tests: D: election/commit tests
-- Maelstrom: none (client histories do not expose the current-term commit rule)
+Scope: Commit transitions and storage witnesses for one Raft group under stable or joint membership.
 
-Next: Retain current-term commit transition checks and negative fixture.
+Assumptions: Storage witnesses reflect actual durable replicas and use the membership effective for the committed entry.
+
+Required clauses:
+- `CM-03.a`: A leader advances commit by counting replicas only at an entry from its current term.
+- `CM-03.b`: Earlier-term entries become committed only through a current-term commit point.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain current-term commit transition checks and negative fixture.
 
 #### `AP-01` Ordered, exactly-once committed application
 
@@ -506,13 +810,23 @@ Kind: safety. Tier: feature.
 
 Statement: Apply and snapshot cursors strictly advance; no index is applied twice or before commit; recovery replays only the required suffix.
 
-Evidence now:
-- TLA+: P: TypeOK/Apply
-- Simulator: D: applied order + required apply
-- Tests: D: node/runtime recovery tests
-- Maelstrom: none (duplicate internal application may be client-invisible)
+Scope: Committed application and snapshot delivery histories across application epochs.
 
-Next: Make 'only committed' and 'at most once' explicit subchecks with negative fixtures.
+Assumptions: The application transition is deterministic; explicit application-state loss starts a new epoch without deleting execution history.
+
+Required clauses:
+- `AP-01.a`: Apply and snapshot cursors advance monotonically.
+- `AP-01.b`: No logical log index is applied more than once within an application epoch.
+- `AP-01.c`: No logical log index is applied before it is committed.
+- `AP-01.d`: Recovery replays exactly the committed suffix above the durable applied floor, in order.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain explicit apply-before-commit, monotone cursor, exactly-once epoch, and recovery-suffix subchecks with negative fixtures.
 
 #### `AP-02` State-machine safety
 
@@ -520,13 +834,21 @@ Kind: safety. Tier: canonical.
 
 Statement: All replicas that apply the same log index apply the same command/configuration and obtain the same deterministic state transition.
 
-Evidence now:
-- TLA+: D: StateMachineSafety
-- Simulator: D: applied payload/snapshot agreement
-- Tests: D: application and snapshot tests
-- Maelstrom: E2E: lin-kv linearizability
+Scope: Committed application and snapshot delivery histories across application epochs.
 
-Next: Retain direct cross-node history; include configuration entries and snapshot-carried state explicitly.
+Assumptions: The application transition is deterministic; explicit application-state loss starts a new epoch without deleting execution history.
+
+Required clauses:
+- `AP-02.a`: Replicas applying the same logical index apply the same command or configuration payload.
+- `AP-02.b`: Replicas applying the same logical index perform the same deterministic state transition.
+
+Evidence now:
+- TLA+: D: clause-bound executable evidence; see evidence references
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: E2E: source-bound client-visible evidence; see evidence references
+
+Next (future_strengthening): Retain direct cross-node history; include configuration entries and snapshot-carried state explicitly.
 
 ### Dynamic Membership
 
@@ -536,13 +858,23 @@ Kind: safety. Tier: feature.
 
 Statement: Stable configurations have a nonempty voter set; joint configurations have nonempty old and new voter sets; voter/learner identities are valid and disjoint within each set.
 
-Evidence now:
-- TLA+: P: TypeOK
-- Simulator: P: nonempty voter checks
-- Tests: D: membership constructors/properties
-- Maelstrom: none
+Scope: Dynamic membership state, quorum consumers, restart, compaction, and leadership transfer in one Raft group.
 
-Next: Extend simulator validation to voter/learner disjointness and identity uniqueness.
+Assumptions: Node identities are stable; membership entries and snapshot metadata are decoded without corruption.
+
+Required clauses:
+- `MB-01.a`: Every stable configuration has a nonempty voter set.
+- `MB-01.b`: Every joint configuration has nonempty old and new voter sets.
+- `MB-01.c`: Every voter and learner identity is valid and unique within its role set.
+- `MB-01.d`: Voter and learner role sets are disjoint.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: none (no direct registry evidence in this layer)
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain constructor/property coverage for nonempty voters, unique identities, and voter/learner disjointness.
 
 #### `MB-02` Quorum algebra
 
@@ -550,13 +882,22 @@ Kind: safety. Tier: feature.
 
 Statement: Stable quorum is a strict majority; joint quorum is a majority of both halves; duplicate or nonmember acknowledgements never manufacture a quorum.
 
-Evidence now:
-- TLA+: P: Quorum definition
-- Simulator: P: behavior only
-- Tests: D: proptest independent recount
-- Maelstrom: none
+Scope: Dynamic membership state, quorum consumers, restart, compaction, and leadership transfer in one Raft group.
 
-Next: Treat the independent property suite as the primary oracle; tag all quorum consumers against it.
+Assumptions: Node identities are stable; membership entries and snapshot metadata are decoded without corruption.
+
+Required clauses:
+- `MB-02.a`: A stable quorum is a strict majority of voters.
+- `MB-02.b`: A joint quorum is a strict majority of each voter half.
+- `MB-02.c`: Duplicate and nonmember acknowledgements cannot manufacture a quorum.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: none (no direct registry evidence in this layer)
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Treat the independent property suite as the primary oracle; tag all quorum consumers against it.
 
 #### `MB-03` Serialized configuration changes
 
@@ -564,13 +905,20 @@ Kind: safety. Tier: feature.
 
 Statement: A log contains at most one uncommitted configuration entry, so membership changes cannot overlap.
 
-Evidence now:
-- TLA+: none
-- Simulator: D
-- Tests: D: membership/bootstrap tests
-- Maelstrom: none
+Scope: Dynamic membership state, quorum consumers, restart, compaction, and leadership transfer in one Raft group.
 
-Next: Already direct; assign an atomic ID and negative fixture.
+Assumptions: Node identities are stable; membership entries and snapshot metadata are decoded without corruption.
+
+Required clauses:
+- `MB-03.a`: A logical log contains at most one uncommitted configuration entry.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain the atomic overlapping-configuration ID and transition-level negative fixture.
 
 #### `MB-04` Monotone configuration transition and identity
 
@@ -578,13 +926,22 @@ Kind: safety. Tier: feature.
 
 Statement: Configuration changes follow the legal stable/joint/stable shape; committed configuration index and identity never regress or conflict.
 
-Evidence now:
-- TLA+: P: membership actions
-- Simulator: D: committed-config floors; partial transition shape
-- Tests: D: membership tests
-- Maelstrom: E2E: scheduled remove-voter workload
+Scope: Dynamic membership state, quorum consumers, restart, compaction, and leadership transfer in one Raft group.
 
-Next: Retain scheduled remove-voter E2E coverage and add explicit transition-shape/config-ID history checks.
+Assumptions: Node identities are stable; membership entries and snapshot metadata are decoded without corruption.
+
+Required clauses:
+- `MB-04.a`: Configuration changes follow the legal stable-to-joint-to-stable transition shape.
+- `MB-04.b`: The committed configuration index never decreases.
+- `MB-04.c`: A committed configuration index never acquires a conflicting configuration identity.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: E2E: source-bound client-visible evidence; see evidence references
+
+Next (future_strengthening): Retain transition-shape and configuration-identity history checks plus scheduled remove-voter end-to-end coverage.
 
 #### `MB-05` Membership recovery consistency
 
@@ -592,13 +949,23 @@ Kind: safety. Tier: feature.
 
 Statement: Effective and committed membership are derived consistently from retained log, installed snapshot, and bootstrap state across restart and compaction.
 
-Evidence now:
-- TLA+: none
-- Simulator: P: joint restart/snapshot explorer
-- Tests: D: runtime dynamic-membership recovery tests
-- Maelstrom: none
+Scope: Dynamic membership state, quorum consumers, restart, compaction, and leadership transfer in one Raft group.
 
-Next: Add a direct cross-restart membership oracle and TLA refinement note.
+Assumptions: Node identities are stable; membership entries and snapshot metadata are decoded without corruption.
+
+Required clauses:
+- `MB-05.a`: Effective and committed membership are derived consistently from the retained log.
+- `MB-05.b`: Effective and committed membership are derived consistently from the installed snapshot.
+- `MB-05.c`: Effective and committed membership are derived consistently from bootstrap state.
+- `MB-05.d`: Membership derivation remains consistent across restart and compaction.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: none (no direct registry evidence in this layer)
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain direct retained-log, snapshot, bootstrap, restart, and compaction membership reconstruction evidence.
 
 #### `MB-06` Learner exclusion
 
@@ -606,13 +973,25 @@ Kind: safety. Tier: feature.
 
 Statement: Learners do not campaign and never count toward election, commit, read, or lease quorums, while remaining eligible for replication and snapshot catch-up.
 
-Evidence now:
-- TLA+: none
-- Simulator: P: membership schedules
-- Tests: D: membership tests
-- Maelstrom: none
+Scope: Dynamic membership state, quorum consumers, restart, compaction, and leadership transfer in one Raft group.
 
-Next: Record quorum witness roles in the simulator and add negative learner-count fixtures.
+Assumptions: Node identities are stable; membership entries and snapshot metadata are decoded without corruption.
+
+Required clauses:
+- `MB-06.a`: Learners never campaign or become leader.
+- `MB-06.b`: Learners never count toward an election quorum.
+- `MB-06.c`: Learners never count toward a commit quorum.
+- `MB-06.d`: Learners never count toward a ReadIndex quorum.
+- `MB-06.e`: Learners never count toward a lease quorum.
+- `MB-06.f`: Learners remain eligible for log replication and snapshot catch-up.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: none (no direct registry evidence in this layer)
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain role-aware election, commit, ReadIndex, lease, replication, and snapshot learner fixtures.
 
 #### `MB-07` Promotion/removal/transfer fencing
 
@@ -620,13 +999,22 @@ Kind: safety. Tier: feature.
 
 Statement: Learner promotion requires a valid catch-up barrier; removed voters or leaders cannot retain quorum authority; leadership transfer targets are eligible and caught up.
 
-Evidence now:
-- TLA+: none
-- Simulator: P: membership + transfer soak
-- Tests: D: membership/transfer tests
-- Maelstrom: none
+Scope: Dynamic membership state, quorum consumers, restart, compaction, and leadership transfer in one Raft group.
 
-Next: Split simulator observations for promotion barrier, removal step-down, and transfer certificate; Maelstrom custom control workload optional.
+Assumptions: Node identities are stable; membership entries and snapshot metadata are decoded without corruption.
+
+Required clauses:
+- `MB-07.a`: Learner promotion requires a valid catch-up barrier.
+- `MB-07.b`: Removed voters and removed leaders cannot retain quorum authority.
+- `MB-07.c`: A leadership-transfer target is an eligible, caught-up voter.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: none (no direct registry evidence in this layer)
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain separate promotion-barrier, removed-authority, stale-acknowledgement, and transfer-certificate evidence.
 
 ### Read Barriers and Leases
 
@@ -636,13 +1024,23 @@ Kind: safety. Tier: feature.
 
 Statement: Only a current leader with a committed current-term entry may initiate/grant ReadIndex; pending reads are canceled on leadership loss or transfer.
 
-Evidence now:
-- TLA+: P: read actions
-- Simulator: P: explored behavior
-- Tests: D: read_index tests
-- Maelstrom: E2E: reads under faults
+Scope: ReadIndex, lease-read, adapter, and client-history behavior for one Raft group.
 
-Next: Add explicit precondition/cancellation predicates to the simulator.
+Assumptions: Sequence numbers and ticks are monotone; bounded lease conclusions use the configured tick duration and clock assumptions.
+
+Required clauses:
+- `RD-01.a`: Only the current leader may initiate or grant ReadIndex.
+- `RD-01.b`: ReadIndex requires a committed entry from the leader's current term.
+- `RD-01.c`: Pending reads are canceled when leadership authority is lost.
+- `RD-01.d`: Pending reads are canceled when leadership transfer begins.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: none (no direct registry evidence in this layer)
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: E2E: source-bound client-visible evidence; see evidence references
+
+Next (future_strengthening): Retain leader/current-term preconditions and leadership-loss/transfer cancellation predicates.
 
 #### `RD-02` Fresh quorum confirmation
 
@@ -650,13 +1048,23 @@ Kind: safety. Tier: feature.
 
 Statement: A non-lease read is confirmed only by a quorum round at or after registration; delayed, zero-sequence, or pre-registration acknowledgements cannot satisfy it.
 
-Evidence now:
-- TLA+: P: GrantRead action
-- Simulator: P: schedule exploration, no direct oracle
-- Tests: D: read_index tests
-- Maelstrom: none (client histories do not expose read-round acknowledgements)
+Scope: ReadIndex, lease-read, adapter, and client-history behavior for one Raft group.
 
-Next: Record registration round and quorum acknowledgements in the simulator.
+Assumptions: Sequence numbers and ticks are monotone; bounded lease conclusions use the configured tick duration and clock assumptions.
+
+Required clauses:
+- `RD-02.a`: A non-lease read is confirmed only by a quorum round at or after its registration round.
+- `RD-02.b`: A delayed acknowledgement from an older round cannot confirm a read.
+- `RD-02.c`: A zero-sequence acknowledgement cannot confirm a registered read.
+- `RD-02.d`: An acknowledgement observed before registration cannot confirm a read.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: none (no direct registry evidence in this layer)
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain registration-round, delayed, zero-sequence, and pre-registration acknowledgement fixtures.
 
 #### `RD-03` Read barrier covers committed floor
 
@@ -664,13 +1072,21 @@ Kind: safety. Tier: feature.
 
 Statement: Every grant corresponds to a registered request and has read_index at least the cluster-wide committed floor observed at registration.
 
-Evidence now:
-- TLA+: D: ReadBarrierLinearizability
-- Simulator: D
-- Tests: D: invariant negative tests
-- Maelstrom: E2E: lin-kv
+Scope: ReadIndex, lease-read, adapter, and client-history behavior for one Raft group.
 
-Next: Already strong; unify duplicate simulator checks under one ID.
+Assumptions: Sequence numbers and ticks are monotone; bounded lease conclusions use the configured tick duration and clock assumptions.
+
+Required clauses:
+- `RD-03.a`: Every read grant corresponds to a registered request.
+- `RD-03.b`: Every read grant's read index is at least the cluster-wide committed floor observed at registration.
+
+Evidence now:
+- TLA+: D: clause-bound executable evidence; see evidence references
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: E2E: source-bound client-visible evidence; see evidence references
+
+Next (future_strengthening): Already strong; unify duplicate simulator checks under one ID.
 
 #### `RD-04` Apply before serving a read
 
@@ -678,13 +1094,20 @@ Kind: safety. Tier: feature.
 
 Statement: The application returns a read result only after its local applied index reaches the granted read index.
 
-Evidence now:
-- TLA+: none
-- Simulator: D: client-history proof
-- Tests: D: read/runtime adapter tests
-- Maelstrom: E2E: lin-kv
+Scope: ReadIndex, lease-read, adapter, and client-history behavior for one Raft group.
 
-Next: Keep the adapter assertion visible in the registry; add a deliberately early-read negative integration test.
+Assumptions: Sequence numbers and ticks are monotone; bounded lease conclusions use the configured tick duration and clock assumptions.
+
+Required clauses:
+- `RD-04.a`: The application returns a read result only after local applied index reaches the granted read index.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: E2E: source-bound client-visible evidence; see evidence references
+
+Next (future_strengthening): Retain the adapter assertion and deliberately early-read simulator negative fixture.
 
 #### `RD-05` Lease-read safety
 
@@ -692,13 +1115,24 @@ Kind: safety. Tier: feature.
 
 Statement: Lease reads require pre-vote and check-quorum, a fresh quorum checkpoint, and a bounded lease window; stale acknowledgements cannot renew the lease and an isolated leader cannot use it.
 
-Evidence now:
-- TLA+: none
-- Simulator: P: lease profile explores timing/faults
-- Tests: D: read_lease tests
-- Maelstrom: none (Maelstrom node does not enable leases)
+Scope: ReadIndex, lease-read, adapter, and client-history behavior for one Raft group.
 
-Next: Add explicit lease basis/expiry oracle and a lease-enabled Maelstrom variant only if the clock/tick model is intentional.
+Assumptions: Sequence numbers and ticks are monotone; bounded lease conclusions use the configured tick duration and clock assumptions.
+
+Required clauses:
+- `RD-05.a`: Lease reads require both pre-vote and check-quorum.
+- `RD-05.b`: Only a fresh quorum checkpoint may establish or renew a lease.
+- `RD-05.c`: Every lease grant is bounded by the configured lease window.
+- `RD-05.d`: Stale acknowledgements cannot establish or renew a lease.
+- `RD-05.e`: An isolated leader cannot serve lease reads after the bounded lease expires.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: none (no direct registry evidence in this layer)
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain prerequisite, fresh-basis, bounded-window, stale-acknowledgement, and isolated-leader lease fixtures.
 
 #### `RD-06` Client history linearizability
 
@@ -706,13 +1140,21 @@ Kind: safety. Tier: client.
 
 Statement: Completed reads and writes admit a legal real-time-respecting sequential history; unknown write outcomes are not treated as absent.
 
-Evidence now:
-- TLA+: none
-- Simulator: D: dedicated linearizability checker
-- Tests: D: checker unit tests
-- Maelstrom: E2E: Maelstrom lin-kv
+Scope: ReadIndex, lease-read, adapter, and client-history behavior for one Raft group.
 
-Next: Keep simulator and Maelstrom as independent oracles; pin checker counterexamples as regressions.
+Assumptions: Sequence numbers and ticks are monotone; bounded lease conclusions use the configured tick duration and clock assumptions.
+
+Required clauses:
+- `RD-06.a`: Completed reads and writes admit a legal real-time-respecting sequential history.
+- `RD-06.b`: Unknown write outcomes are retained as possible operations rather than treated as absent.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: E2E: source-bound client-visible evidence; see evidence references
+
+Next (future_strengthening): Keep simulator and Maelstrom as independent oracles; pin checker counterexamples as regressions.
 
 ### Persistence, Restart, and Snapshots
 
@@ -722,13 +1164,23 @@ Kind: safety. Tier: durable.
 
 Statement: Hard state, log, committed configuration, and snapshot mutations are durable before dependent peer sends, apply outputs, or successful client replies escape.
 
-Evidence now:
-- TLA+: none
-- Simulator: none
-- Tests: D: rafter-runtime persistence-order tests + exhaustive output dependency guard
-- Maelstrom: none (successful histories do not prove persistence-before-output ordering)
+Scope: The durable runtime boundary, injected store failures, and reopen behavior for one Raft group.
 
-Next: Retain the exhaustive output dependency guard and keep failure-injection coverage aligned with each dependency.
+Assumptions: A successful store operation is durable; an injected failure is observable and reopen reads only durable state.
+
+Required clauses:
+- `PS-01.a`: Hard-state mutations are durable before dependent outputs escape.
+- `PS-01.b`: Log mutations are durable before dependent outputs escape.
+- `PS-01.c`: Committed-configuration mutations are durable before dependent outputs escape.
+- `PS-01.d`: Snapshot mutations are durable before dependent outputs escape.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: none (no direct registry evidence in this layer)
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain the exhaustive output dependency guard and keep failure-injection coverage aligned with each dependency.
 
 #### `PS-02` Persistence failure is fail-stop
 
@@ -736,13 +1188,22 @@ Kind: safety. Tier: durable.
 
 Statement: A failed durable write suppresses dependent outputs and poisons the in-memory runtime until reopen; execution cannot continue from ahead-of-disk state.
 
-Evidence now:
-- TLA+: none
-- Simulator: none
-- Tests: D: runtime failure-injection tests + checked store-operation matrix
-- Maelstrom: none
+Scope: The durable runtime boundary, injected store failures, and reopen behavior for one Raft group.
 
-Next: Retain the checked store-operation matrix and add failure-injection rows when new runtime persistence operations appear.
+Assumptions: A successful store operation is durable; an injected failure is observable and reopen reads only durable state.
+
+Required clauses:
+- `PS-02.a`: A failed durable write suppresses every dependent output.
+- `PS-02.b`: A failed durable write poisons the in-memory runtime until reopen.
+- `PS-02.c`: Execution cannot continue from protocol state that is ahead of durable state.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: none (no direct registry evidence in this layer)
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain the checked store-operation matrix and add failure-injection rows when new runtime persistence operations appear.
 
 #### `PS-03` Exact durable restart
 
@@ -750,13 +1211,24 @@ Kind: safety. Tier: durable.
 
 Statement: Restart reconstructs the durable term, vote, log, commit/configuration, and snapshot without losing or reindexing an acknowledged entry.
 
-Evidence now:
-- TLA+: P: abstract Restart
-- Simulator: D: restart explorer + durable-state digest checker
-- Tests: D: runtime/storage restart tests
-- Maelstrom: E2E: repeated scheduled restart workload
+Scope: The durable runtime boundary, injected store failures, and reopen behavior for one Raft group.
 
-Next: Retain the direct restart digest checker and arbitrary-node repeated restart E2E coverage.
+Assumptions: A successful store operation is durable; an injected failure is observable and reopen reads only durable state.
+
+Required clauses:
+- `PS-03.a`: Restart reconstructs the durable term and vote exactly.
+- `PS-03.b`: Restart reconstructs the durable logical log exactly.
+- `PS-03.c`: Restart reconstructs durable commit and configuration state exactly.
+- `PS-03.d`: Restart reconstructs the durable snapshot exactly.
+- `PS-03.e`: Restart neither loses nor reindexes an acknowledged entry.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: E2E: source-bound client-visible evidence; see evidence references
+
+Next (future_strengthening): Retain the direct restart digest checker and arbitrary-node repeated restart E2E coverage.
 
 #### `PS-04` Applied-floor recovery
 
@@ -764,13 +1236,22 @@ Kind: safety. Tier: durable.
 
 Statement: Recovery emits no Apply at or below the application's durable applied floor and replays every committed entry above it in order; the floor never exceeds commit or the covered log.
 
-Evidence now:
-- TLA+: none
-- Simulator: D: applied-floor replay checker
-- Tests: D: bootstrap/runtime recovery tests + Maelstrom app.applied/crashpoint tests
-- Maelstrom: E2E: app-persist crashpoint workload
+Scope: The durable runtime boundary, injected store failures, and reopen behavior for one Raft group.
 
-Next: Retain applied-floor replay checker, app-persist crashpoint tests, and the app-persist crashpoint E2E workload.
+Assumptions: A successful store operation is durable; an injected failure is observable and reopen reads only durable state.
+
+Required clauses:
+- `PS-04.a`: Recovery emits no Apply at or below the application's durable applied floor.
+- `PS-04.b`: Recovery replays every committed entry above the durable applied floor in order.
+- `PS-04.c`: The durable applied floor never exceeds commit or the logical log coverage boundary.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: E2E: source-bound client-visible evidence; see evidence references
+
+Next (future_strengthening): Retain applied-floor replay checker, app-persist crashpoint tests, and the app-persist crashpoint E2E workload.
 
 #### `SS-01` Atomic monotone snapshot state
 
@@ -778,13 +1259,22 @@ Kind: safety. Tier: durable.
 
 Statement: Snapshot creation/install advances a monotone boundary atomically, and metadata (term, membership/config identity, application identity) matches the installed bytes/state.
 
-Evidence now:
-- TLA+: none
-- Simulator: D: metadata/payload integrity and boundary checks
-- Tests: D: snapshot tests
-- Maelstrom: none
+Scope: Snapshot creation, transfer, installation, compaction, and reopen for one Raft group.
 
-Next: Retain explicit metadata/payload fixture; keep boundary monotonicity covered with snapshot geometry checks.
+Assumptions: Snapshot bytes and metadata are immutable once identified; transport may duplicate, delay, reorder, or drop chunks.
+
+Required clauses:
+- `SS-01.a`: Snapshot creation and installation advance a monotone snapshot boundary.
+- `SS-01.b`: Snapshot boundary, bytes, and metadata become visible atomically.
+- `SS-01.c`: Snapshot term, membership identity, configuration identity, and application identity match the installed bytes and state.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain explicit metadata/payload fixture; keep boundary monotonicity covered with snapshot geometry checks.
 
 #### `SS-02` Crash-safe snapshot/compaction ordering
 
@@ -792,13 +1282,21 @@ Kind: safety. Tier: durable.
 
 Statement: A crash between snapshot persistence and log compaction repairs on reopen to the same logical state as clean completion; compaction ahead of the snapshot is rejected.
 
-Evidence now:
-- TLA+: none
-- Simulator: none
-- Tests: D: runtime crash_window tests, including file-backed reopen repair
-- Maelstrom: none
+Scope: Snapshot creation, transfer, installation, compaction, and reopen for one Raft group.
 
-Next: Keep runtime/storage scope; keep file-backed reopen coverage in scheduled CI.
+Assumptions: Snapshot bytes and metadata are immutable once identified; transport may duplicate, delay, reorder, or drop chunks.
+
+Required clauses:
+- `SS-02.a`: Reopen after a crash between snapshot persistence and compaction repairs to the same logical state as clean completion.
+- `SS-02.b`: Compaction ahead of the durable snapshot boundary is rejected.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: none (no direct registry evidence in this layer)
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Keep runtime/storage scope; keep file-backed reopen coverage in scheduled CI.
 
 #### `SS-03` Snapshot/log index geometry
 
@@ -806,13 +1304,22 @@ Kind: safety. Tier: durable.
 
 Statement: Covered prefixes are hidden or compacted, the next append index is snapshot_index+1, and no entry is persisted behind the snapshot boundary.
 
-Evidence now:
-- TLA+: none
-- Simulator: D: retained suffix geometry checks
-- Tests: D: runtime crash-window/bootstrap tests
-- Maelstrom: none
+Scope: Snapshot creation, transfer, installation, compaction, and reopen for one Raft group.
 
-Next: Retain simulator geometry summary fields and direct retained-suffix negative fixture.
+Assumptions: Snapshot bytes and metadata are immutable once identified; transport may duplicate, delay, reorder, or drop chunks.
+
+Required clauses:
+- `SS-03.a`: Entries covered by a snapshot are hidden or compacted from the retained log.
+- `SS-03.b`: The next retained append index after a snapshot is snapshot index plus one.
+- `SS-03.c`: No entry is persisted behind the snapshot boundary.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain simulator geometry summary fields and direct retained-suffix negative fixture.
 
 #### `SS-04` Snapshot-transfer integrity
 
@@ -820,13 +1327,23 @@ Kind: safety. Tier: durable.
 
 Statement: Chunks retain one snapshot identity, use valid offsets/order and byte bounds, and install only when complete; stale or already-complete pending transfers are not retained.
 
-Evidence now:
-- TLA+: none
-- Simulator: D
-- Tests: D: chunk/streaming tests + fuzz
-- Maelstrom: none
+Scope: Snapshot creation, transfer, installation, compaction, and reopen for one Raft group.
 
-Next: Retain the direct transfer-integrity helper and negative fixture; add persisted pending-transfer E2E only if needed.
+Assumptions: Snapshot bytes and metadata are immutable once identified; transport may duplicate, delay, reorder, or drop chunks.
+
+Required clauses:
+- `SS-04.a`: All chunks in a transfer retain one snapshot identity.
+- `SS-04.b`: Snapshot chunks obey valid offsets, ordering, and byte bounds.
+- `SS-04.c`: A snapshot installs only after the complete byte range is present.
+- `SS-04.d`: Stale or already-complete pending snapshot transfers are not retained.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain the direct transfer-integrity helper and negative fixture; add persisted pending-transfer E2E only if needed.
 
 #### `SS-05` Snapshot semantic equivalence
 
@@ -834,13 +1351,22 @@ Kind: safety. Tier: durable.
 
 Statement: Snapshot bytes are never emitted as a log command; covered divergent suffixes never reappear; replicas at the same snapshot boundary agree on term, membership, and state.
 
-Evidence now:
-- TLA+: none
-- Simulator: D: snapshot term/payload/membership agreement
-- Tests: D: snapshot/restart tests
-- Maelstrom: E2E: forced snapshot workload
+Scope: Snapshot creation, transfer, installation, compaction, and reopen for one Raft group.
 
-Next: Retain same-boundary snapshot equivalence checks and forced-snapshot end-to-end coverage.
+Assumptions: Snapshot bytes and metadata are immutable once identified; transport may duplicate, delay, reorder, or drop chunks.
+
+Required clauses:
+- `SS-05.a`: Snapshot bytes are never emitted as a log command.
+- `SS-05.b`: A divergent suffix covered by an installed snapshot never reappears.
+- `SS-05.c`: Replicas at the same snapshot boundary agree on term, membership, and application state.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: E2E: source-bound client-visible evidence; see evidence references
+
+Next (future_strengthening): Retain same-boundary snapshot equivalence checks and forced-snapshot end-to-end coverage.
 
 ### Liveness Obligations
 
@@ -850,13 +1376,21 @@ Kind: liveness. Tier: progress.
 
 Statement: After faults stop and a quorum is mutually reachable, a leader is eventually elected and remains usable under the stated timing/fairness bounds.
 
-Evidence now:
-- TLA+: none
-- Simulator: D: bounded soak liveness phase
-- Tests: P: process lifecycle tests
-- Maelstrom: P: Maelstrom availability
+Scope: Bounded deterministic simulator executions after the named fault and scheduling preconditions hold.
 
-Next: Document assumptions and report the concrete round/time bound in failures.
+Assumptions: Faults stop, a quorum remains mutually reachable, enabled deliveries and ticks are scheduled fairly, and execution remains within the stated round or step bound.
+
+Required clauses:
+- `LV-01.a`: After faults stop and a quorum is mutually reachable, a leader is elected within the documented bound.
+- `LV-01.b`: The converged leader remains usable through the documented stable observation window.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain explicit fairness/timing assumptions, quorum-only convergence, starvation fixture, usability probe, and concrete round bounds.
 
 #### `LV-02` Proposal progress
 
@@ -864,13 +1398,21 @@ Kind: liveness. Tier: progress.
 
 Statement: A proposal accepted by a stable leader with a reachable quorum eventually commits/applies, or the API explicitly terminates it when authority is lost.
 
-Evidence now:
-- TLA+: none
-- Simulator: D: bounded soak probe
-- Tests: P: scenario tests
-- Maelstrom: P: Maelstrom completion/availability
+Scope: Bounded deterministic simulator executions after the named fault and scheduling preconditions hold.
 
-Next: Track accepted proposal IDs through failover and distinguish committed, rejected, canceled, and unknown.
+Assumptions: Faults stop, a quorum remains mutually reachable, enabled deliveries and ticks are scheduled fairly, and execution remains within the stated round or step bound.
+
+Required clauses:
+- `LV-02.a`: A proposal accepted by a stable leader with a reachable quorum commits and applies within the documented bound.
+- `LV-02.b`: When authority is lost, every accepted proposal terminates explicitly as committed, rejected, canceled, or unknown within the documented bound.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: D: clause-bound executable evidence; see evidence references
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain accepted-proposal terminal-state tracking and bounded authority-loss and stable-quorum monitors.
 
 #### `LV-03` Feature-operation progress
 
@@ -878,10 +1420,20 @@ Kind: liveness. Tier: progress.
 
 Statement: Under stable conditions, read barriers, snapshot catch-up, membership transitions, and leadership transfers eventually complete or terminate explicitly.
 
-Evidence now:
-- TLA+: none
-- Simulator: D: read-barrier, snapshot-catch-up, membership-transition, and leadership-transfer bounded progress monitors
-- Tests: P: feature scenario tests
-- Maelstrom: none
+Scope: Bounded deterministic simulator executions after the named fault and scheduling preconditions hold.
 
-Next: Retain operation-specific bounded progress monitors and keep them separate from safety checks.
+Assumptions: Faults stop, a quorum remains mutually reachable, enabled deliveries and ticks are scheduled fairly, and execution remains within the stated round or step bound.
+
+Required clauses:
+- `LV-03.a`: A read barrier completes or terminates explicitly under stable conditions within its documented bound.
+- `LV-03.b`: Snapshot catch-up completes or terminates explicitly under stable conditions within its documented bound.
+- `LV-03.c`: A membership transition completes or terminates explicitly under stable conditions within its documented bound.
+- `LV-03.d`: A leadership transfer completes or terminates explicitly under stable conditions within its documented bound.
+
+Evidence now:
+- TLA+: none (no direct registry evidence in this layer)
+- Simulator: D: clause-bound executable evidence; see evidence references
+- Tests: none (no direct registry evidence in this layer)
+- Maelstrom: none (no direct registry evidence in this layer)
+
+Next (future_strengthening): Retain operation-specific bounded progress monitors and keep them separate from safety checks.

@@ -12,7 +12,7 @@ use super::{Node, Output, ReadIndexRejection, Role};
 /// Barriers a leader will hold un-confirmed before refusing new ones; an
 /// unreachable leader must not grow this without bound. This is a read-id
 /// count, not a round count: grouped barriers still consume one slot each.
-const MAX_PENDING_READS: usize = 1024;
+pub(super) const MAX_PENDING_READS: usize = 1024;
 
 impl Node {
     /// Registers a linearizable read barrier (thesis 6.4): the barrier is

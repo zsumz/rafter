@@ -23,14 +23,15 @@ pub use aggregate::{
     AggregateError, LoadedEvidence,
 };
 pub use catalog::{
-    Catalog, CatalogError, EvidenceDescriptor, ProfileManifest, SimulatorIdentity, TestIdentity,
+    Catalog, CatalogError, ClauseDescriptor, EvidenceDescriptor, InvariantDescriptor,
+    ProfileManifest, SimulatorIdentity, TestIdentity,
 };
 pub use producer::{produce, ProducerOptions, ProducerOutcome};
 pub use render::{render_junit, render_markdown};
 pub use types::{
-    ArtifactRef, CheckCompletion, CheckReceipt, EvidenceResult, EvidenceStatus, ExecutionReceipt,
-    FailureClassification, InvariantVerdict, ResultBundle, SourceReceipt, ToolReceipt,
-    VerdictReport, VerdictStatus,
+    ArtifactRef, CheckCompletion, CheckReceipt, ClauseVerdict, EvidenceResult, EvidenceStatus,
+    ExecutionReceipt, FailureClassification, InvariantVerdict, ResultBundle, SourceReceipt,
+    ToolReceipt, VerdictReport, VerdictStatus,
 };
 
 #[cfg(test)]

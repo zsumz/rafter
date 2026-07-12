@@ -10,27 +10,34 @@ pub(super) const CLIENT_HISTORY_LINEARIZABILITY_INVARIANT: &str =
     catalog::RD_06_CLIENT_HISTORY_LINEARIZABILITY;
 
 pub(super) fn check_client_history_linearizable(history: &ClientHistory) -> Result<(), String> {
-    let operations = completed_operations(history);
+    let operations = observed_operations(history);
     if operations.is_empty() || is_linearizable(history.initial_value.as_ref(), &operations) {
         return Ok(());
     }
 
     Err(format!(
-        "completed client history is not linearizable for single-register model: {}",
+        "observed client history is not linearizable for single-register model: {}",
         describe_operations(&operations)
     ))
 }
 
-fn completed_operations(history: &ClientHistory) -> Vec<Operation> {
+fn observed_operations(history: &ClientHistory) -> Vec<Operation> {
     let mut operations = Vec::new();
     for write in history.writes.values() {
-        let ClientWriteStatus::Completed { completed_at, .. } = write.status else {
-            continue;
+        let (completed_at, optional) = match write.status {
+            ClientWriteStatus::Completed { completed_at, .. } => (completed_at, false),
+            ClientWriteStatus::Unknown { .. } | ClientWriteStatus::Dropped { .. } => {
+                (u64::MAX, true)
+            }
+            ClientWriteStatus::Pending
+            | ClientWriteStatus::Accepted { .. }
+            | ClientWriteStatus::Rejected => continue,
         };
         operations.push(Operation {
             id: OperationId::Write(write.proposal_id),
             started_at: write.started_at,
             completed_at,
+            optional,
             kind: OperationKind::Write {
                 value: write.payload.clone(),
             },
@@ -50,6 +57,7 @@ fn completed_operations(history: &ClientHistory) -> Vec<Operation> {
             id: OperationId::Read(read.request_id),
             started_at: read.started_at,
             completed_at: *completed_at,
+            optional: false,
             kind: OperationKind::Read {
                 result: result.clone(),
             },
@@ -106,6 +114,13 @@ fn search(
     }
 
     for index in enabled_operation_indexes(predecessors, placed) {
+        if operations[index].optional {
+            placed[index] = true;
+            if search(operations, predecessors, placed, value, dead_ends) {
+                return true;
+            }
+            placed[index] = false;
+        }
         let ApplyOutcome::Accepted(next_value) = operations[index].kind.apply(value) else {
             continue;
         };
@@ -158,6 +173,7 @@ struct Operation {
     id: OperationId,
     started_at: u64,
     completed_at: u64,
+    optional: bool,
     kind: OperationKind,
 }
 
@@ -165,10 +181,15 @@ impl Operation {
     fn describe(&self) -> String {
         match &self.kind {
             OperationKind::Write { value } => format!(
-                "write {} start={} end={} value={}",
+                "{}write {} start={} end={} value={}",
+                if self.optional { "optional " } else { "" },
                 self.id.label(),
                 self.started_at,
-                self.completed_at,
+                if self.optional {
+                    "unknown".to_owned()
+                } else {
+                    self.completed_at.to_string()
+                },
                 format_payload(Some(value))
             ),
             OperationKind::Read { result } => format!(

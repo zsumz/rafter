@@ -4,8 +4,9 @@ use crate::{
     catalog::{Catalog, ProfileManifest},
     receipt::collect_results,
     types::{
-        EvidenceResult, EvidenceStatus, FailureClassification, InvariantVerdict, ResultBundle,
-        VerdictIssue, VerdictReport, VerdictStatus, VerdictSummary, RESULT_SCHEMA_VERSION,
+        ClauseVerdict, EvidenceResult, EvidenceStatus, FailureClassification, InvariantVerdict,
+        ResultBundle, VerdictIssue, VerdictReport, VerdictStatus, VerdictSummary,
+        RESULT_SCHEMA_VERSION,
     },
 };
 
@@ -32,6 +33,13 @@ impl std::error::Error for AggregateError {}
 pub struct LoadedEvidence {
     pub bundles: Vec<ResultBundle>,
     pub harness_errors: Vec<String>,
+}
+
+struct InvariantEvidence<'a> {
+    clauses: &'a [crate::ClauseDescriptor],
+    required: &'a [crate::EvidenceDescriptor],
+    accepted: &'a BTreeMap<String, EvidenceResult>,
+    harness_errors: &'a [String],
 }
 
 /// Loads strict result bundles from the requested artifact paths.
@@ -124,11 +132,15 @@ pub fn aggregate_with_harness_errors(
         .map(|invariant_id| {
             invariant_verdict(
                 invariant_id,
-                &required[invariant_id],
-                &accepted,
-                &harness_errors,
+                &InvariantEvidence {
+                    clauses: &catalog.clauses_for(invariant_id),
+                    required: &required[invariant_id],
+                    accepted: &accepted,
+                    harness_errors: &harness_errors,
+                },
                 catalog.canonical_ids.contains(invariant_id),
                 contract.canonical_minimum_independent_layers,
+                &contract.required_clause_strength,
             )
         })
         .collect::<Vec<_>>();
@@ -215,24 +227,50 @@ pub fn verify_layer_bundle(
 
 fn invariant_verdict(
     invariant_id: &str,
-    required: &[crate::EvidenceDescriptor],
-    accepted: &BTreeMap<String, EvidenceResult>,
-    harness_errors: &[String],
+    evidence: &InvariantEvidence<'_>,
     canonical: bool,
     canonical_minimum_layers: usize,
+    required_clause_strength: &str,
 ) -> InvariantVerdict {
     let mut issues = Vec::new();
-    let mut passed = 0;
-    if required.is_empty() {
-        issues.push(VerdictIssue {
-            evidence_id: format!("{invariant_id}/coverage"),
-            status: EvidenceStatus::Incomplete,
-            classification: FailureClassification::CoverageNotReached,
-            message: "profile has no direct or end-to-end registry evidence".to_owned(),
-            artifacts: Vec::new(),
-        });
-    }
-    let independent_layers = required
+    let clause_verdicts = evidence
+        .clauses
+        .iter()
+        .map(|clause| {
+            let clause_evidence = evidence
+                .required
+                .iter()
+                .filter(|evidence| evidence.clause_id == clause.clause_id)
+                .collect::<Vec<_>>();
+            clause_verdict(
+                clause,
+                &clause_evidence,
+                evidence.accepted,
+                required_clause_strength,
+            )
+        })
+        .collect::<Vec<_>>();
+    let required_clauses = evidence
+        .clauses
+        .iter()
+        .filter(|clause| clause.required)
+        .count();
+    let passed_clauses = evidence
+        .clauses
+        .iter()
+        .zip(&clause_verdicts)
+        .filter(|(clause, verdict)| clause.required && verdict.status == VerdictStatus::Green)
+        .count();
+    issues.extend(
+        evidence
+            .clauses
+            .iter()
+            .zip(&clause_verdicts)
+            .filter(|(clause, _)| clause.required)
+            .flat_map(|(_, verdict)| verdict.issues.iter().cloned()),
+    );
+    let independent_layers = evidence
+        .required
         .iter()
         .map(|evidence| evidence.layer.as_str())
         .collect::<std::collections::BTreeSet<_>>()
@@ -248,6 +286,73 @@ fn invariant_verdict(
             artifacts: Vec::new(),
         });
     }
+    let passed = evidence
+        .required
+        .iter()
+        .filter(|descriptor| {
+            evidence
+                .accepted
+                .get(&descriptor.evidence_id())
+                .is_some_and(|result| result.status == EvidenceStatus::Pass)
+        })
+        .count();
+    issues.extend(evidence.harness_errors.iter().map(|message| VerdictIssue {
+        evidence_id: "aggregate/harness".to_owned(),
+        status: EvidenceStatus::Error,
+        classification: FailureClassification::HarnessError,
+        message: message.clone(),
+        artifacts: Vec::new(),
+    }));
+    InvariantVerdict {
+        invariant_id: invariant_id.to_owned(),
+        status: if issues.is_empty() {
+            VerdictStatus::Green
+        } else {
+            VerdictStatus::Red
+        },
+        required_clauses,
+        passed_clauses,
+        required_evidence: evidence.required.len(),
+        passed_evidence: passed,
+        clauses: clause_verdicts,
+        issues,
+    }
+}
+
+fn clause_verdict(
+    clause: &crate::ClauseDescriptor,
+    required: &[&crate::EvidenceDescriptor],
+    accepted: &BTreeMap<String, EvidenceResult>,
+    required_strength: &str,
+) -> ClauseVerdict {
+    let mut issues = Vec::new();
+    if required.is_empty() {
+        issues.push(VerdictIssue {
+            evidence_id: format!("{}/coverage", clause.clause_id),
+            status: EvidenceStatus::Incomplete,
+            classification: FailureClassification::CoverageNotReached,
+            message: format!(
+                "required clause {} has no profile-selected executable evidence",
+                clause.clause_id
+            ),
+            artifacts: Vec::new(),
+        });
+    } else if !required
+        .iter()
+        .any(|evidence| evidence.strength == required_strength)
+    {
+        issues.push(VerdictIssue {
+            evidence_id: format!("{}/direct-evidence", clause.clause_id),
+            status: EvidenceStatus::Incomplete,
+            classification: FailureClassification::CoverageNotReached,
+            message: format!(
+                "required clause {} has no {required_strength} evidence",
+                clause.clause_id
+            ),
+            artifacts: Vec::new(),
+        });
+    }
+    let mut passed = 0;
     for evidence in required {
         let evidence_id = evidence.evidence_id();
         match accepted.get(&evidence_id) {
@@ -262,15 +367,9 @@ fn invariant_verdict(
             }),
         }
     }
-    issues.extend(harness_errors.iter().map(|message| VerdictIssue {
-        evidence_id: "aggregate/harness".to_owned(),
-        status: EvidenceStatus::Error,
-        classification: FailureClassification::HarnessError,
-        message: message.clone(),
-        artifacts: Vec::new(),
-    }));
-    InvariantVerdict {
-        invariant_id: invariant_id.to_owned(),
+    ClauseVerdict {
+        clause_id: clause.clause_id.clone(),
+        statement: clause.statement.clone(),
         status: if issues.is_empty() {
             VerdictStatus::Green
         } else {

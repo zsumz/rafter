@@ -1,4 +1,4 @@
-use super::{Entry, Evidence};
+use super::{Clause, Entry, Evidence};
 
 pub(super) fn parse_entries(registry: &str) -> Vec<Entry> {
     let mut entries = Vec::new();
@@ -70,6 +70,61 @@ pub(super) fn parse_entries(registry: &str) -> Vec<Entry> {
         entries.push(entry);
     }
     entries
+}
+
+pub(super) fn parse_clauses(registry: &str) -> Vec<Clause> {
+    let mut clauses = Vec::new();
+    let mut current = None::<Clause>;
+    let mut in_clauses = false;
+    for raw_line in registry.lines() {
+        let indent = raw_line
+            .chars()
+            .take_while(|character| *character == ' ')
+            .count();
+        let line = raw_line.trim();
+        if indent == 0 {
+            if let Some(clause) = current.take() {
+                clauses.push(clause);
+            }
+            in_clauses = line == "clauses:";
+            continue;
+        }
+        if !in_clauses || line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if indent == 2 && line.starts_with("- id: ") {
+            if let Some(clause) = current.take() {
+                clauses.push(clause);
+            }
+            current = Some(Clause {
+                id: yaml_value(line.trim_start_matches("- id: ")),
+                ..Clause::default()
+            });
+            continue;
+        }
+        if indent != 4 {
+            continue;
+        }
+        let Some((key, value)) = line.split_once(": ") else {
+            continue;
+        };
+        let Some(clause) = current.as_mut() else {
+            continue;
+        };
+        let value = yaml_value(value);
+        match key {
+            "invariant_id" => clause.invariant_id = value,
+            "statement" => clause.statement = value,
+            "scope" => clause.scope = value,
+            "assumptions" => clause.assumptions = value,
+            "required" => clause.required = value == "true",
+            _ => {}
+        }
+    }
+    if let Some(clause) = current {
+        clauses.push(clause);
+    }
+    clauses
 }
 
 pub(super) fn parse_evidence(registry: &str) -> Vec<Evidence> {
@@ -146,7 +201,10 @@ fn set_entry_field(entry: &mut Entry, key: &str, value: String) {
         "tier" => entry.tier = value,
         "title" => entry.title = value,
         "statement" => entry.statement = value,
-        "required_action" => entry.required_action = value,
+        "scope" => entry.scope = value,
+        "assumptions" => entry.assumptions = value,
+        "action_class" => entry.action_class = value,
+        "next_action" => entry.next_action = value,
         "priority" => entry.priority = value,
         _ => {}
     }
@@ -154,6 +212,14 @@ fn set_entry_field(entry: &mut Entry, key: &str, value: String) {
 
 fn set_evidence_field(record: &mut Evidence, key: &str, value: String) {
     match key {
+        "clauses" => {
+            record.clauses = value
+                .split(',')
+                .map(str::trim)
+                .filter(|clause| !clause.is_empty())
+                .map(str::to_owned)
+                .collect();
+        }
         "layer" => record.layer = value,
         "strength" => record.strength = value,
         "path" => record.path = value,

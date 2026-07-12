@@ -114,9 +114,9 @@ fn run_detectors(
         .iter()
         .filter_map(|descriptor| descriptor.simulator.as_ref()?.negative_test.clone())
         .collect::<Vec<_>>();
-    let first = identities
-        .first()
-        .ok_or("simulator detector inventory is empty")?;
+    if identities.is_empty() {
+        return Err("simulator detector inventory is empty".into());
+    }
     let detector_profile = format!("{profile}-simulator-detectors");
     let target_dir = prepare_target_dir(&detector_profile, source_ref)?;
     let mut environment = process::base_environment();
@@ -124,16 +124,24 @@ fn run_detectors(
         "CARGO_TARGET_DIR".to_owned(),
         target_dir.to_string_lossy().into_owned(),
     );
-    let compiled = compile(
-        &Target::from(first),
-        &detector_profile,
-        source_ref,
-        &environment,
-        output_dir,
-    )?;
+    let targets = identities
+        .iter()
+        .map(Target::from)
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut compiled = BTreeMap::new();
+    for target in targets {
+        let outcome = compile(
+            &target,
+            &detector_profile,
+            source_ref,
+            &environment,
+            output_dir,
+        )?;
+        compiled.insert(target, outcome);
+    }
     evaluate_detectors(
         identities,
-        compiled,
+        &compiled,
         &detector_profile,
         source_ref,
         output_dir,
@@ -142,32 +150,43 @@ fn run_detectors(
 
 fn evaluate_detectors(
     identities: Vec<crate::TestIdentity>,
-    compiled: CompiledTarget,
+    compiled: &BTreeMap<Target, CompiledTarget>,
     profile: &str,
     source_ref: &str,
     output_dir: &Path,
 ) -> Result<DetectorRun, Box<dyn Error>> {
     let mut outcomes = BTreeMap::new();
-    let mut peak_rss_kib = compiled.peak_rss_kib;
+    let mut peak_rss_kib = compiled
+        .values()
+        .map(|target| target.peak_rss_kib)
+        .max()
+        .unwrap_or_default();
+    let mut artifacts = Vec::new();
+    for target in compiled.values() {
+        artifacts.push(target.artifact.clone());
+        if let Some(binary) = &target.binary_artifact {
+            artifacts.push(binary.clone());
+        }
+    }
     for identity in identities {
+        let target = Target::from(&identity);
+        let compiled_target = compiled
+            .get(&target)
+            .ok_or("compiled simulator detector target inventory changed")?;
         let execution_id = artifact::stable_id("detector", &identity.check_id());
         let mut outcome = test_exec::evaluate(
             &identity,
-            &compiled,
+            compiled_target,
             profile,
             source_ref,
             &execution_id,
             output_dir,
         )?;
-        if let Some(binary) = &compiled.binary_artifact {
+        if let Some(binary) = &compiled_target.binary_artifact {
             outcome.artifacts.push(binary.clone());
         }
         peak_rss_kib = peak_rss_kib.max(outcome.peak_rss_kib);
         outcomes.insert(identity.test_name, outcome);
-    }
-    let mut artifacts = vec![compiled.artifact];
-    if let Some(binary) = compiled.binary_artifact {
-        artifacts.push(binary);
     }
     Ok(DetectorRun {
         outcomes,

@@ -6,20 +6,48 @@ use std::{
 
 use serde::Deserialize;
 
-use crate::registry_parse::{parse_evidence, parse_invariants};
+use crate::registry_parse::{
+    parse_clauses, parse_evidence, parse_invariants, parse_registry_schema_version,
+};
+
+const REGISTRY_SCHEMA_VERSION: u32 = 2;
+const PROFILE_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Debug)]
 /// Reviewed invariant IDs and their declared executable evidence.
 pub struct Catalog {
     pub ids: Vec<String>,
+    pub invariants: Vec<InvariantDescriptor>,
     pub canonical_ids: BTreeSet<String>,
+    pub clauses: Vec<ClauseDescriptor>,
     pub evidence: Vec<EvidenceDescriptor>,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// One reviewed parent invariant and its documented verification boundary.
+pub struct InvariantDescriptor {
+    pub id: String,
+    pub statement: String,
+    pub scope: String,
+    pub assumptions: String,
+}
+
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+/// One stable, atomic normative obligation owned by a parent invariant.
+pub struct ClauseDescriptor {
+    pub invariant_id: String,
+    pub clause_id: String,
+    pub statement: String,
+    pub scope: String,
+    pub assumptions: String,
+    pub required: bool,
 }
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 /// One direct or end-to-end evidence declaration from the registry.
 pub struct EvidenceDescriptor {
     pub invariant_id: String,
+    pub clause_id: String,
     pub layer: String,
     pub strength: String,
     pub path: String,
@@ -68,8 +96,8 @@ impl EvidenceDescriptor {
     #[must_use]
     pub fn evidence_id(&self) -> String {
         let base = format!(
-            "{}/{}/{}/{}#{}",
-            self.invariant_id, self.layer, self.strength, self.path, self.symbol
+            "{}/{}/{}/{}/{}#{}",
+            self.invariant_id, self.clause_id, self.layer, self.strength, self.path, self.symbol
         );
         self.negative_fixture
             .as_ref()
@@ -92,6 +120,8 @@ pub struct ProfileManifest {
 pub struct ProfileContract {
     pub description: String,
     pub evidence_policy: String,
+    pub clause_policy: String,
+    pub required_clause_strength: String,
     pub required_layers: Vec<String>,
     pub required_strengths: Vec<String>,
     pub canonical_minimum_independent_layers: usize,
@@ -131,8 +161,69 @@ impl Catalog {
     pub fn load(path: &Path) -> Result<Self, CatalogError> {
         let source = fs::read_to_string(path)
             .map_err(|error| CatalogError(format!("read {}: {error}", path.display())))?;
-        let (ids, canonical_ids) = parse_invariants(&source)?;
+        let schema_version = parse_registry_schema_version(&source)?;
+        if schema_version != REGISTRY_SCHEMA_VERSION {
+            return Err(CatalogError(format!(
+                "unsupported registry schema {schema_version}"
+            )));
+        }
+        let (invariants, canonical_ids) = parse_invariants(&source)?;
+        let ids = invariants
+            .iter()
+            .map(|invariant| invariant.id.clone())
+            .collect::<Vec<_>>();
+        let unique_ids = ids.iter().collect::<BTreeSet<_>>();
+        if unique_ids.len() != ids.len() {
+            return Err(CatalogError(
+                "registry invariant IDs must be unique".to_owned(),
+            ));
+        }
+        let clauses = parse_clauses(&source)?;
+        let clause_ids = clauses
+            .iter()
+            .map(|clause| clause.clause_id.as_str())
+            .collect::<BTreeSet<_>>();
+        if clause_ids.len() != clauses.len() {
+            return Err(CatalogError(
+                "registry clause IDs must be globally unique".to_owned(),
+            ));
+        }
+        for clause in &clauses {
+            if !unique_ids.contains(&clause.invariant_id) {
+                return Err(CatalogError(format!(
+                    "clause {} refers to unknown invariant {}",
+                    clause.clause_id, clause.invariant_id
+                )));
+            }
+        }
+        for invariant_id in &ids {
+            if !clauses
+                .iter()
+                .any(|clause| clause.invariant_id == *invariant_id && clause.required)
+            {
+                return Err(CatalogError(format!(
+                    "invariant {invariant_id} has no required normative clauses"
+                )));
+            }
+        }
         let evidence = parse_evidence(&source)?;
+        for descriptor in &evidence {
+            let Some(clause) = clauses
+                .iter()
+                .find(|clause| clause.clause_id == descriptor.clause_id)
+            else {
+                return Err(CatalogError(format!(
+                    "evidence for {} refers to unknown clause {}",
+                    descriptor.invariant_id, descriptor.clause_id
+                )));
+            };
+            if clause.invariant_id != descriptor.invariant_id {
+                return Err(CatalogError(format!(
+                    "evidence parent {} does not own clause {}",
+                    descriptor.invariant_id, descriptor.clause_id
+                )));
+            }
+        }
         let evidence_ids = evidence
             .iter()
             .map(EvidenceDescriptor::evidence_id)
@@ -144,9 +235,21 @@ impl Catalog {
         }
         Ok(Self {
             ids,
+            invariants,
             canonical_ids,
+            clauses,
             evidence,
         })
+    }
+
+    #[must_use]
+    /// Returns the ordered normative clauses owned by one parent invariant.
+    pub fn clauses_for(&self, invariant_id: &str) -> Vec<ClauseDescriptor> {
+        self.clauses
+            .iter()
+            .filter(|clause| clause.invariant_id == invariant_id)
+            .cloned()
+            .collect()
     }
 
     #[must_use]
@@ -200,7 +303,7 @@ impl ProfileManifest {
     /// Returns an error unless the manifest and registry contain exactly the
     /// same 44 IDs and all required profiles have supported nonempty policy.
     pub fn validate(&self, catalog: &Catalog) -> Result<(), CatalogError> {
-        if self.schema_version != 1 {
+        if self.schema_version != PROFILE_SCHEMA_VERSION {
             return Err(CatalogError(format!(
                 "unsupported profile manifest schema {}",
                 self.schema_version
@@ -227,6 +330,13 @@ impl ProfileManifest {
                 return Err(CatalogError(format!(
                     "profile {profile} has unsupported evidence policy {}",
                     contract.evidence_policy
+                )));
+            }
+            if contract.clause_policy != "all_required_clauses"
+                || contract.required_clause_strength != "direct"
+            {
+                return Err(CatalogError(format!(
+                    "profile {profile} must require direct evidence for all normative clauses"
                 )));
             }
             if contract.description.trim().is_empty()

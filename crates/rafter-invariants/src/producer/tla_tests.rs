@@ -93,7 +93,14 @@ fn named_counterexample_fails_only_its_predicate() -> Result<(), Box<dyn std::er
         })
         .collect::<Vec<_>>();
 
-    assert_eq!(results.len(), 8);
+    assert_eq!(
+        results.len(),
+        catalog
+            .evidence
+            .iter()
+            .filter(|descriptor| descriptor.layer == "tla")
+            .count()
+    );
     assert_eq!(
         results
             .iter()

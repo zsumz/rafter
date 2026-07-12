@@ -139,10 +139,17 @@ pub(crate) fn print_soak_summary(
         .iter()
         .map(|kind| kind.as_str())
         .collect::<Vec<_>>();
-    let mut liveness_features = vec!["leader-convergence", "proposal-progress"];
+    let mut liveness_features = vec![
+        "leader-convergence",
+        "quorum-only-leader-convergence",
+        "proposal-progress",
+        "proposal-termination",
+    ];
     let mut observations = serde_json::Map::from_iter([
         ("post_heal_quiescent_leaders".to_owned(), json!(1)),
+        ("quorum_only_post_fault_leaders".to_owned(), json!(1)),
         ("accepted_completed_liveness_proposals".to_owned(), json!(1)),
+        ("terminated_liveness_proposals".to_owned(), json!(1)),
     ]);
     if config.checks_read_progress() {
         liveness_features.push("read-barrier");

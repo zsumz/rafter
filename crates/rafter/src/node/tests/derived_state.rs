@@ -1,11 +1,12 @@
 //! Derived-state synchronization after bootstrap and log mutation.
 
+use super::super::state::{AcknowledgementSet, PendingReadRound};
 use super::helpers::node;
 use super::*;
 use crate::{
     AppendEntries, ApplicationSnapshotKind, ApplicationSnapshotMetadata,
     ApplicationSnapshotVersion, BootstrapLogEntry, ConfigurationEntry, ConfigurationId, LogEntry,
-    MembershipSet, RaftSnapshot, RaftSnapshotMetadata, SnapshotGroupId,
+    MembershipSet, RaftSnapshot, RaftSnapshotMetadata, ReadId, SnapshotGroupId,
 };
 
 #[test]
@@ -142,6 +143,73 @@ fn derived_state_is_valid_after_snapshot_install() {
     follower
         .validate_derived_state()
         .expect("snapshot compaction rebuilds retained configuration offsets");
+}
+
+#[test]
+fn derived_state_rejects_log_geometry_overflow() {
+    let mut node = node(1, &[2, 3]);
+    node.persistent.snapshot = Some(snapshot_descriptor(u64::MAX - 1, 1, 1));
+    node.persistent.log.extend([
+        LogEntry::application(Term(1), b"overflow-1".to_vec()),
+        LogEntry::application(Term(1), b"overflow-2".to_vec()),
+    ]);
+
+    let error = node
+        .validate_derived_state()
+        .expect_err("overflowing logical log geometry must be rejected");
+    assert!(error.contains("overflows LogIndex"), "{error}");
+}
+
+#[test]
+fn derived_state_rejects_commit_beyond_log() {
+    let mut node = node(1, &[2, 3]);
+    node.volatile.commit_index = LogIndex(1);
+
+    let error = node
+        .validate_derived_state()
+        .expect_err("commit beyond logical log must be rejected");
+    assert!(error.contains("commit index 1 exceeds logical last index 0"));
+}
+
+#[test]
+fn derived_state_rejects_apply_beyond_commit() {
+    let mut node = node(1, &[2, 3]);
+    node.append_log_entry(LogEntry::application(Term(1), b"entry".to_vec()));
+    node.volatile.applied_index = LogIndex(1);
+
+    let error = node
+        .validate_derived_state()
+        .expect_err("apply beyond commit must be rejected");
+    assert!(error.contains("applied index 1 exceeds commit index 0"));
+}
+
+#[test]
+fn derived_state_rejects_non_leader_pending_read_round() {
+    let mut node = node(1, &[2, 3]);
+    let membership = node.effective_membership();
+    node.leader.heartbeat_sequence = 1;
+    node.leader.pending_reads.push(PendingReadRound {
+        read_ids: vec![ReadId(7)],
+        read_index: LogIndex::ZERO,
+        registered_sequence: 1,
+        acks: AcknowledgementSet::new(&membership, node.id()),
+    });
+
+    let error = node
+        .validate_derived_state()
+        .expect_err("a follower cannot retain pending reads");
+    assert!(error.contains("non-leader retains pending read-index rounds"));
+}
+
+#[test]
+fn derived_state_rejects_stale_configuration_offsets() {
+    let mut node = node(1, &[2, 3]);
+    node.derived.push_configuration_offset_for_test(0);
+
+    let error = node
+        .validate_derived_state()
+        .expect_err("stale configuration offsets must be rejected");
+    assert!(error.contains("configuration_offsets mismatch"));
 }
 
 fn config() -> NodeConfig {

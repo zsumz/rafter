@@ -45,6 +45,7 @@ pub(super) fn check_commit_safety(
     state: &ExplorationState,
     trace: &[Action],
 ) -> Result<(), Failure> {
+    check_internal_derived_state(&state.cluster, trace)?;
     check_commit_index_monotonicity(state, trace)?;
     check_committed_configuration_monotonicity(state, trace)?;
     check_applied_payload_agreement(&state.cluster, trace)?;

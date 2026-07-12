@@ -13,6 +13,14 @@ impl ExplorationState {
     }
 
     pub(in crate::model_check) fn observe_state_coverage(&mut self) {
+        if self
+            .cluster
+            .nodes
+            .values()
+            .all(|node| node.validate_derived_state().is_ok())
+        {
+            self.mark_observation(Observation::WellFormedStatesChecked);
+        }
         self.observe_application_coverage();
         self.observe_membership_coverage();
         self.observe_read_coverage();

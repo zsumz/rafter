@@ -1,10 +1,11 @@
 use std::{collections::BTreeSet, fs, path::Path};
 
-use super::{Entry, Evidence, COVERAGE_LAYERS, VALID_EVIDENCE_STRENGTHS};
+use super::{Clause, Entry, Evidence, COVERAGE_LAYERS, VALID_EVIDENCE_STRENGTHS};
 
 pub(super) fn assert_evidence_is_machine_checkable(
     workspace: &Path,
     entries: &[Entry],
+    clauses: &[Clause],
     evidence: &[Evidence],
 ) {
     assert!(
@@ -17,6 +18,10 @@ pub(super) fn assert_evidence_is_machine_checkable(
         .map(|entry| entry.id.as_str())
         .collect::<BTreeSet<_>>();
     let mut seen_records = BTreeSet::new();
+    let clauses_by_id = clauses
+        .iter()
+        .map(|clause| (clause.id.as_str(), clause))
+        .collect::<std::collections::BTreeMap<_, _>>();
 
     for record in evidence {
         assert!(
@@ -37,8 +42,27 @@ pub(super) fn assert_evidence_is_machine_checkable(
             record.strength,
         );
         assert!(
+            !record.clauses.is_empty(),
+            "{} evidence must bind at least one normative clause",
+            record.id,
+        );
+        for clause_id in &record.clauses {
+            let clause = clauses_by_id.get(clause_id.as_str()).unwrap_or_else(|| {
+                panic!(
+                    "{} evidence references unknown clause {clause_id}",
+                    record.id
+                )
+            });
+            assert_eq!(
+                clause.invariant_id, record.id,
+                "{} evidence cannot bind clause {clause_id} owned by {}",
+                record.id, clause.invariant_id,
+            );
+        }
+        assert!(
             seen_records.insert((
                 record.id.as_str(),
+                record.clauses.as_slice(),
                 record.layer.as_str(),
                 record.strength.as_str(),
                 record.path.as_str(),
@@ -75,6 +99,22 @@ pub(super) fn assert_evidence_is_machine_checkable(
             record.path,
         );
         assert_negative_fixture_policy(workspace, record, &source);
+    }
+
+    assert_coverage_bindings(entries, clauses, evidence);
+}
+
+fn assert_coverage_bindings(entries: &[Entry], clauses: &[Clause], evidence: &[Evidence]) {
+    for clause in clauses.iter().filter(|clause| clause.required) {
+        assert!(
+            evidence.iter().any(|record| {
+                record.id == clause.invariant_id
+                    && record.strength == "direct"
+                    && record.clauses.contains(&clause.id)
+            }),
+            "{} has no direct executable evidence binding",
+            clause.id,
+        );
     }
 
     for entry in entries {

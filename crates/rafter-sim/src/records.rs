@@ -8,6 +8,7 @@ use rafter::{
 pub struct Applied {
     pub node_id: NodeId,
     pub application_epoch: u64,
+    pub commit_index_at_emit: LogIndex,
     pub index: LogIndex,
     pub payload: SharedPayload,
 }
