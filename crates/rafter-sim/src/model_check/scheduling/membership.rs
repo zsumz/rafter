@@ -7,7 +7,7 @@ pub(super) fn enabled_membership_actions(
     state: &ExplorationState,
     bounds: Bounds,
 ) -> Vec<EnabledAction> {
-    if state.membership_changes_issued >= bounds.membership_change_count as u64 {
+    if state.membership_changes_issued() >= bounds.membership_change_count as u64 {
         return Vec::new();
     }
 
@@ -22,8 +22,8 @@ pub(super) fn enabled_membership_actions(
 
 pub(super) fn enabled_membership_operations(state: &ExplorationState) -> Vec<Operation> {
     let mut operations = Vec::new();
-    let cluster_node_ids = state.cluster.nodes.keys().copied().collect::<Vec<_>>();
-    for (leader_id, node) in &state.cluster.nodes {
+    let cluster_node_ids = state.cluster().nodes.keys().copied().collect::<Vec<_>>();
+    for (leader_id, node) in &state.cluster().nodes {
         if node.role() != Role::Leader {
             continue;
         }
@@ -44,7 +44,7 @@ pub(super) fn enabled_membership_operations(state: &ExplorationState) -> Vec<Ope
                         learner_id: *learner_id,
                     });
                     if let Some(promotion_barrier) =
-                        state.cluster.promotion_barrier(*leader_id, *learner_id)
+                        state.cluster().promotion_barrier(*leader_id, *learner_id)
                     {
                         operations.push(Operation::PromoteLearner {
                             to: *leader_id,
