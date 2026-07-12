@@ -42,6 +42,22 @@ pub(crate) fn check_commit_history(
             state: summarize(&state.cluster),
         });
     }
+    if let Some((node_id, index)) = state
+        .commit_history
+        .unwitnessed_committed_prefixes
+        .iter()
+        .next()
+    {
+        return Err(Failure {
+            kind: crate::model_check::FailureKind::CoverageNotReached,
+            invariant: super::catalog::LG_05_LEADER_COMPLETENESS,
+            message: format!(
+                "{node_id} committed through {index} without a logical-prefix witness"
+            ),
+            trace: trace.to_vec(),
+            state: summarize(&state.cluster),
+        });
+    }
     if let Some(index) = state.commit_history.unwitnessed_commit_terms.iter().next() {
         return Err(Failure {
             kind: crate::model_check::FailureKind::HarnessError,

@@ -1,4 +1,6 @@
-use rafter::{MembershipConfig, MembershipSet, Message, NodeId, RaftSnapshot, SharedPayload, Term};
+use rafter::{
+    LogIndex, MembershipConfig, MembershipSet, Message, NodeId, RaftSnapshot, SharedPayload, Term,
+};
 
 use crate::Cluster;
 
@@ -94,6 +96,7 @@ impl RestartSnapshotState {
         }
         state.refresh_log_history();
         state.refresh_seeded_commit_history();
+        state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(2), Term(2));
         elect_node_one_with_node_three_in_state(&mut state);
         state.cluster.drop_matching(|envelope| {
             matches!(

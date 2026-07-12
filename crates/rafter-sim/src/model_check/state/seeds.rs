@@ -48,7 +48,9 @@ impl ExplorationState {
                 leader_commit: LogIndex(3),
             }),
         );
-        Self::new(cluster)
+        let mut state = Self::new(cluster);
+        state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(1), Term(1));
+        state
     }
 
     pub(in crate::model_check) fn seeded_divergent_suffix_probe(configs: Vec<NodeConfig>) -> Self {
@@ -116,6 +118,7 @@ impl ExplorationState {
         );
 
         let mut state = Self::new(cluster);
+        state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(2), Term(2));
         state
             .forbidden_applied_payloads
             .insert(b"divergent-two".to_vec().into());
@@ -203,6 +206,7 @@ impl ExplorationState {
             .expect("joint self-quorum prior application seed is valid");
 
         let mut state = Self::new(cluster);
+        state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(1), Term(1));
         state.require_applied_payload(NodeId(1), LogIndex(2), payload.into());
         state
     }

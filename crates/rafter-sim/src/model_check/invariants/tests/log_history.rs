@@ -199,6 +199,97 @@ fn log_matching_detects_snapshot_boundary_hiding_mismatched_prefix() {
 }
 
 #[test]
+fn log_matching_rejects_snapshot_witness_shorter_than_boundary() {
+    let (snapshot, payload) = test_snapshot(1, 2, 2, 2, b"snapshot through two");
+    let transfer_id = snapshot.transfer_id();
+    let mut cluster = one_node_cluster();
+    cluster.seed_snapshot_payload(NodeId(1), &snapshot, payload);
+    cluster
+        .restart_node_from_bootstrap(NodeId(1), bootstrap_with_snapshot(Term(2), snapshot, &[]))
+        .expect("snapshot bootstrap is valid");
+    let mut state = ExplorationState::new(cluster);
+    state
+        .logical_log_history
+        .snapshot_prefixes_by_owner_transfer
+        .insert(
+            (NodeId(1), transfer_id),
+            LogPrefixWitness {
+                through: LogIndex(1),
+                entries: vec![LogEntry::application(Term(1), b"one".to_vec())],
+            },
+        );
+    state.refresh_log_history();
+
+    let failure = check_log_history(&state, &[])
+        .expect_err("a short witness must not prove a longer snapshot boundary");
+    assert_eq!(failure.invariant(), catalog::LG_03_LOG_MATCHING);
+    assert!(failure.message.contains("does not match boundary"));
+}
+
+#[test]
+fn log_matching_rejects_snapshot_witness_with_wrong_boundary_term() {
+    let (snapshot, payload) = test_snapshot(1, 2, 2, 2, b"snapshot through two");
+    let transfer_id = snapshot.transfer_id();
+    let mut cluster = one_node_cluster();
+    cluster.seed_snapshot_payload(NodeId(1), &snapshot, payload);
+    cluster
+        .restart_node_from_bootstrap(NodeId(1), bootstrap_with_snapshot(Term(2), snapshot, &[]))
+        .expect("snapshot bootstrap is valid");
+    let mut state = ExplorationState::new(cluster);
+    state
+        .logical_log_history
+        .snapshot_prefixes_by_owner_transfer
+        .insert(
+            (NodeId(1), transfer_id),
+            LogPrefixWitness {
+                through: LogIndex(2),
+                entries: vec![
+                    LogEntry::application(Term(1), b"one".to_vec()),
+                    LogEntry::application(Term(1), b"wrong-term".to_vec()),
+                ],
+            },
+        );
+    state.refresh_log_history();
+
+    let failure = check_log_history(&state, &[])
+        .expect_err("a witness with the wrong final term must not prove the boundary");
+    assert_eq!(failure.invariant(), catalog::LG_03_LOG_MATCHING);
+    assert!(failure.message.contains("does not match boundary"));
+}
+
+#[test]
+fn log_matching_does_not_bless_unproven_snapshot_from_global_transfer_id() {
+    let mut cluster = two_node_cluster();
+    cluster
+        .restart_node_from_bootstrap(NodeId(1), bootstrap_state(Term(1), &[(1, Term(1), b"one")]))
+        .expect("visible source bootstrap is valid");
+    let mut state = ExplorationState::new(cluster);
+    let (snapshot, payload) = test_snapshot(1, 1, 1, 1, b"snapshot through one");
+    for node_id in [NodeId(1), NodeId(2)] {
+        state
+            .cluster
+            .seed_snapshot_payload(node_id, &snapshot, payload.clone());
+        state
+            .cluster
+            .restart_node_from_bootstrap(
+                node_id,
+                bootstrap_with_snapshot(Term(1), snapshot.clone(), &[]),
+            )
+            .expect("snapshot bootstrap is valid");
+        state.refresh_log_history();
+    }
+
+    let failure = check_log_history(&state, &[])
+        .expect_err("another owner's transfer ID must not supply snapshot provenance");
+    assert_eq!(
+        failure.kind(),
+        crate::model_check::FailureKind::CoverageNotReached
+    );
+    assert_eq!(failure.invariant(), catalog::LG_03_LOG_MATCHING);
+    assert!(failure.message.contains("has no logical-prefix witness"));
+}
+
+#[test]
 fn seeded_snapshot_without_prefix_is_coverage_not_reached() {
     let (snapshot, payload) = test_snapshot(1, 2, 1, 2, b"unwitnessed snapshot");
     let mut cluster = one_node_cluster();
@@ -261,11 +352,73 @@ fn logical_leader_log_accepts_compaction_with_matching_prefix_witness() {
         .last_view(NodeId(1))
         .expect("compacted view is observed");
 
-    assert!(
-        state
-            .logical_log_history
-            .observed_log_extends(&previous, current),
+    assert_eq!(
+        LogicalLogHistory::observed_log_extends(&previous, current),
+        Some(true),
         "matching snapshot prefix must preserve the logical leader log"
     );
     check_log_history(&state, &[]).expect("witnessed compaction must remain green");
+}
+
+#[test]
+fn leader_append_only_detects_snapshot_only_boundary_regression() {
+    let previous = snapshot_only_view(11, &[(1, 1, b"one"), (2, 2, b"two")]);
+    let current = snapshot_only_view(12, &[(1, 1, b"one")]);
+
+    assert_eq!(
+        LogicalLogHistory::observed_log_extends(&previous, &current),
+        Some(false),
+        "a snapshot-only leader must not delete its logical suffix"
+    );
+}
+
+#[test]
+fn leader_append_only_detects_snapshot_only_prefix_replacement() {
+    let previous = snapshot_only_view(21, &[(1, 1, b"one-a"), (2, 2, b"two")]);
+    let current = snapshot_only_view(22, &[(1, 1, b"one-b"), (2, 2, b"two")]);
+
+    assert_eq!(
+        LogicalLogHistory::observed_log_extends(&previous, &current),
+        Some(false),
+        "an equal snapshot boundary must not hide a replaced prefix"
+    );
+}
+
+#[test]
+fn leader_append_only_accepts_higher_snapshot_with_same_logical_prefix() {
+    let previous = snapshot_only_view(31, &[(1, 1, b"one"), (2, 2, b"two")]);
+    let current = snapshot_only_view(32, &[(1, 1, b"one"), (2, 2, b"two"), (3, 2, b"three")]);
+
+    assert_eq!(
+        LogicalLogHistory::observed_log_extends(&previous, &current),
+        Some(true),
+        "a higher snapshot with the same prior prefix is a legal extension"
+    );
+}
+
+#[test]
+fn leader_append_only_missing_snapshot_witness_is_not_success() {
+    let previous = snapshot_only_view(41, &[(1, 1, b"one")]);
+    let current = LogicalLogView::snapshot_only(SnapshotTransferId(42), LogIndex(1), Term(1), None);
+
+    assert_eq!(
+        LogicalLogHistory::observed_log_extends(&previous, &current),
+        None,
+        "an unavailable logical prefix must remain coverage-incomplete"
+    );
+}
+
+fn snapshot_only_view(transfer_sequence: u64, entries: &[(u64, u64, &[u8])]) -> LogicalLogView {
+    let entries = entries
+        .iter()
+        .map(|(_, term, payload)| LogEntry::application(Term(*term), payload.to_vec()))
+        .collect::<Vec<_>>();
+    let through = LogIndex(entries.len() as u64);
+    let term = entries.last().map_or(Term::default(), |entry| entry.term);
+    LogicalLogView::snapshot_only(
+        SnapshotTransferId(transfer_sequence),
+        through,
+        term,
+        Some(LogPrefixWitness { through, entries }),
+    )
 }

@@ -18,6 +18,7 @@ pub(crate) struct CommitHistory {
     pub(crate) certificates: BTreeMap<(NodeId, Term, LogIndex), CommitCertificate>,
     pub(crate) committed_prefix: Option<LogPrefixWitness>,
     pub(crate) committed_in_terms: Vec<Term>,
+    pub(crate) unwitnessed_committed_prefixes: BTreeSet<(NodeId, LogIndex)>,
     pub(crate) unwitnessed_commit_terms: BTreeSet<LogIndex>,
     pub(crate) leader_completeness_checked_through: BTreeMap<(NodeId, Term), LogIndex>,
     pub(crate) violations: BTreeSet<CommitHistoryViolation>,
@@ -27,6 +28,7 @@ impl Hash for CommitHistory {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.committed_prefix.hash(state);
         self.committed_in_terms.hash(state);
+        self.unwitnessed_committed_prefixes.hash(state);
         self.unwitnessed_commit_terms.hash(state);
         self.leader_completeness_checked_through.hash(state);
         self.violations.hash(state);
@@ -150,15 +152,50 @@ impl CommitHistory {
         logical_logs: &LogicalLogHistory,
     ) {
         for (node_id, node) in &cluster.nodes {
+            self.unwitnessed_committed_prefixes
+                .retain(|(owner, _)| owner != node_id);
             let committed_through = node.commit_index();
             if committed_through == LogIndex::ZERO {
                 continue;
             }
-            let view = LogicalLogView::from_cluster(cluster, *node_id);
-            if let Some(prefix) = logical_logs.prefix_from_view(&view, committed_through) {
-                self.insert_committed_prefix(*node_id, prefix);
+            let view = logical_logs.observed_view(cluster, *node_id);
+            let Some(prefix) = LogicalLogHistory::prefix_from_view(&view, committed_through) else {
+                self.unwitnessed_committed_prefixes
+                    .insert((*node_id, committed_through));
+                continue;
+            };
+            self.insert_committed_prefix(*node_id, prefix);
+        }
+    }
+
+    pub(super) fn record_seeded_commit_authority(
+        &mut self,
+        old_commit: LogIndex,
+        new_commit: LogIndex,
+        term: Term,
+    ) {
+        if term != Term::default() {
+            self.record_commit_terms(old_commit, new_commit, term);
+        }
+    }
+
+    pub(super) fn record_seeded_commit_terms(
+        &mut self,
+        cluster: &Cluster,
+        logical_logs: &LogicalLogHistory,
+    ) {
+        for (node_id, node) in &cluster.nodes {
+            let Ok(len) = usize::try_from(node.commit_index().0) else {
+                continue;
+            };
+            let view = logical_logs.observed_view(cluster, *node_id);
+            if LogicalLogHistory::prefix_from_view(&view, node.commit_index()).is_some()
+                && self.committed_in_terms.len() < len
+            {
+                self.committed_in_terms.resize(len, Term::default());
             }
         }
+        self.refresh_commit_term_coverage();
     }
 
     fn insert_committed_prefix(&mut self, node_id: NodeId, prefix: LogPrefixWitness) {
@@ -183,36 +220,6 @@ impl CommitHistory {
 
         if prefix.through > committed.through {
             self.committed_prefix = Some(prefix);
-        }
-        self.refresh_commit_term_coverage();
-    }
-
-    pub(super) fn record_seeded_commit_terms(
-        &mut self,
-        cluster: &Cluster,
-        logical_logs: &LogicalLogHistory,
-    ) {
-        for (node_id, node) in &cluster.nodes {
-            let Ok(len) = usize::try_from(node.commit_index().0) else {
-                continue;
-            };
-            let view = LogicalLogView::from_cluster(cluster, *node_id);
-            if logical_logs
-                .prefix_from_view(&view, node.commit_index())
-                .is_none()
-            {
-                continue;
-            }
-            if self.committed_in_terms.len() < len {
-                self.committed_in_terms.resize(len, Term::default());
-            }
-            for committed_in_term in &mut self.committed_in_terms[..len] {
-                if *committed_in_term == Term::default() {
-                    *committed_in_term = node.current_term();
-                } else {
-                    *committed_in_term = (*committed_in_term).min(node.current_term());
-                }
-            }
         }
         self.refresh_commit_term_coverage();
     }
@@ -274,7 +281,7 @@ impl CommitHistory {
             if committed.through <= checked_through {
                 continue;
             }
-            let leader_view = LogicalLogView::from_cluster(cluster, certificate.leader_id);
+            let leader_view = logical_logs.observed_view(cluster, certificate.leader_id);
             let checked_entries =
                 usize::try_from(checked_through.0).unwrap_or(committed.entries.len());
             let relevant_through = committed
@@ -292,7 +299,7 @@ impl CommitHistory {
             if let Some(relevant_through) = relevant_through {
                 observations.mark(Observation::LaterTermLeaderPriorPrefixChecks);
                 let expected = committed.slice_through(relevant_through);
-                if logical_logs.prefix_from_view(&leader_view, relevant_through) != expected {
+                if LogicalLogHistory::prefix_from_view(&leader_view, relevant_through) != expected {
                     self.violations.insert(CommitHistoryViolation {
                         invariant: catalog::LG_05_LEADER_COMPLETENESS,
                         message: format!(
@@ -406,6 +413,16 @@ impl ExplorationState {
         self.commit_history
             .record_seeded_commit_terms(&self.cluster, &self.logical_log_history);
         self.refresh_committed_prefixes();
+    }
+
+    pub(in crate::model_check) fn witness_seeded_commit_authority(
+        &mut self,
+        old_commit: LogIndex,
+        new_commit: LogIndex,
+        term: Term,
+    ) {
+        self.commit_history
+            .record_seeded_commit_authority(old_commit, new_commit, term);
     }
 
     pub(in crate::model_check) fn record_leader_completeness_observation(&mut self) {

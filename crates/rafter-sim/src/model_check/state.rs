@@ -25,6 +25,8 @@ pub(super) use election::ElectionCertificate;
 pub(super) use election::ElectionHistory;
 pub(super) use election::{AuthorityTransitionViolationKind, PreVoteViolationKind};
 pub(super) use logical_log::LogicalLogHistory;
+#[cfg(test)]
+pub(super) use logical_log::{LogPrefixWitness, LogicalLogView};
 pub(super) use restart_snapshot::{ExpectedSnapshot, RestartSnapshotState};
 
 #[derive(Clone, Debug, Hash)]
@@ -133,6 +135,8 @@ impl ExplorationState {
         delivered: Option<&Envelope>,
         emitted: &[Envelope],
     ) {
+        self.logical_log_history
+            .record_snapshot_installation(before, &self.cluster, delivered);
         let observations = self.logical_log_history.record_append_entries_delivery(
             before,
             &self.cluster,

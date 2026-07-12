@@ -19,6 +19,7 @@ fn shorter_matching_commit_observation_preserves_canonical_ledger_identity() {
             )
         }],
     );
+    state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(2), Term(2));
     let before = hash_commit_history(&state);
 
     state
@@ -102,7 +103,8 @@ fn leader_completeness_checks_prior_term_entry_hidden_by_newer_suffix() {
             )
         }],
     );
-    state.commit_history.committed_in_terms[0] = Term(3);
+    state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(1), Term(3));
+    state.witness_seeded_commit_authority(LogIndex(1), LogIndex(2), Term(5));
     let certificate = election_certificate(4, 2, stable_membership(&[1, 2], &[]), &[1, 2]);
     state
         .election_history
@@ -141,7 +143,7 @@ fn later_commit_does_not_retroactively_invalidate_an_earlier_leader() {
             ),
         )
         .expect("later committed bootstrap is valid");
-    state.commit_history.committed_in_terms = vec![Term(20), Term(20)];
+    state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(2), Term(20));
     state.refresh_log_history();
     state.refresh_committed_prefixes();
     state.record_leader_completeness_observation();
@@ -175,6 +177,65 @@ fn committed_prefix_without_commit_term_provenance_is_a_harness_error() {
         crate::model_check::FailureKind::HarnessError
     );
     assert!(failure.message.contains("no commit-authority term witness"));
+}
+
+#[test]
+fn seeded_commit_without_explicit_authority_fails_closed() {
+    let state = state_with_bootstraps(
+        voter_configs(&[1]),
+        &[{
+            (
+                1,
+                bootstrap_with_log(
+                    Term(10),
+                    LogIndex(1),
+                    vec![app_entry(1, Term(3), b"committed-before-current-term")],
+                    None,
+                ),
+            )
+        }],
+    );
+
+    let failure = check_commit_history(&state, &[])
+        .expect_err("seeded commit authority must be explicit, not inferred from current_term");
+    assert_eq!(
+        failure.kind(),
+        crate::model_check::FailureKind::HarnessError
+    );
+    assert!(failure.message.contains("no commit-authority term witness"));
+}
+
+#[test]
+fn seeded_current_term_does_not_masquerade_as_commit_authority() {
+    let mut state = state_with_bootstraps(
+        voter_configs(&[1, 2]),
+        &[{
+            (
+                1,
+                bootstrap_with_log(
+                    Term(10),
+                    LogIndex(1),
+                    vec![app_entry(1, Term(3), b"prior-commit")],
+                    None,
+                ),
+            )
+        }],
+    );
+    state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(1), Term(3));
+    let certificate = election_certificate(4, 2, stable_membership(&[1, 2], &[]), &[1, 2]);
+    state
+        .election_history
+        .elected_by_term
+        .insert(certificate.term, certificate);
+
+    state.record_leader_completeness_observation();
+
+    let failure = check_commit_history(&state, &[])
+        .expect_err("explicit prior authority must expose the later leader's missing entry");
+    assert_eq!(failure.invariant(), catalog::LG_05_LEADER_COMPLETENESS);
+    assert!(failure
+        .message
+        .contains("without committed prefix through 1"));
 }
 
 fn hash_commit_history(state: &ExplorationState) -> u64 {

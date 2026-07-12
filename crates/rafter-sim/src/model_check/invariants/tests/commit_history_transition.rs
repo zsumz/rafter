@@ -102,7 +102,9 @@ fn state_with_committed_single_node_entry() -> ExplorationState {
             },
         )
         .expect("single-node committed bootstrap is valid");
-    ExplorationState::new(cluster)
+    let mut state = ExplorationState::new(cluster);
+    state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(1), Term(1));
+    state
 }
 
 fn state_hash(state: &ExplorationState) -> u64 {

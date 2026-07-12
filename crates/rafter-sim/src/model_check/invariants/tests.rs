@@ -4,7 +4,7 @@ use rafter::{
     AppendEntries, AppendEntriesResponse, BootstrapLogEntry, CommittedConfiguration,
     ConfigurationEntry, ConfigurationId, LogEntry, MembershipConfig, MembershipSet, Message,
     NodeConfig, NodeId, PendingSnapshotTransfer, PreVote, PreVoteResponse, RequestVote,
-    RequestVoteResponse, SharedEntries, Term,
+    RequestVoteResponse, SharedEntries, SnapshotTransferId, Term,
 };
 
 use super::super::helpers::{
@@ -12,7 +12,7 @@ use super::super::helpers::{
 };
 use super::super::state::{
     ClientRead, ClientReadProof, ClientWrite, ClientWriteUnknownReason, CommitTransitionContext,
-    ElectionCertificate,
+    ElectionCertificate, LogPrefixWitness, LogicalLogHistory, LogicalLogView,
 };
 use super::*;
 use crate::{Applied, Cluster, DurableStateDigest, Envelope, SnapshotInstalled};
