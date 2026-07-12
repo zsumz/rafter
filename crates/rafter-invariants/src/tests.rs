@@ -528,6 +528,47 @@ fn stale_bundle_is_red_never_green() {
 }
 
 #[test]
+fn evidence_load_error_still_emits_exactly_44_red_verdicts() {
+    let (catalog, manifest) = loaded();
+    let bundles = passing_bundles(&catalog, &manifest);
+    let report = aggregate_with_harness_errors(
+        &catalog,
+        &manifest,
+        "pr",
+        "abc",
+        &bundles,
+        &["parse artifacts/invariants/pr-tests.json: malformed JSON".to_owned()],
+    )
+    .expect("report aggregates");
+
+    assert_eq!(report.summary.total, 44);
+    assert_eq!(report.summary.green, 0);
+    assert_eq!(report.summary.red, 44);
+    assert!(report.invariants.iter().all(|verdict| verdict
+        .issues
+        .iter()
+        .any(|issue| issue.message.contains("malformed JSON"))));
+}
+
+#[test]
+fn one_layer_can_be_independently_verified_against_its_profile() {
+    let (catalog, manifest) = loaded();
+    let bundles = passing_bundles(&catalog, &manifest);
+    let tests = bundles
+        .iter()
+        .find(|bundle| bundle.runner == "tests")
+        .expect("tests bundle exists");
+
+    verify_layer_bundle(&catalog, &manifest, "pr", "tests", tests)
+        .expect("complete tests layer verifies");
+
+    let mut incomplete = tests.clone();
+    incomplete.results[0].status = EvidenceStatus::Incomplete;
+    incomplete.execution.checks[0].completion = CheckCompletion::CoverageNotReached;
+    assert!(verify_layer_bundle(&catalog, &manifest, "pr", "tests", &incomplete).is_err());
+}
+
+#[test]
 fn renderers_emit_every_invariant() {
     let (catalog, manifest) = loaded();
     let report = aggregate(&catalog, &manifest, "pr", "abc", &[]).expect("report aggregates");
