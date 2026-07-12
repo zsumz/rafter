@@ -338,6 +338,7 @@ const fn read_cancel_reason_message(reason: ReadIndexCancelReason) -> &'static s
     match reason {
         ReadIndexCancelReason::LeadershipLost => "leadership was lost",
         ReadIndexCancelReason::LeaderStateReset => "leader state was reset",
+        ReadIndexCancelReason::LeadershipTransfer { .. } => "leadership transfer started",
     }
 }
 

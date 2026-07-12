@@ -129,8 +129,15 @@ fn timeout_now_to_a_stale_leader_sheds_all_leader_state_first() {
         }),
     });
     let _ = leader.step(Input::ReadIndex { read_id: ReadId(8) });
-    let _ = leader.step(Input::TransferLeadership { target: NodeId(2) });
-    assert_eq!(leader.pending_read_count(), 1);
+    let transfer_outputs = leader.step(Input::TransferLeadership { target: NodeId(2) });
+    assert!(transfer_outputs.iter().any(|output| matches!(
+        output,
+        Output::ReadIndexCanceled {
+            read_id: ReadId(8),
+            reason: ReadIndexCancelReason::LeadershipTransfer { target: NodeId(2) },
+        }
+    )));
+    assert_eq!(leader.pending_read_count(), 0);
 
     let old_term = leader.current_term();
     let _ = leader.step(Input::Message {

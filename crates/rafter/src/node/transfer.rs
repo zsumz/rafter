@@ -33,13 +33,15 @@ impl Node {
             ticks_remaining: self.config.election_timeout_ticks(),
             timeout_now_sent: false,
         });
+        let mut outputs =
+            self.drain_pending_reads(super::ReadIndexCancelReason::LeadershipTransfer { target });
 
         if self.target_is_caught_up(target) {
-            return self.send_timeout_now(target);
+            outputs.extend(self.send_timeout_now(target));
+            return outputs;
         }
         // Nudge the target's replication; completion is detected when its
         // acknowledgement brings match_index to the leader's last index.
-        let mut outputs = Vec::new();
         self.replicate_to_follower(target, ReplicationDemand::EnsureContact, &mut outputs);
         outputs
     }
