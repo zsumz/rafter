@@ -119,7 +119,7 @@ fn nonzero_process_exit_is_always_a_harness_error() -> Result<(), Box<dyn std::e
 fn bundle() -> ResultBundle {
     let execution_id = "maelstrom-base".to_owned();
     ResultBundle {
-        schema_version: 5,
+        schema_version: 6,
         runner: "maelstrom".to_owned(),
         profile: "nightly".to_owned(),
         source_ref: "abc".to_owned(),
