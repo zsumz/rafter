@@ -2,6 +2,8 @@
 
 use super::support::*;
 
+mod quorum;
+
 #[test]
 fn learner_does_not_start_election_and_its_grant_is_uncounted() {
     let mut learner = node_with_configuration(4, &[1, 2, 3], learner_configuration());

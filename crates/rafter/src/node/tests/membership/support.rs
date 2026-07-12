@@ -32,11 +32,44 @@ pub(super) fn stable_configuration(
 }
 
 pub(super) fn committed_leader_with_learner_config() -> Node {
-    let mut leader = leader_with_log(vec![BootstrapLogEntry::configuration(
-        LogIndex(1),
-        Term(2),
-        learner_configuration(),
-    )]);
+    committed_leader_with_learner_config_options(false)
+}
+
+pub(super) fn committed_leader_with_learner_config_and_lease_reads() -> Node {
+    committed_leader_with_learner_config_options(true)
+}
+
+fn committed_leader_with_learner_config_options(lease_reads: bool) -> Node {
+    committed_leader_with_configuration(learner_configuration(), lease_reads)
+}
+
+pub(super) fn committed_leader_after_removing_voter_with_lease_reads() -> Node {
+    committed_leader_with_configuration(stable_configuration(ConfigurationId(3), &[1, 2, 3]), true)
+}
+
+fn committed_leader_with_configuration(
+    configuration: ConfigurationEntry,
+    lease_reads: bool,
+) -> Node {
+    let mut leader = Node::from_bootstrap(
+        NodeConfig::new(NodeId(1), vec![NodeId(2), NodeId(3), NodeId(4)], 3)
+            .expect("test Raft node config is valid")
+            .with_lease_reads(lease_reads),
+        BootstrapState {
+            current_term: Term(2),
+            voted_for: None,
+            commit_index: LogIndex::ZERO,
+            committed_configuration: None,
+            snapshot: None,
+            log: vec![BootstrapLogEntry::configuration(
+                LogIndex(1),
+                Term(2),
+                configuration,
+            )],
+        },
+    )
+    .expect("leader log bootstraps");
+    leader.become_leader();
     let committed = leader.last_log_index();
     leader.volatile.commit_index = committed;
     leader.volatile.applied_index = committed;
@@ -115,10 +148,19 @@ pub(super) fn acknowledge(
     follower_id: NodeId,
     match_index: LogIndex,
 ) -> Vec<Output> {
+    acknowledge_round(leader, follower_id, match_index, 0)
+}
+
+pub(super) fn acknowledge_round(
+    leader: &mut Node,
+    follower_id: NodeId,
+    match_index: LogIndex,
+    sequence: u64,
+) -> Vec<Output> {
     leader.step(Input::Message {
         from: follower_id,
         message: Message::AppendEntriesResponse(AppendEntriesResponse {
-            sequence: 0,
+            sequence,
             term: leader.current_term(),
             follower_id,
             success: true,
