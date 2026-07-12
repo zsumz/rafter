@@ -1,18 +1,19 @@
-use super::super::*;
-use super::helpers::bootstrap_entry;
-use crate::{InMemorySnapshotChunkSource, LogEntry, MembershipConfig, MembershipSet};
+//! Shared descriptors, sources, and message inspection for snapshot scenarios.
 
-pub(super) fn push_log_entry(node: &mut Node, term: Term, payload: &[u8]) {
+pub(super) use super::super::helpers::bootstrap_entry;
+pub(super) use super::*;
+
+pub(in crate::node::tests) fn push_log_entry(node: &mut Node, term: Term, payload: &[u8]) {
     node.persistent
         .log
         .push(LogEntry::application(term, payload.to_vec()));
 }
 
-pub(super) fn leader_with_snapshot_and_suffix() -> Node {
+pub(in crate::node::tests) fn leader_with_snapshot_and_suffix() -> Node {
     leader_with_snapshot_payload(b"snapshot bytes".to_vec()).0
 }
 
-pub(super) fn leader_with_snapshot_payload(
+pub(in crate::node::tests) fn leader_with_snapshot_payload(
     payload: Vec<u8>,
 ) -> (Node, InMemorySnapshotChunkSource) {
     let snapshot = test_snapshot(3, 4, 5, &payload);
@@ -33,7 +34,7 @@ pub(super) fn leader_with_snapshot_payload(
     (leader, source)
 }
 
-pub(super) fn snapshot_source(
+pub(in crate::node::tests) fn snapshot_source(
     snapshot: &crate::RaftSnapshot,
     payload: Vec<u8>,
 ) -> InMemorySnapshotChunkSource {
@@ -44,20 +45,22 @@ pub(super) fn snapshot_source(
     source
 }
 
-pub(super) fn large_snapshot_payload() -> Vec<u8> {
+pub(in crate::node::tests) fn large_snapshot_payload() -> Vec<u8> {
     (0_u32..70_000)
         .map(|value| u8::try_from(value % 251).expect("value is below u8::MAX"))
         .collect()
 }
 
-pub(super) fn snapshot_chunk_send_from_output(output: &Output) -> crate::SnapshotChunkSend {
+pub(in crate::node::tests) fn snapshot_chunk_send_from_output(
+    output: &Output,
+) -> crate::SnapshotChunkSend {
     let Output::SendSnapshotChunk { chunk, .. } = output else {
         panic!("expected send snapshot chunk output");
     };
     chunk.clone()
 }
 
-pub(super) fn install_snapshot_chunk_from_output(
+pub(in crate::node::tests) fn install_snapshot_chunk_from_output(
     output: &Output,
     source: &InMemorySnapshotChunkSource,
 ) -> crate::InstallSnapshotChunk {
@@ -66,7 +69,7 @@ pub(super) fn install_snapshot_chunk_from_output(
         .expect("source serves the snapshot chunk")
 }
 
-pub(super) fn install_snapshot_response_from_outputs(
+pub(in crate::node::tests) fn install_snapshot_response_from_outputs(
     outputs: &[Output],
 ) -> crate::InstallSnapshotResponse {
     outputs
@@ -83,7 +86,7 @@ pub(super) fn install_snapshot_response_from_outputs(
         .expect("expected install snapshot response")
 }
 
-pub(super) fn staged_snapshot_bytes(outputs: &[Output]) -> Vec<u8> {
+pub(in crate::node::tests) fn staged_snapshot_bytes(outputs: &[Output]) -> Vec<u8> {
     outputs
         .iter()
         .filter_map(|output| {
@@ -96,7 +99,7 @@ pub(super) fn staged_snapshot_bytes(outputs: &[Output]) -> Vec<u8> {
         .concat()
 }
 
-pub(super) fn test_snapshot(
+pub(in crate::node::tests) fn test_snapshot(
     last_included_index: u64,
     last_included_term: u64,
     hard_state_term: u64,
@@ -108,7 +111,7 @@ pub(super) fn test_snapshot(
     )
 }
 
-pub(super) fn test_snapshot_with_committed_voters(
+pub(in crate::node::tests) fn test_snapshot_with_committed_voters(
     last_included_index: u64,
     last_included_term: u64,
     hard_state_term: u64,

@@ -4,9 +4,20 @@ use std::{
     path::{Path, PathBuf},
 };
 
+#[path = "support/readability.rs"]
+mod readability_support;
+
+use readability_support::{FACADE_PATHS, TEST_FACADE_PATHS};
+
+const FACADE_TARGET_LINES: usize = 100;
+const FACADE_SOFT_LINES: usize = 150;
+const FACADE_HARD_LINES: usize = 225;
 const LIBRARY_TARGET_LINES: usize = 300;
 const LIBRARY_SOFT_LINES: usize = 700;
 const LIBRARY_HARD_LINES: usize = 1_000;
+const CORE_TEST_TARGET_LINES: usize = 400;
+const CORE_TEST_SOFT_LINES: usize = 600;
+const CORE_TEST_HARD_LINES: usize = 900;
 const AUXILIARY_TARGET_LINES: usize = 600;
 const AUXILIARY_SOFT_LINES: usize = 1_000;
 const AUXILIARY_HARD_LINES: usize = 1_500;
@@ -74,7 +85,11 @@ fn file_size_guard_enforces_module_size_limits() {
     }
     assert!(
         violations.is_empty(),
-        "file-size guard violations:\n{}\n\nSplit the file, or add a reviewed temporary allowlist entry with a reason and tracking label.",
+        concat!(
+            "file-size guard violations:\n{}\n\n",
+            "Split the file, or add a reviewed temporary allowlist entry with a reason ",
+            "and tracking label."
+        ),
         violations.join("\n")
     );
 }
@@ -102,7 +117,10 @@ fn validate_allowlist(workspace: &Path, files: &[PathBuf], violations: &mut Vec<
         let limits = limits_for(allow.path);
         if line_count <= limits.hard {
             violations.push(format!(
-                "{}:{}: allowlist entry is no longer needed; remove it from SIZE_ALLOWLIST ({}, tracking label {})",
+                concat!(
+                    "{}:{}: allowlist entry is no longer needed; remove it from ",
+                    "SIZE_ALLOWLIST ({}, tracking label {})"
+                ),
                 allow.path, line_count, allow.reason, allow.tracking_label
             ));
         }
@@ -156,7 +174,21 @@ fn check_file_size(
 }
 
 fn limits_for(relative_path: &str) -> SizeLimits {
-    if is_auxiliary_file(relative_path) {
+    if FACADE_PATHS.contains(&relative_path) || TEST_FACADE_PATHS.contains(&relative_path) {
+        SizeLimits {
+            target: FACADE_TARGET_LINES,
+            soft: FACADE_SOFT_LINES,
+            hard: FACADE_HARD_LINES,
+            label: "facade",
+        }
+    } else if is_rafter_core_test(relative_path) {
+        SizeLimits {
+            target: CORE_TEST_TARGET_LINES,
+            soft: CORE_TEST_SOFT_LINES,
+            hard: CORE_TEST_HARD_LINES,
+            label: "rafter protocol scenario",
+        }
+    } else if is_auxiliary_file(relative_path) {
         SizeLimits {
             target: AUXILIARY_TARGET_LINES,
             soft: AUXILIARY_SOFT_LINES,
@@ -173,13 +205,20 @@ fn limits_for(relative_path: &str) -> SizeLimits {
     }
 }
 
+fn is_rafter_core_test(relative_path: &str) -> bool {
+    relative_path.starts_with("crates/rafter/src/")
+        && (relative_path.contains("/tests/")
+            || relative_path.ends_with("/tests.rs")
+            || relative_path.ends_with("_test.rs"))
+}
+
 fn is_auxiliary_file(relative_path: &str) -> bool {
     relative_path.starts_with("fuzz/")
         || relative_path.contains("/examples/")
         || relative_path.contains("/tests/")
         || relative_path.contains("/src/bin/")
         || relative_path.ends_with("/src/main.rs")
-        || relative_path.ends_with("/src/tests.rs")
+        || relative_path.ends_with("/tests.rs")
         || relative_path.ends_with("_test.rs")
 }
 
@@ -241,6 +280,7 @@ fn display_path(workspace: &Path, path: &Path) -> String {
         .unwrap_or(path)
         .display()
         .to_string()
+        .replace('\\', "/")
 }
 
 fn render_ratchet_warnings(warnings: &[SizeWarning]) -> String {
@@ -266,8 +306,18 @@ mod tests {
     use super::*;
 
     #[test]
+    fn facade_files_use_tight_size_limits() {
+        let limits = limits_for("crates/rafter/src/node/config/mod.rs");
+
+        assert_eq!(limits.target, FACADE_TARGET_LINES);
+        assert_eq!(limits.soft, FACADE_SOFT_LINES);
+        assert_eq!(limits.hard, FACADE_HARD_LINES);
+        assert_eq!(limits.label, "facade");
+    }
+
+    #[test]
     fn library_files_use_three_hundred_line_ratchet_target() {
-        let limits = limits_for("crates/rafter/src/node/replication.rs");
+        let limits = limits_for("crates/rafter/src/node/replication/send.rs");
 
         assert_eq!(limits.target, LIBRARY_TARGET_LINES);
         assert_eq!(limits.soft, LIBRARY_SOFT_LINES);

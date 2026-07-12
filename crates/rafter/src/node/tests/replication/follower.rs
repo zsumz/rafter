@@ -1,3 +1,5 @@
+//! Follower `AppendEntries` matching, conflict repair, and commit safety.
+
 use super::support::*;
 use super::*;
 

@@ -1,15 +1,16 @@
+//! Top-level protocol scenario map for the deterministic node kernel.
+
+pub(super) use crate::*;
+
 mod bootstrap;
+mod config;
 mod derived_state;
+mod dispatch;
 mod election;
 mod helpers;
 mod membership;
 mod pre_vote;
-mod read_index;
-mod read_lease;
+mod read;
 mod replication;
-mod replication_pipelining;
-mod replication_snapshot_chunks;
-mod replication_snapshot_streaming;
-mod replication_snapshot_support;
-mod replication_snapshots;
+mod snapshot;
 mod transfer;

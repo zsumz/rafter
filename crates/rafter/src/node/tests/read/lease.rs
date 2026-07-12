@@ -1,4 +1,7 @@
-use super::super::*;
+//! Lease establishment, renewal, expiry, and dependency safety.
+
+use super::super::helpers::elect_leader;
+use super::*;
 use crate::{AppendEntriesResponse, Message, PreVoteResponse, ReadId, RequestVoteResponse};
 
 const ELECTION_TIMEOUT_TICKS: u64 = 8;
@@ -257,7 +260,7 @@ fn the_lease_opt_in_is_inert_without_its_safety_foundation() {
     // Behaviorally: acknowledged rounds never activate the lease and
     // barriers take the read-index round trip.
     let mut leader = Node::new(degraded);
-    let _ = super::helpers::elect_leader(&mut leader);
+    let _ = elect_leader(&mut leader);
     ack(&mut leader, 2, 1);
     assert_eq!(leader.commit_index(), LogIndex(1));
 

@@ -1,5 +1,7 @@
-use super::super::*;
+//! Derived-state synchronization after bootstrap and log mutation.
+
 use super::helpers::node;
+use super::*;
 use crate::{
     AppendEntries, ApplicationSnapshotKind, ApplicationSnapshotMetadata,
     ApplicationSnapshotVersion, BootstrapLogEntry, ConfigurationEntry, ConfigurationId, LogEntry,
