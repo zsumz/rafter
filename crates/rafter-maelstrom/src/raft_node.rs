@@ -26,8 +26,17 @@ pub(crate) fn open_node(
     let raft_dir = root.join("raft");
     std::fs::create_dir_all(&raft_dir)?;
     let (hard_state, log, snapshots) = FileRaftNodeStores::open(&raft_dir)?.into_parts();
-    let config = NodeConfig::new(node_id, peers, ELECTION_TIMEOUT_TICKS)?
-        .with_heartbeat_interval_ticks(HEARTBEAT_INTERVAL_TICKS);
+    let election_timeout_ticks = timing_from_env(
+        "RAFTER_MAELSTROM_ELECTION_TIMEOUT_TICKS",
+        ELECTION_TIMEOUT_TICKS,
+    )?;
+    let heartbeat_interval_ticks = timing_from_env(
+        "RAFTER_MAELSTROM_HEARTBEAT_INTERVAL_TICKS",
+        HEARTBEAT_INTERVAL_TICKS,
+    )?;
+    let config = NodeConfig::new(node_id, peers, election_timeout_ticks)?
+        .with_heartbeat_interval_ticks(heartbeat_interval_ticks)
+        .with_lease_reads(lease_reads_enabled_from_env());
     Ok(
         DurableRaftNode::with_storage_and_snapshot_store_applied_through(
             config,
@@ -37,6 +46,34 @@ pub(crate) fn open_node(
             applied_through,
         )?,
     )
+}
+
+fn lease_reads_enabled_from_env() -> bool {
+    lease_reads_enabled(
+        std::env::var("RAFTER_MAELSTROM_LEASE_EVIDENCE")
+            .ok()
+            .as_deref(),
+    )
+}
+
+fn lease_reads_enabled(value: Option<&str>) -> bool {
+    value.is_some_and(|value| matches!(value, "1" | "true" | "yes"))
+}
+
+fn timing_from_env(name: &str, default: u64) -> Result<u64, Box<dyn Error>> {
+    timing_value(name, std::env::var(name).ok().as_deref(), default)
+        .map_err(std::convert::Into::into)
+}
+
+fn timing_value(name: &str, value: Option<&str>, default: u64) -> Result<u64, String> {
+    let Some(value) = value else {
+        return Ok(default);
+    };
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|value| *value > 0)
+        .ok_or_else(|| format!("{name} must be a positive u64"))
 }
 
 pub(crate) fn node_root(node_name: &str) -> PathBuf {
@@ -86,4 +123,26 @@ pub(crate) fn read_snapshot_payload(
         offset += u64::from(len);
     }
     Ok(payload)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{lease_reads_enabled, timing_value};
+
+    #[test]
+    fn lease_reads_are_enabled_only_by_an_explicit_evidence_flag() {
+        assert!(lease_reads_enabled(Some("1")));
+        assert!(lease_reads_enabled(Some("true")));
+        assert!(!lease_reads_enabled(None));
+        assert!(!lease_reads_enabled(Some("0")));
+        assert!(!lease_reads_enabled(Some("TRUE")));
+    }
+
+    #[test]
+    fn evidence_timing_values_are_explicit_positive_ticks() {
+        assert_eq!(timing_value("ticks", None, 5), Ok(5));
+        assert_eq!(timing_value("ticks", Some("20"), 5), Ok(20));
+        assert!(timing_value("ticks", Some("0"), 5).is_err());
+        assert!(timing_value("ticks", Some("nope"), 5).is_err());
+    }
 }

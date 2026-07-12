@@ -235,6 +235,7 @@ named temporal or witness-based verdicts.
 | `RD-04` | `RD-04.a` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
 | `RD-04` | `RD-04.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/client.rs#check_client_history_read_write_invariants`; negative fixture `client_history_detects_completed_read_before_local_apply_floor` |
 | `RD-04` | `RD-04.a` | tests | direct | `crates/rafter-app/tests/group_read.rs#linearizable_read_helper_returns_result_when_barrier_grants` |
+| `RD-05` | `RD-05.e` | maelstrom | e2e | `scripts/maelstrom-lin-kv-lease-isolation#RAFTER_MAELSTROM_RESTART_MODE` |
 | `RD-05` | `RD-05.b` | tests | direct | `crates/rafter/src/node/tests/read/lease.rs#a_confirmed_lease_grants_barriers_without_a_round_trip` |
 | `RD-05` | `RD-05.a` | tests | direct | `crates/rafter/src/node/tests/read/lease.rs#the_lease_opt_in_is_inert_without_its_safety_foundation` |
 | `RD-05` | `RD-05.c` | tests | direct | `crates/rafter/src/node/tests/read/lease.rs#the_lease_boundary_is_the_half_election_window` |
@@ -1129,7 +1130,7 @@ Statement: Lease reads require pre-vote and check-quorum, a fresh quorum checkpo
 
 Scope: ReadIndex, lease-read, adapter, and client-history behavior for one Raft group.
 
-Assumptions: Sequence numbers and ticks are monotone; bounded lease conclusions use the configured tick duration and clock assumptions.
+Assumptions: Sequence numbers and process-local ticks are monotone, and each Maelstrom client issues one synchronous operation at a time. The Maelstrom lease-isolation evidence uses 50 ms ticks, a 20-tick election timeout, a 2-tick heartbeat interval, and the resulting 10-tick/500 ms lease window. After expiry it treats each client's first direct read as a warmup, buffers and immediately releases the next direct read from a previously observed client, requires the same node and term through request handling, rejects any second correlated terminal response, and binds the exact client/msg_id code-11 completion to an ordered same-process invoke/terminal pair with matching operation value in retained client history.
 
 Required clauses:
 - `RD-05.a`: Lease reads require both pre-vote and check-quorum.
@@ -1142,9 +1143,9 @@ Evidence now:
 - TLA+: none (no direct registry evidence in this layer)
 - Simulator: none (no direct registry evidence in this layer)
 - Tests: D: clause-bound executable evidence; see evidence references
-- Maelstrom: none (no direct registry evidence in this layer)
+- Maelstrom: E2E: source-bound client-visible isolation evidence; see evidence references
 
-Next (future_strengthening): Retain prerequisite, fresh-basis, bounded-window, stale-acknowledgement, and isolated-leader lease fixtures.
+Next (future_strengthening): Retain prerequisite, fresh-basis, bounded-window, stale-acknowledgement, isolated-leader fixtures, and the ordered same-node/same-term real-client lease-isolation transcript with exact retained-history binding.
 
 #### `RD-06` Client history linearizability
 

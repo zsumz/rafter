@@ -126,6 +126,9 @@ fn invalid_history_can_only_fail_client_linearizability() -> Result<(), Box<dyn 
     bundle.execution.checks[0]
         .observations
         .insert("valid_trials".to_owned(), 0);
+    bundle.execution.checks[0]
+        .observations
+        .insert("invalid_trials".to_owned(), 1);
     bundle.execution.checks[0].completion = CheckCompletion::Counterexample;
     bundle.results[0].status = EvidenceStatus::Fail;
 
@@ -306,6 +309,7 @@ fn observations() -> BTreeMap<String, u64> {
     BTreeMap::from([
         ("trials".to_owned(), 1),
         ("valid_trials".to_owned(), 1),
+        ("invalid_trials".to_owned(), 0),
         ("operation_count".to_owned(), 9),
         ("ok_count".to_owned(), 6),
         ("read_ok".to_owned(), 2),
@@ -321,6 +325,21 @@ fn observations() -> BTreeMap<String, u64> {
         ("snapshots_compacted".to_owned(), 0),
         ("snapshots_applied".to_owned(), 0),
         ("post_restart_snapshots_applied".to_owned(), 0),
+        ("lease_fast_path_read_ok".to_owned(), 0),
+        ("lease_read_buffered".to_owned(), 0),
+        ("lease_expired_while_leader".to_owned(), 0),
+        ("lease_post_expiry_released".to_owned(), 0),
+        ("lease_post_expiry_handler".to_owned(), 0),
+        ("lease_post_expiry_unavailable".to_owned(), 0),
+        ("lease_post_expiry_read_served".to_owned(), 0),
+        ("lease_post_expiry_renewed".to_owned(), 0),
+        ("lease_post_expiry_unexpected_error".to_owned(), 0),
+        ("lease_duplicate_terminal".to_owned(), 0),
+        ("lease_coverage_lost".to_owned(), 0),
+        ("lease_history_probe_matches".to_owned(), 0),
+        ("lease_history_probe_mismatches".to_owned(), 0),
+        ("lease_sequence_complete".to_owned(), 0),
+        ("lease_sequence_invalid".to_owned(), 0),
     ])
 }
 

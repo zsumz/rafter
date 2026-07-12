@@ -7,8 +7,9 @@ use crate::{
 };
 
 use crate::artifact_verify_maelstrom_support::{
-    add, add_summary, empty_observations, group_trials, parse_process, parse_results,
-    requires_proxy, scan_node_logs, scenario_script, trial_floors_met, unique, verify_matches_file,
+    add, add_summary, bind_lease_history, empty_observations, group_trials, parse_process,
+    parse_results, requires_proxy, scan_node_logs, scenario_script, trial_floors_met, unique,
+    verify_matches_file, LeaseArtifactStatus,
 };
 
 pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateError> {
@@ -39,11 +40,13 @@ fn verify_check(
 
     let mut observations = empty_observations(trials);
     let mut summaries = Vec::new();
+    let mut result_parse_successes = Vec::new();
     let mut process_successes = Vec::new();
     let mut coverage = Vec::new();
+    let mut lease_statuses = Vec::new();
     for (trial, artifacts) in &grouped {
         verify_trial_inputs(bundle, scenario, artifacts, root)?;
-        let summary = parse_results(unique(artifacts, "maelstrom-results")?, root)?;
+        let summary = parse_results(unique(artifacts, "maelstrom-results")?, root).ok();
         let process = parse_process(unique(artifacts, "maelstrom-process-log")?, root)?;
         if process.schema_version != 2
             || process.label != scenario
@@ -62,21 +65,38 @@ fn verify_check(
             root,
         )?;
         process_successes.push(process.exit_code == Some(0) && !process.timed_out);
-        add_summary(&mut observations, &summary);
-        let markers = scan_node_logs(artifacts, root)?;
-        for (&name, &value) in &markers {
+        if let Some(summary) = &summary {
+            add_summary(&mut observations, summary);
+        }
+        let mut marker_scan = scan_node_logs(artifacts, root)?;
+        if scenario == "lease-isolation" {
+            bind_lease_history(&mut marker_scan, artifacts, root)?;
+        }
+        for (&name, &value) in &marker_scan.values {
             add(&mut observations, name, value);
         }
         let durable = artifacts
             .iter()
             .any(|artifact| artifact.kind == "maelstrom-durable-file");
-        coverage.push(trial_floors_met(scenario, &summary, &markers, durable));
+        coverage.push(summary.as_ref().is_some_and(|summary| {
+            trial_floors_met(scenario, summary, &marker_scan.values, durable)
+        }));
+        lease_statuses.push(marker_scan.lease_status);
+        result_parse_successes.push(summary.is_some());
         summaries.push(summary);
     }
     if observations != check.observations {
         return Err(error("Maelstrom observations disagree with artifacts"));
     }
-    verify_statuses(bundle, check, &summaries, &process_successes, &coverage)
+    verify_statuses(
+        bundle,
+        check,
+        &summaries,
+        &result_parse_successes,
+        &process_successes,
+        &coverage,
+        &lease_statuses,
+    )
 }
 
 fn verify_exact_invocation(
@@ -104,6 +124,11 @@ fn verify_exact_invocation(
         "RAFTER_MAELSTROM_TIME_LIMIT",
         "RAFTER_MAELSTROM_RATE",
         "RAFTER_MAELSTROM_CONCURRENCY",
+        "RAFTER_MAELSTROM_RESTART_MODE",
+        "RAFTER_MAELSTROM_LEASE_EVIDENCE",
+        "RAFTER_MAELSTROM_TICK_INTERVAL_MS",
+        "RAFTER_MAELSTROM_ELECTION_TIMEOUT_TICKS",
+        "RAFTER_MAELSTROM_HEARTBEAT_INTERVAL_TICKS",
     ] {
         base_environment.remove(name);
     }
@@ -126,6 +151,9 @@ fn verify_exact_invocation(
             concurrency.to_owned(),
         ),
     ]);
+    if scenario == "lease-isolation" {
+        extend_lease_environment(bundle, &mut expected_environment)?;
+    }
     let runner = unique(artifacts, "maelstrom-runner")?;
     let expected_program = std::fs::canonicalize(repository.join(scenario_script(scenario)?))
         .map_err(|error| self::error(format!("canonicalize Maelstrom script: {error}")))?;
@@ -164,6 +192,32 @@ fn verify_exact_invocation(
     Ok(())
 }
 
+fn extend_lease_environment(
+    bundle: &ResultBundle,
+    environment: &mut std::collections::BTreeMap<String, String>,
+) -> Result<(), AggregateError> {
+    environment.extend([
+        (
+            "RAFTER_MAELSTROM_RESTART_MODE".to_owned(),
+            "lease-isolation".to_owned(),
+        ),
+        ("RAFTER_MAELSTROM_LEASE_EVIDENCE".to_owned(), "1".to_owned()),
+        (
+            "RAFTER_MAELSTROM_TICK_INTERVAL_MS".to_owned(),
+            configuration(bundle, "lease_tick_interval_ms")?.to_owned(),
+        ),
+        (
+            "RAFTER_MAELSTROM_ELECTION_TIMEOUT_TICKS".to_owned(),
+            configuration(bundle, "lease_election_timeout_ticks")?.to_owned(),
+        ),
+        (
+            "RAFTER_MAELSTROM_HEARTBEAT_INTERVAL_TICKS".to_owned(),
+            configuration(bundle, "lease_heartbeat_interval_ticks")?.to_owned(),
+        ),
+    ]);
+    Ok(())
+}
+
 fn verify_trial_inputs(
     bundle: &ResultBundle,
     scenario: &str,
@@ -192,9 +246,11 @@ fn verify_trial_inputs(
 fn verify_statuses(
     bundle: &ResultBundle,
     check: &CheckReceipt,
-    summaries: &[MaelstromSummary],
+    summaries: &[Option<MaelstromSummary>],
+    result_parse_successes: &[bool],
     process_successes: &[bool],
     coverage: &[bool],
+    lease_statuses: &[LeaseArtifactStatus],
 ) -> Result<(), AggregateError> {
     let statuses = bundle
         .results
@@ -204,16 +260,41 @@ fn verify_statuses(
         .collect::<Vec<_>>();
     let non_linearizable = summaries
         .iter()
+        .flatten()
         .any(|summary| summary.linearizability == Validity::Invalid);
-    let all_valid = summaries
-        .iter()
-        .all(|summary| summary.validity == Validity::Valid);
+    let all_valid = summaries.iter().all(|summary| {
+        summary
+            .as_ref()
+            .is_some_and(|summary| summary.validity == Validity::Valid)
+    });
     let owns_rd06 = statuses.iter().any(|(id, _)| *id == "RD-06");
-    let agrees = if non_linearizable && owns_rd06 {
-        counterexample_statuses(check, &statuses)
+    let lease_violation = lease_statuses.iter().any(|status| {
+        matches!(
+            status,
+            LeaseArtifactStatus::Violation | LeaseArtifactStatus::ViolationWithHarnessError
+        )
+    });
+    let expected_failures =
+        expected_counterexample_invariants(lease_violation, non_linearizable, owns_rd06);
+    let globally_bound_rd06 = bundle
+        .results
+        .iter()
+        .any(|result| result.invariant_id == "RD-06" && result.status == EvidenceStatus::Fail);
+    let agrees = if !expected_failures.is_empty() {
+        local_counterexample_agrees(
+            check,
+            &statuses,
+            &expected_failures,
+            non_linearizable,
+            owns_rd06,
+            globally_bound_rd06,
+        )
     } else if non_linearizable {
         supporting_counterexample_statuses(bundle, check, &statuses)
-    } else if process_successes.contains(&false) {
+    } else if result_parse_successes.contains(&false)
+        || process_successes.contains(&false)
+        || lease_statuses.contains(&LeaseArtifactStatus::HarnessError)
+    {
         uniform_statuses(
             check,
             &statuses,
@@ -245,17 +326,49 @@ fn verify_statuses(
     }
 }
 
-fn counterexample_statuses(check: &CheckReceipt, statuses: &[(&str, EvidenceStatus)]) -> bool {
-    let failed_rd06 =
-        |invariant: &str, status| invariant == "RD-06" && status == EvidenceStatus::Fail;
+fn local_counterexample_agrees(
+    check: &CheckReceipt,
+    statuses: &[(&str, EvidenceStatus)],
+    expected_invariants: &BTreeSet<&str>,
+    non_linearizable: bool,
+    owns_rd06: bool,
+    globally_bound_rd06: bool,
+) -> bool {
+    counterexample_statuses(check, statuses, expected_invariants)
+        && (!non_linearizable || owns_rd06 || globally_bound_rd06)
+}
+
+fn expected_counterexample_invariants(
+    lease_violation: bool,
+    non_linearizable: bool,
+    owns_rd06: bool,
+) -> BTreeSet<&'static str> {
+    [
+        (lease_violation, "RD-05"),
+        (non_linearizable && owns_rd06, "RD-06"),
+    ]
+    .into_iter()
+    .filter_map(|(required, invariant)| required.then_some(invariant))
+    .collect()
+}
+
+fn counterexample_statuses(
+    check: &CheckReceipt,
+    statuses: &[(&str, EvidenceStatus)],
+    expected_invariants: &BTreeSet<&str>,
+) -> bool {
+    let expected_failure = |invariant: &str, status| {
+        expected_invariants.contains(invariant) && status == EvidenceStatus::Fail
+    };
     check.completion == CheckCompletion::Counterexample
         && statuses
             .iter()
-            .filter(|(id, status)| failed_rd06(id, *status))
+            .filter(|(id, status)| expected_failure(id, *status))
             .count()
-            == 1
+            == expected_invariants.len()
         && statuses.iter().all(|(id, status)| {
-            failed_rd06(id, *status) || (*id != "RD-06" && *status == EvidenceStatus::Incomplete)
+            expected_failure(id, *status)
+                || (!expected_invariants.contains(id) && *status == EvidenceStatus::Incomplete)
         })
 }
 
@@ -303,4 +416,64 @@ fn configuration<'a>(bundle: &'a ResultBundle, key: &str) -> Result<&'a str, Agg
 
 fn error(message: impl Into<String>) -> AggregateError {
     AggregateError::new(message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    use crate::{CheckCompletion, CheckReceipt, EvidenceStatus};
+
+    use super::{
+        counterexample_statuses, expected_counterexample_invariants, local_counterexample_agrees,
+    };
+
+    #[test]
+    fn independent_verifier_requires_both_rd05_and_rd06_failures_when_both_rederive() {
+        let expected = expected_counterexample_invariants(true, true, true);
+        assert_eq!(expected, BTreeSet::from(["RD-05", "RD-06"]));
+        let check = CheckReceipt {
+            execution_id: "lease".to_owned(),
+            check_id: "maelstrom/lease-isolation".to_owned(),
+            evidence_ids: Vec::new(),
+            completion: CheckCompletion::Counterexample,
+            observations: BTreeMap::new(),
+            duration_ms: 1,
+            peak_rss_kib: 1,
+            artifacts: Vec::new(),
+        };
+        let combined = [
+            ("RD-05", EvidenceStatus::Fail),
+            ("RD-06", EvidenceStatus::Fail),
+            ("LG-04", EvidenceStatus::Incomplete),
+        ];
+        assert!(counterexample_statuses(&check, &combined, &expected));
+        assert!(!counterexample_statuses(&check, &combined[..1], &expected));
+    }
+
+    #[test]
+    fn local_rd05_failure_survives_harness_faults_and_external_rd06_ownership() {
+        let expected = BTreeSet::from(["RD-05"]);
+        let check = CheckReceipt {
+            execution_id: "lease".to_owned(),
+            check_id: "maelstrom/lease-isolation".to_owned(),
+            evidence_ids: Vec::new(),
+            completion: CheckCompletion::Counterexample,
+            observations: BTreeMap::new(),
+            duration_ms: 1,
+            peak_rss_kib: 1,
+            artifacts: Vec::new(),
+        };
+        let statuses = [("RD-05", EvidenceStatus::Fail)];
+
+        assert!(local_counterexample_agrees(
+            &check, &statuses, &expected, false, false, false
+        ));
+        assert!(local_counterexample_agrees(
+            &check, &statuses, &expected, true, false, true
+        ));
+        assert!(!local_counterexample_agrees(
+            &check, &statuses, &expected, true, false, false
+        ));
+    }
 }

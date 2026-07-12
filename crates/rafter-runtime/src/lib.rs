@@ -294,6 +294,12 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
         self.node.current_term()
     }
 
+    /// Whether a read requested now would use the active leader lease.
+    #[must_use]
+    pub fn read_lease_active(&self) -> bool {
+        self.node.read_lease_active()
+    }
+
     /// Returns the highest log index committed by the local Raft kernel.
     #[must_use]
     pub fn commit_index(&self) -> rafter::LogIndex {

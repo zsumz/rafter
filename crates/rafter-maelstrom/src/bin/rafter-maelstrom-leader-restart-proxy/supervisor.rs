@@ -1,15 +1,20 @@
 use std::error::Error;
+use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::PathBuf;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
-use super::config::RestartMode;
+use super::config::ProxyMode;
 use super::config::{
-    child_path, env_down_time, env_restart_count, env_restart_delay, env_restart_mode,
+    child_path, env_down_time, env_proxy_mode, env_restart_count, env_restart_delay,
 };
-use super::protocol::{body_type, init_node_id, node_restart_stagger, reports_leader};
+use super::lease_isolation::{Action as LeaseAction, EvidenceEvent, LeaseIsolation};
+use super::protocol::{
+    body_type, client_request, client_response, init_node_id, lease_read, lease_state,
+    node_restart_stagger, reports_leader, role_state,
+};
 
 mod io_threads;
 
@@ -26,7 +31,10 @@ struct Supervisor {
     init_line: Option<String>,
     init_ok_forwarded: bool,
     node_id: Option<String>,
-    restart_mode: RestartMode,
+    proxy_mode: ProxyMode,
+    lease_isolation: LeaseIsolation,
+    buffered_read_line: Option<String>,
+    lease_event_sequence: u64,
     restarts_done: u64,
     max_restarts: u64,
     restart_delay: Duration,
@@ -64,7 +72,10 @@ impl Supervisor {
             init_line: None,
             init_ok_forwarded: false,
             node_id: None,
-            restart_mode: env_restart_mode(),
+            proxy_mode: env_proxy_mode(),
+            lease_isolation: LeaseIsolation::default(),
+            buffered_read_line: None,
+            lease_event_sequence: 0,
             restarts_done: 0,
             max_restarts: env_restart_count(),
             restart_delay: env_restart_delay(),
@@ -105,6 +116,22 @@ impl Supervisor {
             self.node_id = init_node_id(line);
             self.schedule_staggered_restart();
         }
+        let message_type = body_type(line);
+        if self.proxy_mode == ProxyMode::LeaseIsolation {
+            if message_type.as_deref() == Some("raft") && self.lease_isolation.drops_raft() {
+                return Ok(());
+            }
+            if let Some((request, direct)) = client_request(line) {
+                let disposition = self.lease_isolation.observe_read_request(&request, direct);
+                if disposition.hold && self.buffered_read_line.replace(line.to_owned()).is_some() {
+                    return Err("lease-isolation attempted to buffer more than one read".into());
+                }
+                self.handle_lease_actions(disposition.actions)?;
+                if disposition.hold {
+                    return Ok(());
+                }
+            }
+        }
         let Some(child) = self.child.as_mut() else {
             eprintln!("dropping Maelstrom input while child is down");
             return Ok(());
@@ -130,6 +157,18 @@ impl Supervisor {
             }
             self.init_ok_forwarded = true;
         }
+        if self.proxy_mode == ProxyMode::LeaseIsolation {
+            if body_type(line).as_deref() == Some("raft") && self.lease_isolation.drops_raft() {
+                return Ok(());
+            }
+            let actions = client_response(line).map_or_else(Vec::new, |(request, response)| {
+                self.lease_isolation.observe_response(&request, response)
+            });
+            println!("{line}");
+            std::io::stdout().flush()?;
+            self.handle_lease_actions(actions)?;
+            return Ok(());
+        }
         println!("{line}");
         std::io::stdout().flush()?;
         Ok(())
@@ -137,7 +176,30 @@ impl Supervisor {
 
     fn handle_child_stderr(&mut self, line: &str) -> Result<(), Box<dyn Error>> {
         eprintln!("{line}");
-        if self.restart_mode == RestartMode::Leader
+        if self.proxy_mode == ProxyMode::LeaseIsolation {
+            if let Some(state) = lease_state(line) {
+                let actions = self.lease_isolation.observe_lease_state(
+                    state.active,
+                    state.leader,
+                    state.term,
+                );
+                self.handle_lease_actions(actions)?;
+            }
+            if let Some(role) = role_state(line) {
+                let actions = self.lease_isolation.observe_role(role.leader, role.term);
+                self.handle_lease_actions(actions)?;
+            }
+            if let Some(read) = lease_read(line) {
+                let actions = self.lease_isolation.observe_read_handler(
+                    &read.request,
+                    read.active,
+                    read.leader,
+                    read.term,
+                );
+                self.handle_lease_actions(actions)?;
+            }
+        }
+        if self.proxy_mode == ProxyMode::Leader
             && reports_leader(line)
             && self.leader_seen_at.is_none()
             && self.restarts_done < self.max_restarts
@@ -179,7 +241,7 @@ impl Supervisor {
             return Ok(());
         }
 
-        if self.restart_mode == RestartMode::Scheduled
+        if self.proxy_mode == ProxyMode::Scheduled
             && self
                 .scheduled_restart_at
                 .is_some_and(|restart_at| now >= restart_at)
@@ -190,7 +252,7 @@ impl Supervisor {
     }
 
     fn schedule_staggered_restart(&mut self) {
-        if self.restart_mode != RestartMode::Scheduled
+        if self.proxy_mode != ProxyMode::Scheduled
             || self.child.is_none()
             || self.init_line.is_none()
             || self.scheduled_restart_at.is_some()
@@ -224,5 +286,124 @@ impl Supervisor {
         self.scheduled_restart_at = None;
         self.restart_at = Some(Instant::now() + self.down_time);
         Ok(())
+    }
+
+    fn handle_lease_actions(&mut self, actions: Vec<LeaseAction>) -> Result<(), Box<dyn Error>> {
+        for action in actions {
+            self.handle_lease_action(action)?;
+        }
+        Ok(())
+    }
+
+    fn handle_lease_action(&mut self, action: LeaseAction) -> Result<(), Box<dyn Error>> {
+        match action {
+            LeaseAction::Claim => {
+                let node = self
+                    .node_id
+                    .as_deref()
+                    .ok_or("lease-isolation node unavailable")?;
+                let claimed = claim_lease_isolation(node)?;
+                let actions = self.lease_isolation.claim_result(claimed);
+                self.handle_lease_actions(actions)?;
+            }
+            LeaseAction::FastPathReadOk(event) => {
+                self.emit_lease_marker("fast-path-read-ok", &event, None)?;
+            }
+            LeaseAction::ReadBuffered(event) => {
+                self.emit_lease_marker("read-buffered", &event, None)?;
+            }
+            LeaseAction::LeaseExpired(event) => {
+                self.emit_lease_marker("lease-expired", &event, None)?;
+            }
+            LeaseAction::ReleaseBuffered(event) => {
+                let line = self
+                    .buffered_read_line
+                    .take()
+                    .ok_or("lease-isolation buffered read line unavailable")?;
+                let child = self
+                    .child
+                    .as_mut()
+                    .ok_or("lease-isolation child unavailable")?;
+                writeln!(child.stdin, "{line}")?;
+                child.stdin.flush()?;
+                self.emit_lease_marker("post-expiry-released", &event, None)?;
+            }
+            LeaseAction::PostExpiryHandler(event) => {
+                self.emit_lease_marker("post-expiry-handler", &event, None)?;
+            }
+            LeaseAction::ProbeUnavailable(event) => {
+                self.emit_lease_marker("post-expiry-unavailable", &event, None)?;
+            }
+            LeaseAction::PostExpiryReadServed(event) => {
+                self.emit_lease_marker("post-expiry-read-served-violation", &event, None)?;
+            }
+            LeaseAction::PostExpiryLeaseRenewed(event) => {
+                self.emit_lease_marker("post-expiry-renewed-violation", &event, None)?;
+            }
+            LeaseAction::PostExpiryUnexpectedError { event, code } => {
+                self.emit_lease_marker(
+                    "post-expiry-unexpected-error",
+                    &event,
+                    Some(&format!("code={code}")),
+                )?;
+            }
+            LeaseAction::DuplicateTerminal(event) => {
+                self.emit_lease_marker("post-expiry-duplicate-terminal", &event, None)?;
+            }
+            LeaseAction::CoverageLost { event, reason } => {
+                if let Some(line) = self.buffered_read_line.take() {
+                    let child = self
+                        .child
+                        .as_mut()
+                        .ok_or("lease-isolation child unavailable")?;
+                    writeln!(child.stdin, "{line}")?;
+                    child.stdin.flush()?;
+                }
+                self.emit_lease_marker("coverage-lost", &event, Some(&format!("reason={reason}")))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_lease_marker(
+        &mut self,
+        phase: &str,
+        event: &EvidenceEvent,
+        extra: Option<&str>,
+    ) -> Result<(), Box<dyn Error>> {
+        let node = self
+            .node_id
+            .as_deref()
+            .ok_or("lease-isolation node ID unavailable")?;
+        self.lease_event_sequence += 1;
+        eprint!(
+            "rafter-maelstrom lease-isolation seq={} node={node} term={} phase={phase} client={} msg_id={}",
+            self.lease_event_sequence,
+            event.term,
+            event.request.client(),
+            event.request.msg_id()
+        );
+        if let Some(extra) = extra {
+            eprint!(" {extra}");
+        }
+        eprintln!();
+        Ok(())
+    }
+}
+
+fn claim_lease_isolation(node_id: &str) -> Result<bool, Box<dyn Error>> {
+    let root = std::env::var_os("RAFTER_MAELSTROM_ROOT")
+        .ok_or("lease-isolation proxy requires RAFTER_MAELSTROM_ROOT")?;
+    let path = PathBuf::from(root).join("lease-isolation-owner");
+    match OpenOptions::new().write(true).create_new(true).open(&path) {
+        Ok(mut file) => {
+            writeln!(file, "{node_id}")?;
+            file.flush()?;
+            Ok(true)
+        }
+        Err(error) if error.kind() == ErrorKind::AlreadyExists => {
+            Ok(fs::read_to_string(path)?.trim() == node_id)
+        }
+        Err(error) => Err(error.into()),
     }
 }

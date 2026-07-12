@@ -76,10 +76,10 @@
           "require_peak_rss": true
         },
         "maelstrom": {
-          "producer": "rafter-invariants-maelstrom-v4",
+          "producer": "rafter-invariants-maelstrom-v8",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "nightly", "--layer", "maelstrom"],
-          "configuration": {"build": "locked-debug", "duration_seconds": "45", "evidence_semantics": "nondeterministic-sampled-e2e", "fault_markers": "required", "java_major": "21", "maelstrom_archive_sha256": "301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799", "maelstrom_executable_sha256": "aba82f628ca088d25e8952c2c49834565406b9239d1c79953a54bf2c26cfdf20", "maelstrom_jar_sha256": "7d35db06546a737134a4dd4eb3b7dfb0955537df992d922d18cc716080853f67", "maelstrom_version": "v0.2.4", "operation_floor": "read-write-cas-per-trial", "rate": "100", "replay": "retained-store", "scenarios": "base,membership,restart,app-crash,snapshot", "scheduler_seed": "unavailable", "structural_edn": "required", "trials": "1"},
-          "minimum_observed_checks": 5,
+          "configuration": {"build": "locked-debug", "duration_seconds": "45", "evidence_semantics": "nondeterministic-sampled-e2e", "fault_markers": "required", "java_major": "21", "lease_election_timeout_ticks": "20", "lease_heartbeat_interval_ticks": "2", "lease_history_binding": "ordered-process-invoke-terminal-client-msg-value-code11", "lease_probe_selection": "second-post-expiry-read-per-client", "lease_probe_source": "real-direct-maelstrom-read", "lease_same_node_term": "required", "lease_tick_interval_ms": "50", "lease_window_ms": "500", "lease_window_ticks": "10", "maelstrom_archive_sha256": "301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799", "maelstrom_executable_sha256": "aba82f628ca088d25e8952c2c49834565406b9239d1c79953a54bf2c26cfdf20", "maelstrom_jar_sha256": "7d35db06546a737134a4dd4eb3b7dfb0955537df992d922d18cc716080853f67", "maelstrom_version": "v0.2.4", "operation_floor": "read-write-cas-per-trial", "rate": "100", "replay": "retained-store", "scenarios": "base,membership,restart,app-crash,snapshot,lease-isolation", "scheduler_seed": "unavailable", "structural_edn": "required", "trials": "1"},
+          "minimum_observed_checks": 6,
           "require_peak_rss": true
         }
       }
@@ -115,10 +115,10 @@
           "require_peak_rss": true
         },
         "maelstrom": {
-          "producer": "rafter-invariants-maelstrom-v4",
+          "producer": "rafter-invariants-maelstrom-v8",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "weekly", "--layer", "maelstrom"],
-          "configuration": {"build": "locked-debug", "duration_seconds": "60", "evidence_semantics": "nondeterministic-sampled-e2e", "fault_markers": "required", "java_major": "21", "maelstrom_archive_sha256": "301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799", "maelstrom_executable_sha256": "aba82f628ca088d25e8952c2c49834565406b9239d1c79953a54bf2c26cfdf20", "maelstrom_jar_sha256": "7d35db06546a737134a4dd4eb3b7dfb0955537df992d922d18cc716080853f67", "maelstrom_version": "v0.2.4", "operation_floor": "read-write-cas-per-trial", "rate": "100", "replay": "retained-store", "scenarios": "base,membership,restart,app-crash,snapshot", "scheduler_seed": "unavailable", "structural_edn": "required", "trials": "3"},
-          "minimum_observed_checks": 5,
+          "configuration": {"build": "locked-debug", "duration_seconds": "60", "evidence_semantics": "nondeterministic-sampled-e2e", "fault_markers": "required", "java_major": "21", "lease_election_timeout_ticks": "20", "lease_heartbeat_interval_ticks": "2", "lease_history_binding": "ordered-process-invoke-terminal-client-msg-value-code11", "lease_probe_selection": "second-post-expiry-read-per-client", "lease_probe_source": "real-direct-maelstrom-read", "lease_same_node_term": "required", "lease_tick_interval_ms": "50", "lease_window_ms": "500", "lease_window_ticks": "10", "maelstrom_archive_sha256": "301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799", "maelstrom_executable_sha256": "aba82f628ca088d25e8952c2c49834565406b9239d1c79953a54bf2c26cfdf20", "maelstrom_jar_sha256": "7d35db06546a737134a4dd4eb3b7dfb0955537df992d922d18cc716080853f67", "maelstrom_version": "v0.2.4", "operation_floor": "read-write-cas-per-trial", "rate": "100", "replay": "retained-store", "scenarios": "base,membership,restart,app-crash,snapshot,lease-isolation", "scheduler_seed": "unavailable", "structural_edn": "required", "trials": "3"},
+          "minimum_observed_checks": 6,
           "require_peak_rss": true
         }
       }

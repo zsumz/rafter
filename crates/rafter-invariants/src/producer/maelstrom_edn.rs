@@ -57,6 +57,94 @@ pub(crate) fn parse(source: &str) -> Result<MaelstromSummary, String> {
     })
 }
 
+pub(crate) fn lease_probe_completion_count(
+    source: &str,
+    client: &str,
+    msg_id: u64,
+) -> Result<u64, String> {
+    let expected = format!("[rafter-lease-probe client={client} msg_id={msg_id} code=11]");
+    let mut pending = BTreeMap::<Value, (Value, Value)>::new();
+    let mut completions = 0;
+    let mut last_index = None;
+    for line in source.lines().filter(|line| !line.trim().is_empty()) {
+        let parsed = parse_str(line).map_err(|error| format!("parse history EDN: {error}"))?;
+        let operation = as_map(&parsed)?;
+        let index = unsigned(field(operation, "index")?)?;
+        if last_index.is_some_and(|previous| index <= previous) {
+            return Err("Maelstrom history indices are not strictly ordered".to_owned());
+        }
+        last_index = Some(index);
+        let process = field(operation, "process")?.clone();
+        let function = field(operation, "f")?.clone();
+        let operation_value = field(operation, "value")?.clone();
+        let operation_type = keyword_name(field(operation, "type")?)?;
+        if operation_type == "invoke" {
+            if pending
+                .insert(process, (function, operation_value))
+                .is_some()
+            {
+                return Err("Maelstrom process invoked twice without a terminal".to_owned());
+            }
+            continue;
+        }
+        if !matches!(operation_type, "ok" | "fail" | "info") {
+            return Err(format!(
+                "unknown Maelstrom history operation type :{operation_type}"
+            ));
+        }
+        let (invoked_function, invoked_value) = pending
+            .remove(&process)
+            .ok_or_else(|| "Maelstrom terminal has no preceding invoke".to_owned())?;
+        if invoked_function != function
+            || !operation_identity_matches(&function, &invoked_value, &operation_value)
+        {
+            return Err("Maelstrom terminal function does not match its invoke".to_owned());
+        }
+        let tagged = match operation.get(&keyword("error")) {
+            Some(Value::Vector(error)) if error.len() == 2 => {
+                matches!(&error[0], Value::Keyword(value) if value.name() == "temporarily-unavailable")
+                    && matches!(&error[1], Value::String(text) if text.ends_with(&expected))
+            }
+            _ => false,
+        };
+        if tagged {
+            if operation_type != "fail"
+                || !matches!(&function, Value::Keyword(value) if value.name() == "read")
+                || operation_value != invoked_value
+            {
+                return Err(
+                    "lease probe tag appeared outside its exact failed read completion".to_owned(),
+                );
+            }
+            completions += 1;
+        }
+    }
+    if !pending.is_empty() {
+        return Err("Maelstrom history ended with an unterminated invoke".to_owned());
+    }
+    Ok(completions)
+}
+
+fn operation_identity_matches(function: &Value, invoked: &Value, terminal: &Value) -> bool {
+    if matches!(function, Value::Keyword(value) if value.name() == "read") {
+        match (invoked, terminal) {
+            (Value::Vector(invoked), Value::Vector(terminal)) => {
+                invoked.first() == terminal.first()
+            }
+            _ => invoked == terminal,
+        }
+    } else {
+        invoked == terminal
+    }
+}
+
+fn keyword_name(value: &Value) -> Result<&str, String> {
+    match value {
+        Value::Keyword(value) => Ok(value.name()),
+        _ => Err(format!("expected EDN keyword, got {value}")),
+    }
+}
+
 fn linearizability_validity(value: &Value) -> Result<Validity, String> {
     let results = as_map(value)?;
     if results.is_empty() {
@@ -131,7 +219,7 @@ fn unsigned(value: &Value) -> Result<u64, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse, MaelstromSummary, Validity};
+    use super::{lease_probe_completion_count, parse, MaelstromSummary, Validity};
 
     const VALID: &str = r"{
       :stats {:count 9 :ok-count 6 :by-f {
@@ -191,5 +279,50 @@ mod tests {
     #[test]
     fn missing_checker_structure_is_a_harness_error() {
         assert!(parse("{:valid? true}").is_err());
+    }
+
+    #[test]
+    fn lease_probe_completion_is_bound_to_exact_client_and_message() {
+        let history = concat!(
+            "{:index 1 :type :invoke :process 0 :f :read :value [0 nil]}\n",
+            "{:index 2 :type :fail :process 0 :f :read :value [0 nil] ",
+            ":error [:temporarily-unavailable \"LeadershipLost [rafter-lease-probe client=c1 msg_id=11 code=11]\"]}\n",
+        );
+        assert_eq!(lease_probe_completion_count(history, "c1", 11), Ok(1));
+        assert_eq!(lease_probe_completion_count(history, "c2", 11), Ok(0));
+        assert_eq!(lease_probe_completion_count(history, "c1", 12), Ok(0));
+        assert_eq!(lease_probe_completion_count("", "c1", 11), Ok(0));
+    }
+
+    #[test]
+    fn lease_probe_history_rejects_completion_only_truncation_and_swapped_processes() {
+        let completion = "{:index 2 :type :fail :process 0 :f :read :value nil :error [:temporarily-unavailable \"x [rafter-lease-probe client=c1 msg_id=11 code=11]\"]}";
+        assert!(lease_probe_completion_count(completion, "c1", 11).is_err());
+
+        let truncated = "{:index 1 :type :invoke :process 0 :f :read :value nil}";
+        assert!(lease_probe_completion_count(truncated, "c1", 11).is_err());
+
+        let swapped = format!(
+            "{{:index 1 :type :invoke :process 0 :f :read :value nil}}\n{{:index 2 :type :invoke :process 1 :f :write :value 1}}\n{}",
+            completion.replace(":index 2", ":index 3").replace(":process 0", ":process 1")
+        );
+        assert!(lease_probe_completion_count(&swapped, "c1", 11).is_err());
+
+        let intervening = format!(
+            "{{:index 1 :type :invoke :process 0 :f :read :value nil}}\n{{:index 2 :type :fail :process 0 :f :read :error :net-timeout}}\n{}",
+            completion.replace(":index 2", ":index 3")
+        );
+        assert!(lease_probe_completion_count(&intervening, "c1", 11).is_err());
+
+        let exact_pair = format!(
+            "{{:index 1 :type :invoke :process 0 :f :read :value [0 nil]}}\n{}",
+            completion.replace(":value nil", ":value [1 nil]")
+        );
+        assert!(lease_probe_completion_count(&exact_pair, "c1", 11).is_err());
+        let missing_value = format!(
+            "{{:index 1 :type :invoke :process 0 :f :read :value nil}}\n{}",
+            completion.replace(" :value nil", "")
+        );
+        assert!(lease_probe_completion_count(&missing_value, "c1", 11).is_err());
     }
 }

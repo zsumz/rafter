@@ -1,3 +1,5 @@
+use std::fmt::Write as _;
+
 use rafter::{Input, LogIndex, ReadId, Role};
 use serde_json::{json, Value};
 
@@ -72,7 +74,17 @@ impl InitializedNode {
         }
         self.known_leader = Some(self.node.id());
         match request {
-            ClientRequest::Read { key } => self.start_read(origin, client, in_reply_to, key),
+            ClientRequest::Read { key } => {
+                eprintln!(
+                    "rafter-maelstrom lease-read node={} phase=request role=leader term={} active={} client={} msg_id={}",
+                    self.name,
+                    self.node.current_term(),
+                    self.node.read_lease_active(),
+                    client,
+                    in_reply_to
+                );
+                self.start_read(origin, client, in_reply_to, key);
+            }
             ClientRequest::Write { key, value } => {
                 self.propose(
                     origin,
@@ -198,11 +210,11 @@ impl InitializedNode {
         {
             return;
         }
-        let body = self.result_body(in_reply_to, result);
+        let body = self.result_body(client, in_reply_to, result);
         self.emit(client, body);
     }
 
-    fn result_body(&mut self, in_reply_to: u64, result: ClientResult) -> Value {
+    fn result_body(&mut self, client: &str, in_reply_to: u64, result: ClientResult) -> Value {
         let msg_id = self.next_msg_id;
         self.next_msg_id += 1;
         match result {
@@ -215,7 +227,16 @@ impl InitializedNode {
             ClientResult::CasOk => {
                 json!({"type": "cas_ok", "msg_id": msg_id, "in_reply_to": in_reply_to})
             }
-            ClientResult::Error { code, text } => {
+            ClientResult::Error { code, mut text } => {
+                if code == ERROR_TEMPORARILY_UNAVAILABLE
+                    && std::env::var("RAFTER_MAELSTROM_LEASE_EVIDENCE").as_deref() == Ok("1")
+                {
+                    write!(
+                        text,
+                        " [rafter-lease-probe client={client} msg_id={in_reply_to} code=11]"
+                    )
+                    .expect("writing to a String cannot fail");
+                }
                 json!({"type": "error", "msg_id": msg_id, "in_reply_to": in_reply_to, "code": code, "text": text})
             }
         }

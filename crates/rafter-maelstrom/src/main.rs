@@ -46,6 +46,7 @@ struct InitializedNode {
     snapshot_every: u64,
     last_snapshot_index: LogIndex,
     last_reported_role: Role,
+    last_reported_lease_active: bool,
 }
 
 #[derive(Debug, Default)]

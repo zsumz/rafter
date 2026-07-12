@@ -48,7 +48,23 @@ impl InitializedNode {
             }
         };
         self.report_role_transition();
+        self.report_lease_transition();
         self.handle_outputs(outputs);
+    }
+
+    fn report_lease_transition(&mut self) {
+        let active = self.node.read_lease_active();
+        if active == self.last_reported_lease_active {
+            return;
+        }
+        self.last_reported_lease_active = active;
+        eprintln!(
+            "rafter-maelstrom lease node={} state={} role={} term={}",
+            self.name,
+            if active { "active" } else { "inactive" },
+            self.node.role(),
+            self.node.current_term()
+        );
     }
 
     fn report_role_transition(&mut self) {
