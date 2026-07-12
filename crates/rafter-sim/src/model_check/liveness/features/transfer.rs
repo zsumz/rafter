@@ -3,8 +3,11 @@ use std::collections::BTreeSet;
 use rafter::NodeId;
 
 use super::super::driver::{
-    check_soak_safety, drive_liveness_rounds_until, drive_until_quiescent_leader, quiescent_leader,
-    soak_liveness_failure,
+    check_soak_safety, drive_liveness_rounds_until_observed, drive_until_stable_leader,
+    quiescent_leader, soak_liveness_failure, LivenessRoundBudget,
+};
+use super::{
+    FaultStateRequirement, LivenessFeatureReport, LivenessPreconditionProbe, LivenessPreconditions,
 };
 use crate::model_check::{
     catalog,
@@ -20,9 +23,10 @@ pub(super) fn run_leadership_transfer_liveness_check(
     trace: &mut Vec<SoakAction>,
     observed_actions: &mut BTreeSet<SoakActionKind>,
     budget: usize,
-) -> Result<(), SoakFailure> {
-    let Some(leader) =
-        drive_until_quiescent_leader(state, config, trace, observed_actions, budget)?
+) -> Result<LivenessFeatureReport, SoakFailure> {
+    let round_budget = LivenessRoundBudget::capture(state, config, 2);
+    let Some(convergence) =
+        drive_until_stable_leader(state, config, trace, observed_actions, budget)?
     else {
         return Err(soak_liveness_failure(
             state,
@@ -32,9 +36,27 @@ pub(super) fn run_leadership_transfer_liveness_check(
             format!("no leader elected within {budget} leadership-transfer liveness rounds"),
         ));
     };
+    let leader = convergence.leader;
+    let preconditions = LivenessPreconditions::capture(
+        state,
+        LivenessPreconditionProbe {
+            leader: Some(leader),
+            fault_requirement: FaultStateRequirement::Stopped,
+            stable_leader_observed: None,
+            accepted_proposal_observed: None,
+            authority_loss_observed: None,
+        },
+    );
 
     let Some(target) = leadership_transfer_liveness_target(state, leader) else {
-        return Ok(());
+        return Err(soak_liveness_failure(
+            state,
+            config,
+            trace,
+            catalog::LV_03_FEATURE_OPERATION_PROGRESS,
+            "leadership-transfer liveness precondition was not reached: no caught-up voter"
+                .to_owned(),
+        ));
     };
 
     issue_liveness_transfer(state, leader, target);
@@ -45,10 +67,31 @@ pub(super) fn run_leadership_transfer_liveness_check(
     observed_actions.insert(SoakActionKind::Transfer);
     check_soak_safety(state, config, trace)?;
 
-    if drive_liveness_rounds_until(state, config, trace, observed_actions, budget, |state| {
-        quiescent_leader(state) == Some(target)
-    })? {
-        Ok(())
+    let completion = drive_liveness_rounds_until_observed(
+        state,
+        config,
+        trace,
+        observed_actions,
+        budget,
+        |state| quiescent_leader(state) == Some(target),
+        |_| true,
+    )?;
+    if completion.completed {
+        Ok(LivenessFeatureReport {
+            invariant_id: "LV-03",
+            feature_id: "leadership-transfer",
+            scenario_id: "caught-up-voter-transfer-v1",
+            observation_id: "completed_target_leadership_transfers",
+            preconditions,
+            round_budget,
+            round_limit: budget.saturating_mul(2),
+            rounds_used: convergence
+                .rounds_used
+                .saturating_add(completion.rounds_used),
+            fault_cycle: None,
+            stable_leader: None,
+            proposal: None,
+        })
     } else {
         Err(soak_liveness_failure(
             state,

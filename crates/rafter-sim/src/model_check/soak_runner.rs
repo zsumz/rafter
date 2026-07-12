@@ -70,7 +70,13 @@ pub fn run_raft_random_soak(
         }
     }
 
-    run_soak_liveness_check(&mut state, config, &mut trace, &mut observed_actions)?;
+    let liveness_reports =
+        run_soak_liveness_check(&mut state, config, &mut trace, &mut observed_actions)?;
 
-    Ok(SoakSummary::from_trace(config.seed, config.steps, &trace))
+    Ok(SoakSummary::from_trace(
+        config,
+        &trace,
+        &observed_actions,
+        liveness_reports,
+    ))
 }

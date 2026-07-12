@@ -1,0 +1,225 @@
+use std::collections::BTreeSet;
+
+use rafter::NodeId;
+
+use crate::{
+    model_check::{
+        run_raft_random_soak,
+        scheduling::SoakOperation,
+        soak::{SoakActionKind, SoakConfig},
+        state::{apply_soak_action, ExplorationState},
+    },
+    Cluster, SimSeed,
+};
+
+use super::{
+    production_configs, run_feature_liveness_checks, FaultStateRequirement,
+    LivenessPreconditionProbe, LivenessPreconditions,
+};
+
+#[test]
+fn independent_reports_do_not_relabel_quorum_only_as_post_heal() {
+    let config = SoakConfig::new(SimSeed(0x11_7e), 0);
+    let mut observed_actions = BTreeSet::<SoakActionKind>::new();
+
+    let reports = run_feature_liveness_checks(config, &mut observed_actions)
+        .expect("independent liveness monitors should complete");
+
+    assert_eq!(reports.len(), 3);
+    assert!(reports
+        .iter()
+        .all(|report| report.feature_id() != "leader-convergence"));
+    assert!(reports.iter().any(|report| {
+        report.feature_id() == "quorum-only-leader-convergence"
+            && report.scenario_id() == "minority-unavailable-stable-quorum-v1"
+    }));
+}
+
+#[test]
+fn healed_soak_returns_distinct_measured_convergence_evidence() {
+    let config = SoakConfig::new(SimSeed(0x11_7e), 0).with_max_partitions(1);
+    let summary = run_raft_random_soak(
+        production_configs().expect("production liveness configuration should be valid"),
+        config,
+    )
+    .expect("healed soak should complete its measured liveness contract");
+
+    let post_heal = summary
+        .liveness_reports()
+        .iter()
+        .find(|report| report.feature_id() == "leader-convergence")
+        .expect("actual healed execution must emit leader-convergence evidence");
+    let quorum_only = summary
+        .liveness_reports()
+        .iter()
+        .find(|report| report.feature_id() == "quorum-only-leader-convergence")
+        .expect("independent quorum-only execution must remain distinct");
+
+    assert_eq!(post_heal.scenario_id(), "post-heal-stable-quorum-v1");
+    assert_eq!(post_heal.observation_id(), "post_heal_quiescent_leaders");
+    assert_ne!(post_heal.scenario_id(), quorum_only.scenario_id());
+    assert!(summary
+        .observed_actions()
+        .contains(&SoakActionKind::Partition));
+    assert!(summary.observed_actions().contains(&SoakActionKind::Heal));
+    assert!(summary.action_count(SoakActionKind::Partition) >= 1);
+    assert!(summary.action_count(SoakActionKind::Heal) >= 1);
+    let fault_cycle = &post_heal.to_json()["fault_cycle"];
+    assert_eq!(fault_cycle["partition_observed"], true);
+    assert_eq!(fault_cycle["partitioned_rounds"], 1);
+    assert_eq!(fault_cycle["ticks_executed"], 3);
+    assert_eq!(fault_cycle["partition_active_after_exercise"], true);
+    assert_eq!(fault_cycle["heal_observed"], true);
+    post_heal
+        .validate_structure()
+        .expect("measured post-heal report should be internally valid");
+}
+
+#[test]
+fn post_heal_report_rejects_missing_or_unhealed_fault_cycle() {
+    let config = SoakConfig::new(SimSeed(0xfa17), 0);
+    let summary = run_raft_random_soak(
+        production_configs().expect("production liveness configuration should be valid"),
+        config,
+    )
+    .expect("post-heal scenario should inject and heal its own fault");
+    let report = summary
+        .liveness_reports()
+        .iter()
+        .find(|report| report.feature_id() == "leader-convergence")
+        .expect("post-heal report should exist");
+
+    let mut missing = report.clone();
+    missing.fault_cycle = None;
+    assert!(missing
+        .validate_structure()
+        .expect_err("missing fault-cycle evidence must fail")
+        .contains("fault-cycle"));
+
+    let mut unhealed = report.clone();
+    unhealed
+        .fault_cycle
+        .as_mut()
+        .expect("real fault-cycle evidence should exist")
+        .heal_observed = super::EvidenceStatus::Unsatisfied;
+    assert!(unhealed
+        .validate_structure()
+        .expect_err("an unhealed fault must fail")
+        .contains("heal observation"));
+
+    let mut no_protocol_work = report.clone();
+    no_protocol_work
+        .fault_cycle
+        .as_mut()
+        .expect("real fault-cycle evidence should exist")
+        .ticks_executed = 0;
+    assert!(no_protocol_work
+        .validate_structure()
+        .expect_err("a no-op partition must fail")
+        .contains("partitioned tick execution"));
+
+    let mut vanished_during_exercise = report.clone();
+    vanished_during_exercise
+        .fault_cycle
+        .as_mut()
+        .expect("real fault-cycle evidence should exist")
+        .partition_active_after_exercise = super::EvidenceStatus::Unsatisfied;
+    assert!(vanished_during_exercise
+        .validate_structure()
+        .expect_err("the fault must remain active through protocol exercise")
+        .contains("partition persistence"));
+}
+
+#[test]
+fn captured_preconditions_reject_stopped_fault_or_quorum_claims_that_are_false() {
+    let config = SoakConfig::new(SimSeed(0xfa17), 0);
+    let mut state = ExplorationState::new(Cluster::new_with_seed(
+        production_configs().expect("production liveness configuration should be valid"),
+        config.seed(),
+    ));
+    for (a, b) in [(1, 2), (1, 3), (2, 3)] {
+        apply_soak_action(
+            &mut state,
+            SoakOperation::Partition {
+                a: NodeId(a),
+                b: NodeId(b),
+            },
+        );
+    }
+
+    let preconditions = LivenessPreconditions::capture(
+        &state,
+        LivenessPreconditionProbe {
+            leader: Some(NodeId(1)),
+            fault_requirement: FaultStateRequirement::Stopped,
+            stable_leader_observed: None,
+            accepted_proposal_observed: None,
+            authority_loss_observed: None,
+        },
+    );
+    let error = preconditions
+        .validate()
+        .expect_err("captured false preconditions must not become success evidence");
+
+    assert!(matches!(error, "fault_state" | "mutually_reachable_quorum"));
+}
+
+#[test]
+fn fault_preconditions_are_measured_for_healed_and_partitioned_scenarios() {
+    let config = SoakConfig::new(SimSeed(0x51_7e), 0);
+    let summary = run_raft_random_soak(
+        production_configs().expect("production liveness configuration should be valid"),
+        config,
+    )
+    .expect("liveness scenarios should complete");
+
+    let post_heal = summary
+        .liveness_reports_json()
+        .into_iter()
+        .find(|report| report["feature_id"] == "leader-convergence")
+        .expect("post-heal report should exist");
+    assert_eq!(post_heal["preconditions"]["fault_requirement"], "stopped");
+    assert_eq!(post_heal["preconditions"]["faults_stopped"], true);
+    assert_eq!(post_heal["preconditions"]["partition_active"], false);
+
+    let quorum_only = summary
+        .liveness_reports_json()
+        .into_iter()
+        .find(|report| report["feature_id"] == "quorum-only-leader-convergence")
+        .expect("quorum-only report should exist");
+    assert_eq!(
+        quorum_only["preconditions"]["fault_requirement"],
+        "active-partition"
+    );
+    assert_eq!(quorum_only["preconditions"]["faults_stopped"], false);
+    assert_eq!(quorum_only["preconditions"]["partition_active"], true);
+}
+
+#[test]
+fn optional_features_use_fresh_fixtures_and_emit_honest_evidence() {
+    let config = SoakConfig::new(SimSeed(0x51_7e), 0)
+        .with_max_read_indexes(1)
+        .with_max_membership_changes(1)
+        .with_max_transfers(1)
+        .with_snapshot_catchup_probe();
+    let summary = run_raft_random_soak(
+        production_configs().expect("production liveness configuration should be valid"),
+        config,
+    )
+    .expect("fresh optional feature fixtures should all complete");
+
+    assert_eq!(summary.liveness_reports().len(), 8);
+    for report in summary.liveness_reports() {
+        report
+            .validate_structure()
+            .unwrap_or_else(|error| panic!("{} report is invalid: {error}", report.feature_id()));
+    }
+    for feature_id in ["membership-transition", "leadership-transfer"] {
+        let report = summary
+            .liveness_reports()
+            .iter()
+            .find(|report| report.feature_id() == feature_id)
+            .unwrap_or_else(|| panic!("missing {feature_id} report"));
+        assert!(report.to_json()["stable_leader"].is_null());
+    }
+}

@@ -3,8 +3,11 @@ use std::collections::BTreeSet;
 use rafter::{MembershipConfig, MembershipSet, NodeId};
 
 use super::super::driver::{
-    check_soak_safety, drive_soak_liveness_round, drive_until_quiescent_leader, quiescent_leader,
-    soak_liveness_failure,
+    check_soak_safety, drive_soak_liveness_round, drive_until_stable_leader, quiescent_leader,
+    soak_liveness_failure, LivenessRoundBudget,
+};
+use super::{
+    FaultStateRequirement, LivenessFeatureReport, LivenessPreconditionProbe, LivenessPreconditions,
 };
 use crate::model_check::{
     catalog,
@@ -20,9 +23,10 @@ pub(super) fn run_membership_transition_liveness_check(
     trace: &mut Vec<SoakAction>,
     observed_actions: &mut BTreeSet<SoakActionKind>,
     budget: usize,
-) -> Result<(), SoakFailure> {
-    let Some(leader) =
-        drive_until_quiescent_leader(state, config, trace, observed_actions, budget)?
+) -> Result<LivenessFeatureReport, SoakFailure> {
+    let round_budget = LivenessRoundBudget::capture(state, config, 2);
+    let Some(convergence) =
+        drive_until_stable_leader(state, config, trace, observed_actions, budget)?
     else {
         return Err(soak_liveness_failure(
             state,
@@ -32,9 +36,26 @@ pub(super) fn run_membership_transition_liveness_check(
             format!("no leader elected within {budget} membership-transition liveness rounds"),
         ));
     };
+    let leader = convergence.leader;
+    let preconditions = LivenessPreconditions::capture(
+        state,
+        LivenessPreconditionProbe {
+            leader: Some(leader),
+            fault_requirement: FaultStateRequirement::Stopped,
+            stable_leader_observed: None,
+            accepted_proposal_observed: None,
+            authority_loss_observed: None,
+        },
+    );
 
     let Some((removed_voter, target)) = membership_liveness_target(state, leader) else {
-        return Ok(());
+        return Err(soak_liveness_failure(
+            state,
+            config,
+            trace,
+            catalog::LV_03_FEATURE_OPERATION_PROGRESS,
+            "membership liveness precondition was not reached: no removable voter".to_owned(),
+        ));
     };
 
     apply_to_state(
@@ -54,7 +75,13 @@ pub(super) fn run_membership_transition_liveness_check(
     let mut leave_issued = false;
     for round in 0..budget {
         if membership_transition_completed(state, &target) {
-            return Ok(());
+            return Ok(membership_report(
+                budget,
+                round_budget,
+                convergence.rounds_used,
+                round,
+                preconditions,
+            ));
         }
 
         if !leave_issued {
@@ -65,12 +92,18 @@ pub(super) fn run_membership_transition_liveness_check(
                 leave_issued = true;
                 check_soak_safety(state, config, trace)?;
                 if membership_transition_completed(state, &target) {
-                    return Ok(());
+                    return Ok(membership_report(
+                        budget,
+                        round_budget,
+                        convergence.rounds_used,
+                        round,
+                        preconditions,
+                    ));
                 }
             }
         }
 
-        drive_soak_liveness_round(state, trace, observed_actions, round);
+        drive_soak_liveness_round(state, config, trace, observed_actions, round)?;
         check_soak_safety(state, config, trace)?;
     }
 
@@ -83,6 +116,28 @@ pub(super) fn run_membership_transition_liveness_check(
             "membership transition removing {removed_voter} did not reach stable target {target:?} within {budget} post-heal rounds"
         ),
     ))
+}
+
+fn membership_report(
+    budget: usize,
+    round_budget: LivenessRoundBudget,
+    convergence_rounds: usize,
+    operation_rounds: usize,
+    preconditions: LivenessPreconditions,
+) -> LivenessFeatureReport {
+    LivenessFeatureReport {
+        invariant_id: "LV-03",
+        feature_id: "membership-transition",
+        scenario_id: "stable-remove-voter-joint-consensus-v1",
+        observation_id: "completed_stable_membership_transitions",
+        preconditions,
+        round_budget,
+        round_limit: budget.saturating_mul(2),
+        rounds_used: convergence_rounds.saturating_add(operation_rounds),
+        fault_cycle: None,
+        stable_leader: None,
+        proposal: None,
+    }
 }
 
 fn membership_liveness_target(
