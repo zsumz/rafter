@@ -309,36 +309,7 @@ fn verify_test_invocations(
         .to_string_lossy()
         .into_owned();
     let base_digest = bundle.execution.source.environment_sha256.as_str();
-    let execution_id = check
-        .artifacts
-        .iter()
-        .find(|artifact| artifact.kind == "test-log")
-        .and_then(|artifact| Path::new(&artifact.path).file_stem())
-        .and_then(|value| value.to_str())
-        .ok_or_else(|| AggregateError::new("test log path has no execution ID".to_owned()))?;
-    let temporary = Path::new("target/rafter-invariants/tmp").join(execution_id);
-    let execution_profile = test_execution_profile(bundle);
-    let seed = crate::producer::artifact::deterministic_u64(
-        "rafter-tests/v1",
-        &format!("{execution_profile}\0{}\0{test_name}", bundle.source_ref),
-    );
-    let mut exact_environment = invocations
-        .first()
-        .map(|invocation| invocation.invocation.environment.clone())
-        .unwrap_or_default();
-    exact_environment.extend([
-        ("PROPTEST_RNG_SEED".to_owned(), seed.to_string()),
-        (
-            "PROPTEST_DISABLE_FAILURE_PERSISTENCE".to_owned(),
-            "1".to_owned(),
-        ),
-        (
-            "TMPDIR".to_owned(),
-            temporary.to_string_lossy().into_owned(),
-        ),
-        ("RUST_BACKTRACE".to_owned(), "1".to_owned()),
-    ]);
-    let exact_digest = crate::producer::process::digest_environment(&exact_environment);
+    let exact_digest = exact_test_environment_digest(bundle, check, &invocations, test_name)?;
     let expected = [
         (
             "libtest discovery",
@@ -372,22 +343,93 @@ fn verify_test_invocations(
     let exact_arguments = &exact.invocation.arguments;
     if exact.label != "exact libtest execution"
         || exact_arguments.len() < 5
-        || exact_arguments[0] != test_name
+        || (exact_arguments[0] != test_name
+            && !exact_arguments[0].ends_with(&format!("::{test_name}")))
         || exact_arguments[1..5] != ["--exact", "--test-threads=1", "--color", "never"]
         || (exact_arguments.len() == 6 && exact_arguments[5] != "--ignored")
         || exact_arguments.len() > 6
-        || exact.invocation.environment_sha256 != exact_digest
-        || invocations.iter().any(|invocation| {
-            invocation.invocation.program_sha256 != binary.sha256
-                || invocation.invocation.current_dir != current_dir
-                || !Path::new(&invocation.invocation.program).is_absolute()
-        })
+    {
+        return Err(AggregateError::new(format!(
+            "test log does not contain the exact libtest argument plan for {test_name}: {exact_arguments:?}"
+        )));
+    }
+    if exact.invocation.environment_sha256 != exact_digest {
+        return Err(AggregateError::new(
+            "test log does not contain the exact execution environment".to_owned(),
+        ));
+    }
+    if invocations
+        .iter()
+        .any(|invocation| invocation.invocation.program_sha256 != binary.sha256)
     {
         return Err(AggregateError::new(
-            "test log does not contain the exact executable invocation plan".to_owned(),
+            "test log executable digest does not match its binary artifact".to_owned(),
+        ));
+    }
+    if invocations
+        .iter()
+        .any(|invocation| invocation.invocation.current_dir != current_dir)
+    {
+        return Err(AggregateError::new(
+            "test log working directory does not match the active checkout".to_owned(),
+        ));
+    }
+    if invocations
+        .iter()
+        .any(|invocation| !Path::new(&invocation.invocation.program).is_absolute())
+    {
+        return Err(AggregateError::new(
+            "test log executable path is not absolute".to_owned(),
         ));
     }
     Ok(())
+}
+
+fn exact_test_environment_digest(
+    bundle: &ResultBundle,
+    check: &crate::CheckReceipt,
+    invocations: &[crate::producer::process::LabeledInvocation],
+    test_name: &str,
+) -> Result<String, AggregateError> {
+    let execution_id = check
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.kind == "test-log")
+        .and_then(|artifact| Path::new(&artifact.path).file_stem())
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| AggregateError::new("test log path has no execution ID".to_owned()))?;
+    let execution_profile = test_execution_profile(bundle);
+    let executed_test_name = invocations
+        .get(2)
+        .and_then(|invocation| invocation.invocation.arguments.first())
+        .map_or(test_name, String::as_str);
+    let seed = crate::producer::artifact::deterministic_u64(
+        "rafter-tests/v1",
+        &format!(
+            "{execution_profile}\0{}\0{executed_test_name}",
+            bundle.source_ref
+        ),
+    );
+    let mut environment = invocations
+        .first()
+        .map(|invocation| invocation.invocation.environment.clone())
+        .unwrap_or_default();
+    environment.extend([
+        ("PROPTEST_RNG_SEED".to_owned(), seed.to_string()),
+        (
+            "PROPTEST_DISABLE_FAILURE_PERSISTENCE".to_owned(),
+            "1".to_owned(),
+        ),
+        (
+            "TMPDIR".to_owned(),
+            Path::new("target/rafter-invariants/tmp")
+                .join(execution_id)
+                .to_string_lossy()
+                .into_owned(),
+        ),
+        ("RUST_BACKTRACE".to_owned(), "1".to_owned()),
+    ]);
+    Ok(crate::producer::process::digest_environment(&environment))
 }
 
 fn test_execution_profile(bundle: &ResultBundle) -> String {
