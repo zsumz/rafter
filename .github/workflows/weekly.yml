@@ -69,6 +69,50 @@ jobs:
           path: model-check-raft-weekly.log
           if-no-files-found: ignore
 
+  invariants-maelstrom:
+    name: invariants-maelstrom-weekly
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Install Maelstrom analysis tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends graphviz gnuplot-nox
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Install pinned Maelstrom
+        run: |
+          version=v0.2.4
+          archive=/tmp/maelstrom.tar.bz2
+          expected=301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799
+          curl -fsSL -o "$archive" \
+            "https://github.com/jepsen-io/maelstrom/releases/download/${version}/maelstrom.tar.bz2"
+          actual="$(sha256sum "$archive" | awk '{ print $1 }')"
+          test "$actual" = "$expected"
+          tar -xjf "$archive" -C /tmp
+          echo "/tmp/maelstrom" >> "$GITHUB_PATH"
+      - name: Produce three trials of all five Maelstrom scenarios
+        run: cargo run --locked -p rafter-invariants -- run --profile weekly --layer maelstrom
+      - name: Independently verify weekly Maelstrom evidence
+        run: >-
+          cargo run --locked -p rafter-invariants -- verify-layer
+          --profile weekly --layer maelstrom
+          --result artifacts/invariants/weekly-maelstrom.json
+      - name: Upload source-bound Maelstrom receipts and replay artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-weekly-maelstrom
+          path: artifacts/invariants/
+          if-no-files-found: warn
+
   tlc-full:
     name: tlc-full
     runs-on: ubuntu-latest
