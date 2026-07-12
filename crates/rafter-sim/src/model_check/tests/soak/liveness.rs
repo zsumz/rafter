@@ -18,14 +18,14 @@ struct HistoryCounts {
 impl HistoryCounts {
     fn from_state(state: &ExplorationState) -> Self {
         Self {
-            elections: state.election_history.elected_by_term.len(),
-            log_prefixes: state.logical_log_history.prefixes_by_index_term.len(),
+            elections: state.election_history().elected_by_term.len(),
+            log_prefixes: state.logical_log_history().prefixes_by_index_term.len(),
             committed_prefix_entries: state
-                .commit_history
+                .commit_history()
                 .committed_prefix
                 .as_ref()
                 .map_or(0, |prefix| prefix.entries.len()),
-            commit_certificates: state.commit_history.certificates.len(),
+            commit_certificates: state.commit_history().certificates.len(),
         }
     }
 }
@@ -131,14 +131,14 @@ fn liveness_phase_updates_p0_histories_through_instrumented_transitions() {
     );
 
     let target = state
-        .cluster
+        .cluster()
         .leaders()
         .into_iter()
         .min_by_key(|node_id| node_id.0)
         .expect("transfer liveness should leave a leader");
     assert!(
         state
-            .election_history
+            .election_history()
             .elected_by_term
             .values()
             .any(|certificate| certificate.leader_id == target),

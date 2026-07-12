@@ -1,7 +1,7 @@
 use rafter::NodeId;
 
-use super::super::super::application::restart_node;
 use super::super::super::helpers::{elect_node_one, three_node_configs};
+use super::super::super::state::restart_node;
 use super::super::super::state::ExplorationState;
 use super::super::super::{run_raft_random_soak, SoakActionKind, SoakConfig};
 use crate::{Cluster, SimSeed};
@@ -42,11 +42,11 @@ fn ordinary_restart_preserves_durable_state_digest() {
     cluster.propose(NodeId(1), b"digest-restart".to_vec());
     cluster.deliver_all();
     let mut state = ExplorationState::new(cluster);
-    let before = state.cluster.durable_state_digest(NodeId(1));
+    let before = state.cluster().durable_state_digest(NodeId(1));
 
     restart_node(&mut state, NodeId(1), &[]).expect("ordinary restart must preserve digest");
 
-    assert_eq!(state.cluster.durable_state_digest(NodeId(1)), before);
+    assert_eq!(state.cluster().durable_state_digest(NodeId(1)), before);
 }
 
 #[test]
