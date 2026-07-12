@@ -10,11 +10,13 @@ import json
 import os
 import platform
 import subprocess
+import sys
 from pathlib import Path
 
 from model_check_profile_parser import (
     ReportError,
     compare_revisions,
+    evaluate_comparisons,
     read_samples,
     summarize_samples,
 )
@@ -49,10 +51,13 @@ def build_report(args: argparse.Namespace) -> dict:
         raise ReportError("expected runs must be a positive even number")
     samples = read_samples(args.artifact_dir.resolve(), args.time_style)
     profiles = sorted({sample["profile"] for sample in samples})
+    comparisons = compare_revisions(samples, args.expected_runs)
     return {
-        "schema_version": 1,
+        "schema_version": 2,
         "generated_at": dt.datetime.now(dt.timezone.utc).isoformat(),
         "base_ref": args.base_ref,
+        "requested_base_ref": args.requested_base_ref,
+        "baseline_policy": args.baseline_policy,
         "sources": {
             "base": source_metadata(args.base_root, args.base_binary),
             "current": source_metadata(args.current_root, args.current_binary),
@@ -90,9 +95,13 @@ def build_report(args: argparse.Namespace) -> dict:
             "alternating_profile_order": True,
             "run_count_per_revision_and_profile": args.expected_runs,
             "totals_are_additive_across_checks": True,
+            "acceptance_uses_paired_medians": True,
         },
         "summaries": summarize_samples(samples, args.expected_runs),
-        "comparisons": compare_revisions(samples, args.expected_runs),
+        "comparisons": comparisons,
+        "acceptance": evaluate_comparisons(
+            comparisons, args.max_wall_ratio, args.max_rss_ratio
+        ),
         "samples": samples,
     }
 
@@ -103,7 +112,9 @@ def render_markdown(report: dict) -> str:
         "",
         f"- Base: `{report['sources']['base']['commit']}`",
         f"- Current: `{report['sources']['current']['commit']}`",
+        f"- Baseline policy: `{report['baseline_policy']}` (requested `{report['requested_base_ref']}`).",
         "- Method: median of repeated alternating-order release runs; state totals are additive across checks.",
+        f"- Acceptance: **{report['acceptance']['status']}**; median wall <= {report['acceptance']['max_median_wall_ratio']:.3f}x, median peak RSS <= {report['acceptance']['max_median_peak_rss_ratio']:.3f}x, and protocol state shape unchanged.",
         "",
         "| Label | Profile | Runs | Wall ms (min/median/max) | Peak RSS MiB (min/median/max) | Protocol states | Verifier states | Verifier overhead |",
         "| --- | --- | ---: | --- | --- | ---: | ---: | ---: |",
@@ -123,18 +134,22 @@ def render_markdown(report: dict) -> str:
     lines.extend(
         [
             "",
-            "| Profile | Like-for-like state shape | Current/base wall ratio (min/median/max) | Current/base RSS ratio (min/median/max) |",
-            "| --- | --- | --- | --- |",
+            "| Profile | Protocol shape equal | Verifier shape equal | Current/base wall ratio (min/median/max) | Current/base RSS ratio (min/median/max) |",
+            "| --- | --- | --- | --- | --- |",
         ]
     )
     for comparison in report["comparisons"]:
         wall = comparison["paired_current_over_base_wall_time"]
         rss = comparison["paired_current_over_base_peak_rss"]
         lines.append(
-            f"| {comparison['profile']} | {str(comparison['like_for_like_state_shape']).lower()} | "
+            f"| {comparison['profile']} | {str(comparison['like_for_like_protocol_state_shape']).lower()} | "
+            f"{str(comparison['like_for_like_verifier_state_shape']).lower()} | "
             f"{wall['min']:.3f}/{wall['median']:.3f}/{wall['max']:.3f} | "
             f"{rss['min']:.3f}/{rss['median']:.3f}/{rss['max']:.3f} |"
         )
+    if report["acceptance"]["failures"]:
+        lines.extend(["", "## Acceptance Failures", ""])
+        lines.extend(f"- {failure}" for failure in report["acceptance"]["failures"])
     return "\n".join(lines) + "\n"
 
 
@@ -143,6 +158,8 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--artifact-dir", type=Path, required=True)
     parser.add_argument("--base-root", type=Path, required=True)
     parser.add_argument("--base-ref", required=True)
+    parser.add_argument("--requested-base-ref", required=True)
+    parser.add_argument("--baseline-policy", required=True)
     parser.add_argument("--base-binary", type=Path, required=True)
     parser.add_argument("--current-root", type=Path, required=True)
     parser.add_argument("--current-binary", type=Path, required=True)
@@ -150,6 +167,8 @@ def arguments() -> argparse.Namespace:
     parser.add_argument("--timing-binary", type=Path, required=True)
     parser.add_argument("--time-style", choices=("bsd", "gnu"), required=True)
     parser.add_argument("--expected-runs", type=int, required=True)
+    parser.add_argument("--max-wall-ratio", type=float, required=True)
+    parser.add_argument("--max-rss-ratio", type=float, required=True)
     parser.add_argument("--output-json", type=Path, required=True)
     parser.add_argument("--output-markdown", type=Path, required=True)
     return parser.parse_args()
@@ -168,6 +187,10 @@ def main() -> None:
     atomic_write(args.output_markdown, render_markdown(report))
     print(f"wrote {args.output_json}")
     print(f"wrote {args.output_markdown}")
+    if report["acceptance"]["status"] != "pass":
+        for failure in report["acceptance"]["failures"]:
+            print(f"model-check overhead gate: {failure}", file=sys.stderr)
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
