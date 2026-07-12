@@ -114,7 +114,10 @@ The deterministic PR aggregate emits exactly one verdict for each of the 44
 reviewed IDs. Branch protection on `main` requires the stable `invariants-pr`
 job; missing, malformed, incomplete, or stale evidence makes that job red.
 Maelstrom supplies sampled end-to-end evidence in nightly and weekly profiles
-and is intentionally excluded from the deterministic PR verdict.
+and is intentionally excluded from the deterministic PR verdict. Scheduled
+`invariants-nightly` and `invariants-weekly` jobs run every required layer,
+render the same 44-row report, and remain red on missing evidence or exhausted
+coverage budgets.
 
 ## Benchmarks
 

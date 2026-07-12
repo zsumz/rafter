@@ -37,9 +37,6 @@ pub(super) fn run(
     source: SourceReceipt,
     output_dir: &Path,
 ) -> Result<ResultBundle, Box<dyn Error>> {
-    if profile != "pr" {
-        return Err("scheduled simulator producers are not implemented yet".into());
-    }
     let started = Instant::now();
     let runner = contract
         .runners

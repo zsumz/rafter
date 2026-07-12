@@ -1,13 +1,14 @@
-# Nightly lane: curated deep/soak regression profiles, the fresh-seeded
-# nightly model-check profile, nightly 3-voter TLC, the burn-in script, long
-# fuzz runs, and the nightly-scale ignored test.
+# Nightly lane: curated deep/soak regressions, source-derived nightly
+# invariant evidence, the burn-in script, long fuzz runs, and the
+# nightly-scale ignored test.
 #
 # Profiles come from `rafter-model-check-fast --list-profiles`:
 #   fast (per-commit) | raft-deep, raft-soak (local-minutes) |
 #   raft-nightly (scheduled) | raft-weekly (weekly-scheduled)
 # The fast profile is covered per-PR in ci.yml. `raft-deep` and `raft-soak`
-# are fixed-seed curated regression legs even when scheduled here; fresh soak
-# entropy comes from `raft-nightly` and `raft-weekly`.
+# are fixed-seed curated regression legs even when scheduled here. The
+# invariant simulator producer derives replayable scheduled seeds from the
+# checked-out commit.
 # The weekly-scheduled Rust profile runs in weekly.yml.
 #
 # Toolchain pinned to the workspace rust-version in Cargo.toml (1.88); keep
@@ -42,11 +43,11 @@ jobs:
   model-check:
     name: model-check (${{ matrix.profile }})
     runs-on: ubuntu-latest
-    timeout-minutes: 180 # raft-nightly clears a 100M+ unique-state regression floor in release mode
+    timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
-        profile: [raft-deep, raft-soak, raft-nightly]
+        profile: [raft-deep, raft-soak]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88
@@ -66,12 +67,55 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  tlc-nightly:
-    name: tlc-nightly
+  invariants-tests:
+    name: invariants-tests-nightly
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Produce source-bound nightly test evidence
+        run: cargo run --locked -p rafter-invariants -- run --profile nightly --layer tests
+      - name: Upload nightly test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-nightly-tests
+          path: artifacts/invariants/
+          if-no-files-found: warn
+          retention-days: 30
+
+  invariants-simulator:
+    name: invariants-simulator-nightly
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Produce source-bound nightly simulator evidence
+        run: cargo run --locked -p rafter-invariants -- run --profile nightly --layer simulator
+      - name: Upload nightly simulator evidence and replay logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-nightly-simulator
+          path: artifacts/invariants/
+          if-no-files-found: warn
+          retention-days: 30
+
+  invariants-tla:
+    name: invariants-tla-nightly
+    runs-on: ubuntu-latest
+    timeout-minutes: 140
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -84,35 +128,19 @@ jobs:
         with:
           path: tools/cache
           key: tla2tools-${{ hashFiles('tools/tla/VERSION', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS') }}
-      - name: TLC nightly bounds (RaftNightly.cfg)
-        run: |
-          set +e
-          timeout --signal=TERM --kill-after=30s 115m \
-            scripts/tla-model-check --nightly 2>&1 | tee tlc-nightly.log
-          code=${PIPESTATUS[0]}
-          set -e
-          case "$code" in
-            0)
-              ;;
-            124)
-              echo "TLC nightly exhausted the 115-minute soft budget before completing RaftNightly.cfg; failing because this lane has no checkpoint recovery."
-              exit "$code"
-              ;;
-            137)
-              echo "TLC nightly was killed by the runner; treating exit 137 as a failure."
-              exit "$code"
-              ;;
-            *)
-              exit "$code"
-              ;;
-          esac
-      - name: Upload TLC nightly log
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Produce source-bound nightly TLA+ evidence
+        run: cargo run --locked -p rafter-invariants -- run --profile nightly --layer tla
+      - name: Upload nightly TLA+ evidence and counterexamples
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: tlc-nightly-log
-          path: tlc-nightly.log
-          if-no-files-found: ignore
+          name: invariants-nightly-tla
+          path: artifacts/invariants/
+          if-no-files-found: warn
+          retention-days: 30
 
   burn-in:
     name: burn-in
@@ -187,6 +215,76 @@ jobs:
           path: artifacts/invariants/
           if-no-files-found: error
           retention-days: 30
+
+  invariants-nightly:
+    name: invariants-nightly
+    needs:
+      - invariants-tests
+      - invariants-simulator
+      - invariants-tla
+      - invariants-maelstrom
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Download available nightly evidence
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: invariants-nightly-*
+          path: artifacts/invariants
+          merge-multiple: true
+      - name: Aggregate exactly 44 nightly invariant verdicts
+        if: always()
+        id: aggregate
+        run: |
+          set +e
+          cargo run --locked -p rafter-invariants -- check --profile nightly --source-ref "$GITHUB_SHA"
+          status=$?
+          set -e
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+      - name: Render the 44-row nightly report
+        if: always()
+        run: |
+          if [[ -f target/rafter-invariants/nightly.md ]]; then
+            cat target/rafter-invariants/nightly.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Raft invariant gate" >> "$GITHUB_STEP_SUMMARY"
+            echo "No 44-row nightly report was produced; the aggregate is red." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload nightly aggregate reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-nightly-report
+          path: |
+            target/rafter-invariants/nightly.json
+            target/rafter-invariants/nightly.xml
+            target/rafter-invariants/nightly.md
+            artifacts/invariants/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Require 44 of 44 nightly invariants green
+        if: always()
+        env:
+          AGGREGATE_STATUS: ${{ steps.aggregate.outputs.status }}
+          TESTS_RESULT: ${{ needs.invariants-tests.result }}
+          SIMULATOR_RESULT: ${{ needs.invariants-simulator.result }}
+          TLA_RESULT: ${{ needs.invariants-tla.result }}
+          MAELSTROM_RESULT: ${{ needs.invariants-maelstrom.result }}
+        run: |
+          test "$TESTS_RESULT" = "success"
+          test "$SIMULATOR_RESULT" = "success"
+          test "$TLA_RESULT" = "success"
+          test "$MAELSTROM_RESULT" = "success"
+          test "$AGGREGATE_STATUS" = "0"
+          jq -e '.summary.total == 44 and .summary.green == 44 and .summary.red == 0 and (.invariants | length) == 44' \
+            target/rafter-invariants/nightly.json >/dev/null
 
   fuzz-long:
     name: fuzz-long (${{ matrix.target }})

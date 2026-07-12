@@ -77,6 +77,7 @@ fn verify_test_logs(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateE
 }
 
 fn verify_simulator_logs(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateError> {
+    verify_simulator_schedule(bundle, root)?;
     let events = simulator_events(bundle, root)?;
     let mut test_logs = BTreeMap::<String, String>::new();
     for check in &bundle.execution.checks {
@@ -106,6 +107,145 @@ fn verify_simulator_logs(bundle: &ResultBundle, root: &Path) -> Result<(), Aggre
         require_exact_test_pass(&source, fixture, &check.check_id)?;
     }
     Ok(())
+}
+
+fn verify_simulator_schedule(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateError> {
+    let logs = bundle
+        .execution
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == "simulator-log")
+        .collect::<Vec<_>>();
+    let sources = logs
+        .iter()
+        .map(|log| {
+            fs::read_to_string(root.join(&log.path)).map_err(|error| {
+                AggregateError::new(format!(
+                    "read scheduled simulator log {}: {error}",
+                    log.path
+                ))
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_simulator_schedule(&bundle.profile, &bundle.source_ref, &sources)
+}
+
+fn validate_simulator_schedule(
+    profile: &str,
+    source_ref: &str,
+    logs: &[String],
+) -> Result<(), AggregateError> {
+    let Some(expected_seeds) = crate::producer::expected_scheduled_seeds(profile, source_ref)
+    else {
+        return Ok(());
+    };
+    if logs.len() != 1 {
+        return Err(AggregateError::new(format!(
+            "scheduled simulator receipt must retain exactly one profile log, found {}",
+            logs.len()
+        )));
+    }
+    let model_profile = format!("raft-{profile}");
+    let expected_profile = format!("model-check profile={model_profile} ");
+    let expected_seed_line =
+        format!("model-check {model_profile}-soak seeds source=replay seeds={expected_seeds}");
+    let events = parse_machine_events(&logs[0])?;
+    if !logs[0].lines().any(|line| line == "exit_code: Some(0)")
+        || !logs[0]
+            .lines()
+            .any(|line| line.starts_with(&expected_profile))
+        || !logs[0].lines().any(|line| line == expected_seed_line)
+        || !profile_total_is_rederived(profile, &model_profile, &events)
+        || !soak_seeds_are_rederived(&model_profile, &expected_seeds, &events)
+    {
+        return Err(AggregateError::new(format!(
+            "scheduled simulator log does not prove the source-derived {profile} execution plan"
+        )));
+    }
+    Ok(())
+}
+
+fn parse_machine_events(log: &str) -> Result<Vec<Value>, AggregateError> {
+    log.lines()
+        .filter_map(|line| line.strip_prefix(EVENT_PREFIX))
+        .map(|line| {
+            serde_json::from_str(line).map_err(|error| {
+                AggregateError::new(format!("parse scheduled simulator event: {error}"))
+            })
+        })
+        .collect()
+}
+
+fn profile_total_is_rederived(profile: &str, model_profile: &str, events: &[Value]) -> bool {
+    let (protocol_floor, verifier_floor) = match profile {
+        "nightly" => (100_000_000, 100_000_000),
+        "weekly" => (250_000_000, 250_000_000),
+        _ => return false,
+    };
+    let exhaustive = events
+        .iter()
+        .filter(|event| event["event"] == "exhaustive-check")
+        .collect::<Vec<_>>();
+    let Some(protocol_total) = exhaustive.iter().try_fold(0_u64, |total, event| {
+        total.checked_add(event["unique_protocol_states"].as_u64()?)
+    }) else {
+        return false;
+    };
+    let Some(verifier_total) = exhaustive.iter().try_fold(0_u64, |total, event| {
+        total.checked_add(event["unique_verifier_states"].as_u64()?)
+    }) else {
+        return false;
+    };
+    let profile_totals = events
+        .iter()
+        .filter(|event| event["event"] == "profile-total" && event["profile"] == model_profile)
+        .collect::<Vec<_>>();
+    profile_totals.len() == 1
+        && !exhaustive.is_empty()
+        && exhaustive.iter().all(|event| event["status"] == "pass")
+        && profile_totals[0]["status"] == "pass"
+        && profile_totals[0]["target_protocol_states"] == protocol_floor
+        && profile_totals[0]["target_verifier_states"] == verifier_floor
+        && profile_totals[0]["unique_protocol_states"] == protocol_total
+        && profile_totals[0]["unique_verifier_states"] == verifier_total
+        && protocol_total >= protocol_floor
+        && verifier_total >= verifier_floor
+}
+
+fn soak_seeds_are_rederived(model_profile: &str, expected_seeds: &str, events: &[Value]) -> bool {
+    let expected_values = expected_seeds
+        .split(',')
+        .map(|seed| u64::from_str_radix(seed.trim_start_matches("0x"), 16))
+        .collect::<Result<Vec<_>, _>>();
+    let Ok(expected_values) = expected_values else {
+        return false;
+    };
+    let expected_checks = [
+        format!("{model_profile}-soak"),
+        format!("{model_profile}-soak-lease"),
+        format!("{model_profile}-soak-membership"),
+    ];
+    let expected = expected_checks
+        .iter()
+        .flat_map(|check| {
+            expected_values
+                .iter()
+                .map(move |seed| (check.clone(), *seed))
+        })
+        .collect::<BTreeSet<_>>();
+    let mut observed = BTreeMap::<(String, u64), usize>::new();
+    for event in events.iter().filter(|event| event["event"] == "soak-check") {
+        let (Some(check), Some(seed)) = (event["check_id"].as_str(), event["seed"].as_u64()) else {
+            return false;
+        };
+        if event["status"] != "pass" || !check.starts_with(&format!("{model_profile}-soak")) {
+            return false;
+        }
+        *observed.entry((check.to_owned(), seed)).or_default() += 1;
+    }
+    observed.len() == expected.len()
+        && observed.keys().cloned().collect::<BTreeSet<_>>() == expected
+        && observed.values().all(|count| *count == 1)
 }
 
 fn simulator_events(
@@ -138,7 +278,14 @@ fn simulator_events(
             let check_id = event["check_id"].as_str().ok_or_else(|| {
                 AggregateError::new(format!("simulator event in {} lacks check_id", log.path))
             })?;
-            events.entry(check_id.to_owned()).or_default().push(event);
+            events
+                .entry(check_id.to_owned())
+                .or_default()
+                .push(event.clone());
+            if let Some(canonical) = crate::producer::canonical_check_id(&bundle.profile, check_id)
+            {
+                events.entry(canonical).or_default().push(event);
+            }
         }
     }
     Ok(events)
@@ -256,4 +403,98 @@ fn is_passing(bundle: &ResultBundle, execution_id: &str) -> bool {
         .results
         .iter()
         .any(|result| result.execution_id == execution_id && result.status == EvidenceStatus::Pass)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validate_simulator_schedule;
+    use crate::producer::expected_scheduled_seeds;
+    use serde_json::json;
+
+    #[test]
+    fn scheduled_simulator_log_proves_exact_source_derived_plan() {
+        let source_ref = "abc123";
+        let log = scheduled_log(source_ref);
+
+        assert!(
+            validate_simulator_schedule("nightly", source_ref, std::slice::from_ref(&log)).is_ok()
+        );
+        assert!(validate_simulator_schedule("nightly", "different", &[log]).is_err());
+        assert!(validate_simulator_schedule("nightly", source_ref, &[]).is_err());
+    }
+
+    #[test]
+    fn scheduled_simulator_rejects_fabricated_totals_and_executed_seeds() {
+        let source_ref = "abc123";
+        let log = scheduled_log(source_ref);
+        let fabricated_total = log.replace(
+            "\"unique_protocol_states\":40000000",
+            "\"unique_protocol_states\":4",
+        );
+        assert!(validate_simulator_schedule("nightly", source_ref, &[fabricated_total]).is_err());
+
+        let wrong_seed = log.replacen("\"seed\":", "\"seed\":999,\"ignored_seed\":", 1);
+        assert!(validate_simulator_schedule("nightly", source_ref, &[wrong_seed]).is_err());
+    }
+
+    #[test]
+    fn scheduled_seed_banner_uses_simulator_canonical_hex() {
+        let seeds = expected_scheduled_seeds("weekly", "abc123").expect("weekly seeds");
+        assert!(seeds.contains("0xe00e6256b8bdd15"));
+        assert!(!seeds.contains("0x0e00e6256b8bdd15"));
+    }
+
+    fn scheduled_log(source_ref: &str) -> String {
+        let seeds = expected_scheduled_seeds("nightly", source_ref).expect("nightly seeds");
+        let mut lines = vec![
+            "label: raft-nightly".to_owned(),
+            "exit_code: Some(0)".to_owned(),
+            "model-check profile=raft-nightly expected_runtime=scheduled".to_owned(),
+            format!("model-check raft-nightly-soak seeds source=replay seeds={seeds}"),
+            event(&json!({
+                "event": "exhaustive-check",
+                "check_id": "raft-election-nightly",
+                "status": "pass",
+                "unique_protocol_states": 40_000_000,
+                "unique_verifier_states": 40_000_000,
+            })),
+            event(&json!({
+                "event": "exhaustive-check",
+                "check_id": "raft-commit-nightly",
+                "status": "pass",
+                "unique_protocol_states": 60_000_000,
+                "unique_verifier_states": 60_000_000,
+            })),
+            event(&json!({
+                "event": "profile-total",
+                "check_id": "raft-profile-total-nightly",
+                "profile": "raft-nightly",
+                "status": "pass",
+                "unique_protocol_states": 100_000_000,
+                "unique_verifier_states": 100_000_000,
+                "target_protocol_states": 100_000_000,
+                "target_verifier_states": 100_000_000,
+            })),
+        ];
+        for seed in seeds.split(',') {
+            let seed = u64::from_str_radix(seed.trim_start_matches("0x"), 16).expect("hex seed");
+            for check_id in [
+                "raft-nightly-soak",
+                "raft-nightly-soak-lease",
+                "raft-nightly-soak-membership",
+            ] {
+                lines.push(event(&json!({
+                    "event": "soak-check",
+                    "check_id": check_id,
+                    "status": "pass",
+                    "seed": seed,
+                })));
+            }
+        }
+        format!("{}\n", lines.join("\n"))
+    }
+
+    fn event(value: &serde_json::Value) -> String {
+        format!("{}{}", super::EVENT_PREFIX, value)
+    }
 }

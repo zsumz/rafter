@@ -20,6 +20,7 @@ pub(crate) mod tla_output;
 mod unit_tests;
 
 pub(crate) use process::ProcessLog;
+pub(crate) use simulator_model::{canonical_check_id, expected_scheduled_seeds};
 pub(crate) use tla_contract::java_major;
 
 use std::collections::BTreeSet;
