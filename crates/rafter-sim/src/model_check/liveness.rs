@@ -1,7 +1,9 @@
 use std::collections::BTreeSet;
 
 use super::{
+    application::apply_soak_action,
     catalog,
+    scheduling::SoakOperation,
     soak::{SoakAction, SoakActionKind, SoakConfig, SoakFailure},
     state::ExplorationState,
 };
@@ -11,8 +13,8 @@ mod features;
 
 use driver::{
     check_soak_safety, drive_soak_liveness_round, drive_until_quiescent_leader, has_partition,
-    issue_liveness_proposal, liveness_proposal_completed, quiescent_leader, soak_liveness_failure,
-    soak_liveness_round_budget,
+    issue_liveness_proposal, liveness_proposal_completed, liveness_proposal_terminated,
+    quiescent_leader, soak_liveness_failure, soak_liveness_round_budget,
 };
 use features::run_feature_liveness_checks;
 
@@ -28,9 +30,7 @@ pub(super) fn run_soak_liveness_check(
     observed_actions: &mut BTreeSet<SoakActionKind>,
 ) -> Result<(), SoakFailure> {
     if has_partition(&state.cluster) {
-        state.cluster.heal_partitions();
-        state.refresh_commit_floors();
-        state.refresh_client_history();
+        apply_soak_action(state, SoakOperation::Heal);
         trace.push(SoakAction::Heal);
         observed_actions.insert(SoakActionKind::Heal);
         check_soak_safety(state, config, trace)?;
@@ -58,6 +58,11 @@ pub(super) fn run_soak_liveness_check(
         {
             run_feature_liveness_checks(state, config, trace, observed_actions, budget)?;
             return Ok(());
+        }
+        if accepted_proposal
+            .is_some_and(|proposal_id| liveness_proposal_terminated(state, proposal_id))
+        {
+            accepted_proposal = None;
         }
         if accepted_proposal.is_none() {
             if let Some(leader) = quiescent_leader(state) {
