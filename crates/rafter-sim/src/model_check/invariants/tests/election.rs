@@ -1,6 +1,7 @@
 use super::*;
 use crate::model_check::{
     helpers::elect_node_one_in_state,
+    observations::Observation,
     scheduling::{Operation, SoakOperation},
     state::{apply_soak_action, apply_to_state, restart_node},
 };
@@ -152,6 +153,12 @@ fn modeled_restart_preserves_observed_durable_vote() {
     restart_node(&mut state, NodeId(1), &[]).expect("ordinary restart should preserve vote");
 
     assert_eq!(state.restarts_issued(), 1);
+    assert!(
+        state
+            .observation_set()
+            .contains(Observation::RestartTermComparisons),
+        "successful restart must record the explicit term comparison"
+    );
     check_election_history(&state, &[]).expect("ordinary restart must keep durable vote history");
     assert_eq!(
         state
