@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 /// Current version of the machine-readable receipt and report contract.
-pub const RESULT_SCHEMA_VERSION: u32 = 5;
+pub const RESULT_SCHEMA_VERSION: u32 = 6;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -154,6 +154,21 @@ pub struct VerdictSummary {
 /// Final verdict and supporting issues for one invariant ID.
 pub struct InvariantVerdict {
     pub invariant_id: String,
+    pub status: VerdictStatus,
+    pub required_clauses: usize,
+    pub passed_clauses: usize,
+    pub required_evidence: usize,
+    pub passed_evidence: usize,
+    pub clauses: Vec<ClauseVerdict>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub issues: Vec<VerdictIssue>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+/// Final verdict for one stable normative clause within a parent invariant.
+pub struct ClauseVerdict {
+    pub clause_id: String,
+    pub statement: String,
     pub status: VerdictStatus,
     pub required_evidence: usize,
     pub passed_evidence: usize,
