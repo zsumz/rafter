@@ -263,8 +263,19 @@ named temporal or witness-based verdicts.
 | `PS-04` | `PS-04.c` | tests | direct | `crates/rafter-maelstrom/src/app/tests.rs#persisted_app_state_round_trips_applied_floor` |
 | `PS-04` | `PS-04.a,PS-04.b` | tests | direct | `crates/rafter-maelstrom/src/app/tests.rs#app_persist_crash_point_fires_once_per_root` |
 | `PS-04` | `PS-04.a` | tests | direct | `crates/rafter/src/node/tests/bootstrap/application.rs#applied_floor_suppresses_reapply_below_it` |
-| `SS-01` | `SS-01.a,SS-01.b,SS-01.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_metadata_payload_integrity`; negative fixture `snapshot_metadata_payload_integrity_detects_expected_metadata_with_different_bytes` |
-| `SS-01` | `SS-01.a,SS-01.b,SS-01.c` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_persists_installed_snapshot_and_compacts_log_past_local_tail` |
+| `SS-01` | `SS-01.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_boundary_monotonicity`; negative fixture `snapshot_boundary_monotonicity_detects_regression` |
+| `SS-01` | `SS-01.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_payload_binding`; negative fixture `snapshot_payload_binding_detects_metadata_bound_to_different_bytes` |
+| `SS-01` | `SS-01.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_transfer_identity`; negative fixture `snapshot_transfer_identity_detects_install_different_from_delivery` |
+| `SS-01` | `SS-01.c` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/bootstrap_compaction/local.rs#runtime_local_compaction_rejects_wrong_boundary_term_before_writes` |
+| `SS-01` | `SS-01.c` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/bootstrap_compaction/local.rs#runtime_local_compaction_rejects_wrong_committed_membership_before_writes` |
+| `SS-01` | `SS-01.c` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/bootstrap_compaction/local.rs#runtime_local_compaction_rejects_wrong_committed_configuration_identity_before_writes` |
+| `SS-01` | `SS-01.a` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_ignores_inbound_snapshot_at_or_below_durable_boundary_across_restart` |
+| `SS-01` | `SS-01.a` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_rejects_local_snapshot_behind_installed_boundary_before_writes` |
+| `SS-01` | `SS-01.b` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_snapshot_promote_failure_suppresses_apply_and_success_response` |
+| `SS-01` | `SS-01.c` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_persists_installed_snapshot_and_compacts_log_past_local_tail` |
+| `SS-01` | `SS-01.c` | tests | direct | `crates/rafter-storage/src/raft_snapshot_codec_test.rs#decode_rejects_corrupt_snapshot_payload_checksum` |
+| `SS-01` | `SS-01.b` | tests | direct | `crates/rafter-storage/src/raft_snapshot_store_test.rs#file_snapshot_store_ignores_unmanifested_complete_snapshot_on_open` |
+| `SS-01` | `SS-01.b` | tests | direct | `crates/rafter-storage/src/raft_snapshot_store_test.rs#file_snapshot_store_reopens_manifest_selected_snapshot` |
 | `SS-02` | `SS-02.b` | tests | direct | `crates/rafter-runtime/src/tests/crash_window/reopen.rs#reopen_rejects_log_compacted_past_the_snapshot` |
 | `SS-02` | `SS-02.a` | tests | direct | `crates/rafter-runtime/src/tests/crash_window/repair.rs#reopen_completes_compaction_after_crash_between_snapshot_and_compaction` |
 | `SS-02` | `SS-02.a` | tests | direct | `crates/rafter-runtime/src/tests/crash_window/repair.rs#file_backed_reopen_persists_repaired_compaction_after_snapshot_crash_window` |

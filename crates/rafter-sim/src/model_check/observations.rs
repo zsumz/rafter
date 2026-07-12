@@ -34,12 +34,15 @@ pub(super) enum Observation {
     RestartTermComparisons,
     RestartRecoveriesWithNonzeroAppliedFloor,
     ExpectedSnapshotInstallsChecked,
+    SnapshotBoundaryAdvances,
+    SnapshotPayloadBindingsChecked,
+    SnapshotTransferIdentitiesChecked,
     NodesWithNonzeroSnapshotIndex,
     PartialSnapshotTransfersChecked,
     SameBoundarySnapshotInstallPairs,
 }
 
-const ALL: [Observation; 34] = [
+const ALL: [Observation; 37] = [
     Observation::WellFormedStatesChecked,
     Observation::TermAdvances,
     Observation::SameTermVoteReobservations,
@@ -71,6 +74,9 @@ const ALL: [Observation; 34] = [
     Observation::RestartTermComparisons,
     Observation::RestartRecoveriesWithNonzeroAppliedFloor,
     Observation::ExpectedSnapshotInstallsChecked,
+    Observation::SnapshotBoundaryAdvances,
+    Observation::SnapshotPayloadBindingsChecked,
+    Observation::SnapshotTransferIdentitiesChecked,
     Observation::NodesWithNonzeroSnapshotIndex,
     Observation::PartialSnapshotTransfersChecked,
     Observation::SameBoundarySnapshotInstallPairs,
@@ -116,6 +122,9 @@ impl Observation {
                 "restart_recoveries_with_nonzero_applied_floor"
             }
             Self::ExpectedSnapshotInstallsChecked => "expected_snapshot_installs_checked",
+            Self::SnapshotBoundaryAdvances => "snapshot_boundary_advances",
+            Self::SnapshotPayloadBindingsChecked => "snapshot_payload_bindings_checked",
+            Self::SnapshotTransferIdentitiesChecked => "snapshot_transfer_identities_checked",
             Self::NodesWithNonzeroSnapshotIndex => "nodes_with_nonzero_snapshot_index",
             Self::PartialSnapshotTransfersChecked => "partial_snapshot_transfers_checked",
             Self::SameBoundarySnapshotInstallPairs => "same_boundary_snapshot_install_pairs",

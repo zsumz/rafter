@@ -104,6 +104,7 @@ pub(super) fn apply_to_state_inner(state: &mut ExplorationState, operation: Oper
         state.observe_election_authority();
         state.record_election_observation(&before, delivered.as_ref(), &effects.emitted);
         state.record_log_transition(&before, delivered.as_ref(), &effects.emitted);
+        state.record_snapshot_transition(&before, delivered.as_ref());
     }
     state.observe_election_authority();
     state.refresh_log_history();

@@ -96,6 +96,9 @@ fn apply_transition(
             TransitionOutcome::RandomReadyPosition(state.cluster.0.random_ready_position())
         }
     };
+    if matches!(outcome, TransitionOutcome::Applied) {
+        state.refresh_snapshot_history();
+    }
     Ok(outcome)
 }
 

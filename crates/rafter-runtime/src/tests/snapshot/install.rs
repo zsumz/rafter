@@ -52,6 +52,79 @@ fn runtime_persists_installed_snapshot_and_compacts_log_past_local_tail() {
 }
 
 #[test]
+fn runtime_ignores_inbound_snapshot_at_or_below_durable_boundary_across_restart() {
+    let current = raft_snapshot(5, 3, 5, b"current snapshot");
+    let mut runtime = DurableRaftNode::with_storage_and_snapshot_store(
+        raft_config(2, &[1, 3]),
+        hard_state_store(5, None),
+        InMemoryRaftLogSegment::new(),
+        InMemoryRaftSnapshotStore::with_snapshot(current.clone()),
+    )
+    .expect("runtime hydrates from the current snapshot");
+
+    for stale in [
+        raft_snapshot(5, 3, 5, b"different bytes at the same boundary"),
+        raft_snapshot(3, 2, 5, b"older snapshot"),
+    ] {
+        let outputs = runtime
+            .step(RaftInput::Message {
+                from: RaftNodeId(1),
+                message: Message::InstallSnapshot(rafter::InstallSnapshot {
+                    term: Term(5),
+                    leader_id: RaftNodeId(1),
+                    metadata: stale.metadata,
+                    application_payload: stale.application_payload,
+                }),
+            })
+            .expect("stale snapshot is acknowledged without installation");
+
+        assert!(outputs.iter().all(|output| !matches!(
+            output,
+            RaftOutput::StageSnapshotChunk { .. } | RaftOutput::ApplySnapshot { .. }
+        )));
+        assert_eq!(runtime.snapshot_index(), LogIndex(5));
+        assert_eq!(runtime.snapshot_store.current(), Some(&current));
+    }
+
+    let restarted = DurableRaftNode::with_storage_and_snapshot_store(
+        raft_config(2, &[1, 3]),
+        runtime.hard_state_store.clone(),
+        runtime.log_segment.clone(),
+        runtime.snapshot_store.clone(),
+    )
+    .expect("runtime reopens at the same snapshot boundary");
+    assert_eq!(restarted.snapshot_index(), LogIndex(5));
+    assert_eq!(restarted.snapshot_store.current(), Some(&current));
+}
+
+#[test]
+fn runtime_rejects_local_snapshot_behind_installed_boundary_before_writes() {
+    let current = raft_snapshot(5, 3, 5, b"current snapshot");
+    let mut runtime = DurableRaftNode::with_storage_and_snapshot_store(
+        raft_config(2, &[1, 3]),
+        hard_state_store(5, None),
+        InMemoryRaftLogSegment::new(),
+        InMemoryRaftSnapshotStore::with_snapshot(current.clone()),
+    )
+    .expect("runtime hydrates from the current snapshot");
+    let before_log = runtime.log_segment.clone();
+    let before_store = runtime.snapshot_store.clone();
+
+    assert_eq!(
+        runtime.compact_log_with_snapshot(raft_snapshot(3, 2, 5, b"older local snapshot")),
+        Err(RaftRuntimeError::SnapshotBoundaryTermMismatch {
+            snapshot_index: LogIndex(3),
+            snapshot_term: Term(2),
+            local_term: None,
+        })
+    );
+    assert_eq!(runtime.snapshot_index(), LogIndex(5));
+    assert_eq!(runtime.log_segment, before_log);
+    assert_eq!(runtime.snapshot_store, before_store);
+    assert_eq!(runtime.snapshot_store.current(), Some(&current));
+}
+
+#[test]
 fn runtime_snapshot_write_failure_poisons_runtime_until_restart() {
     let snapshot = raft_snapshot(2, 2, 5, b"snapshot write fails");
     let mut runtime = DurableRaftNode::with_storage_and_snapshot_store(
