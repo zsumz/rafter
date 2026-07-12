@@ -10,11 +10,11 @@ use super::{
     production_monitor_state,
 };
 use crate::model_check::{
-    application::apply_soak_action,
     catalog,
     helpers::{deliver_all_in_state, elect_node_one_in_state},
     scheduling::SoakOperation,
     soak::{SoakAction, SoakActionKind, SoakConfig, SoakFailure},
+    state::apply_soak_action,
 };
 
 pub(super) fn run_proposal_termination_liveness_check(

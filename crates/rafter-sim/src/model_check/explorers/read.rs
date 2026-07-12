@@ -1,10 +1,10 @@
 use super::super::{
-    application::apply_to_state,
     invariants::{
         check_commit_history, check_commit_safety, check_election_history, check_election_safety,
         check_log_history, check_read_barrier_safety,
     },
     scheduling::enabled_read_index_actions,
+    state::apply_to_state,
     Action, Bounds, ExplorationState, Failure, Summary,
 };
 use super::budget::ExplorationBudget;
@@ -34,12 +34,12 @@ impl ReadIndexSafetyExplorer {
         if !self.budget.enter(state, depth) {
             return Ok(());
         }
-        check_election_safety(&state.cluster, trace)?;
+        check_election_safety(state.cluster(), trace)?;
         check_election_history(state, trace)?;
         check_log_history(state, trace)?;
         check_commit_history(state, trace)?;
         check_commit_safety(state, trace)?;
-        check_read_barrier_safety(&state.cluster, trace)?;
+        check_read_barrier_safety(state.cluster(), trace)?;
 
         if depth == self.budget.bounds.depth {
             return Ok(());

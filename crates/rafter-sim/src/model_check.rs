@@ -36,8 +36,6 @@ mod state;
 
 use state::{ExplorationState, RestartSnapshotState};
 
-mod application;
-
 mod soak;
 
 pub use soak::{SoakAction, SoakActionKind, SoakConfig, SoakFailure, SoakSummary};

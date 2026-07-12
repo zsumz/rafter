@@ -45,15 +45,15 @@ pub(super) fn check_commit_safety(
     state: &ExplorationState,
     trace: &[Action],
 ) -> Result<(), Failure> {
-    check_internal_derived_state(&state.cluster, trace)?;
+    check_internal_derived_state(state.cluster(), trace)?;
     check_commit_index_monotonicity(state, trace)?;
     check_committed_configuration_monotonicity(state, trace)?;
-    check_applied_payload_agreement(&state.cluster, trace)?;
-    check_applied_order(&state.cluster, trace)?;
-    check_snapshot_log_geometry(&state.cluster, trace)?;
-    check_committed_prefixes(&state.cluster, trace)?;
-    check_membership_quorum_validity(&state.cluster, trace)?;
-    check_no_overlapping_uncommitted_configurations(&state.cluster, trace)?;
+    check_applied_payload_agreement(state.cluster(), trace)?;
+    check_applied_order(state.cluster(), trace)?;
+    check_snapshot_log_geometry(state.cluster(), trace)?;
+    check_committed_prefixes(state.cluster(), trace)?;
+    check_membership_quorum_validity(state.cluster(), trace)?;
+    check_no_overlapping_uncommitted_configurations(state.cluster(), trace)?;
     check_client_history_read_write_invariants(state, trace)?;
     check_client_history_linearizability(state, trace)?;
     check_forbidden_applied_payloads(state, trace)?;
@@ -75,18 +75,18 @@ pub(super) fn run_replay_check(
 ) -> Result<(), Failure> {
     match check {
         ReplayCheck::ElectionSafety => {
-            check_election_safety(&state.cluster, trace)?;
+            check_election_safety(state.cluster(), trace)?;
             check_election_history(state, trace)?;
             check_log_history(state, trace)?;
             check_commit_history(state, trace)
         }
         ReplayCheck::CommitSafety => {
-            check_election_safety(&state.cluster, trace)?;
+            check_election_safety(state.cluster(), trace)?;
             check_election_history(state, trace)?;
             check_log_history(state, trace)?;
             check_commit_history(state, trace)?;
             check_commit_safety(state, trace)?;
-            check_read_barrier_safety(&state.cluster, trace)
+            check_read_barrier_safety(state.cluster(), trace)
         }
     }
 }

@@ -49,21 +49,21 @@ pub fn check_raft_leadership_noop_safety(bounds: Bounds) -> Result<Summary, Fail
     ];
     let required_applies = required_state_summaries(seeds.iter().flat_map(|state| {
         state
-            .required_applied_payloads
+            .required_applied_payloads()
             .keys()
             .copied()
             .map(move |key| (key, state))
     }));
     let required_configurations = required_state_summaries(seeds.iter().flat_map(|state| {
         state
-            .required_committed_configurations
+            .required_committed_configurations()
             .keys()
             .copied()
             .map(move |key| (key, state))
     }));
     let required_commits = required_state_summaries(seeds.iter().flat_map(|state| {
         state
-            .required_commit_indexes
+            .required_commit_indexes()
             .iter()
             .copied()
             .map(move |key| (key, state))
@@ -132,6 +132,6 @@ fn required_state_summaries<'a>(
 ) -> BTreeMap<(NodeId, LogIndex), StateSummary> {
     required
         .into_iter()
-        .map(|(key, state)| (key, summarize(&state.cluster)))
+        .map(|(key, state)| (key, summarize(state.cluster())))
         .collect()
 }

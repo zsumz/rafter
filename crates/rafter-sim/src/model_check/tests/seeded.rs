@@ -1,11 +1,11 @@
 use rafter::{LogIndex, Message, NodeId};
 
-use super::super::application::apply_to_state;
 use super::super::helpers::{
     config, deliver_all_in_state, elect_node_one_in_state,
     propose_to_node_one_and_deliver_in_state, summarize, three_node_configs,
 };
 use super::super::scheduling::Operation;
+use super::super::state::apply_to_state;
 use super::super::state::{ClientReadOutcome, ClientWriteStatus, ExplorationState};
 use super::super::{
     catalog, check_raft_leadership_noop_safety, check_raft_restart_and_snapshot_safety,
@@ -75,7 +75,7 @@ fn failure_kind_is_explicit_not_derived_from_message_text() {
         invariant: catalog::AP_01_ORDERED_EXACTLY_ONCE_COMMITTED_APPLICATION,
         message: "did not reach required Apply appears in this invariant message".to_string(),
         trace: Vec::new(),
-        state: summarize(&state.cluster),
+        state: summarize(state.cluster()),
     };
 
     assert_eq!(failure.kind(), FailureKind::InvariantViolation);
@@ -85,10 +85,10 @@ fn failure_kind_is_explicit_not_derived_from_message_text() {
 fn seeded_single_voter_prior_application_noop_requires_apply() {
     let mut state = ExplorationState::seeded_single_voter_prior_application_noop();
 
-    state.cluster.tick(NodeId(1));
+    apply_to_state(&mut state, Operation::Tick(NodeId(1)));
 
-    assert_eq!(state.cluster.commit_index(NodeId(1)), LogIndex(2));
-    assert!(state.cluster.applied().iter().any(|applied| {
+    assert_eq!(state.cluster().commit_index(NodeId(1)), LogIndex(2));
+    assert!(state.cluster().applied().iter().any(|applied| {
         applied.node_id == NodeId(1)
             && applied.index == LogIndex(1)
             && applied.payload.as_ref() == b"leadership-noop-prior-app"
@@ -99,11 +99,11 @@ fn seeded_single_voter_prior_application_noop_requires_apply() {
 fn seeded_single_voter_prior_configuration_noop_commits_identity() {
     let mut state = ExplorationState::seeded_single_voter_prior_configuration_noop();
 
-    state.cluster.tick(NodeId(1));
+    apply_to_state(&mut state, Operation::Tick(NodeId(1)));
 
-    assert_eq!(state.cluster.commit_index(NodeId(1)), LogIndex(2));
+    assert_eq!(state.cluster().commit_index(NodeId(1)), LogIndex(2));
     assert_eq!(
-        state.cluster.committed_configuration_state(NodeId(1)),
+        state.cluster().committed_configuration_state(NodeId(1)),
         Some(rafter::CommittedConfiguration {
             index: LogIndex(1),
             config_id: rafter::ConfigurationId(7),
@@ -115,10 +115,10 @@ fn seeded_single_voter_prior_configuration_noop_commits_identity() {
 fn seeded_joint_self_quorum_prior_application_noop_applies_suffix() {
     let mut state = ExplorationState::seeded_joint_self_quorum_prior_application_noop();
 
-    state.cluster.tick(NodeId(1));
+    apply_to_state(&mut state, Operation::Tick(NodeId(1)));
 
-    assert_eq!(state.cluster.commit_index(NodeId(1)), LogIndex(3));
-    assert!(state.cluster.applied().iter().any(|applied| {
+    assert_eq!(state.cluster().commit_index(NodeId(1)), LogIndex(3));
+    assert!(state.cluster().applied().iter().any(|applied| {
         applied.node_id == NodeId(1)
             && applied.index == LogIndex(2)
             && applied.payload.as_ref() == b"joint-self-quorum-prior-app"
@@ -131,11 +131,11 @@ fn seeded_leadership_transfer_reaches_target_noop_commit() {
 
     deliver_all_in_state(&mut state);
 
-    assert_eq!(state.cluster.role(NodeId(2)), rafter::Role::Leader);
-    assert!(state.cluster.commit_index(NodeId(2)) >= LogIndex(2));
+    assert_eq!(state.cluster().role(NodeId(2)), rafter::Role::Leader);
+    assert!(state.cluster().commit_index(NodeId(2)) >= LogIndex(2));
     assert!(
         state
-            .election_history
+            .election_history()
             .elected_by_term
             .values()
             .any(|certificate| certificate.leader_id == NodeId(2)),
@@ -151,8 +151,8 @@ fn seeded_low_empty_probe_keeps_precommitted_floor() {
         config(3, &[1, 2], 2),
     ]);
 
-    assert_eq!(state.cluster.commit_index(NodeId(2)), LogIndex(1));
-    assert!(state.cluster.pending().any(|envelope| {
+    assert_eq!(state.cluster().commit_index(NodeId(2)), LogIndex(1));
+    assert!(state.cluster().pending().any(|envelope| {
         envelope.from == NodeId(1)
             && envelope.to == NodeId(2)
             && matches!(
@@ -164,8 +164,8 @@ fn seeded_low_empty_probe_keeps_precommitted_floor() {
             )
     }));
 
-    state.cluster.deliver_all();
-    assert_eq!(state.cluster.commit_index(NodeId(2)), LogIndex(1));
+    deliver_all_in_state(&mut state);
+    assert_eq!(state.cluster().commit_index(NodeId(2)), LogIndex(1));
 }
 
 #[test]
@@ -176,9 +176,9 @@ fn seeded_divergent_suffix_probe_confirms_only_the_shared_prefix() {
         config(3, &[1, 2], 2),
     ]);
 
-    assert_eq!(state.cluster.commit_index(NodeId(1)), LogIndex(2));
-    assert_eq!(state.cluster.commit_index(NodeId(2)), LogIndex(1));
-    assert!(state.cluster.pending().any(|envelope| {
+    assert_eq!(state.cluster().commit_index(NodeId(1)), LogIndex(2));
+    assert_eq!(state.cluster().commit_index(NodeId(2)), LogIndex(1));
+    assert!(state.cluster().pending().any(|envelope| {
         envelope.from == NodeId(1)
             && envelope.to == NodeId(2)
             && matches!(
@@ -190,9 +190,9 @@ fn seeded_divergent_suffix_probe_confirms_only_the_shared_prefix() {
             )
     }));
 
-    state.cluster.deliver_all();
-    assert_eq!(state.cluster.commit_index(NodeId(2)), LogIndex(1));
-    assert!(!state.cluster.applied().iter().any(|applied| {
+    deliver_all_in_state(&mut state);
+    assert_eq!(state.cluster().commit_index(NodeId(2)), LogIndex(1));
+    assert!(!state.cluster().applied().iter().any(|applied| {
         applied.node_id == NodeId(2) && applied.payload.as_ref() == b"divergent-two"
     }));
 }
@@ -211,9 +211,8 @@ fn client_history_records_write_completion_and_read_proof() {
             stale_leader: false,
         },
     );
-    state.cluster.deliver_all();
-    state.refresh_client_history();
-    let write = &state.client_history.writes[&ProposalId(42)];
+    deliver_all_in_state(&mut state);
+    let write = &state.client_history().writes[&ProposalId(42)];
     assert!(matches!(
         write.status,
         ClientWriteStatus::Completed { index, .. } if index > LogIndex::ZERO
@@ -226,9 +225,8 @@ fn client_history_records_write_completion_and_read_proof() {
             request_id: 77,
         },
     );
-    state.cluster.deliver_all();
-    state.refresh_client_history();
-    let read = &state.client_history.reads[&77];
+    deliver_all_in_state(&mut state);
+    let read = &state.client_history().reads[&77];
     match &read.outcome {
         ClientReadOutcome::Completed { proof, result, .. } => {
             assert!(proof.read_index >= read.committed_floor);

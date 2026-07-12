@@ -2,14 +2,14 @@ use rafter::{MembershipConfig, MembershipSet, NodeId};
 
 use crate::Cluster;
 
-use super::super::{helpers::proposal_payload, scheduling::Operation};
+use super::super::super::{helpers::proposal_payload, scheduling::Operation};
 
 #[derive(Clone, Debug, Default)]
-pub(in crate::model_check::application) struct AppliedOperationEffects {
-    pub(in crate::model_check::application) emitted: Vec<crate::Envelope>,
+pub(in crate::model_check::state::application) struct AppliedOperationEffects {
+    pub(in crate::model_check::state::application) emitted: Vec<crate::Envelope>,
 }
 
-pub(in crate::model_check::application) fn apply_to_cluster(
+pub(in crate::model_check::state::application) fn apply_to_cluster(
     cluster: &mut Cluster,
     operation: Operation,
 ) -> AppliedOperationEffects {

@@ -6,21 +6,21 @@ fn leader_append_only_detects_leader_term_truncation() {
     elect_node_one(&mut cluster);
     let mut state = ExplorationState::new(cluster);
     let leader_id = NodeId(1);
-    let leader_term = state.cluster.current_term(leader_id);
+    let leader_term = state.cluster().current_term(leader_id);
 
     let mut previous = state
-        .logical_log_history
+        .logical_log_history_mut()
         .leader_logs_by_term
         .get(&(leader_id, leader_term))
         .expect("leader observation should be recorded")
         .clone();
-    let stale_tail_index = state.cluster.last_log_index(leader_id).next();
+    let stale_tail_index = state.cluster().last_log_index(leader_id).next();
     previous.entries.insert(
         stale_tail_index,
         LogEntry::application(leader_term, b"stale-leader-tail".to_vec()),
     );
     state
-        .logical_log_history
+        .logical_log_history_mut()
         .leader_logs_by_term
         .insert((leader_id, leader_term), previous);
     state.refresh_log_history();
@@ -167,18 +167,14 @@ fn log_matching_detects_snapshot_boundary_hiding_mismatched_prefix() {
     let mut state = ExplorationState::new(cluster);
 
     let (snapshot, payload) = test_snapshot(2, 2, 2, 2, b"snapshot through two");
+    state.inject_snapshot_payload(NodeId(2), &snapshot, payload);
     state
-        .cluster
-        .seed_snapshot_payload(NodeId(2), &snapshot, payload);
-    state
-        .cluster
-        .restart_node_from_bootstrap(NodeId(2), bootstrap_with_snapshot(Term(2), snapshot, &[]))
+        .inject_bootstrap_state(NodeId(2), bootstrap_with_snapshot(Term(2), snapshot, &[]))
         .expect("node-2 compacted bootstrap is valid");
     state.refresh_log_history();
 
     state
-        .cluster
-        .restart_node_from_bootstrap(
+        .inject_bootstrap_state(
             NodeId(1),
             bootstrap_state(
                 Term(2),
@@ -209,7 +205,7 @@ fn log_matching_rejects_snapshot_witness_shorter_than_boundary() {
         .expect("snapshot bootstrap is valid");
     let mut state = ExplorationState::new(cluster);
     state
-        .logical_log_history
+        .logical_log_history_mut()
         .snapshot_prefixes_by_owner_transfer
         .insert(
             (NodeId(1), transfer_id),
@@ -237,7 +233,7 @@ fn log_matching_rejects_snapshot_witness_with_wrong_boundary_term() {
         .expect("snapshot bootstrap is valid");
     let mut state = ExplorationState::new(cluster);
     state
-        .logical_log_history
+        .logical_log_history_mut()
         .snapshot_prefixes_by_owner_transfer
         .insert(
             (NodeId(1), transfer_id),
@@ -266,12 +262,9 @@ fn log_matching_does_not_bless_unproven_snapshot_from_global_transfer_id() {
     let mut state = ExplorationState::new(cluster);
     let (snapshot, payload) = test_snapshot(1, 1, 1, 1, b"snapshot through one");
     for node_id in [NodeId(1), NodeId(2)] {
+        state.inject_snapshot_payload(node_id, &snapshot, payload.clone());
         state
-            .cluster
-            .seed_snapshot_payload(node_id, &snapshot, payload.clone());
-        state
-            .cluster
-            .restart_node_from_bootstrap(
+            .inject_bootstrap_state(
                 node_id,
                 bootstrap_with_snapshot(Term(1), snapshot.clone(), &[]),
             )
@@ -331,24 +324,21 @@ fn logical_leader_log_accepts_compaction_with_matching_prefix_witness() {
         .expect("visible log bootstrap is valid");
     let mut state = ExplorationState::new(cluster);
     let previous = state
-        .logical_log_history
+        .logical_log_history_mut()
         .last_view(NodeId(1))
         .expect("visible view is observed")
         .clone();
     let (snapshot, payload) = test_snapshot(1, 2, 2, 2, b"snapshot through two");
+    state.inject_snapshot_payload(NodeId(1), &snapshot, payload);
     state
-        .cluster
-        .seed_snapshot_payload(NodeId(1), &snapshot, payload);
-    state
-        .cluster
-        .restart_node_from_bootstrap(
+        .inject_bootstrap_state(
             NodeId(1),
             bootstrap_with_snapshot(Term(2), snapshot, &[(3, Term(2), b"suffix")]),
         )
         .expect("compacted bootstrap is valid");
     state.refresh_log_history();
     let current = state
-        .logical_log_history
+        .logical_log_history_mut()
         .last_view(NodeId(1))
         .expect("compacted view is observed");
 

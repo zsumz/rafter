@@ -81,8 +81,7 @@ fn snapshot_metadata_payload_integrity_detects_expected_metadata_with_different_
     corrupted[0] = corrupted[0].wrapping_add(1);
     state
         .state
-        .cluster
-        .seed_snapshot_payload(NodeId(1), &expected.snapshot, corrupted);
+        .inject_snapshot_payload(NodeId(1), &expected.snapshot, corrupted);
 
     let failure = check_snapshot_metadata_payload_integrity(&state, NodeId(1), &expected, &[])
         .expect_err("expected metadata with different bytes must fail SS-01");
@@ -116,7 +115,7 @@ fn snapshot_transfer_integrity_rejects_complete_pending_transfer() {
     };
 
     let failure = check_snapshot_transfer_integrity(
-        &state.state.cluster,
+        state.state.cluster(),
         NodeId(2),
         LogIndex::ZERO,
         Some(&pending),
@@ -144,7 +143,7 @@ fn restart_snapshot_safety_rejects_snapshot_bytes_as_log_apply() {
         .as_ref()
         .expect("fixture has an expected snapshot")
         .clone();
-    state.state.cluster.applied.push(Applied {
+    state.state.inject_applied_record(Applied {
         node_id: NodeId(1),
         application_epoch: 0,
         commit_index_at_emit: LogIndex(1),

@@ -1,8 +1,8 @@
 use super::*;
 use crate::model_check::{
-    application::{apply_soak_action, apply_to_state, restart_node},
     helpers::elect_node_one_in_state,
     scheduling::{Operation, SoakOperation},
+    state::{apply_soak_action, apply_to_state, restart_node},
 };
 
 #[test]
@@ -17,12 +17,12 @@ fn authority_history_records_seeded_term_and_vote() {
     let state = ExplorationState::new(cluster);
 
     assert_eq!(
-        state.election_history.term_floor_by_node.get(&NodeId(1)),
+        state.election_history().term_floor_by_node.get(&NodeId(1)),
         Some(&Term(4))
     );
     assert_eq!(
         state
-            .election_history
+            .election_history()
             .votes_by_node_term
             .get(&(NodeId(1), Term(4))),
         Some(&NodeId(2))
@@ -61,8 +61,7 @@ fn term_monotonicity_history_detects_regression_from_observation() {
     let mut state = ExplorationState::new(cluster);
 
     state
-        .cluster
-        .restart_node_from_bootstrap(NodeId(1), bootstrap_state(Term(3), &[]))
+        .inject_bootstrap_state(NodeId(1), bootstrap_state(Term(3), &[]))
         .expect("regressed term bootstrap is valid");
     state.observe_election_authority();
 
@@ -91,8 +90,7 @@ fn durable_vote_history_rejects_second_vote_in_term() {
     let mut second_vote = bootstrap_state(Term(7), &[]);
     second_vote.voted_for = Some(NodeId(3));
     state
-        .cluster
-        .restart_node_from_bootstrap(NodeId(1), second_vote)
+        .inject_bootstrap_state(NodeId(1), second_vote)
         .expect("second vote bootstrap is valid");
     state.observe_election_authority();
 
@@ -122,8 +120,7 @@ fn durable_vote_history_detects_lost_vote_same_term() {
     let mut state = ExplorationState::new(cluster);
 
     state
-        .cluster
-        .restart_node_from_bootstrap(NodeId(1), bootstrap_state(Term(5), &[]))
+        .inject_bootstrap_state(NodeId(1), bootstrap_state(Term(5), &[]))
         .expect("lost vote bootstrap is valid");
     state.observe_election_authority();
 
@@ -154,10 +151,11 @@ fn modeled_restart_preserves_observed_durable_vote() {
 
     restart_node(&mut state, NodeId(1), &[]).expect("ordinary restart should preserve vote");
 
+    assert_eq!(state.restarts_issued(), 1);
     check_election_history(&state, &[]).expect("ordinary restart must keep durable vote history");
     assert_eq!(
         state
-            .election_history
+            .election_history_mut()
             .votes_by_node_term
             .get(&(NodeId(1), Term(6))),
         Some(&NodeId(2))
@@ -179,7 +177,7 @@ fn modeled_lossy_restart_preserves_observed_durable_vote() {
     check_election_history(&state, &[]).expect("lossy restart must keep durable vote history");
     assert_eq!(
         state
-            .election_history
+            .election_history_mut()
             .votes_by_node_term
             .get(&(NodeId(1), Term(6))),
         Some(&NodeId(2))
@@ -189,7 +187,7 @@ fn modeled_lossy_restart_preserves_observed_durable_vote() {
 #[test]
 fn authority_fencing_observation_accepts_higher_term_append_entries() {
     let mut state = ExplorationState::new(two_node_cluster());
-    state.cluster.queue_message(
+    state.inject_message(
         NodeId(2),
         NodeId(1),
         Message::AppendEntries(AppendEntries {
@@ -205,8 +203,8 @@ fn authority_fencing_observation_accepts_higher_term_append_entries() {
 
     apply_to_state(&mut state, Operation::DeliverReadyAt(0));
 
-    assert_eq!(state.cluster.current_term(NodeId(1)), Term(3));
-    assert_eq!(state.cluster.role(NodeId(1)), rafter::Role::Follower);
+    assert_eq!(state.cluster().current_term(NodeId(1)), Term(3));
+    assert_eq!(state.cluster().role(NodeId(1)), rafter::Role::Follower);
     check_election_history(&state, &[]).expect("higher-term append should fence cleanly");
 }
 
@@ -214,9 +212,9 @@ fn authority_fencing_observation_accepts_higher_term_append_entries() {
 fn instrumented_delivery_observes_higher_term_append_entries_response() {
     let mut state = ExplorationState::new(two_node_cluster());
     elect_node_one_in_state(&mut state);
-    state.cluster.drop_matching(|_| true);
-    let higher_term = state.cluster.current_term(NodeId(1)).next();
-    state.cluster.queue_message(
+    state.drop_all_messages();
+    let higher_term = state.cluster().current_term(NodeId(1)).next();
+    state.inject_message(
         NodeId(2),
         NodeId(1),
         Message::AppendEntriesResponse(AppendEntriesResponse {
@@ -230,10 +228,13 @@ fn instrumented_delivery_observes_higher_term_append_entries_response() {
 
     apply_to_state(&mut state, Operation::DeliverReadyAt(0));
 
-    assert_eq!(state.cluster.current_term(NodeId(1)), higher_term);
-    assert_eq!(state.cluster.role(NodeId(1)), rafter::Role::Follower);
+    assert_eq!(state.cluster().current_term(NodeId(1)), higher_term);
+    assert_eq!(state.cluster().role(NodeId(1)), rafter::Role::Follower);
     assert_eq!(
-        state.election_history.term_floor_by_node.get(&NodeId(1)),
+        state
+            .election_history_mut()
+            .term_floor_by_node
+            .get(&NodeId(1)),
         Some(&higher_term),
         "the instrumented boundary must observe response-driven authority changes"
     );
@@ -341,7 +342,7 @@ fn pre_vote_observation_accepts_non_binding_request() {
     state.record_election_observation(&before, Some(&delivered), &emitted);
 
     assert!(
-        state.election_history.pre_vote_violations.is_empty(),
+        state.election_history_mut().pre_vote_violations.is_empty(),
         "non-binding pre-vote request must not produce a recorder violation"
     );
     check_election_history(&state, &[]).expect("non-binding pre-vote request should pass");
@@ -423,13 +424,13 @@ fn pre_vote_partition_heal_does_not_disrupt_leader_in_model_check() {
         apply_to_state(&mut state, Operation::Tick(NodeId(1)));
     }
     deliver_all_pending_in_state(&mut state);
-    assert_eq!(state.cluster.leaders(), vec![NodeId(1)]);
+    assert_eq!(state.cluster().leaders(), vec![NodeId(1)]);
 
     for _ in 0..18 {
         apply_to_state(&mut state, Operation::Tick(NodeId(3)));
     }
-    assert_eq!(state.cluster.role(NodeId(3)), rafter::Role::PreCandidate);
-    assert_eq!(state.cluster.current_term(NodeId(3)), Term(1));
+    assert_eq!(state.cluster().role(NodeId(3)), rafter::Role::PreCandidate);
+    assert_eq!(state.cluster().current_term(NodeId(3)), Term(1));
 
     let delivered = deliver_pending_matching_in_state(&mut state, |envelope| {
         envelope.from == NodeId(3) && matches!(envelope.message, Message::PreVote(_))
@@ -440,19 +441,19 @@ fn pre_vote_partition_heal_does_not_disrupt_leader_in_model_check() {
     );
     deliver_all_pending_in_state(&mut state);
 
-    assert_eq!(state.cluster.role(NodeId(3)), rafter::Role::PreCandidate);
-    assert_eq!(state.cluster.leaders(), vec![NodeId(1)]);
+    assert_eq!(state.cluster().role(NodeId(3)), rafter::Role::PreCandidate);
+    assert_eq!(state.cluster().leaders(), vec![NodeId(1)]);
 
     apply_to_state(&mut state, Operation::Tick(NodeId(1)));
     deliver_all_pending_in_state(&mut state);
 
-    assert_eq!(state.cluster.leaders(), vec![NodeId(1)]);
-    assert_eq!(state.cluster.role(NodeId(3)), rafter::Role::Follower);
+    assert_eq!(state.cluster().leaders(), vec![NodeId(1)]);
+    assert_eq!(state.cluster().role(NodeId(3)), rafter::Role::Follower);
     for node_id in [1, 2, 3] {
-        assert_eq!(state.cluster.current_term(NodeId(node_id)), Term(1));
+        assert_eq!(state.cluster().current_term(NodeId(node_id)), Term(1));
     }
     assert!(
-        state.election_history.pre_vote_violations.is_empty(),
+        state.election_history_mut().pre_vote_violations.is_empty(),
         "legitimate partition-heal pre-vote traffic should stay non-disruptive"
     );
     check_election_history(&state, &[]).expect("pre-vote partition heal should pass EL-08");
@@ -474,7 +475,7 @@ fn vote_grant_observation_accepts_eligible_request() {
 
     check_election_history(&state, &[]).expect("eligible vote grant should pass");
     let grant = state
-        .election_history
+        .election_history()
         .vote_grants
         .last()
         .expect("vote grant observation should be recorded");
@@ -492,7 +493,7 @@ fn vote_grant_observation_accepts_eligible_request() {
 #[test]
 fn vote_grant_observation_records_partition_dropped_response() {
     let mut state = ExplorationState::new(two_node_cluster());
-    state.cluster.queue_message(
+    state.inject_message(
         NodeId(2),
         NodeId(1),
         Message::RequestVote(RequestVote {
@@ -502,12 +503,12 @@ fn vote_grant_observation_records_partition_dropped_response() {
             last_log_term: Term::default(),
         }),
     );
-    state.cluster.blocked_pairs.insert((NodeId(1), NodeId(2)));
+    state.inject_blocked_pair(NodeId(1), NodeId(2));
 
     apply_to_state(&mut state, Operation::DeliverReadyAt(0));
 
     assert!(
-        state.cluster.pending().all(|envelope| !matches!(
+        state.cluster().pending().all(|envelope| !matches!(
             &envelope.message,
             Message::RequestVoteResponse(RequestVoteResponse {
                 vote_granted: true,
@@ -517,7 +518,7 @@ fn vote_grant_observation_records_partition_dropped_response() {
         "granted response should be dropped by the simulated partition"
     );
     let grant = state
-        .election_history
+        .election_history_mut()
         .vote_grants
         .last()
         .expect("dropped granted response should still be observed");
@@ -555,7 +556,7 @@ fn vote_grant_observation_ignores_denied_response() {
     state.record_election_observation(&before, Some(&delivered), &emitted);
 
     assert!(
-        state.election_history.vote_grants.is_empty(),
+        state.election_history_mut().vote_grants.is_empty(),
         "denied RequestVote responses must not create grant observations"
     );
 }
@@ -648,8 +649,8 @@ fn election_history_detects_second_leader_in_same_term() {
     let second = election_certificate(4, 2, membership, &[2, 3]);
     let mut state = ExplorationState::new(one_node_cluster());
 
-    state.election_history.record_election(first);
-    state.election_history.record_election(second);
+    state.election_history_mut().record_election(first);
+    state.election_history_mut().record_election(second);
 
     let failure = check_election_history(&state, &[])
         .expect_err("second leader in one term must be detected");
@@ -725,7 +726,7 @@ fn election_certificate_rejects_non_voter_leader() {
 #[test]
 fn election_history_deduplicates_duplicate_grants() {
     let mut state = ExplorationState::new(one_node_cluster());
-    let before = state.cluster.clone();
+    let before = state.cluster().clone();
     let envelope = Envelope {
         from: NodeId(2),
         to: NodeId(1),
@@ -741,7 +742,7 @@ fn election_history_deduplicates_duplicate_grants() {
 
     assert_eq!(
         state
-            .election_history
+            .election_history_mut()
             .grants_by_candidate
             .get(&(Term(7), NodeId(1)))
             .expect("grant history should be recorded")
@@ -796,7 +797,7 @@ fn pre_vote_three_node_cluster() -> Cluster {
 }
 
 fn deliver_all_pending_in_state(state: &mut ExplorationState) {
-    while state.cluster.pending().next().is_some() {
+    while state.cluster().pending().next().is_some() {
         apply_to_state(state, Operation::DeliverReadyAt(0));
     }
 }
@@ -808,7 +809,7 @@ fn deliver_pending_matching_in_state(
     let mut delivered = 0;
     loop {
         let position = state
-            .cluster
+            .cluster()
             .pending()
             .enumerate()
             .find_map(|(position, envelope)| predicate(envelope).then_some(position));

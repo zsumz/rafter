@@ -9,8 +9,8 @@ use super::super::helpers::{
     bootstrap_state, config, deliver_all_in_state, elect_node_one_with_node_three_in_state,
     three_node_configs,
 };
-use super::super::{application::apply_to_state, scheduling::Operation};
-use super::ExplorationState;
+use super::super::scheduling::Operation;
+use super::{apply_to_state, ExplorationState};
 
 impl ExplorationState {
     pub(in crate::model_check) fn seeded_low_empty_probe(configs: Vec<NodeConfig>) -> Self {

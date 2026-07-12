@@ -27,7 +27,9 @@ fn committed_prefix_checker_detects_divergent_committed_entries() {
 #[test]
 fn commit_index_monotonicity_detects_floor_regression() {
     let mut state = ExplorationState::new(one_node_cluster());
-    state.commit_floor_by_node.insert(NodeId(1), LogIndex(2));
+    state
+        .commit_floor_by_node_mut()
+        .insert(NodeId(1), LogIndex(2));
 
     let failure = check_commit_index_monotonicity(&state, &[])
         .expect_err("commit index regression must be detected");
@@ -45,7 +47,7 @@ fn commit_index_monotonicity_detects_floor_regression() {
 #[test]
 fn committed_configuration_monotonicity_detects_regression() {
     let mut state = ExplorationState::new(one_node_cluster());
-    state.committed_configuration_floor_by_node.insert(
+    state.committed_configuration_floor_by_node_mut().insert(
         NodeId(1),
         Some(CommittedConfiguration {
             index: LogIndex(3),

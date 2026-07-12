@@ -7,8 +7,8 @@ use rafter::{
 use crate::{Cluster, Envelope};
 
 use super::{
-    application::apply_to_state, scheduling::Operation, state::ExplorationState, NodeSummary,
-    ProposalId, StateSummary,
+    scheduling::Operation, state::apply_to_state, state::ExplorationState, NodeSummary, ProposalId,
+    StateSummary,
 };
 
 pub(super) fn proposal_payload(proposal_id: ProposalId) -> Vec<u8> {
@@ -92,7 +92,7 @@ pub(super) fn elect_node_one(cluster: &mut Cluster) {
 
 pub(super) fn elect_node_one_in_state(state: &mut ExplorationState) {
     for _ in 0..32 {
-        if state.cluster.role(NodeId(1)) == Role::Leader {
+        if state.cluster().role(NodeId(1)) == Role::Leader {
             return;
         }
         apply_to_state(state, Operation::Tick(NodeId(1)));
@@ -107,7 +107,7 @@ pub(super) fn elect_node_one_with_node_three_in_state(state: &mut ExplorationSta
     }
     deliver_one_in_state(state, request_vote(NodeId(1), NodeId(3)));
     deliver_one_in_state(state, request_vote_response(NodeId(3), NodeId(1)));
-    debug_assert_eq!(state.cluster.role(NodeId(1)), Role::Leader);
+    debug_assert_eq!(state.cluster().role(NodeId(1)), Role::Leader);
 }
 
 pub(super) fn propose_to_node_one_and_deliver_in_state(state: &mut ExplorationState) {
@@ -115,7 +115,7 @@ pub(super) fn propose_to_node_one_and_deliver_in_state(state: &mut ExplorationSt
         state,
         Operation::Propose {
             to: NodeId(1),
-            proposal_id: ProposalId(state.proposals_issued + 1),
+            proposal_id: ProposalId(state.proposals_issued() + 1),
             stale_leader: false,
         },
     );
@@ -132,8 +132,8 @@ fn deliver_one_in_state(
     state: &mut ExplorationState,
     mut predicate: impl FnMut(&Envelope) -> bool,
 ) {
-    let Some(position) = state.cluster.network.iter().position(|queued| {
-        queued.ready_at <= state.cluster.clock.now() && predicate(&queued.envelope)
+    let Some(position) = state.cluster().network.iter().position(|queued| {
+        queued.ready_at <= state.cluster().clock.now() && predicate(&queued.envelope)
     }) else {
         panic!("expected one ready message to deliver");
     };
@@ -142,10 +142,10 @@ fn deliver_one_in_state(
 
 fn first_ready_position(state: &ExplorationState) -> Option<usize> {
     state
-        .cluster
+        .cluster()
         .network
         .iter()
-        .position(|queued| queued.ready_at <= state.cluster.clock.now())
+        .position(|queued| queued.ready_at <= state.cluster().clock.now())
 }
 
 pub(super) fn request_vote(from: NodeId, to: NodeId) -> impl FnMut(&Envelope) -> bool {

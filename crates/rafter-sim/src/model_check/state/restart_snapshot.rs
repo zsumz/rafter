@@ -9,7 +9,9 @@ use super::super::helpers::{
     large_snapshot_payload, test_snapshot, test_snapshot_with_committed_membership,
     three_node_configs,
 };
+use super::super::scheduling::SoakOperation;
 use super::ExplorationState;
+use super::{apply_snapshot_bootstrap_seeds, apply_soak_action, SnapshotBootstrapSeed};
 
 /// The snapshot every healthy node must converge on: the descriptor the
 /// kernel tracks plus the payload bytes the content invariants compare,
@@ -82,29 +84,30 @@ impl RestartSnapshotState {
             .restart_node_from_bootstrap(NodeId(3), bootstrap_state(Term(2), visible_prefix))
             .expect("visible voter bootstrap is valid");
         let mut state = ExplorationState::new(cluster);
-        for node_id in [NodeId(1), NodeId(3)] {
-            state
-                .cluster
-                .seed_snapshot_payload(node_id, &snapshot, payload.clone());
-            state
-                .cluster
-                .restart_node_from_bootstrap(
+        apply_snapshot_bootstrap_seeds(
+            &mut state,
+            [NodeId(1), NodeId(3)]
+                .into_iter()
+                .map(|node_id| SnapshotBootstrapSeed {
                     node_id,
-                    bootstrap_with_snapshot(Term(2), snapshot.clone(), &[]),
-                )
-                .expect("compacted voter bootstrap is valid");
-        }
-        state.refresh_log_history();
-        state.refresh_seeded_commit_history();
+                    snapshot: snapshot.clone(),
+                    payload: payload.clone(),
+                    bootstrap: bootstrap_with_snapshot(Term(2), snapshot.clone(), &[]),
+                })
+                .collect(),
+        )
+        .expect("compacted voter bootstrap is valid");
         state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(2), Term(2));
         elect_node_one_with_node_three_in_state(&mut state);
-        state.cluster.drop_matching(|envelope| {
+        while let Some(position) = state.cluster().network.iter().position(|queued| {
             matches!(
-                envelope.message,
+                queued.envelope.message,
                 Message::RequestVote(_) | Message::RequestVoteResponse(_)
-            ) || envelope.from == NodeId(3)
-                || envelope.to == NodeId(3)
-        });
+            ) || queued.envelope.from == NodeId(3)
+                || queued.envelope.to == NodeId(3)
+        }) {
+            apply_soak_action(&mut state, SoakOperation::DropAt(position));
+        }
 
         Self {
             state,

@@ -10,8 +10,8 @@ pub(super) fn check_commit_index_monotonicity(
     state: &ExplorationState,
     trace: &[Action],
 ) -> Result<(), Failure> {
-    for (node_id, floor) in &state.commit_floor_by_node {
-        let commit_index = state.cluster.commit_index(*node_id);
+    for (node_id, floor) in state.commit_floor_by_node() {
+        let commit_index = state.cluster().commit_index(*node_id);
         if commit_index < *floor {
             return Err(Failure {
                 kind: crate::model_check::FailureKind::InvariantViolation,
@@ -20,7 +20,7 @@ pub(super) fn check_commit_index_monotonicity(
                     "{node_id} commit index regressed from observed floor {floor} to {commit_index}"
                 ),
                 trace: trace.to_vec(),
-                state: summarize(&state.cluster),
+                state: summarize(state.cluster()),
             });
         }
     }
@@ -31,11 +31,11 @@ pub(super) fn check_committed_configuration_monotonicity(
     state: &ExplorationState,
     trace: &[Action],
 ) -> Result<(), Failure> {
-    for (node_id, floor) in &state.committed_configuration_floor_by_node {
+    for (node_id, floor) in state.committed_configuration_floor_by_node() {
         let Some(floor) = floor else {
             continue;
         };
-        let actual = state.cluster.committed_configuration_state(*node_id);
+        let actual = state.cluster().committed_configuration_state(*node_id);
         match actual {
             None => {
                 return Err(committed_configuration_regression(
@@ -74,7 +74,7 @@ fn committed_configuration_regression(
             "{node_id} committed configuration regressed from observed floor {floor:?} to {actual:?}"
         ),
         trace: trace.to_vec(),
-        state: summarize(&state.cluster),
+        state: summarize(state.cluster()),
     }
 }
 
@@ -196,11 +196,11 @@ pub(super) fn check_required_committed_configurations(
     state: &ExplorationState,
     trace: &[Action],
 ) -> Result<(), Failure> {
-    for ((node_id, index), expected) in &state.required_committed_configurations {
-        if state.cluster.commit_index(*node_id) < *index {
+    for ((node_id, index), expected) in state.required_committed_configurations() {
+        if state.cluster().commit_index(*node_id) < *index {
             continue;
         }
-        let actual = state.cluster.committed_configuration_state(*node_id);
+        let actual = state.cluster().committed_configuration_state(*node_id);
         if actual == Some(*expected) {
             continue;
         }
@@ -211,7 +211,7 @@ pub(super) fn check_required_committed_configurations(
                 "{node_id} committed required configuration at index {index} as {actual:?}, expected {expected:?}"
             ),
             trace: trace.to_vec(),
-            state: summarize(&state.cluster),
+            state: summarize(state.cluster()),
         });
     }
     Ok(())

@@ -6,9 +6,9 @@ use rafter::{
 };
 
 use super::super::super::{
-    application::apply_to_state,
     helpers::{elect_node_one_in_state, three_node_configs},
     scheduling::Operation,
+    state::apply_to_state,
     ProposalId,
 };
 use super::*;
@@ -17,8 +17,8 @@ use super::*;
 fn higher_term_follower_commit_is_not_attributed_to_old_leader_authority() {
     let mut state = ExplorationState::new(Cluster::new(three_node_configs()));
     elect_node_one_in_state(&mut state);
-    assert_eq!(state.cluster.role(NodeId(1)), Role::Leader);
-    assert_eq!(state.cluster.commit_index(NodeId(1)), LogIndex(1));
+    assert_eq!(state.cluster().role(NodeId(1)), Role::Leader);
+    assert_eq!(state.cluster().commit_index(NodeId(1)), LogIndex(1));
 
     apply_to_state(
         &mut state,
@@ -28,8 +28,8 @@ fn higher_term_follower_commit_is_not_attributed_to_old_leader_authority() {
             stale_leader: false,
         },
     );
-    state.cluster.drop_matching(|_| true);
-    state.cluster.queue_message(
+    state.drop_all_messages();
+    state.inject_message(
         NodeId(2),
         NodeId(1),
         Message::AppendEntries(AppendEntries {
@@ -48,9 +48,9 @@ fn higher_term_follower_commit_is_not_attributed_to_old_leader_authority() {
 
     apply_to_state(&mut state, Operation::DeliverReadyAt(0));
 
-    assert_eq!(state.cluster.current_term(NodeId(1)), Term(2));
-    assert_eq!(state.cluster.role(NodeId(1)), Role::Follower);
-    assert_eq!(state.cluster.commit_index(NodeId(1)), LogIndex(2));
+    assert_eq!(state.cluster().current_term(NodeId(1)), Term(2));
+    assert_eq!(state.cluster().role(NodeId(1)), Role::Follower);
+    assert_eq!(state.cluster().commit_index(NodeId(1)), LogIndex(2));
     check_commit_history(&state, &[])
         .expect("higher-term follower commit should not be misattributed to the old leader");
 }
@@ -71,11 +71,10 @@ fn diagnostic_commit_certificates_do_not_change_the_state_hash() {
     with_certificate.record_commit_observation(&context, None, None);
 
     assert!(
-        with_certificate.commit_history.certificates.contains_key(&(
-            NodeId(1),
-            Term(1),
-            LogIndex(1)
-        )),
+        with_certificate
+            .commit_history()
+            .certificates
+            .contains_key(&(NodeId(1), Term(1), LogIndex(1))),
         "test setup should differ by a diagnostic commit certificate"
     );
     assert_eq!(state_hash(&base), state_hash(&with_certificate));

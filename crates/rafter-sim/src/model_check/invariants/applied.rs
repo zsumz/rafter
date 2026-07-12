@@ -158,14 +158,17 @@ pub(super) fn check_forbidden_applied_payloads(
     state: &ExplorationState,
     trace: &[Action],
 ) -> Result<(), Failure> {
-    for applied in &state.cluster.applied {
-        if state.forbidden_applied_payloads.contains(&applied.payload) {
+    for applied in &state.cluster().applied {
+        if state
+            .forbidden_applied_payloads()
+            .contains(&applied.payload)
+        {
             return Err(Failure {
                 kind: crate::model_check::FailureKind::InvariantViolation,
                 invariant: catalog::LG_04_COMMITTED_PREFIX_STABILITY,
                 message: format!("forbidden payload applied at log index {}", applied.index),
                 trace: trace.to_vec(),
-                state: summarize(&state.cluster),
+                state: summarize(state.cluster()),
             });
         }
     }
@@ -176,12 +179,12 @@ pub(super) fn check_required_applied_payloads(
     state: &ExplorationState,
     trace: &[Action],
 ) -> Result<(), Failure> {
-    for ((node_id, index), payload) in &state.required_applied_payloads {
-        if state.cluster.commit_index(*node_id) < *index {
+    for ((node_id, index), payload) in state.required_applied_payloads() {
+        if state.cluster().commit_index(*node_id) < *index {
             continue;
         }
-        let current_epoch = state.cluster.application_epoch(*node_id);
-        if state.cluster.applied().iter().any(|applied| {
+        let current_epoch = state.cluster().application_epoch(*node_id);
+        if state.cluster().applied().iter().any(|applied| {
             applied.node_id == *node_id
                 && applied.application_epoch == current_epoch
                 && applied.index == *index
@@ -196,7 +199,7 @@ pub(super) fn check_required_applied_payloads(
                 "{node_id} committed required payload at index {index} without emitting Apply"
             ),
             trace: trace.to_vec(),
-            state: summarize(&state.cluster),
+            state: summarize(state.cluster()),
         });
     }
     Ok(())

@@ -16,7 +16,7 @@ pub(in crate::model_check) fn enabled_soak_actions(
     config: SoakConfig,
 ) -> Vec<EnabledSoakAction> {
     let mut actions = state
-        .cluster
+        .cluster()
         .nodes
         .keys()
         .copied()
@@ -26,13 +26,13 @@ pub(in crate::model_check) fn enabled_soak_actions(
         })
         .collect::<Vec<_>>();
 
-    if state.proposals_issued < config.max_proposals as u64 {
-        let proposal_id = ProposalId(state.proposals_issued + 1);
-        for (node_id, node) in &state.cluster.nodes {
+    if state.proposals_issued() < config.max_proposals as u64 {
+        let proposal_id = ProposalId(state.proposals_issued() + 1);
+        for (node_id, node) in &state.cluster().nodes {
             if node.role() != Role::Leader {
                 continue;
             }
-            let stale_leader = newer_term_has_leader(&state.cluster, node.current_term());
+            let stale_leader = newer_term_has_leader(state.cluster(), node.current_term());
             actions.push(EnabledSoakAction {
                 trace: SoakAction::Propose {
                     to: *node_id,
@@ -47,9 +47,9 @@ pub(in crate::model_check) fn enabled_soak_actions(
         }
     }
 
-    for (position, queued) in state.cluster.network.iter().enumerate() {
+    for (position, queued) in state.cluster().network.iter().enumerate() {
         let action = soak_message_action(&queued.envelope);
-        if queued.ready_at <= state.cluster.clock.now() {
+        if queued.ready_at <= state.cluster().clock.now() {
             actions.push(EnabledSoakAction {
                 trace: SoakAction::Deliver {
                     from: action.from,
@@ -86,10 +86,10 @@ pub(in crate::model_check) fn enabled_soak_actions(
         });
     }
 
-    if state.restarts_issued < config.max_restarts as u64 {
+    if state.restarts_issued() < config.max_restarts as u64 {
         actions.extend(
             state
-                .cluster
+                .cluster()
                 .nodes
                 .keys()
                 .copied()
@@ -112,9 +112,9 @@ fn enabled_soak_fault_actions(
     config: SoakConfig,
 ) -> Vec<EnabledSoakAction> {
     let mut actions = Vec::new();
-    if state.read_indexes_issued < config.max_read_indexes as u64 {
-        let request_id = state.read_indexes_issued + 1;
-        for (node_id, node) in &state.cluster.nodes {
+    if state.read_indexes_issued() < config.max_read_indexes as u64 {
+        let request_id = state.read_indexes_issued() + 1;
+        for (node_id, node) in &state.cluster().nodes {
             if node.role() == Role::Leader {
                 actions.push(EnabledSoakAction {
                     trace: SoakAction::ReadIndex {
@@ -130,12 +130,12 @@ fn enabled_soak_fault_actions(
         }
     }
 
-    if state.transfers_issued < config.max_transfers as u64 {
-        for (from, node) in &state.cluster.nodes {
+    if state.transfers_issued() < config.max_transfers as u64 {
+        for (from, node) in &state.cluster().nodes {
             if node.role() != Role::Leader {
                 continue;
             }
-            for target in state.cluster.nodes.keys() {
+            for target in state.cluster().nodes.keys() {
                 if target != from {
                     actions.push(EnabledSoakAction {
                         trace: SoakAction::Transfer {
@@ -152,11 +152,11 @@ fn enabled_soak_fault_actions(
         }
     }
 
-    if state.partitions_issued < config.max_partitions as u64 {
-        let node_ids: Vec<NodeId> = state.cluster.nodes.keys().copied().collect();
+    if state.partitions_issued() < config.max_partitions as u64 {
+        let node_ids: Vec<NodeId> = state.cluster().nodes.keys().copied().collect();
         for (position, a) in node_ids.iter().enumerate() {
             for b in &node_ids[position + 1..] {
-                if !state.cluster.partitioned(*a, *b) {
+                if !state.cluster().partitioned(*a, *b) {
                     actions.push(EnabledSoakAction {
                         trace: SoakAction::Partition { a: *a, b: *b },
                         operation: SoakOperation::Partition { a: *a, b: *b },
@@ -165,12 +165,12 @@ fn enabled_soak_fault_actions(
             }
         }
     }
-    if state.cluster.nodes.keys().any(|a| {
+    if state.cluster().nodes.keys().any(|a| {
         state
-            .cluster
+            .cluster()
             .nodes
             .keys()
-            .any(|b| state.cluster.partitioned(*a, *b))
+            .any(|b| state.cluster().partitioned(*a, *b))
     }) {
         actions.push(EnabledSoakAction {
             trace: SoakAction::Heal,
@@ -178,10 +178,10 @@ fn enabled_soak_fault_actions(
         });
     }
 
-    if state.lossy_restarts_issued < config.max_lossy_restarts as u64 {
+    if state.lossy_restarts_issued() < config.max_lossy_restarts as u64 {
         actions.extend(
             state
-                .cluster
+                .cluster()
                 .nodes
                 .keys()
                 .copied()
@@ -192,7 +192,7 @@ fn enabled_soak_fault_actions(
         );
     }
 
-    if state.membership_changes_issued < config.max_membership_changes as u64 {
+    if state.membership_changes_issued() < config.max_membership_changes as u64 {
         actions.extend(
             enabled_membership_operations(state)
                 .into_iter()

@@ -5,11 +5,11 @@ use rafter::NodeConfig;
 use crate::Cluster;
 
 use super::{
-    application::apply_soak_action,
     invariants::run_replay_check,
     liveness::run_soak_liveness_check,
     scheduling::{enabled_soak_actions, soak_preferred_kind},
     soak::{SoakAction, SoakConfig, SoakFailure, SoakSummary},
+    state::apply_soak_action,
     state::ExplorationState,
     ReplayCheck,
 };
@@ -37,17 +37,17 @@ pub fn run_raft_random_soak(
             .filter_map(|(index, action)| (action.trace.kind() == preferred_kind).then_some(index))
             .collect::<Vec<_>>();
         let mut action_index = if candidates.is_empty() {
-            state.cluster.rng.index(actions.len())
+            state.scheduler_index(actions.len())
         } else {
-            candidates[state.cluster.rng.index(candidates.len())]
+            candidates[state.scheduler_index(candidates.len())]
         };
         // Tick-rate skew: re-draw tick targets so the skewed node ticks
         // `weight`-to-one against each peer, deterministically.
         if let (Some((skewed, weight)), SoakAction::Tick(_)) =
             (config.tick_skew, &actions[action_index].trace)
         {
-            let peers = state.cluster.nodes.len().saturating_sub(1);
-            if state.cluster.rng.index(weight as usize + peers) < weight as usize {
+            let peers = state.cluster().nodes.len().saturating_sub(1);
+            if state.scheduler_index(weight as usize + peers) < weight as usize {
                 if let Some(skewed_index) = actions.iter().position(
                     |action| matches!(action.trace, SoakAction::Tick(node) if node == skewed),
                 ) {

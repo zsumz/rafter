@@ -1,12 +1,12 @@
 use rafter::NodeId;
 
 use super::super::{
-    application::apply_to_restart_snapshot_state,
     invariants::{
         check_commit_history, check_election_history, check_election_safety, check_log_history,
         check_restart_snapshot_safety,
     },
     scheduling::enabled_restart_snapshot_actions,
+    state::apply_to_restart_snapshot_state,
     Action, Bounds, Failure, RestartSnapshotState, Summary,
 };
 use super::budget::ExplorationBudget;
@@ -43,7 +43,7 @@ impl RestartSafetyExplorer {
             return Ok(());
         }
         self.observe(state, trace);
-        check_election_safety(&state.state.cluster, trace)?;
+        check_election_safety(state.state.cluster(), trace)?;
         check_election_history(&state.state, trace)?;
         check_log_history(&state.state, trace)?;
         check_commit_history(&state.state, trace)?;
@@ -74,7 +74,7 @@ impl RestartSafetyExplorer {
             return;
         };
 
-        for (node_id, node) in &state.state.cluster.nodes {
+        for (node_id, node) in &state.state.cluster().nodes {
             if *node_id != NodeId(2) {
                 continue;
             }

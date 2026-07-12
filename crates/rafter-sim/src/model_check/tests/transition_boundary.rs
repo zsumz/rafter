@@ -11,8 +11,25 @@ const DIRECT_CLUSTER_TRANSITION_NEEDLES: &[&str] = &[
     "cluster.deliver_message(",
     "cluster.deliver_one_matching(",
     "cluster.deliver_random_ready(",
+    "cluster.read_index(",
     "cluster.propose(",
     "cluster.transfer_leadership(",
+    "cluster.add_learner(",
+    "cluster.promote_learner(",
+    "cluster.remove_voter(",
+    "cluster.enter_joint(",
+    "cluster.leave_joint(",
+    "cluster.change_membership(",
+    "cluster.restart_node_from_bootstrap(",
+    "cluster.restart_node_from_bootstrap_losing_application_state(",
+    "cluster.restart_node_lossy(",
+    "cluster.seed_snapshot_payload(",
+    "cluster.partition_between(",
+    "cluster.heal_partitions(",
+    "cluster.delay_matching(",
+    "cluster.drop_matching(",
+    "cluster.duplicate_matching(",
+    "cluster.queue_message(",
 ];
 
 const DIRECT_CLUSTER_TRANSITION_ALLOWLIST: &[(&str, &str)] = &[
@@ -29,12 +46,28 @@ const DIRECT_CLUSTER_TRANSITION_ALLOWLIST: &[(&str, &str)] = &[
         "static seed construction happens before ExplorationState exists",
     ),
     (
-        "src/model_check/tests/replay.rs",
-        "expected-cluster replay fixtures intentionally build an independent comparison state",
+        "src/model_check/state.rs",
+        "test-only detector fixture injection is owned by ExplorationState",
     ),
     (
-        "src/model_check/tests/seeded.rs",
-        "seeded regressions intentionally prepare fixture states before exercising apply_to_state",
+        "src/model_check/checks/witnesses.rs",
+        "semantic witness messages are queued before ExplorationState exists",
+    ),
+    (
+        "src/model_check/invariants/tests/application_epoch.rs",
+        "application-epoch detector fixtures seed snapshots before ExplorationState exists",
+    ),
+    (
+        "src/model_check/invariants/tests/commit_history_snapshot.rs",
+        "commit-history detector fixtures seed snapshots before ExplorationState exists",
+    ),
+    (
+        "src/model_check/invariants/tests/log_history.rs",
+        "logical-log detector fixtures seed snapshots before ExplorationState exists",
+    ),
+    (
+        "src/model_check/tests/replay.rs",
+        "expected-cluster replay fixtures intentionally build an independent comparison state",
     ),
     (
         "src/model_check/tests/soak/core.rs",
@@ -75,9 +108,44 @@ fn model_check_drivers_use_instrumented_transition_boundary() {
 
     assert!(
         violations.is_empty(),
-        "model-check protocol transitions must flow through apply_to_state; add a narrow allowlist reason for fixture-only setup:\n{}",
+        "model-check transitions must flow through the state-owned transition engine; add a narrow allowlist reason for fixture-only setup:\n{}",
         violations.join("\n")
     );
+}
+
+#[test]
+fn transition_capability_is_owned_by_state_and_has_no_mutable_deref() {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let state = fs::read_to_string(manifest_dir.join("src/model_check/state.rs"))
+        .expect("model-check state source is readable");
+    let application = fs::read_to_string(manifest_dir.join("src/model_check/application.rs"))
+        .expect("transition engine source is readable");
+    let root = fs::read_to_string(manifest_dir.join("src/model_check.rs"))
+        .expect("model-check root source is readable");
+
+    assert!(state.contains("mod application;"));
+    assert!(state.contains("cluster: InstrumentedCluster,"));
+    assert!(!state.contains("pub(super) cluster: InstrumentedCluster,"));
+    for field in [
+        "proposals_issued",
+        "restarts_issued",
+        "client_history",
+        "election_history",
+        "logical_log_history",
+        "commit_history",
+        "observations",
+    ] {
+        assert!(
+            !state.contains(&format!("pub(super) {field}:")),
+            "verifier field {field} must remain private to the state-owned engine"
+        );
+    }
+    assert!(application.contains("fn apply_transition("));
+    assert!(application.contains("Transition::SchedulerIndex"));
+    assert!(application.contains("Transition::RandomReadyPosition"));
+    assert!(application.contains("impl Deref for InstrumentedCluster"));
+    assert!(!application.contains("DerefMut"));
+    assert!(!root.contains("mod application;"));
 }
 
 #[test]

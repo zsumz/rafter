@@ -23,8 +23,7 @@ fn shorter_matching_commit_observation_preserves_canonical_ledger_identity() {
     let before = hash_commit_history(&state);
 
     state
-        .cluster
-        .restart_node_from_bootstrap(
+        .inject_bootstrap_state(
             NodeId(2),
             bootstrap_with_log(
                 Term(2),
@@ -40,7 +39,7 @@ fn shorter_matching_commit_observation_preserves_canonical_ledger_identity() {
     assert_eq!(hash_commit_history(&state), before);
     assert_eq!(
         state
-            .commit_history
+            .commit_history()
             .committed_prefix
             .as_ref()
             .map(|prefix| prefix.through),
@@ -107,7 +106,7 @@ fn leader_completeness_checks_prior_term_entry_hidden_by_newer_suffix() {
     state.witness_seeded_commit_authority(LogIndex(1), LogIndex(2), Term(5));
     let certificate = election_certificate(4, 2, stable_membership(&[1, 2], &[]), &[1, 2]);
     state
-        .election_history
+        .election_history_mut()
         .elected_by_term
         .insert(certificate.term, certificate);
 
@@ -124,13 +123,12 @@ fn later_commit_does_not_retroactively_invalidate_an_earlier_leader() {
     let mut state = state_with_bootstraps(voter_configs(&[1, 2, 3]), &[]);
     let certificate = election_certificate(18, 3, stable_membership(&[1, 2, 3], &[]), &[2, 3]);
     state
-        .election_history
+        .election_history_mut()
         .elected_by_term
         .insert(certificate.term, certificate);
 
     state
-        .cluster
-        .restart_node_from_bootstrap(
+        .inject_bootstrap_state(
             NodeId(1),
             bootstrap_with_log(
                 Term(20),
@@ -156,8 +154,7 @@ fn later_commit_does_not_retroactively_invalidate_an_earlier_leader() {
 fn committed_prefix_without_commit_term_provenance_is_a_harness_error() {
     let mut state = state_with_bootstraps(voter_configs(&[1, 2]), &[]);
     state
-        .cluster
-        .restart_node_from_bootstrap(
+        .inject_bootstrap_state(
             NodeId(1),
             bootstrap_with_log(
                 Term(3),
@@ -224,7 +221,7 @@ fn seeded_current_term_does_not_masquerade_as_commit_authority() {
     state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(1), Term(3));
     let certificate = election_certificate(4, 2, stable_membership(&[1, 2], &[]), &[1, 2]);
     state
-        .election_history
+        .election_history_mut()
         .elected_by_term
         .insert(certificate.term, certificate);
 
@@ -240,6 +237,6 @@ fn seeded_current_term_does_not_masquerade_as_commit_authority() {
 
 fn hash_commit_history(state: &ExplorationState) -> u64 {
     let mut hasher = DefaultHasher::new();
-    state.commit_history.hash(&mut hasher);
+    state.commit_history().hash(&mut hasher);
     hasher.finish()
 }

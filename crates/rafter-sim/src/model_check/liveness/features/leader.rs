@@ -10,10 +10,10 @@ use super::{
     production_monitor_state,
 };
 use crate::model_check::{
-    application::apply_soak_action,
     catalog,
     scheduling::SoakOperation,
     soak::{SoakAction, SoakActionKind, SoakConfig, SoakFailure},
+    state::apply_soak_action,
 };
 
 pub(super) fn run_quorum_only_leader_liveness_check(
@@ -76,7 +76,7 @@ pub(super) fn run_quorum_only_leader_liveness_check(
         budget,
         |state| liveness_proposal_completed(state, proposal_id),
     )?;
-    if completed && !state.cluster.leaders().is_empty() {
+    if completed && !state.cluster().leaders().is_empty() {
         return Ok(());
     }
 

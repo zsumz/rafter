@@ -50,12 +50,12 @@ fn snapshot_catchup_completed(
     expected: &state::ExpectedSnapshot,
 ) -> bool {
     let follower = NodeId(2);
-    state.cluster.bootstrap_state(follower).snapshot == Some(expected.snapshot.clone())
+    state.cluster().bootstrap_state(follower).snapshot == Some(expected.snapshot.clone())
         && state
-            .cluster
+            .cluster()
             .snapshot_payload(follower, &expected.snapshot)
             .is_some_and(|payload| payload == expected.payload.as_ref())
-        && state.cluster.snapshot_installs().iter().any(|install| {
+        && state.cluster().snapshot_installs().iter().any(|install| {
             install.node_id == follower
                 && install.last_included_index == expected.snapshot.metadata.last_included_index
                 && install.last_included_term == expected.snapshot.metadata.last_included_term

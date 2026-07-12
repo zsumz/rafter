@@ -7,10 +7,10 @@ use super::super::driver::{
     soak_liveness_failure,
 };
 use crate::model_check::{
-    application::apply_to_state,
     catalog,
     scheduling::Operation,
     soak::{SoakAction, SoakActionKind, SoakConfig, SoakFailure},
+    state::apply_to_state,
     state::ExplorationState,
 };
 
@@ -63,10 +63,10 @@ pub(super) fn run_leadership_transfer_liveness_check(
 }
 
 fn leadership_transfer_liveness_target(state: &ExplorationState, leader: NodeId) -> Option<NodeId> {
-    let membership = state.cluster.effective_membership(leader);
-    let leader_last_log_index = state.cluster.last_log_index(leader);
+    let membership = state.cluster().effective_membership(leader);
+    let leader_last_log_index = state.cluster().last_log_index(leader);
     state
-        .cluster
+        .cluster()
         .leader_replication_progress(leader)
         .into_iter()
         .filter(|progress| {
