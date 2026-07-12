@@ -86,11 +86,13 @@ impl Cluster {
         for output in outputs {
             match output {
                 Output::Apply { index, payload, .. } => {
+                    let commit_index_at_emit = self.commit_index(from);
                     self.record_durable_applied(from, index);
                     let application_epoch = self.application_epoch(from);
                     self.applied.push(Applied {
                         node_id: from,
                         application_epoch,
+                        commit_index_at_emit,
                         index,
                         payload,
                     });
