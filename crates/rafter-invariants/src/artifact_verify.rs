@@ -110,7 +110,7 @@ fn verify_compile_invocations(bundle: &ResultBundle, root: &Path) -> Result<(), 
                     .to_owned(),
             ));
         }
-        if bundle.runner == "tests" {
+        if bundle.runner == "tests" || observed.label != "simulator compile" {
             verify_test_compile(bundle, observed)?;
         } else {
             verify_simulator_compile(bundle, observed)?;
@@ -152,10 +152,9 @@ fn verify_test_compile(
         "--message-format=json-render-diagnostics".to_owned(),
     ]);
     let source_prefix = bundle.source_ref.get(..12).unwrap_or(&bundle.source_ref);
-    let expected_target = format!(
-        "target/rafter-invariants/build/{source_prefix}/{}-tests",
-        bundle.profile
-    );
+    let execution_profile = test_execution_profile(bundle);
+    let expected_target =
+        format!("target/rafter-invariants/build/{source_prefix}/{execution_profile}-tests");
     let mut base_environment = observed.invocation.environment.clone();
     let target_dir = base_environment.remove("CARGO_TARGET_DIR");
     if observed.invocation.arguments != expected
@@ -311,9 +310,10 @@ fn verify_test_invocations(
         .into_owned();
     let base_digest = bundle.execution.source.environment_sha256.as_str();
     let temporary = Path::new("target/rafter-invariants/tmp").join(&check.execution_id);
+    let execution_profile = test_execution_profile(bundle);
     let seed = crate::producer::artifact::deterministic_u64(
         "rafter-tests/v1",
-        &format!("{}\0{}\0{test_name}", bundle.profile, bundle.source_ref),
+        &format!("{execution_profile}\0{}\0{test_name}", bundle.source_ref),
     );
     let mut exact_environment = invocations
         .first()
@@ -381,6 +381,14 @@ fn verify_test_invocations(
         ));
     }
     Ok(())
+}
+
+fn test_execution_profile(bundle: &ResultBundle) -> String {
+    if bundle.runner == "simulator" {
+        format!("{}-simulator-detectors", bundle.profile)
+    } else {
+        bundle.profile.clone()
+    }
 }
 
 fn verify_simulator_invocations(
