@@ -3,6 +3,7 @@ use rafter::{LogIndex, NodeId, SharedPayload};
 use super::super::linearizability::check_client_history_linearizable;
 use super::super::state::{
     ClientHistory, ClientRead, ClientReadOutcome, ClientReadProof, ClientWrite, ClientWriteStatus,
+    ClientWriteUnknownReason,
 };
 use super::super::ProposalId;
 
@@ -53,6 +54,29 @@ fn linearizer_accepts_read_of_initial_register_value() {
         .expect("reads may return the value established before history recording");
 }
 
+#[test]
+fn linearizer_can_include_unknown_write_to_explain_later_read() {
+    let mut history = ClientHistory::default();
+    insert_unknown_write(&mut history, ProposalId(1), 0, b"maybe");
+    insert_completed_read(&mut history, 1, 1, 2, LogIndex(1), Some(payload(b"maybe")));
+
+    check_client_history_linearizable(&history)
+        .expect("an unknown write may explain a later observed value");
+}
+
+#[test]
+fn linearizer_rejects_history_that_requires_and_then_forgets_unknown_write() {
+    let mut history = ClientHistory::default();
+    insert_unknown_write(&mut history, ProposalId(1), 0, b"maybe");
+    insert_completed_read(&mut history, 1, 1, 2, LogIndex(1), Some(payload(b"maybe")));
+    insert_completed_read(&mut history, 2, 3, 4, LogIndex(1), None);
+
+    let error = check_client_history_linearizable(&history)
+        .expect_err("an included unknown write cannot later disappear");
+    assert!(error.contains("not linearizable"));
+    assert!(error.contains("optional write 1"));
+}
+
 fn insert_completed_write(
     history: &mut ClientHistory,
     proposal_id: ProposalId,
@@ -100,6 +124,26 @@ fn insert_completed_read(
                 },
                 result,
                 completed_at,
+            },
+        },
+    );
+}
+
+fn insert_unknown_write(
+    history: &mut ClientHistory,
+    proposal_id: ProposalId,
+    started_at: u64,
+    value: &[u8],
+) {
+    history.writes.insert(
+        proposal_id,
+        ClientWrite {
+            proposal_id,
+            node_id: NodeId(1),
+            payload: payload(value),
+            started_at,
+            status: ClientWriteStatus::Unknown {
+                reason: ClientWriteUnknownReason::StaleLeader,
             },
         },
     );
