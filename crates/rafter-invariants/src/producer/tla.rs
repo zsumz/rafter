@@ -19,6 +19,7 @@ use super::{
         validate_runner_options, validate_spec_contract,
     },
     tla_exec::{execute, MainStatus, ProbeStatus, TlaExecution},
+    ProducerContext,
 };
 
 pub(super) fn run(
@@ -27,6 +28,7 @@ pub(super) fn run(
     profile: &str,
     source: SourceReceipt,
     output_dir: &Path,
+    context: &ProducerContext<'_>,
 ) -> Result<ResultBundle, Box<dyn Error>> {
     let started = Instant::now();
     let runner = contract.runners.get("tla").ok_or("TLA runner missing")?;
@@ -88,9 +90,8 @@ pub(super) fn run(
         profile: profile.to_owned(),
         source_ref: source.commit.clone(),
         execution: ExecutionReceipt {
-            producer: runner.producer.clone(),
-            command: runner.command.clone(),
-            configuration: runner.configuration.clone(),
+            plan: context.plan.clone(),
+            invocation: context.invocation.clone(),
             source,
             checks: vec![check],
             duration_ms: process::duration_ms(started.elapsed()),

@@ -3,7 +3,10 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 
 /// Current version of the machine-readable receipt and report contract.
-pub const RESULT_SCHEMA_VERSION: u32 = 6;
+pub const RESULT_SCHEMA_VERSION: u32 = 7;
+
+/// Current version of the hashed execution-plan contract.
+pub const PLAN_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -21,14 +24,45 @@ pub struct ResultBundle {
 #[serde(deny_unknown_fields)]
 /// Deterministic execution provenance shared by every result in a bundle.
 pub struct ExecutionReceipt {
-    pub producer: String,
-    pub command: Vec<String>,
-    pub configuration: BTreeMap<String, String>,
+    pub plan: ExecutionPlanReceipt,
+    pub invocation: InvocationReceipt,
     pub source: SourceReceipt,
     pub checks: Vec<CheckReceipt>,
     pub duration_ms: u64,
     pub peak_rss_kib: u64,
     pub artifacts: Vec<ArtifactRef>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+/// Exact registry, manifest, and selected profile contract used by a producer.
+pub struct ExecutionPlanReceipt {
+    pub schema_version: u32,
+    pub profile: String,
+    pub registry: PlanInput,
+    pub manifest: PlanInput,
+    pub contract: crate::ProfileContract,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+/// One repository-relative input whose exact bytes are bound into a plan.
+pub struct PlanInput {
+    pub path: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+/// Actual invariant CLI process invocation, separate from reproduction hints.
+pub struct InvocationReceipt {
+    pub program: String,
+    pub program_sha256: String,
+    pub arguments: Vec<String>,
+    pub current_dir: String,
+    pub environment: BTreeMap<String, String>,
+    pub environment_sha256: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

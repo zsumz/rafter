@@ -1,11 +1,11 @@
-mod artifact;
+pub(crate) mod artifact;
 mod maelstrom;
 mod maelstrom_binding;
 pub(crate) mod maelstrom_edn;
 mod maelstrom_exec;
 mod maelstrom_scenario;
 mod maelstrom_tool;
-mod process;
+pub(crate) mod process;
 mod simulator;
 mod simulator_model;
 pub(crate) mod source;
@@ -26,7 +26,10 @@ pub(crate) use tla_contract::java_major;
 use std::collections::BTreeSet;
 use std::{error::Error, fs, path::PathBuf};
 
-use crate::{Catalog, ProfileManifest, ResultBundle};
+use crate::{
+    capture_invocation, ExecutionPlan, ExecutionPlanReceipt, InvocationReceipt, PlanOptions,
+    ResultBundle,
+};
 
 #[derive(Clone, Debug)]
 /// Input paths and selected contract for one deterministic evidence producer.
@@ -45,6 +48,11 @@ pub struct ProducerOutcome {
     pub all_passed: bool,
 }
 
+pub(super) struct ProducerContext<'a> {
+    pub plan: &'a ExecutionPlanReceipt,
+    pub invocation: &'a InvocationReceipt,
+}
+
 /// Executes one profile layer and writes its strict result bundle.
 ///
 /// # Errors
@@ -53,58 +61,97 @@ pub struct ProducerOutcome {
 /// invalid, the selected layer is unsupported, or the receipt cannot be
 /// written. Individual check failures are represented inside the receipt.
 pub fn produce(options: &ProducerOptions) -> Result<ProducerOutcome, Box<dyn Error>> {
-    artifact::validate_output_dir(&options.output_dir)?;
-    let catalog = Catalog::load(&options.registry)?;
-    let manifest = ProfileManifest::load(&options.manifest)?;
-    manifest.validate(&catalog)?;
-    let contract = manifest
-        .profiles
-        .get(&options.profile)
-        .ok_or_else(|| format!("unknown profile {}", options.profile))?;
-    if !contract.required_layers.contains(&options.layer) {
+    let plan = ExecutionPlan::load(&PlanOptions {
+        profile: options.profile.clone(),
+        registry: options.registry.clone(),
+        manifest: options.manifest.clone(),
+    })?;
+    let invocation = capture_invocation()?;
+    produce_with_plan(&plan, &options.layer, &options.output_dir, &invocation)
+}
+
+/// Executes one layer from an already loaded immutable plan.
+///
+/// # Errors
+///
+/// Returns an error when the selected layer cannot produce a complete receipt.
+pub fn produce_with_plan(
+    plan: &ExecutionPlan,
+    layer: &str,
+    output_dir: &std::path::Path,
+    invocation: &InvocationReceipt,
+) -> Result<ProducerOutcome, Box<dyn Error>> {
+    artifact::validate_output_dir(output_dir)?;
+    crate::plan::verify_plan_input(&plan.receipt.registry, std::path::Path::new("."))?;
+    crate::plan::verify_plan_input(&plan.receipt.manifest, std::path::Path::new("."))?;
+    let contract = plan.contract();
+    if !contract
+        .required_layers
+        .iter()
+        .any(|required| required == layer)
+    {
         return Err(format!(
             "layer {} is not required by profile {}",
-            options.layer, options.profile
+            layer, plan.receipt.profile
         )
         .into());
     }
-    let source = source::capture_for_layer(&options.layer)?;
-    let bundle = match options.layer.as_str() {
+    let path = output_dir.join(format!("{}-{layer}.json", plan.receipt.profile));
+    if path.exists() {
+        fs::remove_file(&path)?;
+    }
+    let source = source::capture_for_layer(layer)?;
+    let context = ProducerContext {
+        plan: &plan.receipt,
+        invocation,
+    };
+    let mut bundle = match layer {
         "tests" => tests::run(
-            &catalog,
+            &plan.catalog,
             contract,
-            &options.profile,
+            &plan.receipt.profile,
             source,
-            &options.output_dir,
+            output_dir,
+            &context,
         )?,
         "simulator" => simulator::run(
-            &catalog,
+            &plan.catalog,
             contract,
-            &options.profile,
+            &plan.receipt.profile,
             source,
-            &options.output_dir,
+            output_dir,
+            &context,
         )?,
         "tla" => tla::run(
-            &catalog,
+            &plan.catalog,
             contract,
-            &options.profile,
+            &plan.receipt.profile,
             source,
-            &options.output_dir,
+            output_dir,
+            &context,
         )?,
         "maelstrom" => maelstrom::run(
-            &catalog,
+            &plan.catalog,
             contract,
-            &options.profile,
+            &plan.receipt.profile,
             source,
-            &options.output_dir,
+            output_dir,
+            &context,
         )?,
         layer => return Err(format!("producer for layer {layer} is not implemented").into()),
     };
-    let expected_ids = catalog
+    bundle.execution.artifacts.push(artifact::capture(
+        output_dir,
+        std::path::Path::new(&format!("{}-{layer}/inputs", plan.receipt.profile)),
+        &std::env::current_exe()?,
+        "producer-binary",
+    )?);
+    let expected_ids = plan
+        .catalog
         .required_evidence(contract)
         .into_values()
         .flatten()
-        .filter(|descriptor| descriptor.layer == options.layer)
+        .filter(|descriptor| descriptor.layer == layer)
         .map(|descriptor| descriptor.evidence_id())
         .collect::<BTreeSet<_>>();
     let result_ids = bundle
@@ -115,22 +162,31 @@ pub fn produce(options: &ProducerOptions) -> Result<ProducerOutcome, Box<dyn Err
     let all_passed = !expected_ids.is_empty()
         && result_ids == expected_ids
         && bundle.results.len() == result_ids.len()
-        && bundle.execution.checks.len()
-            >= contract.runners[&options.layer].minimum_observed_checks
+        && bundle.execution.checks.len() >= contract.runners[layer].minimum_observed_checks
         && bundle
             .results
             .iter()
             .all(|result| result.status == crate::EvidenceStatus::Pass);
-    let path = write_bundle(&bundle, &options.output_dir)?;
+    let path = write_bundle(&bundle, output_dir)?;
     Ok(ProducerOutcome { path, all_passed })
 }
 
-fn write_bundle(bundle: &ResultBundle, output_dir: &PathBuf) -> Result<PathBuf, Box<dyn Error>> {
+fn write_bundle(
+    bundle: &ResultBundle,
+    output_dir: &std::path::Path,
+) -> Result<PathBuf, Box<dyn Error>> {
     fs::create_dir_all(output_dir)?;
     let path = output_dir.join(format!("{}-{}.json", bundle.profile, bundle.runner));
+    let temporary = output_dir.join(format!(
+        ".{}-{}.json.tmp-{}",
+        bundle.profile,
+        bundle.runner,
+        std::process::id()
+    ));
     fs::write(
-        &path,
+        &temporary,
         format!("{}\n", serde_json::to_string_pretty(bundle)?),
     )?;
+    fs::rename(temporary, &path)?;
     Ok(path)
 }

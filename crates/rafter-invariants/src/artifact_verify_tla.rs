@@ -16,9 +16,9 @@ pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), Aggregate
         .checks
         .first()
         .ok_or_else(|| AggregateError::new("TLA receipt has no check".to_owned()))?;
-    let main = read_process_log(check, "tla-log", "model-check", root)?;
-    let trace = read_process_log(check, "tla-trace-log", "trace-sample", root)?;
-    let detector = read_process_log(check, "tla-detector-log", "detector-negative", root)?;
+    let main = read_process_log(bundle, check, "tla-log", "model-check", root)?;
+    let trace = read_process_log(bundle, check, "tla-trace-log", "trace-sample", root)?;
+    let detector = read_process_log(bundle, check, "tla-detector-log", "detector-negative", root)?;
     let config = read_kind(check, "tla-config", root)?;
     verify_tool_pin(bundle, check, root)?;
     let main_summary = crate::producer::tla_output::parse(main.stdout.as_bytes())
@@ -101,6 +101,13 @@ fn checksum_matches(checksums: &str, expected_sha: &str) -> bool {
 fn configuration<'a>(bundle: &'a ResultBundle, name: &str) -> Result<&'a str, AggregateError> {
     bundle
         .execution
+        .plan
+        .contract
+        .runners
+        .get(&bundle.runner)
+        .ok_or_else(|| {
+            AggregateError::new(format!("execution plan omitted runner {}", bundle.runner))
+        })?
         .configuration
         .get(name)
         .map(String::as_str)
@@ -165,6 +172,7 @@ fn unique_artifact<'a>(
 }
 
 fn read_process_log(
+    bundle: &ResultBundle,
     check: &crate::CheckReceipt,
     kind: &str,
     label: &str,
@@ -173,12 +181,86 @@ fn read_process_log(
     let source = read_kind(check, kind, root)?;
     let log: crate::producer::ProcessLog = serde_json::from_str(&source)
         .map_err(|error| AggregateError::new(format!("parse TLA process log: {error}")))?;
-    if log.schema_version != 1 || log.label != label {
+    if log.schema_version != 2 || log.label != label || !log.has_complete_invocation() {
         return Err(AggregateError::new(format!(
-            "TLA process log {kind} has the wrong schema or label"
+            "TLA process log {kind} has the wrong schema, label, or exact invocation"
         )));
     }
+    verify_tla_invocation(bundle, label, &log.invocation, root)?;
     Ok(log)
+}
+
+fn verify_tla_invocation(
+    bundle: &ResultBundle,
+    label: &str,
+    observed: &crate::InvocationReceipt,
+    root: &Path,
+) -> Result<(), AggregateError> {
+    let (config, module, workers) = match label {
+        "model-check" => (
+            configuration(bundle, "config")?,
+            "Raft.tla",
+            configuration(bundle, "workers")?,
+        ),
+        "trace-sample" => ("RaftTraceSample.cfg", "RaftTraceSample.tla", "1"),
+        "detector-negative" => (
+            "RafterInvariantDetectorNegative.cfg",
+            "RafterInvariantDetectorNegative.tla",
+            "1",
+        ),
+        _ => {
+            return Err(AggregateError::new(format!(
+                "unknown TLA log label {label}"
+            )))
+        }
+    };
+    let repository = fs::canonicalize(root)
+        .map_err(|error| AggregateError::new(format!("canonicalize TLA root: {error}")))?;
+    let current_dir = repository.join("specs/tla/raft");
+    let source_prefix = bundle.source_ref.get(..12).unwrap_or(&bundle.source_ref);
+    let state_dir = repository
+        .join("target/rafter-invariants/tla")
+        .join(source_prefix)
+        .join(&bundle.profile)
+        .join(label);
+    let arguments = vec![
+        "-XX:+UseParallelGC".to_owned(),
+        "-cp".to_owned(),
+        repository
+            .join("tools/cache/tla2tools.jar")
+            .to_string_lossy()
+            .into_owned(),
+        "tlc2.TLC".to_owned(),
+        "-tool".to_owned(),
+        "-workers".to_owned(),
+        workers.to_owned(),
+        "-seed".to_owned(),
+        configuration(bundle, "seed")?.to_owned(),
+        "-fp".to_owned(),
+        "0".to_owned(),
+        "-metadir".to_owned(),
+        state_dir.to_string_lossy().into_owned(),
+        "-config".to_owned(),
+        config.to_owned(),
+        module.to_owned(),
+    ];
+    let java_sha = bundle
+        .execution
+        .source
+        .tools
+        .get("java")
+        .map(|tool| tool.sha256.as_str());
+    if observed.program != "java"
+        || java_sha != Some(observed.program_sha256.as_str())
+        || observed.arguments != arguments
+        || observed.current_dir != current_dir.to_string_lossy()
+        || observed.environment_sha256 != bundle.execution.source.environment_sha256
+    {
+        return Err(AggregateError::new(format!(
+            "TLA process log {label} does not match the exact invocation plan"
+        )));
+    }
+    Ok(())
 }
 
 fn configured_invariants(source: &str) -> Vec<String> {

@@ -12,7 +12,7 @@ use super::{
     maelstrom_edn::Validity,
     maelstrom_exec::{run_trial, Scenario, ScenarioMarkers, TrialOutcome},
     maelstrom_scenario::{required_configuration, scenario_for},
-    process, source,
+    process, source, ProducerContext,
 };
 
 pub(super) fn run(
@@ -21,6 +21,7 @@ pub(super) fn run(
     profile: &str,
     source: SourceReceipt,
     output_dir: &Path,
+    context: &ProducerContext<'_>,
 ) -> Result<ResultBundle, Box<dyn Error>> {
     let started = Instant::now();
     let runner = contract
@@ -103,9 +104,8 @@ pub(super) fn run(
         profile: profile.to_owned(),
         source_ref: source.commit.clone(),
         execution: ExecutionReceipt {
-            producer: runner.producer.clone(),
-            command: runner.command.clone(),
-            configuration: runner.configuration.clone(),
+            plan: context.plan.clone(),
+            invocation: context.invocation.clone(),
             source,
             checks,
             duration_ms: process::duration_ms(started.elapsed()),

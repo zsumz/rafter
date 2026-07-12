@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "runner", "profile", "source_ref", "execution", "results"],
   "properties": {
-    "schema_version": { "const": 6 },
+    "schema_version": { "const": 7 },
     "runner": { "enum": ["tests", "simulator", "tla", "maelstrom"] },
     "profile": { "enum": ["pr", "nightly", "weekly"] },
     "source_ref": { "type": "string", "minLength": 1 },
@@ -20,17 +20,141 @@
     "execution": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["producer", "command", "configuration", "source", "checks", "duration_ms", "peak_rss_kib", "artifacts"],
+      "required": ["plan", "invocation", "source", "checks", "duration_ms", "peak_rss_kib", "artifacts"],
       "properties": {
-        "producer": { "type": "string", "minLength": 1 },
-        "command": { "type": "array", "minItems": 1, "items": { "type": "string" } },
-        "configuration": { "type": "object", "minProperties": 1, "additionalProperties": { "type": "string" } },
+        "plan": { "$ref": "#/$defs/plan" },
+        "invocation": { "$ref": "#/$defs/invocation" },
         "source": { "$ref": "#/$defs/source" },
         "checks": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/check" } },
         "duration_ms": { "type": "integer", "minimum": 0 },
         "peak_rss_kib": { "type": "integer", "minimum": 1 },
         "artifacts": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/artifact" } }
       }
+    },
+    "plan_input": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "size_bytes"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "size_bytes": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "profile", "registry", "manifest", "contract"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "profile": { "enum": ["pr", "nightly", "weekly"] },
+        "registry": { "$ref": "#/$defs/plan_input" },
+        "manifest": { "$ref": "#/$defs/plan_input" },
+        "contract": { "$ref": "#/$defs/profile_contract" }
+      }
+    },
+    "invocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["program", "program_sha256", "arguments", "current_dir", "environment", "environment_sha256"],
+      "properties": {
+        "program": { "type": "string", "minLength": 1 },
+        "program_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "arguments": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" }
+        },
+        "current_dir": { "type": "string", "minLength": 1 },
+        "environment": { "type": "object", "additionalProperties": { "type": "string" } },
+        "environment_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "profile_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["description", "evidence_policy", "clause_policy", "required_clause_strength", "required_layers", "required_strengths", "canonical_minimum_independent_layers", "runners"],
+      "properties": {
+        "description": { "type": "string", "minLength": 1 },
+        "evidence_policy": { "const": "all_matching_registry_evidence" },
+        "clause_policy": { "const": "all_required_clauses" },
+        "required_clause_strength": { "const": "direct" },
+        "required_layers": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["tests", "simulator", "tla", "maelstrom"] }
+        },
+        "required_strengths": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["direct", "e2e"] }
+        },
+        "canonical_minimum_independent_layers": { "type": "integer", "minimum": 2 },
+        "runners": {
+          "type": "object",
+          "minProperties": 1,
+          "propertyNames": { "enum": ["tests", "simulator", "tla", "maelstrom"] },
+          "additionalProperties": { "$ref": "#/$defs/runner_contract" }
+        }
+      }
+    },
+    "runner_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["producer", "command", "configuration", "minimum_observed_checks", "require_peak_rss"],
+      "properties": {
+        "producer": { "type": "string", "minLength": 1 },
+        "command": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string" }
+        },
+        "configuration": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "type": "string" }
+        },
+        "minimum_observed_checks": { "type": "integer", "minimum": 1 },
+        "require_peak_rss": { "type": "boolean" }
+      }
+    },
+    "test_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["package", "target_kind", "target", "test_name"],
+      "properties": {
+        "package": { "type": "string", "minLength": 1 },
+        "target_kind": { "type": "string", "minLength": 1 },
+        "target": { "type": "string", "minLength": 1 },
+        "test_name": { "type": "string", "minLength": 1 }
+      }
+    },
+    "simulator_identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["checks", "required_observation", "minimum_observation"],
+      "properties": {
+        "checks": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "required_observation": { "type": "string", "minLength": 1 },
+        "minimum_observation": { "type": "integer", "minimum": 1 },
+        "minimum_protocol_states": { "type": "integer", "minimum": 1 },
+        "minimum_verifier_states": { "type": "integer", "minimum": 1 },
+        "minimum_runs_per_check": { "type": "integer", "minimum": 1 },
+        "minimum_steps": { "type": "integer", "minimum": 1 },
+        "required_liveness_feature": { "type": "string", "minLength": 1 },
+        "negative_test": { "$ref": "#/$defs/test_identity" }
+      },
+      "anyOf": [
+        { "required": ["minimum_protocol_states", "minimum_verifier_states"] },
+        { "required": ["minimum_runs_per_check", "minimum_steps", "required_liveness_feature"] }
+      ]
     },
     "source": {
       "type": "object",

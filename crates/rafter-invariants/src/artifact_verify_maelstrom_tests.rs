@@ -1,9 +1,11 @@
 use std::{collections::BTreeMap, fs, path::PathBuf};
 
 use crate::{
-    ArtifactRef, CheckCompletion, CheckReceipt, EvidenceResult, EvidenceStatus, ExecutionReceipt,
-    ResultBundle, SourceReceipt,
+    ArtifactRef, CheckCompletion, CheckReceipt, EvidenceResult, EvidenceStatus,
+    ExecutionPlanReceipt, ExecutionReceipt, InvocationReceipt, PlanInput, ProfileContract,
+    ResultBundle, RunnerContract, SourceReceipt, PLAN_SCHEMA_VERSION,
 };
+use sha2::{Digest, Sha256};
 
 const VALID: &str = r"{
   :stats {:count 9 :ok-count 6 :by-f {
@@ -17,6 +19,7 @@ fn aggregate_rederives_maelstrom_semantics_from_trial_artifacts(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let root = temporary_root()?;
     write(&root, "scripts/maelstrom-lin-kv", "runner")?;
+    prepare_state(&root)?;
     write(&root, "target/debug/rafter-maelstrom", "binary")?;
     write(&root, "evidence/trial-0/runner", "runner")?;
     write(&root, "evidence/trial-0/binary", "binary")?;
@@ -24,12 +27,30 @@ fn aggregate_rederives_maelstrom_semantics_from_trial_artifacts(
     write(
         &root,
         "evidence/trial-0/process.json",
-        r#"{"schema_version":1,"label":"base","exit_code":0,"timed_out":false,"duration_ms":1,"peak_rss_kib":1,"stdout":"","stderr":""}"#,
+        &process_log(&root, 0, "")?,
     )?;
     write(&root, "evidence/trial-0/node.log", "role=leader")?;
     let bundle = bundle();
 
     crate::artifact_verify_maelstrom::verify(&bundle, &root)?;
+
+    let mut wrong_invocation: serde_json::Value =
+        serde_json::from_str(&process_log(&root, 0, "")?)?;
+    wrong_invocation["invocation"]["arguments"] = serde_json::json!(["--test-count", "2"]);
+    write(
+        &root,
+        "evidence/trial-0/process.json",
+        &wrong_invocation.to_string(),
+    )?;
+    assert!(crate::artifact_verify_maelstrom::verify(&bundle, &root)
+        .expect_err("wrong complete invocation is rejected")
+        .to_string()
+        .contains("arguments"));
+    write(
+        &root,
+        "evidence/trial-0/process.json",
+        &process_log(&root, 0, "")?,
+    )?;
 
     let mut forged = bundle.clone();
     forged.execution.checks[0]
@@ -39,6 +60,31 @@ fn aggregate_rederives_maelstrom_semantics_from_trial_artifacts(
         .expect_err("forged observation is rejected")
         .to_string()
         .contains("observations disagree"));
+
+    let mut stale: serde_json::Value = serde_json::from_str(&process_log(&root, 0, "")?)?;
+    stale["schema_version"] = serde_json::json!(1);
+    write(&root, "evidence/trial-0/process.json", &stale.to_string())?;
+    assert!(crate::artifact_verify_maelstrom::verify(&bundle, &root)
+        .expect_err("stale process schema is rejected")
+        .to_string()
+        .contains("exact invocation"));
+
+    let mut incomplete: serde_json::Value = serde_json::from_str(&process_log(&root, 0, "")?)?;
+    incomplete["invocation"]["program"] = serde_json::json!("");
+    write(
+        &root,
+        "evidence/trial-0/process.json",
+        &incomplete.to_string(),
+    )?;
+    assert!(crate::artifact_verify_maelstrom::verify(&bundle, &root)
+        .expect_err("incomplete invocation is rejected")
+        .to_string()
+        .contains("exact invocation"));
+    write(
+        &root,
+        "evidence/trial-0/process.json",
+        &process_log(&root, 0, "")?,
+    )?;
 
     let mut missing = bundle;
     missing.execution.checks[0]
@@ -58,6 +104,7 @@ fn invalid_history_can_only_fail_client_linearizability() -> Result<(), Box<dyn 
 {
     let root = temporary_root()?;
     write(&root, "scripts/maelstrom-lin-kv", "runner")?;
+    prepare_state(&root)?;
     write(&root, "target/debug/rafter-maelstrom", "binary")?;
     write(&root, "evidence/trial-0/runner", "runner")?;
     write(&root, "evidence/trial-0/binary", "binary")?;
@@ -72,7 +119,7 @@ fn invalid_history_can_only_fail_client_linearizability() -> Result<(), Box<dyn 
     write(
         &root,
         "evidence/trial-0/process.json",
-        r#"{"schema_version":1,"label":"base","exit_code":0,"timed_out":false,"duration_ms":1,"peak_rss_kib":1,"stdout":"","stderr":""}"#,
+        &process_log(&root, 0, "")?,
     )?;
     write(&root, "evidence/trial-0/node.log", "role=leader")?;
     let mut bundle = bundle();
@@ -93,6 +140,7 @@ fn invalid_history_can_only_fail_client_linearizability() -> Result<(), Box<dyn 
 fn nonzero_process_exit_is_always_a_harness_error() -> Result<(), Box<dyn std::error::Error>> {
     let root = temporary_root()?;
     write(&root, "scripts/maelstrom-lin-kv", "runner")?;
+    prepare_state(&root)?;
     write(&root, "target/debug/rafter-maelstrom", "binary")?;
     write(&root, "evidence/trial-0/runner", "runner")?;
     write(&root, "evidence/trial-0/binary", "binary")?;
@@ -100,7 +148,7 @@ fn nonzero_process_exit_is_always_a_harness_error() -> Result<(), Box<dyn std::e
     write(
         &root,
         "evidence/trial-0/process.json",
-        r#"{"schema_version":1,"label":"base","exit_code":1,"timed_out":false,"duration_ms":1,"peak_rss_kib":1,"stdout":"","stderr":"failed"}"#,
+        &process_log(&root, 1, "failed")?,
     )?;
     write(&root, "evidence/trial-0/node.log", "role=leader")?;
     let mut bundle = bundle();
@@ -118,18 +166,52 @@ fn nonzero_process_exit_is_always_a_harness_error() -> Result<(), Box<dyn std::e
 
 fn bundle() -> ResultBundle {
     let execution_id = "maelstrom-base".to_owned();
+    let configuration = BTreeMap::from([
+        ("trials".to_owned(), "1".to_owned()),
+        ("maelstrom_jar_sha256".to_owned(), "0".repeat(64)),
+        ("duration_seconds".to_owned(), "5".to_owned()),
+        ("rate".to_owned(), "10".to_owned()),
+    ]);
+    let contract = ProfileContract {
+        description: "test".to_owned(),
+        evidence_policy: "all_matching_registry_evidence".to_owned(),
+        clause_policy: "all_required_clauses".to_owned(),
+        required_clause_strength: "direct".to_owned(),
+        required_layers: vec!["maelstrom".to_owned()],
+        required_strengths: vec!["e2e".to_owned()],
+        canonical_minimum_independent_layers: 2,
+        runners: BTreeMap::from([(
+            "maelstrom".to_owned(),
+            RunnerContract {
+                producer: "test".to_owned(),
+                command: vec!["test".to_owned()],
+                configuration,
+                minimum_observed_checks: 1,
+                require_peak_rss: true,
+            },
+        )]),
+    };
     ResultBundle {
-        schema_version: 6,
+        schema_version: 7,
         runner: "maelstrom".to_owned(),
         profile: "nightly".to_owned(),
         source_ref: "abc".to_owned(),
         execution: ExecutionReceipt {
-            producer: "test".to_owned(),
-            command: Vec::new(),
-            configuration: BTreeMap::from([
-                ("trials".to_owned(), "1".to_owned()),
-                ("maelstrom_jar_sha256".to_owned(), "0".repeat(64)),
-            ]),
+            plan: ExecutionPlanReceipt {
+                schema_version: PLAN_SCHEMA_VERSION,
+                profile: "nightly".to_owned(),
+                registry: plan_input("verification/raft-invariants.yaml"),
+                manifest: plan_input("verification/raft-invariant-profiles.json"),
+                contract,
+            },
+            invocation: InvocationReceipt {
+                program: "rafter-invariants".to_owned(),
+                program_sha256: "0".repeat(64),
+                arguments: vec!["run".to_owned()],
+                current_dir: "/workspace/rafter".to_owned(),
+                environment: BTreeMap::new(),
+                environment_sha256: crate::producer::process::digest_environment(&BTreeMap::new()),
+            },
             source: source(),
             checks: vec![CheckReceipt {
                 execution_id: execution_id.clone(),
@@ -164,6 +246,62 @@ fn bundle() -> ResultBundle {
     }
 }
 
+fn process_log(
+    root: &std::path::Path,
+    exit_code: i32,
+    stderr: &str,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let state_dir =
+        fs::canonicalize(root.join("target/rafter-invariants/maelstrom/abc/nightly/base/trial-0"))?;
+    let durable = state_dir.join("durable");
+    let environment = crate::producer::process::base_environment()
+        .into_iter()
+        .chain(BTreeMap::from([
+            (
+                "RAFTER_MAELSTROM_ROOT".to_owned(),
+                durable.to_string_lossy().into_owned(),
+            ),
+            ("RAFTER_MAELSTROM_TIME_LIMIT".to_owned(), "5".to_owned()),
+            ("RAFTER_MAELSTROM_RATE".to_owned(), "10".to_owned()),
+            ("RAFTER_MAELSTROM_CONCURRENCY".to_owned(), "6".to_owned()),
+        ]))
+        .collect::<BTreeMap<_, _>>();
+    let invocation = crate::producer::process::expected_invocation(
+        fs::canonicalize(root.join("scripts/maelstrom-lin-kv"))?
+            .to_str()
+            .ok_or("script path is not UTF-8")?,
+        &["--test-count".into(), "1".into()],
+        &environment,
+        &state_dir,
+    )?;
+    Ok(serde_json::json!({
+        "schema_version": 2,
+        "label": "base",
+        "invocation": invocation,
+        "exit_code": exit_code,
+        "timed_out": false,
+        "duration_ms": 1,
+        "peak_rss_kib": 1,
+        "stdout": "",
+        "stderr": stderr,
+    })
+    .to_string())
+}
+
+fn prepare_state(root: &std::path::Path) -> Result<(), std::io::Error> {
+    fs::create_dir_all(
+        root.join("target/rafter-invariants/maelstrom/abc/nightly/base/trial-0/durable"),
+    )
+}
+
+fn plan_input(path: &str) -> PlanInput {
+    PlanInput {
+        path: path.to_owned(),
+        sha256: "0".repeat(64),
+        size_bytes: 1,
+    }
+}
+
 fn observations() -> BTreeMap<String, u64> {
     BTreeMap::from([
         ("trials".to_owned(), 1),
@@ -190,7 +328,11 @@ fn artifact(path: &str, kind: &str) -> ArtifactRef {
     ArtifactRef {
         kind: kind.to_owned(),
         path: path.to_owned(),
-        sha256: "0".repeat(64),
+        sha256: if kind == "maelstrom-runner" {
+            format!("{:x}", Sha256::digest(b"runner"))
+        } else {
+            "0".repeat(64)
+        },
         size_bytes: 1,
     }
 }
@@ -209,7 +351,9 @@ fn source() -> SourceReceipt {
         build_profile: "test".to_owned(),
         features: Vec::new(),
         tools: BTreeMap::new(),
-        environment_sha256: "0".repeat(64),
+        environment_sha256: crate::producer::process::digest_environment(
+            &crate::producer::process::base_environment(),
+        ),
         clean: true,
     }
 }

@@ -66,7 +66,7 @@ pub(super) fn execute(
                 run.label
             )),
             "simulator-log",
-            &process::combined_log(&run.label, &output),
+            &process::combined_log(&run.label, &output)?,
         )?);
     }
     Ok(SimulatorExecution {
@@ -160,7 +160,7 @@ fn build(
         output_dir,
         Path::new(&format!("{profile}-simulator/{source_prefix}/compile.log")),
         "compile-log",
-        &process::combined_log("simulator compile", &output),
+        &process::combined_log("simulator compile", &output)?,
     )?;
     if !output.status.success() {
         return Err("simulator release build failed".into());

@@ -4,7 +4,7 @@ use std::{
     path::Path,
 };
 
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::registry_parse::{
     parse_clauses, parse_evidence, parse_invariants, parse_registry_schema_version,
@@ -105,7 +105,7 @@ impl EvidenceDescriptor {
     }
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 /// Explicit invariant IDs and evidence policies for every scheduled profile.
 pub struct ProfileManifest {
@@ -114,7 +114,7 @@ pub struct ProfileManifest {
     pub profiles: BTreeMap<String, ProfileContract>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 /// Evidence-selection and independent-layer policy for one profile.
 pub struct ProfileContract {
@@ -128,11 +128,13 @@ pub struct ProfileContract {
     pub runners: BTreeMap<String, RunnerContract>,
 }
 
-#[derive(Clone, Debug, Deserialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 /// Required deterministic producer identity and bounds for one layer.
 pub struct RunnerContract {
     pub producer: String,
+    /// Human-facing command that reproduces this runner; actual argv is
+    /// recorded separately in each execution receipt.
     pub command: Vec<String>,
     pub configuration: BTreeMap<String, String>,
     pub minimum_observed_checks: usize,
@@ -342,6 +344,18 @@ impl ProfileManifest {
             if contract.description.trim().is_empty()
                 || contract.required_layers.is_empty()
                 || contract.required_strengths.is_empty()
+                || contract
+                    .required_layers
+                    .iter()
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    != contract.required_layers.len()
+                || contract
+                    .required_strengths
+                    .iter()
+                    .collect::<BTreeSet<_>>()
+                    .len()
+                    != contract.required_strengths.len()
                 || contract.canonical_minimum_independent_layers < 2
                 || contract.runners.keys().collect::<BTreeSet<_>>()
                     != contract.required_layers.iter().collect::<BTreeSet<_>>()
