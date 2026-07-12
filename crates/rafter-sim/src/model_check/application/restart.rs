@@ -1,6 +1,6 @@
 use rafter::{BootstrapState, LogIndex, Node, NodeId, SharedPayload};
 
-use super::super::{
+use super::super::super::{
     catalog,
     helpers::summarize,
     invariants::{check_applied_floor_recovery, check_exact_durable_restart, AppliedFloorRecovery},
@@ -8,7 +8,7 @@ use super::super::{
     Action, ExplorationState, Failure, FailureKind,
 };
 
-pub(in crate::model_check) fn restart_node(
+pub(super) fn restart_node_inner(
     state: &mut ExplorationState,
     node_id: NodeId,
     trace: &[Action],
@@ -28,6 +28,7 @@ pub(in crate::model_check) fn restart_node(
 
     state
         .cluster
+        .0
         .restart_node_from_bootstrap(node_id, before.clone())
         .map_err(|error| {
             restart_failure(
@@ -40,7 +41,7 @@ pub(in crate::model_check) fn restart_node(
         })?;
 
     if let Some(pending) = before_pending.clone() {
-        let Some(node) = state.cluster.nodes.get_mut(&node_id) else {
+        let Some(node) = state.cluster.0.nodes.get_mut(&node_id) else {
             return Err(restart_failure(
                 state,
                 trace,
@@ -62,7 +63,7 @@ pub(in crate::model_check) fn restart_node(
         // The kernel record resumes only alongside its durably staged byte
         // prefix; a plain restart would have dropped both together.
         if let Some(staged) = before_staged {
-            state.cluster.snapshot_staging.insert(node_id, staged);
+            state.cluster.0.snapshot_staging.insert(node_id, staged);
         }
     }
 
@@ -115,10 +116,6 @@ pub(in crate::model_check) fn restart_node(
         trace,
     )?;
     mark_restart_observations(state, &before, &after, before_applied_floor);
-
-    state.reset_commit_floor(node_id);
-    state.observe_election_authority();
-    state.observe_state_coverage();
 
     Ok(())
 }
