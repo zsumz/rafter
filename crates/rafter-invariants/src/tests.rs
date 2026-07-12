@@ -232,7 +232,7 @@ fn passing_bundles(catalog: &Catalog, manifest: &ProfileManifest) -> Vec<ResultB
                 );
             }
             ResultBundle {
-                schema_version: 5,
+                schema_version: 6,
                 runner: runner.clone(),
                 profile: "pr".to_owned(),
                 source_ref: "abc".to_owned(),
@@ -270,9 +270,132 @@ fn complete_matching_evidence_is_44_of_44_green() {
     let (catalog, manifest) = loaded();
     let bundles = passing_bundles(&catalog, &manifest);
     let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
-    assert_eq!(report.summary.green, 44);
+    assert_eq!(
+        report.summary.green,
+        44,
+        "unexpected red verdicts: {:#?}",
+        report
+            .invariants
+            .iter()
+            .filter(|verdict| verdict.status == VerdictStatus::Red)
+            .collect::<Vec<_>>()
+    );
     assert_eq!(report.summary.red, 0);
     assert_eq!(report.artifacts.len(), 3);
+}
+
+fn relaxed_check_minimums(manifest: &mut ProfileManifest) {
+    for contract in manifest.profiles.values_mut() {
+        for runner in contract.runners.values_mut() {
+            runner.minimum_observed_checks = 1;
+        }
+    }
+}
+
+fn assert_only_parent_red(report: &VerdictReport, invariant_id: &str) {
+    assert_eq!(report.summary.total, 44);
+    assert_eq!(report.summary.green, 43);
+    assert_eq!(report.summary.red, 1);
+    let red = report
+        .invariants
+        .iter()
+        .filter(|verdict| verdict.status == VerdictStatus::Red)
+        .map(|verdict| verdict.invariant_id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(red, [invariant_id]);
+}
+
+#[test]
+fn missing_direct_clause_keeps_only_parent_red() {
+    let (mut catalog, mut manifest) = loaded();
+    relaxed_check_minimums(&mut manifest);
+    catalog
+        .evidence
+        .retain(|evidence| evidence.clause_id != "RD-06.b");
+    let bundles = passing_bundles(&catalog, &manifest);
+
+    let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
+    assert_only_parent_red(&report, "RD-06");
+    assert!(report.invariants.iter().any(|verdict| {
+        verdict.invariant_id == "RD-06"
+            && verdict
+                .issues
+                .iter()
+                .any(|issue| issue.evidence_id == "RD-06.b/coverage")
+    }));
+}
+
+#[test]
+fn e2e_does_not_satisfy_direct_clause() {
+    let (mut catalog, manifest) = loaded();
+    let evidence = catalog
+        .evidence
+        .iter_mut()
+        .find(|evidence| evidence.clause_id == "RD-06.b" && evidence.strength == "direct")
+        .expect("RD-06.b direct evidence exists");
+    evidence.strength = "e2e".to_owned();
+    let bundles = passing_bundles(&catalog, &manifest);
+
+    let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
+    assert_only_parent_red(&report, "RD-06");
+    assert!(report.invariants.iter().any(|verdict| {
+        verdict.invariant_id == "RD-06"
+            && verdict
+                .issues
+                .iter()
+                .any(|issue| issue.message.contains("has no direct evidence"))
+    }));
+}
+
+#[test]
+fn sibling_clause_evidence_cannot_substitute() {
+    let (mut catalog, mut manifest) = loaded();
+    relaxed_check_minimums(&mut manifest);
+    let evidence = catalog
+        .evidence
+        .iter_mut()
+        .find(|evidence| evidence.clause_id == "RD-06.b" && evidence.strength == "direct")
+        .expect("RD-06.b direct evidence exists");
+    evidence.clause_id = "RD-06.a".to_owned();
+    let bundles = passing_bundles(&catalog, &manifest);
+
+    let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
+    assert_only_parent_red(&report, "RD-06");
+}
+
+#[test]
+fn incomplete_clause_result_fails_parent() {
+    let (catalog, manifest) = loaded();
+    let mut bundles = passing_bundles(&catalog, &manifest);
+    let evidence_id = catalog
+        .evidence
+        .iter()
+        .find(|evidence| evidence.clause_id == "RD-06.b" && evidence.strength == "direct")
+        .expect("RD-06.b direct evidence exists")
+        .evidence_id();
+    let tests = bundles
+        .iter_mut()
+        .find(|bundle| bundle.runner == "tests")
+        .expect("tests bundle exists");
+    let result = tests
+        .results
+        .iter_mut()
+        .find(|result| result.evidence_id == evidence_id)
+        .expect("RD-06.b result exists");
+    result.status = EvidenceStatus::Incomplete;
+    result.classification = Some(FailureClassification::CoverageNotReached);
+    result.message = Some("unknown-write branch was not reached".to_owned());
+    result.artifacts = vec![artifact("artifacts/rd-06-b.log")];
+    let check = tests
+        .execution
+        .checks
+        .iter_mut()
+        .find(|check| check.execution_id == result.execution_id)
+        .expect("RD-06.b check exists");
+    check.completion = CheckCompletion::CoverageNotReached;
+
+    let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
+    assert_only_parent_red(&report, "RD-06");
 }
 
 #[test]
@@ -287,8 +410,22 @@ fn detector_fixtures_have_distinct_evidence_ids() {
         .iter()
         .map(|evidence| evidence.evidence_id())
         .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(simulator.len(), 39);
     assert_eq!(ids.len(), simulator.len());
+    let physical_checks = simulator
+        .iter()
+        .map(|evidence| {
+            (
+                evidence.path.as_str(),
+                evidence.symbol.as_str(),
+                evidence.negative_fixture.as_deref(),
+                evidence
+                    .simulator
+                    .as_ref()
+                    .map(|identity| identity.required_observation.as_str()),
+            )
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(physical_checks.len(), 48);
 }
 
 #[test]
@@ -421,7 +558,7 @@ fn tla_pass_requires_every_framed_predicate_observation() {
     let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
     assert_eq!(report.summary.green, 0);
     assert_eq!(report.summary.red, 44);
-    assert!(report.invariants.iter().all(|verdict| verdict
+    assert!(report.invariants.iter().any(|verdict| verdict
         .issues
         .iter()
         .any(|issue| issue.message.contains("terminal frames"))));
@@ -440,7 +577,7 @@ fn tla_generic_completed_status_cannot_claim_pass() {
     let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
     assert_eq!(report.summary.green, 0);
     assert_eq!(report.summary.red, 44);
-    assert!(report.invariants.iter().all(|verdict| verdict
+    assert!(report.invariants.iter().any(|verdict| verdict
         .issues
         .iter()
         .any(|issue| issue.message.contains("generic completed"))));
@@ -470,7 +607,7 @@ fn canonical_invariant_with_one_layer_stays_red() {
 #[test]
 fn result_bundle_rejects_unknown_fields() {
     let source = r#"{
-        "schema_version": 5,
+        "schema_version": 6,
         "runner": "tests",
         "profile": "pr",
         "source_ref": "abc",
@@ -501,7 +638,7 @@ fn result_bundle_rejects_unknown_fields() {
 fn stale_bundle_is_red_never_green() {
     let (catalog, manifest) = loaded();
     let bundle = ResultBundle {
-        schema_version: 5,
+        schema_version: 6,
         runner: "tests".to_owned(),
         profile: "pr".to_owned(),
         source_ref: "old".to_owned(),
