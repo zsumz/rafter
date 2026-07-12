@@ -127,6 +127,7 @@ fn mark_restart_observations(
     applied_floor: LogIndex,
 ) {
     state.mark_observation(Observation::DurableRestartComparisons);
+    state.mark_observation(Observation::RestartTermComparisons);
     if applied_floor > LogIndex::ZERO {
         state.mark_observation(Observation::RestartRecoveriesWithNonzeroAppliedFloor);
     }

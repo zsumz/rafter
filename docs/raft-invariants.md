@@ -140,7 +140,8 @@ named temporal or witness-based verdicts.
 | `ST-01` | `ST-01.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/applied.rs#check_internal_derived_state`; negative fixture `derived_state_rejects_non_leader_pending_read_round` |
 | `ST-01` | `ST-01.d` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/applied.rs#check_internal_derived_state`; negative fixture `derived_state_rejects_stale_configuration_offsets` |
 | `ST-01` | `ST-01.d` | tests | direct | `crates/rafter/src/node/tests/derived_state.rs#derived_state_is_valid_after_bootstrap` |
-| `EL-01` | `EL-01.a,EL-01.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `term_monotonicity_history_detects_regression_from_observation` |
+| `EL-01` | `EL-01.b` | simulator | direct | `crates/rafter-sim/src/model_check/application/restart.rs#restart_node_inner`; negative fixture `term_monotonicity_history_detects_regression_from_observation` |
+| `EL-01` | `EL-01.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `term_monotonicity_history_detects_regression_from_observation` |
 | `EL-01` | `EL-01.a` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#election_persists_term_and_vote_before_vote_requests_escape` |
 | `EL-01` | `EL-01.a` | tests | direct | `crates/rafter/src/node/tests/election/voting.rs#public_transitions_do_not_decrease_current_term` |
 | `EL-02` | `EL-02.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `durable_vote_history_rejects_second_vote_in_term` |

@@ -31,6 +31,7 @@ pub(super) enum Observation {
     CompletedReads,
     CompletedWriteBeforeReadHistories,
     DurableRestartComparisons,
+    RestartTermComparisons,
     RestartRecoveriesWithNonzeroAppliedFloor,
     ExpectedSnapshotInstallsChecked,
     NodesWithNonzeroSnapshotIndex,
@@ -38,7 +39,7 @@ pub(super) enum Observation {
     SameBoundarySnapshotInstallPairs,
 }
 
-const ALL: [Observation; 33] = [
+const ALL: [Observation; 34] = [
     Observation::WellFormedStatesChecked,
     Observation::TermAdvances,
     Observation::SameTermVoteReobservations,
@@ -67,6 +68,7 @@ const ALL: [Observation; 33] = [
     Observation::CompletedReads,
     Observation::CompletedWriteBeforeReadHistories,
     Observation::DurableRestartComparisons,
+    Observation::RestartTermComparisons,
     Observation::RestartRecoveriesWithNonzeroAppliedFloor,
     Observation::ExpectedSnapshotInstallsChecked,
     Observation::NodesWithNonzeroSnapshotIndex,
@@ -109,6 +111,7 @@ impl Observation {
             Self::CompletedReads => "completed_reads",
             Self::CompletedWriteBeforeReadHistories => "completed_write_before_read_histories",
             Self::DurableRestartComparisons => "durable_restart_comparisons",
+            Self::RestartTermComparisons => "restart_term_comparisons",
             Self::RestartRecoveriesWithNonzeroAppliedFloor => {
                 "restart_recoveries_with_nonzero_applied_floor"
             }
