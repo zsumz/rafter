@@ -1,10 +1,4 @@
-use std::{
-    env,
-    error::Error,
-    fs,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::{env, error::Error, fs, path::PathBuf, process::Command};
 
 use sha2::{Digest, Sha256};
 
@@ -81,10 +75,10 @@ fn capture(
         tree,
         cargo_lock_sha256: format!("{:x}", Sha256::digest(cargo_lock)),
         cargo,
-        cargo_sha256: tool_sha256("cargo")?,
+        cargo_sha256: executable_sha256("cargo")?,
         cargo_config_sha256: cargo_config_sha256()?,
         rustc,
-        rustc_sha256: tool_sha256("rustc")?,
+        rustc_sha256: executable_sha256("rustc")?,
         target,
         build_profile: build_profile.to_owned(),
         features,
@@ -146,17 +140,6 @@ fn command_output(
         return Err(format!("{program} produced empty identity output").into());
     }
     Ok(value)
-}
-
-fn tool_sha256(name: &str) -> Result<String, Box<dyn Error>> {
-    let sysroot = command_output("rustc", &["--print", "sysroot"], false)?;
-    let sysroot_tool = Path::new(&sysroot).join("bin").join(name);
-    let path = if sysroot_tool.is_file() {
-        sysroot_tool
-    } else {
-        find_tool(name).ok_or_else(|| format!("{name} is not present on PATH"))?
-    };
-    Ok(format!("{:x}", Sha256::digest(fs::read(path)?)))
 }
 
 fn executable_sha256(name: &str) -> Result<String, Box<dyn Error>> {
