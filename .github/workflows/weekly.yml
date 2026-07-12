@@ -59,15 +59,16 @@ jobs:
           cache-on-failure: true
       - name: model check (raft-weekly)
         run: |
-          cargo run --release -p rafter-sim --bin rafter-model-check-fast -- \
+          cargo run --release --locked -p rafter-sim --bin rafter-model-check-fast -- \
             --profile raft-weekly 2>&1 | tee model-check-raft-weekly.log
       - name: Upload log
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: model-check-raft-weekly-log
           path: model-check-raft-weekly.log
-          if-no-files-found: ignore
+          if-no-files-found: error
+          retention-days: 30
 
   invariants-maelstrom:
     name: invariants-maelstrom-weekly
@@ -111,7 +112,8 @@ jobs:
         with:
           name: invariants-weekly-maelstrom
           path: artifacts/invariants/
-          if-no-files-found: warn
+          if-no-files-found: error
+          retention-days: 30
 
   tlc-full:
     name: tlc-full

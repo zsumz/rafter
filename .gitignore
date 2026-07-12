@@ -1,4 +1,6 @@
 /target
+__pycache__/
+*.pyc
 /artifacts/invariants/
 /bench-compare/target
 /fuzz/target

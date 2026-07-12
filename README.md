@@ -107,6 +107,9 @@ The Raft verification contract lives in
 [`docs/raft-invariants.md`](./docs/raft-invariants.md), generated from the
 machine-readable catalog at
 [`verification/raft-invariants.yaml`](./verification/raft-invariants.yaml).
+The model-check profiles, state-count semantics, and reproducible overhead
+measurement procedure are documented in
+[`docs/model-checking.md`](./docs/model-checking.md).
 The deterministic PR aggregate emits exactly one verdict for each of the 44
 reviewed IDs. Branch protection on `main` requires the stable `invariants-pr`
 job; missing, malformed, incomplete, or stale evidence makes that job red.

@@ -55,15 +55,16 @@ jobs:
           cache-on-failure: true
       - name: model check (${{ matrix.profile }})
         run: |
-          cargo run --release -p rafter-sim --bin rafter-model-check-fast -- \
+          cargo run --release --locked -p rafter-sim --bin rafter-model-check-fast -- \
             --profile ${{ matrix.profile }} 2>&1 | tee "model-check-${{ matrix.profile }}.log"
       - name: Upload log
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: model-check-${{ matrix.profile }}-log
           path: model-check-${{ matrix.profile }}.log
-          if-no-files-found: ignore
+          if-no-files-found: error
+          retention-days: 30
 
   tlc-nightly:
     name: tlc-nightly
@@ -131,12 +132,13 @@ jobs:
       # The script writes per-step logs, summary.tsv, and run.json under
       # target/raft-burn-in/<run-id>/.
       - name: Upload burn-in logs
-        if: failure()
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: burn-in-logs
           path: target/raft-burn-in/
-          if-no-files-found: ignore
+          if-no-files-found: error
+          retention-days: 30
 
   invariants-maelstrom:
     name: invariants-maelstrom-nightly
@@ -183,7 +185,8 @@ jobs:
         with:
           name: invariants-nightly-maelstrom
           path: artifacts/invariants/
-          if-no-files-found: warn
+          if-no-files-found: error
+          retention-days: 30
 
   fuzz-long:
     name: fuzz-long (${{ matrix.target }})
