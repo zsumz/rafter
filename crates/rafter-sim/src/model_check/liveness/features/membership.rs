@@ -7,10 +7,10 @@ use super::super::driver::{
     soak_liveness_failure,
 };
 use crate::model_check::{
-    application::apply_to_state,
     catalog,
     scheduling::Operation,
     soak::{SoakAction, SoakActionKind, SoakConfig, SoakFailure},
+    state::apply_to_state,
     state::ExplorationState,
 };
 
@@ -89,7 +89,7 @@ fn membership_liveness_target(
     state: &ExplorationState,
     leader: NodeId,
 ) -> Option<(NodeId, MembershipSet)> {
-    let MembershipConfig::Stable(current) = state.cluster.effective_membership(leader) else {
+    let MembershipConfig::Stable(current) = state.cluster().effective_membership(leader) else {
         return None;
     };
     let removed_voter = current
@@ -113,8 +113,8 @@ fn membership_transition_ready_to_leave(
     target: &MembershipSet,
 ) -> Option<NodeId> {
     let leader = quiescent_leader(state)?;
-    let effective = state.cluster.effective_membership(leader);
-    let committed = state.cluster.committed_membership(leader);
+    let effective = state.cluster().effective_membership(leader);
+    let committed = state.cluster().committed_membership(leader);
     match (&effective, &committed) {
         (MembershipConfig::Joint(joint), MembershipConfig::Joint(_))
             if joint.new_membership() == target && committed == effective =>
@@ -129,8 +129,8 @@ fn membership_transition_completed(state: &ExplorationState, target: &Membership
     let Some(leader) = quiescent_leader(state) else {
         return false;
     };
-    stable_membership_matches(&state.cluster.effective_membership(leader), target)
-        && stable_membership_matches(&state.cluster.committed_membership(leader), target)
+    stable_membership_matches(&state.cluster().effective_membership(leader), target)
+        && stable_membership_matches(&state.cluster().committed_membership(leader), target)
 }
 
 fn stable_membership_matches(config: &MembershipConfig, target: &MembershipSet) -> bool {

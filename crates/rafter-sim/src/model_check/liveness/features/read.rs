@@ -5,10 +5,10 @@ use super::super::driver::{
     soak_liveness_failure,
 };
 use crate::model_check::{
-    application::apply_to_state,
     catalog,
     scheduling::Operation,
     soak::{SoakAction, SoakActionKind, SoakConfig, SoakFailure},
+    state::apply_to_state,
     state::{ClientReadOutcome, ExplorationState},
 };
 
@@ -31,7 +31,7 @@ pub(super) fn run_read_barrier_liveness_check(
         ));
     };
 
-    let request_id = state.read_indexes_issued + 1;
+    let request_id = state.read_indexes_issued() + 1;
     apply_to_state(
         state,
         Operation::ReadIndex {
@@ -65,7 +65,7 @@ pub(super) fn run_read_barrier_liveness_check(
 
 fn liveness_read_completed(state: &ExplorationState, request_id: u64) -> bool {
     state
-        .client_history
+        .client_history()
         .reads
         .get(&request_id)
         .is_some_and(|read| matches!(read.outcome, ClientReadOutcome::Completed { .. }))
