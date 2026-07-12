@@ -24,6 +24,7 @@ fn leader_completeness_accepts_committed_prefix_hidden_by_witnessed_snapshot() {
         )
         .expect("visible committed bootstrap is valid");
     let mut state = ExplorationState::new(cluster);
+    state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(1), Term(2));
     assert!(
         state
             .commit_history
@@ -78,6 +79,7 @@ fn leader_completeness_rejects_unwitnessed_snapshot_with_matching_boundary() {
         )
         .expect("visible committed bootstrap is valid");
     let mut state = ExplorationState::new(cluster);
+    state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(2), Term(2));
     state.election_history.record_election(election_certificate(
         3,
         1,
@@ -129,6 +131,7 @@ fn snapshot_transfer_propagates_logical_prefix_witness_to_installed_follower() {
         )
         .expect("voter visible bootstrap is valid");
     let mut state = ExplorationState::new(cluster);
+    state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(2), Term(2));
 
     let (snapshot, payload) = test_snapshot(1, 2, 1, 2, b"snapshot through two");
     let suffix = b"suffix".as_slice();
@@ -164,6 +167,37 @@ fn snapshot_transfer_propagates_logical_prefix_witness_to_installed_follower() {
 
     check_commit_history(&state, &[])
         .expect("installed snapshot transfer should carry the logical prefix witness");
+}
+
+#[test]
+fn leader_completeness_snapshot_only_committed_state_is_not_vacuous_success() {
+    let (snapshot, payload) = test_snapshot(1, 2, 2, 3, b"unwitnessed committed snapshot");
+    let mut bootstrap = bootstrap_with_snapshot(Term(3), snapshot.clone(), &[]);
+    bootstrap.commit_index = LogIndex(2);
+    let mut cluster = Cluster::new(voter_configs(&[1]));
+    cluster.seed_snapshot_payload(NodeId(1), &snapshot, payload);
+    cluster
+        .restart_node_from_bootstrap(NodeId(1), bootstrap)
+        .expect("snapshot-only committed bootstrap is valid");
+    let state = ExplorationState::new(cluster);
+
+    let log_failure = check_log_history(&state, &[])
+        .expect_err("LG-03 must reject an unwitnessed snapshot independently");
+    assert_eq!(log_failure.invariant(), catalog::LG_03_LOG_MATCHING);
+
+    let commit_failure = check_commit_history(&state, &[])
+        .expect_err("LG-05 must reject an unwitnessed committed prefix independently");
+    assert_eq!(
+        commit_failure.kind(),
+        crate::model_check::FailureKind::CoverageNotReached
+    );
+    assert_eq!(
+        commit_failure.invariant(),
+        catalog::LG_05_LEADER_COMPLETENESS
+    );
+    assert!(commit_failure
+        .message
+        .contains("without a logical-prefix witness"));
 }
 
 fn drive_until_node_two_installs_snapshot(state: &mut ExplorationState, snapshot: &RaftSnapshot) {

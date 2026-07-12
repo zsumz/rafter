@@ -2,7 +2,9 @@ use std::collections::BTreeSet;
 
 use rafter::LogIndex;
 
-use super::{logical_log::LogicalLogView, ClientReadOutcome, ClientWriteStatus, ExplorationState};
+use super::{
+    logical_log::LogicalLogHistory, ClientReadOutcome, ClientWriteStatus, ExplorationState,
+};
 use crate::model_check::observations::Observation;
 
 impl ExplorationState {
@@ -112,19 +114,20 @@ impl ExplorationState {
         let mut compared_prefix = false;
         let mut compared_committed = false;
         for (offset, left_id) in nodes.iter().enumerate() {
-            let left = LogicalLogView::from_cluster(&self.cluster, *left_id);
+            let left = self
+                .logical_log_history
+                .observed_view(&self.cluster, *left_id);
             for right_id in &nodes[offset + 1..] {
-                let right = LogicalLogView::from_cluster(&self.cluster, *right_id);
+                let right = self
+                    .logical_log_history
+                    .observed_view(&self.cluster, *right_id);
                 for (index, entry) in &left.entries {
                     if right.term_at(*index) != Some(entry.term) {
                         continue;
                     }
-                    compared_prefix |= self.logical_log_history.prefix_from_view(&left, *index)
-                        == self.logical_log_history.prefix_from_view(&right, *index)
-                        && self
-                            .logical_log_history
-                            .prefix_from_view(&left, *index)
-                            .is_some();
+                    compared_prefix |= LogicalLogHistory::prefix_from_view(&left, *index)
+                        == LogicalLogHistory::prefix_from_view(&right, *index)
+                        && LogicalLogHistory::prefix_from_view(&left, *index).is_some();
                     compared_committed |= *index <= self.cluster.commit_index(*left_id)
                         && *index <= self.cluster.commit_index(*right_id);
                 }

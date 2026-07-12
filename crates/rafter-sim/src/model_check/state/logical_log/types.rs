@@ -62,10 +62,22 @@ impl LogicalLogView {
         self.entries.get(&index).map(|entry| entry.term)
     }
 
-    pub(crate) fn snapshot_covers(&self, index: LogIndex) -> bool {
-        self.snapshot
-            .as_ref()
-            .is_some_and(|snapshot| snapshot.index >= index && index > LogIndex::ZERO)
+    #[cfg(test)]
+    pub(crate) fn snapshot_only(
+        transfer_id: SnapshotTransferId,
+        index: LogIndex,
+        term: Term,
+        prefix: Option<LogPrefixWitness>,
+    ) -> Self {
+        Self {
+            snapshot: Some(LogicalSnapshotBoundary {
+                transfer_id,
+                index,
+                term,
+                prefix: prefix.map(Box::new),
+            }),
+            entries: BTreeMap::new(),
+        }
     }
 }
 
