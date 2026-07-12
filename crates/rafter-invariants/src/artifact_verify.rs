@@ -151,8 +151,17 @@ fn verify_test_compile(
         "--no-run".to_owned(),
         "--message-format=json-render-diagnostics".to_owned(),
     ]);
+    let source_prefix = bundle.source_ref.get(..12).unwrap_or(&bundle.source_ref);
+    let expected_target = format!(
+        "target/rafter-invariants/build/{source_prefix}/{}-tests",
+        bundle.profile
+    );
+    let mut base_environment = observed.invocation.environment.clone();
+    let target_dir = base_environment.remove("CARGO_TARGET_DIR");
     if observed.invocation.arguments != expected
-        || observed.invocation.environment_sha256 != bundle.execution.source.environment_sha256
+        || target_dir.as_deref() != Some(expected_target.as_str())
+        || crate::producer::process::digest_environment(&base_environment)
+            != bundle.execution.source.environment_sha256
     {
         return Err(AggregateError::new(
             "test compile log does not match the exact Cargo invocation plan".to_owned(),
@@ -182,14 +191,26 @@ fn verify_simulator_compile(
     );
     let mut base_environment = observed.invocation.environment.clone();
     let target = base_environment.remove("CARGO_TARGET_DIR");
-    if observed.label != "simulator compile"
-        || observed.invocation.arguments != expected_arguments
-        || target.as_deref() != Some(expected_target.as_str())
-        || crate::producer::process::digest_environment(&base_environment)
-            != bundle.execution.source.environment_sha256
+    if observed.label != "simulator compile" {
+        return Err(AggregateError::new(
+            "simulator compile log has the wrong label".to_owned(),
+        ));
+    }
+    if observed.invocation.arguments != expected_arguments {
+        return Err(AggregateError::new(
+            "simulator compile log has the wrong Cargo arguments".to_owned(),
+        ));
+    }
+    if target.as_deref() != Some(expected_target.as_str()) {
+        return Err(AggregateError::new(
+            "simulator compile log has the wrong Cargo target directory".to_owned(),
+        ));
+    }
+    if crate::producer::process::digest_environment(&base_environment)
+        != bundle.execution.source.environment_sha256
     {
         return Err(AggregateError::new(
-            "simulator compile log does not match the exact Cargo invocation plan".to_owned(),
+            "simulator compile log has the wrong base environment".to_owned(),
         ));
     }
     Ok(())
