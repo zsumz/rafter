@@ -74,6 +74,21 @@ pub(super) fn check_applied_order(cluster: &Cluster, trace: &[Action]) -> Result
     let mut last_applied_by_node_epoch = BTreeMap::<(NodeId, u64), LogIndex>::new();
     let mut installs = cluster.snapshot_installs().iter().peekable();
     for (position, applied) in cluster.applied.iter().enumerate() {
+        if applied.index > applied.commit_index_at_emit {
+            return Err(Failure {
+                kind: crate::model_check::FailureKind::InvariantViolation,
+                invariant: catalog::AP_01_ORDERED_EXACTLY_ONCE_COMMITTED_APPLICATION,
+                message: format!(
+                    "{} epoch {} applied index {} when its commit index at emit was {}",
+                    applied.node_id,
+                    applied.application_epoch,
+                    applied.index,
+                    applied.commit_index_at_emit
+                ),
+                trace: trace.to_vec(),
+                state: summarize(cluster),
+            });
+        }
         while let Some(install) = installs.peek() {
             if install.applied_records_before_install > position {
                 break;

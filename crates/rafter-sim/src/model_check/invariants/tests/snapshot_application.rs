@@ -7,6 +7,7 @@ fn applied_order_detects_snapshot_rewinding_applied_entries() {
         cluster.applied.push(Applied {
             node_id: NodeId(1),
             application_epoch: 0,
+            commit_index_at_emit: LogIndex(index),
             index: LogIndex(index),
             payload: vec![u8::try_from(index).unwrap_or(u8::MAX)].into(),
         });
@@ -48,6 +49,7 @@ fn applied_order_detects_apply_at_or_below_snapshot_boundary() {
     cluster.applied.push(Applied {
         node_id: NodeId(1),
         application_epoch: 0,
+        commit_index_at_emit: LogIndex(3),
         index: LogIndex(3),
         payload: b"stale".to_vec().into(),
     });
@@ -129,6 +131,37 @@ fn snapshot_transfer_integrity_rejects_complete_pending_transfer() {
         failure
             .message
             .contains("retained a complete pending snapshot transfer"),
+        "unexpected failure message: {}",
+        failure.message
+    );
+}
+
+#[test]
+fn restart_snapshot_safety_rejects_snapshot_bytes_as_log_apply() {
+    let mut state = RestartSnapshotState::snapshot_transfer();
+    let expected = state
+        .expected_snapshot
+        .as_ref()
+        .expect("fixture has an expected snapshot")
+        .clone();
+    state.state.cluster.applied.push(Applied {
+        node_id: NodeId(1),
+        application_epoch: 0,
+        commit_index_at_emit: LogIndex(1),
+        index: LogIndex(1),
+        payload: expected.payload.clone(),
+    });
+
+    let failure = check_restart_snapshot_safety(&state, &[])
+        .expect_err("snapshot bytes emitted as a log command must fail SS-05");
+    assert_eq!(
+        failure.invariant(),
+        catalog::SS_05_SNAPSHOT_SEMANTIC_EQUIVALENCE
+    );
+    assert!(
+        failure
+            .message
+            .contains("snapshot bytes were exposed as an applied log entry"),
         "unexpected failure message: {}",
         failure.message
     );

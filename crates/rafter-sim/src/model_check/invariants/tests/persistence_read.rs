@@ -34,6 +34,7 @@ fn applied_floor_recovery_rejects_replay_at_or_below_floor() {
     let recovered = [Applied {
         node_id: NodeId(1),
         application_epoch: 0,
+        commit_index_at_emit: LogIndex(3),
         index: LogIndex(2),
         payload: b"already-applied".to_vec().into(),
     }];
