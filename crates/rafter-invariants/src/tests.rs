@@ -116,12 +116,16 @@ fn synthetic_observations(
                 ("configured_invariants".to_owned(), 9),
                 ("tool_pin_verified".to_owned(), 1),
                 ("trace_sample_passed".to_owned(), 1),
-                ("detector_negative_passed".to_owned(), 1),
                 ("generated_states".to_owned(), 130_000_000),
                 ("distinct_states".to_owned(), 120_000_000),
                 ("states_left_on_queue".to_owned(), 0),
                 ("search_depth".to_owned(), 1),
             ]);
+            observations.extend(
+                crate::producer::tla_output::REGISTERED_PREDICATES
+                    .into_iter()
+                    .map(|predicate| (format!("detector_qualified:{predicate}"), 1)),
+            );
             observations.extend(
                 descriptors
                     .iter()
@@ -179,24 +183,33 @@ fn synthetic_artifacts(descriptor: &EvidenceDescriptor) -> Vec<ArtifactRef> {
             }
             artifacts
         }
-        "tla" => [
-            "tla-log",
-            "tla-trace-log",
-            "tla-detector-log",
-            "tla-tool",
-            "tla-spec",
-            "tla-trace-spec",
-            "tla-detector-spec",
-            "tla-runner",
-            "tla-tool-asset-id",
-            "tla-tool-checksums",
-            "tla-config",
-            "tla-trace-config",
-            "tla-detector-config",
-        ]
-        .into_iter()
-        .map(|kind| artifact_kind(&format!("artifacts/{kind}"), kind))
-        .collect(),
+        "tla" => {
+            let mut kinds = [
+                "tla-log",
+                "tla-trace-log",
+                "tla-tool",
+                "tla-spec",
+                "tla-trace-spec",
+                "tla-detector-spec",
+                "tla-runner",
+                "tla-tool-asset-id",
+                "tla-tool-checksums",
+                "tla-config",
+                "tla-trace-config",
+                "tla-detector-config",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+            for predicate in crate::producer::tla_output::REGISTERED_PREDICATES {
+                kinds.push(format!("tla-detector-log:{predicate}"));
+                kinds.push(format!("tla-detector-config:{predicate}"));
+            }
+            kinds
+                .into_iter()
+                .map(|kind| artifact_kind(&format!("artifacts/{kind}"), &kind))
+                .collect()
+        }
         runner => vec![artifact(&format!("artifacts/{runner}.log"))],
     }
 }
@@ -619,7 +632,7 @@ fn tla_pass_requires_every_framed_predicate_observation() {
         .expect("TLA bundle exists");
     tla.execution.checks[0]
         .observations
-        .remove("checked:ElectionSafety");
+        .remove("detector_qualified:ElectionSafety");
 
     let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
     assert_eq!(report.summary.green, 0);

@@ -194,11 +194,8 @@ fn observations(
             "trace_sample_passed".to_owned(),
             u64::from(execution.trace_status == ProbeStatus::Passed),
         ),
-        (
-            "detector_negative_passed".to_owned(),
-            u64::from(execution.detector_status == ProbeStatus::Passed),
-        ),
     ]);
+    observations.extend(execution.detector_qualifications.clone());
     if let Some(summary) = &execution.main {
         observations.extend([
             ("generated_states".to_owned(), summary.generated_states),
