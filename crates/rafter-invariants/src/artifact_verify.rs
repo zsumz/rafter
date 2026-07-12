@@ -309,7 +309,14 @@ fn verify_test_invocations(
         .to_string_lossy()
         .into_owned();
     let base_digest = bundle.execution.source.environment_sha256.as_str();
-    let temporary = Path::new("target/rafter-invariants/tmp").join(&check.execution_id);
+    let execution_id = check
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.kind == "test-log")
+        .and_then(|artifact| Path::new(&artifact.path).file_stem())
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| AggregateError::new("test log path has no execution ID".to_owned()))?;
+    let temporary = Path::new("target/rafter-invariants/tmp").join(execution_id);
     let execution_profile = test_execution_profile(bundle);
     let seed = crate::producer::artifact::deterministic_u64(
         "rafter-tests/v1",
