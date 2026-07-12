@@ -16,6 +16,10 @@ on:
       - ".github/workflows/benchmarks.yml"
       - "bench-compare/**"
       - "scripts/bench-compare.sh"
+      - "scripts/model-check-profile-compare"
+      - "scripts/model_check_profile_parser.py"
+      - "scripts/model_check_profile_report.py"
+      - "scripts/tests/test_model_check_profile_report.py"
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -25,6 +29,10 @@ on:
       - ".github/workflows/benchmarks.yml"
       - "bench-compare/**"
       - "scripts/bench-compare.sh"
+      - "scripts/model-check-profile-compare"
+      - "scripts/model_check_profile_parser.py"
+      - "scripts/model_check_profile_report.py"
+      - "scripts/tests/test_model_check_profile_report.py"
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -36,6 +44,10 @@ on:
         description: "Isolated runs per benchmark binary for evidence jobs"
         required: true
         default: "5"
+      model_check_base_ref:
+        description: "Explicit baseline ref for model-check overhead evidence"
+        required: true
+        default: "HEAD^"
 
 concurrency:
   group: benchmarks-${{ github.workflow }}-${{ github.ref }}
@@ -70,6 +82,11 @@ jobs:
             BENCH_COMPARE_MODE=rafter-only \
             OUT=target/bench-compare/rafter-only-smoke.json \
             scripts/bench-compare.sh
+      - name: Model-check evidence parser contract
+        run: |
+          test -x scripts/model-check-profile-compare
+          bash -n scripts/model-check-profile-compare
+          python3 -m unittest scripts/tests/test_model_check_profile_report.py
       - name: Summarize smoke result
         if: always()
         run: |
@@ -166,3 +183,58 @@ jobs:
             target/bench-compare/rafter-only.json
             target/bench-compare/latest.json
           if-no-files-found: ignore
+
+  model-check-evidence:
+    name: model-check-overhead-evidence
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Select baseline
+        id: baseline
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          MANUAL_BASE: ${{ inputs.model_check_base_ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          case "$EVENT_NAME" in
+            push)
+              base="$PUSH_BEFORE"
+              if [[ -z "$base" || "$base" =~ ^0+$ ]]; then
+                base="HEAD^"
+              fi
+              ;;
+            workflow_dispatch) base="$MANUAL_BASE" ;;
+            schedule) base="HEAD^" ;;
+            *) echo "unsupported benchmark event: $EVENT_NAME" >&2; exit 2 ;;
+          esac
+          git rev-parse "$base^{commit}"
+          echo "ref=$base" >> "$GITHUB_OUTPUT"
+      - name: Repeated model-check overhead comparison
+        env:
+          MODEL_CHECK_BASE_REF: ${{ steps.baseline.outputs.ref }}
+          MODEL_CHECK_PROFILES: fast
+          MODEL_CHECK_RUNS: "6"
+          OUT_DIR: target/model-check-profile
+        run: scripts/model-check-profile-compare
+      - name: Summarize model-check overhead
+        if: always()
+        run: |
+          if [[ -f target/model-check-profile/compare.md ]]; then
+            cat target/model-check-profile/compare.md >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload model-check overhead evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: model-check-overhead-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
+          path: target/model-check-profile/
+          if-no-files-found: error
+          retention-days: 30

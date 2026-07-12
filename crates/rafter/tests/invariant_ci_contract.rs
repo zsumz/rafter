@@ -76,6 +76,61 @@ fn scheduled_profiles_run_real_maelstrom_evidence() {
         assert!(block.contains("cargo run --locked -p rafter-invariants -- verify-layer"));
         assert!(block.contains("if: always()"));
         assert!(block.contains("actions/upload-artifact@v4"));
+        assert!(block.contains("if-no-files-found: error"));
+        assert!(block.contains("retention-days: 30"));
+    }
+}
+
+#[test]
+fn scheduled_model_checks_preserve_cost_evidence() {
+    let root = workspace_root();
+    for (workflow, job, profile) in [
+        (
+            ".github/workflows/nightly.yml",
+            "model-check",
+            "${{ matrix.profile }}",
+        ),
+        (
+            ".github/workflows/weekly.yml",
+            "model-check-extra-deep",
+            "raft-weekly",
+        ),
+    ] {
+        let source = read(&root.join(workflow));
+        let block = job_block(&source, job);
+        assert!(block.contains("cargo run --release --locked -p rafter-sim"));
+        assert!(block.contains(&format!("--profile {profile}")));
+        assert!(block.contains("if: always()"));
+        assert!(block.contains("actions/upload-artifact@v4"));
+        assert!(block.contains("if-no-files-found: error"));
+        assert!(block.contains("retention-days: 30"));
+    }
+}
+
+#[test]
+fn model_check_overhead_evidence_is_repeated_and_durable() {
+    let root = workspace_root();
+    let workflow = read(&root.join(".github/workflows/benchmarks.yml"));
+    let smoke = job_block(&workflow, "smoke");
+    assert!(smoke.contains("python3 -m unittest scripts/tests/test_model_check_profile_report.py"));
+    assert!(smoke.contains("test -x scripts/model-check-profile-compare"));
+
+    let evidence = job_block(&workflow, "model-check-evidence");
+    for required in [
+        "fetch-depth: 0",
+        "MODEL_CHECK_PROFILES: fast",
+        "MODEL_CHECK_RUNS: \"6\"",
+        "scripts/model-check-profile-compare",
+        "if: always()",
+        "GITHUB_STEP_SUMMARY",
+        "actions/upload-artifact@v4",
+        "if-no-files-found: error",
+        "retention-days: 30",
+    ] {
+        assert!(
+            evidence.contains(required),
+            "model-check evidence omitted required contract fragment: {required}"
+        );
     }
 }
 
