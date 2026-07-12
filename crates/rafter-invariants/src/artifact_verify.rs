@@ -12,6 +12,17 @@ use crate::{aggregate::AggregateError, EvidenceStatus, ResultBundle};
 const EVENT_PREFIX: &str = "RAFTER_EVENT ";
 
 pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateError> {
+    for input in [
+        &bundle.execution.plan.registry,
+        &bundle.execution.plan.manifest,
+    ] {
+        crate::plan::verify_plan_input(input, root).map_err(|error| {
+            AggregateError::new(format!(
+                "verify execution-plan input {}: {error}",
+                input.path
+            ))
+        })?;
+    }
     let mut artifacts = bundle.execution.artifacts.iter().collect::<BTreeSet<_>>();
     artifacts.extend(
         bundle
@@ -49,6 +60,7 @@ pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), Aggregate
             )));
         }
     }
+    verify_compile_invocations(bundle, root)?;
     match bundle.runner.as_str() {
         "tests" => verify_test_logs(bundle, root),
         "simulator" => verify_simulator_logs(bundle, root),
@@ -56,6 +68,131 @@ pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), Aggregate
         "maelstrom" => crate::artifact_verify_maelstrom::verify(bundle, root),
         _ => Ok(()),
     }
+}
+
+fn verify_compile_invocations(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateError> {
+    let logs = bundle
+        .execution
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == "compile-log")
+        .collect::<Vec<_>>();
+    if !matches!(bundle.runner.as_str(), "tests" | "simulator") {
+        return Ok(());
+    }
+    if logs.is_empty() {
+        return Err(AggregateError::new(format!(
+            "{} execution has no compile invocation log",
+            bundle.runner
+        )));
+    }
+    let current_dir = fs::canonicalize(root)
+        .map_err(|error| AggregateError::new(format!("canonicalize compile root: {error}")))?
+        .to_string_lossy()
+        .into_owned();
+    for log in logs {
+        let source = fs::read_to_string(root.join(&log.path)).map_err(|error| {
+            AggregateError::new(format!("read compile log {}: {error}", log.path))
+        })?;
+        let invocations = crate::producer::process::parse_combined_invocations(&source)
+            .map_err(|error| AggregateError::new(format!("parse compile invocation: {error}")))?;
+        let [observed] = invocations.as_slice() else {
+            return Err(AggregateError::new(
+                "compile log must contain exactly one invocation".to_owned(),
+            ));
+        };
+        if observed.invocation.program != "cargo"
+            || observed.invocation.program_sha256 != bundle.execution.source.cargo_sha256
+            || observed.invocation.current_dir != current_dir
+        {
+            return Err(AggregateError::new(
+                "compile executable or working directory does not match source provenance"
+                    .to_owned(),
+            ));
+        }
+        if bundle.runner == "tests" {
+            verify_test_compile(bundle, observed)?;
+        } else {
+            verify_simulator_compile(bundle, observed)?;
+        }
+    }
+    Ok(())
+}
+
+fn verify_test_compile(
+    bundle: &ResultBundle,
+    observed: &crate::producer::process::LabeledInvocation,
+) -> Result<(), AggregateError> {
+    let parts = observed.label.split('/').collect::<Vec<_>>();
+    let [package, kind, target] = parts.as_slice() else {
+        return Err(AggregateError::new(
+            "test compile label does not name one Cargo target".to_owned(),
+        ));
+    };
+    let selector = match *kind {
+        "lib" => vec!["--lib".to_owned()],
+        "test" => vec!["--test".to_owned(), (*target).to_owned()],
+        "bin" => vec!["--bin".to_owned(), (*target).to_owned()],
+        _ => {
+            return Err(AggregateError::new(
+                "test compile label has an unsupported target kind".to_owned(),
+            ))
+        }
+    };
+    let mut expected = vec![
+        "test".to_owned(),
+        "--locked".to_owned(),
+        "--no-default-features".to_owned(),
+        "-p".to_owned(),
+        (*package).to_owned(),
+    ];
+    expected.extend(selector);
+    expected.extend([
+        "--no-run".to_owned(),
+        "--message-format=json-render-diagnostics".to_owned(),
+    ]);
+    if observed.invocation.arguments != expected
+        || observed.invocation.environment_sha256 != bundle.execution.source.environment_sha256
+    {
+        return Err(AggregateError::new(
+            "test compile log does not match the exact Cargo invocation plan".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn verify_simulator_compile(
+    bundle: &ResultBundle,
+    observed: &crate::producer::process::LabeledInvocation,
+) -> Result<(), AggregateError> {
+    let expected_arguments = [
+        "build",
+        "--release",
+        "--locked",
+        "-p",
+        "rafter-sim",
+        "--bin",
+        "rafter-model-check-fast",
+        "--message-format=json-render-diagnostics",
+    ];
+    let source_prefix = bundle.source_ref.get(..12).unwrap_or(&bundle.source_ref);
+    let expected_target = format!(
+        "target/rafter-invariants/simulator-build/{source_prefix}/{}",
+        bundle.profile
+    );
+    let mut base_environment = observed.invocation.environment.clone();
+    let target = base_environment.remove("CARGO_TARGET_DIR");
+    if observed.label != "simulator compile"
+        || observed.invocation.arguments != expected_arguments
+        || target.as_deref() != Some(expected_target.as_str())
+        || crate::producer::process::digest_environment(&base_environment)
+            != bundle.execution.source.environment_sha256
+    {
+        return Err(AggregateError::new(
+            "simulator compile log does not match the exact Cargo invocation plan".to_owned(),
+        ));
+    }
+    Ok(())
 }
 
 fn verify_test_logs(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateError> {
@@ -71,6 +208,7 @@ fn verify_test_logs(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateE
                 AggregateError::new(format!("invalid tests check ID {}", check.check_id))
             })?;
         let source = read_artifact_kind(check, "test-log", root)?;
+        verify_test_invocations(bundle, check, &source, test_name, root)?;
         require_exact_test_pass(&source, test_name, &check.check_id)?;
     }
     Ok(())
@@ -104,6 +242,7 @@ fn verify_simulator_logs(bundle: &ResultBundle, root: &Path) -> Result<(), Aggre
             test_logs.insert(artifact.path.clone(), source.clone());
             source
         };
+        verify_test_invocations(bundle, check, &source, fixture, root)?;
         require_exact_test_pass(&source, fixture, &check.check_id)?;
     }
     Ok(())
@@ -127,7 +266,176 @@ fn verify_simulator_schedule(bundle: &ResultBundle, root: &Path) -> Result<(), A
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
+    verify_simulator_invocations(bundle, root, &sources)?;
     validate_simulator_schedule(&bundle.profile, &bundle.source_ref, &sources)
+}
+
+fn verify_test_invocations(
+    bundle: &ResultBundle,
+    check: &crate::CheckReceipt,
+    source: &str,
+    test_name: &str,
+    root: &Path,
+) -> Result<(), AggregateError> {
+    let invocations = crate::producer::process::parse_combined_invocations(source)
+        .map_err(|error| AggregateError::new(format!("parse test invocation: {error}")))?;
+    let binary = check
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.kind == "test-binary")
+        .ok_or_else(|| AggregateError::new("test binary artifact is missing".to_owned()))?;
+    let current_dir = fs::canonicalize(root)
+        .map_err(|error| AggregateError::new(format!("canonicalize test root: {error}")))?
+        .to_string_lossy()
+        .into_owned();
+    let base_digest = bundle.execution.source.environment_sha256.as_str();
+    let temporary = Path::new("target/rafter-invariants/tmp").join(&check.execution_id);
+    let seed = crate::producer::artifact::deterministic_u64(
+        "rafter-tests/v1",
+        &format!("{}\0{}\0{test_name}", bundle.profile, bundle.source_ref),
+    );
+    let mut exact_environment = invocations
+        .first()
+        .map(|invocation| invocation.invocation.environment.clone())
+        .unwrap_or_default();
+    exact_environment.extend([
+        ("PROPTEST_RNG_SEED".to_owned(), seed.to_string()),
+        (
+            "PROPTEST_DISABLE_FAILURE_PERSISTENCE".to_owned(),
+            "1".to_owned(),
+        ),
+        (
+            "TMPDIR".to_owned(),
+            temporary.to_string_lossy().into_owned(),
+        ),
+        ("RUST_BACKTRACE".to_owned(), "1".to_owned()),
+    ]);
+    let exact_digest = crate::producer::process::digest_environment(&exact_environment);
+    let expected = [
+        (
+            "libtest discovery",
+            vec!["--list", "--format", "terse"],
+            base_digest,
+        ),
+        (
+            "libtest ignored discovery",
+            vec!["--ignored", "--list", "--format", "terse"],
+            base_digest,
+        ),
+    ];
+    if invocations.len() != 3
+        || expected
+            .iter()
+            .zip(&invocations[..2])
+            .any(|(expected, observed)| {
+                observed.label != expected.0
+                    || observed.invocation.arguments != expected.1
+                    || observed.invocation.environment_sha256 != expected.2
+                    || crate::producer::process::digest_environment(
+                        &observed.invocation.environment,
+                    ) != expected.2
+            })
+    {
+        return Err(AggregateError::new(
+            "test log does not contain the exact discovery invocation plan".to_owned(),
+        ));
+    }
+    let exact = &invocations[2];
+    let exact_arguments = &exact.invocation.arguments;
+    if exact.label != "exact libtest execution"
+        || exact_arguments.len() < 5
+        || exact_arguments[0] != test_name
+        || exact_arguments[1..5] != ["--exact", "--test-threads=1", "--color", "never"]
+        || (exact_arguments.len() == 6 && exact_arguments[5] != "--ignored")
+        || exact_arguments.len() > 6
+        || exact.invocation.environment_sha256 != exact_digest
+        || invocations.iter().any(|invocation| {
+            invocation.invocation.program_sha256 != binary.sha256
+                || invocation.invocation.current_dir != current_dir
+                || !Path::new(&invocation.invocation.program).is_absolute()
+        })
+    {
+        return Err(AggregateError::new(
+            "test log does not contain the exact executable invocation plan".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn verify_simulator_invocations(
+    bundle: &ResultBundle,
+    root: &Path,
+    sources: &[String],
+) -> Result<(), AggregateError> {
+    let binary = bundle
+        .execution
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.kind == "simulator-binary")
+        .ok_or_else(|| AggregateError::new("simulator binary artifact is missing".to_owned()))?;
+    let environment_sha256 = bundle.execution.source.environment_sha256.as_str();
+    let current_dir = fs::canonicalize(root)
+        .map_err(|error| AggregateError::new(format!("canonicalize simulator root: {error}")))?
+        .to_string_lossy()
+        .into_owned();
+    let expected: Vec<(String, Vec<String>)> = match bundle.profile.as_str() {
+        "pr" => vec![
+            (
+                "fast".to_owned(),
+                vec!["--profile".to_owned(), "fast".to_owned()],
+            ),
+            (
+                "raft-soak".to_owned(),
+                vec!["--profile".to_owned(), "raft-soak".to_owned()],
+            ),
+        ],
+        profile @ ("nightly" | "weekly") => {
+            let label = format!("raft-{profile}");
+            let seeds = crate::producer::expected_scheduled_seeds(profile, &bundle.source_ref)
+                .ok_or_else(|| AggregateError::new("scheduled seeds are missing".to_owned()))?;
+            vec![(
+                label.clone(),
+                vec!["--profile".to_owned(), label, "--seed".to_owned(), seeds],
+            )]
+        }
+        profile => {
+            return Err(AggregateError::new(format!(
+                "unknown simulator profile {profile}"
+            )))
+        }
+    };
+    if sources.len() != expected.len() {
+        return Err(AggregateError::new(
+            "simulator log count does not match the execution plan".to_owned(),
+        ));
+    }
+    for (label, arguments) in expected {
+        let source = sources
+            .iter()
+            .find(|source| source.lines().any(|line| line == format!("label: {label}")))
+            .ok_or_else(|| AggregateError::new(format!("simulator log {label} is missing")))?;
+        let invocations = crate::producer::process::parse_combined_invocations(source)
+            .map_err(|error| AggregateError::new(format!("parse simulator invocation: {error}")))?;
+        let [observed] = invocations.as_slice() else {
+            return Err(AggregateError::new(format!(
+                "simulator log {label} must contain exactly one invocation"
+            )));
+        };
+        if observed.label != label
+            || observed.invocation.arguments != arguments
+            || observed.invocation.program_sha256 != binary.sha256
+            || observed.invocation.current_dir != current_dir
+            || observed.invocation.environment_sha256 != environment_sha256
+            || crate::producer::process::digest_environment(&observed.invocation.environment)
+                != environment_sha256
+            || !Path::new(&observed.invocation.program).is_absolute()
+        {
+            return Err(AggregateError::new(format!(
+                "simulator log {label} does not match the exact invocation plan"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn validate_simulator_schedule(

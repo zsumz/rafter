@@ -30,6 +30,10 @@ pub(super) fn capture_for_layer(layer: &str) -> Result<SourceReceipt, Box<dyn Er
     }
 }
 
+pub(crate) fn head_commit() -> Result<String, Box<dyn Error>> {
+    git(&["rev-parse", "HEAD"])
+}
+
 fn capture(
     build_profile: &str,
     features: Vec<String>,

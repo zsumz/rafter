@@ -55,7 +55,7 @@ pub(super) fn compile(
         output_dir,
         Path::new(&format!("{profile}-tests/compile/{artifact_id}.log")),
         "compile-log",
-        &process::combined_log(&target.key(), &output),
+        &process::combined_log(&target.key(), &output)?,
     )?;
     let (executable, error) = compile_result(&output, target);
     let binary_artifact = executable

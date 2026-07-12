@@ -49,7 +49,7 @@ pub(super) fn collect_results(
             ));
             continue;
         };
-        if let Err(message) = validate_execution(bundle, runner_contract, expected) {
+        if let Err(message) = validate_execution(bundle, contract, runner_contract, expected) {
             harness_errors.push(format!("runner {}: {message}", bundle.runner));
             continue;
         }
@@ -98,18 +98,38 @@ fn collect_bundle_results(
 
 fn validate_execution(
     bundle: &ResultBundle,
-    contract: &RunnerContract,
+    profile_contract: &ProfileContract,
+    runner_contract: &RunnerContract,
     expected: &BTreeMap<String, &EvidenceDescriptor>,
 ) -> Result<(), &'static str> {
-    if bundle.execution.producer != contract.producer {
-        return Err("producer identity does not match profile contract");
+    validate_provenance(bundle, profile_contract)?;
+    validate_checks(bundle, runner_contract)?;
+    validate_runner_receipt(bundle, runner_contract, expected)
+}
+
+fn validate_provenance(
+    bundle: &ResultBundle,
+    profile_contract: &ProfileContract,
+) -> Result<(), &'static str> {
+    if bundle.execution.plan.schema_version != crate::PLAN_SCHEMA_VERSION
+        || bundle.execution.plan.profile != bundle.profile
+        || bundle.execution.plan.contract != *profile_contract
+        || !valid_plan_input(&bundle.execution.plan.registry)
+        || !valid_plan_input(&bundle.execution.plan.manifest)
+    {
+        return Err("hashed execution plan does not match profile contract");
     }
-    if bundle.execution.command != contract.command {
-        return Err("executed command does not match profile contract");
+    if bundle.execution.invocation.program.trim().is_empty()
+        || !is_sha256(&bundle.execution.invocation.program_sha256)
+        || bundle.execution.invocation.arguments.is_empty()
+        || bundle.execution.invocation.current_dir.trim().is_empty()
+        || crate::producer::process::digest_environment(&bundle.execution.invocation.environment)
+            != bundle.execution.invocation.environment_sha256
+        || !is_sha256(&bundle.execution.invocation.environment_sha256)
+    {
+        return Err("actual producer invocation provenance is incomplete");
     }
-    if bundle.execution.configuration != contract.configuration {
-        return Err("execution configuration does not match profile contract");
-    }
+    validate_producer_invocation(bundle)?;
     if bundle.execution.source.commit != bundle.source_ref
         || !bundle.execution.source.clean
         || bundle.execution.source.tree.trim().is_empty()
@@ -131,10 +151,58 @@ fn validate_execution(
     {
         return Err("source/toolchain provenance is incomplete or does not match source_ref");
     }
-    if bundle.execution.checks.len() < contract.minimum_observed_checks {
+    Ok(())
+}
+
+fn validate_producer_invocation(bundle: &ResultBundle) -> Result<(), &'static str> {
+    let binaries = bundle
+        .execution
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == "producer-binary")
+        .collect::<Vec<_>>();
+    let [binary] = binaries.as_slice() else {
+        return Err("producer invocation requires exactly one binary artifact");
+    };
+    if binary.sha256 != bundle.execution.invocation.program_sha256 {
+        return Err("producer invocation binary does not match its artifact");
+    }
+    let arguments = &bundle.execution.invocation.arguments;
+    let profile = unique_argument(arguments, "--profile");
+    let layer = unique_argument(arguments, "--layer");
+    let command_matches = match arguments.first().map(String::as_str) {
+        Some("run") => {
+            profile == Some(bundle.profile.as_str()) && layer == Some(bundle.runner.as_str())
+        }
+        Some("run-all") => profile == Some(bundle.profile.as_str()) && layer.is_none(),
+        _ => false,
+    };
+    if !command_matches {
+        return Err("producer invocation does not select this profile and layer");
+    }
+    Ok(())
+}
+
+fn unique_argument<'a>(arguments: &'a [String], name: &str) -> Option<&'a str> {
+    let values = arguments
+        .windows(2)
+        .filter(|pair| pair[0] == name)
+        .map(|pair| pair[1].as_str())
+        .collect::<Vec<_>>();
+    match values.as_slice() {
+        [value] => Some(*value),
+        _ => None,
+    }
+}
+
+fn validate_checks(
+    bundle: &ResultBundle,
+    runner_contract: &RunnerContract,
+) -> Result<(), &'static str> {
+    if bundle.execution.checks.len() < runner_contract.minimum_observed_checks {
         return Err("observed check count is below the profile minimum");
     }
-    if contract.require_peak_rss && bundle.execution.peak_rss_kib == 0 {
+    if runner_contract.require_peak_rss && bundle.execution.peak_rss_kib == 0 {
         return Err("peak RSS measurement is missing");
     }
     if bundle.execution.artifacts.is_empty()
@@ -157,7 +225,7 @@ fn validate_execution(
             .execution
             .checks
             .iter()
-            .any(|check| !valid_check(check, contract.require_peak_rss))
+            .any(|check| !valid_check(check, runner_contract.require_peak_rss))
     {
         return Err("check receipts must be unique and complete");
     }
@@ -190,16 +258,28 @@ fn validate_execution(
             return Err("result status disagrees with its check completion");
         }
     }
+    Ok(())
+}
+
+fn validate_runner_receipt(
+    bundle: &ResultBundle,
+    runner_contract: &RunnerContract,
+    expected: &BTreeMap<String, &EvidenceDescriptor>,
+) -> Result<(), &'static str> {
     if bundle.runner == "tests" {
         crate::receipt_tests::validate(bundle, expected)?;
     } else if bundle.runner == "simulator" {
         crate::receipt_simulator::validate(bundle, expected)?;
     } else if bundle.runner == "tla" {
-        crate::receipt_tla::validate(bundle, expected, contract)?;
+        crate::receipt_tla::validate(bundle, expected, runner_contract)?;
     } else if bundle.runner == "maelstrom" {
-        crate::receipt_maelstrom::validate(bundle, expected, contract)?;
+        crate::receipt_maelstrom::validate(bundle, expected, runner_contract)?;
     }
     Ok(())
+}
+
+fn valid_plan_input(input: &crate::PlanInput) -> bool {
+    !input.path.trim().is_empty() && input.size_bytes > 0 && is_sha256(&input.sha256)
 }
 
 fn valid_check(check: &CheckReceipt, require_peak_rss: bool) -> bool {

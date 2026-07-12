@@ -41,13 +41,26 @@ fn verify_check(
     let mut summaries = Vec::new();
     let mut process_successes = Vec::new();
     let mut coverage = Vec::new();
-    for artifacts in grouped.values() {
+    for (trial, artifacts) in &grouped {
         verify_trial_inputs(bundle, scenario, artifacts, root)?;
         let summary = parse_results(unique(artifacts, "maelstrom-results")?, root)?;
         let process = parse_process(unique(artifacts, "maelstrom-process-log")?, root)?;
-        if process.schema_version != 1 || process.label != scenario {
-            return Err(error("Maelstrom process log has wrong schema or label"));
+        if process.schema_version != 2
+            || process.label != scenario
+            || !process.has_complete_invocation()
+        {
+            return Err(error(
+                "Maelstrom process log has wrong schema, label, or exact invocation",
+            ));
         }
+        verify_exact_invocation(
+            bundle,
+            scenario,
+            *trial,
+            artifacts,
+            &process.invocation,
+            root,
+        )?;
         process_successes.push(process.exit_code == Some(0) && !process.timed_out);
         add_summary(&mut observations, &summary);
         let markers = scan_node_logs(artifacts, root)?;
@@ -64,6 +77,91 @@ fn verify_check(
         return Err(error("Maelstrom observations disagree with artifacts"));
     }
     verify_statuses(bundle, check, &summaries, &process_successes, &coverage)
+}
+
+fn verify_exact_invocation(
+    bundle: &ResultBundle,
+    scenario: &str,
+    trial: u64,
+    artifacts: &[&crate::ArtifactRef],
+    observed: &crate::InvocationReceipt,
+    root: &Path,
+) -> Result<(), AggregateError> {
+    let source_prefix = bundle.source_ref.get(..12).unwrap_or(&bundle.source_ref);
+    let suffix = Path::new("target/rafter-invariants/maelstrom")
+        .join(source_prefix)
+        .join(&bundle.profile)
+        .join(scenario)
+        .join(format!("trial-{trial}"));
+    let repository = std::fs::canonicalize(root)
+        .map_err(|error| self::error(format!("canonicalize Maelstrom root: {error}")))?;
+    let state_dir = repository.join(suffix);
+    let durable = state_dir.join("durable");
+    let concurrency = if scenario == "membership" { "8" } else { "6" };
+    let mut base_environment = observed.environment.clone();
+    for name in [
+        "RAFTER_MAELSTROM_ROOT",
+        "RAFTER_MAELSTROM_TIME_LIMIT",
+        "RAFTER_MAELSTROM_RATE",
+        "RAFTER_MAELSTROM_CONCURRENCY",
+    ] {
+        base_environment.remove(name);
+    }
+    let mut expected_environment = base_environment.clone();
+    expected_environment.extend([
+        (
+            "RAFTER_MAELSTROM_ROOT".to_owned(),
+            durable.to_string_lossy().into_owned(),
+        ),
+        (
+            "RAFTER_MAELSTROM_TIME_LIMIT".to_owned(),
+            configuration(bundle, "duration_seconds")?.to_owned(),
+        ),
+        (
+            "RAFTER_MAELSTROM_RATE".to_owned(),
+            configuration(bundle, "rate")?.to_owned(),
+        ),
+        (
+            "RAFTER_MAELSTROM_CONCURRENCY".to_owned(),
+            concurrency.to_owned(),
+        ),
+    ]);
+    let runner = unique(artifacts, "maelstrom-runner")?;
+    let expected_program = std::fs::canonicalize(repository.join(scenario_script(scenario)?))
+        .map_err(|error| self::error(format!("canonicalize Maelstrom script: {error}")))?;
+    if observed.program != expected_program.to_string_lossy() {
+        return Err(error(
+            "Maelstrom process program path does not match its scenario",
+        ));
+    }
+    if observed.program_sha256 != runner.sha256 {
+        return Err(error(
+            "Maelstrom process program digest does not match its runner artifact",
+        ));
+    }
+    if observed.arguments != ["--test-count", "1"] {
+        return Err(error(
+            "Maelstrom process arguments do not match the exact invocation plan",
+        ));
+    }
+    if observed.current_dir != state_dir.to_string_lossy() {
+        return Err(error(
+            "Maelstrom invocation working directory does not match its trial",
+        ));
+    }
+    if observed.environment != expected_environment {
+        return Err(error(
+            "Maelstrom process environment does not match the exact invocation plan",
+        ));
+    }
+    if crate::producer::process::digest_environment(&base_environment)
+        != bundle.execution.source.environment_sha256
+    {
+        return Err(error(
+            "Maelstrom base environment does not match source provenance",
+        ));
+    }
+    Ok(())
 }
 
 fn verify_trial_inputs(
@@ -192,6 +290,11 @@ fn uniform_statuses(
 fn configuration<'a>(bundle: &'a ResultBundle, key: &str) -> Result<&'a str, AggregateError> {
     bundle
         .execution
+        .plan
+        .contract
+        .runners
+        .get(&bundle.runner)
+        .ok_or_else(|| error(format!("execution plan omitted runner {}", bundle.runner)))?
         .configuration
         .get(key)
         .map(String::as_str)

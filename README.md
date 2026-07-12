@@ -97,7 +97,7 @@ for output in node.step(Input::Tick) {
 cargo test --workspace
 cargo test -p rafter-sim
 cargo run --release -p rafter-sim --bin rafter-model-check-fast
-cargo run -p rafter-invariants -- check --profile pr
+cargo run --locked -p rafter-invariants -- run-all --profile pr
 scripts/maelstrom-lin-kv
 ```
 
@@ -110,7 +110,10 @@ machine-readable catalog at
 The model-check profiles, state-count semantics, and reproducible overhead
 measurement procedure are documented in
 [`docs/model-checking.md`](./docs/model-checking.md).
-The deterministic PR aggregate emits exactly one verdict for each of the 44
+`run-all` loads one immutable execution plan, runs every required layer, and
+aggregates only the evidence produced by that invocation. `check` is the
+separate aggregation-only command for existing result bundles. The
+deterministic PR aggregate emits exactly one verdict for each of the 44
 reviewed IDs. Branch protection on `main` requires the stable `invariants-pr`
 job; missing, malformed, incomplete, or stale evidence makes that job red.
 Maelstrom supplies sampled end-to-end evidence in nightly and weekly profiles

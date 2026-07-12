@@ -8,6 +8,7 @@ mod artifact_verify_maelstrom_support;
 mod artifact_verify_maelstrom_tests;
 mod artifact_verify_tla;
 mod catalog;
+mod plan;
 mod producer;
 mod receipt;
 mod receipt_maelstrom;
@@ -16,6 +17,7 @@ mod receipt_tests;
 mod receipt_tla;
 mod registry_parse;
 mod render;
+mod run_all;
 mod types;
 
 pub use aggregate::{
@@ -24,14 +26,17 @@ pub use aggregate::{
 };
 pub use catalog::{
     Catalog, CatalogError, ClauseDescriptor, EvidenceDescriptor, InvariantDescriptor,
-    ProfileManifest, SimulatorIdentity, TestIdentity,
+    ProfileContract, ProfileManifest, RunnerContract, SimulatorIdentity, TestIdentity,
 };
-pub use producer::{produce, ProducerOptions, ProducerOutcome};
+pub use plan::{capture_invocation, verify_bundle_plan, ExecutionPlan, PlanOptions};
+pub use producer::{produce, produce_with_plan, ProducerOptions, ProducerOutcome};
 pub use render::{render_junit, render_markdown};
+pub use run_all::{run_all, write_report, RunAllOptions, RunAllOutcome};
 pub use types::{
     ArtifactRef, CheckCompletion, CheckReceipt, ClauseVerdict, EvidenceResult, EvidenceStatus,
-    ExecutionReceipt, FailureClassification, InvariantVerdict, ResultBundle, SourceReceipt,
-    ToolReceipt, VerdictReport, VerdictStatus,
+    ExecutionPlanReceipt, ExecutionReceipt, FailureClassification, InvariantVerdict,
+    InvocationReceipt, PlanInput, ResultBundle, SourceReceipt, ToolReceipt, VerdictReport,
+    VerdictStatus, PLAN_SCHEMA_VERSION,
 };
 
 #[cfg(test)]

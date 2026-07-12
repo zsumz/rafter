@@ -60,8 +60,11 @@ pub(super) fn evaluate(
         &environment,
         Path::new("."),
     )?;
-    let mut log = process::combined_log("libtest discovery", &listed);
-    log.extend(process::combined_log("libtest ignored discovery", &ignored));
+    let mut log = process::combined_log("libtest discovery", &listed)?;
+    log.extend(process::combined_log(
+        "libtest ignored discovery",
+        &ignored,
+    )?);
     let discovery_rss = listed.peak_rss_kib.max(ignored.peak_rss_kib);
     let discovery_ms =
         process::duration_ms(listed.duration) + process::duration_ms(ignored.duration);
@@ -153,7 +156,7 @@ fn execute_exact(
         arguments.push("--ignored".into());
     }
     let executed = process::timed(program, &arguments, &run_environment, Path::new("."))?;
-    log.extend(process::combined_log("exact libtest execution", &executed));
+    log.extend(process::combined_log("exact libtest execution", &executed)?);
     let artifact = write_log(output_dir, profile, source_ref, execution_id, &log)?;
     let peak_rss_kib = discovery_rss.max(executed.peak_rss_kib);
     let duration_ms = discovery_ms + process::duration_ms(executed.duration);

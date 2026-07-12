@@ -6,8 +6,9 @@ use std::{
 
 use clap::{Parser, Subcommand};
 use rafter_invariants::{
-    aggregate_with_harness_errors, load_bundles, load_evidence, produce, render_junit,
-    render_markdown, verify_layer_bundle, Catalog, ProducerOptions, ProfileManifest, VerdictStatus,
+    aggregate_with_harness_errors, capture_invocation, load_bundles, load_evidence, produce,
+    run_all, verify_bundle_plan, verify_layer_bundle, write_report, ExecutionPlan, PlanOptions,
+    ProducerOptions, RunAllOptions, VerdictReport, VerdictStatus,
 };
 
 #[derive(Debug, Parser)]
@@ -56,6 +57,18 @@ enum Commands {
         #[arg(long, default_value = "verification/raft-invariant-profiles.json")]
         manifest: PathBuf,
         #[arg(long, default_value = "artifacts/invariants")]
+        output_dir: PathBuf,
+    },
+    RunAll {
+        #[arg(long)]
+        profile: String,
+        #[arg(long, default_value = "verification/raft-invariants.yaml")]
+        registry: PathBuf,
+        #[arg(long, default_value = "verification/raft-invariant-profiles.json")]
+        manifest: PathBuf,
+        #[arg(long, default_value = "artifacts/invariants")]
+        results_dir: PathBuf,
+        #[arg(long, default_value = "target/rafter-invariants")]
         output_dir: PathBuf,
     },
     VerifyLayer {
@@ -119,6 +132,34 @@ fn run(cli: Cli) -> Result<bool, Box<dyn std::error::Error>> {
             println!("wrote {}", outcome.path.display());
             Ok(outcome.all_passed)
         }
+        Commands::RunAll {
+            profile,
+            registry,
+            manifest,
+            results_dir,
+            output_dir,
+        } => {
+            let invocation = capture_invocation()?;
+            let outcome = run_all(
+                &RunAllOptions {
+                    plan: PlanOptions {
+                        profile,
+                        registry,
+                        manifest,
+                    },
+                    results_dir,
+                    output_dir,
+                },
+                &invocation,
+            )?;
+            print_report(&outcome.report);
+            if !outcome.structural_errors.is_empty() {
+                return Err(outcome.structural_errors.join("; ").into());
+            }
+            Ok(outcome.all_layers_passed
+                && outcome.report.summary.green == 44
+                && outcome.report.summary.total == 44)
+        }
         Commands::VerifyLayer {
             profile,
             layer,
@@ -126,13 +167,17 @@ fn run(cli: Cli) -> Result<bool, Box<dyn std::error::Error>> {
             registry,
             manifest,
         } => {
-            let catalog = Catalog::load(&registry)?;
-            let manifest = ProfileManifest::load(&manifest)?;
+            let plan = ExecutionPlan::load(&PlanOptions {
+                profile: profile.clone(),
+                registry,
+                manifest,
+            })?;
             let bundles = load_bundles(&[result])?;
             let [bundle] = bundles.as_slice() else {
                 return Err("layer verification requires exactly one result bundle".into());
             };
-            verify_layer_bundle(&catalog, &manifest, &profile, &layer, bundle)?;
+            verify_bundle_plan(bundle, &plan.receipt)?;
+            verify_layer_bundle(&plan.catalog, &plan.manifest, &profile, &layer, bundle)?;
             println!("verified {profile}/{layer} evidence");
             Ok(true)
         }
@@ -162,33 +207,33 @@ fn check(options: CheckOptions) -> Result<bool, Box<dyn std::error::Error>> {
     let source_ref = source_ref
         .or_else(|| env::var("RAFTER_SOURCE_REF").ok())
         .unwrap_or_else(git_head);
-    let catalog = Catalog::load(&registry)?;
-    let manifest = ProfileManifest::load(&manifest)?;
+    let plan = ExecutionPlan::load(&PlanOptions {
+        profile: profile.clone(),
+        registry,
+        manifest,
+    })?;
     let mut loaded = load_evidence(&results);
     loaded.harness_errors.extend(discovery_errors);
+    for bundle in &loaded.bundles {
+        if let Err(error) = verify_bundle_plan(bundle, &plan.receipt) {
+            loaded.harness_errors.push(error.to_string());
+        }
+    }
     let report = aggregate_with_harness_errors(
-        &catalog,
-        &manifest,
+        &plan.catalog,
+        &plan.manifest,
         &profile,
         &source_ref,
         &loaded.bundles,
         &loaded.harness_errors,
     )?;
 
-    fs::create_dir_all(&output_dir)?;
-    fs::write(
-        output_dir.join(format!("{profile}.json")),
-        format!("{}\n", serde_json::to_string_pretty(&report)?),
-    )?;
-    fs::write(
-        output_dir.join(format!("{profile}.xml")),
-        render_junit(&report),
-    )?;
-    fs::write(
-        output_dir.join(format!("{profile}.md")),
-        render_markdown(&report),
-    )?;
+    write_report(&report, &output_dir)?;
+    print_report(&report);
+    Ok(report.summary.green == 44 && report.summary.total == 44)
+}
 
+fn print_report(report: &VerdictReport) {
     for verdict in &report.invariants {
         let label = match verdict.status {
             VerdictStatus::Green => "GREEN",
@@ -205,9 +250,8 @@ fn check(options: CheckOptions) -> Result<bool, Box<dyn std::error::Error>> {
     }
     println!(
         "invariant verdict: {}/{} green ({})",
-        report.summary.green, report.summary.total, profile
+        report.summary.green, report.summary.total, report.profile
     );
-    Ok(report.summary.green == 44 && report.summary.total == 44)
 }
 
 fn json_files(directory: &Path) -> Result<Vec<PathBuf>, std::io::Error> {

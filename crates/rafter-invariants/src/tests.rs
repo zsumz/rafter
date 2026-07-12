@@ -8,7 +8,7 @@ fn workspace_file(path: &str) -> PathBuf {
         .join(path)
 }
 
-fn loaded() -> (Catalog, ProfileManifest) {
+pub(crate) fn loaded() -> (Catalog, ProfileManifest) {
     let catalog = Catalog::load(&workspace_file("verification/raft-invariants.yaml"))
         .expect("registry loads");
     let manifest =
@@ -46,6 +46,43 @@ fn source_receipt(commit: &str) -> SourceReceipt {
         tools: std::collections::BTreeMap::new(),
         environment_sha256: "0".repeat(64),
         clean: true,
+    }
+}
+
+pub(crate) fn plan_receipt(manifest: &ProfileManifest, profile: &str) -> ExecutionPlanReceipt {
+    ExecutionPlanReceipt {
+        schema_version: PLAN_SCHEMA_VERSION,
+        profile: profile.to_owned(),
+        registry: plan_input("verification/raft-invariants.yaml"),
+        manifest: plan_input("verification/raft-invariant-profiles.json"),
+        contract: manifest.profiles[profile].clone(),
+    }
+}
+
+fn plan_input(path: &str) -> PlanInput {
+    PlanInput {
+        path: path.to_owned(),
+        sha256: "0".repeat(64),
+        size_bytes: 1,
+    }
+}
+
+fn invocation_receipt(runner: &str) -> InvocationReceipt {
+    InvocationReceipt {
+        program: "target/debug/rafter-invariants".to_owned(),
+        program_sha256: "0".repeat(64),
+        arguments: vec![
+            "run".to_owned(),
+            "--profile".to_owned(),
+            "pr".to_owned(),
+            "--layer".to_owned(),
+            runner.to_owned(),
+        ],
+        current_dir: "/workspace/rafter".to_owned(),
+        environment: std::collections::BTreeMap::new(),
+        environment_sha256: crate::producer::process::digest_environment(
+            &std::collections::BTreeMap::new(),
+        ),
     }
 }
 
@@ -164,7 +201,7 @@ fn synthetic_artifacts(descriptor: &EvidenceDescriptor) -> Vec<ArtifactRef> {
     }
 }
 
-fn passing_bundles(catalog: &Catalog, manifest: &ProfileManifest) -> Vec<ResultBundle> {
+pub(crate) fn passing_bundles(catalog: &Catalog, manifest: &ProfileManifest) -> Vec<ResultBundle> {
     let required = catalog.required_evidence(&manifest.profiles["pr"]);
     let mut by_runner = std::collections::BTreeMap::<String, Vec<EvidenceDescriptor>>::new();
     for evidence in required.values().flatten() {
@@ -176,7 +213,6 @@ fn passing_bundles(catalog: &Catalog, manifest: &ProfileManifest) -> Vec<ResultB
     by_runner
         .into_iter()
         .map(|(runner, evidence)| {
-            let runner_contract = &manifest.profiles["pr"].runners[&runner];
             let mut groups = std::collections::BTreeMap::<String, Vec<EvidenceDescriptor>>::new();
             for descriptor in evidence {
                 let check_id = synthetic_check_id(&descriptor);
@@ -232,19 +268,21 @@ fn passing_bundles(catalog: &Catalog, manifest: &ProfileManifest) -> Vec<ResultB
                 );
             }
             ResultBundle {
-                schema_version: 6,
+                schema_version: 7,
                 runner: runner.clone(),
                 profile: "pr".to_owned(),
                 source_ref: "abc".to_owned(),
                 execution: ExecutionReceipt {
-                    producer: runner_contract.producer.clone(),
-                    command: runner_contract.command.clone(),
-                    configuration: runner_contract.configuration.clone(),
+                    plan: plan_receipt(manifest, "pr"),
+                    invocation: invocation_receipt(&runner),
                     source,
                     checks,
                     duration_ms: 1,
                     peak_rss_kib: 1,
-                    artifacts: vec![artifact(&format!("artifacts/{runner}.log"))],
+                    artifacts: vec![
+                        artifact(&format!("artifacts/{runner}.log")),
+                        artifact_kind(&format!("artifacts/{runner}-producer"), "producer-binary"),
+                    ],
                 },
                 results,
             }
@@ -281,7 +319,35 @@ fn complete_matching_evidence_is_44_of_44_green() {
             .collect::<Vec<_>>()
     );
     assert_eq!(report.summary.red, 0);
-    assert_eq!(report.artifacts.len(), 3);
+    assert_eq!(report.artifacts.len(), 6);
+}
+
+#[test]
+fn same_commit_evidence_from_a_different_plan_is_red() {
+    let (catalog, manifest) = loaded();
+    let mut bundles = passing_bundles(&catalog, &manifest);
+    bundles[0].execution.plan.contract.description = "different plan".to_owned();
+
+    let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
+    assert!(report.summary.red > 0);
+    assert!(report.invariants.iter().any(|verdict| verdict
+        .issues
+        .iter()
+        .any(|issue| issue.message.contains("hashed execution plan"))));
+}
+
+#[test]
+fn missing_actual_invocation_is_red() {
+    let (catalog, manifest) = loaded();
+    let mut bundles = passing_bundles(&catalog, &manifest);
+    bundles[0].execution.invocation.arguments.clear();
+
+    let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
+    assert!(report.summary.red > 0);
+    assert!(report.invariants.iter().any(|verdict| verdict
+        .issues
+        .iter()
+        .any(|issue| issue.message.contains("actual producer invocation"))));
 }
 
 fn relaxed_check_minimums(manifest: &mut ProfileManifest) {
@@ -607,14 +673,22 @@ fn canonical_invariant_with_one_layer_stays_red() {
 #[test]
 fn result_bundle_rejects_unknown_fields() {
     let source = r#"{
-        "schema_version": 6,
+        "schema_version": 7,
         "runner": "tests",
         "profile": "pr",
         "source_ref": "abc",
         "execution": {
-          "producer": "tests-v1",
-          "command": ["test"],
-          "configuration": {"suite": "test"},
+          "plan": {
+            "schema_version": 1,
+            "profile": "pr",
+            "registry": {"path": "verification/raft-invariants.yaml", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "size_bytes": 1},
+            "manifest": {"path": "verification/raft-invariant-profiles.json", "sha256": "0000000000000000000000000000000000000000000000000000000000000000", "size_bytes": 1},
+            "contract": {}
+          },
+          "invocation": {
+            "program": "target/debug/rafter-invariants", "program_sha256": "0000000000000000000000000000000000000000000000000000000000000000", "arguments": ["run"],
+            "current_dir": "/workspace/rafter", "environment": {}, "environment_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+          },
           "source": {
             "commit": "abc", "tree": "tree", "cargo_lock_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
             "cargo": "cargo test", "cargo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
@@ -638,21 +712,21 @@ fn result_bundle_rejects_unknown_fields() {
 fn stale_bundle_is_red_never_green() {
     let (catalog, manifest) = loaded();
     let bundle = ResultBundle {
-        schema_version: 6,
+        schema_version: 7,
         runner: "tests".to_owned(),
         profile: "pr".to_owned(),
         source_ref: "old".to_owned(),
         execution: ExecutionReceipt {
-            producer: "rafter-invariants-tests-v1".to_owned(),
-            command: manifest.profiles["pr"].runners["tests"].command.clone(),
-            configuration: manifest.profiles["pr"].runners["tests"]
-                .configuration
-                .clone(),
+            plan: plan_receipt(&manifest, "pr"),
+            invocation: invocation_receipt("tests"),
             source: source_receipt("old"),
             checks: Vec::new(),
             duration_ms: 1,
             peak_rss_kib: 1,
-            artifacts: vec![artifact("artifacts/tests.log")],
+            artifacts: vec![
+                artifact("artifacts/tests.log"),
+                artifact_kind("artifacts/tests-producer", "producer-binary"),
+            ],
         },
         results: Vec::new(),
     };
