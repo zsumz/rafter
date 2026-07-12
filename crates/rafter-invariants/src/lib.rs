@@ -2,10 +2,15 @@
 
 mod aggregate;
 mod artifact_verify;
+mod artifact_verify_maelstrom;
+mod artifact_verify_maelstrom_support;
+#[cfg(test)]
+mod artifact_verify_maelstrom_tests;
 mod artifact_verify_tla;
 mod catalog;
 mod producer;
 mod receipt;
+mod receipt_maelstrom;
 mod receipt_simulator;
 mod receipt_tests;
 mod receipt_tla;
@@ -13,7 +18,10 @@ mod registry_parse;
 mod render;
 mod types;
 
-pub use aggregate::{aggregate, load_bundles, AggregateError};
+pub use aggregate::{
+    aggregate, aggregate_with_harness_errors, load_bundles, load_evidence, verify_layer_bundle,
+    AggregateError, LoadedEvidence,
+};
 pub use catalog::{
     Catalog, CatalogError, EvidenceDescriptor, ProfileManifest, SimulatorIdentity, TestIdentity,
 };
