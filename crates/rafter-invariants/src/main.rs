@@ -6,8 +6,8 @@ use std::{
 
 use clap::{Parser, Subcommand};
 use rafter_invariants::{
-    aggregate, load_bundles, produce, render_junit, render_markdown, Catalog, ProducerOptions,
-    ProfileManifest, VerdictStatus,
+    aggregate_with_harness_errors, load_bundles, load_evidence, produce, render_junit,
+    render_markdown, verify_layer_bundle, Catalog, ProducerOptions, ProfileManifest, VerdictStatus,
 };
 
 #[derive(Debug, Parser)]
@@ -58,6 +58,18 @@ enum Commands {
         #[arg(long, default_value = "artifacts/invariants")]
         output_dir: PathBuf,
     },
+    VerifyLayer {
+        #[arg(long)]
+        profile: String,
+        #[arg(long)]
+        layer: String,
+        #[arg(long)]
+        result: PathBuf,
+        #[arg(long, default_value = "verification/raft-invariants.yaml")]
+        registry: PathBuf,
+        #[arg(long, default_value = "verification/raft-invariant-profiles.json")]
+        manifest: PathBuf,
+    },
 }
 
 fn main() -> ExitCode {
@@ -107,6 +119,23 @@ fn run(cli: Cli) -> Result<bool, Box<dyn std::error::Error>> {
             println!("wrote {}", outcome.path.display());
             Ok(outcome.all_passed)
         }
+        Commands::VerifyLayer {
+            profile,
+            layer,
+            result,
+            registry,
+            manifest,
+        } => {
+            let catalog = Catalog::load(&registry)?;
+            let manifest = ProfileManifest::load(&manifest)?;
+            let bundles = load_bundles(&[result])?;
+            let [bundle] = bundles.as_slice() else {
+                return Err("layer verification requires exactly one result bundle".into());
+            };
+            verify_layer_bundle(&catalog, &manifest, &profile, &layer, bundle)?;
+            println!("verified {profile}/{layer} evidence");
+            Ok(true)
+        }
     }
 }
 
@@ -120,16 +149,31 @@ fn check(options: CheckOptions) -> Result<bool, Box<dyn std::error::Error>> {
         output_dir,
         source_ref,
     } = options;
+    let mut discovery_errors = Vec::new();
     if results.is_empty() {
-        results = json_files(&results_dir)?;
+        match json_files(&results_dir) {
+            Ok(paths) => results = paths,
+            Err(error) => discovery_errors.push(format!(
+                "discover evidence in {}: {error}",
+                results_dir.display()
+            )),
+        }
     }
     let source_ref = source_ref
         .or_else(|| env::var("RAFTER_SOURCE_REF").ok())
         .unwrap_or_else(git_head);
     let catalog = Catalog::load(&registry)?;
     let manifest = ProfileManifest::load(&manifest)?;
-    let bundles = load_bundles(&results)?;
-    let report = aggregate(&catalog, &manifest, &profile, &source_ref, &bundles)?;
+    let mut loaded = load_evidence(&results);
+    loaded.harness_errors.extend(discovery_errors);
+    let report = aggregate_with_harness_errors(
+        &catalog,
+        &manifest,
+        &profile,
+        &source_ref,
+        &loaded.bundles,
+        &loaded.harness_errors,
+    )?;
 
     fs::create_dir_all(&output_dir)?;
     fs::write(
