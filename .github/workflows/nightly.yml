@@ -138,8 +138,8 @@ jobs:
           path: target/raft-burn-in/
           if-no-files-found: ignore
 
-  maelstrom-lin-kv:
-    name: maelstrom-lin-kv
+  invariants-maelstrom:
+    name: invariants-maelstrom-nightly
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -170,17 +170,20 @@ jobs:
           fi
           tar -xjf "$archive" -C /tmp
           echo "/tmp/maelstrom" >> "$GITHUB_PATH"
-      - name: Maelstrom lin-kv partitions
-        run: scripts/maelstrom-lin-kv
-      - name: Maelstrom lin-kv partitions plus leader restart
-        run: scripts/maelstrom-lin-kv-leader-restart
-      - name: Upload Maelstrom store
-        if: failure()
+      - name: Produce all five nightly Maelstrom evidence scenarios
+        run: cargo run --locked -p rafter-invariants -- run --profile nightly --layer maelstrom
+      - name: Independently verify nightly Maelstrom evidence
+        run: >-
+          cargo run --locked -p rafter-invariants -- verify-layer
+          --profile nightly --layer maelstrom
+          --result artifacts/invariants/nightly-maelstrom.json
+      - name: Upload source-bound Maelstrom receipts and replay artifacts
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: maelstrom-lin-kv-store
-          path: store/
-          if-no-files-found: ignore
+          name: invariants-nightly-maelstrom
+          path: artifacts/invariants/
+          if-no-files-found: warn
 
   fuzz-long:
     name: fuzz-long (${{ matrix.target }})
