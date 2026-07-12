@@ -1,8 +1,8 @@
 use rafter::NodeId;
 
 use super::super::{
-    application::{apply_to_state, restart_node},
     scheduling::Operation,
+    state::{apply_to_state, restart_node},
     Action, ExplorationState, MessageKind, ProposalId,
 };
 use super::ReplayError;
@@ -70,7 +70,8 @@ fn replay_membership_action(
             Ok(())
         }
         Action::PromoteLearner { to, learner_id } => {
-            let Some(promotion_barrier) = state.cluster.promotion_barrier(*to, *learner_id) else {
+            let Some(promotion_barrier) = state.cluster().promotion_barrier(*to, *learner_id)
+            else {
                 return Err(ReplayError::MissingPromotionBarrier {
                     action_index,
                     action: action.clone(),
@@ -131,9 +132,9 @@ fn replay_restart_action(
 }
 
 fn replay_proposal_action(state: &mut ExplorationState, to: NodeId, proposal_id: ProposalId) {
-    let stale_leader = state.cluster.nodes.get(&to).is_some_and(|node| {
+    let stale_leader = state.cluster().nodes.get(&to).is_some_and(|node| {
         state
-            .cluster
+            .cluster()
             .nodes
             .values()
             .any(|other| other.current_term() > node.current_term())
@@ -156,8 +157,8 @@ fn replay_deliver_action(
     let Action::Deliver { from, to, message } = action else {
         unreachable!("caller filters delivery replay actions");
     };
-    let Some(position) = state.cluster.network.iter().position(|queued| {
-        queued.ready_at <= state.cluster.clock.now()
+    let Some(position) = state.cluster().network.iter().position(|queued| {
+        queued.ready_at <= state.cluster().clock.now()
             && queued.envelope.from == *from
             && queued.envelope.to == *to
             && MessageKind::from(&queued.envelope.message) == *message

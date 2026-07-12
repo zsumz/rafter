@@ -32,7 +32,7 @@ pub fn replay_raft_trace(
                     if failure.invariant() == expected =>
                 {
                     Ok(ReplayReport {
-                        state: summarize(&state.cluster),
+                        state: summarize(state.cluster()),
                         failure: Some(failure),
                     })
                 }
@@ -50,7 +50,7 @@ pub fn replay_raft_trace(
         }
     }
 
-    let actual = summarize(&state.cluster);
+    let actual = summarize(state.cluster());
     match expectation {
         ReplayExpectation::FinalState(expected) if expected == &actual => Ok(ReplayReport {
             state: actual,
