@@ -12,30 +12,30 @@ pub(crate) fn check_restart_snapshot_safety(
     state: &RestartSnapshotState,
     trace: &[Action],
 ) -> Result<(), Failure> {
-    check_internal_derived_state(&state.state.cluster, trace)?;
-    check_applied_payload_agreement(&state.state.cluster, trace)?;
-    check_snapshot_log_geometry(&state.state.cluster, trace)?;
-    check_committed_prefixes(&state.state.cluster, trace)?;
+    check_internal_derived_state(state.state.cluster(), trace)?;
+    check_applied_payload_agreement(state.state.cluster(), trace)?;
+    check_snapshot_log_geometry(state.state.cluster(), trace)?;
+    check_committed_prefixes(state.state.cluster(), trace)?;
 
     let Some(expected) = &state.expected_snapshot else {
         return Ok(());
     };
 
-    for applied in &state.state.cluster.applied {
+    for applied in &state.state.cluster().applied {
         if applied.payload == expected.payload {
             return Err(Failure {
                 kind: crate::model_check::FailureKind::InvariantViolation,
                 invariant: catalog::SS_05_SNAPSHOT_SEMANTIC_EQUIVALENCE,
                 message: "snapshot bytes were exposed as an applied log entry".to_string(),
                 trace: trace.to_vec(),
-                state: summarize(&state.state.cluster),
+                state: summarize(state.state.cluster()),
             });
         }
     }
 
-    for (node_id, node) in &state.state.cluster.nodes {
+    for (node_id, node) in &state.state.cluster().nodes {
         check_snapshot_transfer_integrity(
-            &state.state.cluster,
+            state.state.cluster(),
             *node_id,
             node.snapshot_index(),
             node.pending_snapshot_transfer().as_ref(),
@@ -47,7 +47,7 @@ pub(crate) fn check_restart_snapshot_safety(
             continue;
         }
 
-        let bootstrap = state.state.cluster.bootstrap_state(*node_id);
+        let bootstrap = state.state.cluster().bootstrap_state(*node_id);
 
         for entry in bootstrap.log {
             if state
@@ -63,7 +63,7 @@ pub(crate) fn check_restart_snapshot_safety(
                         entry.index
                     ),
                     trace: trace.to_vec(),
-                    state: summarize(&state.state.cluster),
+                    state: summarize(state.state.cluster()),
                 });
             }
         }
@@ -127,16 +127,16 @@ pub(super) fn check_snapshot_metadata_payload_integrity(
     expected: &ExpectedSnapshot,
     trace: &[Action],
 ) -> Result<(), Failure> {
-    let node = state.state.cluster.node(node_id);
+    let node = state.state.cluster().node(node_id);
     if node.snapshot_index() < expected.snapshot.metadata.last_included_index {
         return Ok(());
     }
 
-    let bootstrap = state.state.cluster.bootstrap_state(node_id);
+    let bootstrap = state.state.cluster().bootstrap_state(node_id);
     if bootstrap.snapshot.as_ref() == Some(&expected.snapshot)
         && state
             .state
-            .cluster
+            .cluster()
             .snapshot_payload(node_id, &expected.snapshot)
             != Some(expected.payload.as_slice())
     {
@@ -145,7 +145,7 @@ pub(super) fn check_snapshot_metadata_payload_integrity(
             invariant: catalog::SS_01_ATOMIC_MONOTONE_SNAPSHOT_STATE,
             message: format!("{node_id} installed expected metadata with different bytes"),
             trace: trace.to_vec(),
-            state: summarize(&state.state.cluster),
+            state: summarize(state.state.cluster()),
         });
     }
 

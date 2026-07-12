@@ -62,7 +62,7 @@ fn election_certificate(
 
 fn state_with_recorded_certificate(certificate: ElectionCertificate) -> ExplorationState {
     let mut state = ExplorationState::new(one_node_cluster());
-    state.election_history.record_election(certificate);
+    state.election_history_mut().record_election(certificate);
     state
 }
 

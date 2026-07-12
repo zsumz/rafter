@@ -130,14 +130,14 @@ fn commit_certificate_records_self_removing_leader_after_stepdown() {
         LogIndex::ZERO,
     );
 
-    assert_ne!(state.cluster.role(NodeId(1)), Role::Leader);
+    assert_ne!(state.cluster().role(NodeId(1)), Role::Leader);
     state.record_commit_observation(&context, None, None);
 
     check_commit_history(&state, &[])
         .expect("self-removing leader commit should still have a valid certificate");
     assert!(
         state
-            .commit_history
+            .commit_history()
             .certificates
             .contains_key(&(NodeId(1), Term(2), LogIndex(1))),
         "commit transition should be recorded even after the leader steps down"
@@ -238,21 +238,20 @@ fn leader_completeness_rechecks_when_committed_ledger_grows_after_election() {
     let mut state = state_with_bootstraps(voter_configs(&[1, 2]), &[]);
     let certificate = election_certificate(4, 2, stable_membership(&[1, 2], &[]), &[1, 2]);
     state
-        .election_history
+        .election_history_mut()
         .elected_by_term
         .insert(certificate.term, certificate);
     state.record_leader_completeness_observation();
     assert_eq!(
         state
-            .commit_history
+            .commit_history()
             .leader_completeness_checked_through
             .get(&(NodeId(2), Term(4))),
         Some(&LogIndex::ZERO)
     );
 
     state
-        .cluster
-        .restart_node_from_bootstrap(
+        .inject_bootstrap_state(
             NodeId(1),
             bootstrap_with_log(
                 Term(3),

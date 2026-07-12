@@ -52,7 +52,7 @@ pub(super) fn check_client_history_read_write_invariants(
     trace: &[Action],
 ) -> Result<(), Failure> {
     let mut completed_by_index = BTreeMap::new();
-    for write in state.client_history.writes.values() {
+    for write in state.client_history().writes.values() {
         if let ClientWriteStatus::Completed { index, .. } = write.status {
             if let Some(previous) = completed_by_index.insert(index, write.proposal_id) {
                 if previous != write.proposal_id {
@@ -64,14 +64,14 @@ pub(super) fn check_client_history_read_write_invariants(
                             previous.0, write.proposal_id.0
                         ),
                         trace: trace.to_vec(),
-                        state: summarize(&state.cluster),
+                        state: summarize(state.cluster()),
                     });
                 }
             }
         }
     }
 
-    for read in state.client_history.reads.values() {
+    for read in state.client_history().reads.values() {
         let proof = match &read.outcome {
             ClientReadOutcome::Pending => continue,
             ClientReadOutcome::ProofGranted { proof }
@@ -86,7 +86,7 @@ pub(super) fn check_client_history_read_write_invariants(
                     read.node_id, read.request_id, proof.read_index, read.committed_floor
                 ),
                 trace: trace.to_vec(),
-                state: summarize(&state.cluster),
+                state: summarize(state.cluster()),
             });
         }
         if let ClientReadOutcome::Completed { proof, .. } = &read.outcome {
@@ -100,10 +100,10 @@ pub(super) fn check_client_history_read_write_invariants(
                         read.node_id, read.request_id, proof.local_applied_index, proof.read_index
                     ),
                     trace: trace.to_vec(),
-                    state: summarize(&state.cluster),
+                    state: summarize(state.cluster()),
                 });
             }
-            for write in state.client_history.writes.values() {
+            for write in state.client_history().writes.values() {
                 let ClientWriteStatus::Completed { index, .. } = write.status else {
                     continue;
                 };
@@ -120,7 +120,7 @@ pub(super) fn check_client_history_read_write_invariants(
                             index
                         ),
                         trace: trace.to_vec(),
-                        state: summarize(&state.cluster),
+                        state: summarize(state.cluster()),
                     });
                 }
             }
@@ -134,11 +134,11 @@ pub(super) fn check_client_history_linearizability(
     state: &ExplorationState,
     trace: &[Action],
 ) -> Result<(), Failure> {
-    check_client_history_linearizable(&state.client_history).map_err(|message| Failure {
+    check_client_history_linearizable(state.client_history()).map_err(|message| Failure {
         kind: crate::model_check::FailureKind::InvariantViolation,
         invariant: CLIENT_HISTORY_LINEARIZABILITY_INVARIANT,
         message,
         trace: trace.to_vec(),
-        state: summarize(&state.cluster),
+        state: summarize(state.cluster()),
     })
 }

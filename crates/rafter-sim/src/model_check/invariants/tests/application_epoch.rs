@@ -187,9 +187,9 @@ fn read_reconstruction_ignores_values_from_previous_application_epoch() {
 
     let mut state = ExplorationState::new(cluster);
     state.record_client_read(NodeId(1), 7, LogIndex(1));
-    state.cluster.read_grants.push(crate::ReadGranted {
+    state.inject_read_grant(crate::ReadGranted {
         node_id: NodeId(1),
-        application_epoch: state.cluster.application_epoch(NodeId(1)),
+        application_epoch: state.cluster().application_epoch(NodeId(1)),
         request_id: 7,
         read_index: LogIndex(1),
         local_applied_index: LogIndex(1),
@@ -197,7 +197,7 @@ fn read_reconstruction_ignores_values_from_previous_application_epoch() {
     state.refresh_client_history();
 
     let read = state
-        .client_history
+        .client_history()
         .reads
         .get(&7)
         .expect("registered read is present");

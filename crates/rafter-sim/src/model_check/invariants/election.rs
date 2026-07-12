@@ -45,7 +45,7 @@ pub(crate) fn check_election_history(
 }
 
 fn check_term_and_vote_history(state: &ExplorationState, trace: &[Action]) -> Result<(), Failure> {
-    if let Some(regression) = state.election_history.term_regressions.iter().next() {
+    if let Some(regression) = state.election_history().term_regressions.iter().next() {
         return Err(Failure {
             kind: crate::model_check::FailureKind::InvariantViolation,
             invariant: catalog::EL_01_TERM_MONOTONICITY,
@@ -54,11 +54,11 @@ fn check_term_and_vote_history(state: &ExplorationState, trace: &[Action]) -> Re
                 regression.node_id, regression.previous_floor, regression.observed
             ),
             trace: trace.to_vec(),
-            state: summarize(&state.cluster),
+            state: summarize(state.cluster()),
         });
     }
 
-    if let Some(conflict) = state.election_history.vote_conflicts.iter().next() {
+    if let Some(conflict) = state.election_history().vote_conflicts.iter().next() {
         return Err(Failure {
             kind: crate::model_check::FailureKind::InvariantViolation,
             invariant: catalog::EL_02_ONE_DURABLE_VOTE_PER_TERM,
@@ -67,11 +67,11 @@ fn check_term_and_vote_history(state: &ExplorationState, trace: &[Action]) -> Re
                 conflict.node_id, conflict.term, conflict.first_vote, conflict.second_vote
             ),
             trace: trace.to_vec(),
-            state: summarize(&state.cluster),
+            state: summarize(state.cluster()),
         });
     }
 
-    if let Some(loss) = state.election_history.vote_losses.iter().next() {
+    if let Some(loss) = state.election_history().vote_losses.iter().next() {
         return Err(Failure {
             kind: crate::model_check::FailureKind::InvariantViolation,
             invariant: catalog::EL_02_ONE_DURABLE_VOTE_PER_TERM,
@@ -80,7 +80,7 @@ fn check_term_and_vote_history(state: &ExplorationState, trace: &[Action]) -> Re
                 loss.node_id, loss.previous_vote, loss.term
             ),
             trace: trace.to_vec(),
-            state: summarize(&state.cluster),
+            state: summarize(state.cluster()),
         });
     }
 
@@ -88,7 +88,7 @@ fn check_term_and_vote_history(state: &ExplorationState, trace: &[Action]) -> Re
 }
 
 fn check_vote_grants(state: &ExplorationState, trace: &[Action]) -> Result<(), Failure> {
-    for grant in &state.election_history.vote_grants {
+    for grant in &state.election_history().vote_grants {
         if !grant.voter_membership.contains_voter(grant.candidate_id) {
             return Err(Failure {
                 kind: crate::model_check::FailureKind::InvariantViolation,
@@ -98,7 +98,7 @@ fn check_vote_grants(state: &ExplorationState, trace: &[Action]) -> Result<(), F
                     grant.voter_id, grant.term, grant.candidate_id, grant.voter_membership
                 ),
                 trace: trace.to_vec(),
-                state: summarize(&state.cluster),
+                state: summarize(state.cluster()),
             });
         }
         if (
@@ -120,7 +120,7 @@ fn check_vote_grants(state: &ExplorationState, trace: &[Action]) -> Result<(), F
                     grant.voter_last_log_term,
                 ),
                 trace: trace.to_vec(),
-                state: summarize(&state.cluster),
+                state: summarize(state.cluster()),
             });
         }
         if grant.durable_vote != Some(grant.candidate_id) {
@@ -132,7 +132,7 @@ fn check_vote_grants(state: &ExplorationState, trace: &[Action]) -> Result<(), F
                     grant.voter_id, grant.term, grant.candidate_id, grant.durable_vote
                 ),
                 trace: trace.to_vec(),
-                state: summarize(&state.cluster),
+                state: summarize(state.cluster()),
             });
         }
     }
@@ -142,7 +142,7 @@ fn check_vote_grants(state: &ExplorationState, trace: &[Action]) -> Result<(), F
 
 fn check_authority_transitions(state: &ExplorationState, trace: &[Action]) -> Result<(), Failure> {
     if let Some(violation) = state
-        .election_history
+        .election_history()
         .authority_transition_violations
         .first()
     {
@@ -168,7 +168,7 @@ fn check_authority_transitions(state: &ExplorationState, trace: &[Action]) -> Re
                 violation.after_role,
             ),
             trace: trace.to_vec(),
-            state: summarize(&state.cluster),
+            state: summarize(state.cluster()),
         });
     }
 
@@ -176,7 +176,7 @@ fn check_authority_transitions(state: &ExplorationState, trace: &[Action]) -> Re
 }
 
 fn check_pre_vote_history(state: &ExplorationState, trace: &[Action]) -> Result<(), Failure> {
-    if let Some(violation) = state.election_history.pre_vote_violations.first() {
+    if let Some(violation) = state.election_history().pre_vote_violations.first() {
         let reason = match violation.reason {
             super::super::state::PreVoteViolationKind::RequestMutatedAuthority => {
                 "pre-vote request mutated authority"
@@ -204,7 +204,7 @@ fn check_pre_vote_history(state: &ExplorationState, trace: &[Action]) -> Result<
                 violation.after_vote,
             ),
             trace: trace.to_vec(),
-            state: summarize(&state.cluster),
+            state: summarize(state.cluster()),
         });
     }
 
@@ -212,7 +212,7 @@ fn check_pre_vote_history(state: &ExplorationState, trace: &[Action]) -> Result<
 }
 
 fn check_election_outcomes(state: &ExplorationState, trace: &[Action]) -> Result<(), Failure> {
-    if let Some(conflict) = state.election_history.conflicting_elections.iter().next() {
+    if let Some(conflict) = state.election_history().conflicting_elections.iter().next() {
         return Err(Failure {
             kind: crate::model_check::FailureKind::InvariantViolation,
             invariant: catalog::EL_05_ELECTION_SAFETY_OVER_HISTORY,
@@ -221,12 +221,12 @@ fn check_election_outcomes(state: &ExplorationState, trace: &[Action]) -> Result
                 conflict.term, conflict.first_leader, conflict.second_leader
             ),
             trace: trace.to_vec(),
-            state: summarize(&state.cluster),
+            state: summarize(state.cluster()),
         });
     }
 
     if let Some((leader_id, term)) = state
-        .election_history
+        .election_history()
         .uncertified_seeded_leaders
         .iter()
         .next()
@@ -238,7 +238,7 @@ fn check_election_outcomes(state: &ExplorationState, trace: &[Action]) -> Result
                 "{leader_id} was already leader in term {term} when exploration history began"
             ),
             trace: trace.to_vec(),
-            state: summarize(&state.cluster),
+            state: summarize(state.cluster()),
         });
     }
 
@@ -246,7 +246,7 @@ fn check_election_outcomes(state: &ExplorationState, trace: &[Action]) -> Result
 }
 
 fn check_election_certificates(state: &ExplorationState, trace: &[Action]) -> Result<(), Failure> {
-    for (term, certificate) in &state.election_history.elected_by_term {
+    for (term, certificate) in &state.election_history().elected_by_term {
         if certificate.term != *term {
             return Err(Failure {
                 kind: crate::model_check::FailureKind::InvariantViolation,
@@ -256,7 +256,7 @@ fn check_election_certificates(state: &ExplorationState, trace: &[Action]) -> Re
                     certificate.term
                 ),
                 trace: trace.to_vec(),
-                state: summarize(&state.cluster),
+                state: summarize(state.cluster()),
             });
         }
         if !certificate.membership.contains_voter(certificate.leader_id) {
@@ -268,7 +268,7 @@ fn check_election_certificates(state: &ExplorationState, trace: &[Action]) -> Re
                     certificate.leader_id, certificate.term
                 ),
                 trace: trace.to_vec(),
-                state: summarize(&state.cluster),
+                state: summarize(state.cluster()),
             });
         }
         if let Some(non_voter) = certificate
@@ -284,7 +284,7 @@ fn check_election_certificates(state: &ExplorationState, trace: &[Action]) -> Re
                     certificate.leader_id, certificate.term, non_voter
                 ),
                 trace: trace.to_vec(),
-                state: summarize(&state.cluster),
+                state: summarize(state.cluster()),
             });
         }
         if !certificate
@@ -304,7 +304,7 @@ fn check_election_certificates(state: &ExplorationState, trace: &[Action]) -> Re
                     certificate.last_log_term,
                 ),
                 trace: trace.to_vec(),
-                state: summarize(&state.cluster),
+                state: summarize(state.cluster()),
             });
         }
     }
