@@ -13,8 +13,11 @@ pub(super) fn validate(
         .filter(|(_, descriptor)| descriptor.layer == "tla")
         .map(|(evidence_id, descriptor)| (evidence_id.clone(), descriptor.symbol.clone()))
         .collect::<BTreeMap<_, _>>();
-    if required.len() != 8 || bundle.execution.checks.len() != 1 {
-        return Err("TLA receipt must contain one check covering eight registry predicates");
+    let predicate_count = required.values().collect::<BTreeSet<_>>().len();
+    if predicate_count != 8 || bundle.execution.checks.len() != 1 {
+        return Err(
+            "TLA receipt must contain one check covering eight model predicates and every clause binding",
+        );
     }
     let check = &bundle.execution.checks[0];
     let config = contract
@@ -34,7 +37,7 @@ pub(super) fn validate(
         CheckCompletion::FrontierExhausted => {
             validate_pass(bundle, check, &required, contract)?;
         }
-        CheckCompletion::Counterexample => validate_counterexample(bundle)?,
+        CheckCompletion::Counterexample => validate_counterexample(bundle, &required)?,
         CheckCompletion::CoverageNotReached
         | CheckCompletion::BudgetExhausted
         | CheckCompletion::Timeout => {
@@ -62,22 +65,40 @@ pub(super) fn validate(
     Ok(())
 }
 
-fn validate_counterexample(bundle: &ResultBundle) -> Result<(), &'static str> {
-    let statuses = bundle
+fn validate_counterexample(
+    bundle: &ResultBundle,
+    required: &BTreeMap<String, String>,
+) -> Result<(), &'static str> {
+    let failed_symbols = bundle
         .results
         .iter()
-        .map(|result| result.status)
-        .collect::<Vec<_>>();
-    if statuses
-        .iter()
-        .filter(|status| **status == EvidenceStatus::Fail)
-        .count()
-        != 1
-        || statuses
-            .iter()
-            .any(|status| !matches!(status, EvidenceStatus::Fail | EvidenceStatus::Incomplete))
+        .filter(|result| result.status == EvidenceStatus::Fail)
+        .filter_map(|result| required.get(&result.evidence_id))
+        .collect::<BTreeSet<_>>();
+    if failed_symbols.len() != 1
+        || bundle.results.iter().any(|result| {
+            !matches!(
+                result.status,
+                EvidenceStatus::Fail | EvidenceStatus::Incomplete
+            )
+        })
     {
-        return Err("TLA counterexample must fail one predicate and leave the rest incomplete");
+        return Err(
+            "TLA counterexample must fail every binding of one predicate and leave the rest incomplete",
+        );
+    }
+    let failed_symbol = *failed_symbols
+        .iter()
+        .next()
+        .ok_or("TLA counterexample omitted its failed predicate")?;
+    if bundle.results.iter().any(|result| {
+        required.get(&result.evidence_id).is_some_and(|symbol| {
+            (symbol == failed_symbol) != (result.status == EvidenceStatus::Fail)
+        })
+    }) {
+        return Err(
+            "TLA counterexample did not fail exactly one predicate's complete clause fanout",
+        );
     }
     Ok(())
 }
@@ -93,7 +114,7 @@ fn validate_pass(
         .iter()
         .any(|result| result.status != EvidenceStatus::Pass)
     {
-        return Err("frontier-exhausted TLA check must pass all eight predicates");
+        return Err("frontier-exhausted TLA check must pass every predicate clause binding");
     }
     let minimum_generated = contract.configuration["minimum_generated_states"]
         .parse::<u64>()
