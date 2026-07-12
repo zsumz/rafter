@@ -237,6 +237,22 @@ def _exact_shape(sample: dict) -> list[dict]:
     ]
 
 
+def _protocol_shape(sample: dict) -> list[dict]:
+    return [
+        {
+            key: check[key]
+            for key in (
+                "check_id",
+                "configured_depth",
+                "reached_depth",
+                "unique_protocol_states",
+                "explored_actions",
+            )
+        }
+        for check in sample["checks"]
+    ]
+
+
 def summarize_samples(samples: list[dict], expected_runs: int) -> list[dict]:
     groups = {}
     for sample in samples:
@@ -282,7 +298,10 @@ def compare_revisions(samples: list[dict], expected_runs: int) -> list[dict]:
         comparisons.append(
             {
                 "profile": profile,
-                "like_for_like_state_shape": _exact_shape(base) == _exact_shape(current),
+                "like_for_like_protocol_state_shape": _protocol_shape(base)
+                == _protocol_shape(current),
+                "like_for_like_verifier_state_shape": _exact_shape(base)
+                == _exact_shape(current),
                 "paired_current_over_base_wall_time": _number_summary(
                     [current["wall_time_ms"] / base["wall_time_ms"] for base, current in pairs]
                 ),
@@ -292,6 +311,34 @@ def compare_revisions(samples: list[dict], expected_runs: int) -> list[dict]:
             }
         )
     return comparisons
+
+
+def evaluate_comparisons(
+    comparisons: list[dict], max_wall_ratio: float, max_rss_ratio: float
+) -> dict:
+    if max_wall_ratio < 1 or max_rss_ratio < 1:
+        raise ReportError("performance ratio ceilings must be at least 1.0")
+    failures = []
+    for comparison in comparisons:
+        profile = comparison["profile"]
+        if not comparison["like_for_like_protocol_state_shape"]:
+            failures.append(f"{profile}: protocol state shape changed")
+        wall = comparison["paired_current_over_base_wall_time"]["median"]
+        if wall > max_wall_ratio:
+            failures.append(
+                f"{profile}: median wall ratio {wall:.3f} exceeds {max_wall_ratio:.3f}"
+            )
+        rss = comparison["paired_current_over_base_peak_rss"]["median"]
+        if rss > max_rss_ratio:
+            failures.append(
+                f"{profile}: median RSS ratio {rss:.3f} exceeds {max_rss_ratio:.3f}"
+            )
+    return {
+        "status": "pass" if not failures else "fail",
+        "max_median_wall_ratio": max_wall_ratio,
+        "max_median_peak_rss_ratio": max_rss_ratio,
+        "failures": failures,
+    }
 
 
 def _number_summary(values: list[int | float]) -> dict:

@@ -222,6 +222,8 @@ jobs:
           MODEL_CHECK_BASE_REF: ${{ steps.baseline.outputs.ref }}
           MODEL_CHECK_PROFILES: fast
           MODEL_CHECK_RUNS: "6"
+          MODEL_CHECK_MAX_MEDIAN_WALL_RATIO: "2.25"
+          MODEL_CHECK_MAX_MEDIAN_RSS_RATIO: "1.75"
           OUT_DIR: target/model-check-profile
         run: scripts/model-check-profile-compare
       - name: Summarize model-check overhead
@@ -229,6 +231,8 @@ jobs:
         run: |
           if [[ -f target/model-check-profile/compare.md ]]; then
             cat target/model-check-profile/compare.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Model-check overhead report construction failed; inspect the uploaded raw evidence and SHA256SUMS." >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Upload model-check overhead evidence
         if: always()

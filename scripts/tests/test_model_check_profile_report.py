@@ -172,6 +172,59 @@ class ModelCheckProfileReportTests(unittest.TestCase):
         with self.assertRaisesRegex(REPORT.ReportError, "state shape changed"):
             REPORT.summarize_samples([first, second], 2)
 
+    def test_comparison_separates_protocol_and_verifier_shape(self):
+        checks = REPORT.parse_checks(self.output(exhaustive_event()))
+        base = {
+            "run": 1,
+            "label": "base",
+            "profile": "fast",
+            "wall_time_ms": 10,
+            "peak_rss_bytes": 100,
+            "profile_contract": {"profile": "fast"},
+            "checks": checks,
+            "totals": {},
+        }
+        current_checks = [
+            {
+                **checks[0],
+                "unique_states": 14,
+                "unique_verifier_states": 14,
+                "explored_states": 17,
+            }
+        ]
+        current = {
+            **base,
+            "label": "current",
+            "wall_time_ms": 20,
+            "peak_rss_bytes": 150,
+            "checks": current_checks,
+        }
+
+        comparison = REPORT.compare_revisions([base, current], 1)[0]
+
+        self.assertTrue(comparison["like_for_like_protocol_state_shape"])
+        self.assertFalse(comparison["like_for_like_verifier_state_shape"])
+        self.assertEqual(
+            REPORT.evaluate_comparisons([comparison], 2.0, 1.5)["status"], "pass"
+        )
+
+    def test_performance_thresholds_fail_closed(self):
+        comparison = {
+            "profile": "fast",
+            "like_for_like_protocol_state_shape": False,
+            "paired_current_over_base_wall_time": {"median": 2.1},
+            "paired_current_over_base_peak_rss": {"median": 1.6},
+        }
+
+        verdict = REPORT.evaluate_comparisons([comparison], 2.0, 1.5)
+
+        self.assertEqual(verdict["status"], "fail")
+        self.assertEqual(len(verdict["failures"]), 3)
+
+    def test_performance_thresholds_reject_values_below_one(self):
+        with self.assertRaisesRegex(REPORT.ReportError, "at least 1.0"):
+            REPORT.evaluate_comparisons([], 0.9, 1.0)
+
 
 if __name__ == "__main__":
     unittest.main()

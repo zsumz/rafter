@@ -50,6 +50,15 @@ events, timing logs, build logs, and a SHA-256 manifest even when report
 construction fails. Main pushes use the pre-push commit as baseline; scheduled
 runs use `HEAD^`; manual runs require an explicit baseline input.
 
+The first comparison against a revision that predates structured events uses
+the source-recorded migration baseline `9770d1a` and records both the requested
+and effective baseline. It never parses legacy human output as equivalent
+evidence. The gate requires an unchanged protocol-state shape plus paired
+median current/base ceilings of 2.25x wall time and 1.75x peak RSS. Verifier
+state growth is reported separately and is expected when sound history is
+added; protocol-state drift or a cost ceiling breach fails the job after the
+JSON and Markdown reports have been written.
+
 The default requires a clean checkout so a commit names the measured source.
 `MODEL_CHECK_ALLOW_DIRTY=1` exists only for directional local experiments; such
 a run records `clean: false` and is not release or threshold evidence.
