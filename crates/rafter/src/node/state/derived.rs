@@ -4,9 +4,10 @@
 //! queries inexpensive, and each index owns the mutation and validation rules
 //! that keep it synchronized with its canonical source.
 
-use crate::{CommittedConfiguration, ConfigurationEntry, LogEntry, LogIndex};
+#[cfg(any(test, feature = "internal-test-hooks"))]
+mod validate;
 
-use super::super::Node;
+use crate::{CommittedConfiguration, ConfigurationEntry, LogEntry, LogIndex};
 
 /// All state that can be reconstructed exactly from canonical node state.
 #[derive(Clone, Debug, Default, Eq, Hash, PartialEq)]
@@ -24,6 +25,11 @@ impl DerivedState {
     #[cfg(any(test, feature = "internal-test-hooks"))]
     fn validate(&self, log: &[LogEntry]) -> Result<(), String> {
         self.configuration.validate(log)
+    }
+
+    #[cfg(test)]
+    pub(in crate::node) fn push_configuration_offset_for_test(&mut self, offset: usize) {
+        self.configuration.offsets.push(offset);
     }
 }
 
@@ -176,14 +182,6 @@ impl ConfigurationIndex {
             "configuration_offsets mismatch: stored {:?}, expected {:?}",
             self.offsets, expected.offsets
         ))
-    }
-}
-
-impl Node {
-    #[cfg(any(test, feature = "internal-test-hooks"))]
-    #[doc(hidden)]
-    pub fn validate_derived_state(&self) -> Result<(), String> {
-        self.derived.validate(&self.persistent.log)
     }
 }
 
