@@ -176,19 +176,15 @@ named temporal or witness-based verdicts.
 | `LG-04` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_committed_prefixes`; negative fixture `committed_prefix_checker_detects_divergent_committed_entries` |
 | `LG-04` | tests | direct | `crates/rafter-runtime/src/tests/conflict_repair.rs#file_backed_follower_conflict_repair_survives_restart` |
 | `LG-04` | tla | direct | `specs/tla/raft/Raft.tla#CommittedPrefixStability` |
-| `LG-05` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
 | `LG-05` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_commit_history`; negative fixture `leader_completeness_rechecks_when_committed_ledger_grows_after_election` |
 | `LG-05` | tla | direct | `specs/tla/raft/Raft.tla#LeaderCompleteness` |
 | `CM-01` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_commit_index_monotonicity`; negative fixture `commit_index_monotonicity_detects_floor_regression` |
 | `CM-01` | tests | direct | `crates/rafter/src/node/tests/replication/follower.rs#a_probe_with_a_high_leader_commit_never_regresses_the_commit_index` |
-| `CM-02` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
 | `CM-02` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_commit_history`; negative fixture `commit_certificate_uses_pre_transition_joint_quorum_for_candidate_below_config` |
 | `CM-02` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_commit_history`; negative fixture `commit_certificate_uses_post_append_joint_quorum_for_same_operation_commit` |
 | `CM-02` | tla | direct | `specs/tla/raft/Raft.tla#CommittedEntriesHaveQuorum` |
-| `CM-03` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
 | `CM-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_commit_history`; negative fixture `commit_certificate_detects_prior_term_candidate_commit` |
 | `CM-03` | tests | direct | `crates/rafter/src/node/tests/election/campaign.rs#single_voter_leadership_noop_does_not_drop_prior_term_apply` |
-| `AP-01` | maelstrom | e2e | `crates/rafter-maelstrom/src/raft_node.rs#DurableRaftNode::with_storage_and_snapshot_store_applied_through` |
 | `AP-01` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_applied_order`; negative fixture `applied_order_detects_apply_at_or_below_snapshot_boundary` |
 | `AP-01` | tests | direct | `crates/rafter/src/node/tests/bootstrap/application.rs#committed_entries_above_applied_floor_drain_immediately_after_bootstrap` |
 | `AP-02` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
@@ -207,7 +203,6 @@ named temporal or witness-based verdicts.
 | `MB-07` | tests | direct | `crates/rafter/src/node/tests/transfer/handoff.rs#transfer_to_caught_up_target_sends_timeout_now_immediately` |
 | `RD-01` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--nemesis partition` |
 | `RD-01` | tests | direct | `crates/rafter/src/node/tests/read/authority.rs#read_rejected_without_current_term_commit` |
-| `RD-02` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
 | `RD-02` | tests | direct | `crates/rafter/src/node/tests/read/barrier.rs#delayed_ack_from_an_older_round_never_confirms_a_barrier` |
 | `RD-03` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
 | `RD-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/client.rs#check_read_barrier_safety`; negative fixture `read_barrier_invariant_detects_grant_below_registration_floor` |
@@ -220,7 +215,6 @@ named temporal or witness-based verdicts.
 | `RD-06` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
 | `RD-06` | simulator | direct | `crates/rafter-sim/src/model_check/linearizability.rs#check_client_history_linearizable`; negative fixture `linearizer_rejects_read_that_misses_completed_write` |
 | `RD-06` | tests | direct | `crates/rafter-sim/src/model_check/tests/linearizability.rs#linearizer_rejects_read_that_misses_completed_write` |
-| `PS-01` | maelstrom | e2e | `scripts/maelstrom-lin-kv-common#RAFTER_MAELSTROM_ROOT` |
 | `PS-01` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#election_persists_term_and_vote_before_vote_requests_escape` |
 | `PS-01` | tests | direct | `crates/rafter-runtime/src/tests/persistence_contract.rs#all_raft_outputs_have_declared_runtime_persistence_dependency` |
 | `PS-02` | tests | direct | `crates/rafter-runtime/src/tests/group_commit/failure.rs#a_failed_batch_releases_no_output_and_poisons_the_runtime` |
@@ -458,7 +452,7 @@ Evidence now:
 - TLA+: D: LeaderCompleteness
 - Simulator: D: committed-prefix ledger checked on leader election
 - Tests: P: leadership no-op/failover scenarios
-- Maelstrom: E2E: indirect
+- Maelstrom: none (client histories do not expose leader election certificates)
 
 Next: Retain leader-completeness checks over committed prefixes and election certificates.
 
@@ -488,7 +482,7 @@ Evidence now:
 - TLA+: D: CommittedEntriesHaveQuorum
 - Simulator: D: commit certificates from actual storage witnesses
 - Tests: P: membership/replication tests
-- Maelstrom: E2E: indirect
+- Maelstrom: none (client histories do not expose commit quorum witnesses)
 
 Next: Retain storage-derived commit certificates and quorum negative fixtures.
 
@@ -502,7 +496,7 @@ Evidence now:
 - TLA+: P: Commit action
 - Simulator: D: leader commit-transition oracle
 - Tests: D: election/commit tests
-- Maelstrom: E2E: indirect
+- Maelstrom: none (client histories do not expose the current-term commit rule)
 
 Next: Retain current-term commit transition checks and negative fixture.
 
@@ -516,7 +510,7 @@ Evidence now:
 - TLA+: P: TypeOK/Apply
 - Simulator: D: applied order + required apply
 - Tests: D: node/runtime recovery tests
-- Maelstrom: E2E: app applied floor
+- Maelstrom: none (duplicate internal application may be client-invisible)
 
 Next: Make 'only committed' and 'at most once' explicit subchecks with negative fixtures.
 
@@ -660,7 +654,7 @@ Evidence now:
 - TLA+: P: GrantRead action
 - Simulator: P: schedule exploration, no direct oracle
 - Tests: D: read_index tests
-- Maelstrom: E2E: indirect
+- Maelstrom: none (client histories do not expose read-round acknowledgements)
 
 Next: Record registration round and quorum acknowledgements in the simulator.
 
@@ -732,7 +726,7 @@ Evidence now:
 - TLA+: none
 - Simulator: none
 - Tests: D: rafter-runtime persistence-order tests + exhaustive output dependency guard
-- Maelstrom: E2E: file stores + app persistence
+- Maelstrom: none (successful histories do not prove persistence-before-output ordering)
 
 Next: Retain the exhaustive output dependency guard and keep failure-injection coverage aligned with each dependency.
 
