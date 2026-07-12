@@ -1,12 +1,14 @@
+//! Durable recovery and validation of partial snapshot transfers.
+
 use std::{error::Error, fmt};
 
 use crate::{
-    types::snapshot_transfer_id_from_parts, InstallSnapshotChunk, LogIndex, NodeId,
-    PendingSnapshotTransfer, SnapshotTransferId,
+    types::snapshot_transfer_id_from_parts, LogIndex, NodeId, PendingSnapshotTransfer,
+    SnapshotTransferId,
 };
 
 use super::super::super::{state::IncomingSnapshotTransfer, Node};
-use super::SnapshotTransferHeaderRejection;
+use super::validate::SnapshotTransferHeaderRejection;
 
 impl Node {
     /// Returns the durable shape of an incomplete inbound snapshot transfer.
@@ -119,69 +121,60 @@ impl fmt::Display for PendingSnapshotTransferResumeError {
         match self {
             Self::LeaderNotAuthorized { leader_id } => write!(
                 formatter,
-                "pending snapshot transfer leader {leader_id} is not authorized by the snapshot membership"
+                concat!(
+                    "pending snapshot transfer leader {leader_id} is not authorized by ",
+                    "the snapshot membership"
+                ),
+                leader_id = leader_id,
             ),
             Self::ReceivedPayloadTooLong {
                 received_bytes,
                 total_payload_len,
             } => write!(
                 formatter,
-                "pending snapshot transfer received {received_bytes} bytes, more than the total payload length {total_payload_len}"
+                concat!(
+                    "pending snapshot transfer received {received_bytes} bytes, more than ",
+                    "the total payload length {total_payload_len}"
+                ),
+                received_bytes = received_bytes,
+                total_payload_len = total_payload_len,
             ),
             Self::TransferIdMismatch { expected, actual } => write!(
                 formatter,
-                "pending snapshot transfer id {actual} does not match id {expected} derived from its metadata"
+                concat!(
+                    "pending snapshot transfer id {actual} does not match id {expected} ",
+                    "derived from its metadata"
+                ),
+                actual = actual,
+                expected = expected,
             ),
-            Self::InvalidMetadata => formatter
-                .write_str("pending snapshot transfer metadata is not valid for this node"),
+            Self::InvalidMetadata => {
+                formatter.write_str("pending snapshot transfer metadata is not valid for this node")
+            }
             Self::StaleSnapshot {
                 snapshot_index,
                 transfer_last_included_index,
             } => write!(
                 formatter,
-                "pending snapshot transfer through index {transfer_last_included_index} is stale behind current snapshot index {snapshot_index}"
+                concat!(
+                    "pending snapshot transfer through index {transfer_last_included_index} ",
+                    "is stale behind current snapshot index {snapshot_index}"
+                ),
+                transfer_last_included_index = transfer_last_included_index,
+                snapshot_index = snapshot_index,
             ),
             Self::CompleteTransferNotInstalled {
                 last_included_index,
             } => write!(
                 formatter,
-                "pending snapshot transfer through index {last_included_index} is complete and must be installed, not resumed"
+                concat!(
+                    "pending snapshot transfer through index {last_included_index} is ",
+                    "complete and must be installed, not resumed"
+                ),
+                last_included_index = last_included_index,
             ),
         }
     }
 }
 
 impl Error for PendingSnapshotTransferResumeError {}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(in crate::node::replication) enum SnapshotChunkRejection {
-    StaleTerm,
-    WrongTransfer,
-    MetadataMismatch,
-    LeaderNotAuthorized,
-    OutOfOrderOffset,
-    InvalidBounds,
-}
-
-pub(in crate::node::replication) fn validate_snapshot_chunk_shape(
-    request: &InstallSnapshotChunk,
-) -> Result<(), SnapshotChunkRejection> {
-    let chunk_len = request.chunk.len() as u64;
-    let Some(end) = request.offset.checked_add(chunk_len) else {
-        return Err(SnapshotChunkRejection::InvalidBounds);
-    };
-    if request.offset > request.total_payload_len || end > request.total_payload_len {
-        return Err(SnapshotChunkRejection::InvalidBounds);
-    }
-    if request.done {
-        if end == request.total_payload_len {
-            Ok(())
-        } else {
-            Err(SnapshotChunkRejection::InvalidBounds)
-        }
-    } else if chunk_len > 0 && end < request.total_payload_len {
-        Ok(())
-    } else {
-        Err(SnapshotChunkRejection::InvalidBounds)
-    }
-}

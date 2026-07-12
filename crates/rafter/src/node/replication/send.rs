@@ -1,22 +1,33 @@
+//! Leader-side append and snapshot sending.
+//!
+//! The send path interprets follower progress and emits messages; response
+//! handling owns acknowledgement semantics and commit advancement.
+
 use crate::{AppendEntries, LogIndex, Message, NodeId, SharedEntries};
 
-use super::super::log::LogBatch;
+mod cache;
+
 use super::super::state::ProgressMode;
 use super::super::{Node, Output};
+use cache::LogBatchCache;
 
-#[derive(Default)]
-pub(super) struct LogBatchCache {
-    batches: Vec<CachedLogBatch>,
+/// Whether one replication nudge may remain silent when no payload can move.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::node) enum ReplicationDemand {
+    /// Send only when replication state can make progress.
+    ProgressOnly,
+    /// Reach the follower even when that requires an empty heartbeat.
+    EnsureContact,
 }
 
-struct CachedLogBatch {
-    first_index: LogIndex,
-    max_replication_bytes: usize,
-    batch: LogBatch,
+impl ReplicationDemand {
+    const fn requires_message(self) -> bool {
+        matches!(self, Self::EnsureContact)
+    }
 }
 
 #[derive(Clone, Copy)]
-struct WindowFill {
+struct WindowBudget {
     last_log_index: LogIndex,
     max_batches: usize,
     max_bytes: usize,
@@ -33,67 +44,78 @@ impl Node {
         self.leader.heartbeat_sequence += 1;
         self.leader.heartbeat_elapsed = 0;
         self.refresh_leader_progress_index();
+
         let local_id = self.id();
         let replica_count = self.leader.progress.replica_count();
         outputs.reserve(replica_count.saturating_sub(1));
+
         let mut batch_cache = LogBatchCache::default();
         for slot in 0..replica_count {
-            let Some(peer) = self.leader.progress.replica_id_at(slot) else {
+            let Some(follower_id) = self.leader.progress.replica_id_at(slot) else {
                 continue;
             };
-            if peer == local_id {
+            if follower_id == local_id {
                 continue;
             }
-            self.replicate_to_peer_with_cache_fresh(peer, true, outputs, &mut batch_cache);
+
+            self.replicate_to_follower_with_cache_fresh(
+                follower_id,
+                ReplicationDemand::EnsureContact,
+                outputs,
+                &mut batch_cache,
+            );
         }
     }
 
-    /// Sends whatever `peer`'s progress mode admits. With `ensure_message`,
-    /// at least one message goes out - an empty heartbeat when the window is
-    /// full or nothing is pending - so a broadcast round reaches every
-    /// follower; check-quorum and read barriers depend on that.
-    pub(in crate::node) fn replicate_to_peer(
+    /// Sends whatever the follower's progress mode admits.
+    ///
+    /// [`ReplicationDemand::EnsureContact`] emits an empty heartbeat when the
+    /// window is full or no entries are pending. Broadcast rounds, check-quorum,
+    /// read barriers, and leadership transfer rely on that contact guarantee.
+    pub(in crate::node) fn replicate_to_follower(
         &mut self,
-        peer: NodeId,
-        ensure_message: bool,
+        follower_id: NodeId,
+        demand: ReplicationDemand,
         outputs: &mut Vec<Output>,
     ) {
         let mut batch_cache = LogBatchCache::default();
-        self.replicate_to_peer_with_cache(peer, ensure_message, outputs, &mut batch_cache);
+        self.replicate_to_follower_with_cache(follower_id, demand, outputs, &mut batch_cache);
     }
 
-    pub(super) fn replicate_to_peer_with_cache(
+    fn replicate_to_follower_with_cache(
         &mut self,
-        peer: NodeId,
-        ensure_message: bool,
+        follower_id: NodeId,
+        demand: ReplicationDemand,
         outputs: &mut Vec<Output>,
         batch_cache: &mut LogBatchCache,
     ) {
         self.refresh_leader_progress_index();
-        self.replicate_to_peer_with_cache_fresh(peer, ensure_message, outputs, batch_cache);
+        self.replicate_to_follower_with_cache_fresh(follower_id, demand, outputs, batch_cache);
     }
 
-    fn replicate_to_peer_with_cache_fresh(
+    fn replicate_to_follower_with_cache_fresh(
         &mut self,
-        peer: NodeId,
-        ensure_message: bool,
+        follower_id: NodeId,
+        demand: ReplicationDemand,
         outputs: &mut Vec<Output>,
         batch_cache: &mut LogBatchCache,
     ) {
-        if peer == self.id() || !self.leader.progress.contains(peer) {
+        if follower_id == self.id() || !self.leader.progress.contains(follower_id) {
             return;
         }
 
         let snapshot_index = self.snapshot_index();
-        let last_log_index = self.last_log_index();
-        let max_batches = self.config.max_inflight_appends();
-        let max_bytes = self.config.max_inflight_bytes();
+        let window = WindowBudget {
+            last_log_index: self.last_log_index(),
+            max_batches: self.config.max_inflight_appends(),
+            max_bytes: self.config.max_inflight_bytes(),
+        };
 
-        let Some(progress) = self.leader.progress.get_mut(peer) else {
+        let Some(progress) = self.leader.progress.get_mut(follower_id) else {
             return;
         };
-        // A follower behind the snapshot boundary needs the snapshot, not
-        // the log; the transfer pauses append pipelining until it installs.
+        // A follower behind the snapshot boundary needs the snapshot, not the
+        // log. Snapshot mode pauses append pipelining until installation.
         if progress.next_index <= snapshot_index
             && !matches!(progress.mode, ProgressMode::Snapshot { .. })
         {
@@ -104,55 +126,44 @@ impl Node {
 
         match mode {
             ProgressMode::Snapshot { .. } => {
-                self.replicate_snapshot_to_peer(peer, outputs);
+                self.replicate_snapshot_to_follower(follower_id, outputs);
             }
             ProgressMode::Probe { awaiting_response } => {
-                self.replicate_probe_to_peer(
-                    peer,
+                self.replicate_probe_to_follower(
+                    follower_id,
                     awaiting_response,
-                    ensure_message,
+                    demand,
                     snapshot_index,
                     outputs,
                     batch_cache,
                 );
             }
             ProgressMode::Replicate => {
-                self.replicate_window_to_peer(
-                    peer,
-                    ensure_message,
-                    WindowFill {
-                        last_log_index,
-                        max_batches,
-                        max_bytes,
-                    },
-                    outputs,
-                    batch_cache,
-                );
+                self.fill_replication_window(follower_id, demand, window, outputs, batch_cache);
             }
         }
     }
 
-    fn replicate_snapshot_to_peer(&mut self, peer: NodeId, outputs: &mut Vec<Output>) {
-        // Every nudge re-sends the cursor chunk: lost chunks are retried by the
-        // next tick, and acknowledgements advance the cursor through the
-        // snapshot response path.
+    fn replicate_snapshot_to_follower(&mut self, follower_id: NodeId, outputs: &mut Vec<Output>) {
+        // Every nudge re-sends the cursor chunk. A later tick retries lost
+        // chunks; acknowledgements advance the cursor in the response path.
         if let Some(snapshot) = self.persistent.snapshot.as_ref() {
-            outputs.push(self.install_snapshot_chunk_to(peer, snapshot));
+            outputs.push(self.install_snapshot_chunk_to(follower_id, snapshot));
         }
     }
 
-    fn replicate_probe_to_peer(
+    fn replicate_probe_to_follower(
         &mut self,
-        peer: NodeId,
+        follower_id: NodeId,
         awaiting_response: bool,
-        ensure_message: bool,
+        demand: ReplicationDemand,
         snapshot_index: LogIndex,
         outputs: &mut Vec<Output>,
         batch_cache: &mut LogBatchCache,
     ) {
         if awaiting_response {
-            if ensure_message {
-                self.send_empty_append_to_progress_next(peer, outputs);
+            if demand.requires_message() {
+                self.send_empty_append_to_progress_next(follower_id, outputs);
             }
             return;
         }
@@ -160,7 +171,7 @@ impl Node {
         let Some(next_index) = self
             .leader
             .progress
-            .get(peer)
+            .get(follower_id)
             .map(|progress| progress.next_index.max(snapshot_index.next()))
         else {
             return;
@@ -172,8 +183,10 @@ impl Node {
                 batch_cache,
             )
             .map_or_else(SharedEntries::default, |batch| batch.entries);
-        outputs.push(self.append_entries_message(peer, next_index, entries));
-        let Some(progress) = self.leader.progress.get_mut(peer) else {
+
+        outputs.push(self.append_entries_message(follower_id, next_index, entries));
+
+        let Some(progress) = self.leader.progress.get_mut(follower_id) else {
             return;
         };
         progress.next_index = next_index;
@@ -182,21 +195,24 @@ impl Node {
         };
     }
 
-    fn replicate_window_to_peer(
+    fn fill_replication_window(
         &mut self,
-        peer: NodeId,
-        ensure_message: bool,
-        fill: WindowFill,
+        follower_id: NodeId,
+        demand: ReplicationDemand,
+        window: WindowBudget,
         outputs: &mut Vec<Output>,
         batch_cache: &mut LogBatchCache,
     ) {
         let mut sent = false;
-        while let Some(progress) = self.leader.progress.get(peer) {
-            if progress.inflights.is_full(fill.max_batches, fill.max_bytes)
-                || progress.next_index > fill.last_log_index
+        while let Some(progress) = self.leader.progress.get(follower_id) {
+            if progress
+                .inflights
+                .is_full(window.max_batches, window.max_bytes)
+                || progress.next_index > window.last_log_index
             {
                 break;
             }
+
             let next_index = progress.next_index;
             let Some(batch) = self.log_batch_from_bounded_cached(
                 next_index,
@@ -207,62 +223,55 @@ impl Node {
             };
             let last_sent = batch.last_index;
             let batch_bytes = batch.replication_bytes;
-            outputs.push(self.append_entries_message(peer, batch.first_index, batch.entries));
-            let Some(progress) = self.leader.progress.get_mut(peer) else {
+
+            outputs.push(self.append_entries_message(
+                follower_id,
+                batch.first_index,
+                batch.entries,
+            ));
+
+            let Some(progress) = self.leader.progress.get_mut(follower_id) else {
                 return;
             };
             progress.inflights.record(last_sent, batch_bytes);
             progress.next_index = last_sent.next();
             sent = true;
         }
-        if !sent && ensure_message {
-            self.send_empty_append_to_progress_next(peer, outputs);
+
+        if !sent && demand.requires_message() {
+            self.send_empty_append_to_progress_next(follower_id, outputs);
         }
     }
 
-    fn send_empty_append_to_progress_next(&mut self, peer: NodeId, outputs: &mut Vec<Output>) {
+    fn send_empty_append_to_progress_next(
+        &mut self,
+        follower_id: NodeId,
+        outputs: &mut Vec<Output>,
+    ) {
         let Some(next_index) = self
             .leader
             .progress
-            .get(peer)
+            .get(follower_id)
             .map(|progress| progress.next_index)
         else {
             return;
         };
-        outputs.push(self.append_entries_message(peer, next_index, SharedEntries::default()));
-    }
-
-    fn log_batch_from_bounded_cached(
-        &self,
-        first_index: LogIndex,
-        max_replication_bytes: usize,
-        batch_cache: &mut LogBatchCache,
-    ) -> Option<LogBatch> {
-        if let Some(cached) = batch_cache.batches.iter().find(|cached| {
-            cached.first_index == first_index
-                && cached.max_replication_bytes == max_replication_bytes
-        }) {
-            return Some(cached.batch.clone());
-        }
-
-        let batch = self.log_batch_from_bounded(first_index, max_replication_bytes)?;
-        batch_cache.batches.push(CachedLogBatch {
-            first_index,
-            max_replication_bytes,
-            batch: batch.clone(),
-        });
-        Some(batch)
+        outputs.push(self.append_entries_message(
+            follower_id,
+            next_index,
+            SharedEntries::default(),
+        ));
     }
 
     fn append_entries_message(
         &self,
-        peer: NodeId,
+        follower_id: NodeId,
         next_index: LogIndex,
         entries: SharedEntries,
     ) -> Output {
         let prev_log_index = LogIndex(next_index.0.saturating_sub(1));
         Output::Send {
-            to: peer,
+            to: follower_id,
             message: Message::AppendEntries(AppendEntries {
                 term: self.current_term(),
                 leader_id: self.id(),

@@ -1,3 +1,10 @@
+//! Election timeouts, pre-vote, binding votes, and leadership acquisition.
+//!
+//! This module owns campaign transitions and vote eligibility. Durable term
+//! and vote changes remain explicit in [`Node`](super::Node) state, while
+//! [`ElectionState`](super::state::ElectionState) owns only the local timer and
+//! grants collected during active rounds.
+
 use crate::{
     LogIndex, Message, NodeId, PreVote, PreVoteResponse, RequestVote, RequestVoteResponse, Term,
 };
@@ -20,8 +27,7 @@ impl Node {
             return self.broadcast_append_entries();
         }
 
-        self.election_elapsed = self.election_elapsed.saturating_add(1);
-        if self.election_elapsed < self.effective_election_timeout() {
+        if self.election.advance_timeout() < self.effective_election_timeout() {
             return Vec::new();
         }
 
@@ -39,7 +45,7 @@ impl Node {
 
     fn start_pre_vote_round(&mut self) -> Vec<Output> {
         if !self.is_effective_voter(self.id()) {
-            self.election_elapsed = 0;
+            self.election.reset_timeout();
             return Vec::new();
         }
 
@@ -49,9 +55,8 @@ impl Node {
         // of the feature (thesis 9.6).
         self.volatile.role = Role::PreCandidate;
         self.volatile.leader_hint = None;
-        self.election_elapsed = 0;
-        self.granted_pre_votes.clear();
-        self.granted_pre_votes.insert(self.id());
+        let self_id = self.id();
+        self.election.begin_pre_vote(self_id);
 
         let request = PreVote {
             term: self.current_term().next(),
@@ -72,7 +77,7 @@ impl Node {
             .collect();
 
         // A single-voter membership wins its own pre-vote poll immediately.
-        if self.has_effective_quorum(self.granted_pre_votes.iter().copied()) {
+        if self.has_effective_quorum(self.election.pre_votes()) {
             outputs.extend(self.start_election());
         }
 
@@ -81,18 +86,16 @@ impl Node {
 
     pub(super) fn start_election(&mut self) -> Vec<Output> {
         if !self.is_effective_voter(self.id()) {
-            self.election_elapsed = 0;
+            self.election.reset_timeout();
             return Vec::new();
         }
 
         self.volatile.role = Role::Candidate;
         self.volatile.leader_hint = None;
         self.persistent.current_term = self.persistent.current_term.next();
-        self.persistent.voted_for = Some(self.id());
-        self.election_elapsed = 0;
-        self.granted_votes.clear();
-        self.granted_votes.insert(self.id());
-        self.granted_pre_votes.clear();
+        let self_id = self.id();
+        self.persistent.voted_for = Some(self_id);
+        self.election.begin_election(self_id);
 
         let request = RequestVote {
             term: self.current_term(),
@@ -112,7 +115,7 @@ impl Node {
             })
             .collect();
 
-        if self.has_effective_quorum(self.granted_votes.iter().copied()) {
+        if self.has_effective_quorum(self.election.votes()) {
             outputs.extend(self.become_leader());
             outputs.extend(self.broadcast_append_entries());
         }
@@ -141,7 +144,7 @@ impl Node {
 
         if vote_granted {
             self.persistent.voted_for = Some(candidate_id);
-            self.election_elapsed = 0;
+            self.election.reset_timeout();
         }
 
         outputs.push(Output::Send {
@@ -173,10 +176,10 @@ impl Node {
         }
 
         if response.vote_granted {
-            self.granted_votes.insert(voter_id);
+            self.election.record_vote(voter_id);
         }
 
-        if self.has_effective_quorum(self.granted_votes.iter().copied()) {
+        if self.has_effective_quorum(self.election.votes()) {
             let mut outputs = self.become_leader();
             outputs.extend(self.broadcast_append_entries());
             return outputs;
@@ -194,14 +197,14 @@ impl Node {
         // leader within its election timeout, a pre-vote poll must fail so a
         // rejoining partitioned node cannot depose a healthy leader.
         let leader_believed_current = self.volatile.leader_hint.is_some()
-            && self.election_elapsed < self.config.election_timeout_ticks();
+            && self.election.elapsed() < self.config.election_timeout_ticks();
 
         let vote_granted = request.term > self.current_term()
             && self.effective_membership().contains_voter(candidate_id)
             && self.candidate_log_is_up_to_date(request.last_log_term, request.last_log_index)
             && !leader_believed_current;
 
-        // Granting mutates nothing: term, voted_for, and election_elapsed all
+        // Granting mutates nothing: term, voted_for, and the election timer all
         // stay put, and nothing is persisted. Multiple pre-vote grants in one
         // term are allowed by design; only a real RequestVote binds a vote.
         //
@@ -244,12 +247,12 @@ impl Node {
         }
 
         if response.vote_granted {
-            self.granted_pre_votes.insert(voter_id);
+            self.election.record_pre_vote(voter_id);
         }
 
         // A quorum at the proposed term predicts a winnable election, so the
         // real, term-incrementing election path starts now (thesis 9.6).
-        if self.has_effective_quorum(self.granted_pre_votes.iter().copied()) {
+        if self.has_effective_quorum(self.election.pre_votes()) {
             return self.start_election();
         }
 

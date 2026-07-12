@@ -1,7 +1,9 @@
+//! Client proposal admission, batching, and replication.
+
 use crate::{ClientProposalInput, LogEntry};
 
 use super::super::state::LocalProposal;
-use super::{Node, Output, ProposalRejection, Role};
+use super::super::{Node, Output, ProposalRejection, Role};
 
 impl Node {
     /// Appends one deterministic client proposal without constructing the
