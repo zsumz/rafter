@@ -187,6 +187,31 @@ pub(crate) fn print_soak_summary(
     );
 }
 
+pub(crate) fn print_profile_total(
+    profile: &str,
+    protocol_states: usize,
+    verifier_states: usize,
+    target_protocol_states: usize,
+    target_verifier_states: usize,
+) {
+    let passed =
+        protocol_states >= target_protocol_states && verifier_states >= target_verifier_states;
+    println!(
+        "{EVENT_PREFIX}{}",
+        json!({
+            "event": "profile-total",
+            "check_id": format!("raft-profile-total-{}", profile.trim_start_matches("raft-")),
+            "profile": profile,
+            "status": if passed { "pass" } else { "incomplete" },
+            "classification": if passed { serde_json::Value::Null } else { json!("coverage-not-reached") },
+            "unique_protocol_states": protocol_states,
+            "unique_verifier_states": verifier_states,
+            "target_protocol_states": target_protocol_states,
+            "target_verifier_states": target_verifier_states,
+        })
+    );
+}
+
 pub(crate) fn print_raft_failure(name: &str, failure: &Failure) {
     print_failure_event(name, failure.kind(), failure.invariant(), failure.message());
     eprintln!("model-check {name} failed: {failure}");

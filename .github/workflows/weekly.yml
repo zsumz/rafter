@@ -47,8 +47,29 @@ defaults:
     shell: bash
 
 jobs:
-  model-check-extra-deep:
-    name: model-check-extra-deep
+  invariants-tests:
+    name: invariants-tests-weekly
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Produce source-bound weekly test evidence
+        run: cargo run --locked -p rafter-invariants -- run --profile weekly --layer tests
+      - name: Upload weekly test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-weekly-tests
+          path: artifacts/invariants/
+          if-no-files-found: warn
+          retention-days: 30
+
+  invariants-simulator:
+    name: invariants-simulator-weekly
     runs-on: ubuntu-latest
     timeout-minutes: 350
     steps:
@@ -57,17 +78,45 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - name: model check (raft-weekly)
-        run: |
-          cargo run --release --locked -p rafter-sim --bin rafter-model-check-fast -- \
-            --profile raft-weekly 2>&1 | tee model-check-raft-weekly.log
-      - name: Upload log
+      - name: Produce source-bound weekly simulator evidence
+        run: cargo run --locked -p rafter-invariants -- run --profile weekly --layer simulator
+      - name: Upload weekly simulator evidence and replay logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: model-check-raft-weekly-log
-          path: model-check-raft-weekly.log
-          if-no-files-found: error
+          name: invariants-weekly-simulator
+          path: artifacts/invariants/
+          if-no-files-found: warn
+          retention-days: 30
+
+  invariants-tla:
+    name: invariants-tla-weekly
+    runs-on: ubuntu-latest
+    timeout-minutes: 140
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Cache tla2tools.jar
+        uses: actions/cache@v4
+        with:
+          path: tools/cache
+          key: tla2tools-${{ hashFiles('tools/tla/VERSION', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS') }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Produce source-bound weekly TLA+ evidence
+        run: cargo run --locked -p rafter-invariants -- run --profile weekly --layer tla
+      - name: Upload weekly TLA+ evidence and counterexamples
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-weekly-tla
+          path: artifacts/invariants/
+          if-no-files-found: warn
           retention-days: 30
 
   invariants-maelstrom:
@@ -114,6 +163,76 @@ jobs:
           path: artifacts/invariants/
           if-no-files-found: error
           retention-days: 30
+
+  invariants-weekly:
+    name: invariants-weekly
+    needs:
+      - invariants-tests
+      - invariants-simulator
+      - invariants-tla
+      - invariants-maelstrom
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Download available weekly evidence
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: invariants-weekly-*
+          path: artifacts/invariants
+          merge-multiple: true
+      - name: Aggregate exactly 44 weekly invariant verdicts
+        if: always()
+        id: aggregate
+        run: |
+          set +e
+          cargo run --locked -p rafter-invariants -- check --profile weekly --source-ref "$GITHUB_SHA"
+          status=$?
+          set -e
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+      - name: Render the 44-row weekly report
+        if: always()
+        run: |
+          if [[ -f target/rafter-invariants/weekly.md ]]; then
+            cat target/rafter-invariants/weekly.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Raft invariant gate" >> "$GITHUB_STEP_SUMMARY"
+            echo "No 44-row weekly report was produced; the aggregate is red." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload weekly aggregate reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-weekly-report
+          path: |
+            target/rafter-invariants/weekly.json
+            target/rafter-invariants/weekly.xml
+            target/rafter-invariants/weekly.md
+            artifacts/invariants/
+          if-no-files-found: warn
+          retention-days: 30
+      - name: Require 44 of 44 weekly invariants green
+        if: always()
+        env:
+          AGGREGATE_STATUS: ${{ steps.aggregate.outputs.status }}
+          TESTS_RESULT: ${{ needs.invariants-tests.result }}
+          SIMULATOR_RESULT: ${{ needs.invariants-simulator.result }}
+          TLA_RESULT: ${{ needs.invariants-tla.result }}
+          MAELSTROM_RESULT: ${{ needs.invariants-maelstrom.result }}
+        run: |
+          test "$TESTS_RESULT" = "success"
+          test "$SIMULATOR_RESULT" = "success"
+          test "$TLA_RESULT" = "success"
+          test "$MAELSTROM_RESULT" = "success"
+          test "$AGGREGATE_STATUS" = "0"
+          jq -e '.summary.total == 44 and .summary.green == 44 and .summary.red == 0 and (.invariants | length) == 44' \
+            target/rafter-invariants/weekly.json >/dev/null
 
   tlc-full:
     name: tlc-full
@@ -187,8 +306,8 @@ jobs:
                 exit 0
                 ;;
               124)
-                echo "TLC full bounds exhausted the 295-minute soft budget during recovery; checkpoint state will be saved for the next run."
-                exit 0
+                echo "TLC full bounds exhausted the 295-minute soft budget during recovery; checkpoint state will be saved, and this run remains incomplete."
+                exit "$code"
                 ;;
               10 | 11 | 12 | 13 | 14)
                 # Real TLC verdicts (assumption/deadlock/safety/liveness/
@@ -210,7 +329,8 @@ jobs:
             0)
               ;;
             124)
-              echo "TLC full bounds exhausted the 295-minute soft budget; checkpoint state will be saved for the next run."
+              echo "TLC full bounds exhausted the 295-minute soft budget; checkpoint state will be saved, and this run remains incomplete."
+              exit "$code"
               ;;
             *)
               exit "$code"

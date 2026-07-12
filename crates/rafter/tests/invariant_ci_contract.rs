@@ -82,29 +82,64 @@ fn scheduled_profiles_run_real_maelstrom_evidence() {
 }
 
 #[test]
-fn scheduled_model_checks_preserve_cost_evidence() {
+fn scheduled_profiles_run_all_evidence_and_exact_aggregates() {
     let root = workspace_root();
-    for (workflow, job, profile) in [
-        (
-            ".github/workflows/nightly.yml",
-            "model-check",
-            "${{ matrix.profile }}",
-        ),
-        (
-            ".github/workflows/weekly.yml",
-            "model-check-extra-deep",
-            "raft-weekly",
-        ),
+    for (workflow, profile) in [
+        (".github/workflows/nightly.yml", "nightly"),
+        (".github/workflows/weekly.yml", "weekly"),
     ] {
         let source = read(&root.join(workflow));
-        let block = job_block(&source, job);
-        assert!(block.contains("cargo run --release --locked -p rafter-sim"));
-        assert!(block.contains(&format!("--profile {profile}")));
-        assert!(block.contains("if: always()"));
-        assert!(block.contains("actions/upload-artifact@v4"));
-        assert!(block.contains("if-no-files-found: error"));
-        assert!(block.contains("retention-days: 30"));
+        for layer in ["tests", "simulator", "tla", "maelstrom"] {
+            let block = job_block(&source, &format!("invariants-{layer}"));
+            assert!(block.contains(&format!(
+                "cargo run --locked -p rafter-invariants -- run --profile {profile} --layer {layer}"
+            )));
+            assert!(block.contains("if: always()"));
+            assert!(block.contains("actions/upload-artifact@v4"));
+            assert!(block.contains("retention-days: 30"));
+        }
+
+        let aggregate = job_block(&source, &format!("invariants-{profile}"));
+        for dependency in [
+            "invariants-tests",
+            "invariants-simulator",
+            "invariants-tla",
+            "invariants-maelstrom",
+        ] {
+            assert!(aggregate.contains(&format!("- {dependency}")));
+            assert!(aggregate.contains(&format!("needs.{dependency}.result")));
+        }
+        for required in [
+            "if: always()",
+            "continue-on-error: true",
+            "actions/download-artifact@v4",
+            "actions/upload-artifact@v4",
+            "GITHUB_STEP_SUMMARY",
+            ".summary.total == 44",
+            ".summary.green == 44",
+            "(.invariants | length) == 44",
+        ] {
+            assert!(
+                aggregate.contains(required),
+                "{profile} aggregate omitted required contract fragment: {required}"
+            );
+        }
+        assert!(aggregate.contains(&format!(
+            "check --profile {profile} --source-ref \"$GITHUB_SHA\""
+        )));
     }
+}
+
+#[test]
+fn weekly_full_tlc_budget_exhaustion_is_red() {
+    let root = workspace_root();
+    let workflow = read(&root.join(".github/workflows/weekly.yml"));
+    let full = job_block(&workflow, "tlc-full");
+    assert!(full.contains("remains incomplete"));
+    assert_eq!(full.matches("124)").count(), 2);
+    assert!(full.matches("exit \"$code\"").count() >= 2);
+    assert!(full.contains("if: always()"));
+    assert!(full.contains("actions/cache/save@v4"));
 }
 
 #[test]

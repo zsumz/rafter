@@ -3,6 +3,7 @@ use std::{error::Error, time::Duration};
 use rafter_sim::model_check::Bounds;
 
 use crate::profile::Profile;
+use crate::reporting::print_profile_total;
 
 const NIGHTLY_EXHAUSTIVE_MAX_WALL_CLOCK: Duration = Duration::from_secs(1_200);
 const WEEKLY_EXHAUSTIVE_MAX_WALL_CLOCK: Duration = Duration::from_secs(3_600);
@@ -24,6 +25,13 @@ pub(super) fn assert_exhaustive_targets(
         unique_verifier_states,
         targets.protocol_states,
         targets.verifier_states
+    );
+    print_profile_total(
+        profile.name(),
+        unique_protocol_states,
+        unique_verifier_states,
+        targets.protocol_states,
+        targets.verifier_states,
     );
     if unique_protocol_states < targets.protocol_states {
         return Err(format!(

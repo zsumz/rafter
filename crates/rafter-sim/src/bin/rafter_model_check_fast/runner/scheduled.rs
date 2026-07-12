@@ -4,7 +4,8 @@ use rafter_sim::model_check::{
     check_raft_commit_safety, check_raft_election_safety,
     check_raft_joint_membership_restart_and_snapshot_safety, check_raft_leadership_noop_safety,
     check_raft_membership_safety, check_raft_read_index_safety,
-    check_raft_restart_and_snapshot_safety, check_raft_seeded_commit_safety, Bounds, Summary,
+    check_raft_restart_and_snapshot_safety, check_raft_seeded_commit_safety,
+    check_raft_semantic_witness_safety, Bounds, Summary,
 };
 use rafter_sim::SimSeed;
 
@@ -27,6 +28,9 @@ pub(super) fn run_raft_nightly_profile(
     let mut totals = StateTotals::default();
     totals.record(run_raft_check("raft-election-nightly", || {
         check_raft_election_safety(three_node_configs(2), scheduled(Bounds::new(8)))
+    })?);
+    totals.record(run_raft_check("raft-election-prevote-nightly", || {
+        check_raft_election_safety(three_node_pre_vote_configs(2), scheduled(Bounds::new(8)))
     })?);
     totals.record(run_raft_check("raft-commit-nightly", || {
         check_raft_commit_safety(
@@ -80,6 +84,10 @@ pub(super) fn run_raft_nightly_profile(
     totals.record(run_raft_check("raft-restart-snapshot-nightly", || {
         check_raft_restart_and_snapshot_safety(scheduled(Bounds::new(10).with_max_restarts(2)))
     })?);
+    totals.record(run_raft_check(
+        "raft-semantic-witnesses-nightly",
+        check_raft_semantic_witness_safety,
+    )?);
     totals.record(run_raft_check("raft-read-index-nightly", || {
         check_raft_read_index_safety(
             three_node_configs(2),
@@ -166,6 +174,10 @@ pub(super) fn run_raft_weekly_profile(
     totals.record(run_raft_check("raft-election-prevote-weekly", || {
         check_raft_election_safety(three_node_pre_vote_configs(2), scheduled(Bounds::new(8)))
     })?);
+    totals.record(run_raft_check(
+        "raft-semantic-witnesses-weekly",
+        check_raft_semantic_witness_safety,
+    )?);
     totals.record(run_raft_check("raft-read-index-weekly", || {
         check_raft_read_index_safety(
             three_node_configs(2),
