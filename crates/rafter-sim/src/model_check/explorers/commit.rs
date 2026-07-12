@@ -3,12 +3,12 @@ use std::collections::BTreeSet;
 use rafter::{LogIndex, NodeId};
 
 use super::super::{
-    application::apply_to_state,
     invariants::{
         check_commit_history, check_commit_safety, check_election_history, check_election_safety,
         check_log_history,
     },
     scheduling::enabled_commit_actions,
+    state::apply_to_state,
     Action, Bounds, ExplorationState, Failure, Summary,
 };
 use super::budget::ExplorationBudget;
@@ -62,7 +62,7 @@ impl CommitSafetyExplorer {
         if !self.budget.enter(state, depth) {
             return Ok(());
         }
-        check_election_safety(&state.cluster, trace)?;
+        check_election_safety(state.cluster(), trace)?;
         check_election_history(state, trace)?;
         check_log_history(state, trace)?;
         check_commit_history(state, trace)?;
@@ -86,23 +86,23 @@ impl CommitSafetyExplorer {
     }
 
     fn observe_required_commit_points(&mut self, state: &ExplorationState) {
-        for key in state.required_applied_payloads.keys() {
+        for key in state.required_applied_payloads().keys() {
             let (node_id, index) = *key;
-            if state.cluster.commit_index(node_id) >= index {
+            if state.cluster().commit_index(node_id) >= index {
                 self.observed_required_applies.insert(*key);
             }
         }
-        for (key, expected) in &state.required_committed_configurations {
+        for (key, expected) in state.required_committed_configurations() {
             let (node_id, index) = *key;
-            if state.cluster.commit_index(node_id) >= index
-                && state.cluster.committed_configuration_state(node_id) == Some(*expected)
+            if state.cluster().commit_index(node_id) >= index
+                && state.cluster().committed_configuration_state(node_id) == Some(*expected)
             {
                 self.observed_required_configurations.insert(*key);
             }
         }
-        for key in &state.required_commit_indexes {
+        for key in state.required_commit_indexes() {
             let (node_id, index) = *key;
-            if state.cluster.commit_index(node_id) >= index {
+            if state.cluster().commit_index(node_id) >= index {
                 self.observed_required_commits.insert(*key);
             }
         }

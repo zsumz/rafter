@@ -105,18 +105,18 @@ pub(super) trait StateIdentity: Hash {
 
 impl StateIdentity for ExplorationState {
     fn hash_protocol_state<H: Hasher>(&self, state: &mut H) {
-        self.cluster.hash(state);
-        self.proposals_issued.hash(state);
-        self.restarts_issued.hash(state);
-        self.read_indexes_issued.hash(state);
-        self.membership_changes_issued.hash(state);
-        self.transfers_issued.hash(state);
-        self.partitions_issued.hash(state);
-        self.lossy_restarts_issued.hash(state);
+        self.cluster().hash(state);
+        self.proposals_issued().hash(state);
+        self.restarts_issued().hash(state);
+        self.read_indexes_issued().hash(state);
+        self.membership_changes_issued().hash(state);
+        self.transfers_issued().hash(state);
+        self.partitions_issued().hash(state);
+        self.lossy_restarts_issued().hash(state);
     }
 
     fn observations(&self) -> ObservationSet {
-        self.observations
+        self.observation_set()
     }
 }
 
@@ -126,7 +126,7 @@ impl StateIdentity for RestartSnapshotState {
     }
 
     fn observations(&self) -> ObservationSet {
-        self.state.observations
+        self.state.observation_set()
     }
 }
 

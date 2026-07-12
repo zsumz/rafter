@@ -1,10 +1,10 @@
 use super::super::{
-    application::apply_to_state,
     catalog,
     invariants::{
         check_commit_history, check_election_history, check_election_safety, check_log_history,
     },
     scheduling::enabled_actions,
+    state::apply_to_state,
     Action, Bounds, ExplorationState, Failure, Summary,
 };
 use super::budget::ExplorationBudget;
@@ -37,7 +37,7 @@ impl ElectionSafetyExplorer {
         if !self.budget.enter(state, depth) {
             return Ok(());
         }
-        check_election_safety(&state.cluster, trace)?;
+        check_election_safety(state.cluster(), trace)?;
         check_election_history(state, trace)?;
         check_log_history(state, trace)?;
         check_commit_history(state, trace)?;
@@ -46,7 +46,7 @@ impl ElectionSafetyExplorer {
             return Ok(());
         }
 
-        for action in enabled_actions(&state.cluster) {
+        for action in enabled_actions(state.cluster()) {
             let mut next = state.clone();
             apply_to_state(&mut next, action.operation);
             self.budget.record_action();
