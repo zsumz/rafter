@@ -1,10 +1,10 @@
 use std::collections::BTreeSet;
 
 use super::{
-    application::apply_soak_action,
     catalog,
     scheduling::SoakOperation,
     soak::{SoakAction, SoakActionKind, SoakConfig, SoakFailure},
+    state::apply_soak_action,
     state::ExplorationState,
 };
 
@@ -29,7 +29,7 @@ pub(super) fn run_soak_liveness_check(
     trace: &mut Vec<SoakAction>,
     observed_actions: &mut BTreeSet<SoakActionKind>,
 ) -> Result<(), SoakFailure> {
-    if has_partition(&state.cluster) {
+    if has_partition(state.cluster()) {
         apply_soak_action(state, SoakOperation::Heal);
         trace.push(SoakAction::Heal);
         observed_actions.insert(SoakActionKind::Heal);
@@ -54,7 +54,7 @@ pub(super) fn run_soak_liveness_check(
     for round in 0..budget {
         if accepted_proposal
             .is_some_and(|proposal_id| liveness_proposal_completed(state, proposal_id))
-            && !state.cluster.leaders().is_empty()
+            && !state.cluster().leaders().is_empty()
         {
             run_feature_liveness_checks(state, config, trace, observed_actions, budget)?;
             return Ok(());
@@ -80,7 +80,7 @@ pub(super) fn run_soak_liveness_check(
         check_soak_safety(state, config, trace)?;
     }
 
-    let message = match (state.cluster.leaders().is_empty(), accepted_proposal) {
+    let message = match (state.cluster().leaders().is_empty(), accepted_proposal) {
         (true, _) => format!("no leader remained after {budget} liveness proposal rounds"),
         (false, Some(proposal_id)) => format!(
             "accepted liveness proposal {} did not commit within {budget} post-heal rounds",
@@ -90,7 +90,7 @@ pub(super) fn run_soak_liveness_check(
             format!("no liveness proposal was accepted within {budget} post-heal rounds")
         }
     };
-    let invariant = if state.cluster.leaders().is_empty() {
+    let invariant = if state.cluster().leaders().is_empty() {
         catalog::LV_01_POST_HEAL_LEADER_CONVERGENCE
     } else {
         catalog::LV_02_PROPOSAL_PROGRESS

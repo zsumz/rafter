@@ -4,6 +4,8 @@ use rafter::{CommittedConfiguration, LogIndex, NodeId, SharedPayload};
 
 use crate::{Cluster, Envelope};
 
+#[path = "application.rs"]
+mod application;
 mod client;
 mod commit;
 mod coverage;
@@ -12,6 +14,11 @@ mod logical_log;
 mod restart_snapshot;
 mod seeds;
 
+use self::application::InstrumentedCluster;
+pub(super) use self::application::{
+    apply_snapshot_bootstrap_seeds, apply_soak_action, apply_to_restart_snapshot_state,
+    apply_to_state, restart_node, SnapshotBootstrapSeed,
+};
 use super::observations::ObservationSet;
 use client::initial_register_value;
 pub(super) use client::{ClientHistory, ClientReadOutcome, ClientWriteStatus};
@@ -31,27 +38,25 @@ pub(super) use restart_snapshot::{ExpectedSnapshot, RestartSnapshotState};
 
 #[derive(Clone, Debug, Hash)]
 pub(super) struct ExplorationState {
-    pub(super) cluster: Cluster,
-    pub(super) proposals_issued: u64,
-    pub(super) restarts_issued: u64,
-    pub(super) read_indexes_issued: u64,
-    pub(super) membership_changes_issued: u64,
-    pub(super) transfers_issued: u64,
-    pub(super) partitions_issued: u64,
-    pub(super) lossy_restarts_issued: u64,
-    pub(super) commit_floor_by_node: BTreeMap<NodeId, LogIndex>,
-    pub(super) committed_configuration_floor_by_node:
-        BTreeMap<NodeId, Option<CommittedConfiguration>>,
-    pub(super) client_history: ClientHistory,
-    pub(super) forbidden_applied_payloads: BTreeSet<SharedPayload>,
-    pub(super) required_applied_payloads: BTreeMap<(NodeId, LogIndex), SharedPayload>,
-    pub(super) required_committed_configurations:
-        BTreeMap<(NodeId, LogIndex), CommittedConfiguration>,
-    pub(super) required_commit_indexes: BTreeSet<(NodeId, LogIndex)>,
-    pub(super) election_history: ElectionHistory,
-    pub(super) logical_log_history: LogicalLogHistory,
-    pub(super) commit_history: CommitHistory,
-    pub(super) observations: ObservationSet,
+    cluster: InstrumentedCluster,
+    proposals_issued: u64,
+    restarts_issued: u64,
+    read_indexes_issued: u64,
+    membership_changes_issued: u64,
+    transfers_issued: u64,
+    partitions_issued: u64,
+    lossy_restarts_issued: u64,
+    commit_floor_by_node: BTreeMap<NodeId, LogIndex>,
+    committed_configuration_floor_by_node: BTreeMap<NodeId, Option<CommittedConfiguration>>,
+    client_history: ClientHistory,
+    forbidden_applied_payloads: BTreeSet<SharedPayload>,
+    required_applied_payloads: BTreeMap<(NodeId, LogIndex), SharedPayload>,
+    required_committed_configurations: BTreeMap<(NodeId, LogIndex), CommittedConfiguration>,
+    required_commit_indexes: BTreeSet<(NodeId, LogIndex)>,
+    election_history: ElectionHistory,
+    logical_log_history: LogicalLogHistory,
+    commit_history: CommitHistory,
+    observations: ObservationSet,
 }
 
 impl ExplorationState {
@@ -68,7 +73,7 @@ impl ExplorationState {
             .map(|(node_id, node)| (*node_id, node.committed_configuration_state()))
             .collect();
         let mut state = Self {
-            cluster,
+            cluster: InstrumentedCluster::new(cluster),
             proposals_issued: 0,
             restarts_issued: 0,
             read_indexes_issued: 0,
@@ -94,6 +99,168 @@ impl ExplorationState {
         state.refresh_seeded_commit_history();
         state.observe_state_coverage();
         state
+    }
+
+    pub(super) fn cluster(&self) -> &Cluster {
+        &self.cluster
+    }
+
+    pub(super) const fn proposals_issued(&self) -> u64 {
+        self.proposals_issued
+    }
+
+    pub(super) const fn restarts_issued(&self) -> u64 {
+        self.restarts_issued
+    }
+
+    pub(super) const fn read_indexes_issued(&self) -> u64 {
+        self.read_indexes_issued
+    }
+
+    pub(super) const fn membership_changes_issued(&self) -> u64 {
+        self.membership_changes_issued
+    }
+
+    pub(super) const fn transfers_issued(&self) -> u64 {
+        self.transfers_issued
+    }
+
+    pub(super) const fn partitions_issued(&self) -> u64 {
+        self.partitions_issued
+    }
+
+    pub(super) const fn lossy_restarts_issued(&self) -> u64 {
+        self.lossy_restarts_issued
+    }
+
+    pub(super) const fn commit_floor_by_node(&self) -> &BTreeMap<NodeId, LogIndex> {
+        &self.commit_floor_by_node
+    }
+
+    pub(super) const fn committed_configuration_floor_by_node(
+        &self,
+    ) -> &BTreeMap<NodeId, Option<CommittedConfiguration>> {
+        &self.committed_configuration_floor_by_node
+    }
+
+    pub(super) const fn client_history(&self) -> &ClientHistory {
+        &self.client_history
+    }
+
+    pub(super) const fn forbidden_applied_payloads(&self) -> &BTreeSet<SharedPayload> {
+        &self.forbidden_applied_payloads
+    }
+
+    pub(super) const fn required_applied_payloads(
+        &self,
+    ) -> &BTreeMap<(NodeId, LogIndex), SharedPayload> {
+        &self.required_applied_payloads
+    }
+
+    pub(super) const fn required_committed_configurations(
+        &self,
+    ) -> &BTreeMap<(NodeId, LogIndex), CommittedConfiguration> {
+        &self.required_committed_configurations
+    }
+
+    pub(super) const fn required_commit_indexes(&self) -> &BTreeSet<(NodeId, LogIndex)> {
+        &self.required_commit_indexes
+    }
+
+    pub(super) const fn election_history(&self) -> &ElectionHistory {
+        &self.election_history
+    }
+
+    pub(super) const fn logical_log_history(&self) -> &LogicalLogHistory {
+        &self.logical_log_history
+    }
+
+    pub(super) const fn commit_history(&self) -> &CommitHistory {
+        &self.commit_history
+    }
+
+    pub(super) const fn observation_set(&self) -> ObservationSet {
+        self.observations
+    }
+
+    #[cfg(test)]
+    pub(super) fn commit_floor_by_node_mut(&mut self) -> &mut BTreeMap<NodeId, LogIndex> {
+        &mut self.commit_floor_by_node
+    }
+
+    #[cfg(test)]
+    pub(super) fn committed_configuration_floor_by_node_mut(
+        &mut self,
+    ) -> &mut BTreeMap<NodeId, Option<CommittedConfiguration>> {
+        &mut self.committed_configuration_floor_by_node
+    }
+
+    #[cfg(test)]
+    pub(super) fn client_history_mut(&mut self) -> &mut ClientHistory {
+        &mut self.client_history
+    }
+
+    #[cfg(test)]
+    pub(super) fn election_history_mut(&mut self) -> &mut ElectionHistory {
+        &mut self.election_history
+    }
+
+    #[cfg(test)]
+    pub(super) fn logical_log_history_mut(&mut self) -> &mut LogicalLogHistory {
+        &mut self.logical_log_history
+    }
+
+    pub(super) fn scheduler_index(&mut self, len: usize) -> usize {
+        application::scheduler_index(self, len)
+    }
+
+    pub(super) fn random_ready_position(&mut self) -> Option<usize> {
+        application::random_ready_position(self)
+    }
+
+    #[cfg(test)]
+    pub(super) fn inject_bootstrap_state(
+        &mut self,
+        node_id: NodeId,
+        bootstrap: rafter::BootstrapState,
+    ) -> Result<(), rafter::BootstrapValidationError> {
+        self.cluster.restart_node_from_bootstrap(node_id, bootstrap)
+    }
+
+    #[cfg(test)]
+    pub(super) fn inject_snapshot_payload(
+        &mut self,
+        node_id: NodeId,
+        snapshot: &rafter::RaftSnapshot,
+        payload: Vec<u8>,
+    ) {
+        self.cluster
+            .seed_snapshot_payload(node_id, snapshot, payload);
+    }
+
+    #[cfg(test)]
+    pub(super) fn inject_message(&mut self, from: NodeId, to: NodeId, message: rafter::Message) {
+        self.cluster.queue_message(from, to, message);
+    }
+
+    #[cfg(test)]
+    pub(super) fn drop_all_messages(&mut self) {
+        self.cluster.drop_matching(|_| true);
+    }
+
+    #[cfg(test)]
+    pub(super) fn inject_applied_record(&mut self, applied: crate::Applied) {
+        self.cluster.inject_applied_record(applied);
+    }
+
+    #[cfg(test)]
+    pub(super) fn inject_read_grant(&mut self, grant: crate::ReadGranted) {
+        self.cluster.inject_read_grant(grant);
+    }
+
+    #[cfg(test)]
+    pub(super) fn inject_blocked_pair(&mut self, from: NodeId, to: NodeId) {
+        self.cluster.inject_blocked_pair(from, to);
     }
 
     pub(super) fn refresh_commit_floors(&mut self) {

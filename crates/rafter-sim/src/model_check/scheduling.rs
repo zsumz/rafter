@@ -40,14 +40,14 @@ pub(super) fn enabled_commit_actions(
     state: &ExplorationState,
     bounds: Bounds,
 ) -> Vec<EnabledAction> {
-    let mut actions = enabled_actions(&state.cluster);
-    if state.proposals_issued < bounds.proposal_count as u64 {
-        let proposal_id = ProposalId(state.proposals_issued + 1);
-        for (node_id, node) in &state.cluster.nodes {
+    let mut actions = enabled_actions(state.cluster());
+    if state.proposals_issued() < bounds.proposal_count as u64 {
+        let proposal_id = ProposalId(state.proposals_issued() + 1);
+        for (node_id, node) in &state.cluster().nodes {
             if node.role() != Role::Leader {
                 continue;
             }
-            let stale_leader = newer_term_has_leader(&state.cluster, node.current_term());
+            let stale_leader = newer_term_has_leader(state.cluster(), node.current_term());
             actions.push(EnabledAction {
                 trace: Action::Propose {
                     to: *node_id,
@@ -72,12 +72,12 @@ pub(super) fn enabled_read_index_actions(
     bounds: Bounds,
 ) -> Vec<EnabledAction> {
     let mut actions = enabled_commit_actions(state, bounds);
-    if state.read_indexes_issued >= bounds.read_index_count as u64 {
+    if state.read_indexes_issued() >= bounds.read_index_count as u64 {
         return actions;
     }
 
-    let request_id = state.read_indexes_issued + 1;
-    for (node_id, node) in &state.cluster.nodes {
+    let request_id = state.read_indexes_issued() + 1;
+    for (node_id, node) in &state.cluster().nodes {
         if node.role() != Role::Leader {
             continue;
         }
@@ -102,25 +102,25 @@ pub(super) fn enabled_restart_snapshot_actions(
     let mut actions = if state.expected_snapshot.is_some() {
         state
             .state
-            .cluster
+            .cluster()
             .network
             .iter()
             .enumerate()
-            .filter(|(_, queued)| queued.ready_at <= state.state.cluster.clock.now())
+            .filter(|(_, queued)| queued.ready_at <= state.state.cluster().clock.now())
             .map(|(position, queued)| EnabledAction {
                 trace: deliver_action(&queued.envelope),
                 operation: Operation::DeliverReadyAt(position),
             })
             .collect::<Vec<_>>()
     } else {
-        enabled_actions(&state.state.cluster)
+        enabled_actions(state.state.cluster())
     };
 
-    if state.state.restarts_issued < bounds.restart_count as u64 {
+    if state.state.restarts_issued() < bounds.restart_count as u64 {
         actions.extend(
             state
                 .state
-                .cluster
+                .cluster()
                 .nodes
                 .keys()
                 .copied()
