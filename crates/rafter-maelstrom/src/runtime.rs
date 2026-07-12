@@ -16,25 +16,47 @@ use crate::{
     InitializedNode, MaelstromNode,
 };
 
-const TICK_INTERVAL: Duration = Duration::from_millis(50);
+const DEFAULT_TICK_INTERVAL_MS: u64 = 50;
 
 pub(crate) fn run() -> Result<(), Box<dyn Error>> {
+    let tick_interval = tick_interval_from_env()?;
     let stdin_rx = spawn_stdin_reader();
     let mut node = MaelstromNode::default();
     let mut last_tick = Instant::now();
 
     loop {
-        match stdin_rx.recv_timeout(TICK_INTERVAL / 5) {
+        match stdin_rx.recv_timeout(tick_interval / 5) {
             Ok(line) => node.handle_line(&line)?,
             Err(mpsc::RecvTimeoutError::Timeout) => {}
             Err(mpsc::RecvTimeoutError::Disconnected) => return Ok(()),
         }
 
-        if node.is_initialized() && last_tick.elapsed() >= TICK_INTERVAL {
+        if node.is_initialized() && last_tick.elapsed() >= tick_interval {
             node.tick();
             last_tick = Instant::now();
         }
     }
+}
+
+fn tick_interval_from_env() -> Result<Duration, Box<dyn Error>> {
+    tick_interval(
+        std::env::var("RAFTER_MAELSTROM_TICK_INTERVAL_MS")
+            .ok()
+            .as_deref(),
+    )
+    .map_err(std::convert::Into::into)
+}
+
+fn tick_interval(value: Option<&str>) -> Result<Duration, String> {
+    let milliseconds = match value {
+        Some(value) => value
+            .parse::<u64>()
+            .ok()
+            .filter(|value| *value >= 5)
+            .ok_or_else(|| "RAFTER_MAELSTROM_TICK_INTERVAL_MS must be at least 5".to_owned())?,
+        None => DEFAULT_TICK_INTERVAL_MS,
+    };
+    Ok(Duration::from_millis(milliseconds))
 }
 
 fn spawn_stdin_reader() -> mpsc::Receiver<String> {
@@ -110,6 +132,7 @@ impl MaelstromNode {
         let app = load_app_state(&root)?;
         let node = open_node(&root, node_id, peers, app.applied)?;
         let last_reported_role = node.role();
+        let last_reported_lease_active = node.read_lease_active();
         let last_snapshot_index = node.snapshot_index();
         let snapshot_every = snapshot_every_from_env()?;
 
@@ -131,6 +154,7 @@ impl MaelstromNode {
             snapshot_every,
             last_snapshot_index,
             last_reported_role,
+            last_reported_lease_active,
         };
         initialized.emit(
             &envelope.src,
@@ -141,5 +165,20 @@ impl MaelstromNode {
         );
         self.initialized = Some(initialized);
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::tick_interval;
+
+    #[test]
+    fn evidence_tick_interval_is_explicit_and_nonzero() {
+        assert_eq!(tick_interval(None), Ok(Duration::from_millis(50)));
+        assert_eq!(tick_interval(Some("25")), Ok(Duration::from_millis(25)));
+        assert!(tick_interval(Some("0")).is_err());
+        assert!(tick_interval(Some("bad")).is_err());
     }
 }

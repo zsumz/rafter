@@ -5,6 +5,7 @@ pub(super) enum Scenario {
     Restart,
     AppCrash,
     Snapshot,
+    LeaseIsolation,
 }
 
 pub(super) fn scenario_for(descriptor: &EvidenceDescriptor) -> Option<Scenario> {
@@ -14,6 +15,7 @@ pub(super) fn scenario_for(descriptor: &EvidenceDescriptor) -> Option<Scenario> 
         "scripts/maelstrom-lin-kv-repeated-restart" => Some(Scenario::Restart),
         "scripts/maelstrom-lin-kv-app-persist-crash" => Some(Scenario::AppCrash),
         "scripts/maelstrom-lin-kv-forced-snapshot" => Some(Scenario::Snapshot),
+        "scripts/maelstrom-lin-kv-lease-isolation" => Some(Scenario::LeaseIsolation),
         _ => None,
     }
 }
@@ -29,12 +31,13 @@ pub(super) fn required_configuration<'a>(
 }
 
 impl Scenario {
-    pub(super) const ALL: [Self; 5] = [
+    pub(super) const ALL: [Self; 6] = [
         Self::Base,
         Self::Membership,
         Self::Restart,
         Self::AppCrash,
         Self::Snapshot,
+        Self::LeaseIsolation,
     ];
 
     pub(super) const fn name(self) -> &'static str {
@@ -44,6 +47,7 @@ impl Scenario {
             Self::Restart => "restart",
             Self::AppCrash => "app-crash",
             Self::Snapshot => "snapshot",
+            Self::LeaseIsolation => "lease-isolation",
         }
     }
 
@@ -54,6 +58,7 @@ impl Scenario {
             Self::Restart => "scripts/maelstrom-lin-kv-repeated-restart",
             Self::AppCrash => "scripts/maelstrom-lin-kv-app-persist-crash",
             Self::Snapshot => "scripts/maelstrom-lin-kv-forced-snapshot",
+            Self::LeaseIsolation => "scripts/maelstrom-lin-kv-lease-isolation",
         }
     }
 

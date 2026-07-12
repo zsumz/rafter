@@ -10,7 +10,7 @@ use crate::{
 use super::{
     maelstrom_binding::bind_counterexamples,
     maelstrom_edn::Validity,
-    maelstrom_exec::{run_trial, Scenario, ScenarioMarkers, TrialOutcome},
+    maelstrom_exec::{run_trial, LeaseTranscriptStatus, Scenario, ScenarioMarkers, TrialOutcome},
     maelstrom_scenario::{required_configuration, scenario_for},
     process, source, ProducerContext,
 };
@@ -118,7 +118,11 @@ pub(super) fn run(
 
 enum ScenarioVerdict {
     Pass,
-    Counterexample,
+    Counterexample {
+        rd05: bool,
+        rd06: bool,
+        harness_error: bool,
+    },
     Incomplete(String),
     Error(String),
 }
@@ -127,24 +131,53 @@ impl ScenarioVerdict {
     const fn completion(&self) -> CheckCompletion {
         match self {
             Self::Pass => CheckCompletion::Completed,
-            Self::Counterexample => CheckCompletion::Counterexample,
+            Self::Counterexample { .. } => CheckCompletion::Counterexample,
             Self::Incomplete(_) => CheckCompletion::CoverageNotReached,
             Self::Error(_) => CheckCompletion::HarnessError,
+        }
+    }
+
+    fn targets(&self, invariant_id: &str) -> bool {
+        match self {
+            Self::Counterexample { rd05, .. } if invariant_id == "RD-05" => *rd05,
+            Self::Counterexample { rd06, .. } if invariant_id == "RD-06" => *rd06,
+            _ => false,
         }
     }
 }
 
 fn evaluate(scenario: Scenario, outcomes: &[TrialOutcome]) -> ScenarioVerdict {
-    if let Some(error) = outcomes.iter().find_map(|outcome| outcome.error.as_ref()) {
-        return ScenarioVerdict::Error(error.clone());
-    }
-    if outcomes.iter().any(|outcome| {
+    let rd06 = outcomes.iter().any(|outcome| {
         outcome
             .summary
             .as_ref()
             .is_some_and(|summary| summary.linearizability == Validity::Invalid)
-    }) {
-        return ScenarioVerdict::Counterexample;
+    });
+    let rd05 = scenario == Scenario::LeaseIsolation
+        && outcomes.iter().any(|outcome| {
+            matches!(
+                outcome.markers.lease_status,
+                LeaseTranscriptStatus::Violation | LeaseTranscriptStatus::ViolationWithHarnessError
+            )
+        });
+    let harness_error = outcomes.iter().any(|outcome| {
+        outcome.error.is_some()
+            || !outcome.process_succeeded
+            || matches!(
+                outcome.markers.lease_status,
+                LeaseTranscriptStatus::HarnessError
+                    | LeaseTranscriptStatus::ViolationWithHarnessError
+            )
+    });
+    if rd05 || rd06 {
+        return ScenarioVerdict::Counterexample {
+            rd05,
+            rd06,
+            harness_error,
+        };
+    }
+    if let Some(error) = outcomes.iter().find_map(|outcome| outcome.error.as_ref()) {
+        return ScenarioVerdict::Error(error.clone());
     }
     if outcomes.iter().any(|outcome| !outcome.process_succeeded) {
         return ScenarioVerdict::Error("Maelstrom process did not exit successfully".to_owned());
@@ -158,6 +191,25 @@ fn evaluate(scenario: Scenario, outcomes: &[TrialOutcome]) -> ScenarioVerdict {
         return ScenarioVerdict::Incomplete(
             "Maelstrom did not produce a completed valid checker result".to_owned(),
         );
+    }
+    if scenario == Scenario::LeaseIsolation {
+        if outcomes
+            .iter()
+            .any(|outcome| outcome.markers.lease_status == LeaseTranscriptStatus::HarnessError)
+        {
+            return ScenarioVerdict::Error(
+                "lease-isolation transcript was malformed or returned an unexpected error"
+                    .to_owned(),
+            );
+        }
+        if outcomes
+            .iter()
+            .any(|outcome| outcome.markers.lease_status != LeaseTranscriptStatus::Complete)
+        {
+            return ScenarioVerdict::Incomplete(
+                "lease-isolation did not complete one ordered real-client transcript".to_owned(),
+            );
+        }
     }
     if outcomes.iter().any(|outcome| {
         outcome.summary.as_ref().is_none_or(|summary| {
@@ -188,6 +240,23 @@ fn markers_cover(scenario: Scenario, markers: ScenarioMarkers) -> bool {
                 && markers.snapshots_applied > 0
                 && markers.post_restart_snapshots_applied > 0
         }
+        Scenario::LeaseIsolation => {
+            markers.lease_sequence_complete == 1
+                && markers.lease_sequence_invalid == 0
+                && markers.lease_fast_path_read_ok == 1
+                && markers.lease_read_buffered == 1
+                && markers.lease_expired_while_leader == 1
+                && markers.lease_post_expiry_released == 1
+                && markers.lease_post_expiry_handler == 1
+                && markers.lease_post_expiry_unavailable == 1
+                && markers.lease_post_expiry_read_served == 0
+                && markers.lease_post_expiry_renewed == 0
+                && markers.lease_post_expiry_unexpected_error == 0
+                && markers.lease_duplicate_terminal == 0
+                && markers.lease_coverage_lost == 0
+                && markers.lease_history_probe_matches == 1
+                && markers.lease_history_probe_mismatches == 0
+        }
     }
 }
 
@@ -195,6 +264,7 @@ fn observations(outcomes: &[TrialOutcome]) -> BTreeMap<String, u64> {
     let mut values = BTreeMap::from([
         ("trials".to_owned(), outcomes.len() as u64),
         ("valid_trials".to_owned(), 0),
+        ("invalid_trials".to_owned(), 0),
         ("operation_count".to_owned(), 0),
         ("ok_count".to_owned(), 0),
         ("read_ok".to_owned(), 0),
@@ -210,6 +280,21 @@ fn observations(outcomes: &[TrialOutcome]) -> BTreeMap<String, u64> {
         ("snapshots_compacted".to_owned(), 0),
         ("snapshots_applied".to_owned(), 0),
         ("post_restart_snapshots_applied".to_owned(), 0),
+        ("lease_fast_path_read_ok".to_owned(), 0),
+        ("lease_read_buffered".to_owned(), 0),
+        ("lease_expired_while_leader".to_owned(), 0),
+        ("lease_post_expiry_released".to_owned(), 0),
+        ("lease_post_expiry_handler".to_owned(), 0),
+        ("lease_post_expiry_unavailable".to_owned(), 0),
+        ("lease_post_expiry_read_served".to_owned(), 0),
+        ("lease_post_expiry_renewed".to_owned(), 0),
+        ("lease_post_expiry_unexpected_error".to_owned(), 0),
+        ("lease_duplicate_terminal".to_owned(), 0),
+        ("lease_coverage_lost".to_owned(), 0),
+        ("lease_history_probe_matches".to_owned(), 0),
+        ("lease_history_probe_mismatches".to_owned(), 0),
+        ("lease_sequence_complete".to_owned(), 0),
+        ("lease_sequence_invalid".to_owned(), 0),
     ]);
     for outcome in outcomes {
         if let Some(summary) = &outcome.summary {
@@ -217,6 +302,11 @@ fn observations(outcomes: &[TrialOutcome]) -> BTreeMap<String, u64> {
                 &mut values,
                 "valid_trials",
                 u64::from(summary.validity == Validity::Valid),
+            );
+            add(
+                &mut values,
+                "invalid_trials",
+                u64::from(summary.linearizability == Validity::Invalid),
             );
             add(&mut values, "operation_count", summary.operation_count);
             add(&mut values, "ok_count", summary.ok_count);
@@ -235,7 +325,7 @@ fn add(values: &mut BTreeMap<String, u64>, name: &str, value: u64) {
     *values.entry(name.to_owned()).or_default() += value;
 }
 
-fn marker_values(markers: ScenarioMarkers) -> [(&'static str, u64); 10] {
+fn marker_values(markers: ScenarioMarkers) -> [(&'static str, u64); 25] {
     [
         ("membership_enter", markers.membership_enter),
         ("membership_leave", markers.membership_leave),
@@ -250,6 +340,48 @@ fn marker_values(markers: ScenarioMarkers) -> [(&'static str, u64); 10] {
             "post_restart_snapshots_applied",
             markers.post_restart_snapshots_applied,
         ),
+        ("lease_fast_path_read_ok", markers.lease_fast_path_read_ok),
+        ("lease_read_buffered", markers.lease_read_buffered),
+        (
+            "lease_expired_while_leader",
+            markers.lease_expired_while_leader,
+        ),
+        (
+            "lease_post_expiry_released",
+            markers.lease_post_expiry_released,
+        ),
+        (
+            "lease_post_expiry_handler",
+            markers.lease_post_expiry_handler,
+        ),
+        (
+            "lease_post_expiry_unavailable",
+            markers.lease_post_expiry_unavailable,
+        ),
+        (
+            "lease_post_expiry_read_served",
+            markers.lease_post_expiry_read_served,
+        ),
+        (
+            "lease_post_expiry_renewed",
+            markers.lease_post_expiry_renewed,
+        ),
+        (
+            "lease_post_expiry_unexpected_error",
+            markers.lease_post_expiry_unexpected_error,
+        ),
+        ("lease_duplicate_terminal", markers.lease_duplicate_terminal),
+        ("lease_coverage_lost", markers.lease_coverage_lost),
+        (
+            "lease_history_probe_matches",
+            markers.lease_history_probe_matches,
+        ),
+        (
+            "lease_history_probe_mismatches",
+            markers.lease_history_probe_mismatches,
+        ),
+        ("lease_sequence_complete", markers.lease_sequence_complete),
+        ("lease_sequence_invalid", markers.lease_sequence_invalid),
     ]
 }
 
@@ -261,12 +393,33 @@ fn evidence_result(
 ) -> EvidenceResult {
     let (status, classification, message) = match verdict {
         ScenarioVerdict::Pass => (EvidenceStatus::Pass, None, None),
-        ScenarioVerdict::Counterexample if descriptor.invariant_id == "RD-06" => (
+        ScenarioVerdict::Counterexample {
+            rd05,
+            rd06,
+            harness_error,
+        }
+            if verdict.targets(&descriptor.invariant_id) => (
             EvidenceStatus::Fail,
             Some(FailureClassification::InvariantViolation),
-            Some("Maelstrom reported a non-linearizable client history".to_owned()),
+            Some(if descriptor.invariant_id == "RD-05" && *rd05 {
+                let mut message =
+                    "an isolated leader renewed its expired lease or served the buffered read"
+                        .to_owned();
+                if *harness_error {
+                    message.push_str("; a later harness error was also observed");
+                }
+                message
+            } else if descriptor.invariant_id == "RD-06" && *rd06 {
+                let mut message = "Maelstrom reported a non-linearizable client history".to_owned();
+                if *harness_error {
+                    message.push_str("; a later harness error was also observed");
+                }
+                message
+            } else {
+                unreachable!("targeted Maelstrom counterexample has a known invariant")
+            }),
         ),
-        ScenarioVerdict::Counterexample => (
+        ScenarioVerdict::Counterexample { .. } => (
             EvidenceStatus::Incomplete,
             Some(FailureClassification::CoverageNotReached),
             Some("Maelstrom found a client counterexample that cannot be attributed to this supporting invariant".to_owned()),
@@ -294,5 +447,73 @@ fn evidence_result(
         } else {
             artifacts.to_vec()
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::producer::maelstrom_edn::{MaelstromSummary, Validity};
+    use crate::producer::maelstrom_exec::{
+        LeaseTranscriptStatus, Scenario, ScenarioMarkers, TrialOutcome,
+    };
+
+    use super::{evaluate, ScenarioVerdict};
+
+    #[test]
+    fn producer_preserves_simultaneous_rd05_and_rd06_counterexamples() {
+        let outcome = TrialOutcome {
+            summary: Some(MaelstromSummary {
+                validity: Validity::Invalid,
+                linearizability: Validity::Invalid,
+                operation_count: 3,
+                ok_count: 3,
+                read_ok: 1,
+                write_ok: 1,
+                cas_ok: 1,
+            }),
+            error: None,
+            process_succeeded: true,
+            markers: ScenarioMarkers {
+                lease_status: LeaseTranscriptStatus::Violation,
+                ..ScenarioMarkers::default()
+            },
+            duration_ms: 1,
+            peak_rss_kib: 1,
+            artifacts: Vec::new(),
+        };
+        assert!(matches!(
+            evaluate(Scenario::LeaseIsolation, &[outcome]),
+            ScenarioVerdict::Counterexample {
+                rd05: true,
+                rd06: true,
+                harness_error: false
+            }
+        ));
+    }
+
+    #[test]
+    fn rd05_violation_survives_later_parse_process_and_transcript_errors() {
+        let outcome = TrialOutcome {
+            summary: None,
+            error: Some("malformed results.edn".to_owned()),
+            process_succeeded: false,
+            markers: ScenarioMarkers {
+                lease_status: LeaseTranscriptStatus::ViolationWithHarnessError,
+                lease_post_expiry_read_served: 1,
+                lease_sequence_invalid: 1,
+                ..ScenarioMarkers::default()
+            },
+            duration_ms: 1,
+            peak_rss_kib: 1,
+            artifacts: Vec::new(),
+        };
+        assert!(matches!(
+            evaluate(Scenario::LeaseIsolation, &[outcome]),
+            ScenarioVerdict::Counterexample {
+                rd05: true,
+                rd06: false,
+                harness_error: true
+            }
+        ));
     }
 }

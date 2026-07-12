@@ -3,9 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::catalog::RunnerContract;
 use crate::{CheckCompletion, CheckReceipt, EvidenceDescriptor, EvidenceStatus, ResultBundle};
 
-const OBSERVATIONS: [&str; 17] = [
+const OBSERVATIONS: [&str; 33] = [
     "trials",
     "valid_trials",
+    "invalid_trials",
     "operation_count",
     "ok_count",
     "read_ok",
@@ -21,6 +22,21 @@ const OBSERVATIONS: [&str; 17] = [
     "snapshots_compacted",
     "snapshots_applied",
     "post_restart_snapshots_applied",
+    "lease_fast_path_read_ok",
+    "lease_read_buffered",
+    "lease_expired_while_leader",
+    "lease_post_expiry_released",
+    "lease_post_expiry_handler",
+    "lease_post_expiry_unavailable",
+    "lease_post_expiry_read_served",
+    "lease_post_expiry_renewed",
+    "lease_post_expiry_unexpected_error",
+    "lease_duplicate_terminal",
+    "lease_coverage_lost",
+    "lease_history_probe_matches",
+    "lease_history_probe_mismatches",
+    "lease_sequence_complete",
+    "lease_sequence_invalid",
 ];
 
 pub(super) fn validate(
@@ -34,8 +50,8 @@ pub(super) fn validate(
         .filter(|(_, descriptor)| descriptor.layer == "maelstrom")
         .map(|(evidence_id, descriptor)| (evidence_id.clone(), scenario(descriptor.path.as_str())))
         .collect::<BTreeMap<_, _>>();
-    if required.len() != 10 || bundle.execution.checks.len() != 5 {
-        return Err("Maelstrom receipt must contain five scenarios covering ten E2E records");
+    if required.len() != 11 || bundle.execution.checks.len() != 6 {
+        return Err("Maelstrom receipt must contain six scenarios covering eleven E2E records");
     }
     let rd06 = expected
         .iter()
@@ -125,8 +141,26 @@ fn validate_configuration(contract: &RunnerContract) -> Result<(), &'static str>
         ),
         ("maelstrom_version", "v0.2.4"),
         ("operation_floor", "read-write-cas-per-trial"),
+        ("lease_tick_interval_ms", "50"),
+        ("lease_election_timeout_ticks", "20"),
+        ("lease_heartbeat_interval_ticks", "2"),
+        ("lease_window_ticks", "10"),
+        ("lease_window_ms", "500"),
+        ("lease_probe_source", "real-direct-maelstrom-read"),
+        (
+            "lease_history_binding",
+            "ordered-process-invoke-terminal-client-msg-value-code11",
+        ),
+        (
+            "lease_probe_selection",
+            "second-post-expiry-read-per-client",
+        ),
+        ("lease_same_node_term", "required"),
         ("replay", "retained-store"),
-        ("scenarios", "base,membership,restart,app-crash,snapshot"),
+        (
+            "scenarios",
+            "base,membership,restart,app-crash,snapshot,lease-isolation",
+        ),
         ("scheduler_seed", "unavailable"),
         ("structural_edn", "required"),
     ];
@@ -188,18 +222,8 @@ fn validate_completion(
             }
         }
         CheckCompletion::Counterexample => {
-            let failed = statuses
-                .iter()
-                .filter(|(_, status)| *status == EvidenceStatus::Fail)
-                .map(|(invariant, _)| *invariant)
-                .collect::<Vec<_>>();
-            if failed.as_slice() != ["RD-06"]
-                || statuses.iter().any(|(invariant, status)| {
-                    (*status == EvidenceStatus::Fail && *invariant != "RD-06")
-                        || !matches!(status, EvidenceStatus::Fail | EvidenceStatus::Incomplete)
-                })
-            {
-                return Err("Maelstrom counterexample is attributed beyond client linearizability");
+            if !valid_counterexample_attribution(&statuses) {
+                return Err("Maelstrom counterexample has an invalid invariant attribution");
             }
         }
         CheckCompletion::CoverageNotReached
@@ -227,8 +251,25 @@ fn validate_completion(
     Ok(())
 }
 
+fn valid_counterexample_attribution(statuses: &[(&str, EvidenceStatus)]) -> bool {
+    let failed = statuses
+        .iter()
+        .filter(|(_, status)| *status == EvidenceStatus::Fail)
+        .map(|(invariant, _)| *invariant)
+        .collect::<BTreeSet<_>>();
+    !failed.is_empty()
+        && failed.is_subset(&BTreeSet::from(["RD-05", "RD-06"]))
+        && statuses.iter().all(|(invariant, status)| {
+            (*status != EvidenceStatus::Fail || matches!(*invariant, "RD-05" | "RD-06"))
+                && matches!(status, EvidenceStatus::Fail | EvidenceStatus::Incomplete)
+        })
+}
+
 fn requires_proxy(scenario: &str) -> bool {
-    matches!(scenario, "restart" | "app-crash" | "snapshot")
+    matches!(
+        scenario,
+        "restart" | "app-crash" | "snapshot" | "lease-isolation"
+    )
 }
 
 fn requires_durable(scenario: &str) -> bool {
@@ -257,6 +298,23 @@ fn markers_cover(check: &CheckReceipt, scenario: &str, trials: u64) -> bool {
                 && observed(check, "snapshots_applied") >= trials
                 && observed(check, "post_restart_snapshots_applied") >= trials
         }
+        "lease-isolation" => {
+            observed(check, "lease_sequence_complete") == trials
+                && observed(check, "lease_sequence_invalid") == 0
+                && observed(check, "lease_fast_path_read_ok") == trials
+                && observed(check, "lease_read_buffered") == trials
+                && observed(check, "lease_expired_while_leader") == trials
+                && observed(check, "lease_post_expiry_released") == trials
+                && observed(check, "lease_post_expiry_handler") == trials
+                && observed(check, "lease_post_expiry_unavailable") == trials
+                && observed(check, "lease_post_expiry_read_served") == 0
+                && observed(check, "lease_post_expiry_renewed") == 0
+                && observed(check, "lease_post_expiry_unexpected_error") == 0
+                && observed(check, "lease_duplicate_terminal") == 0
+                && observed(check, "lease_coverage_lost") == 0
+                && observed(check, "lease_history_probe_matches") == trials
+                && observed(check, "lease_history_probe_mismatches") == 0
+        }
         _ => false,
     }
 }
@@ -268,6 +326,7 @@ fn scenario(path: &str) -> Option<&'static str> {
         "scripts/maelstrom-lin-kv-repeated-restart" => Some("restart"),
         "scripts/maelstrom-lin-kv-app-persist-crash" => Some("app-crash"),
         "scripts/maelstrom-lin-kv-forced-snapshot" => Some("snapshot"),
+        "scripts/maelstrom-lin-kv-lease-isolation" => Some("lease-isolation"),
         _ => None,
     }
 }
@@ -282,4 +341,24 @@ fn artifact_count(check: &CheckReceipt, kind: &str) -> usize {
         .iter()
         .filter(|artifact| artifact.kind == kind)
         .count()
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::EvidenceStatus;
+
+    use super::valid_counterexample_attribution;
+
+    #[test]
+    fn receipt_accepts_combined_rd05_rd06_counterexample_only() {
+        assert!(valid_counterexample_attribution(&[
+            ("RD-05", EvidenceStatus::Fail),
+            ("RD-06", EvidenceStatus::Fail),
+            ("LG-04", EvidenceStatus::Incomplete),
+        ]));
+        assert!(!valid_counterexample_attribution(&[
+            ("RD-05", EvidenceStatus::Fail),
+            ("LG-04", EvidenceStatus::Fail),
+        ]));
+    }
 }

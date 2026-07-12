@@ -5,9 +5,10 @@ const DEFAULT_RESTART_DELAY_MS: u64 = 250;
 const DEFAULT_DOWN_MS: u64 = 500;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum RestartMode {
+pub(super) enum ProxyMode {
     Leader,
     Scheduled,
+    LeaseIsolation,
 }
 
 pub(super) fn child_path() -> Result<PathBuf, Box<dyn Error>> {
@@ -17,14 +18,15 @@ pub(super) fn child_path() -> Result<PathBuf, Box<dyn Error>> {
     Ok(env::current_exe()?.with_file_name("rafter-maelstrom"))
 }
 
-pub(super) fn env_restart_mode() -> RestartMode {
-    restart_mode_from_value(env::var("RAFTER_MAELSTROM_RESTART_MODE").ok().as_deref())
+pub(super) fn env_proxy_mode() -> ProxyMode {
+    proxy_mode_from_value(env::var("RAFTER_MAELSTROM_RESTART_MODE").ok().as_deref())
 }
 
-pub(super) fn restart_mode_from_value(value: Option<&str>) -> RestartMode {
+pub(super) fn proxy_mode_from_value(value: Option<&str>) -> ProxyMode {
     match value {
-        Some("scheduled" | "staggered" | "any-node") => RestartMode::Scheduled,
-        _ => RestartMode::Leader,
+        Some("scheduled" | "staggered" | "any-node") => ProxyMode::Scheduled,
+        Some("lease-isolation") => ProxyMode::LeaseIsolation,
+        _ => ProxyMode::Leader,
     }
 }
 
@@ -72,14 +74,18 @@ mod tests {
         // The parser accepts aliases used by scripts but keeps the proxy's
         // historical leader-triggered behavior as the fallback.
         assert_eq!(
-            restart_mode_from_value(Some("scheduled")),
-            RestartMode::Scheduled
+            proxy_mode_from_value(Some("scheduled")),
+            ProxyMode::Scheduled
         );
         assert_eq!(
-            restart_mode_from_value(Some("staggered")),
-            RestartMode::Scheduled
+            proxy_mode_from_value(Some("staggered")),
+            ProxyMode::Scheduled
         );
-        assert_eq!(restart_mode_from_value(Some("leader")), RestartMode::Leader);
-        assert_eq!(restart_mode_from_value(None), RestartMode::Leader);
+        assert_eq!(
+            proxy_mode_from_value(Some("lease-isolation")),
+            ProxyMode::LeaseIsolation
+        );
+        assert_eq!(proxy_mode_from_value(Some("leader")), ProxyMode::Leader);
+        assert_eq!(proxy_mode_from_value(None), ProxyMode::Leader);
     }
 }
