@@ -1,6 +1,8 @@
 use std::{collections::BTreeMap, path::PathBuf};
 
-use super::{evaluate, evidence_result, MainStatus, ProbeStatus, TlaExecution, TlaVerdict};
+use super::{
+    evaluate, evidence_result, observations, MainStatus, ProbeStatus, TlaExecution, TlaVerdict,
+};
 use crate::{producer::tla_output::TlcSummary, Catalog, EvidenceStatus, FailureClassification};
 
 fn complete_execution(exit_succeeded: bool) -> TlaExecution {
@@ -22,6 +24,10 @@ fn complete_execution(exit_succeeded: bool) -> TlaExecution {
         },
         trace_status: ProbeStatus::Passed,
         detector_status: ProbeStatus::Passed,
+        detector_qualifications: crate::producer::tla_output::REGISTERED_PREDICATES
+            .into_iter()
+            .map(|predicate| (format!("detector_qualified:{predicate}"), 1))
+            .collect(),
         peak_rss_kib: 1,
         duration_ms: 1,
         artifacts: Vec::new(),
@@ -71,6 +77,20 @@ fn coverage_floor_uses_generated_and_distinct_state_counters() {
         evaluate(&execution, &symbols, &too_high),
         TlaVerdict::Incomplete(_, _)
     ));
+}
+
+#[test]
+fn observations_report_each_detector_qualification_independently() {
+    let execution = complete_execution(true);
+    let symbols = crate::producer::tla_output::REGISTERED_PREDICATES
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    let observed = observations(&execution, &symbols, 9);
+    assert!(!observed.contains_key("detector_negative_passed"));
+    for predicate in crate::producer::tla_output::REGISTERED_PREDICATES {
+        assert_eq!(observed[&format!("detector_qualified:{predicate}")], 1);
+    }
 }
 
 #[test]

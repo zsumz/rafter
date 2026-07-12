@@ -1,6 +1,9 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::catalog::RunnerContract;
+use crate::producer::tla_output::{
+    detector_config_kind, detector_log_kind, detector_observation, REGISTERED_PREDICATES,
+};
 use crate::{CheckCompletion, EvidenceDescriptor, EvidenceStatus, ResultBundle};
 
 pub(super) fn validate(
@@ -126,18 +129,27 @@ fn validate_pass(
         "configured_invariants".to_owned(),
         "tool_pin_verified".to_owned(),
         "trace_sample_passed".to_owned(),
-        "detector_negative_passed".to_owned(),
         "generated_states".to_owned(),
         "distinct_states".to_owned(),
         "states_left_on_queue".to_owned(),
         "search_depth".to_owned(),
     ]);
+    expected_observations.extend(
+        REGISTERED_PREDICATES
+            .iter()
+            .map(|predicate| detector_observation(predicate).expect("registered predicate")),
+    );
     expected_observations.extend(required.values().map(|symbol| format!("checked:{symbol}")));
     if check.observations.keys().cloned().collect::<BTreeSet<_>>() != expected_observations
         || observed(check, "configured_invariants") != 9
         || observed(check, "tool_pin_verified") != 1
         || observed(check, "trace_sample_passed") != 1
-        || observed(check, "detector_negative_passed") != 1
+        || REGISTERED_PREDICATES.iter().any(|predicate| {
+            observed(
+                check,
+                &detector_observation(predicate).expect("registered predicate"),
+            ) != 1
+        })
         || observed(check, "generated_states") < minimum_generated
         || observed(check, "distinct_states") < minimum_distinct
         || observed(check, "generated_states") < observed(check, "distinct_states")
@@ -149,10 +161,22 @@ fn validate_pass(
     {
         return Err("passing TLA receipt lacks exact terminal frames or configured coverage");
     }
-    let required_artifacts = BTreeSet::from([
+    let required_artifacts = required_proof_artifact_kinds();
+    let actual_artifacts = check
+        .artifacts
+        .iter()
+        .map(|artifact| artifact.kind.clone())
+        .collect::<BTreeSet<_>>();
+    if actual_artifacts != required_artifacts || actual_artifacts.len() != check.artifacts.len() {
+        return Err("passing TLA receipt lacks the exact unique proof artifact set");
+    }
+    Ok(())
+}
+
+fn required_proof_artifact_kinds() -> BTreeSet<String> {
+    let mut kinds = [
         "tla-log",
         "tla-trace-log",
-        "tla-detector-log",
         "tla-tool",
         "tla-spec",
         "tla-trace-spec",
@@ -163,18 +187,34 @@ fn validate_pass(
         "tla-config",
         "tla-trace-config",
         "tla-detector-config",
-    ]);
-    let actual_artifacts = check
-        .artifacts
-        .iter()
-        .map(|artifact| artifact.kind.as_str())
-        .collect::<BTreeSet<_>>();
-    if actual_artifacts != required_artifacts || actual_artifacts.len() != check.artifacts.len() {
-        return Err("passing TLA receipt lacks the exact unique proof artifact set");
+    ]
+    .into_iter()
+    .map(str::to_owned)
+    .collect::<BTreeSet<_>>();
+    for predicate in REGISTERED_PREDICATES {
+        kinds.insert(detector_log_kind(predicate).expect("registered detector predicate"));
+        kinds.insert(detector_config_kind(predicate).expect("registered detector predicate"));
     }
-    Ok(())
+    kinds
 }
 
 fn observed(check: &crate::CheckReceipt, name: &str) -> u64 {
     check.observations.get(name).copied().unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::required_proof_artifact_kinds;
+    use crate::producer::tla_output::REGISTERED_PREDICATES;
+
+    #[test]
+    fn passing_receipt_requires_two_artifacts_per_detector_predicate() {
+        let kinds = required_proof_artifact_kinds();
+        assert_eq!(kinds.len(), 12 + 2 * REGISTERED_PREDICATES.len());
+        assert!(!kinds.contains("tla-detector-log"));
+        for predicate in REGISTERED_PREDICATES {
+            assert!(kinds.contains(&format!("tla-detector-log:{predicate}")));
+            assert!(kinds.contains(&format!("tla-detector-config:{predicate}")));
+        }
+    }
 }

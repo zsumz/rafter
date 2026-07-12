@@ -14,7 +14,10 @@ use super::{artifact, process};
 const SPEC: &str = "specs/tla/raft/Raft.tla";
 const TRACE_SPEC: &str = "specs/tla/raft/RaftTraceSample.tla";
 const DETECTOR_SPEC: &str = "specs/tla/raft/RafterInvariantDetectorNegative.tla";
+const DETECTOR_CONFIG: &str = "specs/tla/raft/RafterInvariantDetectorNegative.cfg";
 const JAR: &str = "tools/cache/tla2tools.jar";
+
+use super::tla_output::{render_detector_config, REGISTERED_PREDICATES};
 
 pub(super) fn validate_runner_options(
     configuration: &BTreeMap<String, String>,
@@ -37,20 +40,46 @@ pub(super) fn validate_spec_contract(
     config_name: &str,
     symbols: &BTreeSet<String>,
 ) -> Result<Vec<String>, Box<dyn Error>> {
+    let registered = REGISTERED_PREDICATES
+        .iter()
+        .map(|predicate| (*predicate).to_owned())
+        .collect::<BTreeSet<_>>();
+    if symbols != &registered {
+        return Err("TLA registry must contain exactly the eight detector predicates".into());
+    }
     let config = Path::new("specs/tla/raft").join(config_name);
     let configured = configured_invariants(&fs::read_to_string(&config)?);
     let configured_set = configured.iter().cloned().collect::<BTreeSet<_>>();
     let mut expected = symbols.clone();
     expected.insert("TypeOK".to_owned());
     let spec = fs::read_to_string(SPEC)?;
+    let detector_spec = fs::read_to_string(DETECTOR_SPEC)?;
+    let detector_config = fs::read_to_string(DETECTOR_CONFIG)?;
     if configured_set != expected
         || symbols.iter().any(|symbol| {
             !spec
                 .lines()
                 .any(|line| line.trim_start().starts_with(&format!("{symbol} ==")))
         })
+        || !detector_spec
+            .lines()
+            .any(|line| line.trim() == "EXTENDS Raft")
+        || !detector_spec
+            .lines()
+            .any(|line| line.trim_start().starts_with("FixtureInit =="))
+        || !detector_spec
+            .lines()
+            .any(|line| line.trim_start().starts_with("FixtureNext =="))
+        || REGISTERED_PREDICATES.iter().any(|predicate| {
+            detector_spec
+                .lines()
+                .any(|line| line.trim_start().starts_with(&format!("{predicate} ==")))
+                || render_detector_config(&detector_config, predicate).is_err()
+        })
     {
-        return Err("TLA config/spec does not contain exactly the registry predicates".into());
+        return Err(
+            "TLA config/spec/detector does not contain exactly the registry predicates".into(),
+        );
     }
     Ok(configured)
 }
@@ -142,7 +171,7 @@ pub(super) fn source_artifacts(
         artifact::capture(
             output_dir,
             &namespace,
-            Path::new("specs/tla/raft/RafterInvariantDetectorNegative.cfg"),
+            Path::new(DETECTOR_CONFIG),
             "tla-detector-config",
         )?,
     ])
@@ -214,6 +243,7 @@ pub(super) fn parse_timeout(value: &str) -> Result<Duration, Box<dyn Error>> {
 mod tests {
     use std::collections::BTreeMap;
 
+    use super::super::tla_output::{render_detector_config, REGISTERED_PREDICATES};
     use super::{configured_invariants, java_major, validate_runner_options};
 
     #[test]
@@ -245,5 +275,22 @@ mod tests {
             configured_invariants(config),
             vec!["TypeOK".to_owned(), "ElectionSafety".to_owned()]
         );
+    }
+
+    #[test]
+    fn detector_configs_bind_one_unique_counterexample_identity() {
+        let template = "INIT FixtureInit\nCONSTANT TargetPredicate = \"ElectionSafety\"\nINVARIANT TypeOK\nINVARIANT ElectionSafety\n";
+        let rendered = REGISTERED_PREDICATES
+            .iter()
+            .map(|predicate| {
+                let config = render_detector_config(template, predicate).expect("valid template");
+                assert!(config.contains(&format!("CONSTANT TargetPredicate = \"{predicate}\"")));
+                assert!(config.contains(&format!("INVARIANT {predicate}")));
+                config
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(rendered.len(), REGISTERED_PREDICATES.len());
+        assert!(render_detector_config(template, "ExpectedViolation").is_err());
+        assert!(render_detector_config("INIT Init\n", "ElectionSafety").is_err());
     }
 }

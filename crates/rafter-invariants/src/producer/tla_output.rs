@@ -1,3 +1,74 @@
+pub(crate) const REGISTERED_PREDICATES: [&str; 8] = [
+    "ElectionSafety",
+    "LogMatching",
+    "LeaderCompleteness",
+    "CommittedPrefixStability",
+    "StateMachineSafety",
+    "StaleLeaderFencing",
+    "CommittedEntriesHaveQuorum",
+    "ReadBarrierLinearizability",
+];
+
+pub(crate) fn detector_invariant(predicate: &str) -> Option<String> {
+    is_registered_predicate(predicate).then(|| predicate.to_owned())
+}
+
+pub(crate) fn detector_label(predicate: &str) -> Option<String> {
+    is_registered_predicate(predicate).then(|| format!("detector-negative-{predicate}"))
+}
+
+pub(crate) fn detector_log_kind(predicate: &str) -> Option<String> {
+    is_registered_predicate(predicate).then(|| format!("tla-detector-log:{predicate}"))
+}
+
+pub(crate) fn detector_config_kind(predicate: &str) -> Option<String> {
+    is_registered_predicate(predicate).then(|| format!("tla-detector-config:{predicate}"))
+}
+
+pub(crate) fn detector_observation(predicate: &str) -> Option<String> {
+    is_registered_predicate(predicate).then(|| format!("detector_qualified:{predicate}"))
+}
+
+fn is_registered_predicate(predicate: &str) -> bool {
+    REGISTERED_PREDICATES.contains(&predicate)
+}
+
+pub(crate) fn render_detector_config(template: &str, predicate: &str) -> Result<String, String> {
+    let invariant = detector_invariant(predicate)
+        .ok_or_else(|| format!("unregistered TLA detector predicate {predicate}"))?;
+    let mut target_lines = 0;
+    let mut invariant_lines = 0;
+    let mut rendered = Vec::new();
+    for line in template.lines() {
+        let indentation = &line[..line.len() - line.trim_start().len()];
+        let trimmed = line.trim();
+        if trimmed.starts_with("CONSTANT TargetPredicate = ")
+            || trimmed.starts_with("TargetPredicate = ")
+        {
+            target_lines += 1;
+            let declaration = if trimmed.starts_with("CONSTANT ") {
+                "CONSTANT TargetPredicate"
+            } else {
+                "TargetPredicate"
+            };
+            rendered.push(format!("{indentation}{declaration} = \"{predicate}\""));
+        } else if trimmed.starts_with("INVARIANT ") && trimmed != "INVARIANT TypeOK" {
+            invariant_lines += 1;
+            rendered.push(format!("{indentation}INVARIANT {invariant}"));
+        } else {
+            rendered.push(line.to_owned());
+        }
+    }
+    if target_lines != 1 || invariant_lines != 1 {
+        return Err("TLA detector config must contain one target and one invariant".to_owned());
+    }
+    let mut rendered = rendered.join("\n");
+    if template.ends_with('\n') {
+        rendered.push('\n');
+    }
+    Ok(rendered)
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct TlcSummary {
     pub generated_states: u64,
