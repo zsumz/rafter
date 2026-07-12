@@ -149,6 +149,51 @@ fn proposals_are_rejected_during_transfer_and_resume_after_expiry() {
         "proposals resume once the transfer expires"
     );
 }
+
+#[test]
+fn starting_transfer_cancels_pending_reads_and_stale_ack_cannot_grant() {
+    let mut leader = leader_with_acknowledged_follower();
+    let read_outputs = leader.step(Input::ReadIndex {
+        read_id: ReadId(42),
+    });
+    let registered_sequence = read_outputs
+        .iter()
+        .find_map(|output| match output {
+            Output::Send {
+                message: Message::AppendEntries(request),
+                ..
+            } => Some(request.sequence),
+            _ => None,
+        })
+        .expect("pending read broadcasts its registration round");
+    assert_eq!(leader.pending_read_count(), 1);
+
+    let transfer_outputs = leader.step(Input::TransferLeadership { target: NodeId(2) });
+
+    assert!(transfer_outputs.iter().any(|output| matches!(
+        output,
+        Output::ReadIndexCanceled {
+            read_id: ReadId(42),
+            reason: ReadIndexCancelReason::LeadershipTransfer { target: NodeId(2) },
+        }
+    )));
+    assert_eq!(leader.pending_read_count(), 0);
+
+    let delayed_ack_outputs = leader.step(Input::Message {
+        from: NodeId(3),
+        message: Message::AppendEntriesResponse(AppendEntriesResponse {
+            sequence: registered_sequence,
+            term: leader.current_term(),
+            follower_id: NodeId(3),
+            success: true,
+            match_index: leader.last_log_index(),
+        }),
+    });
+    assert!(delayed_ack_outputs
+        .iter()
+        .all(|output| !matches!(output, Output::ReadIndexGranted { .. })));
+}
+
 #[test]
 fn duplicate_transfer_requests_are_rejected_while_pending() {
     let mut leader = leader_with_acknowledged_follower();

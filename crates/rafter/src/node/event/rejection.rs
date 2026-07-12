@@ -29,6 +29,7 @@ pub enum LocalProposalDropReason {
 pub enum ReadIndexCancelReason {
     LeadershipLost,
     LeaderStateReset,
+    LeadershipTransfer { target: NodeId },
 }
 
 /// Why a read-index request was refused.
