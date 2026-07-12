@@ -136,7 +136,18 @@ pub(in crate::model_check::liveness) fn issue_liveness_proposal(
     });
     observed_actions.insert(SoakActionKind::Propose);
 
-    if !liveness_payload_visible(state, &payload) {
+    if !state
+        .client_history
+        .writes
+        .get(&proposal_id)
+        .is_some_and(|write| {
+            matches!(
+                write.status,
+                ClientWriteStatus::Accepted { .. } | ClientWriteStatus::Completed { .. }
+            )
+        })
+        || !liveness_payload_visible(state, &payload)
+    {
         return None;
     }
 
@@ -187,6 +198,25 @@ pub(in crate::model_check::liveness) fn liveness_proposal_completed(
         .writes
         .get(&proposal_id)
         .is_some_and(|write| matches!(write.status, ClientWriteStatus::Completed { .. }))
+}
+
+pub(in crate::model_check::liveness) fn liveness_proposal_terminated(
+    state: &ExplorationState,
+    proposal_id: ProposalId,
+) -> bool {
+    state
+        .client_history
+        .writes
+        .get(&proposal_id)
+        .is_some_and(|write| {
+            matches!(
+                write.status,
+                ClientWriteStatus::Completed { .. }
+                    | ClientWriteStatus::Rejected
+                    | ClientWriteStatus::Dropped { .. }
+                    | ClientWriteStatus::Unknown { .. }
+            )
+        })
 }
 
 pub(in crate::model_check::liveness) fn soak_liveness_failure(
