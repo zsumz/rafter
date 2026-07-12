@@ -33,14 +33,51 @@ pub(super) fn write(
     Ok(reference(&path, kind, bytes))
 }
 
-pub(super) fn existing(path: &Path, kind: &str) -> Result<ArtifactRef, Box<dyn Error>> {
+pub(super) fn capture(
+    output_dir: &Path,
+    namespace: &Path,
+    source: &Path,
+    kind: &str,
+) -> Result<ArtifactRef, Box<dyn Error>> {
     let root = fs::canonicalize(".")?;
-    let canonical = fs::canonicalize(path)?;
-    let relative = canonical
+    let canonical = fs::canonicalize(source)?;
+    canonical
         .strip_prefix(&root)
         .map_err(|_| "artifact is outside the repository worktree")?;
     let bytes = fs::read(&canonical)?;
-    Ok(reference(relative, kind, &bytes))
+    let digest = format!("{:x}", Sha256::digest(&bytes));
+    let relative_name = namespace.join(format!("{kind}-{digest}"));
+    write(output_dir, &relative_name, kind, &bytes)
+}
+
+pub(super) fn capture_as(
+    output_dir: &Path,
+    relative_name: &Path,
+    source: &Path,
+    kind: &str,
+) -> Result<ArtifactRef, Box<dyn Error>> {
+    let root = fs::canonicalize(".")?;
+    let canonical = fs::canonicalize(source)?;
+    canonical
+        .strip_prefix(&root)
+        .map_err(|_| "artifact is outside the repository worktree")?;
+    write(output_dir, relative_name, kind, &fs::read(canonical)?)
+}
+
+pub(super) fn capture_external(
+    output_dir: &Path,
+    namespace: &Path,
+    source: &Path,
+    kind: &str,
+) -> Result<ArtifactRef, Box<dyn Error>> {
+    let bytes = fs::read(fs::canonicalize(source)?)?;
+    let digest = format!("{:x}", Sha256::digest(&bytes));
+    write(
+        output_dir,
+        &namespace.join(format!("{kind}-{digest}")),
+        kind,
+        &bytes,
+    )
 }
 
 fn reference(path: &Path, kind: &str, bytes: &[u8]) -> ArtifactRef {

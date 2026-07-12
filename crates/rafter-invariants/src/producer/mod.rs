@@ -1,4 +1,10 @@
 mod artifact;
+mod maelstrom;
+mod maelstrom_binding;
+pub(crate) mod maelstrom_edn;
+mod maelstrom_exec;
+mod maelstrom_scenario;
+mod maelstrom_tool;
 mod process;
 mod simulator;
 mod simulator_model;
@@ -14,6 +20,7 @@ pub(crate) mod tla_output;
 mod unit_tests;
 
 pub(crate) use process::ProcessLog;
+pub(crate) use tla_contract::java_major;
 
 use std::collections::BTreeSet;
 use std::{error::Error, fs, path::PathBuf};
@@ -77,6 +84,13 @@ pub fn produce(options: &ProducerOptions) -> Result<ProducerOutcome, Box<dyn Err
             &options.output_dir,
         )?,
         "tla" => tla::run(
+            &catalog,
+            contract,
+            &options.profile,
+            source,
+            &options.output_dir,
+        )?,
+        "maelstrom" => maelstrom::run(
             &catalog,
             contract,
             &options.profile,

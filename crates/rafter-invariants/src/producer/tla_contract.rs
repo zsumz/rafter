@@ -76,8 +76,16 @@ fn configured_invariants(source: &str) -> Vec<String> {
 
 pub(super) fn source_artifacts(
     configuration: &BTreeMap<String, String>,
+    output_dir: &Path,
+    profile: &str,
+    source_ref: &str,
 ) -> Result<Vec<crate::ArtifactRef>, Box<dyn Error>> {
-    let jar = artifact::existing(Path::new(JAR), "tla-tool")?;
+    let source_prefix = source_ref.get(..12).unwrap_or(source_ref);
+    let namespace = Path::new(profile)
+        .join("tla")
+        .join(source_prefix)
+        .join("inputs");
+    let jar = artifact::capture(output_dir, &namespace, Path::new(JAR), "tla-tool")?;
     if jar.sha256 != required_configuration(configuration, "tool_sha256")? {
         return Err("pinned TLC jar digest does not match the profile contract".into());
     }
@@ -88,21 +96,52 @@ pub(super) fn source_artifacts(
     }
     Ok(vec![
         jar,
-        artifact::existing(Path::new(SPEC), "tla-spec")?,
-        artifact::existing(Path::new(TRACE_SPEC), "tla-trace-spec")?,
-        artifact::existing(Path::new(DETECTOR_SPEC), "tla-detector-spec")?,
-        artifact::existing(Path::new("scripts/tla-model-check"), "tla-runner")?,
-        artifact::existing(Path::new("tools/tla/ASSET_ID"), "tla-tool-asset-id")?,
-        artifact::existing(Path::new("tools/tla/SHA256SUMS"), "tla-tool-checksums")?,
-        artifact::existing(
+        artifact::capture(output_dir, &namespace, Path::new(SPEC), "tla-spec")?,
+        artifact::capture(
+            output_dir,
+            &namespace,
+            Path::new(TRACE_SPEC),
+            "tla-trace-spec",
+        )?,
+        artifact::capture(
+            output_dir,
+            &namespace,
+            Path::new(DETECTOR_SPEC),
+            "tla-detector-spec",
+        )?,
+        artifact::capture(
+            output_dir,
+            &namespace,
+            Path::new("scripts/tla-model-check"),
+            "tla-runner",
+        )?,
+        artifact::capture(
+            output_dir,
+            &namespace,
+            Path::new("tools/tla/ASSET_ID"),
+            "tla-tool-asset-id",
+        )?,
+        artifact::capture(
+            output_dir,
+            &namespace,
+            Path::new("tools/tla/SHA256SUMS"),
+            "tla-tool-checksums",
+        )?,
+        artifact::capture(
+            output_dir,
+            &namespace,
             &Path::new("specs/tla/raft").join(required_configuration(configuration, "config")?),
             "tla-config",
         )?,
-        artifact::existing(
+        artifact::capture(
+            output_dir,
+            &namespace,
             Path::new("specs/tla/raft/RaftTraceSample.cfg"),
             "tla-trace-config",
         )?,
-        artifact::existing(
+        artifact::capture(
+            output_dir,
+            &namespace,
             Path::new("specs/tla/raft/RafterInvariantDetectorNegative.cfg"),
             "tla-detector-config",
         )?,
@@ -140,7 +179,7 @@ pub(super) fn validate_java(
     Ok(())
 }
 
-fn java_major(version: &str) -> Option<u32> {
+pub(crate) fn java_major(version: &str) -> Option<u32> {
     version.split_whitespace().find_map(|part| {
         let part = part.trim_matches('"');
         let mut components = part.split('.');
