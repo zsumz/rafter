@@ -55,16 +55,25 @@ def parse_scalar(value: str) -> str:
 
 def parse_registry(
     path: Path,
-) -> tuple[dict[str, str], dict[str, int], list[dict[str, str]], list[dict[str, object]]]:
+) -> tuple[
+    dict[str, str],
+    dict[str, int],
+    list[dict[str, str]],
+    list[dict[str, str]],
+    list[dict[str, object]],
+]:
     metadata: dict[str, str] = {}
     counts: dict[str, int] = {}
     evidence: list[dict[str, str]] = []
+    clauses: list[dict[str, str]] = []
     invariants: list[dict[str, object]] = []
     current: dict[str, object] | None = None
     current_evidence: dict[str, str] | None = None
+    current_clause: dict[str, str] | None = None
     section: str | None = None
     active_map: str | None = None
     in_evidence = False
+    in_clauses = False
     in_invariants = False
 
     for raw_line in path.read_text().splitlines():
@@ -78,18 +87,30 @@ def parse_registry(
             if current_evidence is not None:
                 evidence.append(current_evidence)
                 current_evidence = None
+            if current_clause is not None:
+                clauses.append(current_clause)
+                current_clause = None
             if line == "invariants:":
                 in_invariants = True
                 in_evidence = False
+                in_clauses = False
                 section = None
                 continue
             if line == "evidence:":
                 in_invariants = False
                 in_evidence = True
+                in_clauses = False
+                section = None
+                continue
+            if line == "clauses:":
+                in_invariants = False
+                in_evidence = False
+                in_clauses = True
                 section = None
                 continue
             in_invariants = False
             in_evidence = False
+            in_clauses = False
             active_map = None
             if line.endswith(":"):
                 section = line[:-1]
@@ -108,6 +129,17 @@ def parse_registry(
             if indent == 4 and current_evidence is not None and ": " in line:
                 key, value = line.split(": ", 1)
                 current_evidence[key] = parse_scalar(value)
+            continue
+
+        if in_clauses:
+            if indent == 2 and line.startswith("- id: "):
+                if current_clause is not None:
+                    clauses.append(current_clause)
+                current_clause = {"id": parse_scalar(line.removeprefix("- id: "))}
+                continue
+            if indent == 4 and current_clause is not None and ": " in line:
+                key, value = line.split(": ", 1)
+                current_clause[key] = parse_scalar(value)
             continue
 
         if not in_invariants:
@@ -147,8 +179,10 @@ def parse_registry(
         invariants.append(current)
     if current_evidence is not None:
         evidence.append(current_evidence)
+    if current_clause is not None:
+        clauses.append(current_clause)
 
-    return metadata, counts, evidence, invariants
+    return metadata, counts, evidence, clauses, invariants
 
 
 def sort_key(entry: dict[str, object]) -> tuple[int, int]:
@@ -178,7 +212,10 @@ def coverage_text(entry: dict[str, object]) -> list[str]:
 
 
 def render_evidence_references(evidence: list[dict[str, str]]) -> list[str]:
-    lines = ["| ID | Layer | Strength | Reference |", "| --- | --- | --- | --- |"]
+    lines = [
+        "| ID | Clauses | Layer | Strength | Reference |",
+        "| --- | --- | --- | --- | --- |",
+    ]
     for record in sorted(evidence, key=evidence_sort_key):
         reference = f"`{record['path']}#{record['symbol']}`"
         if negative := record.get("negative_fixture"):
@@ -186,7 +223,7 @@ def render_evidence_references(evidence: list[dict[str, str]]) -> list[str]:
         if exemption := record.get("negative_fixture_exemption"):
             reference = f"{reference}; negative fixture exemption `{exemption}`"
         lines.append(
-            f"| `{record['id']}` | {record['layer']} | {record['strength']} | {reference} |"
+            f"| `{record['id']}` | `{record['clauses']}` | {record['layer']} | {record['strength']} | {reference} |"
         )
     return lines
 
@@ -230,11 +267,13 @@ def render_first_closures(invariants: list[dict[str, object]]) -> list[str]:
         "These are the first closures because they turn broad green checks into",
         "named temporal or witness-based verdicts.",
         "",
-        "| ID | Work |",
-        "| --- | --- |",
+        "| ID | Class | Work |",
+        "| --- | --- | --- |",
     ]
     for entry in sorted(first, key=sort_key):
-        lines.append(f"| `{entry['id']}` | {entry['required_action']} |")
+        lines.append(
+            f"| `{entry['id']}` | {entry['action_class']} | {entry['next_action']} |"
+        )
     return lines
 
 
@@ -245,7 +284,21 @@ def render_simple_list(invariants: list[dict[str, object]]) -> list[str]:
     return lines
 
 
-def render_catalog(invariants: list[dict[str, object]]) -> list[str]:
+def render_clause_index(clauses: list[dict[str, str]]) -> list[str]:
+    lines = [
+        "| Clause | Parent | Normative statement |",
+        "| --- | --- | --- |",
+    ]
+    for clause in clauses:
+        lines.append(
+            f"| `{clause['id']}` | `{clause['invariant_id']}` | {clause['statement']} |"
+        )
+    return lines
+
+
+def render_catalog(
+    invariants: list[dict[str, object]], clauses: list[dict[str, str]]
+) -> list[str]:
     lines: list[str] = []
     by_family: dict[str, list[dict[str, object]]] = {key: [] for key, _ in FAMILY_ORDER}
     for entry in sorted(invariants, key=sort_key):
@@ -266,10 +319,21 @@ def render_catalog(invariants: list[dict[str, object]]) -> list[str]:
                     "",
                     f"Statement: {entry['statement']}",
                     "",
+                    f"Scope: {entry['scope']}",
+                    "",
+                    f"Assumptions: {entry['assumptions']}",
+                    "",
+                    "Required clauses:",
+                    *[
+                        f"- `{clause['id']}`: {clause['statement']}"
+                        for clause in clauses
+                        if clause["invariant_id"] == invariant_id
+                    ],
+                    "",
                     "Evidence now:",
                     *coverage_text(entry),
                     "",
-                    f"Next: {entry['required_action']}",
+                    f"Next ({entry['action_class']}): {entry['next_action']}",
                     "",
                 ]
             )
@@ -280,6 +344,7 @@ def render(
     metadata: dict[str, str],
     counts: dict[str, int],
     evidence: list[dict[str, str]],
+    clauses: list[dict[str, str]],
     invariants: list[dict[str, object]],
 ) -> str:
     kind_counts = Counter(str(entry["kind"]) for entry in invariants)
@@ -333,7 +398,6 @@ def render(
         "## Layer Legend",
         "",
         "- D: direct executable oracle.",
-        "- P: partial, indirect, or scenario coverage.",
         "- E2E: client-visible end-to-end consequence.",
         "- none: not covered, or not the right layer for that predicate.",
         "",
@@ -353,9 +417,13 @@ def render(
         "",
         *render_evidence_references(evidence),
         "",
+        "## Normative Clauses",
+        "",
+        *render_clause_index(clauses),
+        "",
         "## Catalog",
         "",
-        *render_catalog(invariants),
+        *render_catalog(invariants, clauses),
     ]
     return "\n".join(lines).rstrip() + "\n"
 
@@ -370,8 +438,8 @@ def main() -> None:
         help="fail if docs/raft-invariants.md is not the exact rendered output",
     )
     args = parser.parse_args()
-    metadata, counts, evidence, invariants = parse_registry(REGISTRY)
-    rendered = render(metadata, counts, evidence, invariants)
+    metadata, counts, evidence, clauses, invariants = parse_registry(REGISTRY)
+    rendered = render(metadata, counts, evidence, clauses, invariants)
     if args.check:
         try:
             current = OUTPUT.read_text()
