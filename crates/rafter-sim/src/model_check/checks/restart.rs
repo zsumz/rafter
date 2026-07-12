@@ -31,7 +31,7 @@ pub fn check_raft_joint_membership_restart_and_snapshot_safety(
             message: "bounded joint-membership exploration did not reach a restart action"
                 .to_string(),
             trace: Vec::new(),
-            state: summarize(&state.state.cluster),
+            state: summarize(state.state.cluster()),
         });
     }
     if !explorer.observed_pending_snapshot {
@@ -42,7 +42,7 @@ pub fn check_raft_joint_membership_restart_and_snapshot_safety(
                 "bounded joint-membership exploration did not reach a pending snapshot transfer"
                     .to_string(),
             trace: Vec::new(),
-            state: summarize(&state.state.cluster),
+            state: summarize(state.state.cluster()),
         });
     }
     if !explorer.observed_installed_snapshot {
@@ -52,7 +52,7 @@ pub fn check_raft_joint_membership_restart_and_snapshot_safety(
             message: "bounded joint-membership exploration did not reach an installed snapshot"
                 .to_string(),
             trace: Vec::new(),
-            state: summarize(&state.state.cluster),
+            state: summarize(state.state.cluster()),
         });
     }
     Ok(explorer.summary())
@@ -76,7 +76,7 @@ pub fn check_raft_restart_and_snapshot_safety(bounds: Bounds) -> Result<Summary,
             invariant: catalog::PS_03_EXACT_DURABLE_RESTART,
             message: "bounded exploration did not reach a restart action".to_string(),
             trace: Vec::new(),
-            state: summarize(&restart_state.state.cluster),
+            state: summarize(restart_state.state.cluster()),
         });
     }
 
@@ -92,7 +92,7 @@ pub fn check_raft_restart_and_snapshot_safety(bounds: Bounds) -> Result<Summary,
             invariant: catalog::SS_04_SNAPSHOT_TRANSFER_INTEGRITY,
             message: "bounded exploration did not reach a pending snapshot transfer".to_string(),
             trace: Vec::new(),
-            state: summarize(&snapshot_state.state.cluster),
+            state: summarize(snapshot_state.state.cluster()),
         });
     }
     if !snapshot_explorer.observed_installed_snapshot {
@@ -101,7 +101,7 @@ pub fn check_raft_restart_and_snapshot_safety(bounds: Bounds) -> Result<Summary,
             invariant: catalog::SS_01_ATOMIC_MONOTONE_SNAPSHOT_STATE,
             message: "bounded exploration did not reach an installed snapshot".to_string(),
             trace: Vec::new(),
-            state: summarize(&snapshot_state.state.cluster),
+            state: summarize(snapshot_state.state.cluster()),
         });
     }
 

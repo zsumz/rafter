@@ -3,7 +3,6 @@ use rafter::{LogIndex, MembershipSet, Message, NodeConfig, NodeId, RequestVote, 
 use crate::Cluster;
 
 use super::super::{
-    application::{apply_to_restart_snapshot_state, apply_to_state},
     explorers::{CommitSafetyExplorer, ElectionSafetyExplorer, RestartSafetyExplorer},
     helpers::{
         bootstrap_state, bootstrap_with_snapshot, config, elect_node_one_in_state,
@@ -11,6 +10,10 @@ use super::super::{
     },
     observations::Observation,
     scheduling::Operation,
+    state::{
+        apply_snapshot_bootstrap_seeds, apply_to_restart_snapshot_state, apply_to_state,
+        SnapshotBootstrapSeed,
+    },
     state::{ExpectedSnapshot, ExplorationState, RestartSnapshotState},
     Bounds, Failure, FailureKind, StateSummary, Summary,
 };
@@ -42,7 +45,7 @@ fn nonvoter_vote_summary() -> Result<Summary, Failure> {
         }),
     );
     let state = ExplorationState::new(cluster);
-    let state_summary = summarize(&state.cluster);
+    let state_summary = summarize(state.cluster());
     let mut explorer = ElectionSafetyExplorer::new(Bounds::new(1));
     explorer.explore(&state, &mut Vec::new(), 0)?;
     require_observation(
@@ -66,7 +69,7 @@ fn post_append_joint_commit_summary() -> Result<Summary, Failure> {
             promotion_barriers: Vec::new(),
         },
     );
-    let state_summary = summarize(&state.cluster);
+    let state_summary = summarize(state.cluster());
     let mut explorer = CommitSafetyExplorer::new(Bounds::new(0));
     explorer.explore(&state, &mut Vec::new(), 0)?;
     require_observation(
@@ -79,15 +82,15 @@ fn post_append_joint_commit_summary() -> Result<Summary, Failure> {
 fn same_boundary_snapshot_pair_summary() -> Result<Summary, Failure> {
     let mut state = snapshot_pair_state()?;
     for _ in 0..256 {
-        if state.state.cluster.snapshot_installs().len() >= 2 {
+        if state.state.cluster().snapshot_installs().len() >= 2 {
             break;
         }
-        if state.state.cluster.pending().next().is_none() {
+        if state.state.cluster().pending().next().is_none() {
             break;
         }
         apply_to_restart_snapshot_state(&mut state, Operation::DeliverReadyAt(0), &[])?;
     }
-    let state_summary = summarize(&state.state.cluster);
+    let state_summary = summarize(state.state.cluster());
     let mut explorer = RestartSafetyExplorer::new(Bounds::new(0));
     explorer.explore(&state, &mut Vec::new(), 0)?;
     require_observation(
@@ -123,17 +126,16 @@ fn snapshot_pair_state() -> Result<RestartSnapshotState, Failure> {
             })?;
     }
     let mut state = ExplorationState::new(cluster);
-    state
-        .cluster
-        .seed_snapshot_payload(NodeId(1), &snapshot, payload.clone());
-    state
-        .cluster
-        .restart_node_from_bootstrap(
-            NodeId(1),
-            bootstrap_with_snapshot(Term(2), snapshot.clone(), &[]),
-        )
-        .map_err(|error| witness_harness_error(format!("seed compacted leader: {error:?}")))?;
-    state.refresh_log_history();
+    apply_snapshot_bootstrap_seeds(
+        &mut state,
+        vec![SnapshotBootstrapSeed {
+            node_id: NodeId(1),
+            snapshot: snapshot.clone(),
+            payload: payload.clone(),
+            bootstrap: bootstrap_with_snapshot(Term(2), snapshot.clone(), &[]),
+        }],
+    )
+    .map_err(|error| witness_harness_error(format!("seed compacted leader: {error:?}")))?;
     elect_node_one_with_node_three_in_state(&mut state);
     Ok(RestartSnapshotState {
         state,
