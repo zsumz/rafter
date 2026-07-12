@@ -97,6 +97,7 @@ for output in node.step(Input::Tick) {
 cargo test --workspace
 cargo test -p rafter-sim
 cargo run --release -p rafter-sim --bin rafter-model-check-fast
+cargo run -p rafter-invariants -- check --profile pr
 scripts/maelstrom-lin-kv
 ```
 
@@ -106,6 +107,11 @@ The Raft verification contract lives in
 [`docs/raft-invariants.md`](./docs/raft-invariants.md), generated from the
 machine-readable catalog at
 [`verification/raft-invariants.yaml`](./verification/raft-invariants.yaml).
+The deterministic PR aggregate emits exactly one verdict for each of the 44
+reviewed IDs. Branch protection on `main` requires the stable `invariants-pr`
+job; missing, malformed, incomplete, or stale evidence makes that job red.
+Maelstrom supplies sampled end-to-end evidence in nightly and weekly profiles
+and is intentionally excluded from the deterministic PR verdict.
 
 ## Benchmarks
 

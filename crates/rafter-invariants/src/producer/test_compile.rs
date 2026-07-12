@@ -60,7 +60,14 @@ pub(super) fn compile(
     let (executable, error) = compile_result(&output, target);
     let binary_artifact = executable
         .as_deref()
-        .map(|path| artifact::existing(path, "test-binary"))
+        .map(|path| {
+            artifact::capture(
+                output_dir,
+                Path::new(&format!("{profile}-tests/inputs")),
+                path,
+                "test-binary",
+            )
+        })
         .transpose()?;
     Ok(CompiledTarget {
         executable,

@@ -33,7 +33,7 @@ pub(super) fn run(
     validate_runner_options(&runner.configuration)?;
     validate_java(&source, &runner.configuration)?;
     fetch_tool()?;
-    let artifacts = source_artifacts(&runner.configuration)?;
+    let artifacts = source_artifacts(&runner.configuration, output_dir, profile, &source.commit)?;
     let descriptors = catalog
         .required_evidence(contract)
         .into_values()

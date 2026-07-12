@@ -53,6 +53,7 @@ pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), Aggregate
         "tests" => verify_test_logs(bundle, root),
         "simulator" => verify_simulator_logs(bundle, root),
         "tla" => crate::artifact_verify_tla::verify(bundle, root),
+        "maelstrom" => crate::artifact_verify_maelstrom::verify(bundle, root),
         _ => Ok(()),
     }
 }

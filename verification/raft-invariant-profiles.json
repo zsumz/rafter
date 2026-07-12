@@ -44,7 +44,7 @@
       }
     },
     "nightly": {
-      "description": "Every direct and end-to-end registry record rerun with the nightly runner bounds.",
+      "description": "Every direct and end-to-end registry record rerun with nightly bounds; Maelstrom contributes nondeterministic sampled E2E evidence, never exhaustive evidence.",
       "evidence_policy": "all_matching_registry_evidence",
       "required_layers": ["tests", "simulator", "tla", "maelstrom"],
       "required_strengths": ["direct", "e2e"],
@@ -72,16 +72,16 @@
           "require_peak_rss": true
         },
         "maelstrom": {
-          "producer": "rafter-invariants-maelstrom-v2",
+          "producer": "rafter-invariants-maelstrom-v3",
           "command": ["cargo", "run", "-p", "rafter-invariants", "--", "run", "--profile", "nightly", "--layer", "maelstrom"],
-          "configuration": {"duration_seconds": "45", "replay": "retained-store", "scenarios": "base,membership,restart,app-crash,snapshot", "scheduler_seed": "unavailable", "trials": "1"},
+          "configuration": {"build": "locked-debug", "duration_seconds": "45", "evidence_semantics": "nondeterministic-sampled-e2e", "fault_markers": "required", "java_major": "21", "maelstrom_archive_sha256": "301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799", "maelstrom_executable_sha256": "aba82f628ca088d25e8952c2c49834565406b9239d1c79953a54bf2c26cfdf20", "maelstrom_jar_sha256": "7d35db06546a737134a4dd4eb3b7dfb0955537df992d922d18cc716080853f67", "maelstrom_version": "v0.2.4", "operation_floor": "read-write-cas-per-trial", "rate": "100", "replay": "retained-store", "scenarios": "base,membership,restart,app-crash,snapshot", "scheduler_seed": "unavailable", "structural_edn": "required", "trials": "1"},
           "minimum_observed_checks": 5,
           "require_peak_rss": true
         }
       }
     },
     "weekly": {
-      "description": "Every direct and end-to-end registry record rerun with the weekly deep runner bounds.",
+      "description": "Every direct and end-to-end registry record rerun with weekly deep bounds; Maelstrom contributes repeated nondeterministic sampled E2E evidence, never exhaustive evidence.",
       "evidence_policy": "all_matching_registry_evidence",
       "required_layers": ["tests", "simulator", "tla", "maelstrom"],
       "required_strengths": ["direct", "e2e"],
@@ -109,10 +109,10 @@
           "require_peak_rss": true
         },
         "maelstrom": {
-          "producer": "rafter-invariants-maelstrom-v2",
+          "producer": "rafter-invariants-maelstrom-v3",
           "command": ["cargo", "run", "-p", "rafter-invariants", "--", "run", "--profile", "weekly", "--layer", "maelstrom"],
-          "configuration": {"duration_seconds": "60", "replay": "retained-store", "scenarios": "base,membership,restart,app-crash,snapshot", "scheduler_seed": "unavailable", "trials": "3"},
-          "minimum_observed_checks": 15,
+          "configuration": {"build": "locked-debug", "duration_seconds": "60", "evidence_semantics": "nondeterministic-sampled-e2e", "fault_markers": "required", "java_major": "21", "maelstrom_archive_sha256": "301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799", "maelstrom_executable_sha256": "aba82f628ca088d25e8952c2c49834565406b9239d1c79953a54bf2c26cfdf20", "maelstrom_jar_sha256": "7d35db06546a737134a4dd4eb3b7dfb0955537df992d922d18cc716080853f67", "maelstrom_version": "v0.2.4", "operation_floor": "read-write-cas-per-trial", "rate": "100", "replay": "retained-store", "scenarios": "base,membership,restart,app-crash,snapshot", "scheduler_seed": "unavailable", "structural_edn": "required", "trials": "3"},
+          "minimum_observed_checks": 5,
           "require_peak_rss": true
         }
       }

@@ -1,11 +1,11 @@
-# Per-PR lane: fmt, clippy -D warnings, workspace tests, model-check fast
-# profile, TLC with the CI-bounded config, fuzz smoke.
+# Per-PR lane: fmt, clippy -D warnings, workspace tests, deterministic
+# invariant evidence aggregation, and fuzz smoke.
 #
 # "A PR cannot merge red" is enforced by branch protection, which lives in
 # repository settings, not in this file. Branch protection on `main` must
 # list these required status checks:
 #
-#   lint, test, model-check-fast, tlc-ci, fuzz-smoke
+#   lint, test, fuzz-smoke, invariants-pr
 #
 # The Rust toolchain is pinned to the workspace rust-version in Cargo.toml
 # (currently 1.88). Keep the dtolnay/rust-toolchain@<version> refs below in
@@ -82,26 +82,53 @@ jobs:
       - name: replicated KV process lifecycle
         run: cargo test -p rafter-runtime --test replicated_kv_example -- --ignored --exact replicated_kv_process_per_node_tcp_survives_kill_restart --nocapture
 
-  model-check-fast:
-    name: model-check-fast
+  invariants-tests:
+    name: invariants-tests
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - name: model check (fast profile)
-        # Per-commit profile; ~3 s locally in release after the build.
-        run: cargo run --release -p rafter-sim --bin rafter-model-check-fast -- --profile fast
+      - name: Produce test evidence
+        run: cargo run --locked -p rafter-invariants -- run --profile pr --layer tests
+      - name: Upload test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-pr-tests
+          path: artifacts/invariants/
+          if-no-files-found: warn
 
-  tlc-ci:
-    name: tlc-ci
+  invariants-simulator:
+    name: invariants-simulator
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Produce simulator evidence
+        run: cargo run --locked -p rafter-invariants -- run --profile pr --layer simulator
+      - name: Upload simulator evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-pr-simulator
+          path: artifacts/invariants/
+          if-no-files-found: warn
+
+  invariants-tla:
+    name: invariants-tla
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -114,15 +141,108 @@ jobs:
         with:
           path: tools/cache
           key: tla2tools-${{ hashFiles('tools/tla/VERSION', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS') }}
-      - name: TLC (CI-bounded config RaftCi.cfg)
-        # RaftCi.cfg: 2 nodes, 2 terms, log length 2, symmetry reduction.
-        # The current spec generates roughly 130M states at these bounds. A
-        # 2026-07-07 hosted runner was still draining the queue at the old
-        # 20-minute cap, so keep enough headroom for runner variance while
-        # preserving a bounded per-PR lane.
-        run: scripts/tla-model-check
-      - name: TLC Rust trace sample
-        run: scripts/tla-model-check --trace-sample
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Produce TLA+ evidence
+        run: cargo run --locked -p rafter-invariants -- run --profile pr --layer tla
+      - name: Upload TLA+ evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-pr-tla
+          path: artifacts/invariants/
+          if-no-files-found: warn
+
+  invariants-maelstrom:
+    name: invariants-maelstrom
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Validate scheduled Maelstrom evidence contract
+        run: cargo test --locked -p rafter-invariants maelstrom
+      - name: Validate Maelstrom runner scripts
+        run: >-
+          bash -n
+          scripts/maelstrom-lin-kv
+          scripts/maelstrom-lin-kv-membership-change
+          scripts/maelstrom-lin-kv-repeated-restart
+          scripts/maelstrom-lin-kv-app-persist-crash
+          scripts/maelstrom-lin-kv-forced-snapshot
+
+  invariants-pr:
+    name: invariants-pr
+    needs:
+      - invariants-tests
+      - invariants-simulator
+      - invariants-tla
+      - invariants-maelstrom
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Download available evidence
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          pattern: invariants-pr-*
+          path: artifacts/invariants
+          merge-multiple: true
+      - name: Aggregate exactly 44 invariant verdicts
+        if: always()
+        id: aggregate
+        run: |
+          set +e
+          cargo run --locked -p rafter-invariants -- check --profile pr --source-ref "$GITHUB_SHA"
+          status=$?
+          set -e
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+      - name: Render invariant table in the job summary
+        if: always()
+        run: |
+          if [[ -f target/rafter-invariants/pr.md ]]; then
+            cat target/rafter-invariants/pr.md >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "## Raft invariant gate" >> "$GITHUB_STEP_SUMMARY"
+            echo "No 44-row report was produced; the aggregate is red." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Upload aggregate reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-pr-report
+          path: |
+            target/rafter-invariants/pr.json
+            target/rafter-invariants/pr.xml
+            target/rafter-invariants/pr.md
+            artifacts/invariants/
+          if-no-files-found: warn
+      - name: Require 44 of 44 green
+        if: always()
+        env:
+          AGGREGATE_STATUS: ${{ steps.aggregate.outputs.status }}
+          TESTS_RESULT: ${{ needs.invariants-tests.result }}
+          SIMULATOR_RESULT: ${{ needs.invariants-simulator.result }}
+          TLA_RESULT: ${{ needs.invariants-tla.result }}
+          MAELSTROM_RESULT: ${{ needs.invariants-maelstrom.result }}
+        run: |
+          test "$TESTS_RESULT" = "success"
+          test "$SIMULATOR_RESULT" = "success"
+          test "$TLA_RESULT" = "success"
+          test "$MAELSTROM_RESULT" = "success"
+          test "$AGGREGATE_STATUS" = "0"
+          jq -e '.summary.total == 44 and .summary.green == 44 and .summary.red == 0 and (.invariants | length) == 44' \
+            target/rafter-invariants/pr.json >/dev/null
 
   fuzz-smoke:
     name: fuzz-smoke

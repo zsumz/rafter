@@ -12,7 +12,7 @@ TIME_LIMIT="${RAFTER_MAELSTROM_TIME_LIMIT:-20}"
 RATE="${RAFTER_MAELSTROM_RATE:-100}"
 CONCURRENCY="${RAFTER_MAELSTROM_CONCURRENCY:-6}"
 
-cargo build --manifest-path "${REPO_ROOT}/Cargo.toml" -p rafter-maelstrom --bin rafter-maelstrom
+cargo build --locked --manifest-path "${REPO_ROOT}/Cargo.toml" -p rafter-maelstrom --bin rafter-maelstrom
 
 maelstrom test \
   --workload lin-kv \

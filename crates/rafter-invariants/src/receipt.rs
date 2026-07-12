@@ -196,6 +196,8 @@ fn validate_execution(
         crate::receipt_simulator::validate(bundle, expected)?;
     } else if bundle.runner == "tla" {
         crate::receipt_tla::validate(bundle, expected, contract)?;
+    } else if bundle.runner == "maelstrom" {
+        crate::receipt_maelstrom::validate(bundle, expected, contract)?;
     }
     Ok(())
 }

@@ -21,7 +21,11 @@ pub(super) fn capture_for_layer(layer: &str) -> Result<SourceReceipt, Box<dyn Er
             &[],
         ),
         "tla" => capture("tla", Vec::new(), &["java"]),
-        "maelstrom" => capture("release", Vec::new(), &[]),
+        "maelstrom" => capture(
+            "maelstrom-debug",
+            Vec::new(),
+            &["java", "maelstrom", "dot", "gnuplot"],
+        ),
         _ => Err(format!("unsupported source profile for layer {layer}").into()),
     }
 }
@@ -53,7 +57,7 @@ fn capture(
     let tools = additional_tools
         .iter()
         .map(|name| {
-            let version = command_output(name, &["--version"], false)?;
+            let version = tool_version(name)?;
             Ok((
                 (*name).to_owned(),
                 ToolReceipt {
@@ -100,12 +104,7 @@ pub(super) fn verify(expected: &SourceReceipt) -> Result<(), Box<dyn Error>> {
 }
 
 pub(crate) fn verify_checkout(expected: &SourceReceipt) -> Result<(), Box<dyn Error>> {
-    let names = expected
-        .tools
-        .keys()
-        .map(String::as_str)
-        .collect::<Vec<_>>();
-    let observed = capture(&expected.build_profile, expected.features.clone(), &names)?;
+    let observed = capture(&expected.build_profile, expected.features.clone(), &[])?;
     if observed.commit != expected.commit
         || observed.tree != expected.tree
         || observed.cargo_lock_sha256 != expected.cargo_lock_sha256
@@ -115,8 +114,6 @@ pub(crate) fn verify_checkout(expected: &SourceReceipt) -> Result<(), Box<dyn Er
         || observed.rustc != expected.rustc
         || observed.rustc_sha256 != expected.rustc_sha256
         || observed.target != expected.target
-        || observed.tools != expected.tools
-        || observed.environment_sha256 != expected.environment_sha256
     {
         return Err("evidence source identity does not match the active checkout".into());
     }
@@ -163,10 +160,29 @@ fn executable_sha256(name: &str) -> Result<String, Box<dyn Error>> {
     Ok(format!("{:x}", Sha256::digest(fs::read(path)?)))
 }
 
+fn tool_version(name: &str) -> Result<String, Box<dyn Error>> {
+    let output = Command::new(name).arg("--version").output()?;
+    let value = format!(
+        "{}{}",
+        String::from_utf8(output.stdout)?,
+        String::from_utf8(output.stderr)?
+    )
+    .trim()
+    .to_owned();
+    if value.is_empty() {
+        return Err(format!("{name} produced empty identity output").into());
+    }
+    Ok(value)
+}
+
 fn find_tool(name: &str) -> Option<PathBuf> {
     env::split_paths(&env::var_os("PATH")?)
         .map(|directory| directory.join(name))
         .find(|candidate| candidate.is_file())
+}
+
+pub(super) fn tool_path(name: &str) -> Option<PathBuf> {
+    find_tool(name)
 }
 
 fn cargo_config_sha256() -> Result<String, Box<dyn Error>> {

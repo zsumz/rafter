@@ -27,7 +27,12 @@ pub(super) fn execute(
     output_dir: &Path,
 ) -> Result<SimulatorExecution, Box<dyn Error>> {
     let (binary, mut artifacts, build_peak) = build(profile, source_ref, output_dir)?;
-    let binary_artifact = artifact::existing(&binary, "simulator-binary")?;
+    let binary_artifact = artifact::capture(
+        output_dir,
+        Path::new(&format!("{profile}-simulator/inputs")),
+        &binary,
+        "simulator-binary",
+    )?;
     artifacts.push(binary_artifact);
     let mut events = BTreeMap::<String, Vec<Value>>::new();
     let mut peak_rss_kib = build_peak;
