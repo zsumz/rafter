@@ -1,4 +1,7 @@
 use super::*;
+use crate::model_check::{
+    observations::Observation, scheduling::Operation, state::apply_to_restart_snapshot_state,
+};
 
 #[test]
 fn applied_order_detects_snapshot_rewinding_applied_entries() {
@@ -70,7 +73,74 @@ fn applied_order_detects_apply_at_or_below_snapshot_boundary() {
 }
 
 #[test]
-fn snapshot_metadata_payload_integrity_detects_expected_metadata_with_different_bytes() {
+fn snapshot_boundary_monotonicity_detects_regression() {
+    let mut state = RestartSnapshotState::snapshot_transfer();
+    let (older, payload) = test_snapshot(1, 1, 1, 2, b"older snapshot");
+    state
+        .state
+        .inject_snapshot_payload(NodeId(1), &older, payload);
+    state
+        .state
+        .inject_bootstrap_state(NodeId(1), bootstrap_with_snapshot(Term(2), older, &[]))
+        .expect("older snapshot bootstrap remains structurally valid");
+    state.state.refresh_snapshot_history();
+
+    let failure = check_snapshot_boundary_monotonicity(&state.state, &[])
+        .expect_err("snapshot rewind must fail SS-01.a");
+    assert_eq!(
+        failure.invariant(),
+        catalog::SS_01_ATOMIC_MONOTONE_SNAPSHOT_STATE
+    );
+    assert!(
+        failure.message.contains("snapshot boundary regressed"),
+        "unexpected failure message: {}",
+        failure.message
+    );
+}
+
+#[test]
+fn snapshot_boundary_coverage_requires_explored_installation_not_bootstrap_seed() {
+    let mut state = RestartSnapshotState::snapshot_transfer();
+    for observation in [
+        Observation::SnapshotBoundaryAdvances,
+        Observation::SnapshotPayloadBindingsChecked,
+        Observation::SnapshotTransferIdentitiesChecked,
+    ] {
+        assert!(
+            !state.state.observation_set().contains(observation),
+            "bootstrap seeding must not satisfy explored transition coverage"
+        );
+    }
+
+    for _ in 0..256 {
+        if state
+            .state
+            .observation_set()
+            .contains(Observation::SnapshotTransferIdentitiesChecked)
+        {
+            break;
+        }
+        if state.state.cluster().pending().next().is_none() {
+            break;
+        }
+        apply_to_restart_snapshot_state(&mut state, Operation::DeliverReadyAt(0), &[])
+            .expect("snapshot delivery remains safe");
+    }
+
+    for observation in [
+        Observation::SnapshotBoundaryAdvances,
+        Observation::SnapshotPayloadBindingsChecked,
+        Observation::SnapshotTransferIdentitiesChecked,
+    ] {
+        assert!(
+            state.state.observation_set().contains(observation),
+            "a real follower installation must satisfy snapshot coverage"
+        );
+    }
+}
+
+#[test]
+fn snapshot_payload_binding_detects_metadata_bound_to_different_bytes() {
     let mut state = RestartSnapshotState::snapshot_transfer();
     let expected = state
         .expected_snapshot
@@ -83,8 +153,8 @@ fn snapshot_metadata_payload_integrity_detects_expected_metadata_with_different_
         .state
         .inject_snapshot_payload(NodeId(1), &expected.snapshot, corrupted);
 
-    let failure = check_snapshot_metadata_payload_integrity(&state, NodeId(1), &expected, &[])
-        .expect_err("expected metadata with different bytes must fail SS-01");
+    let failure = check_snapshot_payload_binding(&state.state, &[])
+        .expect_err("metadata bound to different bytes must fail SS-01.c");
     assert_eq!(
         failure.invariant(),
         catalog::SS_01_ATOMIC_MONOTONE_SNAPSHOT_STATE
@@ -92,10 +162,116 @@ fn snapshot_metadata_payload_integrity_detects_expected_metadata_with_different_
     assert!(
         failure
             .message
-            .contains("installed expected metadata with different bytes"),
+            .contains("does not bind its metadata to the visible payload bytes"),
         "unexpected failure message: {}",
         failure.message
     );
+}
+
+#[test]
+fn snapshot_transfer_identity_detects_install_different_from_delivery() {
+    let mut state = RestartSnapshotState::snapshot_transfer();
+    let expected = state
+        .expected_snapshot
+        .as_ref()
+        .expect("fixture has an expected snapshot")
+        .clone();
+    let before = state.state.cluster().clone();
+    let (different, different_payload) = test_snapshot(3, 2, 1, 2, b"different installed snapshot");
+    state
+        .state
+        .inject_snapshot_payload(NodeId(2), &different, different_payload);
+    state
+        .state
+        .inject_bootstrap_state(NodeId(2), bootstrap_with_snapshot(Term(2), different, &[]))
+        .expect("different installed snapshot remains structurally valid");
+    let delivered = Envelope {
+        from: NodeId(1),
+        to: NodeId(2),
+        message: Message::InstallSnapshotChunk(rafter::InstallSnapshotChunk {
+            term: Term(2),
+            leader_id: NodeId(1),
+            transfer_id: expected.snapshot.transfer_id(),
+            metadata: expected.snapshot.metadata.clone(),
+            total_payload_len: expected.snapshot.application_payload_len,
+            application_payload_crc32: expected.snapshot.application_payload_crc32,
+            offset: 0,
+            chunk: expected.payload.as_ref().to_vec(),
+            done: true,
+        }),
+    };
+    state
+        .state
+        .record_snapshot_transition(&before, Some(&delivered));
+
+    let failure = check_snapshot_transfer_identity(&state.state, &[])
+        .expect_err("installation differing from delivery must fail SS-01.c");
+    assert_eq!(
+        failure.invariant(),
+        catalog::SS_01_ATOMIC_MONOTONE_SNAPSHOT_STATE
+    );
+    assert!(
+        failure.message.contains("instead of delivered transfer"),
+        "unexpected failure message: {}",
+        failure.message
+    );
+}
+
+#[test]
+fn snapshot_transfer_identity_uses_retained_send_identity_after_sender_advances() {
+    let mut state = RestartSnapshotState::snapshot_transfer();
+    let expected = state
+        .expected_snapshot
+        .as_ref()
+        .expect("fixture has an expected snapshot")
+        .clone();
+    let (newer, newer_payload) = test_snapshot(1, 3, 2, 2, b"newer sender snapshot");
+    state
+        .state
+        .inject_snapshot_payload(NodeId(1), &newer, newer_payload);
+    state
+        .state
+        .inject_bootstrap_state(NodeId(1), bootstrap_with_snapshot(Term(2), newer, &[]))
+        .expect("sender advances while retaining old transfer bytes");
+    let before = state.state.cluster().clone();
+
+    state.state.inject_snapshot_payload(
+        NodeId(2),
+        &expected.snapshot,
+        expected.payload.as_ref().to_vec(),
+    );
+    state
+        .state
+        .inject_bootstrap_state(
+            NodeId(2),
+            bootstrap_with_snapshot(Term(2), expected.snapshot.clone(), &[]),
+        )
+        .expect("delayed older transfer installs on lagging follower");
+    let delivered = Envelope {
+        from: NodeId(1),
+        to: NodeId(2),
+        message: Message::InstallSnapshotChunk(rafter::InstallSnapshotChunk {
+            term: Term(2),
+            leader_id: NodeId(1),
+            transfer_id: expected.snapshot.transfer_id(),
+            metadata: expected.snapshot.metadata.clone(),
+            total_payload_len: expected.snapshot.application_payload_len,
+            application_payload_crc32: expected.snapshot.application_payload_crc32,
+            offset: 0,
+            chunk: expected.payload.as_ref().to_vec(),
+            done: true,
+        }),
+    };
+    state
+        .state
+        .record_snapshot_transition(&before, Some(&delivered));
+
+    check_snapshot_transfer_identity(&state.state, &[])
+        .expect("delayed transfer remains identified by immutable transfer data");
+    assert!(state
+        .state
+        .observation_set()
+        .contains(Observation::SnapshotTransferIdentitiesChecked));
 }
 
 #[test]

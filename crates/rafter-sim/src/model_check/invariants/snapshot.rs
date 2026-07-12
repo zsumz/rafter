@@ -2,7 +2,7 @@ use rafter::{LogIndex, NodeId, PendingSnapshotTransfer};
 
 use crate::Cluster;
 
-use super::super::state::ExpectedSnapshot;
+use super::super::state::{snapshot_payload_binding_issue, ExplorationState};
 use super::{
     catalog, check_applied_payload_agreement, check_committed_prefixes,
     check_internal_derived_state, summarize, Action, Failure, RestartSnapshotState,
@@ -16,6 +16,9 @@ pub(crate) fn check_restart_snapshot_safety(
     check_applied_payload_agreement(state.state.cluster(), trace)?;
     check_snapshot_log_geometry(state.state.cluster(), trace)?;
     check_committed_prefixes(state.state.cluster(), trace)?;
+    check_snapshot_boundary_monotonicity(&state.state, trace)?;
+    check_snapshot_payload_binding(&state.state, trace)?;
+    check_snapshot_transfer_identity(&state.state, trace)?;
 
     let Some(expected) = &state.expected_snapshot else {
         return Ok(());
@@ -41,8 +44,6 @@ pub(crate) fn check_restart_snapshot_safety(
             node.pending_snapshot_transfer().as_ref(),
             trace,
         )?;
-        check_snapshot_metadata_payload_integrity(state, *node_id, expected, trace)?;
-
         if node.snapshot_index() < expected.snapshot.metadata.last_included_index {
             continue;
         }
@@ -121,35 +122,68 @@ pub(super) fn check_snapshot_transfer_integrity(
     Ok(())
 }
 
-pub(super) fn check_snapshot_metadata_payload_integrity(
-    state: &RestartSnapshotState,
-    node_id: NodeId,
-    expected: &ExpectedSnapshot,
+pub(super) fn check_snapshot_boundary_monotonicity(
+    state: &ExplorationState,
     trace: &[Action],
 ) -> Result<(), Failure> {
-    let node = state.state.cluster().node(node_id);
-    if node.snapshot_index() < expected.snapshot.metadata.last_included_index {
-        return Ok(());
-    }
-
-    let bootstrap = state.state.cluster().bootstrap_state(node_id);
-    if bootstrap.snapshot.as_ref() == Some(&expected.snapshot)
-        && state
-            .state
-            .cluster()
-            .snapshot_payload(node_id, &expected.snapshot)
-            != Some(expected.payload.as_slice())
-    {
+    if let Some(violation) = state.snapshot_history().violations().iter().next() {
         return Err(Failure {
             kind: crate::model_check::FailureKind::InvariantViolation,
             invariant: catalog::SS_01_ATOMIC_MONOTONE_SNAPSHOT_STATE,
-            message: format!("{node_id} installed expected metadata with different bytes"),
+            message: format!(
+                "{} snapshot boundary regressed from {} to {}",
+                violation.node_id, violation.previous_boundary, violation.current_boundary
+            ),
             trace: trace.to_vec(),
-            state: summarize(state.state.cluster()),
+            state: summarize(state.cluster()),
         });
     }
-
     Ok(())
+}
+
+pub(super) fn check_snapshot_payload_binding(
+    state: &ExplorationState,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    if let Some(message) = state
+        .snapshot_history()
+        .payload_binding_violations()
+        .iter()
+        .next()
+    {
+        return Err(snapshot_failure(state, trace, message.clone()));
+    }
+    for node_id in state.cluster().nodes.keys().copied() {
+        if let Some(message) = snapshot_payload_binding_issue(state.cluster(), node_id) {
+            return Err(snapshot_failure(state, trace, message));
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn check_snapshot_transfer_identity(
+    state: &ExplorationState,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    if let Some(message) = state
+        .snapshot_history()
+        .transfer_identity_violations()
+        .iter()
+        .next()
+    {
+        return Err(snapshot_failure(state, trace, message.clone()));
+    }
+    Ok(())
+}
+
+fn snapshot_failure(state: &ExplorationState, trace: &[Action], message: String) -> Failure {
+    Failure {
+        kind: crate::model_check::FailureKind::InvariantViolation,
+        invariant: catalog::SS_01_ATOMIC_MONOTONE_SNAPSHOT_STATE,
+        message,
+        trace: trace.to_vec(),
+        state: summarize(state.cluster()),
+    }
 }
 
 pub(super) fn check_snapshot_log_geometry(

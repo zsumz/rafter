@@ -13,6 +13,7 @@ mod election;
 mod logical_log;
 mod restart_snapshot;
 mod seeds;
+mod snapshot;
 
 use self::application::InstrumentedCluster;
 pub(super) use self::application::{
@@ -35,6 +36,7 @@ pub(super) use logical_log::LogicalLogHistory;
 #[cfg(test)]
 pub(super) use logical_log::{LogPrefixWitness, LogicalLogView};
 pub(super) use restart_snapshot::{ExpectedSnapshot, RestartSnapshotState};
+pub(super) use snapshot::snapshot_payload_binding_issue;
 
 #[derive(Clone, Debug, Hash)]
 pub(super) struct ExplorationState {
@@ -56,6 +58,7 @@ pub(super) struct ExplorationState {
     election_history: ElectionHistory,
     logical_log_history: LogicalLogHistory,
     commit_history: CommitHistory,
+    snapshot_history: snapshot::SnapshotHistory,
     observations: ObservationSet,
 }
 
@@ -72,6 +75,7 @@ impl ExplorationState {
             .iter()
             .map(|(node_id, node)| (*node_id, node.committed_configuration_state()))
             .collect();
+        let snapshot_history = snapshot::SnapshotHistory::from_cluster(&cluster);
         let mut state = Self {
             cluster: InstrumentedCluster::new(cluster),
             proposals_issued: 0,
@@ -91,6 +95,7 @@ impl ExplorationState {
             election_history: ElectionHistory::default(),
             logical_log_history: LogicalLogHistory::default(),
             commit_history: CommitHistory::default(),
+            snapshot_history,
             observations: ObservationSet::default(),
         };
         state.election_history.record_seeded_leaders(&state.cluster);
@@ -177,6 +182,10 @@ impl ExplorationState {
 
     pub(super) const fn commit_history(&self) -> &CommitHistory {
         &self.commit_history
+    }
+
+    pub(super) const fn snapshot_history(&self) -> &snapshot::SnapshotHistory {
+        &self.snapshot_history
     }
 
     pub(super) const fn observation_set(&self) -> ObservationSet {
@@ -315,6 +324,22 @@ impl ExplorationState {
 
     pub(super) fn refresh_log_history(&mut self) {
         let observations = self.logical_log_history.observe_cluster(&self.cluster);
+        self.observations.union_with(observations);
+    }
+
+    pub(in crate::model_check) fn refresh_snapshot_history(&mut self) {
+        let observations = self.snapshot_history.observe_cluster(&self.cluster);
+        self.observations.union_with(observations);
+    }
+
+    pub(in crate::model_check) fn record_snapshot_transition(
+        &mut self,
+        before: &Cluster,
+        delivered: Option<&Envelope>,
+    ) {
+        let observations =
+            self.snapshot_history
+                .record_transition(before, &self.cluster, delivered);
         self.observations.union_with(observations);
     }
 

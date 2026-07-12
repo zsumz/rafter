@@ -37,7 +37,8 @@ pub(super) use snapshot::check_restart_snapshot_safety;
 use snapshot::check_snapshot_log_geometry;
 #[cfg(test)]
 use snapshot::{
-    check_snapshot_log_geometry_shape, check_snapshot_metadata_payload_integrity,
+    check_snapshot_boundary_monotonicity, check_snapshot_log_geometry_shape,
+    check_snapshot_payload_binding, check_snapshot_transfer_identity,
     check_snapshot_transfer_integrity,
 };
 

@@ -35,6 +35,27 @@ fn runtime_local_compaction_fills_committed_dynamic_membership_metadata() {
 }
 
 #[test]
+fn runtime_local_compaction_rejects_wrong_boundary_term_before_writes() {
+    let (mut runtime, _, _) = super::super::super::dynamic_membership_recovery_fixture();
+    let before_log = runtime.log_segment.replay_entries();
+    let before_snapshot = runtime.snapshot_store.current().cloned();
+
+    assert_eq!(
+        runtime.compact_log_with_snapshot(PersistedRaftSnapshot {
+            metadata: snapshot_metadata_for_writer(1, 16, 7, 8),
+            application_payload: b"wrong boundary term".to_vec(),
+        }),
+        Err(RaftRuntimeError::SnapshotBoundaryTermMismatch {
+            snapshot_index: LogIndex(16),
+            snapshot_term: Term(7),
+            local_term: Some(Term(8)),
+        })
+    );
+    assert_eq!(runtime.log_segment.replay_entries(), before_log);
+    assert_eq!(runtime.snapshot_store.current().cloned(), before_snapshot);
+}
+
+#[test]
 fn runtime_local_compaction_rejects_wrong_committed_membership_before_writes() {
     let (mut runtime, _, new_membership) =
         super::super::super::dynamic_membership_recovery_fixture();
