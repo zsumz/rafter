@@ -18,11 +18,16 @@ mod snapshot;
 
 use self::application::InstrumentedCluster;
 pub(super) use self::application::{
-    apply_pending_application_replay_seed, apply_snapshot_bootstrap_seeds, apply_soak_action,
-    apply_to_restart_snapshot_state, apply_to_state, restart_node, PendingApplicationReplaySeed,
-    SnapshotBootstrapSeed,
+    apply_pending_application_replay_seed, apply_scheduled_operation,
+    apply_snapshot_bootstrap_seeds, apply_soak_action, apply_to_restart_snapshot_state,
+    apply_to_state, restart_node, restart_node_losing_application_state, try_apply_soak_action,
+    PendingApplicationReplaySeed, SnapshotBootstrapSeed,
 };
-use self::application_history::ApplicationHistory;
+#[cfg(test)]
+pub(super) use self::application::{record_execution_corruption, ExecutionRecorderCorruption};
+use self::application_history::{
+    ApplicationHistory, ExecutionHistoryInstrumentationError, ExecutionHistoryViolation,
+};
 use super::observations::ObservationSet;
 use client::initial_register_value;
 pub(super) use client::{ClientHistory, ClientReadOutcome, ClientWriteStatus};
@@ -41,6 +46,13 @@ pub(super) use logical_log::{LogPrefixWitness, LogicalLogView};
 pub(super) use restart_snapshot::{ExpectedSnapshot, RestartSnapshotState};
 pub(super) use snapshot::snapshot_payload_binding_issue;
 
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(super) struct TransitionInstrumentationError {
+    pub(in crate::model_check) kind: super::FailureKind,
+    pub(in crate::model_check) invariant: &'static str,
+    pub(in crate::model_check) message: String,
+}
+
 #[derive(Clone, Debug, Hash)]
 pub(super) struct ExplorationState {
     cluster: InstrumentedCluster,
@@ -55,7 +67,6 @@ pub(super) struct ExplorationState {
     committed_configuration_floor_by_node: BTreeMap<NodeId, Option<CommittedConfiguration>>,
     application_history: ApplicationHistory,
     client_history: ClientHistory,
-    forbidden_applied_payloads: BTreeSet<SharedPayload>,
     required_applied_payloads: BTreeMap<(NodeId, LogIndex), SharedPayload>,
     required_committed_configurations: BTreeMap<(NodeId, LogIndex), CommittedConfiguration>,
     required_commit_indexes: BTreeSet<(NodeId, LogIndex)>,
@@ -64,6 +75,7 @@ pub(super) struct ExplorationState {
     commit_history: CommitHistory,
     snapshot_history: snapshot::SnapshotHistory,
     observations: ObservationSet,
+    transition_instrumentation_errors: BTreeSet<TransitionInstrumentationError>,
 }
 
 impl ExplorationState {
@@ -94,7 +106,6 @@ impl ExplorationState {
             committed_configuration_floor_by_node,
             application_history,
             client_history: ClientHistory::with_initial_value(initial_value),
-            forbidden_applied_payloads: BTreeSet::new(),
             required_applied_payloads: BTreeMap::new(),
             required_committed_configurations: BTreeMap::new(),
             required_commit_indexes: BTreeSet::new(),
@@ -103,11 +114,13 @@ impl ExplorationState {
             commit_history: CommitHistory::default(),
             snapshot_history,
             observations: ObservationSet::default(),
+            transition_instrumentation_errors: BTreeSet::new(),
         };
         state.election_history.record_seeded_leaders(&state.cluster);
         state.observe_election_authority();
         state.refresh_log_history();
         state.refresh_seeded_commit_history();
+        state.refresh_application_history();
         state.observe_state_coverage();
         state
     }
@@ -158,18 +171,31 @@ impl ExplorationState {
         &self.client_history
     }
 
-    pub(super) fn application_history(&self) -> &[crate::ExecutionWitness] {
-        self.application_history.witnesses()
+    pub(super) const fn transition_instrumentation_errors(
+        &self,
+    ) -> &BTreeSet<TransitionInstrumentationError> {
+        &self.transition_instrumentation_errors
+    }
+
+    pub(super) fn record_transition_instrumentation_error(&mut self, failure: &super::Failure) {
+        self.transition_instrumentation_errors
+            .insert(TransitionInstrumentationError {
+                kind: failure.kind,
+                invariant: failure.invariant,
+                message: failure.message.clone(),
+            });
+    }
+
+    pub(super) const fn execution_history_violations(
+        &self,
+    ) -> &BTreeSet<ExecutionHistoryViolation> {
+        self.application_history.violations()
     }
 
     pub(super) const fn execution_instrumentation_errors(
         &self,
-    ) -> &BTreeSet<crate::network::ExecutionInstrumentationError> {
+    ) -> &BTreeSet<ExecutionHistoryInstrumentationError> {
         self.application_history.instrumentation_errors()
-    }
-
-    pub(super) const fn forbidden_applied_payloads(&self) -> &BTreeSet<SharedPayload> {
-        &self.forbidden_applied_payloads
     }
 
     pub(super) const fn required_applied_payloads(
@@ -231,6 +257,11 @@ impl ExplorationState {
     }
 
     #[cfg(test)]
+    pub(super) const fn election_transition_contexts_observed(&self) -> u64 {
+        self.election_history.transition_contexts_observed
+    }
+
+    #[cfg(test)]
     pub(super) fn logical_log_history_mut(&mut self) -> &mut LogicalLogHistory {
         &mut self.logical_log_history
     }
@@ -276,12 +307,6 @@ impl ExplorationState {
     #[cfg(test)]
     pub(super) fn inject_applied_record(&mut self, applied: crate::Applied) {
         self.cluster.inject_applied_record(applied);
-    }
-
-    #[cfg(test)]
-    pub(super) fn inject_execution_witness(&mut self, witness: crate::ExecutionWitness) {
-        self.cluster.inject_execution_witness(witness);
-        self.refresh_application_history();
     }
 
     #[cfg(test)]

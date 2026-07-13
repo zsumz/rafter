@@ -9,7 +9,7 @@ use super::{
     liveness::run_soak_liveness_check,
     scheduling::{enabled_soak_actions, soak_preferred_kind},
     soak::{SoakAction, SoakConfig, SoakFailure, SoakSummary},
-    state::apply_soak_action,
+    state::try_apply_soak_action,
     state::ExplorationState,
     ReplayCheck,
 };
@@ -30,7 +30,12 @@ pub fn run_raft_random_soak(
     let mut observed_actions = BTreeSet::new();
 
     for step in 0..config.steps {
-        let actions = enabled_soak_actions(&state, config);
+        let actions = enabled_soak_actions(&state, config).map_err(|error| SoakFailure {
+            seed: config.seed,
+            step: step + 1,
+            trace: trace.clone(),
+            failure: Box::new(error.into_failure(state.cluster(), &[])),
+        })?;
         let preferred_kind = soak_preferred_kind(step);
         let candidates = actions
             .iter()
@@ -57,7 +62,16 @@ pub fn run_raft_random_soak(
             }
         }
         let action = actions[action_index].clone();
-        apply_soak_action(&mut state, action.operation);
+        try_apply_soak_action(&mut state, action.operation).map_err(|failure| {
+            let mut failure_trace = trace.clone();
+            failure_trace.push(action.trace.clone());
+            SoakFailure {
+                seed: config.seed,
+                step: step + 1,
+                trace: failure_trace,
+                failure: Box::new(failure),
+            }
+        })?;
         observed_actions.insert(action.trace.kind());
         trace.push(action.trace);
 

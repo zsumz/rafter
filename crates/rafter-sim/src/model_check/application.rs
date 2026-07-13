@@ -9,6 +9,8 @@ mod soak;
 
 use std::ops::Deref;
 
+#[cfg(test)]
+use rafter::LogEntryKind;
 use rafter::{BootstrapValidationError, NodeId};
 
 use crate::Cluster;
@@ -39,15 +41,33 @@ pub(in crate::model_check) struct PendingApplicationReplaySeed {
     pub(in crate::model_check) bootstrap: rafter::BootstrapState,
 }
 
+#[cfg(test)]
+pub(in crate::model_check) enum ExecutionRecorderCorruption {
+    EntryKind(LogEntryKind),
+    ResultingState(crate::ReferenceState),
+}
+
 enum Transition<'a> {
     Operation(Operation),
     Restart {
         node_id: NodeId,
         trace: &'a [Action],
     },
-    Soak(SoakOperation),
+    ApplicationLossRestart {
+        node_id: NodeId,
+        trace: &'a [Action],
+    },
+    Soak {
+        operation: SoakOperation,
+        trace: &'a [Action],
+    },
     SnapshotBootstrapSeeds(Vec<SnapshotBootstrapSeed>),
     PendingApplicationReplaySeed(Box<PendingApplicationReplaySeed>),
+    #[cfg(test)]
+    ExecutionRecorderCorruption {
+        source: Box<crate::ExecutionWitness>,
+        corruption: ExecutionRecorderCorruption,
+    },
     SchedulerIndex(usize),
     RandomReadyPosition,
 }
@@ -73,20 +93,22 @@ fn apply_transition(
             TransitionOutcome::Applied
         }
         Transition::Restart { node_id, trace } => {
+            let before = state.cluster.clone();
             restart::restart_node_inner(state, node_id, trace)
                 .map_err(TransitionError::Invariant)?;
-            state.restarts_issued += 1;
-            state.observe_election_authority();
-            state.refresh_log_history();
-            state.refresh_committed_prefixes();
-            state.refresh_commit_floors();
-            state.refresh_client_history();
-            state.record_leader_completeness_observation();
-            state.observe_state_coverage();
+            observe_restart_transition(state, &before);
             TransitionOutcome::Applied
         }
-        Transition::Soak(operation) => {
-            soak::apply_soak_action_inner(state, operation);
+        Transition::ApplicationLossRestart { node_id, trace } => {
+            let before = state.cluster.clone();
+            restart_node_losing_application_state_inner(state, node_id, trace)
+                .map_err(TransitionError::Invariant)?;
+            observe_restart_transition(state, &before);
+            TransitionOutcome::Applied
+        }
+        Transition::Soak { operation, trace } => {
+            soak::apply_soak_action_inner(state, operation, trace)
+                .map_err(TransitionError::Invariant)?;
             TransitionOutcome::Applied
         }
         Transition::SnapshotBootstrapSeeds(seeds) => {
@@ -103,6 +125,38 @@ fn apply_transition(
                 .seed_pending_application_replay(seed.node_id, seed.bootstrap)
                 .map_err(TransitionError::Bootstrap)?;
             observe_seeded_transition(state);
+            TransitionOutcome::Applied
+        }
+        #[cfg(test)]
+        Transition::ExecutionRecorderCorruption {
+            mut source,
+            corruption,
+        } => {
+            match corruption {
+                ExecutionRecorderCorruption::EntryKind(kind) => {
+                    source.entry.kind = kind;
+                    source.resulting_state = source.prior_state.clone();
+                    match &source.entry.kind {
+                        LogEntryKind::Application(payload) => {
+                            source.resulting_state.application_value.clone_from(payload);
+                        }
+                        LogEntryKind::Configuration(configuration) => {
+                            source.resulting_state.committed_membership =
+                                configuration.membership_config();
+                            source.resulting_state.committed_configuration =
+                                Some(rafter::CommittedConfiguration {
+                                    index: source.entry.index,
+                                    config_id: configuration.config_id(),
+                                });
+                        }
+                        LogEntryKind::Noop => {}
+                    }
+                }
+                ExecutionRecorderCorruption::ResultingState(result) => {
+                    source.resulting_state = result;
+                }
+            }
+            state.cluster.0.execution_history.push(*source);
             TransitionOutcome::Applied
         }
         Transition::SchedulerIndex(len) => {
@@ -128,9 +182,54 @@ fn observe_seeded_transition(state: &mut ExplorationState) {
     state.refresh_commit_floors();
     state.refresh_client_history();
     state.record_leader_completeness_observation();
-    state.refresh_application_history();
-    state.refresh_snapshot_history();
     state.observe_state_coverage();
+}
+
+fn observe_restart_transition(state: &mut ExplorationState, before: &Cluster) {
+    state.restarts_issued += 1;
+    state.observe_election_authority();
+    state.record_election_observation(before, None, &[]);
+    state.refresh_log_history();
+    state.refresh_committed_prefixes();
+    state.refresh_commit_floors();
+    state.refresh_client_history();
+    state.record_leader_completeness_observation();
+    state.observe_state_coverage();
+}
+
+fn restart_node_losing_application_state_inner(
+    state: &mut ExplorationState,
+    node_id: NodeId,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    let before_epoch = state.cluster.application_epoch(node_id);
+    let bootstrap = state.cluster.bootstrap_state(node_id);
+    state
+        .cluster
+        .0
+        .restart_node_from_bootstrap_losing_application_state(node_id, bootstrap)
+        .map_err(|error| Failure {
+                kind: super::super::FailureKind::HarnessError,
+                invariant: super::super::catalog::AP_02_STATE_MACHINE_SAFETY,
+                message: format!(
+                    "{node_id} failed application-state-loss restart from captured bootstrap: {error:?}"
+                ),
+                trace: trace.to_vec(),
+                state: super::super::helpers::summarize(state.cluster()),
+        })?;
+    let after_epoch = state.cluster.application_epoch(node_id);
+    if after_epoch <= before_epoch {
+        return Err(Failure {
+            kind: super::super::FailureKind::HarnessError,
+            invariant: super::super::catalog::AP_02_STATE_MACHINE_SAFETY,
+            message: format!(
+                "{node_id} application-state-loss restart did not advance epoch {before_epoch}"
+            ),
+            trace: trace.to_vec(),
+            state: super::super::helpers::summarize(state.cluster()),
+        });
+    }
+    Ok(())
 }
 
 pub(in crate::model_check) fn apply_to_state(state: &mut ExplorationState, operation: Operation) {
@@ -162,18 +261,68 @@ pub(in crate::model_check) fn restart_node(
     }
 }
 
+pub(in crate::model_check) fn restart_node_losing_application_state(
+    state: &mut ExplorationState,
+    node_id: NodeId,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    match apply_transition(state, Transition::ApplicationLossRestart { node_id, trace }) {
+        Ok(TransitionOutcome::Applied) => Ok(()),
+        Ok(TransitionOutcome::SchedulerIndex(_) | TransitionOutcome::RandomReadyPosition(_)) => {
+            unreachable!("application-loss restart transitions return an applied outcome")
+        }
+        Err(TransitionError::Invariant(failure)) => Err(failure),
+        Err(TransitionError::Bootstrap(_)) => {
+            unreachable!("application-loss restart transitions do not return seed errors")
+        }
+    }
+}
+
+pub(in crate::model_check) fn apply_scheduled_operation(
+    state: &mut ExplorationState,
+    operation: Operation,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    match operation {
+        Operation::Restart(node_id) => restart_node(state, node_id, trace),
+        Operation::ApplicationLossRestart(node_id) => {
+            restart_node_losing_application_state(state, node_id, trace)
+        }
+        operation => {
+            apply_to_state(state, operation);
+            Ok(())
+        }
+    }
+}
+
+pub(in crate::model_check) fn try_apply_soak_action(
+    state: &mut ExplorationState,
+    operation: SoakOperation,
+) -> Result<(), Failure> {
+    match apply_transition(
+        state,
+        Transition::Soak {
+            operation,
+            trace: &[],
+        },
+    ) {
+        Ok(TransitionOutcome::Applied) => Ok(()),
+        Ok(TransitionOutcome::SchedulerIndex(_) | TransitionOutcome::RandomReadyPosition(_)) => {
+            unreachable!("soak transitions return an applied outcome")
+        }
+        Err(TransitionError::Invariant(failure)) => Err(failure),
+        Err(TransitionError::Bootstrap(_)) => {
+            unreachable!("soak transitions do not return seed errors")
+        }
+    }
+}
+
 pub(in crate::model_check) fn apply_soak_action(
     state: &mut ExplorationState,
     operation: SoakOperation,
 ) {
-    match apply_transition(state, Transition::Soak(operation)) {
-        Ok(TransitionOutcome::Applied) => {}
-        Ok(TransitionOutcome::SchedulerIndex(_) | TransitionOutcome::RandomReadyPosition(_)) => {
-            unreachable!("soak transitions return an applied outcome")
-        }
-        Err(TransitionError::Invariant(_) | TransitionError::Bootstrap(_)) => {
-            unreachable!("soak transitions handle restart failures internally")
-        }
+    if let Err(failure) = try_apply_soak_action(state, operation) {
+        state.record_transition_instrumentation_error(&failure);
     }
 }
 
@@ -208,6 +357,34 @@ pub(in crate::model_check) fn apply_pending_application_replay_seed(
         Err(TransitionError::Bootstrap(error)) => Err(error),
         Err(TransitionError::Invariant(_)) => {
             unreachable!("pending-replay seeding does not run invariant checks")
+        }
+    }
+}
+
+#[cfg(test)]
+pub(in crate::model_check) fn record_execution_corruption(
+    state: &mut ExplorationState,
+    corruption: ExecutionRecorderCorruption,
+) -> Result<(), &'static str> {
+    let source = state
+        .cluster
+        .execution_history()
+        .last()
+        .cloned()
+        .ok_or("execution recorder corruption requires a real source witness")?;
+    match apply_transition(
+        state,
+        Transition::ExecutionRecorderCorruption {
+            source: Box::new(source),
+            corruption,
+        },
+    ) {
+        Ok(TransitionOutcome::Applied) => Ok(()),
+        Ok(TransitionOutcome::SchedulerIndex(_) | TransitionOutcome::RandomReadyPosition(_)) => {
+            Err("execution recorder corruption returned a scheduler outcome")
+        }
+        Err(TransitionError::Invariant(_) | TransitionError::Bootstrap(_)) => {
+            Err("execution recorder corruption returned an unrelated transition error")
         }
     }
 }
@@ -248,11 +425,6 @@ impl InstrumentedCluster {
     #[cfg(test)]
     pub(super) fn inject_applied_record(&mut self, applied: crate::Applied) {
         self.0.applied.push(applied);
-    }
-
-    #[cfg(test)]
-    pub(super) fn inject_execution_witness(&mut self, witness: crate::ExecutionWitness) {
-        self.0.execution_history.push(witness);
     }
 
     #[cfg(test)]

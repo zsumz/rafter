@@ -15,8 +15,7 @@ use super::state::{ExplorationState, RestartSnapshotState};
 use super::{Action, Failure, ReplayCheck};
 use applied::{
     check_applied_order, check_applied_payload_agreement, check_execution_history_agreement,
-    check_forbidden_applied_payloads, check_internal_derived_state,
-    check_required_applied_payloads,
+    check_internal_derived_state, check_required_applied_payloads,
 };
 pub(super) use client::check_read_barrier_safety;
 use client::{check_client_history_linearizability, check_client_history_read_write_invariants};
@@ -65,7 +64,6 @@ pub(super) fn check_commit_safety(
     check_no_overlapping_uncommitted_configurations(state.cluster(), trace)?;
     check_client_history_read_write_invariants(state, trace)?;
     check_client_history_linearizability(state, trace)?;
-    check_forbidden_applied_payloads(state, trace)?;
     check_required_applied_payloads(state, trace)?;
     check_required_committed_configurations(state, trace)
 }

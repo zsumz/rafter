@@ -10,6 +10,9 @@ pub(super) const CLIENT_HISTORY_LINEARIZABILITY_INVARIANT: &str =
     catalog::RD_06_CLIENT_HISTORY_LINEARIZABILITY;
 
 pub(super) fn check_client_history_linearizable(history: &ClientHistory) -> Result<(), String> {
+    if let Some(error) = history.instrumentation_errors.iter().next() {
+        return Err(format!("client-history instrumentation failed: {error}"));
+    }
     let operations = observed_operations(history);
     if operations.is_empty() || is_linearizable(history.initial_value.as_ref(), &operations) {
         return Ok(());

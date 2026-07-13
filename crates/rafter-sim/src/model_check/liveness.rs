@@ -4,7 +4,7 @@ use super::{
     catalog,
     scheduling::SoakOperation,
     soak::{SoakAction, SoakActionKind, SoakConfig, SoakFailure},
-    state::apply_soak_action,
+    state::try_apply_soak_action,
     state::ExplorationState,
 };
 
@@ -15,7 +15,8 @@ use driver::{
     check_soak_safety, drive_liveness_rounds_until_observed, drive_soak_liveness_round,
     drive_until_stable_leader, has_partition, issue_liveness_proposal, liveness_proposal_accepted,
     liveness_proposal_completed, liveness_proposal_terminal_outcome, single_leader,
-    soak_liveness_failure, LivenessRoundBudget, ProposalTerminalOutcome, StableLeaderGuard,
+    soak_liveness_failure, soak_transition_failure, LivenessRoundBudget, ProposalTerminalOutcome,
+    StableLeaderGuard,
 };
 pub(in crate::model_check) use features::LivenessFeatureReport;
 use features::{
@@ -256,7 +257,8 @@ fn create_post_heal_partition(
     observed_actions: &mut BTreeSet<SoakActionKind>,
 ) -> Result<(rafter::NodeId, rafter::NodeId), SoakFailure> {
     if has_partition(state.cluster()) {
-        apply_soak_action(state, SoakOperation::Heal);
+        try_apply_soak_action(state, SoakOperation::Heal)
+            .map_err(|failure| soak_transition_failure(config, trace, failure))?;
         trace.push(SoakAction::Heal);
         observed_actions.insert(SoakActionKind::Heal);
         check_soak_safety(state, config, trace)?;
@@ -281,13 +283,14 @@ fn create_post_heal_partition(
         ));
     };
 
-    apply_soak_action(
+    try_apply_soak_action(
         state,
         SoakOperation::Partition {
             a: partition_a,
             b: partition_b,
         },
-    );
+    )
+    .map_err(|failure| soak_transition_failure(config, trace, failure))?;
     trace.push(SoakAction::Partition {
         a: partition_a,
         b: partition_b,
@@ -382,7 +385,8 @@ fn heal_post_heal_partition(
     partition_a: rafter::NodeId,
     partition_b: rafter::NodeId,
 ) -> Result<(), SoakFailure> {
-    apply_soak_action(state, SoakOperation::Heal);
+    try_apply_soak_action(state, SoakOperation::Heal)
+        .map_err(|failure| soak_transition_failure(config, trace, failure))?;
     trace.push(SoakAction::Heal);
     observed_actions.insert(SoakActionKind::Heal);
     let heal_observed =
