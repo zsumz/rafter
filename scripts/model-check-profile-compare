@@ -98,16 +98,20 @@ write_manifest() {
     find . -type f ! -name SHA256SUMS -print0 \
       | sort -z \
       | while IFS= read -r -d '' artifact; do
-          shasum -a 256 "$artifact"
+          LC_ALL=C LANG=C shasum -a 256 "$artifact"
         done > "$TMP_DIR/SHA256SUMS"
   )
   mv "$TMP_DIR/SHA256SUMS" "$OUT_DIR/SHA256SUMS"
 }
 on_exit() {
   local status="$?"
-  write_manifest || true
+  local manifest_status=0
+  write_manifest || manifest_status="$?"
   cleanup
-  return "$status"
+  if (( status != 0 )); then
+    return "$status"
+  fi
+  return "$manifest_status"
 }
 trap on_exit EXIT
 
