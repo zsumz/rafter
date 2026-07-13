@@ -63,6 +63,7 @@ pub enum TlaAbstractionGap {
     SnapshotTransfer,
     PreVote,
     MembershipChange,
+    ApplicationStateLoss,
 }
 
 impl TlaAbstractionGap {
@@ -75,6 +76,7 @@ impl TlaAbstractionGap {
             Self::SnapshotTransfer => "snapshot_transfer_not_in_tla_model",
             Self::PreVote => "pre_vote_not_in_tla_model",
             Self::MembershipChange => "membership_change_not_in_tla_model",
+            Self::ApplicationStateLoss => "application_state_loss_not_in_tla_model",
         }
     }
 }
