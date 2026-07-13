@@ -88,6 +88,37 @@ fn initial_reference_state() -> ReferenceState {
     }
 }
 
+fn state_with_committed_application_witness(payload: &[u8]) -> ExplorationState {
+    let mut cluster = one_node_cluster();
+    let mut bootstrap = bootstrap_state(Term(1), &[(1, Term(1), payload)]);
+    bootstrap.commit_index = LogIndex(1);
+    cluster
+        .restart_node_from_bootstrap(NodeId(1), bootstrap)
+        .expect("committed application witness bootstrap is valid");
+    ExplorationState::new(cluster)
+}
+
+fn state_with_committed_configuration_witness(
+    configuration: ConfigurationEntry,
+) -> ExplorationState {
+    let mut cluster = one_node_cluster();
+    let mut bootstrap = bootstrap_state(Term(2), &[]);
+    bootstrap.commit_index = LogIndex(1);
+    bootstrap.committed_configuration = Some(CommittedConfiguration {
+        index: LogIndex(1),
+        config_id: configuration.config_id(),
+    });
+    bootstrap.log.push(BootstrapLogEntry::configuration(
+        LogIndex(1),
+        Term(1),
+        configuration,
+    ));
+    cluster
+        .restart_node_from_bootstrap(NodeId(1), bootstrap)
+        .expect("committed configuration witness bootstrap is valid");
+    ExplorationState::new(cluster)
+}
+
 fn grant_set(values: &[u64]) -> BTreeSet<NodeId> {
     ids(values).into_iter().collect()
 }

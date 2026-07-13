@@ -214,6 +214,91 @@ fn local_proposal_drop_is_an_unknown_outcome() {
     ));
 }
 
+#[test]
+fn contradictory_tracked_proposal_events_fail_closed_and_persist() {
+    use crate::records::LocalProposalEvent;
+
+    let proposal_id = crate::model_check::ProposalId(13);
+    let payload = crate::model_check::helpers::proposal_payload(proposal_id);
+    let mut state = state_with_uncommitted_applications(Term(5), &[&payload, &payload]);
+    state.record_client_proposal(NodeId(1), proposal_id, false);
+    state.record_local_proposal_events(&[
+        LocalProposalEvent::Appended {
+            node_id: NodeId(1),
+            proposal_id: rafter::LocalProposalId(proposal_id.0),
+            index: LogIndex(1),
+            term: Term(5),
+        },
+        LocalProposalEvent::Appended {
+            node_id: NodeId(1),
+            proposal_id: rafter::LocalProposalId(proposal_id.0),
+            index: LogIndex(2),
+            term: Term(5),
+        },
+    ]);
+    let cloned = state.clone();
+
+    for recorded in [&state, &cloned] {
+        assert!(matches!(
+            recorded.client_history().writes[&proposal_id].status,
+            ClientWriteStatus::Accepted {
+                index: LogIndex(1),
+                ..
+            }
+        ));
+        let failure = check_client_history_linearizability(recorded, &[])
+            .expect_err("contradictory tracked events must fail closed");
+        assert_eq!(
+            failure.kind(),
+            crate::model_check::FailureKind::HarnessError
+        );
+        assert_eq!(
+            failure.invariant(),
+            catalog::RD_06_CLIENT_HISTORY_LINEARIZABILITY
+        );
+        assert!(
+            failure.message.contains("instrumentation failed")
+                && failure.message.contains("existing_matches=false"),
+            "unexpected failure message: {}",
+            failure.message
+        );
+    }
+}
+
+#[test]
+fn stale_unknown_write_may_later_apply_without_becoming_required() {
+    use crate::records::LocalProposalEvent;
+
+    let proposal_id = crate::model_check::ProposalId(14);
+    let payload = crate::model_check::helpers::proposal_payload(proposal_id);
+    let mut state = state_with_uncommitted_applications(Term(6), &[&payload]);
+    state.record_client_proposal(NodeId(1), proposal_id, true);
+    state.record_local_proposal_events(&[
+        LocalProposalEvent::Appended {
+            node_id: NodeId(1),
+            proposal_id: rafter::LocalProposalId(proposal_id.0),
+            index: LogIndex(1),
+            term: Term(6),
+        },
+        LocalProposalEvent::Applied {
+            node_id: NodeId(1),
+            proposal_id: rafter::LocalProposalId(proposal_id.0),
+            index: LogIndex(1),
+            term: Term(6),
+            payload: payload.into(),
+        },
+    ]);
+
+    assert!(matches!(
+        state.client_history().writes[&proposal_id].status,
+        ClientWriteStatus::Unknown {
+            reason: ClientWriteUnknownReason::StaleLeader
+        }
+    ));
+    check_client_history_linearizability(&state, &[])
+        .expect("a stale unknown write that later applies remains optional");
+}
+
 fn state_with_uncommitted_applications(term: Term, payloads: &[&[u8]]) -> ExplorationState {
     let config =
         NodeConfig::new(NodeId(1), vec![NodeId(2), NodeId(3)], 3).expect("test config is valid");

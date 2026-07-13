@@ -144,10 +144,11 @@ fn lossy_restart_preserves_temporal_commit_and_configuration_floors() {
         .committed_configuration_floor_by_node_mut()
         .insert(NodeId(1), Some(configuration_floor));
 
-    crate::model_check::state::apply_soak_action(
+    crate::model_check::state::try_apply_soak_action(
         &mut state,
         crate::model_check::scheduling::SoakOperation::LossyRestart(NodeId(1)),
-    );
+    )
+    .expect("fixture lossy restart must remain valid");
 
     assert_eq!(state.commit_floor_by_node()[&NodeId(1)], LogIndex(2));
     assert_eq!(

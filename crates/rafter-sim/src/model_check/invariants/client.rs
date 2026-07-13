@@ -155,8 +155,13 @@ pub(super) fn check_client_history_linearizability(
     state: &ExplorationState,
     trace: &[Action],
 ) -> Result<(), Failure> {
+    let instrumentation_failed = !state.client_history().instrumentation_errors.is_empty();
     check_client_history_linearizable(state.client_history()).map_err(|message| Failure {
-        kind: crate::model_check::FailureKind::InvariantViolation,
+        kind: if instrumentation_failed {
+            crate::model_check::FailureKind::HarnessError
+        } else {
+            crate::model_check::FailureKind::InvariantViolation
+        },
         invariant: CLIENT_HISTORY_LINEARIZABILITY_INVARIANT,
         message,
         trace: trace.to_vec(),

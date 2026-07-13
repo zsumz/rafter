@@ -258,6 +258,130 @@ fn snapshot_payload_binding_detects_metadata_bound_to_different_bytes() {
 }
 
 #[test]
+fn snapshot_reference_binding_detects_self_consistent_application_identity_change() {
+    let mut state = RestartSnapshotState::snapshot_transfer();
+    let expected = state
+        .expected_snapshot
+        .as_ref()
+        .expect("fixture has an expected snapshot")
+        .clone();
+    let wrong_payload = b"self-consistent but wrong application state".to_vec();
+    let wrong_snapshot =
+        rafter::RaftSnapshot::from_payload(expected.snapshot.metadata.clone(), &wrong_payload);
+    install_mutated_source_snapshot(&mut state, wrong_snapshot, wrong_payload);
+
+    let failure = check_snapshot_payload_binding(&state.state, &[])
+        .expect_err("snapshot bytes differing from the witnessed reference state must fail");
+    assert_eq!(
+        failure.invariant(),
+        catalog::SS_01_ATOMIC_MONOTONE_SNAPSHOT_STATE
+    );
+    assert!(failure.message.contains("witnessed reference state"));
+}
+
+#[test]
+fn snapshot_reference_binding_detects_self_consistent_boundary_term_change() {
+    let mut state = RestartSnapshotState::snapshot_transfer();
+    let expected = state
+        .expected_snapshot
+        .as_ref()
+        .expect("fixture has an expected snapshot")
+        .clone();
+    let mut metadata = expected.snapshot.metadata.clone();
+    metadata.last_included_term = Term(2);
+    let wrong_snapshot = rafter::RaftSnapshot::from_payload(metadata, &expected.payload);
+    install_mutated_source_snapshot(
+        &mut state,
+        wrong_snapshot,
+        expected.payload.as_ref().to_vec(),
+    );
+
+    let failure = check_snapshot_payload_binding(&state.state, &[])
+        .expect_err("snapshot term differing from the witnessed logical prefix must fail");
+    assert!(failure.message.contains("witnessed logical-prefix term"));
+}
+
+#[test]
+fn snapshot_reference_binding_detects_self_consistent_membership_change() {
+    let mut state = RestartSnapshotState::snapshot_transfer();
+    let expected = state
+        .expected_snapshot
+        .as_ref()
+        .expect("fixture has an expected snapshot")
+        .clone();
+    let metadata = expected
+        .snapshot
+        .metadata
+        .clone()
+        .with_committed_membership(stable_membership(&[1, 3], &[]));
+    let wrong_snapshot = rafter::RaftSnapshot::from_payload(metadata, &expected.payload);
+    install_mutated_source_snapshot(
+        &mut state,
+        wrong_snapshot,
+        expected.payload.as_ref().to_vec(),
+    );
+
+    let failure = check_snapshot_payload_binding(&state.state, &[])
+        .expect_err("snapshot membership differing from the witnessed reference state must fail");
+    assert!(failure.message.contains("committed membership differs"));
+}
+
+#[test]
+fn snapshot_reference_binding_detects_self_consistent_configuration_identity_change() {
+    let mut state = RestartSnapshotState::joint_snapshot_transfer();
+    let expected = state
+        .expected_snapshot
+        .as_ref()
+        .expect("fixture has an expected snapshot")
+        .clone();
+    let membership = expected
+        .snapshot
+        .metadata
+        .committed_membership()
+        .expect("joint fixture carries membership")
+        .clone();
+    let metadata = expected
+        .snapshot
+        .metadata
+        .clone()
+        .with_committed_configuration(rafter::SnapshotCommittedConfiguration::new(
+            Some(CommittedConfiguration {
+                index: LogIndex(1),
+                config_id: ConfigurationId(8),
+            }),
+            membership,
+        ));
+    let wrong_snapshot = rafter::RaftSnapshot::from_payload(metadata, &expected.payload);
+    install_mutated_source_snapshot(
+        &mut state,
+        wrong_snapshot,
+        expected.payload.as_ref().to_vec(),
+    );
+
+    let failure = check_snapshot_payload_binding(&state.state, &[]).expect_err(
+        "snapshot configuration identity differing from the witnessed reference state must fail",
+    );
+    assert!(failure
+        .message
+        .contains("committed configuration identity differs"));
+}
+
+fn install_mutated_source_snapshot(
+    state: &mut RestartSnapshotState,
+    snapshot: rafter::RaftSnapshot,
+    payload: Vec<u8>,
+) {
+    state
+        .state
+        .inject_snapshot_payload(NodeId(1), &snapshot, payload);
+    state
+        .state
+        .inject_bootstrap_state(NodeId(1), bootstrap_with_snapshot(Term(2), snapshot, &[]))
+        .expect("mutated source snapshot remains structurally valid");
+    state.state.refresh_snapshot_history();
+}
+
+#[test]
 fn snapshot_transfer_identity_detects_install_different_from_delivery() {
     let mut state = RestartSnapshotState::snapshot_transfer();
     let expected = state
@@ -408,6 +532,20 @@ fn restart_snapshot_safety_rejects_snapshot_bytes_as_log_apply() {
         .as_ref()
         .expect("fixture has an expected snapshot")
         .clone();
+    state
+        .state
+        .inject_bootstrap_state(
+            NodeId(2),
+            bootstrap_state(
+                Term(2),
+                &[
+                    (1, Term(1), b"old prefix"),
+                    (2, Term(1), expected.payload.as_ref()),
+                ],
+            ),
+        )
+        .expect("target prefix remains structurally valid");
+    state.state.refresh_snapshot_history();
     let before = state.state.cluster().clone();
     state
         .state

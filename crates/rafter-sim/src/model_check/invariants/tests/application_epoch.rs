@@ -276,17 +276,17 @@ fn read_reconstruction_ignores_values_from_previous_application_epoch() {
 
 #[test]
 fn replayed_index_must_match_prior_command_across_epochs() {
-    let mut state = ExplorationState::new(one_node_cluster());
-    for (epoch, payload) in [(0, b"original".as_slice()), (1, b"different".as_slice())] {
-        state.inject_execution_witness(execution_witness(
-            1,
-            epoch,
-            1,
-            1,
-            LogEntryKind::Application(payload.to_vec().into()),
-            initial_reference_state(),
-        ));
-    }
+    let mut state = state_with_committed_application_witness(b"original");
+    crate::model_check::state::restart_node_losing_application_state(&mut state, NodeId(1), &[])
+        .expect("application-loss transition must replay the committed witness");
+    assert_eq!(state.cluster().application_epoch(NodeId(1)), 1);
+    crate::model_check::state::record_execution_corruption(
+        &mut state,
+        crate::model_check::state::ExecutionRecorderCorruption::EntryKind(
+            LogEntryKind::Application(b"different".to_vec().into()),
+        ),
+    )
+    .expect("real witness is available to the recorder corruption fixture");
 
     let failure = check_execution_history_agreement(&state, &[])
         .expect_err("different commands at the same log index must still fail");
