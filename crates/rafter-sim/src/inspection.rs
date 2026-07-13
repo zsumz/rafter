@@ -136,31 +136,37 @@ impl Cluster {
         self.node(node_id).committed_configuration_state()
     }
 
-    /// Returns a compact durable-state fingerprint for `node_id`.
+    /// Returns an exact durable-state image for `node_id`, or `None` when an
+    /// installed snapshot descriptor has no matching durable payload bytes.
     #[must_use]
-    pub fn durable_state_digest(&self, node_id: NodeId) -> DurableStateDigest {
+    pub fn durable_state_digest(&self, node_id: NodeId) -> Option<DurableStateDigest> {
         let bootstrap = self.bootstrap_state(node_id);
-        DurableStateDigest {
-            current_term: bootstrap.current_term,
-            voted_for: bootstrap.voted_for,
-            commit_index: bootstrap.commit_index,
-            committed_configuration: bootstrap.committed_configuration,
-            snapshot: bootstrap
-                .snapshot
-                .as_ref()
-                .map(|snapshot| DurableSnapshotDigest {
+        let snapshot = match bootstrap.snapshot.as_ref() {
+            Some(snapshot) => {
+                let application_payload = self.snapshot_payload(node_id, snapshot)?.to_vec();
+                Some(DurableSnapshotDigest {
                     transfer_id: snapshot.transfer_id(),
                     last_included_index: snapshot.metadata.last_included_index,
                     last_included_term: snapshot.metadata.last_included_term,
                     hard_state_term: snapshot.metadata.hard_state_term,
                     application_payload_len: snapshot.application_payload_len,
                     application_payload_crc32: snapshot.application_payload_crc32,
+                    application_payload,
                     committed_configuration: snapshot.metadata.committed_configuration_state(),
-                }),
+                })
+            }
+            None => None,
+        };
+        Some(DurableStateDigest {
+            current_term: bootstrap.current_term,
+            voted_for: bootstrap.voted_for,
+            commit_index: bootstrap.commit_index,
+            committed_configuration: bootstrap.committed_configuration,
+            snapshot,
             log: bootstrap.log,
             application_epoch: self.application_epoch(node_id),
             applied_through: self.durable_applied_floor(node_id),
-        }
+        })
     }
 
     /// Captures `node_id` as a restart bootstrap state.
