@@ -17,7 +17,8 @@ use crate::model_check::{
     helpers::{deliver_all_in_state, elect_node_one_in_state},
     scheduling::SoakOperation,
     soak::{SoakAction, SoakActionKind, SoakConfig, SoakFailure},
-    state::apply_soak_action,
+    state::{apply_soak_action, ExplorationState},
+    ProposalId,
 };
 
 pub(super) fn run_proposal_progress_liveness_check(
@@ -126,6 +127,8 @@ pub(super) fn run_proposal_termination_liveness_check(
 
     let mut trace = Vec::new();
     let mut observed_actions = BTreeSet::new();
+    isolate_node_one(&mut state, &mut trace, &mut observed_actions);
+
     let Some(proposal_id) =
         issue_liveness_proposal(&mut state, NodeId(1), &mut trace, &mut observed_actions)
     else {
@@ -138,29 +141,45 @@ pub(super) fn run_proposal_termination_liveness_check(
         ));
     };
     let stable_leader_at_acceptance = single_leader(&state) == Some(NodeId(1));
-
-    for peer in [NodeId(2), NodeId(3)] {
-        apply_soak_action(
-            &mut state,
-            SoakOperation::Partition {
-                a: NodeId(1),
-                b: peer,
-            },
-        );
-        trace.push(SoakAction::Partition {
-            a: NodeId(1),
-            b: peer,
-        });
-        observed_actions.insert(SoakActionKind::Partition);
-    }
     check_soak_safety(&state, config, &trace)?;
 
-    let termination = drive_liveness_rounds_until_observed(
+    let competing_leader = drive_liveness_rounds_until_observed(
         &mut state,
         config,
         &mut trace,
         &mut observed_actions,
         budget,
+        |state| {
+            state
+                .cluster()
+                .leaders()
+                .into_iter()
+                .any(|leader| leader != NodeId(1))
+        },
+        |_| true,
+    )?;
+    if !competing_leader.completed {
+        return Err(proposal_termination_failure(
+            &state,
+            config,
+            &trace,
+            proposal_id,
+            budget,
+        ));
+    }
+
+    apply_soak_action(&mut state, SoakOperation::Heal);
+    trace.push(SoakAction::Heal);
+    observed_actions.insert(SoakActionKind::Heal);
+    check_soak_safety(&state, config, &trace)?;
+
+    let remaining_budget = budget.saturating_sub(competing_leader.rounds_used);
+    let termination = drive_liveness_rounds_until_observed(
+        &mut state,
+        config,
+        &mut trace,
+        &mut observed_actions,
+        remaining_budget,
         |state| liveness_proposal_terminal_outcome(state, proposal_id).is_some(),
         |_| true,
     )?;
@@ -174,46 +193,103 @@ pub(super) fn run_proposal_termination_liveness_check(
                 "proposal-termination monitor reported completion without an outcome".to_owned(),
             ));
         };
-        return Ok(LivenessFeatureReport {
-            invariant_id: "LV-02",
-            clause_ids: LV_02_TERMINATION_CLAUSE_IDS,
-            feature_id: "proposal-termination",
-            scenario_id: "accepted-proposal-authority-loss-v1",
-            observation_id: "terminated_liveness_proposals",
-            preconditions: LivenessPreconditions::capture(
-                &state,
-                LivenessPreconditionProbe {
-                    leader: single_leader(&state),
-                    fault_requirement: FaultStateRequirement::ActivePartition,
-                    stable_leader_observed: Some(stable_leader_at_acceptance),
-                    accepted_proposal_observed: Some(true),
-                    authority_loss_observed: Some(single_leader(&state) != Some(NodeId(1))),
-                },
-            ),
+        return Ok(proposal_termination_report(
+            &state,
+            proposal_id,
+            outcome,
+            stable_leader_at_acceptance,
             round_budget,
-            round_limit: budget,
-            rounds_used: termination.rounds_used,
-            fault_cycle: None,
-            stable_leader: Some(StableLeaderEvidence {
-                leader: NodeId(1),
-                stable_rounds: 1,
-                remained_leader_through_probe: false,
-            }),
-            proposal: Some(ProposalEvidence {
-                proposal_id,
-                outcome,
-            }),
-        });
+            budget,
+            competing_leader.rounds_used + termination.rounds_used,
+        ));
     }
 
-    Err(soak_liveness_failure(
+    Err(proposal_termination_failure(
         &state,
         config,
         &trace,
+        proposal_id,
+        budget,
+    ))
+}
+
+fn isolate_node_one(
+    state: &mut ExplorationState,
+    trace: &mut Vec<SoakAction>,
+    observed_actions: &mut BTreeSet<SoakActionKind>,
+) {
+    for peer in [NodeId(2), NodeId(3)] {
+        apply_soak_action(
+            state,
+            SoakOperation::Partition {
+                a: NodeId(1),
+                b: peer,
+            },
+        );
+        trace.push(SoakAction::Partition {
+            a: NodeId(1),
+            b: peer,
+        });
+        observed_actions.insert(SoakActionKind::Partition);
+    }
+}
+
+fn proposal_termination_failure(
+    state: &ExplorationState,
+    config: SoakConfig,
+    trace: &[SoakAction],
+    proposal_id: ProposalId,
+    budget: usize,
+) -> SoakFailure {
+    soak_liveness_failure(
+        state,
+        config,
+        trace,
         catalog::LV_02_PROPOSAL_PROGRESS,
         format!(
             "accepted proposal {} did not reach an explicit terminal state within {budget} authority-loss rounds",
             proposal_id.0
         ),
-    ))
+    )
+}
+
+fn proposal_termination_report(
+    state: &ExplorationState,
+    proposal_id: ProposalId,
+    outcome: ProposalTerminalOutcome,
+    stable_leader_at_acceptance: bool,
+    round_budget: LivenessRoundBudget,
+    round_limit: usize,
+    rounds_used: usize,
+) -> LivenessFeatureReport {
+    LivenessFeatureReport {
+        invariant_id: "LV-02",
+        clause_ids: LV_02_TERMINATION_CLAUSE_IDS,
+        feature_id: "proposal-termination",
+        scenario_id: "accepted-proposal-authority-loss-v1",
+        observation_id: "terminated_liveness_proposals",
+        preconditions: LivenessPreconditions::capture(
+            state,
+            LivenessPreconditionProbe {
+                leader: single_leader(state),
+                fault_requirement: FaultStateRequirement::Stopped,
+                stable_leader_observed: Some(stable_leader_at_acceptance),
+                accepted_proposal_observed: Some(true),
+                authority_loss_observed: Some(single_leader(state) != Some(NodeId(1))),
+            },
+        ),
+        round_budget,
+        round_limit,
+        rounds_used,
+        fault_cycle: None,
+        stable_leader: Some(StableLeaderEvidence {
+            leader: NodeId(1),
+            stable_rounds: 1,
+            remained_leader_through_probe: false,
+        }),
+        proposal: Some(ProposalEvidence {
+            proposal_id,
+            outcome,
+        }),
+    }
 }

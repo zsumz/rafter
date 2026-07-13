@@ -1,5 +1,6 @@
-use rafter::{MembershipConfig, MembershipSet, NodeId};
+use rafter::{Input, LocalProposalId, MembershipConfig, MembershipSet, NodeId};
 
+use crate::records::LocalProposalEvent;
 use crate::Cluster;
 
 use super::super::super::{helpers::proposal_payload, scheduling::Operation};
@@ -7,6 +8,7 @@ use super::super::super::{helpers::proposal_payload, scheduling::Operation};
 #[derive(Clone, Debug, Default)]
 pub(in crate::model_check::state::application) struct AppliedOperationEffects {
     pub(in crate::model_check::state::application) emitted: Vec<crate::Envelope>,
+    pub(in crate::model_check::state::application) local_proposals: Vec<LocalProposalEvent>,
 }
 
 pub(in crate::model_check::state::application) fn apply_to_cluster(
@@ -14,11 +16,28 @@ pub(in crate::model_check::state::application) fn apply_to_cluster(
     operation: Operation,
 ) -> AppliedOperationEffects {
     match operation {
-        Operation::Tick(node_id) => cluster.tick(node_id),
+        Operation::Tick(node_id) => {
+            let outputs = cluster.node_mut(node_id).step(Input::Tick);
+            let recorded = cluster.record_outputs_observed(node_id, outputs);
+            return AppliedOperationEffects {
+                emitted: recorded.emitted,
+                local_proposals: recorded.local_proposals,
+            };
+        }
         Operation::Restart(_) => unreachable!("restart operations need invariant context"),
         Operation::Propose {
             to, proposal_id, ..
-        } => cluster.propose(to, proposal_payload(proposal_id)),
+        } => {
+            let outputs = cluster.node_mut(to).step(Input::TrackedClientProposal {
+                proposal_id: LocalProposalId(proposal_id.0),
+                payload: proposal_payload(proposal_id),
+            });
+            let recorded = cluster.record_outputs_observed(to, outputs);
+            return AppliedOperationEffects {
+                emitted: recorded.emitted,
+                local_proposals: recorded.local_proposals,
+            };
+        }
         Operation::ReadIndex { to, request_id } => cluster.read_index(to, request_id),
         Operation::AddLearner { to, learner_id } => cluster.add_learner(to, learner_id),
         Operation::RemoveLearner { to, learner_id } => {
@@ -43,8 +62,10 @@ pub(in crate::model_check::state::application) fn apply_to_cluster(
         Operation::Transfer { from, target } => cluster.transfer_leadership(from, target),
         Operation::DeliverReadyAt(position) => {
             if let Some(queued) = cluster.network.remove(position) {
+                let recorded = cluster.deliver_observed(queued.envelope);
                 return AppliedOperationEffects {
-                    emitted: cluster.deliver(queued.envelope),
+                    emitted: recorded.emitted,
+                    local_proposals: recorded.local_proposals,
                 };
             }
         }

@@ -26,9 +26,7 @@ fn observed_operations(history: &ClientHistory) -> Vec<Operation> {
     for write in history.writes.values() {
         let (completed_at, optional) = match write.status {
             ClientWriteStatus::Completed { completed_at, .. } => (completed_at, false),
-            ClientWriteStatus::Unknown { .. } | ClientWriteStatus::Dropped { .. } => {
-                (u64::MAX, true)
-            }
+            ClientWriteStatus::Unknown { .. } => (u64::MAX, true),
             ClientWriteStatus::Pending
             | ClientWriteStatus::Accepted { .. }
             | ClientWriteStatus::Rejected => continue,

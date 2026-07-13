@@ -114,7 +114,7 @@ fn required_liveness_features() -> Vec<ExpectedLivenessFeature> {
             stable_rounds: StableRoundsExpectation::Exact(1),
             proposal_outcome: ProposalOutcomeExpectation::ExplicitTerminal,
             authority_loss: true,
-            fault_requirement: FaultRequirement::ActivePartition,
+            fault_requirement: FaultRequirement::Stopped,
             fault_cycle: false,
             phase_count: 1,
             fixed_rounds: 0,

@@ -559,7 +559,6 @@ fn validate_proposal_outcome(
             outcome,
             ProposalTerminalOutcome::Committed
                 | ProposalTerminalOutcome::Rejected
-                | ProposalTerminalOutcome::Canceled
                 | ProposalTerminalOutcome::Unknown
         ),
         _ => false,

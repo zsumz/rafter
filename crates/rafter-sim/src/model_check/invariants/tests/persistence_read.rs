@@ -145,24 +145,18 @@ fn exact_durable_restart_detects_application_recovery_metadata_change() {
 
 #[test]
 fn applied_floor_recovery_rejects_replay_at_or_below_floor() {
-    let cluster = one_node_cluster();
-    let recovered = [Applied {
-        node_id: NodeId(1),
-        application_epoch: 0,
-        commit_index_at_emit: LogIndex(3),
-        index: LogIndex(2),
-        payload: b"already-applied".to_vec().into(),
-    }];
+    let (cluster, expected, recovered) = recorded_mixed_recovery();
 
     let failure = check_recovery_applied_floor_exclusion(
         &cluster,
         AppliedFloorRecovery {
             node_id: NodeId(1),
-            applied_floor: LogIndex(2),
+            application_epoch: 0,
+            applied_floor: LogIndex(1),
             commit_index: LogIndex(3),
             last_log_index: LogIndex(3),
-            expected_replay: &[],
-            recovered_applies: &recovered,
+            expected_replay: &expected,
+            recovered_execution: &recovered,
         },
         &[],
     )
@@ -179,71 +173,57 @@ fn applied_floor_recovery_rejects_replay_at_or_below_floor() {
 
 #[test]
 fn applied_floor_recovery_rejects_missing_committed_suffix_entry() {
-    let cluster = one_node_cluster();
-    let expected = [
-        (LogIndex(3), b"three".to_vec().into()),
-        (LogIndex(4), b"four".to_vec().into()),
-    ];
-    let recovered = [Applied {
-        node_id: NodeId(1),
-        application_epoch: 0,
-        commit_index_at_emit: LogIndex(4),
-        index: LogIndex(4),
-        payload: b"four".to_vec().into(),
-    }];
+    let (cluster, expected, mut recovered) = recorded_mixed_recovery();
+    recovered.remove(1);
 
     let failure = check_recovery_exact_committed_suffix(
         &cluster,
         AppliedFloorRecovery {
             node_id: NodeId(1),
-            applied_floor: LogIndex(2),
-            commit_index: LogIndex(4),
-            last_log_index: LogIndex(4),
+            application_epoch: 0,
+            applied_floor: LogIndex::ZERO,
+            commit_index: LogIndex(3),
+            last_log_index: LogIndex(3),
             expected_replay: &expected,
-            recovered_applies: &recovered,
+            recovered_execution: &recovered,
         },
         &[],
     )
     .expect_err("omitting a committed suffix entry must fail PS-04.b");
     assert_eq!(failure.invariant(), catalog::PS_04_APPLIED_FLOOR_RECOVERY);
-    assert!(failure
-        .message
-        .contains("expected [LogIndex(3), LogIndex(4)]"));
+    assert!(failure.message.contains("replayed logical entries"));
+    assert!(failure.message.contains("Configuration"));
 }
 
 #[test]
 fn pending_application_replay_restarts_through_the_instrumented_transition() {
     let config = NodeConfig::new(NodeId(1), Vec::new(), 3).expect("test config is valid");
     let mut state = ExplorationState::new(Cluster::new(vec![config]));
-    let payload = b"pending-application-replay".to_vec();
+    let bootstrap = mixed_replay_bootstrap();
     apply_pending_application_replay_seed(
         &mut state,
         PendingApplicationReplaySeed {
             node_id: NodeId(1),
-            bootstrap: BootstrapState {
-                current_term: Term(1),
-                voted_for: None,
-                commit_index: LogIndex(1),
-                committed_configuration: None,
-                snapshot: None,
-                log: vec![BootstrapLogEntry::application(
-                    LogIndex(1),
-                    Term(1),
-                    payload.clone(),
-                )],
-            },
+            bootstrap,
         },
     )
     .expect("pending replay seed is valid");
-    state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(1), Term(1));
+    state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(3), Term(1));
 
     assert!(state.cluster().applied().is_empty());
     restart_node(&mut state, NodeId(1), &[]).expect("restart replays the committed suffix");
 
-    let recovered = state.cluster().applied();
-    assert_eq!(recovered.len(), 1);
-    assert_eq!(recovered[0].index, LogIndex(1));
-    assert_eq!(recovered[0].payload.as_ref(), payload.as_slice());
+    let recovered = state.cluster().execution_history();
+    assert_eq!(recovered.len(), 3);
+    assert_eq!(recovered[0].entry.kind, LogEntryKind::Noop);
+    assert!(matches!(
+        recovered[1].entry.kind,
+        LogEntryKind::Configuration(_)
+    ));
+    assert_eq!(
+        recovered[2].entry.kind.application_payload(),
+        Some(b"pending-application-replay".as_slice())
+    );
     assert!(state
         .observation_set()
         .contains(Observation::RestartNonemptyExpectedReplayComparisons));
@@ -252,20 +232,21 @@ fn pending_application_replay_restarts_through_the_instrumented_transition() {
             .cluster()
             .durable_state_digest(NodeId(1))
             .applied_through,
-        LogIndex(1)
+        LogIndex(3)
     );
 }
 
 #[test]
 fn applied_floor_recovery_rejects_floor_beyond_durable_bounds() {
-    let cluster = one_node_cluster();
+    let (cluster, expected, recovered) = recorded_mixed_recovery();
     let base = AppliedFloorRecovery {
         node_id: NodeId(1),
+        application_epoch: 0,
         applied_floor: LogIndex(4),
         commit_index: LogIndex(3),
-        last_log_index: LogIndex(4),
-        expected_replay: &[],
-        recovered_applies: &[],
+        last_log_index: LogIndex(3),
+        expected_replay: &expected,
+        recovered_execution: &recovered,
     };
     let commit_failure = check_recovery_applied_floor_bounds(&cluster, base, &[])
         .expect_err("floor beyond commit must fail PS-04.c");
@@ -282,6 +263,55 @@ fn applied_floor_recovery_rejects_floor_beyond_durable_bounds() {
     )
     .expect_err("floor beyond log coverage must fail PS-04.c");
     assert!(log_failure.message.contains("exceeds local last log index"));
+}
+
+fn recorded_mixed_recovery() -> (Cluster, Vec<ExecutedLogEntry>, Vec<ExecutionWitness>) {
+    let mut cluster = one_node_cluster();
+    let bootstrap = mixed_replay_bootstrap();
+    let expected = bootstrap
+        .log
+        .iter()
+        .map(|entry| ExecutedLogEntry {
+            index: entry.index,
+            term: entry.term,
+            kind: entry.kind.clone(),
+        })
+        .collect::<Vec<_>>();
+    cluster
+        .seed_pending_application_replay(NodeId(1), bootstrap.clone())
+        .expect("mixed pending replay seed is valid");
+    let history_start = cluster.execution_history().len();
+    cluster
+        .restart_node_from_bootstrap(NodeId(1), bootstrap)
+        .expect("mixed committed suffix reopens");
+    let recovered = cluster.execution_history()[history_start..].to_vec();
+    assert_eq!(recovered.len(), expected.len());
+    (cluster, expected, recovered)
+}
+
+fn mixed_replay_bootstrap() -> BootstrapState {
+    let membership = MembershipSet::new(vec![NodeId(1), NodeId(2), NodeId(3)], Vec::new())
+        .expect("mixed recovery membership is valid");
+    let configuration = ConfigurationEntry::stable(ConfigurationId(7), membership);
+    BootstrapState {
+        current_term: Term(1),
+        voted_for: None,
+        commit_index: LogIndex(3),
+        committed_configuration: Some(CommittedConfiguration {
+            index: LogIndex(2),
+            config_id: ConfigurationId(7),
+        }),
+        snapshot: None,
+        log: vec![
+            BootstrapLogEntry::noop(LogIndex(1), Term(1)),
+            BootstrapLogEntry::configuration(LogIndex(2), Term(1), configuration),
+            BootstrapLogEntry::application(
+                LogIndex(3),
+                Term(1),
+                b"pending-application-replay".to_vec(),
+            ),
+        ],
+    }
 }
 
 #[test]

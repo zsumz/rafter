@@ -1,6 +1,6 @@
-use rafter::{LogIndex, NodeId, SharedPayload};
+use rafter::{LogIndex, NodeId};
 
-use crate::{Applied, Cluster, DurableStateDigest};
+use crate::{Cluster, DurableStateDigest, ExecutedLogEntry, ExecutionWitness};
 
 use super::{catalog, summarize, Action, Failure};
 
@@ -140,11 +140,12 @@ fn ps03_failure(cluster: &Cluster, node_id: NodeId, trace: &[Action], message: &
 #[derive(Clone, Copy)]
 pub(crate) struct AppliedFloorRecovery<'a> {
     pub(crate) node_id: NodeId,
+    pub(crate) application_epoch: u64,
     pub(crate) applied_floor: LogIndex,
     pub(crate) commit_index: LogIndex,
     pub(crate) last_log_index: LogIndex,
-    pub(crate) expected_replay: &'a [(LogIndex, SharedPayload)],
-    pub(crate) recovered_applies: &'a [Applied],
+    pub(crate) expected_replay: &'a [ExecutedLogEntry],
+    pub(crate) recovered_execution: &'a [ExecutionWitness],
 }
 
 pub(crate) fn check_applied_floor_recovery(
@@ -199,23 +200,24 @@ pub(crate) fn check_recovery_applied_floor_exclusion(
     let AppliedFloorRecovery {
         node_id,
         applied_floor,
-        recovered_applies,
+        recovered_execution,
         ..
     } = recovery;
-    let actual_replay = recovered_applies
+    let actual_replay = recovered_execution
         .iter()
-        .filter(|applied| applied.node_id == node_id)
-        .map(|applied| (applied.index, applied.payload.clone()))
+        .filter(|witness| witness.node_id == node_id)
+        .map(|witness| &witness.entry)
         .collect::<Vec<_>>();
-    if let Some((index, _)) = actual_replay
+    if let Some(entry) = actual_replay
         .iter()
-        .find(|(index, _)| *index <= applied_floor)
+        .find(|entry| entry.index <= applied_floor)
     {
         return Err(ps04_failure(
             cluster,
             trace,
             format!(
-                "{node_id} replayed application entry at {index} at or below durable applied floor {applied_floor}"
+                "{node_id} replayed logical entry at {} at or below durable applied floor {applied_floor}",
+                entry.index
             ),
         ));
     }
@@ -229,43 +231,59 @@ pub(crate) fn check_recovery_exact_committed_suffix(
 ) -> Result<(), Failure> {
     let AppliedFloorRecovery {
         node_id,
+        application_epoch,
         applied_floor,
         commit_index,
         expected_replay,
-        recovered_applies,
+        recovered_execution,
         ..
     } = recovery;
-    let actual_replay = recovered_applies
+    if let Some(witness) = recovered_execution.iter().find(|witness| {
+        witness.node_id != node_id
+            || witness.application_epoch != application_epoch
+            || witness.commit_index_at_emit < witness.entry.index
+            || witness.commit_index_at_emit > commit_index
+    }) {
+        return Err(ps04_failure(
+            cluster,
+            trace,
+            format!(
+                "{node_id} recovered malformed execution witness for {} at epoch {} with commit floor {}",
+                witness.entry.index, witness.application_epoch, witness.commit_index_at_emit
+            ),
+        ));
+    }
+    let actual_replay = recovered_execution
         .iter()
-        .filter(|applied| applied.node_id == node_id)
-        .map(|applied| (applied.index, applied.payload.clone()))
+        .map(|witness| witness.entry.clone())
         .collect::<Vec<_>>();
-    if let Some((index, _)) = actual_replay
+    if let Some(entry) = actual_replay
         .iter()
-        .find(|(index, _)| *index > commit_index)
+        .find(|entry| entry.index > commit_index)
     {
         return Err(ps04_failure(
             cluster,
             trace,
             format!(
-                "{node_id} replayed application entry at {index} above commit index {commit_index}"
+                "{node_id} replayed logical entry at {} above commit index {commit_index}",
+                entry.index
             ),
         ));
     }
     if actual_replay != expected_replay {
         let actual_indexes = actual_replay
             .iter()
-            .map(|(index, _)| *index)
+            .map(|entry| (entry.index, entry.term, &entry.kind))
             .collect::<Vec<_>>();
         let expected_indexes = expected_replay
             .iter()
-            .map(|(index, _)| *index)
+            .map(|entry| (entry.index, entry.term, &entry.kind))
             .collect::<Vec<_>>();
         return Err(ps04_failure(
             cluster,
             trace,
             format!(
-                "{node_id} replayed application indexes {actual_indexes:?}; expected {expected_indexes:?} above durable applied floor {applied_floor}"
+                "{node_id} replayed logical entries {actual_indexes:?}; expected {expected_indexes:?} above durable applied floor {applied_floor}"
             ),
         ));
     }

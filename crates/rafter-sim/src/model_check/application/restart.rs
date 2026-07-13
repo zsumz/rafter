@@ -1,6 +1,6 @@
-use rafter::{BootstrapState, LogIndex, Node, NodeId, PendingSnapshotTransfer, SharedPayload};
+use rafter::{BootstrapState, LogIndex, Node, NodeId, PendingSnapshotTransfer};
 
-use crate::{DurableStateDigest, StagedSnapshotTransfer};
+use crate::{DurableStateDigest, ExecutedLogEntry, StagedSnapshotTransfer};
 
 use super::super::super::{
     catalog,
@@ -26,7 +26,7 @@ pub(super) fn restart_node_inner(
         .get(&node_id)
         .and_then(Node::pending_snapshot_transfer);
     let before_staged = state.cluster.snapshot_staging.get(&node_id).cloned();
-    let before_applied_len = state.cluster.applied.len();
+    let before_execution_len = state.cluster.execution_history().len();
 
     state
         .cluster
@@ -44,16 +44,17 @@ pub(super) fn restart_node_inner(
 
     resume_pending_snapshot_transfer(state, node_id, before_pending.clone(), before_staged, trace)?;
 
-    let recovered_applies = state.cluster.applied[before_applied_len..].to_vec();
+    let recovered_execution = state.cluster.execution_history()[before_execution_len..].to_vec();
     check_applied_floor_recovery(
         &state.cluster,
         AppliedFloorRecovery {
             node_id,
+            application_epoch: before_digest.application_epoch,
             applied_floor: before_applied_floor,
             commit_index: before.commit_index,
             last_log_index: before_last_log_index,
             expected_replay: &expected_replay,
-            recovered_applies: &recovered_applies,
+            recovered_execution: &recovered_execution,
         },
         trace,
     )?;
@@ -86,7 +87,7 @@ pub(super) fn restart_node_inner(
 
     let expected_applied_floor = expected_replay
         .last()
-        .map_or(before_applied_floor, |(index, _)| *index);
+        .map_or(before_applied_floor, |entry| entry.index);
     check_restart_digest(
         state,
         node_id,
@@ -165,7 +166,7 @@ fn mark_restart_observations(
     after: &BootstrapState,
     before_digest: &DurableStateDigest,
     applied_floor: LogIndex,
-    expected_replay: &[(LogIndex, SharedPayload)],
+    expected_replay: &[ExecutedLogEntry],
 ) {
     state.mark_observation(Observation::DurableRestartComparisons);
     state.mark_observation(Observation::RestartTermComparisons);
@@ -219,16 +220,15 @@ fn restart_failure(
 fn expected_replay_from_bootstrap(
     before: &BootstrapState,
     before_applied_floor: LogIndex,
-) -> Vec<(LogIndex, SharedPayload)> {
+) -> Vec<ExecutedLogEntry> {
     before
         .log
         .iter()
         .filter(|entry| entry.index > before_applied_floor && entry.index <= before.commit_index)
-        .filter_map(|entry| {
-            entry
-                .kind
-                .application_payload()
-                .map(|payload| (entry.index, payload.to_vec().into()))
+        .map(|entry| ExecutedLogEntry {
+            index: entry.index,
+            term: entry.term,
+            kind: entry.kind.clone(),
         })
         .collect()
 }

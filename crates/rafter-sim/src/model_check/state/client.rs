@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
 
-use rafter::{LogIndex, NodeId, Role, SharedPayload, Term};
+use rafter::{LocalProposalDropReason, LogIndex, NodeId, SharedPayload, Term};
 
+use crate::records::LocalProposalEvent;
 use crate::{Applied, Cluster};
 
 use super::super::{helpers::proposal_payload, ProposalId};
@@ -56,19 +57,12 @@ pub(crate) enum ClientWriteStatus {
         reason: ClientWriteUnknownReason,
     },
     Rejected,
-    Dropped {
-        reason: ClientWriteDropReason,
-    },
 }
 
 #[derive(Clone, Copy, Debug, Hash)]
 pub(crate) enum ClientWriteUnknownReason {
     StaleLeader,
-}
-
-#[derive(Clone, Copy, Debug, Hash)]
-pub(crate) enum ClientWriteDropReason {
-    AuthorityLost,
+    LocalTrackingDropped,
 }
 
 #[derive(Clone, Debug, Hash)]
@@ -174,77 +168,155 @@ impl ExplorationState {
 
     pub(in crate::model_check) fn refresh_client_history(&mut self) {
         let mut next_event = self.client_history.next_event;
-        self.refresh_client_writes(&mut next_event);
         self.refresh_client_reads(&mut next_event);
         self.client_history.next_event = next_event;
     }
 
-    fn refresh_client_writes(&mut self, next_event: &mut u64) {
-        for write in self.client_history.writes.values_mut() {
-            if matches!(write.status, ClientWriteStatus::Completed { .. }) {
-                continue;
+    pub(in crate::model_check) fn record_local_proposal_events(
+        &mut self,
+        events: &[LocalProposalEvent],
+    ) {
+        for event in events {
+            self.record_local_proposal_event(event);
+        }
+    }
+
+    fn record_local_proposal_event(&mut self, event: &LocalProposalEvent) {
+        match event {
+            LocalProposalEvent::Appended {
+                node_id,
+                proposal_id,
+                index,
+                term,
+            } => {
+                self.record_local_proposal_appended(*node_id, proposal_id.0, *index, *term);
             }
-            if let Some(applied) = self
+            LocalProposalEvent::Applied {
+                node_id,
+                proposal_id,
+                index,
+                term,
+                payload,
+            } => {
+                self.record_local_proposal_applied(*node_id, proposal_id.0, *index, *term, payload);
+            }
+            LocalProposalEvent::Dropped {
+                node_id,
+                proposal_id,
+                index,
+                term,
+                reason,
+            } => {
+                self.record_local_proposal_dropped(*node_id, proposal_id.0, *index, *term, *reason);
+            }
+            LocalProposalEvent::Rejected {
+                node_id,
+                proposal_id,
+                ..
+            } => {
+                self.record_local_proposal_rejected(*node_id, proposal_id.0);
+            }
+        }
+    }
+
+    fn record_local_proposal_appended(
+        &mut self,
+        node_id: NodeId,
+        proposal_id: u64,
+        index: LogIndex,
+        term: Term,
+    ) {
+        let proposal_id = ProposalId(proposal_id);
+        let Some(write) = self.client_history.writes.get(&proposal_id) else {
+            return;
+        };
+        let matches_operation = write.node_id == node_id
+            && self
                 .cluster
-                .applied()
-                .iter()
-                .find(|applied| applied.payload == write.payload)
-            {
-                write.status = ClientWriteStatus::Completed {
-                    node_id: applied.node_id,
-                    index: applied.index,
-                    completed_at: *next_event,
-                };
-                *next_event += 1;
-                continue;
-            }
-            match write.status {
-                ClientWriteStatus::Pending => {
-                    let accepted = self
-                        .cluster
-                        .bootstrap_state(write.node_id)
-                        .log
-                        .into_iter()
-                        .find(|entry| {
-                            entry.kind.application_payload() == Some(write.payload.as_slice())
-                        });
-                    write.status = accepted.map_or(ClientWriteStatus::Rejected, |entry| {
-                        ClientWriteStatus::Accepted {
-                            node_id: write.node_id,
-                            index: entry.index,
-                            term: entry.term,
-                        }
-                    });
-                }
-                ClientWriteStatus::Accepted {
+                .bootstrap_state(node_id)
+                .log
+                .into_iter()
+                .find(|entry| entry.index == index)
+                .is_some_and(|entry| {
+                    entry.term == term
+                        && entry.kind.application_payload() == Some(write.payload.as_slice())
+                });
+        if matches_operation && matches!(write.status, ClientWriteStatus::Pending) {
+            if let Some(write) = self.client_history.writes.get_mut(&proposal_id) {
+                write.status = ClientWriteStatus::Accepted {
                     node_id,
                     index,
                     term,
-                } => {
-                    let authority_lost = self.cluster.role(node_id) != Role::Leader
-                        || self.cluster.current_term(node_id) != term
-                        || self
-                            .cluster
-                            .bootstrap_state(node_id)
-                            .log
-                            .iter()
-                            .find(|entry| entry.index == index)
-                            .is_none_or(|entry| {
-                                entry.term != term
-                                    || entry.kind.application_payload()
-                                        != Some(write.payload.as_slice())
-                            });
-                    if authority_lost {
-                        write.status = ClientWriteStatus::Dropped {
-                            reason: ClientWriteDropReason::AuthorityLost,
-                        };
-                    }
-                }
-                ClientWriteStatus::Completed { .. }
-                | ClientWriteStatus::Unknown { .. }
-                | ClientWriteStatus::Rejected
-                | ClientWriteStatus::Dropped { .. } => {}
+                };
             }
+        }
+    }
+
+    fn record_local_proposal_applied(
+        &mut self,
+        node_id: NodeId,
+        proposal_id: u64,
+        index: LogIndex,
+        term: Term,
+        payload: &SharedPayload,
+    ) {
+        let proposal_id = ProposalId(proposal_id);
+        let Some(write) = self.client_history.writes.get(&proposal_id) else {
+            return;
+        };
+        let exact_acceptance = matches!(
+            write.status,
+            ClientWriteStatus::Accepted {
+                node_id: accepted_by,
+                index: accepted_index,
+                term: accepted_term,
+            } if accepted_by == node_id && accepted_index == index && accepted_term == term
+        );
+        if !exact_acceptance || write.payload != *payload {
+            return;
+        }
+        let completed_at = self.client_history.next_event();
+        if let Some(write) = self.client_history.writes.get_mut(&proposal_id) {
+            write.status = ClientWriteStatus::Completed {
+                node_id,
+                index,
+                completed_at,
+            };
+        }
+    }
+
+    fn record_local_proposal_dropped(
+        &mut self,
+        node_id: NodeId,
+        proposal_id: u64,
+        index: LogIndex,
+        term: Term,
+        _reason: LocalProposalDropReason,
+    ) {
+        let proposal_id = ProposalId(proposal_id);
+        let Some(write) = self.client_history.writes.get_mut(&proposal_id) else {
+            return;
+        };
+        if matches!(
+            write.status,
+            ClientWriteStatus::Accepted {
+                node_id: accepted_by,
+                index: accepted_index,
+                term: accepted_term,
+            } if accepted_by == node_id && accepted_index == index && accepted_term == term
+        ) {
+            write.status = ClientWriteStatus::Unknown {
+                reason: ClientWriteUnknownReason::LocalTrackingDropped,
+            };
+        }
+    }
+
+    fn record_local_proposal_rejected(&mut self, node_id: NodeId, proposal_id: u64) {
+        let Some(write) = self.client_history.writes.get_mut(&ProposalId(proposal_id)) else {
+            return;
+        };
+        if write.node_id == node_id && matches!(write.status, ClientWriteStatus::Pending) {
+            write.status = ClientWriteStatus::Rejected;
         }
     }
 

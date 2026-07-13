@@ -1,7 +1,10 @@
 use rafter::{
-    BootstrapLogEntry, CommittedConfiguration, LogEntryKind, LogIndex, MembershipConfig, NodeId,
-    RaftSnapshotMetadata, SharedPayload, SnapshotTransferId, Term,
+    BootstrapLogEntry, CommittedConfiguration, LocalProposalDropReason, LocalProposalId,
+    LogEntryKind, LogIndex, MembershipConfig, NodeId, ProposalRejection, RaftSnapshotMetadata,
+    SharedPayload, SnapshotTransferId, Term,
 };
+
+use crate::Envelope;
 
 /// One application payload applied by a simulated node.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -14,9 +17,6 @@ pub struct Applied {
 }
 
 /// Exact identity of one logical entry incorporated into application state.
-/// No-op entries advance the execution cursor but do not produce an
-/// [`ExecutionWitness`] because they leave the reference application state
-/// unchanged.
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ExecutedLogEntry {
     pub index: LogIndex,
@@ -39,7 +39,7 @@ pub struct ReferenceState {
     pub committed_configuration: Option<CommittedConfiguration>,
 }
 
-/// Immutable witness for one state-machine-visible committed log application.
+/// Immutable witness for one committed logical log execution.
 ///
 /// Application commands and configuration entries share this record so the
 /// AP-02 oracle can detect cross-kind disagreement at the same logical index.
@@ -54,6 +54,46 @@ pub struct ExecutionWitness {
     pub entry: ExecutedLogEntry,
     pub prior_state: ReferenceState,
     pub resulting_state: ReferenceState,
+}
+
+/// Local-only proposal correlation emitted by one simulated node transition.
+///
+/// These events preserve the kernel's explicit outcome boundary without
+/// inferring acceptance, completion, or loss from payload equality or later
+/// protocol state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum LocalProposalEvent {
+    Appended {
+        node_id: NodeId,
+        proposal_id: LocalProposalId,
+        index: LogIndex,
+        term: Term,
+    },
+    Applied {
+        node_id: NodeId,
+        proposal_id: LocalProposalId,
+        index: LogIndex,
+        term: Term,
+        payload: SharedPayload,
+    },
+    Dropped {
+        node_id: NodeId,
+        proposal_id: LocalProposalId,
+        index: LogIndex,
+        term: Term,
+        reason: LocalProposalDropReason,
+    },
+    Rejected {
+        node_id: NodeId,
+        proposal_id: LocalProposalId,
+        reason: ProposalRejection,
+    },
+}
+
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub(crate) struct RecordedOutputs {
+    pub(crate) emitted: Vec<Envelope>,
+    pub(crate) local_proposals: Vec<LocalProposalEvent>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
