@@ -245,7 +245,7 @@ fn same_boundary_snapshot_pair_summary() -> Result<Summary, Failure> {
 
 fn snapshot_pair_state() -> Result<RestartSnapshotState, Failure> {
     let mut cluster = Cluster::new(three_node_configs());
-    let (snapshot, payload) = test_snapshot(1, 2, 1, 2, b"same-boundary-pair");
+    let (snapshot, payload) = test_snapshot(1, 2, 1, 2, b"snapshot boundary");
     cluster
         .restart_node_from_bootstrap(
             NodeId(1),
