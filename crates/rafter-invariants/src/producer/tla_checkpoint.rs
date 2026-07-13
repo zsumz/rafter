@@ -20,6 +20,7 @@ pub(crate) const RECOVERY_REPORT_KIND: &str = "tla-checkpoint-recovery-report";
 
 const CONTRACT_FILE: &str = "checkpoint-contract.json";
 const INVENTORY_FILE: &str = "checkpoint-inventory.json";
+const CACHE_VALID_FILE: &str = "CACHE_VALID";
 const INPUT_KINDS: [&str; 10] = [
     "tla-tool",
     "tla-spec",
@@ -145,6 +146,7 @@ pub(super) fn prepare(
     let source_prefix = source_ref.get(..12).unwrap_or(source_ref);
     let namespace = Path::new(&format!("{profile}-tla/{source_prefix}/checkpoint")).to_path_buf();
     fs::create_dir_all(&root)?;
+    remove_file_if_present(&root.join(CACHE_VALID_FILE))?;
 
     let contract_path = root.join(CONTRACT_FILE);
     let inventory_path = root.join(INVENTORY_FILE);
@@ -185,7 +187,7 @@ pub(super) fn prepare(
     let report = RecoveryReport {
         schema_version: 1,
         status,
-        contract_sha256,
+        contract_sha256: contract_sha256.clone(),
         candidate_present,
         recovery_attempted: recover_from.is_some(),
         recovered_checkpoint: recover_from
@@ -201,7 +203,10 @@ pub(super) fn prepare(
         &report,
     )?);
 
-    if error.is_none() {
+    if error.is_some() {
+        sanitize_cache_root(&root)?;
+        write_cache_valid_marker(&root, "clean", &contract_sha256)?;
+    } else {
         fs::create_dir_all(&state_dir)?;
         write_json_atomic(&contract_path, &contract)?;
     }
@@ -242,8 +247,40 @@ impl Preparation {
             &inventory_path,
             INVENTORY_KIND,
         )?);
+        write_cache_valid_marker(&self.root, "checkpoint", &contract_sha256)?;
         Ok(self.artifacts)
     }
+}
+
+fn sanitize_cache_root(root: &Path) -> Result<(), Box<dyn Error>> {
+    if root.exists() {
+        fs::remove_dir_all(root)?;
+    }
+    fs::create_dir_all(root)?;
+    Ok(())
+}
+
+fn remove_file_if_present(path: &Path) -> Result<(), Box<dyn Error>> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
+fn write_cache_valid_marker(
+    root: &Path,
+    state: &str,
+    contract_sha256: &str,
+) -> Result<(), Box<dyn Error>> {
+    let path = root.join(CACHE_VALID_FILE);
+    let temporary = root.join(format!("{CACHE_VALID_FILE}.tmp-{}", std::process::id()));
+    fs::write(
+        &temporary,
+        format!("schema_version=1\nstate={state}\ncontract_sha256={contract_sha256}\n"),
+    )?;
+    fs::rename(temporary, path)?;
+    Ok(())
 }
 
 fn prune_to_latest(state_dir: &Path) -> Result<(), Box<dyn Error>> {
@@ -495,9 +532,12 @@ fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), Box<dyn
 #[cfg(test)]
 mod tests {
     use super::{
-        inventory, prune_to_latest, validate_candidate, CheckpointContract, CheckpointInventory,
+        expected_contract, inventory, prepare, prune_to_latest, validate_candidate,
+        CheckpointContract, CheckpointInventory, RecoveryStatus, CACHE_VALID_FILE, INPUT_KINDS,
+        RECOVERED_CONTRACT_KIND, RECOVERED_INVENTORY_KIND, RECOVERY_REPORT_KIND,
     };
-    use std::{collections::BTreeMap, fs};
+    use crate::ArtifactRef;
+    use std::{collections::BTreeMap, fs, path::Path};
 
     #[test]
     fn inventory_detects_changed_checkpoint_bytes() {
@@ -607,5 +647,94 @@ mod tests {
         .is_err());
         assert_eq!(fs::read(&state).expect("state remains"), b"usable");
         let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn incompatible_candidate_is_sanitized_before_the_next_prepare() {
+        let profile = format!("checkpoint-self-heal-{}", std::process::id());
+        let root = Path::new("target/rafter-invariants/tla-checkpoint").join(&profile);
+        let output_dir =
+            Path::new("target/rafter-invariants/checkpoint-test-artifacts").join(&profile);
+        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(&output_dir);
+
+        let configuration = BTreeMap::from([
+            ("config".to_owned(), "Raft.cfg".to_owned()),
+            ("checkpoint_minutes".to_owned(), "30".to_owned()),
+        ]);
+        let source_artifacts = INPUT_KINDS
+            .into_iter()
+            .map(|kind| ArtifactRef {
+                kind: kind.to_owned(),
+                path: format!("test-inputs/{kind}"),
+                sha256: format!("{:0>64}", kind.len()),
+                size_bytes: 1,
+            })
+            .collect::<Vec<_>>();
+        let expected = expected_contract(&profile, &configuration, &source_artifacts)
+            .expect("derive expected contract");
+        let mut stale = expected.clone();
+        stale.runner_contract_sha256 = "f".repeat(64);
+        let states = root.join("states");
+        let run = states.join("26-07-12-00-00-00.000");
+        fs::create_dir_all(&run).expect("create stale checkpoint");
+        fs::write(run.join("states_0.chkpt"), b"poison").expect("write stale checkpoint");
+        fs::write(
+            root.join("checkpoint-contract.json"),
+            serde_json::to_vec_pretty(&stale).expect("serialize stale contract"),
+        )
+        .expect("write stale contract");
+        let stale_inventory = inventory(&states, &stale.sha256().expect("digest stale contract"))
+            .expect("inventory stale checkpoint");
+        fs::write(
+            root.join("checkpoint-inventory.json"),
+            serde_json::to_vec_pretty(&stale_inventory).expect("serialize stale inventory"),
+        )
+        .expect("write stale inventory");
+        fs::write(root.join(CACHE_VALID_FILE), b"stale marker")
+            .expect("write stale validity marker");
+
+        let first = prepare(
+            &profile,
+            "1c642bc4fe001234567890123456789012345678",
+            &configuration,
+            &source_artifacts,
+            &output_dir,
+        )
+        .expect("reject and sanitize stale checkpoint");
+        assert_eq!(first.report.status, RecoveryStatus::Incompatible);
+        assert!(first.error.is_some());
+        assert!(!states.exists());
+        assert!(!root.join("checkpoint-contract.json").exists());
+        assert!(!root.join("checkpoint-inventory.json").exists());
+        assert!(root.join(CACHE_VALID_FILE).is_file());
+        let diagnostic_kinds = first
+            .finish(&output_dir)
+            .expect("finish incompatible preparation")
+            .into_iter()
+            .map(|artifact| artifact.kind)
+            .collect::<Vec<_>>();
+        assert!(diagnostic_kinds.contains(&RECOVERED_CONTRACT_KIND.to_owned()));
+        assert!(diagnostic_kinds.contains(&RECOVERED_INVENTORY_KIND.to_owned()));
+        assert!(diagnostic_kinds.contains(&RECOVERY_REPORT_KIND.to_owned()));
+
+        let second = prepare(
+            &profile,
+            "1c642bc4fe001234567890123456789012345678",
+            &configuration,
+            &source_artifacts,
+            &output_dir,
+        )
+        .expect("prepare clean replacement checkpoint");
+        assert_eq!(second.report.status, RecoveryStatus::Fresh);
+        assert!(!second.report.candidate_present);
+        assert!(second.error.is_none());
+        second
+            .finish(&output_dir)
+            .expect("finish clean preparation");
+        assert!(root.join(CACHE_VALID_FILE).is_file());
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(output_dir);
     }
 }

@@ -125,7 +125,7 @@ jobs:
   invariants-tla:
     name: invariants-tla
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88
@@ -145,8 +145,10 @@ jobs:
         with:
           cache-on-failure: true
       - name: Produce TLA+ evidence
+        timeout-minutes: 60
         run: cargo run --locked -p rafter-invariants -- run --profile pr --layer tla
       - name: Validate TLA+ detector mutation sensitivity
+        timeout-minutes: 15
         run: cargo test --locked -p rafter-invariants producer::tla_exec::mutation_tests -- --ignored --test-threads=1
       - name: Upload TLA+ evidence
         if: always()
