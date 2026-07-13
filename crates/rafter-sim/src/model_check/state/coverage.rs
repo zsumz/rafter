@@ -120,7 +120,10 @@ impl ExplorationState {
             .values()
             .filter_map(|read| match read.outcome {
                 ClientReadOutcome::Completed { .. } => Some(read.started_at),
-                ClientReadOutcome::Pending | ClientReadOutcome::ProofGranted { .. } => None,
+                ClientReadOutcome::Pending
+                | ClientReadOutcome::ProofGranted { .. }
+                | ClientReadOutcome::Rejected { .. }
+                | ClientReadOutcome::Canceled { .. } => None,
             })
             .collect::<Vec<_>>();
         if completed_reads.is_empty() {

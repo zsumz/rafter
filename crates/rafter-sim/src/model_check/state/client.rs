@@ -5,8 +5,8 @@ use std::{
 
 use rafter::{LocalProposalDropReason, LogIndex, NodeId, SharedPayload, Term};
 
-use crate::records::LocalProposalEvent;
-use crate::{Applied, Cluster};
+use crate::records::{LocalProposalEvent, ReadTerminalOutput};
+use crate::Cluster;
 
 use super::super::{helpers::proposal_payload, ProposalId};
 use super::ExplorationState;
@@ -19,6 +19,7 @@ pub(crate) struct ClientHistory {
     pub(crate) reads: BTreeMap<u64, ClientRead>,
     pub(crate) tracked_entries: BTreeMap<ProposalId, TrackedProposalEntry>,
     pub(crate) instrumentation_errors: BTreeSet<ClientInstrumentationError>,
+    pub(crate) read_instrumentation_errors: BTreeSet<String>,
 }
 
 impl ClientHistory {
@@ -96,6 +97,7 @@ impl fmt::Display for ClientInstrumentationError {
 
 #[derive(Clone, Debug, Hash)]
 pub(crate) struct ClientRead {
+    pub(crate) operation_id: u64,
     pub(crate) node_id: NodeId,
     pub(crate) request_id: u64,
     pub(crate) committed_floor: LogIndex,
@@ -114,6 +116,12 @@ pub(crate) enum ClientReadOutcome {
         result: Option<SharedPayload>,
         completed_at: u64,
     },
+    Rejected {
+        completed_at: u64,
+    },
+    Canceled {
+        completed_at: u64,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Hash)]
@@ -124,12 +132,13 @@ pub(crate) struct ClientReadProof {
 }
 
 pub(super) fn register_value_at(
-    applied: &[Applied],
+    cluster: &Cluster,
     node_id: NodeId,
     application_epoch: u64,
     read_index: LogIndex,
 ) -> Option<SharedPayload> {
-    applied
+    let applied = cluster
+        .applied()
         .iter()
         .filter(|applied| {
             applied.node_id == node_id
@@ -137,16 +146,56 @@ pub(super) fn register_value_at(
                 && applied.index <= read_index
         })
         .max_by_key(|applied| applied.index)
-        .map(|applied| applied.payload.clone())
+        .map(|applied| (applied.index, applied.payload.clone()));
+    let installed = cluster
+        .snapshot_installs()
+        .iter()
+        .filter(|snapshot| {
+            snapshot.node_id == node_id
+                && snapshot.application_epoch == application_epoch
+                && snapshot.last_included_index <= read_index
+        })
+        .max_by_key(|snapshot| snapshot.last_included_index)
+        .map(|snapshot| {
+            (
+                snapshot.last_included_index,
+                snapshot.payload.clone().into(),
+            )
+        });
+    let current = (cluster.application_epoch(node_id) == application_epoch)
+        .then(|| cluster.node(node_id).snapshot())
+        .flatten()
+        .filter(|snapshot| snapshot.metadata.last_included_index <= read_index)
+        .and_then(|snapshot| {
+            cluster.snapshot_payload(node_id, snapshot).map(|payload| {
+                (
+                    snapshot.metadata.last_included_index,
+                    payload.to_vec().into(),
+                )
+            })
+        });
+    [applied, installed, current]
+        .into_iter()
+        .flatten()
+        .max_by_key(|(index, _)| *index)
+        .map(|(_, value)| value)
 }
 
 pub(super) fn initial_register_value(cluster: &Cluster) -> Option<SharedPayload> {
     cluster
-        .applied()
-        .iter()
-        .filter(|applied| applied.application_epoch == cluster.application_epoch(applied.node_id))
-        .max_by_key(|applied| applied.index)
-        .map(|applied| applied.payload.clone())
+        .nodes
+        .keys()
+        .map(|node_id| {
+            let epoch = cluster.application_epoch(*node_id);
+            let applied = cluster.local_applied_index(*node_id);
+            (
+                applied,
+                register_value_at(cluster, *node_id, epoch, applied),
+            )
+        })
+        .filter_map(|(index, value)| value.map(|value| (index, value)))
+        .max_by_key(|(index, _)| *index)
+        .map(|(_, value)| value)
 }
 
 impl ExplorationState {
@@ -178,17 +227,16 @@ impl ExplorationState {
 
     pub(in crate::model_check) fn record_client_read(
         &mut self,
-        node_id: NodeId,
-        request_id: u64,
-        committed_floor: LogIndex,
+        registration: &crate::ReadRegistered,
     ) {
         let started_at = self.client_history.next_event();
         self.client_history.reads.insert(
-            request_id,
+            registration.operation_id,
             ClientRead {
-                node_id,
-                request_id,
-                committed_floor,
+                operation_id: registration.operation_id,
+                node_id: registration.node_id,
+                request_id: registration.request_id,
+                committed_floor: registration.committed_floor,
                 started_at,
                 outcome: ClientReadOutcome::Pending,
             },
@@ -198,7 +246,7 @@ impl ExplorationState {
     #[cfg(test)]
     pub(in crate::model_check) fn record_client_read_completion_corruption(
         &mut self,
-        request_id: u64,
+        operation_id: u64,
         proof: ClientReadProof,
         result: Option<SharedPayload>,
     ) -> Result<(), &'static str> {
@@ -206,7 +254,7 @@ impl ExplorationState {
         let read = self
             .client_history
             .reads
-            .get_mut(&request_id)
+            .get_mut(&operation_id)
             .ok_or("read recorder corruption requires a registered read")?;
         if !matches!(read.outcome, ClientReadOutcome::Pending) {
             return Err("read recorder corruption requires a pending read");
@@ -500,18 +548,54 @@ impl ExplorationState {
     }
 
     fn refresh_client_reads(&mut self, next_event: &mut u64) {
-        let applied = &self.cluster.applied;
+        let mut instrumentation_errors = Vec::new();
         for read in self.client_history.reads.values_mut() {
-            if matches!(&read.outcome, ClientReadOutcome::Completed { .. }) {
+            if matches!(
+                &read.outcome,
+                ClientReadOutcome::Completed { .. }
+                    | ClientReadOutcome::Rejected { .. }
+                    | ClientReadOutcome::Canceled { .. }
+            ) {
                 continue;
             }
-            let Some(grant) =
-                self.cluster.read_grants().iter().find(|grant| {
-                    grant.node_id == read.node_id && grant.request_id == read.request_id
-                })
+            if let Some(terminal) = self
+                .cluster
+                .read_terminal_outputs()
+                .iter()
+                .copied()
+                .find(|terminal| terminal.matches_operation(read.operation_id))
+            {
+                read.outcome = match terminal {
+                    ReadTerminalOutput::Rejected { .. } => ClientReadOutcome::Rejected {
+                        completed_at: *next_event,
+                    },
+                    ReadTerminalOutput::Canceled { .. } => ClientReadOutcome::Canceled {
+                        completed_at: *next_event,
+                    },
+                };
+                *next_event += 1;
+                continue;
+            }
+            let Some(grant) = self
+                .cluster
+                .read_grants()
+                .iter()
+                .find(|grant| grant.operation_id == Some(read.operation_id))
             else {
                 continue;
             };
+            let current_epoch = self.cluster.application_epoch(read.node_id);
+            if grant.application_epoch != current_epoch {
+                instrumentation_errors.push(format!(
+                    "read operation {} for request {} retained grant epoch {} after node {} advanced to application epoch {}",
+                    read.operation_id,
+                    read.request_id,
+                    grant.application_epoch,
+                    read.node_id,
+                    current_epoch
+                ));
+                continue;
+            }
             let proof = ClientReadProof {
                 application_epoch: grant.application_epoch,
                 read_index: grant.read_index,
@@ -519,7 +603,7 @@ impl ExplorationState {
             };
             read.outcome = if proof.local_applied_index >= proof.read_index {
                 let result = register_value_at(
-                    applied,
+                    &self.cluster,
                     read.node_id,
                     proof.application_epoch,
                     proof.read_index,
@@ -535,5 +619,8 @@ impl ExplorationState {
                 ClientReadOutcome::ProofGranted { proof }
             };
         }
+        self.client_history
+            .read_instrumentation_errors
+            .extend(instrumentation_errors);
     }
 }
