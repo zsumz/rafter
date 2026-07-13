@@ -824,12 +824,13 @@ fn validate_fault_cycle(
     let ticks_executed = required_map_u64(cycle, "ticks_executed")?;
     let _deliveries = required_map_u64(cycle, "deliveries_executed")?;
     let _drops = required_map_u64(cycle, "drops_executed")?;
-    let _state_changed = required_map_bool(cycle, "protocol_state_changed")?;
+    let state_changed = required_map_bool(cycle, "protocol_state_changed")?;
     if partition_a == partition_b
         || !required_map_bool(cycle, "partition_observed")?
         || partitioned_rounds != contract.fixed_rounds
         || nodes_exercised < 2
         || ticks_executed != partitioned_rounds.saturating_mul(nodes_exercised)
+        || !state_changed
         || !required_map_bool(cycle, "partition_active_after_exercise")?
         || !required_map_bool(cycle, "heal_observed")?
     {
@@ -1345,6 +1346,16 @@ pub(crate) mod liveness_report_tests {
             assert_eq!(error.kind, LivenessReportErrorKind::Malformed);
             assert!(error.message.contains("round"));
         }
+    }
+
+    #[test]
+    fn no_op_fault_cycle_is_malformed() {
+        let (identity, contracts, mut events) = fixture();
+        report_mut(&mut events, "leader-convergence")["fault_cycle"]["protocol_state_changed"] =
+            json!(false);
+        let error =
+            derive(&identity, &contracts, &events).expect_err("a no-op partition cycle must fail");
+        assert!(error.message.contains("fault-cycle"));
     }
 
     #[test]

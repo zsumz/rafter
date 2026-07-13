@@ -118,6 +118,17 @@ fn post_heal_report_rejects_missing_or_unhealed_fault_cycle() {
         .expect_err("a no-op partition must fail")
         .contains("partitioned tick execution"));
 
+    let mut unchanged_protocol = report.clone();
+    unchanged_protocol
+        .fault_cycle
+        .as_mut()
+        .expect("real fault-cycle evidence should exist")
+        .protocol_state_changed = false;
+    assert!(unchanged_protocol
+        .validate_structure()
+        .expect_err("a protocol-no-op partition must fail")
+        .contains("protocol state change"));
+
     let mut vanished_during_exercise = report.clone();
     vanished_during_exercise
         .fault_cycle

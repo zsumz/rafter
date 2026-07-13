@@ -292,6 +292,9 @@ impl FaultCycleEvidence {
         {
             return Err("partitioned protocol transitions");
         }
+        if !self.protocol_state_changed {
+            return Err("partitioned protocol state change");
+        }
         if self.partition_active_after_exercise != EvidenceStatus::Satisfied {
             return Err("partition persistence through exercise");
         }
