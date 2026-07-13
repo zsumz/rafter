@@ -166,14 +166,6 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
     },
     WarningAllow {
         kind: WarningKind::LibraryExpect,
-        path: "crates/rafter-sim/src/model_check/application/soak.rs",
-        symbol: None,
-        text: Some(r#".expect("soak restart from captured durable state must be valid")"#),
-        classification_label: SIM_INVARIANT_LABEL,
-        reason: SIM_BOOTSTRAP_INVARIANT,
-    },
-    WarningAllow {
-        kind: WarningKind::LibraryExpect,
         path: "crates/rafter-sim/src/model_check/helpers.rs",
         symbol: None,
         text: Some(r#".expect("model-check Raft node config must be valid")"#),
