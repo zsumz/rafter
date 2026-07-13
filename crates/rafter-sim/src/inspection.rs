@@ -1,11 +1,14 @@
+use std::collections::BTreeSet;
+
 use rafter::{
     BootstrapLogEntry, BootstrapState, CommittedConfiguration, LogEntry, LogIndex,
     MembershipConfig, Node, NodeId, PromotionBarrier, ReplicationProgress, Role, Term,
 };
 
 use crate::{
+    records::{ProposalRejected, TransferRejected},
     Applied, Cluster, DurableSnapshotDigest, DurableStateDigest, ExecutionWitness, ReadGranted,
-    ReadRegistered, SimClock, SnapshotInstalled,
+    ReadRegistered, ReadTerminalOutput, SimClock, SnapshotInstalled,
 };
 
 impl Cluster {
@@ -53,6 +56,24 @@ impl Cluster {
         &self.read_registrations
     }
 
+    /// Returns the immutable read-index rejection and cancellation history.
+    #[must_use]
+    pub fn read_terminal_outputs(&self) -> &[ReadTerminalOutput] {
+        &self.read_terminal_outputs
+    }
+
+    pub(crate) const fn read_output_correlation_errors(&self) -> &BTreeSet<String> {
+        &self.read_output_correlation_errors
+    }
+
+    pub(crate) fn proposal_rejections(&self) -> &[ProposalRejected] {
+        &self.proposal_rejections
+    }
+
+    pub(crate) fn transfer_rejections(&self) -> &[TransferRejected] {
+        &self.transfer_rejections
+    }
+
     /// Returns the highest commit index reported by any simulated node.
     #[must_use]
     pub fn committed_floor(&self) -> LogIndex {
@@ -87,7 +108,11 @@ impl Cluster {
     /// Returns the immutable application/configuration execution history.
     #[must_use]
     pub fn execution_history(&self) -> &[ExecutionWitness] {
-        &self.execution_history
+        self.execution_history.as_slice()
+    }
+
+    pub(crate) const fn execution_history_rewrite_revision(&self) -> u64 {
+        self.execution_history.rewrite_revision()
     }
 
     /// Returns the promotion barrier currently required for `learner_id`.
