@@ -16,6 +16,11 @@ pub enum ReplayError {
         action_index: usize,
         action: Action,
     },
+    SchedulingFailure {
+        action_index: usize,
+        action: Action,
+        message: String,
+    },
     UnexpectedFailure {
         expected: &'static str,
         actual: Failure,
@@ -46,6 +51,14 @@ impl fmt::Display for ReplayError {
             } => write!(
                 formatter,
                 "trace action {action_index} could not find a promotion barrier for `{action}`"
+            ),
+            Self::SchedulingFailure {
+                action_index,
+                action,
+                message,
+            } => write!(
+                formatter,
+                "trace action {action_index} could not resolve scheduler identity for `{action}`: {message}"
             ),
             Self::UnexpectedFailure { expected, actual } => write!(
                 formatter,
