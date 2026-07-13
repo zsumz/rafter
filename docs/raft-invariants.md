@@ -198,6 +198,7 @@ named temporal or witness-based verdicts.
 | `AP-02` | `AP-02.a,AP-02.b` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
 | `AP-02` | `AP-02.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/applied.rs#check_execution_history_agreement`; negative fixture `replayed_index_must_match_prior_command_across_epochs` |
 | `AP-02` | `AP-02.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/applied.rs#check_execution_history_agreement`; negative fixture `execution_agreement_detects_mismatched_configuration_application` |
+| `AP-02` | `AP-02.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/applied.rs#check_execution_history_agreement`; negative fixture `execution_agreement_detects_mismatched_reference_result` |
 | `AP-02` | `AP-02.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/applied.rs#check_execution_history_agreement`; negative fixture `execution_agreement_detects_broken_configuration_result` |
 | `AP-02` | `AP-02.a` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/application_epoch.rs#replayed_index_must_match_prior_command_across_epochs` |
 | `AP-02` | `AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/application_epoch.rs#full_prefix_application_replay_matches_snapshot_anchored_replay` |
@@ -206,6 +207,8 @@ named temporal or witness-based verdicts.
 | `AP-02` | `AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/applied_agreement.rs#execution_agreement_detects_broken_configuration_result` |
 | `AP-02` | `AP-02.a,AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/state/application_history.rs#same_node_replay_does_not_qualify_cross_replica_coverage` |
 | `AP-02` | `AP-02.a,AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/state/application_history.rs#distinct_nodes_qualify_each_execution_witness_class` |
+| `AP-02` | `AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/state/application_history.rs#application_pairs_do_not_qualify_configuration_results` |
+| `AP-02` | `AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/state/application_history.rs#configuration_pairs_do_not_qualify_application_results` |
 | `AP-02` | `AP-02.a,AP-02.b` | tla | direct | `specs/tla/raft/Raft.tla#StateMachineSafety` |
 | `MB-01` | `MB-01.a,MB-01.b,MB-01.c,MB-01.d` | tests | direct | `crates/rafter/tests/properties.rs#membership_constructor_validation_matches_the_documented_invariant` |
 | `MB-02` | `MB-02.a,MB-02.b,MB-02.c` | tests | direct | `crates/rafter/tests/properties.rs#membership_joint_quorum_holds_iff_both_half_majorities_hold` |
@@ -867,8 +870,8 @@ Required clauses:
 
 Evidence now:
 - TLA+: D: clause-bound executable evidence; see evidence references
-- Simulator: D: immutable exact-input witnesses plus independently rederived deterministic register, membership, and committed-configuration results; command, configuration, and result observations each require distinct nodes
-- Tests: D: detector-level command/configuration/result corruption fixtures, canonical full-prefix-to-snapshot replay, and positive/negative distinct-node coverage tests
+- Simulator: D: immutable exact-input witnesses plus independently rederived deterministic register, membership, and committed-configuration results; application-result and configuration-result receipts are independently required and each needs distinct nodes
+- Tests: D: detector-level command/configuration/result corruption fixtures, canonical full-prefix-to-snapshot replay, distinct-node coverage tests, and result-class isolation tests
 - Maelstrom: E2E: source-bound client-visible evidence; see evidence references
 
 Next (future_strengthening): Retain the canonical reference-state and cross-node witness checks; replace or supplement the reference register with application-exported state digests when that runtime contract exists.

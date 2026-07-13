@@ -40,7 +40,6 @@ impl ApplicationHistory {
         let mut observations = ObservationSet::default();
         let mut applications = BTreeMap::<LogIndex, BTreeSet<_>>::new();
         let mut configurations = BTreeMap::<LogIndex, BTreeSet<_>>::new();
-        let mut results = BTreeMap::<LogIndex, BTreeSet<_>>::new();
 
         for witness in &self.witnesses {
             let class = match witness.entry.kind {
@@ -54,20 +53,15 @@ impl ApplicationHistory {
                     .or_default()
                     .insert(witness.node_id);
             }
-            results
-                .entry(witness.entry.index)
-                .or_default()
-                .insert(witness.node_id);
         }
 
         if applications.values().any(|nodes| nodes.len() >= 2) {
             observations.mark(Observation::SameIndexApplicationWitnessPairs);
+            observations.mark(Observation::SameIndexApplicationResultPairs);
         }
         if configurations.values().any(|nodes| nodes.len() >= 2) {
             observations.mark(Observation::SameIndexConfigurationWitnessPairs);
-        }
-        if results.values().any(|nodes| nodes.len() >= 2) {
-            observations.mark(Observation::SameIndexResultStatePairs);
+            observations.mark(Observation::SameIndexConfigurationResultPairs);
         }
         observations
     }
@@ -101,7 +95,8 @@ mod tests {
         let coverage = history.coverage();
         assert!(!coverage.contains(Observation::SameIndexApplicationWitnessPairs));
         assert!(!coverage.contains(Observation::SameIndexConfigurationWitnessPairs));
-        assert!(!coverage.contains(Observation::SameIndexResultStatePairs));
+        assert!(!coverage.contains(Observation::SameIndexApplicationResultPairs));
+        assert!(!coverage.contains(Observation::SameIndexConfigurationResultPairs));
     }
 
     #[test]
@@ -122,7 +117,39 @@ mod tests {
         let coverage = history.coverage();
         assert!(coverage.contains(Observation::SameIndexApplicationWitnessPairs));
         assert!(coverage.contains(Observation::SameIndexConfigurationWitnessPairs));
-        assert!(coverage.contains(Observation::SameIndexResultStatePairs));
+        assert!(coverage.contains(Observation::SameIndexApplicationResultPairs));
+        assert!(coverage.contains(Observation::SameIndexConfigurationResultPairs));
+    }
+
+    #[test]
+    fn application_pairs_do_not_qualify_configuration_results() {
+        let mut history = ApplicationHistory::default();
+        for node_id in [1, 2] {
+            history.witnesses.push(witness(
+                node_id,
+                0,
+                1,
+                LogEntryKind::Application(b"command".to_vec().into()),
+            ));
+        }
+
+        let coverage = history.coverage();
+        assert!(coverage.contains(Observation::SameIndexApplicationResultPairs));
+        assert!(!coverage.contains(Observation::SameIndexConfigurationResultPairs));
+    }
+
+    #[test]
+    fn configuration_pairs_do_not_qualify_application_results() {
+        let mut history = ApplicationHistory::default();
+        for node_id in [1, 2] {
+            history
+                .witnesses
+                .push(witness(node_id, 0, 2, configuration_kind()));
+        }
+
+        let coverage = history.coverage();
+        assert!(coverage.contains(Observation::SameIndexConfigurationResultPairs));
+        assert!(!coverage.contains(Observation::SameIndexApplicationResultPairs));
     }
 
     fn witness(
