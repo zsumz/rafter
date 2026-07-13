@@ -1,11 +1,27 @@
 use std::{fs, path::Path, process::Command};
 
 use super::detector_qualified;
-use crate::producer::tla_output::{parse, render_detector_config, DetectorProbe};
+use crate::producer::tla_output::{parse, render_detector_config, DetectorProbe, DETECTOR_PROBES};
 
 const ELECTION_PROBE: DetectorProbe = DetectorProbe {
     predicate: "ElectionSafety",
     mode: "ElectionRecorderOnly",
+};
+const LOG_MATCHING_PROBE: DetectorProbe = DetectorProbe {
+    predicate: "LogMatching",
+    mode: "LogMatchingRecorderOnly",
+};
+const SNAPSHOT_PREFIX_PROBE: DetectorProbe = DetectorProbe {
+    predicate: "LogMatching",
+    mode: "SnapshotPrefixRecorderOnly",
+};
+const LEADER_COMPLETENESS_PROBE: DetectorProbe = DetectorProbe {
+    predicate: "LeaderCompleteness",
+    mode: "LeaderCompletenessRecorderOnly",
+};
+const COMMITTED_PREFIX_PROBE: DetectorProbe = DetectorProbe {
+    predicate: "CommittedPrefixStability",
+    mode: "CommittedPrefixRecorderOnly",
 };
 const HIGHER_TERM_PROBE: DetectorProbe = DetectorProbe {
     predicate: "StaleLeaderFencing",
@@ -18,6 +34,18 @@ const STALE_AUTHORITY_PROBE: DetectorProbe = DetectorProbe {
 const APPLICATION_PROBE: DetectorProbe = DetectorProbe {
     predicate: "StateMachineSafety",
     mode: "ApplicationRecorderOnly",
+};
+const APPLICATION_EPOCH_PROBE: DetectorProbe = DetectorProbe {
+    predicate: "StateMachineSafety",
+    mode: "ApplicationEpochRecorderOnly",
+};
+const COMMIT_QUORUM_PROBE: DetectorProbe = DetectorProbe {
+    predicate: "CommittedEntriesHaveQuorum",
+    mode: "CommitQuorumRecorderOnly",
+};
+const READ_BARRIER_PROBE: DetectorProbe = DetectorProbe {
+    predicate: "ReadBarrierLinearizability",
+    mode: "ReadBarrierRecorderOnly",
 };
 
 const JOINT_QUORUM_REGRESSION_CONFIG: &str = r#"SPECIFICATION JointQuorumRegressionSpec
@@ -100,6 +128,56 @@ PROPERTY DelayedHeartbeatRegressionCompletes
 CHECK_DEADLOCK FALSE
 "#;
 
+const SNAPSHOT_LIFECYCLE_CONFIG: &str = r#"SPECIFICATION SnapshotLifecycleSpec
+
+CONSTANTS
+  Nodes = {n1, n2, n3}
+  Values = {v1, v2}
+  MaxTerm = 2
+  MaxLogLen = 2
+  ReadRequests = {r1}
+  FixtureA = n1
+  FixtureB = n2
+  FixtureC = n3
+  FixtureValueA = v1
+  FixtureValueB = v2
+  FixtureRead = r1
+  FixtureMode = "Default"
+  TargetPredicate = "LogMatching"
+
+INVARIANT TypeOK
+INVARIANT SnapshotLifecycleInvariant
+
+PROPERTY SnapshotLifecycleCompletes
+
+CHECK_DEADLOCK FALSE
+"#;
+
+const APPLICATION_EPOCH_LIFECYCLE_CONFIG: &str = r#"SPECIFICATION ApplicationEpochLifecycleSpec
+
+CONSTANTS
+  Nodes = {n1, n2, n3}
+  Values = {v1, v2}
+  MaxTerm = 2
+  MaxLogLen = 2
+  ReadRequests = {r1}
+  FixtureA = n1
+  FixtureB = n2
+  FixtureC = n3
+  FixtureValueA = v1
+  FixtureValueB = v2
+  FixtureRead = r1
+  FixtureMode = "Default"
+  TargetPredicate = "StateMachineSafety"
+
+INVARIANT TypeOK
+INVARIANT ApplicationEpochLifecycleInvariant
+
+PROPERTY ApplicationEpochLifecycleCompletes
+
+CHECK_DEADLOCK FALSE
+"#;
+
 #[test]
 #[ignore = "requires the pinned TLC tool and Java"]
 fn recorder_only_fixtures_qualify_before_mutation() {
@@ -110,9 +188,22 @@ fn recorder_only_fixtures_qualify_before_mutation() {
             .expect("read detector spec");
     for (name, probe) in [
         ("election-recorder-baseline", ELECTION_PROBE),
+        ("log-matching-recorder-baseline", LOG_MATCHING_PROBE),
+        ("snapshot-prefix-recorder-baseline", SNAPSHOT_PREFIX_PROBE),
+        (
+            "leader-completeness-recorder-baseline",
+            LEADER_COMPLETENESS_PROBE,
+        ),
+        ("committed-prefix-recorder-baseline", COMMITTED_PREFIX_PROBE),
         ("higher-term-recorder-baseline", HIGHER_TERM_PROBE),
         ("stale-authority-recorder-baseline", STALE_AUTHORITY_PROBE),
         ("application-recorder-baseline", APPLICATION_PROBE),
+        (
+            "application-epoch-recorder-baseline",
+            APPLICATION_EPOCH_PROBE,
+        ),
+        ("commit-quorum-recorder-baseline", COMMIT_QUORUM_PROBE),
+        ("read-barrier-recorder-baseline", READ_BARRIER_PROBE),
     ] {
         let result = run_tlc_mutation(&root, name, &raft, &detector, probe);
         let summary = parse(&result.stdout).expect("parse TLC recorder baseline output");
@@ -127,10 +218,120 @@ fn recorder_only_fixtures_qualify_before_mutation() {
 
 #[test]
 #[ignore = "requires the pinned TLC tool and Java"]
+fn every_required_detector_probe_reaches_its_named_counterexample() {
+    let root = workspace_root();
+    let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
+    let detector =
+        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
+            .expect("read detector spec");
+    for probe in DETECTOR_PROBES {
+        let name = format!("required-{}-{}", probe.predicate, probe.mode);
+        let result = run_tlc_mutation(&root, &name, &raft, &detector, probe);
+        let summary = parse(&result.stdout).expect("parse TLC detector output");
+        assert!(
+            detector_qualified(result.status.code(), false, Some(&summary), probe.predicate),
+            "required detector {}:{} did not qualify: {}",
+            probe.predicate,
+            probe.mode,
+            String::from_utf8_lossy(&result.stdout)
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires the pinned TLC tool and Java"]
+fn snapshot_lifecycle_preserves_logical_identity_through_restart() {
+    let root = workspace_root();
+    let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
+    let detector =
+        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
+            .expect("read detector spec");
+    let result = run_tlc_with_config(
+        &root,
+        "snapshot-lifecycle",
+        &raft,
+        &detector,
+        SNAPSHOT_LIFECYCLE_CONFIG,
+    );
+    let summary = parse(&result.stdout).expect("parse snapshot lifecycle output");
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stdout)
+    );
+    assert!(summary.completed_without_error);
+    assert!(summary.process_finished);
+    assert!(summary.distinct_states >= 7);
+    assert!(summary.search_depth >= 7);
+}
+
+#[test]
+#[ignore = "requires the pinned TLC tool and Java"]
+fn application_epoch_loss_replays_identically_without_erasing_history() {
+    let root = workspace_root();
+    let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
+    let detector =
+        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
+            .expect("read detector spec");
+    let result = run_tlc_with_config(
+        &root,
+        "application-epoch-lifecycle",
+        &raft,
+        &detector,
+        APPLICATION_EPOCH_LIFECYCLE_CONFIG,
+    );
+    let summary = parse(&result.stdout).expect("parse application epoch lifecycle output");
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stdout)
+    );
+    assert!(summary.completed_without_error);
+    assert!(summary.process_finished);
+    assert!(summary.distinct_states >= 4);
+    assert!(summary.search_depth >= 4);
+}
+
+#[test]
+#[ignore = "requires the pinned TLC tool and Java"]
+fn corrupted_snapshot_install_breaks_lifecycle_identity() {
+    let root = workspace_root();
+    let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
+    let mutated = replace_operator(
+        &raft,
+        "InstallSnapshotLog(node, prefix)",
+        "InstallSnapshot",
+        "<<Entry(prefix[1].term, CHOOSE value \\in Values : value # prefix[1].input)>>",
+    );
+    let detector =
+        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
+            .expect("read detector spec");
+    let result = run_tlc_with_config(
+        &root,
+        "corrupted-snapshot-install",
+        &mutated,
+        &detector,
+        SNAPSHOT_LIFECYCLE_CONFIG,
+    );
+    let summary = parse(&result.stdout).expect("parse corrupted snapshot output");
+    assert_eq!(result.status.code(), Some(12));
+    assert_eq!(
+        summary.violated_invariant.as_deref(),
+        Some("SnapshotLifecycleInvariant")
+    );
+}
+
+#[test]
+#[ignore = "requires the pinned TLC tool and Java"]
 fn true_mutation_of_real_predicate_cannot_qualify() {
     let root = workspace_root();
     let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
-    let mutated = replace_operator(&raft, "ElectionSafety", "LogMatching", "TRUE");
+    let mutated = replace_operator(
+        &raft,
+        "ElectionSafety",
+        "LogMatchingFor(logs, snapshotIndexes, snapshotPrefixes)",
+        "TRUE",
+    );
     let detector =
         fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
             .expect("read detector spec");
@@ -179,7 +380,7 @@ fn applied_membership_quorum_mutation_breaks_joint_regression() {
     let mutated = replace_operator(
         &raft,
         "QuorumNodes(ns)",
-        "MatchingReplicas(n, i)",
+        "CanAdoptLog(n, entries)",
         "MembershipQuorum(membership, ns)",
     );
     let detector =
@@ -208,7 +409,7 @@ fn missing_effective_recomputation_breaks_overwrite_regression() {
     let mutated = replace_operator(
         &raft,
         "EffectiveConfigurationFor(entries)",
-        "AuthoritativeLogReplacement(message, accepted)",
+        "LogicalPrefixFrom(logs, snapshotIndexes, snapshotPrefixes, node, index)",
         "[configIndex |-> effectiveConfigIndex, config |-> effectiveMembership]",
     );
     let detector =
@@ -361,19 +562,146 @@ fn missing_application_recorder_cannot_qualify_state_machine_safety() {
     let detector =
         fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
             .expect("read detector spec");
+    for (name, probe) in [
+        ("missing-application-recorder", APPLICATION_PROBE),
+        (
+            "missing-application-epoch-recorder",
+            APPLICATION_EPOCH_PROBE,
+        ),
+    ] {
+        let result = run_tlc_mutation(&root, name, &mutated, &detector, probe);
+        let summary = parse(&result.stdout).expect("parse TLC mutation output");
+        assert!(!detector_qualified(
+            result.status.code(),
+            false,
+            Some(&summary),
+            probe.predicate
+        ));
+    }
+}
+
+#[test]
+#[ignore = "requires the pinned TLC tool and Java"]
+fn missing_log_prefix_recorder_cannot_qualify_log_or_snapshot_paths() {
+    let root = workspace_root();
+    let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
+    let mutated = replace_operator(
+        &raft,
+        "RecordLogicalPrefixes(logs, snapshotIndexes, snapshotPrefixes)",
+        "LogicalPrefixLedgerSound",
+        "/\\ UNCHANGED logicalPrefixLedger",
+    );
+    let detector =
+        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
+            .expect("read detector spec");
+    for (name, probe) in [
+        ("missing-log-matching-recorder", LOG_MATCHING_PROBE),
+        ("missing-snapshot-prefix-recorder", SNAPSHOT_PREFIX_PROBE),
+    ] {
+        let result = run_tlc_mutation(&root, name, &mutated, &detector, probe);
+        let summary = parse(&result.stdout).expect("parse TLC mutation output");
+        assert!(result.status.success());
+        assert!(!detector_qualified(
+            result.status.code(),
+            false,
+            Some(&summary),
+            probe.predicate
+        ));
+    }
+}
+
+#[test]
+#[ignore = "requires the pinned TLC tool and Java"]
+fn missing_commit_ledger_recorder_cannot_qualify_history_predicates() {
+    let root = workspace_root();
+    let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
+    let mutated = replace_operator(
+        &raft,
+        "RecordCommittedEntries(\n    logs, snapshotIndexes, snapshotPrefixes, node, oldFloor, newFloor)",
+        "ConfigurationMembershipAt(\n    logs, snapshotIndexes, snapshotPrefixes, node, configIndex)",
+        "/\\ UNCHANGED committedLedger",
+    );
+    let detector =
+        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
+            .expect("read detector spec");
+    for (name, probe) in [
+        (
+            "missing-leader-completeness-recorder",
+            LEADER_COMPLETENESS_PROBE,
+        ),
+        ("missing-committed-prefix-recorder", COMMITTED_PREFIX_PROBE),
+    ] {
+        let result = run_tlc_mutation(&root, name, &mutated, &detector, probe);
+        let summary = parse(&result.stdout).expect("parse TLC mutation output");
+        assert!(result.status.success());
+        assert!(!detector_qualified(
+            result.status.code(),
+            false,
+            Some(&summary),
+            probe.predicate
+        ));
+    }
+}
+
+#[test]
+#[ignore = "requires the pinned TLC tool and Java"]
+fn missing_commit_witness_recorder_cannot_qualify_quorum_predicate() {
+    let root = workspace_root();
+    let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
+    let mutated = replace_operator(
+        &raft,
+        "RecordCommitWitnesses(witnesses)",
+        "RecordReadGrant(grant)",
+        "/\\ UNCHANGED commitWitnesses",
+    );
+    let detector =
+        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
+            .expect("read detector spec");
     let result = run_tlc_mutation(
         &root,
-        "missing-application-recorder",
+        "missing-commit-witness-recorder",
         &mutated,
         &detector,
-        APPLICATION_PROBE,
+        COMMIT_QUORUM_PROBE,
     );
     let summary = parse(&result.stdout).expect("parse TLC mutation output");
+    assert!(result.status.success());
     assert!(!detector_qualified(
         result.status.code(),
         false,
         Some(&summary),
-        APPLICATION_PROBE.predicate
+        COMMIT_QUORUM_PROBE.predicate
+    ));
+}
+
+#[test]
+#[ignore = "requires the pinned TLC tool and Java"]
+fn missing_read_grant_recorder_cannot_qualify_read_barrier_predicate() {
+    let root = workspace_root();
+    let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
+    let mutated = replace_operator(
+        &raft,
+        "RecordReadGrant(grant)",
+        "NodePairSet",
+        "/\\ UNCHANGED readGrants",
+    );
+    let detector =
+        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
+            .expect("read detector spec");
+    let result = run_tlc_mutation(
+        &root,
+        "missing-read-grant-recorder",
+        &mutated,
+        &detector,
+        READ_BARRIER_PROBE,
+    );
+    let summary = parse(&result.stdout).expect("parse TLC mutation output");
+    assert!(result.status.success());
+    assert!(!detector_qualified(
+        result.status.code(),
+        false,
+        Some(&summary),
+        READ_BARRIER_PROBE.predicate
     ));
 }
 

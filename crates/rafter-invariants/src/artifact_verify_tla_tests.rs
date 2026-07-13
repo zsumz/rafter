@@ -131,6 +131,20 @@ fn all_red_bundle_still_verifies_exact_invocation() {
     assert!(verify(&fixture.bundle, &fixture.root).is_err());
 }
 
+#[test]
+fn multi_clause_counterexample_verifies_complete_predicate_fanout() {
+    let mut fixture = Fixture::new();
+    fixture.set_counterexample("CommittedEntriesHaveQuorum");
+    let failed = fixture
+        .bundle
+        .results
+        .iter()
+        .filter(|result| result.status == crate::EvidenceStatus::Fail)
+        .count();
+    assert_eq!(failed, 2);
+    verify(&fixture.bundle, &fixture.root).expect("multi-clause counterexample verifies");
+}
+
 struct Fixture {
     root: PathBuf,
     bundle: ResultBundle,
@@ -257,6 +271,36 @@ impl Fixture {
                 violation_output(probe.predicate),
                 12,
             );
+        }
+    }
+
+    fn set_counterexample(&mut self, predicate: &str) {
+        let mut log = self.read_log("tla-log");
+        log.exit_code = Some(12);
+        log.stdout = violation_output(predicate);
+        self.write_log("tla-log", &log);
+        self.bundle.execution.checks[0].completion = crate::CheckCompletion::Counterexample;
+        self.bundle.execution.checks[0]
+            .observations
+            .retain(|name, _| !name.starts_with("checked:"));
+        self.bundle.execution.checks[0].observations.extend([
+            ("generated_states".to_owned(), 2),
+            ("distinct_states".to_owned(), 2),
+            ("states_left_on_queue".to_owned(), 0),
+            ("search_depth".to_owned(), 2),
+        ]);
+        for result in &mut self.bundle.results {
+            if result
+                .evidence_id
+                .rsplit_once('#')
+                .is_some_and(|(_, symbol)| symbol == predicate)
+            {
+                result.status = crate::EvidenceStatus::Fail;
+                result.classification = Some(crate::FailureClassification::InvariantViolation);
+            } else {
+                result.status = crate::EvidenceStatus::Incomplete;
+                result.classification = Some(crate::FailureClassification::CoverageNotReached);
+            }
         }
     }
 

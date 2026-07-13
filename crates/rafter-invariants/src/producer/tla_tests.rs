@@ -151,6 +151,43 @@ fn named_counterexample_fails_only_its_predicate() -> Result<(), Box<dyn std::er
 }
 
 #[test]
+fn multi_clause_counterexample_fails_every_bound_evidence_row(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let registry = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("verification/raft-invariants.yaml");
+    let catalog = Catalog::load(&registry)?;
+    let results = catalog
+        .evidence
+        .iter()
+        .filter(|descriptor| descriptor.layer == "tla")
+        .map(|descriptor| {
+            evidence_result(
+                descriptor,
+                "tla-test",
+                &TlaVerdict::Violation("CommittedEntriesHaveQuorum".to_owned()),
+                &[],
+            )
+        })
+        .collect::<Vec<_>>();
+    let failed = results
+        .iter()
+        .filter(|result| result.status == EvidenceStatus::Fail)
+        .collect::<Vec<_>>();
+
+    assert_eq!(failed.len(), 2);
+    assert!(failed.iter().all(|result| result.invariant_id == "CM-02"));
+    assert!(failed.iter().all(|result| {
+        result.classification == Some(FailureClassification::InvariantViolation)
+    }));
+    assert!(results
+        .iter()
+        .filter(|result| result.status != EvidenceStatus::Fail)
+        .all(|result| result.status == EvidenceStatus::Incomplete));
+    Ok(())
+}
+
+#[test]
 fn parsed_named_counterexample_outranks_concurrent_timeout() {
     let mut execution = complete_execution(false);
     execution.main_status = MainStatus::TimedOut;

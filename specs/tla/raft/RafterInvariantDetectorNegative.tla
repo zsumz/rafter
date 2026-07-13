@@ -17,16 +17,30 @@ PredicateNames == {
 
 DefaultFixtureMode == "Default"
 ElectionRecorderMode == "ElectionRecorderOnly"
+LogMatchingRecorderMode == "LogMatchingRecorderOnly"
+SnapshotPrefixRecorderMode == "SnapshotPrefixRecorderOnly"
+LeaderCompletenessRecorderMode == "LeaderCompletenessRecorderOnly"
+CommittedPrefixRecorderMode == "CommittedPrefixRecorderOnly"
 HigherTermRecorderMode == "HigherTermRecorderOnly"
 StaleAuthorityRecorderMode == "StaleAuthorityRecorderOnly"
 ApplicationRecorderMode == "ApplicationRecorderOnly"
+ApplicationEpochRecorderMode == "ApplicationEpochRecorderOnly"
+CommitQuorumRecorderMode == "CommitQuorumRecorderOnly"
+ReadBarrierRecorderMode == "ReadBarrierRecorderOnly"
 
 FixtureModes == {
     DefaultFixtureMode,
     ElectionRecorderMode,
+    LogMatchingRecorderMode,
+    SnapshotPrefixRecorderMode,
+    LeaderCompletenessRecorderMode,
+    CommittedPrefixRecorderMode,
     HigherTermRecorderMode,
     StaleAuthorityRecorderMode,
-    ApplicationRecorderMode
+    ApplicationRecorderMode,
+    ApplicationEpochRecorderMode,
+    CommitQuorumRecorderMode,
+    ReadBarrierRecorderMode
 }
 
 FixtureConstantsOK ==
@@ -45,6 +59,13 @@ BaseRole == [n \in Nodes |-> Follower]
 BaseLog == [n \in Nodes |-> <<>>]
 BaseCommit == [n \in Nodes |-> 0]
 BaseApplied == [n \in Nodes |-> <<>>]
+BaseSnapshotIndex == [n \in Nodes |-> 0]
+BaseSnapshotPrefix == [n \in Nodes |-> <<>>]
+BaseCompactedIndex == [n \in Nodes |-> 0]
+BaseApplicationEpoch == [n \in Nodes |-> 0]
+BaseEpochIndex == [n \in Nodes |-> 0]
+BaseApplicationState == [n \in Nodes |-> InitialApplicationState]
+BaseAppliedThrough == [n \in Nodes |-> 0]
 
 ApplicationConfig ==
   JointMembership(Nodes, {FixtureA, FixtureB})
@@ -52,10 +73,30 @@ ApplicationConfig ==
 CorruptedApplicationConfig ==
   JointMembership(Nodes, {FixtureA, FixtureC})
 
+RegressionStableConfig == StableMembership({FixtureA, FixtureB})
+
+DivergentLogs ==
+  [n \in Nodes |->
+    IF n = FixtureA THEN <<Entry(1, FixtureValueA)>>
+    ELSE IF n = FixtureB THEN <<Entry(1, FixtureValueB)>>
+    ELSE <<>>]
+
+SingleAEntryLogs ==
+  [n \in Nodes |->
+    IF n = FixtureA THEN <<Entry(1, FixtureValueA)>> ELSE <<>>]
+
+SingleBEntryLogs ==
+  [n \in Nodes |->
+    IF n = FixtureB THEN <<Entry(1, FixtureValueB)>> ELSE <<>>]
+
+IsMode(predicate, mode) ==
+  TargetPredicate = predicate /\ FixtureMode = mode
+
 InitialTerm ==
-  IF TargetPredicate = "StaleLeaderFencing" /\
-       FixtureMode = StaleAuthorityRecorderMode
+  IF IsMode("StaleLeaderFencing", StaleAuthorityRecorderMode)
   THEN [n \in Nodes |-> IF n = FixtureA THEN 2 ELSE 1]
+  ELSE IF IsMode("LeaderCompleteness", LeaderCompletenessRecorderMode)
+  THEN [n \in Nodes |-> IF n = FixtureB THEN 2 ELSE 1]
   ELSE BaseTerm
 
 InitialVote ==
@@ -66,41 +107,340 @@ InitialVote ==
 InitialRole ==
   CASE TargetPredicate = "ElectionSafety" ->
          [n \in Nodes |-> IF n = FixtureA THEN Candidate ELSE Follower]
+    [] IsMode("LeaderCompleteness", LeaderCompletenessRecorderMode) ->
+         [n \in Nodes |-> IF n = FixtureB THEN Leader ELSE Follower]
+    [] IsMode("LogMatching", SnapshotPrefixRecorderMode) ->
+         [n \in Nodes |-> IF n = FixtureA THEN Leader ELSE Follower]
     [] TargetPredicate = "StaleLeaderFencing" /\
          FixtureMode # StaleAuthorityRecorderMode ->
          [n \in Nodes |-> IF n = FixtureA THEN Leader ELSE Follower]
     [] OTHER -> BaseRole
 
 InitialLog ==
-  IF TargetPredicate = "StateMachineSafety"
-  THEN [n \in Nodes |-> <<ConfigurationEntry(1, ApplicationConfig)>>]
-  ELSE BaseLog
+  CASE TargetPredicate = "StateMachineSafety" /\
+         FixtureMode # ApplicationEpochRecorderMode ->
+         [n \in Nodes |-> <<ConfigurationEntry(1, ApplicationConfig)>>]
+    [] IsMode("StateMachineSafety", ApplicationEpochRecorderMode) ->
+         [n \in Nodes |->
+           IF n = FixtureA THEN <<Entry(1, FixtureValueA)>> ELSE <<>>]
+    [] IsMode("LogMatching", SnapshotPrefixRecorderMode) -> SingleAEntryLogs
+    [] OTHER -> BaseLog
 
 InitialCommit ==
-  IF TargetPredicate = "StateMachineSafety"
-  THEN [n \in Nodes |-> 1]
-  ELSE BaseCommit
+  CASE TargetPredicate = "StateMachineSafety" /\
+         FixtureMode # ApplicationEpochRecorderMode ->
+         [n \in Nodes |-> 1]
+    [] IsMode("StateMachineSafety", ApplicationEpochRecorderMode) ->
+         [n \in Nodes |-> IF n = FixtureA THEN 1 ELSE 0]
+    [] IsMode("LogMatching", SnapshotPrefixRecorderMode) ->
+         [n \in Nodes |-> IF n = FixtureA THEN 1 ELSE 0]
+    [] OTHER -> BaseCommit
+
+InitialSnapshotIndex ==
+  IF IsMode("LogMatching", SnapshotPrefixRecorderMode)
+  THEN [n \in Nodes |-> IF n = FixtureA THEN 1 ELSE 0]
+  ELSE BaseSnapshotIndex
+
+InitialSnapshotPrefix ==
+  IF IsMode("LogMatching", SnapshotPrefixRecorderMode)
+  THEN [n \in Nodes |->
+    IF n = FixtureA THEN <<Entry(1, FixtureValueA)>> ELSE <<>>]
+  ELSE BaseSnapshotPrefix
+
+InitialCompactedIndex ==
+  IF IsMode("LogMatching", SnapshotPrefixRecorderMode)
+  THEN [n \in Nodes |-> IF n = FixtureA THEN 1 ELSE 0]
+  ELSE BaseCompactedIndex
 
 InitialEffectiveMembership ==
-  IF TargetPredicate = "StateMachineSafety"
+  IF TargetPredicate = "StateMachineSafety" /\
+       FixtureMode # ApplicationEpochRecorderMode
   THEN ApplicationConfig
   ELSE StableMembership(Nodes)
 
 InitialEffectiveConfigIndex ==
-  IF TargetPredicate = "StateMachineSafety" THEN 1 ELSE 0
+  IF TargetPredicate = "StateMachineSafety" /\
+       FixtureMode # ApplicationEpochRecorderMode
+  THEN 1
+  ELSE 0
+
+InitialReadRequests ==
+  IF IsMode("ReadBarrierLinearizability", ReadBarrierRecorderMode)
+  THEN {[node |-> FixtureA, request |-> FixtureRead, committedFloor |-> 1]}
+  ELSE {}
+
+InitialCommittedLedger ==
+  IF IsMode("CommittedPrefixStability", CommittedPrefixRecorderMode)
+  THEN {[index |-> 1, entry |-> Entry(1, FixtureValueA)]}
+  ELSE {}
 
 InitialElectedLeaders ==
   [t \in 1..MaxTerm |->
-    IF TargetPredicate = "StaleLeaderFencing" /\
-         FixtureMode # StaleAuthorityRecorderMode /\ t = 1
+    IF /\ t = 1
+       /\ (IsMode("LogMatching", SnapshotPrefixRecorderMode)
+            \/ (TargetPredicate = "StaleLeaderFencing" /\
+                 FixtureMode # StaleAuthorityRecorderMode))
     THEN {FixtureA}
+    ELSE IF /\ t = 2
+            /\ IsMode("LeaderCompleteness", LeaderCompletenessRecorderMode)
+    THEN {FixtureB}
     ELSE {}]
 
-DivergentLogs ==
-  [n \in Nodes |->
-    IF n = FixtureA THEN <<Entry(1, FixtureValueA)>>
-    ELSE IF n = FixtureB THEN <<Entry(1, FixtureValueB)>>
-    ELSE <<>>]
+FixtureInit ==
+  /\ TargetPredicate \in PredicateNames
+  /\ FixtureConstantsOK
+  /\ currentTerm = InitialTerm
+  /\ votedFor = InitialVote
+  /\ role = InitialRole
+  /\ log = InitialLog
+  /\ commitIndex = InitialCommit
+  /\ snapshotIndex = InitialSnapshotIndex
+  /\ snapshotPrefix = InitialSnapshotPrefix
+  /\ compactedIndex = InitialCompactedIndex
+  /\ snapshotTransfer = NoSnapshotTransfer
+  /\ applied = BaseApplied
+  /\ applicationEpoch = BaseApplicationEpoch
+  /\ epochBaseIndex = BaseEpochIndex
+  /\ epochBaseState = BaseApplicationState
+  /\ applicationState = BaseApplicationState
+  /\ appliedThrough = BaseAppliedThrough
+  /\ messages = {}
+  /\ readRequests = InitialReadRequests
+  /\ readGrants = {}
+  /\ membership = StableMembership(Nodes)
+  /\ appliedConfigIndex = 0
+  /\ effectiveMembership = InitialEffectiveMembership
+  /\ effectiveConfigIndex = InitialEffectiveConfigIndex
+  /\ electedLeaders = InitialElectedLeaders
+  /\ logicalPrefixLedger = {}
+  /\ committedLedger = InitialCommittedLedger
+  /\ commitWitnesses = {}
+  /\ higherTermEvidenceSeen = FALSE
+  /\ higherTermStepDownFailed = FALSE
+  /\ staleAuthorityAccepted = FALSE
+
+ElectionFirstLeader ==
+  /\ role[FixtureA] = Candidate
+  /\ electedLeaders[1] = {}
+  /\ BecomeLeader(FixtureA)
+
+PrepareSequentialCandidate ==
+  /\ role[FixtureA] = Leader
+  /\ votedFor' = [n \in Nodes |-> FixtureB]
+  /\ role' = [n \in Nodes |-> IF n = FixtureB THEN Candidate ELSE Follower]
+  /\ UNCHANGED <<currentTerm, log, commitIndex, messages,
+                  readRequests, readGrants, membership, appliedConfigIndex,
+                  effectiveMembership, effectiveConfigIndex,
+                  electedLeaders>>
+  /\ UNCHANGED snapshotVars
+  /\ UNCHANGED applicationVars
+  /\ UNCHANGED historyVars
+  /\ UNCHANGED authorityVars
+
+FaultySequentialLeader ==
+  /\ role[FixtureB] = Candidate
+  /\ role' = [n \in Nodes |-> IF n = FixtureB THEN Leader ELSE Follower]
+  /\ RecordElection(FixtureB)
+  /\ RecordAuthorityAcceptance(1, 1, TRUE)
+  /\ UNCHANGED <<currentTerm, votedFor, log, commitIndex, messages,
+                  readRequests, readGrants, membership, appliedConfigIndex,
+                  effectiveMembership, effectiveConfigIndex,
+                  higherTermEvidenceSeen, higherTermStepDownFailed>>
+  /\ UNCHANGED snapshotVars
+  /\ UNCHANGED applicationVars
+  /\ UNCHANGED historyVars
+
+FaultyHigherTermAndAuthority ==
+  /\ ~higherTermEvidenceSeen
+  /\ ~higherTermStepDownFailed
+  /\ ~staleAuthorityAccepted
+  /\ currentTerm' = [currentTerm EXCEPT ![FixtureA] = 2]
+  /\ votedFor' = [votedFor EXCEPT ![FixtureA] = NoVote]
+  /\ role' = [role EXCEPT ![FixtureA] = Candidate]
+  /\ RecordHigherTermOutcome(FixtureA, 2, TRUE)
+  /\ RecordAuthorityAcceptance(
+       1, 2, FixtureMode # HigherTermRecorderMode)
+  /\ UNCHANGED <<log, commitIndex, messages, readRequests, readGrants,
+                  membership, appliedConfigIndex, effectiveMembership,
+                  effectiveConfigIndex, electedLeaders>>
+  /\ UNCHANGED snapshotVars
+  /\ UNCHANGED applicationVars
+  /\ UNCHANGED historyVars
+
+FaultyStaleAuthorityOnly ==
+  /\ ~higherTermEvidenceSeen
+  /\ ~higherTermStepDownFailed
+  /\ ~staleAuthorityAccepted
+  /\ RecordHigherTermOutcome(FixtureA, currentTerm[FixtureA], FALSE)
+  /\ RecordAuthorityAcceptance(1, currentTerm[FixtureA], TRUE)
+  /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
+                  messages, readRequests, readGrants, membership,
+                  appliedConfigIndex, effectiveMembership,
+                  effectiveConfigIndex, electedLeaders>>
+  /\ UNCHANGED snapshotVars
+  /\ UNCHANGED applicationVars
+  /\ UNCHANGED historyVars
+
+ApplicationFirstApply ==
+  /\ Len(applied[FixtureA]) = 0
+  /\ Len(applied[FixtureB]) = 0
+  /\ Apply(FixtureA)
+
+FaultyApplicationResult ==
+  LET entry == log[FixtureB][1]
+      priorState == InitialApplicationState
+      corruptedResult ==
+        [referenceState |-> <<>>, membership |-> CorruptedApplicationConfig]
+  IN
+    /\ Len(applied[FixtureA]) = 1
+    /\ Len(applied[FixtureB]) = 0
+    /\ RecordApplication(FixtureB, 1, entry, priorState, corruptedResult)
+    /\ applicationState' =
+         [applicationState EXCEPT ![FixtureB] = corruptedResult]
+    /\ appliedThrough' = [appliedThrough EXCEPT ![FixtureB] = 1]
+    /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
+                    messages, readRequests, readGrants, membership,
+                    appliedConfigIndex, effectiveMembership,
+                    effectiveConfigIndex, electedLeaders,
+                    applicationEpoch, epochBaseIndex, epochBaseState>>
+    /\ UNCHANGED snapshotVars
+    /\ UNCHANGED historyVars
+    /\ UNCHANGED authorityVars
+
+ApplicationEpochFirstApply ==
+  /\ applicationEpoch[FixtureA] = 0
+  /\ appliedThrough[FixtureA] = 0
+  /\ Apply(FixtureA)
+
+ApplicationEpochLoss ==
+  /\ applicationEpoch[FixtureA] = 0
+  /\ appliedThrough[FixtureA] = 1
+  /\ ApplicationStateLoss(FixtureA)
+
+FaultyApplicationEpochReplay ==
+  LET entry == Entry(1, FixtureValueB)
+      priorState == InitialApplicationState
+      resultState == ApplyEntry(priorState, entry)
+  IN
+    /\ applicationEpoch[FixtureA] = 1
+    /\ appliedThrough[FixtureA] = 0
+    /\ RecordApplication(FixtureA, 1, entry, priorState, resultState)
+    /\ applicationState' =
+         [applicationState EXCEPT ![FixtureA] = resultState]
+    /\ appliedThrough' = [appliedThrough EXCEPT ![FixtureA] = 1]
+    /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
+                    messages, readRequests, readGrants, membership,
+                    appliedConfigIndex, effectiveMembership,
+                    effectiveConfigIndex, electedLeaders,
+                    applicationEpoch, epochBaseIndex, epochBaseState>>
+    /\ UNCHANGED snapshotVars
+    /\ UNCHANGED historyVars
+    /\ UNCHANGED authorityVars
+
+FaultyLogMatchingRecorder ==
+  /\ logicalPrefixLedger = {}
+  /\ RecordLogicalPrefixes(
+       DivergentLogs, BaseSnapshotIndex, BaseSnapshotPrefix)
+  /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
+                  messages, readRequests, readGrants, membership,
+                  appliedConfigIndex, effectiveMembership,
+                  effectiveConfigIndex, electedLeaders,
+                  committedLedger, commitWitnesses>>
+  /\ UNCHANGED snapshotVars
+  /\ UNCHANGED applicationVars
+  /\ UNCHANGED authorityVars
+
+ObserveSnapshotSource ==
+  /\ logicalPrefixLedger = {}
+  /\ RecordLogicalPrefixes(log, snapshotIndex, snapshotPrefix)
+  /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
+                  messages, readRequests, readGrants, membership,
+                  appliedConfigIndex, effectiveMembership,
+                  effectiveConfigIndex, electedLeaders,
+                  committedLedger, commitWitnesses>>
+  /\ UNCHANGED snapshotVars
+  /\ UNCHANGED applicationVars
+  /\ UNCHANGED authorityVars
+
+FaultySnapshotTransfer ==
+  /\ logicalPrefixLedger # {}
+  /\ ~snapshotTransfer.active
+  /\ snapshotIndex[FixtureB] = 0
+  /\ snapshotTransfer' =
+       [active |-> TRUE, term |-> 1,
+        from |-> FixtureA, to |-> FixtureB, index |-> 1,
+        prefix |-> <<Entry(1, FixtureValueB)>>]
+  /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
+                  snapshotIndex, snapshotPrefix, compactedIndex,
+                  messages, readRequests, readGrants, membership,
+                  appliedConfigIndex, effectiveMembership,
+                  effectiveConfigIndex, electedLeaders>>
+  /\ UNCHANGED applicationVars
+  /\ UNCHANGED historyVars
+  /\ UNCHANGED authorityVars
+
+FaultyLeaderCompletenessRecorder ==
+  /\ committedLedger = {}
+  /\ RecordCommittedEntries(
+       SingleAEntryLogs, BaseSnapshotIndex, BaseSnapshotPrefix,
+       FixtureA, 0, 1)
+  /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
+                  messages, readRequests, readGrants, membership,
+                  appliedConfigIndex, effectiveMembership,
+                  effectiveConfigIndex, electedLeaders,
+                  logicalPrefixLedger, commitWitnesses>>
+  /\ UNCHANGED snapshotVars
+  /\ UNCHANGED applicationVars
+  /\ UNCHANGED authorityVars
+
+FaultyCommittedPrefixRecorder ==
+  /\ Cardinality(committedLedger) = 1
+  /\ RecordCommittedEntries(
+       SingleBEntryLogs, BaseSnapshotIndex, BaseSnapshotPrefix,
+       FixtureB, 0, 1)
+  /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
+                  messages, readRequests, readGrants, membership,
+                  appliedConfigIndex, effectiveMembership,
+                  effectiveConfigIndex, electedLeaders,
+                  logicalPrefixLedger, commitWitnesses>>
+  /\ UNCHANGED snapshotVars
+  /\ UNCHANGED applicationVars
+  /\ UNCHANGED authorityVars
+
+FaultyCommitQuorumRecorder ==
+  LET witness ==
+        [index |-> 1,
+         entry |-> Entry(1, FixtureValueA),
+         membership |-> StableMembership(Nodes),
+         derivedMembership |-> ApplicationConfig,
+         configIndex |-> 1,
+         replicas |-> {FixtureA}]
+  IN
+    /\ commitWitnesses = {}
+    /\ RecordCommitWitnesses({witness})
+    /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
+                    messages, readRequests, readGrants, membership,
+                    appliedConfigIndex, effectiveMembership,
+                    effectiveConfigIndex, electedLeaders,
+                    logicalPrefixLedger, committedLedger>>
+    /\ UNCHANGED snapshotVars
+    /\ UNCHANGED applicationVars
+    /\ UNCHANGED authorityVars
+
+FaultyReadBarrierRecorder ==
+  LET grant ==
+        [node |-> FixtureA, request |-> FixtureRead, readIndex |-> 0]
+  IN
+    /\ readGrants = {}
+    /\ RecordReadGrant(grant)
+    /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
+                    messages, readRequests, membership,
+                    appliedConfigIndex, effectiveMembership,
+                    effectiveConfigIndex, electedLeaders>>
+    /\ UNCHANGED snapshotVars
+    /\ UNCHANGED applicationVars
+    /\ UNCHANGED historyVars
+    /\ UNCHANGED authorityVars
 
 LegacyTargetTerm ==
   IF TargetPredicate = "LeaderCompleteness"
@@ -123,8 +463,7 @@ LegacyTargetLog ==
     [] TargetPredicate = "CommittedPrefixStability" -> DivergentLogs
     [] TargetPredicate \in {
            "LeaderCompleteness", "CommittedEntriesHaveQuorum"} ->
-         [n \in Nodes |->
-           IF n = FixtureA THEN <<Entry(1, FixtureValueA)>> ELSE <<>>]
+         SingleAEntryLogs
     [] OTHER -> BaseLog
 
 LegacyTargetCommit ==
@@ -134,6 +473,26 @@ LegacyTargetCommit ==
   ELSE IF TargetPredicate = "CommittedPrefixStability"
   THEN [n \in Nodes |-> IF n \in {FixtureA, FixtureB} THEN 1 ELSE 0]
   ELSE BaseCommit
+
+LegacyTargetCommittedLedger ==
+  CASE TargetPredicate = "LeaderCompleteness" ->
+         {[index |-> 1, entry |-> Entry(1, FixtureValueA)]}
+    [] TargetPredicate = "CommittedPrefixStability" ->
+         {[index |-> 1, entry |-> Entry(1, FixtureValueA)],
+          [index |-> 1, entry |-> Entry(1, FixtureValueB)]}
+    [] TargetPredicate = "CommittedEntriesHaveQuorum" ->
+         {[index |-> 1, entry |-> Entry(1, FixtureValueA)]}
+    [] OTHER -> {}
+
+LegacyTargetCommitWitnesses ==
+  IF TargetPredicate = "CommittedEntriesHaveQuorum"
+  THEN {[index |-> 1,
+         entry |-> Entry(1, FixtureValueA),
+         membership |-> StableMembership(Nodes),
+         derivedMembership |-> StableMembership(Nodes),
+         configIndex |-> 0,
+         replicas |-> {FixtureA}]}
+  ELSE {}
 
 LegacyTargetElectedLeaders ==
   [t \in 1..MaxTerm |->
@@ -146,110 +505,22 @@ LegacyTargetReadGrants ==
   THEN {[node |-> FixtureA, request |-> FixtureRead, readIndex |-> 0]}
   ELSE {}
 
-FixtureInit ==
-  /\ TargetPredicate \in PredicateNames
-  /\ FixtureConstantsOK
-  /\ currentTerm = InitialTerm
-  /\ votedFor = InitialVote
-  /\ role = InitialRole
-  /\ log = InitialLog
-  /\ commitIndex = InitialCommit
-  /\ applied = BaseApplied
-  /\ messages = {}
-  /\ readRequests = {}
-  /\ readGrants = {}
-  /\ membership = StableMembership(Nodes)
-  /\ appliedConfigIndex = 0
-  /\ effectiveMembership = InitialEffectiveMembership
-  /\ effectiveConfigIndex = InitialEffectiveConfigIndex
-  /\ electedLeaders = InitialElectedLeaders
-  /\ higherTermEvidenceSeen = FALSE
-  /\ higherTermStepDownFailed = FALSE
-  /\ staleAuthorityAccepted = FALSE
-
-ElectionFirstLeader ==
-  /\ role[FixtureA] = Candidate
-  /\ electedLeaders[1] = {}
-  /\ BecomeLeader(FixtureA)
-
-PrepareSequentialCandidate ==
-  /\ role[FixtureA] = Leader
-  /\ votedFor' = [n \in Nodes |-> FixtureB]
-  /\ role' = [n \in Nodes |-> IF n = FixtureB THEN Candidate ELSE Follower]
-  /\ UNCHANGED << currentTerm, log, commitIndex, applied, messages,
-                  readRequests, readGrants, membership, appliedConfigIndex,
-                  effectiveMembership, effectiveConfigIndex,
-                  electedLeaders,
-                  higherTermEvidenceSeen, higherTermStepDownFailed,
-                  staleAuthorityAccepted >>
-
-FaultySequentialLeader ==
-  /\ role[FixtureB] = Candidate
-  /\ role' = [n \in Nodes |-> IF n = FixtureB THEN Leader ELSE Follower]
-  /\ RecordElection(FixtureB)
-  /\ RecordAuthorityAcceptance(1, 1, TRUE)
-  /\ UNCHANGED << currentTerm, votedFor, log, commitIndex, applied, messages,
-                  readRequests, readGrants, membership, appliedConfigIndex,
-                  effectiveMembership, effectiveConfigIndex,
-                  higherTermEvidenceSeen, higherTermStepDownFailed >>
-
-FaultyHigherTermAndAuthority ==
-  /\ ~higherTermEvidenceSeen
-  /\ ~higherTermStepDownFailed
-  /\ ~staleAuthorityAccepted
-  /\ currentTerm' = [currentTerm EXCEPT ![FixtureA] = 2]
-  /\ votedFor' = [votedFor EXCEPT ![FixtureA] = NoVote]
-  /\ role' = [role EXCEPT ![FixtureA] = Candidate]
-  /\ RecordHigherTermOutcome(FixtureA, 2, TRUE)
-  /\ RecordAuthorityAcceptance(
-       1,
-       2,
-       FixtureMode # HigherTermRecorderMode)
-  /\ UNCHANGED << log, commitIndex, applied, messages, readRequests,
-                  readGrants, membership, appliedConfigIndex,
-                  effectiveMembership, effectiveConfigIndex,
-                  electedLeaders >>
-
-FaultyStaleAuthorityOnly ==
-  /\ ~higherTermEvidenceSeen
-  /\ ~higherTermStepDownFailed
-  /\ ~staleAuthorityAccepted
-  /\ RecordHigherTermOutcome(FixtureA, currentTerm[FixtureA], FALSE)
-  /\ RecordAuthorityAcceptance(1, currentTerm[FixtureA], TRUE)
-  /\ UNCHANGED << currentTerm, votedFor, role, log, commitIndex, applied,
-                  messages, readRequests, readGrants, membership,
-                  appliedConfigIndex,
-                  effectiveMembership, effectiveConfigIndex,
-                  electedLeaders >>
-
-ApplicationFirstApply ==
-  /\ Len(applied[FixtureA]) = 0
-  /\ Len(applied[FixtureB]) = 0
-  /\ Apply(FixtureA)
-
-FaultyApplicationResult ==
-  LET entry == log[FixtureB][1]
-      priorState == InitialApplicationState
-      corruptedResult ==
-        [referenceState |-> <<>>, membership |-> CorruptedApplicationConfig]
-  IN
-    /\ Len(applied[FixtureA]) = 1
-    /\ Len(applied[FixtureB]) = 0
-    /\ RecordApplication(FixtureB, 1, entry, priorState, corruptedResult)
-    /\ UNCHANGED << currentTerm, votedFor, role, log, commitIndex, messages,
-                    readRequests, readGrants, membership,
-                    appliedConfigIndex, effectiveMembership,
-                    effectiveConfigIndex, electedLeaders,
-                    higherTermEvidenceSeen, higherTermStepDownFailed,
-                    staleAuthorityAccepted >>
-
 LegacyViolation ==
   /\ currentTerm' = LegacyTargetTerm
   /\ votedFor' = BaseVote
   /\ role' = LegacyTargetRole
   /\ log' = LegacyTargetLog
   /\ commitIndex' = LegacyTargetCommit
+  /\ snapshotIndex' = BaseSnapshotIndex
+  /\ snapshotPrefix' = BaseSnapshotPrefix
+  /\ compactedIndex' = BaseCompactedIndex
+  /\ snapshotTransfer' = NoSnapshotTransfer
   /\ applied' = BaseApplied
+  /\ applicationEpoch' = BaseApplicationEpoch
+  /\ epochBaseIndex' = BaseEpochIndex
+  /\ epochBaseState' = BaseApplicationState
+  /\ applicationState' = BaseApplicationState
+  /\ appliedThrough' = BaseAppliedThrough
   /\ messages' = {}
   /\ readRequests' = {}
   /\ readGrants' = LegacyTargetReadGrants
@@ -258,46 +529,237 @@ LegacyViolation ==
   /\ effectiveMembership' = StableMembership(Nodes)
   /\ effectiveConfigIndex' = 0
   /\ electedLeaders' = LegacyTargetElectedLeaders
+  /\ logicalPrefixLedger' = {}
+  /\ committedLedger' = LegacyTargetCommittedLedger
+  /\ commitWitnesses' = LegacyTargetCommitWitnesses
   /\ higherTermEvidenceSeen' = FALSE
   /\ higherTermStepDownFailed' = FALSE
   /\ staleAuthorityAccepted' = FALSE
 
-ElectionDone ==
-  /\ role[FixtureB] = Leader
-  /\ UNCHANGED vars
-
-FencingDone ==
-  /\ (higherTermStepDownFailed \/ staleAuthorityAccepted)
-  /\ UNCHANGED vars
-
-ApplicationDone ==
-  /\ Len(applied[FixtureA]) = 1
-  /\ Len(applied[FixtureB]) = 1
-  /\ UNCHANGED vars
+FixtureDone == UNCHANGED vars
 
 FixtureNext ==
   \/ /\ TargetPredicate = "ElectionSafety"
      /\ (ElectionFirstLeader
           \/ PrepareSequentialCandidate
           \/ FaultySequentialLeader
-          \/ ElectionDone)
+          \/ FixtureDone)
   \/ /\ TargetPredicate = "StaleLeaderFencing"
      /\ (IF FixtureMode = StaleAuthorityRecorderMode
           THEN FaultyStaleAuthorityOnly
           ELSE FaultyHigherTermAndAuthority)
   \/ /\ TargetPredicate = "StaleLeaderFencing"
-     /\ FencingDone
+     /\ FixtureDone
   \/ /\ TargetPredicate = "StateMachineSafety"
-     /\ (ApplicationFirstApply
-          \/ FaultyApplicationResult
-          \/ ApplicationDone)
-  \/ /\ TargetPredicate \notin {
-           "ElectionSafety", "StaleLeaderFencing", "StateMachineSafety"}
+     /\ FixtureMode # ApplicationEpochRecorderMode
+     /\ (ApplicationFirstApply \/ FaultyApplicationResult \/ FixtureDone)
+  \/ /\ IsMode("StateMachineSafety", ApplicationEpochRecorderMode)
+     /\ (ApplicationEpochFirstApply
+          \/ ApplicationEpochLoss
+          \/ FaultyApplicationEpochReplay
+          \/ FixtureDone)
+  \/ /\ IsMode("LogMatching", LogMatchingRecorderMode)
+     /\ (FaultyLogMatchingRecorder \/ FixtureDone)
+  \/ /\ IsMode("LogMatching", SnapshotPrefixRecorderMode)
+     /\ (ObserveSnapshotSource
+          \/ FaultySnapshotTransfer
+          \/ InstallSnapshot
+          \/ FixtureDone)
+  \/ /\ IsMode("LeaderCompleteness", LeaderCompletenessRecorderMode)
+     /\ (FaultyLeaderCompletenessRecorder \/ FixtureDone)
+  \/ /\ IsMode("CommittedPrefixStability", CommittedPrefixRecorderMode)
+     /\ (FaultyCommittedPrefixRecorder \/ FixtureDone)
+  \/ /\ IsMode("CommittedEntriesHaveQuorum", CommitQuorumRecorderMode)
+     /\ (FaultyCommitQuorumRecorder \/ FixtureDone)
+  \/ /\ IsMode("ReadBarrierLinearizability", ReadBarrierRecorderMode)
+     /\ (FaultyReadBarrierRecorder \/ FixtureDone)
+  \/ /\ FixtureMode = DefaultFixtureMode
+     /\ TargetPredicate \notin {
+          "ElectionSafety", "StaleLeaderFencing", "StateMachineSafety"}
      /\ LegacyViolation
 
 FixtureSpec == FixtureInit /\ [][FixtureNext]_vars
 
-RegressionStableConfig == StableMembership({FixtureA, FixtureB})
+BaseExtendedState ==
+  /\ snapshotIndex = BaseSnapshotIndex
+  /\ snapshotPrefix = BaseSnapshotPrefix
+  /\ compactedIndex = BaseCompactedIndex
+  /\ snapshotTransfer = NoSnapshotTransfer
+  /\ applied = BaseApplied
+  /\ applicationEpoch = BaseApplicationEpoch
+  /\ epochBaseIndex = BaseEpochIndex
+  /\ epochBaseState = BaseApplicationState
+  /\ applicationState = BaseApplicationState
+  /\ appliedThrough = BaseAppliedThrough
+  /\ logicalPrefixLedger = {}
+  /\ committedLedger = {}
+  /\ commitWitnesses = {}
+
+SnapshotLifecycleEntry == Entry(1, FixtureValueA)
+
+SnapshotLifecycleResult ==
+  ApplyEntry(InitialApplicationState, SnapshotLifecycleEntry)
+
+SnapshotLifecycleWitness ==
+  [index |-> 1,
+   entry |-> SnapshotLifecycleEntry,
+   membership |-> StableMembership(Nodes),
+   derivedMembership |-> StableMembership(Nodes),
+   configIndex |-> 0,
+   replicas |-> {FixtureA, FixtureB}]
+
+SnapshotLifecycleInit ==
+  /\ FixtureConstantsOK
+  /\ currentTerm = BaseTerm
+  /\ votedFor = [n \in Nodes |-> FixtureA]
+  /\ role = [n \in Nodes |-> IF n = FixtureA THEN Leader ELSE Follower]
+  /\ log = [n \in Nodes |->
+       IF n \in {FixtureA, FixtureB} THEN <<SnapshotLifecycleEntry>> ELSE <<>>]
+  /\ commitIndex = [n \in Nodes |-> IF n = FixtureA THEN 1 ELSE 0]
+  /\ snapshotIndex = BaseSnapshotIndex
+  /\ snapshotPrefix = BaseSnapshotPrefix
+  /\ compactedIndex = BaseCompactedIndex
+  /\ snapshotTransfer = NoSnapshotTransfer
+  /\ applied = [n \in Nodes |->
+       IF n = FixtureA
+       THEN <<AppliedEvent(
+         0, 0, InitialApplicationState, 1, SnapshotLifecycleEntry,
+         InitialApplicationState, SnapshotLifecycleResult)>>
+       ELSE <<>>]
+  /\ applicationEpoch = BaseApplicationEpoch
+  /\ epochBaseIndex = BaseEpochIndex
+  /\ epochBaseState = BaseApplicationState
+  /\ applicationState = [n \in Nodes |->
+       IF n = FixtureA THEN SnapshotLifecycleResult ELSE InitialApplicationState]
+  /\ appliedThrough =
+       [n \in Nodes |-> IF n = FixtureA THEN 1 ELSE 0]
+  /\ messages = {}
+  /\ readRequests = {}
+  /\ readGrants = {}
+  /\ membership = StableMembership(Nodes)
+  /\ appliedConfigIndex = 0
+  /\ effectiveMembership = StableMembership(Nodes)
+  /\ effectiveConfigIndex = 0
+  /\ electedLeaders = [t \in 1..MaxTerm |->
+       IF t = 1 THEN {FixtureA} ELSE {}]
+  /\ logicalPrefixLedger = {}
+  /\ committedLedger = {[index |-> 1, entry |-> SnapshotLifecycleEntry]}
+  /\ commitWitnesses = {SnapshotLifecycleWitness}
+  /\ higherTermEvidenceSeen = FALSE
+  /\ higherTermStepDownFailed = FALSE
+  /\ staleAuthorityAccepted = FALSE
+
+SnapshotLifecycleNext ==
+  \/ /\ snapshotIndex[FixtureA] = 0
+     /\ CreateSnapshot(FixtureA)
+  \/ /\ snapshotIndex[FixtureA] = 1
+     /\ compactedIndex[FixtureA] = 0
+     /\ CompactSnapshot(FixtureA)
+  \/ /\ compactedIndex[FixtureA] = 1
+     /\ snapshotIndex[FixtureB] = 0
+     /\ ~snapshotTransfer.active
+     /\ TransferSnapshot(FixtureA, FixtureB)
+  \/ /\ snapshotTransfer.active
+     /\ InstallSnapshot
+  \/ /\ snapshotIndex[FixtureB] = 1
+     /\ currentTerm[FixtureB] = 1
+     /\ role[FixtureB] = Follower
+     /\ Timeout(FixtureB)
+  \/ /\ snapshotIndex[FixtureB] = 1
+     /\ currentTerm[FixtureB] = 2
+     /\ role[FixtureB] = Candidate
+     /\ Restart(FixtureB)
+  \/ /\ snapshotIndex[FixtureB] = 1
+     /\ currentTerm[FixtureB] = 2
+     /\ role[FixtureB] = Follower
+     /\ UNCHANGED vars
+
+SnapshotLifecycleSpec ==
+  /\ SnapshotLifecycleInit
+  /\ [][SnapshotLifecycleNext]_vars
+  /\ WF_vars(SnapshotLifecycleNext)
+
+SnapshotLifecycleInvariant ==
+  /\ SnapshotIdentitySoundFor(
+       log, snapshotIndex, snapshotPrefix, compactedIndex)
+  /\ LogMatching
+  /\ LeaderCompleteness
+  /\ CommittedPrefixStability
+  /\ StateMachineSafety
+  /\ CommittedEntriesHaveQuorum
+
+SnapshotLifecycleComplete ==
+  /\ snapshotIndex[FixtureB] = 1
+  /\ compactedIndex[FixtureB] = 1
+  /\ applicationEpoch[FixtureB] = 1
+  /\ currentTerm[FixtureB] = 2
+  /\ role[FixtureB] = Follower
+
+SnapshotLifecycleCompletes == <>SnapshotLifecycleComplete
+
+ApplicationEpochLifecycleInit ==
+  /\ FixtureConstantsOK
+  /\ currentTerm = BaseTerm
+  /\ votedFor = [n \in Nodes |-> FixtureA]
+  /\ role = [n \in Nodes |-> IF n = FixtureA THEN Leader ELSE Follower]
+  /\ log = [n \in Nodes |->
+       IF n \in {FixtureA, FixtureB} THEN <<SnapshotLifecycleEntry>> ELSE <<>>]
+  /\ commitIndex = [n \in Nodes |-> IF n = FixtureA THEN 1 ELSE 0]
+  /\ snapshotIndex = BaseSnapshotIndex
+  /\ snapshotPrefix = BaseSnapshotPrefix
+  /\ compactedIndex = BaseCompactedIndex
+  /\ snapshotTransfer = NoSnapshotTransfer
+  /\ applied = BaseApplied
+  /\ applicationEpoch = BaseApplicationEpoch
+  /\ epochBaseIndex = BaseEpochIndex
+  /\ epochBaseState = BaseApplicationState
+  /\ applicationState = BaseApplicationState
+  /\ appliedThrough = BaseAppliedThrough
+  /\ messages = {}
+  /\ readRequests = {}
+  /\ readGrants = {}
+  /\ membership = StableMembership(Nodes)
+  /\ appliedConfigIndex = 0
+  /\ effectiveMembership = StableMembership(Nodes)
+  /\ effectiveConfigIndex = 0
+  /\ electedLeaders = [t \in 1..MaxTerm |->
+       IF t = 1 THEN {FixtureA} ELSE {}]
+  /\ logicalPrefixLedger = {}
+  /\ committedLedger = {[index |-> 1, entry |-> SnapshotLifecycleEntry]}
+  /\ commitWitnesses = {SnapshotLifecycleWitness}
+  /\ higherTermEvidenceSeen = FALSE
+  /\ higherTermStepDownFailed = FALSE
+  /\ staleAuthorityAccepted = FALSE
+
+ApplicationEpochLifecycleNext ==
+  \/ /\ applicationEpoch[FixtureA] = 0
+     /\ appliedThrough[FixtureA] = 0
+     /\ Apply(FixtureA)
+  \/ /\ applicationEpoch[FixtureA] = 0
+     /\ appliedThrough[FixtureA] = 1
+     /\ ApplicationStateLoss(FixtureA)
+  \/ /\ applicationEpoch[FixtureA] = 1
+     /\ appliedThrough[FixtureA] = 0
+     /\ Apply(FixtureA)
+  \/ /\ applicationEpoch[FixtureA] = 1
+     /\ appliedThrough[FixtureA] = 1
+     /\ UNCHANGED vars
+
+ApplicationEpochLifecycleSpec ==
+  /\ ApplicationEpochLifecycleInit
+  /\ [][ApplicationEpochLifecycleNext]_vars
+  /\ WF_vars(ApplicationEpochLifecycleNext)
+
+ApplicationEpochLifecycleInvariant ==
+  /\ StateMachineSafety
+  /\ CommittedEntriesHaveQuorum
+
+ApplicationEpochLifecycleComplete ==
+  /\ applicationEpoch[FixtureA] = 1
+  /\ appliedThrough[FixtureA] = 1
+  /\ Len(applied[FixtureA]) = 2
+
+ApplicationEpochLifecycleCompletes == <>ApplicationEpochLifecycleComplete
 
 ConfigurationRegressionInit ==
   /\ FixtureConstantsOK
@@ -313,7 +775,7 @@ ConfigurationRegressionInit ==
        ELSE <<>>]
   /\ commitIndex = [n \in Nodes |->
        IF n = FixtureA THEN 2 ELSE IF n = FixtureB THEN 1 ELSE 0]
-  /\ applied = BaseApplied
+  /\ BaseExtendedState
   /\ messages = {}
   /\ readRequests = {}
   /\ readGrants = {}
@@ -327,15 +789,15 @@ ConfigurationRegressionInit ==
   /\ staleAuthorityAccepted = FALSE
 
 ConfigurationRegressionNext ==
-  \/ /\ Len(applied[FixtureA]) = 0
+  \/ /\ appliedThrough[FixtureA] = 0
      /\ Apply(FixtureA)
-  \/ /\ Len(applied[FixtureA]) = 1
+  \/ /\ appliedThrough[FixtureA] = 1
      /\ Apply(FixtureA)
-  \/ /\ Len(applied[FixtureA]) = 2
-     /\ Len(applied[FixtureB]) = 0
+  \/ /\ appliedThrough[FixtureA] = 2
+     /\ appliedThrough[FixtureB] = 0
      /\ Apply(FixtureB)
-  \/ /\ Len(applied[FixtureA]) = 2
-     /\ Len(applied[FixtureB]) = 1
+  \/ /\ appliedThrough[FixtureA] = 2
+     /\ appliedThrough[FixtureB] = 1
      /\ UNCHANGED vars
 
 ConfigurationRegressionSpec ==
@@ -346,10 +808,10 @@ ConfigurationRegressionSpec ==
 ConfigurationRegressionInvariant ==
   /\ effectiveConfigIndex = 2
   /\ effectiveMembership = RegressionStableConfig
-  /\ CASE Len(applied[FixtureA]) >= 2 ->
+  /\ CASE appliedThrough[FixtureA] >= 2 ->
             /\ appliedConfigIndex = 2
             /\ membership = RegressionStableConfig
-       [] Len(applied[FixtureA]) = 1 ->
+       [] appliedThrough[FixtureA] = 1 ->
             /\ appliedConfigIndex = 1
             /\ membership = ApplicationConfig
        [] OTHER ->
@@ -357,8 +819,8 @@ ConfigurationRegressionInvariant ==
             /\ membership = StableMembership(Nodes)
 
 ConfigurationRegressionComplete ==
-  /\ Len(applied[FixtureA]) = 2
-  /\ Len(applied[FixtureB]) = 1
+  /\ appliedThrough[FixtureA] = 2
+  /\ appliedThrough[FixtureB] = 1
 
 ConfigurationRegressionCompletes == <>ConfigurationRegressionComplete
 
@@ -371,7 +833,7 @@ JointQuorumRegressionInit ==
   /\ role = [n \in Nodes |-> IF n = FixtureA THEN Leader ELSE Follower]
   /\ log = BaseLog
   /\ commitIndex = BaseCommit
-  /\ applied = BaseApplied
+  /\ BaseExtendedState
   /\ messages = {}
   /\ readRequests = {}
   /\ readGrants = {}
@@ -411,9 +873,9 @@ JointQuorumRegressionNext ==
      /\ messages = {}
      /\ Commit(FixtureA, 1)
   \/ /\ commitIndex[FixtureA] = 1
-     /\ Len(applied[FixtureA]) = 0
+     /\ appliedThrough[FixtureA] = 0
      /\ Apply(FixtureA)
-  \/ /\ Len(applied[FixtureA]) = 1
+  \/ /\ appliedThrough[FixtureA] = 1
      /\ UNCHANGED vars
 
 JointQuorumRegressionSpec ==
@@ -427,30 +889,11 @@ JointQuorumOldSideCannotCommit ==
     /\ Len(log[FixtureC]) = 1 ) =>
     commitIndex[FixtureA] = 0
 
-JointQuorumRegressionComplete == Len(applied[FixtureA]) = 1
+JointQuorumRegressionComplete == appliedThrough[FixtureA] = 1
 
 JointQuorumRegressionCompletes == <>JointQuorumRegressionComplete
 
-EffectiveOverwriteRegressionInit ==
-  /\ FixtureConstantsOK
-  /\ currentTerm = BaseTerm
-  /\ votedFor = [n \in Nodes |-> FixtureA]
-  /\ role = [n \in Nodes |-> IF n = FixtureA THEN Leader ELSE Follower]
-  /\ log = BaseLog
-  /\ commitIndex = BaseCommit
-  /\ applied = BaseApplied
-  /\ messages = {}
-  /\ readRequests = {}
-  /\ readGrants = {}
-  /\ membership = StableMembership(Nodes)
-  /\ appliedConfigIndex = 0
-  /\ effectiveMembership = StableMembership(Nodes)
-  /\ effectiveConfigIndex = 0
-  /\ electedLeaders = [t \in 1..MaxTerm |->
-       IF t = 1 THEN {FixtureA} ELSE {}]
-  /\ higherTermEvidenceSeen = FALSE
-  /\ higherTermStepDownFailed = FALSE
-  /\ staleAuthorityAccepted = FALSE
+EffectiveOverwriteRegressionInit == JointQuorumRegressionInit
 
 PrepareEffectiveOverwriteLeader ==
   /\ Len(log[FixtureA]) = 1
@@ -461,10 +904,13 @@ PrepareEffectiveOverwriteLeader ==
   /\ role' = [n \in Nodes |-> IF n = FixtureB THEN Leader ELSE Follower]
   /\ log' = [log EXCEPT ![FixtureB] = <<Entry(2, FixtureValueA)>>]
   /\ electedLeaders' = [electedLeaders EXCEPT ![2] = @ \cup {FixtureB}]
-  /\ UNCHANGED << commitIndex, applied, messages, readRequests, readGrants,
+  /\ RecordLogicalPrefixes(log', snapshotIndex, snapshotPrefix)
+  /\ UNCHANGED <<commitIndex, messages, readRequests, readGrants,
                   membership, appliedConfigIndex, effectiveMembership,
-                  effectiveConfigIndex, higherTermEvidenceSeen,
-                  higherTermStepDownFailed, staleAuthorityAccepted >>
+                  effectiveConfigIndex, committedLedger, commitWitnesses>>
+  /\ UNCHANGED snapshotVars
+  /\ UNCHANGED applicationVars
+  /\ UNCHANGED authorityVars
 
 EffectiveOverwriteRegressionNext ==
   \/ /\ Len(log[FixtureA]) = 0
@@ -553,9 +999,9 @@ DelayedHeartbeatRegressionNext ==
      /\ messages = {}
      /\ Commit(FixtureA, 1)
   \/ /\ commitIndex[FixtureA] = 1
-     /\ Len(applied[FixtureA]) = 0
+     /\ appliedThrough[FixtureA] = 0
      /\ Apply(FixtureA)
-  \/ /\ Len(applied[FixtureA]) = 1
+  \/ /\ appliedThrough[FixtureA] = 1
      /\ UNCHANGED vars
 
 DelayedHeartbeatRegressionSpec ==
@@ -575,7 +1021,7 @@ DelayedHeartbeatRegressionInvariant ==
        /\ messages = {} ) =>
        commitIndex[FixtureA] = 0
 
-DelayedHeartbeatRegressionComplete == Len(applied[FixtureA]) = 1
+DelayedHeartbeatRegressionComplete == appliedThrough[FixtureA] = 1
 
 DelayedHeartbeatRegressionCompletes ==
   <>DelayedHeartbeatRegressionComplete
