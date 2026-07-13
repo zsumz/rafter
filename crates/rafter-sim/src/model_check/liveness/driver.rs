@@ -422,11 +422,14 @@ fn drive_soak_liveness_round_observed(
                 let Some(envelope) = state.cluster().pending_envelope_at(position).cloned() else {
                     break;
                 };
+                let identity =
+                    super::super::scheduling::envelope_identity(state.cluster(), position);
                 apply_to_state(state, Operation::DeliverReadyAt(position));
                 trace.push(SoakAction::Deliver {
                     from: envelope.from,
                     to: envelope.to,
                     message: MessageKind::from(&envelope.message),
+                    identity,
                 });
                 observed_actions.insert(SoakActionKind::Deliver);
                 boundary_deliveries = boundary_deliveries.saturating_add(1);

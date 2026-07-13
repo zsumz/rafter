@@ -3,7 +3,8 @@ use rafter::{NodeId, Role};
 use crate::Envelope;
 
 use super::super::{
-    ExplorationState, MessageKind, ProposalId, SoakAction, SoakActionKind, SoakConfig,
+    EnvelopeIdentity, ExplorationState, MessageKind, ProposalId, SoakAction, SoakActionKind,
+    SoakConfig,
 };
 use super::membership::{
     enabled_membership_operations, soak_membership_operation, soak_membership_trace,
@@ -48,13 +49,17 @@ pub(in crate::model_check) fn enabled_soak_actions(
     }
 
     for (position, queued) in state.cluster().network.iter().enumerate() {
-        let action = soak_message_action(&queued.envelope);
+        let action = soak_message_action(
+            &queued.envelope,
+            super::envelope_identity(state.cluster(), position),
+        );
         if queued.ready_at <= state.cluster().clock.now() {
             actions.push(EnabledSoakAction {
                 trace: SoakAction::Deliver {
                     from: action.from,
                     to: action.to,
                     message: action.message,
+                    identity: action.identity,
                 },
                 operation: SoakOperation::DeliverReadyAt(position),
             });
@@ -64,6 +69,7 @@ pub(in crate::model_check) fn enabled_soak_actions(
                 from: action.from,
                 to: action.to,
                 message: action.message,
+                identity: action.identity,
                 ticks: 1,
             },
             operation: SoakOperation::DelayAt(position, 1),
@@ -73,6 +79,7 @@ pub(in crate::model_check) fn enabled_soak_actions(
                 from: action.from,
                 to: action.to,
                 message: action.message,
+                identity: action.identity,
             },
             operation: SoakOperation::DropAt(position),
         });
@@ -81,6 +88,7 @@ pub(in crate::model_check) fn enabled_soak_actions(
                 from: action.from,
                 to: action.to,
                 message: action.message,
+                identity: action.identity,
             },
             operation: SoakOperation::DuplicateAt(position),
         });
@@ -232,12 +240,14 @@ struct SoakMessageAction {
     from: NodeId,
     to: NodeId,
     message: MessageKind,
+    identity: EnvelopeIdentity,
 }
 
-fn soak_message_action(envelope: &Envelope) -> SoakMessageAction {
+fn soak_message_action(envelope: &Envelope, identity: EnvelopeIdentity) -> SoakMessageAction {
     SoakMessageAction {
         from: envelope.from,
         to: envelope.to,
         message: MessageKind::from(&envelope.message),
+        identity,
     }
 }

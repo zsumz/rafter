@@ -8,4 +8,4 @@ pub use bounds::Bounds;
 pub use failure::{Failure, FailureKind};
 pub use state::{NodeSummary, StateSummary};
 pub use summary::{ExplorationCompletion, Summary};
-pub use trace::{Action, MessageKind, ProposalId};
+pub use trace::{Action, EnvelopeIdentity, MessageKind, ProposalId};

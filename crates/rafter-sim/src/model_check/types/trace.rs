@@ -2,6 +2,8 @@ use std::fmt;
 
 use rafter::{MembershipSet, Message, NodeId};
 
+use crate::SimTick;
+
 /// A small, replayable action emitted in a model-checking counterexample.
 ///
 /// This enum is exhaustive because counterexample traces are recorded using a
@@ -45,6 +47,7 @@ pub enum Action {
         from: NodeId,
         to: NodeId,
         message: MessageKind,
+        identity: EnvelopeIdentity,
     },
 }
 
@@ -75,10 +78,59 @@ impl fmt::Display for Action {
                 write!(formatter, "enter joint via {to} target {target:?}")
             }
             Self::LeaveJoint { to } => write!(formatter, "leave joint via {to}"),
-            Self::Deliver { from, to, message } => {
-                write!(formatter, "deliver {message} {from}->{to}")
+            Self::Deliver {
+                from,
+                to,
+                message,
+                identity,
+            } => {
+                write!(formatter, "deliver {message} {from}->{to} {identity}")
             }
         }
+    }
+}
+
+/// Exact identity of one queued envelope in a deterministic trace state.
+///
+/// The ordinal is counted among envelopes with the same sender, receiver, and
+/// message kind. Pairing it with the scheduled tick distinguishes both
+/// different messages in the same protocol family and byte-identical copies.
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub struct EnvelopeIdentity {
+    ready_at: SimTick,
+    matching_ordinal: u64,
+}
+
+impl EnvelopeIdentity {
+    /// Builds an identity from a queued envelope's scheduling metadata.
+    #[must_use]
+    pub const fn new(ready_at: SimTick, matching_ordinal: u64) -> Self {
+        Self {
+            ready_at,
+            matching_ordinal,
+        }
+    }
+
+    /// Returns the logical tick at which the envelope becomes deliverable.
+    #[must_use]
+    pub const fn ready_at(self) -> SimTick {
+        self.ready_at
+    }
+
+    /// Returns the envelope's ordinal among equal routing/message families.
+    #[must_use]
+    pub const fn matching_ordinal(self) -> u64 {
+        self.matching_ordinal
+    }
+}
+
+impl fmt::Display for EnvelopeIdentity {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "[ready={}, ordinal={}]",
+            self.ready_at.0, self.matching_ordinal
+        )
     }
 }
 

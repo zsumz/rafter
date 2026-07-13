@@ -1,9 +1,9 @@
 use rafter::{Role, Term};
 
-use crate::{Cluster, Envelope};
+use crate::Cluster;
 
 use super::state::{ExplorationState, RestartSnapshotState};
-use super::{Action, Bounds, MessageKind, ProposalId};
+use super::{Action, Bounds, EnvelopeIdentity, MessageKind, ProposalId};
 
 mod membership;
 mod operation;
@@ -27,7 +27,7 @@ pub(super) fn enabled_actions(cluster: &Cluster) -> Vec<EnabledAction> {
     for (position, queued) in cluster.network.iter().enumerate() {
         if queued.ready_at <= cluster.clock.now() {
             actions.push(EnabledAction {
-                trace: deliver_action(&queued.envelope),
+                trace: deliver_action(cluster, position),
                 operation: Operation::DeliverReadyAt(position),
             });
         }
@@ -107,8 +107,8 @@ pub(super) fn enabled_restart_snapshot_actions(
             .iter()
             .enumerate()
             .filter(|(_, queued)| queued.ready_at <= state.state.cluster().clock.now())
-            .map(|(position, queued)| EnabledAction {
-                trace: deliver_action(&queued.envelope),
+            .map(|(position, _queued)| EnabledAction {
+                trace: deliver_action(state.state.cluster(), position),
                 operation: Operation::DeliverReadyAt(position),
             })
             .collect::<Vec<_>>()
@@ -139,10 +139,78 @@ fn newer_term_has_leader(cluster: &Cluster, term: Term) -> bool {
         .values()
         .any(|node| node.role() == Role::Leader && node.current_term() > term)
 }
-fn deliver_action(envelope: &Envelope) -> Action {
+pub(in crate::model_check) fn deliver_action(cluster: &Cluster, position: usize) -> Action {
+    let queued = cluster
+        .network
+        .get(position)
+        .expect("enabled delivery position must name a queued envelope");
+    let envelope = &queued.envelope;
     Action::Deliver {
         from: envelope.from,
         to: envelope.to,
         message: MessageKind::from(&envelope.message),
+        identity: envelope_identity(cluster, position),
+    }
+}
+
+pub(in crate::model_check) fn envelope_identity(
+    cluster: &Cluster,
+    position: usize,
+) -> EnvelopeIdentity {
+    let queued = cluster
+        .network
+        .get(position)
+        .expect("envelope identity position must be queued");
+    let kind = MessageKind::from(&queued.envelope.message);
+    let matching_ordinal = cluster
+        .network
+        .iter()
+        .take(position)
+        .filter(|candidate| {
+            candidate.envelope.from == queued.envelope.from
+                && candidate.envelope.to == queued.envelope.to
+                && MessageKind::from(&candidate.envelope.message) == kind
+        })
+        .count();
+    EnvelopeIdentity::new(
+        queued.ready_at,
+        u64::try_from(matching_ordinal).expect("queue ordinal fits in u64"),
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use rafter::{LogIndex, Message, NodeConfig, NodeId, RequestVote, Term};
+
+    use crate::{Cluster, SimSeed};
+
+    use super::{enabled_soak_actions, ExplorationState};
+    use crate::model_check::{SoakAction, SoakConfig};
+
+    #[test]
+    fn soak_actions_distinguish_duplicate_envelopes() {
+        let config = NodeConfig::new(NodeId(1), vec![NodeId(2)], 3).expect("test config is valid");
+        let mut state = ExplorationState::new(Cluster::new(vec![config]));
+        let message = Message::RequestVote(RequestVote {
+            term: Term(1),
+            candidate_id: NodeId(2),
+            last_log_index: LogIndex::ZERO,
+            last_log_term: Term::default(),
+        });
+        state.inject_message(NodeId(2), NodeId(1), message.clone());
+        state.inject_message(NodeId(2), NodeId(1), message);
+
+        let identities = enabled_soak_actions(&state, SoakConfig::new(SimSeed(7), 1))
+            .into_iter()
+            .filter_map(|action| match action.trace {
+                SoakAction::Deliver { identity, .. } => Some(identity),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(identities.len(), 2);
+        assert_eq!(identities[0].matching_ordinal(), 0);
+        assert_eq!(identities[1].matching_ordinal(), 1);
+        assert_ne!(identities[0], identities[1]);
     }
 }

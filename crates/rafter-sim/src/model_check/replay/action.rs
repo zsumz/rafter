@@ -154,15 +154,31 @@ fn replay_deliver_action(
     action_index: usize,
     action: &Action,
 ) -> Result<(), ReplayError> {
-    let Action::Deliver { from, to, message } = action else {
+    let Action::Deliver {
+        from,
+        to,
+        message,
+        identity,
+    } = action
+    else {
         unreachable!("caller filters delivery replay actions");
     };
-    let Some(position) = state.cluster().network.iter().position(|queued| {
-        queued.ready_at <= state.cluster().clock.now()
-            && queued.envelope.from == *from
-            && queued.envelope.to == *to
-            && MessageKind::from(&queued.envelope.message) == *message
-    }) else {
+    let Some(position) =
+        state
+            .cluster()
+            .network
+            .iter()
+            .enumerate()
+            .find_map(|(position, queued)| {
+                (queued.ready_at <= state.cluster().clock.now()
+                    && queued.envelope.from == *from
+                    && queued.envelope.to == *to
+                    && MessageKind::from(&queued.envelope.message) == *message
+                    && super::super::scheduling::envelope_identity(state.cluster(), position)
+                        == *identity)
+                    .then_some(position)
+            })
+    else {
         return Err(ReplayError::MissingReadyMessage {
             action_index,
             action: action.clone(),
