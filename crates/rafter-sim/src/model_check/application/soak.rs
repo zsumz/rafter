@@ -16,7 +16,7 @@ pub(super) fn apply_soak_action_inner(
         Err(operation) => operation,
     };
 
-    let before = state.cluster.clone();
+    let before = state.cluster.transition_observation_snapshot();
     match operation {
         SoakOperation::DelayAt(position, ticks) => {
             let ready_at = state.cluster.clock.now().after(ticks);

@@ -2,6 +2,7 @@ use rafter::{Input, LocalProposalId, MembershipConfig, MembershipSet, NodeId};
 
 use crate::records::LocalProposalEvent;
 use crate::Cluster;
+use crate::ReadRegistered;
 
 use super::super::super::{helpers::proposal_payload, scheduling::Operation};
 
@@ -9,6 +10,7 @@ use super::super::super::{helpers::proposal_payload, scheduling::Operation};
 pub(in crate::model_check::state::application) struct AppliedOperationEffects {
     pub(in crate::model_check::state::application) emitted: Vec<crate::Envelope>,
     pub(in crate::model_check::state::application) local_proposals: Vec<LocalProposalEvent>,
+    pub(in crate::model_check::state::application) read_registration: Option<ReadRegistered>,
 }
 
 pub(in crate::model_check::state::application) fn apply_to_cluster(
@@ -22,6 +24,7 @@ pub(in crate::model_check::state::application) fn apply_to_cluster(
             return AppliedOperationEffects {
                 emitted: recorded.emitted,
                 local_proposals: recorded.local_proposals,
+                read_registration: None,
             };
         }
         Operation::Restart(_) | Operation::ApplicationLossRestart(_) => {
@@ -38,9 +41,16 @@ pub(in crate::model_check::state::application) fn apply_to_cluster(
             return AppliedOperationEffects {
                 emitted: recorded.emitted,
                 local_proposals: recorded.local_proposals,
+                read_registration: None,
             };
         }
-        Operation::ReadIndex { to, request_id } => cluster.read_index(to, request_id),
+        Operation::ReadIndex { to, request_id } => {
+            let read_registration = cluster.read_index(to, request_id);
+            return AppliedOperationEffects {
+                read_registration: Some(read_registration),
+                ..AppliedOperationEffects::default()
+            };
+        }
         Operation::AddLearner { to, learner_id } => cluster.add_learner(to, learner_id),
         Operation::RemoveLearner { to, learner_id } => {
             if let Some(target) =
@@ -68,6 +78,7 @@ pub(in crate::model_check::state::application) fn apply_to_cluster(
                 return AppliedOperationEffects {
                     emitted: recorded.emitted,
                     local_proposals: recorded.local_proposals,
+                    read_registration: None,
                 };
             }
         }
