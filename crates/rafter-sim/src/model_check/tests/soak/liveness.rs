@@ -46,6 +46,82 @@ fn randomized_soak_liveness_phase_elects_leader_and_commits_probe() {
             "liveness phase should observe {kind:?}"
         );
     }
+
+    let convergence = summary
+        .liveness_reports()
+        .iter()
+        .find(|report| report.feature_id() == "leader-convergence")
+        .expect("post-heal convergence should emit clause-a evidence");
+    let usability = summary
+        .liveness_reports()
+        .iter()
+        .find(|report| report.feature_id() == "leader-usability")
+        .expect("post-heal usability should emit clause-b evidence");
+    assert_eq!(
+        convergence.to_json()["clause_ids"],
+        serde_json::json!(["LV-01.a"])
+    );
+    assert_eq!(
+        usability.to_json()["clause_ids"],
+        serde_json::json!(["LV-01.b"])
+    );
+}
+
+#[test]
+fn post_heal_leader_convergence_monitor_reports_exhausted_bound() {
+    let config = SoakConfig::new(SimSeed(0x11_5e), 0);
+    let mut state =
+        ExplorationState::new(Cluster::new_with_seed(three_node_configs(), config.seed));
+    let mut trace = Vec::new();
+    let mut observed_actions = BTreeSet::new();
+
+    let failure = liveness::run_soak_liveness_check_with_budget_overrides(
+        &mut state,
+        config,
+        &mut trace,
+        &mut observed_actions,
+        Some(0),
+        None,
+    )
+    .expect_err("zero post-heal rounds must fail the convergence detector");
+
+    assert!(failure
+        .failure
+        .message()
+        .contains("within 0 post-heal convergence rounds"));
+    assert!(trace
+        .iter()
+        .any(|action| matches!(action, SoakAction::Heal)));
+    assert!(!trace
+        .iter()
+        .any(|action| matches!(action, SoakAction::Propose { .. })));
+}
+
+#[test]
+fn post_heal_leader_usability_monitor_reports_exhausted_bound() {
+    let config = SoakConfig::new(SimSeed(0x11_5e), 0);
+    let mut state =
+        ExplorationState::new(Cluster::new_with_seed(three_node_configs(), config.seed));
+    let mut trace = Vec::new();
+    let mut observed_actions = BTreeSet::new();
+
+    let failure = liveness::run_soak_liveness_check_with_budget_overrides(
+        &mut state,
+        config,
+        &mut trace,
+        &mut observed_actions,
+        None,
+        Some(0),
+    )
+    .expect_err("a converged leader cannot complete a fresh proposal in zero rounds");
+
+    assert!(failure
+        .failure
+        .message()
+        .contains("within 0 bounded-fair usability rounds"));
+    assert!(trace
+        .iter()
+        .any(|action| matches!(action, SoakAction::Propose { .. })));
 }
 
 #[test]
