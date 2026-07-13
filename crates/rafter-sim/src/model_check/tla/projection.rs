@@ -58,6 +58,7 @@ fn project_raft_action_to_tla(action: &Action) -> TlaProjection {
             from,
             to,
             message: MessageKind::RequestVote,
+            ..
         } => TlaProjection::Action(TlaAction::DeliverRequestVote {
             from: *from,
             to: *to,
@@ -66,6 +67,7 @@ fn project_raft_action_to_tla(action: &Action) -> TlaProjection {
             from,
             to,
             message: MessageKind::AppendEntries,
+            ..
         } => TlaProjection::Action(TlaAction::DeliverAppend {
             from: *from,
             to: *to,

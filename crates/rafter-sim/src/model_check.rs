@@ -1,8 +1,8 @@
 mod types;
 
 pub use types::{
-    Action, Bounds, ExplorationCompletion, Failure, FailureKind, MessageKind, NodeSummary,
-    ProposalId, StateSummary, Summary,
+    Action, Bounds, EnvelopeIdentity, ExplorationCompletion, Failure, FailureKind, MessageKind,
+    NodeSummary, ProposalId, StateSummary, Summary,
 };
 
 mod tla;

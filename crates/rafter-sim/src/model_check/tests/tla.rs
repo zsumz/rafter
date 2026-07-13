@@ -2,8 +2,10 @@ use rafter::NodeId;
 
 use super::super::{
     project_raft_trace_to_tla, render_tla_trace_spec, require_tla_projectable_raft_trace, Action,
-    MessageKind, ProposalId, TlaAbstractionGap, TlaAction, TlaProjection, TlaTraceRenderError,
+    EnvelopeIdentity, MessageKind, ProposalId, TlaAbstractionGap, TlaAction, TlaProjection,
+    TlaTraceRenderError,
 };
+use crate::SimTick;
 
 #[test]
 fn raft_trace_projects_to_tla_action_vocabulary() {
@@ -22,11 +24,13 @@ fn raft_trace_projects_to_tla_action_vocabulary() {
             from: NodeId(1),
             to: NodeId(2),
             message: MessageKind::RequestVote,
+            identity: identity(),
         },
         Action::Deliver {
             from: NodeId(1),
             to: NodeId(2),
             message: MessageKind::AppendEntries,
+            identity: identity(),
         },
     ];
 
@@ -69,11 +73,13 @@ fn raft_trace_tla_projection_names_abstraction_gaps() {
             from: NodeId(2),
             to: NodeId(1),
             message: MessageKind::AppendEntriesResponse,
+            identity: identity(),
         },
         Action::Deliver {
             from: NodeId(2),
             to: NodeId(1),
             message: MessageKind::PreVote,
+            identity: identity(),
         },
         Action::AddLearner {
             to: NodeId(1),
@@ -100,6 +106,10 @@ fn raft_trace_tla_projection_names_abstraction_gaps() {
     assert_eq!(failure.action_index(), 0);
     assert_eq!(failure.action(), &trace[0]);
     assert_eq!(failure.gap().code(), "append_entries_response_abstracted");
+}
+
+const fn identity() -> EnvelopeIdentity {
+    EnvelopeIdentity::new(SimTick(0), 0)
 }
 
 #[test]

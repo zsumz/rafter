@@ -2,7 +2,7 @@ use std::fmt;
 
 use rafter::{MembershipSet, NodeId};
 
-use crate::model_check::{MessageKind, ProposalId};
+use crate::model_check::{EnvelopeIdentity, MessageKind, ProposalId};
 
 /// Randomized simulator action family.
 ///
@@ -72,22 +72,26 @@ pub enum SoakAction {
         from: NodeId,
         to: NodeId,
         message: MessageKind,
+        identity: EnvelopeIdentity,
     },
     Delay {
         from: NodeId,
         to: NodeId,
         message: MessageKind,
+        identity: EnvelopeIdentity,
         ticks: u64,
     },
     Drop {
         from: NodeId,
         to: NodeId,
         message: MessageKind,
+        identity: EnvelopeIdentity,
     },
     Duplicate {
         from: NodeId,
         to: NodeId,
         message: MessageKind,
+        identity: EnvelopeIdentity,
     },
     Restart(NodeId),
     ReadIndex {
@@ -161,20 +165,39 @@ impl fmt::Display for SoakAction {
             Self::Propose { to, proposal_id } => {
                 write!(formatter, "propose {} to {to}", proposal_id.0)
             }
-            Self::Deliver { from, to, message } => {
-                write!(formatter, "deliver {message} {from}->{to}")
+            Self::Deliver {
+                from,
+                to,
+                message,
+                identity,
+            } => {
+                write!(formatter, "deliver {message} {from}->{to} {identity}")
             }
             Self::Delay {
                 from,
                 to,
                 message,
+                identity,
                 ticks,
-            } => write!(formatter, "delay {message} {from}->{to} by {ticks} ticks"),
-            Self::Drop { from, to, message } => {
-                write!(formatter, "drop {message} {from}->{to}")
+            } => write!(
+                formatter,
+                "delay {message} {from}->{to} {identity} by {ticks} ticks"
+            ),
+            Self::Drop {
+                from,
+                to,
+                message,
+                identity,
+            } => {
+                write!(formatter, "drop {message} {from}->{to} {identity}")
             }
-            Self::Duplicate { from, to, message } => {
-                write!(formatter, "duplicate {message} {from}->{to}")
+            Self::Duplicate {
+                from,
+                to,
+                message,
+                identity,
+            } => {
+                write!(formatter, "duplicate {message} {from}->{to} {identity}")
             }
             Self::Restart(node_id) => write!(formatter, "restart {node_id}"),
             Self::ReadIndex { to, request_id } => {
