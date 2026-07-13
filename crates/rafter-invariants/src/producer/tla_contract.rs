@@ -9,6 +9,7 @@ use std::{
 
 use crate::SourceReceipt;
 
+use super::tla_checkpoint;
 use super::{artifact, process};
 
 const SPEC: &str = "specs/tla/raft/Raft.tla";
@@ -33,6 +34,22 @@ pub(super) fn validate_runner_options(
             return Err(format!("TLA runner requires {name}={expected}").into());
         }
     }
+    if tla_checkpoint::enabled(configuration) {
+        for (name, expected) in [
+            ("config", "Raft.cfg"),
+            ("workers", "auto"),
+            ("soft_timeout", "295m"),
+            ("checkpoint_minutes", "30"),
+            ("checkpoint_gzip", "required"),
+            ("max_heap", "4g"),
+            ("checkpoint_recovery", "strict-compatible-if-present"),
+            ("unsymmetrized_exploration", "required"),
+        ] {
+            if required_configuration(configuration, name)? != expected {
+                return Err(format!("checkpointed TLA runner requires {name}={expected}").into());
+            }
+        }
+    }
     Ok(())
 }
 
@@ -48,13 +65,21 @@ pub(super) fn validate_spec_contract(
         return Err("TLA registry must contain exactly the eight detector predicates".into());
     }
     let config = Path::new("specs/tla/raft").join(config_name);
-    let configured = configured_invariants(&fs::read_to_string(&config)?);
+    let config_source = fs::read_to_string(&config)?;
+    let configured = configured_invariants(&config_source);
     let configured_set = configured.iter().cloned().collect::<BTreeSet<_>>();
     let mut expected = symbols.clone();
     expected.insert("TypeOK".to_owned());
     let spec = fs::read_to_string(SPEC)?;
     let detector_spec = fs::read_to_string(DETECTOR_SPEC)?;
     let detector_config = fs::read_to_string(DETECTOR_CONFIG)?;
+    if config_name == "Raft.cfg"
+        && config_source
+            .lines()
+            .any(|line| line.trim_start().starts_with("SYMMETRY "))
+    {
+        return Err("full weekly TLA config must be unsymmetrized".into());
+    }
     if configured_set != expected
         || symbols.iter().any(|symbol| {
             !spec
@@ -265,6 +290,34 @@ mod tests {
         ]);
         assert!(validate_runner_options(&options).is_ok());
         options.insert("fp".to_owned(), "1".to_owned());
+        assert!(validate_runner_options(&options).is_err());
+    }
+
+    #[test]
+    fn weekly_checkpoint_contract_is_exact() {
+        let mut options = BTreeMap::from([
+            ("module".to_owned(), "Raft.tla".to_owned()),
+            ("fp".to_owned(), "0".to_owned()),
+            ("tool_mode".to_owned(), "required".to_owned()),
+            ("trace_sample".to_owned(), "required".to_owned()),
+            ("detector_negative".to_owned(), "required".to_owned()),
+            ("config".to_owned(), "Raft.cfg".to_owned()),
+            ("workers".to_owned(), "auto".to_owned()),
+            ("soft_timeout".to_owned(), "295m".to_owned()),
+            ("checkpoint_minutes".to_owned(), "30".to_owned()),
+            ("checkpoint_gzip".to_owned(), "required".to_owned()),
+            ("max_heap".to_owned(), "4g".to_owned()),
+            (
+                "checkpoint_recovery".to_owned(),
+                "strict-compatible-if-present".to_owned(),
+            ),
+            (
+                "unsymmetrized_exploration".to_owned(),
+                "required".to_owned(),
+            ),
+        ]);
+        assert!(validate_runner_options(&options).is_ok());
+        options.insert("max_heap".to_owned(), "8g".to_owned());
         assert!(validate_runner_options(&options).is_err());
     }
 

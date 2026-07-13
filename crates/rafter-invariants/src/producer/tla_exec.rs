@@ -1,6 +1,6 @@
 use std::{collections::BTreeMap, error::Error, fs, path::Path, time::Duration};
 
-use super::{artifact, process, tla_contract::required_configuration, tla_output};
+use super::{artifact, process, tla_checkpoint, tla_contract::required_configuration, tla_output};
 use tla_output::{
     detector_config_kind, detector_invariant, detector_label, detector_log_kind,
     detector_observation, render_detector_config, REGISTERED_PREDICATES,
@@ -20,6 +20,8 @@ pub(super) struct TlaExecution {
     pub(super) peak_rss_kib: u64,
     pub(super) duration_ms: u64,
     pub(super) artifacts: Vec<crate::ArtifactRef>,
+    pub(super) checkpoint_report: Option<tla_checkpoint::RecoveryReport>,
+    pub(super) checkpoint_error: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -47,7 +49,7 @@ pub(super) fn execute(
     mut artifacts: Vec<crate::ArtifactRef>,
 ) -> Result<TlaExecution, Box<dyn Error>> {
     let trace = run_trace_probe(profile, source_ref, configuration, output_dir)?;
-    artifacts.push(trace.artifact);
+    artifacts.push(trace.artifact.clone());
     let trace_summary = tla_output::parse(&trace.output.stdout).ok();
     let trace_succeeded = trace.output.status.success()
         && !trace.output.timed_out
@@ -59,34 +61,46 @@ pub(super) fn execute(
                 && summary.search_depth >= 4
         });
     if !trace_succeeded {
-        return Ok(TlaExecution {
-            main: None,
-            main_parse_error: None,
-            main_status: MainStatus::NotRun,
-            trace_status: ProbeStatus::Failed,
-            detector_status: ProbeStatus::NotRun,
-            detector_qualifications: empty_detector_qualifications(),
-            peak_rss_kib: trace.output.peak_rss_kib,
-            duration_ms: process::duration_ms(trace.output.duration),
-            artifacts,
-        });
+        return Ok(trace_failure(&trace, artifacts));
     }
-    let detectors = run_detector_probes(profile, source_ref, configuration, output_dir)?;
-    artifacts.extend(detectors.artifacts);
+    let mut detectors = run_detector_probes(profile, source_ref, configuration, output_dir)?;
+    artifacts.append(&mut detectors.artifacts);
     if !detectors.succeeded {
-        return Ok(TlaExecution {
-            main: None,
-            main_parse_error: None,
-            main_status: MainStatus::NotRun,
-            trace_status: ProbeStatus::Passed,
-            detector_status: ProbeStatus::Failed,
-            detector_qualifications: detectors.qualifications,
-            peak_rss_kib: trace.output.peak_rss_kib.max(detectors.peak_rss_kib),
-            duration_ms: process::duration_ms(trace.output.duration)
-                .saturating_add(detectors.duration_ms),
-            artifacts,
-        });
+        return Ok(detector_failure(&trace, detectors, artifacts));
     }
+    let mut checkpoint =
+        prepare_checkpoint(profile, source_ref, configuration, &artifacts, output_dir)?;
+    let checkpoint_report = checkpoint
+        .as_ref()
+        .map(|preparation| preparation.report.clone());
+    if let Some(error) = checkpoint
+        .as_ref()
+        .and_then(|preparation| preparation.error.clone())
+    {
+        artifacts.extend(
+            checkpoint
+                .take()
+                .expect("checkpoint exists")
+                .finish(output_dir)?,
+        );
+        return Ok(checkpoint_failure(
+            &trace,
+            detectors,
+            artifacts,
+            checkpoint_report,
+            error,
+        ));
+    }
+    let state = checkpoint
+        .as_ref()
+        .map_or(TlcState::Ephemeral, |preparation| TlcState::Checkpoint {
+            state_dir: &preparation.state_dir,
+            recover_from: preparation.recover_from.as_deref(),
+            checkpoint_minutes: required_configuration(configuration, "checkpoint_minutes")
+                .expect("validated checkpoint interval"),
+            max_heap: required_configuration(configuration, "max_heap")
+                .expect("validated checkpoint heap"),
+        });
     let main = run_tlc(TlcRequest {
         profile,
         source_ref,
@@ -98,6 +112,7 @@ pub(super) fn execute(
         output_dir,
         label: "model-check",
         artifact_kind: "tla-log",
+        state,
     })?;
     let (summary, main_parse_error) = match tla_output::parse(&main.output.stdout) {
         Ok(summary) => (Some(summary), None),
@@ -111,14 +126,11 @@ pub(super) fn execute(
     let duration_ms = process::duration_ms(trace.output.duration)
         .saturating_add(detectors.duration_ms)
         .saturating_add(process::duration_ms(main.output.duration));
-    let main_status = if main.output.timed_out {
-        MainStatus::TimedOut
-    } else if main.output.status.success() {
-        MainStatus::Succeeded
-    } else {
-        MainStatus::Failed
-    };
+    let main_status = classify_main_status(&main.output);
     artifacts.push(main.artifact);
+    if let Some(preparation) = checkpoint {
+        artifacts.extend(preparation.finish(output_dir)?);
+    }
     Ok(TlaExecution {
         main: summary,
         main_parse_error,
@@ -129,7 +141,91 @@ pub(super) fn execute(
         peak_rss_kib,
         duration_ms,
         artifacts,
+        checkpoint_report,
+        checkpoint_error: None,
     })
+}
+
+fn classify_main_status(output: &process::ProcessOutput) -> MainStatus {
+    if output.timed_out {
+        MainStatus::TimedOut
+    } else if output.status.success() {
+        MainStatus::Succeeded
+    } else {
+        MainStatus::Failed
+    }
+}
+
+fn prepare_checkpoint(
+    profile: &str,
+    source_ref: &str,
+    configuration: &BTreeMap<String, String>,
+    artifacts: &[crate::ArtifactRef],
+    output_dir: &Path,
+) -> Result<Option<tla_checkpoint::Preparation>, Box<dyn Error>> {
+    tla_checkpoint::enabled(configuration)
+        .then(|| tla_checkpoint::prepare(profile, source_ref, configuration, artifacts, output_dir))
+        .transpose()
+}
+
+fn trace_failure(trace: &TlcRun, artifacts: Vec<crate::ArtifactRef>) -> TlaExecution {
+    TlaExecution {
+        main: None,
+        main_parse_error: None,
+        main_status: MainStatus::NotRun,
+        trace_status: ProbeStatus::Failed,
+        detector_status: ProbeStatus::NotRun,
+        detector_qualifications: empty_detector_qualifications(),
+        peak_rss_kib: trace.output.peak_rss_kib,
+        duration_ms: process::duration_ms(trace.output.duration),
+        artifacts,
+        checkpoint_report: None,
+        checkpoint_error: None,
+    }
+}
+
+fn detector_failure(
+    trace: &TlcRun,
+    detectors: DetectorProbes,
+    artifacts: Vec<crate::ArtifactRef>,
+) -> TlaExecution {
+    TlaExecution {
+        main: None,
+        main_parse_error: None,
+        main_status: MainStatus::NotRun,
+        trace_status: ProbeStatus::Passed,
+        detector_status: ProbeStatus::Failed,
+        detector_qualifications: detectors.qualifications,
+        peak_rss_kib: trace.output.peak_rss_kib.max(detectors.peak_rss_kib),
+        duration_ms: process::duration_ms(trace.output.duration)
+            .saturating_add(detectors.duration_ms),
+        artifacts,
+        checkpoint_report: None,
+        checkpoint_error: None,
+    }
+}
+
+fn checkpoint_failure(
+    trace: &TlcRun,
+    detectors: DetectorProbes,
+    artifacts: Vec<crate::ArtifactRef>,
+    checkpoint_report: Option<tla_checkpoint::RecoveryReport>,
+    error: String,
+) -> TlaExecution {
+    TlaExecution {
+        main: None,
+        main_parse_error: None,
+        main_status: MainStatus::NotRun,
+        trace_status: ProbeStatus::Passed,
+        detector_status: ProbeStatus::Passed,
+        detector_qualifications: detectors.qualifications,
+        peak_rss_kib: trace.output.peak_rss_kib.max(detectors.peak_rss_kib),
+        duration_ms: process::duration_ms(trace.output.duration)
+            .saturating_add(detectors.duration_ms),
+        artifacts,
+        checkpoint_report,
+        checkpoint_error: Some(error),
+    }
 }
 
 fn run_trace_probe(
@@ -149,6 +245,7 @@ fn run_trace_probe(
         output_dir,
         label: "trace-sample",
         artifact_kind: "tla-trace-log",
+        state: TlcState::Ephemeral,
     })
 }
 
@@ -220,6 +317,7 @@ fn run_detector_probe(
         output_dir,
         label: &label,
         artifact_kind: &artifact_kind,
+        state: TlcState::Ephemeral,
     })?;
     Ok(DetectorRun {
         run,
@@ -288,6 +386,17 @@ fn detector_qualified(
 }
 
 #[derive(Clone, Copy)]
+enum TlcState<'a> {
+    Ephemeral,
+    Checkpoint {
+        state_dir: &'a Path,
+        recover_from: Option<&'a Path>,
+        checkpoint_minutes: &'a str,
+        max_heap: &'a str,
+    },
+}
+
+#[derive(Clone, Copy)]
 struct TlcRequest<'a> {
     profile: &'a str,
     source_ref: &'a str,
@@ -299,21 +408,34 @@ struct TlcRequest<'a> {
     output_dir: &'a Path,
     label: &'a str,
     artifact_kind: &'a str,
+    state: TlcState<'a>,
 }
 
 fn run_tlc(request: TlcRequest<'_>) -> Result<TlcRun, Box<dyn Error>> {
     let source_prefix = request.source_ref.get(..12).unwrap_or(request.source_ref);
-    let state_dir = Path::new("target/rafter-invariants/tla")
-        .join(source_prefix)
-        .join(request.profile)
-        .join(request.label);
-    if state_dir.exists() {
-        fs::remove_dir_all(&state_dir)?;
-    }
-    fs::create_dir_all(&state_dir)?;
-    let state_dir = fs::canonicalize(state_dir)?;
+    let state_dir = match request.state {
+        TlcState::Ephemeral => {
+            let state_dir = Path::new("target/rafter-invariants/tla")
+                .join(source_prefix)
+                .join(request.profile)
+                .join(request.label);
+            if state_dir.exists() {
+                fs::remove_dir_all(&state_dir)?;
+            }
+            fs::create_dir_all(&state_dir)?;
+            fs::canonicalize(state_dir)?
+        }
+        TlcState::Checkpoint { state_dir, .. } => {
+            fs::create_dir_all(state_dir)?;
+            fs::canonicalize(state_dir)?
+        }
+    };
     let jar = fs::canonicalize(JAR)?;
-    let arguments = [
+    let mut arguments = Vec::new();
+    if let TlcState::Checkpoint { max_heap, .. } = request.state {
+        arguments.push(format!("-Xmx{max_heap}").into());
+    }
+    arguments.extend([
         "-XX:+UseParallelGC".into(),
         "-cp".into(),
         jar.into_os_string(),
@@ -327,10 +449,30 @@ fn run_tlc(request: TlcRequest<'_>) -> Result<TlcRun, Box<dyn Error>> {
         "0".into(),
         "-metadir".into(),
         state_dir.into_os_string(),
+    ]);
+    if let TlcState::Checkpoint {
+        checkpoint_minutes,
+        recover_from,
+        ..
+    } = request.state
+    {
+        arguments.extend([
+            "-checkpoint".into(),
+            checkpoint_minutes.into(),
+            "-gzip".into(),
+        ]);
+        if let Some(recover_from) = recover_from {
+            arguments.extend([
+                "-recover".into(),
+                fs::canonicalize(recover_from)?.into_os_string(),
+            ]);
+        }
+    }
+    arguments.extend([
         "-config".into(),
         request.config.into(),
         request.module.into(),
-    ];
+    ]);
     let output = process::timed_with_timeout(
         "java",
         &arguments,
@@ -345,7 +487,7 @@ fn run_tlc(request: TlcRequest<'_>) -> Result<TlcRun, Box<dyn Error>> {
             request.profile, request.label
         )),
         request.artifact_kind,
-        &process::json_log(request.label, &output)?,
+        &process::tla_json_log(request.label, &output)?,
     )?;
     Ok(TlcRun { output, artifact })
 }

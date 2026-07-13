@@ -132,6 +132,23 @@ fn evaluate(
     if execution.detector_status != ProbeStatus::Passed {
         return error("TLC negative detector did not report its named counterexample");
     }
+    if let Some(checkpoint_error) = &execution.checkpoint_error {
+        return error(&format!(
+            "TLC checkpoint recovery rejected: {checkpoint_error}"
+        ));
+    }
+    if let Some(invariant) = execution
+        .main
+        .as_ref()
+        .and_then(|summary| summary.violated_invariant.as_ref())
+    {
+        if symbols.contains(invariant) {
+            return TlaVerdict::Violation(invariant.clone());
+        }
+        return error(&format!(
+            "TLC violated unregistered harness predicate {invariant}"
+        ));
+    }
     if execution.main_status == MainStatus::TimedOut {
         return incomplete(
             CheckCompletion::Timeout,
@@ -144,14 +161,6 @@ fn evaluate(
     let Some(summary) = execution.main.as_ref() else {
         return error("TLC model check was not executed");
     };
-    if let Some(invariant) = &summary.violated_invariant {
-        if symbols.contains(invariant) {
-            return TlaVerdict::Violation(invariant.clone());
-        }
-        return error(&format!(
-            "TLC violated unregistered harness predicate {invariant}"
-        ));
-    }
     if execution.main_status != MainStatus::Succeeded
         || !summary.completed_without_error
         || !summary.process_finished
@@ -197,6 +206,23 @@ fn observations(
         ),
     ]);
     observations.extend(execution.detector_qualifications.clone());
+    if let Some(report) = &execution.checkpoint_report {
+        observations.extend([
+            ("checkpoint_enabled".to_owned(), 1),
+            (
+                "checkpoint_candidate_present".to_owned(),
+                u64::from(report.candidate_present),
+            ),
+            (
+                "checkpoint_compatible".to_owned(),
+                u64::from(report.status != super::tla_checkpoint::RecoveryStatus::Incompatible),
+            ),
+            (
+                "checkpoint_recovery_attempted".to_owned(),
+                u64::from(report.recovery_attempted),
+            ),
+        ]);
+    }
     if let Some(summary) = &execution.main {
         observations.extend([
             ("generated_states".to_owned(), summary.generated_states),

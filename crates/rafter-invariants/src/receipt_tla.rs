@@ -1,6 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::catalog::RunnerContract;
+use crate::producer::tla_checkpoint::{
+    CONTRACT_KIND, INVENTORY_KIND, RECOVERED_CONTRACT_KIND, RECOVERED_INVENTORY_KIND,
+    RECOVERY_REPORT_KIND,
+};
 use crate::producer::tla_output::{
     detector_config_kind, detector_log_kind, detector_observation, REGISTERED_PREDICATES,
 };
@@ -140,6 +144,15 @@ fn validate_pass(
             .map(|predicate| detector_observation(predicate).expect("registered predicate")),
     );
     expected_observations.extend(required.values().map(|symbol| format!("checked:{symbol}")));
+    let checkpoint_enabled = contract.configuration.contains_key("checkpoint_minutes");
+    if checkpoint_enabled {
+        expected_observations.extend([
+            "checkpoint_enabled".to_owned(),
+            "checkpoint_candidate_present".to_owned(),
+            "checkpoint_compatible".to_owned(),
+            "checkpoint_recovery_attempted".to_owned(),
+        ]);
+    }
     if check.observations.keys().cloned().collect::<BTreeSet<_>>() != expected_observations
         || observed(check, "configured_invariants") != 9
         || observed(check, "tool_pin_verified") != 1
@@ -161,7 +174,20 @@ fn validate_pass(
     {
         return Err("passing TLA receipt lacks exact terminal frames or configured coverage");
     }
-    let required_artifacts = required_proof_artifact_kinds();
+    if checkpoint_enabled
+        && (observed(check, "checkpoint_enabled") != 1
+            || observed(check, "checkpoint_compatible") != 1
+            || observed(check, "checkpoint_candidate_present") > 1
+            || observed(check, "checkpoint_recovery_attempted") > 1
+            || observed(check, "checkpoint_recovery_attempted")
+                > observed(check, "checkpoint_candidate_present"))
+    {
+        return Err("passing checkpointed TLA receipt lacks compatible recovery metadata");
+    }
+    let required_artifacts = required_proof_artifact_kinds(
+        checkpoint_enabled,
+        observed(check, "checkpoint_candidate_present") == 1,
+    );
     let actual_artifacts = check
         .artifacts
         .iter()
@@ -173,7 +199,10 @@ fn validate_pass(
     Ok(())
 }
 
-fn required_proof_artifact_kinds() -> BTreeSet<String> {
+fn required_proof_artifact_kinds(
+    checkpoint_enabled: bool,
+    checkpoint_candidate_present: bool,
+) -> BTreeSet<String> {
     let mut kinds = [
         "tla-log",
         "tla-trace-log",
@@ -195,6 +224,19 @@ fn required_proof_artifact_kinds() -> BTreeSet<String> {
         kinds.insert(detector_log_kind(predicate).expect("registered detector predicate"));
         kinds.insert(detector_config_kind(predicate).expect("registered detector predicate"));
     }
+    if checkpoint_enabled {
+        kinds.extend([
+            CONTRACT_KIND.to_owned(),
+            INVENTORY_KIND.to_owned(),
+            RECOVERY_REPORT_KIND.to_owned(),
+        ]);
+        if checkpoint_candidate_present {
+            kinds.extend([
+                RECOVERED_CONTRACT_KIND.to_owned(),
+                RECOVERED_INVENTORY_KIND.to_owned(),
+            ]);
+        }
+    }
     kinds
 }
 
@@ -209,12 +251,25 @@ mod tests {
 
     #[test]
     fn passing_receipt_requires_two_artifacts_per_detector_predicate() {
-        let kinds = required_proof_artifact_kinds();
+        let kinds = required_proof_artifact_kinds(false, false);
         assert_eq!(kinds.len(), 12 + 2 * REGISTERED_PREDICATES.len());
         assert!(!kinds.contains("tla-detector-log"));
         for predicate in REGISTERED_PREDICATES {
             assert!(kinds.contains(&format!("tla-detector-log:{predicate}")));
             assert!(kinds.contains(&format!("tla-detector-config:{predicate}")));
         }
+    }
+
+    #[test]
+    fn checkpointed_pass_requires_recovery_and_final_inventory_artifacts() {
+        let fresh = required_proof_artifact_kinds(true, false);
+        assert!(fresh.contains("tla-checkpoint-recovery-report"));
+        assert!(fresh.contains("tla-checkpoint-contract"));
+        assert!(fresh.contains("tla-checkpoint-inventory"));
+        assert!(!fresh.contains("tla-checkpoint-recovered-contract"));
+
+        let recovered = required_proof_artifact_kinds(true, true);
+        assert!(recovered.contains("tla-checkpoint-recovered-contract"));
+        assert!(recovered.contains("tla-checkpoint-recovered-inventory"));
     }
 }
