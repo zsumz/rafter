@@ -1,10 +1,7 @@
 use rafter::BootstrapState;
 
 use super::{catalog, summarize, Action, Failure};
-use super::{
-    BTreeMap, Cluster, CommittedConfiguration, ExplorationState, LogEntry, LogIndex,
-    MembershipConfig, NodeId,
-};
+use super::{BTreeMap, Cluster, ExplorationState, LogEntry, LogIndex, MembershipConfig, NodeId};
 
 pub(super) fn check_commit_index_monotonicity(
     state: &ExplorationState,
@@ -31,71 +28,121 @@ pub(super) fn check_committed_configuration_monotonicity(
     state: &ExplorationState,
     trace: &[Action],
 ) -> Result<(), Failure> {
+    check_committed_configuration_index_monotonicity(state, trace)?;
+    check_committed_configuration_identity(state, trace)
+}
+
+pub(super) fn check_committed_configuration_index_monotonicity(
+    state: &ExplorationState,
+    trace: &[Action],
+) -> Result<(), Failure> {
     for (node_id, floor) in state.committed_configuration_floor_by_node() {
         let Some(floor) = floor else {
             continue;
         };
         let actual = state.cluster().committed_configuration_state(*node_id);
-        match actual {
-            None => {
-                return Err(committed_configuration_regression(
-                    state, trace, *node_id, *floor, actual,
-                ));
-            }
-            Some(actual)
-                if actual.index < floor.index
-                    || (actual.index == floor.index && actual.config_id != floor.config_id) =>
-            {
-                return Err(committed_configuration_regression(
-                    state,
-                    trace,
-                    *node_id,
-                    *floor,
-                    Some(actual),
-                ));
-            }
-            Some(_) => {}
+        if actual.is_none_or(|actual| actual.index < floor.index) {
+            return Err(committed_configuration_failure(
+                state,
+                trace,
+                format!(
+                    "{node_id} committed configuration regressed from observed floor {floor:?} to {actual:?}"
+                ),
+            ));
         }
     }
     Ok(())
 }
 
-fn committed_configuration_regression(
+pub(super) fn check_committed_configuration_identity(
     state: &ExplorationState,
     trace: &[Action],
-    node_id: NodeId,
-    floor: CommittedConfiguration,
-    actual: Option<CommittedConfiguration>,
+) -> Result<(), Failure> {
+    for (node_id, floor) in state.committed_configuration_floor_by_node() {
+        let Some(floor) = floor else {
+            continue;
+        };
+        let Some(actual) = state.cluster().committed_configuration_state(*node_id) else {
+            continue;
+        };
+        if actual.index == floor.index && actual.config_id != floor.config_id {
+            return Err(committed_configuration_failure(
+                state,
+                trace,
+                format!(
+                    "{node_id} committed configuration identity changed at index {} from {} to {}",
+                    floor.index, floor.config_id, actual.config_id
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn committed_configuration_failure(
+    state: &ExplorationState,
+    trace: &[Action],
+    message: String,
 ) -> Failure {
     Failure {
         kind: crate::model_check::FailureKind::InvariantViolation,
         invariant: catalog::MB_04_MONOTONE_CONFIGURATION_TRANSITION_AND_IDENTITY,
-        message: format!(
-            "{node_id} committed configuration regressed from observed floor {floor:?} to {actual:?}"
-        ),
+        message,
         trace: trace.to_vec(),
         state: summarize(state.cluster()),
     }
 }
 
 pub(super) fn check_committed_prefixes(cluster: &Cluster, trace: &[Action]) -> Result<(), Failure> {
-    let mut committed_by_index = BTreeMap::<LogIndex, LogEntry>::new();
+    check_commit_index_within_local_log_bounds(cluster, trace)?;
+    check_cross_node_committed_prefix_agreement(cluster, trace)
+}
+
+pub(super) fn check_commit_index_within_local_log_bounds(
+    cluster: &Cluster,
+    trace: &[Action],
+) -> Result<(), Failure> {
     for (node_id, node) in &cluster.nodes {
+        check_commit_index_within_local_log_bounds_shape(
+            cluster,
+            *node_id,
+            node.commit_index(),
+            node.last_log_index(),
+            trace,
+        )?;
+    }
+    Ok(())
+}
+
+pub(super) fn check_commit_index_within_local_log_bounds_shape(
+    cluster: &Cluster,
+    node_id: NodeId,
+    commit_index: LogIndex,
+    last_log_index: LogIndex,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    if commit_index <= last_log_index {
+        return Ok(());
+    }
+    Err(Failure {
+        kind: crate::model_check::FailureKind::InvariantViolation,
+        invariant: catalog::CM_01_COMMIT_INDEX_MONOTONICITY_AND_BOUNDS,
+        message: format!(
+            "{node_id} commit index {commit_index} is beyond local last log index {last_log_index}"
+        ),
+        trace: trace.to_vec(),
+        state: summarize(cluster),
+    })
+}
+
+pub(super) fn check_cross_node_committed_prefix_agreement(
+    cluster: &Cluster,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    let mut committed_by_index = BTreeMap::<LogIndex, LogEntry>::new();
+    for node in cluster.nodes.values() {
         let commit_index = node.commit_index();
         let snapshot_index = node.snapshot_index();
-        let last_log_index = node.last_log_index();
-        if commit_index > last_log_index {
-            return Err(Failure {
-                kind: crate::model_check::FailureKind::InvariantViolation,
-                invariant: catalog::CM_01_COMMIT_INDEX_MONOTONICITY_AND_BOUNDS,
-                message: format!(
-                    "{node_id} commit index {commit_index} is beyond local last log index {last_log_index}"
-                ),
-                trace: trace.to_vec(),
-                state: summarize(cluster),
-            });
-        }
-
         let first_log_index = snapshot_index.next();
         let entries = node.log_entries_from(first_log_index);
         for (offset, entry) in entries.into_iter().enumerate() {

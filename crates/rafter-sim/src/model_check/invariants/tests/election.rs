@@ -1,3 +1,7 @@
+use super::super::election::{
+    check_vote_candidate_eligibility, check_vote_candidate_log_freshness,
+    check_vote_grant_durability,
+};
 use super::*;
 use crate::model_check::{
     helpers::elect_node_one_in_state,
@@ -268,8 +272,8 @@ fn authority_fencing_oracle_rejects_unfenced_higher_term_response() {
 
     state.record_election_observation(&before, Some(&delivered), &[]);
 
-    let failure =
-        check_election_history(&state, &[]).expect_err("higher-term authority must fence a leader");
+    let failure = check_higher_term_authority_fencing(&state, &[])
+        .expect_err("higher-term authority must fence a leader");
     assert_eq!(
         failure.invariant(),
         catalog::EL_07_TERM_AND_AUTHORITY_FENCING
@@ -307,7 +311,7 @@ fn authority_fencing_oracle_rejects_stale_response_leadership() {
 
     state.record_election_observation(&before, Some(&delivered), &[]);
 
-    let failure = check_election_history(&state, &[])
+    let failure = check_stale_authority_leadership(&state, &[])
         .expect_err("stale-term traffic must not create leadership");
     assert_eq!(
         failure.invariant(),
@@ -317,6 +321,50 @@ fn authority_fencing_oracle_rejects_stale_response_leadership() {
         failure
             .message
             .contains("let stale-term traffic create leadership"),
+        "unexpected failure message: {}",
+        failure.message
+    );
+}
+
+#[test]
+fn authority_fencing_oracle_rejects_stale_authority_regression() {
+    let mut before = one_node_cluster();
+    let mut authority = bootstrap_state(Term(3), &[]);
+    authority.voted_for = Some(NodeId(1));
+    before
+        .restart_node_from_bootstrap(NodeId(1), authority)
+        .expect("before bootstrap is valid");
+    let mut after = before.clone();
+    let mut regressed = bootstrap_state(Term(2), &[]);
+    regressed.voted_for = Some(NodeId(1));
+    after
+        .restart_node_from_bootstrap(NodeId(1), regressed)
+        .expect("regressed bootstrap is structurally valid");
+    let mut state = ExplorationState::new(after);
+    let delivered = Envelope {
+        from: NodeId(2),
+        to: NodeId(1),
+        message: Message::AppendEntriesResponse(AppendEntriesResponse {
+            term: Term(2),
+            follower_id: NodeId(2),
+            success: false,
+            match_index: LogIndex::ZERO,
+            sequence: 12,
+        }),
+    };
+
+    state.record_election_observation(&before, Some(&delivered), &[]);
+
+    let failure = check_stale_authority_state(&state, &[])
+        .expect_err("stale-term traffic must not regress durable authority");
+    assert_eq!(
+        failure.invariant(),
+        catalog::EL_07_TERM_AND_AUTHORITY_FENCING
+    );
+    assert!(
+        failure
+            .message
+            .contains("let stale-term traffic lower durable authority"),
         "unexpected failure message: {}",
         failure.message
     );
@@ -376,13 +424,49 @@ fn pre_vote_oracle_rejects_request_term_mutation() {
 
     state.record_election_observation(&before, Some(&delivered), &[]);
 
-    let failure = check_election_history(&state, &[])
+    let failure = check_pre_vote_request_authority(&state, &[])
         .expect_err("pre-vote request must not mutate durable authority");
     assert_eq!(failure.invariant(), catalog::EL_08_PRE_VOTE_NON_BINDING);
     assert!(
         failure
             .message
             .contains("pre-vote request mutated authority"),
+        "unexpected failure message: {}",
+        failure.message
+    );
+}
+
+#[test]
+fn pre_vote_oracle_rejects_request_disrupting_leader() {
+    let mut before = two_node_cluster();
+    elect_node_one(&mut before);
+    assert_eq!(before.role(NodeId(1)), rafter::Role::Leader);
+    let mut after = before.clone();
+    after
+        .restart_node_from_bootstrap(NodeId(1), before.bootstrap_state(NodeId(1)))
+        .expect("same-authority follower bootstrap is valid");
+    assert_eq!(after.role(NodeId(1)), rafter::Role::Follower);
+    let mut state = ExplorationState::new(after);
+    let delivered = Envelope {
+        from: NodeId(2),
+        to: NodeId(1),
+        message: Message::PreVote(PreVote {
+            term: before.current_term(NodeId(1)).next(),
+            candidate_id: NodeId(2),
+            last_log_index: LogIndex::ZERO,
+            last_log_term: Term::default(),
+        }),
+    };
+
+    state.record_election_observation(&before, Some(&delivered), &[]);
+
+    let failure = check_pre_vote_leader_stability(&state, &[])
+        .expect_err("pre-vote request must not disrupt an established leader");
+    assert_eq!(failure.invariant(), catalog::EL_08_PRE_VOTE_NON_BINDING);
+    assert!(
+        failure
+            .message
+            .contains("pre-vote request disrupted a leader"),
         "unexpected failure message: {}",
         failure.message
     );
@@ -411,7 +495,7 @@ fn pre_vote_oracle_rejects_stale_response_authority_advance() {
 
     state.record_election_observation(&before, Some(&delivered), &[]);
 
-    let failure = check_election_history(&state, &[])
+    let failure = check_stale_pre_vote_response_authority(&state, &[])
         .expect_err("stale pre-vote response must not advance authority");
     assert_eq!(failure.invariant(), catalog::EL_08_PRE_VOTE_NON_BINDING);
     assert!(
@@ -582,7 +666,7 @@ fn vote_grant_oracle_rejects_non_voter_candidate() {
         Some(NodeId(4)),
     );
 
-    let failure = check_election_history(&state, &[])
+    let failure = check_vote_candidate_eligibility(&state, &[])
         .expect_err("grant to candidate outside membership must be rejected");
     assert_eq!(failure.invariant(), catalog::EL_03_SAFE_VOTE_ELIGIBILITY);
     assert!(
@@ -608,7 +692,7 @@ fn vote_grant_oracle_rejects_stale_candidate_log() {
         Some(NodeId(2)),
     );
 
-    let failure = check_election_history(&state, &[])
+    let failure = check_vote_candidate_log_freshness(&state, &[])
         .expect_err("grant to stale candidate log must be rejected");
     assert_eq!(failure.invariant(), catalog::EL_03_SAFE_VOTE_ELIGIBILITY);
     assert!(
@@ -634,7 +718,7 @@ fn vote_grant_oracle_requires_durable_vote_for_candidate() {
         None,
     );
 
-    let failure = check_election_history(&state, &[])
+    let failure = check_vote_grant_durability(&state, &[])
         .expect_err("grant response must leave a durable vote for the candidate");
     assert_eq!(
         failure.invariant(),

@@ -1,7 +1,9 @@
 use std::hash::{DefaultHasher, Hash, Hasher};
 
+use super::super::history::check_committed_prefix_history_stability;
 use super::commit_history::{app_entry, bootstrap_with_log, state_with_bootstraps, voter_configs};
 use super::*;
+use crate::model_check::observations::Observation;
 
 #[test]
 fn shorter_matching_commit_observation_preserves_canonical_ledger_identity() {
@@ -37,6 +39,12 @@ fn shorter_matching_commit_observation_preserves_canonical_ledger_identity() {
     state.refresh_committed_prefixes();
 
     assert_eq!(hash_commit_history(&state), before);
+    assert!(state
+        .observation_set()
+        .contains(Observation::CommittedPrefixHistoryComparisons));
+    assert!(state
+        .observation_set()
+        .contains(Observation::CrossNodeCommittedPrefixAgreementChecks));
     assert_eq!(
         state
             .commit_history()
@@ -74,7 +82,7 @@ fn shorter_commit_mismatch_is_checked_against_canonical_ledger() {
         ],
     );
 
-    let failure = check_commit_history(&state, &[])
+    let failure = check_committed_prefix_history_stability(&state, &[])
         .expect_err("shorter divergent committed prefix must be rejected");
     assert_eq!(
         failure.invariant(),

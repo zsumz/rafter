@@ -12,11 +12,18 @@ pub(crate) fn check_read_barrier_safety(
     cluster: &Cluster,
     trace: &[Action],
 ) -> Result<(), Failure> {
+    check_registered_read_grants(cluster, trace)?;
+    check_read_grant_committed_floors(cluster, trace)
+}
+
+pub(super) fn check_registered_read_grants(
+    cluster: &Cluster,
+    trace: &[Action],
+) -> Result<(), Failure> {
     for grant in cluster.read_grants() {
-        let registration = cluster.read_registrations().iter().find(|registration| {
+        if !cluster.read_registrations().iter().any(|registration| {
             registration.node_id == grant.node_id && registration.request_id == grant.request_id
-        });
-        let Some(registration) = registration else {
+        }) {
             return Err(Failure {
                 kind: crate::model_check::FailureKind::InvariantViolation,
                 invariant: catalog::RD_03_READ_BARRIER_COVERS_COMMITTED_FLOOR,
@@ -27,6 +34,20 @@ pub(crate) fn check_read_barrier_safety(
                 trace: trace.to_vec(),
                 state: summarize(cluster),
             });
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn check_read_grant_committed_floors(
+    cluster: &Cluster,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    for grant in cluster.read_grants() {
+        let Some(registration) = cluster.read_registrations().iter().find(|registration| {
+            registration.node_id == grant.node_id && registration.request_id == grant.request_id
+        }) else {
+            continue;
         };
         if grant.read_index < registration.committed_floor {
             return Err(Failure {
