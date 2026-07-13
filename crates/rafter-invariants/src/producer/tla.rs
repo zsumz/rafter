@@ -79,6 +79,7 @@ pub(super) fn run(
         evidence_ids,
         completion: verdict.completion(),
         observations: observations(&execution, &symbols, configured.len()),
+        simulator_liveness: None,
         duration_ms: execution.duration_ms,
         peak_rss_kib: execution.peak_rss_kib,
         artifacts: execution.artifacts.clone(),

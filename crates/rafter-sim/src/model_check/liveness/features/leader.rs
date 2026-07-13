@@ -11,6 +11,7 @@ use super::{
     },
     production_monitor_state, FaultStateRequirement, LivenessFeatureReport,
     LivenessPreconditionProbe, LivenessPreconditions, ProposalEvidence, StableLeaderEvidence,
+    LV_01_CLAUSE_IDS,
 };
 use crate::model_check::{
     catalog,
@@ -155,6 +156,7 @@ fn successful_quorum_only_report(
 ) -> LivenessFeatureReport {
     LivenessFeatureReport {
         invariant_id: "LV-01",
+        clause_ids: LV_01_CLAUSE_IDS,
         feature_id: "quorum-only-leader-convergence",
         scenario_id: "minority-unavailable-stable-quorum-v1",
         observation_id: "quorum_only_post_fault_leaders",

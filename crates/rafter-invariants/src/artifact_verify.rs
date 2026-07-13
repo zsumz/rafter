@@ -237,9 +237,49 @@ fn verify_test_logs(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateE
 fn verify_simulator_logs(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateError> {
     verify_simulator_schedule(bundle, root)?;
     let events = simulator_events(bundle, root)?;
+    let catalog =
+        crate::Catalog::load(root.join(&bundle.execution.plan.registry.path).as_path())
+            .map_err(|error| AggregateError::new(format!("reload simulator registry: {error}")))?;
+    let descriptors = catalog
+        .evidence
+        .iter()
+        .map(|descriptor| (descriptor.evidence_id(), descriptor))
+        .collect::<BTreeMap<_, _>>();
+    let liveness_contracts = catalog
+        .evidence
+        .iter()
+        .filter_map(|descriptor| {
+            descriptor
+                .simulator
+                .as_ref()?
+                .liveness_report
+                .as_ref()
+                .map(|contract| (contract.feature_id.clone(), contract.clone()))
+        })
+        .collect::<BTreeMap<_, _>>()
+        .into_values()
+        .collect::<Vec<_>>();
     let mut test_logs = BTreeMap::<String, String>::new();
     for check in &bundle.execution.checks {
-        verify_simulator_observations(check, &events)?;
+        let [evidence_id] = check.evidence_ids.as_slice() else {
+            return Err(AggregateError::new(format!(
+                "simulator check {} must bind exactly one evidence record",
+                check.check_id
+            )));
+        };
+        let descriptor = descriptors.get(evidence_id).ok_or_else(|| {
+            AggregateError::new(format!(
+                "simulator check {} names unknown evidence {evidence_id}",
+                check.check_id
+            ))
+        })?;
+        let identity = descriptor.simulator.as_ref().ok_or_else(|| {
+            AggregateError::new(format!(
+                "simulator check {} names non-simulator evidence",
+                check.check_id
+            ))
+        })?;
+        verify_simulator_observations(bundle, check, identity, &liveness_contracts, &events)?;
         if !is_passing(bundle, &check.execution_id) {
             continue;
         }
@@ -521,6 +561,9 @@ fn validate_simulator_schedule(
     source_ref: &str,
     logs: &[String],
 ) -> Result<(), AggregateError> {
+    if profile == "pr" {
+        return validate_pr_soak_schedule(logs);
+    }
     let Some(expected_seeds) = crate::producer::expected_scheduled_seeds(profile, source_ref)
     else {
         return Ok(());
@@ -547,6 +590,36 @@ fn validate_simulator_schedule(
         return Err(AggregateError::new(format!(
             "scheduled simulator log does not prove the source-derived {profile} execution plan"
         )));
+    }
+    Ok(())
+}
+
+fn validate_pr_soak_schedule(logs: &[String]) -> Result<(), AggregateError> {
+    const EXPECTED_SEEDS: &str = "0x9103,0x9104,0x9105,0x9106";
+    if logs.len() != 2 {
+        return Err(AggregateError::new(format!(
+            "PR simulator receipt must retain exactly two profile logs, found {}",
+            logs.len()
+        )));
+    }
+    let expected_seed_line =
+        format!("model-check raft-soak seeds source=curated seeds={EXPECTED_SEEDS}");
+    let seed_line_count = logs
+        .iter()
+        .flat_map(|log| log.lines())
+        .filter(|line| *line == expected_seed_line)
+        .count();
+    let events = logs
+        .iter()
+        .map(|log| parse_machine_events(log))
+        .collect::<Result<Vec<_>, _>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    if seed_line_count != 1 || !soak_seeds_are_rederived("raft", EXPECTED_SEEDS, &events) {
+        return Err(AggregateError::new(
+            "PR simulator log does not prove the exact reviewed soak seed inventory".to_owned(),
+        ));
     }
     Ok(())
 }
@@ -678,22 +751,20 @@ fn simulator_events(
 }
 
 fn verify_simulator_observations(
+    bundle: &ResultBundle,
     check: &crate::CheckReceipt,
+    identity: &crate::SimulatorIdentity,
+    liveness_contracts: &[crate::types::SimulatorLivenessContract],
     events: &BTreeMap<String, Vec<Value>>,
 ) -> Result<(), AggregateError> {
-    let names = check
-        .observations
-        .keys()
-        .filter_map(|key| key.strip_prefix("runs:"))
-        .collect::<Vec<_>>();
-    if names.is_empty() {
+    if identity.checks.is_empty() {
         return Err(AggregateError::new(format!(
             "simulator receipt {} names no executed model check",
             check.check_id
         )));
     }
     let mut derived = BTreeMap::new();
-    for name in names {
+    for name in &identity.checks {
         let matching = events.get(name).map(Vec::as_slice).unwrap_or_default();
         derived.insert(format!("runs:{name}"), matching.len() as u64);
         derived.insert(
@@ -711,9 +782,50 @@ fn verify_simulator_observations(
                 .min()
                 .unwrap_or_default(),
         );
-        for event in matching {
-            merge_event_observations(event, &mut derived);
+        if identity.liveness_report.is_none() {
+            for event in matching {
+                merge_event_observations(event, &mut derived);
+            }
         }
+    }
+    if identity.liveness_report.is_some() {
+        if is_passing(bundle, &check.execution_id) {
+            let binding = crate::catalog::derive_liveness_binding(
+                &bundle.profile,
+                identity,
+                liveness_contracts,
+                events,
+            )
+            .map_err(|error| {
+                AggregateError::new(format!(
+                    "simulator raw liveness reports are invalid for {}: {}",
+                    check.check_id, error.message
+                ))
+            })?;
+            derived.insert(
+                identity.required_observation.clone(),
+                binding.reports.len() as u64,
+            );
+            if check.simulator_liveness.as_ref() != Some(&binding) {
+                return Err(AggregateError::new(format!(
+                    "simulator liveness binding disagrees with raw logs for {}",
+                    check.check_id
+                )));
+            }
+        } else {
+            derived.insert(identity.required_observation.clone(), 0);
+            if check.simulator_liveness.is_some() {
+                return Err(AggregateError::new(format!(
+                    "non-passing simulator check {} retains a liveness binding",
+                    check.check_id
+                )));
+            }
+        }
+    } else if check.simulator_liveness.is_some() {
+        return Err(AggregateError::new(format!(
+            "simulator safety check {} retains a liveness binding",
+            check.check_id
+        )));
     }
     let claimed = check
         .observations
@@ -793,9 +905,10 @@ fn is_passing(bundle: &ResultBundle, execution_id: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::validate_simulator_schedule;
+    use super::{validate_simulator_schedule, verify_simulator_observations, EVENT_PREFIX};
     use crate::producer::expected_scheduled_seeds;
     use serde_json::json;
+    use std::{collections::BTreeMap, fmt::Write as _};
 
     #[test]
     fn scheduled_simulator_log_proves_exact_source_derived_plan() {
@@ -828,6 +941,264 @@ mod tests {
         let seeds = expected_scheduled_seeds("weekly", "abc123").expect("weekly seeds");
         assert!(seeds.contains("0xe00e6256b8bdd15"));
         assert!(!seeds.contains("0x0e00e6256b8bdd15"));
+    }
+
+    #[test]
+    fn pr_simulator_log_proves_exact_curated_seed_inventory() {
+        let logs = pr_logs();
+        assert!(validate_simulator_schedule("pr", "unused", &logs).is_ok());
+
+        let mut substituted = logs.clone();
+        substituted[1] = substituted[1].replacen("\"seed\":37123", "\"seed\":999", 1);
+        assert!(validate_simulator_schedule("pr", "unused", &substituted).is_err());
+
+        let mut extra = logs.clone();
+        write!(
+            extra[1],
+            "\n{EVENT_PREFIX}{}",
+            serde_json::to_string(&json!({
+                "event": "soak-check",
+                "check_id": "raft-soak",
+                "status": "pass",
+                "seed": 0x9107_u64,
+            }))
+            .expect("serialize extra event")
+        )
+        .expect("append extra event");
+        assert!(validate_simulator_schedule("pr", "unused", &extra).is_err());
+
+        let mut unknown = logs;
+        write!(
+            unknown[0],
+            "\n{EVENT_PREFIX}{}",
+            serde_json::to_string(&json!({
+                "event": "soak-check",
+                "check_id": "unreviewed-soak",
+                "status": "pass",
+                "seed": 0x9103_u64,
+            }))
+            .expect("serialize unknown event")
+        )
+        .expect("append unknown event");
+        assert!(validate_simulator_schedule("pr", "unused", &unknown).is_err());
+    }
+
+    fn pr_logs() -> Vec<String> {
+        let mut soak = vec![
+            "label: raft-soak".to_owned(),
+            "exit_code: Some(0)".to_owned(),
+            "model-check raft-soak seeds source=curated seeds=0x9103,0x9104,0x9105,0x9106"
+                .to_owned(),
+        ];
+        for check_id in ["raft-soak", "raft-soak-lease", "raft-soak-membership"] {
+            for seed in 0x9103_u64..=0x9106 {
+                soak.push(event(&json!({
+                    "event": "soak-check",
+                    "check_id": check_id,
+                    "status": "pass",
+                    "seed": seed,
+                })));
+            }
+        }
+        vec![
+            "label: fast\nexit_code: Some(0)".to_owned(),
+            soak.join("\n"),
+        ]
+    }
+
+    #[test]
+    fn raw_reports_reject_coordinated_receipt_binding_tampering() {
+        let (catalog, manifest) = crate::tests::loaded();
+        let descriptor = catalog
+            .evidence
+            .iter()
+            .find(|descriptor| {
+                descriptor.simulator.as_ref().is_some_and(|identity| {
+                    identity.liveness_report.as_ref().is_some_and(|contract| {
+                        contract.feature_id == "proposal-progress"
+                            && descriptor.clause_id == "LV-02.a"
+                    })
+                })
+            })
+            .expect("proposal progress descriptor");
+        let mut bundle = crate::tests::passing_bundles(&catalog, &manifest)
+            .into_iter()
+            .find(|bundle| bundle.runner == "simulator")
+            .expect("simulator bundle");
+        let check_index = bundle
+            .execution
+            .checks
+            .iter()
+            .position(|check| check.evidence_ids == [descriptor.evidence_id()])
+            .expect("proposal progress check");
+        let (fixture_identity, contracts, events) =
+            crate::catalog::liveness_report_tests::fixture();
+        let binding =
+            crate::catalog::derive_liveness_binding("pr", &fixture_identity, &contracts, &events)
+                .expect("valid raw reports bind");
+        let check = &mut bundle.execution.checks[check_index];
+        check.observations = BTreeMap::from([
+            ("runs:raft-soak".to_owned(), 1),
+            ("passes:raft-soak".to_owned(), 1),
+            ("steps:raft-soak".to_owned(), 320),
+            (
+                fixture_identity.required_observation.clone(),
+                binding.reports.len() as u64,
+            ),
+        ]);
+        check.simulator_liveness = Some(binding);
+        verify_simulator_observations(
+            &bundle,
+            &bundle.execution.checks[check_index],
+            &fixture_identity,
+            &contracts,
+            &events,
+        )
+        .expect("raw report binding verifies");
+
+        let mut tampered = bundle.execution.checks[check_index].clone();
+        let binding = tampered
+            .simulator_liveness
+            .as_mut()
+            .expect("liveness binding remains");
+        binding.reports[0].report_sha256 = "f".repeat(64);
+        binding.reports_sha256 = crate::catalog::liveness_reports_digest(&binding.reports);
+        let error = verify_simulator_observations(
+            &bundle,
+            &tampered,
+            &fixture_identity,
+            &contracts,
+            &events,
+        )
+        .expect_err("coordinated binding tamper must fail");
+        assert!(error.to_string().contains("disagrees with raw logs"));
+    }
+
+    #[test]
+    fn raw_reports_reject_coordinated_execution_contract_tampering() {
+        let (catalog, manifest) = crate::tests::loaded();
+        let descriptor = proposal_progress_descriptor(&catalog);
+        let mut bundle = simulator_bundle(&catalog, &manifest);
+        let check_index = proposal_progress_check_index(&bundle, descriptor);
+        let (identity, contracts, mut events) = crate::catalog::liveness_report_tests::fixture();
+        let binding = crate::catalog::derive_liveness_binding("pr", &identity, &contracts, &events)
+            .expect("valid raw reports bind");
+        prepare_fixture_check(
+            &mut bundle.execution.checks[check_index],
+            &identity,
+            binding,
+        );
+
+        events.get_mut("raft-soak").expect("soak event")[0]["execution_contract"]
+            ["max_proposals"] = json!(25);
+        let receipt = bundle.execution.checks[check_index]
+            .simulator_liveness
+            .as_mut()
+            .expect("liveness binding");
+        for report in &mut receipt.reports {
+            report.execution_contract.max_proposals = 25;
+            report.execution_contract_sha256 =
+                crate::catalog::execution_contract_digest(&report.execution_contract);
+        }
+        receipt.reports_sha256 = crate::catalog::liveness_reports_digest(&receipt.reports);
+
+        let error = verify_simulator_observations(
+            &bundle,
+            &bundle.execution.checks[check_index],
+            &identity,
+            &contracts,
+            &events,
+        )
+        .expect_err("coordinated execution-contract tamper must fail");
+        assert!(error.to_string().contains("execution contract"));
+    }
+
+    #[test]
+    fn raw_reports_reject_complete_report_set_substitution() {
+        let (catalog, manifest) = crate::tests::loaded();
+        let descriptor = proposal_progress_descriptor(&catalog);
+        let mut bundle = simulator_bundle(&catalog, &manifest);
+        let check_index = proposal_progress_check_index(&bundle, descriptor);
+        let (identity, contracts, mut events) = crate::catalog::liveness_report_tests::fixture();
+        let binding = crate::catalog::derive_liveness_binding("pr", &identity, &contracts, &events)
+            .expect("valid raw reports bind");
+        prepare_fixture_check(
+            &mut bundle.execution.checks[check_index],
+            &identity,
+            binding,
+        );
+
+        let reports = events.get_mut("raft-soak").expect("soak event")[0]["liveness_reports"]
+            .as_array_mut()
+            .expect("liveness report array");
+        reports
+            .iter_mut()
+            .find(|report| report["feature_id"] == "snapshot-catch-up")
+            .expect("snapshot report")["feature_id"] = json!("invented-feature");
+
+        let error = verify_simulator_observations(
+            &bundle,
+            &bundle.execution.checks[check_index],
+            &identity,
+            &contracts,
+            &events,
+        )
+        .expect_err("complete report-set substitution must fail");
+        assert!(error.to_string().contains("unknown"));
+    }
+
+    fn proposal_progress_descriptor(catalog: &crate::Catalog) -> &crate::EvidenceDescriptor {
+        catalog
+            .evidence
+            .iter()
+            .find(|descriptor| {
+                descriptor.simulator.as_ref().is_some_and(|identity| {
+                    identity.liveness_report.as_ref().is_some_and(|contract| {
+                        contract.feature_id == "proposal-progress"
+                            && descriptor.clause_id == "LV-02.a"
+                    })
+                })
+            })
+            .expect("proposal progress descriptor")
+    }
+
+    fn simulator_bundle(
+        catalog: &crate::Catalog,
+        manifest: &crate::ProfileManifest,
+    ) -> crate::ResultBundle {
+        crate::tests::passing_bundles(catalog, manifest)
+            .into_iter()
+            .find(|bundle| bundle.runner == "simulator")
+            .expect("simulator bundle")
+    }
+
+    fn proposal_progress_check_index(
+        bundle: &crate::ResultBundle,
+        descriptor: &crate::EvidenceDescriptor,
+    ) -> usize {
+        bundle
+            .execution
+            .checks
+            .iter()
+            .position(|check| check.evidence_ids == [descriptor.evidence_id()])
+            .expect("proposal progress check")
+    }
+
+    fn prepare_fixture_check(
+        check: &mut crate::CheckReceipt,
+        identity: &crate::SimulatorIdentity,
+        binding: crate::types::SimulatorLivenessBinding,
+    ) {
+        check.observations = BTreeMap::from([
+            ("runs:raft-soak".to_owned(), 1),
+            ("passes:raft-soak".to_owned(), 1),
+            ("steps:raft-soak".to_owned(), 320),
+            (
+                identity.required_observation.clone(),
+                binding.reports.len() as u64,
+            ),
+        ]);
+        check.simulator_liveness = Some(binding);
     }
 
     fn scheduled_log(source_ref: &str) -> String {

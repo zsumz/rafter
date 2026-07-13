@@ -168,6 +168,7 @@ fn run_checks(
             evidence_ids,
             completion: outcome.completion,
             observations: outcome.observations,
+            simulator_liveness: None,
             duration_ms: outcome.duration_ms,
             peak_rss_kib: outcome.peak_rss_kib,
             artifacts: outcome.artifacts,

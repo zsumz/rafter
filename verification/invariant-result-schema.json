@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "runner", "profile", "source_ref", "execution", "results"],
   "properties": {
-    "schema_version": { "const": 7 },
+    "schema_version": { "const": 9 },
     "runner": { "enum": ["tests", "simulator", "tla", "maelstrom"] },
     "profile": { "enum": ["pr", "nightly", "weekly"] },
     "source_ref": { "type": "string", "minLength": 1 },
@@ -148,13 +148,112 @@
         "minimum_verifier_states": { "type": "integer", "minimum": 1 },
         "minimum_runs_per_check": { "type": "integer", "minimum": 1 },
         "minimum_steps": { "type": "integer", "minimum": 1 },
-        "required_liveness_feature": { "type": "string", "minLength": 1 },
+        "liveness_report": { "$ref": "#/$defs/simulator_liveness_contract" },
         "negative_test": { "$ref": "#/$defs/test_identity" }
       },
       "anyOf": [
         { "required": ["minimum_protocol_states", "minimum_verifier_states"] },
-        { "required": ["minimum_runs_per_check", "minimum_steps", "required_liveness_feature"] }
+        { "required": ["minimum_runs_per_check", "minimum_steps", "liveness_report"] }
       ]
+    },
+    "simulator_liveness_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "invariant_id", "clause_ids", "feature_id", "scenario_id", "observation_id",
+        "fault_requirement", "stable_leader_retained", "stable_leader_rounds_minimum",
+        "stable_leader_rounds_exact", "stable_leader_rounds_relation", "proposal_outcome",
+        "authority_loss_required", "fault_cycle_required", "fairness_policy_id",
+        "fairness_tick_bound_rounds", "fairness_delivery_bound_rounds",
+        "fairness_max_delivery_waves_per_tick", "round_budget_provenance",
+        "minimum_rounds", "rounds_per_node", "rounds_per_queued_message",
+        "rounds_per_proposal", "rounds_per_membership_change", "rounds_per_partition",
+        "snapshot_catchup_rounds", "phase_count", "fixed_rounds"
+      ],
+      "properties": {
+        "invariant_id": { "type": "string", "pattern": "^LV-[0-9]{2}$" },
+        "clause_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "pattern": "^LV-[0-9]{2}\\.[a-z]$" } },
+        "feature_id": { "type": "string", "minLength": 1 },
+        "scenario_id": { "type": "string", "minLength": 1 },
+        "observation_id": { "type": "string", "minLength": 1 },
+        "fault_requirement": { "enum": ["stopped", "active-partition"] },
+        "stable_leader_retained": { "type": ["boolean", "null"] },
+        "stable_leader_rounds_minimum": { "type": ["integer", "null"], "minimum": 1 },
+        "stable_leader_rounds_exact": { "type": ["integer", "null"], "minimum": 1 },
+        "stable_leader_rounds_relation": { "enum": ["none", "exact", "probe-rounds"] },
+        "proposal_outcome": { "enum": ["none", "committed", "explicit-terminal"] },
+        "authority_loss_required": { "type": "boolean" },
+        "fault_cycle_required": { "type": "boolean" },
+        "fairness_policy_id": { "const": "all-node-ticks-fifo-ready-waves-v1" },
+        "fairness_tick_bound_rounds": { "type": "integer", "minimum": 1 },
+        "fairness_delivery_bound_rounds": { "type": "integer", "minimum": 1 },
+        "fairness_max_delivery_waves_per_tick": { "type": "integer", "minimum": 1 },
+        "round_budget_provenance": { "const": "liveness-round-budget-v1" },
+        "minimum_rounds": { "type": "integer", "minimum": 1 },
+        "rounds_per_node": { "type": "integer", "minimum": 1 },
+        "rounds_per_queued_message": { "type": "integer", "minimum": 1 },
+        "rounds_per_proposal": { "type": "integer", "minimum": 1 },
+        "rounds_per_membership_change": { "type": "integer", "minimum": 1 },
+        "rounds_per_partition": { "type": "integer", "minimum": 1 },
+        "snapshot_catchup_rounds": { "type": "integer", "minimum": 1 },
+        "phase_count": { "type": "integer", "minimum": 1 },
+        "fixed_rounds": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "simulator_execution_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "contract_id", "profile_id", "check_id", "check_kind", "node_config_id",
+        "node_count", "steps", "max_proposals", "max_restarts", "max_read_indexes",
+        "max_membership_changes", "max_transfers", "max_partitions", "max_lossy_restarts",
+        "snapshot_catchup_probe", "tick_skew_node_id", "tick_skew_weight"
+      ],
+      "properties": {
+        "contract_id": { "const": "rafter-soak-execution-v1" },
+        "profile_id": { "enum": ["raft-soak", "raft-nightly-soak", "raft-weekly-soak"] },
+        "check_id": { "type": "string", "minLength": 1 },
+        "check_kind": { "enum": ["standard", "lease", "membership"] },
+        "node_config_id": { "enum": ["three-node-standard-v1", "three-node-lease-v1", "four-node-future-learner-v1"] },
+        "node_count": { "type": "integer", "minimum": 1 },
+        "steps": { "type": "integer", "minimum": 1 },
+        "max_proposals": { "type": "integer", "minimum": 0 },
+        "max_restarts": { "type": "integer", "minimum": 0 },
+        "max_read_indexes": { "type": "integer", "minimum": 0 },
+        "max_membership_changes": { "type": "integer", "minimum": 0 },
+        "max_transfers": { "type": "integer", "minimum": 0 },
+        "max_partitions": { "type": "integer", "minimum": 0 },
+        "max_lossy_restarts": { "type": "integer", "minimum": 0 },
+        "snapshot_catchup_probe": { "type": "boolean" },
+        "tick_skew_node_id": { "type": ["integer", "null"], "minimum": 1 },
+        "tick_skew_weight": { "type": ["integer", "null"], "minimum": 1 }
+      }
+    },
+    "simulator_liveness_report_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["check_id", "seed", "execution_contract", "execution_contract_sha256", "report_sha256", "round_limit", "rounds_used"],
+      "properties": {
+        "check_id": { "type": "string", "minLength": 1 },
+        "seed": { "type": "integer", "minimum": 0 },
+        "execution_contract": { "$ref": "#/$defs/simulator_execution_contract" },
+        "execution_contract_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "report_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "round_limit": { "type": "integer", "minimum": 1 },
+        "rounds_used": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "simulator_liveness_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schema_version", "contract", "contract_sha256", "reports_sha256", "reports"],
+      "properties": {
+        "schema_version": { "const": 1 },
+        "contract": { "$ref": "#/$defs/simulator_liveness_contract" },
+        "contract_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "reports_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "reports": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/simulator_liveness_report_binding" } }
+      }
     },
     "source": {
       "type": "object",
@@ -192,13 +291,19 @@
     "check": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["execution_id", "check_id", "evidence_ids", "completion", "observations", "duration_ms", "peak_rss_kib", "artifacts"],
+      "required": ["execution_id", "check_id", "evidence_ids", "completion", "observations", "simulator_liveness", "duration_ms", "peak_rss_kib", "artifacts"],
       "properties": {
         "execution_id": { "type": "string", "minLength": 1 },
         "check_id": { "type": "string", "minLength": 1 },
         "evidence_ids": { "type": "array", "minItems": 1, "uniqueItems": true, "items": { "type": "string", "minLength": 1 } },
         "completion": { "enum": ["completed", "frontier_exhausted", "counterexample", "coverage_not_reached", "budget_exhausted", "timeout", "harness_error"] },
         "observations": { "type": "object", "additionalProperties": { "type": "integer", "minimum": 0 } },
+        "simulator_liveness": {
+          "oneOf": [
+            { "type": "null" },
+            { "$ref": "#/$defs/simulator_liveness_binding" }
+          ]
+        },
         "duration_ms": { "type": "integer", "minimum": 0 },
         "peak_rss_kib": { "type": "integer", "minimum": 1 },
         "artifacts": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/artifact" } }

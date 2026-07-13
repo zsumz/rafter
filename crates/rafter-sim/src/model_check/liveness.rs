@@ -21,6 +21,7 @@ pub(in crate::model_check) use features::LivenessFeatureReport;
 use features::{
     run_feature_liveness_checks, EvidenceStatus, FaultCycleEvidence, FaultStateRequirement,
     LivenessPreconditionProbe, LivenessPreconditions, ProposalEvidence, StableLeaderEvidence,
+    LV_01_CLAUSE_IDS,
 };
 
 #[cfg(test)]
@@ -94,6 +95,7 @@ pub(super) fn run_soak_liveness_check(
 
     let post_heal_report = LivenessFeatureReport {
         invariant_id: "LV-01",
+        clause_ids: LV_01_CLAUSE_IDS,
         feature_id: "leader-convergence",
         scenario_id: "post-heal-stable-quorum-v1",
         observation_id: "post_heal_quiescent_leaders",

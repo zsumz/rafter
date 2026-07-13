@@ -6,7 +6,7 @@ use super::super::driver::{
 };
 use super::{
     FaultStateRequirement, LivenessFeatureReport, LivenessPreconditionProbe, LivenessPreconditions,
-    StableLeaderEvidence,
+    StableLeaderEvidence, LV_03_READ_CLAUSE_IDS,
 };
 use crate::model_check::{
     catalog,
@@ -65,6 +65,7 @@ pub(super) fn run_read_barrier_liveness_check(
     if completion.completed && completion.observer_held {
         Ok(LivenessFeatureReport {
             invariant_id: "LV-03",
+            clause_ids: LV_03_READ_CLAUSE_IDS,
             feature_id: "read-barrier",
             scenario_id: "stable-leader-read-barrier-v1",
             observation_id: "completed_liveness_read_barriers",

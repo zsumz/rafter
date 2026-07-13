@@ -222,6 +222,7 @@ fn bundle() -> ResultBundle {
                 evidence_ids: vec!["RD-06/test".to_owned()],
                 completion: CheckCompletion::Completed,
                 observations: observations(),
+                simulator_liveness: None,
                 duration_ms: 1,
                 peak_rss_kib: 1,
                 artifacts: vec![

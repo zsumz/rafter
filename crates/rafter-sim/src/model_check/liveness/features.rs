@@ -38,8 +38,16 @@ use transfer::run_leadership_transfer_liveness_check;
 
 use super::driver::{
     ProposalTerminalOutcome, FAIR_DELIVERY_BOUND_ROUNDS, FAIR_MAX_DELIVERY_WAVES_PER_TICK,
-    FAIR_SCHEDULER_POLICY_ID, FAIR_TICK_BOUND_ROUNDS,
+    FAIR_SCHEDULER_POLICY_ID, FAIR_TICK_BOUND_ROUNDS, STABLE_LEADER_WINDOW_ROUNDS,
 };
+
+pub(super) const LV_01_CLAUSE_IDS: &[&str] = &["LV-01.a", "LV-01.b"];
+pub(super) const LV_02_PROGRESS_CLAUSE_IDS: &[&str] = &["LV-02.a"];
+pub(super) const LV_02_TERMINATION_CLAUSE_IDS: &[&str] = &["LV-02.b"];
+pub(super) const LV_03_READ_CLAUSE_IDS: &[&str] = &["LV-03.a"];
+pub(super) const LV_03_SNAPSHOT_CLAUSE_IDS: &[&str] = &["LV-03.b"];
+pub(super) const LV_03_MEMBERSHIP_CLAUSE_IDS: &[&str] = &["LV-03.c"];
+pub(super) const LV_03_TRANSFER_CLAUSE_IDS: &[&str] = &["LV-03.d"];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum EvidenceStatus {
@@ -90,7 +98,7 @@ pub(super) struct LivenessPreconditionProbe {
     pub(super) authority_loss_observed: Option<bool>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct LivenessPreconditions {
     fault_requirement: FaultStateRequirement,
     fault_state: EvidenceStatus,
@@ -101,6 +109,7 @@ pub(super) struct LivenessPreconditions {
     stable_leader: EvidenceStatus,
     accepted_proposal: EvidenceStatus,
     authority_loss: EvidenceStatus,
+    voter_ids: Vec<NodeId>,
     reachable_voters: usize,
     quorum_size: usize,
     unavailable_voters: usize,
@@ -164,13 +173,14 @@ impl LivenessPreconditions {
             stable_leader,
             accepted_proposal,
             authority_loss,
+            voter_ids: voters.clone(),
             reachable_voters,
             quorum_size,
             unavailable_voters: voters.len().saturating_sub(reachable_voters),
         }
     }
 
-    fn validate(self) -> Result<(), &'static str> {
+    fn validate(&self) -> Result<(), &'static str> {
         for (name, status) in [
             ("fault_state", self.fault_state),
             ("mutually_reachable_quorum", self.mutually_reachable_quorum),
@@ -185,6 +195,12 @@ impl LivenessPreconditions {
         }
         if self.quorum_size == 0 || self.reachable_voters < self.quorum_size {
             return Err("reachable_voters");
+        }
+        if self.voter_ids.is_empty()
+            || self.quorum_size != self.voter_ids.len() / 2 + 1
+            || self.unavailable_voters != self.voter_ids.len().saturating_sub(self.reachable_voters)
+        {
+            return Err("voter_ids");
         }
         Ok(())
     }
@@ -289,6 +305,7 @@ impl FaultCycleEvidence {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LivenessFeatureReport {
     pub(super) invariant_id: &'static str,
+    pub(super) clause_ids: &'static [&'static str],
     pub(super) feature_id: &'static str,
     pub(super) scenario_id: &'static str,
     pub(super) observation_id: &'static str,
@@ -305,6 +322,7 @@ impl LivenessFeatureReport {
     pub fn to_json(&self) -> serde_json::Value {
         json!({
             "invariant_id": self.invariant_id,
+            "clause_ids": self.clause_ids,
             "feature_id": self.feature_id,
             "scenario_id": self.scenario_id,
             "observation_id": self.observation_id,
@@ -327,6 +345,7 @@ impl LivenessFeatureReport {
                 "authority_loss_required": self.preconditions.authority_loss.is_required(),
                 "authority_loss_satisfied": self.preconditions.authority_loss.is_satisfied(),
                 "authority_loss_status": self.preconditions.authority_loss.as_str(),
+                "voter_ids": self.preconditions.voter_ids.iter().map(|node_id| node_id.0).collect::<Vec<_>>(),
                 "reachable_voters": self.preconditions.reachable_voters,
                 "quorum_size": self.preconditions.quorum_size,
                 "unavailable_voters": self.preconditions.unavailable_voters,
@@ -434,6 +453,21 @@ impl LivenessFeatureReport {
         if self.preconditions.accepted_proposal.is_required() != self.proposal.is_some() {
             return Err("proposal evidence does not match its precondition".to_owned());
         }
+        if let Some(leader) = self.stable_leader {
+            if !self.preconditions.voter_ids.contains(&leader.leader) {
+                return Err("stable leader is not a measured voter".to_owned());
+            }
+            validate_stable_window(self.feature_id, leader, self.rounds_used)?;
+        }
+        if let Some(proposal) = self.proposal {
+            if proposal.proposal_id.0 == 0 {
+                return Err("proposal ID must be positive".to_owned());
+            }
+            validate_proposal_outcome(self.feature_id, proposal.outcome)?;
+        }
+        if expected_clause_ids(self.feature_id) != Some(self.clause_ids) {
+            return Err("clause IDs do not match the liveness feature".to_owned());
+        }
         let fault_cycle_required = self.feature_id == "leader-convergence"
             && self.scenario_id == "post-heal-stable-quorum-v1";
         if fault_cycle_required != self.fault_cycle.is_some() {
@@ -445,6 +479,68 @@ impl LivenessFeatureReport {
                 .map_err(|name| format!("invalid fault-cycle evidence: {name}"))?;
         }
         Ok(())
+    }
+}
+
+fn expected_clause_ids(feature_id: &str) -> Option<&'static [&'static str]> {
+    match feature_id {
+        "leader-convergence" | "quorum-only-leader-convergence" => Some(LV_01_CLAUSE_IDS),
+        "proposal-progress" => Some(LV_02_PROGRESS_CLAUSE_IDS),
+        "proposal-termination" => Some(LV_02_TERMINATION_CLAUSE_IDS),
+        "read-barrier" => Some(LV_03_READ_CLAUSE_IDS),
+        "snapshot-catch-up" => Some(LV_03_SNAPSHOT_CLAUSE_IDS),
+        "membership-transition" => Some(LV_03_MEMBERSHIP_CLAUSE_IDS),
+        "leadership-transfer" => Some(LV_03_TRANSFER_CLAUSE_IDS),
+        _ => None,
+    }
+}
+
+fn validate_stable_window(
+    feature_id: &str,
+    evidence: StableLeaderEvidence,
+    rounds_used: usize,
+) -> Result<(), String> {
+    let valid = match feature_id {
+        "leader-convergence" | "quorum-only-leader-convergence" | "read-barrier" => {
+            evidence.stable_rounds == STABLE_LEADER_WINDOW_ROUNDS
+                && evidence.remained_leader_through_probe
+        }
+        "proposal-progress" => {
+            evidence.stable_rounds == rounds_used.max(1) && evidence.remained_leader_through_probe
+        }
+        "proposal-termination" => {
+            evidence.stable_rounds == 1 && !evidence.remained_leader_through_probe
+        }
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err("stable-leader window does not match monitor semantics".to_owned())
+    }
+}
+
+fn validate_proposal_outcome(
+    feature_id: &str,
+    outcome: ProposalTerminalOutcome,
+) -> Result<(), String> {
+    let valid = match feature_id {
+        "leader-convergence" | "quorum-only-leader-convergence" | "proposal-progress" => {
+            outcome == ProposalTerminalOutcome::Committed
+        }
+        "proposal-termination" => matches!(
+            outcome,
+            ProposalTerminalOutcome::Committed
+                | ProposalTerminalOutcome::Rejected
+                | ProposalTerminalOutcome::Canceled
+                | ProposalTerminalOutcome::Unknown
+        ),
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err("proposal terminal outcome does not match monitor semantics".to_owned())
     }
 }
 

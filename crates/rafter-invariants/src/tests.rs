@@ -135,11 +135,14 @@ fn synthetic_observations(
         }
         return std::collections::BTreeMap::new();
     };
+    let liveness_reports = identity.liveness_report.as_ref().map(|_| {
+        identity.checks.len() as u64 * identity.minimum_runs_per_check.unwrap_or_default() as u64
+    });
     let mut observations = std::collections::BTreeMap::from([
         ("detector_qualified".to_owned(), 1),
         (
             identity.required_observation.clone(),
-            identity.minimum_observation as u64,
+            liveness_reports.unwrap_or(identity.minimum_observation as u64),
         ),
     ]);
     if let (Some(protocol), Some(verifier)) = (
@@ -158,6 +161,41 @@ fn synthetic_observations(
         }
     }
     observations
+}
+
+fn synthetic_liveness_binding(
+    descriptor: &EvidenceDescriptor,
+) -> Option<crate::types::SimulatorLivenessBinding> {
+    let identity = descriptor.simulator.as_ref()?;
+    let contract = identity.liveness_report.clone()?;
+    let runs = identity.minimum_runs_per_check?;
+    let mut reports = identity
+        .checks
+        .iter()
+        .flat_map(|check_id| {
+            let execution_contract = crate::catalog::expected_execution_contract("pr", check_id)
+                .expect("synthetic PR execution contract");
+            (0..runs).map(move |index| crate::types::SimulatorLivenessReportBinding {
+                check_id: check_id.clone(),
+                seed: index as u64 + 1,
+                execution_contract_sha256: crate::catalog::execution_contract_digest(
+                    &execution_contract,
+                ),
+                execution_contract: execution_contract.clone(),
+                report_sha256: format!("{:064x}", index + 1),
+                round_limit: 1,
+                rounds_used: 1,
+            })
+        })
+        .collect::<Vec<_>>();
+    reports.sort();
+    Some(crate::types::SimulatorLivenessBinding {
+        schema_version: 1,
+        contract_sha256: crate::catalog::liveness_contract_digest(&contract),
+        reports_sha256: crate::catalog::liveness_reports_digest(&reports),
+        contract,
+        reports,
+    })
 }
 
 fn synthetic_artifacts(descriptor: &EvidenceDescriptor) -> Vec<ArtifactRef> {
@@ -264,6 +302,7 @@ pub(crate) fn passing_bundles(catalog: &Catalog, manifest: &ProfileManifest) -> 
                         evidence_ids,
                         completion,
                         observations: synthetic_observations(&descriptors),
+                        simulator_liveness: synthetic_liveness_binding(&descriptors[0]),
                         duration_ms: 1,
                         peak_rss_kib: 1,
                         artifacts: synthetic_artifacts(&descriptors[0]),
@@ -281,7 +320,7 @@ pub(crate) fn passing_bundles(catalog: &Catalog, manifest: &ProfileManifest) -> 
                 );
             }
             ResultBundle {
-                schema_version: 7,
+                schema_version: crate::types::RESULT_SCHEMA_VERSION,
                 runner: runner.clone(),
                 profile: "pr".to_owned(),
                 source_ref: "abc".to_owned(),
@@ -623,6 +662,30 @@ fn simulator_pass_requires_its_registry_semantic_witness() {
 }
 
 #[test]
+fn simulator_liveness_pass_rejects_shallow_counter_only_receipt() {
+    let (catalog, manifest) = loaded();
+    let mut bundles = passing_bundles(&catalog, &manifest);
+    let simulator = bundles
+        .iter_mut()
+        .find(|bundle| bundle.runner == "simulator")
+        .expect("simulator bundle exists");
+    let check = simulator
+        .execution
+        .checks
+        .iter_mut()
+        .find(|check| check.simulator_liveness.is_some())
+        .expect("liveness check exists");
+    check.simulator_liveness = None;
+
+    let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
+    assert!(report.summary.green < 44);
+    assert!(report.invariants.iter().any(|verdict| verdict
+        .issues
+        .iter()
+        .any(|issue| { issue.message.contains("exact typed report binding") })));
+}
+
+#[test]
 fn tla_pass_requires_every_framed_predicate_observation() {
     let (catalog, manifest) = loaded();
     let mut bundles = passing_bundles(&catalog, &manifest);
@@ -722,10 +785,41 @@ fn result_bundle_rejects_unknown_fields() {
 }
 
 #[test]
+fn old_receipts_without_report_binding_field_are_red() {
+    let (catalog, manifest) = loaded();
+    let mut bundles = passing_bundles(&catalog, &manifest);
+    let simulator_index = bundles
+        .iter()
+        .position(|bundle| bundle.runner == "simulator")
+        .expect("simulator bundle");
+    let mut value =
+        serde_json::to_value(&bundles[simulator_index]).expect("serialize simulator bundle");
+    let liveness_check = value["execution"]["checks"]
+        .as_array_mut()
+        .expect("check array")
+        .iter_mut()
+        .find(|check| !check["simulator_liveness"].is_null())
+        .expect("liveness check");
+    liveness_check
+        .as_object_mut()
+        .expect("check object")
+        .remove("simulator_liveness");
+    bundles[simulator_index] =
+        serde_json::from_value::<ResultBundle>(value).expect("old receipt still parses");
+
+    let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
+    assert!(report.summary.green < 44);
+    assert!(report.invariants.iter().any(|verdict| verdict
+        .issues
+        .iter()
+        .any(|issue| issue.message.contains("exact typed report binding"))));
+}
+
+#[test]
 fn stale_bundle_is_red_never_green() {
     let (catalog, manifest) = loaded();
     let bundle = ResultBundle {
-        schema_version: 7,
+        schema_version: crate::types::RESULT_SCHEMA_VERSION,
         runner: "tests".to_owned(),
         profile: "pr".to_owned(),
         source_ref: "old".to_owned(),

@@ -13,6 +13,7 @@ pub(super) fn snapshot_liveness_round_budget(config: SoakConfig) -> usize {
 }
 use super::{
     FaultStateRequirement, LivenessFeatureReport, LivenessPreconditionProbe, LivenessPreconditions,
+    LV_03_SNAPSHOT_CLAUSE_IDS,
 };
 use crate::model_check::{
     catalog,
@@ -46,6 +47,7 @@ pub(in crate::model_check) fn run_snapshot_catchup_liveness_check(
     if completion.completed {
         Ok(LivenessFeatureReport {
             invariant_id: "LV-03",
+            clause_ids: LV_03_SNAPSHOT_CLAUSE_IDS,
             feature_id: "snapshot-catch-up",
             scenario_id: "restart-snapshot-transfer-v1",
             observation_id: "completed_expected_snapshot_catchups",

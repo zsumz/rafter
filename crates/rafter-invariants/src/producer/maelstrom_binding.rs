@@ -215,6 +215,7 @@ mod tests {
             evidence_ids: evidence.iter().map(ToString::to_string).collect(),
             completion,
             observations: BTreeMap::new(),
+            simulator_liveness: None,
             duration_ms: 1,
             peak_rss_kib: 1,
             artifacts: Vec::new(),

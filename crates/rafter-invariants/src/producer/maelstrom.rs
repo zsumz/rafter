@@ -87,6 +87,7 @@ pub(super) fn run(
             evidence_ids,
             completion: verdict.completion(),
             observations: observations(&outcomes),
+            simulator_liveness: None,
             duration_ms: outcomes.iter().map(|outcome| outcome.duration_ms).sum(),
             peak_rss_kib: outcomes
                 .iter()

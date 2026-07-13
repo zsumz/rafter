@@ -1,9 +1,16 @@
-use std::{collections::BTreeMap, time::Duration};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    time::Duration,
+};
 
 use rafter_sim::model_check::{
     ExplorationCompletion, Failure, FailureKind, SoakConfig, SoakFailure, SoakSummary, Summary,
 };
 use serde_json::json;
+
+#[cfg(test)]
+use crate::profile::SoakCheckKind;
+use crate::profile::SoakExecutionContract;
 
 const EVENT_PREFIX: &str = "RAFTER_EVENT ";
 
@@ -122,11 +129,12 @@ fn format_raft_summary_line(name: &str, metrics: RaftSummaryMetrics, duration: D
 }
 
 pub(crate) fn print_soak_summary(
-    name: &str,
+    contract: &SoakExecutionContract,
     summary: &SoakSummary,
     config: SoakConfig,
     duration: Duration,
 ) {
+    let name = &contract.check_id;
     println!(
         "model-check {name}: seed={:#x} steps={} observed_actions={:?} duration_ms={}",
         summary.seed().0,
@@ -141,10 +149,11 @@ pub(crate) fn print_soak_summary(
         .collect::<Vec<_>>();
     println!(
         "{EVENT_PREFIX}{}",
-        soak_event(name, summary, config, &observed_actions, duration)
+        soak_event_with_contract(contract, summary, config, &observed_actions, duration)
     );
 }
 
+#[cfg(test)]
 fn soak_event(
     name: &str,
     summary: &SoakSummary,
@@ -152,10 +161,29 @@ fn soak_event(
     observed_actions: &[&str],
     duration: Duration,
 ) -> serde_json::Value {
-    let reports = summary.liveness_reports_json();
-    soak_event_from_reports(name, summary, config, observed_actions, duration, &reports)
+    let contract = test_execution_contract(name, config);
+    soak_event_with_contract(&contract, summary, config, observed_actions, duration)
 }
 
+fn soak_event_with_contract(
+    contract: &SoakExecutionContract,
+    summary: &SoakSummary,
+    config: SoakConfig,
+    observed_actions: &[&str],
+    duration: Duration,
+) -> serde_json::Value {
+    let reports = summary.liveness_reports_json();
+    soak_event_from_reports_with_contract(
+        contract,
+        summary,
+        config,
+        observed_actions,
+        duration,
+        &reports,
+    )
+}
+
+#[cfg(test)]
 fn soak_event_from_reports(
     name: &str,
     summary: &SoakSummary,
@@ -164,8 +192,28 @@ fn soak_event_from_reports(
     duration: Duration,
     reports: &[serde_json::Value],
 ) -> serde_json::Value {
+    let contract = test_execution_contract(name, config);
+    soak_event_from_reports_with_contract(
+        &contract,
+        summary,
+        config,
+        observed_actions,
+        duration,
+        reports,
+    )
+}
+
+fn soak_event_from_reports_with_contract(
+    contract: &SoakExecutionContract,
+    summary: &SoakSummary,
+    config: SoakConfig,
+    observed_actions: &[&str],
+    duration: Duration,
+    reports: &[serde_json::Value],
+) -> serde_json::Value {
     let validation = summary
         .validate_liveness_report_structure()
+        .and_then(|()| contract.validate_config(config))
         .and_then(|()| validate_liveness_reports(summary, config, reports));
     let passed = validation.is_ok();
     let liveness_features = if passed {
@@ -187,7 +235,8 @@ fn soak_event_from_reports(
     };
     json!({
         "event": "soak-check",
-        "check_id": name,
+        "check_id": contract.check_id,
+        "execution_contract": contract.to_json(),
         "status": if passed { "pass" } else { "error" },
         "classification": if passed { serde_json::Value::Null } else { json!("harness-error") },
         "message": validation.err(),
@@ -201,19 +250,40 @@ fn soak_event_from_reports(
     })
 }
 
+#[cfg(test)]
+fn test_execution_contract(name: &str, config: SoakConfig) -> SoakExecutionContract {
+    let kind = if name.ends_with("-membership") {
+        SoakCheckKind::Membership
+    } else if name.ends_with("-lease") {
+        SoakCheckKind::Lease
+    } else {
+        SoakCheckKind::Standard
+    };
+    SoakExecutionContract::from_config("test-soak", name, kind, config)
+}
+
 #[derive(Clone, Copy)]
 struct ExpectedLivenessFeature {
     feature_id: &'static str,
     invariant_id: &'static str,
+    clause_ids: &'static [&'static str],
     scenario_id: &'static str,
     observation_id: &'static str,
     remained_leader_through_probe: Option<bool>,
+    stable_rounds: StableRoundsExpectation,
     proposal_outcome: ProposalOutcomeExpectation,
     authority_loss: bool,
     fault_requirement: FaultRequirement,
     fault_cycle: bool,
     phase_count: u64,
     fixed_rounds: u64,
+}
+
+#[derive(Clone, Copy)]
+enum StableRoundsExpectation {
+    None,
+    Exact(u64),
+    ProbeRounds,
 }
 
 #[derive(Clone, Copy)]
@@ -320,9 +390,11 @@ fn expected_liveness_features(config: SoakConfig) -> Vec<ExpectedLivenessFeature
         expected.push(ExpectedLivenessFeature {
             feature_id: "read-barrier",
             invariant_id: "LV-03",
+            clause_ids: &["LV-03.a"],
             scenario_id: "stable-leader-read-barrier-v1",
             observation_id: "completed_liveness_read_barriers",
             remained_leader_through_probe: Some(true),
+            stable_rounds: StableRoundsExpectation::Exact(2),
             proposal_outcome: ProposalOutcomeExpectation::None,
             authority_loss: false,
             fault_requirement: FaultRequirement::Stopped,
@@ -340,9 +412,11 @@ fn required_liveness_features() -> Vec<ExpectedLivenessFeature> {
         ExpectedLivenessFeature {
             feature_id: "leader-convergence",
             invariant_id: "LV-01",
+            clause_ids: &["LV-01.a", "LV-01.b"],
             scenario_id: "post-heal-stable-quorum-v1",
             observation_id: "post_heal_quiescent_leaders",
             remained_leader_through_probe: Some(true),
+            stable_rounds: StableRoundsExpectation::Exact(2),
             proposal_outcome: ProposalOutcomeExpectation::Exact("committed"),
             authority_loss: false,
             fault_requirement: FaultRequirement::Stopped,
@@ -353,9 +427,11 @@ fn required_liveness_features() -> Vec<ExpectedLivenessFeature> {
         ExpectedLivenessFeature {
             feature_id: "quorum-only-leader-convergence",
             invariant_id: "LV-01",
+            clause_ids: &["LV-01.a", "LV-01.b"],
             scenario_id: "minority-unavailable-stable-quorum-v1",
             observation_id: "quorum_only_post_fault_leaders",
             remained_leader_through_probe: Some(true),
+            stable_rounds: StableRoundsExpectation::Exact(2),
             proposal_outcome: ProposalOutcomeExpectation::Exact("committed"),
             authority_loss: false,
             fault_requirement: FaultRequirement::ActivePartition,
@@ -366,9 +442,11 @@ fn required_liveness_features() -> Vec<ExpectedLivenessFeature> {
         ExpectedLivenessFeature {
             feature_id: "proposal-progress",
             invariant_id: "LV-02",
+            clause_ids: &["LV-02.a"],
             scenario_id: "stable-leader-reachable-quorum-v1",
             observation_id: "accepted_completed_liveness_proposals",
             remained_leader_through_probe: Some(true),
+            stable_rounds: StableRoundsExpectation::ProbeRounds,
             proposal_outcome: ProposalOutcomeExpectation::Exact("committed"),
             authority_loss: false,
             fault_requirement: FaultRequirement::Stopped,
@@ -379,9 +457,11 @@ fn required_liveness_features() -> Vec<ExpectedLivenessFeature> {
         ExpectedLivenessFeature {
             feature_id: "proposal-termination",
             invariant_id: "LV-02",
+            clause_ids: &["LV-02.b"],
             scenario_id: "accepted-proposal-authority-loss-v1",
             observation_id: "terminated_liveness_proposals",
             remained_leader_through_probe: Some(false),
+            stable_rounds: StableRoundsExpectation::Exact(1),
             proposal_outcome: ProposalOutcomeExpectation::ExplicitTerminal,
             authority_loss: true,
             fault_requirement: FaultRequirement::ActivePartition,
@@ -400,9 +480,11 @@ fn append_optional_operation_features(
         expected.push(ExpectedLivenessFeature {
             feature_id: "membership-transition",
             invariant_id: "LV-03",
+            clause_ids: &["LV-03.c"],
             scenario_id: "stable-remove-voter-joint-consensus-v1",
             observation_id: "completed_stable_membership_transitions",
             remained_leader_through_probe: None,
+            stable_rounds: StableRoundsExpectation::None,
             proposal_outcome: ProposalOutcomeExpectation::None,
             authority_loss: false,
             fault_requirement: FaultRequirement::Stopped,
@@ -415,9 +497,11 @@ fn append_optional_operation_features(
         expected.push(ExpectedLivenessFeature {
             feature_id: "leadership-transfer",
             invariant_id: "LV-03",
+            clause_ids: &["LV-03.d"],
             scenario_id: "caught-up-voter-transfer-v1",
             observation_id: "completed_target_leadership_transfers",
             remained_leader_through_probe: None,
+            stable_rounds: StableRoundsExpectation::None,
             proposal_outcome: ProposalOutcomeExpectation::None,
             authority_loss: false,
             fault_requirement: FaultRequirement::Stopped,
@@ -430,9 +514,11 @@ fn append_optional_operation_features(
         expected.push(ExpectedLivenessFeature {
             feature_id: "snapshot-catch-up",
             invariant_id: "LV-03",
+            clause_ids: &["LV-03.b"],
             scenario_id: "restart-snapshot-transfer-v1",
             observation_id: "completed_expected_snapshot_catchups",
             remained_leader_through_probe: None,
+            stable_rounds: StableRoundsExpectation::None,
             proposal_outcome: ProposalOutcomeExpectation::None,
             authority_loss: false,
             fault_requirement: FaultRequirement::Stopped,
@@ -449,7 +535,27 @@ fn validate_liveness_report(
     config_provenance: &serde_json::Value,
     expected: ExpectedLivenessFeature,
 ) -> Result<(), String> {
+    require_exact_fields(
+        report,
+        &[
+            "invariant_id",
+            "clause_ids",
+            "feature_id",
+            "scenario_id",
+            "observation_id",
+            "preconditions",
+            "fairness",
+            "round_budget",
+            "round_limit",
+            "rounds_used",
+            "fault_cycle",
+            "stable_leader",
+            "proposal",
+        ],
+        "liveness report",
+    )?;
     require_exact(report, "invariant_id", expected.invariant_id)?;
+    require_exact_strings(report, "clause_ids", expected.clause_ids)?;
     require_exact(report, "feature_id", expected.feature_id)?;
     require_exact(report, "scenario_id", expected.scenario_id)?;
     require_exact(report, "observation_id", expected.observation_id)?;
@@ -482,6 +588,7 @@ fn validate_liveness_report(
                 expected.feature_id
             ));
         }
+        validate_stable_leader_semantics(report, expected)?;
     }
     if !expected
         .proposal_outcome
@@ -489,6 +596,41 @@ fn validate_liveness_report(
     {
         return Err(format!(
             "{} has an invalid proposal terminal outcome",
+            expected.feature_id
+        ));
+    }
+    Ok(())
+}
+
+fn validate_stable_leader_semantics(
+    report: &serde_json::Value,
+    expected: ExpectedLivenessFeature,
+) -> Result<(), String> {
+    let stable_leader = report["stable_leader"]
+        .as_object()
+        .ok_or_else(|| format!("{} has no stable-leader evidence", expected.feature_id))?;
+    require_exact_object_fields(
+        stable_leader,
+        &["node_id", "stable_rounds", "remained_leader_through_probe"],
+        "stable-leader evidence",
+    )?;
+    let leader = required_object_u64(stable_leader, "node_id")?;
+    let stable_rounds = required_object_u64(stable_leader, "stable_rounds")?;
+    let rounds_used = required_u64(report, "rounds_used")?;
+    let valid_rounds = match expected.stable_rounds {
+        StableRoundsExpectation::None => false,
+        StableRoundsExpectation::Exact(rounds) => stable_rounds == rounds,
+        StableRoundsExpectation::ProbeRounds => stable_rounds == rounds_used.max(1),
+    };
+    let voters = required_u64_array(
+        report["preconditions"]
+            .as_object()
+            .ok_or_else(|| "liveness report has no preconditions".to_owned())?,
+        "voter_ids",
+    )?;
+    if leader == 0 || !voters.contains(&leader) || !valid_rounds {
+        return Err(format!(
+            "{} has invalid leader identity or stable window",
             expected.feature_id
         ));
     }
@@ -571,6 +713,22 @@ fn validate_liveness_round_budget(
         .get("round_budget")
         .and_then(serde_json::Value::as_object)
         .ok_or_else(|| format!("{} has no round-budget evidence", expected.feature_id))?;
+    require_exact_object_fields(
+        budget,
+        &[
+            "minimum_rounds",
+            "node_count",
+            "queued_messages",
+            "max_proposals",
+            "max_membership_changes",
+            "max_partitions",
+            "snapshot_catchup_probe",
+            "base_rounds",
+            "phase_count",
+            "fixed_rounds",
+        ],
+        "liveness round budget",
+    )?;
     let minimum_rounds = required_object_u64(budget, "minimum_rounds")?;
     let node_count = required_object_u64(budget, "node_count")?;
     let queued_messages = required_object_u64(budget, "queued_messages")?;
@@ -624,6 +782,23 @@ fn validate_fault_cycle(
     let fault_cycle = fault_cycle
         .and_then(serde_json::Value::as_object)
         .ok_or_else(|| format!("{} has no fault-cycle evidence", expected.feature_id))?;
+    require_exact_object_fields(
+        fault_cycle,
+        &[
+            "partition_a",
+            "partition_b",
+            "partition_observed",
+            "partitioned_rounds",
+            "nodes_exercised",
+            "ticks_executed",
+            "deliveries_executed",
+            "drops_executed",
+            "protocol_state_changed",
+            "partition_active_after_exercise",
+            "heal_observed",
+        ],
+        "fault-cycle evidence",
+    )?;
     let partition_a = required_object_u64(fault_cycle, "partition_a")?;
     let partition_b = required_object_u64(fault_cycle, "partition_b")?;
     let partition_observed = fault_cycle
@@ -673,6 +848,34 @@ fn validate_liveness_preconditions(
         .get("preconditions")
         .and_then(serde_json::Value::as_object)
         .ok_or_else(|| format!("{} has no precondition object", expected.feature_id))?;
+    require_exact_object_fields(
+        preconditions,
+        &[
+            "fault_requirement",
+            "fault_state_satisfied",
+            "fault_state_status",
+            "faults_stopped",
+            "partition_active",
+            "mutually_reachable_quorum",
+            "mutually_reachable_quorum_status",
+            "stable_membership",
+            "stable_membership_status",
+            "stable_leader_required",
+            "stable_leader_satisfied",
+            "stable_leader_status",
+            "accepted_proposal_required",
+            "accepted_proposal_satisfied",
+            "accepted_proposal_status",
+            "authority_loss_required",
+            "authority_loss_satisfied",
+            "authority_loss_status",
+            "voter_ids",
+            "reachable_voters",
+            "quorum_size",
+            "unavailable_voters",
+        ],
+        "liveness preconditions",
+    )?;
     validate_fault_precondition(preconditions, expected)?;
     for field in ["mutually_reachable_quorum", "stable_membership"] {
         if preconditions
@@ -764,8 +967,16 @@ fn validate_quorum_counts(
 ) -> Result<(), String> {
     let reachable_voters = required_object_u64(preconditions, "reachable_voters")?;
     let quorum_size = required_object_u64(preconditions, "quorum_size")?;
-    let _unavailable_voters = required_object_u64(preconditions, "unavailable_voters")?;
-    if quorum_size == 0 || reachable_voters < quorum_size {
+    let unavailable_voters = required_object_u64(preconditions, "unavailable_voters")?;
+    let voters = required_u64_array(preconditions, "voter_ids")?;
+    let unique = voters.iter().copied().collect::<BTreeSet<_>>();
+    if voters.is_empty()
+        || unique.len() != voters.len()
+        || voters.contains(&0)
+        || quorum_size != voters.len() as u64 / 2 + 1
+        || reachable_voters < quorum_size
+        || unavailable_voters != voters.len() as u64 - reachable_voters
+    {
         Err(format!("{feature_id} has invalid reachable-quorum counts"))
     } else {
         Ok(())
@@ -808,6 +1019,16 @@ fn validate_liveness_fairness(report: &serde_json::Value, feature_id: &str) -> R
         .get("fairness")
         .and_then(serde_json::Value::as_object)
         .ok_or_else(|| format!("{feature_id} has no fairness evidence"))?;
+    require_exact_object_fields(
+        fairness,
+        &[
+            "policy_id",
+            "tick_bound_rounds",
+            "delivery_bound_rounds",
+            "max_delivery_waves_per_tick",
+        ],
+        "liveness fairness",
+    )?;
     let valid = fairness
         .get("policy_id")
         .and_then(serde_json::Value::as_str)
@@ -870,6 +1091,11 @@ fn validate_required_evidence(
             .ok_or_else(|| format!("`{evidence_field}` evidence is not an object"))?;
         match evidence_field {
             "stable_leader" => {
+                require_exact_object_fields(
+                    evidence,
+                    &["node_id", "stable_rounds", "remained_leader_through_probe"],
+                    "stable-leader evidence",
+                )?;
                 if evidence
                     .get("node_id")
                     .and_then(serde_json::Value::as_u64)
@@ -887,10 +1113,15 @@ fn validate_required_evidence(
                 }
             }
             "proposal" => {
+                require_exact_object_fields(
+                    evidence,
+                    &["proposal_id", "terminal_outcome"],
+                    "proposal evidence",
+                )?;
                 if evidence
                     .get("proposal_id")
                     .and_then(serde_json::Value::as_u64)
-                    .is_none()
+                    .is_none_or(|proposal_id| proposal_id == 0)
                     || evidence
                         .get("terminal_outcome")
                         .and_then(serde_json::Value::as_str)
@@ -907,6 +1138,75 @@ fn validate_required_evidence(
         }
     }
     Ok(())
+}
+
+fn require_exact_fields(
+    value: &serde_json::Value,
+    expected: &[&str],
+    context: &str,
+) -> Result<(), String> {
+    let object = value
+        .as_object()
+        .ok_or_else(|| format!("{context} is not an object"))?;
+    require_exact_object_fields(object, expected, context)
+}
+
+fn require_exact_object_fields(
+    object: &serde_json::Map<String, serde_json::Value>,
+    expected: &[&str],
+    context: &str,
+) -> Result<(), String> {
+    let observed = object.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    let expected = expected.iter().copied().collect::<BTreeSet<_>>();
+    if observed == expected {
+        Ok(())
+    } else {
+        let missing = expected.difference(&observed).copied().collect::<Vec<_>>();
+        let unknown = observed.difference(&expected).copied().collect::<Vec<_>>();
+        Err(format!(
+            "{context} has missing fields {missing:?} or unknown fields {unknown:?}"
+        ))
+    }
+}
+
+fn require_exact_strings(
+    value: &serde_json::Value,
+    field: &str,
+    expected: &[&str],
+) -> Result<(), String> {
+    let observed = value
+        .get(field)
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| format!("liveness report field `{field}` is missing or not an array"))?
+        .iter()
+        .map(|value| {
+            value
+                .as_str()
+                .ok_or_else(|| format!("liveness report field `{field}` contains a non-string"))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if observed == expected {
+        Ok(())
+    } else {
+        Err(format!("liveness report field `{field}` is inconsistent"))
+    }
+}
+
+fn required_u64_array(
+    object: &serde_json::Map<String, serde_json::Value>,
+    field: &str,
+) -> Result<Vec<u64>, String> {
+    object
+        .get(field)
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| format!("liveness precondition `{field}` is missing or not an array"))?
+        .iter()
+        .map(|value| {
+            value
+                .as_u64()
+                .ok_or_else(|| format!("liveness precondition `{field}` contains a non-integer"))
+        })
+        .collect()
 }
 
 fn required_object_u64(
@@ -1085,7 +1385,10 @@ mod tests {
 
     use crate::raft_config::three_node_configs;
 
-    use super::{failure_event, soak_event, soak_event_from_reports};
+    use super::{
+        failure_event, soak_event, soak_event_from_reports, soak_event_from_reports_with_contract,
+        test_execution_contract,
+    };
 
     #[test]
     fn machine_failure_event_preserves_classification_and_message() {
@@ -1316,6 +1619,23 @@ mod tests {
             soak_event_from_reports("raft-soak", &summary, config, &[], Duration::ZERO, &reports);
 
         assert_harness_error(&event, "typed SoakConfig provenance");
+    }
+
+    #[test]
+    fn soak_event_rejects_execution_contract_tampering() {
+        let (summary, config, reports) = base_soak_reports();
+        let mut contract = test_execution_contract("raft-soak", config);
+        contract.max_proposals += 1;
+        let event = soak_event_from_reports_with_contract(
+            &contract,
+            &summary,
+            config,
+            &[],
+            Duration::ZERO,
+            &reports,
+        );
+
+        assert_harness_error(&event, "does not match the actual SoakConfig");
     }
 
     #[test]
