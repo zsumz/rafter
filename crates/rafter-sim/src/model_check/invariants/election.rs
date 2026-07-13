@@ -1,7 +1,7 @@
 use super::{catalog, summarize, Action, Failure};
 use super::{
     check_internal_derived_state, BTreeMap, Cluster, ElectionSafetyExplorer, ExplorationState,
-    NodeId, Role, Term,
+    MembershipConfig, NodeId, Role, Term,
 };
 
 pub(crate) fn check_election_safety(cluster: &Cluster, trace: &[Action]) -> Result<(), Failure> {
@@ -246,6 +246,16 @@ fn check_election_outcomes(state: &ExplorationState, trace: &[Action]) -> Result
 }
 
 fn check_election_certificates(state: &ExplorationState, trace: &[Action]) -> Result<(), Failure> {
+    check_eligible_leader_certificates(state, trace)?;
+    check_election_certificate_voters(state, trace)?;
+    check_stable_election_quorums(state, trace)?;
+    check_joint_election_quorums(state, trace)
+}
+
+pub(super) fn check_eligible_leader_certificates(
+    state: &ExplorationState,
+    trace: &[Action],
+) -> Result<(), Failure> {
     for (term, certificate) in &state.election_history().elected_by_term {
         if certificate.term != *term {
             return Err(Failure {
@@ -271,6 +281,16 @@ fn check_election_certificates(state: &ExplorationState, trace: &[Action]) -> Re
                 state: summarize(state.cluster()),
             });
         }
+    }
+
+    Ok(())
+}
+
+pub(super) fn check_election_certificate_voters(
+    state: &ExplorationState,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    for certificate in state.election_history().elected_by_term.values() {
         if let Some(non_voter) = certificate
             .granted_by
             .iter()
@@ -286,6 +306,35 @@ fn check_election_certificates(state: &ExplorationState, trace: &[Action]) -> Re
                 trace: trace.to_vec(),
                 state: summarize(state.cluster()),
             });
+        }
+    }
+
+    Ok(())
+}
+
+pub(super) fn check_stable_election_quorums(
+    state: &ExplorationState,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    check_election_quorums(state, trace, false)
+}
+
+pub(super) fn check_joint_election_quorums(
+    state: &ExplorationState,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    check_election_quorums(state, trace, true)
+}
+
+fn check_election_quorums(
+    state: &ExplorationState,
+    trace: &[Action],
+    joint: bool,
+) -> Result<(), Failure> {
+    for certificate in state.election_history().elected_by_term.values() {
+        let is_joint = matches!(certificate.membership, MembershipConfig::Joint(_));
+        if is_joint != joint {
+            continue;
         }
         if !certificate
             .membership

@@ -161,7 +161,9 @@ named temporal or witness-based verdicts.
 | `EL-04` | `EL-04.c` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#hard_state_write_failure_suppresses_higher_term_append_response` |
 | `EL-05` | `EL-05.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `election_history_detects_second_leader_in_same_term` |
 | `EL-05` | `EL-05.a` | tla | direct | `specs/tla/raft/Raft.tla#ElectionSafety` |
-| `EL-06` | `EL-06.a,EL-06.b,EL-06.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `election_certificate_rejects_learner_grant` |
+| `EL-06` | `EL-06.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_eligible_leader_certificates`; negative fixture `election_certificate_rejects_non_voter_leader` |
+| `EL-06` | `EL-06.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_stable_election_quorums`; negative fixture `election_certificate_requires_stable_quorum` |
+| `EL-06` | `EL-06.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_joint_election_quorums`; negative fixture `election_certificate_requires_joint_quorum` |
 | `EL-06` | `EL-06.b` | tests | direct | `crates/rafter/src/node/tests/election/campaign.rs#candidate_becomes_leader_after_quorum` |
 | `EL-06` | `EL-06.a,EL-06.b` | tests | direct | `crates/rafter/src/node/tests/membership/authority.rs#learner_grant_does_not_create_quorum` |
 | `EL-07` | `EL-07.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `authority_fencing_oracle_rejects_unfenced_higher_term_response` |

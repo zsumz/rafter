@@ -10,6 +10,9 @@ pub(super) enum Observation {
     NonvoterVoteDecisions,
     StaleLogVoteDecisions,
     ElectionCertificates,
+    EligibleLeaderCertificates,
+    StableElectionCertificates,
+    JointElectionCertificates,
     HigherTermAuthorityDeliveries,
     StaleAuthorityResponses,
     PreVoteRequestDeliveries,
@@ -46,7 +49,7 @@ pub(super) enum Observation {
     SameBoundarySnapshotInstallPairs,
 }
 
-const ALL: [Observation; 41] = [
+const ALL: [Observation; 44] = [
     Observation::WellFormedStatesChecked,
     Observation::TermAdvances,
     Observation::SameTermVoteReobservations,
@@ -54,6 +57,9 @@ const ALL: [Observation; 41] = [
     Observation::NonvoterVoteDecisions,
     Observation::StaleLogVoteDecisions,
     Observation::ElectionCertificates,
+    Observation::EligibleLeaderCertificates,
+    Observation::StableElectionCertificates,
+    Observation::JointElectionCertificates,
     Observation::HigherTermAuthorityDeliveries,
     Observation::StaleAuthorityResponses,
     Observation::PreVoteRequestDeliveries,
@@ -100,6 +106,9 @@ impl Observation {
             Self::NonvoterVoteDecisions => "nonvoter_vote_decisions",
             Self::StaleLogVoteDecisions => "stale_log_vote_decisions",
             Self::ElectionCertificates => "election_certificates",
+            Self::EligibleLeaderCertificates => "eligible_leader_certificates",
+            Self::StableElectionCertificates => "stable_election_certificates",
+            Self::JointElectionCertificates => "joint_election_certificates",
             Self::HigherTermAuthorityDeliveries => "higher_term_authority_deliveries",
             Self::StaleAuthorityResponses => "stale_authority_responses",
             Self::PreVoteRequestDeliveries => "pre_vote_request_deliveries",

@@ -1,4 +1,7 @@
-use rafter::{LogIndex, MembershipSet, Message, NodeConfig, NodeId, RequestVote, Term};
+use rafter::{
+    BootstrapLogEntry, BootstrapState, CommittedConfiguration, ConfigurationEntry, ConfigurationId,
+    JointMembership, LogIndex, MembershipSet, Message, NodeConfig, NodeId, RequestVote, Term,
+};
 
 use crate::Cluster;
 
@@ -27,9 +30,55 @@ use super::super::{
 /// exercise every required detector branch.
 pub fn check_raft_semantic_witness_safety() -> Result<Summary, Failure> {
     let mut summary = nonvoter_vote_summary()?;
+    summary = summary.combined(joint_election_summary()?);
     summary = summary.combined(post_append_joint_commit_summary()?);
     summary = summary.combined(same_boundary_snapshot_pair_summary()?);
     Ok(summary)
+}
+
+fn joint_election_summary() -> Result<Summary, Failure> {
+    let config_id = ConfigurationId(17);
+    let old = MembershipSet::new(vec![NodeId(1), NodeId(2)], Vec::new())
+        .map_err(|error| witness_harness_error(format!("build old voter set: {error:?}")))?;
+    let new = MembershipSet::new(vec![NodeId(1), NodeId(3)], Vec::new())
+        .map_err(|error| witness_harness_error(format!("build new voter set: {error:?}")))?;
+    let configuration = ConfigurationEntry::joint(config_id, JointMembership::new(old, new));
+    let mut cluster = Cluster::new(three_node_configs());
+    for node_id in [NodeId(1), NodeId(2), NodeId(3)] {
+        cluster
+            .restart_node_from_bootstrap(
+                node_id,
+                BootstrapState {
+                    current_term: Term(1),
+                    voted_for: None,
+                    commit_index: LogIndex(1),
+                    committed_configuration: Some(CommittedConfiguration {
+                        index: LogIndex(1),
+                        config_id,
+                    }),
+                    snapshot: None,
+                    log: vec![BootstrapLogEntry::configuration(
+                        LogIndex(1),
+                        Term(1),
+                        configuration.clone(),
+                    )],
+                },
+            )
+            .map_err(|error| {
+                witness_harness_error(format!("seed joint voter {node_id}: {error:?}"))
+            })?;
+    }
+    let mut state = ExplorationState::new(cluster);
+    state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(1), Term(1));
+    elect_node_one_in_state(&mut state);
+    let state_summary = summarize(state.cluster());
+    let mut explorer = ElectionSafetyExplorer::new(Bounds::new(0));
+    explorer.explore(&state, &mut Vec::new(), 0)?;
+    require_observation(
+        explorer.summary(),
+        Observation::JointElectionCertificates,
+        state_summary,
+    )
 }
 
 fn nonvoter_vote_summary() -> Result<Summary, Failure> {
@@ -196,6 +245,7 @@ mod tests {
         let summary = check_raft_semantic_witness_safety().expect("semantic witness leg passes");
         for observation in [
             Observation::NonvoterVoteDecisions,
+            Observation::JointElectionCertificates,
             Observation::PostAppendJointCommitCertificates,
             Observation::SameBoundarySnapshotInstallPairs,
         ] {

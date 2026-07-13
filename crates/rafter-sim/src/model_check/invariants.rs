@@ -27,6 +27,11 @@ use commit::{
     check_committed_prefixes, check_membership_quorum_validity,
     check_no_overlapping_uncommitted_configurations, check_required_committed_configurations,
 };
+#[cfg(test)]
+use election::{
+    check_election_certificate_voters, check_eligible_leader_certificates,
+    check_joint_election_quorums, check_stable_election_quorums,
+};
 pub(super) use election::{check_election_history, check_election_safety};
 pub(super) use history::{check_commit_history, check_log_history};
 pub(super) use persistence::{
