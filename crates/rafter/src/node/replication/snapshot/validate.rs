@@ -5,7 +5,7 @@ use crate::{
     Term,
 };
 
-use super::super::super::Node;
+use crate::node::Node;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SnapshotTransferHeaderRejection {

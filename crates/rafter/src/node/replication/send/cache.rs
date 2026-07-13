@@ -2,8 +2,7 @@
 
 use crate::LogIndex;
 
-use super::super::super::log::LogBatch;
-use super::super::super::Node;
+use crate::node::{log::LogBatch, Node};
 
 #[derive(Default)]
 pub(super) struct LogBatchCache {

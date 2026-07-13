@@ -17,7 +17,7 @@ fn progress(membership: &MembershipConfig, indexes: &[(u64, u64)]) -> ProgressSe
 }
 
 #[test]
-fn stable_candidate_is_quorum_threshold() {
+fn stable_committable_index_is_quorum_threshold() {
     let membership = MembershipConfig::stable(
         MembershipSet::new(
             vec![NodeId(1), NodeId(2), NodeId(3), NodeId(4), NodeId(5)],
@@ -34,7 +34,7 @@ fn stable_candidate_is_quorum_threshold() {
 }
 
 #[test]
-fn joint_candidate_is_min_of_both_thresholds() {
+fn joint_committable_index_is_minimum_of_both_quorum_indexes() {
     let old = MembershipSet::new(vec![NodeId(1), NodeId(2), NodeId(3)], Vec::new())
         .expect("old membership is valid");
     let new = MembershipSet::new(vec![NodeId(3), NodeId(4), NodeId(5)], Vec::new())
@@ -49,7 +49,7 @@ fn joint_candidate_is_min_of_both_thresholds() {
 }
 
 #[test]
-fn unmatched_voter_progress_bounds_threshold_to_zero() {
+fn unmatched_voter_progress_bounds_committable_index_to_zero() {
     let membership = MembershipConfig::stable(
         MembershipSet::new(vec![NodeId(1), NodeId(2), NodeId(3)], Vec::new())
             .expect("membership is valid"),

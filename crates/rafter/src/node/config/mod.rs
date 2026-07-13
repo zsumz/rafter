@@ -27,9 +27,6 @@ pub const DEFAULT_MAX_APPEND_ENTRIES_BYTES: usize = 512 * 1024;
 /// A window of one serializes replication on the round trip. The default
 /// pipelines eight batches so a lagging follower catches up at wire speed
 /// instead of acknowledgement pace.
-///
-/// A window of one serializes replication on the round trip. The default
-/// pipelines eight batches so a lagging follower can catch up at wire speed.
 pub const DEFAULT_MAX_INFLIGHT_APPENDS: usize = 8;
 
 /// Default per-follower in-flight append window, in payload bytes: the

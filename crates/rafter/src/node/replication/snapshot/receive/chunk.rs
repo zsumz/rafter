@@ -4,10 +4,10 @@ use crate::{
     InstallSnapshotChunk, LogIndex, NodeId, RaftSnapshot, SnapshotTransferId, StagedSnapshotChunk,
 };
 
-use super::super::super::super::{Node, Output};
 use super::super::reply::SnapshotReply;
 use super::super::validate::SnapshotChunkRejection;
 use super::disposition::ChunkDisposition;
+use crate::node::{Node, Output};
 
 impl Node {
     pub(in crate::node) fn handle_install_snapshot_chunk(

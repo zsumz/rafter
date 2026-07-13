@@ -2,7 +2,7 @@
 
 use crate::{InstallSnapshotResponse, LogIndex, Message, NodeId, SnapshotTransferId, Term};
 
-use super::super::super::{Node, Output};
+use crate::node::{Node, Output};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum SnapshotReply {

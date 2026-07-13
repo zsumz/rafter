@@ -2,8 +2,8 @@
 
 use crate::{InstallSnapshot, NodeId, RaftSnapshot, StagedSnapshotChunk};
 
-use super::super::super::super::{Node, Output};
 use super::super::reply::SnapshotReply;
+use crate::node::{Node, Output};
 
 impl Node {
     pub(in crate::node) fn handle_install_snapshot(

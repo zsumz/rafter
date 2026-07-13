@@ -2,9 +2,8 @@
 
 use crate::{InstallSnapshotResponse, NodeId, RaftSnapshot};
 
-use super::super::super::state::ProgressMode;
-use super::super::super::{Node, Output, Role};
 use super::super::ReplicationDemand;
+use crate::node::{state::ProgressMode, Node, Output, Role};
 
 impl Node {
     pub(in crate::node) fn handle_install_snapshot_response(

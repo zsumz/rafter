@@ -2,7 +2,7 @@
 
 use crate::{NodeId, RaftSnapshot, SnapshotChunkSend};
 
-use super::super::super::{state::ProgressMode, Node, Output};
+use crate::node::{state::ProgressMode, Node, Output};
 
 /// Bytes of snapshot payload per chunk directive. Comfortably below the
 /// default append budget (`DEFAULT_MAX_APPEND_ENTRIES_BYTES`, 512 KiB), so a

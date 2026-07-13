@@ -7,8 +7,8 @@ use crate::{
     SnapshotTransferId,
 };
 
-use super::super::super::{state::IncomingSnapshotTransfer, Node};
 use super::validate::SnapshotTransferHeaderRejection;
+use crate::node::{state::IncomingSnapshotTransfer, Node};
 
 impl Node {
     /// Returns the durable shape of an incomplete inbound snapshot transfer.

@@ -6,7 +6,7 @@ mod whole;
 
 use crate::{LogIndex, NodeId, Term};
 
-use super::super::super::{Node, Output, Role};
+use crate::node::{Node, Output, Role};
 
 impl Node {
     fn adopt_snapshot_term(&mut self, term: Term) -> Vec<Output> {

@@ -4,8 +4,8 @@ use std::cmp::Ordering;
 
 use crate::{InstallSnapshotChunk, LogIndex, NodeId};
 
-use super::super::super::super::{state::IncomingSnapshotTransfer, Node};
 use super::super::validate::SnapshotChunkRejection;
+use crate::node::{state::IncomingSnapshotTransfer, Node};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum ChunkDisposition {
