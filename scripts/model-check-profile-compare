@@ -1,197 +1,168 @@
 #!/usr/bin/env bash
-# Produces repeated, interleaved before/after cost evidence for deterministic
-# model-check profiles. Build time is excluded from measured samples.
+# Orchestrates strict model-check cost comparisons. A baseline crossing a
+# reviewed contract migration is split around its pinned pivot; all other runs
+# remain a single like-for-like comparison.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-CARGO="${CARGO:-cargo}"
 BASE_REF="${MODEL_CHECK_BASE_REF:-origin/main}"
-MIGRATION_BASE_REF="${MODEL_CHECK_MIGRATION_BASE_REF:-9770d1aff12999dcc949dffe63c5d75fdda9c573}"
+CURRENT_REF="${MODEL_CHECK_CURRENT_REF:-HEAD}"
 PROFILE_LIST="${MODEL_CHECK_PROFILES:-fast}"
 RUNS="${MODEL_CHECK_RUNS:-6}"
 MAX_WALL_RATIO="${MODEL_CHECK_MAX_MEDIAN_WALL_RATIO:-2.25}"
 MAX_RSS_RATIO="${MODEL_CHECK_MAX_MEDIAN_RSS_RATIO:-1.75}"
 OUT_DIR="${OUT_DIR:-$ROOT/target/model-check-profile}"
-TIME_BIN="${TIME_BIN:-/usr/bin/time}"
-TIME_BIN="$(command -v "$TIME_BIN")"
+MIGRATION_MANIFEST="${MODEL_CHECK_CONTRACT_MIGRATIONS:-verification/model-check-contract-migrations.json}"
+PAIR="$ROOT/scripts/model-check-profile-pair"
+MIGRATION_TOOL="$ROOT/scripts/model_check_contract_migration.py"
 
-if ! [[ "$RUNS" =~ ^[1-9][0-9]*$ ]]; then
-  echo "MODEL_CHECK_RUNS must be a positive integer, got: $RUNS" >&2
-  exit 2
-fi
-if (( RUNS % 2 != 0 )); then
-  echo "MODEL_CHECK_RUNS must be even so base/current run positions are balanced" >&2
-  exit 2
-fi
-read -r -a PROFILES <<< "$PROFILE_LIST"
-if [[ "${#PROFILES[@]}" -eq 0 ]]; then
-  echo "MODEL_CHECK_PROFILES must name at least one profile" >&2
-  exit 2
-fi
 case "$OUT_DIR" in
   /*) ;;
   *) OUT_DIR="$ROOT/$OUT_DIR" ;;
 esac
-
-detect_time_style() {
-  local probe
-  probe="$(mktemp)"
-  if "$TIME_BIN" -l true >/dev/null 2>"$probe"; then
-    rm -f "$probe"
-    echo bsd
-  elif "$TIME_BIN" -v true >/dev/null 2>"$probe"; then
-    rm -f "$probe"
-    echo gnu
-  else
-    rm -f "$probe"
-    echo unsupported
-  fi
-}
-
-TIME_STYLE="$(detect_time_style)"
-if [[ "$TIME_STYLE" == unsupported ]]; then
-  echo "$TIME_BIN must support BSD -l or GNU -v peak-RSS reporting" >&2
-  exit 2
-fi
-
-if [[ -n "$(git -C "$ROOT" status --porcelain)" && "${MODEL_CHECK_ALLOW_DIRTY:-0}" != 1 ]]; then
-  echo "current checkout is dirty; commit it or set MODEL_CHECK_ALLOW_DIRTY=1 for directional measurements" >&2
-  exit 2
-fi
-
-REQUESTED_BASE_REF="$BASE_REF"
-BASELINE_POLICY="requested-structured-baseline"
-BASE_COMMIT="$(git -C "$ROOT" rev-parse "$BASE_REF^{commit}")"
-CURRENT_COMMIT="$(git -C "$ROOT" rev-parse 'HEAD^{commit}')"
-if [[ "$BASE_COMMIT" == "$CURRENT_COMMIT" ]]; then
-  echo "baseline and current resolve to the same commit: $CURRENT_COMMIT" >&2
-  exit 2
-fi
-
-if ! git -C "$ROOT" grep -q 'RAFTER_EVENT' "$BASE_COMMIT" -- crates/rafter-sim; then
-  MIGRATION_BASE_COMMIT="$(git -C "$ROOT" rev-parse "$MIGRATION_BASE_REF^{commit}")"
-  if ! git -C "$ROOT" merge-base --is-ancestor "$MIGRATION_BASE_COMMIT" "$CURRENT_COMMIT"; then
-    echo "requested baseline predates structured events and migration baseline is not an ancestor: $MIGRATION_BASE_COMMIT" >&2
-    exit 2
-  fi
-  BASE_REF="$MIGRATION_BASE_REF"
-  BASE_COMMIT="$MIGRATION_BASE_COMMIT"
-  BASELINE_POLICY="structured-migration-baseline"
-  echo "requested baseline $REQUESTED_BASE_REF predates RAFTER_EVENT; using $BASE_COMMIT" >&2
-fi
+case "$MIGRATION_MANIFEST" in
+  /*) ;;
+  *) MIGRATION_MANIFEST="$ROOT/$MIGRATION_MANIFEST" ;;
+esac
 
 if [[ -d "$OUT_DIR" && -n "$(find "$OUT_DIR" -mindepth 1 -print -quit)" ]]; then
   echo "OUT_DIR must be empty so stale files cannot enter the evidence bundle: $OUT_DIR" >&2
   exit 2
 fi
-mkdir -p "$OUT_DIR"
-TMP_DIR="$(mktemp -d)"
-cleanup() {
-  if [[ -d "$TMP_DIR/base" ]]; then
-    git -C "$ROOT" worktree remove --force "$TMP_DIR/base" >/dev/null 2>&1 || true
-  fi
-  rm -rf "$TMP_DIR"
-}
+mkdir -p "$OUT_DIR/segments"
+PLAN="$OUT_DIR/plan.json"
+
+# Invoked by the EXIT finalizer.
+# shellcheck disable=SC2329
 write_manifest() {
+  local temporary
+  temporary="$(mktemp)"
   (
     cd "$OUT_DIR"
     find . -type f ! -name SHA256SUMS -print0 \
       | sort -z \
       | while IFS= read -r -d '' artifact; do
           LC_ALL=C LANG=C shasum -a 256 "$artifact"
-        done > "$TMP_DIR/SHA256SUMS"
+        done > "$temporary"
   )
-  mv "$TMP_DIR/SHA256SUMS" "$OUT_DIR/SHA256SUMS"
+  mv "$temporary" "$OUT_DIR/SHA256SUMS"
 }
-on_exit() {
-  local status="$?"
+
+# Invoked by the EXIT trap.
+# shellcheck disable=SC2329
+finalize() {
+  local command_status="$?"
+  local aggregate_status=0
   local manifest_status=0
+  local final_status
+  trap - EXIT
+  python3 "$MIGRATION_TOOL" aggregate \
+    --plan "$PLAN" \
+    --repo "$ROOT" \
+    --artifact-dir "$OUT_DIR" \
+    --max-wall-ratio "$MAX_WALL_RATIO" \
+    --max-rss-ratio "$MAX_RSS_RATIO" \
+    --output-json "$OUT_DIR/compare.json" \
+    --output-markdown "$OUT_DIR/compare.md" || aggregate_status="$?"
   write_manifest || manifest_status="$?"
-  cleanup
-  if (( status != 0 )); then
-    return "$status"
+  final_status="$command_status"
+  if (( final_status == 0 && aggregate_status != 0 )); then
+    final_status="$aggregate_status"
   fi
-  return "$manifest_status"
+  if (( final_status == 0 && manifest_status != 0 )); then
+    final_status="$manifest_status"
+  fi
+  exit "$final_status"
 }
-trap on_exit EXIT
+trap finalize EXIT
 
-git -C "$ROOT" worktree add --detach "$TMP_DIR/base" "$BASE_COMMIT" >/dev/null
-
-build_binary() {
-  local label="$1"
-  local checkout="$2"
-  local target_dir="$TMP_DIR/$label-target"
-  echo "==> building $label rafter-model-check-fast" >&2
-  CARGO_TARGET_DIR="$target_dir" "$CARGO" build --manifest-path "$checkout/Cargo.toml" \
-    --release --locked -p rafter-sim --bin rafter-model-check-fast \
-    2>&1 | tee "$OUT_DIR/$label-build.log" >&2
-  printf '%s\n' "$target_dir/release/rafter-model-check-fast"
-}
-
-run_sample() {
-  local run="$1"
-  local label="$2"
-  local binary="$3"
-  local profile="$4"
-  local stem
-  stem="run-$(printf '%03d' "$run")-$label-$profile"
-  echo "==> sample=$run label=$label profile=$profile"
-  if [[ "$TIME_STYLE" == bsd ]]; then
-    "$TIME_BIN" -l "$binary" --profile "$profile" \
-      >"$OUT_DIR/$stem.stdout" 2>"$OUT_DIR/$stem.time"
-  else
-    "$TIME_BIN" -v "$binary" --profile "$profile" \
-      >"$OUT_DIR/$stem.stdout" 2>"$OUT_DIR/$stem.time"
-  fi
-  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
-    "$run" "$label" "$profile" "$stem.stdout" "$stem.time" "$ORDER" \
-    >> "$OUT_DIR/runs.tsv"
-}
-
-BASE_BIN="$(build_binary base "$TMP_DIR/base")"
-CURRENT_BIN="$(build_binary current "$ROOT")"
-printf 'run\tlabel\tprofile\tstdout\ttime_log\texecution_order\n' > "$OUT_DIR/runs.tsv"
-
-for run in $(seq 1 "$RUNS"); do
-  if (( run % 2 == 1 )); then
-    LABELS=(base current)
-  else
-    LABELS=(current base)
-  fi
-  ORDER="${LABELS[0]}-then-${LABELS[1]}"
-  if (( run % 2 == 1 )); then
-    RUN_PROFILES=("${PROFILES[@]}")
-  else
-    RUN_PROFILES=()
-    for ((index = ${#PROFILES[@]} - 1; index >= 0; index--)); do
-      RUN_PROFILES+=("${PROFILES[index]}")
-    done
-  fi
-  for profile in "${RUN_PROFILES[@]}"; do
-    for label in "${LABELS[@]}"; do
-      if [[ "$label" == base ]]; then
-        run_sample "$run" "$label" "$BASE_BIN" "$profile"
-      else
-        run_sample "$run" "$label" "$CURRENT_BIN" "$profile"
-      fi
-    done
-  done
-done
-
-python3 "$ROOT/scripts/model_check_profile_report.py" \
-  --artifact-dir "$OUT_DIR" \
-  --base-root "$TMP_DIR/base" \
+python3 "$MIGRATION_TOOL" plan \
+  --repo "$ROOT" \
+  --manifest "$MIGRATION_MANIFEST" \
   --base-ref "$BASE_REF" \
-  --requested-base-ref "$REQUESTED_BASE_REF" \
-  --baseline-policy "$BASELINE_POLICY" \
-  --base-binary "$BASE_BIN" \
-  --current-root "$ROOT" \
-  --current-binary "$CURRENT_BIN" \
-  --cargo "$CARGO" \
-  --timing-binary "$TIME_BIN" \
-  --time-style "$TIME_STYLE" \
-  --expected-runs "$RUNS" \
-  --max-wall-ratio "$MAX_WALL_RATIO" \
-  --max-rss-ratio "$MAX_RSS_RATIO" \
-  --output-json "$OUT_DIR/compare.json" \
-  --output-markdown "$OUT_DIR/compare.md"
+  --current-ref "$CURRENT_REF" \
+  --profiles "$PROFILE_LIST" \
+  --output "$PLAN"
+
+plan_get() {
+  python3 -c '
+import json, sys
+value = json.load(open(sys.argv[1]))
+for part in sys.argv[2].split("."):
+    value = value[int(part)] if isinstance(value, list) else value[part]
+if isinstance(value, list):
+    print(" ".join(value))
+elif isinstance(value, bool):
+    print(str(value).lower())
+else:
+    print(value)
+' "$PLAN" "$1"
+}
+
+run_pair() {
+  local name="$1"
+  local base="$2"
+  local current="$3"
+  local profiles="$4"
+  local runs="$5"
+  local mode="$6"
+  MODEL_CHECK_BASE_REF="$base" \
+  MODEL_CHECK_CURRENT_REF="$current" \
+  MODEL_CHECK_REQUESTED_BASE_REF="$base" \
+  MODEL_CHECK_PROFILES="$profiles" \
+  MODEL_CHECK_RUNS="$runs" \
+  MODEL_CHECK_MAX_MEDIAN_WALL_RATIO="$MAX_WALL_RATIO" \
+  MODEL_CHECK_MAX_MEDIAN_RSS_RATIO="$MAX_RSS_RATIO" \
+  MODEL_CHECK_COMPARISON_MODE="$mode" \
+  OUT_DIR="$OUT_DIR/segments/$name" \
+    "$PAIR"
+}
+
+record_segment_failure() {
+  printf '%s\n' "$1: evidence command exited nonzero" \
+    >> "$OUT_DIR/orchestration-errors.log"
+  RUN_STATUS=1
+}
+
+MODE="$(plan_get comparison_mode)"
+RUN_STATUS=0
+if [[ "$MODE" == like-for-like ]]; then
+  run_pair \
+    like-for-like \
+    "$(plan_get segments.0.base_commit)" \
+    "$(plan_get segments.0.current_commit)" \
+    "$(plan_get segments.0.profiles)" \
+    "$RUNS" \
+    like-for-like || record_segment_failure like-for-like
+elif [[ "$MODE" == monotone-bound-migration ]]; then
+  if [[ "$(plan_get segments.0.required)" == true ]]; then
+    run_pair \
+      pre-migration \
+      "$(plan_get segments.0.base_commit)" \
+      "$(plan_get segments.0.current_commit)" \
+      "$(plan_get segments.0.profiles)" \
+      "$RUNS" \
+      like-for-like || record_segment_failure pre-migration
+  fi
+  if [[ "$(plan_get segments.1.required)" == true ]]; then
+    run_pair \
+      post-migration \
+      "$(plan_get segments.1.base_commit)" \
+      "$(plan_get segments.1.current_commit)" \
+      "$(plan_get segments.1.profiles)" \
+      "$RUNS" \
+      like-for-like || record_segment_failure post-migration
+  fi
+  run_pair \
+    migration-delta \
+    "$(plan_get segments.2.base_commit)" \
+    "$(plan_get segments.2.current_commit)" \
+    "$(plan_get segments.2.profiles)" \
+    2 \
+    migration-delta || record_segment_failure migration-delta
+else
+  echo "unsupported planned comparison mode: $MODE" >&2
+  RUN_STATUS=1
+fi
+
+exit "$RUN_STATUS"

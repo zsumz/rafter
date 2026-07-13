@@ -1,0 +1,59 @@
+{
+  "schema_version": 1,
+  "migrations": [
+    {
+      "id": "simulator-v12-to-v13-reviewed-bounds",
+      "pivot_commit": "c5608f2741b0bd40567f7e5bc90d714aaf99d28e",
+      "pivot_parent": "255f757b4db913ba782e5ae47bae4baca2b68907",
+      "changed_paths": [
+        "crates/rafter-sim/src/bin/rafter_model_check_fast/profile.rs",
+        "crates/rafter-sim/src/bin/rafter_model_check_fast/runner/checks.rs",
+        "verification/raft-invariant-profiles.json"
+      ],
+      "profiles": {
+        "fast": {
+          "from_contract_sha256": "2b80fdb2c385a71cb9c064a7d41b1ce106ec0f5e152d804cf8fb6343e0033d1d",
+          "to_contract_sha256": "3c683783b826ce763bb36fb5dabe277eb34eafa40d68951d20dd51936b446092",
+          "configured_depth_changes": [
+            {
+              "check_id": "raft-commit",
+              "from_depth": 8,
+              "to_depth": 9
+            },
+            {
+              "check_id": "raft-commit-window1",
+              "from_depth": 8,
+              "to_depth": 9
+            },
+            {
+              "check_id": "raft-election-prevote",
+              "from_depth": 7,
+              "to_depth": 9
+            },
+            {
+              "check_id": "raft-membership",
+              "from_depth": 5,
+              "to_depth": 6
+            },
+            {
+              "check_id": "raft-read-index",
+              "from_depth": 6,
+              "to_depth": 7
+            }
+          ]
+        },
+        "raft-deep": {
+          "from_contract_sha256": "1a1db15b3d470926d23b2bfa20415195e1bb2942546d741afbaf4e724cc21f23",
+          "to_contract_sha256": "901149f75ebadbcfd3b91746016edaa452452a46466b7ffc50076fa1a08caee6",
+          "configured_depth_changes": [
+            {
+              "check_id": "raft-election-prevote-deep",
+              "from_depth": 7,
+              "to_depth": 9
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

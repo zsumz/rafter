@@ -1,0 +1,219 @@
+#!/usr/bin/env bash
+# Measures one source-bound pair. Contract migrations are orchestrated by
+# model-check-profile-compare; this script never relaxes like-for-like checks.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+CARGO="${CARGO:-cargo}"
+BASE_REF="${MODEL_CHECK_BASE_REF:-origin/main}"
+CURRENT_REF="${MODEL_CHECK_CURRENT_REF:-HEAD}"
+REQUESTED_BASE_REF="${MODEL_CHECK_REQUESTED_BASE_REF:-$BASE_REF}"
+MIGRATION_BASE_REF="${MODEL_CHECK_MIGRATION_BASE_REF:-9770d1aff12999dcc949dffe63c5d75fdda9c573}"
+COMPARISON_MODE="${MODEL_CHECK_COMPARISON_MODE:-like-for-like}"
+PROFILE_LIST="${MODEL_CHECK_PROFILES:-fast}"
+RUNS="${MODEL_CHECK_RUNS:-6}"
+MAX_WALL_RATIO="${MODEL_CHECK_MAX_MEDIAN_WALL_RATIO:-2.25}"
+MAX_RSS_RATIO="${MODEL_CHECK_MAX_MEDIAN_RSS_RATIO:-1.75}"
+OUT_DIR="${OUT_DIR:-$ROOT/target/model-check-profile-pair}"
+TIME_BIN="${TIME_BIN:-/usr/bin/time}"
+TIME_BIN="$(command -v "$TIME_BIN")"
+
+if [[ "$COMPARISON_MODE" != like-for-like && "$COMPARISON_MODE" != migration-delta ]]; then
+  echo "unsupported MODEL_CHECK_COMPARISON_MODE: $COMPARISON_MODE" >&2
+  exit 2
+fi
+if ! [[ "$RUNS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "MODEL_CHECK_RUNS must be a positive integer, got: $RUNS" >&2
+  exit 2
+fi
+if (( RUNS % 2 != 0 )); then
+  echo "MODEL_CHECK_RUNS must be even so base/current run positions are balanced" >&2
+  exit 2
+fi
+read -r -a PROFILES <<< "$PROFILE_LIST"
+if [[ "${#PROFILES[@]}" -eq 0 ]]; then
+  echo "MODEL_CHECK_PROFILES must name at least one profile" >&2
+  exit 2
+fi
+case "$OUT_DIR" in
+  /*) ;;
+  *) OUT_DIR="$ROOT/$OUT_DIR" ;;
+esac
+
+detect_time_style() {
+  local probe
+  probe="$(mktemp)"
+  if "$TIME_BIN" -l true >/dev/null 2>"$probe"; then
+    rm -f "$probe"
+    echo bsd
+  elif "$TIME_BIN" -v true >/dev/null 2>"$probe"; then
+    rm -f "$probe"
+    echo gnu
+  else
+    rm -f "$probe"
+    echo unsupported
+  fi
+}
+
+TIME_STYLE="$(detect_time_style)"
+if [[ "$TIME_STYLE" == unsupported ]]; then
+  echo "$TIME_BIN must support BSD -l or GNU -v peak-RSS reporting" >&2
+  exit 2
+fi
+
+REQUESTED_BASE_COMMIT="$(git -C "$ROOT" rev-parse "$BASE_REF^{commit}")"
+BASE_COMMIT="$REQUESTED_BASE_COMMIT"
+CURRENT_COMMIT="$(git -C "$ROOT" rev-parse "$CURRENT_REF^{commit}")"
+ROOT_HEAD="$(git -C "$ROOT" rev-parse 'HEAD^{commit}')"
+if [[ "$BASE_COMMIT" == "$CURRENT_COMMIT" ]]; then
+  echo "baseline and current resolve to the same commit: $CURRENT_COMMIT" >&2
+  exit 2
+fi
+if [[ "$CURRENT_COMMIT" == "$ROOT_HEAD" ]] \
+  && [[ -n "$(git -C "$ROOT" status --porcelain)" ]] \
+  && [[ "${MODEL_CHECK_ALLOW_DIRTY:-0}" != 1 ]]; then
+  echo "current checkout is dirty; commit it or set MODEL_CHECK_ALLOW_DIRTY=1 for directional measurements" >&2
+  exit 2
+fi
+
+BASELINE_POLICY="requested-structured-baseline"
+if ! git -C "$ROOT" grep -q 'RAFTER_EVENT' "$BASE_COMMIT" -- crates/rafter-sim; then
+  MIGRATION_BASE_COMMIT="$(git -C "$ROOT" rev-parse "$MIGRATION_BASE_REF^{commit}")"
+  if ! git -C "$ROOT" merge-base --is-ancestor "$MIGRATION_BASE_COMMIT" "$CURRENT_COMMIT"; then
+    echo "requested baseline predates structured events and migration baseline is not an ancestor: $MIGRATION_BASE_COMMIT" >&2
+    exit 2
+  fi
+  BASE_REF="$MIGRATION_BASE_REF"
+  BASE_COMMIT="$MIGRATION_BASE_COMMIT"
+  BASELINE_POLICY="structured-migration-baseline"
+  echo "requested baseline $REQUESTED_BASE_REF predates RAFTER_EVENT; using $BASE_COMMIT" >&2
+fi
+
+if [[ -d "$OUT_DIR" && -n "$(find "$OUT_DIR" -mindepth 1 -print -quit)" ]]; then
+  echo "OUT_DIR must be empty so stale files cannot enter the evidence bundle: $OUT_DIR" >&2
+  exit 2
+fi
+mkdir -p "$OUT_DIR"
+TMP_DIR="$(mktemp -d)"
+CURRENT_ROOT="$ROOT"
+
+cleanup() {
+  if [[ -d "$TMP_DIR/base" ]]; then
+    git -C "$ROOT" worktree remove --force "$TMP_DIR/base" >/dev/null 2>&1 || true
+  fi
+  if [[ -d "$TMP_DIR/current" ]]; then
+    git -C "$ROOT" worktree remove --force "$TMP_DIR/current" >/dev/null 2>&1 || true
+  fi
+  rm -rf "$TMP_DIR"
+}
+
+write_manifest() {
+  (
+    cd "$OUT_DIR"
+    find . -type f ! -name SHA256SUMS -print0 \
+      | sort -z \
+      | while IFS= read -r -d '' artifact; do
+          LC_ALL=C LANG=C shasum -a 256 "$artifact"
+        done > "$TMP_DIR/SHA256SUMS"
+  )
+  mv "$TMP_DIR/SHA256SUMS" "$OUT_DIR/SHA256SUMS"
+}
+
+on_exit() {
+  local status="$?"
+  local manifest_status=0
+  write_manifest || manifest_status="$?"
+  cleanup
+  if (( status != 0 )); then
+    return "$status"
+  fi
+  return "$manifest_status"
+}
+trap on_exit EXIT
+
+git -C "$ROOT" worktree add --detach "$TMP_DIR/base" "$BASE_COMMIT" >/dev/null
+if [[ "$CURRENT_COMMIT" != "$ROOT_HEAD" ]]; then
+  git -C "$ROOT" worktree add --detach "$TMP_DIR/current" "$CURRENT_COMMIT" >/dev/null
+  CURRENT_ROOT="$TMP_DIR/current"
+fi
+
+build_binary() {
+  local label="$1"
+  local checkout="$2"
+  local target_dir="$TMP_DIR/$label-target"
+  echo "==> building $label rafter-model-check-fast" >&2
+  CARGO_TARGET_DIR="$target_dir" "$CARGO" build --manifest-path "$checkout/Cargo.toml" \
+    --release --locked -p rafter-sim --bin rafter-model-check-fast \
+    2>&1 | tee "$OUT_DIR/$label-build.log" >&2
+  printf '%s\n' "$target_dir/release/rafter-model-check-fast"
+}
+
+run_sample() {
+  local run="$1"
+  local label="$2"
+  local binary="$3"
+  local profile="$4"
+  local stem
+  stem="run-$(printf '%03d' "$run")-$label-$profile"
+  echo "==> sample=$run label=$label profile=$profile"
+  if [[ "$TIME_STYLE" == bsd ]]; then
+    "$TIME_BIN" -l "$binary" --profile "$profile" \
+      >"$OUT_DIR/$stem.stdout" 2>"$OUT_DIR/$stem.time"
+  else
+    "$TIME_BIN" -v "$binary" --profile "$profile" \
+      >"$OUT_DIR/$stem.stdout" 2>"$OUT_DIR/$stem.time"
+  fi
+  printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+    "$run" "$label" "$profile" "$stem.stdout" "$stem.time" "$ORDER" \
+    >> "$OUT_DIR/runs.tsv"
+}
+
+BASE_BIN="$(build_binary base "$TMP_DIR/base")"
+CURRENT_BIN="$(build_binary current "$CURRENT_ROOT")"
+printf 'run\tlabel\tprofile\tstdout\ttime_log\texecution_order\n' > "$OUT_DIR/runs.tsv"
+
+for run in $(seq 1 "$RUNS"); do
+  if (( run % 2 == 1 )); then
+    LABELS=(base current)
+  else
+    LABELS=(current base)
+  fi
+  ORDER="${LABELS[0]}-then-${LABELS[1]}"
+  if (( run % 2 == 1 )); then
+    RUN_PROFILES=("${PROFILES[@]}")
+  else
+    RUN_PROFILES=()
+    for ((index = ${#PROFILES[@]} - 1; index >= 0; index--)); do
+      RUN_PROFILES+=("${PROFILES[index]}")
+    done
+  fi
+  for profile in "${RUN_PROFILES[@]}"; do
+    for label in "${LABELS[@]}"; do
+      if [[ "$label" == base ]]; then
+        run_sample "$run" "$label" "$BASE_BIN" "$profile"
+      else
+        run_sample "$run" "$label" "$CURRENT_BIN" "$profile"
+      fi
+    done
+  done
+done
+
+python3 "$ROOT/scripts/model_check_profile_report.py" \
+  --artifact-dir "$OUT_DIR" \
+  --base-root "$TMP_DIR/base" \
+  --base-ref "$BASE_REF" \
+  --requested-base-ref "$REQUESTED_BASE_REF" \
+  --requested-base-commit "$REQUESTED_BASE_COMMIT" \
+  --baseline-policy "$BASELINE_POLICY" \
+  --base-binary "$BASE_BIN" \
+  --current-root "$CURRENT_ROOT" \
+  --current-binary "$CURRENT_BIN" \
+  --cargo "$CARGO" \
+  --timing-binary "$TIME_BIN" \
+  --time-style "$TIME_STYLE" \
+  --expected-runs "$RUNS" \
+  --max-wall-ratio "$MAX_WALL_RATIO" \
+  --max-rss-ratio "$MAX_RSS_RATIO" \
+  --comparison-mode "$COMPARISON_MODE" \
+  --output-json "$OUT_DIR/compare.json" \
+  --output-markdown "$OUT_DIR/compare.md"

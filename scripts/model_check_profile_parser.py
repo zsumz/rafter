@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import re
 import statistics
@@ -311,6 +312,129 @@ def compare_revisions(samples: list[dict], expected_runs: int) -> list[dict]:
             }
         )
     return comparisons
+
+
+def contract_snapshot(sample: dict) -> dict:
+    """Return the canonical, source-emitted contract for one profile sample."""
+    profile_contract = sample["profile_contract"]
+    contract = {
+        "profile": profile_contract["profile"],
+        "expected_runtime": profile_contract["expected_runtime"],
+        "bounds": profile_contract["bounds"],
+        "schedule_classes": profile_contract["schedule_classes"],
+        "checks": sorted(
+            (
+                {
+                    "check_id": check["check_id"],
+                    "configured_depth": check["configured_depth"],
+                }
+                for check in sample["checks"]
+            ),
+            key=lambda check: check["check_id"],
+        ),
+    }
+    encoded = json.dumps(contract, sort_keys=True, separators=(",", ":")).encode()
+    return {**contract, "sha256": hashlib.sha256(encoded).hexdigest()}
+
+
+def compare_contract_migration(samples: list[dict], expected_runs: int) -> dict:
+    """Describe an exhaustive, monotone configured-depth contract migration."""
+    summarize_samples(samples, expected_runs)
+    profiles = sorted({sample["profile"] for sample in samples})
+    snapshots = []
+    changes = []
+    coverage_delta = []
+    for profile in profiles:
+        indexed = {
+            (sample["label"], sample["run"]): sample
+            for sample in samples
+            if sample["profile"] == profile
+        }
+        base = indexed[("base", 1)]
+        current = indexed[("current", 1)]
+        base_snapshot = contract_snapshot(base)
+        current_snapshot = contract_snapshot(current)
+        snapshots.extend(
+            [
+                {"label": "base", **base_snapshot},
+                {"label": "current", **current_snapshot},
+            ]
+        )
+        for field in ("profile", "expected_runtime", "schedule_classes"):
+            if base_snapshot[field] != current_snapshot[field]:
+                raise ReportError(
+                    f"{profile}: non-bound profile contract field {field} changed"
+                )
+        base_checks = {check["check_id"]: check for check in base["checks"]}
+        current_checks = {check["check_id"]: check for check in current["checks"]}
+        if set(base_checks) != set(current_checks):
+            raise ReportError(f"{profile}: migration added or removed checks")
+        for check_id in sorted(base_checks):
+            before = base_checks[check_id]
+            after = current_checks[check_id]
+            from_depth = before["configured_depth"]
+            to_depth = after["configured_depth"]
+            if to_depth < from_depth:
+                raise ReportError(
+                    f"{profile}/{check_id}: configured depth decreased "
+                    f"from {from_depth} to {to_depth}"
+                )
+            if to_depth != from_depth:
+                changes.append(
+                    {
+                        "profile": profile,
+                        "check_id": check_id,
+                        "from_depth": from_depth,
+                        "to_depth": to_depth,
+                    }
+                )
+            coverage = {
+                "protocol_states": (
+                    after["unique_protocol_states"]
+                    - before["unique_protocol_states"]
+                ),
+                "verifier_states": (
+                    after["unique_verifier_states"]
+                    - before["unique_verifier_states"]
+                ),
+                "explored_actions": (
+                    after["explored_actions"] - before["explored_actions"]
+                ),
+            }
+            if any(delta < 0 for delta in coverage.values()):
+                raise ReportError(
+                    f"{profile}/{check_id}: coverage counters decreased across "
+                    "a bound-only migration"
+                )
+            if to_depth > from_depth:
+                if after["reached_depth"] <= before["reached_depth"]:
+                    raise ReportError(
+                        f"{profile}/{check_id}: configured depth increased without "
+                        "reaching a deeper frontier"
+                    )
+                if not any(delta > 0 for delta in coverage.values()):
+                    raise ReportError(
+                        f"{profile}/{check_id}: configured depth increased without "
+                        "increasing measured coverage"
+                    )
+            coverage_delta.append(
+                {
+                    "profile": profile,
+                    "check_id": check_id,
+                    "from_depth": from_depth,
+                    "to_depth": to_depth,
+                    "from_reached_depth": before["reached_depth"],
+                    "to_reached_depth": after["reached_depth"],
+                    **coverage,
+                }
+            )
+    if not changes:
+        raise ReportError("migration did not increase any configured depth")
+    return {
+        "contract_snapshots": snapshots,
+        "configured_depth_changes": changes,
+        "coverage_delta": coverage_delta,
+    }
 
 
 def evaluate_comparisons(

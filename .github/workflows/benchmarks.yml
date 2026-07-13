@@ -17,9 +17,12 @@ on:
       - "bench-compare/**"
       - "scripts/bench-compare.sh"
       - "scripts/model-check-profile-compare"
+      - "scripts/model-check-profile-pair"
+      - "scripts/model_check_contract_migration.py"
       - "scripts/model_check_profile_parser.py"
       - "scripts/model_check_profile_report.py"
       - "scripts/tests/test_model_check_profile_report.py"
+      - "verification/model-check-contract-migrations.json"
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -30,9 +33,12 @@ on:
       - "bench-compare/**"
       - "scripts/bench-compare.sh"
       - "scripts/model-check-profile-compare"
+      - "scripts/model-check-profile-pair"
+      - "scripts/model_check_contract_migration.py"
       - "scripts/model_check_profile_parser.py"
       - "scripts/model_check_profile_report.py"
       - "scripts/tests/test_model_check_profile_report.py"
+      - "verification/model-check-contract-migrations.json"
       - "crates/**"
       - "Cargo.toml"
       - "Cargo.lock"
@@ -85,7 +91,13 @@ jobs:
       - name: Model-check evidence parser contract
         run: |
           test -x scripts/model-check-profile-compare
+          test -x scripts/model-check-profile-pair
           bash -n scripts/model-check-profile-compare
+          bash -n scripts/model-check-profile-pair
+          python3 -m py_compile \
+            scripts/model_check_contract_migration.py \
+            scripts/model_check_profile_parser.py \
+            scripts/model_check_profile_report.py
           python3 -m unittest scripts/tests/test_model_check_profile_report.py
       - name: Summarize smoke result
         if: always()
@@ -224,6 +236,7 @@ jobs:
           MODEL_CHECK_RUNS: "6"
           MODEL_CHECK_MAX_MEDIAN_WALL_RATIO: "2.25"
           MODEL_CHECK_MAX_MEDIAN_RSS_RATIO: "1.75"
+          MODEL_CHECK_CONTRACT_MIGRATIONS: verification/model-check-contract-migrations.json
           OUT_DIR: target/model-check-profile
         run: scripts/model-check-profile-compare
       - name: Summarize model-check overhead
