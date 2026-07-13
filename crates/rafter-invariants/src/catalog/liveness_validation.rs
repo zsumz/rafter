@@ -25,6 +25,7 @@ pub(super) fn validate_liveness_report(
             "fault_cycle",
             "stable_leader",
             "proposal",
+            "operation",
         ],
         "liveness report",
     )?;
@@ -50,6 +51,7 @@ pub(super) fn validate_liveness_report(
         return Err("round limit is not the registry-derived bound".to_owned());
     }
     validate_optional_evidence(contract, report, &voter_ids, rounds_used)?;
+    validate_operation_evidence(contract, report)?;
     validate_fault_cycle(contract, report.get("fault_cycle"))?;
     Ok((round_limit, rounds_used))
 }
@@ -383,6 +385,62 @@ fn validate_optional_evidence(
         value => return Err(format!("unknown registry proposal outcome `{value}`")),
     }
     Ok(())
+}
+
+fn validate_operation_evidence(
+    contract: &SimulatorLivenessContract,
+    report: &Value,
+) -> Result<(), String> {
+    let (prefix, outcomes): (&str, &[&str]) = match contract.feature_id.as_str() {
+        "read-barrier" => ("read:", &["completed", "rejected", "canceled"]),
+        "membership-transition" => ("remove-voter:", &["committed", "rejected"]),
+        "leadership-transfer" => ("transfer:", &["completed", "rejected"]),
+        "snapshot-catch-up" => ("snapshot:", &["installed"]),
+        _ => {
+            return if report.get("operation").is_none_or(Value::is_null) {
+                Ok(())
+            } else {
+                Err("unexpected operation evidence".to_owned())
+            };
+        }
+    };
+    let operation = required_object(report, "operation")?;
+    require_exact_object_fields(
+        operation,
+        &["operation_id", "terminal_outcome"],
+        "operation evidence",
+    )?;
+    let operation_id = required_map_str(operation, "operation_id")?;
+    let outcome = required_map_str(operation, "terminal_outcome")?;
+    if !valid_operation_id(&contract.feature_id, operation_id, prefix)
+        || !outcomes.contains(&outcome)
+    {
+        return Err("operation identity or terminal outcome is inconsistent".to_owned());
+    }
+    Ok(())
+}
+
+fn valid_operation_id(feature: &str, operation_id: &str, prefix: &str) -> bool {
+    let Some(identity) = operation_id.strip_prefix(prefix) else {
+        return false;
+    };
+    match feature {
+        "read-barrier" => identity.parse::<u64>().is_ok(),
+        "membership-transition" => {
+            let ids = identity
+                .split(':')
+                .map(str::parse::<u64>)
+                .collect::<Result<Vec<_>, _>>();
+            ids.is_ok_and(|ids| ids.len() == 2 && ids[0] != 0 && ids[1] != 0 && ids[0] != ids[1])
+        }
+        "leadership-transfer" => identity.split_once("->").is_some_and(|(from, to)| {
+            from.parse::<u64>().is_ok_and(|id| id != 0)
+                && to.parse::<u64>().is_ok_and(|id| id != 0)
+                && from != to
+        }),
+        "snapshot-catch-up" => !identity.is_empty(),
+        _ => false,
+    }
 }
 
 fn validate_fault_cycle(
