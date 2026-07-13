@@ -2,7 +2,7 @@ use std::{collections::BTreeMap, error::Error, path::Path, time::Instant};
 
 use serde_json::Value;
 
-use crate::types::RESULT_SCHEMA_VERSION;
+use crate::types::{SimulatorLivenessBinding, RESULT_SCHEMA_VERSION};
 use crate::{
     catalog::{Catalog, ProfileContract},
     CheckCompletion, CheckReceipt, EvidenceDescriptor, EvidenceResult, EvidenceStatus,
@@ -22,7 +22,20 @@ struct EvaluatedEvidence {
     classification: Option<FailureClassification>,
     message: Option<String>,
     observations: BTreeMap<String, u64>,
+    simulator_liveness: Option<SimulatorLivenessBinding>,
     artifacts: Vec<crate::ArtifactRef>,
+}
+
+struct ModelEvidence {
+    observations: BTreeMap<String, u64>,
+    simulator_liveness: Option<SimulatorLivenessBinding>,
+    issue: Option<SimulatorIssue>,
+}
+
+enum SimulatorIssue {
+    InvariantViolation(String),
+    HarnessError(String),
+    CoverageNotReached(String),
 }
 
 struct DetectorRun {
@@ -52,11 +65,12 @@ pub(super) fn run(
         .collect::<Vec<_>>();
     let model = simulator_model::execute(profile, &source.commit, output_dir)?;
     let detectors = run_detectors(&descriptors, profile, &source.commit, output_dir)?;
+    let liveness_contracts = liveness_contracts(&descriptors)?;
     let mut checks = Vec::with_capacity(descriptors.len());
     let mut results = Vec::with_capacity(descriptors.len());
     for descriptor in &descriptors {
         let execution_id = artifact::stable_id("simulator", &descriptor.evidence_id());
-        let evaluated = evaluate(descriptor, &model, &detectors)?;
+        let evaluated = evaluate(descriptor, profile, &liveness_contracts, &model, &detectors)?;
         results.push(EvidenceResult {
             invariant_id: descriptor.invariant_id.clone(),
             evidence_id: descriptor.evidence_id(),
@@ -76,6 +90,7 @@ pub(super) fn run(
             evidence_ids: vec![descriptor.evidence_id()],
             completion: evaluated.completion,
             observations: evaluated.observations,
+            simulator_liveness: evaluated.simulator_liveness,
             duration_ms: model.duration_ms,
             peak_rss_kib: model.peak_rss_kib.max(detectors.peak_rss_kib),
             artifacts: evaluated.artifacts,
@@ -195,6 +210,8 @@ fn evaluate_detectors(
 
 fn evaluate(
     descriptor: &EvidenceDescriptor,
+    profile: &str,
+    liveness_contracts: &[crate::types::SimulatorLivenessContract],
     model: &simulator_model::SimulatorExecution,
     detectors: &DetectorRun,
 ) -> Result<EvaluatedEvidence, Box<dyn Error>> {
@@ -202,7 +219,8 @@ fn evaluate(
         .simulator
         .as_ref()
         .ok_or("simulator descriptor omitted execution identity")?;
-    let mut observations = model_observations(identity, &model.events);
+    let mut model_evidence =
+        model_observations(profile, identity, liveness_contracts, &model.events);
     let mut artifacts = model.artifacts.clone();
     let detector_passed = match &identity.negative_test {
         Some(test) => {
@@ -215,11 +233,44 @@ fn evaluate(
         }
         None => true,
     };
-    observations.insert("detector_qualified".to_owned(), u64::from(detector_passed));
-    let coverage = coverage_reached(identity, &observations);
+    model_evidence
+        .observations
+        .insert("detector_qualified".to_owned(), u64::from(detector_passed));
+    if let Some(issue) = model_evidence.issue {
+        let (completion, status, classification, message) = match issue {
+            SimulatorIssue::InvariantViolation(message) => (
+                CheckCompletion::Counterexample,
+                EvidenceStatus::Fail,
+                FailureClassification::InvariantViolation,
+                message,
+            ),
+            SimulatorIssue::HarnessError(message) => (
+                CheckCompletion::HarnessError,
+                EvidenceStatus::Error,
+                FailureClassification::HarnessError,
+                message,
+            ),
+            SimulatorIssue::CoverageNotReached(message) => (
+                CheckCompletion::CoverageNotReached,
+                EvidenceStatus::Incomplete,
+                FailureClassification::CoverageNotReached,
+                message,
+            ),
+        };
+        return Ok(EvaluatedEvidence {
+            completion,
+            status,
+            classification: Some(classification),
+            message: Some(message),
+            observations: model_evidence.observations,
+            simulator_liveness: None,
+            artifacts,
+        });
+    }
+    let coverage = coverage_reached(identity, &model_evidence.observations);
     if model.processes_succeeded && detector_passed && coverage {
         return Ok(EvaluatedEvidence {
-            completion: if identity.required_liveness_feature.is_some() {
+            completion: if identity.liveness_report.is_some() {
                 CheckCompletion::Completed
             } else {
                 CheckCompletion::FrontierExhausted
@@ -227,7 +278,8 @@ fn evaluate(
             status: EvidenceStatus::Pass,
             classification: None,
             message: None,
-            observations,
+            observations: model_evidence.observations,
+            simulator_liveness: model_evidence.simulator_liveness,
             artifacts,
         });
     }
@@ -242,7 +294,8 @@ fn evaluate(
             status: EvidenceStatus::Error,
             classification: Some(FailureClassification::HarnessError),
             message: Some(message.to_owned()),
-            observations,
+            observations: model_evidence.observations,
+            simulator_liveness: None,
             artifacts,
         });
     }
@@ -251,16 +304,20 @@ fn evaluate(
         status: EvidenceStatus::Incomplete,
         classification: Some(FailureClassification::CoverageNotReached),
         message: Some("required semantic simulator coverage was not reached".to_owned()),
-        observations,
+        observations: model_evidence.observations,
+        simulator_liveness: None,
         artifacts,
     })
 }
 
 fn model_observations(
+    profile: &str,
     identity: &SimulatorIdentity,
+    liveness_contracts: &[crate::types::SimulatorLivenessContract],
     events: &BTreeMap<String, Vec<Value>>,
-) -> BTreeMap<String, u64> {
+) -> ModelEvidence {
     let mut observations = BTreeMap::new();
+    let mut issue = None;
     for check in &identity.checks {
         let matching = events.get(check).map(Vec::as_slice).unwrap_or_default();
         observations.insert(format!("runs:{check}"), matching.len() as u64);
@@ -277,11 +334,110 @@ fn model_observations(
             .min()
             .unwrap_or_default();
         observations.insert(format!("steps:{check}"), minimum_steps);
-        for event in matching {
-            merge_event_observations(event, &mut observations);
+        if identity.liveness_report.is_none() {
+            for event in matching {
+                merge_event_observations(event, &mut observations);
+            }
+        } else {
+            for event in matching {
+                merge_issue(&mut issue, simulator_event_issue(check, event));
+            }
         }
     }
-    observations
+    if identity.liveness_report.is_none() {
+        return ModelEvidence {
+            observations,
+            simulator_liveness: None,
+            issue,
+        };
+    }
+    observations.insert(identity.required_observation.clone(), 0);
+    let simulator_liveness = if issue.is_none() {
+        match crate::catalog::derive_liveness_binding(profile, identity, liveness_contracts, events)
+        {
+            Ok(binding) => {
+                observations.insert(
+                    identity.required_observation.clone(),
+                    binding.reports.len() as u64,
+                );
+                Some(binding)
+            }
+            Err(error) => {
+                issue = Some(match error.kind {
+                    crate::catalog::LivenessReportErrorKind::Missing => {
+                        SimulatorIssue::CoverageNotReached(error.message)
+                    }
+                    crate::catalog::LivenessReportErrorKind::Malformed => {
+                        SimulatorIssue::HarnessError(error.message)
+                    }
+                });
+                None
+            }
+        }
+    } else {
+        None
+    };
+    ModelEvidence {
+        observations,
+        simulator_liveness,
+        issue,
+    }
+}
+
+fn liveness_contracts(
+    descriptors: &[EvidenceDescriptor],
+) -> Result<Vec<crate::types::SimulatorLivenessContract>, Box<dyn Error>> {
+    let mut by_feature = BTreeMap::new();
+    for contract in descriptors
+        .iter()
+        .filter_map(|descriptor| descriptor.simulator.as_ref()?.liveness_report.as_ref())
+    {
+        if let Some(previous) = by_feature.insert(contract.feature_id.clone(), contract.clone()) {
+            if previous != *contract {
+                return Err(format!(
+                    "conflicting simulator liveness contracts for {}",
+                    contract.feature_id
+                )
+                .into());
+            }
+        }
+    }
+    Ok(by_feature.into_values().collect())
+}
+
+fn simulator_event_issue(check: &str, event: &Value) -> Option<SimulatorIssue> {
+    if event.get("status").and_then(Value::as_str) == Some("pass") {
+        return None;
+    }
+    let message = event.get("message").and_then(Value::as_str).map_or_else(
+        || format!("simulator check `{check}` did not pass"),
+        str::to_owned,
+    );
+    match event.get("classification").and_then(Value::as_str) {
+        Some("invariant-violation") => Some(SimulatorIssue::InvariantViolation(message)),
+        Some("coverage-not-reached") => Some(SimulatorIssue::CoverageNotReached(message)),
+        Some("harness-error") => Some(SimulatorIssue::HarnessError(message)),
+        _ => Some(SimulatorIssue::HarnessError(format!(
+            "simulator check `{check}` has an invalid failure classification"
+        ))),
+    }
+}
+
+fn merge_issue(current: &mut Option<SimulatorIssue>, candidate: Option<SimulatorIssue>) {
+    let Some(candidate) = candidate else {
+        return;
+    };
+    let rank = |issue: &SimulatorIssue| match issue {
+        SimulatorIssue::InvariantViolation(_) => 3,
+        SimulatorIssue::HarnessError(_) => 2,
+        SimulatorIssue::CoverageNotReached(_) => 1,
+    };
+    if current
+        .as_ref()
+        .is_none_or(|issue| rank(&candidate) > rank(issue))
+    {
+        *current = Some(candidate);
+    }
 }
 
 fn merge_event_observations(event: &Value, observations: &mut BTreeMap<String, u64>) {
@@ -308,7 +464,7 @@ fn coverage_reached(identity: &SimulatorIdentity, observations: &BTreeMap<String
         .copied()
         .unwrap_or_default()
         >= identity.minimum_observation as u64;
-    if let Some(feature) = &identity.required_liveness_feature {
+    if let Some(contract) = &identity.liveness_report {
         return witness
             && identity.checks.iter().all(|check| {
                 let required_runs = identity.minimum_runs_per_check.unwrap_or_default() as u64;
@@ -328,7 +484,7 @@ fn coverage_reached(identity: &SimulatorIdentity, observations: &BTreeMap<String
                         .unwrap_or_default()
                         >= identity.minimum_steps.unwrap_or_default() as u64
             })
-            && !feature.is_empty();
+            && !contract.feature_id.is_empty();
     }
     witness
         && identity.checks.iter().all(|check| {
@@ -348,4 +504,37 @@ fn coverage_reached(identity: &SimulatorIdentity, observations: &BTreeMap<String
             .copied()
             .unwrap_or_default()
             >= identity.minimum_verifier_states.unwrap_or_default() as u64
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{simulator_event_issue, SimulatorIssue};
+    use serde_json::json;
+
+    #[test]
+    fn simulator_failure_classifications_remain_distinct() {
+        let invariant = simulator_event_issue(
+            "raft-soak",
+            &json!({"status": "fail", "classification": "invariant-violation"}),
+        );
+        assert!(matches!(
+            invariant,
+            Some(SimulatorIssue::InvariantViolation(_))
+        ));
+
+        let incomplete = simulator_event_issue(
+            "raft-soak",
+            &json!({"status": "incomplete", "classification": "coverage-not-reached"}),
+        );
+        assert!(matches!(
+            incomplete,
+            Some(SimulatorIssue::CoverageNotReached(_))
+        ));
+
+        let malformed = simulator_event_issue(
+            "raft-soak",
+            &json!({"status": "error", "classification": "harness-error"}),
+        );
+        assert!(matches!(malformed, Some(SimulatorIssue::HarnessError(_))));
+    }
 }
