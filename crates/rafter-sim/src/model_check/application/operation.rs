@@ -100,6 +100,7 @@ pub(super) fn apply_to_state_inner(state: &mut ExplorationState, operation: Oper
         state.transfers_issued += 1;
     }
     let effects = apply_to_cluster(&mut state.cluster.0, operation);
+    state.record_local_proposal_events(&effects.local_proposals);
     if let Some((before, delivered)) = transition_context {
         state.observe_election_authority();
         state.record_election_observation(&before, delivered.as_ref(), &effects.emitted);

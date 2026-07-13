@@ -37,9 +37,11 @@ fn proposal_termination_monitor_observes_authority_loss() {
     assert!(report.rounds_used <= report.round_limit);
     assert_eq!(
         report.proposal.map(|proposal| proposal.outcome),
-        Some(ProposalTerminalOutcome::Canceled),
-        "authority-loss drops must be reported explicitly as canceled"
+        Some(ProposalTerminalOutcome::Unknown),
+        "local proposal drops are an unknown-outcome boundary"
     );
+    assert!(report.preconditions.faults_stopped);
+    assert!(!report.preconditions.partition_active);
     report
         .validate_structure()
         .expect("production monitor should emit an exact derived bound");

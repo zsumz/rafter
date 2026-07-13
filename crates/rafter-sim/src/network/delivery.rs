@@ -3,6 +3,7 @@ use std::fmt;
 use rafter::{CommittedConfiguration, Input, LogEntryKind, LogIndex, NodeId, Output, RaftSnapshot};
 
 use super::{Envelope, QueuedEnvelope};
+use crate::records::{LocalProposalEvent, RecordedOutputs};
 use crate::{
     Applied, Cluster, ExecutedLogEntry, ExecutionCursor, ExecutionWitness, ReadGranted,
     ReferenceState, SnapshotInstalled,
@@ -148,8 +149,20 @@ impl Cluster {
     }
 
     pub(crate) fn record_outputs(&mut self, from: NodeId, outputs: Vec<Output>) -> Vec<Envelope> {
+        self.record_outputs_observed(from, outputs).emitted
+    }
+
+    pub(crate) fn record_outputs_observed(
+        &mut self,
+        from: NodeId,
+        outputs: Vec<Output>,
+    ) -> RecordedOutputs {
         let mut emitted = Vec::new();
+        let mut local_proposals = Vec::new();
         for output in outputs {
+            if let Some(event) = local_proposal_event(from, &output) {
+                local_proposals.push(event);
+            }
             match output {
                 Output::Apply { index, payload, .. } => {
                     let commit_index_at_emit = self.commit_index(from);
@@ -230,16 +243,24 @@ impl Cluster {
             }
         }
         self.record_execution_history(from);
-        emitted
+        RecordedOutputs {
+            emitted,
+            local_proposals,
+        }
     }
 
-    pub(crate) fn deliver(&mut self, envelope: Envelope) -> Vec<Envelope> {
+    pub(crate) fn deliver_observed(&mut self, envelope: Envelope) -> RecordedOutputs {
         self.record_delivered_acknowledgement(&envelope);
-        let outputs = self.node_mut(envelope.to).step(Input::Message {
+        let to = envelope.to;
+        let outputs = self.node_mut(to).step(Input::Message {
             from: envelope.from,
             message: envelope.message,
         });
-        self.record_outputs(envelope.to, outputs)
+        self.record_outputs_observed(to, outputs)
+    }
+
+    pub(crate) fn deliver(&mut self, envelope: Envelope) -> Vec<Envelope> {
+        self.deliver_observed(envelope).emitted
     }
 
     /// A delivered success acknowledgement raises the sender's durable-loss
@@ -300,19 +321,14 @@ impl Cluster {
             };
             let prior_state = state;
             let resulting_state = Self::apply_reference_transition(&prior_state, &executed);
-            if matches!(
-                executed.kind,
-                LogEntryKind::Application(_) | LogEntryKind::Configuration(_)
-            ) {
-                self.execution_history.push(ExecutionWitness {
-                    node_id,
-                    application_epoch,
-                    commit_index_at_emit,
-                    entry: executed,
-                    prior_state: prior_state.clone(),
-                    resulting_state: resulting_state.clone(),
-                });
-            }
+            self.execution_history.push(ExecutionWitness {
+                node_id,
+                application_epoch,
+                commit_index_at_emit,
+                entry: executed,
+                prior_state: prior_state.clone(),
+                resulting_state: resulting_state.clone(),
+            });
             state = resulting_state;
         }
 
@@ -324,6 +340,7 @@ impl Cluster {
                 state,
             },
         );
+        self.record_durable_applied(node_id, applied_through);
     }
 
     fn refresh_execution_epoch(&mut self, node_id: NodeId) {
@@ -567,6 +584,68 @@ impl Cluster {
     }
 }
 
+fn local_proposal_event(from: NodeId, output: &Output) -> Option<LocalProposalEvent> {
+    match output {
+        Output::LocalProposalAppended {
+            proposal_id,
+            index,
+            term,
+        } => Some(LocalProposalEvent::Appended {
+            node_id: from,
+            proposal_id: *proposal_id,
+            index: *index,
+            term: *term,
+        }),
+        Output::Apply {
+            index,
+            term,
+            payload,
+            local_proposal_id: Some(proposal_id),
+        } => Some(LocalProposalEvent::Applied {
+            node_id: from,
+            proposal_id: *proposal_id,
+            index: *index,
+            term: *term,
+            payload: payload.clone(),
+        }),
+        Output::LocalProposalDropped {
+            proposal_id,
+            index,
+            term,
+            reason,
+        } => Some(LocalProposalEvent::Dropped {
+            node_id: from,
+            proposal_id: *proposal_id,
+            index: *index,
+            term: *term,
+            reason: *reason,
+        }),
+        Output::RejectProposal {
+            proposal_id: Some(proposal_id),
+            reason,
+        } => Some(LocalProposalEvent::Rejected {
+            node_id: from,
+            proposal_id: *proposal_id,
+            reason: reason.clone(),
+        }),
+        Output::Apply {
+            local_proposal_id: None,
+            ..
+        }
+        | Output::ApplySnapshot { .. }
+        | Output::SendSnapshotChunk { .. }
+        | Output::StageSnapshotChunk { .. }
+        | Output::RejectProposal {
+            proposal_id: None, ..
+        }
+        | Output::LeadershipTransferRejected { .. }
+        | Output::ReadIndexGranted { .. }
+        | Output::ReadIndexRejected { .. }
+        | Output::ReadIndexCanceled { .. }
+        | Output::Send { .. } => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rafter::{
@@ -666,6 +745,65 @@ mod tests {
                 applied_through: LogIndex(2),
                 available_entries: 1,
             }]
+        );
+    }
+
+    #[test]
+    fn recorder_preserves_every_committed_log_entry_kind() {
+        let mut cluster = one_node_cluster();
+        let configuration = rafter::ConfigurationEntry::stable(
+            rafter::ConfigurationId(7),
+            rafter::MembershipSet::new(vec![NodeId(1), NodeId(2), NodeId(3)], Vec::new())
+                .expect("fixture membership is valid"),
+        );
+        let bootstrap = BootstrapState {
+            current_term: Term(1),
+            voted_for: None,
+            commit_index: LogIndex(3),
+            committed_configuration: Some(rafter::CommittedConfiguration {
+                index: LogIndex(2),
+                config_id: rafter::ConfigurationId(7),
+            }),
+            snapshot: None,
+            log: vec![
+                BootstrapLogEntry::noop(LogIndex(1), Term(1)),
+                BootstrapLogEntry::configuration(LogIndex(2), Term(1), configuration.clone()),
+                BootstrapLogEntry::application(LogIndex(3), Term(1), b"value".to_vec()),
+            ],
+        };
+        let mut node =
+            Node::from_bootstrap_applied_through(node_config(), bootstrap, LogIndex::ZERO)
+                .expect("fixture bootstrap is valid");
+        let outputs = node.drain_committed_outputs();
+        cluster.nodes.insert(NODE_ID, node);
+        cluster.record_outputs(NODE_ID, outputs);
+
+        let recorded: Vec<_> = cluster
+            .execution_history()
+            .iter()
+            .map(|witness| {
+                (
+                    witness.entry.index,
+                    witness.entry.term,
+                    witness.entry.kind.clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            recorded,
+            vec![
+                (LogIndex(1), Term(1), rafter::LogEntryKind::Noop),
+                (
+                    LogIndex(2),
+                    Term(1),
+                    rafter::LogEntryKind::Configuration(configuration),
+                ),
+                (
+                    LogIndex(3),
+                    Term(1),
+                    rafter::LogEntryKind::Application(b"value".to_vec().into()),
+                ),
+            ]
         );
     }
 

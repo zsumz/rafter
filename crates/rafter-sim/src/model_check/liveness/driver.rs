@@ -138,7 +138,6 @@ pub(in crate::model_check::liveness) struct LeaderConvergence {
 pub(in crate::model_check::liveness) enum ProposalTerminalOutcome {
     Committed,
     Rejected,
-    Canceled,
     Unknown,
 }
 
@@ -147,7 +146,6 @@ impl ProposalTerminalOutcome {
         match self {
             Self::Committed => "committed",
             Self::Rejected => "rejected",
-            Self::Canceled => "canceled",
             Self::Unknown => "unknown",
         }
     }
@@ -606,7 +604,6 @@ pub(in crate::model_check::liveness) fn liveness_proposal_terminal_outcome(
     match write.status {
         ClientWriteStatus::Completed { .. } => Some(ProposalTerminalOutcome::Committed),
         ClientWriteStatus::Rejected => Some(ProposalTerminalOutcome::Rejected),
-        ClientWriteStatus::Dropped { .. } => Some(ProposalTerminalOutcome::Canceled),
         ClientWriteStatus::Unknown { .. } => Some(ProposalTerminalOutcome::Unknown),
         ClientWriteStatus::Pending | ClientWriteStatus::Accepted { .. } => None,
     }
