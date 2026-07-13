@@ -1,5 +1,7 @@
 use rafter::{BootstrapState, LogIndex, Node, NodeId, SharedPayload};
 
+use crate::DurableStateDigest;
+
 use super::super::super::{
     catalog,
     helpers::summarize,
@@ -107,29 +109,64 @@ pub(super) fn restart_node_inner(
         ));
     }
 
-    let after_digest = state.cluster.durable_state_digest(node_id);
-    check_exact_durable_restart(
-        &state.cluster,
-        node_id,
+    check_restart_digest(state, node_id, &before_digest, trace)?;
+    mark_restart_observations(
+        state,
+        &before,
+        &after,
         &before_digest,
-        &after_digest,
-        trace,
-    )?;
-    mark_restart_observations(state, &before, &after, before_applied_floor);
+        before_applied_floor,
+        &expected_replay,
+    );
 
     Ok(())
+}
+
+fn check_restart_digest(
+    state: &ExplorationState,
+    node_id: NodeId,
+    before: &DurableStateDigest,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    let after = state.cluster.durable_state_digest(node_id);
+    check_exact_durable_restart(&state.cluster, node_id, before, &after, trace)
 }
 
 fn mark_restart_observations(
     state: &mut ExplorationState,
     before: &BootstrapState,
     after: &BootstrapState,
+    before_digest: &DurableStateDigest,
     applied_floor: LogIndex,
+    expected_replay: &[(LogIndex, SharedPayload)],
 ) {
     state.mark_observation(Observation::DurableRestartComparisons);
     state.mark_observation(Observation::RestartTermComparisons);
+    state.mark_observation(Observation::RestartTermVoteComparisons);
+    if !before_digest.log.is_empty() {
+        state.mark_observation(Observation::RestartLogComparisons);
+    }
+    if before_digest.commit_index > LogIndex::ZERO
+        || before_digest.committed_configuration.is_some()
+    {
+        state.mark_observation(Observation::RestartCommitConfigurationComparisons);
+    }
+    if before_digest.snapshot.is_some() {
+        state.mark_observation(Observation::RestartSnapshotComparisons);
+    }
+    if before_digest
+        .log
+        .iter()
+        .any(|entry| entry.index <= before_digest.commit_index)
+    {
+        state.mark_observation(Observation::RestartAcknowledgedEntryComparisons);
+    }
     if applied_floor > LogIndex::ZERO {
         state.mark_observation(Observation::RestartRecoveriesWithNonzeroAppliedFloor);
+        state.mark_observation(Observation::RestartAppliedFloorBoundComparisons);
+    }
+    if !expected_replay.is_empty() {
+        state.mark_observation(Observation::RestartNonemptyExpectedReplayComparisons);
     }
     if before.voted_for.is_some() && after.current_term == before.current_term {
         state.mark_observation(Observation::SameTermVotedRestarts);
