@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fmt,
-    hash::{DefaultHasher, Hash, Hasher},
+    hash::{Hash, Hasher},
 };
 
 use rafter::{LogEntryKind, LogIndex, NodeId};
@@ -13,12 +13,12 @@ use crate::{Cluster, ExecutionWitness};
 /// Incremental verifier index over the simulator's immutable execution ledger.
 ///
 /// The cluster remains the sole owner of exact witnesses. This index keeps a
-/// cursor, rolling digest, and one canonical identity per logical index so AP-02
-/// checks do not clone or rescan the full ledger after every transition.
-#[derive(Clone, Debug, Default, Hash)]
+/// cursor, append-only ledger revision, and one canonical identity per logical
+/// index so AP-02 agreement checks only process appended witnesses.
+#[derive(Clone, Debug, Default)]
 pub(super) struct ApplicationHistory {
     cursor: usize,
-    digest: ExecutionLedgerDigest,
+    ledger_rewrite_revision: u64,
     canonical_by_index: BTreeMap<LogIndex, ExecutionWitness>,
     application_nodes_by_index: BTreeMap<LogIndex, BTreeSet<NodeId>>,
     configuration_nodes_by_index: BTreeMap<LogIndex, BTreeSet<NodeId>>,
@@ -26,6 +26,20 @@ pub(super) struct ApplicationHistory {
     violations: BTreeSet<ExecutionHistoryViolation>,
     instrumentation_errors: BTreeSet<ExecutionHistoryInstrumentationError>,
     coverage: ObservationSet,
+    witness_identity_a: u64,
+    witness_identity_b: u64,
+}
+
+impl Hash for ApplicationHistory {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.cursor.hash(state);
+        self.ledger_rewrite_revision.hash(state);
+        self.witness_identity_a.hash(state);
+        self.witness_identity_b.hash(state);
+        self.violations.hash(state);
+        self.instrumentation_errors.hash(state);
+        self.coverage.hash(state);
+    }
 }
 
 impl ApplicationHistory {
@@ -46,10 +60,19 @@ impl ApplicationHistory {
             );
             return self.coverage;
         }
+        if cluster.execution_history_rewrite_revision() != self.ledger_rewrite_revision {
+            self.instrumentation_errors.insert(
+                ExecutionHistoryInstrumentationError::LedgerPrefixChanged {
+                    observed: self.cursor,
+                },
+            );
+            return self.coverage;
+        }
         for witness in &actual[self.cursor..] {
             self.record_witness(witness);
+            self.cursor = self.cursor.saturating_add(1);
         }
-        self.cursor = actual.len();
+        self.ledger_rewrite_revision = cluster.execution_history_rewrite_revision();
         self.instrumentation_errors.extend(
             cluster
                 .execution_instrumentation_errors()
@@ -70,7 +93,13 @@ impl ApplicationHistory {
     }
 
     fn record_witness(&mut self, witness: &ExecutionWitness) {
-        self.digest.push(witness);
+        (self.witness_identity_a, self.witness_identity_b) =
+            crate::records::fold_execution_witness_identity(
+                self.witness_identity_a,
+                self.witness_identity_b,
+                self.cursor,
+                witness,
+            );
         let expected = independently_derive_reference_result(witness);
         if witness.resulting_state != expected {
             self.violations.insert(ExecutionHistoryViolation {
@@ -154,25 +183,6 @@ impl ApplicationHistory {
     }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
-struct ExecutionLedgerDigest {
-    lane_a: u64,
-    lane_b: u64,
-}
-
-impl ExecutionLedgerDigest {
-    fn push(&mut self, witness: &ExecutionWitness) {
-        let mut hasher = DefaultHasher::new();
-        witness.hash(&mut hasher);
-        let item = hasher.finish();
-        self.lane_a = self.lane_a.rotate_left(7) ^ item.wrapping_mul(0x9e37_79b1_85eb_ca87);
-        self.lane_b = self
-            .lane_b
-            .rotate_right(11)
-            .wrapping_add(item ^ self.lane_a);
-    }
-}
-
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub(in crate::model_check) struct ExecutionHistoryViolation {
     kind: ExecutionHistoryViolationKind,
@@ -190,6 +200,7 @@ enum ExecutionHistoryViolationKind {
 pub(in crate::model_check) enum ExecutionHistoryInstrumentationError {
     Simulator(ExecutionInstrumentationError),
     LedgerTruncated { observed: usize, actual: usize },
+    LedgerPrefixChanged { observed: usize },
 }
 
 impl fmt::Display for ExecutionHistoryInstrumentationError {
@@ -199,6 +210,10 @@ impl fmt::Display for ExecutionHistoryInstrumentationError {
             Self::LedgerTruncated { observed, actual } => write!(
                 formatter,
                 "immutable execution ledger shrank from {observed} to {actual} witnesses"
+            ),
+            Self::LedgerPrefixChanged { observed } => write!(
+                formatter,
+                "immutable execution ledger changed within its {observed}-witness consumed prefix"
             ),
         }
     }
@@ -222,13 +237,86 @@ fn independently_derive_reference_result(witness: &ExecutionWitness) -> crate::R
 
 #[cfg(test)]
 mod tests {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+
     use rafter::{
         ConfigurationEntry, ConfigurationId, LogEntryKind, MembershipConfig, MembershipSet, NodeId,
         Term,
     };
 
-    use super::{ApplicationHistory, Observation};
-    use crate::{ExecutedLogEntry, ExecutionWitness, ReferenceState};
+    use super::{ApplicationHistory, ExecutionHistoryInstrumentationError, Observation};
+    use crate::{Cluster, ExecutedLogEntry, ExecutionWitness, ReferenceState};
+
+    #[test]
+    fn detector_rejects_same_length_consumed_prefix_rewrite() {
+        let mut cluster = cluster_with_history(vec![
+            witness(1, 0, 1, LogEntryKind::Noop),
+            witness(1, 0, 2, LogEntryKind::Noop),
+        ]);
+        let mut history = ApplicationHistory::from_cluster(&cluster);
+        let mut rewritten = cluster.execution_history()[0].clone();
+        rewritten.node_id = NodeId(2);
+        cluster.execution_history.rewrite(0, rewritten);
+
+        let _ = history.observe_cluster(&cluster);
+
+        assert!(history
+            .instrumentation_errors()
+            .contains(&ExecutionHistoryInstrumentationError::LedgerPrefixChanged { observed: 2 }));
+    }
+
+    #[test]
+    fn detector_rejects_same_length_consumed_prefix_reorder() {
+        let mut cluster = cluster_with_history(vec![
+            witness(1, 0, 1, LogEntryKind::Noop),
+            witness(1, 0, 2, LogEntryKind::Noop),
+        ]);
+        let mut history = ApplicationHistory::from_cluster(&cluster);
+        cluster.execution_history.swap(0, 1);
+
+        let _ = history.observe_cluster(&cluster);
+
+        assert!(history
+            .instrumentation_errors()
+            .contains(&ExecutionHistoryInstrumentationError::LedgerPrefixChanged { observed: 2 }));
+    }
+
+    #[test]
+    fn incremental_ledger_identity_distinguishes_append_rewrite_and_reorder() {
+        let first = witness(1, 0, 1, LogEntryKind::Noop);
+        let second = witness(1, 0, 2, LogEntryKind::Noop);
+        let mut cluster = cluster_with_history(vec![first.clone(), second.clone()]);
+        let original = hash_value(&cluster.execution_history);
+
+        cluster
+            .execution_history
+            .push(witness(2, 0, 3, LogEntryKind::Noop));
+        assert_ne!(hash_value(&cluster.execution_history), original);
+
+        let mut rewritten = cluster_with_history(vec![first.clone(), second.clone()]);
+        let mut replacement = first.clone();
+        replacement.node_id = NodeId(2);
+        rewritten.execution_history.rewrite(0, replacement);
+        assert_ne!(hash_value(&rewritten.execution_history), original);
+
+        let mut reordered = cluster_with_history(vec![first, second]);
+        reordered.execution_history.swap(0, 1);
+        assert_ne!(hash_value(&reordered.execution_history), original);
+    }
+
+    #[test]
+    fn execution_evidence_changes_verifier_hash_but_not_protocol_hash() {
+        let mut cluster = cluster_with_history(Vec::new());
+        let protocol_before = protocol_hash(&cluster);
+        let verifier_before = hash_value(&cluster);
+
+        cluster
+            .execution_history
+            .push(witness(1, 0, 1, LogEntryKind::Noop));
+
+        assert_eq!(protocol_hash(&cluster), protocol_before);
+        assert_ne!(hash_value(&cluster), verifier_before);
+    }
 
     #[test]
     fn same_node_replay_does_not_qualify_cross_replica_coverage() {
@@ -299,6 +387,13 @@ mod tests {
         assert!(!coverage.contains(Observation::SameIndexApplicationResultPairs));
     }
 
+    fn cluster_with_history(execution_history: Vec<ExecutionWitness>) -> Cluster {
+        let mut cluster = Cluster::new(Vec::new());
+        cluster.execution_history =
+            crate::records::ExecutionLedger::from_witnesses(execution_history);
+        cluster
+    }
+
     fn witness(
         node_id: u64,
         application_epoch: u64,
@@ -337,5 +432,17 @@ mod tests {
             MembershipSet::new(voters.iter().copied().map(NodeId).collect(), Vec::new())
                 .expect("fixture membership is valid"),
         )
+    }
+
+    fn hash_value(value: &impl Hash) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    fn protocol_hash(cluster: &Cluster) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        cluster.hash_protocol_state(&mut hasher);
+        hasher.finish()
     }
 }

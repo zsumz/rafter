@@ -1,8 +1,10 @@
 use super::super::snapshot::{
-    check_pending_snapshot_lifecycle_shape, check_snapshot_chunk_identity_history,
+    check_pending_snapshot_lifecycle_shape, check_restart_snapshot_safety,
+    check_snapshot_boundary_monotonicity, check_snapshot_chunk_identity_history,
     check_snapshot_chunk_offsets_history, check_snapshot_covered_prefix_shape,
     check_snapshot_install_completeness_history, check_snapshot_next_retained_index_shape,
-    check_snapshot_persisted_boundary_shape, check_snapshot_semantic_history,
+    check_snapshot_payload_binding, check_snapshot_persisted_boundary_shape,
+    check_snapshot_semantic_history, check_snapshot_transfer_identity,
 };
 use super::*;
 use crate::model_check::{
@@ -165,14 +167,12 @@ fn applied_order_detects_apply_at_or_below_snapshot_boundary() {
 fn snapshot_boundary_monotonicity_detects_regression() {
     let mut state = RestartSnapshotState::snapshot_transfer();
     let (older, payload) = test_snapshot(1, 1, 1, 2, b"older snapshot");
-    state
-        .state
-        .inject_snapshot_payload(NodeId(1), &older, payload);
-    state
-        .state
-        .inject_bootstrap_state(NodeId(1), bootstrap_with_snapshot(Term(2), older, &[]))
+    let mut observed = Cluster::new(three_node_configs());
+    observed.seed_snapshot_payload(NodeId(1), &older, payload);
+    observed
+        .restart_node_from_bootstrap(NodeId(1), bootstrap_with_snapshot(Term(2), older, &[]))
         .expect("older snapshot bootstrap remains structurally valid");
-    state.state.refresh_snapshot_history();
+    state.state.observe_snapshot_cluster_for_detector(&observed);
 
     let failure = check_snapshot_boundary_monotonicity(&state.state, &[])
         .expect_err("snapshot rewind must fail SS-01.a");
@@ -226,6 +226,27 @@ fn snapshot_boundary_coverage_requires_explored_installation_not_bootstrap_seed(
             "a real follower installation must satisfy snapshot coverage"
         );
     }
+}
+
+#[test]
+fn seeded_snapshot_without_prefix_fails_payload_binding_coverage_closed() {
+    let (snapshot, payload) = test_snapshot(1, 2, 1, 2, b"unwitnessed snapshot");
+    let mut state = ExplorationState::new(one_node_cluster());
+    state.inject_snapshot_payload(NodeId(1), &snapshot, payload);
+    state
+        .inject_bootstrap_state(NodeId(1), bootstrap_with_snapshot(Term(2), snapshot, &[]))
+        .expect("snapshot bootstrap is valid");
+    state.refresh_snapshot_history();
+
+    let failure = check_snapshot_payload_binding(&state, &[])
+        .expect_err("an unwitnessed seeded snapshot cannot pass payload binding");
+    assert_eq!(
+        failure.kind(),
+        crate::model_check::FailureKind::CoverageNotReached
+    );
+    assert!(failure
+        .message()
+        .contains("no logical-prefix reference witness"));
 }
 
 #[test]
@@ -532,18 +553,17 @@ fn restart_snapshot_safety_rejects_snapshot_bytes_as_log_apply() {
         .as_ref()
         .expect("fixture has an expected snapshot")
         .clone();
+    let mut committed_prefix = bootstrap_state(
+        Term(2),
+        &[
+            (1, Term(1), b"old prefix"),
+            (2, Term(1), expected.payload.as_ref()),
+        ],
+    );
+    committed_prefix.commit_index = LogIndex(2);
     state
         .state
-        .inject_bootstrap_state(
-            NodeId(2),
-            bootstrap_state(
-                Term(2),
-                &[
-                    (1, Term(1), b"old prefix"),
-                    (2, Term(1), expected.payload.as_ref()),
-                ],
-            ),
-        )
+        .inject_bootstrap_state(NodeId(2), committed_prefix)
         .expect("target prefix remains structurally valid");
     state.state.refresh_snapshot_history();
     let before = state.state.cluster().clone();

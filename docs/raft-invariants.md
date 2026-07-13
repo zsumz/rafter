@@ -348,23 +348,23 @@ named temporal or witness-based verdicts.
 | `SS-04` | `SS-04.b` | tests | direct | `crates/rafter/src/node/tests/snapshot/chunks/receive.rs#out_of_order_snapshot_chunk_requests_expected_offset` |
 | `SS-04` | `SS-04.c` | tests | direct | `crates/rafter/src/node/tests/snapshot/chunks/receive.rs#out_of_order_snapshot_chunk_requests_expected_offset` |
 | `SS-05` | `SS-05.a,SS-05.b,SS-05.c` | maelstrom | e2e | `scripts/maelstrom-lin-kv-forced-snapshot#RAFTER_MAELSTROM_SNAPSHOT_EVERY` |
-| `SS-05` | `SS-05.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_applied_payload_agreement`; negative fixture `applied_agreement_detects_snapshot_membership_mismatch_at_same_boundary` |
+| `SS-05` | `SS-05.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/applied.rs#check_applied_payload_agreement`; negative fixture `applied_agreement_detects_snapshot_membership_mismatch_at_same_boundary` |
 | `SS-05` | `SS-05.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_restart_snapshot_safety`; negative fixture `restart_snapshot_safety_rejects_snapshot_bytes_as_log_apply` |
 | `SS-05` | `SS-05.a` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/snapshot_application.rs#restart_snapshot_safety_rejects_snapshot_bytes_as_log_apply` |
 | `SS-05` | `SS-05.b` | tests | direct | `crates/rafter-sim/src/tests/snapshot_installation/catchup.rs#simulator_discards_divergent_suffix_when_installing_snapshot` |
-| `LV-01` | `LV-01.a` | simulator | direct | `crates/rafter-sim/src/model_check/liveness.rs#run_soak_liveness_check`; negative fixture `post_heal_leader_convergence_monitor_reports_exhausted_bound` |
+| `LV-01` | `LV-01.a` | simulator | direct | `crates/rafter-sim/src/model_check/liveness.rs#run_soak_liveness_check_with_budget_overrides`; negative fixture `post_heal_leader_convergence_monitor_reports_exhausted_bound` |
 | `LV-01` | `LV-01.b` | simulator | direct | `crates/rafter-sim/src/model_check/liveness.rs#run_soak_liveness_check`; negative fixture `post_heal_leader_usability_monitor_reports_exhausted_bound` |
 | `LV-01` | `LV-01.a` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features/leader.rs#run_quorum_only_leader_convergence_check`; negative fixture `quorum_only_leader_monitor_reports_starved_schedule_bound` |
 | `LV-01` | `LV-01.b` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features/leader.rs#run_quorum_only_leader_usability_check`; negative fixture `quorum_only_leader_usability_monitor_reports_exhausted_bound` |
 | `LV-01` | `LV-01.a` | tests | direct | `crates/rafter-sim/src/model_check/liveness/features/leader_tests.rs#quorum_only_leader_monitor_elects_and_serves_with_minority_unavailable` |
 | `LV-01` | `LV-01.b` | tests | direct | `crates/rafter-sim/src/model_check/liveness/features/leader_tests.rs#quorum_only_leader_monitor_elects_and_serves_with_minority_unavailable` |
-| `LV-02` | `LV-02.a` | simulator | direct | `crates/rafter-sim/src/model_check/liveness.rs#run_soak_liveness_check`; negative fixture exemption `bounded liveness driver, not an invariant checker` |
-| `LV-02` | `LV-02.b` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features/proposal.rs#run_proposal_termination_liveness_check`; negative fixture `proposal_termination_monitor_reports_exhausted_bound` |
+| `LV-02` | `LV-02.a` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features/proposal.rs#run_proposal_progress_liveness_detector`; negative fixture `lv_02_proposal_progress_detector_rejects_exhausted_bound` |
+| `LV-02` | `LV-02.b` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features/proposal.rs#run_proposal_termination_liveness_detector`; negative fixture `lv_02_proposal_termination_detector_rejects_exhausted_bound` |
 | `LV-02` | `LV-02.b` | tests | direct | `crates/rafter-sim/src/model_check/liveness/features/proposal_tests.rs#proposal_termination_monitor_observes_authority_loss` |
-| `LV-03` | `LV-03.a` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features.rs#run_read_barrier_liveness_check`; negative fixture exemption `bounded read-barrier liveness driver, not an invariant checker` |
-| `LV-03` | `LV-03.c` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features.rs#run_membership_transition_liveness_check`; negative fixture exemption `bounded membership-transition liveness driver, not an invariant checker` |
-| `LV-03` | `LV-03.d` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features.rs#run_leadership_transfer_liveness_check`; negative fixture exemption `bounded leadership-transfer liveness driver, not an invariant checker` |
-| `LV-03` | `LV-03.b` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features.rs#run_snapshot_catchup_liveness_check`; negative fixture exemption `bounded snapshot-catch-up liveness driver, not an invariant checker` |
+| `LV-03` | `LV-03.c` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features/membership.rs#run_membership_transition_liveness_detector`; negative fixture `lv_03_membership_transition_detector_rejects_exhausted_bound` |
+| `LV-03` | `LV-03.a` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features/read.rs#run_read_barrier_liveness_detector`; negative fixture `lv_03_read_barrier_detector_rejects_exhausted_bound` |
+| `LV-03` | `LV-03.b` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features/snapshot.rs#run_snapshot_catchup_liveness_detector`; negative fixture `lv_03_snapshot_catch_up_detector_rejects_exhausted_bound` |
+| `LV-03` | `LV-03.d` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features/transfer.rs#run_leadership_transfer_liveness_detector`; negative fixture `lv_03_leadership_transfer_detector_rejects_exhausted_bound` |
 
 ## Normative Clauses
 

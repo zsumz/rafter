@@ -149,8 +149,8 @@ fn witnessed_prefix_bootstrap(
     BootstrapState {
         current_term,
         voted_for: None,
-        commit_index: LogIndex::ZERO,
-        committed_configuration: None,
+        commit_index: LogIndex(2),
+        committed_configuration: configuration.map(|(_, committed)| *committed),
         snapshot: None,
         log: vec![
             first,

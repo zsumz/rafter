@@ -50,6 +50,7 @@ impl Cluster {
             self.durable_applied_floor(node_id),
         )?;
         let outputs = node.drain_committed_outputs();
+        self.retire_pending_reads(node_id);
         self.nodes.insert(node_id, node);
         // A process restart loses the volatile staging area; explicit resume
         // paths (the model checker's durable-transfer restart) reinstate it
@@ -85,6 +86,7 @@ impl Cluster {
             .expect("simulated node config must exist in cluster")
             .clone();
         let node = Node::from_bootstrap_applied_through(config, bootstrap, applied_floor)?;
+        self.retire_pending_reads(node_id);
         self.nodes.insert(node_id, node);
         self.snapshot_staging.remove(&node_id);
         Ok(())
@@ -142,6 +144,7 @@ impl Cluster {
 
         let mut node = Node::from_bootstrap_applied_through(config, bootstrap, snapshot_boundary)?;
         let outputs = node.drain_committed_outputs();
+        self.retire_pending_reads(node_id);
         self.nodes.insert(node_id, node);
         self.snapshot_staging.remove(&node_id);
         let next_epoch = self.application_epoch(node_id).saturating_add(1);

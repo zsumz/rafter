@@ -10,7 +10,7 @@ use super::helpers::summarize;
 use super::linearizability::{
     check_client_history_linearizable, CLIENT_HISTORY_LINEARIZABILITY_INVARIANT,
 };
-use super::state::{ClientReadOutcome, ClientWriteStatus};
+use super::state::{ClientRead, ClientReadOutcome, ClientReadProof, ClientWriteStatus};
 use super::state::{ExplorationState, RestartSnapshotState};
 use super::{Action, Failure, ReplayCheck};
 use applied::{
@@ -19,21 +19,13 @@ use applied::{
 };
 pub(super) use client::check_read_barrier_safety;
 use client::{check_client_history_linearizability, check_client_history_read_write_invariants};
-#[cfg(test)]
-use commit::check_no_overlapping_uncommitted_configurations_in_bootstrap;
 use commit::{
     check_commit_index_monotonicity, check_committed_configuration_monotonicity,
     check_committed_prefixes, check_membership_quorum_validity,
     check_no_overlapping_uncommitted_configurations, check_required_committed_configurations,
 };
 #[cfg(test)]
-use election::{
-    check_election_certificate_voters, check_eligible_leader_certificates,
-    check_higher_term_authority_fencing, check_joint_election_quorums,
-    check_pre_vote_leader_stability, check_pre_vote_request_authority,
-    check_stable_election_quorums, check_stale_authority_leadership, check_stale_authority_state,
-    check_stale_pre_vote_response_authority,
-};
+use election::check_election_certificate_voters;
 pub(super) use election::{check_election_history, check_election_safety};
 pub(super) use history::{check_commit_history, check_log_history};
 pub(super) use persistence::{
@@ -42,11 +34,7 @@ pub(super) use persistence::{
 pub(super) use snapshot::check_restart_snapshot_safety;
 use snapshot::check_snapshot_log_geometry;
 #[cfg(test)]
-use snapshot::{
-    check_snapshot_boundary_monotonicity, check_snapshot_log_geometry_shape,
-    check_snapshot_payload_binding, check_snapshot_transfer_identity,
-    check_snapshot_transfer_integrity,
-};
+use snapshot::{check_snapshot_log_geometry_shape, check_snapshot_transfer_integrity};
 
 pub(super) fn check_commit_safety(
     state: &ExplorationState,

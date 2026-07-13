@@ -105,7 +105,7 @@ pub(super) trait StateIdentity: Hash {
 
 impl StateIdentity for ExplorationState {
     fn hash_protocol_state<H: Hasher>(&self, state: &mut H) {
-        self.cluster().hash(state);
+        self.cluster().hash_protocol_state(state);
         self.proposals_issued().hash(state);
         self.restarts_issued().hash(state);
         self.read_indexes_issued().hash(state);
@@ -137,7 +137,10 @@ mod tests {
         time::Duration,
     };
 
-    use super::{Bounds, ExplorationBudget, StateIdentity};
+    use rafter::{LogIndex, NodeConfig, NodeId};
+
+    use super::{Bounds, ExplorationBudget, ExplorationState, StateIdentity, StateKey};
+    use crate::{Applied, Cluster};
 
     #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
     enum ToyState {
@@ -215,6 +218,52 @@ mod tests {
 
         let summary = budget.summary();
         assert_eq!(summary.unique_states(), 2);
+        assert_eq!(summary.unique_verifier_states(), 2);
+        assert_eq!(summary.unique_protocol_states(), 1);
+    }
+
+    #[test]
+    fn protocol_count_ignores_cluster_recorder_history() {
+        let config = NodeConfig::new(NodeId(1), Vec::new(), 3).expect("fixture config is valid");
+        let original = ExplorationState::new(Cluster::new(vec![config]));
+        let mut applied_mutated = original.clone();
+        applied_mutated.inject_applied_record(Applied {
+            node_id: NodeId(1),
+            application_epoch: 0,
+            commit_index_at_emit: LogIndex(1),
+            index: LogIndex(1),
+            payload: b"recorder-only".to_vec().into(),
+        });
+
+        let mut cursor_mutated = original.clone();
+        cursor_mutated.clear_execution_cursors();
+        let mut reference_mutated = original.clone();
+        reference_mutated.clear_initial_reference_states();
+        let mut epoch_mutated = original.clone();
+        epoch_mutated.clear_application_epochs();
+
+        for recorder_mutated in [
+            &applied_mutated,
+            &cursor_mutated,
+            &reference_mutated,
+            &epoch_mutated,
+        ] {
+            assert_ne!(
+                StateKey::from_hash(&original),
+                StateKey::from_hash(recorder_mutated),
+                "recorder state remains part of full verifier identity"
+            );
+            assert_eq!(
+                StateKey::from_protocol_state(&original),
+                StateKey::from_protocol_state(recorder_mutated),
+                "recorder state must not change protocol identity"
+            );
+        }
+
+        let mut budget = ExplorationBudget::new(Bounds::new(1));
+        assert!(budget.enter(&original, 0));
+        assert!(budget.enter(&applied_mutated, 0));
+        let summary = budget.summary();
         assert_eq!(summary.unique_verifier_states(), 2);
         assert_eq!(summary.unique_protocol_states(), 1);
     }

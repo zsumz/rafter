@@ -215,6 +215,39 @@ impl BoundedFairnessMonitor {
     }
 }
 
+pub(in crate::model_check::liveness) struct FairRoundDriver {
+    fairness: BoundedFairnessMonitor,
+}
+
+impl FairRoundDriver {
+    pub(in crate::model_check::liveness) fn new() -> Self {
+        Self {
+            fairness: BoundedFairnessMonitor::new(
+                FAIR_TICK_BOUND_ROUNDS,
+                FAIR_DELIVERY_BOUND_ROUNDS,
+            ),
+        }
+    }
+
+    fn drive(
+        &mut self,
+        state: &mut ExplorationState,
+        trace: &mut Vec<SoakAction>,
+        observed_actions: &mut BTreeSet<SoakActionKind>,
+        round: usize,
+        observe: &mut dyn FnMut(&ExplorationState) -> bool,
+    ) -> Result<FairRoundExecution, &'static str> {
+        drive_soak_liveness_round_observed(
+            state,
+            trace,
+            observed_actions,
+            round,
+            observe,
+            &mut self.fairness,
+        )
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::model_check::liveness) struct StableLeaderGuard {
     expected: NodeId,
@@ -283,22 +316,43 @@ pub(in crate::model_check::liveness) fn drive_liveness_rounds_until_observed(
         return Ok(BoundedRun {
             completed: true,
             rounds_used: 0,
-            observer_held: observe(state),
+            observer_held: true,
         });
     }
+    let mut fair_rounds = FairRoundDriver::new();
     for round in 0..budget {
-        let execution =
-            drive_soak_liveness_round_observed(state, trace, observed_actions, round, &mut observe)
-                .map_err(|message| soak_liveness_harness_error(state, config, trace, message))?;
+        let mut completion_latched = false;
+        let mut premise_held = true;
+        let mut observe_until_terminal = |state: &ExplorationState| {
+            if completion_latched {
+                return true;
+            }
+            if complete(state) {
+                completion_latched = true;
+                return true;
+            }
+            let held = observe(state);
+            premise_held &= held;
+            held
+        };
+        let execution = fair_rounds
+            .drive(
+                state,
+                trace,
+                observed_actions,
+                round,
+                &mut observe_until_terminal,
+            )
+            .map_err(|message| soak_liveness_harness_error(state, config, trace, message))?;
         check_soak_safety(state, config, trace)?;
-        if !execution.observer_held {
+        if !premise_held || !execution.observer_held {
             return Ok(BoundedRun {
                 completed: false,
                 rounds_used: round + 1,
                 observer_held: false,
             });
         }
-        if complete(state) {
+        if completion_latched || complete(state) {
             return Ok(BoundedRun {
                 completed: true,
                 rounds_used: round + 1,
@@ -336,6 +390,7 @@ pub(in crate::model_check::liveness) fn drive_until_stable_leader(
 ) -> Result<Option<LeaderConvergence>, SoakFailure> {
     let mut stable_leader = None;
     let mut stable_rounds = 0usize;
+    let mut fair_rounds = FairRoundDriver::new();
     for round in 0..budget {
         let round_candidate = single_leader(state);
         let mut candidate_held = round_candidate.is_some();
@@ -344,14 +399,15 @@ pub(in crate::model_check::liveness) fn drive_until_stable_leader(
             candidate_held &= held;
             held
         };
-        let execution = drive_soak_liveness_round_observed(
-            state,
-            trace,
-            observed_actions,
-            round,
-            &mut observe_candidate,
-        )
-        .map_err(|message| soak_liveness_harness_error(state, config, trace, message))?;
+        let execution = fair_rounds
+            .drive(
+                state,
+                trace,
+                observed_actions,
+                round,
+                &mut observe_candidate,
+            )
+            .map_err(|message| soak_liveness_harness_error(state, config, trace, message))?;
         check_soak_safety(state, config, trace)?;
 
         if candidate_held && execution.observer_held {
@@ -378,15 +434,37 @@ pub(in crate::model_check::liveness) fn drive_until_stable_leader(
 }
 
 pub(in crate::model_check::liveness) fn drive_soak_liveness_round(
+    fair_rounds: &mut FairRoundDriver,
     state: &mut ExplorationState,
     config: SoakConfig,
     trace: &mut Vec<SoakAction>,
     observed_actions: &mut BTreeSet<SoakActionKind>,
     round: usize,
 ) -> Result<(), SoakFailure> {
-    drive_soak_liveness_round_observed(state, trace, observed_actions, round, &mut always_observe)
+    fair_rounds
+        .drive(state, trace, observed_actions, round, &mut always_observe)
         .map(|_| ())
         .map_err(|message| soak_liveness_harness_error(state, config, trace, message))
+}
+
+pub(in crate::model_check::liveness) fn drive_soak_liveness_round_until_terminal(
+    fair_rounds: &mut FairRoundDriver,
+    state: &mut ExplorationState,
+    config: SoakConfig,
+    trace: &mut Vec<SoakAction>,
+    observed_actions: &mut BTreeSet<SoakActionKind>,
+    round: usize,
+    mut terminal: impl FnMut(&ExplorationState) -> bool,
+) -> Result<bool, SoakFailure> {
+    let mut terminal_latched = terminal(state);
+    let mut latch_terminal = |state: &ExplorationState| {
+        terminal_latched |= terminal(state);
+        true
+    };
+    fair_rounds
+        .drive(state, trace, observed_actions, round, &mut latch_terminal)
+        .map_err(|message| soak_liveness_harness_error(state, config, trace, message))?;
+    Ok(terminal_latched)
 }
 
 fn drive_soak_liveness_round_observed(
@@ -395,6 +473,7 @@ fn drive_soak_liveness_round_observed(
     observed_actions: &mut BTreeSet<SoakActionKind>,
     _round: usize,
     observe: &mut dyn FnMut(&ExplorationState) -> bool,
+    fairness: &mut BoundedFairnessMonitor,
 ) -> Result<FairRoundExecution, &'static str> {
     let node_ids = state.cluster().nodes.keys().copied().collect::<Vec<_>>();
     let mut executed_ticks = Vec::with_capacity(node_ids.len());
@@ -438,8 +517,6 @@ fn drive_soak_liveness_round_observed(
         ensure_delivery_frontier_drained(ready_message_count(state))?;
     }
 
-    let mut fairness =
-        BoundedFairnessMonitor::new(FAIR_TICK_BOUND_ROUNDS, FAIR_DELIVERY_BOUND_ROUNDS);
     fairness.observe_round(
         &node_ids,
         &executed_ticks,
@@ -610,11 +687,46 @@ pub(in crate::model_check::liveness) fn liveness_proposal_terminal_outcome(
     }
 }
 
-pub(in crate::model_check::liveness) fn soak_liveness_failure(
+pub(in crate::model_check::liveness) fn soak_liveness_coverage_failure(
     state: &ExplorationState,
     config: SoakConfig,
     trace: &[SoakAction],
     invariant: &'static str,
+    message: String,
+) -> SoakFailure {
+    classified_liveness_failure(
+        state,
+        config,
+        trace,
+        invariant,
+        crate::model_check::FailureKind::CoverageNotReached,
+        message,
+    )
+}
+
+pub(in crate::model_check::liveness) fn soak_liveness_invariant_failure(
+    state: &ExplorationState,
+    config: SoakConfig,
+    trace: &[SoakAction],
+    invariant: &'static str,
+    message: String,
+) -> SoakFailure {
+    classified_liveness_failure(
+        state,
+        config,
+        trace,
+        invariant,
+        crate::model_check::FailureKind::InvariantViolation,
+        message,
+    )
+}
+
+fn classified_liveness_failure(
+    state: &ExplorationState,
+    config: SoakConfig,
+    trace: &[SoakAction],
+    invariant: &'static str,
+    kind: crate::model_check::FailureKind,
     message: String,
 ) -> SoakFailure {
     SoakFailure {
@@ -622,7 +734,7 @@ pub(in crate::model_check::liveness) fn soak_liveness_failure(
         step: trace.len(),
         trace: trace.to_vec(),
         failure: Box::new(Failure {
-            kind: crate::model_check::FailureKind::CoverageNotReached,
+            kind,
             invariant,
             message,
             trace: Vec::new(),
@@ -644,7 +756,7 @@ pub(in crate::model_check::liveness) fn soak_transition_failure(
     }
 }
 
-fn soak_liveness_harness_error(
+pub(in crate::model_check::liveness) fn soak_liveness_harness_error(
     state: &ExplorationState,
     config: SoakConfig,
     trace: &[SoakAction],

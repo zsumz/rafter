@@ -303,6 +303,16 @@ fn allowed_dev_workspace_deps(crate_name: &str) -> BTreeMap<String, &'static str
             "rafter-transport-tcp-insecure",
             "runtime examples may use the demo TCP transport without making runtime depend on transport",
         )],
+        "rafter-invariants" => &[
+            (
+                "rafter",
+                "validator integration tests construct canonical node configs without widening verifier runtime dependencies",
+            ),
+            (
+                "rafter-sim",
+                "validator integration tests consume actual simulator liveness JSON without widening verifier runtime dependencies",
+            ),
+        ],
         "rafter-service" => &[
             (
                 "rafter-runtime",
@@ -316,7 +326,6 @@ fn allowed_dev_workspace_deps(crate_name: &str) -> BTreeMap<String, &'static str
         "rafter"
         | "rafter-codec"
         | "rafter-crc32"
-        | "rafter-invariants"
         | "rafter-maelstrom"
         | "rafter-runtime-api"
         | "rafter-sim"

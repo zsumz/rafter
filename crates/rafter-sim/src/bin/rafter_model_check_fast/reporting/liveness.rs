@@ -162,6 +162,7 @@ fn validate_liveness_report(
             "fault_cycle",
             "stable_leader",
             "proposal",
+            "operation",
         ],
         "liveness report",
     )?;
@@ -208,6 +209,53 @@ fn validate_liveness_report(
         return Err(format!(
             "{} has an invalid proposal terminal outcome",
             expected.feature_id
+        ));
+    }
+    validate_operation_evidence(report, expected.feature_id)?;
+    Ok(())
+}
+
+fn validate_operation_evidence(report: &serde_json::Value, feature_id: &str) -> Result<(), String> {
+    let expected_outcomes: Option<&[&str]> = match feature_id {
+        "read-barrier" => Some(&["completed", "rejected", "canceled"]),
+        "snapshot-catch-up" => Some(&["installed"]),
+        "membership-transition" => Some(&["committed", "rejected"]),
+        "leadership-transfer" => Some(&["completed", "rejected"]),
+        _ => None,
+    };
+    let Some(expected_outcomes) = expected_outcomes else {
+        return if report
+            .get("operation")
+            .is_some_and(serde_json::Value::is_null)
+        {
+            Ok(())
+        } else {
+            Err(format!(
+                "{feature_id} unexpectedly carries operation evidence"
+            ))
+        };
+    };
+    let operation = report
+        .get("operation")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| format!("{feature_id} has no operation evidence"))?;
+    require_exact_object_fields(
+        operation,
+        &["operation_id", "terminal_outcome"],
+        "operation evidence",
+    )?;
+    let operation_id = operation
+        .get("operation_id")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| format!("{feature_id} has an invalid operation identity"))?;
+    let outcome = operation
+        .get("terminal_outcome")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| format!("{feature_id} has no operation terminal outcome"))?;
+    if !expected_outcomes.contains(&outcome) {
+        return Err(format!(
+            "{feature_id} has invalid outcome `{outcome}` for operation `{operation_id}`"
         ));
     }
     Ok(())
@@ -312,6 +360,11 @@ fn validate_execution_provenance(
                 "{feature_id} `{field}` does not match typed execution provenance"
             ));
         }
+    }
+    if report.get("operation") != execution_provenance.get("operation") {
+        return Err(format!(
+            "{feature_id} operation evidence does not match typed execution provenance"
+        ));
     }
     Ok(())
 }

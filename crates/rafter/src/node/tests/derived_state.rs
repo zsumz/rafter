@@ -154,8 +154,7 @@ fn derived_state_rejects_log_geometry_overflow() {
         LogEntry::application(Term(1), b"overflow-2".to_vec()),
     ]);
 
-    let error = node
-        .validate_derived_state()
+    let error = detect_derived_state_violation(&node)
         .expect_err("overflowing logical log geometry must be rejected");
     assert!(error.contains("overflows LogIndex"), "{error}");
 }
@@ -165,8 +164,7 @@ fn derived_state_rejects_commit_beyond_log() {
     let mut node = node(1, &[2, 3]);
     node.volatile.commit_index = LogIndex(1);
 
-    let error = node
-        .validate_derived_state()
+    let error = detect_derived_state_violation(&node)
         .expect_err("commit beyond logical log must be rejected");
     assert!(error.contains("commit index 1 exceeds logical last index 0"));
 }
@@ -177,9 +175,8 @@ fn derived_state_rejects_apply_beyond_commit() {
     node.append_log_entry(LogEntry::application(Term(1), b"entry".to_vec()));
     node.volatile.applied_index = LogIndex(1);
 
-    let error = node
-        .validate_derived_state()
-        .expect_err("apply beyond commit must be rejected");
+    let error =
+        detect_derived_state_violation(&node).expect_err("apply beyond commit must be rejected");
     assert!(error.contains("applied index 1 exceeds commit index 0"));
 }
 
@@ -195,9 +192,8 @@ fn derived_state_rejects_non_leader_pending_read_round() {
         acks: AcknowledgementSet::new(&membership, node.id()),
     });
 
-    let error = node
-        .validate_derived_state()
-        .expect_err("a follower cannot retain pending reads");
+    let error =
+        detect_derived_state_violation(&node).expect_err("a follower cannot retain pending reads");
     assert!(error.contains("non-leader retains pending read-index rounds"));
 }
 
@@ -206,8 +202,7 @@ fn derived_state_rejects_stale_configuration_offsets() {
     let mut node = node(1, &[2, 3]);
     node.derived.push_configuration_offset_for_test(0);
 
-    let error = node
-        .validate_derived_state()
+    let error = detect_derived_state_violation(&node)
         .expect_err("stale configuration offsets must be rejected");
     assert!(error.contains("configuration_offsets mismatch"));
 }
@@ -215,6 +210,10 @@ fn derived_state_rejects_stale_configuration_offsets() {
 fn config() -> NodeConfig {
     NodeConfig::new(NodeId(1), vec![NodeId(2), NodeId(3)], 3)
         .expect("test Raft node config is valid")
+}
+
+fn detect_derived_state_violation(node: &Node) -> Result<(), String> {
+    node.validate_derived_state()
 }
 
 fn stable_configuration(config_id: u64) -> ConfigurationEntry {

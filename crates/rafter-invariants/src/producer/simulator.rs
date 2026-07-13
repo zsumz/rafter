@@ -447,13 +447,10 @@ fn model_observations(
             .min()
             .unwrap_or_default();
         observations.insert(format!("steps:{check}"), minimum_steps);
-        if identity.liveness_report.is_none() {
-            for event in matching {
+        for event in matching {
+            merge_issue(&mut issue, simulator_event_issue(check, event));
+            if identity.liveness_report.is_none() {
                 merge_event_observations(event, &mut observations);
-            }
-        } else {
-            for event in matching {
-                merge_issue(&mut issue, simulator_event_issue(check, event));
             }
         }
     }
@@ -621,7 +618,10 @@ fn coverage_reached(identity: &SimulatorIdentity, observations: &BTreeMap<String
 
 #[cfg(test)]
 mod tests {
-    use super::{simulator_event_issue, SimulatorIssue};
+    use std::collections::BTreeMap;
+
+    use super::{model_observations, simulator_event_issue, SimulatorIssue};
+    use crate::SimulatorIdentity;
     use serde_json::json;
 
     #[test]
@@ -649,5 +649,36 @@ mod tests {
             &json!({"status": "error", "classification": "harness-error"}),
         );
         assert!(matches!(malformed, Some(SimulatorIssue::HarnessError(_))));
+    }
+
+    #[test]
+    fn safety_model_events_preserve_their_structured_failure_classification() {
+        let identity = SimulatorIdentity {
+            checks: vec!["raft-commit".to_owned()],
+            required_observation: "commit_floor_advances".to_owned(),
+            minimum_observation: 1,
+            minimum_protocol_states: Some(1),
+            minimum_verifier_states: Some(1),
+            minimum_runs_per_check: None,
+            minimum_steps: None,
+            liveness_report: None,
+            negative_test: None,
+        };
+        let events = BTreeMap::from([(
+            "raft-commit".to_owned(),
+            vec![json!({
+                "status": "fail",
+                "classification": "invariant-violation",
+                "message": "commit witness violated"
+            })],
+        )]);
+
+        let evidence = model_observations("pr", &identity, &[], &events);
+
+        assert!(matches!(
+            evidence.issue,
+            Some(SimulatorIssue::InvariantViolation(message))
+                if message == "commit witness violated"
+        ));
     }
 }

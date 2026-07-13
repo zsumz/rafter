@@ -31,7 +31,7 @@ impl SimulatorRunnerConfiguration {
     pub(crate) fn validate_profile(&self, profile: &str) -> Result<(), &'static str> {
         if self.build != "release-and-test-locked"
             || self.execution_contract != "rafter-soak-execution-v1"
-            || self.liveness_report_binding != "typed-canonical-json-sha256-v2"
+            || self.liveness_report_binding != "typed-canonical-json-sha256-v3"
             || self.soak_steps == 0
         {
             return Err("shared build, execution, liveness, or step policy is unsupported");
@@ -119,7 +119,7 @@ mod tests {
             ("build", "release-and-test-locked"),
             ("completion", "frontier-and-aggregate-state-floor"),
             ("execution_contract", "rafter-soak-execution-v1"),
-            ("liveness_report_binding", "typed-canonical-json-sha256-v2"),
+            ("liveness_report_binding", "typed-canonical-json-sha256-v3"),
             ("model_profile", "raft-nightly"),
             ("seed_count", "6"),
             ("seed_policy", "source-derived-sha256-v1"),
@@ -152,7 +152,7 @@ mod tests {
             "build": "release-and-test-locked",
             "completion": "frontier-and-semantic-floor",
             "execution_contract": "rafter-soak-execution-v1",
-            "liveness_report_binding": "typed-canonical-json-sha256-v2",
+            "liveness_report_binding": "typed-canonical-json-sha256-v3",
             "model_profile": "fast+raft-soak",
             "seed_policy": "curated-0x9103-through-0x9106",
             "snapshot_catchup_probe": "required",

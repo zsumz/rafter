@@ -143,6 +143,87 @@ fn unknown_fields_and_complete_set_substitution_are_rejected() {
     assert_eq!(error.kind, LivenessReportErrorKind::Malformed);
 }
 
+#[test]
+fn operation_evidence_is_feature_specific_and_fail_closed() {
+    for feature in [
+        "read-barrier",
+        "membership-transition",
+        "leadership-transfer",
+        "snapshot-catch-up",
+    ] {
+        let (identity, contracts, mut events) = fixture();
+        report_mut(&mut events, feature)["operation"]["terminal_outcome"] = json!("unknown");
+        let error = derive(&identity, &contracts, &events)
+            .expect_err("an invalid feature-specific terminal outcome must fail");
+        assert!(error
+            .message
+            .contains("operation identity or terminal outcome"));
+    }
+
+    let (identity, contracts, mut events) = fixture();
+    report_mut(&mut events, "read-barrier")["operation"] = Value::Null;
+    let error = derive(&identity, &contracts, &events)
+        .expect_err("missing operation evidence must fail closed");
+    assert!(error.message.contains("operation"));
+}
+
+#[test]
+fn actual_simulator_liveness_json_satisfies_the_independent_v3_validator() {
+    use rafter::{NodeConfig, NodeId};
+    use rafter_sim::{
+        model_check::{run_raft_random_soak, SoakConfig},
+        SimSeed,
+    };
+
+    let configs = [1_u64, 2, 3]
+        .into_iter()
+        .map(|id| {
+            NodeConfig::new(
+                NodeId(id),
+                [1_u64, 2, 3]
+                    .into_iter()
+                    .filter(|peer| *peer != id)
+                    .map(NodeId)
+                    .collect(),
+                3,
+            )
+            .expect("three-node simulator config is valid")
+        })
+        .collect();
+    let config = SoakConfig::new(SimSeed(0x9103), 0)
+        .with_max_proposals(24)
+        .with_max_restarts(12)
+        .with_max_read_indexes(4)
+        .with_max_membership_changes(8)
+        .with_max_transfers(2)
+        .with_max_partitions(2)
+        .with_max_lossy_restarts(2)
+        .with_snapshot_catchup_probe()
+        .with_tick_skew(NodeId(1), 3);
+    let summary = run_raft_random_soak(configs, config)
+        .expect("actual simulator liveness reports should be produced");
+    let (_, contracts, _) = fixture();
+    let contracts = contracts
+        .iter()
+        .map(|contract| (contract.feature_id.as_str(), contract))
+        .collect::<BTreeMap<_, _>>();
+    let execution =
+        expected_execution_contract("pr", "raft-soak").expect("PR soak execution contract exists");
+    let reports = summary.liveness_reports_json();
+    assert_eq!(reports.len(), contracts.len());
+    for report in reports {
+        let feature = report["feature_id"]
+            .as_str()
+            .expect("actual report has feature identity");
+        super::liveness_validation::validate_liveness_report(
+            contracts[feature],
+            &execution,
+            &report,
+        )
+        .unwrap_or_else(|error| panic!("actual {feature} report failed validation: {error}"));
+    }
+}
+
 pub(crate) fn fixture() -> (
     SimulatorIdentity,
     Vec<SimulatorLivenessContract>,
@@ -269,6 +350,25 @@ fn valid_report(
             }
         })
     });
+    let operation = match contract.feature_id.as_str() {
+        "read-barrier" => Some(json!({
+            "operation_id": "read:1",
+            "terminal_outcome": "completed"
+        })),
+        "membership-transition" => Some(json!({
+            "operation_id": "remove-voter:1:3",
+            "terminal_outcome": "committed"
+        })),
+        "leadership-transfer" => Some(json!({
+            "operation_id": "transfer:1->2",
+            "terminal_outcome": "completed"
+        })),
+        "snapshot-catch-up" => Some(json!({
+            "operation_id": "snapshot:fixture",
+            "terminal_outcome": "installed"
+        })),
+        _ => None,
+    };
     json!({
         "invariant_id": contract.invariant_id,
         "clause_ids": contract.clause_ids,
@@ -321,6 +421,7 @@ fn valid_report(
         "rounds_used": rounds_used,
         "fault_cycle": fault_cycle,
         "stable_leader": stable_leader,
-        "proposal": proposal
+        "proposal": proposal,
+        "operation": operation
     })
 }

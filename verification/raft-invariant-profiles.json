@@ -23,16 +23,16 @@
       "canonical_minimum_independent_layers": 2,
       "runners": {
         "tests": {
-          "producer": "rafter-invariants-tests-v7",
+          "producer": "rafter-invariants-tests-v8",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "pr", "--layer", "tests"],
           "configuration": {"build": "locked-no-default-features", "discovery": "libtest-executable", "execution": "exact-single-threaded", "scale": "pr"},
           "minimum_observed_checks": 82,
           "require_peak_rss": true
         },
         "simulator": {
-          "producer": "rafter-invariants-simulator-v11",
+          "producer": "rafter-invariants-simulator-v12",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "pr", "--layer", "simulator"],
-          "configuration": {"build": "release-and-test-locked", "completion": "frontier-and-semantic-floor", "execution_contract": "rafter-soak-execution-v1", "liveness_report_binding": "typed-canonical-json-sha256-v2", "model_profile": "fast+raft-soak", "seed_policy": "curated-0x9103-through-0x9106", "snapshot_catchup_probe": "required", "soak_steps": "320", "state_floors": "per-evidence"},
+          "configuration": {"build": "release-and-test-locked", "completion": "frontier-and-semantic-floor", "execution_contract": "rafter-soak-execution-v1", "liveness_report_binding": "typed-canonical-json-sha256-v3", "model_profile": "fast+raft-soak", "seed_policy": "curated-0x9103-through-0x9106", "snapshot_catchup_probe": "required", "soak_steps": "320", "state_floors": "per-evidence"},
           "minimum_observed_checks": 79,
           "require_peak_rss": true
         },
@@ -55,16 +55,16 @@
       "canonical_minimum_independent_layers": 2,
       "runners": {
         "tests": {
-          "producer": "rafter-invariants-tests-v7",
+          "producer": "rafter-invariants-tests-v8",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "nightly", "--layer", "tests"],
           "configuration": {"build": "locked-no-default-features", "discovery": "libtest-executable", "execution": "exact-single-threaded", "scale": "nightly"},
           "minimum_observed_checks": 82,
           "require_peak_rss": true
         },
         "simulator": {
-          "producer": "rafter-invariants-simulator-v11",
+          "producer": "rafter-invariants-simulator-v12",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "nightly", "--layer", "simulator"],
-          "configuration": {"build": "release-and-test-locked", "canonical_check_binding": "scheduled-suffix-v1", "completion": "frontier-and-aggregate-state-floor", "execution_contract": "rafter-soak-execution-v1", "liveness_report_binding": "typed-canonical-json-sha256-v2", "model_profile": "raft-nightly", "seed_count": "6", "seed_policy": "source-derived-sha256-v1", "soak_steps": "1024", "state_floors": "100000000-protocol-and-verifier"},
+          "configuration": {"build": "release-and-test-locked", "canonical_check_binding": "scheduled-suffix-v1", "completion": "frontier-and-aggregate-state-floor", "execution_contract": "rafter-soak-execution-v1", "liveness_report_binding": "typed-canonical-json-sha256-v3", "model_profile": "raft-nightly", "seed_count": "6", "seed_policy": "source-derived-sha256-v1", "soak_steps": "1024", "state_floors": "100000000-protocol-and-verifier"},
           "minimum_observed_checks": 79,
           "require_peak_rss": true
         },
@@ -94,16 +94,16 @@
       "canonical_minimum_independent_layers": 2,
       "runners": {
         "tests": {
-          "producer": "rafter-invariants-tests-v7",
+          "producer": "rafter-invariants-tests-v8",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "weekly", "--layer", "tests"],
           "configuration": {"build": "locked-no-default-features", "discovery": "libtest-executable", "execution": "exact-single-threaded", "scale": "weekly"},
           "minimum_observed_checks": 82,
           "require_peak_rss": true
         },
         "simulator": {
-          "producer": "rafter-invariants-simulator-v11",
+          "producer": "rafter-invariants-simulator-v12",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "weekly", "--layer", "simulator"],
-          "configuration": {"build": "release-and-test-locked", "canonical_check_binding": "scheduled-suffix-v1", "completion": "frontier-and-aggregate-state-floor", "execution_contract": "rafter-soak-execution-v1", "liveness_report_binding": "typed-canonical-json-sha256-v2", "model_profile": "raft-weekly", "seed_count": "10", "seed_policy": "source-derived-sha256-v1", "soak_steps": "4096", "state_floors": "250000000-protocol-and-verifier"},
+          "configuration": {"build": "release-and-test-locked", "canonical_check_binding": "scheduled-suffix-v1", "completion": "frontier-and-aggregate-state-floor", "execution_contract": "rafter-soak-execution-v1", "liveness_report_binding": "typed-canonical-json-sha256-v3", "model_profile": "raft-weekly", "seed_count": "10", "seed_policy": "source-derived-sha256-v1", "soak_steps": "4096", "state_floors": "250000000-protocol-and-verifier"},
           "minimum_observed_checks": 79,
           "require_peak_rss": true
         },

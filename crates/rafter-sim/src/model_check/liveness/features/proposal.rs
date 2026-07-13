@@ -6,11 +6,12 @@ use super::{
     super::driver::{
         check_soak_safety, drive_liveness_rounds_until_observed, issue_liveness_proposal,
         liveness_proposal_completed, liveness_proposal_terminal_outcome, single_leader,
-        soak_liveness_failure, soak_transition_failure, LivenessRoundBudget,
-        ProposalTerminalOutcome, StableLeaderGuard,
+        soak_liveness_coverage_failure, soak_liveness_invariant_failure, soak_transition_failure,
+        LivenessRoundBudget, ProposalTerminalOutcome, StableLeaderGuard,
     },
     production_monitor_state, FaultStateRequirement, LivenessFeatureReport,
-    LivenessPreconditionProbe, LivenessPreconditions, ProposalEvidence, StableLeaderEvidence,
+    LivenessPreconditionProbe, LivenessPreconditions, OperationTerminalOutcome, ProposalEvidence,
+    StableLeaderEvidence, TerminalEvidenceRecorder, TerminalRecorderMode,
     LV_02_PROGRESS_CLAUSE_IDS, LV_02_TERMINATION_CLAUSE_IDS,
 };
 use crate::model_check::{
@@ -26,6 +27,14 @@ pub(super) fn run_proposal_progress_liveness_check(
     config: SoakConfig,
     budget: usize,
 ) -> Result<LivenessFeatureReport, SoakFailure> {
+    run_proposal_progress_liveness_detector(config, budget, TerminalRecorderMode::Production)
+}
+
+pub(super) fn run_proposal_progress_liveness_detector(
+    config: SoakConfig,
+    budget: usize,
+    recorder_mode: TerminalRecorderMode,
+) -> Result<LivenessFeatureReport, SoakFailure> {
     let mut state = production_monitor_state(config, catalog::LV_02_PROPOSAL_PROGRESS)?;
     let round_budget = LivenessRoundBudget::capture(&state, config, 1);
     elect_node_one_in_state(&mut state);
@@ -33,7 +42,7 @@ pub(super) fn run_proposal_progress_liveness_check(
 
     let leader = NodeId(1);
     if single_leader(&state) != Some(leader) {
-        return Err(soak_liveness_failure(
+        return Err(soak_liveness_coverage_failure(
             &state,
             config,
             &[],
@@ -47,7 +56,7 @@ pub(super) fn run_proposal_progress_liveness_check(
     let Some(proposal_id) =
         issue_liveness_proposal(&mut state, leader, &mut trace, &mut observed_actions)
     else {
-        return Err(soak_liveness_failure(
+        return Err(soak_liveness_coverage_failure(
             &state,
             config,
             &trace,
@@ -57,6 +66,8 @@ pub(super) fn run_proposal_progress_liveness_check(
     };
     check_soak_safety(&state, config, &trace)?;
 
+    let mut terminal_recorder =
+        TerminalEvidenceRecorder::new(format!("proposal:{}", proposal_id.0), recorder_mode);
     let mut guard = StableLeaderGuard::new(leader, budget);
     let completion = drive_liveness_rounds_until_observed(
         &mut state,
@@ -64,16 +75,32 @@ pub(super) fn run_proposal_progress_liveness_check(
         &mut trace,
         &mut observed_actions,
         budget,
-        |state| liveness_proposal_completed(state, proposal_id),
+        |state| {
+            terminal_recorder.observe(
+                liveness_proposal_completed(state, proposal_id)
+                    .then_some(OperationTerminalOutcome::Committed),
+            )
+        },
         |state| guard.observe(single_leader(state)).is_ok(),
     )?;
-    let outcome = liveness_proposal_terminal_outcome(&state, proposal_id);
-    if !completion.completed
-        || !completion.observer_held
-        || single_leader(&state) != Some(leader)
-        || outcome != Some(ProposalTerminalOutcome::Committed)
-    {
-        return Err(soak_liveness_failure(
+    let outcome = terminal_recorder
+        .evidence()
+        .map(|evidence| evidence.outcome)
+        .and_then(proposal_outcome_from_operation);
+    if !completion.observer_held || single_leader(&state) != Some(leader) {
+        return Err(soak_liveness_coverage_failure(
+            &state,
+            config,
+            &trace,
+            catalog::LV_02_PROPOSAL_PROGRESS,
+            format!(
+                "stable-leader premise for proposal {} was lost during the bounded progress window",
+                proposal_id.0
+            ),
+        ));
+    }
+    if !completion.completed || outcome != Some(ProposalTerminalOutcome::Committed) {
+        return Err(soak_liveness_invariant_failure(
             &state,
             config,
             &trace,
@@ -85,44 +112,78 @@ pub(super) fn run_proposal_progress_liveness_check(
         ));
     }
 
-    Ok(LivenessFeatureReport {
+    Ok(proposal_progress_report(
+        &state,
+        leader,
+        proposal_id,
+        round_budget,
+        budget,
+        completion.rounds_used,
+    ))
+}
+
+fn proposal_progress_report(
+    state: &ExplorationState,
+    leader: NodeId,
+    proposal_id: ProposalId,
+    round_budget: LivenessRoundBudget,
+    round_limit: usize,
+    rounds_used: usize,
+) -> LivenessFeatureReport {
+    LivenessFeatureReport {
         invariant_id: "LV-02",
         clause_ids: LV_02_PROGRESS_CLAUSE_IDS,
         feature_id: "proposal-progress",
         scenario_id: "stable-leader-reachable-quorum-v1",
         observation_id: "accepted_completed_liveness_proposals",
         preconditions: LivenessPreconditions::capture(
-            &state,
+            state,
             LivenessPreconditionProbe {
                 leader: Some(leader),
                 fault_requirement: FaultStateRequirement::Stopped,
-                stable_leader_observed: Some(single_leader(&state) == Some(leader)),
+                stable_leader_observed: Some(single_leader(state) == Some(leader)),
                 accepted_proposal_observed: Some(true),
                 authority_loss_observed: None,
             },
         ),
         round_budget,
-        round_limit: budget,
-        rounds_used: completion.rounds_used,
+        round_limit,
+        rounds_used,
         fault_cycle: None,
         stable_leader: Some(StableLeaderEvidence {
             leader,
-            stable_rounds: completion.rounds_used.max(1),
+            stable_rounds: rounds_used.max(1),
             remained_leader_through_probe: true,
         }),
         proposal: Some(ProposalEvidence {
             proposal_id,
             outcome: ProposalTerminalOutcome::Committed,
         }),
-    })
+        operation: None,
+    }
 }
 
 pub(super) fn run_proposal_termination_liveness_check(
     config: SoakConfig,
-    budget: usize,
+    authority_loss_budget: usize,
+    termination_budget: usize,
+) -> Result<LivenessFeatureReport, SoakFailure> {
+    run_proposal_termination_liveness_detector(
+        config,
+        authority_loss_budget,
+        termination_budget,
+        TerminalRecorderMode::Production,
+    )
+}
+
+pub(super) fn run_proposal_termination_liveness_detector(
+    config: SoakConfig,
+    authority_loss_budget: usize,
+    termination_budget: usize,
+    recorder_mode: TerminalRecorderMode,
 ) -> Result<LivenessFeatureReport, SoakFailure> {
     let mut state = production_monitor_state(config, catalog::LV_02_PROPOSAL_PROGRESS)?;
-    let round_budget = LivenessRoundBudget::capture(&state, config, 1);
+    let round_budget = LivenessRoundBudget::capture(&state, config, 2);
     elect_node_one_in_state(&mut state);
     deliver_all_in_state(&mut state);
 
@@ -133,7 +194,7 @@ pub(super) fn run_proposal_termination_liveness_check(
     let Some(proposal_id) =
         issue_liveness_proposal(&mut state, NodeId(1), &mut trace, &mut observed_actions)
     else {
-        return Err(soak_liveness_failure(
+        return Err(soak_liveness_coverage_failure(
             &state,
             config,
             &trace,
@@ -149,7 +210,7 @@ pub(super) fn run_proposal_termination_liveness_check(
         config,
         &mut trace,
         &mut observed_actions,
-        budget,
+        authority_loss_budget,
         |state| {
             state
                 .cluster()
@@ -160,12 +221,12 @@ pub(super) fn run_proposal_termination_liveness_check(
         |_| true,
     )?;
     if !competing_leader.completed {
-        return Err(proposal_termination_failure(
+        return Err(proposal_authority_loss_coverage_failure(
             &state,
             config,
             &trace,
             proposal_id,
-            budget,
+            authority_loss_budget,
         ));
     }
 
@@ -175,19 +236,29 @@ pub(super) fn run_proposal_termination_liveness_check(
     observed_actions.insert(SoakActionKind::Heal);
     check_soak_safety(&state, config, &trace)?;
 
-    let remaining_budget = budget.saturating_sub(competing_leader.rounds_used);
+    let mut terminal_recorder =
+        TerminalEvidenceRecorder::new(format!("proposal:{}", proposal_id.0), recorder_mode);
     let termination = drive_liveness_rounds_until_observed(
         &mut state,
         config,
         &mut trace,
         &mut observed_actions,
-        remaining_budget,
-        |state| liveness_proposal_terminal_outcome(state, proposal_id).is_some(),
+        termination_budget,
+        |state| {
+            terminal_recorder.observe(
+                liveness_proposal_terminal_outcome(state, proposal_id)
+                    .map(operation_outcome_from_proposal),
+            )
+        },
         |_| true,
     )?;
     if termination.completed {
-        let Some(outcome) = liveness_proposal_terminal_outcome(&state, proposal_id) else {
-            return Err(soak_liveness_failure(
+        let Some(outcome) = terminal_recorder
+            .evidence()
+            .map(|evidence| evidence.outcome)
+            .and_then(proposal_outcome_from_operation)
+        else {
+            return Err(soak_liveness_invariant_failure(
                 &state,
                 config,
                 &trace,
@@ -201,18 +272,41 @@ pub(super) fn run_proposal_termination_liveness_check(
             outcome,
             stable_leader_at_acceptance,
             round_budget,
-            budget,
+            authority_loss_budget.saturating_add(termination_budget),
             competing_leader.rounds_used + termination.rounds_used,
         ));
     }
 
-    Err(proposal_termination_failure(
+    Err(proposal_termination_bound_failure(
         &state,
         config,
         &trace,
         proposal_id,
-        budget,
+        termination_budget,
     ))
+}
+
+const fn operation_outcome_from_proposal(
+    outcome: ProposalTerminalOutcome,
+) -> OperationTerminalOutcome {
+    match outcome {
+        ProposalTerminalOutcome::Committed => OperationTerminalOutcome::Committed,
+        ProposalTerminalOutcome::Rejected => OperationTerminalOutcome::Rejected,
+        ProposalTerminalOutcome::Unknown => OperationTerminalOutcome::Unknown,
+    }
+}
+
+const fn proposal_outcome_from_operation(
+    outcome: OperationTerminalOutcome,
+) -> Option<ProposalTerminalOutcome> {
+    match outcome {
+        OperationTerminalOutcome::Committed => Some(ProposalTerminalOutcome::Committed),
+        OperationTerminalOutcome::Rejected => Some(ProposalTerminalOutcome::Rejected),
+        OperationTerminalOutcome::Unknown => Some(ProposalTerminalOutcome::Unknown),
+        OperationTerminalOutcome::Completed
+        | OperationTerminalOutcome::Canceled
+        | OperationTerminalOutcome::Installed => None,
+    }
 }
 
 fn isolate_node_one(
@@ -239,14 +333,33 @@ fn isolate_node_one(
     Ok(())
 }
 
-fn proposal_termination_failure(
+fn proposal_authority_loss_coverage_failure(
     state: &ExplorationState,
     config: SoakConfig,
     trace: &[SoakAction],
     proposal_id: ProposalId,
     budget: usize,
 ) -> SoakFailure {
-    soak_liveness_failure(
+    soak_liveness_coverage_failure(
+        state,
+        config,
+        trace,
+        catalog::LV_02_PROPOSAL_PROGRESS,
+        format!(
+            "accepted proposal {} did not establish authority loss within {budget} bounded-fair rounds",
+            proposal_id.0
+        ),
+    )
+}
+
+fn proposal_termination_bound_failure(
+    state: &ExplorationState,
+    config: SoakConfig,
+    trace: &[SoakAction],
+    proposal_id: ProposalId,
+    budget: usize,
+) -> SoakFailure {
+    soak_liveness_invariant_failure(
         state,
         config,
         trace,
@@ -296,5 +409,6 @@ fn proposal_termination_report(
             proposal_id,
             outcome,
         }),
+        operation: None,
     }
 }

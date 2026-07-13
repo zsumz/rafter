@@ -246,17 +246,16 @@ fn same_boundary_snapshot_pair_summary() -> Result<Summary, Failure> {
 fn snapshot_pair_state() -> Result<RestartSnapshotState, Failure> {
     let mut cluster = Cluster::new(three_node_configs());
     let (snapshot, payload) = test_snapshot(1, 2, 1, 2, b"snapshot boundary");
+    let mut visible_prefix = bootstrap_state(
+        Term(2),
+        &[
+            (1, Term(1), b"old prefix"),
+            (2, Term(1), b"snapshot boundary"),
+        ],
+    );
+    visible_prefix.commit_index = LogIndex(2);
     cluster
-        .restart_node_from_bootstrap(
-            NodeId(1),
-            bootstrap_state(
-                Term(2),
-                &[
-                    (1, Term(1), b"old prefix"),
-                    (2, Term(1), b"snapshot boundary"),
-                ],
-            ),
-        )
+        .restart_node_from_bootstrap(NodeId(1), visible_prefix)
         .map_err(|error| witness_harness_error(format!("seed visible leader: {error:?}")))?;
     for node_id in [NodeId(2), NodeId(3)] {
         cluster

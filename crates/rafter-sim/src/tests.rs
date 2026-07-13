@@ -13,3 +13,4 @@ mod raft_liveness;
 mod replication_pipelining;
 mod single_group_failures;
 mod snapshot_installation;
+mod transition_observation;

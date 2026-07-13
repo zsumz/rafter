@@ -1,4 +1,7 @@
-use crate::{model_check::catalog, SimSeed};
+use crate::{
+    model_check::{catalog, FailureKind},
+    SimSeed,
+};
 
 use super::super::driver::soak_liveness_round_budget;
 use super::{
@@ -20,6 +23,7 @@ fn quorum_only_leader_monitor_reports_starved_schedule_bound() {
         failure.failure.invariant(),
         catalog::LV_01_POST_HEAL_LEADER_CONVERGENCE
     );
+    assert_eq!(failure.failure.kind(), FailureKind::InvariantViolation);
     assert!(failure
         .failure
         .message()
@@ -39,6 +43,7 @@ fn quorum_only_leader_usability_monitor_reports_exhausted_bound() {
         failure.failure.invariant(),
         catalog::LV_01_POST_HEAL_LEADER_CONVERGENCE
     );
+    assert_eq!(failure.failure.kind(), FailureKind::InvariantViolation);
     assert!(failure
         .failure
         .message()

@@ -32,10 +32,15 @@ fn linearizer_rejects_read_that_misses_completed_write() {
     ));
 
     let read_index = state.cluster().local_applied_index(NodeId(1));
-    state.record_client_read(NodeId(1), 1, read_index);
+    state.record_client_read(&crate::ReadRegistered {
+        node_id: NodeId(1),
+        operation_id: 0,
+        request_id: 1,
+        committed_floor: read_index,
+    });
     state
         .record_client_read_completion_corruption(
-            1,
+            0,
             ClientReadProof {
                 application_epoch: state.cluster().application_epoch(NodeId(1)),
                 read_index,
@@ -50,7 +55,7 @@ fn linearizer_rejects_read_that_misses_completed_write() {
 
     assert!(error.contains("not linearizable"));
     assert!(error.contains("write 1"));
-    assert!(error.contains("read 1"));
+    assert!(error.contains("read 0"));
 }
 
 #[test]
@@ -144,6 +149,7 @@ fn insert_completed_read(
     history.reads.insert(
         request_id,
         ClientRead {
+            operation_id: request_id,
             node_id: NodeId(1),
             request_id,
             committed_floor: read_index,

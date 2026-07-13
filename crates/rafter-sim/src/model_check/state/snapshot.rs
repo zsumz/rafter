@@ -9,6 +9,10 @@ use crate::{Cluster, Envelope, ReferenceState};
 
 use super::super::observations::{Observation, ObservationSet};
 
+#[path = "snapshot_identity.rs"]
+mod identity;
+use identity::{snapshot_transfer_identity_check, SnapshotTransferIdentityCheck};
+
 #[derive(Clone, Debug, Default, Hash)]
 pub(crate) struct SnapshotHistory {
     boundary_floor_by_node: BTreeMap<NodeId, LogIndex>,
@@ -18,10 +22,12 @@ pub(crate) struct SnapshotHistory {
     next_retained_index_violations: BTreeSet<String>,
     persisted_boundary_violations: BTreeSet<String>,
     payload_binding_violations: BTreeSet<String>,
+    payload_binding_coverage_gaps: BTreeSet<String>,
     reference_witnesses_by_log_prefix: BTreeMap<(NodeId, LogIndex), SnapshotReferenceWitness>,
     reference_witnesses_by_snapshot:
         BTreeMap<(NodeId, SnapshotTransferId), SnapshotReferenceWitness>,
     transfer_identity_violations: BTreeSet<String>,
+    transfer_identity_instrumentation_errors: BTreeSet<String>,
     chunk_descriptors: BTreeMap<(NodeId, SnapshotTransferId), SnapshotTransferDescriptor>,
     accepted_chunk_witnesses: BTreeSet<AcceptedSnapshotChunkWitness>,
     chunk_identity_violations: BTreeSet<String>,
@@ -123,6 +129,7 @@ impl SnapshotHistory {
         };
         history.record_logical_prefix_references(cluster);
         history.record_snapshot_references(cluster);
+        let _ = history.observe_cluster(cluster);
         history
     }
 
@@ -131,10 +138,17 @@ impl SnapshotHistory {
         self.record_logical_prefix_references(cluster);
         self.record_snapshot_references(cluster);
         for (node_id, node) in &cluster.nodes {
-            if let SnapshotReferenceBindingCheck::Violation(issue) =
-                self.snapshot_reference_binding_check(cluster, *node_id)
-            {
-                self.payload_binding_violations.insert(issue);
+            if node.snapshot().is_some() {
+                match self.snapshot_reference_binding_check(cluster, *node_id) {
+                    SnapshotReferenceBindingCheck::Verified => {}
+                    SnapshotReferenceBindingCheck::CoverageUnavailable => {
+                        self.payload_binding_coverage_gaps
+                            .insert(snapshot_reference_coverage_issue(cluster, *node_id));
+                    }
+                    SnapshotReferenceBindingCheck::Violation(issue) => {
+                        self.payload_binding_violations.insert(issue);
+                    }
+                }
             }
             let current = node.snapshot_index();
             let floor = self.boundary_floor_by_node.entry(*node_id).or_default();
@@ -180,28 +194,47 @@ impl SnapshotHistory {
             let Some(previous) = before.nodes.get(node_id) else {
                 continue;
             };
-            if node.snapshot_index() <= previous.snapshot_index() {
+            let boundary_advanced = node.snapshot_index() > previous.snapshot_index();
+            let snapshot_identity_changed = snapshot_identity_changed(before, after, *node_id);
+            if !snapshot_identity_changed || node.snapshot_index() < previous.snapshot_index() {
                 continue;
             }
             self.record_installed_snapshot_reference(after, *node_id, delivered);
             self.record_snapshot_semantics(before, after, *node_id);
-            observations.mark(Observation::SnapshotBoundaryAdvances);
+            if boundary_advanced {
+                observations.mark(Observation::SnapshotBoundaryAdvances);
+            }
             self.record_geometry(after, *node_id, &mut observations);
 
             match self.snapshot_reference_binding_check(after, *node_id) {
                 SnapshotReferenceBindingCheck::Verified => {
                     observations.mark(Observation::SnapshotPayloadBindingsChecked);
                 }
-                SnapshotReferenceBindingCheck::CoverageUnavailable => {}
+                SnapshotReferenceBindingCheck::CoverageUnavailable => {
+                    self.payload_binding_coverage_gaps
+                        .insert(snapshot_reference_coverage_issue(after, *node_id));
+                }
                 SnapshotReferenceBindingCheck::Violation(issue) => {
                     self.payload_binding_violations.insert(issue);
                 }
+            }
+            let delivered_install = delivered.is_some_and(|envelope| {
+                envelope.to == *node_id
+                    && matches!(
+                        envelope.message,
+                        Message::InstallSnapshot(_) | Message::InstallSnapshotChunk(_)
+                    )
+            });
+            if !boundary_advanced && !delivered_install {
+                continue;
             }
             match snapshot_transfer_identity_check(before, after, *node_id, delivered) {
                 SnapshotTransferIdentityCheck::Verified => {
                     observations.mark(Observation::SnapshotTransferIdentitiesChecked);
                 }
-                SnapshotTransferIdentityCheck::CoverageUnavailable => {}
+                SnapshotTransferIdentityCheck::CoverageUnavailable(issue) => {
+                    self.transfer_identity_instrumentation_errors.insert(issue);
+                }
                 SnapshotTransferIdentityCheck::Violation(issue) => {
                     self.transfer_identity_violations.insert(issue);
                 }
@@ -241,7 +274,11 @@ impl SnapshotHistory {
             let Some(mut state) = state else {
                 continue;
             };
-            for entry in bootstrap.log {
+            for entry in bootstrap
+                .log
+                .into_iter()
+                .filter(|entry| entry.index <= bootstrap.commit_index)
+            {
                 state = apply_reference_transition(&state, entry.index, &entry.kind);
                 self.reference_witnesses_by_log_prefix.insert(
                     (node_id, entry.index),
@@ -514,7 +551,9 @@ impl SnapshotHistory {
         let Message::InstallSnapshotChunk(request) = &envelope.message else {
             return;
         };
-        let Some(effect) = accepted_chunk_effect(before, after, envelope.to, request) else {
+        let Some(effect) =
+            accepted_chunk_effect(before, after, envelope.to, envelope.from, request)
+        else {
             return;
         };
 
@@ -598,8 +637,16 @@ impl SnapshotHistory {
         &self.payload_binding_violations
     }
 
+    pub(crate) const fn payload_binding_coverage_gaps(&self) -> &BTreeSet<String> {
+        &self.payload_binding_coverage_gaps
+    }
+
     pub(crate) const fn transfer_identity_violations(&self) -> &BTreeSet<String> {
         &self.transfer_identity_violations
+    }
+
+    pub(crate) const fn transfer_identity_instrumentation_errors(&self) -> &BTreeSet<String> {
+        &self.transfer_identity_instrumentation_errors
     }
 
     pub(crate) const fn chunk_identity_violations(&self) -> &BTreeSet<String> {
@@ -623,18 +670,38 @@ impl SnapshotHistory {
     }
 }
 
+fn snapshot_reference_coverage_issue(cluster: &Cluster, node_id: NodeId) -> String {
+    let Some(snapshot) = cluster.node(node_id).snapshot() else {
+        return format!(
+            "{node_id} advanced its snapshot boundary without an installed descriptor to bind to a reference witness"
+        );
+    };
+    format!(
+        "{node_id} snapshot transfer {} at boundary {} has no logical-prefix reference witness",
+        snapshot.transfer_id(),
+        snapshot.metadata.last_included_index
+    )
+}
+
 fn accepted_chunk_effect(
     before: &Cluster,
     after: &Cluster,
     node_id: NodeId,
+    leader_id: NodeId,
     request: &InstallSnapshotChunk,
 ) -> Option<AcceptedSnapshotChunkEffect> {
-    let before_node = before.node(node_id);
     let after_node = after.node(node_id);
-    if after_node.snapshot_index() > before_node.snapshot_index() {
+    if snapshot_identity_changed(before, after, node_id) {
         let before_received = before
             .snapshot_staging
             .get(&node_id)
+            .filter(|staged| {
+                staged.leader_id == leader_id
+                    && staged.transfer_id == request.transfer_id
+                    && staged.metadata == request.metadata
+                    && staged.total_payload_len == request.total_payload_len
+                    && staged.application_payload_crc32 == request.application_payload_crc32
+            })
             .map_or(0, |staged| staged.bytes.len() as u64);
         return Some(AcceptedSnapshotChunkEffect::Installed {
             before_received,
@@ -666,6 +733,15 @@ fn accepted_chunk_effect(
             after_received,
         },
     )
+}
+
+fn snapshot_identity_changed(before: &Cluster, after: &Cluster, node_id: NodeId) -> bool {
+    let before_snapshot = before.node(node_id).snapshot();
+    let after_snapshot = after.node(node_id).snapshot();
+    before_snapshot != after_snapshot
+        || after_snapshot.is_some_and(|snapshot| {
+            before.snapshot_payload(node_id, snapshot) != after.snapshot_payload(node_id, snapshot)
+        })
 }
 
 fn chunk_identity_issue(
@@ -858,7 +934,11 @@ fn reference_witness_from_execution(
         .execution_history()
         .iter()
         .rev()
-        .find(|witness| witness.node_id == node_id && witness.entry.index == boundary)
+        .find(|witness| {
+            witness.node_id == node_id
+                && witness.entry.index == boundary
+                && witness.commit_index_at_emit >= boundary
+        })
         .map(|witness| SnapshotReferenceWitness {
             boundary_term: witness.entry.term,
             state: witness.resulting_state.clone(),
@@ -904,89 +984,6 @@ pub(crate) fn snapshot_payload_binding_issue(cluster: &Cluster, node_id: NodeId)
     None
 }
 
-enum SnapshotTransferIdentityCheck {
-    Verified,
-    CoverageUnavailable,
-    Violation(String),
-}
-
-fn snapshot_transfer_identity_check(
-    before: &Cluster,
-    after: &Cluster,
-    node_id: NodeId,
-    delivered: Option<&Envelope>,
-) -> SnapshotTransferIdentityCheck {
-    let envelope = delivered.filter(|envelope| envelope.to == node_id);
-    let Some(envelope) = envelope else {
-        return SnapshotTransferIdentityCheck::Violation(format!(
-            "{node_id} advanced its snapshot boundary without an install-snapshot delivery"
-        ));
-    };
-    let Some(installed) = after.node(node_id).snapshot() else {
-        return SnapshotTransferIdentityCheck::Violation(format!(
-            "{node_id} advanced its snapshot boundary without a visible descriptor"
-        ));
-    };
-    let installed_payload = after.snapshot_payload(node_id, installed);
-
-    let (expected, expected_payload) = match &envelope.message {
-        Message::InstallSnapshot(request) => (
-            RaftSnapshot::from_payload(
-                request.metadata.clone(),
-                request.application_payload.as_slice(),
-            ),
-            Some(request.application_payload.as_slice()),
-        ),
-        Message::InstallSnapshotChunk(request) if request.done => {
-            let expected = RaftSnapshot::new(
-                request.metadata.clone(),
-                request.total_payload_len,
-                request.application_payload_crc32,
-            );
-            if request.transfer_id != expected.transfer_id() {
-                return SnapshotTransferIdentityCheck::Violation(format!(
-                    "{node_id} installed chunk transfer {} whose descriptor identity is {}",
-                    request.transfer_id,
-                    expected.transfer_id()
-                ));
-            }
-            let expected_payload = before.snapshot_payload(envelope.from, &expected);
-            (expected, expected_payload)
-        }
-        Message::InstallSnapshotChunk(_) => {
-            return SnapshotTransferIdentityCheck::Violation(format!(
-                "{node_id} advanced its snapshot boundary on a non-final chunk"
-            ));
-        }
-        Message::AppendEntries(_)
-        | Message::AppendEntriesResponse(_)
-        | Message::InstallSnapshotResponse(_)
-        | Message::PreVote(_)
-        | Message::PreVoteResponse(_)
-        | Message::RequestVote(_)
-        | Message::RequestVoteResponse(_)
-        | Message::TimeoutNow(_) => {
-            return SnapshotTransferIdentityCheck::Violation(format!(
-                "{node_id} advanced its snapshot boundary on a non-snapshot message"
-            ));
-        }
-    };
-
-    if installed != &expected {
-        return SnapshotTransferIdentityCheck::Violation(format!(
-            "{node_id} installed snapshot transfer {} instead of delivered transfer {}",
-            installed.transfer_id(),
-            expected.transfer_id()
-        ));
-    }
-    let Some(expected_payload) = expected_payload else {
-        return SnapshotTransferIdentityCheck::CoverageUnavailable;
-    };
-    if installed_payload != Some(expected_payload) {
-        return SnapshotTransferIdentityCheck::Violation(format!(
-            "{node_id} installed bytes that differ from delivered transfer {}",
-            expected.transfer_id()
-        ));
-    }
-    SnapshotTransferIdentityCheck::Verified
-}
+#[cfg(test)]
+#[path = "snapshot_tests.rs"]
+mod tests;

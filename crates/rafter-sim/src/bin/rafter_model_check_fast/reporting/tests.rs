@@ -39,7 +39,7 @@ fn soak_event_derives_liveness_evidence_from_monitor_reports() {
     assert_eq!(event["observations"]["post_heal_quiescent_leaders"], 1);
     assert_eq!(event["observations"]["terminated_liveness_proposals"], 1);
     assert!(event["observations"]
-        .get("completed_liveness_read_barriers")
+        .get("terminated_liveness_read_barriers")
         .is_none());
     assert!(event["liveness_reports"].as_array().is_some_and(|reports| {
         reports
@@ -325,6 +325,43 @@ fn soak_event_requires_the_exact_optional_feature_set() {
     assert_eq!(
         event["liveness_features"].as_array().map(Vec::len),
         Some(10)
+    );
+}
+
+#[test]
+fn soak_event_requires_exact_terminal_operation_evidence() {
+    let config = SoakConfig::new(SimSeed(0x51_7e), 0).with_max_read_indexes(1);
+    let summary = run_raft_random_soak(three_node_configs(2), config)
+        .expect("read liveness fixture should complete");
+
+    for mutation in [
+        serde_json::Value::Null,
+        json!({
+            "operation_id": "read:0",
+            "terminal_outcome": "pending"
+        }),
+        json!({
+            "operation_id": "invented",
+            "terminal_outcome": "completed"
+        }),
+    ] {
+        let mut reports = summary.liveness_reports_json();
+        report_mut(&mut reports, "read-barrier")["operation"] = mutation;
+        let event =
+            soak_event_from_reports("raft-soak", &summary, config, &[], Duration::ZERO, &reports);
+        assert_harness_error(&event, "operation");
+    }
+
+    let mut reports = summary.liveness_reports_json();
+    report_mut(&mut reports, "leader-convergence")["operation"] = json!({
+        "operation_id": "invented",
+        "terminal_outcome": "completed"
+    });
+    let event =
+        soak_event_from_reports("raft-soak", &summary, config, &[], Duration::ZERO, &reports);
+    assert_harness_error(
+        &event,
+        "operation evidence does not match typed execution provenance",
     );
 }
 

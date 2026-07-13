@@ -1,7 +1,9 @@
+use std::hash::{Hash, Hasher};
+
 use rafter::{
     BootstrapLogEntry, CommittedConfiguration, LocalProposalDropReason, LocalProposalId,
     LogEntryKind, LogIndex, MembershipConfig, NodeId, ProposalRejection, RaftSnapshotMetadata,
-    SharedPayload, SnapshotTransferId, Term,
+    ReadIndexCancelReason, ReadIndexRejection, SharedPayload, SnapshotTransferId, Term,
 };
 
 use crate::Envelope;
@@ -56,6 +58,141 @@ pub struct ExecutionWitness {
     pub resulting_state: ReferenceState,
 }
 
+/// Structurally append-only owner of execution witnesses.
+///
+/// Production code can only append. Test-only corruption hooks advance a
+/// revision so the incremental verifier can detect rewritten consumed history
+/// without rescanning every payload-rich prefix after each transition.
+#[derive(Clone, Debug)]
+pub(crate) struct ExecutionLedger {
+    witnesses: Vec<ExecutionWitness>,
+    rewrite_revision: u64,
+    identity_a: u64,
+    identity_b: u64,
+}
+
+impl Default for ExecutionLedger {
+    fn default() -> Self {
+        Self {
+            witnesses: Vec::new(),
+            rewrite_revision: 0,
+            identity_a: EXECUTION_IDENTITY_SEED_A,
+            identity_b: EXECUTION_IDENTITY_SEED_B,
+        }
+    }
+}
+
+impl Hash for ExecutionLedger {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.witnesses.len().hash(state);
+        self.rewrite_revision.hash(state);
+        self.identity_a.hash(state);
+        self.identity_b.hash(state);
+    }
+}
+
+impl ExecutionLedger {
+    pub(crate) fn push(&mut self, witness: ExecutionWitness) {
+        (self.identity_a, self.identity_b) = fold_execution_witness_identity(
+            self.identity_a,
+            self.identity_b,
+            self.witnesses.len(),
+            &witness,
+        );
+        self.witnesses.push(witness);
+    }
+
+    pub(crate) fn as_slice(&self) -> &[ExecutionWitness] {
+        &self.witnesses
+    }
+
+    pub(crate) const fn rewrite_revision(&self) -> u64 {
+        self.rewrite_revision
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_witnesses(witnesses: Vec<ExecutionWitness>) -> Self {
+        let mut ledger = Self::default();
+        for witness in witnesses {
+            ledger.push(witness);
+        }
+        ledger
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rewrite(&mut self, index: usize, witness: ExecutionWitness) {
+        self.witnesses[index] = witness;
+        self.rewrite_revision = self.rewrite_revision.saturating_add(1);
+        self.recompute_identity();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn swap(&mut self, first: usize, second: usize) {
+        self.witnesses.swap(first, second);
+        self.rewrite_revision = self.rewrite_revision.saturating_add(1);
+        self.recompute_identity();
+    }
+
+    #[cfg(test)]
+    fn recompute_identity(&mut self) {
+        let mut identity_a = EXECUTION_IDENTITY_SEED_A;
+        let mut identity_b = EXECUTION_IDENTITY_SEED_B;
+        for (position, witness) in self.witnesses.iter().enumerate() {
+            (identity_a, identity_b) =
+                fold_execution_witness_identity(identity_a, identity_b, position, witness);
+        }
+        self.identity_a = identity_a;
+        self.identity_b = identity_b;
+    }
+}
+
+const EXECUTION_IDENTITY_SEED_A: u64 = 0xcbf2_9ce4_8422_2325;
+const EXECUTION_IDENTITY_SEED_B: u64 = 0x55c5_e55d_ba2d_fa91;
+
+pub(crate) fn fold_execution_witness_identity(
+    current_a: u64,
+    current_b: u64,
+    position: usize,
+    witness: &ExecutionWitness,
+) -> (u64, u64) {
+    let mut a = ExecutionIdentityHasher::new(EXECUTION_IDENTITY_SEED_A);
+    witness.hash(&mut a);
+    let mut b = ExecutionIdentityHasher::new(EXECUTION_IDENTITY_SEED_B);
+    witness.hash(&mut b);
+    let position = position as u64;
+    (
+        current_a
+            .rotate_left(9)
+            .wrapping_add(a.finish())
+            .wrapping_add(position.wrapping_mul(0x9e37_79b9_7f4a_7c15)),
+        current_b
+            .rotate_left(17)
+            .wrapping_mul(0x0000_0100_0000_01b3)
+            .wrapping_add(b.finish() ^ position.rotate_left(23)),
+    )
+}
+
+struct ExecutionIdentityHasher(u64);
+
+impl ExecutionIdentityHasher {
+    const fn new(seed: u64) -> Self {
+        Self(seed)
+    }
+}
+
+impl Hasher for ExecutionIdentityHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        for byte in bytes {
+            self.0 ^= u64::from(*byte);
+            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+    }
+}
+
 /// Local-only proposal correlation emitted by one simulated node transition.
 ///
 /// These events preserve the kernel's explicit outcome boundary without
@@ -94,6 +231,18 @@ pub(crate) enum LocalProposalEvent {
 pub(crate) struct RecordedOutputs {
     pub(crate) emitted: Vec<Envelope>,
     pub(crate) local_proposals: Vec<LocalProposalEvent>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct ProposalRejected {
+    pub(crate) node_id: NodeId,
+    pub(crate) proposal_id: Option<LocalProposalId>,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct TransferRejected {
+    pub(crate) node_id: NodeId,
+    pub(crate) target: NodeId,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -165,6 +314,8 @@ pub(crate) struct StagedSnapshotTransfer {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ReadGranted {
     pub node_id: NodeId,
+    /// Simulator-local immutable registration generation, when correlation succeeded.
+    pub operation_id: Option<u64>,
     pub application_epoch: u64,
     pub request_id: u64,
     pub read_index: LogIndex,
@@ -177,6 +328,111 @@ pub struct ReadGranted {
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct ReadRegistered {
     pub node_id: NodeId,
+    /// Simulator-local immutable generation that distinguishes reused `ReadId` values.
+    pub operation_id: u64,
     pub request_id: u64,
     pub committed_floor: LogIndex,
+}
+
+/// An explicit terminal read-index output preserved in simulator history.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub enum ReadTerminalOutput {
+    /// The node refused the request without registering a barrier.
+    Rejected {
+        node_id: NodeId,
+        /// Simulator-local immutable registration generation, when correlation succeeded.
+        operation_id: Option<u64>,
+        request_id: u64,
+        reason: ReadIndexRejection,
+    },
+    /// The node cleared a previously registered barrier before granting it.
+    Canceled {
+        node_id: NodeId,
+        /// Simulator-local immutable registration generation, when correlation succeeded.
+        operation_id: Option<u64>,
+        request_id: u64,
+        reason: ReadIndexCancelReason,
+    },
+}
+
+impl ReadTerminalOutput {
+    pub(crate) fn matches_operation(self, operation_id: u64) -> bool {
+        match self {
+            Self::Rejected {
+                operation_id: recorded,
+                ..
+            }
+            | Self::Canceled {
+                operation_id: recorded,
+                ..
+            } => recorded == Some(operation_id),
+        }
+    }
+
+    pub(crate) const fn operation_id(self) -> Option<u64> {
+        match self {
+            Self::Rejected { operation_id, .. } | Self::Canceled { operation_id, .. } => {
+                operation_id
+            }
+        }
+    }
+}
+
+impl Hash for ReadTerminalOutput {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        match self {
+            Self::Rejected {
+                node_id,
+                operation_id,
+                request_id,
+                reason,
+            } => {
+                0_u8.hash(state);
+                node_id.hash(state);
+                operation_id.hash(state);
+                request_id.hash(state);
+                hash_read_rejection(*reason, state);
+            }
+            Self::Canceled {
+                node_id,
+                operation_id,
+                request_id,
+                reason,
+            } => {
+                1_u8.hash(state);
+                node_id.hash(state);
+                operation_id.hash(state);
+                request_id.hash(state);
+                hash_read_cancellation(*reason, state);
+            }
+        }
+    }
+}
+
+fn hash_read_rejection<H: Hasher>(reason: ReadIndexRejection, state: &mut H) {
+    match reason {
+        ReadIndexRejection::NotLeader { role, term } => {
+            0_u8.hash(state);
+            role.hash(state);
+            term.hash(state);
+        }
+        ReadIndexRejection::NoCommitInCurrentTerm => 1_u8.hash(state),
+        ReadIndexRejection::LeadershipTransferInProgress { target } => {
+            2_u8.hash(state);
+            target.hash(state);
+        }
+        ReadIndexRejection::TooManyPendingReads => 3_u8.hash(state),
+    }
+}
+
+fn hash_read_cancellation<H: Hasher>(reason: ReadIndexCancelReason, state: &mut H) {
+    match reason {
+        ReadIndexCancelReason::LeadershipLost => 0_u8.hash(state),
+        ReadIndexCancelReason::LeaderStateReset => 1_u8.hash(state),
+        ReadIndexCancelReason::LeadershipTransfer { target } => {
+            2_u8.hash(state);
+            target.hash(state);
+        }
+    }
 }

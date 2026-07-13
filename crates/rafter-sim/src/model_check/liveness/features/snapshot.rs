@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use rafter::NodeId;
 
 use super::super::driver::{
-    check_soak_safety, drive_liveness_rounds_until_observed, single_leader, soak_liveness_failure,
-    soak_liveness_round_budget, LivenessRoundBudget,
+    check_soak_safety, drive_liveness_rounds_until_observed, single_leader,
+    soak_liveness_invariant_failure, soak_liveness_round_budget, LivenessRoundBudget,
 };
 
 pub(super) fn snapshot_liveness_round_budget(config: SoakConfig) -> usize {
@@ -13,6 +13,7 @@ pub(super) fn snapshot_liveness_round_budget(config: SoakConfig) -> usize {
 }
 use super::{
     FaultStateRequirement, LivenessFeatureReport, LivenessPreconditionProbe, LivenessPreconditions,
+    OperationTerminalOutcome, TerminalEvidenceRecorder, TerminalRecorderMode,
     LV_03_SNAPSHOT_CLAUSE_IDS,
 };
 use crate::model_check::{
@@ -25,6 +26,14 @@ pub(in crate::model_check) fn run_snapshot_catchup_liveness_check(
     config: SoakConfig,
     budget: usize,
 ) -> Result<LivenessFeatureReport, SoakFailure> {
+    run_snapshot_catchup_liveness_detector(config, budget, TerminalRecorderMode::Production)
+}
+
+pub(super) fn run_snapshot_catchup_liveness_detector(
+    config: SoakConfig,
+    budget: usize,
+    recorder_mode: TerminalRecorderMode,
+) -> Result<LivenessFeatureReport, SoakFailure> {
     let mut snapshot_state = RestartSnapshotState::snapshot_transfer();
     let round_budget = LivenessRoundBudget::capture(&snapshot_state.state, config, 1);
     let expected = snapshot_state
@@ -33,6 +42,10 @@ pub(in crate::model_check) fn run_snapshot_catchup_liveness_check(
         .expect("snapshot liveness fixture declares expected snapshot");
     let mut trace = Vec::new();
     let mut observed_actions = BTreeSet::new();
+    let mut terminal_recorder = TerminalEvidenceRecorder::new(
+        format!("snapshot:{}", expected.snapshot.transfer_id()),
+        recorder_mode,
+    );
 
     check_soak_safety(&snapshot_state.state, config, &trace)?;
     let completion = drive_liveness_rounds_until_observed(
@@ -41,10 +54,23 @@ pub(in crate::model_check) fn run_snapshot_catchup_liveness_check(
         &mut trace,
         &mut observed_actions,
         budget,
-        |state| snapshot_catchup_completed(state, &expected),
+        |state| {
+            terminal_recorder.observe(
+                snapshot_catchup_completed(state, &expected)
+                    .then_some(OperationTerminalOutcome::Installed),
+            )
+        },
         |_| true,
     )?;
     if completion.completed {
+        let operation = terminal_recorder.evidence().ok_or_else(|| {
+            super::super::driver::soak_liveness_harness_error(
+                &snapshot_state.state,
+                config,
+                &trace,
+                "terminal recorder reported snapshot completion without evidence",
+            )
+        })?;
         Ok(LivenessFeatureReport {
             invariant_id: "LV-03",
             clause_ids: LV_03_SNAPSHOT_CLAUSE_IDS,
@@ -67,9 +93,10 @@ pub(in crate::model_check) fn run_snapshot_catchup_liveness_check(
             fault_cycle: None,
             stable_leader: None,
             proposal: None,
+            operation: Some(operation),
         })
     } else {
-        Err(soak_liveness_failure(
+        Err(soak_liveness_invariant_failure(
             &snapshot_state.state,
             config,
             &trace,

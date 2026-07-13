@@ -1,4 +1,7 @@
-use super::super::applied::{check_applied_commit_bound, check_applied_exactly_once};
+use super::super::applied::{
+    check_applied_commit_bound, check_applied_exactly_once, check_execution_history_agreement,
+};
+use super::super::client::check_client_history_read_write_invariants;
 use super::*;
 
 #[test]
@@ -250,9 +253,16 @@ fn read_reconstruction_ignores_values_from_previous_application_epoch() {
     assert_eq!(cluster.application_epoch(NodeId(1)), 1);
 
     let mut state = ExplorationState::new(cluster);
-    state.record_client_read(NodeId(1), 7, LogIndex(1));
+    let operation_id = 0;
+    state.record_client_read(&crate::ReadRegistered {
+        node_id: NodeId(1),
+        operation_id,
+        request_id: 7,
+        committed_floor: LogIndex(1),
+    });
     state.inject_read_grant(crate::ReadGranted {
         node_id: NodeId(1),
+        operation_id: Some(operation_id),
         application_epoch: state.cluster().application_epoch(NodeId(1)),
         request_id: 7,
         read_index: LogIndex(1),
@@ -263,15 +273,46 @@ fn read_reconstruction_ignores_values_from_previous_application_epoch() {
     let read = state
         .client_history()
         .reads
-        .get(&7)
+        .get(&operation_id)
         .expect("registered read is present");
     let ClientReadOutcome::Completed { result, .. } = &read.outcome else {
         panic!("read should complete once the current epoch has applied through the read index");
     };
     assert_eq!(
-        result, &None,
-        "read completion must not reconstruct a value solely from the old epoch"
+        result,
+        &Some(b"snapshot at one".to_vec().into()),
+        "read completion must reconstruct the current epoch snapshot, not an old-epoch apply"
     );
+}
+
+#[test]
+fn read_grant_from_a_previous_application_epoch_fails_closed() {
+    let mut state = ExplorationState::new(one_node_cluster());
+    state.record_client_read(&crate::ReadRegistered {
+        node_id: NodeId(1),
+        operation_id: 0,
+        request_id: 7,
+        committed_floor: LogIndex::ZERO,
+    });
+    crate::model_check::state::restart_node_losing_application_state(&mut state, NodeId(1), &[])
+        .expect("application-loss transition is valid");
+    state.inject_read_grant(crate::ReadGranted {
+        node_id: NodeId(1),
+        operation_id: Some(0),
+        application_epoch: 0,
+        request_id: 7,
+        read_index: LogIndex::ZERO,
+        local_applied_index: LogIndex::ZERO,
+    });
+    state.refresh_client_history();
+
+    let failure = check_client_history_read_write_invariants(&state, &[])
+        .expect_err("a stale-epoch grant cannot complete a current read");
+    assert_eq!(
+        failure.kind(),
+        crate::model_check::FailureKind::HarnessError
+    );
+    assert!(failure.message().contains("retained grant epoch 0"));
 }
 
 #[test]

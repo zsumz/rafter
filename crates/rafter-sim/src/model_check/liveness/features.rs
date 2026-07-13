@@ -12,7 +12,7 @@ use crate::model_check::{
 use crate::Cluster;
 
 use super::driver::{
-    single_leader, soak_liveness_failure, soak_liveness_round_budget, LivenessRoundBudget,
+    single_leader, soak_liveness_coverage_failure, soak_liveness_round_budget, LivenessRoundBudget,
 };
 
 mod leader;
@@ -27,6 +27,88 @@ mod read;
 mod report_tests;
 mod snapshot;
 mod transfer;
+
+#[derive(Clone, Copy)]
+enum TerminalRecorderMode {
+    Production,
+    #[cfg(test)]
+    DropTerminalRecord,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum OperationTerminalOutcome {
+    Completed,
+    Rejected,
+    Canceled,
+    Committed,
+    Installed,
+    Unknown,
+}
+
+impl OperationTerminalOutcome {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Completed => "completed",
+            Self::Rejected => "rejected",
+            Self::Canceled => "canceled",
+            Self::Committed => "committed",
+            Self::Installed => "installed",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct OperationEvidence {
+    operation_id: String,
+    outcome: OperationTerminalOutcome,
+}
+
+impl OperationEvidence {
+    fn new(operation_id: String, outcome: OperationTerminalOutcome) -> Self {
+        Self {
+            operation_id,
+            outcome,
+        }
+    }
+}
+
+struct TerminalEvidenceRecorder {
+    operation_id: String,
+    mode: TerminalRecorderMode,
+    evidence: Option<OperationEvidence>,
+}
+
+impl TerminalEvidenceRecorder {
+    fn new(operation_id: String, mode: TerminalRecorderMode) -> Self {
+        Self {
+            operation_id,
+            mode,
+            evidence: None,
+        }
+    }
+
+    fn observe(&mut self, outcome: Option<OperationTerminalOutcome>) -> bool {
+        if self.evidence.is_some() {
+            return true;
+        }
+        let Some(outcome) = outcome else {
+            return false;
+        };
+        match self.mode {
+            TerminalRecorderMode::Production => {
+                self.evidence = Some(OperationEvidence::new(self.operation_id.clone(), outcome));
+            }
+            #[cfg(test)]
+            TerminalRecorderMode::DropTerminalRecord => {}
+        }
+        self.evidence.is_some()
+    }
+
+    fn evidence(&self) -> Option<OperationEvidence> {
+        self.evidence.clone()
+    }
+}
 
 use leader::run_quorum_only_leader_liveness_check;
 use membership::run_membership_transition_liveness_check;
@@ -321,6 +403,7 @@ pub struct LivenessFeatureReport {
     pub(super) fault_cycle: Option<FaultCycleEvidence>,
     pub(super) stable_leader: Option<StableLeaderEvidence>,
     pub(super) proposal: Option<ProposalEvidence>,
+    pub(super) operation: Option<OperationEvidence>,
 }
 
 impl LivenessFeatureReport {
@@ -399,6 +482,10 @@ impl LivenessFeatureReport {
                 "proposal_id": evidence.proposal_id.0,
                 "terminal_outcome": evidence.outcome.as_str(),
             })),
+            "operation": self.operation.as_ref().map(|evidence| json!({
+                "operation_id": evidence.operation_id,
+                "terminal_outcome": evidence.outcome.as_str(),
+            })),
         })
     }
 
@@ -439,6 +526,10 @@ impl LivenessFeatureReport {
             },
             "round_limit": self.round_limit,
             "rounds_used": self.rounds_used,
+            "operation": self.operation.as_ref().map(|evidence| json!({
+                "operation_id": evidence.operation_id,
+                "terminal_outcome": evidence.outcome.as_str(),
+            })),
         })
     }
 
@@ -484,6 +575,19 @@ impl LivenessFeatureReport {
                 return Err("proposal ID must be positive".to_owned());
             }
             validate_proposal_outcome(self.feature_id, proposal.outcome)?;
+        }
+        let operation_required = matches!(
+            self.feature_id,
+            "read-barrier" | "snapshot-catch-up" | "membership-transition" | "leadership-transfer"
+        );
+        if operation_required != self.operation.is_some() {
+            return Err("operation evidence does not match the liveness feature".to_owned());
+        }
+        if let Some(operation) = &self.operation {
+            if operation.operation_id.is_empty() {
+                return Err("operation ID must not be empty".to_owned());
+            }
+            validate_operation_outcome(self.feature_id, operation.outcome)?;
         }
         if expected_clause_ids(self.feature_id) != Some(self.clause_ids) {
             return Err("clause IDs do not match the liveness feature".to_owned());
@@ -570,6 +674,35 @@ fn validate_proposal_outcome(
     }
 }
 
+fn validate_operation_outcome(
+    feature_id: &str,
+    outcome: OperationTerminalOutcome,
+) -> Result<(), String> {
+    let valid = match feature_id {
+        "read-barrier" => matches!(
+            outcome,
+            OperationTerminalOutcome::Completed
+                | OperationTerminalOutcome::Rejected
+                | OperationTerminalOutcome::Canceled
+        ),
+        "snapshot-catch-up" => outcome == OperationTerminalOutcome::Installed,
+        "membership-transition" => matches!(
+            outcome,
+            OperationTerminalOutcome::Committed | OperationTerminalOutcome::Rejected
+        ),
+        "leadership-transfer" => matches!(
+            outcome,
+            OperationTerminalOutcome::Completed | OperationTerminalOutcome::Rejected
+        ),
+        _ => false,
+    };
+    if valid {
+        Ok(())
+    } else {
+        Err("operation terminal outcome does not match monitor semantics".to_owned())
+    }
+}
+
 fn production_monitor_state(
     config: SoakConfig,
     invariant: &'static str,
@@ -581,7 +714,7 @@ fn production_monitor_state(
         ))),
         Err(error) => {
             let empty = ExplorationState::new(Cluster::new_with_seed(Vec::new(), config.seed));
-            Err(soak_liveness_failure(
+            Err(soak_liveness_coverage_failure(
                 &empty,
                 config,
                 &[],
@@ -618,7 +751,9 @@ pub(super) fn run_feature_liveness_checks(
     let budget = soak_liveness_round_budget(&budget_state, config);
     let mut reports = run_quorum_only_leader_liveness_check(config, budget)?;
     reports.push(run_proposal_progress_liveness_check(config, budget)?);
-    reports.push(run_proposal_termination_liveness_check(config, budget)?);
+    reports.push(run_proposal_termination_liveness_check(
+        config, budget, budget,
+    )?);
     if config.max_read_indexes > 0 {
         let mut state =
             production_monitor_state(config, catalog::LV_03_FEATURE_OPERATION_PROGRESS)?;
@@ -630,6 +765,7 @@ pub(super) fn run_feature_liveness_checks(
             config,
             &mut trace,
             &mut feature_actions,
+            budget,
             budget,
         )?);
         observed_actions.extend(feature_actions);
@@ -646,6 +782,7 @@ pub(super) fn run_feature_liveness_checks(
             &mut trace,
             &mut feature_actions,
             budget,
+            budget,
         )?);
         observed_actions.extend(feature_actions);
     }
@@ -660,6 +797,7 @@ pub(super) fn run_feature_liveness_checks(
             config,
             &mut trace,
             &mut feature_actions,
+            budget,
             budget,
         )?);
         observed_actions.extend(feature_actions);

@@ -15,8 +15,8 @@ use driver::{
     check_soak_safety, drive_liveness_rounds_until_observed, drive_soak_liveness_round,
     drive_until_stable_leader, has_partition, issue_liveness_proposal, liveness_proposal_accepted,
     liveness_proposal_completed, liveness_proposal_terminal_outcome, single_leader,
-    soak_liveness_failure, soak_transition_failure, LivenessRoundBudget, ProposalTerminalOutcome,
-    StableLeaderGuard,
+    soak_liveness_coverage_failure, soak_liveness_invariant_failure, soak_transition_failure,
+    FairRoundDriver, LivenessRoundBudget, ProposalTerminalOutcome, StableLeaderGuard,
 };
 pub(in crate::model_check) use features::LivenessFeatureReport;
 use features::{
@@ -66,7 +66,7 @@ pub(in crate::model_check) fn run_soak_liveness_check_with_budget_overrides(
     let Some(convergence) =
         drive_until_stable_leader(state, config, trace, observed_actions, convergence_budget)?
     else {
-        return Err(soak_liveness_failure(
+        return Err(soak_liveness_invariant_failure(
             state,
             config,
             trace,
@@ -83,12 +83,12 @@ pub(in crate::model_check) fn run_soak_liveness_check_with_budget_overrides(
     );
 
     let Some(proposal_id) = issue_liveness_proposal(state, leader, trace, observed_actions) else {
-        return Err(soak_liveness_failure(
+        return Err(soak_liveness_invariant_failure(
             state,
             config,
             trace,
             catalog::LV_01_POST_HEAL_LEADER_CONVERGENCE,
-            "post-heal stable leader did not accept the usability proposal".to_owned(),
+            "post-heal stable leader rejected the usability proposal".to_owned(),
         ));
     };
     let accepted_proposal = liveness_proposal_accepted(state, proposal_id);
@@ -109,7 +109,7 @@ pub(in crate::model_check) fn run_soak_liveness_check_with_budget_overrides(
         || outcome != Some(ProposalTerminalOutcome::Committed)
         || single_leader(state) != Some(leader)
     {
-        return Err(soak_liveness_failure(
+        return Err(soak_liveness_invariant_failure(
             state,
             config,
             trace,
@@ -168,6 +168,7 @@ fn successful_post_heal_convergence_report(
             remained_leader_through_probe: true,
         }),
         proposal: None,
+        operation: None,
     }
 }
 
@@ -208,6 +209,7 @@ fn successful_post_heal_usability_report(
             proposal_id,
             outcome: ProposalTerminalOutcome::Committed,
         }),
+        operation: None,
     }
 }
 
@@ -265,7 +267,7 @@ fn create_post_heal_partition(
     }
     let mut nodes = state.cluster().nodes.keys().copied();
     let Some(partition_a) = nodes.next() else {
-        return Err(soak_liveness_failure(
+        return Err(soak_liveness_coverage_failure(
             state,
             config,
             trace,
@@ -274,7 +276,7 @@ fn create_post_heal_partition(
         ));
     };
     let Some(partition_b) = nodes.next() else {
-        return Err(soak_liveness_failure(
+        return Err(soak_liveness_coverage_failure(
             state,
             config,
             trace,
@@ -299,7 +301,7 @@ fn create_post_heal_partition(
     let partition_observed =
         state.cluster().partitioned(partition_a, partition_b) && has_partition(state.cluster());
     if !partition_observed {
-        return Err(soak_liveness_failure(
+        return Err(soak_liveness_coverage_failure(
             state,
             config,
             trace,
@@ -330,11 +332,19 @@ fn exercise_post_heal_partition(
     let nodes_exercised = state.cluster().nodes.len();
     let protocol_before = super::explorers::protocol_state_fingerprint(state);
     let exercise_trace_start = trace.len();
+    let mut fair_rounds = FairRoundDriver::new();
     for round in 0..POST_HEAL_FAULT_EXERCISE_ROUNDS {
-        drive_soak_liveness_round(state, config, trace, observed_actions, round)?;
+        drive_soak_liveness_round(
+            &mut fair_rounds,
+            state,
+            config,
+            trace,
+            observed_actions,
+            round,
+        )?;
         check_soak_safety(state, config, trace)?;
         if !state.cluster().partitioned(partition_a, partition_b) {
-            return Err(soak_liveness_failure(
+            return Err(soak_liveness_coverage_failure(
                 state,
                 config,
                 trace,
@@ -360,7 +370,7 @@ fn exercise_post_heal_partition(
     let partition_active_after_exercise =
         state.cluster().partitioned(partition_a, partition_b) && has_partition(state.cluster());
     if !partition_active_after_exercise {
-        return Err(soak_liveness_failure(
+        return Err(soak_liveness_coverage_failure(
             state,
             config,
             trace,
@@ -392,7 +402,7 @@ fn heal_post_heal_partition(
     let heal_observed =
         !has_partition(state.cluster()) && !state.cluster().partitioned(partition_a, partition_b);
     if !heal_observed {
-        return Err(soak_liveness_failure(
+        return Err(soak_liveness_coverage_failure(
             state,
             config,
             trace,

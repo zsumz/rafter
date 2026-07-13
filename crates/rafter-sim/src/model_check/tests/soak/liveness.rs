@@ -1,7 +1,7 @@
 use std::collections::BTreeSet;
 
 use super::super::super::helpers::three_node_configs;
-use super::super::super::liveness;
+use super::super::super::liveness::{self, run_soak_liveness_check_with_budget_overrides};
 use super::super::super::{
     run_raft_random_soak, soak::SoakAction, state::ExplorationState, SoakActionKind, SoakConfig,
 };
@@ -75,7 +75,7 @@ fn post_heal_leader_convergence_monitor_reports_exhausted_bound() {
     let mut trace = Vec::new();
     let mut observed_actions = BTreeSet::new();
 
-    let failure = liveness::run_soak_liveness_check_with_budget_overrides(
+    let failure = run_soak_liveness_check_with_budget_overrides(
         &mut state,
         config,
         &mut trace,
@@ -105,7 +105,7 @@ fn post_heal_leader_usability_monitor_reports_exhausted_bound() {
     let mut trace = Vec::new();
     let mut observed_actions = BTreeSet::new();
 
-    let failure = liveness::run_soak_liveness_check_with_budget_overrides(
+    let failure = run_soak_liveness_check_with_budget_overrides(
         &mut state,
         config,
         &mut trace,

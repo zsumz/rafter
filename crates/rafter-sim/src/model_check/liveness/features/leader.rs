@@ -6,7 +6,7 @@ use super::{
     super::driver::{
         check_soak_safety, drive_liveness_rounds_until_observed, drive_until_stable_leader,
         issue_liveness_proposal, liveness_proposal_completed, liveness_proposal_terminal_outcome,
-        single_leader, soak_liveness_failure, soak_transition_failure, BoundedRun,
+        single_leader, soak_liveness_invariant_failure, soak_transition_failure, BoundedRun,
         LeaderConvergence, LivenessRoundBudget, ProposalTerminalOutcome, StableLeaderGuard,
     },
     production_monitor_state, FaultStateRequirement, LivenessFeatureReport,
@@ -94,7 +94,7 @@ fn converge_quorum_only_leader(
         budget,
     )?
     else {
-        return Err(soak_liveness_failure(
+        return Err(soak_liveness_invariant_failure(
             &state,
             config,
             &trace,
@@ -129,7 +129,7 @@ fn check_stable_leader_usability(
     SoakFailure,
 > {
     let Some(proposal_id) = issue_liveness_proposal(state, leader, trace, observed_actions) else {
-        return Err(soak_liveness_failure(
+        return Err(soak_liveness_invariant_failure(
             state,
             config,
             trace,
@@ -148,7 +148,7 @@ fn check_stable_leader_usability(
         |state| guard.observe(single_leader(state)).is_ok(),
     )?;
     if !completion.observer_held {
-        return Err(soak_liveness_failure(
+        return Err(soak_liveness_invariant_failure(
             state,
             config,
             trace,
@@ -158,7 +158,7 @@ fn check_stable_leader_usability(
     }
     if completion.completed && single_leader(state) == Some(leader) {
         let Some(outcome) = liveness_proposal_terminal_outcome(state, proposal_id) else {
-            return Err(soak_liveness_failure(
+            return Err(soak_liveness_invariant_failure(
                 state,
                 config,
                 trace,
@@ -167,7 +167,7 @@ fn check_stable_leader_usability(
             ));
         };
         if outcome != ProposalTerminalOutcome::Committed {
-            return Err(soak_liveness_failure(
+            return Err(soak_liveness_invariant_failure(
                 state,
                 config,
                 trace,
@@ -181,7 +181,7 @@ fn check_stable_leader_usability(
         return Ok((completion, proposal_id, outcome));
     }
 
-    Err(soak_liveness_failure(
+    Err(soak_liveness_invariant_failure(
         state,
         config,
         trace,
@@ -247,6 +247,7 @@ fn successful_quorum_only_convergence_report(
             remained_leader_through_probe: true,
         }),
         proposal: None,
+        operation: None,
     }
 }
 
@@ -287,5 +288,6 @@ fn successful_quorum_only_usability_report(
             proposal_id,
             outcome,
         }),
+        operation: None,
     }
 }

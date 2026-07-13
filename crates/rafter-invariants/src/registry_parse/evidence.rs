@@ -157,6 +157,7 @@ fn validate_evidence_shape(
 
     let fixture = record.contains_key("negative_fixture");
     let exemption = record.contains_key("negative_fixture_exemption");
+    let direct_simulator = layer == "simulator" && strength == "direct";
     if fixture && exemption {
         return Err(CatalogError(format!(
             "evidence record {} declares both negative_fixture and negative_fixture_exemption",
@@ -177,17 +178,19 @@ fn validate_evidence_shape(
             index + 1
         )));
     }
-    if layer == "simulator" && strength == "direct" && !fixture && !exemption {
+    if direct_simulator && exemption {
+        return Err(CatalogError(format!(
+            "direct simulator evidence record {} may not use negative_fixture_exemption",
+            index + 1
+        )));
+    }
+    if direct_simulator && !fixture {
         return Err(CatalogError(format!(
             "direct simulator evidence record {} lacks detector qualification",
             index + 1
         )));
     }
-    if layer == "simulator"
-        && strength == "direct"
-        && fixture
-        && !record.contains_key("negative_fixture_detector")
-    {
+    if direct_simulator && !record.contains_key("negative_fixture_detector") {
         return Err(CatalogError(format!(
             "direct simulator evidence record {} lacks negative_fixture_detector",
             index + 1

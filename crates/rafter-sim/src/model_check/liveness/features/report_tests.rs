@@ -4,18 +4,23 @@ use rafter::NodeId;
 
 use crate::{
     model_check::{
-        run_raft_random_soak,
+        catalog, run_raft_random_soak,
         scheduling::SoakOperation,
-        soak::{SoakActionKind, SoakConfig},
+        soak::{SoakAction, SoakActionKind, SoakConfig},
         state::{try_apply_soak_action, ExplorationState},
+        FailureKind,
     },
     Cluster, SimSeed,
 };
 
 use super::{
-    production_configs, run_feature_liveness_checks, FaultStateRequirement,
-    LivenessPreconditionProbe, LivenessPreconditions,
+    membership::run_membership_transition_liveness_detector, production_configs,
+    read::run_read_barrier_liveness_detector, run_feature_liveness_checks,
+    snapshot::run_snapshot_catchup_liveness_detector,
+    transfer::run_leadership_transfer_liveness_detector, FaultStateRequirement,
+    LivenessPreconditionProbe, LivenessPreconditions, TerminalRecorderMode,
 };
+use crate::model_check::liveness::driver::soak_liveness_round_budget;
 
 #[test]
 fn independent_reports_do_not_relabel_quorum_only_as_post_heal() {
@@ -260,4 +265,138 @@ fn optional_features_use_fresh_fixtures_and_emit_honest_evidence() {
             .unwrap_or_else(|| panic!("missing {feature_id} report"));
         assert!(report.to_json()["stable_leader"].is_null());
     }
+}
+
+#[test]
+fn lv_03_read_barrier_detector_rejects_exhausted_bound() {
+    let config = SoakConfig::new(SimSeed(0x51_7e), 0).with_max_read_indexes(1);
+    let (mut state, convergence_budget) = optional_monitor_fixture(config);
+    let mut trace = Vec::new();
+    let mut observed_actions = BTreeSet::new();
+
+    let failure = run_read_barrier_liveness_detector(
+        &mut state,
+        config,
+        &mut trace,
+        &mut observed_actions,
+        convergence_budget,
+        1,
+        TerminalRecorderMode::DropTerminalRecord,
+    )
+    .expect_err("a fresh read barrier cannot finish in one delayed operation round");
+
+    assert_bounded_operation_failure(&failure, SoakActionKind::ReadIndex);
+}
+
+#[test]
+fn lv_03_membership_transition_detector_rejects_exhausted_bound() {
+    let config = SoakConfig::new(SimSeed(0x51_7e), 0).with_max_membership_changes(1);
+    let (mut state, convergence_budget) = optional_monitor_fixture(config);
+    let mut trace = Vec::new();
+    let mut observed_actions = BTreeSet::new();
+
+    let failure = run_membership_transition_liveness_detector(
+        &mut state,
+        config,
+        &mut trace,
+        &mut observed_actions,
+        convergence_budget,
+        1,
+        TerminalRecorderMode::DropTerminalRecord,
+    )
+    .expect_err("an issued membership transition cannot finish in one operation round");
+
+    assert_bounded_operation_failure(&failure, SoakActionKind::RemoveVoter);
+}
+
+#[test]
+fn lv_03_leadership_transfer_detector_rejects_exhausted_bound() {
+    let config = SoakConfig::new(SimSeed(0x51_7e), 0).with_max_transfers(1);
+    let (mut state, convergence_budget) = optional_monitor_fixture(config);
+    let mut trace = Vec::new();
+    let mut observed_actions = BTreeSet::new();
+
+    let failure = run_leadership_transfer_liveness_detector(
+        &mut state,
+        config,
+        &mut trace,
+        &mut observed_actions,
+        convergence_budget,
+        1,
+        TerminalRecorderMode::DropTerminalRecord,
+    )
+    .expect_err("an issued leadership transfer cannot finish in one operation round");
+
+    assert_bounded_operation_failure(&failure, SoakActionKind::Transfer);
+}
+
+#[test]
+fn lv_03_snapshot_catch_up_detector_rejects_exhausted_bound() {
+    let config = SoakConfig::new(SimSeed(0x51_7e), 0).with_snapshot_catchup_probe();
+    let failure =
+        run_snapshot_catchup_liveness_detector(config, 1, TerminalRecorderMode::DropTerminalRecord)
+            .expect_err("a pending snapshot transfer cannot finish in one bounded round");
+
+    assert_eq!(
+        failure.failure.invariant(),
+        catalog::LV_03_FEATURE_OPERATION_PROGRESS
+    );
+    assert_eq!(failure.failure.kind(), FailureKind::InvariantViolation);
+    assert!(failure
+        .failure
+        .message()
+        .contains("within 1 bounded rounds"));
+}
+
+#[test]
+fn read_barrier_detector_classifies_unreached_leader_antecedent_as_coverage() {
+    let config = SoakConfig::new(SimSeed(0x51_7e), 0).with_max_read_indexes(1);
+    let (mut state, _) = optional_monitor_fixture(config);
+    let mut trace = Vec::new();
+    let mut observed_actions = BTreeSet::new();
+
+    let failure = run_read_barrier_liveness_detector(
+        &mut state,
+        config,
+        &mut trace,
+        &mut observed_actions,
+        0,
+        0,
+        TerminalRecorderMode::Production,
+    )
+    .expect_err("zero convergence rounds cannot establish the read antecedent");
+
+    assert_eq!(failure.failure.kind(), FailureKind::CoverageNotReached);
+    assert!(!trace
+        .iter()
+        .any(|action| matches!(action, SoakAction::ReadIndex { .. })));
+}
+
+fn optional_monitor_fixture(config: SoakConfig) -> (ExplorationState, usize) {
+    let state = ExplorationState::new(Cluster::new_with_seed(
+        production_configs().expect("production liveness configuration should be valid"),
+        config.seed(),
+    ));
+    let budget = soak_liveness_round_budget(&state, config);
+    (state, budget)
+}
+
+fn assert_bounded_operation_failure(
+    failure: &crate::model_check::soak::SoakFailure,
+    expected_action: SoakActionKind,
+) {
+    assert_eq!(
+        failure.failure.invariant(),
+        catalog::LV_03_FEATURE_OPERATION_PROGRESS
+    );
+    assert_eq!(failure.failure.kind(), FailureKind::InvariantViolation);
+    assert!(failure.failure.message().contains("within 1"));
+    assert!(failure
+        .trace
+        .iter()
+        .any(|action| action.kind() == expected_action));
+    assert!(failure
+        .trace
+        .iter()
+        .any(|action| matches!(action, SoakAction::Tick(_))));
 }

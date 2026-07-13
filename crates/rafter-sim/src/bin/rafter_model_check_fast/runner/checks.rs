@@ -20,7 +20,7 @@ use super::soak::{fixed_or_override, run_raft_soak_profile};
 
 pub(super) fn run_fast_profile() -> Result<(), Box<dyn Error>> {
     run_raft_check("raft-election", || {
-        check_raft_election_safety(three_node_configs(2), Bounds::new(7))
+        check_raft_election_safety(three_node_configs(2), Bounds::new(8))
     })?;
     // Both in-flight window regimes are explored explicitly. Two proposals
     // make the window bind: a window of one answers the second proposal
@@ -62,7 +62,7 @@ pub(super) fn run_fast_profile() -> Result<(), Box<dyn Error>> {
         check_raft_leadership_noop_safety(Bounds::new(8))
     })?;
     run_raft_check("raft-restart-snapshot", || {
-        check_raft_restart_and_snapshot_safety(Bounds::new(8).with_max_restarts(1))
+        check_raft_restart_and_snapshot_safety(Bounds::new(10).with_max_restarts(1))
     })?;
     run_raft_check("raft-election-prevote", || {
         check_raft_election_safety(three_node_pre_vote_configs(2), Bounds::new(7))
@@ -94,7 +94,7 @@ pub(super) fn run_raft_deep_profile(
     seed_override: Option<Vec<SimSeed>>,
 ) -> Result<(), Box<dyn Error>> {
     run_raft_check("raft-election-deep", || {
-        check_raft_election_safety(three_node_configs(2), Bounds::new(7))
+        check_raft_election_safety(three_node_configs(2), Bounds::new(8))
     })?;
     run_raft_check("raft-commit-deep", || {
         check_raft_commit_safety(three_node_configs(2), Bounds::new(9).with_max_proposals(2))
@@ -123,7 +123,7 @@ pub(super) fn run_raft_deep_profile(
         check_raft_leadership_noop_safety(Bounds::new(8))
     })?;
     run_raft_check("raft-restart-snapshot-deep", || {
-        check_raft_restart_and_snapshot_safety(Bounds::new(9).with_max_restarts(2))
+        check_raft_restart_and_snapshot_safety(Bounds::new(10).with_max_restarts(2))
     })?;
     run_raft_check("raft-election-prevote-deep", || {
         check_raft_election_safety(three_node_pre_vote_configs(2), Bounds::new(7))

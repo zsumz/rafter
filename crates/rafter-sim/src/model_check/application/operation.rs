@@ -24,7 +24,7 @@ pub(super) fn apply_snapshot_bootstrap_seeds_inner(
 
 pub(super) fn apply_to_state_inner(state: &mut ExplorationState, operation: Operation) {
     let commit_context = state.commit_transition_context();
-    let before = state.cluster.clone();
+    let before = state.cluster.transition_observation_snapshot();
     let configuration_proposer = match &operation {
         Operation::AddLearner { to, .. }
         | Operation::RemoveLearner { to, .. }
@@ -75,10 +75,6 @@ pub(super) fn apply_to_state_inner(state: &mut ExplorationState, operation: Oper
         state.record_client_proposal(*to, *proposal_id, *stale_leader);
         state.proposals_issued += 1;
     }
-    if let Operation::ReadIndex { to, request_id } = &operation {
-        state.record_client_read(*to, *request_id, state.cluster.committed_floor());
-        state.read_indexes_issued += 1;
-    }
     if matches!(
         operation,
         Operation::AddLearner { .. }
@@ -94,6 +90,10 @@ pub(super) fn apply_to_state_inner(state: &mut ExplorationState, operation: Oper
         state.transfers_issued += 1;
     }
     let effects = apply_to_cluster(&mut state.cluster.0, operation);
+    if let Some(registration) = &effects.read_registration {
+        state.record_client_read(registration);
+        state.read_indexes_issued += 1;
+    }
     state.record_local_proposal_events(&effects.local_proposals);
     state.observe_election_authority();
     state.record_election_observation(&before, delivered.as_ref(), &effects.emitted);
