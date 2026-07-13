@@ -2,6 +2,21 @@ use rafter::NodeId;
 
 use crate::SimSeed;
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Exact operation maxima and scheduler knobs used by one soak run.
+pub struct SoakExecutionParameters {
+    pub steps: usize,
+    pub max_proposals: usize,
+    pub max_restarts: usize,
+    pub max_read_indexes: usize,
+    pub max_membership_changes: usize,
+    pub max_transfers: usize,
+    pub max_partitions: usize,
+    pub max_lossy_restarts: usize,
+    pub snapshot_catchup_probe: bool,
+    pub tick_skew: Option<(NodeId, u32)>,
+}
+
 /// Configuration for deterministic randomized Raft soak runs.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct SoakConfig {
@@ -117,6 +132,23 @@ impl SoakConfig {
     #[must_use]
     pub const fn steps(self) -> usize {
         self.steps
+    }
+
+    /// Returns the exact non-seed execution parameters for provenance binding.
+    #[must_use]
+    pub const fn execution_parameters(self) -> SoakExecutionParameters {
+        SoakExecutionParameters {
+            steps: self.steps,
+            max_proposals: self.max_proposals,
+            max_restarts: self.max_restarts,
+            max_read_indexes: self.max_read_indexes,
+            max_membership_changes: self.max_membership_changes,
+            max_transfers: self.max_transfers,
+            max_partitions: self.max_partitions,
+            max_lossy_restarts: self.max_lossy_restarts,
+            snapshot_catchup_probe: self.snapshot_catchup_probe,
+            tick_skew: self.tick_skew,
+        }
     }
 
     /// Returns whether bounded read-barrier progress is required.
