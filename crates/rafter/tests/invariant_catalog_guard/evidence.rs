@@ -1,4 +1,13 @@
-use std::{collections::BTreeSet, fs, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fs,
+    path::Path,
+};
+
+use syn::{
+    visit::Visit, ExprCall, ExprMethodCall, File, ImplItemFn, ItemConst, ItemFn, ItemMacro,
+    ItemStatic, ItemUse, UseTree,
+};
 
 use super::{Clause, Entry, Evidence, COVERAGE_LAYERS, VALID_EVIDENCE_STRENGTHS};
 
@@ -91,7 +100,7 @@ pub(super) fn assert_evidence_is_machine_checkable(
         let source = fs::read_to_string(&path)
             .unwrap_or_else(|error| panic!("read evidence path {}: {error}", path.display()));
         assert!(
-            source.contains(&record.symbol),
+            source_declares_symbol(&path, &source, &record.symbol),
             "{} {} {} evidence symbol `{}` was not found in {}",
             record.id,
             record.layer,
@@ -193,8 +202,12 @@ fn assert_negative_fixture_policy(workspace: &Path, record: &Evidence, source: &
                 })
             },
         );
+        let fixture_path = record
+            .negative_fixture_path
+            .as_deref()
+            .map_or_else(|| workspace.join(&record.path), |path| workspace.join(path));
         assert!(
-            fixture_source.contains(negative_fixture),
+            source_declares_symbol(&fixture_path, &fixture_source, negative_fixture),
             "{} {} {} negative fixture `{}` was not found in {}",
             record.id,
             record.layer,
@@ -280,56 +293,169 @@ fn assert_negative_fixture_policy(workspace: &Path, record: &Evidence, source: &
 }
 
 fn fixture_exercises_detector(source: &str, fixture: &str, detector: &str) -> bool {
-    let functions = top_level_function_names(source);
+    let Ok(file) = syn::parse_file(source) else {
+        return false;
+    };
+    let functions = function_calls(&file);
     let mut pending = vec![fixture.to_owned()];
     let mut visited = BTreeSet::new();
     while let Some(function) = pending.pop() {
         if !visited.insert(function.clone()) {
             continue;
         }
-        let Some(body) = top_level_function_body(source, &function) else {
+        let Some(calls) = functions.get(&function) else {
             continue;
         };
-        if body.contains(detector) {
+        if calls.contains(detector) {
             return true;
         }
         pending.extend(
-            functions
+            calls
                 .iter()
-                .filter(|candidate| body.contains(&format!("{candidate}(")))
+                .filter(|call| functions.contains_key(*call))
                 .cloned(),
         );
     }
     false
 }
 
-fn top_level_function_names(source: &str) -> Vec<String> {
-    source
-        .lines()
-        .filter(|line| !line.starts_with(char::is_whitespace))
-        .filter_map(|line| line.split_once("fn ").map(|(_, rest)| rest))
-        .filter_map(|rest| rest.split_once('(').map(|(name, _)| name.trim().to_owned()))
-        .collect()
+fn source_declares_symbol(path: &Path, source: &str, symbol: &str) -> bool {
+    if path.extension().and_then(std::ffi::OsStr::to_str) != Some("rs") {
+        return source.contains(symbol);
+    }
+    syn::parse_file(source).is_ok_and(|file| declared_symbols(&file).contains(symbol))
 }
 
-fn top_level_function_body<'a>(source: &'a str, name: &str) -> Option<&'a str> {
-    let signature = format!("fn {name}(");
-    let start = source
-        .match_indices(&signature)
-        .find(|(offset, _)| {
-            let line_start = source[..*offset].rfind('\n').map_or(0, |index| index + 1);
-            !source[line_start..*offset].starts_with(char::is_whitespace)
-        })?
-        .0;
-    let remainder = &source[start + signature.len()..];
-    let end = remainder
-        .match_indices("\nfn ")
-        .chain(remainder.match_indices("\npub fn "))
-        .chain(remainder.match_indices("\npub(super) fn "))
-        .map(|(offset, _)| offset)
-        .min()
-        .unwrap_or(remainder.len());
-    Some(&source[start..start + signature.len() + end])
+fn declared_symbols(file: &File) -> BTreeSet<String> {
+    let mut visitor = DeclarationVisitor::default();
+    visitor.visit_file(file);
+    visitor.symbols
+}
+
+#[derive(Default)]
+struct DeclarationVisitor {
+    symbols: BTreeSet<String>,
+}
+
+impl<'ast> Visit<'ast> for DeclarationVisitor {
+    fn visit_item_fn(&mut self, function: &'ast ItemFn) {
+        self.symbols.insert(function.sig.ident.to_string());
+        syn::visit::visit_item_fn(self, function);
+    }
+
+    fn visit_impl_item_fn(&mut self, function: &'ast ImplItemFn) {
+        self.symbols.insert(function.sig.ident.to_string());
+        syn::visit::visit_impl_item_fn(self, function);
+    }
+
+    fn visit_item_const(&mut self, item: &'ast ItemConst) {
+        self.symbols.insert(item.ident.to_string());
+        syn::visit::visit_item_const(self, item);
+    }
+
+    fn visit_item_static(&mut self, item: &'ast ItemStatic) {
+        self.symbols.insert(item.ident.to_string());
+        syn::visit::visit_item_static(self, item);
+    }
+
+    fn visit_item_macro(&mut self, item: &'ast ItemMacro) {
+        let tokens = item.mac.tokens.to_string();
+        let mut previous = None;
+        for token in tokens.split_whitespace() {
+            if previous == Some("fn") {
+                self.symbols.insert(
+                    token
+                        .trim_matches(|character: char| {
+                            !character.is_alphanumeric() && character != '_'
+                        })
+                        .to_owned(),
+                );
+            }
+            previous = Some(token);
+        }
+        syn::visit::visit_item_macro(self, item);
+    }
+
+    fn visit_item_use(&mut self, item: &'ast ItemUse) {
+        collect_use_symbols(&item.tree, &mut self.symbols);
+        syn::visit::visit_item_use(self, item);
+    }
+}
+
+fn collect_use_symbols(tree: &UseTree, symbols: &mut BTreeSet<String>) {
+    match tree {
+        UseTree::Path(path) => collect_use_symbols(&path.tree, symbols),
+        UseTree::Name(name) => {
+            symbols.insert(name.ident.to_string());
+        }
+        UseTree::Rename(rename) => {
+            symbols.insert(rename.rename.to_string());
+        }
+        UseTree::Group(group) => {
+            for item in &group.items {
+                collect_use_symbols(item, symbols);
+            }
+        }
+        UseTree::Glob(_) => {}
+    }
+}
+
+fn function_calls(file: &File) -> BTreeMap<String, BTreeSet<String>> {
+    let mut visitor = FunctionVisitor::default();
+    visitor.visit_file(file);
+    visitor.functions
+}
+
+#[derive(Default)]
+struct FunctionVisitor {
+    functions: BTreeMap<String, BTreeSet<String>>,
+}
+
+impl<'ast> Visit<'ast> for FunctionVisitor {
+    fn visit_item_fn(&mut self, function: &'ast ItemFn) {
+        let mut calls = CallVisitor::default();
+        calls.visit_block(&function.block);
+        self.functions
+            .entry(function.sig.ident.to_string())
+            .or_default()
+            .extend(calls.calls);
+        syn::visit::visit_item_fn(self, function);
+    }
+
+    fn visit_impl_item_fn(&mut self, function: &'ast ImplItemFn) {
+        let mut calls = CallVisitor::default();
+        calls.visit_block(&function.block);
+        self.functions
+            .entry(function.sig.ident.to_string())
+            .or_default()
+            .extend(calls.calls);
+        syn::visit::visit_impl_item_fn(self, function);
+    }
+}
+
+#[derive(Default)]
+struct CallVisitor {
+    calls: BTreeSet<String>,
+}
+
+impl<'ast> Visit<'ast> for CallVisitor {
+    fn visit_expr_call(&mut self, call: &'ast ExprCall) {
+        if let syn::Expr::Path(path) = call.func.as_ref() {
+            if let Some(segment) = path.path.segments.last() {
+                self.calls.insert(segment.ident.to_string());
+            }
+        }
+        syn::visit::visit_expr_call(self, call);
+    }
+
+    fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+        self.calls.insert(call.method.to_string());
+        syn::visit::visit_expr_method_call(self, call);
+    }
+
+    fn visit_item_fn(&mut self, _function: &'ast ItemFn) {}
+
+    fn visit_impl_item_fn(&mut self, _function: &'ast ImplItemFn) {}
 }
 
 #[test]
@@ -350,6 +476,37 @@ fn negative_fixture_guard_follows_local_fixture_helpers() {
         source,
         "target_fixture",
         "detector"
+    ));
+}
+
+#[test]
+fn negative_fixture_guard_ignores_detector_names_in_comments_and_strings() {
+    let source = r#"
+#[test]
+fn target_fixture() {
+    // detector();
+    let _description = "detector()";
+}
+"#;
+    assert!(!fixture_exercises_detector(
+        source,
+        "target_fixture",
+        "detector"
+    ));
+}
+
+#[test]
+fn rust_symbol_guard_requires_a_real_declaration() {
+    let path = Path::new("fixture.rs");
+    assert!(!source_declares_symbol(
+        path,
+        "// fn claimed_symbol() {}\nconst NOTE: &str = \"claimed_symbol\";",
+        "claimed_symbol"
+    ));
+    assert!(source_declares_symbol(
+        path,
+        "fn claimed_symbol() {}",
+        "claimed_symbol"
     ));
 }
 
