@@ -33,6 +33,23 @@ fn seeded_commit_safety_passes_for_precommitted_and_prediverged_followers() {
 }
 
 #[test]
+fn seeded_commit_restart_evidence_crosses_application_epochs() {
+    let summary = check_raft_seeded_commit_safety(
+        vec![
+            config(1, &[2, 3], 2),
+            config(2, &[1, 3], 2),
+            config(3, &[1, 2], 2),
+        ],
+        Bounds::new(1).with_max_restarts(1),
+    )
+    .expect("scheduled application-loss restart must replay a committed witness");
+
+    assert!(summary
+        .observation_labels()
+        .any(|label| label == "cross_epoch_execution_witness_pairs"));
+}
+
+#[test]
 fn seeded_leadership_noop_safety_passes_for_targeted_cases() {
     let summary = check_raft_leadership_noop_safety(Bounds::new(8))
         .expect("seeded leadership no-op safety should pass");
