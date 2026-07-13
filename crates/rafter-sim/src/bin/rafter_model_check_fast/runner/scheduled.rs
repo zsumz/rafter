@@ -75,7 +75,10 @@ pub(super) fn run_raft_nightly_profile(
         },
     )?);
     totals.record(run_raft_check("raft-commit-seeded-nightly", || {
-        check_raft_seeded_commit_safety(three_node_configs(2), scheduled(Bounds::new(2)))
+        check_raft_seeded_commit_safety(
+            three_node_configs(2),
+            scheduled(Bounds::new(2).with_max_restarts(1)),
+        )
     })?);
     totals.record(run_raft_check(
         "raft-leadership-noop-seeded-nightly",
@@ -162,7 +165,10 @@ pub(super) fn run_raft_weekly_profile(
         },
     )?);
     totals.record(run_raft_check("raft-commit-seeded-weekly", || {
-        check_raft_seeded_commit_safety(three_node_configs(2), scheduled(Bounds::new(3)))
+        check_raft_seeded_commit_safety(
+            three_node_configs(2),
+            scheduled(Bounds::new(3).with_max_restarts(1)),
+        )
     })?);
     totals.record(run_raft_check(
         "raft-leadership-noop-seeded-weekly",
