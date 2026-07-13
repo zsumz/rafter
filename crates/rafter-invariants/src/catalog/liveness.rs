@@ -207,7 +207,9 @@ fn expected_report_contracts<'a>(
     for contract in available {
         let required = match contract.feature_id.as_str() {
             "leader-convergence"
+            | "leader-usability"
             | "quorum-only-leader-convergence"
+            | "quorum-only-leader-usability"
             | "proposal-progress"
             | "proposal-termination" => true,
             "read-barrier" => execution.max_read_indexes > 0,
@@ -233,7 +235,9 @@ fn expected_report_contracts<'a>(
     }
     let mut required = BTreeSet::from([
         "leader-convergence",
+        "leader-usability",
         "quorum-only-leader-convergence",
+        "quorum-only-leader-usability",
         "proposal-progress",
         "proposal-termination",
     ]);

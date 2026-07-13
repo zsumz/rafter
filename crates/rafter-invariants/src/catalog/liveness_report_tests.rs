@@ -222,7 +222,10 @@ fn valid_report(
     let proposal_required = contract.proposal_outcome != "none";
     let reachable_voters = if active_partition { 2 } else { 3 };
     let rounds_used = contract.stable_leader_rounds_exact.unwrap_or(1);
-    let node_count = if contract.feature_id == "leader-convergence" {
+    let node_count = if matches!(
+        contract.feature_id.as_str(),
+        "leader-convergence" | "leader-usability"
+    ) {
         execution.node_count
     } else {
         3

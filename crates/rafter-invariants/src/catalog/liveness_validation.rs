@@ -275,7 +275,10 @@ fn validate_round_budget(
             })
         })
         .ok_or_else(|| "round-budget derivation overflowed".to_owned())?;
-    let expected_node_count = if contract.feature_id == "leader-convergence" {
+    let expected_node_count = if matches!(
+        contract.feature_id.as_str(),
+        "leader-convergence" | "leader-usability"
+    ) {
         execution.node_count
     } else {
         3
