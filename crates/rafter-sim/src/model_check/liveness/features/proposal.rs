@@ -6,7 +6,8 @@ use super::{
     super::driver::{
         check_soak_safety, drive_liveness_rounds_until_observed, issue_liveness_proposal,
         liveness_proposal_completed, liveness_proposal_terminal_outcome, single_leader,
-        soak_liveness_failure, LivenessRoundBudget, ProposalTerminalOutcome, StableLeaderGuard,
+        soak_liveness_failure, soak_transition_failure, LivenessRoundBudget,
+        ProposalTerminalOutcome, StableLeaderGuard,
     },
     production_monitor_state, FaultStateRequirement, LivenessFeatureReport,
     LivenessPreconditionProbe, LivenessPreconditions, ProposalEvidence, StableLeaderEvidence,
@@ -17,7 +18,7 @@ use crate::model_check::{
     helpers::{deliver_all_in_state, elect_node_one_in_state},
     scheduling::SoakOperation,
     soak::{SoakAction, SoakActionKind, SoakConfig, SoakFailure},
-    state::{apply_soak_action, ExplorationState},
+    state::{try_apply_soak_action, ExplorationState},
     ProposalId,
 };
 
@@ -127,7 +128,7 @@ pub(super) fn run_proposal_termination_liveness_check(
 
     let mut trace = Vec::new();
     let mut observed_actions = BTreeSet::new();
-    isolate_node_one(&mut state, &mut trace, &mut observed_actions);
+    isolate_node_one(&mut state, config, &mut trace, &mut observed_actions)?;
 
     let Some(proposal_id) =
         issue_liveness_proposal(&mut state, NodeId(1), &mut trace, &mut observed_actions)
@@ -168,7 +169,8 @@ pub(super) fn run_proposal_termination_liveness_check(
         ));
     }
 
-    apply_soak_action(&mut state, SoakOperation::Heal);
+    try_apply_soak_action(&mut state, SoakOperation::Heal)
+        .map_err(|failure| soak_transition_failure(config, &trace, failure))?;
     trace.push(SoakAction::Heal);
     observed_actions.insert(SoakActionKind::Heal);
     check_soak_safety(&state, config, &trace)?;
@@ -215,23 +217,26 @@ pub(super) fn run_proposal_termination_liveness_check(
 
 fn isolate_node_one(
     state: &mut ExplorationState,
+    config: SoakConfig,
     trace: &mut Vec<SoakAction>,
     observed_actions: &mut BTreeSet<SoakActionKind>,
-) {
+) -> Result<(), SoakFailure> {
     for peer in [NodeId(2), NodeId(3)] {
-        apply_soak_action(
+        try_apply_soak_action(
             state,
             SoakOperation::Partition {
                 a: NodeId(1),
                 b: peer,
             },
-        );
+        )
+        .map_err(|failure| soak_transition_failure(config, trace, failure))?;
         trace.push(SoakAction::Partition {
             a: NodeId(1),
             b: peer,
         });
         observed_actions.insert(SoakActionKind::Partition);
     }
+    Ok(())
 }
 
 fn proposal_termination_failure(

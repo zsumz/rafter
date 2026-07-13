@@ -7,7 +7,7 @@ use crate::{
         run_raft_random_soak,
         scheduling::SoakOperation,
         soak::{SoakActionKind, SoakConfig},
-        state::{apply_soak_action, ExplorationState},
+        state::{try_apply_soak_action, ExplorationState},
     },
     Cluster, SimSeed,
 };
@@ -175,13 +175,14 @@ fn captured_preconditions_reject_stopped_fault_or_quorum_claims_that_are_false()
         config.seed(),
     ));
     for (a, b) in [(1, 2), (1, 3), (2, 3)] {
-        apply_soak_action(
+        try_apply_soak_action(
             &mut state,
             SoakOperation::Partition {
                 a: NodeId(a),
                 b: NodeId(b),
             },
-        );
+        )
+        .expect("fixture partition must remain valid");
     }
 
     let preconditions = LivenessPreconditions::capture(

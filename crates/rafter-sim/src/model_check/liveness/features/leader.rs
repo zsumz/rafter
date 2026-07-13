@@ -6,8 +6,8 @@ use super::{
     super::driver::{
         check_soak_safety, drive_liveness_rounds_until_observed, drive_until_stable_leader,
         issue_liveness_proposal, liveness_proposal_completed, liveness_proposal_terminal_outcome,
-        single_leader, soak_liveness_failure, BoundedRun, LeaderConvergence, LivenessRoundBudget,
-        ProposalTerminalOutcome, StableLeaderGuard,
+        single_leader, soak_liveness_failure, soak_transition_failure, BoundedRun,
+        LeaderConvergence, LivenessRoundBudget, ProposalTerminalOutcome, StableLeaderGuard,
     },
     production_monitor_state, FaultStateRequirement, LivenessFeatureReport,
     LivenessPreconditionProbe, LivenessPreconditions, ProposalEvidence, StableLeaderEvidence,
@@ -17,7 +17,7 @@ use crate::model_check::{
     catalog,
     scheduling::SoakOperation,
     soak::{SoakAction, SoakActionKind, SoakConfig, SoakFailure},
-    state::apply_soak_action,
+    state::try_apply_soak_action,
 };
 
 pub(super) fn run_quorum_only_leader_liveness_check(
@@ -83,7 +83,7 @@ fn converge_quorum_only_leader(
     let round_budget = LivenessRoundBudget::capture(&state, config, 1);
     let mut trace = Vec::new();
     let mut observed_actions = BTreeSet::new();
-    partition_minority(&mut state, &mut trace, &mut observed_actions);
+    partition_minority(&mut state, config, &mut trace, &mut observed_actions)?;
     check_soak_safety(&state, config, &trace)?;
 
     let Some(convergence) = drive_until_stable_leader(
@@ -194,23 +194,26 @@ fn check_stable_leader_usability(
 
 fn partition_minority(
     state: &mut crate::model_check::state::ExplorationState,
+    config: SoakConfig,
     trace: &mut Vec<SoakAction>,
     observed_actions: &mut BTreeSet<SoakActionKind>,
-) {
+) -> Result<(), SoakFailure> {
     for peer in [NodeId(1), NodeId(2)] {
-        apply_soak_action(
+        try_apply_soak_action(
             state,
             SoakOperation::Partition {
                 a: peer,
                 b: NodeId(3),
             },
-        );
+        )
+        .map_err(|failure| soak_transition_failure(config, trace, failure))?;
         trace.push(SoakAction::Partition {
             a: peer,
             b: NodeId(3),
         });
         observed_actions.insert(SoakActionKind::Partition);
     }
+    Ok(())
 }
 
 fn successful_quorum_only_convergence_report(
