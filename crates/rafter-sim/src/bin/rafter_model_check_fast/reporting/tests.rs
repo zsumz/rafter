@@ -6,7 +6,7 @@ use rafter_sim::{
 };
 use serde_json::json;
 
-use crate::raft_config::three_node_configs;
+use crate::raft_config::{four_node_future_learner_configs, three_node_configs};
 
 use super::{
     failure_event, soak_event, soak_event_from_reports, soak_event_from_reports_with_contract,
@@ -35,7 +35,7 @@ fn soak_event_derives_liveness_evidence_from_monitor_reports() {
         .expect("zero-step soak should complete measured liveness monitors");
     let event = soak_event("raft-soak", &summary, config, &[], Duration::from_millis(7));
 
-    assert_eq!(event["liveness_reports"].as_array().map(Vec::len), Some(4));
+    assert_eq!(event["liveness_reports"].as_array().map(Vec::len), Some(6));
     assert_eq!(event["observations"]["post_heal_quiescent_leaders"], 1);
     assert_eq!(event["observations"]["terminated_liveness_proposals"], 1);
     assert!(event["observations"]
@@ -49,13 +49,39 @@ fn soak_event_derives_liveness_evidence_from_monitor_reports() {
 }
 
 #[test]
+fn pr_membership_soak_emits_a_passing_ten_report_event() {
+    let config = SoakConfig::new(SimSeed(0x9104), 320)
+        .with_max_proposals(24)
+        .with_max_restarts(12)
+        .with_max_read_indexes(4)
+        .with_max_membership_changes(8)
+        .with_max_transfers(2)
+        .with_max_partitions(2)
+        .with_max_lossy_restarts(2)
+        .with_snapshot_catchup_probe()
+        .with_tick_skew(rafter::NodeId(1), 3);
+    let summary = run_raft_random_soak(four_node_future_learner_configs(3), config)
+        .expect("the exact PR membership soak should complete");
+    let event = soak_event(
+        "raft-soak-membership",
+        &summary,
+        config,
+        &[],
+        Duration::ZERO,
+    );
+
+    assert_eq!(event["status"], "pass");
+    assert_eq!(event["liveness_reports"].as_array().map(Vec::len), Some(10));
+}
+
+#[test]
 fn soak_event_fails_closed_on_missing_liveness_report() {
     let (summary, config, mut reports) = base_soak_reports();
     reports.pop();
     let event =
         soak_event_from_reports("raft-soak", &summary, config, &[], Duration::ZERO, &reports);
 
-    assert_harness_error(&event, "expected 4 liveness reports");
+    assert_harness_error(&event, "expected 6 liveness reports");
     assert!(event["observations"]
         .as_object()
         .is_some_and(serde_json::Map::is_empty));
@@ -295,8 +321,11 @@ fn soak_event_requires_the_exact_optional_feature_set() {
     let event = soak_event("raft-soak", &summary, config, &[], Duration::ZERO);
 
     assert_eq!(event["status"], "pass");
-    assert_eq!(event["liveness_reports"].as_array().map(Vec::len), Some(8));
-    assert_eq!(event["liveness_features"].as_array().map(Vec::len), Some(8));
+    assert_eq!(event["liveness_reports"].as_array().map(Vec::len), Some(10));
+    assert_eq!(
+        event["liveness_features"].as_array().map(Vec::len),
+        Some(10)
+    );
 }
 
 fn base_soak_reports() -> (SoakSummary, SoakConfig, Vec<serde_json::Value>) {
