@@ -9,7 +9,7 @@ use rafter_sim::model_check::{
 };
 use rafter_sim::SimSeed;
 
-use crate::profile::SoakProfile;
+use crate::profile::{Profile, SoakProfile};
 use crate::raft_config::{
     four_node_future_learner_configs, three_node_configs, three_node_configs_with_inflight_window,
     three_node_lease_configs, three_node_pre_vote_configs, three_node_production_configs,
@@ -19,8 +19,11 @@ use crate::reporting::{print_raft_failure, print_raft_summary};
 use super::soak::{fixed_or_override, run_raft_soak_profile};
 
 pub(super) fn run_fast_profile() -> Result<(), Box<dyn Error>> {
+    let bounds = Profile::Fast
+        .local_model_bounds()
+        .expect("fast profile has local model bounds");
     run_raft_check("raft-election", || {
-        check_raft_election_safety(three_node_configs(2), Bounds::new(8))
+        check_raft_election_safety(three_node_configs(2), Bounds::new(bounds.election_depth))
     })?;
     // These depths back the reviewed per-evidence state floors in
     // verification/raft-invariants.yaml. Both in-flight window regimes are
@@ -31,43 +34,56 @@ pub(super) fn run_fast_profile() -> Result<(), Box<dyn Error>> {
     run_raft_check("raft-commit", || {
         check_raft_commit_safety(
             three_node_configs_with_inflight_window(2, 3),
-            Bounds::new(9).with_max_proposals(2),
+            Bounds::new(bounds.commit_depth).with_max_proposals(bounds.commit_proposals),
         )
     })?;
     run_raft_check("raft-commit-window1", || {
         check_raft_commit_safety(
             three_node_configs_with_inflight_window(2, 1),
-            Bounds::new(9).with_max_proposals(2),
+            Bounds::new(bounds.commit_depth).with_max_proposals(bounds.commit_proposals),
         )
     })?;
     run_raft_check("raft-commit-production", || {
         check_raft_commit_safety(
             three_node_production_configs(3),
-            Bounds::new(7).with_max_proposals(1),
+            Bounds::new(bounds.commit_production_depth).with_max_proposals(1),
         )
     })?;
     run_raft_check("raft-membership", || {
         check_raft_membership_safety(
             four_node_future_learner_configs(3),
-            Bounds::new(6)
+            Bounds::new(bounds.membership_depth)
                 .with_max_proposals(1)
-                .with_max_membership_changes(1),
+                .with_max_membership_changes(bounds.membership_changes),
         )
     })?;
     run_raft_check("raft-membership-restart-snapshot", || {
-        check_raft_joint_membership_restart_and_snapshot_safety(Bounds::new(8).with_max_restarts(1))
+        check_raft_joint_membership_restart_and_snapshot_safety(
+            Bounds::new(bounds.membership_restart_snapshot_depth)
+                .with_max_restarts(bounds.membership_restart_snapshot_restarts),
+        )
     })?;
     run_raft_check("raft-commit-seeded", || {
-        check_raft_seeded_commit_safety(three_node_configs(2), Bounds::new(1).with_max_restarts(1))
+        check_raft_seeded_commit_safety(
+            three_node_configs(2),
+            Bounds::new(bounds.seeded_commit_depth)
+                .with_max_restarts(bounds.seeded_commit_restarts),
+        )
     })?;
     run_raft_check("raft-leadership-noop-seeded", || {
-        check_raft_leadership_noop_safety(Bounds::new(8))
+        check_raft_leadership_noop_safety(Bounds::new(bounds.leadership_noop_depth))
     })?;
     run_raft_check("raft-restart-snapshot", || {
-        check_raft_restart_and_snapshot_safety(Bounds::new(10).with_max_restarts(1))
+        check_raft_restart_and_snapshot_safety(
+            Bounds::new(bounds.restart_snapshot_depth)
+                .with_max_restarts(bounds.restart_snapshot_restarts),
+        )
     })?;
     run_raft_check("raft-election-prevote", || {
-        check_raft_election_safety(three_node_pre_vote_configs(2), Bounds::new(9))
+        check_raft_election_safety(
+            three_node_pre_vote_configs(2),
+            Bounds::new(bounds.prevote_depth),
+        )
     })?;
     run_raft_check(
         "raft-semantic-witnesses",
@@ -76,17 +92,17 @@ pub(super) fn run_fast_profile() -> Result<(), Box<dyn Error>> {
     run_raft_check("raft-read-index", || {
         check_raft_read_index_safety(
             three_node_configs(2),
-            Bounds::new(7)
+            Bounds::new(bounds.read_index_depth)
                 .with_max_proposals(1)
-                .with_max_read_indexes(1),
+                .with_max_read_indexes(bounds.read_indexes),
         )
     })?;
     run_raft_check("raft-lease-read", || {
         check_raft_read_index_safety(
             three_node_lease_configs(8),
-            Bounds::new(6)
+            Bounds::new(bounds.lease_read_depth)
                 .with_max_proposals(1)
-                .with_max_read_indexes(2),
+                .with_max_read_indexes(bounds.lease_read_indexes),
         )
     })?;
     Ok(())
@@ -95,55 +111,74 @@ pub(super) fn run_fast_profile() -> Result<(), Box<dyn Error>> {
 pub(super) fn run_raft_deep_profile(
     seed_override: Option<Vec<SimSeed>>,
 ) -> Result<(), Box<dyn Error>> {
+    let bounds = Profile::RaftDeep
+        .local_model_bounds()
+        .expect("raft-deep profile has local model bounds");
     run_raft_check("raft-election-deep", || {
-        check_raft_election_safety(three_node_configs(2), Bounds::new(8))
+        check_raft_election_safety(three_node_configs(2), Bounds::new(bounds.election_depth))
     })?;
     run_raft_check("raft-commit-deep", || {
-        check_raft_commit_safety(three_node_configs(2), Bounds::new(9).with_max_proposals(2))
+        check_raft_commit_safety(
+            three_node_configs(2),
+            Bounds::new(bounds.commit_depth).with_max_proposals(bounds.commit_proposals),
+        )
     })?;
     run_raft_check("raft-commit-production-deep", || {
         check_raft_commit_safety(
             three_node_production_configs(3),
-            Bounds::new(8).with_max_proposals(1),
+            Bounds::new(bounds.commit_production_depth).with_max_proposals(1),
         )
     })?;
     run_raft_check("raft-membership-deep", || {
         check_raft_membership_safety(
             four_node_future_learner_configs(3),
-            Bounds::new(6)
+            Bounds::new(bounds.membership_depth)
                 .with_max_proposals(1)
-                .with_max_membership_changes(2),
+                .with_max_membership_changes(bounds.membership_changes),
         )
     })?;
     run_raft_check("raft-membership-restart-snapshot-deep", || {
-        check_raft_joint_membership_restart_and_snapshot_safety(Bounds::new(9).with_max_restarts(2))
+        check_raft_joint_membership_restart_and_snapshot_safety(
+            Bounds::new(bounds.membership_restart_snapshot_depth)
+                .with_max_restarts(bounds.membership_restart_snapshot_restarts),
+        )
     })?;
     run_raft_check("raft-commit-seeded-deep", || {
-        check_raft_seeded_commit_safety(three_node_configs(2), Bounds::new(2).with_max_restarts(1))
+        check_raft_seeded_commit_safety(
+            three_node_configs(2),
+            Bounds::new(bounds.seeded_commit_depth)
+                .with_max_restarts(bounds.seeded_commit_restarts),
+        )
     })?;
     run_raft_check("raft-leadership-noop-seeded-deep", || {
-        check_raft_leadership_noop_safety(Bounds::new(8))
+        check_raft_leadership_noop_safety(Bounds::new(bounds.leadership_noop_depth))
     })?;
     run_raft_check("raft-restart-snapshot-deep", || {
-        check_raft_restart_and_snapshot_safety(Bounds::new(10).with_max_restarts(2))
+        check_raft_restart_and_snapshot_safety(
+            Bounds::new(bounds.restart_snapshot_depth)
+                .with_max_restarts(bounds.restart_snapshot_restarts),
+        )
     })?;
     run_raft_check("raft-election-prevote-deep", || {
-        check_raft_election_safety(three_node_pre_vote_configs(2), Bounds::new(9))
+        check_raft_election_safety(
+            three_node_pre_vote_configs(2),
+            Bounds::new(bounds.prevote_depth),
+        )
     })?;
     run_raft_check("raft-read-index-deep", || {
         check_raft_read_index_safety(
             three_node_configs(2),
-            Bounds::new(7)
+            Bounds::new(bounds.read_index_depth)
                 .with_max_proposals(1)
-                .with_max_read_indexes(2),
+                .with_max_read_indexes(bounds.read_indexes),
         )
     })?;
     run_raft_check("raft-lease-read-deep", || {
         check_raft_read_index_safety(
             three_node_lease_configs(8),
-            Bounds::new(7)
+            Bounds::new(bounds.lease_read_depth)
                 .with_max_proposals(1)
-                .with_max_read_indexes(2),
+                .with_max_read_indexes(bounds.lease_read_indexes),
         )
     })?;
     let profile = SoakProfile::raft_deep();
