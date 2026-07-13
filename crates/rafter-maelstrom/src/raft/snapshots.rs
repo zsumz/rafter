@@ -5,8 +5,9 @@ use rafter::{
 use rafter_storage::PersistedRaftSnapshot;
 
 use crate::{
-    app::{decode_snapshot_payload, encode_snapshot_payload, persist_app_state},
+    app::{encode_snapshot_payload, persist_snapshot_application_state, AppState},
     raft_node::read_snapshot_payload,
+    raft_node::FileNode,
     InitializedNode,
 };
 
@@ -22,22 +23,18 @@ impl InitializedNode {
                 return;
             }
         };
-        let kv = match decode_snapshot_payload(&payload) {
-            Ok(kv) => kv,
-            Err(error) => {
-                eprintln!("failed to decode applied snapshot payload: {error}");
-                return;
-            }
-        };
-        self.app.kv = kv;
-        self.app.applied = snapshot.metadata.last_included_index;
-        self.last_snapshot_index = self
-            .last_snapshot_index
-            .max(snapshot.metadata.last_included_index);
-        if let Err(error) = persist_app_state(&self.root, &self.app) {
+        if let Err(error) = persist_snapshot_application_state(
+            &self.root,
+            &mut self.app,
+            snapshot.metadata.last_included_index,
+            &payload,
+        ) {
             eprintln!("failed to persist app state after snapshot: {error}");
             return;
         }
+        self.last_snapshot_index = self
+            .last_snapshot_index
+            .max(snapshot.metadata.last_included_index);
         eprintln!(
             "rafter-maelstrom applied snapshot node={} index={}",
             self.name, self.app.applied
@@ -68,33 +65,39 @@ impl InitializedNode {
     }
 
     fn compact_snapshot(&mut self) -> Result<LogIndex, String> {
-        let applied = self.app.applied;
-        if applied == LogIndex::ZERO {
-            return Ok(LogIndex::ZERO);
-        }
-        let term = self
-            .node
-            .term_at_index(applied)
-            .ok_or_else(|| format!("snapshot boundary term at index {applied} is not retained"))?;
-        let metadata = RaftSnapshotMetadata::new(
-            SnapshotGroupId::new(SNAPSHOT_GROUP_ID).expect("valid snapshot group id"),
-            self.node.id(),
-            applied,
-            term,
-            self.node.current_term(),
-            ApplicationSnapshotMetadata::new(
-                ApplicationSnapshotKind::new(SNAPSHOT_KIND).expect("valid snapshot kind"),
-                ApplicationSnapshotVersion::new(1).expect("valid snapshot version"),
-            ),
-        )
-        .map_err(|error| error.to_string())?;
-        self.node
-            .compact_log_with_snapshot(PersistedRaftSnapshot {
-                metadata,
-                application_payload: encode_snapshot_payload(&self.app.kv)?,
-            })
-            .map_err(|error| error.to_string())?;
+        let applied = compact_application_snapshot(&mut self.node, &self.app)?;
         self.last_snapshot_index = applied;
         Ok(applied)
     }
+}
+
+pub(crate) fn compact_application_snapshot(
+    node: &mut FileNode,
+    app: &AppState,
+) -> Result<LogIndex, String> {
+    let applied = app.applied;
+    if applied == LogIndex::ZERO {
+        return Ok(LogIndex::ZERO);
+    }
+    let term = node
+        .term_at_index(applied)
+        .ok_or_else(|| format!("snapshot boundary term at index {applied} is not retained"))?;
+    let metadata = RaftSnapshotMetadata::new(
+        SnapshotGroupId::new(SNAPSHOT_GROUP_ID).expect("valid snapshot group id"),
+        node.id(),
+        applied,
+        term,
+        node.current_term(),
+        ApplicationSnapshotMetadata::new(
+            ApplicationSnapshotKind::new(SNAPSHOT_KIND).expect("valid snapshot kind"),
+            ApplicationSnapshotVersion::new(1).expect("valid snapshot version"),
+        ),
+    )
+    .map_err(|error| error.to_string())?;
+    node.compact_log_with_snapshot(PersistedRaftSnapshot {
+        metadata,
+        application_payload: encode_snapshot_payload(&app.kv)?,
+    })
+    .map_err(|error| error.to_string())?;
+    Ok(applied)
 }

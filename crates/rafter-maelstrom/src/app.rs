@@ -98,6 +98,18 @@ pub(crate) fn persist_app_state(root: &Path, app: &AppState) -> Result<(), Box<d
     Ok(())
 }
 
+pub(crate) fn persist_snapshot_application_state(
+    root: &Path,
+    app: &mut AppState,
+    snapshot_index: LogIndex,
+    payload: &[u8],
+) -> Result<(), Box<dyn Error>> {
+    let kv = decode_snapshot_payload(payload).map_err(std::io::Error::other)?;
+    app.kv = kv;
+    app.applied = snapshot_index;
+    persist_app_state(root, app)
+}
+
 pub(crate) fn apply_committed_command(
     root: &Path,
     app: &mut AppState,

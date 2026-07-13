@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::io::BufRead;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -10,10 +10,10 @@ use rafter::{Input, NodeId, Output};
 use serde_json::json;
 
 use crate::{
-    app::{load_app_state, AppState},
+    app::{load_app_state, persist_snapshot_application_state, AppState},
     membership::{membership_plan_from_env, membership_target_for_plan},
     protocol::{body_type, node_id_map, required_array, required_str, required_u64, Envelope},
-    raft_node::{node_root, open_node, snapshot_every_from_env, FileNode},
+    raft_node::{node_root, open_node, read_snapshot_payload, snapshot_every_from_env, FileNode},
     InitializedNode, MaelstromNode,
 };
 
@@ -30,8 +30,23 @@ pub(crate) fn open_application_node(
     node_id: NodeId,
     peers: Vec<NodeId>,
 ) -> Result<OpenedApplicationNode, Box<dyn Error>> {
-    let app = load_app_state(root)?;
+    let mut app = load_app_state(root)?;
     let opened = open_node(root, node_id, peers, app.applied)?;
+    if app.applied < opened.node.snapshot_index() {
+        let snapshot = opened
+            .node
+            .snapshot()
+            .cloned()
+            .ok_or("recovered snapshot boundary has no durable snapshot descriptor")?;
+        let payload = read_snapshot_payload(&opened.node, &snapshot)
+            .map_err(|error| format!("failed to read recovered application snapshot: {error}"))?;
+        persist_snapshot_application_state(
+            root,
+            &mut app,
+            snapshot.metadata.last_included_index,
+            &payload,
+        )?;
+    }
     Ok(OpenedApplicationNode {
         node: opened.node,
         app,
@@ -125,6 +140,15 @@ impl MaelstromNode {
     }
 
     fn initialize(&mut self, envelope: &Envelope) -> Result<(), Box<dyn Error>> {
+        let node_name = required_str(&envelope.body, "node_id")?;
+        self.initialize_at_root(envelope, node_root(node_name))
+    }
+
+    pub(crate) fn initialize_at_root(
+        &mut self,
+        envelope: &Envelope,
+        root: PathBuf,
+    ) -> Result<(), Box<dyn Error>> {
         let node_name = required_str(&envelope.body, "node_id")?.to_string();
         let node_names = required_array(&envelope.body, "node_ids")?
             .iter()
@@ -148,7 +172,6 @@ impl MaelstromNode {
             .collect();
         let membership_plan = membership_plan_from_env()?;
         let membership_target = membership_target_for_plan(membership_plan, &name_to_id)?;
-        let root = node_root(&node_name);
         std::fs::create_dir_all(&root)?;
         let opened = open_application_node(&root, node_id, peers)?;
         let node = opened.node;
@@ -186,10 +209,14 @@ impl MaelstromNode {
                 "in_reply_to": required_u64(&envelope.body, "msg_id")?,
             }),
         );
-        initialized.handle_outputs(recovery_outputs);
+        dispatch_recovery_outputs(&mut initialized, recovery_outputs);
         self.initialized = Some(initialized);
         Ok(())
     }
+}
+
+pub(crate) fn dispatch_recovery_outputs(node: &mut InitializedNode, outputs: Vec<Output>) {
+    node.handle_outputs(outputs);
 }
 
 #[cfg(test)]

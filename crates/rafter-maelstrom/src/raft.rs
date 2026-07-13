@@ -11,7 +11,7 @@ use crate::{
     InitializedNode,
 };
 
-mod snapshots;
+pub(crate) mod snapshots;
 
 impl InitializedNode {
     pub(crate) fn handle_raft(&mut self, envelope: &Envelope) {
