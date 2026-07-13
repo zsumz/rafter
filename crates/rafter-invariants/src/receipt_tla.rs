@@ -6,7 +6,8 @@ use crate::producer::tla_checkpoint::{
     RECOVERY_REPORT_KIND,
 };
 use crate::producer::tla_output::{
-    detector_config_kind, detector_log_kind, detector_observation, REGISTERED_PREDICATES,
+    detector_config_kind, detector_log_kind, detector_observation, DETECTOR_PROBES,
+    REGISTERED_PREDICATES,
 };
 use crate::{CheckCompletion, EvidenceDescriptor, EvidenceStatus, ResultBundle};
 
@@ -220,9 +221,9 @@ fn required_proof_artifact_kinds(
     .into_iter()
     .map(str::to_owned)
     .collect::<BTreeSet<_>>();
-    for predicate in REGISTERED_PREDICATES {
-        kinds.insert(detector_log_kind(predicate).expect("registered detector predicate"));
-        kinds.insert(detector_config_kind(predicate).expect("registered detector predicate"));
+    for probe in DETECTOR_PROBES {
+        kinds.insert(detector_log_kind(probe).expect("registered detector probe"));
+        kinds.insert(detector_config_kind(probe).expect("registered detector probe"));
     }
     if checkpoint_enabled {
         kinds.extend([
@@ -247,16 +248,16 @@ fn observed(check: &crate::CheckReceipt, name: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::required_proof_artifact_kinds;
-    use crate::producer::tla_output::REGISTERED_PREDICATES;
+    use crate::producer::tla_output::{detector_config_kind, detector_log_kind, DETECTOR_PROBES};
 
     #[test]
-    fn passing_receipt_requires_two_artifacts_per_detector_predicate() {
+    fn passing_receipt_requires_two_artifacts_per_detector_probe() {
         let kinds = required_proof_artifact_kinds(false, false);
-        assert_eq!(kinds.len(), 12 + 2 * REGISTERED_PREDICATES.len());
+        assert_eq!(kinds.len(), 12 + 2 * DETECTOR_PROBES.len());
         assert!(!kinds.contains("tla-detector-log"));
-        for predicate in REGISTERED_PREDICATES {
-            assert!(kinds.contains(&format!("tla-detector-log:{predicate}")));
-            assert!(kinds.contains(&format!("tla-detector-config:{predicate}")));
+        for probe in DETECTOR_PROBES {
+            assert!(kinds.contains(&detector_log_kind(probe).expect("registered probe")));
+            assert!(kinds.contains(&detector_config_kind(probe).expect("registered probe")));
         }
     }
 

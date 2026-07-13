@@ -21,45 +21,22 @@ RequestVote == "RequestVote"
 AppendEntries == "AppendEntries"
 
 VARIABLES currentTerm, votedFor, role, log, commitIndex, applied, messages,
-          readRequests, readGrants, membership
+          readRequests, readGrants, membership, appliedConfigIndex,
+          electedLeaders,
+          higherTermEvidenceSeen, higherTermStepDownFailed,
+          staleAuthorityAccepted
 
 vars == << currentTerm, votedFor, role, log, commitIndex, applied, messages,
-          readRequests, readGrants, membership >>
+          readRequests, readGrants, membership, appliedConfigIndex,
+          electedLeaders,
+          higherTermEvidenceSeen, higherTermStepDownFailed,
+          staleAuthorityAccepted >>
 
 Min(a, b) == IF a <= b THEN a ELSE b
 Max(a, b) == IF a >= b THEN a ELSE b
 
-Entry(term, value) == [term |-> term, value |-> value]
-
-EntrySet == {Entry(t, v) : t \in 1..MaxTerm, v \in Values}
-
-AllLogs ==
-  {<<>>}
-  \cup {<<e1>> : e1 \in EntrySet}
-  \cup {<<e1, e2>> : e1 \in EntrySet, e2 \in EntrySet}
-  \cup {<<e1, e2, e3>> : e1 \in EntrySet, e2 \in EntrySet, e3 \in EntrySet}
-
-LogSet == {s \in AllLogs : Len(s) <= MaxLogLen}
-
-AllApplied ==
-  {<<>>}
-  \cup {<<v1>> : v1 \in Values}
-  \cup {<<v1, v2>> : v1 \in Values, v2 \in Values}
-  \cup {<<v1, v2, v3>> : v1 \in Values, v2 \in Values, v3 \in Values}
-
-AppliedSet == {s \in AllApplied : Len(s) <= MaxLogLen}
-
-ReadRequestSet ==
-  {[node |-> n, request |-> request, committedFloor |-> floor] :
-      n \in Nodes,
-      request \in ReadRequests,
-      floor \in 0..MaxLogLen}
-
-ReadGrantSet ==
-  {[node |-> n, request |-> request, readIndex |-> index] :
-      n \in Nodes,
-      request \in ReadRequests,
-      index \in 0..MaxLogLen}
+CommandEntryKind == "Command"
+ConfigurationEntryKind == "Configuration"
 
 VoterSets ==
   {voters \in SUBSET Nodes :
@@ -77,32 +54,154 @@ MembershipSet ==
   \cup {JointMembership(oldVoters, newVoters) :
       oldVoters \in VoterSets, newVoters \in VoterSets}
 
+Entry(term, value) ==
+  [term |-> term, kind |-> CommandEntryKind, input |-> value]
+
+ConfigurationEntry(term, config) ==
+  [term |-> term, kind |-> ConfigurationEntryKind, input |-> config]
+
+ConfigurationSet ==
+  {JointMembership(Nodes, voters) :
+      voters \in {candidate \in VoterSets : candidate # Nodes}}
+  \cup {StableMembership(voters) :
+      voters \in {candidate \in VoterSets : candidate # Nodes}}
+
+EntrySet ==
+  {Entry(t, v) : t \in 1..MaxTerm, v \in Values}
+  \cup {ConfigurationEntry(t, config) :
+      t \in 1..MaxTerm, config \in ConfigurationSet}
+
+AllLogs ==
+  {<<>>}
+  \cup {<<e1>> : e1 \in EntrySet}
+  \cup {<<e1, e2>> : e1 \in EntrySet, e2 \in EntrySet}
+  \cup {<<e1, e2, e3>> : e1 \in EntrySet, e2 \in EntrySet, e3 \in EntrySet}
+
+LogSet == {s \in AllLogs : Len(s) <= MaxLogLen}
+
+AllReferenceStates ==
+  {<<>>}
+  \cup {<<v1>> : v1 \in Values}
+  \cup {<<v1, v2>> : v1 \in Values, v2 \in Values}
+  \cup {<<v1, v2, v3>> : v1 \in Values, v2 \in Values, v3 \in Values}
+
+ReferenceStateSet ==
+  {s \in AllReferenceStates : Len(s) <= MaxLogLen}
+
+ReadRequestSet ==
+  {[node |-> n, request |-> request, committedFloor |-> floor] :
+      n \in Nodes,
+      request \in ReadRequests,
+      floor \in 0..MaxLogLen}
+
+ReadGrantSet ==
+  {[node |-> n, request |-> request, readIndex |-> index] :
+      n \in Nodes,
+      request \in ReadRequests,
+      index \in 0..MaxLogLen}
+
+InitialApplicationState ==
+  [referenceState |-> <<>>, membership |-> StableMembership(Nodes)]
+
+ApplicationStateOK(state) ==
+  /\ DOMAIN state = {"referenceState", "membership"}
+  /\ state.referenceState \in ReferenceStateSet
+  /\ state.membership \in MembershipSet
+
+ApplyEntry(state, entry) ==
+  IF entry.kind = CommandEntryKind
+  THEN [state EXCEPT !.referenceState = Append(@, entry.input)]
+  ELSE [state EXCEPT !.membership = entry.input]
+
+AppliedEvent(index, entry, priorState, resultState) ==
+  [index |-> index,
+   entry |-> entry,
+   priorState |-> priorState,
+   resultState |-> resultState]
+
+AppliedEventOK(event) ==
+  /\ DOMAIN event = {"index", "entry", "priorState", "resultState"}
+  /\ event.index \in 1..MaxLogLen
+  /\ event.entry \in EntrySet
+  /\ ApplicationStateOK(event.priorState)
+  /\ ApplicationStateOK(event.resultState)
+
+AppliedResultState(history) ==
+  IF Len(history) = 0
+  THEN InitialApplicationState
+  ELSE history[Len(history)].resultState
+
+AppliedEntryPrefix(history, index) ==
+  [i \in 1..index |-> history[i].entry]
+
+AppliedHistorySound(history) ==
+  \A i \in 1..Len(history) :
+    /\ history[i].priorState =
+         IF i = 1 THEN InitialApplicationState ELSE history[i - 1].resultState
+    /\ history[i].resultState =
+         ApplyEntry(history[i].priorState, history[i].entry)
+
+RecordElection(node) ==
+  electedLeaders' = [electedLeaders EXCEPT
+    ![currentTerm[node]] = @ \cup {node}]
+
+RecordHigherTermOutcome(node, evidenceTerm, observedHigherTerm) ==
+  /\ higherTermEvidenceSeen' =
+       IF observedHigherTerm THEN TRUE ELSE higherTermEvidenceSeen
+  /\ higherTermStepDownFailed' =
+       IF /\ observedHigherTerm
+          /\ (currentTerm'[node] # evidenceTerm \/ role'[node] # Follower)
+       THEN TRUE
+       ELSE higherTermStepDownFailed
+
+RecordAuthorityAcceptance(authorityTerm, knownTerm, accepted) ==
+  staleAuthorityAccepted' =
+    IF accepted /\ authorityTerm < knownTerm
+    THEN TRUE
+    ELSE staleAuthorityAccepted
+
+RecordApplication(node, index, entry, priorState, resultState) ==
+  applied' = [applied EXCEPT ![node] =
+    Append(@, AppliedEvent(index, entry, priorState, resultState))]
+
+NodePairSet ==
+  {pair \in [from: Nodes, to: Nodes] : pair.from # pair.to}
+
+TermLogSet ==
+  {payload \in [term: 1..MaxTerm, entries: LogSet] :
+    \A i \in 1..Len(payload.entries) :
+      payload.entries[i].term <= payload.term}
+
 RequestVoteMessages ==
-  {[type |-> RequestVote, term |-> t, from |-> src, to |-> dst] :
-      t \in 1..MaxTerm, src \in Nodes, dst \in Nodes}
+  {[type |-> RequestVote,
+    term |-> t,
+    from |-> pair.from,
+    to |-> pair.to] :
+      t \in 1..MaxTerm, pair \in NodePairSet}
 
 AppendEntriesMessages ==
-  {[type |-> AppendEntries,
-    term |-> t,
-    from |-> src,
-    to |-> dst,
-    entries |-> entries,
-    leaderCommit |-> leaderCommit] :
-      t \in 1..MaxTerm,
-      src \in Nodes,
-      dst \in Nodes,
-      entries \in LogSet,
-      leaderCommit \in 0..MaxLogLen}
+  {message \in
+    {[type |-> AppendEntries,
+      term |-> payload.term,
+      from |-> pair.from,
+      to |-> pair.to,
+      entries |-> payload.entries,
+      leaderCommit |-> leaderCommit] :
+        pair \in NodePairSet,
+        payload \in TermLogSet,
+        leaderCommit \in 0..MaxLogLen} :
+    message.leaderCommit <= Len(message.entries)}
 
 MessageSet == RequestVoteMessages \cup AppendEntriesMessages
 
 EntryOK(e) ==
   /\ e.term \in 1..MaxTerm
-  /\ e.value \in Values
+  /\ e.kind \in {CommandEntryKind, ConfigurationEntryKind}
+  /\ IF e.kind = CommandEntryKind
+     THEN e.input \in Values
+     ELSE e.input \in ConfigurationSet
 
 LogOK(s) == s \in LogSet
-
-AppliedOK(s) == s \in AppliedSet
 
 Prefix(s, i) ==
   IF i = 0 THEN <<>> ELSE SubSeq(s, 1, i)
@@ -169,25 +268,52 @@ MessageOK(m) ==
      /\ m.to \in Nodes
      /\ m.from # m.to
      /\ LogOK(m.entries)
-     /\ m.leaderCommit \in 0..MaxLogLen
+     /\ m.leaderCommit \in 0..Len(m.entries)
+     /\ \A i \in 1..Len(m.entries) : m.entries[i].term <= m.term
+
+AppliedConfigurationStateOK ==
+  /\ \A n \in Nodes :
+       \A i \in 1..Len(applied[n]) :
+         applied[n][i].entry.kind = ConfigurationEntryKind =>
+           i <= appliedConfigIndex
+  /\ IF appliedConfigIndex = 0
+     THEN membership = InitialApplicationState.membership
+     ELSE \E n \in Nodes :
+            /\ appliedConfigIndex <= Len(applied[n])
+            /\ applied[n][appliedConfigIndex].entry.kind =
+                 ConfigurationEntryKind
+            /\ membership =
+                 applied[n][appliedConfigIndex].resultState.membership
 
 TypeOK ==
   /\ currentTerm \in [Nodes -> 0..MaxTerm]
   /\ votedFor \in [Nodes -> (Nodes \cup {NoVote})]
   /\ role \in [Nodes -> {Follower, Candidate, Leader}]
+  /\ electedLeaders \in [1..MaxTerm -> SUBSET Nodes]
+  /\ \A n \in Nodes :
+       role[n] = Leader =>
+         /\ currentTerm[n] \in 1..MaxTerm
+         /\ n \in electedLeaders[currentTerm[n]]
+  /\ higherTermEvidenceSeen \in BOOLEAN
+  /\ higherTermStepDownFailed \in BOOLEAN
+  /\ staleAuthorityAccepted \in BOOLEAN
   /\ membership \in MembershipSet
+  /\ appliedConfigIndex \in 0..MaxLogLen
   /\ \A n \in Nodes :
        n \notin ActiveVoters(membership) => role[n] = Follower
   /\ log \in [Nodes -> LogSet]
   /\ \A n \in Nodes : LogOK(log[n])
   /\ commitIndex \in [Nodes -> 0..MaxLogLen]
   /\ \A n \in Nodes : commitIndex[n] <= Len(log[n])
-  /\ applied \in [Nodes -> AppliedSet]
+  /\ DOMAIN applied = Nodes
   /\ \A n \in Nodes :
-       /\ AppliedOK(applied[n])
        /\ Len(applied[n]) <= commitIndex[n]
+       /\ DOMAIN applied[n] = 1..Len(applied[n])
        /\ \A i \in 1..Len(applied[n]) :
-            applied[n][i] = log[n][i].value
+            /\ AppliedEventOK(applied[n][i])
+            /\ applied[n][i].index = i
+            /\ applied[n][i].entry = log[n][i]
+  /\ AppliedConfigurationStateOK
   /\ messages \in SUBSET MessageSet
   /\ \A m \in messages : MessageOK(m)
   /\ readRequests \in SUBSET ReadRequestSet
@@ -214,6 +340,11 @@ Init ==
   /\ readRequests = {}
   /\ readGrants = {}
   /\ membership = StableMembership(Nodes)
+  /\ appliedConfigIndex = 0
+  /\ electedLeaders = [t \in 1..MaxTerm |-> {}]
+  /\ higherTermEvidenceSeen = FALSE
+  /\ higherTermStepDownFailed = FALSE
+  /\ staleAuthorityAccepted = FALSE
 
 Timeout(n) ==
   /\ currentTerm[n] < MaxTerm
@@ -222,7 +353,9 @@ Timeout(n) ==
   /\ votedFor' = [votedFor EXCEPT ![n] = n]
   /\ role' = [role EXCEPT ![n] = Candidate]
   /\ UNCHANGED << log, commitIndex, applied, messages, readRequests, readGrants,
-                  membership >>
+                  membership, appliedConfigIndex, electedLeaders,
+                  higherTermEvidenceSeen,
+                  higherTermStepDownFailed, staleAuthorityAccepted >>
 
 SendRequestVote(c, v) ==
   LET msg == [type |-> RequestVote,
@@ -235,12 +368,17 @@ SendRequestVote(c, v) ==
     /\ currentTerm[c] \in 1..MaxTerm
     /\ msg \notin messages
     /\ messages' = messages \cup {msg}
+    /\ RecordAuthorityAcceptance(currentTerm[c], currentTerm[c], TRUE)
     /\ UNCHANGED << currentTerm, votedFor, role, log, commitIndex, applied,
-                    readRequests, readGrants, membership >>
+                    readRequests, readGrants, membership, appliedConfigIndex,
+                    electedLeaders,
+                    higherTermEvidenceSeen, higherTermStepDownFailed >>
 
 DeliverRequestVote(m) ==
-  LET grant == /\ m.term >= currentTerm[m.to]
-               /\ votedFor[m.to] \in {NoVote, m.from}
+  LET higher == m.term > currentTerm[m.to]
+      eligibleVote == IF higher THEN NoVote ELSE votedFor[m.to]
+      grant == /\ m.term >= currentTerm[m.to]
+               /\ eligibleVote \in {NoVote, m.from}
                /\ m.from \in ActiveVoters(membership)
                /\ m.to \in ActiveVoters(membership)
                /\ UpToDate(m.from, m.to)
@@ -248,15 +386,16 @@ DeliverRequestVote(m) ==
     /\ m \in messages
     /\ m.type = RequestVote
     /\ messages' = messages \ {m}
-    /\ IF grant
-       THEN /\ currentTerm' = [currentTerm EXCEPT ![m.to] = m.term]
-            /\ votedFor' = [votedFor EXCEPT ![m.to] = m.from]
-            /\ role' = [role EXCEPT ![m.to] = Follower]
-       ELSE /\ currentTerm' = currentTerm
-            /\ votedFor' = votedFor
-            /\ role' = role
+    /\ currentTerm' = [currentTerm EXCEPT ![m.to] =
+         IF higher THEN m.term ELSE @]
+    /\ votedFor' = [votedFor EXCEPT ![m.to] =
+         IF grant THEN m.from ELSE IF higher THEN NoVote ELSE @]
+    /\ role' = [role EXCEPT ![m.to] =
+         IF higher \/ grant THEN Follower ELSE @]
+    /\ RecordHigherTermOutcome(m.to, m.term, higher)
+    /\ RecordAuthorityAcceptance(m.term, currentTerm[m.to], grant)
     /\ UNCHANGED << log, commitIndex, applied, readRequests, readGrants,
-                    membership >>
+                    membership, appliedConfigIndex, electedLeaders >>
 
 BecomeLeader(n) ==
   /\ role[n] = Candidate
@@ -265,16 +404,24 @@ BecomeLeader(n) ==
        /\ votedFor[v] = n
        /\ currentTerm[v] = currentTerm[n]})
   /\ role' = [role EXCEPT ![n] = Leader]
-  /\ UNCHANGED << currentTerm, votedFor, log, commitIndex, applied, messages,
-                  readRequests, readGrants, membership >>
+  /\ RecordElection(n)
+  /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
+  /\ UNCHANGED << currentTerm, votedFor, log, commitIndex, applied,
+                  messages, readRequests, readGrants, membership,
+                  appliedConfigIndex,
+                  higherTermEvidenceSeen, higherTermStepDownFailed >>
 
 ClientAppend(n, value) ==
   /\ role[n] = Leader
   /\ currentTerm[n] \in 1..MaxTerm
   /\ Len(log[n]) < MaxLogLen
   /\ log' = [log EXCEPT ![n] = Append(@, Entry(currentTerm[n], value))]
-  /\ UNCHANGED << currentTerm, votedFor, role, commitIndex, applied, messages,
-                  readRequests, readGrants, membership >>
+  /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
+  /\ UNCHANGED << currentTerm, votedFor, role, commitIndex, applied,
+                  messages, readRequests, readGrants, membership,
+                  appliedConfigIndex,
+                  electedLeaders,
+                  higherTermEvidenceSeen, higherTermStepDownFailed >>
 
 SendAppend(l, f) ==
   LET msg == [type |-> AppendEntries,
@@ -289,11 +436,15 @@ SendAppend(l, f) ==
     /\ currentTerm[l] \in 1..MaxTerm
     /\ msg \notin messages
     /\ messages' = messages \cup {msg}
+    /\ RecordAuthorityAcceptance(currentTerm[l], currentTerm[l], TRUE)
     /\ UNCHANGED << currentTerm, votedFor, role, log, commitIndex, applied,
-                    readRequests, readGrants, membership >>
+                    readRequests, readGrants, membership, appliedConfigIndex,
+                    electedLeaders,
+                    higherTermEvidenceSeen, higherTermStepDownFailed >>
 
 DeliverAppend(m) ==
-  LET accept == /\ m.term >= currentTerm[m.to]
+  LET higher == m.term > currentTerm[m.to]
+      accept == /\ m.term >= currentTerm[m.to]
                 /\ m.from \in ActiveVoters(membership)
                 /\ m.to \in ActiveVoters(membership)
                 /\ CanAdoptLog(m.to, m.entries)
@@ -301,20 +452,23 @@ DeliverAppend(m) ==
     /\ m \in messages
     /\ m.type = AppendEntries
     /\ messages' = messages \ {m}
+    /\ currentTerm' = [currentTerm EXCEPT ![m.to] =
+         IF higher THEN m.term ELSE @]
+    /\ votedFor' = [votedFor EXCEPT ![m.to] =
+         IF higher THEN NoVote ELSE @]
+    /\ role' = [role EXCEPT ![m.to] =
+         IF higher \/ accept THEN Follower ELSE @]
     /\ IF accept
-       THEN /\ currentTerm' = [currentTerm EXCEPT ![m.to] = m.term]
-            /\ votedFor' = [votedFor EXCEPT ![m.to] =
-                  IF m.term > currentTerm[m.to] THEN NoVote ELSE @]
-            /\ role' = [role EXCEPT ![m.to] = Follower]
-            /\ log' = [log EXCEPT ![m.to] = m.entries]
+       THEN /\ log' = [log EXCEPT ![m.to] = m.entries]
             /\ commitIndex' = [commitIndex EXCEPT ![m.to] =
                   AdvanceCommit(m.to, m.leaderCommit, Len(m.entries))]
-       ELSE /\ currentTerm' = currentTerm
-            /\ votedFor' = votedFor
-            /\ role' = role
-            /\ log' = log
+       ELSE /\ log' = log
             /\ commitIndex' = commitIndex
-    /\ UNCHANGED << applied, readRequests, readGrants, membership >>
+    /\ RecordHigherTermOutcome(m.to, m.term, higher)
+    /\ RecordAuthorityAcceptance(m.term, currentTerm[m.to], accept)
+    /\ UNCHANGED << applied, readRequests, readGrants, membership,
+                    appliedConfigIndex,
+                    electedLeaders >>
 
 Commit(n, i) ==
   /\ role[n] = Leader
@@ -323,21 +477,45 @@ Commit(n, i) ==
   /\ log[n][i].term = currentTerm[n]
   /\ QuorumNodes(MatchingReplicas(n, i))
   /\ commitIndex' = [commitIndex EXCEPT ![n] = i]
-  /\ UNCHANGED << currentTerm, votedFor, role, log, applied, messages,
-                  readRequests, readGrants, membership >>
+  /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
+  /\ UNCHANGED << currentTerm, votedFor, role, log, applied,
+                  messages, readRequests, readGrants, membership,
+                  appliedConfigIndex,
+                  electedLeaders,
+                  higherTermEvidenceSeen, higherTermStepDownFailed >>
 
 Apply(n) ==
   LET next == Len(applied[n]) + 1
+      entry == log[n][next]
+      priorState == AppliedResultState(applied[n])
+      resultState == ApplyEntry(priorState, entry)
+      isNewConfiguration ==
+        /\ entry.kind = ConfigurationEntryKind
+        /\ next > appliedConfigIndex
   IN
     /\ Len(applied[n]) < commitIndex[n]
-    /\ applied' = [applied EXCEPT ![n] = Append(@, log[n][next].value)]
-    /\ UNCHANGED << currentTerm, votedFor, role, log, commitIndex, messages,
-                    readRequests, readGrants, membership >>
+    /\ RecordApplication(n, next, entry, priorState, resultState)
+    /\ membership' =
+         IF isNewConfiguration THEN entry.input ELSE membership
+    /\ appliedConfigIndex' =
+         IF isNewConfiguration THEN next ELSE appliedConfigIndex
+    /\ role' =
+         IF isNewConfiguration
+         THEN RoleAfterMembershipChange(entry.input)
+         ELSE role
+    /\ UNCHANGED << currentTerm, votedFor, log, commitIndex, messages,
+                    readRequests, readGrants, electedLeaders,
+                    higherTermEvidenceSeen, higherTermStepDownFailed,
+                    staleAuthorityAccepted >>
 
 Restart(n) ==
   /\ role' = [role EXCEPT ![n] = Follower]
-  /\ UNCHANGED << currentTerm, votedFor, log, commitIndex, applied, messages,
-                  readRequests, readGrants, membership >>
+  /\ UNCHANGED << currentTerm, votedFor, log, commitIndex, applied,
+                  messages, readRequests, readGrants, membership,
+                  appliedConfigIndex,
+                  electedLeaders,
+                  higherTermEvidenceSeen, higherTermStepDownFailed,
+                  staleAuthorityAccepted >>
 
 EnterJoint(n, newVoters) ==
   LET next == JointMembership(membership.old, newVoters)
@@ -349,10 +527,17 @@ EnterJoint(n, newVoters) ==
     /\ n \in newVoters
     /\ role[n] = Leader
     /\ CommittedEntriesHeldBy(newVoters)
-    /\ membership' = next
-    /\ role' = RoleAfterMembershipChange(next)
-    /\ UNCHANGED << currentTerm, votedFor, log, commitIndex, applied, messages,
-                    readRequests, readGrants >>
+    /\ currentTerm[n] \in 1..MaxTerm
+    /\ Len(log[n]) = Len(applied[n])
+    /\ Len(log[n]) < MaxLogLen
+    /\ log' = [log EXCEPT ![n] =
+         Append(@, ConfigurationEntry(currentTerm[n], next))]
+    /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
+    /\ UNCHANGED << currentTerm, votedFor, role, commitIndex, applied,
+                    messages, readRequests, readGrants, membership,
+                    appliedConfigIndex,
+                    electedLeaders,
+                    higherTermEvidenceSeen, higherTermStepDownFailed >>
 
 LeaveJoint(n) ==
   LET next == StableMembership(membership.new)
@@ -361,10 +546,17 @@ LeaveJoint(n) ==
     /\ n \in membership.new
     /\ role[n] = Leader
     /\ CommittedEntriesHeldBy(membership.new)
-    /\ membership' = next
-    /\ role' = RoleAfterMembershipChange(next)
-    /\ UNCHANGED << currentTerm, votedFor, log, commitIndex, applied, messages,
-                    readRequests, readGrants >>
+    /\ currentTerm[n] \in 1..MaxTerm
+    /\ Len(log[n]) = Len(applied[n])
+    /\ Len(log[n]) < MaxLogLen
+    /\ log' = [log EXCEPT ![n] =
+         Append(@, ConfigurationEntry(currentTerm[n], next))]
+    /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
+    /\ UNCHANGED << currentTerm, votedFor, role, commitIndex, applied,
+                    messages, readRequests, readGrants, membership,
+                    appliedConfigIndex,
+                    electedLeaders,
+                    higherTermEvidenceSeen, higherTermStepDownFailed >>
 
 RegisterRead(n, request) ==
   LET read == [node |-> n,
@@ -376,8 +568,11 @@ RegisterRead(n, request) ==
     /\ \A r \in readRequests :
          ~(r.node = n /\ r.request = request)
     /\ readRequests' = readRequests \cup {read}
+    /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
     /\ UNCHANGED << currentTerm, votedFor, role, log, commitIndex, applied,
-                    messages, readGrants, membership >>
+                    messages, readGrants, membership, appliedConfigIndex,
+                    electedLeaders,
+                    higherTermEvidenceSeen, higherTermStepDownFailed >>
 
 GrantRead(n, request) ==
   \E read \in readRequests :
@@ -389,8 +584,11 @@ GrantRead(n, request) ==
          ~(grant.node = n /\ grant.request = request)
     /\ readGrants' = readGrants \cup
          {[node |-> n, request |-> request, readIndex |-> commitIndex[n]]}
+    /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
     /\ UNCHANGED << currentTerm, votedFor, role, log, commitIndex, applied,
-                    messages, readRequests, membership >>
+                    messages, readRequests, membership, appliedConfigIndex,
+                    electedLeaders,
+                    higherTermEvidenceSeen, higherTermStepDownFailed >>
 
 Next ==
   \/ \E n \in Nodes : Timeout(n)
@@ -412,8 +610,7 @@ Spec == Init /\ [][Next]_vars
 
 ElectionSafety ==
   \A t \in 1..MaxTerm :
-    Cardinality({n \in Nodes : /\ role[n] = Leader
-                              /\ currentTerm[n] = t}) <= 1
+    Cardinality(electedLeaders[t]) <= 1
 
 LogMatching ==
   \A a, b \in Nodes :
@@ -440,19 +637,19 @@ CommittedPrefixStability ==
       => log[a][i] = log[b][i]
 
 StateMachineSafety ==
-  \A a, b \in Nodes :
-    \A i \in 1..MaxLogLen :
-      (/\ i \in 1..Len(applied[a])
-       /\ i \in 1..Len(applied[b]))
-      => applied[a][i] = applied[b][i]
+  /\ \A n \in Nodes : AppliedHistorySound(applied[n])
+  /\ \A a, b \in Nodes :
+       \A i \in 1..MaxLogLen :
+         (/\ i \in 1..Len(applied[a])
+          /\ i \in 1..Len(applied[b]))
+         => /\ AppliedEntryPrefix(applied[a], i) =
+                  AppliedEntryPrefix(applied[b], i)
+            /\ applied[a][i].priorState = applied[b][i].priorState
+            /\ applied[a][i].resultState = applied[b][i].resultState
 
 StaleLeaderFencing ==
-  \A n \in Nodes :
-    role[n] = Leader =>
-      /\ n \in ActiveVoters(membership)
-      /\ \A i \in 1..commitIndex[n] :
-           /\ log[n][i].term <= currentTerm[n]
-           /\ QuorumNodes(MatchingReplicas(n, i))
+  /\ ~higherTermStepDownFailed
+  /\ ~staleAuthorityAccepted
 
 CommittedEntriesHaveQuorum ==
   \A n \in Nodes :

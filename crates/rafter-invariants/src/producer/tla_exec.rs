@@ -3,7 +3,8 @@ use std::{collections::BTreeMap, error::Error, fs, path::Path, time::Duration};
 use super::{artifact, process, tla_checkpoint, tla_contract::required_configuration, tla_output};
 use tla_output::{
     detector_config_kind, detector_invariant, detector_label, detector_log_kind,
-    detector_observation, render_detector_config, REGISTERED_PREDICATES,
+    detector_observation, probe_slug, render_detector_config, DetectorProbe, DETECTOR_PROBES,
+    REGISTERED_PREDICATES,
 };
 
 const TRACE_CONFIG: &str = "RaftTraceSample.cfg";
@@ -256,14 +257,13 @@ fn run_detector_probes(
     output_dir: &Path,
 ) -> Result<DetectorProbes, Box<dyn Error>> {
     let mut aggregate = DetectorProbes::default();
-    for predicate in REGISTERED_PREDICATES {
-        let detector =
-            run_detector_probe(profile, source_ref, configuration, output_dir, predicate)?;
+    for probe in DETECTOR_PROBES {
+        let detector = run_detector_probe(profile, source_ref, configuration, output_dir, probe)?;
         aggregate.peak_rss_kib = aggregate.peak_rss_kib.max(detector.run.output.peak_rss_kib);
         aggregate.duration_ms = aggregate
             .duration_ms
             .saturating_add(process::duration_ms(detector.run.output.duration));
-        let expected_invariant = detector_invariant(predicate).expect("registered predicate");
+        let expected_invariant = detector_invariant(probe).expect("registered detector probe");
         let summary = tla_output::parse(&detector.run.output.stdout).ok();
         let qualified = detector_qualified(
             detector.run.output.status.code(),
@@ -272,10 +272,10 @@ fn run_detector_probes(
             &expected_invariant,
         );
         aggregate.succeeded &= qualified;
-        aggregate.qualifications.insert(
-            detector_observation(predicate).expect("registered predicate"),
-            u64::from(qualified),
-        );
+        let observation =
+            detector_observation(probe.predicate).expect("registered detector predicate");
+        let predicate_qualified = aggregate.qualifications.entry(observation).or_insert(1);
+        *predicate_qualified &= u64::from(qualified);
         aggregate.artifacts.push(detector.config_artifact);
         aggregate.artifacts.push(detector.run.artifact);
     }
@@ -287,16 +287,17 @@ fn run_detector_probe(
     source_ref: &str,
     configuration: &BTreeMap<String, String>,
     output_dir: &Path,
-    predicate: &str,
+    probe: DetectorProbe,
 ) -> Result<DetectorRun, Box<dyn Error>> {
     let source_prefix = source_ref.get(..12).unwrap_or(source_ref);
     let template = fs::read_to_string(Path::new("specs/tla/raft").join(DETECTOR_CONFIG))?;
-    let config_source = render_detector_config(&template, predicate)?;
-    let config_kind = detector_config_kind(predicate).ok_or("unregistered detector predicate")?;
+    let config_source = render_detector_config(&template, probe)?;
+    let config_kind = detector_config_kind(probe).ok_or("unregistered detector probe")?;
+    let slug = probe_slug(probe);
     let config_artifact = artifact::write(
         output_dir,
         Path::new(&format!(
-            "{profile}-tla/{source_prefix}/detectors/{predicate}.cfg"
+            "{profile}-tla/{source_prefix}/detectors/{slug}.cfg"
         )),
         &config_kind,
         config_source.as_bytes(),
@@ -304,8 +305,8 @@ fn run_detector_probe(
     let config = fs::canonicalize(&config_artifact.path)?
         .to_string_lossy()
         .into_owned();
-    let label = detector_label(predicate).ok_or("unregistered detector predicate")?;
-    let artifact_kind = detector_log_kind(predicate).ok_or("unregistered detector predicate")?;
+    let label = detector_label(probe).ok_or("unregistered detector probe")?;
+    let artifact_kind = detector_log_kind(probe).ok_or("unregistered detector probe")?;
     let run = run_tlc(TlcRequest {
         profile,
         source_ref,

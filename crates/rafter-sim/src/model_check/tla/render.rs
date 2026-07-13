@@ -44,7 +44,10 @@ fn render_tla_trace_module(module_name: &str, actions: &[TlaRenderedAction]) -> 
     module.push_str(
         "traceVars == << currentTerm, votedFor, role, log, commitIndex, applied, messages,\n",
     );
-    module.push_str("               readRequests, readGrants, membership, traceStep >>\n\n");
+    module.push_str("               readRequests, readGrants, membership, appliedConfigIndex,\n");
+    module.push_str("               electedLeaders,\n");
+    module.push_str("               higherTermEvidenceSeen, higherTermStepDownFailed,\n");
+    module.push_str("               staleAuthorityAccepted, traceStep >>\n\n");
     module.push_str("TraceInit == Init /\\ traceStep = 0\n\n");
 
     for (index, action) in actions.iter().copied().enumerate() {
