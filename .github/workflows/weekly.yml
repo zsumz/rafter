@@ -95,7 +95,7 @@ jobs:
         timeout-minutes: 325
         run: cargo run --locked -p rafter-invariants -- run --profile weekly --layer tla
       - name: Save exact-compatible weekly TLC checkpoint
-        if: always()
+        if: ${{ always() && hashFiles('target/rafter-invariants/tla-checkpoint/weekly/CACHE_VALID') != '' }}
         uses: actions/cache/save@v4
         with:
           path: target/rafter-invariants/tla-checkpoint/weekly

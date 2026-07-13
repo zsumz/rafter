@@ -149,10 +149,26 @@ fn executable_sha256(name: &str) -> Result<String, Box<dyn Error>> {
 
 fn tool_version(name: &str) -> Result<String, Box<dyn Error>> {
     let output = Command::new(name).arg("--version").output()?;
+    tool_version_output(name, &output)
+}
+
+fn tool_version_output(
+    name: &str,
+    output: &std::process::Output,
+) -> Result<String, Box<dyn Error>> {
+    if !output.status.success() {
+        return Err(format!(
+            "{name} --version failed with {}; stdout: {}; stderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout).trim(),
+            String::from_utf8_lossy(&output.stderr).trim(),
+        )
+        .into());
+    }
     let value = format!(
         "{}{}",
-        String::from_utf8(output.stdout)?,
-        String::from_utf8(output.stderr)?
+        String::from_utf8(output.stdout.clone())?,
+        String::from_utf8(output.stderr.clone())?
     )
     .trim()
     .to_owned();
@@ -192,4 +208,30 @@ fn cargo_config_sha256() -> Result<String, Box<dyn Error>> {
         hasher.update([0]);
     }
     Ok(format!("{:x}", hasher.finalize()))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::process::Command;
+
+    use super::tool_version_output;
+
+    #[test]
+    #[cfg(unix)]
+    fn tool_version_rejects_nonzero_status_with_both_output_streams() {
+        let output = Command::new("sh")
+            .args([
+                "-c",
+                "printf 'fixture stdout'; printf 'fixture stderr' >&2; exit 7",
+            ])
+            .output()
+            .expect("run failing version fixture");
+
+        let error = tool_version_output("fixture-tool", &output)
+            .expect_err("nonzero version command must fail")
+            .to_string();
+        assert!(error.contains("exit status: 7"));
+        assert!(error.contains("stdout: fixture stdout"));
+        assert!(error.contains("stderr: fixture stderr"));
+    }
 }

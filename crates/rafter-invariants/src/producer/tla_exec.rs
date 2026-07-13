@@ -1,4 +1,10 @@
-use std::{collections::BTreeMap, error::Error, fs, path::Path, time::Duration};
+use std::{
+    collections::BTreeMap,
+    error::Error,
+    fs,
+    path::Path,
+    time::{Duration, Instant},
+};
 
 use super::{artifact, process, tla_checkpoint, tla_contract::required_configuration, tla_output};
 use tla_output::{
@@ -10,6 +16,9 @@ use tla_output::{
 const TRACE_CONFIG: &str = "RaftTraceSample.cfg";
 const DETECTOR_CONFIG: &str = "RafterInvariantDetectorNegative.cfg";
 const JAR: &str = "tools/cache/tla2tools.jar";
+const PROBE_TIMEOUT: Duration = Duration::from_secs(120);
+const TOTAL_TIMEOUT_KEY: &str = "total_timeout";
+const FINALIZATION_RESERVE_KEY: &str = "finalization_reserve";
 
 pub(super) struct TlaExecution {
     pub(super) main: Option<tla_output::TlcSummary>,
@@ -49,7 +58,17 @@ pub(super) fn execute(
     output_dir: &Path,
     mut artifacts: Vec<crate::ArtifactRef>,
 ) -> Result<TlaExecution, Box<dyn Error>> {
-    let trace = run_trace_probe(profile, source_ref, configuration, output_dir)?;
+    let budget = ExecutionBudget::from_configuration(profile, configuration)?;
+    let Some(trace_timeout) = budget.phase_timeout(PROBE_TIMEOUT) else {
+        return Ok(trace_budget_failure(artifacts));
+    };
+    let trace = run_trace_probe(
+        profile,
+        source_ref,
+        configuration,
+        output_dir,
+        trace_timeout,
+    )?;
     artifacts.push(trace.artifact.clone());
     let trace_summary = tla_output::parse(&trace.output.stdout).ok();
     let trace_succeeded = trace.output.status.success()
@@ -64,7 +83,8 @@ pub(super) fn execute(
     if !trace_succeeded {
         return Ok(trace_failure(&trace, artifacts));
     }
-    let mut detectors = run_detector_probes(profile, source_ref, configuration, output_dir)?;
+    let mut detectors =
+        run_detector_probes(profile, source_ref, configuration, output_dir, &budget)?;
     artifacts.append(&mut detectors.artifacts);
     if !detectors.succeeded {
         return Ok(detector_failure(&trace, detectors, artifacts));
@@ -90,6 +110,17 @@ pub(super) fn execute(
             error,
         ));
     }
+    let Some(main_timeout) = budget.phase_timeout(timeout) else {
+        if let Some(preparation) = checkpoint {
+            artifacts.extend(preparation.finish(output_dir)?);
+        }
+        return Ok(main_budget_failure(
+            &trace,
+            detectors,
+            artifacts,
+            checkpoint_report,
+        ));
+    };
     let state = if let Some(preparation) = checkpoint.as_ref() {
         TlcState::Checkpoint {
             state_dir: &preparation.state_dir,
@@ -107,12 +138,32 @@ pub(super) fn execute(
         module: "Raft.tla",
         workers: required_configuration(configuration, "workers")?,
         seed: required_configuration(configuration, "seed")?,
-        timeout,
+        timeout: main_timeout,
         output_dir,
         label: "model-check",
         artifact_kind: "tla-log",
         state,
     })?;
+    complete_main_execution(
+        &trace,
+        detectors,
+        artifacts,
+        checkpoint,
+        checkpoint_report,
+        output_dir,
+        main,
+    )
+}
+
+fn complete_main_execution(
+    trace: &TlcRun,
+    detectors: DetectorProbes,
+    mut artifacts: Vec<crate::ArtifactRef>,
+    checkpoint: Option<tla_checkpoint::Preparation>,
+    checkpoint_report: Option<tla_checkpoint::RecoveryReport>,
+    output_dir: &Path,
+    main: TlcRun,
+) -> Result<TlaExecution, Box<dyn Error>> {
     let (summary, main_parse_error) = match tla_output::parse(&main.output.stdout) {
         Ok(summary) => (Some(summary), None),
         Err(error) => (None, Some(error)),
@@ -183,6 +234,22 @@ fn trace_failure(trace: &TlcRun, artifacts: Vec<crate::ArtifactRef>) -> TlaExecu
     }
 }
 
+fn trace_budget_failure(artifacts: Vec<crate::ArtifactRef>) -> TlaExecution {
+    TlaExecution {
+        main: None,
+        main_parse_error: None,
+        main_status: MainStatus::NotRun,
+        trace_status: ProbeStatus::Failed,
+        detector_status: ProbeStatus::NotRun,
+        detector_qualifications: empty_detector_qualifications(),
+        peak_rss_kib: 0,
+        duration_ms: 0,
+        artifacts,
+        checkpoint_report: None,
+        checkpoint_error: None,
+    }
+}
+
 fn detector_failure(
     trace: &TlcRun,
     detectors: DetectorProbes,
@@ -227,11 +294,34 @@ fn checkpoint_failure(
     }
 }
 
+fn main_budget_failure(
+    trace: &TlcRun,
+    detectors: DetectorProbes,
+    artifacts: Vec<crate::ArtifactRef>,
+    checkpoint_report: Option<tla_checkpoint::RecoveryReport>,
+) -> TlaExecution {
+    TlaExecution {
+        main: None,
+        main_parse_error: None,
+        main_status: MainStatus::TimedOut,
+        trace_status: ProbeStatus::Passed,
+        detector_status: ProbeStatus::Passed,
+        detector_qualifications: detectors.qualifications,
+        peak_rss_kib: trace.output.peak_rss_kib.max(detectors.peak_rss_kib),
+        duration_ms: process::duration_ms(trace.output.duration)
+            .saturating_add(detectors.duration_ms),
+        artifacts,
+        checkpoint_report,
+        checkpoint_error: None,
+    }
+}
+
 fn run_trace_probe(
     profile: &str,
     source_ref: &str,
     configuration: &BTreeMap<String, String>,
     output_dir: &Path,
+    timeout: Duration,
 ) -> Result<TlcRun, Box<dyn Error>> {
     run_tlc(TlcRequest {
         profile,
@@ -240,7 +330,7 @@ fn run_trace_probe(
         module: "RaftTraceSample.tla",
         workers: "1",
         seed: required_configuration(configuration, "seed")?,
-        timeout: Duration::from_secs(120),
+        timeout,
         output_dir,
         label: "trace-sample",
         artifact_kind: "tla-trace-log",
@@ -253,10 +343,23 @@ fn run_detector_probes(
     source_ref: &str,
     configuration: &BTreeMap<String, String>,
     output_dir: &Path,
+    budget: &ExecutionBudget,
 ) -> Result<DetectorProbes, Box<dyn Error>> {
     let mut aggregate = DetectorProbes::default();
     for probe in DETECTOR_PROBES {
-        let detector = run_detector_probe(profile, source_ref, configuration, output_dir, probe)?;
+        let Some(timeout) = budget.phase_timeout(PROBE_TIMEOUT) else {
+            aggregate.succeeded = false;
+            aggregate.qualifications = empty_detector_qualifications();
+            break;
+        };
+        let detector = run_detector_probe(
+            profile,
+            source_ref,
+            configuration,
+            output_dir,
+            probe,
+            timeout,
+        )?;
         aggregate.peak_rss_kib = aggregate.peak_rss_kib.max(detector.run.output.peak_rss_kib);
         aggregate.duration_ms = aggregate
             .duration_ms
@@ -286,6 +389,7 @@ fn run_detector_probe(
     configuration: &BTreeMap<String, String>,
     output_dir: &Path,
     probe: DetectorProbe,
+    timeout: Duration,
 ) -> Result<DetectorRun, Box<dyn Error>> {
     let source_prefix = source_ref.get(..12).unwrap_or(source_ref);
     let template = fs::read_to_string(Path::new("specs/tla/raft").join(DETECTOR_CONFIG))?;
@@ -312,7 +416,7 @@ fn run_detector_probe(
         module: "RafterInvariantDetectorNegative.tla",
         workers: "1",
         seed: required_configuration(configuration, "seed")?,
-        timeout: Duration::from_secs(120),
+        timeout,
         output_dir,
         label: &label,
         artifact_kind: &artifact_kind,
@@ -377,6 +481,92 @@ fn detector_qualified(
                 && summary.states_left == 0
                 && summary.search_depth >= 2
         })
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ExecutionBudget {
+    execution_deadline: Option<Instant>,
+}
+
+impl ExecutionBudget {
+    fn from_configuration(
+        profile: &str,
+        configuration: &BTreeMap<String, String>,
+    ) -> Result<Self, Box<dyn Error>> {
+        Self::at(profile, configuration, Instant::now())
+    }
+
+    fn at(
+        profile: &str,
+        configuration: &BTreeMap<String, String>,
+        started: Instant,
+    ) -> Result<Self, Box<dyn Error>> {
+        let total = configured_budget_duration(configuration, TOTAL_TIMEOUT_KEY)?;
+        let reserve = configured_budget_duration(configuration, FINALIZATION_RESERVE_KEY)?;
+        let execution_deadline = match (total, reserve) {
+            (None, None) if profile != "pr" => None,
+            (Some(total), Some(reserve)) => {
+                let execution_window = total
+                    .checked_sub(reserve)
+                    .filter(|window| !window.is_zero())
+                    .ok_or("TLA total_timeout must exceed finalization_reserve")?;
+                let maximum_probe_time = PROBE_TIMEOUT
+                    .checked_mul(u32::try_from(DETECTOR_PROBES.len() + 1)?)
+                    .ok_or("TLA probe budget overflow")?;
+                if execution_window <= maximum_probe_time {
+                    return Err(
+                        "TLA shared execution budget must leave time for the main model check"
+                            .into(),
+                    );
+                }
+                Some(
+                    started
+                        .checked_add(execution_window)
+                        .ok_or("TLA shared execution deadline overflow")?,
+                )
+            }
+            (None, None) => {
+                return Err("PR TLA runner requires total_timeout and finalization_reserve".into())
+            }
+            _ => {
+                return Err(
+                    "TLA total_timeout and finalization_reserve must be configured together".into(),
+                )
+            }
+        };
+        Ok(Self { execution_deadline })
+    }
+
+    fn phase_timeout(self, cap: Duration) -> Option<Duration> {
+        self.phase_timeout_at(Instant::now(), cap)
+    }
+
+    fn phase_timeout_at(self, now: Instant, cap: Duration) -> Option<Duration> {
+        let Some(deadline) = self.execution_deadline else {
+            return Some(cap);
+        };
+        let remaining = deadline.checked_duration_since(now)?;
+        (!remaining.is_zero()).then_some(cap.min(remaining))
+    }
+}
+
+fn configured_budget_duration(
+    configuration: &BTreeMap<String, String>,
+    key: &str,
+) -> Result<Option<Duration>, Box<dyn Error>> {
+    configuration
+        .get(key)
+        .map(|value| {
+            let minutes = value
+                .strip_suffix('m')
+                .ok_or_else(|| format!("TLA {key} must use whole minutes"))?
+                .parse::<u64>()?;
+            let seconds = minutes
+                .checked_mul(60)
+                .ok_or_else(|| format!("TLA {key} is too large"))?;
+            Ok(Duration::from_secs(seconds))
+        })
+        .transpose()
 }
 
 #[derive(Clone, Copy)]
@@ -484,6 +674,77 @@ fn run_tlc(request: TlcRequest<'_>) -> Result<TlcRun, Box<dyn Error>> {
         &process::tla_json_log(request.label, &output)?,
     )?;
     Ok(TlcRun { output, artifact })
+}
+
+#[cfg(test)]
+mod budget_tests {
+    use std::{collections::BTreeMap, time::Duration};
+
+    use super::{ExecutionBudget, FINALIZATION_RESERVE_KEY, PROBE_TIMEOUT, TOTAL_TIMEOUT_KEY};
+
+    fn pr_budget() -> BTreeMap<String, String> {
+        BTreeMap::from([
+            (TOTAL_TIMEOUT_KEY.to_owned(), "45m".to_owned()),
+            (FINALIZATION_RESERVE_KEY.to_owned(), "2m".to_owned()),
+        ])
+    }
+
+    #[test]
+    fn shared_pr_budget_reduces_the_main_timeout_and_preserves_the_reserve() {
+        let started = std::time::Instant::now();
+        let budget = ExecutionBudget::at("pr", &pr_budget(), started).expect("valid PR budget");
+
+        assert_eq!(
+            budget.phase_timeout_at(started, PROBE_TIMEOUT),
+            Some(PROBE_TIMEOUT)
+        );
+        assert_eq!(
+            budget.phase_timeout_at(
+                started + Duration::from_secs(20 * 60),
+                Duration::from_secs(40 * 60),
+            ),
+            Some(Duration::from_secs(23 * 60))
+        );
+        assert_eq!(
+            budget.phase_timeout_at(
+                started + Duration::from_secs(43 * 60),
+                Duration::from_secs(40 * 60),
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn pr_budget_requires_a_paired_reserve_and_time_for_the_main_run() {
+        let started = std::time::Instant::now();
+        assert!(ExecutionBudget::at("pr", &BTreeMap::new(), started).is_err());
+        assert!(ExecutionBudget::at(
+            "pr",
+            &BTreeMap::from([(TOTAL_TIMEOUT_KEY.to_owned(), "45m".to_owned())]),
+            started,
+        )
+        .is_err());
+        assert!(ExecutionBudget::at(
+            "pr",
+            &BTreeMap::from([
+                (TOTAL_TIMEOUT_KEY.to_owned(), "20m".to_owned()),
+                (FINALIZATION_RESERVE_KEY.to_owned(), "2m".to_owned()),
+            ]),
+            started,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn scheduled_profiles_keep_their_existing_per_phase_bounds() {
+        let started = std::time::Instant::now();
+        let budget = ExecutionBudget::at("weekly", &BTreeMap::new(), started)
+            .expect("scheduled profile remains unbounded across phases");
+        assert_eq!(
+            budget.phase_timeout_at(started + Duration::from_secs(24 * 60 * 60), PROBE_TIMEOUT,),
+            Some(PROBE_TIMEOUT)
+        );
+    }
 }
 
 #[cfg(test)]

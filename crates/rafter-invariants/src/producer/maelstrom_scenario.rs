@@ -1,3 +1,7 @@
+use std::collections::BTreeMap;
+
+use crate::EvidenceDescriptor;
+
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) enum Scenario {
     Base,
@@ -70,6 +74,3 @@ impl Scenario {
         }
     }
 }
-use std::collections::BTreeMap;
-
-use crate::EvidenceDescriptor;
