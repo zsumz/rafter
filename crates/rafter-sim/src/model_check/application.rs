@@ -201,6 +201,11 @@ impl InstrumentedCluster {
     }
 
     #[cfg(test)]
+    pub(super) fn inject_execution_witness(&mut self, witness: crate::ExecutionWitness) {
+        self.0.execution_history.push(witness);
+    }
+
+    #[cfg(test)]
     pub(super) fn inject_read_grant(&mut self, grant: crate::ReadGranted) {
         self.0.read_grants.push(grant);
     }

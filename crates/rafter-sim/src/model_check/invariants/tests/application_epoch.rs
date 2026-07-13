@@ -33,7 +33,16 @@ fn application_loss_restart_preserves_immutable_event_history_positions() {
         index: LogIndex(3),
         payload: b"node-two-after-snapshot".to_vec().into(),
     });
+    cluster.execution_history.push(execution_witness(
+        1,
+        0,
+        1,
+        1,
+        LogEntryKind::Application(b"node-one-before-loss".to_vec().into()),
+        initial_reference_state(),
+    ));
     let before_applied = cluster.applied().to_vec();
+    let before_execution_history = cluster.execution_history().to_vec();
     let before_installs = cluster.snapshot_installs().to_vec();
 
     cluster
@@ -44,6 +53,10 @@ fn application_loss_restart_preserves_immutable_event_history_positions() {
         .expect("empty application-loss restart is valid");
 
     assert_eq!(cluster.applied(), before_applied.as_slice());
+    assert_eq!(
+        cluster.execution_history(),
+        before_execution_history.as_slice()
+    );
     assert_eq!(cluster.snapshot_installs(), before_installs.as_slice());
     assert!(
         check_applied_order(&cluster, &[]).is_ok(),
@@ -161,8 +174,58 @@ fn application_loss_replays_committed_suffix_in_new_epoch() {
         ]
     );
     check_applied_order(&cluster, &[]).expect("same-index replay is legal in a new epoch");
-    check_applied_payload_agreement(&cluster, &[])
+    let state = ExplorationState::new(cluster);
+    check_execution_history_agreement(&state, &[])
         .expect("replayed entry must preserve the original command");
+}
+
+#[test]
+fn full_prefix_application_replay_matches_snapshot_anchored_replay() {
+    let mut cluster = one_node_cluster();
+    let mut full_prefix = bootstrap_state(
+        Term(1),
+        &[
+            (1, Term(1), b"snapshot-state"),
+            (2, Term(1), b"post-snapshot-command"),
+        ],
+    );
+    full_prefix.commit_index = LogIndex(2);
+    cluster
+        .restart_node_from_bootstrap(NodeId(1), full_prefix)
+        .expect("the full committed prefix is valid");
+
+    let (snapshot, snapshot_payload) = test_snapshot(1, 1, 1, 1, b"snapshot-state");
+    cluster.seed_snapshot_payload(NodeId(1), &snapshot, snapshot_payload.clone());
+    let mut bootstrap =
+        bootstrap_with_snapshot(Term(1), snapshot, &[(2, Term(1), b"post-snapshot-command")]);
+    bootstrap.commit_index = LogIndex(2);
+
+    cluster
+        .restart_node_from_bootstrap_losing_application_state(NodeId(1), bootstrap)
+        .expect("snapshot plus committed suffix is valid");
+
+    let witnesses = cluster
+        .execution_history()
+        .iter()
+        .filter(|witness| witness.entry.index == LogIndex(2))
+        .collect::<Vec<_>>();
+    assert_eq!(witnesses.len(), 2);
+    assert_eq!(witnesses[0].application_epoch, 0);
+    assert_eq!(witnesses[1].application_epoch, 1);
+    assert_eq!(witnesses[0].prior_state, witnesses[1].prior_state);
+    assert_eq!(witnesses[0].resulting_state, witnesses[1].resulting_state);
+    assert_eq!(
+        witnesses[1].prior_state.application_value.as_ref(),
+        snapshot_payload.as_slice()
+    );
+    assert_eq!(
+        witnesses[1].resulting_state.application_value.as_ref(),
+        b"post-snapshot-command"
+    );
+
+    let state = ExplorationState::new(cluster);
+    check_execution_history_agreement(&state, &[])
+        .expect("equivalent full-prefix and snapshot replay states must agree");
 }
 
 #[test]
@@ -212,30 +275,25 @@ fn read_reconstruction_ignores_values_from_previous_application_epoch() {
 
 #[test]
 fn replayed_index_must_match_prior_command_across_epochs() {
-    let mut cluster = one_node_cluster();
-    cluster.applied.push(Applied {
-        node_id: NodeId(1),
-        application_epoch: 0,
-        commit_index_at_emit: LogIndex(1),
-        index: LogIndex(1),
-        payload: b"original".to_vec().into(),
-    });
-    cluster.applied.push(Applied {
-        node_id: NodeId(1),
-        application_epoch: 1,
-        commit_index_at_emit: LogIndex(1),
-        index: LogIndex(1),
-        payload: b"different".to_vec().into(),
-    });
+    let mut state = ExplorationState::new(one_node_cluster());
+    for (epoch, payload) in [(0, b"original".as_slice()), (1, b"different".as_slice())] {
+        state.inject_execution_witness(execution_witness(
+            1,
+            epoch,
+            1,
+            1,
+            LogEntryKind::Application(payload.to_vec().into()),
+            initial_reference_state(),
+        ));
+    }
 
-    check_applied_order(&cluster, &[]).expect("AP-01 is scoped per application epoch");
-    let failure = check_applied_payload_agreement(&cluster, &[])
+    let failure = check_execution_history_agreement(&state, &[])
         .expect_err("different commands at the same log index must still fail");
     assert_eq!(failure.invariant(), catalog::AP_02_STATE_MACHINE_SAFETY);
     assert!(
         failure
             .message
-            .contains("different payloads applied at log index 1"),
+            .contains("different term/kind/input identities at log index 1"),
         "unexpected failure message: {}",
         failure.message
     );

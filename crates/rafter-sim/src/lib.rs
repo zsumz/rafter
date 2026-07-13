@@ -27,11 +27,11 @@ mod time;
 
 pub use network::Envelope;
 use network::QueuedEnvelope;
-use records::StagedSnapshotTransfer;
 pub use records::{
-    Applied, DurableSnapshotDigest, DurableStateDigest, ReadGranted, ReadRegistered,
-    SnapshotInstalled,
+    Applied, DurableSnapshotDigest, DurableStateDigest, ExecutedLogEntry, ExecutionWitness,
+    ReadGranted, ReadRegistered, ReferenceState, SnapshotInstalled,
 };
+use records::{ExecutionCursor, StagedSnapshotTransfer};
 use time::SimRng;
 pub use time::{SimClock, SimSeed, SimTick};
 
@@ -44,6 +44,16 @@ pub struct Cluster {
     network: VecDeque<QueuedEnvelope>,
     rng: SimRng,
     applied: Vec<Applied>,
+    /// Append-only exact application/configuration execution history used by
+    /// the AP-02 reference-contract oracle.
+    execution_history: Vec<ExecutionWitness>,
+    /// Per-node live cursor used only to derive the next immutable execution
+    /// witness. Restart and snapshot transitions replace the cursor without
+    /// deleting prior history.
+    execution_cursors: BTreeMap<NodeId, ExecutionCursor>,
+    /// Canonical empty application/configuration state for each static node
+    /// configuration. Application-state loss without a snapshot resets here.
+    initial_reference_states: BTreeMap<NodeId, ReferenceState>,
     /// Per-node application incarnation. Explicit application-state-loss
     /// restarts advance this while ordinary process restarts preserve it.
     application_epochs: BTreeMap<NodeId, u64>,
@@ -103,6 +113,32 @@ impl Cluster {
             .map(|node_id| (*node_id, LogIndex::ZERO))
             .collect();
         let application_epochs = nodes.keys().map(|node_id| (*node_id, 0)).collect();
+        let initial_reference_states: BTreeMap<_, _> = nodes
+            .iter()
+            .map(|(node_id, node)| {
+                (
+                    *node_id,
+                    ReferenceState {
+                        application_value: Vec::new().into(),
+                        committed_membership: node.committed_membership(),
+                        committed_configuration: None,
+                    },
+                )
+            })
+            .collect();
+        let execution_cursors = initial_reference_states
+            .iter()
+            .map(|(node_id, state)| {
+                (
+                    *node_id,
+                    ExecutionCursor {
+                        application_epoch: 0,
+                        applied_through: LogIndex::ZERO,
+                        state: state.clone(),
+                    },
+                )
+            })
+            .collect();
 
         Self {
             clock: SimClock::default(),
@@ -111,6 +147,9 @@ impl Cluster {
             network: VecDeque::new(),
             rng: SimRng::new(seed),
             applied: Vec::new(),
+            execution_history: Vec::new(),
+            execution_cursors,
+            initial_reference_states,
             application_epochs,
             durable_applied,
             snapshot_installs: Vec::new(),

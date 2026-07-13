@@ -25,6 +25,9 @@ pub(super) enum Observation {
     CurrentTermCommitCertificates,
     AppliesOrSnapshotBoundaries,
     SameIndexApplyPairs,
+    SameIndexApplicationWitnessPairs,
+    SameIndexConfigurationWitnessPairs,
+    SameIndexResultStatePairs,
     StatesWithOneUncommittedConfiguration,
     CommittedConfigurationAdvances,
     RegisteredReadGrants,
@@ -42,7 +45,7 @@ pub(super) enum Observation {
     SameBoundarySnapshotInstallPairs,
 }
 
-const ALL: [Observation; 37] = [
+const ALL: [Observation; 40] = [
     Observation::WellFormedStatesChecked,
     Observation::TermAdvances,
     Observation::SameTermVoteReobservations,
@@ -65,6 +68,9 @@ const ALL: [Observation; 37] = [
     Observation::CurrentTermCommitCertificates,
     Observation::AppliesOrSnapshotBoundaries,
     Observation::SameIndexApplyPairs,
+    Observation::SameIndexApplicationWitnessPairs,
+    Observation::SameIndexConfigurationWitnessPairs,
+    Observation::SameIndexResultStatePairs,
     Observation::StatesWithOneUncommittedConfiguration,
     Observation::CommittedConfigurationAdvances,
     Observation::RegisteredReadGrants,
@@ -109,6 +115,9 @@ impl Observation {
             Self::CurrentTermCommitCertificates => "current_term_commit_certificates",
             Self::AppliesOrSnapshotBoundaries => "applies_or_snapshot_boundaries",
             Self::SameIndexApplyPairs => "same_index_apply_pairs",
+            Self::SameIndexApplicationWitnessPairs => "same_index_application_witness_pairs",
+            Self::SameIndexConfigurationWitnessPairs => "same_index_configuration_witness_pairs",
+            Self::SameIndexResultStatePairs => "same_index_result_state_pairs",
             Self::StatesWithOneUncommittedConfiguration => {
                 "states_with_one_uncommitted_configuration"
             }

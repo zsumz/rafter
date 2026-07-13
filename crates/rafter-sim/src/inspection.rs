@@ -4,8 +4,8 @@ use rafter::{
 };
 
 use crate::{
-    Applied, Cluster, DurableSnapshotDigest, DurableStateDigest, ReadGranted, ReadRegistered,
-    SimClock, SnapshotInstalled,
+    Applied, Cluster, DurableSnapshotDigest, DurableStateDigest, ExecutionWitness, ReadGranted,
+    ReadRegistered, SimClock, SnapshotInstalled,
 };
 
 impl Cluster {
@@ -82,6 +82,12 @@ impl Cluster {
     #[must_use]
     pub fn applied(&self) -> &[Applied] {
         &self.applied
+    }
+
+    /// Returns the immutable application/configuration execution history.
+    #[must_use]
+    pub fn execution_history(&self) -> &[ExecutionWitness] {
+        &self.execution_history
     }
 
     /// Returns the promotion barrier currently required for `learner_id`.

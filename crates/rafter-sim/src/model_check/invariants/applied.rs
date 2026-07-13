@@ -1,27 +1,92 @@
+use rafter::{CommittedConfiguration, LogEntryKind};
+
 use super::{catalog, summarize, Action, BTreeMap, Cluster, ExplorationState, Failure};
-use super::{LogIndex, NodeId, SharedPayload};
+use super::{LogIndex, NodeId};
+
+pub(super) fn check_execution_history_agreement(
+    state: &ExplorationState,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    let mut witness_by_index = BTreeMap::<LogIndex, &crate::ExecutionWitness>::new();
+    for witness in state.application_history() {
+        let derived_result = independently_derive_reference_result(witness);
+        if witness.resulting_state != derived_result {
+            return Err(ap_02_failure(
+                state.cluster(),
+                trace,
+                format!(
+                    "{} epoch {} recorded an invalid reference-state result at log index {}",
+                    witness.node_id, witness.application_epoch, witness.entry.index
+                ),
+            ));
+        }
+
+        if let Some(previous) = witness_by_index.get(&witness.entry.index) {
+            if previous.entry.term != witness.entry.term
+                || previous.entry.kind != witness.entry.kind
+            {
+                return Err(ap_02_failure(
+                    state.cluster(),
+                    trace,
+                    format!(
+                        "{} and {} applied different term/kind/input identities at log index {}",
+                        previous.node_id, witness.node_id, witness.entry.index
+                    ),
+                ));
+            }
+            if previous.prior_state != witness.prior_state
+                || previous.resulting_state != witness.resulting_state
+            {
+                return Err(ap_02_failure(
+                    state.cluster(),
+                    trace,
+                    format!(
+                        "{} and {} obtained different prior/result state identities at log index {}",
+                        previous.node_id, witness.node_id, witness.entry.index
+                    ),
+                ));
+            }
+        } else {
+            witness_by_index.insert(witness.entry.index, witness);
+        }
+    }
+    Ok(())
+}
+
+fn independently_derive_reference_result(
+    witness: &crate::ExecutionWitness,
+) -> crate::ReferenceState {
+    let mut result = witness.prior_state.clone();
+    match &witness.entry.kind {
+        LogEntryKind::Application(payload) => {
+            result.application_value.clone_from(payload);
+        }
+        LogEntryKind::Configuration(configuration) => {
+            result.committed_membership = configuration.membership_config();
+            result.committed_configuration = Some(CommittedConfiguration {
+                index: witness.entry.index,
+                config_id: configuration.config_id(),
+            });
+        }
+        LogEntryKind::Noop => {}
+    }
+    result
+}
+
+fn ap_02_failure(cluster: &Cluster, trace: &[Action], message: String) -> Failure {
+    Failure {
+        kind: crate::model_check::FailureKind::InvariantViolation,
+        invariant: catalog::AP_02_STATE_MACHINE_SAFETY,
+        message,
+        trace: trace.to_vec(),
+        state: summarize(cluster),
+    }
+}
 
 pub(super) fn check_applied_payload_agreement(
     cluster: &Cluster,
     trace: &[Action],
 ) -> Result<(), Failure> {
-    let mut payload_by_index = BTreeMap::<LogIndex, SharedPayload>::new();
-    for applied in &cluster.applied {
-        if let Some(previous) = payload_by_index.get(&applied.index) {
-            if previous != &applied.payload {
-                return Err(Failure {
-                    kind: crate::model_check::FailureKind::InvariantViolation,
-                    invariant: catalog::AP_02_STATE_MACHINE_SAFETY,
-                    message: format!("different payloads applied at log index {}", applied.index),
-                    trace: trace.to_vec(),
-                    state: summarize(cluster),
-                });
-            }
-        } else {
-            payload_by_index.insert(applied.index, applied.payload.clone());
-        }
-    }
-
     let mut snapshot_by_boundary = BTreeMap::<LogIndex, (crate::SnapshotInstalled, NodeId)>::new();
     for install in cluster.snapshot_installs() {
         if let Some((previous, previous_node)) =
