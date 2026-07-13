@@ -791,9 +791,9 @@ fn result_bundle_rejects_unknown_fields() {
 }
 
 #[test]
-fn old_receipts_without_report_binding_field_are_red() {
+fn old_receipts_without_report_binding_field_are_rejected() {
     let (catalog, manifest) = loaded();
-    let mut bundles = passing_bundles(&catalog, &manifest);
+    let bundles = passing_bundles(&catalog, &manifest);
     let simulator_index = bundles
         .iter()
         .position(|bundle| bundle.runner == "simulator")
@@ -810,15 +810,9 @@ fn old_receipts_without_report_binding_field_are_red() {
         .as_object_mut()
         .expect("check object")
         .remove("simulator_liveness");
-    bundles[simulator_index] =
-        serde_json::from_value::<ResultBundle>(value).expect("old receipt still parses");
-
-    let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
-    assert!(report.summary.green < 44);
-    assert!(report.invariants.iter().any(|verdict| verdict
-        .issues
-        .iter()
-        .any(|issue| issue.message.contains("exact typed report binding"))));
+    let error = serde_json::from_value::<ResultBundle>(value)
+        .expect_err("versioned receipts require an explicit report binding field");
+    assert!(error.to_string().contains("simulator_liveness"));
 }
 
 #[test]

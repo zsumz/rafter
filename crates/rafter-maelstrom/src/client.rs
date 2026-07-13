@@ -231,11 +231,10 @@ impl InitializedNode {
                 if code == ERROR_TEMPORARILY_UNAVAILABLE
                     && std::env::var("RAFTER_MAELSTROM_LEASE_EVIDENCE").as_deref() == Ok("1")
                 {
-                    write!(
+                    let _ = write!(
                         text,
                         " [rafter-lease-probe client={client} msg_id={in_reply_to} code=11]"
-                    )
-                    .expect("writing to a String cannot fail");
+                    );
                 }
                 json!({"type": "error", "msg_id": msg_id, "in_reply_to": in_reply_to, "code": code, "text": text})
             }

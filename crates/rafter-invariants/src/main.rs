@@ -1,5 +1,5 @@
 use std::{
-    env, fs,
+    env,
     path::{Path, PathBuf},
     process::{Command, ExitCode},
 };
@@ -194,26 +194,18 @@ fn check(options: CheckOptions) -> Result<bool, Box<dyn std::error::Error>> {
         output_dir,
         source_ref,
     } = options;
-    let mut discovery_errors = Vec::new();
-    if results.is_empty() {
-        match json_files(&results_dir) {
-            Ok(paths) => results = paths,
-            Err(error) => discovery_errors.push(format!(
-                "discover evidence in {}: {error}",
-                results_dir.display()
-            )),
-        }
-    }
-    let source_ref = source_ref
-        .or_else(|| env::var("RAFTER_SOURCE_REF").ok())
-        .unwrap_or_else(git_head);
     let plan = ExecutionPlan::load(&PlanOptions {
         profile: profile.clone(),
         registry,
         manifest,
     })?;
+    if results.is_empty() {
+        results = profile_result_files(&results_dir, &profile, &plan.contract().required_layers);
+    }
+    let source_ref = source_ref
+        .or_else(|| env::var("RAFTER_SOURCE_REF").ok())
+        .unwrap_or_else(git_head);
     let mut loaded = load_evidence(&results);
-    loaded.harness_errors.extend(discovery_errors);
     for bundle in &loaded.bundles {
         if let Err(error) = verify_bundle_plan(bundle, &plan.receipt) {
             loaded.harness_errors.push(error.to_string());
@@ -254,20 +246,18 @@ fn print_report(report: &VerdictReport) {
     );
 }
 
-fn json_files(directory: &Path) -> Result<Vec<PathBuf>, std::io::Error> {
-    if !directory.exists() {
-        return Ok(Vec::new());
-    }
-    let mut paths = fs::read_dir(directory)?
-        .filter_map(Result::ok)
-        .map(|entry| entry.path())
-        .filter(|path| {
-            path.extension()
-                .is_some_and(|extension| extension == "json")
-        })
+fn profile_result_files(
+    directory: &Path,
+    profile: &str,
+    required_layers: &[String],
+) -> Vec<PathBuf> {
+    let mut paths = required_layers
+        .iter()
+        .map(|layer| directory.join(format!("{profile}-{layer}.json")))
+        .filter(|path| path.exists())
         .collect::<Vec<_>>();
     paths.sort();
-    Ok(paths)
+    paths
 }
 
 fn git_head() -> String {
@@ -280,4 +270,43 @@ fn git_head() -> String {
         .map(|value| value.trim().to_owned())
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| "unknown".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::profile_result_files;
+
+    static DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn implicit_discovery_ignores_other_profiles_and_unexpected_json() {
+        let id = DIRECTORY_ID.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "rafter-invariants-discovery-{}-{id}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("test directory exists");
+        for name in [
+            "pr-tests.json",
+            "pr-simulator.json",
+            "nightly-tests.json",
+            "pr-unexpected.json",
+        ] {
+            std::fs::write(root.join(name), b"not parsed during discovery")
+                .expect("fixture writes");
+        }
+
+        let paths = profile_result_files(
+            &root,
+            "pr",
+            &["tests".to_owned(), "simulator".to_owned(), "tla".to_owned()],
+        );
+        assert_eq!(
+            paths,
+            vec![root.join("pr-simulator.json"), root.join("pr-tests.json")]
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

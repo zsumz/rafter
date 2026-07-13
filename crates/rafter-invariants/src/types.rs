@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
 /// Current version of the machine-readable receipt and report contract.
 pub const RESULT_SCHEMA_VERSION: u32 = 9;
@@ -102,10 +102,19 @@ pub struct CheckReceipt {
     pub evidence_ids: Vec<String>,
     pub completion: CheckCompletion,
     pub observations: BTreeMap<String, u64>,
+    #[serde(deserialize_with = "deserialize_present_option")]
     pub simulator_liveness: Option<SimulatorLivenessBinding>,
     pub duration_ms: u64,
     pub peak_rss_kib: u64,
     pub artifacts: Vec<ArtifactRef>,
+}
+
+fn deserialize_present_option<'de, D, T>(deserializer: D) -> Result<Option<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer)
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
