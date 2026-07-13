@@ -88,6 +88,6 @@ fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .and_then(Path::parent)
-        .expect("rafter crate should live under <workspace>/crates/rafter")
+        .expect("rafter-invariants crate should live under <workspace>/crates/rafter-invariants")
         .to_path_buf()
 }

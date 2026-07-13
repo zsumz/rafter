@@ -49,6 +49,35 @@ fn pre_vote_from_candidate_outside_effective_membership_is_rejected() {
 }
 
 #[test]
+fn non_voter_cannot_campaign_or_become_leader() {
+    let mut non_voter = node_with_configuration(4, &[1, 2, 3], learner_configuration());
+
+    assert!(!non_voter.is_effective_voter(NodeId(4)));
+    assert!(non_voter.is_effective_voter(NodeId(1)));
+    assert!(non_voter.is_effective_voter(NodeId(2)));
+
+    assert!(non_voter.step(Input::Tick).is_empty());
+    assert!(non_voter.step(Input::Tick).is_empty());
+    assert!(non_voter.step(Input::Tick).is_empty());
+    assert_eq!(non_voter.role(), Role::Follower);
+    assert_eq!(non_voter.current_term(), Term(1));
+
+    // Even a campaign already holding one effective voter grant is fenced
+    // before the next grant could complete the two-of-three voter quorum.
+    non_voter.volatile.role = Role::Candidate;
+    non_voter.persistent.current_term = Term(2);
+    non_voter.persistent.voted_for = Some(NodeId(4));
+    non_voter.election.record_vote(NodeId(1));
+
+    let outputs = grant_vote(&mut non_voter, NodeId(2));
+
+    assert!(outputs.is_empty());
+    assert_eq!(non_voter.role(), Role::Follower);
+    assert_eq!(non_voter.current_term(), Term(2));
+    assert_eq!(non_voter.last_log_index(), LogIndex(1));
+}
+
+#[test]
 fn removed_candidate_steps_down_instead_of_winning() {
     let mut candidate = node_with_configuration(
         2,

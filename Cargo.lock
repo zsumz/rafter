@@ -1012,8 +1012,6 @@ version = "0.0.1"
 dependencies = [
  "criterion",
  "proptest",
- "rafter-invariants",
- "syn",
 ]
 
 [[package]]
@@ -1050,6 +1048,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "syn",
 ]
 
 [[package]]
