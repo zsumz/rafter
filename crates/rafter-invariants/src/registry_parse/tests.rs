@@ -211,6 +211,67 @@ fn multi_clause_simulator_evidence_requires_a_qualified_atomic_group() {
 }
 
 #[test]
+fn direct_simulator_evidence_requires_an_executable_detector_fixture() {
+    let fixture_block = r#"    negative_fixture: "atomic_rule_rejects_mutation"
+    negative_fixture_path: "src/model/tests.rs"
+    negative_fixture_detector: "check_atomic_rule"
+    negative_fixture_package: "test-package"
+    negative_fixture_target_kind: "lib"
+    negative_fixture_target: "test_package"
+    negative_fixture_test_name: "tests::atomic_rule_rejects_mutation"
+"#;
+    let exempt = VALID_ATOMIC_SIMULATOR_EVIDENCE.replace(
+        fixture_block,
+        "    negative_fixture_exemption: \"reviewed exception\"\n",
+    );
+    let error = parse_registry_document(&valid_registry(&exempt, VALID_CLAUSE, VALID_INVARIANT))
+        .expect_err("direct simulator exemption must fail");
+    assert_eq!(
+        error.to_string(),
+        "direct simulator evidence record 1 may not use negative_fixture_exemption"
+    );
+
+    let missing_fixture = VALID_ATOMIC_SIMULATOR_EVIDENCE.replace(fixture_block, "");
+    let error = parse_registry_document(&valid_registry(
+        &missing_fixture,
+        VALID_CLAUSE,
+        VALID_INVARIANT,
+    ))
+    .expect_err("direct simulator evidence without a fixture must fail");
+    assert_eq!(
+        error.to_string(),
+        "direct simulator evidence record 1 lacks detector qualification"
+    );
+
+    let missing_test_name = VALID_ATOMIC_SIMULATOR_EVIDENCE.replace(
+        "    negative_fixture_test_name: \"tests::atomic_rule_rejects_mutation\"\n",
+        "",
+    );
+    let error = parse_registry_document(&valid_registry(
+        &missing_test_name,
+        VALID_CLAUSE,
+        VALID_INVARIANT,
+    ))
+    .expect_err("direct simulator fixture without executable identity must fail");
+    assert_eq!(
+        error.to_string(),
+        "evidence record 1 is missing required field negative_fixture_test_name"
+    );
+}
+
+#[test]
+fn non_direct_non_simulator_evidence_may_retain_a_fixture_exemption() {
+    let evidence = VALID_EVIDENCE
+        .replace("    strength: \"direct\"", "    strength: \"e2e\"")
+        .replace(
+            "    symbol: \"test_symbol\"",
+            "    symbol: \"test_symbol\"\n    negative_fixture_exemption: \"reviewed external boundary\"",
+        );
+    parse_registry_document(&valid_registry(&evidence, VALID_CLAUSE, VALID_INVARIANT))
+        .expect("non-direct tests evidence exemption should remain valid");
+}
+
+#[test]
 fn direct_test_evidence_binds_exactly_one_clause_without_an_atomic_escape_hatch() {
     parse_registry_document(&valid_registry(
         VALID_EVIDENCE,
