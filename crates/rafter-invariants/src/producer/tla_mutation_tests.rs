@@ -178,6 +178,32 @@ PROPERTY ApplicationEpochLifecycleCompletes
 CHECK_DEADLOCK FALSE
 "#;
 
+const SELF_REMOVAL_COMMIT_CONFIG: &str = r#"SPECIFICATION SelfRemovalCommitSpec
+
+CONSTANTS
+  Nodes = {n1, n2, n3}
+  Values = {v1, v2}
+  MaxTerm = 2
+  MaxLogLen = 2
+  ReadRequests = {r1}
+  FixtureA = n1
+  FixtureB = n2
+  FixtureC = n3
+  FixtureValueA = v1
+  FixtureValueB = v2
+  FixtureRead = r1
+  FixtureMode = "Default"
+  TargetPredicate = "CommittedEntriesHaveQuorum"
+
+INVARIANT TypeOK
+INVARIANT SelfRemovalCommitInvariant
+INVARIANT CommittedEntriesHaveQuorum
+
+PROPERTY SelfRemovalCommitCompletes
+
+CHECK_DEADLOCK FALSE
+"#;
+
 #[test]
 #[ignore = "requires the pinned TLC tool and Java"]
 fn recorder_only_fixtures_qualify_before_mutation() {
@@ -294,6 +320,88 @@ fn application_epoch_loss_replays_identically_without_erasing_history() {
 
 #[test]
 #[ignore = "requires the pinned TLC tool and Java"]
+fn self_removing_leader_commits_final_configuration_and_steps_down() {
+    let root = workspace_root();
+    let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
+    let detector =
+        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
+            .expect("read detector spec");
+    let result = run_tlc_with_config(
+        &root,
+        "self-removal-commit",
+        &raft,
+        &detector,
+        SELF_REMOVAL_COMMIT_CONFIG,
+    );
+    let summary = parse(&result.stdout).expect("parse self-removal commit output");
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stdout)
+    );
+    assert!(summary.completed_without_error);
+    assert!(summary.process_finished);
+    assert!(summary.distinct_states >= 2);
+    assert!(summary.search_depth >= 2);
+}
+
+#[test]
+#[ignore = "requires the pinned TLC tool and Java"]
+fn missing_self_removal_step_down_breaks_commit_regression() {
+    let root = workspace_root();
+    let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
+    let mutated = replace_operator(
+        &raft,
+        "RoleAfterCommit(node, selfRemoval)",
+        "Commit(n, i)",
+        "role",
+    );
+    let detector =
+        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
+            .expect("read detector spec");
+    let result = run_tlc_with_config(
+        &root,
+        "missing-self-removal-step-down",
+        &mutated,
+        &detector,
+        SELF_REMOVAL_COMMIT_CONFIG,
+    );
+    let summary = parse(&result.stdout).expect("parse missing step-down output");
+    assert_eq!(result.status.code(), Some(12));
+    assert_eq!(summary.violated_invariant.as_deref(), Some("TypeOK"));
+}
+
+#[test]
+#[ignore = "requires the pinned TLC tool and Java"]
+fn unfrozen_effective_membership_breaks_commit_witness_regression() {
+    let root = workspace_root();
+    let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
+    let mutated = replace_operator(
+        &raft,
+        "FrozenCommitContext(\n    leaderRole, leaderTerm, effectiveView, authorityView)",
+        "MatchingReplicasFrom(logs, snapshotIndexes, snapshotPrefixes, node, index)",
+        "[leaderRole |-> leaderRole,\n   leaderTerm |-> leaderTerm,\n   effectiveMembership |-> authorityView,\n   authorityMembership |-> authorityView]",
+    );
+    let detector =
+        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
+            .expect("read detector spec");
+    let result = run_tlc_with_config(
+        &root,
+        "unfrozen-self-removal-effective-membership",
+        &mutated,
+        &detector,
+        SELF_REMOVAL_COMMIT_CONFIG,
+    );
+    let summary = parse(&result.stdout).expect("parse unfrozen commit context output");
+    assert_eq!(result.status.code(), Some(12));
+    assert_eq!(
+        summary.violated_invariant.as_deref(),
+        Some("CommittedEntriesHaveQuorum")
+    );
+}
+
+#[test]
+#[ignore = "requires the pinned TLC tool and Java"]
 fn corrupted_snapshot_install_breaks_lifecycle_identity() {
     let root = workspace_root();
     let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
@@ -377,11 +485,10 @@ fn non_violating_fixture_cannot_qualify() {
 fn applied_membership_quorum_mutation_breaks_joint_regression() {
     let root = workspace_root();
     let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
-    let mutated = replace_operator(
+    let mutated = replace_exactly_once(
         &raft,
-        "QuorumNodes(ns)",
-        "CanAdoptLog(n, entries)",
-        "MembershipQuorum(membership, ns)",
+        "MembershipQuorum(\n         preEffectiveMembership, MatchingReplicas(n, i))",
+        "MembershipQuorum(membership, MatchingReplicas(n, i))",
     );
     let detector =
         fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
@@ -715,6 +822,11 @@ fn replace_operator(source: &str, operator: &str, next: &str, body: &str) -> Str
     let (prefix, rest) = source.split_once(&start).expect("operator exists");
     let (_, suffix) = rest.split_once(&end).expect("next operator exists");
     format!("{prefix}{operator} == {body}\n\n{end}{suffix}")
+}
+
+fn replace_exactly_once(source: &str, from: &str, to: &str) -> String {
+    assert_eq!(source.matches(from).count(), 1, "mutation target is exact");
+    source.replacen(from, to, 1)
 }
 
 fn run_tlc_mutation(
