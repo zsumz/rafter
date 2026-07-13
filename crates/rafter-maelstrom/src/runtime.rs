@@ -13,6 +13,7 @@ use crate::{
     app::{load_app_state, persist_snapshot_application_state, AppState},
     membership::{membership_plan_from_env, membership_target_for_plan},
     protocol::{body_type, node_id_map, required_array, required_str, required_u64, Envelope},
+    raft::snapshots::validate_application_snapshot_metadata,
     raft_node::{node_root, open_node, read_snapshot_payload, snapshot_every_from_env, FileNode},
     InitializedNode, MaelstromNode,
 };
@@ -32,20 +33,20 @@ pub(crate) fn open_application_node(
 ) -> Result<OpenedApplicationNode, Box<dyn Error>> {
     let mut app = load_app_state(root)?;
     let opened = open_node(root, node_id, peers, app.applied)?;
-    if app.applied < opened.node.snapshot_index() {
-        let snapshot = opened
-            .node
-            .snapshot()
-            .cloned()
-            .ok_or("recovered snapshot boundary has no durable snapshot descriptor")?;
-        let payload = read_snapshot_payload(&opened.node, &snapshot)
-            .map_err(|error| format!("failed to read recovered application snapshot: {error}"))?;
-        persist_snapshot_application_state(
-            root,
-            &mut app,
-            snapshot.metadata.last_included_index,
-            &payload,
-        )?;
+    if let Some(snapshot) = opened.node.snapshot().cloned() {
+        validate_application_snapshot_metadata(&snapshot.metadata)
+            .map_err(|error| format!("refusing recovered application snapshot: {error}"))?;
+        if app.applied < snapshot.metadata.last_included_index {
+            let payload = read_snapshot_payload(&opened.node, &snapshot).map_err(|error| {
+                format!("failed to read recovered application snapshot: {error}")
+            })?;
+            persist_snapshot_application_state(
+                root,
+                &mut app,
+                snapshot.metadata.last_included_index,
+                &payload,
+            )?;
+        }
     }
     Ok(OpenedApplicationNode {
         node: opened.node,
