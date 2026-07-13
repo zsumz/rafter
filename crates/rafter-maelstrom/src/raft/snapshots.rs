@@ -82,22 +82,55 @@ pub(crate) fn compact_application_snapshot(
     let term = node
         .term_at_index(applied)
         .ok_or_else(|| format!("snapshot boundary term at index {applied} is not retained"))?;
-    let metadata = RaftSnapshotMetadata::new(
-        SnapshotGroupId::new(SNAPSHOT_GROUP_ID).expect("valid snapshot group id"),
-        node.id(),
-        applied,
-        term,
-        node.current_term(),
-        ApplicationSnapshotMetadata::new(
-            ApplicationSnapshotKind::new(SNAPSHOT_KIND).expect("valid snapshot kind"),
-            ApplicationSnapshotVersion::new(1).expect("valid snapshot version"),
-        ),
-    )
-    .map_err(|error| error.to_string())?;
+    let metadata = application_snapshot_metadata(node.id(), applied, term, node.current_term())?;
     node.compact_log_with_snapshot(PersistedRaftSnapshot {
         metadata,
         application_payload: encode_snapshot_payload(&app.kv)?,
     })
     .map_err(|error| error.to_string())?;
     Ok(applied)
+}
+
+pub(crate) fn application_snapshot_metadata(
+    writer_id: rafter::NodeId,
+    last_included_index: LogIndex,
+    last_included_term: rafter::Term,
+    hard_state_term: rafter::Term,
+) -> Result<RaftSnapshotMetadata, String> {
+    RaftSnapshotMetadata::new(
+        SnapshotGroupId::new(SNAPSHOT_GROUP_ID).expect("valid snapshot group id"),
+        writer_id,
+        last_included_index,
+        last_included_term,
+        hard_state_term,
+        ApplicationSnapshotMetadata::new(
+            ApplicationSnapshotKind::new(SNAPSHOT_KIND).expect("valid snapshot kind"),
+            ApplicationSnapshotVersion::new(1).expect("valid snapshot version"),
+        ),
+    )
+    .map_err(|error| error.to_string())
+}
+
+pub(crate) fn validate_application_snapshot_metadata(
+    metadata: &RaftSnapshotMetadata,
+) -> Result<(), String> {
+    if metadata.group_id.as_str() != SNAPSHOT_GROUP_ID {
+        return Err(format!(
+            "snapshot group {} is not {SNAPSHOT_GROUP_ID}",
+            metadata.group_id
+        ));
+    }
+    if metadata.application.kind.as_str() != SNAPSHOT_KIND {
+        return Err(format!(
+            "application snapshot kind {} is not {SNAPSHOT_KIND}",
+            metadata.application.kind
+        ));
+    }
+    if metadata.application.version.get() != 1 {
+        return Err(format!(
+            "application snapshot version {} is not 1",
+            metadata.application.version
+        ));
+    }
+    Ok(())
 }

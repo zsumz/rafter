@@ -33,22 +33,30 @@ pub(super) fn fresh_elected_node(root: &Path) -> crate::runtime::OpenedApplicati
 }
 
 pub(super) fn initialize_process(root: &Path) -> MaelstromNode {
+    initialize_cluster_process(root, "n1", &["n1"])
+}
+
+pub(super) fn initialize_cluster_process(
+    root: &Path,
+    node_name: &str,
+    node_names: &[&str],
+) -> MaelstromNode {
     let mut process = MaelstromNode::default();
     process
-        .initialize_at_root(&init_envelope(), root.to_path_buf())
+        .initialize_at_root(&init_envelope(node_name, node_names), root.to_path_buf())
         .expect("production Maelstrom initialization recovers application state");
     process
 }
 
-fn init_envelope() -> Envelope {
+fn init_envelope(node_name: &str, node_names: &[&str]) -> Envelope {
     Envelope {
         src: "controller".to_owned(),
-        dest: "n1".to_owned(),
+        dest: node_name.to_owned(),
         body: json!({
             "type": "init",
             "msg_id": 1,
-            "node_id": "n1",
-            "node_ids": ["n1"],
+            "node_id": node_name,
+            "node_ids": node_names,
         }),
     }
 }
@@ -114,9 +122,9 @@ pub(super) fn write_command(in_reply_to: u64, value: u64) -> Command {
     }
 }
 
-pub(super) fn cas_command(in_reply_to: u64, from: u64, to: u64) -> Command {
+pub(super) fn cas_command_for(origin: &str, in_reply_to: u64, from: u64, to: u64) -> Command {
     Command {
-        origin: "n1".to_owned(),
+        origin: origin.to_owned(),
         client: "client".to_owned(),
         in_reply_to,
         request: ClientMutation::Cas {
