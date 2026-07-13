@@ -11,6 +11,7 @@ use super::ExplorationState;
 
 #[derive(Clone, Debug, Default, Hash)]
 pub(crate) struct ElectionHistory {
+    pub(crate) transition_contexts_observed: u64,
     pub(crate) uncertified_seeded_leaders: BTreeSet<(NodeId, Term)>,
     pub(crate) term_floor_by_node: BTreeMap<NodeId, Term>,
     pub(crate) votes_by_node_term: BTreeMap<(NodeId, Term), NodeId>,
@@ -209,6 +210,7 @@ impl ExplorationState {
         delivered: Option<&Envelope>,
         emitted: &[Envelope],
     ) {
+        self.election_history.transition_contexts_observed += 1;
         if let Some(envelope) = delivered {
             self.record_pre_vote_transition(before, envelope);
             self.record_authority_transition(before, envelope);

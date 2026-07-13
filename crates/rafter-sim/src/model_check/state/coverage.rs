@@ -13,7 +13,6 @@ impl ExplorationState {
     }
 
     pub(in crate::model_check) fn observe_state_coverage(&mut self) {
-        self.refresh_application_history();
         if self
             .cluster
             .nodes
