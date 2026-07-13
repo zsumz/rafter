@@ -4,7 +4,7 @@ use std::{
 };
 
 use rafter::{
-    LogIndex, NodeConfig, NodeId, RaftSnapshot, SnapshotChunkRequest, SnapshotChunkSource,
+    LogIndex, NodeConfig, NodeId, Output, RaftSnapshot, SnapshotChunkRequest, SnapshotChunkSource,
 };
 use rafter_runtime::DurableRaftNode;
 use rafter_storage::{
@@ -17,12 +17,17 @@ const HEARTBEAT_INTERVAL_TICKS: u64 = 2;
 pub(crate) type FileNode =
     DurableRaftNode<FileRaftHardStateStore, FileRaftLogSegment, FileRaftSnapshotStore>;
 
+pub(crate) struct OpenedFileNode {
+    pub(crate) node: FileNode,
+    pub(crate) recovery_outputs: Vec<Output>,
+}
+
 pub(crate) fn open_node(
     root: &Path,
     node_id: NodeId,
     peers: Vec<NodeId>,
     applied_through: LogIndex,
-) -> Result<FileNode, Box<dyn Error>> {
+) -> Result<OpenedFileNode, Box<dyn Error>> {
     let raft_dir = root.join("raft");
     std::fs::create_dir_all(&raft_dir)?;
     let (hard_state, log, snapshots) = FileRaftNodeStores::open(&raft_dir)?.into_parts();
@@ -37,15 +42,18 @@ pub(crate) fn open_node(
     let config = NodeConfig::new(node_id, peers, election_timeout_ticks)?
         .with_heartbeat_interval_ticks(heartbeat_interval_ticks)
         .with_lease_reads(lease_reads_enabled_from_env());
-    Ok(
-        DurableRaftNode::with_storage_and_snapshot_store_applied_through(
-            config,
-            hard_state,
-            log,
-            snapshots,
-            applied_through,
-        )?,
-    )
+    let recovered = DurableRaftNode::recover_with_storage_and_snapshot_store_applied_through(
+        config,
+        hard_state,
+        log,
+        snapshots,
+        applied_through,
+    )?;
+    let (node, recovery_outputs) = recovered.into_parts();
+    Ok(OpenedFileNode {
+        node,
+        recovery_outputs,
+    })
 }
 
 fn lease_reads_enabled_from_env() -> bool {

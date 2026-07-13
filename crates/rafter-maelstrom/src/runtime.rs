@@ -1,22 +1,43 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::io::BufRead;
+use std::path::Path;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use rafter::Input;
+use rafter::{Input, NodeId, Output};
 use serde_json::json;
 
 use crate::{
-    app::load_app_state,
+    app::{load_app_state, AppState},
     membership::{membership_plan_from_env, membership_target_for_plan},
     protocol::{body_type, node_id_map, required_array, required_str, required_u64, Envelope},
-    raft_node::{node_root, open_node, snapshot_every_from_env},
+    raft_node::{node_root, open_node, snapshot_every_from_env, FileNode},
     InitializedNode, MaelstromNode,
 };
 
 const DEFAULT_TICK_INTERVAL_MS: u64 = 50;
+
+pub(crate) struct OpenedApplicationNode {
+    pub(crate) node: FileNode,
+    pub(crate) app: AppState,
+    pub(crate) recovery_outputs: Vec<Output>,
+}
+
+pub(crate) fn open_application_node(
+    root: &Path,
+    node_id: NodeId,
+    peers: Vec<NodeId>,
+) -> Result<OpenedApplicationNode, Box<dyn Error>> {
+    let app = load_app_state(root)?;
+    let opened = open_node(root, node_id, peers, app.applied)?;
+    Ok(OpenedApplicationNode {
+        node: opened.node,
+        app,
+        recovery_outputs: opened.recovery_outputs,
+    })
+}
 
 pub(crate) fn run() -> Result<(), Box<dyn Error>> {
     let tick_interval = tick_interval_from_env()?;
@@ -129,14 +150,16 @@ impl MaelstromNode {
         let membership_target = membership_target_for_plan(membership_plan, &name_to_id)?;
         let root = node_root(&node_name);
         std::fs::create_dir_all(&root)?;
-        let app = load_app_state(&root)?;
-        let node = open_node(&root, node_id, peers, app.applied)?;
+        let opened = open_application_node(&root, node_id, peers)?;
+        let node = opened.node;
+        let app = opened.app;
+        let recovery_outputs = opened.recovery_outputs;
         let last_reported_role = node.role();
         let last_reported_lease_active = node.read_lease_active();
         let last_snapshot_index = node.snapshot_index();
         let snapshot_every = snapshot_every_from_env()?;
 
-        let initialized = InitializedNode {
+        let mut initialized = InitializedNode {
             name: node_name,
             node,
             root,
@@ -163,6 +186,7 @@ impl MaelstromNode {
                 "in_reply_to": required_u64(&envelope.body, "msg_id")?,
             }),
         );
+        initialized.handle_outputs(recovery_outputs);
         self.initialized = Some(initialized);
         Ok(())
     }
