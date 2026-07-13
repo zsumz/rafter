@@ -20,6 +20,86 @@ const APPLICATION_PROBE: DetectorProbe = DetectorProbe {
     mode: "ApplicationRecorderOnly",
 };
 
+const JOINT_QUORUM_REGRESSION_CONFIG: &str = r#"SPECIFICATION JointQuorumRegressionSpec
+
+CONSTANTS
+  Nodes = {n1, n2, n3}
+  Values = {v1, v2}
+  MaxTerm = 2
+  MaxLogLen = 2
+  ReadRequests = {r1}
+  FixtureA = n1
+  FixtureB = n2
+  FixtureC = n3
+  FixtureValueA = v1
+  FixtureValueB = v2
+  FixtureRead = r1
+  FixtureMode = "Default"
+  TargetPredicate = "CommittedEntriesHaveQuorum"
+
+INVARIANT TypeOK
+INVARIANT JointQuorumOldSideCannotCommit
+INVARIANT CommittedEntriesHaveQuorum
+INVARIANT StateMachineSafety
+
+PROPERTY JointQuorumRegressionCompletes
+
+CHECK_DEADLOCK FALSE
+"#;
+
+const EFFECTIVE_OVERWRITE_REGRESSION_CONFIG: &str = r#"SPECIFICATION EffectiveOverwriteRegressionSpec
+
+CONSTANTS
+  Nodes = {n1, n2, n3}
+  Values = {v1, v2}
+  MaxTerm = 2
+  MaxLogLen = 2
+  ReadRequests = {r1}
+  FixtureA = n1
+  FixtureB = n2
+  FixtureC = n3
+  FixtureValueA = v1
+  FixtureValueB = v2
+  FixtureRead = r1
+  FixtureMode = "Default"
+  TargetPredicate = "CommittedEntriesHaveQuorum"
+
+INVARIANT TypeOK
+INVARIANT EffectiveOverwriteRegressionInvariant
+INVARIANT CommittedEntriesHaveQuorum
+
+PROPERTY EffectiveOverwriteRegressionCompletes
+
+CHECK_DEADLOCK FALSE
+"#;
+
+const DELAYED_HEARTBEAT_REGRESSION_CONFIG: &str = r#"SPECIFICATION DelayedHeartbeatRegressionSpec
+
+CONSTANTS
+  Nodes = {n1, n2, n3}
+  Values = {v1, v2}
+  MaxTerm = 2
+  MaxLogLen = 2
+  ReadRequests = {r1}
+  FixtureA = n1
+  FixtureB = n2
+  FixtureC = n3
+  FixtureValueA = v1
+  FixtureValueB = v2
+  FixtureRead = r1
+  FixtureMode = "Default"
+  TargetPredicate = "CommittedEntriesHaveQuorum"
+
+INVARIANT TypeOK
+INVARIANT DelayedHeartbeatRegressionInvariant
+INVARIANT CommittedEntriesHaveQuorum
+INVARIANT StateMachineSafety
+
+PROPERTY DelayedHeartbeatRegressionCompletes
+
+CHECK_DEADLOCK FALSE
+"#;
+
 #[test]
 #[ignore = "requires the pinned TLC tool and Java"]
 fn recorder_only_fixtures_qualify_before_mutation() {
@@ -89,6 +169,90 @@ fn non_violating_fixture_cannot_qualify() {
         Some(&summary),
         "ElectionSafety"
     ));
+}
+
+#[test]
+#[ignore = "requires the pinned TLC tool and Java"]
+fn applied_membership_quorum_mutation_breaks_joint_regression() {
+    let root = workspace_root();
+    let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
+    let mutated = replace_operator(
+        &raft,
+        "QuorumNodes(ns)",
+        "MatchingReplicas(n, i)",
+        "MembershipQuorum(membership, ns)",
+    );
+    let detector =
+        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
+            .expect("read detector spec");
+    let result = run_tlc_with_config(
+        &root,
+        "applied-membership-joint-quorum",
+        &mutated,
+        &detector,
+        JOINT_QUORUM_REGRESSION_CONFIG,
+    );
+    let summary = parse(&result.stdout).expect("parse joint quorum mutation output");
+    assert_eq!(result.status.code(), Some(12));
+    assert_eq!(
+        summary.violated_invariant.as_deref(),
+        Some("JointQuorumOldSideCannotCommit")
+    );
+}
+
+#[test]
+#[ignore = "requires the pinned TLC tool and Java"]
+fn missing_effective_recomputation_breaks_overwrite_regression() {
+    let root = workspace_root();
+    let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
+    let mutated = replace_operator(
+        &raft,
+        "EffectiveConfigurationFor(entries)",
+        "AuthoritativeLogReplacement(message, accepted)",
+        "[configIndex |-> effectiveConfigIndex, config |-> effectiveMembership]",
+    );
+    let detector =
+        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
+            .expect("read detector spec");
+    let result = run_tlc_with_config(
+        &root,
+        "missing-effective-overwrite-recomputation",
+        &mutated,
+        &detector,
+        EFFECTIVE_OVERWRITE_REGRESSION_CONFIG,
+    );
+    let summary = parse(&result.stdout).expect("parse effective overwrite mutation output");
+    assert_eq!(result.status.code(), Some(12));
+    assert_eq!(summary.violated_invariant.as_deref(), Some("TypeOK"));
+}
+
+#[test]
+#[ignore = "requires the pinned TLC tool and Java"]
+fn follower_recomputation_breaks_delayed_heartbeat_regression() {
+    let root = workspace_root();
+    let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
+    let mutated = replace_operator(
+        &raft,
+        "AuthoritativeLogReplacement(message, accepted)",
+        "RecordElection(node)",
+        "accepted",
+    );
+    let detector =
+        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
+            .expect("read detector spec");
+    let result = run_tlc_with_config(
+        &root,
+        "follower-recomputes-effective-configuration",
+        &mutated,
+        &detector,
+        DELAYED_HEARTBEAT_REGRESSION_CONFIG,
+    );
+    let summary = parse(&result.stdout).expect("parse delayed heartbeat mutation output");
+    assert_eq!(result.status.code(), Some(12));
+    assert_eq!(
+        summary.violated_invariant.as_deref(),
+        Some("DelayedHeartbeatRegressionInvariant")
+    );
 }
 
 #[test]
@@ -232,6 +396,20 @@ fn run_tlc_mutation(
     detector: &str,
     probe: DetectorProbe,
 ) -> std::process::Output {
+    let template =
+        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.cfg"))
+            .expect("read detector config");
+    let config = render_detector_config(&template, probe).expect("render detector config");
+    run_tlc_with_config(root, name, raft, detector, &config)
+}
+
+fn run_tlc_with_config(
+    root: &Path,
+    name: &str,
+    raft: &str,
+    detector: &str,
+    config: &str,
+) -> std::process::Output {
     let directory = root
         .join("target/rafter-invariants/tla-mutations")
         .join(format!("{}-{name}", std::process::id()));
@@ -245,12 +423,9 @@ fn run_tlc_mutation(
         detector,
     )
     .expect("write mutated detector spec");
-    let template =
-        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.cfg"))
-            .expect("read detector config");
     fs::write(
         directory.join("RafterInvariantDetectorNegative.cfg"),
-        render_detector_config(&template, probe).expect("render detector config"),
+        config,
     )
     .expect("write detector config");
     Command::new("java")

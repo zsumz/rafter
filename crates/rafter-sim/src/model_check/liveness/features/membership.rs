@@ -80,7 +80,7 @@ pub(super) fn run_membership_transition_liveness_check(
                 budget,
                 round_budget,
                 convergence.rounds_used,
-                round,
+                operation_rounds(round, false),
                 preconditions,
             ));
         }
@@ -97,7 +97,7 @@ pub(super) fn run_membership_transition_liveness_check(
                         budget,
                         round_budget,
                         convergence.rounds_used,
-                        round,
+                        operation_rounds(round, false),
                         preconditions,
                     ));
                 }
@@ -106,6 +106,15 @@ pub(super) fn run_membership_transition_liveness_check(
 
         drive_soak_liveness_round(state, config, trace, observed_actions, round)?;
         check_soak_safety(state, config, trace)?;
+        if membership_transition_completed(state, &target) {
+            return Ok(membership_report(
+                budget,
+                round_budget,
+                convergence.rounds_used,
+                operation_rounds(round, true),
+                preconditions,
+            ));
+        }
     }
 
     Err(soak_liveness_failure(
@@ -117,6 +126,10 @@ pub(super) fn run_membership_transition_liveness_check(
             "membership transition removing {removed_voter} did not reach stable target {target:?} within {budget} post-heal rounds"
         ),
     ))
+}
+
+const fn operation_rounds(round: usize, drove_round: bool) -> usize {
+    round.saturating_add(drove_round as usize)
 }
 
 fn membership_report(
@@ -192,4 +205,16 @@ fn membership_transition_completed(state: &ExplorationState, target: &Membership
 
 fn stable_membership_matches(config: &MembershipConfig, target: &MembershipSet) -> bool {
     matches!(config, MembershipConfig::Stable(membership) if membership == target)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::operation_rounds;
+
+    #[test]
+    fn completion_after_final_driven_round_is_within_the_exact_bound() {
+        let budget = 8;
+        assert_eq!(operation_rounds(budget - 1, true), budget);
+        assert_eq!(operation_rounds(budget - 1, false), budget - 1);
+    }
 }

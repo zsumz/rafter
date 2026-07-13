@@ -433,13 +433,4 @@ impl ExplorationState {
         );
         self.observations.union_with(observations);
     }
-
-    pub(in crate::model_check) fn reset_commit_floor(&mut self, node_id: NodeId) {
-        if let Some(node) = self.cluster.nodes.get(&node_id) {
-            self.commit_floor_by_node
-                .insert(node_id, node.commit_index());
-            self.committed_configuration_floor_by_node
-                .insert(node_id, node.committed_configuration_state());
-        }
-    }
 }

@@ -142,7 +142,7 @@ fn validate_pass(
     expected_observations.extend(
         REGISTERED_PREDICATES
             .iter()
-            .map(|predicate| detector_observation(predicate).expect("registered predicate")),
+            .filter_map(|predicate| detector_observation(predicate)),
     );
     expected_observations.extend(required.values().map(|symbol| format!("checked:{symbol}")));
     let checkpoint_enabled = contract.configuration.contains_key("checkpoint_minutes");
@@ -159,10 +159,8 @@ fn validate_pass(
         || observed(check, "tool_pin_verified") != 1
         || observed(check, "trace_sample_passed") != 1
         || REGISTERED_PREDICATES.iter().any(|predicate| {
-            observed(
-                check,
-                &detector_observation(predicate).expect("registered predicate"),
-            ) != 1
+            detector_observation(predicate)
+                .is_none_or(|observation| observed(check, &observation) != 1)
         })
         || observed(check, "generated_states") < minimum_generated
         || observed(check, "distinct_states") < minimum_distinct
@@ -222,8 +220,18 @@ fn required_proof_artifact_kinds(
     .map(str::to_owned)
     .collect::<BTreeSet<_>>();
     for probe in DETECTOR_PROBES {
-        kinds.insert(detector_log_kind(probe).expect("registered detector probe"));
-        kinds.insert(detector_config_kind(probe).expect("registered detector probe"));
+        kinds.insert(detector_log_kind(probe).unwrap_or_else(|| {
+            format!(
+                "invalid-tla-detector-log:{}:{}",
+                probe.predicate, probe.mode
+            )
+        }));
+        kinds.insert(detector_config_kind(probe).unwrap_or_else(|| {
+            format!(
+                "invalid-tla-detector-config:{}:{}",
+                probe.predicate, probe.mode
+            )
+        }));
     }
     if checkpoint_enabled {
         kinds.extend([

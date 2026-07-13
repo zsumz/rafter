@@ -306,6 +306,7 @@ impl FaultCycleEvidence {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+/// Measured evidence emitted by one bounded liveness monitor.
 pub struct LivenessFeatureReport {
     pub(super) invariant_id: &'static str,
     pub(super) clause_ids: &'static [&'static str],
@@ -322,6 +323,8 @@ pub struct LivenessFeatureReport {
 }
 
 impl LivenessFeatureReport {
+    /// Returns the strict machine-readable representation consumed by the invariant runner.
+    #[must_use]
     pub fn to_json(&self) -> serde_json::Value {
         json!({
             "invariant_id": self.invariant_id,
@@ -398,18 +401,26 @@ impl LivenessFeatureReport {
         })
     }
 
+    /// Returns the stable liveness feature identifier.
+    #[must_use]
     pub fn feature_id(&self) -> &'static str {
         self.feature_id
     }
 
+    /// Returns the stable scenario identifier used to bind this report.
+    #[must_use]
     pub fn scenario_id(&self) -> &'static str {
         self.scenario_id
     }
 
+    /// Returns the observation counter qualified by this report.
+    #[must_use]
     pub fn observation_id(&self) -> &'static str {
         self.observation_id
     }
 
+    /// Returns the execution-bound budget and round provenance for this feature.
+    #[must_use]
     pub fn execution_provenance_json(&self) -> serde_json::Value {
         json!({
             "feature_id": self.feature_id,
@@ -430,6 +441,11 @@ impl LivenessFeatureReport {
         })
     }
 
+    /// Validates the report's preconditions, derived bounds, and feature-specific evidence.
+    ///
+    /// # Errors
+    ///
+    /// Returns a description of the first malformed or unsatisfied contract field.
     pub fn validate_structure(&self) -> Result<(), String> {
         self.preconditions
             .validate()

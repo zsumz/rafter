@@ -146,6 +146,8 @@ jobs:
           cache-on-failure: true
       - name: Produce TLA+ evidence
         run: cargo run --locked -p rafter-invariants -- run --profile pr --layer tla
+      - name: Validate TLA+ detector mutation sensitivity
+        run: cargo test --locked -p rafter-invariants producer::tla_exec::mutation_tests -- --ignored --test-threads=1
       - name: Upload TLA+ evidence
         if: always()
         uses: actions/upload-artifact@v4
@@ -167,13 +169,19 @@ jobs:
       - name: Validate scheduled Maelstrom evidence contract
         run: cargo test --locked -p rafter-invariants maelstrom
       - name: Validate Maelstrom runner scripts
-        run: >-
-          bash -n
-          scripts/maelstrom-lin-kv
-          scripts/maelstrom-lin-kv-membership-change
-          scripts/maelstrom-lin-kv-repeated-restart
-          scripts/maelstrom-lin-kv-app-persist-crash
-          scripts/maelstrom-lin-kv-forced-snapshot
+        run: |
+          for script in \
+            scripts/maelstrom-lin-kv \
+            scripts/maelstrom-lin-kv-common \
+            scripts/maelstrom-lin-kv-membership-change \
+            scripts/maelstrom-lin-kv-repeated-restart \
+            scripts/maelstrom-lin-kv-leader-restart \
+            scripts/maelstrom-lin-kv-app-persist-crash \
+            scripts/maelstrom-lin-kv-forced-snapshot \
+            scripts/maelstrom-lin-kv-lease-isolation
+          do
+            bash -n "$script"
+          done
 
   invariants-pr:
     name: invariants-pr

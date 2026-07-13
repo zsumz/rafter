@@ -161,6 +161,12 @@ impl ExplorationState {
         self.application_history.witnesses()
     }
 
+    pub(super) const fn execution_instrumentation_errors(
+        &self,
+    ) -> &BTreeSet<crate::network::ExecutionInstrumentationError> {
+        self.application_history.instrumentation_errors()
+    }
+
     pub(super) const fn forbidden_applied_payloads(&self) -> &BTreeSet<SharedPayload> {
         &self.forbidden_applied_payloads
     }
@@ -275,6 +281,11 @@ impl ExplorationState {
     pub(super) fn inject_execution_witness(&mut self, witness: crate::ExecutionWitness) {
         self.cluster.inject_execution_witness(witness);
         self.refresh_application_history();
+    }
+
+    #[cfg(test)]
+    pub(super) fn remove_execution_cursor(&mut self, node_id: NodeId) {
+        self.cluster.remove_execution_cursor(node_id);
     }
 
     #[cfg(test)]

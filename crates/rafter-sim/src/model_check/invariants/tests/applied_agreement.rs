@@ -1,6 +1,33 @@
 use super::*;
 
 #[test]
+fn real_transition_persists_recorder_failure_as_a_harness_error() {
+    let mut state = ExplorationState::new(one_node_cluster());
+    state.remove_execution_cursor(NodeId(1));
+
+    crate::model_check::state::apply_to_state(
+        &mut state,
+        crate::model_check::scheduling::Operation::Tick(NodeId(1)),
+    );
+    let cloned = state.clone();
+
+    for state in [&state, &cloned] {
+        let failure = check_commit_safety(state, &[])
+            .expect_err("a recorder failure must make commit safety red");
+        assert_eq!(
+            failure.kind(),
+            crate::model_check::FailureKind::HarnessError
+        );
+        assert_eq!(failure.invariant(), catalog::AP_02_STATE_MACHINE_SAFETY);
+        assert!(
+            failure.message.contains("no execution-history cursor"),
+            "unexpected failure message: {}",
+            failure.message
+        );
+    }
+}
+
+#[test]
 fn execution_agreement_detects_mismatched_configuration_application() {
     let mut state = ExplorationState::new(one_node_cluster());
     for (node, config_id, voters) in [(1, 7, &[1, 2][..]), (2, 8, &[1, 2, 3][..])] {

@@ -7,6 +7,16 @@ pub(super) fn check_execution_history_agreement(
     state: &ExplorationState,
     trace: &[Action],
 ) -> Result<(), Failure> {
+    if let Some(error) = state.execution_instrumentation_errors().iter().next() {
+        return Err(Failure {
+            kind: crate::model_check::FailureKind::HarnessError,
+            invariant: catalog::AP_02_STATE_MACHINE_SAFETY,
+            message: format!("execution-history instrumentation failed: {error}"),
+            trace: trace.to_vec(),
+            state: summarize(state.cluster()),
+        });
+    }
+
     let mut witness_by_index = BTreeMap::<LogIndex, &crate::ExecutionWitness>::new();
     for witness in state.application_history() {
         let derived_result = independently_derive_reference_result(witness);

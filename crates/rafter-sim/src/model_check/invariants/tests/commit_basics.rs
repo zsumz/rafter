@@ -71,6 +71,34 @@ fn committed_configuration_monotonicity_detects_regression() {
 }
 
 #[test]
+fn lossy_restart_preserves_temporal_commit_and_configuration_floors() {
+    let mut state = ExplorationState::new(one_node_cluster());
+    let configuration_floor = CommittedConfiguration {
+        index: LogIndex(3),
+        config_id: ConfigurationId(3),
+    };
+    state
+        .commit_floor_by_node_mut()
+        .insert(NodeId(1), LogIndex(2));
+    state
+        .committed_configuration_floor_by_node_mut()
+        .insert(NodeId(1), Some(configuration_floor));
+
+    crate::model_check::state::apply_soak_action(
+        &mut state,
+        crate::model_check::scheduling::SoakOperation::LossyRestart(NodeId(1)),
+    );
+
+    assert_eq!(state.commit_floor_by_node()[&NodeId(1)], LogIndex(2));
+    assert_eq!(
+        state.committed_configuration_floor_by_node()[&NodeId(1)],
+        Some(configuration_floor)
+    );
+    assert!(check_commit_index_monotonicity(&state, &[]).is_err());
+    assert!(check_committed_configuration_monotonicity(&state, &[]).is_err());
+}
+
+#[test]
 fn serialized_configuration_checker_detects_two_uncommitted_configurations() {
     let cluster = one_node_cluster();
     let membership =

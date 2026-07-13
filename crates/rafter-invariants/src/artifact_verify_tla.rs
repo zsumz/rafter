@@ -106,9 +106,19 @@ fn verify_detectors(
     let mut observations = BTreeMap::new();
     let mut all_passed = true;
     for probe in DETECTOR_PROBES {
-        let config_kind = detector_config_kind(probe).expect("registered detector probe");
-        let log_kind = detector_log_kind(probe).expect("registered detector probe");
         let identity = probe_slug(probe);
+        let config_kind = detector_config_kind(probe).ok_or_else(|| {
+            AggregateError::new(format!("unregistered TLA detector probe {identity}"))
+        })?;
+        let log_kind = detector_log_kind(probe).ok_or_else(|| {
+            AggregateError::new(format!("unregistered TLA detector probe {identity}"))
+        })?;
+        let observation = detector_observation(probe.predicate).ok_or_else(|| {
+            AggregateError::new(format!(
+                "unregistered TLA detector predicate {}",
+                probe.predicate
+            ))
+        })?;
         let has_config = has_kind(check, &config_kind)?;
         let has_log = has_kind(check, &log_kind)?;
         if has_config != has_log {
@@ -118,10 +128,7 @@ fn verify_detectors(
         }
         if !has_config {
             all_passed = false;
-            observations.insert(
-                detector_observation(probe.predicate).expect("registered detector predicate"),
-                0,
-            );
+            observations.insert(observation, 0);
             continue;
         }
         let realized_config = read_kind(check, &config_kind, root)?;
@@ -132,16 +139,18 @@ fn verify_detectors(
                 "TLA detector config does not bind probe {identity} exactly"
             )));
         }
-        let label = detector_label(probe).expect("registered detector probe");
+        let label = detector_label(probe).ok_or_else(|| {
+            AggregateError::new(format!("unregistered TLA detector probe {identity}"))
+        })?;
         let detector = read_process_log(bundle, check, &log_kind, &label, root)?;
         let summary = crate::producer::tla_output::parse(detector.stdout.as_bytes()).ok();
-        let expected = detector_invariant(probe).expect("registered detector probe");
+        let expected = detector_invariant(probe).ok_or_else(|| {
+            AggregateError::new(format!("unregistered TLA detector probe {identity}"))
+        })?;
         let qualified = summary
             .as_ref()
             .is_some_and(|summary| successful_detector(&detector, summary, &expected));
         all_passed &= qualified;
-        let observation =
-            detector_observation(probe.predicate).expect("registered detector predicate");
         let predicate_qualified = observations.entry(observation).or_insert(1);
         *predicate_qualified &= u64::from(qualified);
     }
@@ -572,7 +581,12 @@ fn verify_tla_invocation(
                 .iter()
                 .find(|probe| detector_label(**probe).as_deref() == Some(label))
                 .ok_or_else(|| AggregateError::new(format!("unknown TLA log label {label}")))?;
-            let config_kind = detector_config_kind(*probe).expect("registered detector probe");
+            let config_kind = detector_config_kind(*probe).ok_or_else(|| {
+                AggregateError::new(format!(
+                    "unregistered TLA detector probe {}",
+                    probe_slug(*probe)
+                ))
+            })?;
             let artifact = unique_artifact(check, &config_kind)?;
             let config = fs::canonicalize(root.join(&artifact.path))
                 .map_err(|error| {

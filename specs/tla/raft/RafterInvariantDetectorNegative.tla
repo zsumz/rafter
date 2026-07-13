@@ -81,6 +81,14 @@ InitialCommit ==
   THEN [n \in Nodes |-> 1]
   ELSE BaseCommit
 
+InitialEffectiveMembership ==
+  IF TargetPredicate = "StateMachineSafety"
+  THEN ApplicationConfig
+  ELSE StableMembership(Nodes)
+
+InitialEffectiveConfigIndex ==
+  IF TargetPredicate = "StateMachineSafety" THEN 1 ELSE 0
+
 InitialElectedLeaders ==
   [t \in 1..MaxTerm |->
     IF TargetPredicate = "StaleLeaderFencing" /\
@@ -152,6 +160,8 @@ FixtureInit ==
   /\ readGrants = {}
   /\ membership = StableMembership(Nodes)
   /\ appliedConfigIndex = 0
+  /\ effectiveMembership = InitialEffectiveMembership
+  /\ effectiveConfigIndex = InitialEffectiveConfigIndex
   /\ electedLeaders = InitialElectedLeaders
   /\ higherTermEvidenceSeen = FALSE
   /\ higherTermStepDownFailed = FALSE
@@ -168,6 +178,7 @@ PrepareSequentialCandidate ==
   /\ role' = [n \in Nodes |-> IF n = FixtureB THEN Candidate ELSE Follower]
   /\ UNCHANGED << currentTerm, log, commitIndex, applied, messages,
                   readRequests, readGrants, membership, appliedConfigIndex,
+                  effectiveMembership, effectiveConfigIndex,
                   electedLeaders,
                   higherTermEvidenceSeen, higherTermStepDownFailed,
                   staleAuthorityAccepted >>
@@ -179,6 +190,7 @@ FaultySequentialLeader ==
   /\ RecordAuthorityAcceptance(1, 1, TRUE)
   /\ UNCHANGED << currentTerm, votedFor, log, commitIndex, applied, messages,
                   readRequests, readGrants, membership, appliedConfigIndex,
+                  effectiveMembership, effectiveConfigIndex,
                   higherTermEvidenceSeen, higherTermStepDownFailed >>
 
 FaultyHigherTermAndAuthority ==
@@ -195,6 +207,7 @@ FaultyHigherTermAndAuthority ==
        FixtureMode # HigherTermRecorderMode)
   /\ UNCHANGED << log, commitIndex, applied, messages, readRequests,
                   readGrants, membership, appliedConfigIndex,
+                  effectiveMembership, effectiveConfigIndex,
                   electedLeaders >>
 
 FaultyStaleAuthorityOnly ==
@@ -206,6 +219,7 @@ FaultyStaleAuthorityOnly ==
   /\ UNCHANGED << currentTerm, votedFor, role, log, commitIndex, applied,
                   messages, readRequests, readGrants, membership,
                   appliedConfigIndex,
+                  effectiveMembership, effectiveConfigIndex,
                   electedLeaders >>
 
 ApplicationFirstApply ==
@@ -224,7 +238,8 @@ FaultyApplicationResult ==
     /\ RecordApplication(FixtureB, 1, entry, priorState, corruptedResult)
     /\ UNCHANGED << currentTerm, votedFor, role, log, commitIndex, messages,
                     readRequests, readGrants, membership,
-                    appliedConfigIndex, electedLeaders,
+                    appliedConfigIndex, effectiveMembership,
+                    effectiveConfigIndex, electedLeaders,
                     higherTermEvidenceSeen, higherTermStepDownFailed,
                     staleAuthorityAccepted >>
 
@@ -240,6 +255,8 @@ LegacyViolation ==
   /\ readGrants' = LegacyTargetReadGrants
   /\ membership' = StableMembership(Nodes)
   /\ appliedConfigIndex' = 0
+  /\ effectiveMembership' = StableMembership(Nodes)
+  /\ effectiveConfigIndex' = 0
   /\ electedLeaders' = LegacyTargetElectedLeaders
   /\ higherTermEvidenceSeen' = FALSE
   /\ higherTermStepDownFailed' = FALSE
@@ -302,6 +319,8 @@ ConfigurationRegressionInit ==
   /\ readGrants = {}
   /\ membership = StableMembership(Nodes)
   /\ appliedConfigIndex = 0
+  /\ effectiveMembership = RegressionStableConfig
+  /\ effectiveConfigIndex = 2
   /\ electedLeaders = [t \in 1..MaxTerm |-> {}]
   /\ higherTermEvidenceSeen = FALSE
   /\ higherTermStepDownFailed = FALSE
@@ -320,21 +339,245 @@ ConfigurationRegressionNext ==
      /\ UNCHANGED vars
 
 ConfigurationRegressionSpec ==
-  ConfigurationRegressionInit /\ [][ConfigurationRegressionNext]_vars
+  /\ ConfigurationRegressionInit
+  /\ [][ConfigurationRegressionNext]_vars
+  /\ WF_vars(ConfigurationRegressionNext)
 
 ConfigurationRegressionInvariant ==
-  CASE Len(applied[FixtureA]) >= 2 ->
-         /\ appliedConfigIndex = 2
-         /\ membership = RegressionStableConfig
-    [] Len(applied[FixtureA]) = 1 ->
-         /\ appliedConfigIndex = 1
-         /\ membership = ApplicationConfig
-    [] OTHER ->
-         /\ appliedConfigIndex = 0
-         /\ membership = StableMembership(Nodes)
+  /\ effectiveConfigIndex = 2
+  /\ effectiveMembership = RegressionStableConfig
+  /\ CASE Len(applied[FixtureA]) >= 2 ->
+            /\ appliedConfigIndex = 2
+            /\ membership = RegressionStableConfig
+       [] Len(applied[FixtureA]) = 1 ->
+            /\ appliedConfigIndex = 1
+            /\ membership = ApplicationConfig
+       [] OTHER ->
+            /\ appliedConfigIndex = 0
+            /\ membership = StableMembership(Nodes)
 
 ConfigurationRegressionComplete ==
   /\ Len(applied[FixtureA]) = 2
   /\ Len(applied[FixtureB]) = 1
+
+ConfigurationRegressionCompletes == <>ConfigurationRegressionComplete
+
+JointQuorumNewVoters == {FixtureA, FixtureB}
+
+JointQuorumRegressionInit ==
+  /\ FixtureConstantsOK
+  /\ currentTerm = BaseTerm
+  /\ votedFor = [n \in Nodes |-> FixtureA]
+  /\ role = [n \in Nodes |-> IF n = FixtureA THEN Leader ELSE Follower]
+  /\ log = BaseLog
+  /\ commitIndex = BaseCommit
+  /\ applied = BaseApplied
+  /\ messages = {}
+  /\ readRequests = {}
+  /\ readGrants = {}
+  /\ membership = StableMembership(Nodes)
+  /\ appliedConfigIndex = 0
+  /\ effectiveMembership = StableMembership(Nodes)
+  /\ effectiveConfigIndex = 0
+  /\ electedLeaders = [t \in 1..MaxTerm |->
+       IF t = 1 THEN {FixtureA} ELSE {}]
+  /\ higherTermEvidenceSeen = FALSE
+  /\ higherTermStepDownFailed = FALSE
+  /\ staleAuthorityAccepted = FALSE
+
+JointQuorumRegressionNext ==
+  \/ /\ Len(log[FixtureA]) = 0
+     /\ EnterJoint(FixtureA, JointQuorumNewVoters)
+  \/ /\ Len(log[FixtureA]) = 1
+     /\ Len(log[FixtureB]) = 0
+     /\ Len(log[FixtureC]) = 0
+     /\ messages = {}
+     /\ SendAppend(FixtureA, FixtureC)
+  \/ \E m \in messages :
+       /\ m.type = AppendEntries
+       /\ m.to = FixtureC
+       /\ DeliverAppend(m)
+  \/ /\ Len(log[FixtureA]) = 1
+     /\ Len(log[FixtureB]) = 0
+     /\ Len(log[FixtureC]) = 1
+     /\ messages = {}
+     /\ (Commit(FixtureA, 1) \/ SendAppend(FixtureA, FixtureB))
+  \/ \E m \in messages :
+       /\ m.type = AppendEntries
+       /\ m.to = FixtureB
+       /\ DeliverAppend(m)
+  \/ /\ \A n \in Nodes : Len(log[n]) = 1
+     /\ commitIndex[FixtureA] = 0
+     /\ messages = {}
+     /\ Commit(FixtureA, 1)
+  \/ /\ commitIndex[FixtureA] = 1
+     /\ Len(applied[FixtureA]) = 0
+     /\ Apply(FixtureA)
+  \/ /\ Len(applied[FixtureA]) = 1
+     /\ UNCHANGED vars
+
+JointQuorumRegressionSpec ==
+  /\ JointQuorumRegressionInit
+  /\ [][JointQuorumRegressionNext]_vars
+  /\ WF_vars(JointQuorumRegressionNext)
+
+JointQuorumOldSideCannotCommit ==
+  ( /\ Len(log[FixtureA]) = 1
+    /\ Len(log[FixtureB]) = 0
+    /\ Len(log[FixtureC]) = 1 ) =>
+    commitIndex[FixtureA] = 0
+
+JointQuorumRegressionComplete == Len(applied[FixtureA]) = 1
+
+JointQuorumRegressionCompletes == <>JointQuorumRegressionComplete
+
+EffectiveOverwriteRegressionInit ==
+  /\ FixtureConstantsOK
+  /\ currentTerm = BaseTerm
+  /\ votedFor = [n \in Nodes |-> FixtureA]
+  /\ role = [n \in Nodes |-> IF n = FixtureA THEN Leader ELSE Follower]
+  /\ log = BaseLog
+  /\ commitIndex = BaseCommit
+  /\ applied = BaseApplied
+  /\ messages = {}
+  /\ readRequests = {}
+  /\ readGrants = {}
+  /\ membership = StableMembership(Nodes)
+  /\ appliedConfigIndex = 0
+  /\ effectiveMembership = StableMembership(Nodes)
+  /\ effectiveConfigIndex = 0
+  /\ electedLeaders = [t \in 1..MaxTerm |->
+       IF t = 1 THEN {FixtureA} ELSE {}]
+  /\ higherTermEvidenceSeen = FALSE
+  /\ higherTermStepDownFailed = FALSE
+  /\ staleAuthorityAccepted = FALSE
+
+PrepareEffectiveOverwriteLeader ==
+  /\ Len(log[FixtureA]) = 1
+  /\ log[FixtureA][1].kind = ConfigurationEntryKind
+  /\ Len(log[FixtureB]) = 0
+  /\ currentTerm' = [currentTerm EXCEPT ![FixtureB] = 2]
+  /\ votedFor' = [n \in Nodes |-> FixtureB]
+  /\ role' = [n \in Nodes |-> IF n = FixtureB THEN Leader ELSE Follower]
+  /\ log' = [log EXCEPT ![FixtureB] = <<Entry(2, FixtureValueA)>>]
+  /\ electedLeaders' = [electedLeaders EXCEPT ![2] = @ \cup {FixtureB}]
+  /\ UNCHANGED << commitIndex, applied, messages, readRequests, readGrants,
+                  membership, appliedConfigIndex, effectiveMembership,
+                  effectiveConfigIndex, higherTermEvidenceSeen,
+                  higherTermStepDownFailed, staleAuthorityAccepted >>
+
+EffectiveOverwriteRegressionNext ==
+  \/ /\ Len(log[FixtureA]) = 0
+     /\ EnterJoint(FixtureA, JointQuorumNewVoters)
+  \/ /\ role[FixtureA] = Leader
+     /\ Len(log[FixtureA]) = 1
+     /\ Len(log[FixtureB]) = 0
+     /\ PrepareEffectiveOverwriteLeader
+  \/ /\ role[FixtureB] = Leader
+     /\ Len(log[FixtureB]) = 1
+     /\ log[FixtureB][1].kind = CommandEntryKind
+     /\ log[FixtureA][1].kind = ConfigurationEntryKind
+     /\ messages = {}
+     /\ SendAppend(FixtureB, FixtureA)
+  \/ \E m \in messages :
+       /\ m.type = AppendEntries
+       /\ m.from = FixtureB
+       /\ m.to = FixtureA
+       /\ DeliverAppend(m)
+  \/ /\ Len(log[FixtureA]) = 1
+     /\ log[FixtureA][1].kind = CommandEntryKind
+     /\ effectiveConfigIndex = 0
+     /\ UNCHANGED vars
+
+EffectiveOverwriteRegressionSpec ==
+  /\ EffectiveOverwriteRegressionInit
+  /\ [][EffectiveOverwriteRegressionNext]_vars
+  /\ WF_vars(EffectiveOverwriteRegressionNext)
+
+EffectiveOverwriteRegressionInvariant ==
+  CASE Len(log[FixtureA]) = 0 ->
+         /\ effectiveConfigIndex = 0
+         /\ effectiveMembership = StableMembership(Nodes)
+    [] log[FixtureA][1].kind = ConfigurationEntryKind ->
+         /\ effectiveConfigIndex = 1
+         /\ effectiveMembership = ApplicationConfig
+    [] OTHER ->
+         /\ effectiveConfigIndex = 0
+         /\ effectiveMembership = StableMembership(Nodes)
+
+EffectiveOverwriteRegressionComplete ==
+  /\ Len(log[FixtureA]) = 1
+  /\ log[FixtureA][1].kind = CommandEntryKind
+  /\ effectiveConfigIndex = 0
+
+EffectiveOverwriteRegressionCompletes ==
+  <>EffectiveOverwriteRegressionComplete
+
+DelayedHeartbeatRegressionInit == JointQuorumRegressionInit
+
+DelayedHeartbeatRegressionNext ==
+  \/ /\ Len(log[FixtureA]) = 0
+     /\ messages = {}
+     /\ SendAppend(FixtureA, FixtureB)
+  \/ /\ Len(log[FixtureA]) = 0
+     /\ \E m \in messages :
+          /\ m.to = FixtureB
+          /\ Len(m.entries) = 0
+     /\ EnterJoint(FixtureA, JointQuorumNewVoters)
+  \/ /\ Len(log[FixtureA]) = 1
+     /\ Len(log[FixtureC]) = 0
+     /\ \E m \in messages :
+          /\ m.to = FixtureB
+          /\ Len(m.entries) = 0
+     /\ SendAppend(FixtureA, FixtureC)
+  \/ \E m \in messages :
+       /\ m.to = FixtureC
+       /\ Len(m.entries) = 1
+       /\ DeliverAppend(m)
+  \/ \E m \in messages :
+       /\ Len(log[FixtureC]) = 1
+       /\ m.to = FixtureB
+       /\ Len(m.entries) = 0
+       /\ DeliverAppend(m)
+  \/ /\ Len(log[FixtureA]) = 1
+     /\ Len(log[FixtureB]) = 0
+     /\ Len(log[FixtureC]) = 1
+     /\ messages = {}
+     /\ (Commit(FixtureA, 1) \/ SendAppend(FixtureA, FixtureB))
+  \/ \E m \in messages :
+       /\ m.to = FixtureB
+       /\ Len(m.entries) = 1
+       /\ DeliverAppend(m)
+  \/ /\ \A n \in Nodes : Len(log[n]) = 1
+     /\ commitIndex[FixtureA] = 0
+     /\ messages = {}
+     /\ Commit(FixtureA, 1)
+  \/ /\ commitIndex[FixtureA] = 1
+     /\ Len(applied[FixtureA]) = 0
+     /\ Apply(FixtureA)
+  \/ /\ Len(applied[FixtureA]) = 1
+     /\ UNCHANGED vars
+
+DelayedHeartbeatRegressionSpec ==
+  /\ DelayedHeartbeatRegressionInit
+  /\ [][DelayedHeartbeatRegressionNext]_vars
+  /\ WF_vars(DelayedHeartbeatRegressionNext)
+
+DelayedHeartbeatRegressionInvariant ==
+  /\ IF Len(log[FixtureA]) = 0
+     THEN /\ effectiveConfigIndex = 0
+          /\ effectiveMembership = StableMembership(Nodes)
+     ELSE /\ effectiveConfigIndex = 1
+          /\ effectiveMembership = ApplicationConfig
+  /\ ( /\ Len(log[FixtureA]) = 1
+       /\ Len(log[FixtureB]) = 0
+       /\ Len(log[FixtureC]) = 1
+       /\ messages = {} ) =>
+       commitIndex[FixtureA] = 0
+
+DelayedHeartbeatRegressionComplete == Len(applied[FixtureA]) = 1
+
+DelayedHeartbeatRegressionCompletes ==
+  <>DelayedHeartbeatRegressionComplete
 
 ====

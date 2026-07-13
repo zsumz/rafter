@@ -3,6 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use rafter::{LogEntryKind, LogIndex};
 
 use super::super::observations::{Observation, ObservationSet};
+use crate::network::ExecutionInstrumentationError;
 use crate::{Cluster, ExecutionWitness};
 
 /// Model-check-owned immutable copy of the simulator's execution ledger.
@@ -12,12 +13,17 @@ use crate::{Cluster, ExecutionWitness};
 #[derive(Clone, Debug, Default, Hash)]
 pub(super) struct ApplicationHistory {
     witnesses: Vec<ExecutionWitness>,
+    instrumentation_errors: BTreeSet<ExecutionInstrumentationError>,
 }
 
 impl ApplicationHistory {
     pub(super) fn from_cluster(cluster: &Cluster) -> Self {
         Self {
             witnesses: cluster.execution_history().to_vec(),
+            instrumentation_errors: cluster
+                .execution_instrumentation_errors()
+                .into_iter()
+                .collect(),
         }
     }
 
@@ -29,11 +35,17 @@ impl ApplicationHistory {
         );
         self.witnesses
             .extend_from_slice(&actual[self.witnesses.len()..]);
+        self.instrumentation_errors
+            .extend(cluster.execution_instrumentation_errors());
         self.coverage()
     }
 
     pub(super) fn witnesses(&self) -> &[ExecutionWitness] {
         &self.witnesses
+    }
+
+    pub(super) const fn instrumentation_errors(&self) -> &BTreeSet<ExecutionInstrumentationError> {
+        &self.instrumentation_errors
     }
 
     fn coverage(&self) -> ObservationSet {

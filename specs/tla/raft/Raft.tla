@@ -22,12 +22,14 @@ AppendEntries == "AppendEntries"
 
 VARIABLES currentTerm, votedFor, role, log, commitIndex, applied, messages,
           readRequests, readGrants, membership, appliedConfigIndex,
+          effectiveMembership, effectiveConfigIndex,
           electedLeaders,
           higherTermEvidenceSeen, higherTermStepDownFailed,
           staleAuthorityAccepted
 
 vars == << currentTerm, votedFor, role, log, commitIndex, applied, messages,
           readRequests, readGrants, membership, appliedConfigIndex,
+          effectiveMembership, effectiveConfigIndex,
           electedLeaders,
           higherTermEvidenceSeen, higherTermStepDownFailed,
           staleAuthorityAccepted >>
@@ -141,6 +143,26 @@ AppliedHistorySound(history) ==
     /\ history[i].resultState =
          ApplyEntry(history[i].priorState, history[i].entry)
 
+LatestIndex(indexes) ==
+  CHOOSE index \in indexes : \A other \in indexes : other <= index
+
+EffectiveConfigurationFor(entries) ==
+  LET candidates ==
+        {index \in 1..Len(entries) :
+          /\ index > appliedConfigIndex
+          /\ entries[index].kind = ConfigurationEntryKind}
+  IN
+    IF candidates = {}
+    THEN [configIndex |-> appliedConfigIndex, config |-> membership]
+    ELSE LET latest == LatestIndex(candidates)
+         IN [configIndex |-> latest, config |-> entries[latest].input]
+
+AuthoritativeLogReplacement(message, accepted) ==
+  /\ accepted
+  /\ role[message.from] = Leader
+  /\ currentTerm[message.from] = message.term
+  /\ log[message.from] = message.entries
+
 RecordElection(node) ==
   electedLeaders' = [electedLeaders EXCEPT
     ![currentTerm[node]] = @ \cup {node}]
@@ -226,7 +248,7 @@ MembershipQuorum(config, ns) ==
   ELSE /\ StableQuorum(config.old, ns)
        /\ StableQuorum(config.new, ns)
 
-QuorumNodes(ns) == MembershipQuorum(membership, ns)
+QuorumNodes(ns) == MembershipQuorum(effectiveMembership, ns)
 
 MatchingReplicas(n, i) ==
   {r \in Nodes : /\ i \in 1..Len(log[r])
@@ -253,8 +275,11 @@ CommittedEntriesHeldBy(voters) ==
     \A i \in 1..commitIndex[n] :
       StableQuorum(voters, MatchingReplicas(n, i))
 
+RolesAfterMembershipChange(roles, config) ==
+  [n \in Nodes |-> IF n \in ActiveVoters(config) THEN roles[n] ELSE Follower]
+
 RoleAfterMembershipChange(config) ==
-  [n \in Nodes |-> IF n \in ActiveVoters(config) THEN role[n] ELSE Follower]
+  RolesAfterMembershipChange(role, config)
 
 MessageOK(m) ==
   \/ /\ m.type = RequestVote
@@ -285,6 +310,15 @@ AppliedConfigurationStateOK ==
             /\ membership =
                  applied[n][appliedConfigIndex].resultState.membership
 
+EffectiveConfigurationStateOK ==
+  /\ appliedConfigIndex <= effectiveConfigIndex
+  /\ IF effectiveConfigIndex = appliedConfigIndex
+     THEN effectiveMembership = membership
+     ELSE \E n \in Nodes :
+            /\ effectiveConfigIndex <= Len(log[n])
+            /\ log[n][effectiveConfigIndex].kind = ConfigurationEntryKind
+            /\ effectiveMembership = log[n][effectiveConfigIndex].input
+
 TypeOK ==
   /\ currentTerm \in [Nodes -> 0..MaxTerm]
   /\ votedFor \in [Nodes -> (Nodes \cup {NoVote})]
@@ -299,8 +333,10 @@ TypeOK ==
   /\ staleAuthorityAccepted \in BOOLEAN
   /\ membership \in MembershipSet
   /\ appliedConfigIndex \in 0..MaxLogLen
+  /\ effectiveMembership \in MembershipSet
+  /\ effectiveConfigIndex \in 0..MaxLogLen
   /\ \A n \in Nodes :
-       n \notin ActiveVoters(membership) => role[n] = Follower
+       n \notin ActiveVoters(effectiveMembership) => role[n] = Follower
   /\ log \in [Nodes -> LogSet]
   /\ \A n \in Nodes : LogOK(log[n])
   /\ commitIndex \in [Nodes -> 0..MaxLogLen]
@@ -314,6 +350,7 @@ TypeOK ==
             /\ applied[n][i].index = i
             /\ applied[n][i].entry = log[n][i]
   /\ AppliedConfigurationStateOK
+  /\ EffectiveConfigurationStateOK
   /\ messages \in SUBSET MessageSet
   /\ \A m \in messages : MessageOK(m)
   /\ readRequests \in SUBSET ReadRequestSet
@@ -341,6 +378,8 @@ Init ==
   /\ readGrants = {}
   /\ membership = StableMembership(Nodes)
   /\ appliedConfigIndex = 0
+  /\ effectiveMembership = StableMembership(Nodes)
+  /\ effectiveConfigIndex = 0
   /\ electedLeaders = [t \in 1..MaxTerm |-> {}]
   /\ higherTermEvidenceSeen = FALSE
   /\ higherTermStepDownFailed = FALSE
@@ -348,12 +387,13 @@ Init ==
 
 Timeout(n) ==
   /\ currentTerm[n] < MaxTerm
-  /\ n \in ActiveVoters(membership)
+  /\ n \in ActiveVoters(effectiveMembership)
   /\ currentTerm' = [currentTerm EXCEPT ![n] = @ + 1]
   /\ votedFor' = [votedFor EXCEPT ![n] = n]
   /\ role' = [role EXCEPT ![n] = Candidate]
   /\ UNCHANGED << log, commitIndex, applied, messages, readRequests, readGrants,
-                  membership, appliedConfigIndex, electedLeaders,
+                  membership, appliedConfigIndex, effectiveMembership,
+                  effectiveConfigIndex, electedLeaders,
                   higherTermEvidenceSeen,
                   higherTermStepDownFailed, staleAuthorityAccepted >>
 
@@ -371,6 +411,7 @@ SendRequestVote(c, v) ==
     /\ RecordAuthorityAcceptance(currentTerm[c], currentTerm[c], TRUE)
     /\ UNCHANGED << currentTerm, votedFor, role, log, commitIndex, applied,
                     readRequests, readGrants, membership, appliedConfigIndex,
+                    effectiveMembership, effectiveConfigIndex,
                     electedLeaders,
                     higherTermEvidenceSeen, higherTermStepDownFailed >>
 
@@ -379,8 +420,8 @@ DeliverRequestVote(m) ==
       eligibleVote == IF higher THEN NoVote ELSE votedFor[m.to]
       grant == /\ m.term >= currentTerm[m.to]
                /\ eligibleVote \in {NoVote, m.from}
-               /\ m.from \in ActiveVoters(membership)
-               /\ m.to \in ActiveVoters(membership)
+               /\ m.from \in ActiveVoters(effectiveMembership)
+               /\ m.to \in ActiveVoters(effectiveMembership)
                /\ UpToDate(m.from, m.to)
   IN
     /\ m \in messages
@@ -395,11 +436,12 @@ DeliverRequestVote(m) ==
     /\ RecordHigherTermOutcome(m.to, m.term, higher)
     /\ RecordAuthorityAcceptance(m.term, currentTerm[m.to], grant)
     /\ UNCHANGED << log, commitIndex, applied, readRequests, readGrants,
-                    membership, appliedConfigIndex, electedLeaders >>
+                    membership, appliedConfigIndex, effectiveMembership,
+                    effectiveConfigIndex, electedLeaders >>
 
 BecomeLeader(n) ==
   /\ role[n] = Candidate
-  /\ n \in ActiveVoters(membership)
+  /\ n \in ActiveVoters(effectiveMembership)
   /\ QuorumNodes({v \in Nodes :
        /\ votedFor[v] = n
        /\ currentTerm[v] = currentTerm[n]})
@@ -408,7 +450,8 @@ BecomeLeader(n) ==
   /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
   /\ UNCHANGED << currentTerm, votedFor, log, commitIndex, applied,
                   messages, readRequests, readGrants, membership,
-                  appliedConfigIndex,
+                  appliedConfigIndex, effectiveMembership,
+                  effectiveConfigIndex,
                   higherTermEvidenceSeen, higherTermStepDownFailed >>
 
 ClientAppend(n, value) ==
@@ -419,7 +462,8 @@ ClientAppend(n, value) ==
   /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
   /\ UNCHANGED << currentTerm, votedFor, role, commitIndex, applied,
                   messages, readRequests, readGrants, membership,
-                  appliedConfigIndex,
+                  appliedConfigIndex, effectiveMembership,
+                  effectiveConfigIndex,
                   electedLeaders,
                   higherTermEvidenceSeen, higherTermStepDownFailed >>
 
@@ -439,15 +483,20 @@ SendAppend(l, f) ==
     /\ RecordAuthorityAcceptance(currentTerm[l], currentTerm[l], TRUE)
     /\ UNCHANGED << currentTerm, votedFor, role, log, commitIndex, applied,
                     readRequests, readGrants, membership, appliedConfigIndex,
+                    effectiveMembership, effectiveConfigIndex,
                     electedLeaders,
                     higherTermEvidenceSeen, higherTermStepDownFailed >>
 
 DeliverAppend(m) ==
   LET higher == m.term > currentTerm[m.to]
       accept == /\ m.term >= currentTerm[m.to]
-                /\ m.from \in ActiveVoters(membership)
-                /\ m.to \in ActiveVoters(membership)
+                /\ m.from \in ActiveVoters(effectiveMembership)
+                /\ m.to \in ActiveVoters(effectiveMembership)
                 /\ CanAdoptLog(m.to, m.entries)
+      acceptedConfiguration == EffectiveConfigurationFor(m.entries)
+      authoritative == AuthoritativeLogReplacement(m, accept)
+      baseRole == [role EXCEPT ![m.to] =
+        IF higher \/ accept THEN Follower ELSE @]
   IN
     /\ m \in messages
     /\ m.type = AppendEntries
@@ -456,23 +505,34 @@ DeliverAppend(m) ==
          IF higher THEN m.term ELSE @]
     /\ votedFor' = [votedFor EXCEPT ![m.to] =
          IF higher THEN NoVote ELSE @]
-    /\ role' = [role EXCEPT ![m.to] =
-         IF higher \/ accept THEN Follower ELSE @]
+    /\ role' =
+         IF authoritative
+         THEN RolesAfterMembershipChange(
+                baseRole,
+                acceptedConfiguration.config)
+         ELSE baseRole
     /\ IF accept
        THEN /\ log' = [log EXCEPT ![m.to] = m.entries]
             /\ commitIndex' = [commitIndex EXCEPT ![m.to] =
                   AdvanceCommit(m.to, m.leaderCommit, Len(m.entries))]
        ELSE /\ log' = log
             /\ commitIndex' = commitIndex
+    /\ effectiveMembership' =
+         IF authoritative
+         THEN acceptedConfiguration.config
+         ELSE effectiveMembership
+    /\ effectiveConfigIndex' =
+         IF authoritative
+         THEN acceptedConfiguration.configIndex
+         ELSE effectiveConfigIndex
     /\ RecordHigherTermOutcome(m.to, m.term, higher)
     /\ RecordAuthorityAcceptance(m.term, currentTerm[m.to], accept)
     /\ UNCHANGED << applied, readRequests, readGrants, membership,
-                    appliedConfigIndex,
-                    electedLeaders >>
+                    appliedConfigIndex, electedLeaders >>
 
 Commit(n, i) ==
   /\ role[n] = Leader
-  /\ n \in ActiveVoters(membership)
+  /\ n \in ActiveVoters(effectiveMembership)
   /\ i \in (commitIndex[n] + 1)..Len(log[n])
   /\ log[n][i].term = currentTerm[n]
   /\ QuorumNodes(MatchingReplicas(n, i))
@@ -480,7 +540,8 @@ Commit(n, i) ==
   /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
   /\ UNCHANGED << currentTerm, votedFor, role, log, applied,
                   messages, readRequests, readGrants, membership,
-                  appliedConfigIndex,
+                  appliedConfigIndex, effectiveMembership,
+                  effectiveConfigIndex,
                   electedLeaders,
                   higherTermEvidenceSeen, higherTermStepDownFailed >>
 
@@ -499,12 +560,9 @@ Apply(n) ==
          IF isNewConfiguration THEN entry.input ELSE membership
     /\ appliedConfigIndex' =
          IF isNewConfiguration THEN next ELSE appliedConfigIndex
-    /\ role' =
-         IF isNewConfiguration
-         THEN RoleAfterMembershipChange(entry.input)
-         ELSE role
-    /\ UNCHANGED << currentTerm, votedFor, log, commitIndex, messages,
-                    readRequests, readGrants, electedLeaders,
+    /\ UNCHANGED << currentTerm, votedFor, role, log, commitIndex, messages,
+                    readRequests, readGrants, effectiveMembership,
+                    effectiveConfigIndex, electedLeaders,
                     higherTermEvidenceSeen, higherTermStepDownFailed,
                     staleAuthorityAccepted >>
 
@@ -512,18 +570,21 @@ Restart(n) ==
   /\ role' = [role EXCEPT ![n] = Follower]
   /\ UNCHANGED << currentTerm, votedFor, log, commitIndex, applied,
                   messages, readRequests, readGrants, membership,
-                  appliedConfigIndex,
+                  appliedConfigIndex, effectiveMembership,
+                  effectiveConfigIndex,
                   electedLeaders,
                   higherTermEvidenceSeen, higherTermStepDownFailed,
                   staleAuthorityAccepted >>
 
 EnterJoint(n, newVoters) ==
-  LET next == JointMembership(membership.old, newVoters)
+  LET next == JointMembership(effectiveMembership.old, newVoters)
+      nextIndex == Len(log[n]) + 1
   IN
+    /\ effectiveMembership.phase = StableConfig
+    /\ effectiveMembership.old = Nodes
     /\ membership.phase = StableConfig
-    /\ membership.old = Nodes
     /\ newVoters \in VoterSets
-    /\ newVoters # membership.old
+    /\ newVoters # effectiveMembership.old
     /\ n \in newVoters
     /\ role[n] = Leader
     /\ CommittedEntriesHeldBy(newVoters)
@@ -532,27 +593,35 @@ EnterJoint(n, newVoters) ==
     /\ Len(log[n]) < MaxLogLen
     /\ log' = [log EXCEPT ![n] =
          Append(@, ConfigurationEntry(currentTerm[n], next))]
+    /\ effectiveMembership' = next
+    /\ effectiveConfigIndex' = nextIndex
+    /\ role' = RoleAfterMembershipChange(next)
     /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
-    /\ UNCHANGED << currentTerm, votedFor, role, commitIndex, applied,
+    /\ UNCHANGED << currentTerm, votedFor, commitIndex, applied,
                     messages, readRequests, readGrants, membership,
                     appliedConfigIndex,
                     electedLeaders,
                     higherTermEvidenceSeen, higherTermStepDownFailed >>
 
 LeaveJoint(n) ==
-  LET next == StableMembership(membership.new)
+  LET next == StableMembership(effectiveMembership.new)
+      nextIndex == Len(log[n]) + 1
   IN
+    /\ effectiveMembership.phase = JointConfig
     /\ membership.phase = JointConfig
-    /\ n \in membership.new
+    /\ n \in effectiveMembership.new
     /\ role[n] = Leader
-    /\ CommittedEntriesHeldBy(membership.new)
+    /\ CommittedEntriesHeldBy(effectiveMembership.new)
     /\ currentTerm[n] \in 1..MaxTerm
     /\ Len(log[n]) = Len(applied[n])
     /\ Len(log[n]) < MaxLogLen
     /\ log' = [log EXCEPT ![n] =
          Append(@, ConfigurationEntry(currentTerm[n], next))]
+    /\ effectiveMembership' = next
+    /\ effectiveConfigIndex' = nextIndex
+    /\ role' = RoleAfterMembershipChange(next)
     /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
-    /\ UNCHANGED << currentTerm, votedFor, role, commitIndex, applied,
+    /\ UNCHANGED << currentTerm, votedFor, commitIndex, applied,
                     messages, readRequests, readGrants, membership,
                     appliedConfigIndex,
                     electedLeaders,
@@ -571,6 +640,7 @@ RegisterRead(n, request) ==
     /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
     /\ UNCHANGED << currentTerm, votedFor, role, log, commitIndex, applied,
                     messages, readGrants, membership, appliedConfigIndex,
+                    effectiveMembership, effectiveConfigIndex,
                     electedLeaders,
                     higherTermEvidenceSeen, higherTermStepDownFailed >>
 
@@ -587,6 +657,7 @@ GrantRead(n, request) ==
     /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
     /\ UNCHANGED << currentTerm, votedFor, role, log, commitIndex, applied,
                     messages, readRequests, membership, appliedConfigIndex,
+                    effectiveMembership, effectiveConfigIndex,
                     electedLeaders,
                     higherTermEvidenceSeen, higherTermStepDownFailed >>
 

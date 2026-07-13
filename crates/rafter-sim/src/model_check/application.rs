@@ -70,7 +70,6 @@ fn apply_transition(
             restart::restart_node_inner(state, node_id, trace)
                 .map_err(TransitionError::Invariant)?;
             state.restarts_issued += 1;
-            state.reset_commit_floor(node_id);
             state.observe_election_authority();
             state.refresh_log_history();
             state.refresh_committed_prefixes();
@@ -97,6 +96,7 @@ fn apply_transition(
         }
     };
     if matches!(outcome, TransitionOutcome::Applied) {
+        state.refresh_application_history();
         state.refresh_snapshot_history();
     }
     Ok(outcome)
@@ -203,6 +203,11 @@ impl InstrumentedCluster {
     #[cfg(test)]
     pub(super) fn inject_execution_witness(&mut self, witness: crate::ExecutionWitness) {
         self.0.execution_history.push(witness);
+    }
+
+    #[cfg(test)]
+    pub(super) fn remove_execution_cursor(&mut self, node_id: rafter::NodeId) {
+        self.0.execution_cursors.remove(&node_id);
     }
 
     #[cfg(test)]

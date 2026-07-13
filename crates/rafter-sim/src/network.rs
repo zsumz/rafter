@@ -1,4 +1,5 @@
 mod delivery;
+pub(crate) use delivery::ExecutionInstrumentationError;
 mod faults;
 
 use rafter::NodeId;
