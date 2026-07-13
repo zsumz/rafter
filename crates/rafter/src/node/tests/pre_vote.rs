@@ -1,7 +1,9 @@
+//! Pre-vote non-disruption, freshness, identity, and term behavior.
+
 use std::collections::{BTreeMap, VecDeque};
 
-use super::super::*;
 use super::helpers::node;
+use super::*;
 use crate::{AppendEntries, PreVote, PreVoteResponse, RequestVote, RequestVoteResponse};
 
 fn tick_to_timeout(node: &mut Node) -> Vec<Output> {
@@ -230,7 +232,7 @@ fn pre_vote_denied_within_election_timeout_of_leader_contact() {
 fn pre_vote_grant_is_not_persisted_and_does_not_set_voted_for() {
     let mut node = node(1, &[2, 3]);
     assert!(node.step(Input::Tick).is_empty());
-    let elapsed_before = node.election_elapsed;
+    let elapsed_before = node.election.elapsed();
 
     let outputs = node.step(pre_vote_from(2, 1));
     assert_pre_vote_response(&outputs, NodeId(2), Term(1), true);
@@ -240,7 +242,7 @@ fn pre_vote_grant_is_not_persisted_and_does_not_set_voted_for() {
     // timer keeps running.
     assert_eq!(node.current_term(), Term(0));
     assert_eq!(node.voted_for(), None);
-    assert_eq!(node.election_elapsed, elapsed_before);
+    assert_eq!(node.election.elapsed(), elapsed_before);
 
     // A second grant to a DIFFERENT candidate in the same proposed term is
     // allowed by design: pre-votes are non-binding polls.

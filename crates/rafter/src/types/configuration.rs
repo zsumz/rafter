@@ -1,3 +1,5 @@
+//! Replicated membership-configuration and log-entry vocabulary.
+
 use std::fmt;
 
 use super::{JointMembership, LogIndex, MembershipConfig, MembershipSet, NodeId, SharedPayload};

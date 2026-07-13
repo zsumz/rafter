@@ -1,4 +1,6 @@
-use super::super::*;
+//! Small protocol fixtures shared by top-level node scenario modules.
+
+use super::*;
 use crate::{PreVoteResponse, RequestVoteResponse};
 
 pub(super) fn node(id: u64, peers: &[u64]) -> Node {

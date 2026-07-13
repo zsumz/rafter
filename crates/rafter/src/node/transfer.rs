@@ -1,5 +1,8 @@
+//! Leadership transfer initiation, catch-up, and immediate election.
+
 use crate::{Message, NodeId, Term, TimeoutNow};
 
+use super::replication::ReplicationDemand;
 use super::state::PendingLeadershipTransfer;
 use super::{LeadershipTransferRejection, Node, Output, Role};
 
@@ -37,7 +40,7 @@ impl Node {
         // Nudge the target's replication; completion is detected when its
         // acknowledgement brings match_index to the leader's last index.
         let mut outputs = Vec::new();
-        self.replicate_to_peer(target, true, &mut outputs);
+        self.replicate_to_follower(target, ReplicationDemand::EnsureContact, &mut outputs);
         outputs
     }
 

@@ -238,7 +238,7 @@ jobs:
         with:
           cache-on-failure: true
       - name: Ignored nightly-scale test
-        # Runs exactly node::tests::replication_snapshot_streaming::
+        # Runs exactly node::tests::snapshot::streaming::
         # multi_gigabyte_snapshot_transfer_stays_bounded, which is
         # #[ignore]d as nightly-scale (streams a 4.5 GiB synthetic payload;
         # ~3 s in release locally).

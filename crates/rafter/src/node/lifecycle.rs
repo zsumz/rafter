@@ -1,3 +1,8 @@
+//! Role transitions and the state resets they require.
+//!
+//! Follower and leader transitions centralize which volatile, election, and
+//! leader-only state may survive an authority change.
+
 use crate::{LogEntry, Term};
 
 use super::state::LeaderState;
@@ -15,26 +20,23 @@ impl Node {
         }
         self.volatile.role = Role::Follower;
         self.persistent.current_term = std::cmp::max(self.persistent.current_term, term);
-        self.election_elapsed = 0;
-        self.granted_votes.clear();
-        self.granted_pre_votes.clear();
+        self.election.reset_for_follower();
         self.leader = LeaderState::default();
         outputs
     }
 
     pub(super) fn become_leader(&mut self) -> Vec<Output> {
         self.volatile.role = Role::Leader;
-        // The leader believes in itself: with a hint set and election_elapsed
-        // pinned at zero, the pre-vote stickiness rule (thesis 4.2.3) makes a
-        // healthy leader deny pre-votes instead of helping depose itself.
+        // The leader believes in itself: with a hint set and the election
+        // timer pinned at zero, the pre-vote stickiness rule (thesis 4.2.3)
+        // makes a healthy leader deny pre-votes instead of helping depose itself.
         self.volatile.leader_hint = Some(self.id());
-        self.election_elapsed = 0;
+        self.election.enter_leadership();
         // Every term's leadership starts from clean leader state: pending
         // transfers, read barriers, quorum bookkeeping, and the heartbeat
         // round must never leak across terms (responses are term-gated, so
         // resetting the round is safe).
         self.leader = LeaderState::default();
-        self.granted_pre_votes.clear();
         self.volatile.incoming_snapshot = None;
 
         self.append_log_entry(LogEntry::noop(self.current_term()));

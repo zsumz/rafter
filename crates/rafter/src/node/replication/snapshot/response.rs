@@ -1,7 +1,9 @@
+//! Leader-side handling of snapshot-transfer acknowledgements.
+
 use crate::{InstallSnapshotResponse, NodeId, RaftSnapshot};
 
-use super::super::super::state::ProgressMode;
-use super::super::super::{Node, Output, Role};
+use super::super::ReplicationDemand;
+use crate::node::{state::ProgressMode, Node, Output, Role};
 
 impl Node {
     pub(in crate::node) fn handle_install_snapshot_response(
@@ -63,7 +65,11 @@ impl Node {
                     progress.inflights.clear();
                     progress.next_index = snapshot_index;
                     let mut outputs = Vec::new();
-                    self.replicate_to_peer(follower_id, true, &mut outputs);
+                    self.replicate_to_follower(
+                        follower_id,
+                        ReplicationDemand::EnsureContact,
+                        &mut outputs,
+                    );
                     return outputs;
                 }
             }
@@ -87,7 +93,7 @@ impl Node {
             outputs.extend(self.advance_commit_index());
             // The installed snapshot confirmed the follower's position; fill
             // its window with the suffix immediately.
-            self.replicate_to_peer(follower_id, false, &mut outputs);
+            self.replicate_to_follower(follower_id, ReplicationDemand::ProgressOnly, &mut outputs);
             return outputs;
         }
 
@@ -111,7 +117,7 @@ impl Node {
         }
         progress.next_index = snapshot_index;
         let mut outputs = Vec::new();
-        self.replicate_to_peer(follower_id, true, &mut outputs);
+        self.replicate_to_follower(follower_id, ReplicationDemand::EnsureContact, &mut outputs);
         outputs
     }
 }

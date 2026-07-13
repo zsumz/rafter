@@ -1,7 +1,7 @@
-use super::{
-    MembershipConfig, MembershipSet, RaftSnapshotMetadata, SnapshotCommittedConfiguration,
-    SnapshotTransferId,
-};
+//! Stable non-cryptographic snapshot transfer identity derivation.
+
+use super::super::{MembershipConfig, MembershipSet};
+use super::{RaftSnapshotMetadata, SnapshotCommittedConfiguration, SnapshotTransferId};
 
 /// Derives the deterministic transfer identity of a snapshot from its
 /// metadata, total payload length, and application payload checksum — the

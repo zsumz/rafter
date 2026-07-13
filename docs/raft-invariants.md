@@ -135,16 +135,16 @@ named temporal or witness-based verdicts.
 | --- | --- | --- | --- |
 | `ST-01` | tests | direct | `crates/rafter/src/node/tests/derived_state.rs#derived_state_is_valid_after_bootstrap` |
 | `EL-01` | tests | direct | `crates/rafter-runtime/src/tests/hard_state.rs#election_persists_term_and_vote_before_vote_requests_escape` |
-| `EL-01` | tests | direct | `crates/rafter/src/node/tests/election.rs#public_transitions_do_not_decrease_current_term` |
+| `EL-01` | tests | direct | `crates/rafter/src/node/tests/election/voting.rs#public_transitions_do_not_decrease_current_term` |
 | `EL-02` | tests | direct | `crates/rafter-runtime/src/tests/hard_state.rs#restarted_node_preserves_persisted_vote` |
-| `EL-02` | tests | direct | `crates/rafter/src/node/tests/election.rs#follower_grants_one_vote_per_term` |
-| `EL-03` | tests | direct | `crates/rafter/src/node/tests/election.rs#stale_vote_request_is_rejected` |
-| `EL-03` | tests | direct | `crates/rafter/src/node/tests/membership.rs#vote_request_from_candidate_outside_effective_membership_is_rejected` |
+| `EL-02` | tests | direct | `crates/rafter/src/node/tests/election/voting.rs#follower_grants_one_vote_per_term` |
+| `EL-03` | tests | direct | `crates/rafter/src/node/tests/election/voting.rs#stale_vote_request_is_rejected` |
+| `EL-03` | tests | direct | `crates/rafter/src/node/tests/membership/authority.rs#vote_request_from_candidate_outside_effective_membership_is_rejected` |
 | `EL-04` | tests | direct | `crates/rafter-runtime/src/tests/hard_state.rs#granted_vote_is_persisted_before_vote_response_escapes` |
 | `EL-05` | tla | direct | `specs/tla/raft/Raft.tla#ElectionSafety` |
-| `EL-06` | tests | direct | `crates/rafter/src/node/tests/election.rs#candidate_becomes_leader_after_quorum` |
-| `EL-06` | tests | direct | `crates/rafter/src/node/tests/membership.rs#learner_grant_does_not_create_quorum` |
-| `EL-07` | tests | direct | `crates/rafter/src/node/tests/transfer.rs#stale_term_timeout_now_is_ignored` |
+| `EL-06` | tests | direct | `crates/rafter/src/node/tests/election/campaign.rs#candidate_becomes_leader_after_quorum` |
+| `EL-06` | tests | direct | `crates/rafter/src/node/tests/membership/authority.rs#learner_grant_does_not_create_quorum` |
+| `EL-07` | tests | direct | `crates/rafter/src/node/tests/transfer/timeout.rs#stale_term_timeout_now_is_ignored` |
 | `EL-07` | tla | direct | `specs/tla/raft/Raft.tla#StaleLeaderFencing` |
 | `EL-08` | tests | direct | `crates/rafter/src/node/tests/pre_vote.rs#pre_vote_grant_is_not_persisted_and_does_not_set_voted_for` |
 | `LG-02` | tests | direct | `crates/rafter/src/node/tests/replication/follower.rs#follower_rejects_append_that_would_truncate_committed_entry` |
@@ -160,10 +160,10 @@ named temporal or witness-based verdicts.
 | `CM-02` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
 | `CM-02` | tla | direct | `specs/tla/raft/Raft.tla#CommittedEntriesHaveQuorum` |
 | `CM-03` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
-| `CM-03` | tests | direct | `crates/rafter/src/node/tests/election.rs#single_voter_leadership_noop_does_not_drop_prior_term_apply` |
+| `CM-03` | tests | direct | `crates/rafter/src/node/tests/election/campaign.rs#single_voter_leadership_noop_does_not_drop_prior_term_apply` |
 | `AP-01` | maelstrom | e2e | `crates/rafter-maelstrom/src/main.rs#DurableRaftNode::with_storage_and_snapshot_store_applied_through` |
 | `AP-01` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_applied_order`; negative fixture `applied_order_detects_apply_at_or_below_snapshot_boundary` |
-| `AP-01` | tests | direct | `crates/rafter/src/node/tests/bootstrap.rs#committed_entries_above_applied_floor_drain_immediately_after_bootstrap` |
+| `AP-01` | tests | direct | `crates/rafter/src/node/tests/bootstrap/application.rs#committed_entries_above_applied_floor_drain_immediately_after_bootstrap` |
 | `AP-02` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
 | `AP-02` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_applied_payload_agreement`; negative fixture `applied_agreement_detects_disagreeing_snapshots_at_same_boundary` |
 | `AP-02` | tests | direct | `crates/rafter-sim/src/model_check/invariants.rs#applied_agreement_detects_disagreeing_snapshots_at_same_boundary` |
@@ -171,16 +171,16 @@ named temporal or witness-based verdicts.
 | `MB-01` | tests | direct | `crates/rafter/tests/properties.rs#membership_constructor_validation_matches_the_documented_invariant` |
 | `MB-02` | tests | direct | `crates/rafter/tests/properties.rs#membership_joint_quorum_holds_iff_both_half_majorities_hold` |
 | `MB-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_no_overlapping_uncommitted_configurations` |
-| `MB-03` | tests | direct | `crates/rafter/src/node/tests/membership.rs#follower_rejects_second_uncommitted_configuration_entry` |
+| `MB-03` | tests | direct | `crates/rafter/src/node/tests/membership/serialization.rs#follower_rejects_second_uncommitted_configuration_entry` |
 | `MB-04` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_committed_configuration_monotonicity` |
-| `MB-04` | tests | direct | `crates/rafter/src/node/tests/membership.rs#change_membership_derives_joint_configuration_for_voter_changes` |
+| `MB-04` | tests | direct | `crates/rafter/src/node/tests/membership/transition.rs#change_membership_derives_joint_configuration_for_voter_changes` |
 | `MB-05` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/bootstrap_compaction.rs#runtime_local_compaction_fills_committed_dynamic_membership_metadata` |
-| `MB-06` | tests | direct | `crates/rafter/src/node/tests/membership.rs#learner_receives_log_replication_without_counting_for_commit` |
-| `MB-07` | tests | direct | `crates/rafter/src/node/tests/transfer.rs#transfer_to_caught_up_target_sends_timeout_now_immediately` |
+| `MB-06` | tests | direct | `crates/rafter/src/node/tests/membership/learner.rs#learner_receives_log_replication_without_counting_for_commit` |
+| `MB-07` | tests | direct | `crates/rafter/src/node/tests/transfer/handoff.rs#transfer_to_caught_up_target_sends_timeout_now_immediately` |
 | `RD-01` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--nemesis partition` |
-| `RD-01` | tests | direct | `crates/rafter/src/node/tests/read_index.rs#read_rejected_without_current_term_commit` |
+| `RD-01` | tests | direct | `crates/rafter/src/node/tests/read/authority.rs#read_rejected_without_current_term_commit` |
 | `RD-02` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
-| `RD-02` | tests | direct | `crates/rafter/src/node/tests/read_index.rs#delayed_ack_from_an_older_round_never_confirms_a_barrier` |
+| `RD-02` | tests | direct | `crates/rafter/src/node/tests/read/barrier.rs#delayed_ack_from_an_older_round_never_confirms_a_barrier` |
 | `RD-03` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
 | `RD-03` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_read_barrier_safety`; negative fixture `read_barrier_invariant_detects_grant_below_registration_floor` |
 | `RD-03` | tests | direct | `crates/rafter-sim/src/model_check/invariants.rs#read_barrier_invariant_detects_grant_below_registration_floor` |
@@ -188,7 +188,7 @@ named temporal or witness-based verdicts.
 | `RD-04` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
 | `RD-04` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_client_history_read_write_invariants`; negative fixture `client_history_detects_completed_read_before_local_apply_floor` |
 | `RD-04` | tests | direct | `crates/rafter-app/tests/group_read.rs#linearizable_read_helper_returns_result_when_barrier_grants` |
-| `RD-05` | tests | direct | `crates/rafter/src/node/tests/read_lease.rs#a_confirmed_lease_grants_barriers_without_a_round_trip` |
+| `RD-05` | tests | direct | `crates/rafter/src/node/tests/read/lease.rs#a_confirmed_lease_grants_barriers_without_a_round_trip` |
 | `RD-06` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
 | `RD-06` | simulator | direct | `crates/rafter-sim/src/model_check/linearizability.rs#check_client_history_linearizable` |
 | `RD-06` | tests | direct | `crates/rafter-sim/src/model_check/tests/linearizability.rs#linearizer_rejects_read_that_misses_completed_write` |
@@ -198,13 +198,13 @@ named temporal or witness-based verdicts.
 | `PS-03` | maelstrom | e2e | `scripts/maelstrom-lin-kv-leader-restart#rafter-maelstrom-leader-restart-proxy` |
 | `PS-03` | tests | direct | `crates/rafter-runtime/src/tests/local_ids.rs#restart_replays_committed_tracked_entry_without_local_id` |
 | `PS-04` | maelstrom | e2e | `crates/rafter-maelstrom/src/main.rs#persist_app_state` |
-| `PS-04` | tests | direct | `crates/rafter/src/node/tests/bootstrap.rs#applied_floor_suppresses_reapply_below_it` |
+| `PS-04` | tests | direct | `crates/rafter/src/node/tests/bootstrap/application.rs#applied_floor_suppresses_reapply_below_it` |
 | `SS-01` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_restart_snapshot_safety` |
 | `SS-01` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_persists_installed_snapshot_and_compacts_log_past_local_tail` |
 | `SS-02` | tests | direct | `crates/rafter-runtime/src/tests/crash_window.rs#reopen_completes_compaction_after_crash_between_snapshot_and_compaction` |
 | `SS-03` | tests | direct | `crates/rafter-runtime/src/tests/crash_window.rs#append_behind_the_snapshot_boundary_is_refused_not_mislabelled` |
 | `SS-04` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_restart_snapshot_safety` |
-| `SS-04` | tests | direct | `crates/rafter/src/node/tests/replication_snapshot_chunks.rs#out_of_order_snapshot_chunk_requests_expected_offset` |
+| `SS-04` | tests | direct | `crates/rafter/src/node/tests/snapshot/chunks/receive.rs#out_of_order_snapshot_chunk_requests_expected_offset` |
 | `SS-05` | tests | direct | `crates/rafter-sim/src/tests/snapshot_installation.rs#simulator_discards_divergent_suffix_when_installing_snapshot` |
 | `LV-01` | simulator | direct | `crates/rafter-sim/src/model_check.rs#run_soak_liveness_check` |
 | `LV-02` | simulator | direct | `crates/rafter-sim/src/model_check.rs#issue_liveness_proposal` |

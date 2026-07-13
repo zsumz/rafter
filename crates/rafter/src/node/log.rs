@@ -1,6 +1,12 @@
+//! Retained-log access, mutation, compaction, and bounded batching.
+//!
+//! Every log mutation updates [`DerivedState`](super::state::DerivedState) in
+//! the same transition so membership lookups never observe a stale index.
+
 use crate::{LogEntry, LogIndex, SharedEntries, Term};
 
-use super::{LocalProposalDropReason, Node};
+use super::state::LocalProposalTracker;
+use super::{LocalProposalDropReason, Node, Output};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct LogBatch {
@@ -22,7 +28,7 @@ impl Node {
             })
     }
 
-    fn first_available_log_index(&self) -> LogIndex {
+    fn first_retained_log_index(&self) -> LogIndex {
         self.snapshot_index().next()
     }
 
@@ -53,9 +59,9 @@ impl Node {
             return &[];
         }
 
-        let first_available = self.first_available_log_index();
-        let first_index = std::cmp::max(first_index, first_available);
-        let start = log_offset(first_index.0 - first_available.0);
+        let first_retained_index = self.first_retained_log_index();
+        let first_index = std::cmp::max(first_index, first_retained_index);
+        let start = retained_log_offset(first_index.0 - first_retained_index.0);
         &self.persistent.log[start..]
     }
 
@@ -68,9 +74,9 @@ impl Node {
             return None;
         }
 
-        let first_available = self.first_available_log_index();
-        let first_index = std::cmp::max(first_index, first_available);
-        let start = log_offset(first_index.0 - first_available.0);
+        let first_retained_index = self.first_retained_log_index();
+        let first_index = std::cmp::max(first_index, first_retained_index);
+        let start = retained_log_offset(first_index.0 - first_retained_index.0);
         let mut bytes = 0usize;
         let mut entries = Vec::new();
 
@@ -102,7 +108,7 @@ impl Node {
             return None;
         }
 
-        let offset = log_offset(index.0 - self.first_available_log_index().0);
+        let offset = retained_log_offset(index.0 - self.first_retained_log_index().0);
         self.persistent.log.get(offset)
     }
 
@@ -149,16 +155,16 @@ impl Node {
             )
             .collect();
 
-        let first_available = self.first_available_log_index();
-        if index <= first_available {
+        let first_retained_index = self.first_retained_log_index();
+        if index <= first_retained_index {
             self.persistent.log.clear();
-            self.configuration_offsets.clear();
+            self.derived.configuration.clear();
             return outputs;
         }
 
-        let len = log_offset(index.0 - first_available.0);
-        self.persistent.log.truncate(len);
-        self.configuration_offsets.retain(|offset| *offset < len);
+        let retained_len = retained_log_offset(index.0 - first_retained_index.0);
+        self.persistent.log.truncate(retained_len);
+        self.derived.configuration.truncate(retained_len);
         outputs
     }
 
@@ -210,9 +216,48 @@ impl Node {
     }
 }
 
-fn log_offset(value: u64) -> usize {
+fn retained_log_offset(value: u64) -> usize {
     match usize::try_from(value) {
         Ok(offset) => offset,
         Err(_) => usize::MAX,
+    }
+}
+
+impl Node {
+    /// Appends one entry, keeping all derived log indexes exact.
+    pub(super) fn append_log_entry(&mut self, entry: crate::LogEntry) {
+        let offset = self.persistent.log.len();
+        self.derived.configuration.record_append(offset, &entry);
+        self.persistent.log.push(entry);
+    }
+
+    /// Replaces the whole log (bootstrap restores, splice rollbacks,
+    /// snapshot installs) and rebuilds the offset index from it.
+    pub(super) fn replace_log(
+        &mut self,
+        log: Vec<crate::LogEntry>,
+        reason: LocalProposalDropReason,
+    ) -> Vec<Output> {
+        self.derived = super::state::DerivedState::from_log(&log);
+        self.persistent.log = log;
+        let mut retained = LocalProposalTracker::default();
+        let mut outputs = Vec::new();
+        let snapshot_index = self.snapshot_index();
+        for (index, proposal) in std::mem::take(&mut self.volatile.local_proposals) {
+            let covered_by_snapshot =
+                reason == LocalProposalDropReason::SnapshotCovered && index <= snapshot_index;
+            if !covered_by_snapshot && self.term_at(index) == Some(proposal.term) {
+                retained.insert(index, proposal);
+            } else {
+                outputs.push(Output::LocalProposalDropped {
+                    proposal_id: proposal.id,
+                    index,
+                    term: proposal.term,
+                    reason,
+                });
+            }
+        }
+        self.volatile.local_proposals = retained;
+        outputs
     }
 }

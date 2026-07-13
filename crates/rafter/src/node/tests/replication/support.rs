@@ -1,4 +1,6 @@
-use super::*;
+//! Shared message inspection and leader setup for replication scenarios.
+
+pub(super) use super::*;
 
 pub(super) fn assert_committed_append_entries(
     output: &Output,
