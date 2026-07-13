@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use rafter::LogIndex;
 
@@ -43,6 +43,32 @@ impl ExplorationState {
         {
             self.mark_observation(Observation::SameIndexApplyPairs);
         }
+
+        let mut cursor_events_by_epoch = BTreeMap::new();
+        let mut applied_indexes_by_epoch = BTreeMap::<_, BTreeSet<_>>::new();
+        for applied in self.cluster.applied() {
+            *cursor_events_by_epoch
+                .entry((applied.node_id, applied.application_epoch))
+                .or_insert(0_usize) += 1;
+            applied_indexes_by_epoch
+                .entry((applied.node_id, applied.application_epoch))
+                .or_default()
+                .insert(applied.index);
+        }
+        for install in self.cluster.snapshot_installs() {
+            *cursor_events_by_epoch
+                .entry((install.node_id, install.application_epoch))
+                .or_insert(0_usize) += 1;
+        }
+        if cursor_events_by_epoch.values().any(|count| *count >= 2) {
+            self.mark_observation(Observation::ApplicationCursorComparisons);
+        }
+        if applied_indexes_by_epoch
+            .values()
+            .any(|indexes| indexes.len() >= 2)
+        {
+            self.mark_observation(Observation::MultipleOrderedAppliesSameEpoch);
+        }
     }
 
     fn observe_membership_coverage(&mut self) {
@@ -65,6 +91,29 @@ impl ExplorationState {
     fn observe_read_coverage(&mut self) {
         if !self.cluster.read_grants().is_empty() {
             self.mark_observation(Observation::RegisteredReadGrants);
+        }
+        let mut matched_registration = false;
+        let mut nonzero_floor_comparison = false;
+        for grant in self.cluster.read_grants() {
+            let Some(registration) =
+                self.cluster
+                    .read_registrations()
+                    .iter()
+                    .find(|registration| {
+                        registration.node_id == grant.node_id
+                            && registration.request_id == grant.request_id
+                    })
+            else {
+                continue;
+            };
+            matched_registration = true;
+            nonzero_floor_comparison |= registration.committed_floor > LogIndex::ZERO;
+        }
+        if matched_registration {
+            self.mark_observation(Observation::MatchedReadGrantRegistrations);
+        }
+        if nonzero_floor_comparison {
+            self.mark_observation(Observation::ReadGrantCommittedFloorComparisons);
         }
         let completed_reads = self
             .client_history

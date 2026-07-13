@@ -17,6 +17,7 @@ use super::ExplorationState;
 pub(crate) struct CommitHistory {
     pub(crate) certificates: BTreeMap<(NodeId, Term, LogIndex), CommitCertificate>,
     pub(crate) committed_prefix: Option<LogPrefixWitness>,
+    committed_prefix_owner: Option<NodeId>,
     pub(crate) committed_in_terms: Vec<Term>,
     pub(crate) unwitnessed_committed_prefixes: BTreeSet<(NodeId, LogIndex)>,
     pub(crate) unwitnessed_commit_terms: BTreeSet<LogIndex>,
@@ -45,18 +46,7 @@ impl CommitHistory {
         _logical_logs: &LogicalLogHistory,
     ) -> ObservationSet {
         let mut observations = ObservationSet::default();
-        if let Some((node_id, authority_term)) = follower_commit_authority {
-            if let (Some(context), Some(node)) = (before.get(&node_id), cluster.nodes.get(&node_id))
-            {
-                if node.commit_index() > context.old_commit {
-                    self.record_commit_terms(
-                        context.old_commit,
-                        node.commit_index(),
-                        authority_term,
-                    );
-                }
-            }
-        }
+        self.record_follower_commit_terms(before, cluster, follower_commit_authority);
         for context in before.values() {
             let Some(node) = cluster.nodes.get(&context.node_id) else {
                 continue;
@@ -75,7 +65,6 @@ impl CommitHistory {
             if node.current_term() != authority_term {
                 continue;
             }
-
             let view = LogicalLogView::from_cluster(cluster, context.node_id);
             let Some(candidate_term) = view.term_at(new_commit) else {
                 self.violations.insert(CommitHistoryViolation {
@@ -89,10 +78,13 @@ impl CommitHistory {
             };
             let candidate_entry = view.entry_at(new_commit).cloned();
             self.record_commit_terms(context.old_commit, new_commit, authority_term);
-
-            if candidate_term == authority_term {
-                observations.mark(Observation::CurrentTermCommitCertificates);
-            } else {
+            let candidate_is_current_term = candidate_term == authority_term;
+            let covers_prior_term_prefix = candidate_is_current_term
+                && (context.old_commit.0.saturating_add(1)..new_commit.0).any(|index| {
+                    view.term_at(LogIndex(index))
+                        .is_some_and(|term| term < authority_term)
+                });
+            if !candidate_is_current_term {
                 self.violations.insert(CommitHistoryViolation {
                     invariant: catalog::CM_03_LEADERS_ONLY_COMMIT_CURRENT_TERM_ENTRIES,
                     message: format!(
@@ -108,20 +100,22 @@ impl CommitHistory {
             } else {
                 authority_membership
             };
-            if matches!(&membership, MembershipConfig::Joint(_)) {
-                observations.mark(if used_post_append_membership {
-                    Observation::PostAppendJointCommitCertificates
-                } else {
-                    Observation::PreTransitionJointCommitCertificates
-                });
-            }
             let stored_by = nodes_storing_entry(
                 cluster,
                 new_commit,
                 candidate_term,
                 candidate_entry.as_ref(),
             );
-            if !membership.has_quorum(stored_by.iter().copied()) {
+            let has_effective_quorum = membership.has_quorum(stored_by.iter().copied());
+            if has_effective_quorum {
+                mark_commit_certificate_observations(
+                    &mut observations,
+                    &membership,
+                    used_post_append_membership,
+                    candidate_is_current_term,
+                    covers_prior_term_prefix,
+                );
+            } else {
                 self.violations.insert(CommitHistoryViolation {
                     invariant: catalog::CM_02_COMMIT_REQUIRES_EFFECTIVE_QUORUM,
                     message: format!(
@@ -146,11 +140,30 @@ impl CommitHistory {
         observations
     }
 
+    fn record_follower_commit_terms(
+        &mut self,
+        before: &BTreeMap<NodeId, CommitTransitionContext>,
+        cluster: &Cluster,
+        follower_commit_authority: Option<(NodeId, Term)>,
+    ) {
+        let Some((node_id, authority_term)) = follower_commit_authority else {
+            return;
+        };
+        let (Some(context), Some(node)) = (before.get(&node_id), cluster.nodes.get(&node_id))
+        else {
+            return;
+        };
+        if node.commit_index() > context.old_commit {
+            self.record_commit_terms(context.old_commit, node.commit_index(), authority_term);
+        }
+    }
+
     pub(super) fn observe_committed_prefixes(
         &mut self,
         cluster: &Cluster,
         logical_logs: &LogicalLogHistory,
-    ) {
+    ) -> ObservationSet {
+        let mut observations = ObservationSet::default();
         for (node_id, node) in &cluster.nodes {
             self.unwitnessed_committed_prefixes
                 .retain(|(owner, _)| owner != node_id);
@@ -164,8 +177,9 @@ impl CommitHistory {
                     .insert((*node_id, committed_through));
                 continue;
             };
-            self.insert_committed_prefix(*node_id, prefix);
+            observations.union_with(self.insert_committed_prefix(*node_id, prefix));
         }
+        observations
     }
 
     pub(super) fn record_seeded_commit_authority(
@@ -198,11 +212,17 @@ impl CommitHistory {
         self.refresh_commit_term_coverage();
     }
 
-    fn insert_committed_prefix(&mut self, node_id: NodeId, prefix: LogPrefixWitness) {
+    fn insert_committed_prefix(
+        &mut self,
+        node_id: NodeId,
+        prefix: LogPrefixWitness,
+    ) -> ObservationSet {
+        let mut observations = ObservationSet::default();
         let Some(committed) = self.committed_prefix.as_ref() else {
             self.committed_prefix = Some(prefix);
+            self.committed_prefix_owner = Some(node_id);
             self.refresh_commit_term_coverage();
-            return;
+            return observations;
         };
 
         let comparison_through = committed.through.min(prefix.through);
@@ -215,13 +235,23 @@ impl CommitHistory {
                     "{node_id} observed a committed prefix mismatch at or before {comparison_through}"
                 ),
             });
-            return;
+            return observations;
+        }
+
+        observations.mark(Observation::CommittedPrefixHistoryComparisons);
+        if self
+            .committed_prefix_owner
+            .is_some_and(|owner| owner != node_id)
+        {
+            observations.mark(Observation::CrossNodeCommittedPrefixAgreementChecks);
         }
 
         if prefix.through > committed.through {
             self.committed_prefix = Some(prefix);
+            self.committed_prefix_owner = Some(node_id);
         }
         self.refresh_commit_term_coverage();
+        observations
     }
 
     fn record_commit_terms(&mut self, old_commit: LogIndex, new_commit: LogIndex, term: Term) {
@@ -316,6 +346,31 @@ impl CommitHistory {
     }
 }
 
+fn mark_commit_certificate_observations(
+    observations: &mut ObservationSet,
+    membership: &MembershipConfig,
+    used_post_append_membership: bool,
+    candidate_is_current_term: bool,
+    covers_prior_term_prefix: bool,
+) {
+    match membership {
+        MembershipConfig::Stable(_) => observations.mark(Observation::StableCommitCertificates),
+        MembershipConfig::Joint(_) => {
+            observations.mark(if used_post_append_membership {
+                Observation::PostAppendJointCommitCertificates
+            } else {
+                Observation::PreTransitionJointCommitCertificates
+            });
+        }
+    }
+    if candidate_is_current_term {
+        observations.mark(Observation::CurrentTermCommitCertificates);
+        if covers_prior_term_prefix {
+            observations.mark(Observation::CurrentTermCommitCoveringPriorTermPrefix);
+        }
+    }
+}
+
 fn nodes_storing_entry(
     cluster: &Cluster,
     index: LogIndex,
@@ -405,14 +460,18 @@ impl ExplorationState {
     }
 
     pub(in crate::model_check) fn refresh_committed_prefixes(&mut self) {
-        self.commit_history
+        let observations = self
+            .commit_history
             .observe_committed_prefixes(&self.cluster, &self.logical_log_history);
+        self.observations.union_with(observations);
     }
 
     pub(in crate::model_check) fn refresh_seeded_commit_history(&mut self) {
         self.commit_history
             .record_seeded_commit_terms(&self.cluster, &self.logical_log_history);
-        self.refresh_committed_prefixes();
+        let _ = self
+            .commit_history
+            .observe_committed_prefixes(&self.cluster, &self.logical_log_history);
     }
 
     pub(in crate::model_check) fn witness_seeded_commit_authority(

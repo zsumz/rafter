@@ -145,15 +145,18 @@ pub(crate) struct AuthorityTransitionViolation {
     pub(crate) message_term: Term,
     pub(crate) before_term: Term,
     pub(crate) after_term: Term,
+    pub(crate) before_vote: Option<NodeId>,
+    pub(crate) after_vote: Option<NodeId>,
     pub(crate) before_role: rafter::Role,
     pub(crate) after_role: rafter::Role,
     pub(crate) reason: AuthorityTransitionViolationKind,
 }
 
-#[derive(Clone, Copy, Debug, Hash)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum AuthorityTransitionViolationKind {
     HigherTermNotFenced,
     StaleTermCreatedLeader,
+    StaleTermLoweredAuthority,
 }
 
 #[derive(Clone, Debug, Hash)]
@@ -170,7 +173,7 @@ pub(crate) struct PreVoteViolation {
     pub(crate) reason: PreVoteViolationKind,
 }
 
-#[derive(Clone, Copy, Debug, Hash)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub(crate) enum PreVoteViolationKind {
     RequestMutatedAuthority,
     RequestDisruptedLeader,
@@ -222,6 +225,9 @@ impl ExplorationState {
         match &envelope.message {
             Message::PreVote(_) => {
                 self.mark_observation(Observation::PreVoteRequestDeliveries);
+                if before_node.role() == rafter::Role::Leader {
+                    self.mark_observation(Observation::LeaderPreVoteRequestDeliveries);
+                }
             }
             Message::PreVoteResponse(response) if response.term <= before_node.current_term() => {
                 self.mark_observation(Observation::StalePreVoteResponses);
@@ -322,12 +328,19 @@ impl ExplorationState {
         let Some(after_node) = self.cluster.nodes.get(&envelope.to) else {
             return;
         };
+        let after_term = after_node.current_term();
+        let after_vote = after_node.voted_for();
+        let after_role = after_node.role();
+        let stale_term = message_authority.term < before_node.current_term();
+        if stale_term {
+            self.mark_observation(Observation::StaleAuthorityStateComparisons);
+        }
 
         let higher_term_not_fenced = message_authority.must_fence_higher_term
             && message_authority.term > before_node.current_term()
-            && (after_node.current_term() < message_authority.term
+            && (after_term < message_authority.term
                 || (before_node.role() == rafter::Role::Leader
-                    && after_node.role() == rafter::Role::Leader));
+                    && after_role == rafter::Role::Leader));
         if higher_term_not_fenced {
             self.election_history.authority_transition_violations.push(
                 AuthorityTransitionViolation {
@@ -335,9 +348,11 @@ impl ExplorationState {
                     message_kind: message_authority.kind,
                     message_term: message_authority.term,
                     before_term: before_node.current_term(),
-                    after_term: after_node.current_term(),
+                    after_term,
+                    before_vote: before_node.voted_for(),
+                    after_vote,
                     before_role: before_node.role(),
-                    after_role: after_node.role(),
+                    after_role,
                     reason: AuthorityTransitionViolationKind::HigherTermNotFenced,
                 },
             );
@@ -345,7 +360,7 @@ impl ExplorationState {
 
         let stale_term_created_leader = message_authority.term < before_node.current_term()
             && before_node.role() != rafter::Role::Leader
-            && after_node.role() == rafter::Role::Leader;
+            && after_role == rafter::Role::Leader;
         if stale_term_created_leader {
             self.election_history.authority_transition_violations.push(
                 AuthorityTransitionViolation {
@@ -353,10 +368,33 @@ impl ExplorationState {
                     message_kind: message_authority.kind,
                     message_term: message_authority.term,
                     before_term: before_node.current_term(),
-                    after_term: after_node.current_term(),
+                    after_term,
+                    before_vote: before_node.voted_for(),
+                    after_vote,
                     before_role: before_node.role(),
-                    after_role: after_node.role(),
+                    after_role,
                     reason: AuthorityTransitionViolationKind::StaleTermCreatedLeader,
+                },
+            );
+        }
+
+        let stale_term_lowered_authority = stale_term
+            && (after_term < before_node.current_term()
+                || (after_term == before_node.current_term()
+                    && after_vote != before_node.voted_for()));
+        if stale_term_lowered_authority {
+            self.election_history.authority_transition_violations.push(
+                AuthorityTransitionViolation {
+                    node_id: envelope.to,
+                    message_kind: message_authority.kind,
+                    message_term: message_authority.term,
+                    before_term: before_node.current_term(),
+                    after_term,
+                    before_vote: before_node.voted_for(),
+                    after_vote,
+                    before_role: before_node.role(),
+                    after_role,
+                    reason: AuthorityTransitionViolationKind::StaleTermLoweredAuthority,
                 },
             );
         }
