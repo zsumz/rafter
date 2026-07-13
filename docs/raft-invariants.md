@@ -302,8 +302,8 @@ named temporal or witness-based verdicts.
 | `PS-03` | `PS-03.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_restart_term_and_vote`; negative fixture `exact_restart_term_vote_oracle_detects_vote_loss` |
 | `PS-03` | `PS-03.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_restart_log`; negative fixture `exact_restart_log_oracle_detects_payload_change` |
 | `PS-03` | `PS-03.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_restart_commit_and_configuration`; negative fixture `exact_restart_commit_configuration_oracle_detects_identity_change` |
-| `PS-03` | `PS-03.d` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_restart_snapshot`; negative fixture `exact_restart_snapshot_oracle_detects_payload_identity_change` |
-| `PS-03` | `PS-03.e` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_restart_acknowledged_entries`; negative fixture `exact_restart_acknowledged_entry_oracle_detects_reindexing` |
+| `PS-03` | `PS-03.d` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_restart_snapshot`; negative fixture `exact_restart_snapshot_oracle_detects_crc32_collision_payload_change` |
+| `PS-03` | `PS-03.e` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_restart_acknowledged_entries`; negative fixture `exact_restart_acknowledged_entry_oracle_checks_acknowledged_uncommitted_entry` |
 | `PS-03` | `PS-03.e` | tests | direct | `crates/rafter-runtime/src/tests/crash_window/boundary.rs#reopen_completes_compaction_when_snapshot_boundary_is_past_the_log_tail` |
 | `PS-03` | `PS-03.e` | tests | direct | `crates/rafter-runtime/src/tests/local_ids/recovery.rs#restart_replays_committed_tracked_entry_without_local_id` |
 | `PS-03` | `PS-03.c` | tests | direct | `crates/rafter-runtime/src/tests/recovery.rs#restarted_node_recovers_committed_dynamic_membership_suffix_after_snapshot` |
@@ -322,7 +322,7 @@ named temporal or witness-based verdicts.
 | `PS-04` | `PS-04.b` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests/snapshot.rs#ps04_inbound_snapshot_promotion_crash_restores_snapshot_then_dispatches_suffix` |
 | `PS-04` | `PS-04.a` | tests | direct | `crates/rafter/src/node/tests/bootstrap/application.rs#applied_floor_suppresses_reapply_below_it` |
 | `SS-01` | `SS-01.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_boundary_monotonicity`; negative fixture `snapshot_boundary_monotonicity_detects_regression` |
-| `SS-01` | `SS-01.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_payload_binding`; negative fixture `snapshot_payload_binding_detects_metadata_bound_to_different_bytes` |
+| `SS-01` | `SS-01.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_payload_binding`; negative fixture `snapshot_reference_binding_detects_self_consistent_application_identity_change` |
 | `SS-01` | `SS-01.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_transfer_identity`; negative fixture `snapshot_transfer_identity_detects_install_different_from_delivery` |
 | `SS-01` | `SS-01.c` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/bootstrap_compaction/local.rs#runtime_local_compaction_rejects_wrong_boundary_term_before_writes` |
 | `SS-01` | `SS-01.c` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/bootstrap_compaction/local.rs#runtime_local_compaction_rejects_wrong_committed_membership_before_writes` |
