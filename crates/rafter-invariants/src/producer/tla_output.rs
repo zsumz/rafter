@@ -17,7 +17,7 @@ pub(crate) struct DetectorProbe {
     pub(crate) mode: &'static str,
 }
 
-pub(crate) const DETECTOR_PROBES: [DetectorProbe; 9] = [
+pub(crate) const DETECTOR_PROBES: [DetectorProbe; 16] = [
     DetectorProbe {
         predicate: "ElectionSafety",
         mode: DEFAULT_FIXTURE_MODE,
@@ -27,16 +27,36 @@ pub(crate) const DETECTOR_PROBES: [DetectorProbe; 9] = [
         mode: DEFAULT_FIXTURE_MODE,
     },
     DetectorProbe {
+        predicate: "LogMatching",
+        mode: "LogMatchingRecorderOnly",
+    },
+    DetectorProbe {
+        predicate: "LogMatching",
+        mode: "SnapshotPrefixRecorderOnly",
+    },
+    DetectorProbe {
         predicate: "LeaderCompleteness",
         mode: DEFAULT_FIXTURE_MODE,
+    },
+    DetectorProbe {
+        predicate: "LeaderCompleteness",
+        mode: "LeaderCompletenessRecorderOnly",
     },
     DetectorProbe {
         predicate: "CommittedPrefixStability",
         mode: DEFAULT_FIXTURE_MODE,
     },
     DetectorProbe {
+        predicate: "CommittedPrefixStability",
+        mode: "CommittedPrefixRecorderOnly",
+    },
+    DetectorProbe {
         predicate: "StateMachineSafety",
         mode: DEFAULT_FIXTURE_MODE,
+    },
+    DetectorProbe {
+        predicate: "StateMachineSafety",
+        mode: "ApplicationEpochRecorderOnly",
     },
     DetectorProbe {
         predicate: "StaleLeaderFencing",
@@ -51,8 +71,16 @@ pub(crate) const DETECTOR_PROBES: [DetectorProbe; 9] = [
         mode: DEFAULT_FIXTURE_MODE,
     },
     DetectorProbe {
+        predicate: "CommittedEntriesHaveQuorum",
+        mode: "CommitQuorumRecorderOnly",
+    },
+    DetectorProbe {
         predicate: "ReadBarrierLinearizability",
         mode: DEFAULT_FIXTURE_MODE,
+    },
+    DetectorProbe {
+        predicate: "ReadBarrierLinearizability",
+        mode: "ReadBarrierRecorderOnly",
     },
 ];
 
@@ -90,11 +118,22 @@ fn is_valid_fixture_probe(probe: DetectorProbe) -> bool {
             || matches!(
                 (probe.predicate, probe.mode),
                 ("ElectionSafety", "ElectionRecorderOnly")
-                    | ("StateMachineSafety", "ApplicationRecorderOnly")
+                    | (
+                        "LogMatching",
+                        "LogMatchingRecorderOnly" | "SnapshotPrefixRecorderOnly"
+                    )
+                    | ("LeaderCompleteness", "LeaderCompletenessRecorderOnly")
+                    | ("CommittedPrefixStability", "CommittedPrefixRecorderOnly")
+                    | (
+                        "StateMachineSafety",
+                        "ApplicationRecorderOnly" | "ApplicationEpochRecorderOnly"
+                    )
                     | (
                         "StaleLeaderFencing",
                         "HigherTermRecorderOnly" | "StaleAuthorityRecorderOnly"
                     )
+                    | ("CommittedEntriesHaveQuorum", "CommitQuorumRecorderOnly")
+                    | ("ReadBarrierLinearizability", "ReadBarrierRecorderOnly")
             ))
 }
 

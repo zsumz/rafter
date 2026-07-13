@@ -431,26 +431,43 @@ fn verify_counterexample_binding(
     bundle: &ResultBundle,
     violated: Option<&str>,
 ) -> Result<(), AggregateError> {
-    let failed = bundle
-        .results
-        .iter()
-        .filter(|result| result.status == EvidenceStatus::Fail)
-        .collect::<Vec<_>>();
     match violated {
-        None if failed.is_empty() => Ok(()),
-        Some(symbol)
-            if failed.len() == 1
-                && failed[0]
-                    .evidence_id
-                    .strip_suffix(symbol)
-                    .is_some_and(|prefix| prefix.ends_with('#')) =>
+        None if bundle
+            .results
+            .iter()
+            .all(|result| result.status != EvidenceStatus::Fail) =>
         {
             Ok(())
+        }
+        Some(symbol) => {
+            let bound = bundle
+                .results
+                .iter()
+                .filter(|result| evidence_symbol(&result.evidence_id) == Some(symbol))
+                .collect::<Vec<_>>();
+            if !bound.is_empty()
+                && bound
+                    .iter()
+                    .all(|result| result.status == EvidenceStatus::Fail)
+                && bundle.results.iter().all(|result| {
+                    (evidence_symbol(&result.evidence_id) == Some(symbol))
+                        == (result.status == EvidenceStatus::Fail)
+                })
+            {
+                return Ok(());
+            }
+            Err(AggregateError::new(
+                "TLA counterexample frame does not match the failed evidence result".to_owned(),
+            ))
         }
         _ => Err(AggregateError::new(
             "TLA counterexample frame does not match the failed evidence result".to_owned(),
         )),
     }
+}
+
+fn evidence_symbol(evidence_id: &str) -> Option<&str> {
+    evidence_id.rsplit_once('#').map(|(_, symbol)| symbol)
 }
 
 fn read_kind(

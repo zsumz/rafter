@@ -41,12 +41,18 @@ fn render_tla_trace_module(module_name: &str, actions: &[TlaRenderedAction]) -> 
     module.push_str("EXTENDS Raft\n\n");
     module.push_str("CONSTANTS n1, n2, n3, v1, v2, r1, r2\n\n");
     module.push_str("VARIABLE traceStep\n\n");
+    module.push_str("traceVars == << currentTerm, votedFor, role, log, commitIndex,\n");
     module.push_str(
-        "traceVars == << currentTerm, votedFor, role, log, commitIndex, applied, messages,\n",
+        "               snapshotIndex, snapshotPrefix, compactedIndex, snapshotTransfer,\n",
     );
-    module.push_str("               readRequests, readGrants, membership, appliedConfigIndex,\n");
-    module.push_str("               effectiveMembership, effectiveConfigIndex,\n");
-    module.push_str("               electedLeaders,\n");
+    module.push_str("               applied, applicationEpoch, epochBaseIndex, epochBaseState,\n");
+    module.push_str("               applicationState, appliedThrough,\n");
+    module.push_str("               messages, readRequests, readGrants, membership,\n");
+    module.push_str(
+        "               appliedConfigIndex, effectiveMembership, effectiveConfigIndex,\n",
+    );
+    module.push_str("               electedLeaders, logicalPrefixLedger, committedLedger,\n");
+    module.push_str("               commitWitnesses,\n");
     module.push_str("               higherTermEvidenceSeen, higherTermStepDownFailed,\n");
     module.push_str("               staleAuthorityAccepted, traceStep >>\n\n");
     module.push_str("TraceInit == Init /\\ traceStep = 0\n\n");

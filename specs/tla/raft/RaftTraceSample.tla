@@ -5,10 +5,14 @@ CONSTANTS n1, n2, n3, v1, v2, r1, r2
 
 VARIABLE traceStep
 
-traceVars == << currentTerm, votedFor, role, log, commitIndex, applied, messages,
-               readRequests, readGrants, membership, appliedConfigIndex,
-               effectiveMembership, effectiveConfigIndex,
-               electedLeaders,
+traceVars == << currentTerm, votedFor, role, log, commitIndex,
+               snapshotIndex, snapshotPrefix, compactedIndex, snapshotTransfer,
+               applied, applicationEpoch, epochBaseIndex, epochBaseState,
+               applicationState, appliedThrough,
+               messages, readRequests, readGrants, membership,
+               appliedConfigIndex, effectiveMembership, effectiveConfigIndex,
+               electedLeaders, logicalPrefixLedger, committedLedger,
+               commitWitnesses,
                higherTermEvidenceSeen, higherTermStepDownFailed,
                staleAuthorityAccepted, traceStep >>
 
