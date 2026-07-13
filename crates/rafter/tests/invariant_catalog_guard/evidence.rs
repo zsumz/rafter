@@ -67,6 +67,7 @@ pub(super) fn assert_evidence_is_machine_checkable(
                 record.strength.as_str(),
                 record.path.as_str(),
                 record.symbol.as_str(),
+                record.atomic_group.as_deref(),
                 record.negative_fixture.as_deref(),
                 record.negative_fixture_path.as_deref(),
                 record.negative_fixture_detector.as_deref(),
@@ -99,9 +100,48 @@ pub(super) fn assert_evidence_is_machine_checkable(
             record.path,
         );
         assert_negative_fixture_policy(workspace, record, &source);
+        assert_atomic_group_policy(record);
     }
 
     assert_coverage_bindings(entries, clauses, evidence);
+}
+
+fn assert_atomic_group_policy(record: &Evidence) {
+    let direct_simulator = record.layer == "simulator" && record.strength == "direct";
+    if direct_simulator && record.clauses.len() > 1 {
+        let group = record.atomic_group.as_deref().unwrap_or_else(|| {
+            panic!(
+                "{} direct simulator evidence spanning multiple clauses must declare a reviewed atomic_group",
+                record.id
+            )
+        });
+        assert!(
+            group.starts_with(&format!("{}/", record.id)) && group.len() > record.id.len() + 1,
+            "{} atomic_group `{group}` must be a stable ID prefixed with {}/",
+            record.id,
+            record.id,
+        );
+        assert_eq!(
+            (group, record.clauses.as_slice()),
+            (
+                "CM-03/current-term-commit-point",
+                ["CM-03.a".to_owned(), "CM-03.b".to_owned()].as_slice(),
+            ),
+            "{} atomic_group `{group}` is not a reviewed atomic clause set",
+            record.id,
+        );
+        assert!(
+            record.negative_fixture.is_some() && record.negative_fixture_detector.is_some(),
+            "{} atomic_group `{group}` must bind a detector-level negative fixture",
+            record.id,
+        );
+    } else {
+        assert!(
+            record.atomic_group.is_none(),
+            "{} atomic_group is only valid for multi-clause direct simulator evidence",
+            record.id,
+        );
+    }
 }
 
 fn assert_coverage_bindings(entries: &[Entry], clauses: &[Clause], evidence: &[Evidence]) {

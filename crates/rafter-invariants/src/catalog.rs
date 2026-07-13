@@ -22,7 +22,7 @@ pub(crate) use liveness::{
 #[cfg(test)]
 pub(crate) mod liveness_report_tests;
 
-const REGISTRY_SCHEMA_VERSION: u32 = 2;
+const REGISTRY_SCHEMA_VERSION: u32 = 3;
 const PROFILE_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Debug)]
@@ -64,6 +64,7 @@ pub struct EvidenceDescriptor {
     pub strength: String,
     pub path: String,
     pub symbol: String,
+    pub atomic_group: Option<String>,
     pub negative_fixture: Option<String>,
     pub test: Option<TestIdentity>,
     pub simulator: Option<SimulatorIdentity>,
@@ -123,9 +124,13 @@ impl EvidenceDescriptor {
             "{}/{}/{}/{}/{}#{}",
             self.invariant_id, self.clause_id, self.layer, self.strength, self.path, self.symbol
         );
+        let grouped = self
+            .atomic_group
+            .as_ref()
+            .map_or(base.clone(), |group| format!("{base}@atomic={group}"));
         self.negative_fixture
             .as_ref()
-            .map_or(base.clone(), |fixture| format!("{base}@{fixture}"))
+            .map_or(grouped.clone(), |fixture| format!("{grouped}@{fixture}"))
     }
 }
 

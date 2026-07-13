@@ -41,7 +41,8 @@ use super::driver::{
     FAIR_SCHEDULER_POLICY_ID, FAIR_TICK_BOUND_ROUNDS, STABLE_LEADER_WINDOW_ROUNDS,
 };
 
-pub(super) const LV_01_CLAUSE_IDS: &[&str] = &["LV-01.a", "LV-01.b"];
+pub(super) const LV_01_CONVERGENCE_CLAUSE_IDS: &[&str] = &["LV-01.a"];
+pub(super) const LV_01_USABILITY_CLAUSE_IDS: &[&str] = &["LV-01.b"];
 pub(super) const LV_02_PROGRESS_CLAUSE_IDS: &[&str] = &["LV-02.a"];
 pub(super) const LV_02_TERMINATION_CLAUSE_IDS: &[&str] = &["LV-02.b"];
 pub(super) const LV_03_READ_CLAUSE_IDS: &[&str] = &["LV-03.a"];
@@ -503,7 +504,10 @@ impl LivenessFeatureReport {
 
 fn expected_clause_ids(feature_id: &str) -> Option<&'static [&'static str]> {
     match feature_id {
-        "leader-convergence" | "quorum-only-leader-convergence" => Some(LV_01_CLAUSE_IDS),
+        "leader-convergence" | "quorum-only-leader-convergence" => {
+            Some(LV_01_CONVERGENCE_CLAUSE_IDS)
+        }
+        "leader-usability" | "quorum-only-leader-usability" => Some(LV_01_USABILITY_CLAUSE_IDS),
         "proposal-progress" => Some(LV_02_PROGRESS_CLAUSE_IDS),
         "proposal-termination" => Some(LV_02_TERMINATION_CLAUSE_IDS),
         "read-barrier" => Some(LV_03_READ_CLAUSE_IDS),
@@ -520,7 +524,11 @@ fn validate_stable_window(
     rounds_used: usize,
 ) -> Result<(), String> {
     let valid = match feature_id {
-        "leader-convergence" | "quorum-only-leader-convergence" | "read-barrier" => {
+        "leader-convergence"
+        | "leader-usability"
+        | "quorum-only-leader-convergence"
+        | "quorum-only-leader-usability"
+        | "read-barrier" => {
             evidence.stable_rounds == STABLE_LEADER_WINDOW_ROUNDS
                 && evidence.remained_leader_through_probe
         }
@@ -544,7 +552,7 @@ fn validate_proposal_outcome(
     outcome: ProposalTerminalOutcome,
 ) -> Result<(), String> {
     let valid = match feature_id {
-        "leader-convergence" | "quorum-only-leader-convergence" | "proposal-progress" => {
+        "leader-usability" | "quorum-only-leader-usability" | "proposal-progress" => {
             outcome == ProposalTerminalOutcome::Committed
         }
         "proposal-termination" => matches!(
@@ -609,7 +617,7 @@ pub(super) fn run_feature_liveness_checks(
     let budget_state =
         production_monitor_state(config, catalog::LV_01_POST_HEAL_LEADER_CONVERGENCE)?;
     let budget = soak_liveness_round_budget(&budget_state, config);
-    let mut reports = vec![run_quorum_only_leader_liveness_check(config, budget)?];
+    let mut reports = run_quorum_only_leader_liveness_check(config, budget)?;
     reports.push(run_proposal_progress_liveness_check(config, budget)?);
     reports.push(run_proposal_termination_liveness_check(config, budget)?);
     if config.max_read_indexes > 0 {

@@ -1,3 +1,4 @@
+use super::super::applied::{check_applied_commit_bound, check_applied_exactly_once};
 use super::*;
 
 #[test]
@@ -99,7 +100,7 @@ fn applied_order_detects_duplicate_apply_within_one_epoch() {
         });
     }
 
-    let failure = check_applied_order(&cluster, &[])
+    let failure = check_applied_exactly_once(&cluster, &[])
         .expect_err("same-index apply in one epoch must fail AP-01");
     assert_eq!(
         failure.invariant(),
@@ -123,7 +124,7 @@ fn applied_order_detects_apply_before_commit() {
         payload: b"uncommitted".to_vec().into(),
     });
 
-    let failure = check_applied_order(&cluster, &[])
+    let failure = check_applied_commit_bound(&cluster, &[])
         .expect_err("Apply above the emit-time commit index must fail AP-01");
     assert_eq!(
         failure.invariant(),

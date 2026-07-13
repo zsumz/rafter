@@ -1,4 +1,8 @@
+use super::super::history::{
+    check_append_entries_prev_log_acceptance, check_append_entries_stored_suffix_acceptance,
+};
 use super::*;
+use crate::model_check::observations::Observation;
 
 #[test]
 fn leader_append_only_detects_leader_term_truncation() {
@@ -46,7 +50,7 @@ fn append_entries_oracle_rejects_success_without_matching_prev() {
         append_success(LogIndex(2)),
     );
 
-    let failure = check_log_history(&state, &[])
+    let failure = check_append_entries_prev_log_acceptance(&state, &[])
         .expect_err("success with a mismatched prev term must be detected");
     assert_eq!(
         failure.invariant(),
@@ -81,7 +85,7 @@ fn append_entries_oracle_detects_success_without_storing_final_entry() {
     let mut state = ExplorationState::new(after);
     state.record_log_transition(&before, Some(&delivered), &emitted);
 
-    let failure = check_log_history(&state, &[])
+    let failure = check_append_entries_stored_suffix_acceptance(&state, &[])
         .expect_err("success without storing the final entry must be detected");
     assert_eq!(
         failure.invariant(),
@@ -105,8 +109,8 @@ fn append_entries_oracle_detects_inflated_match_index() {
         append_success(LogIndex(3)),
     );
 
-    let failure =
-        check_log_history(&state, &[]).expect_err("inflated success match index must be detected");
+    let failure = check_append_entries_stored_suffix_acceptance(&state, &[])
+        .expect_err("inflated success match index must be detected");
     assert_eq!(
         failure.invariant(),
         catalog::LG_02_TRUTHFUL_APPEND_ENTRIES_ACCEPTANCE
@@ -116,6 +120,29 @@ fn append_entries_oracle_detects_inflated_match_index() {
         "unexpected failure message: {}",
         failure.message
     );
+}
+
+#[test]
+fn append_entries_oracle_marks_clause_specific_success_observations() {
+    let entry = LogEntry::application(Term(2), b"two".to_vec());
+    let request = append_request(Term(1), vec![entry]);
+    let state = append_entries_transition_state(
+        &[(1, Term(1), b"one")],
+        &[(1, Term(1), b"one"), (2, Term(2), b"two")],
+        request,
+        append_success(LogIndex(2)),
+    );
+
+    check_append_entries_prev_log_acceptance(&state, &[])
+        .expect("matching previous entry must satisfy LG-02.a");
+    check_append_entries_stored_suffix_acceptance(&state, &[])
+        .expect("stored suffix and match index must satisfy LG-02.b");
+    assert!(state
+        .observation_set()
+        .contains(Observation::SuccessfulAppendPrevLogMatches));
+    assert!(state
+        .observation_set()
+        .contains(Observation::SuccessfulAppendStoredSuffixMatches));
 }
 
 #[test]

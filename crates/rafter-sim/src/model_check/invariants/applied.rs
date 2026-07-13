@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use rafter::{CommittedConfiguration, LogEntryKind};
 
 use super::{catalog, summarize, Action, BTreeMap, Cluster, ExplorationState, Failure};
@@ -146,24 +148,18 @@ pub(super) fn check_internal_derived_state(
 }
 
 pub(super) fn check_applied_order(cluster: &Cluster, trace: &[Action]) -> Result<(), Failure> {
+    check_applied_cursor_monotonicity(cluster, trace)?;
+    check_applied_exactly_once(cluster, trace)?;
+    check_applied_commit_bound(cluster, trace)
+}
+
+pub(super) fn check_applied_cursor_monotonicity(
+    cluster: &Cluster,
+    trace: &[Action],
+) -> Result<(), Failure> {
     let mut last_applied_by_node_epoch = BTreeMap::<(NodeId, u64), LogIndex>::new();
     let mut installs = cluster.snapshot_installs().iter().peekable();
     for (position, applied) in cluster.applied.iter().enumerate() {
-        if applied.index > applied.commit_index_at_emit {
-            return Err(Failure {
-                kind: crate::model_check::FailureKind::InvariantViolation,
-                invariant: catalog::AP_01_ORDERED_EXACTLY_ONCE_COMMITTED_APPLICATION,
-                message: format!(
-                    "{} epoch {} applied index {} when its commit index at emit was {}",
-                    applied.node_id,
-                    applied.application_epoch,
-                    applied.index,
-                    applied.commit_index_at_emit
-                ),
-                trace: trace.to_vec(),
-                state: summarize(cluster),
-            });
-        }
         while let Some(install) = installs.peek() {
             if install.applied_records_before_install > position {
                 break;
@@ -225,6 +221,52 @@ pub(super) fn check_applied_order(cluster: &Cluster, trace: &[Action]) -> Result
             });
         }
         *cursor = install.last_included_index;
+    }
+    Ok(())
+}
+
+pub(super) fn check_applied_exactly_once(
+    cluster: &Cluster,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    let mut applied_indexes = BTreeSet::new();
+    for applied in &cluster.applied {
+        if !applied_indexes.insert((applied.node_id, applied.application_epoch, applied.index)) {
+            return Err(Failure {
+                kind: crate::model_check::FailureKind::InvariantViolation,
+                invariant: catalog::AP_01_ORDERED_EXACTLY_ONCE_COMMITTED_APPLICATION,
+                message: format!(
+                    "{} epoch {} applied index {} more than once",
+                    applied.node_id, applied.application_epoch, applied.index
+                ),
+                trace: trace.to_vec(),
+                state: summarize(cluster),
+            });
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn check_applied_commit_bound(
+    cluster: &Cluster,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    for applied in &cluster.applied {
+        if applied.index > applied.commit_index_at_emit {
+            return Err(Failure {
+                kind: crate::model_check::FailureKind::InvariantViolation,
+                invariant: catalog::AP_01_ORDERED_EXACTLY_ONCE_COMMITTED_APPLICATION,
+                message: format!(
+                    "{} epoch {} applied index {} when its commit index at emit was {}",
+                    applied.node_id,
+                    applied.application_epoch,
+                    applied.index,
+                    applied.commit_index_at_emit
+                ),
+                trace: trace.to_vec(),
+                state: summarize(cluster),
+            });
+        }
     }
     Ok(())
 }

@@ -96,6 +96,7 @@ struct Evidence {
     strength: String,
     path: String,
     symbol: String,
+    atomic_group: Option<String>,
     negative_fixture: Option<String>,
     negative_fixture_path: Option<String>,
     negative_fixture_detector: Option<String>,

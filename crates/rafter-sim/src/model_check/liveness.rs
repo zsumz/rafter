@@ -21,7 +21,7 @@ pub(in crate::model_check) use features::LivenessFeatureReport;
 use features::{
     run_feature_liveness_checks, EvidenceStatus, FaultCycleEvidence, FaultStateRequirement,
     LivenessPreconditionProbe, LivenessPreconditions, ProposalEvidence, StableLeaderEvidence,
-    LV_01_CLAUSE_IDS,
+    LV_01_CONVERGENCE_CLAUSE_IDS, LV_01_USABILITY_CLAUSE_IDS,
 };
 
 #[cfg(test)]
@@ -36,42 +36,69 @@ pub(super) fn run_soak_liveness_check(
     trace: &mut Vec<SoakAction>,
     observed_actions: &mut BTreeSet<SoakActionKind>,
 ) -> Result<Vec<LivenessFeatureReport>, SoakFailure> {
+    run_soak_liveness_check_with_budget_overrides(
+        state,
+        config,
+        trace,
+        observed_actions,
+        None,
+        None,
+    )
+}
+
+pub(in crate::model_check) fn run_soak_liveness_check_with_budget_overrides(
+    state: &mut ExplorationState,
+    config: SoakConfig,
+    trace: &mut Vec<SoakAction>,
+    observed_actions: &mut BTreeSet<SoakActionKind>,
+    convergence_budget_override: Option<usize>,
+    usability_budget_override: Option<usize>,
+) -> Result<Vec<LivenessFeatureReport>, SoakFailure> {
     let fault_cycle = create_and_heal_post_heal_fault(state, config, trace, observed_actions)?;
-    let round_budget = LivenessRoundBudget::capture(state, config, 2)
+    let convergence_round_budget = LivenessRoundBudget::capture(state, config, 1)
         .with_fixed_rounds(fault_cycle.partitioned_rounds);
-    let budget = round_budget.base_rounds;
+    let usability_round_budget = LivenessRoundBudget::capture(state, config, 1);
+    let convergence_budget =
+        convergence_budget_override.unwrap_or(convergence_round_budget.base_rounds);
+    let usability_budget = usability_budget_override.unwrap_or(usability_round_budget.base_rounds);
 
     let Some(convergence) =
-        drive_until_stable_leader(state, config, trace, observed_actions, budget)?
+        drive_until_stable_leader(state, config, trace, observed_actions, convergence_budget)?
     else {
         return Err(soak_liveness_failure(
             state,
             config,
             trace,
             catalog::LV_01_POST_HEAL_LEADER_CONVERGENCE,
-            format!("no leader elected within {budget} post-heal convergence rounds"),
+            format!("no leader elected within {convergence_budget} post-heal convergence rounds"),
         ));
     };
     let leader = convergence.leader;
+    let convergence_report = successful_post_heal_convergence_report(
+        state,
+        convergence_round_budget,
+        convergence,
+        fault_cycle,
+    );
 
     let Some(proposal_id) = issue_liveness_proposal(state, leader, trace, observed_actions) else {
         return Err(soak_liveness_failure(
             state,
             config,
             trace,
-            catalog::LV_02_PROPOSAL_PROGRESS,
+            catalog::LV_01_POST_HEAL_LEADER_CONVERGENCE,
             "post-heal stable leader did not accept the usability proposal".to_owned(),
         ));
     };
     let accepted_proposal = liveness_proposal_accepted(state, proposal_id);
     check_soak_safety(state, config, trace)?;
-    let mut guard = StableLeaderGuard::new(leader, budget);
+    let mut guard = StableLeaderGuard::new(leader, usability_budget);
     let completion = drive_liveness_rounds_until_observed(
         state,
         config,
         trace,
         observed_actions,
-        budget,
+        usability_budget,
         |state| liveness_proposal_completed(state, proposal_id),
         |state| guard.observe(single_leader(state)).is_ok(),
     )?;
@@ -85,27 +112,46 @@ pub(super) fn run_soak_liveness_check(
             state,
             config,
             trace,
-            catalog::LV_02_PROPOSAL_PROGRESS,
+            catalog::LV_01_POST_HEAL_LEADER_CONVERGENCE,
             format!(
-                "post-heal leader {leader} did not commit proposal {} within {budget} bounded-fair rounds",
+                "post-heal leader {leader} did not commit proposal {} within {usability_budget} bounded-fair usability rounds",
                 proposal_id.0
             ),
         ));
     }
 
-    let post_heal_report = LivenessFeatureReport {
+    let usability_report = successful_post_heal_usability_report(
+        state,
+        usability_round_budget,
+        convergence,
+        completion,
+        proposal_id,
+        accepted_proposal,
+    );
+    let mut reports = vec![convergence_report, usability_report];
+    reports.extend(run_feature_liveness_checks(config, observed_actions)?);
+    Ok(reports)
+}
+
+fn successful_post_heal_convergence_report(
+    state: &ExplorationState,
+    round_budget: LivenessRoundBudget,
+    convergence: driver::LeaderConvergence,
+    fault_cycle: FaultCycleEvidence,
+) -> LivenessFeatureReport {
+    LivenessFeatureReport {
         invariant_id: "LV-01",
-        clause_ids: LV_01_CLAUSE_IDS,
+        clause_ids: LV_01_CONVERGENCE_CLAUSE_IDS,
         feature_id: "leader-convergence",
         scenario_id: "post-heal-stable-quorum-v1",
         observation_id: "post_heal_quiescent_leaders",
         preconditions: LivenessPreconditions::capture(
             state,
             LivenessPreconditionProbe {
-                leader: Some(leader),
+                leader: Some(convergence.leader),
                 fault_requirement: FaultStateRequirement::Stopped,
-                stable_leader_observed: Some(single_leader(state) == Some(leader)),
-                accepted_proposal_observed: Some(accepted_proposal),
+                stable_leader_observed: Some(single_leader(state) == Some(convergence.leader)),
+                accepted_proposal_observed: None,
                 authority_loss_observed: None,
             },
         ),
@@ -113,11 +159,47 @@ pub(super) fn run_soak_liveness_check(
         round_limit: round_budget.round_limit(),
         rounds_used: convergence
             .rounds_used
-            .saturating_add(completion.rounds_used)
             .saturating_add(fault_cycle.partitioned_rounds),
         fault_cycle: Some(fault_cycle),
         stable_leader: Some(StableLeaderEvidence {
-            leader,
+            leader: convergence.leader,
+            stable_rounds: convergence.stable_rounds,
+            remained_leader_through_probe: true,
+        }),
+        proposal: None,
+    }
+}
+
+fn successful_post_heal_usability_report(
+    state: &ExplorationState,
+    round_budget: LivenessRoundBudget,
+    convergence: driver::LeaderConvergence,
+    completion: driver::BoundedRun,
+    proposal_id: crate::model_check::ProposalId,
+    accepted_proposal: bool,
+) -> LivenessFeatureReport {
+    LivenessFeatureReport {
+        invariant_id: "LV-01",
+        clause_ids: LV_01_USABILITY_CLAUSE_IDS,
+        feature_id: "leader-usability",
+        scenario_id: "post-heal-stable-quorum-v1",
+        observation_id: "post_heal_stable_leader_usability_windows",
+        preconditions: LivenessPreconditions::capture(
+            state,
+            LivenessPreconditionProbe {
+                leader: Some(convergence.leader),
+                fault_requirement: FaultStateRequirement::Stopped,
+                stable_leader_observed: Some(single_leader(state) == Some(convergence.leader)),
+                accepted_proposal_observed: Some(accepted_proposal),
+                authority_loss_observed: None,
+            },
+        ),
+        round_budget,
+        round_limit: round_budget.round_limit(),
+        rounds_used: completion.rounds_used,
+        fault_cycle: None,
+        stable_leader: Some(StableLeaderEvidence {
+            leader: convergence.leader,
             stable_rounds: convergence.stable_rounds,
             remained_leader_through_probe: true,
         }),
@@ -125,10 +207,7 @@ pub(super) fn run_soak_liveness_check(
             proposal_id,
             outcome: ProposalTerminalOutcome::Committed,
         }),
-    };
-    let mut reports = vec![post_heal_report];
-    reports.extend(run_feature_liveness_checks(config, observed_actions)?);
-    Ok(reports)
+    }
 }
 
 fn create_and_heal_post_heal_fault(

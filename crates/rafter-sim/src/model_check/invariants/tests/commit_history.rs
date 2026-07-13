@@ -3,7 +3,11 @@ use rafter::{
     JointMembership, LogIndex, NodeConfig, NodeId, Role, Term,
 };
 
+use super::super::history::{
+    check_current_term_commit_certificates, check_joint_commit_quorums, check_stable_commit_quorums,
+};
 use super::*;
+use crate::model_check::observations::Observation;
 
 #[test]
 fn commit_certificate_uses_pre_transition_joint_quorum_for_candidate_below_config() {
@@ -40,7 +44,7 @@ fn commit_certificate_uses_pre_transition_joint_quorum_for_candidate_below_confi
 
     state.record_commit_observation(&context, None, None);
 
-    let failure = check_commit_history(&state, &[])
+    let failure = check_joint_commit_quorums(&state, &[])
         .expect_err("old-side-only storage must not satisfy the joint quorum");
     assert_eq!(
         failure.invariant(),
@@ -88,7 +92,7 @@ fn commit_certificate_rejects_learner_storage_as_voter_quorum() {
 
     state.record_commit_observation(&context, None, None);
 
-    let failure = check_commit_history(&state, &[])
+    let failure = check_stable_commit_quorums(&state, &[])
         .expect_err("a learner replica must not count toward voter quorum");
     assert_eq!(
         failure.invariant(),
@@ -168,8 +172,8 @@ fn commit_certificate_detects_prior_term_candidate_commit() {
 
     state.record_commit_observation(&context, None, None);
 
-    let failure =
-        check_commit_history(&state, &[]).expect_err("prior-term candidate commit must fail");
+    let failure = check_current_term_commit_certificates(&state, &[])
+        .expect_err("prior-term candidate commit must fail");
     assert_eq!(
         failure.invariant(),
         catalog::CM_03_LEADERS_ONLY_COMMIT_CURRENT_TERM_ENTRIES
@@ -220,7 +224,7 @@ fn commit_certificate_uses_post_append_joint_quorum_for_same_operation_commit() 
 
     state.record_commit_observation(&context, Some(NodeId(1)), None);
 
-    let failure = check_commit_history(&state, &[])
+    let failure = check_joint_commit_quorums(&state, &[])
         .expect_err("same-operation joint commit must require the new-side majority");
     assert_eq!(
         failure.invariant(),
@@ -231,6 +235,147 @@ fn commit_certificate_uses_post_append_joint_quorum_for_same_operation_commit() 
         "unexpected failure message: {}",
         failure.message
     );
+}
+
+#[test]
+fn valid_pre_transition_joint_commit_marks_joint_quorum_observation() {
+    let mut state = state_with_bootstraps(
+        voter_configs(&[1, 2, 3, 4, 5]),
+        &[
+            (
+                1,
+                bootstrap_with_log(
+                    Term(2),
+                    LogIndex(1),
+                    vec![app_entry(1, Term(2), b"candidate")],
+                    None,
+                ),
+            ),
+            (
+                2,
+                bootstrap_with_log(
+                    Term(2),
+                    LogIndex::ZERO,
+                    vec![app_entry(1, Term(2), b"candidate")],
+                    None,
+                ),
+            ),
+            (
+                4,
+                bootstrap_with_log(
+                    Term(2),
+                    LogIndex::ZERO,
+                    vec![app_entry(1, Term(2), b"candidate")],
+                    None,
+                ),
+            ),
+        ],
+    );
+    let context = leader_context(
+        &state,
+        1,
+        Term(2),
+        joint_membership(&[1, 2, 3], &[1, 4, 5]),
+        LogIndex::ZERO,
+    );
+
+    state.record_commit_observation(&context, None, None);
+
+    check_joint_commit_quorums(&state, &[]).expect("both joint majorities store the candidate");
+    assert!(state
+        .observation_set()
+        .contains(Observation::PreTransitionJointCommitCertificates));
+}
+
+#[test]
+fn valid_post_append_joint_commit_marks_joint_quorum_observation() {
+    let config_id = ConfigurationId(44);
+    let old = MembershipSet::new(vec![NodeId(1)], Vec::new()).expect("old membership is valid");
+    let new = MembershipSet::new(vec![NodeId(1), NodeId(2), NodeId(3)], Vec::new())
+        .expect("new membership is valid");
+    let configuration =
+        ConfigurationEntry::joint(config_id, JointMembership::new(old.clone(), new));
+    let entry = || BootstrapLogEntry::configuration(LogIndex(1), Term(2), configuration.clone());
+    let mut state = state_with_bootstraps(
+        voter_configs(&[1, 2, 3]),
+        &[
+            (
+                1,
+                bootstrap_with_log(
+                    Term(2),
+                    LogIndex(1),
+                    vec![entry()],
+                    Some(CommittedConfiguration {
+                        index: LogIndex(1),
+                        config_id,
+                    }),
+                ),
+            ),
+            (
+                2,
+                bootstrap_with_log(Term(2), LogIndex::ZERO, vec![entry()], None),
+            ),
+            (
+                3,
+                bootstrap_with_log(Term(2), LogIndex::ZERO, vec![entry()], None),
+            ),
+        ],
+    );
+    let context = leader_context(
+        &state,
+        1,
+        Term(2),
+        MembershipConfig::stable(old),
+        LogIndex::ZERO,
+    );
+
+    state.record_commit_observation(&context, Some(NodeId(1)), None);
+
+    check_joint_commit_quorums(&state, &[]).expect("post-append joint majorities store the entry");
+    assert!(state
+        .observation_set()
+        .contains(Observation::PostAppendJointCommitCertificates));
+}
+
+#[test]
+fn current_term_commit_covering_prior_term_prefix_marks_atomic_observation() {
+    let mut state = state_with_bootstraps(
+        voter_configs(&[1]),
+        &[{
+            (
+                1,
+                bootstrap_with_log(
+                    Term(3),
+                    LogIndex(2),
+                    vec![
+                        app_entry(1, Term(2), b"prior-term"),
+                        app_entry(2, Term(3), b"current-term-commit-point"),
+                    ],
+                    None,
+                ),
+            )
+        }],
+    );
+    let context = leader_context(
+        &state,
+        1,
+        Term(3),
+        stable_membership(&[1], &[]),
+        LogIndex::ZERO,
+    );
+
+    state.record_commit_observation(&context, None, None);
+
+    check_current_term_commit_certificates(&state, &[])
+        .expect("a current-term commit point may commit its prior-term prefix");
+    check_stable_commit_quorums(&state, &[])
+        .expect("the one-voter stable membership stores the commit point");
+    assert!(state
+        .observation_set()
+        .contains(Observation::StableCommitCertificates));
+    assert!(state
+        .observation_set()
+        .contains(Observation::CurrentTermCommitCoveringPriorTermPrefix));
 }
 
 #[test]

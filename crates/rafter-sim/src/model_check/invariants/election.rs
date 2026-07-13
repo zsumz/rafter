@@ -88,6 +88,15 @@ fn check_term_and_vote_history(state: &ExplorationState, trace: &[Action]) -> Re
 }
 
 fn check_vote_grants(state: &ExplorationState, trace: &[Action]) -> Result<(), Failure> {
+    check_vote_candidate_eligibility(state, trace)?;
+    check_vote_candidate_log_freshness(state, trace)?;
+    check_vote_grant_durability(state, trace)
+}
+
+pub(super) fn check_vote_candidate_eligibility(
+    state: &ExplorationState,
+    trace: &[Action],
+) -> Result<(), Failure> {
     for grant in &state.election_history().vote_grants {
         if !grant.voter_membership.contains_voter(grant.candidate_id) {
             return Err(Failure {
@@ -101,6 +110,15 @@ fn check_vote_grants(state: &ExplorationState, trace: &[Action]) -> Result<(), F
                 state: summarize(state.cluster()),
             });
         }
+    }
+    Ok(())
+}
+
+pub(super) fn check_vote_candidate_log_freshness(
+    state: &ExplorationState,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    for grant in &state.election_history().vote_grants {
         if (
             grant.candidate_last_log_term,
             grant.candidate_last_log_index,
@@ -123,6 +141,15 @@ fn check_vote_grants(state: &ExplorationState, trace: &[Action]) -> Result<(), F
                 state: summarize(state.cluster()),
             });
         }
+    }
+    Ok(())
+}
+
+pub(super) fn check_vote_grant_durability(
+    state: &ExplorationState,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    for grant in &state.election_history().vote_grants {
         if grant.durable_vote != Some(grant.candidate_id) {
             return Err(Failure {
                 kind: crate::model_check::FailureKind::InvariantViolation,
@@ -141,31 +168,73 @@ fn check_vote_grants(state: &ExplorationState, trace: &[Action]) -> Result<(), F
 }
 
 fn check_authority_transitions(state: &ExplorationState, trace: &[Action]) -> Result<(), Failure> {
+    check_higher_term_authority_fencing(state, trace)?;
+    check_stale_authority_leadership(state, trace)?;
+    check_stale_authority_state(state, trace)
+}
+
+pub(super) fn check_higher_term_authority_fencing(
+    state: &ExplorationState,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    check_authority_transition_kind(
+        state,
+        trace,
+        super::super::state::AuthorityTransitionViolationKind::HigherTermNotFenced,
+        "did not fence higher-term authority",
+    )
+}
+
+pub(super) fn check_stale_authority_leadership(
+    state: &ExplorationState,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    check_authority_transition_kind(
+        state,
+        trace,
+        super::super::state::AuthorityTransitionViolationKind::StaleTermCreatedLeader,
+        "let stale-term traffic create leadership",
+    )
+}
+
+pub(super) fn check_stale_authority_state(
+    state: &ExplorationState,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    check_authority_transition_kind(
+        state,
+        trace,
+        super::super::state::AuthorityTransitionViolationKind::StaleTermLoweredAuthority,
+        "let stale-term traffic lower durable authority",
+    )
+}
+
+fn check_authority_transition_kind(
+    state: &ExplorationState,
+    trace: &[Action],
+    expected: super::super::state::AuthorityTransitionViolationKind,
+    reason: &str,
+) -> Result<(), Failure> {
     if let Some(violation) = state
         .election_history()
         .authority_transition_violations
-        .first()
+        .iter()
+        .find(|violation| violation.reason == expected)
     {
-        let reason = match violation.reason {
-            super::super::state::AuthorityTransitionViolationKind::HigherTermNotFenced => {
-                "did not fence higher-term authority"
-            }
-            super::super::state::AuthorityTransitionViolationKind::StaleTermCreatedLeader => {
-                "let stale-term traffic create leadership"
-            }
-        };
         return Err(Failure {
             kind: crate::model_check::FailureKind::InvariantViolation,
             invariant: catalog::EL_07_TERM_AND_AUTHORITY_FENCING,
             message: format!(
-                "{} {reason}: delivered {} term {} from term {} {} to term {} {}",
+                "{} {reason}: delivered {} term {} from term {} {} vote {:?} to term {} {} vote {:?}",
                 violation.node_id,
                 violation.message_kind,
                 violation.message_term,
                 violation.before_term,
                 violation.before_role,
+                violation.before_vote,
                 violation.after_term,
                 violation.after_role,
+                violation.after_vote,
             ),
             trace: trace.to_vec(),
             state: summarize(state.cluster()),
@@ -176,18 +245,59 @@ fn check_authority_transitions(state: &ExplorationState, trace: &[Action]) -> Re
 }
 
 fn check_pre_vote_history(state: &ExplorationState, trace: &[Action]) -> Result<(), Failure> {
-    if let Some(violation) = state.election_history().pre_vote_violations.first() {
-        let reason = match violation.reason {
-            super::super::state::PreVoteViolationKind::RequestMutatedAuthority => {
-                "pre-vote request mutated authority"
-            }
-            super::super::state::PreVoteViolationKind::RequestDisruptedLeader => {
-                "pre-vote request disrupted a leader"
-            }
-            super::super::state::PreVoteViolationKind::StaleResponseAdvancedAuthority => {
-                "stale pre-vote response advanced authority"
-            }
-        };
+    check_pre_vote_request_authority(state, trace)?;
+    check_stale_pre_vote_response_authority(state, trace)?;
+    check_pre_vote_leader_stability(state, trace)
+}
+
+pub(super) fn check_pre_vote_request_authority(
+    state: &ExplorationState,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    check_pre_vote_violation_kind(
+        state,
+        trace,
+        super::super::state::PreVoteViolationKind::RequestMutatedAuthority,
+        "pre-vote request mutated authority",
+    )
+}
+
+pub(super) fn check_stale_pre_vote_response_authority(
+    state: &ExplorationState,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    check_pre_vote_violation_kind(
+        state,
+        trace,
+        super::super::state::PreVoteViolationKind::StaleResponseAdvancedAuthority,
+        "stale pre-vote response advanced authority",
+    )
+}
+
+pub(super) fn check_pre_vote_leader_stability(
+    state: &ExplorationState,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    check_pre_vote_violation_kind(
+        state,
+        trace,
+        super::super::state::PreVoteViolationKind::RequestDisruptedLeader,
+        "pre-vote request disrupted a leader",
+    )
+}
+
+fn check_pre_vote_violation_kind(
+    state: &ExplorationState,
+    trace: &[Action],
+    expected: super::super::state::PreVoteViolationKind,
+    reason: &str,
+) -> Result<(), Failure> {
+    if let Some(violation) = state
+        .election_history()
+        .pre_vote_violations
+        .iter()
+        .find(|violation| violation.reason == expected)
+    {
         return Err(Failure {
             kind: crate::model_check::FailureKind::InvariantViolation,
             invariant: catalog::EL_08_PRE_VOTE_NON_BINDING,

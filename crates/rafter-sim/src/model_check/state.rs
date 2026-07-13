@@ -300,10 +300,14 @@ impl ExplorationState {
 
     pub(super) fn refresh_commit_floors(&mut self) {
         let mut commit_advanced = false;
+        let mut commit_bound_checked = false;
         let mut configuration_advanced = false;
+        let mut configuration_identity_checked = false;
         for (node_id, node) in &self.cluster.nodes {
             let floor = self.commit_floor_by_node.entry(*node_id).or_default();
             commit_advanced |= node.commit_index() > *floor;
+            commit_bound_checked |= node.commit_index() > LogIndex::ZERO
+                && node.commit_index() <= node.last_log_index();
             *floor = (*floor).max(node.commit_index());
             let config_floor = self
                 .committed_configuration_floor_by_node
@@ -319,6 +323,11 @@ impl ExplorationState {
                         configuration_advanced = true;
                         *config_floor = Some(actual);
                     }
+                    Some(floor)
+                        if actual.index == floor.index && actual.config_id == floor.config_id =>
+                    {
+                        configuration_identity_checked = true;
+                    }
                     Some(_) => {}
                 }
             }
@@ -326,8 +335,18 @@ impl ExplorationState {
         if commit_advanced {
             self.mark_observation(super::observations::Observation::CommitFloorAdvances);
         }
+        if commit_bound_checked {
+            self.mark_observation(
+                super::observations::Observation::CommitIndexWithinLocalLogBoundsChecks,
+            );
+        }
         if configuration_advanced {
             self.mark_observation(super::observations::Observation::CommittedConfigurationAdvances);
+        }
+        if configuration_identity_checked {
+            self.mark_observation(
+                super::observations::Observation::SameIndexCommittedConfigurationIdentityChecks,
+            );
         }
     }
 

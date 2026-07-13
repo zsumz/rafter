@@ -134,6 +134,16 @@ fn parse_evidence_record(
         )));
     }
     let strength = required("strength")?;
+    let atomic_group = record.get("atomic_group").cloned();
+    validate_atomic_group(
+        index,
+        record,
+        &invariant_id,
+        &clause_ids,
+        &layer,
+        &strength,
+        atomic_group.as_deref(),
+    )?;
     let path = required("path")?;
     let symbol = required("symbol")?;
     Ok(clause_ids
@@ -145,11 +155,61 @@ fn parse_evidence_record(
             strength: strength.clone(),
             path: path.clone(),
             symbol: symbol.clone(),
+            atomic_group: atomic_group.clone(),
             negative_fixture: record.get("negative_fixture").cloned(),
             test: test.clone(),
             simulator: simulator.clone(),
         })
         .collect())
+}
+
+fn validate_atomic_group(
+    index: usize,
+    record: &BTreeMap<String, String>,
+    invariant_id: &str,
+    clause_ids: &[String],
+    layer: &str,
+    strength: &str,
+    atomic_group: Option<&str>,
+) -> Result<(), CatalogError> {
+    let direct_simulator = layer == "simulator" && strength == "direct";
+    if direct_simulator && clause_ids.len() > 1 && atomic_group.is_none() {
+        return Err(CatalogError(format!(
+            "direct simulator evidence record {} spans multiple clauses without a reviewed atomic_group",
+            index + 1
+        )));
+    }
+    let Some(group) = atomic_group else {
+        return Ok(());
+    };
+    if !direct_simulator || clause_ids.len() < 2 {
+        return Err(CatalogError(format!(
+            "evidence record {} declares atomic_group outside multi-clause direct simulator evidence",
+            index + 1
+        )));
+    }
+    if group.trim().is_empty() || !group.starts_with(&format!("{invariant_id}/")) {
+        return Err(CatalogError(format!(
+            "evidence record {} atomic_group must be a nonempty stable ID prefixed with {invariant_id}/",
+            index + 1
+        )));
+    }
+    let reviewed =
+        group == "CM-03/current-term-commit-point" && clause_ids == ["CM-03.a", "CM-03.b"];
+    if !reviewed {
+        return Err(CatalogError(format!(
+            "evidence record {} atomic_group `{group}` is not a reviewed atomic clause set",
+            index + 1
+        )));
+    }
+    if !record.contains_key("negative_fixture") || !record.contains_key("negative_fixture_detector")
+    {
+        return Err(CatalogError(format!(
+            "evidence record {} atomic_group must bind a detector-level negative fixture",
+            index + 1
+        )));
+    }
+    Ok(())
 }
 
 fn parse_simulator_identity(
@@ -600,6 +660,7 @@ fn section_fields(section: &str) -> &'static [&'static str] {
             "strength",
             "path",
             "symbol",
+            "atomic_group",
             "package",
             "target_kind",
             "target",
@@ -699,6 +760,28 @@ mod tests {
     test_name: "tests::test_symbol"
 "#;
 
+    const VALID_ATOMIC_SIMULATOR_EVIDENCE: &str = r#"evidence:
+  - id: "CM-03"
+    clauses: "CM-03.a,CM-03.b"
+    layer: "simulator"
+    strength: "direct"
+    path: "src/model.rs"
+    symbol: "check_atomic_rule"
+    atomic_group: "CM-03/current-term-commit-point"
+    simulator_check: "model-check"
+    minimum_protocol_states: "1"
+    minimum_verifier_states: "1"
+    required_observation: "atomic_rule_checks"
+    minimum_observation: "1"
+    negative_fixture: "atomic_rule_rejects_mutation"
+    negative_fixture_path: "src/model/tests.rs"
+    negative_fixture_detector: "check_atomic_rule"
+    negative_fixture_package: "test-package"
+    negative_fixture_target_kind: "lib"
+    negative_fixture_target: "test_package"
+    negative_fixture_test_name: "tests::atomic_rule_rejects_mutation"
+"#;
+
     #[test]
     fn current_registry_parses_as_exactly_44_unique_invariants() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -706,7 +789,7 @@ mod tests {
             .join("verification/raft-invariants.yaml");
         let source = fs::read_to_string(path).expect("read current registry");
 
-        assert_eq!(parse_registry_schema_version(&source).unwrap(), 2);
+        assert_eq!(parse_registry_schema_version(&source).unwrap(), 3);
         let (invariants, _) = parse_invariants(&source).expect("parse current invariants");
         assert_eq!(invariants.len(), 44);
         assert_eq!(
@@ -813,6 +896,44 @@ mod tests {
             assert!(
                 parse_evidence(&source).is_err(),
                 "malformed evidence was silently accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn multi_clause_simulator_evidence_requires_a_qualified_atomic_group() {
+        let parsed =
+            parse_evidence(VALID_ATOMIC_SIMULATOR_EVIDENCE).expect("qualified atomic group parses");
+        assert_eq!(parsed.len(), 2);
+        assert!(parsed
+            .iter()
+            .all(|descriptor| descriptor.atomic_group.as_deref()
+                == Some("CM-03/current-term-commit-point")));
+
+        let cases = [
+            VALID_ATOMIC_SIMULATOR_EVIDENCE.replace(
+                "    atomic_group: \"CM-03/current-term-commit-point\"\n",
+                "",
+            ),
+            VALID_ATOMIC_SIMULATOR_EVIDENCE.replace(
+                "    clauses: \"CM-03.a,CM-03.b\"",
+                "    clauses: \"CM-03.a\"",
+            ),
+            VALID_ATOMIC_SIMULATOR_EVIDENCE
+                .replace("    negative_fixture_detector: \"check_atomic_rule\"\n", ""),
+            VALID_ATOMIC_SIMULATOR_EVIDENCE.replace(
+                "    atomic_group: \"CM-03/current-term-commit-point\"",
+                "    atomic_group: \"other/atomic-rule\"",
+            ),
+            VALID_ATOMIC_SIMULATOR_EVIDENCE.replace(
+                "    atomic_group: \"CM-03/current-term-commit-point\"",
+                "    atomic_group: \"CM-03/unreviewed-rule\"",
+            ),
+        ];
+        for source in cases {
+            assert!(
+                parse_evidence(&source).is_err(),
+                "invalid atomic group was accepted"
             );
         }
     }
