@@ -94,7 +94,6 @@ pub(super) fn apply_soak_action_inner(state: &mut ExplorationState, operation: S
         SoakOperation::LossyRestart(node_id) => {
             state.cluster.0.restart_node_lossy(node_id);
             state.lossy_restarts_issued += 1;
-            state.reset_commit_floor(node_id);
         }
     }
     state.observe_election_authority();

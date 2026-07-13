@@ -88,6 +88,7 @@ impl SoakSummary {
         &self.restarted_nodes
     }
 
+    /// Returns the exact simulator configuration fields that bind liveness evidence.
     #[must_use]
     pub fn liveness_config_provenance_json(&self) -> serde_json::Value {
         serde_json::json!({

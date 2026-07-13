@@ -1,3 +1,5 @@
+use std::fmt;
+
 use rafter::{CommittedConfiguration, Input, LogEntryKind, LogIndex, NodeId, Output, RaftSnapshot};
 
 use super::{Envelope, QueuedEnvelope};
@@ -5,6 +7,67 @@ use crate::{
     Applied, Cluster, ExecutedLogEntry, ExecutionCursor, ExecutionWitness, ReadGranted,
     ReferenceState, SnapshotInstalled,
 };
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) enum ExecutionInstrumentationError {
+    CursorUnavailable {
+        node_id: NodeId,
+    },
+    RetainedLogGap {
+        node_id: NodeId,
+        first_index: LogIndex,
+        applied_through: LogIndex,
+        available_entries: usize,
+    },
+    SnapshotPayloadUnavailable {
+        node_id: NodeId,
+        snapshot_index: LogIndex,
+    },
+    SnapshotReferenceUnavailable {
+        node_id: NodeId,
+        snapshot_index: LogIndex,
+    },
+    InitialReferenceUnavailable {
+        node_id: NodeId,
+    },
+}
+
+impl fmt::Display for ExecutionInstrumentationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::CursorUnavailable { node_id } => {
+                write!(formatter, "{node_id} has no execution-history cursor")
+            }
+            Self::RetainedLogGap {
+                node_id,
+                first_index,
+                applied_through,
+                available_entries,
+            } => write!(
+                formatter,
+                "{node_id} applied through {applied_through} without retaining every execution-history entry from {first_index} ({available_entries} available)"
+            ),
+            Self::SnapshotPayloadUnavailable {
+                node_id,
+                snapshot_index,
+            } => write!(
+                formatter,
+                "{node_id} cannot resume execution history at snapshot index {snapshot_index}: snapshot payload is missing"
+            ),
+            Self::SnapshotReferenceUnavailable {
+                node_id,
+                snapshot_index,
+            } => write!(
+                formatter,
+                "{node_id} cannot resume execution history at snapshot index {snapshot_index}: snapshot reference state is missing"
+            ),
+            Self::InitialReferenceUnavailable { node_id } => write!(
+                formatter,
+                "{node_id} cannot resume execution history: initial reference state is missing"
+            ),
+        }
+    }
+}
 
 impl Cluster {
     /// Returns the currently queued message envelopes in network order.
@@ -206,11 +269,12 @@ impl Cluster {
     fn record_execution_history(&mut self, node_id: NodeId) {
         self.refresh_execution_epoch(node_id);
 
-        let cursor = self
-            .execution_cursors
-            .get(&node_id)
-            .expect("every simulated node has an execution cursor")
-            .clone();
+        if self.execution_instrumentation_error(node_id).is_some() {
+            return;
+        }
+        let Some(cursor) = self.execution_cursors.get(&node_id).cloned() else {
+            return;
+        };
         let applied_through = self.local_applied_index(node_id);
         if applied_through <= cursor.applied_through {
             return;
@@ -219,12 +283,9 @@ impl Cluster {
         let first_index = cursor.applied_through.next();
         let entries = self.log_entries_from(node_id, first_index);
         let required = applied_through.0 - cursor.applied_through.0;
-        let required_entries = usize::try_from(required)
-            .expect("an in-memory log prefix must fit in the platform address space");
-        assert!(
-            entries.len() >= required_entries,
-            "{node_id} applied through {applied_through} without retaining entries from {first_index}"
-        );
+        let Ok(required_entries) = usize::try_from(required) else {
+            return;
+        };
 
         let application_epoch = self.application_epoch(node_id);
         let commit_index_at_emit = self.commit_index(node_id);
@@ -267,10 +328,12 @@ impl Cluster {
 
     fn refresh_execution_epoch(&mut self, node_id: NodeId) {
         let application_epoch = self.application_epoch(node_id);
-        let cursor = self
-            .execution_cursors
-            .get(&node_id)
-            .expect("every simulated node has an execution cursor");
+        if self.execution_instrumentation_error(node_id).is_some() {
+            return;
+        }
+        let Some(cursor) = self.execution_cursors.get(&node_id) else {
+            return;
+        };
         let snapshot_boundary = self
             .node(node_id)
             .snapshot()
@@ -283,19 +346,23 @@ impl Cluster {
             return;
         }
 
-        let (applied_through, state) = self.node(node_id).snapshot().map_or_else(
-            || (LogIndex::ZERO, self.initial_reference_state(node_id)),
-            |snapshot| {
-                let payload = self
-                    .snapshot_payload(node_id, snapshot)
-                    .expect("restarted snapshot payload remains available")
-                    .to_vec();
-                (
-                    snapshot.metadata.last_included_index,
-                    self.snapshot_reference_state(node_id, snapshot, payload),
-                )
-            },
-        );
+        let (applied_through, state) = if let Some(snapshot) = self.node(node_id).snapshot() {
+            let Some(payload) = self
+                .snapshot_payload(node_id, snapshot)
+                .map(ToOwned::to_owned)
+            else {
+                return;
+            };
+            let Some(state) = self.snapshot_reference_state(node_id, snapshot, payload) else {
+                return;
+            };
+            (snapshot.metadata.last_included_index, state)
+        } else {
+            let Some(state) = self.initial_reference_state(node_id) else {
+                return;
+            };
+            (LogIndex::ZERO, state)
+        };
         self.execution_cursors.insert(
             node_id,
             ExecutionCursor {
@@ -312,7 +379,9 @@ impl Cluster {
         snapshot: &RaftSnapshot,
         payload: Vec<u8>,
     ) {
-        let state = self.snapshot_reference_state(node_id, snapshot, payload);
+        let Some(state) = self.snapshot_reference_state(node_id, snapshot, payload) else {
+            return;
+        };
         self.execution_cursors.insert(
             node_id,
             ExecutionCursor {
@@ -323,11 +392,8 @@ impl Cluster {
         );
     }
 
-    fn initial_reference_state(&self, node_id: NodeId) -> ReferenceState {
-        self.initial_reference_states
-            .get(&node_id)
-            .expect("every simulated node has an initial reference state")
-            .clone()
+    fn initial_reference_state(&self, node_id: NodeId) -> Option<ReferenceState> {
+        self.initial_reference_states.get(&node_id).cloned()
     }
 
     fn snapshot_reference_state(
@@ -335,16 +401,129 @@ impl Cluster {
         node_id: NodeId,
         snapshot: &RaftSnapshot,
         payload: Vec<u8>,
-    ) -> ReferenceState {
-        ReferenceState {
+    ) -> Option<ReferenceState> {
+        let committed_membership = self.snapshot_reference_membership(node_id, snapshot)?;
+        Some(ReferenceState {
             application_value: payload.into(),
-            committed_membership: snapshot
-                .metadata
-                .committed_membership()
-                .cloned()
-                .unwrap_or_else(|| self.initial_reference_state(node_id).committed_membership),
+            committed_membership,
             committed_configuration: snapshot.metadata.committed_configuration_state(),
+        })
+    }
+
+    fn snapshot_reference_membership(
+        &self,
+        node_id: NodeId,
+        snapshot: &RaftSnapshot,
+    ) -> Option<rafter::MembershipConfig> {
+        snapshot
+            .metadata
+            .committed_membership()
+            .cloned()
+            .or_else(|| {
+                self.initial_reference_state(node_id)
+                    .map(|state| state.committed_membership)
+            })
+    }
+
+    pub(crate) fn execution_instrumentation_errors(&self) -> Vec<ExecutionInstrumentationError> {
+        self.execution_instrumentation_errors_with_log_len(|node_id, first_index| {
+            self.log_entries_from(node_id, first_index).len()
+        })
+    }
+
+    fn execution_instrumentation_errors_with_log_len(
+        &self,
+        retained_log_len: impl Fn(NodeId, LogIndex) -> usize,
+    ) -> Vec<ExecutionInstrumentationError> {
+        self.nodes
+            .keys()
+            .filter_map(|node_id| {
+                self.execution_instrumentation_error_with_log_len(*node_id, &retained_log_len)
+            })
+            .collect()
+    }
+
+    fn execution_instrumentation_error(
+        &self,
+        node_id: NodeId,
+    ) -> Option<ExecutionInstrumentationError> {
+        self.execution_instrumentation_error_with_log_len(node_id, &|node_id, first_index| {
+            self.log_entries_from(node_id, first_index).len()
+        })
+    }
+
+    fn execution_instrumentation_error_with_log_len(
+        &self,
+        node_id: NodeId,
+        retained_log_len: &impl Fn(NodeId, LogIndex) -> usize,
+    ) -> Option<ExecutionInstrumentationError> {
+        let cursor = self
+            .execution_cursors
+            .get(&node_id)
+            .ok_or(ExecutionInstrumentationError::CursorUnavailable { node_id });
+        let cursor = match cursor {
+            Ok(cursor) => cursor,
+            Err(error) => return Some(error),
+        };
+        let application_epoch = self.application_epoch(node_id);
+        let snapshot = self.node(node_id).snapshot();
+        let snapshot_boundary = snapshot.map_or(LogIndex::ZERO, |snapshot| {
+            snapshot.metadata.last_included_index
+        });
+        if let Some(snapshot) = snapshot {
+            if self
+                .snapshot_reference_membership(node_id, snapshot)
+                .is_none()
+            {
+                return Some(
+                    ExecutionInstrumentationError::SnapshotReferenceUnavailable {
+                        node_id,
+                        snapshot_index: snapshot_boundary,
+                    },
+                );
+            }
         }
+        let needs_refresh = cursor.application_epoch != application_epoch
+            || cursor.applied_through < snapshot_boundary;
+
+        let applied_from = if needs_refresh {
+            if let Some(snapshot) = snapshot {
+                let snapshot_index = snapshot.metadata.last_included_index;
+                if self.snapshot_payload(node_id, snapshot).is_none() {
+                    return Some(ExecutionInstrumentationError::SnapshotPayloadUnavailable {
+                        node_id,
+                        snapshot_index,
+                    });
+                }
+                snapshot_index
+            } else {
+                if self.initial_reference_state(node_id).is_none() {
+                    return Some(ExecutionInstrumentationError::InitialReferenceUnavailable {
+                        node_id,
+                    });
+                }
+                LogIndex::ZERO
+            }
+        } else {
+            cursor.applied_through
+        };
+
+        let applied_through = self.local_applied_index(node_id);
+        if applied_through <= applied_from {
+            return None;
+        }
+        let first_index = applied_from.next();
+        let available_entries = retained_log_len(node_id, first_index);
+        let required = applied_through.0 - applied_from.0;
+        if u64::try_from(available_entries).is_ok_and(|available| available >= required) {
+            return None;
+        }
+        Some(ExecutionInstrumentationError::RetainedLogGap {
+            node_id,
+            first_index,
+            applied_through,
+            available_entries,
+        })
     }
 
     fn apply_reference_transition(
@@ -385,5 +564,185 @@ impl Cluster {
         self.network
             .iter()
             .position(|queued| queued.ready_at <= self.clock.now() && predicate(&queued.envelope))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rafter::{
+        ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion,
+        BootstrapLogEntry, BootstrapState, LogIndex, Node, NodeConfig, NodeId, RaftSnapshot,
+        RaftSnapshotMetadata, SnapshotGroupId, Term,
+    };
+
+    use super::{Cluster, ExecutionCursor, ExecutionInstrumentationError};
+
+    const NODE_ID: NodeId = NodeId(1);
+
+    #[test]
+    fn recorder_detects_each_missing_execution_input() {
+        let mut cursor = one_node_cluster();
+        cursor.execution_cursors.remove(&NODE_ID);
+        assert!(!cursor.execution_cursors.contains_key(&NODE_ID));
+        cursor.record_execution_history(NODE_ID);
+
+        let mut initial_reference = one_node_cluster();
+        initial_reference.application_epochs.insert(NODE_ID, 1);
+        initial_reference.initial_reference_states.remove(&NODE_ID);
+        assert!(!initial_reference
+            .initial_reference_states
+            .contains_key(&NODE_ID));
+        initial_reference.record_execution_history(NODE_ID);
+
+        let mut snapshot_payload = cluster_with_snapshot(true, false);
+        let snapshot = snapshot_payload
+            .node(NODE_ID)
+            .snapshot()
+            .expect("fixture has a snapshot");
+        assert!(snapshot_payload
+            .snapshot_payload(NODE_ID, snapshot)
+            .is_none());
+        snapshot_payload.record_execution_history(NODE_ID);
+
+        let mut snapshot_reference = cluster_with_snapshot(false, true);
+        snapshot_reference.initial_reference_states.remove(&NODE_ID);
+        let snapshot = snapshot_reference
+            .node(NODE_ID)
+            .snapshot()
+            .expect("fixture has a snapshot");
+        assert!(snapshot_reference
+            .snapshot_reference_membership(NODE_ID, snapshot)
+            .is_none());
+        snapshot_reference.record_execution_history(NODE_ID);
+
+        let cases = [
+            (
+                cursor.execution_instrumentation_errors(),
+                ExecutionInstrumentationError::CursorUnavailable { node_id: NODE_ID },
+            ),
+            (
+                initial_reference.execution_instrumentation_errors(),
+                ExecutionInstrumentationError::InitialReferenceUnavailable { node_id: NODE_ID },
+            ),
+            (
+                snapshot_payload.execution_instrumentation_errors(),
+                ExecutionInstrumentationError::SnapshotPayloadUnavailable {
+                    node_id: NODE_ID,
+                    snapshot_index: LogIndex(2),
+                },
+            ),
+            (
+                snapshot_reference.execution_instrumentation_errors(),
+                ExecutionInstrumentationError::SnapshotReferenceUnavailable {
+                    node_id: NODE_ID,
+                    snapshot_index: LogIndex(2),
+                },
+            ),
+        ];
+
+        for (actual, expected) in cases {
+            assert_eq!(actual, vec![expected]);
+        }
+    }
+
+    #[test]
+    fn recorder_detects_a_retained_log_gap_from_its_log_lookup() {
+        let cluster = cluster_applied_through_two();
+        assert!(cluster.execution_instrumentation_errors().is_empty());
+        let mut retained_entries = cluster.log_entries_from(NODE_ID, LogIndex(1));
+        assert_eq!(retained_entries.len(), 2);
+        retained_entries.remove(0);
+
+        let errors = cluster.execution_instrumentation_errors_with_log_len(|_, first_index| {
+            assert_eq!(first_index, LogIndex(1));
+            retained_entries.len()
+        });
+
+        assert_eq!(
+            errors,
+            vec![ExecutionInstrumentationError::RetainedLogGap {
+                node_id: NODE_ID,
+                first_index: LogIndex(1),
+                applied_through: LogIndex(2),
+                available_entries: 1,
+            }]
+        );
+    }
+
+    fn one_node_cluster() -> Cluster {
+        Cluster::new(vec![node_config()])
+    }
+
+    fn node_config() -> NodeConfig {
+        NodeConfig::new(NODE_ID, vec![NodeId(2), NodeId(3)], 3).expect("test node config is valid")
+    }
+
+    fn cluster_applied_through_two() -> Cluster {
+        let mut cluster = one_node_cluster();
+        let bootstrap = BootstrapState {
+            current_term: Term(1),
+            voted_for: None,
+            commit_index: LogIndex(2),
+            committed_configuration: None,
+            snapshot: None,
+            log: vec![
+                BootstrapLogEntry::application(LogIndex(1), Term(1), b"one".to_vec()),
+                BootstrapLogEntry::application(LogIndex(2), Term(1), b"two".to_vec()),
+            ],
+        };
+        let node = Node::from_bootstrap_applied_through(node_config(), bootstrap, LogIndex(2))
+            .expect("fixture bootstrap is valid");
+        cluster.nodes.insert(NODE_ID, node);
+        cluster
+    }
+
+    fn cluster_with_snapshot(include_reference_membership: bool, seed_payload: bool) -> Cluster {
+        let mut cluster = one_node_cluster();
+        let payload = b"snapshot-state".to_vec();
+        let metadata = RaftSnapshotMetadata::new(
+            SnapshotGroupId::new("execution-recorder").expect("valid snapshot group"),
+            NODE_ID,
+            LogIndex(2),
+            Term(1),
+            Term(1),
+            ApplicationSnapshotMetadata::new(
+                ApplicationSnapshotKind::new("register").expect("valid snapshot kind"),
+                ApplicationSnapshotVersion::new(1).expect("valid snapshot version"),
+            ),
+        )
+        .expect("valid snapshot metadata");
+        let metadata = if include_reference_membership {
+            metadata.with_committed_membership(
+                cluster.initial_reference_states[&NODE_ID]
+                    .committed_membership
+                    .clone(),
+            )
+        } else {
+            metadata
+        };
+        let snapshot = RaftSnapshot::from_payload(metadata, &payload);
+        if seed_payload {
+            cluster.seed_snapshot_payload(NODE_ID, &snapshot, payload);
+        }
+        let bootstrap = BootstrapState {
+            current_term: Term(1),
+            voted_for: None,
+            commit_index: LogIndex(2),
+            committed_configuration: None,
+            snapshot: Some(snapshot),
+            log: Vec::new(),
+        };
+        let node = Node::from_bootstrap_applied_through(node_config(), bootstrap, LogIndex(2))
+            .expect("snapshot fixture bootstrap is valid");
+        cluster.nodes.insert(NODE_ID, node);
+        cluster.execution_cursors.insert(
+            NODE_ID,
+            ExecutionCursor {
+                application_epoch: 0,
+                applied_through: LogIndex::ZERO,
+                state: cluster.initial_reference_states[&NODE_ID].clone(),
+            },
+        );
+        cluster
     }
 }

@@ -7,6 +7,7 @@ VARIABLE traceStep
 
 traceVars == << currentTerm, votedFor, role, log, commitIndex, applied, messages,
                readRequests, readGrants, membership, appliedConfigIndex,
+               effectiveMembership, effectiveConfigIndex,
                electedLeaders,
                higherTermEvidenceSeen, higherTermStepDownFailed,
                staleAuthorityAccepted, traceStep >>

@@ -78,12 +78,10 @@ pub(super) fn execute(
         .as_ref()
         .and_then(|preparation| preparation.error.clone())
     {
-        artifacts.extend(
-            checkpoint
-                .take()
-                .expect("checkpoint exists")
-                .finish(output_dir)?,
-        );
+        let Some(preparation) = checkpoint.take() else {
+            return Err("checkpoint error was reported without checkpoint state".into());
+        };
+        artifacts.extend(preparation.finish(output_dir)?);
         return Ok(checkpoint_failure(
             &trace,
             detectors,
@@ -92,16 +90,16 @@ pub(super) fn execute(
             error,
         ));
     }
-    let state = checkpoint
-        .as_ref()
-        .map_or(TlcState::Ephemeral, |preparation| TlcState::Checkpoint {
+    let state = if let Some(preparation) = checkpoint.as_ref() {
+        TlcState::Checkpoint {
             state_dir: &preparation.state_dir,
             recover_from: preparation.recover_from.as_deref(),
-            checkpoint_minutes: required_configuration(configuration, "checkpoint_minutes")
-                .expect("validated checkpoint interval"),
-            max_heap: required_configuration(configuration, "max_heap")
-                .expect("validated checkpoint heap"),
-        });
+            checkpoint_minutes: required_configuration(configuration, "checkpoint_minutes")?,
+            max_heap: required_configuration(configuration, "max_heap")?,
+        }
+    } else {
+        TlcState::Ephemeral
+    };
     let main = run_tlc(TlcRequest {
         profile,
         source_ref,
@@ -263,7 +261,7 @@ fn run_detector_probes(
         aggregate.duration_ms = aggregate
             .duration_ms
             .saturating_add(process::duration_ms(detector.run.output.duration));
-        let expected_invariant = detector_invariant(probe).expect("registered detector probe");
+        let expected_invariant = detector_invariant(probe).ok_or("unregistered detector probe")?;
         let summary = tla_output::parse(&detector.run.output.stdout).ok();
         let qualified = detector_qualified(
             detector.run.output.status.code(),
@@ -273,7 +271,7 @@ fn run_detector_probes(
         );
         aggregate.succeeded &= qualified;
         let observation =
-            detector_observation(probe.predicate).expect("registered detector predicate");
+            detector_observation(probe.predicate).ok_or("unregistered detector predicate")?;
         let predicate_qualified = aggregate.qualifications.entry(observation).or_insert(1);
         *predicate_qualified &= u64::from(qualified);
         aggregate.artifacts.push(detector.config_artifact);
@@ -359,12 +357,7 @@ impl Default for DetectorProbes {
 fn empty_detector_qualifications() -> BTreeMap<String, u64> {
     REGISTERED_PREDICATES
         .into_iter()
-        .map(|predicate| {
-            (
-                detector_observation(predicate).expect("registered predicate"),
-                0,
-            )
-        })
+        .filter_map(|predicate| detector_observation(predicate).map(|observation| (observation, 0)))
         .collect()
 }
 
