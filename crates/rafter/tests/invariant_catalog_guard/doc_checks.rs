@@ -1,4 +1,6 @@
-use std::{collections::BTreeSet, fs, path::Path, process::Command};
+use std::{collections::BTreeSet, fs, path::Path};
+
+use rafter_invariants::{render_registry_markdown, RegistryDocument};
 
 use super::Entry;
 
@@ -22,18 +24,11 @@ pub(super) fn assert_generated_doc_mentions_every_entry(doc: &str, entries: &[En
     }
 }
 
-pub(super) fn assert_rendered_doc_is_current(workspace: &Path) {
-    let output = Command::new("python3")
-        .arg("scripts/render-raft-invariants-doc")
-        .arg("--check")
-        .current_dir(workspace)
-        .output()
-        .expect("run invariant doc renderer check");
-    assert!(
-        output.status.success(),
-        "docs/raft-invariants.md is not the exact rendered output\nstdout:\n{}\nstderr:\n{}",
-        command_output_text(&output.stdout),
-        command_output_text(&output.stderr),
+pub(super) fn assert_rendered_doc_is_current(registry: &RegistryDocument, current: &str) {
+    assert_eq!(
+        current,
+        render_registry_markdown(registry),
+        "docs/raft-invariants.md is not the exact canonical Rust rendering",
     );
 }
 
@@ -79,10 +74,6 @@ pub(super) fn assert_tla_invariant_counts_match(workspace: &Path, expected: usiz
             "{relative_path} INVARIANTS block must match tla_predicates_now",
         );
     }
-}
-
-fn command_output_text(bytes: &[u8]) -> String {
-    String::from_utf8_lossy(bytes).trim().to_owned()
 }
 
 fn model_check_catalog_labels(workspace: &Path) -> Vec<String> {

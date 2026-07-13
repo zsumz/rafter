@@ -3,42 +3,42 @@ use std::{
     path::Path,
 };
 
+use rafter_invariants::RegistryCounts;
+
 use super::{
-    doc_checks::assert_tla_invariant_counts_match, parse::declared_count, Clause, Entry,
-    COVERAGE_LAYERS, EXPECTED_CANONICAL, EXPECTED_LIVENESS, EXPECTED_SAFETY,
-    EXPECTED_TLA_PREDICATES, EXPECTED_TOTAL, EXPECTED_WELL_FORMEDNESS, ID_PREFIX_TO_KIND,
-    VALID_FAMILIES, VALID_KINDS, VALID_TIERS,
+    doc_checks::assert_tla_invariant_counts_match, Clause, Entry, COVERAGE_LAYERS,
+    EXPECTED_CANONICAL, EXPECTED_LIVENESS, EXPECTED_SAFETY, EXPECTED_TLA_PREDICATES,
+    EXPECTED_TOTAL, EXPECTED_WELL_FORMEDNESS, ID_PREFIX_TO_KIND, VALID_FAMILIES, VALID_KINDS,
+    VALID_TIERS,
 };
 
-pub(super) fn assert_declared_counts_match(registry: &str, entries: &[Entry], workspace: &Path) {
+pub(super) fn assert_declared_counts_match(
+    counts: &RegistryCounts,
+    entries: &[Entry],
+    workspace: &Path,
+) {
     assert_eq!(
-        declared_count(registry, "total_entries"),
-        EXPECTED_TOTAL,
+        counts.total_entries, EXPECTED_TOTAL,
         "registry total_entries must match the reviewed catalog size",
     );
     assert_eq!(
-        declared_count(registry, "canonical_raft_safety_properties"),
-        EXPECTED_CANONICAL,
+        counts.canonical_raft_safety_properties, EXPECTED_CANONICAL,
         "registry canonical_raft_safety_properties count drifted",
     );
     assert_eq!(
-        declared_count(registry, "tla_predicates_now"),
-        EXPECTED_TLA_PREDICATES,
+        counts.tla_predicates_now, EXPECTED_TLA_PREDICATES,
         "registry tla_predicates_now count drifted",
     );
     assert_eq!(
-        declared_count(registry, "well_formedness_meta_invariants"),
-        EXPECTED_WELL_FORMEDNESS,
+        counts.well_formedness_meta_invariants, EXPECTED_WELL_FORMEDNESS,
         "registry well-formedness count drifted",
     );
     assert_eq!(
-        declared_count(registry, "semantic_safety_invariants"),
-        EXPECTED_SAFETY,
+        counts.semantic_safety_invariants, EXPECTED_SAFETY,
         "registry safety count drifted",
     );
     assert_eq!(
-        declared_count(registry, "liveness_obligations"),
-        EXPECTED_LIVENESS,
+        counts.liveness_obligations, EXPECTED_LIVENESS,
         "registry liveness count drifted",
     );
 

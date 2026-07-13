@@ -30,6 +30,15 @@ pub(super) const VALID_EVIDENCE: &str = r#"evidence:
     test_name: "tests::test_symbol"
 "#;
 
+pub(super) const VALID_CLAUSE: &str = r#"clauses:
+  - id: "AA-01.a"
+    invariant_id: "AA-01"
+    statement: "The clause holds."
+    scope: "Test scope."
+    assumptions: "Test assumptions."
+    required: "true"
+"#;
+
 pub(super) const VALID_ATOMIC_SIMULATOR_EVIDENCE: &str = r#"evidence:
   - id: "CM-03"
     clauses: "CM-03.a,CM-03.b"

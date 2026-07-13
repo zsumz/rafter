@@ -15,6 +15,8 @@ mod receipt_maelstrom;
 mod receipt_simulator;
 mod receipt_tests;
 mod receipt_tla;
+mod registry;
+mod registry_document;
 mod registry_parse;
 mod render;
 mod run_all;
@@ -31,6 +33,11 @@ pub use catalog::{
 };
 pub use plan::{capture_invocation, verify_bundle_plan, ExecutionPlan, PlanOptions};
 pub use producer::{produce, produce_with_plan, ProducerOptions, ProducerOutcome};
+pub use registry::{
+    RegistryClause, RegistryCounts, RegistryDocument, RegistryEvidence, RegistryInvariant,
+    REGISTRY_SCHEMA_VERSION,
+};
+pub use registry_document::render_registry_markdown;
 pub use render::{render_junit, render_markdown};
 pub use run_all::{run_all, write_report, RunAllOptions, RunAllOutcome};
 pub use types::{
