@@ -15,7 +15,10 @@ pub(super) fn restart_node_inner(
     node_id: NodeId,
     trace: &[Action],
 ) -> Result<(), Failure> {
-    let before_digest = state.cluster.durable_state_digest(node_id);
+    let before_digest = state
+        .cluster
+        .durable_state_digest(node_id)
+        .ok_or_else(|| missing_snapshot_payload_failure(state, node_id, trace))?;
     let before_applied_floor = state.cluster.durable_applied_floor(node_id);
     let before = state.cluster.bootstrap_state(node_id);
     let before_last_log_index = state.cluster.last_log_index(node_id);
@@ -97,6 +100,7 @@ pub(super) fn restart_node_inner(
     )?;
     mark_restart_observations(
         state,
+        node_id,
         &before,
         &after,
         &before_digest,
@@ -149,7 +153,10 @@ fn check_restart_digest(
     expected_applied_floor: LogIndex,
     trace: &[Action],
 ) -> Result<(), Failure> {
-    let after = state.cluster.durable_state_digest(node_id);
+    let after = state
+        .cluster
+        .durable_state_digest(node_id)
+        .ok_or_else(|| missing_snapshot_payload_failure(state, node_id, trace))?;
     check_exact_durable_restart(
         &state.cluster,
         node_id,
@@ -160,8 +167,23 @@ fn check_restart_digest(
     )
 }
 
+fn missing_snapshot_payload_failure(
+    state: &ExplorationState,
+    node_id: NodeId,
+    trace: &[Action],
+) -> Failure {
+    restart_failure(
+        state,
+        trace,
+        FailureKind::HarnessError,
+        catalog::PS_03_EXACT_DURABLE_RESTART,
+        format!("{node_id} installed snapshot descriptor has no durable payload bytes"),
+    )
+}
+
 fn mark_restart_observations(
     state: &mut ExplorationState,
+    node_id: NodeId,
     before: &BootstrapState,
     after: &BootstrapState,
     before_digest: &DurableStateDigest,
@@ -185,7 +207,7 @@ fn mark_restart_observations(
     if before_digest
         .log
         .iter()
-        .any(|entry| entry.index <= before_digest.commit_index)
+        .any(|entry| entry.index <= state.cluster.delivered_ack_floor(node_id))
     {
         state.mark_observation(Observation::RestartAcknowledgedEntryComparisons);
     }

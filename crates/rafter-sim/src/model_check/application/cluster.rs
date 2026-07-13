@@ -24,7 +24,9 @@ pub(in crate::model_check::state::application) fn apply_to_cluster(
                 local_proposals: recorded.local_proposals,
             };
         }
-        Operation::Restart(_) => unreachable!("restart operations need invariant context"),
+        Operation::Restart(_) | Operation::ApplicationLossRestart(_) => {
+            unreachable!("restart operations need invariant context")
+        }
         Operation::Propose {
             to, proposal_id, ..
         } => {

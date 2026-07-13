@@ -1,6 +1,6 @@
 use super::super::super::{
-    helpers::proposal_payload, observations::Observation, scheduling::Operation, Action,
-    ExplorationState, Failure, RestartSnapshotState,
+    observations::Observation, scheduling::Operation, Action, ExplorationState, Failure,
+    RestartSnapshotState,
 };
 use super::cluster::apply_to_cluster;
 use super::SnapshotBootstrapSeed;
@@ -19,13 +19,12 @@ pub(super) fn apply_snapshot_bootstrap_seeds_inner(
             .0
             .restart_node_from_bootstrap(seed.node_id, seed.bootstrap)?;
     }
-    state.refresh_log_history();
-    state.refresh_seeded_commit_history();
     Ok(())
 }
 
 pub(super) fn apply_to_state_inner(state: &mut ExplorationState, operation: Operation) {
     let commit_context = state.commit_transition_context();
+    let before = state.cluster.clone();
     let configuration_proposer = match &operation {
         Operation::AddLearner { to, .. }
         | Operation::RemoveLearner { to, .. }
@@ -35,6 +34,7 @@ pub(super) fn apply_to_state_inner(state: &mut ExplorationState, operation: Oper
         | Operation::LeaveJoint { to } => Some(*to),
         Operation::Tick(_)
         | Operation::Restart(_)
+        | Operation::ApplicationLossRestart(_)
         | Operation::Propose { .. }
         | Operation::ReadIndex { .. }
         | Operation::Transfer { .. }
@@ -63,9 +63,8 @@ pub(super) fn apply_to_state_inner(state: &mut ExplorationState, operation: Oper
         };
         Some((envelope.to, term))
     });
-    let needs_transition_context = matches!(&operation, Operation::Tick(_)) || delivered.is_some();
-    let transition_context =
-        needs_transition_context.then(|| (state.cluster.clone(), delivered.clone()));
+    let records_protocol_transition =
+        matches!(&operation, Operation::Tick(_)) || delivered.is_some();
 
     if let Operation::Propose {
         to,
@@ -75,11 +74,6 @@ pub(super) fn apply_to_state_inner(state: &mut ExplorationState, operation: Oper
     {
         state.record_client_proposal(*to, *proposal_id, *stale_leader);
         state.proposals_issued += 1;
-        if *stale_leader {
-            state
-                .forbidden_applied_payloads
-                .insert(proposal_payload(*proposal_id).into());
-        }
     }
     if let Operation::ReadIndex { to, request_id } = &operation {
         state.record_client_read(*to, *request_id, state.cluster.committed_floor());
@@ -101,13 +95,12 @@ pub(super) fn apply_to_state_inner(state: &mut ExplorationState, operation: Oper
     }
     let effects = apply_to_cluster(&mut state.cluster.0, operation);
     state.record_local_proposal_events(&effects.local_proposals);
-    if let Some((before, delivered)) = transition_context {
-        state.observe_election_authority();
-        state.record_election_observation(&before, delivered.as_ref(), &effects.emitted);
+    state.observe_election_authority();
+    state.record_election_observation(&before, delivered.as_ref(), &effects.emitted);
+    if records_protocol_transition {
         state.record_log_transition(&before, delivered.as_ref(), &effects.emitted);
         state.record_snapshot_transition(&before, delivered.as_ref());
     }
-    state.observe_election_authority();
     state.refresh_log_history();
     state.record_commit_observation(
         &commit_context,
@@ -128,6 +121,9 @@ pub(super) fn apply_to_restart_snapshot_state(
     match operation {
         Operation::Restart(node_id) => {
             super::restart_node(&mut state.state, node_id, trace)?;
+        }
+        Operation::ApplicationLossRestart(node_id) => {
+            super::restart_node_losing_application_state(&mut state.state, node_id, trace)?;
         }
         operation => {
             super::apply_to_state(&mut state.state, operation);
