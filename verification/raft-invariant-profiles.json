@@ -30,7 +30,7 @@
           "require_peak_rss": true
         },
         "simulator": {
-          "producer": "rafter-invariants-simulator-v12",
+          "producer": "rafter-invariants-simulator-v13",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "pr", "--layer", "simulator"],
           "configuration": {"build": "release-and-test-locked", "completion": "frontier-and-semantic-floor", "execution_contract": "rafter-soak-execution-v1", "liveness_report_binding": "typed-canonical-json-sha256-v3", "model_profile": "fast+raft-soak", "seed_policy": "curated-0x9103-through-0x9106", "snapshot_catchup_probe": "required", "soak_steps": "320", "state_floors": "per-evidence"},
           "minimum_observed_checks": 79,
@@ -62,7 +62,7 @@
           "require_peak_rss": true
         },
         "simulator": {
-          "producer": "rafter-invariants-simulator-v12",
+          "producer": "rafter-invariants-simulator-v13",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "nightly", "--layer", "simulator"],
           "configuration": {"build": "release-and-test-locked", "canonical_check_binding": "scheduled-suffix-v1", "completion": "frontier-and-aggregate-state-floor", "execution_contract": "rafter-soak-execution-v1", "liveness_report_binding": "typed-canonical-json-sha256-v3", "model_profile": "raft-nightly", "seed_count": "6", "seed_policy": "source-derived-sha256-v1", "soak_steps": "1024", "state_floors": "100000000-protocol-and-verifier"},
           "minimum_observed_checks": 79,
@@ -101,7 +101,7 @@
           "require_peak_rss": true
         },
         "simulator": {
-          "producer": "rafter-invariants-simulator-v12",
+          "producer": "rafter-invariants-simulator-v13",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "weekly", "--layer", "simulator"],
           "configuration": {"build": "release-and-test-locked", "canonical_check_binding": "scheduled-suffix-v1", "completion": "frontier-and-aggregate-state-floor", "execution_contract": "rafter-soak-execution-v1", "liveness_report_binding": "typed-canonical-json-sha256-v3", "model_profile": "raft-weekly", "seed_count": "10", "seed_policy": "source-derived-sha256-v1", "soak_steps": "4096", "state_floors": "250000000-protocol-and-verifier"},
           "minimum_observed_checks": 79,

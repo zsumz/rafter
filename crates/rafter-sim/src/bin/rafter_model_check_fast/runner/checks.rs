@@ -22,20 +22,22 @@ pub(super) fn run_fast_profile() -> Result<(), Box<dyn Error>> {
     run_raft_check("raft-election", || {
         check_raft_election_safety(three_node_configs(2), Bounds::new(8))
     })?;
-    // Both in-flight window regimes are explored explicitly. Two proposals
+    // These depths back the reviewed per-evidence state floors in
+    // verification/raft-invariants.yaml. Both in-flight window regimes are
+    // explored explicitly. Two proposals
     // make the window bind: a window of one answers the second proposal
     // with an empty append until the first batch is acknowledged, while a
     // pipelined window streams the second batch immediately.
     run_raft_check("raft-commit", || {
         check_raft_commit_safety(
             three_node_configs_with_inflight_window(2, 3),
-            Bounds::new(8).with_max_proposals(2),
+            Bounds::new(9).with_max_proposals(2),
         )
     })?;
     run_raft_check("raft-commit-window1", || {
         check_raft_commit_safety(
             three_node_configs_with_inflight_window(2, 1),
-            Bounds::new(8).with_max_proposals(2),
+            Bounds::new(9).with_max_proposals(2),
         )
     })?;
     run_raft_check("raft-commit-production", || {
@@ -47,7 +49,7 @@ pub(super) fn run_fast_profile() -> Result<(), Box<dyn Error>> {
     run_raft_check("raft-membership", || {
         check_raft_membership_safety(
             four_node_future_learner_configs(3),
-            Bounds::new(5)
+            Bounds::new(6)
                 .with_max_proposals(1)
                 .with_max_membership_changes(1),
         )
@@ -65,7 +67,7 @@ pub(super) fn run_fast_profile() -> Result<(), Box<dyn Error>> {
         check_raft_restart_and_snapshot_safety(Bounds::new(10).with_max_restarts(1))
     })?;
     run_raft_check("raft-election-prevote", || {
-        check_raft_election_safety(three_node_pre_vote_configs(2), Bounds::new(7))
+        check_raft_election_safety(three_node_pre_vote_configs(2), Bounds::new(9))
     })?;
     run_raft_check(
         "raft-semantic-witnesses",
@@ -74,7 +76,7 @@ pub(super) fn run_fast_profile() -> Result<(), Box<dyn Error>> {
     run_raft_check("raft-read-index", || {
         check_raft_read_index_safety(
             three_node_configs(2),
-            Bounds::new(6)
+            Bounds::new(7)
                 .with_max_proposals(1)
                 .with_max_read_indexes(1),
         )
@@ -126,7 +128,7 @@ pub(super) fn run_raft_deep_profile(
         check_raft_restart_and_snapshot_safety(Bounds::new(10).with_max_restarts(2))
     })?;
     run_raft_check("raft-election-prevote-deep", || {
-        check_raft_election_safety(three_node_pre_vote_configs(2), Bounds::new(7))
+        check_raft_election_safety(three_node_pre_vote_configs(2), Bounds::new(9))
     })?;
     run_raft_check("raft-read-index-deep", || {
         check_raft_read_index_safety(
