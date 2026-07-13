@@ -601,6 +601,12 @@ fn public_api_docs_guard_excludes_test_support_files_from_library_risk_scan() {
     assert!(!is_library_rust_file(Path::new(
         "crates/demo/src/nested/test_support.rs"
     )));
+    assert!(!is_library_rust_file(Path::new(
+        "crates/demo/src/component_tests.rs"
+    )));
+    assert!(!is_library_rust_file(Path::new(
+        "crates/demo/src/component_tests/fixture.rs"
+    )));
     assert!(is_library_rust_file(Path::new("crates/demo/src/lib.rs")));
 }
 
@@ -1095,6 +1101,8 @@ fn is_library_rust_file(path: &Path) -> bool {
         && !path_text.ends_with("/tests.rs")
         && !path_text.ends_with("/test_support.rs")
         && !path_text.ends_with("_test.rs")
+        && !path_text.ends_with("_tests.rs")
+        && !path_text.contains("_tests/")
 }
 
 fn display_path(workspace: &Path, path: &Path) -> String {
