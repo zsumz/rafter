@@ -20,54 +20,27 @@ pub(crate) fn check_restart_snapshot_safety(
     check_committed_prefixes(state.state.cluster(), trace)?;
     check_snapshot_boundary_monotonicity(&state.state, trace)?;
     check_snapshot_payload_binding(&state.state, trace)?;
+    check_snapshot_semantic_history(&state.state, trace)?;
     check_snapshot_transfer_identity(&state.state, trace)?;
     check_snapshot_chunk_identity_history(&state.state, trace)?;
     check_snapshot_chunk_offsets_history(&state.state, trace)?;
     check_snapshot_install_completeness_history(&state.state, trace)?;
-    check_pending_snapshot_lifecycle(&state.state, trace)?;
+    check_pending_snapshot_lifecycle(&state.state, trace)
+}
 
-    let Some(expected) = &state.expected_snapshot else {
-        return Ok(());
-    };
-
-    for applied in &state.state.cluster().applied {
-        if applied.payload == expected.payload {
-            return Err(Failure {
-                kind: crate::model_check::FailureKind::InvariantViolation,
-                invariant: catalog::SS_05_SNAPSHOT_SEMANTIC_EQUIVALENCE,
-                message: "snapshot bytes were exposed as an applied log entry".to_string(),
-                trace: trace.to_vec(),
-                state: summarize(state.state.cluster()),
-            });
-        }
+pub(super) fn check_snapshot_semantic_history(
+    state: &ExplorationState,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    if let Some(message) = state.snapshot_history().semantic_violations().iter().next() {
+        return Err(Failure {
+            kind: crate::model_check::FailureKind::InvariantViolation,
+            invariant: catalog::SS_05_SNAPSHOT_SEMANTIC_EQUIVALENCE,
+            message: message.clone(),
+            trace: trace.to_vec(),
+            state: summarize(state.cluster()),
+        });
     }
-
-    for (node_id, node) in &state.state.cluster().nodes {
-        if node.snapshot_index() < expected.snapshot.metadata.last_included_index {
-            continue;
-        }
-
-        let bootstrap = state.state.cluster().bootstrap_state(*node_id);
-        for entry in bootstrap.log {
-            if state
-                .divergent_payloads
-                .iter()
-                .any(|payload| entry.kind.application_payload() == Some(payload.as_slice()))
-            {
-                return Err(Failure {
-                    kind: crate::model_check::FailureKind::InvariantViolation,
-                    invariant: catalog::SS_05_SNAPSHOT_SEMANTIC_EQUIVALENCE,
-                    message: format!(
-                        "{node_id} resurrected divergent suffix at log index {}",
-                        entry.index
-                    ),
-                    trace: trace.to_vec(),
-                    state: summarize(state.state.cluster()),
-                });
-            }
-        }
-    }
-
     Ok(())
 }
 
