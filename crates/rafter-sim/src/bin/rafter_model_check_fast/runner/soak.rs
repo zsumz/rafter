@@ -4,10 +4,10 @@ use std::{
 };
 
 use rafter::NodeConfig;
-use rafter_sim::model_check::{run_raft_random_soak, SoakConfig};
+use rafter_sim::model_check::run_raft_random_soak;
 use rafter_sim::SimSeed;
 
-use crate::profile::SoakProfile;
+use crate::profile::{SoakCheckKind, SoakExecutionContract, SoakProfile};
 use crate::raft_config::{
     four_node_future_learner_configs, three_node_configs, three_node_lease_configs,
 };
@@ -41,43 +41,35 @@ pub(super) fn run_raft_soak_profile(
         source.as_str(),
         format_seed_list(seeds)
     );
-    run_raft_soak_profile_for_configs(profile.name, profile, seeds, &three_node_configs(2))?;
-    run_raft_soak_profile_for_configs(
-        &format!("{}-lease", profile.name),
-        profile,
-        seeds,
-        &three_node_lease_configs(8),
-    )?;
-    run_raft_soak_profile_for_configs(
-        &format!("{}-membership", profile.name),
-        profile,
-        seeds,
-        &four_node_future_learner_configs(3),
-    )
+    for (kind, configs) in [
+        (SoakCheckKind::Standard, three_node_configs(2)),
+        (SoakCheckKind::Lease, three_node_lease_configs(8)),
+        (
+            SoakCheckKind::Membership,
+            four_node_future_learner_configs(3),
+        ),
+    ] {
+        let contract = profile.execution_contract(kind);
+        run_raft_soak_profile_for_configs(profile, seeds, &configs, &contract)?;
+    }
+    Ok(())
 }
 
 fn run_raft_soak_profile_for_configs(
-    name: &str,
     profile: SoakProfile,
     seeds: &[SimSeed],
     configs: &[NodeConfig],
+    contract: &SoakExecutionContract,
 ) -> Result<(), Box<dyn Error>> {
+    contract.validate_node_configs(configs)?;
     for seed in seeds.iter().copied() {
-        let config = SoakConfig::new(seed, profile.steps)
-            .with_max_proposals(profile.max_proposals)
-            .with_max_restarts(profile.max_restarts)
-            .with_max_read_indexes(profile.max_read_indexes)
-            .with_max_membership_changes(profile.max_membership_changes)
-            .with_max_transfers(profile.max_transfers)
-            .with_max_partitions(profile.max_partitions)
-            .with_max_lossy_restarts(profile.max_lossy_restarts)
-            .with_snapshot_catchup_probe()
-            .with_tick_skew(rafter::NodeId(1), profile.tick_skew_weight);
+        let config = profile.soak_config(seed);
+        contract.validate_config(config)?;
         let started = Instant::now();
         let summary = run_raft_random_soak(configs.to_owned(), config).inspect_err(|failure| {
-            print_soak_failure(name, failure);
+            print_soak_failure(&contract.check_id, failure);
         })?;
-        print_soak_summary(name, &summary, config, started.elapsed());
+        print_soak_summary(contract, &summary, config, started.elapsed());
     }
     Ok(())
 }

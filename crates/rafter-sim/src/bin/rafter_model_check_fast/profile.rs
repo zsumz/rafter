@@ -8,7 +8,7 @@ mod cli;
 mod soak_profile;
 
 pub(crate) use cli::parse_profile;
-pub(crate) use soak_profile::SoakProfile;
+pub(crate) use soak_profile::{SoakCheckKind, SoakExecutionContract, SoakProfile};
 
 pub(crate) const SCHEDULE_CLASSES: &str =
     "proposal, failover, snapshot_transfer, restart, drop, delay, duplicate, reorder, partition, lossy_restart, tick_skew, read_index, transfer, membership_change";
