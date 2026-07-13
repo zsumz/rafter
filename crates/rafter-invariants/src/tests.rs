@@ -535,10 +535,10 @@ fn detector_fixtures_have_distinct_evidence_ids() {
         .map(|evidence| evidence.evidence_id())
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(ids.len(), simulator.len());
-    let physical_checks = simulator
-        .iter()
-        .map(|evidence| {
-            (
+    let mut physical_checks = std::collections::BTreeMap::new();
+    for evidence in &simulator {
+        physical_checks
+            .entry((
                 evidence.path.as_str(),
                 evidence.symbol.as_str(),
                 evidence.negative_fixture.as_deref(),
@@ -546,10 +546,18 @@ fn detector_fixtures_have_distinct_evidence_ids() {
                     .simulator
                     .as_ref()
                     .map(|identity| identity.required_observation.as_str()),
-            )
-        })
-        .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(physical_checks.len(), 56);
+            ))
+            .or_insert_with(Vec::new)
+            .push(evidence);
+    }
+    for descriptors in physical_checks.values().filter(|group| group.len() > 1) {
+        let atomic_groups = descriptors
+            .iter()
+            .map(|evidence| evidence.atomic_group.as_deref())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(atomic_groups.len(), 1);
+        assert!(atomic_groups.iter().all(Option::is_some));
+    }
 }
 
 #[test]
