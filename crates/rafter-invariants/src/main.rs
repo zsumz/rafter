@@ -1,5 +1,5 @@
 use std::{
-    env,
+    env, fs,
     path::{Path, PathBuf},
     process::{Command, ExitCode},
 };
@@ -7,8 +7,9 @@ use std::{
 use clap::{Parser, Subcommand};
 use rafter_invariants::{
     aggregate_with_harness_errors, capture_invocation, load_bundles, load_evidence, produce,
-    run_all, verify_bundle_plan, verify_layer_bundle, write_report, ExecutionPlan, PlanOptions,
-    ProducerOptions, RunAllOptions, VerdictReport, VerdictStatus,
+    render_registry_markdown, run_all, verify_bundle_plan, verify_layer_bundle, write_report,
+    ExecutionPlan, PlanOptions, ProducerOptions, RegistryDocument, RunAllOptions, VerdictReport,
+    VerdictStatus,
 };
 
 #[derive(Debug, Parser)]
@@ -82,6 +83,14 @@ enum Commands {
         registry: PathBuf,
         #[arg(long, default_value = "verification/raft-invariant-profiles.json")]
         manifest: PathBuf,
+    },
+    RenderDoc {
+        #[arg(long, default_value = "verification/raft-invariants.yaml")]
+        registry: PathBuf,
+        #[arg(long, default_value = "docs/raft-invariants.md")]
+        output: PathBuf,
+        #[arg(long)]
+        check: bool,
     },
 }
 
@@ -181,7 +190,43 @@ fn run(cli: Cli) -> Result<bool, Box<dyn std::error::Error>> {
             println!("verified {profile}/{layer} evidence");
             Ok(true)
         }
+        Commands::RenderDoc {
+            registry,
+            output,
+            check,
+        } => render_doc(&registry, &output, check),
     }
+}
+
+fn render_doc(
+    registry_path: &Path,
+    output_path: &Path,
+    check: bool,
+) -> Result<bool, Box<dyn std::error::Error>> {
+    let registry = RegistryDocument::load(registry_path)?;
+    let rendered = render_registry_markdown(&registry);
+    if check {
+        let current = fs::read_to_string(output_path).map_err(|error| {
+            format!(
+                "{} is missing or unreadable: {error}; run scripts/render-raft-invariants-doc",
+                output_path.display()
+            )
+        })?;
+        if current != rendered {
+            return Err(format!(
+                "{} is out of date; run scripts/render-raft-invariants-doc",
+                output_path.display()
+            )
+            .into());
+        }
+        return Ok(true);
+    }
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(output_path, rendered)?;
+    println!("wrote {}", output_path.display());
+    Ok(true)
 }
 
 fn check(options: CheckOptions) -> Result<bool, Box<dyn std::error::Error>> {
@@ -274,9 +319,12 @@ fn git_head() -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::{
+        path::PathBuf,
+        sync::atomic::{AtomicU64, Ordering},
+    };
 
-    use super::profile_result_files;
+    use super::{profile_result_files, render_doc};
 
     static DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -307,6 +355,25 @@ mod tests {
             paths,
             vec![root.join("pr-simulator.json"), root.join("pr-tests.json")]
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn document_check_fails_stale_and_accepts_canonical_output() {
+        let id = DIRECTORY_ID.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "rafter-invariants-document-{}-{id}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).expect("test directory exists");
+        let workspace = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let registry = workspace.join("verification/raft-invariants.yaml");
+        let output = root.join("raft-invariants.md");
+        std::fs::write(&output, "stale\n").expect("stale fixture writes");
+
+        assert!(render_doc(&registry, &output, true).is_err());
+        assert!(render_doc(&registry, &output, false).expect("render document"));
+        assert!(render_doc(&registry, &output, true).expect("check current document"));
         let _ = std::fs::remove_dir_all(root);
     }
 }

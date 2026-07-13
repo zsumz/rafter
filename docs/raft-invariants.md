@@ -1456,7 +1456,7 @@ Statement: A proposal accepted by a stable leader with a reachable quorum eventu
 
 Scope: Bounded deterministic simulator executions after the named fault and scheduling preconditions hold.
 
-Assumptions: Faults stop, a quorum remains mutually reachable, enabled deliveries and ticks are scheduled fairly, and execution remains within the stated round or step bound.
+Assumptions: After a finite fault prefix, no new faults occur; each scenario's declared fault topology remains stable or heals as specified, a quorum remains mutually reachable, enabled deliveries and ticks are scheduled fairly, and execution remains within the stated round or step bound.
 
 Required clauses:
 - `LV-02.a`: A proposal accepted by a stable leader with a reachable quorum commits and applies within the documented bound.
