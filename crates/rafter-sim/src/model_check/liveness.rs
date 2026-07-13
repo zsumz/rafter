@@ -245,19 +245,8 @@ fn exercise_post_heal_partition(
     partition_a: rafter::NodeId,
     partition_b: rafter::NodeId,
 ) -> Result<PartitionExercise, SoakFailure> {
-    let protocol_before = state
-        .cluster()
-        .nodes
-        .keys()
-        .copied()
-        .map(|node_id| {
-            (
-                node_id,
-                state.cluster().current_term(node_id),
-                state.cluster().role(node_id),
-            )
-        })
-        .collect::<Vec<_>>();
+    let nodes_exercised = state.cluster().nodes.len();
+    let protocol_before = super::explorers::protocol_state_fingerprint(state);
     let exercise_trace_start = trace.len();
     for round in 0..POST_HEAL_FAULT_EXERCISE_ROUNDS {
         drive_soak_liveness_round(state, config, trace, observed_actions, round)?;
@@ -285,19 +274,7 @@ fn exercise_post_heal_partition(
         .iter()
         .filter(|action| action.kind() == SoakActionKind::Drop)
         .count();
-    let protocol_after = state
-        .cluster()
-        .nodes
-        .keys()
-        .copied()
-        .map(|node_id| {
-            (
-                node_id,
-                state.cluster().current_term(node_id),
-                state.cluster().role(node_id),
-            )
-        })
-        .collect::<Vec<_>>();
+    let protocol_after = super::explorers::protocol_state_fingerprint(state);
     let partition_active_after_exercise =
         state.cluster().partitioned(partition_a, partition_b) && has_partition(state.cluster());
     if !partition_active_after_exercise {
@@ -310,7 +287,7 @@ fn exercise_post_heal_partition(
         ));
     }
     Ok(PartitionExercise {
-        nodes_exercised: protocol_before.len(),
+        nodes_exercised,
         ticks_executed,
         deliveries_executed,
         drops_executed,

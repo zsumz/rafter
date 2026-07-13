@@ -313,6 +313,13 @@ impl StateKey {
     }
 }
 
+pub(in crate::model_check) fn protocol_state_fingerprint(
+    state: &ExplorationState,
+) -> (u64, u64, u64) {
+    let key = StateKey::from_protocol_state(state);
+    (key.len, key.hash_a, key.hash_b)
+}
+
 struct StateKeyHasher {
     len: u64,
     hash_a: u64,

@@ -812,7 +812,7 @@ fn validate_fault_cycle(
     let ticks_executed = required_object_u64(fault_cycle, "ticks_executed")?;
     let _deliveries_executed = required_object_u64(fault_cycle, "deliveries_executed")?;
     let _drops_executed = required_object_u64(fault_cycle, "drops_executed")?;
-    let _protocol_state_changed = fault_cycle
+    let protocol_state_changed = fault_cycle
         .get("protocol_state_changed")
         .and_then(serde_json::Value::as_bool)
         .ok_or_else(|| {
@@ -829,6 +829,7 @@ fn validate_fault_cycle(
         || partitioned_rounds != expected.fixed_rounds
         || nodes_exercised < 2
         || ticks_executed != partitioned_rounds.saturating_mul(nodes_exercised)
+        || !protocol_state_changed
         || partition_active_after_exercise != Some(true)
         || heal_observed != Some(true)
     {
@@ -1669,6 +1670,7 @@ mod tests {
             "partition_observed",
             "partition_active_after_exercise",
             "heal_observed",
+            "protocol_state_changed",
         ] {
             let (summary, config, mut reports) = base_soak_reports();
             report_mut(&mut reports, "leader-convergence")["fault_cycle"][field] = json!(false);
