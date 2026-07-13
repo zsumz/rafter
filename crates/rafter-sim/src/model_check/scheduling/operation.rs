@@ -18,6 +18,7 @@ pub(in crate::model_check) struct EnabledSoakAction {
 pub(in crate::model_check) enum Operation {
     Tick(NodeId),
     Restart(NodeId),
+    ApplicationLossRestart(NodeId),
     Propose {
         to: NodeId,
         proposal_id: ProposalId,
@@ -72,6 +73,7 @@ pub(in crate::model_check) enum SoakOperation {
     DropAt(usize),
     DuplicateAt(usize),
     Restart(NodeId),
+    ApplicationLossRestart(NodeId),
     ReadIndex {
         to: NodeId,
         request_id: u64,

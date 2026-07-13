@@ -11,11 +11,12 @@ use super::membership::{
 };
 use super::newer_term_has_leader;
 use super::operation::{EnabledSoakAction, SoakOperation};
+use super::SchedulingError;
 
 pub(in crate::model_check) fn enabled_soak_actions(
     state: &ExplorationState,
     config: SoakConfig,
-) -> Vec<EnabledSoakAction> {
+) -> Result<Vec<EnabledSoakAction>, SchedulingError> {
     let mut actions = state
         .cluster()
         .nodes
@@ -48,10 +49,46 @@ pub(in crate::model_check) fn enabled_soak_actions(
         }
     }
 
+    actions.extend(enabled_message_actions(state)?);
+
+    if state.restarts_issued() < config.max_restarts as u64 {
+        actions.extend(
+            state
+                .cluster()
+                .nodes
+                .keys()
+                .copied()
+                .map(|node_id| EnabledSoakAction {
+                    trace: SoakAction::Restart(node_id),
+                    operation: SoakOperation::Restart(node_id),
+                }),
+        );
+        actions.extend(
+            state
+                .cluster()
+                .nodes
+                .keys()
+                .copied()
+                .map(|node_id| EnabledSoakAction {
+                    trace: SoakAction::ApplicationLossRestart(node_id),
+                    operation: SoakOperation::ApplicationLossRestart(node_id),
+                }),
+        );
+    }
+
+    actions.extend(enabled_soak_fault_actions(state, config));
+
+    Ok(actions)
+}
+
+fn enabled_message_actions(
+    state: &ExplorationState,
+) -> Result<Vec<EnabledSoakAction>, SchedulingError> {
+    let mut actions = Vec::new();
     for (position, queued) in state.cluster().network.iter().enumerate() {
         let action = soak_message_action(
             &queued.envelope,
-            super::envelope_identity(state.cluster(), position),
+            super::envelope_identity(state.cluster(), position)?,
         );
         if queued.ready_at <= state.cluster().clock.now() {
             actions.push(EnabledSoakAction {
@@ -93,24 +130,7 @@ pub(in crate::model_check) fn enabled_soak_actions(
             operation: SoakOperation::DuplicateAt(position),
         });
     }
-
-    if state.restarts_issued() < config.max_restarts as u64 {
-        actions.extend(
-            state
-                .cluster()
-                .nodes
-                .keys()
-                .copied()
-                .map(|node_id| EnabledSoakAction {
-                    trace: SoakAction::Restart(node_id),
-                    operation: SoakOperation::Restart(node_id),
-                }),
-        );
-    }
-
-    actions.extend(enabled_soak_fault_actions(state, config));
-
-    actions
+    Ok(actions)
 }
 
 /// The A2 fault-and-protocol families: read barriers, leadership transfers,
@@ -215,7 +235,7 @@ fn enabled_soak_fault_actions(
 }
 
 pub(in crate::model_check) const fn soak_preferred_kind(step: usize) -> SoakActionKind {
-    match step % 18 {
+    match step % 19 {
         0 | 7 => SoakActionKind::Tick,
         1 | 8 => SoakActionKind::Deliver,
         2 => SoakActionKind::Propose,
@@ -231,7 +251,8 @@ pub(in crate::model_check) const fn soak_preferred_kind(step: usize) -> SoakActi
         14 => SoakActionKind::LeaveJoint,
         15 => SoakActionKind::RemoveVoter,
         16 => SoakActionKind::RemoveLearner,
-        _ => SoakActionKind::EnterJoint,
+        17 => SoakActionKind::EnterJoint,
+        _ => SoakActionKind::ApplicationLossRestart,
     }
 }
 
