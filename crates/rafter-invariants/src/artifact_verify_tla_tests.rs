@@ -12,7 +12,7 @@ use crate::producer::{
     process::{digest_environment, ProcessLog, TerminationReceipt},
     tla_output::{
         detector_config_kind, detector_label, detector_log_kind, render_detector_config,
-        REGISTERED_PREDICATES,
+        DetectorProbe, DEFAULT_FIXTURE_MODE, DETECTOR_PROBES,
     },
 };
 use crate::{ArtifactRef, InvocationReceipt, ResultBundle};
@@ -28,8 +28,9 @@ fn complete_tla_bundle_verifies() {
 #[test]
 fn missing_one_detector_pair_fails_closed() {
     let mut fixture = Fixture::new();
-    let config = detector_config_kind("ElectionSafety").expect("registered predicate");
-    let log = detector_log_kind("ElectionSafety").expect("registered predicate");
+    let probe = default_probe("ElectionSafety");
+    let config = detector_config_kind(probe).expect("registered probe");
+    let log = detector_log_kind(probe).expect("registered probe");
     fixture.bundle.execution.checks[0]
         .artifacts
         .retain(|artifact| artifact.kind != config && artifact.kind != log);
@@ -37,13 +38,29 @@ fn missing_one_detector_pair_fails_closed() {
 }
 
 #[test]
+fn missing_either_fencing_subprobe_fails_closed() {
+    for mode in ["HigherTermRecorderOnly", "StaleAuthorityRecorderOnly"] {
+        let mut fixture = Fixture::new();
+        let probe = named_probe("StaleLeaderFencing", mode);
+        let config = detector_config_kind(probe).expect("registered probe");
+        let log = detector_log_kind(probe).expect("registered probe");
+        fixture.bundle.execution.checks[0]
+            .artifacts
+            .retain(|artifact| artifact.kind != config && artifact.kind != log);
+        assert!(verify(&fixture.bundle, &fixture.root).is_err());
+    }
+}
+
+#[test]
 fn swapped_detector_pairs_fail_closed() {
     let mut fixture = Fixture::new();
+    let election = default_probe("ElectionSafety");
+    let matching = default_probe("LogMatching");
     for kind in [detector_config_kind, detector_log_kind] {
         swap_kinds(
             &mut fixture.bundle,
-            &kind("ElectionSafety").expect("registered predicate"),
-            &kind("LogMatching").expect("registered predicate"),
+            &kind(election).expect("registered probe"),
+            &kind(matching).expect("registered probe"),
         );
     }
     assert!(verify(&fixture.bundle, &fixture.root).is_err());
@@ -52,7 +69,7 @@ fn swapped_detector_pairs_fail_closed() {
 #[test]
 fn generic_expected_violation_fails_closed() {
     let mut fixture = Fixture::new();
-    let kind = detector_log_kind("ElectionSafety").expect("registered predicate");
+    let kind = detector_log_kind(default_probe("ElectionSafety")).expect("registered probe");
     let mut log = fixture.read_log(&kind);
     log.stdout = violation_output("ExpectedViolation");
     fixture.write_log(&kind, &log);
@@ -62,7 +79,7 @@ fn generic_expected_violation_fails_closed() {
 #[test]
 fn altered_detector_target_fails_closed() {
     let mut fixture = Fixture::new();
-    let kind = detector_config_kind("ElectionSafety").expect("registered predicate");
+    let kind = detector_config_kind(default_probe("ElectionSafety")).expect("registered probe");
     let config = fixture.read_kind(&kind).replace(
         "TargetPredicate = \"ElectionSafety\"",
         "TargetPredicate = \"LogMatching\"",
@@ -74,9 +91,10 @@ fn altered_detector_target_fails_closed() {
 #[test]
 fn mismatched_recorded_config_invocation_fails_closed() {
     let mut fixture = Fixture::new();
-    let kind = detector_log_kind("ElectionSafety").expect("registered predicate");
-    let other_config =
-        fixture.canonical_kind(&detector_config_kind("LogMatching").expect("registered predicate"));
+    let kind = detector_log_kind(default_probe("ElectionSafety")).expect("registered probe");
+    let other_config = fixture.canonical_kind(
+        &detector_config_kind(default_probe("LogMatching")).expect("registered probe"),
+    );
     let mut log = fixture.read_log(&kind);
     let position = log
         .invocation
@@ -211,9 +229,9 @@ impl Fixture {
         let checksums = fs::read(workspace.join("tools/tla/SHA256SUMS")).expect("read checksums");
         self.write_kind("tla-tool-checksums", &checksums);
         self.artifact_mut("tla-tool").sha256 = tool_sha;
-        for predicate in REGISTERED_PREDICATES {
-            let kind = detector_config_kind(predicate).expect("registered predicate");
-            let rendered = render_detector_config(&template, predicate).expect("render config");
+        for probe in DETECTOR_PROBES {
+            let kind = detector_config_kind(probe).expect("registered probe");
+            let rendered = render_detector_config(&template, probe).expect("render config");
             self.write_kind(&kind, rendered.as_bytes());
         }
         self.write_process_log(
@@ -230,13 +248,13 @@ impl Fixture {
             success_output(4, 4, 4),
             0,
         );
-        for predicate in REGISTERED_PREDICATES {
-            let kind = detector_log_kind(predicate).expect("registered predicate");
+        for probe in DETECTOR_PROBES {
+            let kind = detector_log_kind(probe).expect("registered probe");
             self.write_process_log(
                 &kind,
-                &detector_label(predicate).expect("registered predicate"),
-                Some(predicate),
-                violation_output(predicate),
+                &detector_label(probe).expect("registered probe"),
+                Some(probe),
+                violation_output(probe.predicate),
                 12,
             );
         }
@@ -246,14 +264,14 @@ impl Fixture {
         &mut self,
         kind: &str,
         label: &str,
-        predicate: Option<&str>,
+        probe: Option<DetectorProbe>,
         stdout: String,
         exit_code: i32,
     ) {
         let log = ProcessLog {
             schema_version: 3,
             label: label.to_owned(),
-            invocation: self.invocation(label, predicate),
+            invocation: self.invocation(label, probe),
             exit_code: Some(exit_code),
             timed_out: false,
             termination: Some(TerminationReceipt {
@@ -270,12 +288,10 @@ impl Fixture {
         self.write_log(kind, &log);
     }
 
-    fn invocation(&self, label: &str, predicate: Option<&str>) -> InvocationReceipt {
-        let (config, module, workers) = match predicate {
-            Some(predicate) => (
-                self.canonical_kind(
-                    &detector_config_kind(predicate).expect("registered predicate"),
-                ),
+    fn invocation(&self, label: &str, probe: Option<DetectorProbe>) -> InvocationReceipt {
+        let (config, module, workers) = match probe {
+            Some(probe) => (
+                self.canonical_kind(&detector_config_kind(probe).expect("registered probe")),
                 "RafterInvariantDetectorNegative.tla",
                 "1",
             ),
@@ -400,6 +416,17 @@ fn swap_kinds(bundle: &mut ResultBundle, first: &str, second: &str) {
             artifact.kind = first.to_owned();
         }
     }
+}
+
+fn default_probe(predicate: &'static str) -> DetectorProbe {
+    named_probe(predicate, DEFAULT_FIXTURE_MODE)
+}
+
+fn named_probe(predicate: &'static str, mode: &'static str) -> DetectorProbe {
+    DETECTOR_PROBES
+        .into_iter()
+        .find(|probe| probe.predicate == predicate && probe.mode == mode)
+        .expect("registered detector probe")
 }
 
 fn safe_name(kind: &str) -> String {

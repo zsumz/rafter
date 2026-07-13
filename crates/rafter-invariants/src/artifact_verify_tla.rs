@@ -7,7 +7,7 @@ use crate::producer::tla_checkpoint::{
 };
 use crate::producer::tla_output::{
     detector_config_kind, detector_invariant, detector_label, detector_log_kind,
-    detector_observation, render_detector_config, REGISTERED_PREDICATES,
+    detector_observation, probe_slug, render_detector_config, DETECTOR_PROBES,
 };
 use crate::{aggregate::AggregateError, CheckCompletion, EvidenceStatus, ResultBundle};
 
@@ -105,44 +105,45 @@ fn verify_detectors(
 ) -> Result<(BTreeMap<String, u64>, bool), AggregateError> {
     let mut observations = BTreeMap::new();
     let mut all_passed = true;
-    for predicate in REGISTERED_PREDICATES {
-        let config_kind = detector_config_kind(predicate).expect("registered detector predicate");
-        let log_kind = detector_log_kind(predicate).expect("registered detector predicate");
+    for probe in DETECTOR_PROBES {
+        let config_kind = detector_config_kind(probe).expect("registered detector probe");
+        let log_kind = detector_log_kind(probe).expect("registered detector probe");
+        let identity = probe_slug(probe);
         let has_config = has_kind(check, &config_kind)?;
         let has_log = has_kind(check, &log_kind)?;
         if has_config != has_log {
             return Err(AggregateError::new(format!(
-                "TLA detector artifacts for {predicate} are incomplete"
+                "TLA detector artifacts for {identity} are incomplete"
             )));
         }
         if !has_config {
             all_passed = false;
             observations.insert(
-                detector_observation(predicate).expect("registered detector predicate"),
+                detector_observation(probe.predicate).expect("registered detector predicate"),
                 0,
             );
             continue;
         }
         let realized_config = read_kind(check, &config_kind, root)?;
         let expected_config =
-            render_detector_config(template, predicate).map_err(AggregateError::new)?;
+            render_detector_config(template, probe).map_err(AggregateError::new)?;
         if realized_config != expected_config {
             return Err(AggregateError::new(format!(
-                "TLA detector config does not bind predicate {predicate} exactly"
+                "TLA detector config does not bind probe {identity} exactly"
             )));
         }
-        let label = detector_label(predicate).expect("registered detector predicate");
+        let label = detector_label(probe).expect("registered detector probe");
         let detector = read_process_log(bundle, check, &log_kind, &label, root)?;
         let summary = crate::producer::tla_output::parse(detector.stdout.as_bytes()).ok();
-        let expected = detector_invariant(predicate).expect("registered detector predicate");
+        let expected = detector_invariant(probe).expect("registered detector probe");
         let qualified = summary
             .as_ref()
             .is_some_and(|summary| successful_detector(&detector, summary, &expected));
         all_passed &= qualified;
-        observations.insert(
-            detector_observation(predicate).expect("registered detector predicate"),
-            u64::from(qualified),
-        );
+        let observation =
+            detector_observation(probe.predicate).expect("registered detector predicate");
+        let predicate_qualified = observations.entry(observation).or_insert(1);
+        *predicate_qualified &= u64::from(qualified);
     }
     Ok((observations, all_passed))
 }
@@ -567,12 +568,11 @@ fn verify_tla_invocation(
             workers: "1",
         },
         _ => {
-            let predicate = REGISTERED_PREDICATES
+            let probe = DETECTOR_PROBES
                 .iter()
-                .find(|predicate| detector_label(predicate).as_deref() == Some(label))
+                .find(|probe| detector_label(**probe).as_deref() == Some(label))
                 .ok_or_else(|| AggregateError::new(format!("unknown TLA log label {label}")))?;
-            let config_kind =
-                detector_config_kind(predicate).expect("registered detector predicate");
+            let config_kind = detector_config_kind(*probe).expect("registered detector probe");
             let artifact = unique_artifact(check, &config_kind)?;
             let config = fs::canonicalize(root.join(&artifact.path))
                 .map_err(|error| {

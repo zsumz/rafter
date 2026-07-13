@@ -18,7 +18,7 @@ const DETECTOR_SPEC: &str = "specs/tla/raft/RafterInvariantDetectorNegative.tla"
 const DETECTOR_CONFIG: &str = "specs/tla/raft/RafterInvariantDetectorNegative.cfg";
 const JAR: &str = "tools/cache/tla2tools.jar";
 
-use super::tla_output::{render_detector_config, REGISTERED_PREDICATES};
+use super::tla_output::{render_detector_config, DETECTOR_PROBES, REGISTERED_PREDICATES};
 
 pub(super) fn validate_runner_options(
     configuration: &BTreeMap<String, String>,
@@ -95,11 +95,11 @@ pub(super) fn validate_spec_contract(
         || !detector_spec
             .lines()
             .any(|line| line.trim_start().starts_with("FixtureNext =="))
-        || REGISTERED_PREDICATES.iter().any(|predicate| {
-            detector_spec
-                .lines()
-                .any(|line| line.trim_start().starts_with(&format!("{predicate} ==")))
-                || render_detector_config(&detector_config, predicate).is_err()
+        || DETECTOR_PROBES.iter().any(|probe| {
+            detector_spec.lines().any(|line| {
+                line.trim_start()
+                    .starts_with(&format!("{} ==", probe.predicate))
+            }) || render_detector_config(&detector_config, *probe).is_err()
         })
     {
         return Err(
@@ -268,7 +268,9 @@ pub(super) fn parse_timeout(value: &str) -> Result<Duration, Box<dyn Error>> {
 mod tests {
     use std::collections::BTreeMap;
 
-    use super::super::tla_output::{render_detector_config, REGISTERED_PREDICATES};
+    use super::super::tla_output::{
+        render_detector_config, DetectorProbe, DEFAULT_FIXTURE_MODE, DETECTOR_PROBES,
+    };
     use super::{configured_invariants, java_major, validate_runner_options};
 
     #[test]
@@ -332,18 +334,26 @@ mod tests {
 
     #[test]
     fn detector_configs_bind_one_unique_counterexample_identity() {
-        let template = "INIT FixtureInit\nCONSTANT TargetPredicate = \"ElectionSafety\"\nINVARIANT TypeOK\nINVARIANT ElectionSafety\n";
-        let rendered = REGISTERED_PREDICATES
+        let template = "INIT FixtureInit\nCONSTANT TargetPredicate = \"ElectionSafety\"\nCONSTANT FixtureMode = \"Default\"\nINVARIANT TypeOK\nINVARIANT ElectionSafety\n";
+        let rendered = DETECTOR_PROBES
             .iter()
-            .map(|predicate| {
-                let config = render_detector_config(template, predicate).expect("valid template");
-                assert!(config.contains(&format!("CONSTANT TargetPredicate = \"{predicate}\"")));
-                assert!(config.contains(&format!("INVARIANT {predicate}")));
+            .map(|probe| {
+                let config = render_detector_config(template, *probe).expect("valid template");
+                assert!(config.contains(&format!(
+                    "CONSTANT TargetPredicate = \"{}\"",
+                    probe.predicate
+                )));
+                assert!(config.contains(&format!("CONSTANT FixtureMode = \"{}\"", probe.mode)));
+                assert!(config.contains(&format!("INVARIANT {}", probe.predicate)));
                 config
             })
             .collect::<std::collections::BTreeSet<_>>();
-        assert_eq!(rendered.len(), REGISTERED_PREDICATES.len());
-        assert!(render_detector_config(template, "ExpectedViolation").is_err());
-        assert!(render_detector_config("INIT Init\n", "ElectionSafety").is_err());
+        assert_eq!(rendered.len(), DETECTOR_PROBES.len());
+        let invalid = DetectorProbe {
+            predicate: "ExpectedViolation",
+            mode: DEFAULT_FIXTURE_MODE,
+        };
+        assert!(render_detector_config(template, invalid).is_err());
+        assert!(render_detector_config("INIT Init\n", DETECTOR_PROBES[0]).is_err());
     }
 }

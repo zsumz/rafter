@@ -239,9 +239,15 @@ fn synthetic_artifacts(descriptor: &EvidenceDescriptor) -> Vec<ArtifactRef> {
             .into_iter()
             .map(str::to_owned)
             .collect::<Vec<_>>();
-            for predicate in crate::producer::tla_output::REGISTERED_PREDICATES {
-                kinds.push(format!("tla-detector-log:{predicate}"));
-                kinds.push(format!("tla-detector-config:{predicate}"));
+            for probe in crate::producer::tla_output::DETECTOR_PROBES {
+                kinds.push(
+                    crate::producer::tla_output::detector_log_kind(probe)
+                        .expect("registered detector probe"),
+                );
+                kinds.push(
+                    crate::producer::tla_output::detector_config_kind(probe)
+                        .expect("registered detector probe"),
+                );
             }
             kinds
                 .into_iter()

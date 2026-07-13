@@ -6,7 +6,10 @@ CONSTANTS n1, n2, n3, v1, v2, r1, r2
 VARIABLE traceStep
 
 traceVars == << currentTerm, votedFor, role, log, commitIndex, applied, messages,
-               readRequests, readGrants, membership, traceStep >>
+               readRequests, readGrants, membership, appliedConfigIndex,
+               electedLeaders,
+               higherTermEvidenceSeen, higherTermStepDownFailed,
+               staleAuthorityAccepted, traceStep >>
 
 TraceInit == Init /\ traceStep = 0
 

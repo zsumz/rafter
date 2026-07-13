@@ -9,20 +9,67 @@ pub(crate) const REGISTERED_PREDICATES: [&str; 8] = [
     "ReadBarrierLinearizability",
 ];
 
-pub(crate) fn detector_invariant(predicate: &str) -> Option<String> {
-    is_registered_predicate(predicate).then(|| predicate.to_owned())
+pub(crate) const DEFAULT_FIXTURE_MODE: &str = "Default";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct DetectorProbe {
+    pub(crate) predicate: &'static str,
+    pub(crate) mode: &'static str,
 }
 
-pub(crate) fn detector_label(predicate: &str) -> Option<String> {
-    is_registered_predicate(predicate).then(|| format!("detector-negative-{predicate}"))
+pub(crate) const DETECTOR_PROBES: [DetectorProbe; 9] = [
+    DetectorProbe {
+        predicate: "ElectionSafety",
+        mode: DEFAULT_FIXTURE_MODE,
+    },
+    DetectorProbe {
+        predicate: "LogMatching",
+        mode: DEFAULT_FIXTURE_MODE,
+    },
+    DetectorProbe {
+        predicate: "LeaderCompleteness",
+        mode: DEFAULT_FIXTURE_MODE,
+    },
+    DetectorProbe {
+        predicate: "CommittedPrefixStability",
+        mode: DEFAULT_FIXTURE_MODE,
+    },
+    DetectorProbe {
+        predicate: "StateMachineSafety",
+        mode: DEFAULT_FIXTURE_MODE,
+    },
+    DetectorProbe {
+        predicate: "StaleLeaderFencing",
+        mode: "HigherTermRecorderOnly",
+    },
+    DetectorProbe {
+        predicate: "StaleLeaderFencing",
+        mode: "StaleAuthorityRecorderOnly",
+    },
+    DetectorProbe {
+        predicate: "CommittedEntriesHaveQuorum",
+        mode: DEFAULT_FIXTURE_MODE,
+    },
+    DetectorProbe {
+        predicate: "ReadBarrierLinearizability",
+        mode: DEFAULT_FIXTURE_MODE,
+    },
+];
+
+pub(crate) fn detector_invariant(probe: DetectorProbe) -> Option<String> {
+    is_valid_fixture_probe(probe).then(|| probe.predicate.to_owned())
 }
 
-pub(crate) fn detector_log_kind(predicate: &str) -> Option<String> {
-    is_registered_predicate(predicate).then(|| format!("tla-detector-log:{predicate}"))
+pub(crate) fn detector_label(probe: DetectorProbe) -> Option<String> {
+    is_registered_probe(probe).then(|| format!("detector-negative-{}", probe_slug(probe)))
 }
 
-pub(crate) fn detector_config_kind(predicate: &str) -> Option<String> {
-    is_registered_predicate(predicate).then(|| format!("tla-detector-config:{predicate}"))
+pub(crate) fn detector_log_kind(probe: DetectorProbe) -> Option<String> {
+    is_registered_probe(probe).then(|| artifact_kind("tla-detector-log", probe))
+}
+
+pub(crate) fn detector_config_kind(probe: DetectorProbe) -> Option<String> {
+    is_registered_probe(probe).then(|| artifact_kind("tla-detector-config", probe))
 }
 
 pub(crate) fn detector_observation(predicate: &str) -> Option<String> {
@@ -33,10 +80,52 @@ fn is_registered_predicate(predicate: &str) -> bool {
     REGISTERED_PREDICATES.contains(&predicate)
 }
 
-pub(crate) fn render_detector_config(template: &str, predicate: &str) -> Result<String, String> {
-    let invariant = detector_invariant(predicate)
-        .ok_or_else(|| format!("unregistered TLA detector predicate {predicate}"))?;
+fn is_registered_probe(probe: DetectorProbe) -> bool {
+    DETECTOR_PROBES.contains(&probe)
+}
+
+fn is_valid_fixture_probe(probe: DetectorProbe) -> bool {
+    is_registered_predicate(probe.predicate)
+        && (probe.mode == DEFAULT_FIXTURE_MODE
+            || matches!(
+                (probe.predicate, probe.mode),
+                ("ElectionSafety", "ElectionRecorderOnly")
+                    | ("StateMachineSafety", "ApplicationRecorderOnly")
+                    | (
+                        "StaleLeaderFencing",
+                        "HigherTermRecorderOnly" | "StaleAuthorityRecorderOnly"
+                    )
+            ))
+}
+
+fn artifact_kind(prefix: &str, probe: DetectorProbe) -> String {
+    if probe.mode == DEFAULT_FIXTURE_MODE {
+        format!("{prefix}:{}", probe.predicate)
+    } else {
+        format!("{prefix}:{}:{}", probe.predicate, probe.mode)
+    }
+}
+
+pub(crate) fn probe_slug(probe: DetectorProbe) -> String {
+    if probe.mode == DEFAULT_FIXTURE_MODE {
+        probe.predicate.to_owned()
+    } else {
+        format!("{}-{}", probe.predicate, probe.mode)
+    }
+}
+
+pub(crate) fn render_detector_config(
+    template: &str,
+    probe: DetectorProbe,
+) -> Result<String, String> {
+    let invariant = detector_invariant(probe).ok_or_else(|| {
+        format!(
+            "unregistered TLA detector probe {}:{}",
+            probe.predicate, probe.mode
+        )
+    })?;
     let mut target_lines = 0;
+    let mut mode_lines = 0;
     let mut invariant_lines = 0;
     let mut rendered = Vec::new();
     for line in template.lines() {
@@ -51,7 +140,20 @@ pub(crate) fn render_detector_config(template: &str, predicate: &str) -> Result<
             } else {
                 "TargetPredicate"
             };
-            rendered.push(format!("{indentation}{declaration} = \"{predicate}\""));
+            rendered.push(format!(
+                "{indentation}{declaration} = \"{}\"",
+                probe.predicate
+            ));
+        } else if trimmed.starts_with("CONSTANT FixtureMode = ")
+            || trimmed.starts_with("FixtureMode = ")
+        {
+            mode_lines += 1;
+            let declaration = if trimmed.starts_with("CONSTANT ") {
+                "CONSTANT FixtureMode"
+            } else {
+                "FixtureMode"
+            };
+            rendered.push(format!("{indentation}{declaration} = \"{}\"", probe.mode));
         } else if trimmed.starts_with("INVARIANT ") && trimmed != "INVARIANT TypeOK" {
             invariant_lines += 1;
             rendered.push(format!("{indentation}INVARIANT {invariant}"));
@@ -59,8 +161,10 @@ pub(crate) fn render_detector_config(template: &str, predicate: &str) -> Result<
             rendered.push(line.to_owned());
         }
     }
-    if target_lines != 1 || invariant_lines != 1 {
-        return Err("TLA detector config must contain one target and one invariant".to_owned());
+    if target_lines != 1 || mode_lines != 1 || invariant_lines != 1 {
+        return Err(
+            "TLA detector config must contain one target, fixture mode, and invariant".to_owned(),
+        );
     }
     let mut rendered = rendered.join("\n");
     if template.ends_with('\n') {
