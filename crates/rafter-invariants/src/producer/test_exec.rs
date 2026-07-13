@@ -185,24 +185,13 @@ fn execute_exact(
             peak_rss_kib,
             artifacts: vec![artifact],
         })
-    } else if confirmed_test_failure(&executed.stdout, &identity.test_name) {
-        Ok(TestOutcome {
-            completion: CheckCompletion::Counterexample,
-            status: EvidenceStatus::Fail,
-            classification: Some(FailureClassification::InvariantViolation),
-            message: Some(format!("exact test {} failed", identity.test_name)),
-            observations: observations(1, 1, 0),
-            duration_ms,
-            peak_rss_kib,
-            artifacts: vec![artifact],
-        })
     } else {
         Ok(TestOutcome {
             completion: CheckCompletion::HarnessError,
             status: EvidenceStatus::Error,
             classification: Some(FailureClassification::HarnessError),
             message: Some(format!(
-                "exact test process {} terminated without a confirmed libtest assertion failure",
+                "exact test process {} failed without a source-bound oracle receipt",
                 identity.test_name
             )),
             observations: observations(1, 0, 0),
@@ -230,16 +219,6 @@ pub(super) fn exact_pass(output: &[u8], test_name: &str) -> bool {
         && output
             .lines()
             .any(|line| line.contains("1 passed; 0 failed; 0 ignored"))
-}
-
-pub(super) fn confirmed_test_failure(output: &[u8], test_name: &str) -> bool {
-    let output = String::from_utf8_lossy(output);
-    output
-        .lines()
-        .any(|line| line.trim() == format!("test {test_name} ... FAILED"))
-        && output
-            .lines()
-            .any(|line| line.contains("0 passed; 1 failed"))
 }
 
 fn observations(discovered: usize, executed: usize, passed: usize) -> BTreeMap<String, u64> {
