@@ -16,6 +16,10 @@ const SNAPSHOT_KIND: &str = "lin-kv-v1";
 
 impl InitializedNode {
     pub(super) fn apply_snapshot(&mut self, snapshot: &RaftSnapshot) {
+        if let Err(error) = validate_application_snapshot_metadata(&snapshot.metadata) {
+            eprintln!("refusing applied application snapshot: {error}");
+            return;
+        }
         let payload = match read_snapshot_payload(&self.node, snapshot) {
             Ok(payload) => payload,
             Err(error) => {

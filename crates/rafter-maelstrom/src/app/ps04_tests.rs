@@ -8,6 +8,7 @@ use self::support::{
 };
 
 mod floor;
+mod live_snapshot;
 mod snapshot;
 mod support;
 
