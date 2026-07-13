@@ -239,6 +239,8 @@ jobs:
           pattern: invariants-nightly-*
           path: artifacts/invariants
           merge-multiple: true
+      - name: Build source-bound Maelstrom verification binaries
+        run: cargo build --locked -p rafter-maelstrom --bins
       - name: Aggregate exactly 44 nightly invariant verdicts
         if: always()
         id: aggregate
