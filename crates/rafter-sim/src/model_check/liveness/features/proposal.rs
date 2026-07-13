@@ -10,6 +10,7 @@ use super::{
     },
     production_monitor_state, FaultStateRequirement, LivenessFeatureReport,
     LivenessPreconditionProbe, LivenessPreconditions, ProposalEvidence, StableLeaderEvidence,
+    LV_02_PROGRESS_CLAUSE_IDS, LV_02_TERMINATION_CLAUSE_IDS,
 };
 use crate::model_check::{
     catalog,
@@ -84,6 +85,7 @@ pub(super) fn run_proposal_progress_liveness_check(
 
     Ok(LivenessFeatureReport {
         invariant_id: "LV-02",
+        clause_ids: LV_02_PROGRESS_CLAUSE_IDS,
         feature_id: "proposal-progress",
         scenario_id: "stable-leader-reachable-quorum-v1",
         observation_id: "accepted_completed_liveness_proposals",
@@ -174,6 +176,7 @@ pub(super) fn run_proposal_termination_liveness_check(
         };
         return Ok(LivenessFeatureReport {
             invariant_id: "LV-02",
+            clause_ids: LV_02_TERMINATION_CLAUSE_IDS,
             feature_id: "proposal-termination",
             scenario_id: "accepted-proposal-authority-loss-v1",
             observation_id: "terminated_liveness_proposals",

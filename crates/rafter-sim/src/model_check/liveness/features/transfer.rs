@@ -8,6 +8,7 @@ use super::super::driver::{
 };
 use super::{
     FaultStateRequirement, LivenessFeatureReport, LivenessPreconditionProbe, LivenessPreconditions,
+    LV_03_TRANSFER_CLAUSE_IDS,
 };
 use crate::model_check::{
     catalog,
@@ -79,6 +80,7 @@ pub(super) fn run_leadership_transfer_liveness_check(
     if completion.completed {
         Ok(LivenessFeatureReport {
             invariant_id: "LV-03",
+            clause_ids: LV_03_TRANSFER_CLAUSE_IDS,
             feature_id: "leadership-transfer",
             scenario_id: "caught-up-voter-transfer-v1",
             observation_id: "completed_target_leadership_transfers",

@@ -8,6 +8,7 @@ use super::super::driver::{
 };
 use super::{
     FaultStateRequirement, LivenessFeatureReport, LivenessPreconditionProbe, LivenessPreconditions,
+    LV_03_MEMBERSHIP_CLAUSE_IDS,
 };
 use crate::model_check::{
     catalog,
@@ -127,6 +128,7 @@ fn membership_report(
 ) -> LivenessFeatureReport {
     LivenessFeatureReport {
         invariant_id: "LV-03",
+        clause_ids: LV_03_MEMBERSHIP_CLAUSE_IDS,
         feature_id: "membership-transition",
         scenario_id: "stable-remove-voter-joint-consensus-v1",
         observation_id: "completed_stable_membership_transitions",
