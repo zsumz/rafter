@@ -2,7 +2,6 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
     path::Path,
-    time::Instant,
 };
 
 use crate::types::RESULT_SCHEMA_VERSION;
@@ -13,7 +12,7 @@ use crate::{
 };
 
 use super::{
-    artifact, process, source,
+    artifact, source,
     tla_contract::{
         fetch_tool, parse_timeout, required_configuration, source_artifacts, validate_java,
         validate_runner_options, validate_spec_contract,
@@ -30,7 +29,6 @@ pub(super) fn run(
     output_dir: &Path,
     context: &ProducerContext<'_>,
 ) -> Result<ResultBundle, Box<dyn Error>> {
-    let started = Instant::now();
     let runner = contract.runners.get("tla").ok_or("TLA runner missing")?;
     validate_runner_options(&runner.configuration)?;
     validate_java(&source, &runner.configuration)?;
@@ -95,7 +93,7 @@ pub(super) fn run(
             invocation: context.invocation.clone(),
             source,
             checks: vec![check],
-            duration_ms: process::duration_ms(started.elapsed()),
+            duration_ms: execution.duration_ms,
             peak_rss_kib: execution.peak_rss_kib,
             artifacts: execution.artifacts,
         },

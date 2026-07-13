@@ -149,14 +149,9 @@ fn verify_resource_metrics(bundle: &ResultBundle, root: &Path) -> Result<(), Agg
         )
         .filter(|artifact| is_process_log_kind(&artifact.kind));
     let derived = derive_process_metrics(artifacts, root)?;
-    let duration_matches = if bundle.runner == "tla" {
-        let maximum_overhead = derived.duration_ms / 10 + 300_000;
-        bundle.execution.duration_ms >= derived.duration_ms
-            && bundle.execution.duration_ms <= derived.duration_ms.saturating_add(maximum_overhead)
-    } else {
-        bundle.execution.duration_ms == derived.duration_ms
-    };
-    if !duration_matches || bundle.execution.peak_rss_kib != derived.peak_rss_kib {
+    if bundle.execution.duration_ms != derived.duration_ms
+        || bundle.execution.peak_rss_kib != derived.peak_rss_kib
+    {
         return Err(AggregateError::new(
             "execution resource metrics disagree with hashed process logs".to_owned(),
         ));

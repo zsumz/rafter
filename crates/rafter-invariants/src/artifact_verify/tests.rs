@@ -97,6 +97,56 @@ fn process_logs_bind_check_and_execution_resource_metrics() {
     std::fs::remove_dir_all(root).expect("remove scratch root");
 }
 
+#[test]
+fn tla_execution_duration_must_exactly_match_process_logs() {
+    let root = scratch("tla-resource-metrics");
+    std::fs::create_dir_all(&root).expect("create scratch root");
+    let relative = "tla-process.json";
+    let source = serde_json::to_vec(&json!({
+        "schema_version": 1,
+        "label": "model-check",
+        "invocation": {
+            "program": "/bin/java",
+            "program_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "arguments": ["java", "tlc2.TLC"],
+            "current_dir": "/workspace",
+            "environment": {},
+            "environment_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        },
+        "exit_code": 0,
+        "timed_out": false,
+        "duration_ms": 7,
+        "peak_rss_kib": 13,
+        "stdout": "ok",
+        "stderr": ""
+    }))
+    .expect("serialize process log");
+    std::fs::write(root.join(relative), &source).expect("write process log");
+    let artifact = crate::ArtifactRef {
+        kind: "tla-log".to_owned(),
+        path: relative.to_owned(),
+        sha256: format!("{:x}", Sha256::digest(&source)),
+        size_bytes: source.len() as u64,
+    };
+    let (catalog, manifest) = crate::tests::loaded();
+    let mut bundle = crate::tests::passing_bundles(&catalog, &manifest)
+        .into_iter()
+        .find(|bundle| bundle.runner == "tla")
+        .expect("TLA bundle");
+    bundle.execution.checks.truncate(1);
+    bundle.execution.checks[0].artifacts = vec![artifact.clone()];
+    bundle.execution.checks[0].duration_ms = 7;
+    bundle.execution.checks[0].peak_rss_kib = 13;
+    bundle.execution.artifacts = vec![artifact];
+    bundle.execution.duration_ms = 7;
+    bundle.execution.peak_rss_kib = 13;
+
+    verify_resource_metrics(&bundle, &root).expect("exact TLA metrics verify");
+    bundle.execution.duration_ms = 8;
+    assert!(verify_resource_metrics(&bundle, &root).is_err());
+    std::fs::remove_dir_all(root).expect("remove scratch root");
+}
+
 fn scratch(label: &str) -> std::path::PathBuf {
     std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../..")
