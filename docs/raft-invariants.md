@@ -165,7 +165,8 @@ named temporal or witness-based verdicts.
 | `EL-06` | `EL-06.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_stable_election_quorums`; negative fixture `election_certificate_requires_stable_quorum` |
 | `EL-06` | `EL-06.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_joint_election_quorums`; negative fixture `election_certificate_requires_joint_quorum` |
 | `EL-06` | `EL-06.b` | tests | direct | `crates/rafter/src/node/tests/election/campaign.rs#candidate_becomes_leader_after_quorum` |
-| `EL-06` | `EL-06.a,EL-06.b` | tests | direct | `crates/rafter/src/node/tests/membership/authority.rs#learner_grant_does_not_create_quorum` |
+| `EL-06` | `EL-06.a` | tests | direct | `crates/rafter/src/node/tests/membership/authority.rs#non_voter_cannot_campaign_or_become_leader` |
+| `EL-06` | `EL-06.b` | tests | direct | `crates/rafter/src/node/tests/membership/authority.rs#learner_grant_does_not_create_quorum` |
 | `EL-07` | `EL-07.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_higher_term_authority_fencing`; negative fixture `authority_fencing_oracle_rejects_unfenced_higher_term_response` |
 | `EL-07` | `EL-07.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_stale_authority_leadership`; negative fixture `authority_fencing_oracle_rejects_stale_response_leadership` |
 | `EL-07` | `EL-07.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_stale_authority_state`; negative fixture `authority_fencing_oracle_rejects_stale_authority_regression` |
@@ -186,7 +187,8 @@ named temporal or witness-based verdicts.
 | `LG-04` | `LG-04.a,LG-04.b` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
 | `LG-04` | `LG-04.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_cross_node_committed_prefix_agreement`; negative fixture `committed_prefix_checker_detects_divergent_committed_entries` |
 | `LG-04` | `LG-04.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_committed_prefix_history_stability`; negative fixture `shorter_commit_mismatch_is_checked_against_canonical_ledger` |
-| `LG-04` | `LG-04.a,LG-04.b` | tests | direct | `crates/rafter-runtime/src/tests/conflict_repair.rs#file_backed_follower_conflict_repair_survives_restart` |
+| `LG-04` | `LG-04.b` | tests | direct | `crates/rafter-sim/src/tests/raft_invariants.rs#committed_prefix_is_stable_across_failover` |
+| `LG-04` | `LG-04.a` | tests | direct | `crates/rafter/src/node/tests/replication/follower.rs#follower_rejects_append_that_would_truncate_committed_entry` |
 | `LG-04` | `LG-04.a,LG-04.b` | tla | direct | `specs/tla/raft/Raft.tla#CommittedPrefixStability` |
 | `LG-05` | `LG-05.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_commit_history`; negative fixture `leader_completeness_rechecks_when_committed_ledger_grows_after_election` |
 | `LG-05` | `LG-05.a` | tla | direct | `specs/tla/raft/Raft.tla#LeaderCompleteness` |
@@ -214,22 +216,29 @@ named temporal or witness-based verdicts.
 | `AP-02` | `AP-02.a` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/applied_agreement.rs#execution_agreement_detects_mismatched_configuration_application` |
 | `AP-02` | `AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/applied_agreement.rs#execution_agreement_detects_mismatched_reference_result` |
 | `AP-02` | `AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/applied_agreement.rs#execution_agreement_detects_broken_configuration_result` |
-| `AP-02` | `AP-02.a,AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/state/application_history.rs#same_node_replay_does_not_qualify_cross_replica_coverage` |
-| `AP-02` | `AP-02.a,AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/state/application_history.rs#distinct_nodes_qualify_each_execution_witness_class` |
 | `AP-02` | `AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/state/application_history.rs#application_pairs_do_not_qualify_configuration_results` |
 | `AP-02` | `AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/state/application_history.rs#configuration_pairs_do_not_qualify_application_results` |
 | `AP-02` | `AP-02.a,AP-02.b` | tla | direct | `specs/tla/raft/Raft.tla#StateMachineSafety` |
-| `MB-01` | `MB-01.a,MB-01.b,MB-01.c,MB-01.d` | tests | direct | `crates/rafter/tests/properties.rs#membership_constructor_validation_matches_the_documented_invariant` |
-| `MB-02` | `MB-02.a,MB-02.b,MB-02.c` | tests | direct | `crates/rafter/tests/properties.rs#membership_joint_quorum_holds_iff_both_half_majorities_hold` |
+| `MB-01` | `MB-01.a` | tests | direct | `crates/rafter/tests/properties.rs#membership_constructor_validation_matches_the_documented_invariant` |
+| `MB-01` | `MB-01.b` | tests | direct | `crates/rafter/tests/properties.rs#membership_constructor_validation_matches_the_documented_invariant` |
+| `MB-01` | `MB-01.c` | tests | direct | `crates/rafter/tests/properties.rs#membership_constructor_validation_matches_the_documented_invariant` |
+| `MB-01` | `MB-01.d` | tests | direct | `crates/rafter/tests/properties.rs#membership_constructor_validation_matches_the_documented_invariant` |
+| `MB-02` | `MB-02.a` | tests | direct | `crates/rafter/tests/properties.rs#membership_stable_quorum_matches_a_direct_majority_recount` |
+| `MB-02` | `MB-02.b` | tests | direct | `crates/rafter/tests/properties.rs#membership_joint_quorum_holds_iff_both_half_majorities_hold` |
+| `MB-02` | `MB-02.c` | tests | direct | `crates/rafter/tests/properties.rs#membership_joint_quorum_holds_iff_both_half_majorities_hold` |
 | `MB-03` | `MB-03.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_no_overlapping_uncommitted_configurations`; negative fixture `serialized_configuration_checker_detects_two_uncommitted_configurations` |
 | `MB-03` | `MB-03.a` | tests | direct | `crates/rafter/src/node/tests/membership/serialization.rs#follower_rejects_second_uncommitted_configuration_entry` |
 | `MB-04` | `MB-04.a` | maelstrom | e2e | `scripts/maelstrom-lin-kv-membership-change#RAFTER_MAELSTROM_MEMBERSHIP_PLAN` |
 | `MB-04` | `MB-04.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_committed_configuration_index_monotonicity`; negative fixture `committed_configuration_monotonicity_detects_regression` |
 | `MB-04` | `MB-04.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/commit.rs#check_committed_configuration_identity`; negative fixture `committed_configuration_identity_detects_same_index_conflict` |
 | `MB-04` | `MB-04.a` | tests | direct | `crates/rafter/src/node/tests/membership/transition.rs#change_membership_derives_joint_configuration_for_voter_changes` |
-| `MB-05` | `MB-05.a,MB-05.b,MB-05.c,MB-05.d` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/bootstrap_compaction/local.rs#runtime_local_compaction_fills_committed_dynamic_membership_metadata` |
+| `MB-05` | `MB-05.a` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/bootstrap_compaction/local.rs#runtime_local_compaction_fills_committed_dynamic_membership_metadata` |
+| `MB-05` | `MB-05.b` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/bootstrap_compaction/local.rs#runtime_local_compaction_fills_committed_dynamic_membership_metadata` |
+| `MB-05` | `MB-05.c` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/bootstrap_compaction/local.rs#runtime_local_compaction_fills_committed_dynamic_membership_metadata` |
+| `MB-05` | `MB-05.d` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/bootstrap_compaction/local.rs#runtime_local_compaction_fills_committed_dynamic_membership_metadata` |
 | `MB-06` | `MB-06.b` | tests | direct | `crates/rafter/src/node/tests/membership/authority.rs#learner_grant_does_not_create_quorum` |
-| `MB-06` | `MB-06.c,MB-06.f` | tests | direct | `crates/rafter/src/node/tests/membership/learner.rs#learner_receives_log_replication_without_counting_for_commit` |
+| `MB-06` | `MB-06.c` | tests | direct | `crates/rafter/src/node/tests/membership/learner.rs#learner_receives_log_replication_without_counting_for_commit` |
+| `MB-06` | `MB-06.f` | tests | direct | `crates/rafter/src/node/tests/membership/learner.rs#learner_receives_log_replication_and_snapshot_catch_up` |
 | `MB-06` | `MB-06.a` | tests | direct | `crates/rafter/src/node/tests/membership/learner.rs#learner_does_not_start_election_and_its_grant_is_uncounted` |
 | `MB-06` | `MB-06.f` | tests | direct | `crates/rafter/src/node/tests/membership/learner.rs#learner_receives_snapshot_replication` |
 | `MB-06` | `MB-06.d` | tests | direct | `crates/rafter/src/node/tests/membership/learner/quorum.rs#learner_acknowledgement_cannot_satisfy_read_index_quorum_but_voter_can` |
@@ -246,7 +255,8 @@ named temporal or witness-based verdicts.
 | `RD-01` | `RD-01.a` | tests | direct | `crates/rafter/src/node/tests/read/authority.rs#read_rejected_on_follower` |
 | `RD-01` | `RD-01.c` | tests | direct | `crates/rafter/src/node/tests/read/authority.rs#pending_reads_are_cleared_on_step_down` |
 | `RD-01` | `RD-01.d` | tests | direct | `crates/rafter/src/node/tests/transfer/handoff.rs#starting_transfer_cancels_pending_reads_and_stale_ack_cannot_grant` |
-| `RD-02` | `RD-02.b,RD-02.d` | tests | direct | `crates/rafter/src/node/tests/read/barrier.rs#delayed_ack_from_an_older_round_never_confirms_a_barrier` |
+| `RD-02` | `RD-02.b` | tests | direct | `crates/rafter/src/node/tests/read/barrier.rs#delayed_ack_from_an_older_round_never_confirms_a_barrier` |
+| `RD-02` | `RD-02.d` | tests | direct | `crates/rafter/src/node/tests/read/barrier.rs#acknowledgement_observed_before_registration_cannot_confirm_later_read` |
 | `RD-02` | `RD-02.a` | tests | direct | `crates/rafter/src/node/tests/read/barrier.rs#read_index_broadcasts_confirmation_round_immediately` |
 | `RD-02` | `RD-02.c` | tests | direct | `crates/rafter/src/node/tests/read/barrier.rs#zero_sequence_echo_never_confirms_a_barrier` |
 | `RD-03` | `RD-03.a,RD-03.b` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
@@ -269,15 +279,25 @@ named temporal or witness-based verdicts.
 | `RD-06` | `RD-06.a` | tests | direct | `crates/rafter-sim/src/model_check/tests/linearizability.rs#linearizer_rejects_read_that_misses_completed_write` |
 | `RD-06` | `RD-06.b` | tests | direct | `crates/rafter-sim/src/model_check/tests/linearizability.rs#linearizer_can_include_unknown_write_to_explain_later_read` |
 | `PS-01` | `PS-01.a` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#election_persists_term_and_vote_before_vote_requests_escape` |
-| `PS-01` | `PS-01.a,PS-01.b,PS-01.c,PS-01.d` | tests | direct | `crates/rafter-runtime/src/tests/persistence_contract.rs#all_raft_outputs_have_declared_runtime_persistence_dependency` |
-| `PS-02` | `PS-02.a,PS-02.b,PS-02.c` | tests | direct | `crates/rafter-runtime/src/tests/group_commit/failure.rs#a_failed_batch_releases_no_output_and_poisons_the_runtime` |
-| `PS-02` | `PS-02.a,PS-02.b,PS-02.c` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/commit_failure.rs#final_hard_state_write_failure_suppresses_apply_and_success_response` |
-| `PS-02` | `PS-02.a,PS-02.b,PS-02.c` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#hard_state_write_failure_suppresses_vote_requests` |
-| `PS-02` | `PS-02.a,PS-02.b,PS-02.c` | tests | direct | `crates/rafter-runtime/src/tests/persistence_contract.rs#ps02_failure_matrix_covers_each_runtime_store_operation` |
-| `PS-02` | `PS-02.a,PS-02.b,PS-02.c` | tests | direct | `crates/rafter-runtime/src/tests/persistence_ordering.rs#log_append_failure_suppresses_apply_outputs` |
-| `PS-02` | `PS-02.a,PS-02.b,PS-02.c` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_snapshot_promote_failure_suppresses_apply_and_success_response` |
-| `PS-02` | `PS-02.a,PS-02.b,PS-02.c` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_snapshot_compaction_failure_suppresses_apply_and_success_response` |
-| `PS-02` | `PS-02.a,PS-02.b,PS-02.c` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_snapshot_write_failure_poisons_runtime_until_restart` |
+| `PS-01` | `PS-01.b` | tests | direct | `crates/rafter-runtime/src/tests/persistence_ordering.rs#leader_proposal_log_entry_is_persisted_before_apply_output_escapes` |
+| `PS-01` | `PS-01.c` | tests | direct | `crates/rafter-runtime/src/tests/persistence_ordering.rs#committed_configuration_write_failure_suppresses_dependent_membership_output` |
+| `PS-01` | `PS-01.d` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_persists_installed_snapshot_and_compacts_log_past_local_tail` |
+| `PS-02` | `PS-02.a` | tests | direct | `crates/rafter-runtime/src/tests/group_commit/failure.rs#group_commit_failure_is_surfaced_without_releasing_outputs` |
+| `PS-02` | `PS-02.b` | tests | direct | `crates/rafter-runtime/src/tests/group_commit/failure.rs#group_commit_failure_poisons_runtime_and_rejects_further_writes` |
+| `PS-02` | `PS-02.c` | tests | direct | `crates/rafter-runtime/src/tests/group_commit/failure.rs#group_commit_failure_preserves_last_successful_state_across_crash_and_reopen` |
+| `PS-02` | `PS-02.a` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/commit_failure.rs#final_hard_state_write_failure_suppresses_apply_and_success_response` |
+| `PS-02` | `PS-02.b` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/commit_failure.rs#final_hard_state_write_failure_suppresses_apply_and_success_response` |
+| `PS-02` | `PS-02.c` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/commit_failure.rs#final_hard_state_write_failure_suppresses_apply_and_success_response` |
+| `PS-02` | `PS-02.a` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#hard_state_write_failure_suppresses_vote_requests` |
+| `PS-02` | `PS-02.b` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#hard_state_write_failure_suppresses_vote_requests` |
+| `PS-02` | `PS-02.a` | tests | direct | `crates/rafter-runtime/src/tests/persistence_ordering.rs#log_append_failure_suppresses_apply_outputs` |
+| `PS-02` | `PS-02.b` | tests | direct | `crates/rafter-runtime/src/tests/persistence_ordering.rs#log_append_failure_suppresses_apply_outputs` |
+| `PS-02` | `PS-02.a` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_snapshot_promote_failure_suppresses_apply_and_success_response` |
+| `PS-02` | `PS-02.b` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_snapshot_promote_failure_suppresses_apply_and_success_response` |
+| `PS-02` | `PS-02.a` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_snapshot_compaction_failure_suppresses_apply_and_success_response` |
+| `PS-02` | `PS-02.b` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_snapshot_compaction_failure_suppresses_apply_and_success_response` |
+| `PS-02` | `PS-02.a` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_snapshot_write_failure_poisons_runtime_until_restart` |
+| `PS-02` | `PS-02.b` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_snapshot_write_failure_poisons_runtime_until_restart` |
 | `PS-03` | `PS-03.e` | maelstrom | e2e | `scripts/maelstrom-lin-kv-repeated-restart#RAFTER_MAELSTROM_RESTART_MODE` |
 | `PS-03` | `PS-03.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_restart_term_and_vote`; negative fixture `exact_restart_term_vote_oracle_detects_vote_loss` |
 | `PS-03` | `PS-03.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_restart_log`; negative fixture `exact_restart_log_oracle_detects_payload_change` |
@@ -294,10 +314,12 @@ named temporal or witness-based verdicts.
 | `PS-04` | `PS-04.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_recovery_applied_floor_exclusion`; negative fixture `applied_floor_recovery_rejects_replay_at_or_below_floor` |
 | `PS-04` | `PS-04.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_recovery_exact_committed_suffix`; negative fixture `applied_floor_recovery_rejects_missing_committed_suffix_entry` |
 | `PS-04` | `PS-04.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_recovery_applied_floor_bounds`; negative fixture `applied_floor_recovery_rejects_floor_beyond_durable_bounds` |
-| `PS-04` | `PS-04.a,PS-04.b` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests.rs#ps04_app_persist_interrupt_reopens_at_durable_floor_and_replays_suffix_once` |
+| `PS-04` | `PS-04.a` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests.rs#ps04_app_persist_interrupt_reopens_at_durable_floor_and_replays_suffix_once` |
+| `PS-04` | `PS-04.b` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests.rs#ps04_app_persist_interrupt_reopens_at_durable_floor_and_replays_suffix_once` |
 | `PS-04` | `PS-04.c` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests/floor.rs#ps04_production_open_rejects_app_floor_beyond_commit` |
 | `PS-04` | `PS-04.c` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests/floor.rs#ps04_production_open_rejects_app_floor_beyond_log_coverage` |
-| `PS-04` | `PS-04.a,PS-04.b` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests/snapshot.rs#ps04_inbound_snapshot_promotion_crash_restores_snapshot_then_dispatches_suffix` |
+| `PS-04` | `PS-04.a` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests/snapshot.rs#ps04_inbound_snapshot_promotion_crash_restores_snapshot_then_dispatches_suffix` |
+| `PS-04` | `PS-04.b` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests/snapshot.rs#ps04_inbound_snapshot_promotion_crash_restores_snapshot_then_dispatches_suffix` |
 | `PS-04` | `PS-04.a` | tests | direct | `crates/rafter/src/node/tests/bootstrap/application.rs#applied_floor_suppresses_reapply_below_it` |
 | `SS-01` | `SS-01.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_boundary_monotonicity`; negative fixture `snapshot_boundary_monotonicity_detects_regression` |
 | `SS-01` | `SS-01.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_payload_binding`; negative fixture `snapshot_payload_binding_detects_metadata_bound_to_different_bytes` |
@@ -323,7 +345,8 @@ named temporal or witness-based verdicts.
 | `SS-04` | `SS-04.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_chunk_offsets_history`; negative fixture `snapshot_chunk_offset_history_rejects_out_of_order_progress` |
 | `SS-04` | `SS-04.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_install_completeness_history`; negative fixture `snapshot_install_completeness_history_rejects_incomplete_install` |
 | `SS-04` | `SS-04.d` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_pending_snapshot_lifecycle`; negative fixture `pending_snapshot_lifecycle_detector_rejects_stale_transfer` |
-| `SS-04` | `SS-04.b,SS-04.c` | tests | direct | `crates/rafter/src/node/tests/snapshot/chunks/receive.rs#out_of_order_snapshot_chunk_requests_expected_offset` |
+| `SS-04` | `SS-04.b` | tests | direct | `crates/rafter/src/node/tests/snapshot/chunks/receive.rs#out_of_order_snapshot_chunk_requests_expected_offset` |
+| `SS-04` | `SS-04.c` | tests | direct | `crates/rafter/src/node/tests/snapshot/chunks/receive.rs#out_of_order_snapshot_chunk_requests_expected_offset` |
 | `SS-05` | `SS-05.a,SS-05.b,SS-05.c` | maelstrom | e2e | `scripts/maelstrom-lin-kv-forced-snapshot#RAFTER_MAELSTROM_SNAPSHOT_EVERY` |
 | `SS-05` | `SS-05.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_applied_payload_agreement`; negative fixture `applied_agreement_detects_snapshot_membership_mismatch_at_same_boundary` |
 | `SS-05` | `SS-05.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_restart_snapshot_safety`; negative fixture `restart_snapshot_safety_rejects_snapshot_bytes_as_log_apply` |

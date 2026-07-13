@@ -64,6 +64,29 @@ fn delayed_ack_from_an_older_round_never_confirms_a_barrier() {
 }
 
 #[test]
+fn acknowledgement_observed_before_registration_cannot_confirm_later_read() {
+    let mut leader = leader_with_current_term_commit();
+
+    // Process quorum evidence while there is no read to confirm.
+    let pre_registration_round = heartbeat_round(&leader.step(Input::Tick));
+    let outputs = ack(&mut leader, 2, pre_registration_round);
+    assert!(granted(&outputs).is_empty());
+    assert_eq!(leader.pending_read_count(), 0);
+
+    // Registering afterward must not inherit the already-observed acknowledgement.
+    let registration_outputs = leader.step(read_index(10));
+    let post_registration_round = heartbeat_round(&registration_outputs);
+    assert!(granted(&registration_outputs).is_empty());
+    assert_eq!(leader.pending_read_count(), 1);
+
+    // Only a fresh quorum round observed after registration confirms the read.
+    assert!(post_registration_round > pre_registration_round);
+    let outputs = ack(&mut leader, 2, post_registration_round);
+    assert_eq!(granted(&outputs), vec![(ReadId(10), LogIndex(1))]);
+    assert_eq!(leader.pending_read_count(), 0);
+}
+
+#[test]
 fn zero_sequence_echo_never_confirms_a_barrier() {
     let mut leader = leader_with_current_term_commit();
     let _ = leader.step(read_index(1));

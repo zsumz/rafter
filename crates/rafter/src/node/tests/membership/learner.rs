@@ -122,6 +122,63 @@ fn learner_receives_log_replication_without_counting_for_commit() {
 }
 
 #[test]
+fn learner_receives_log_replication_and_snapshot_catch_up() {
+    let learner_id = NodeId(4);
+    let payload = b"learner log replication";
+    let mut log_leader = committed_leader_with_learner_config();
+
+    assert!(!log_leader.is_effective_voter(learner_id));
+    assert!(log_leader.is_effective_learner(learner_id));
+
+    let outputs = log_leader.step(Input::ClientProposal {
+        payload: payload.to_vec(),
+    });
+    let learner_append =
+        append_entries_to(&outputs, learner_id).expect("learner receives append entries");
+
+    assert_eq!(learner_append.prev_log_index, LogIndex(1));
+    assert_eq!(learner_append.entries.len(), 2);
+    assert_eq!(
+        learner_append
+            .entries
+            .iter()
+            .filter_map(LogEntry::application_payload)
+            .collect::<Vec<_>>(),
+        vec![payload.as_slice()]
+    );
+
+    let (mut snapshot_leader, source) = leader_with_snapshot_and_learner_suffix();
+    assert!(!snapshot_leader.is_effective_voter(learner_id));
+    assert!(snapshot_leader.is_effective_learner(learner_id));
+    snapshot_leader
+        .try_follower_progress_mut(learner_id)
+        .expect("learner has replication progress")
+        .next_index = LogIndex(2);
+
+    let outputs = snapshot_leader.step(Input::Message {
+        from: learner_id,
+        message: Message::AppendEntriesResponse(AppendEntriesResponse {
+            sequence: 0,
+            term: snapshot_leader.current_term(),
+            follower_id: learner_id,
+            success: false,
+            match_index: LogIndex::ZERO,
+        }),
+    });
+
+    assert_eq!(outputs.len(), 1);
+    let Output::SendSnapshotChunk { to, chunk } = &outputs[0] else {
+        panic!("expected learner snapshot catch-up");
+    };
+    assert_eq!(*to, learner_id);
+    assert_eq!(chunk.metadata.last_included_index, LogIndex(1));
+    assert_eq!(chunk.offset, 0);
+    assert!(chunk.done);
+    let request = chunk.resolve(&source).expect("source serves the snapshot");
+    assert_eq!(request.chunk, b"learner snapshot".to_vec());
+}
+
+#[test]
 fn newly_added_learner_receives_retained_suffix_from_boundary() {
     let mut leader = node(1, &[2, 3]);
     let _ = elect_leader(&mut leader);

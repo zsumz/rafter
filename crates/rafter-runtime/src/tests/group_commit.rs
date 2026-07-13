@@ -11,6 +11,9 @@ use rafter_storage::{
 mod batch;
 mod failure;
 
+const INJECTED_APPEND_OPERATION: &str = "append group-commit test entries";
+const INJECTED_APPEND_MESSAGE: &str = "injected group-commit append failure";
+
 /// Counts every append and truncate call while delegating to an in-memory
 /// segment: one `append_entries` call is one durable flush in a file-backed
 /// segment, so the counter observes the amortization directly.
@@ -156,9 +159,9 @@ impl RaftLogSegment for FailAfterLogSegment {
             return self.inner.append_entries(entries);
         }
         if self.allowed == 0 {
-            return Err(RaftLogSegmentAppendError::NonContiguous {
-                expected: self.inner.next_index(),
-                actual: entries[0].index,
+            return Err(RaftLogSegmentAppendError::Io {
+                operation: INJECTED_APPEND_OPERATION,
+                message: INJECTED_APPEND_MESSAGE.to_owned(),
             });
         }
         self.allowed -= 1;

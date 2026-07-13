@@ -52,7 +52,7 @@ const PS02_FAILURE_COVERAGE: &[FailureCoverage] = &[
         operation: RuntimeStoreOperation::BatchedLogSuffixAppend,
         path: "crates/rafter-runtime/src/tests/group_commit/failure.rs",
         source: include_str!("group_commit/failure.rs"),
-        symbol: "a_failed_batch_releases_no_output_and_poisons_the_runtime",
+        symbol: "group_commit_failure_is_surfaced_without_releasing_outputs",
     },
     FailureCoverage {
         operation: RuntimeStoreOperation::FinalHardStateWrite,

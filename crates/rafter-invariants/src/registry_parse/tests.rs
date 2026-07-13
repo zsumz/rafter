@@ -211,6 +211,34 @@ fn multi_clause_simulator_evidence_requires_a_qualified_atomic_group() {
 }
 
 #[test]
+fn direct_test_evidence_binds_exactly_one_clause_without_an_atomic_escape_hatch() {
+    parse_registry_document(&valid_registry(
+        VALID_EVIDENCE,
+        VALID_CLAUSE,
+        VALID_INVARIANT,
+    ))
+    .expect("single-clause direct test evidence parses");
+
+    let multi_clause = VALID_EVIDENCE.replace(
+        "    clauses: \"AA-01.a\"",
+        "    clauses: \"AA-01.a,AA-01.b\"",
+    );
+    let ceremonial_atomic_group = multi_clause.replace(
+        "    layer: \"tests\"",
+        "    atomic_group: \"AA-01/ceremonial\"\n    layer: \"tests\"",
+    );
+    for evidence in [multi_clause, ceremonial_atomic_group] {
+        let error =
+            parse_registry_document(&valid_registry(&evidence, VALID_CLAUSE, VALID_INVARIANT))
+                .expect_err("multi-clause direct test evidence must fail");
+        assert_eq!(
+            error.to_string(),
+            "direct tests evidence record 1 must bind exactly one clause, found 2"
+        );
+    }
+}
+
+#[test]
 fn duplicate_invariant_and_clause_ids_are_rejected() {
     let duplicate_invariant = format!(
         "{VALID_INVARIANT}{}",

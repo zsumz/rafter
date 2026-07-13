@@ -47,6 +47,7 @@ pub(super) fn parse_evidence_record(
     }
     let strength = required("strength")?;
     validate_evidence_shape(index, record, &layer, &strength)?;
+    validate_direct_test_binding(index, &clause_ids, &layer, &strength)?;
     let atomic_group = record.get("atomic_group").cloned();
     validate_atomic_group(
         index,
@@ -74,6 +75,22 @@ pub(super) fn parse_evidence_record(
             simulator: simulator.clone(),
         })
         .collect())
+}
+
+fn validate_direct_test_binding(
+    index: usize,
+    clause_ids: &[String],
+    layer: &str,
+    strength: &str,
+) -> Result<(), CatalogError> {
+    if layer == "tests" && strength == "direct" && clause_ids.len() != 1 {
+        return Err(CatalogError(format!(
+            "direct tests evidence record {} must bind exactly one clause, found {}",
+            index + 1,
+            clause_ids.len()
+        )));
+    }
+    Ok(())
 }
 
 fn validate_evidence_shape(

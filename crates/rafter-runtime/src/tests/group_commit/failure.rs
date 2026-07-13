@@ -1,7 +1,7 @@
 use super::*;
 
 #[test]
-fn a_failed_batch_releases_no_output_and_poisons_the_runtime() {
+fn group_commit_failure_is_surfaced_without_releasing_outputs() {
     let mut runtime = elected_leader_with_log_segment(FailAfterLogSegment {
         inner: InMemoryRaftLogSegment::new(),
         allowed: 1,
@@ -10,19 +10,47 @@ fn a_failed_batch_releases_no_output_and_poisons_the_runtime() {
     let error = runtime
         .step_batch(proposals(3))
         .expect_err("the batch's single flush fails");
-    assert!(matches!(error, RaftRuntimeError::LogAppend(_)));
-
-    let error = runtime
-        .step_batch(vec![RaftInput::Tick])
-        .expect_err("a poisoned runtime refuses further batches");
-    assert!(matches!(error, RaftRuntimeError::Poisoned { .. }));
+    assert_eq!(
+        error,
+        RaftRuntimeError::LogAppend(RaftLogSegmentAppendError::Io {
+            operation: INJECTED_APPEND_OPERATION,
+            message: INJECTED_APPEND_MESSAGE.to_owned(),
+        })
+    );
+    assert_eq!(
+        runtime.log_segment.inner.replay_entries().len(),
+        1,
+        "the failed batch returns no outputs and persists none of its entries"
+    );
 }
 
-/// The prose contract behind the poisoned-accessor change, machine-checked:
-/// a failed persist leaves durable state exactly where the last successful
-/// persist put it, and a restart from those stores resumes from that state.
 #[test]
-fn durable_state_never_runs_ahead_of_a_failed_persist_and_restart_resumes_from_it() {
+fn group_commit_failure_poisons_runtime_and_rejects_further_writes() {
+    let mut runtime = elected_leader_with_log_segment(FailAfterLogSegment {
+        inner: InMemoryRaftLogSegment::new(),
+        allowed: 1,
+    });
+
+    runtime
+        .step_batch(proposals(3))
+        .expect_err("the injected append failure is surfaced");
+
+    let error = runtime
+        .step_batch(proposals(1))
+        .expect_err("a poisoned runtime refuses further writes");
+    assert!(matches!(
+        error,
+        RaftRuntimeError::Poisoned {
+            cause: RaftRuntimeFatalError::LogAppend(RaftLogSegmentAppendError::Io {
+                operation: INJECTED_APPEND_OPERATION,
+                ref message,
+            }),
+        } if message == INJECTED_APPEND_MESSAGE
+    ));
+}
+
+#[test]
+fn group_commit_failure_preserves_last_successful_state_across_crash_and_reopen() {
     let mut runtime = elected_leader_with_log_segment(FailAfterLogSegment {
         inner: InMemoryRaftLogSegment::new(),
         allowed: 2,
@@ -30,30 +58,38 @@ fn durable_state_never_runs_ahead_of_a_failed_persist_and_restart_resumes_from_i
     runtime
         .step_batch(proposals(1))
         .expect("the first proposal persists");
+    let last_successful_index = runtime.last_log_index();
 
     let error = runtime
         .step_batch(proposals(1))
         .expect_err("the second proposal's flush fails");
     assert!(matches!(error, RaftRuntimeError::LogAppend(_)));
 
-    // Durable contents: exactly the election no-op and first entry, nothing
-    // from the failed batch — even though the poisoned runtime's accessors
-    // stepped past it.
-    let durable = runtime.log_segment.inner.replay_entries();
-    assert_eq!(durable.len(), 2);
-    assert_eq!(durable[0].index, rafter::LogIndex(1));
-    assert_eq!(durable[1].index, rafter::LogIndex(2));
+    let durable_log = runtime.log_segment.inner.replay_entries();
+    let durable_hard_state = runtime.hard_state_store.current();
+    assert_eq!(durable_log.len(), 2);
+    assert_eq!(durable_log[0].index, rafter::LogIndex(1));
+    assert_eq!(durable_log[1].index, last_successful_index);
     assert_eq!(runtime.last_log_index(), rafter::LogIndex(3));
+    assert!(matches!(
+        runtime
+            .step_batch(proposals(1))
+            .expect_err("stepped-ahead volatile state cannot execute"),
+        RaftRuntimeError::Poisoned { .. }
+    ));
 
-    // Restart from the durable stores: the node resumes at the persisted
-    // state and accepts new work.
     let hard_state = runtime.hard_state_store.clone();
     let segment = runtime.log_segment.inner.clone();
+    drop(runtime);
+
     let mut restarted = DurableRaftNode::with_storage(raft_config(2, &[1, 3]), hard_state, segment)
-        .expect("restart from the durable stores");
-    assert_eq!(restarted.last_log_index(), rafter::LogIndex(2));
+        .expect("reopen from the durable stores");
+    assert_eq!(restarted.last_log_index(), last_successful_index);
+    assert_eq!(restarted.log_segment.replay_entries(), durable_log);
+    assert_eq!(restarted.hard_state_store.current(), durable_hard_state);
+
     let outputs = restarted
         .step(RaftInput::Tick)
-        .expect("restarted node runs");
+        .expect("the reopened node runs from durable state");
     assert!(!outputs.is_empty() || restarted.role() != RaftRole::Leader);
 }

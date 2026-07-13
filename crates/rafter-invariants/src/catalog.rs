@@ -6,10 +6,10 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 
-use crate::registry_parse::{
-    parse_clauses, parse_evidence, parse_invariants, parse_registry_schema_version,
+use crate::{
+    registry::{RegistryDocument, REGISTRY_SCHEMA_VERSION},
+    types::SimulatorLivenessContract,
 };
-use crate::types::SimulatorLivenessContract;
 
 mod liveness;
 mod liveness_validation;
@@ -24,7 +24,6 @@ pub(crate) use simulator_contract::{SimulatorRunnerConfiguration, SimulatorState
 #[cfg(test)]
 pub(crate) mod liveness_report_tests;
 
-const REGISTRY_SCHEMA_VERSION: u32 = 3;
 const PROFILE_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Debug)]
@@ -192,15 +191,20 @@ impl Catalog {
     /// Returns an error when the registry cannot be read or any evidence
     /// declaration is missing a field required by the aggregate contract.
     pub fn load(path: &Path) -> Result<Self, CatalogError> {
-        let source = fs::read_to_string(path)
-            .map_err(|error| CatalogError(format!("read {}: {error}", path.display())))?;
-        let schema_version = parse_registry_schema_version(&source)?;
-        if schema_version != REGISTRY_SCHEMA_VERSION {
+        let registry = RegistryDocument::load(path)?;
+        if registry.schema_version != REGISTRY_SCHEMA_VERSION {
             return Err(CatalogError(format!(
-                "unsupported registry schema {schema_version}"
+                "unsupported registry schema {}",
+                registry.schema_version
             )));
         }
-        let (invariants, canonical_ids) = parse_invariants(&source)?;
+        let invariants = registry.invariant_descriptors();
+        let canonical_ids = registry
+            .invariants
+            .iter()
+            .filter(|invariant| invariant.tier == "canonical")
+            .map(|invariant| invariant.id.clone())
+            .collect();
         let ids = invariants
             .iter()
             .map(|invariant| invariant.id.clone())
@@ -211,7 +215,7 @@ impl Catalog {
                 "registry invariant IDs must be unique".to_owned(),
             ));
         }
-        let clauses = parse_clauses(&source)?;
+        let clauses = registry.clause_descriptors();
         let clause_ids = clauses
             .iter()
             .map(|clause| clause.clause_id.as_str())
@@ -239,7 +243,7 @@ impl Catalog {
                 )));
             }
         }
-        let evidence = parse_evidence(&source)?;
+        let evidence = registry.evidence_descriptors();
         for descriptor in &evidence {
             let Some(clause) = clauses
                 .iter()
