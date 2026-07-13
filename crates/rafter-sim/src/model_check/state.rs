@@ -30,9 +30,11 @@ use self::application_history::{
 };
 use super::observations::ObservationSet;
 use client::initial_register_value;
-pub(super) use client::{ClientHistory, ClientReadOutcome, ClientWriteStatus};
+pub(super) use client::{
+    ClientHistory, ClientRead, ClientReadOutcome, ClientReadProof, ClientWriteStatus,
+};
 #[cfg(test)]
-pub(super) use client::{ClientRead, ClientReadProof, ClientWrite, ClientWriteUnknownReason};
+pub(super) use client::{ClientWrite, ClientWriteUnknownReason};
 pub(super) use commit::CommitHistory;
 #[cfg(test)]
 pub(super) use commit::CommitTransitionContext;
@@ -300,6 +302,12 @@ impl ExplorationState {
     }
 
     #[cfg(test)]
+    pub(super) fn observe_snapshot_cluster_for_detector(&mut self, cluster: &Cluster) {
+        let observations = self.snapshot_history.observe_cluster(cluster);
+        self.observations.union_with(observations);
+    }
+
+    #[cfg(test)]
     pub(super) fn drop_all_messages(&mut self) {
         self.cluster.drop_matching(|_| true);
     }
@@ -310,6 +318,21 @@ impl ExplorationState {
     }
 
     #[cfg(test)]
+    pub(super) fn clear_execution_cursors(&mut self) {
+        self.cluster.clear_execution_cursors();
+    }
+
+    #[cfg(test)]
+    pub(super) fn clear_initial_reference_states(&mut self) {
+        self.cluster.clear_initial_reference_states();
+    }
+
+    #[cfg(test)]
+    pub(super) fn clear_application_epochs(&mut self) {
+        self.cluster.clear_application_epochs();
+    }
+
+    #[cfg(test)]
     pub(super) fn remove_execution_cursor(&mut self, node_id: NodeId) {
         self.cluster.remove_execution_cursor(node_id);
     }
@@ -317,6 +340,11 @@ impl ExplorationState {
     #[cfg(test)]
     pub(super) fn inject_read_grant(&mut self, grant: crate::ReadGranted) {
         self.cluster.inject_read_grant(grant);
+    }
+
+    #[cfg(test)]
+    pub(super) fn inject_read_terminal_output(&mut self, output: crate::ReadTerminalOutput) {
+        self.cluster.inject_read_terminal_output(output);
     }
 
     #[cfg(test)]

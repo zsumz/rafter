@@ -93,14 +93,14 @@ fn apply_transition(
             TransitionOutcome::Applied
         }
         Transition::Restart { node_id, trace } => {
-            let before = state.cluster.clone();
+            let before = state.cluster.transition_observation_snapshot();
             restart::restart_node_inner(state, node_id, trace)
                 .map_err(TransitionError::Invariant)?;
             observe_restart_transition(state, &before);
             TransitionOutcome::Applied
         }
         Transition::ApplicationLossRestart { node_id, trace } => {
-            let before = state.cluster.clone();
+            let before = state.cluster.transition_observation_snapshot();
             restart_node_losing_application_state_inner(state, node_id, trace)
                 .map_err(TransitionError::Invariant)?;
             observe_restart_transition(state, &before);
@@ -428,6 +428,21 @@ impl InstrumentedCluster {
     }
 
     #[cfg(test)]
+    pub(super) fn clear_execution_cursors(&mut self) {
+        self.0.execution_cursors.clear();
+    }
+
+    #[cfg(test)]
+    pub(super) fn clear_initial_reference_states(&mut self) {
+        self.0.initial_reference_states.clear();
+    }
+
+    #[cfg(test)]
+    pub(super) fn clear_application_epochs(&mut self) {
+        self.0.application_epochs.clear();
+    }
+
+    #[cfg(test)]
     pub(super) fn remove_execution_cursor(&mut self, node_id: rafter::NodeId) {
         self.0.execution_cursors.remove(&node_id);
     }
@@ -435,6 +450,11 @@ impl InstrumentedCluster {
     #[cfg(test)]
     pub(super) fn inject_read_grant(&mut self, grant: crate::ReadGranted) {
         self.0.read_grants.push(grant);
+    }
+
+    #[cfg(test)]
+    pub(super) fn inject_read_terminal_output(&mut self, output: crate::ReadTerminalOutput) {
+        self.0.read_terminal_outputs.push(output);
     }
 
     #[cfg(test)]

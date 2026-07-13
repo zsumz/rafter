@@ -13,6 +13,9 @@ pub(super) fn check_client_history_linearizable(history: &ClientHistory) -> Resu
     if let Some(error) = history.instrumentation_errors.iter().next() {
         return Err(format!("client-history instrumentation failed: {error}"));
     }
+    if let Some(error) = history.read_instrumentation_errors.iter().next() {
+        return Err(format!("client-read instrumentation failed: {error}"));
+    }
     let operations = observed_operations(history);
     if operations.is_empty() || is_linearizable(history.initial_value.as_ref(), &operations) {
         return Ok(());
@@ -55,7 +58,7 @@ fn observed_operations(history: &ClientHistory) -> Vec<Operation> {
             continue;
         };
         operations.push(Operation {
-            id: OperationId::Read(read.request_id),
+            id: OperationId::Read(read.operation_id),
             started_at: read.started_at,
             completed_at: *completed_at,
             optional: false,
@@ -214,7 +217,7 @@ impl OperationId {
     const fn label(self) -> u64 {
         match self {
             Self::Write(proposal_id) => proposal_id.0,
-            Self::Read(request_id) => request_id,
+            Self::Read(operation_id) => operation_id,
         }
     }
 }
