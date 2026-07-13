@@ -3,10 +3,13 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// Current version of the machine-readable receipt and report contract.
-pub const RESULT_SCHEMA_VERSION: u32 = 9;
+pub const RESULT_SCHEMA_VERSION: u32 = 10;
+
+/// Current version of the final aggregate verdict report contract.
+pub const VERDICT_SCHEMA_VERSION: u32 = 1;
 
 /// Current version of the hashed execution-plan contract.
-pub const PLAN_SCHEMA_VERSION: u32 = 1;
+pub const PLAN_SCHEMA_VERSION: u32 = 2;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -41,6 +44,8 @@ pub struct ExecutionPlanReceipt {
     pub profile: String,
     pub registry: PlanInput,
     pub manifest: PlanInput,
+    pub result_schema: PlanInput,
+    pub verdict_schema: PlanInput,
     pub contract: crate::ProfileContract,
 }
 
@@ -255,7 +260,8 @@ pub struct ArtifactRef {
     pub size_bytes: u64,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 /// Aggregate report containing exactly one verdict per reviewed invariant.
 pub struct VerdictReport {
     pub schema_version: u32,
@@ -266,7 +272,8 @@ pub struct VerdictReport {
     pub invariants: Vec<InvariantVerdict>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 /// Aggregate green/red counts.
 pub struct VerdictSummary {
     pub total: usize,
@@ -274,7 +281,8 @@ pub struct VerdictSummary {
     pub red: usize,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 /// Final verdict and supporting issues for one invariant ID.
 pub struct InvariantVerdict {
     pub invariant_id: String,
@@ -288,7 +296,8 @@ pub struct InvariantVerdict {
     pub issues: Vec<VerdictIssue>,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 /// Final verdict for one stable normative clause within a parent invariant.
 pub struct ClauseVerdict {
     pub clause_id: String,
@@ -300,7 +309,7 @@ pub struct ClauseVerdict {
     pub issues: Vec<VerdictIssue>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 /// Exhaustive final verdict states.
 pub enum VerdictStatus {
@@ -308,7 +317,8 @@ pub enum VerdictStatus {
     Red,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 /// One missing, failed, incomplete, stale, or malformed evidence issue.
 pub struct VerdictIssue {
     pub evidence_id: String,

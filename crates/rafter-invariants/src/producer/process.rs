@@ -63,6 +63,19 @@ pub(crate) struct LabeledInvocation {
     pub invocation: InvocationReceipt,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct ProcessMetrics {
+    pub duration_ms: u64,
+    pub peak_rss_kib: u64,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct LabeledProcess {
+    pub label: String,
+    pub invocation: InvocationReceipt,
+    pub metrics: ProcessMetrics,
+}
+
 impl ProcessLog {
     pub(crate) fn has_complete_invocation(&self) -> bool {
         let invocation = &self.invocation;
@@ -303,10 +316,20 @@ pub(crate) fn digest_environment(environment: &BTreeMap<String, String>) -> Stri
     format!("{:x}", Sha256::digest(encoded))
 }
 
-pub(crate) fn parse_combined_invocations(
-    source: &str,
-) -> Result<Vec<LabeledInvocation>, serde_json::Error> {
-    source
+pub(crate) fn parse_combined_invocations(source: &str) -> Result<Vec<LabeledInvocation>, String> {
+    parse_combined_processes(source).map(|processes| {
+        processes
+            .into_iter()
+            .map(|process| LabeledInvocation {
+                label: process.label,
+                invocation: process.invocation,
+            })
+            .collect()
+    })
+}
+
+pub(crate) fn parse_combined_processes(source: &str) -> Result<Vec<LabeledProcess>, String> {
+    let processes = source
         .split("schema_version: 2\n")
         .skip(1)
         .map(|section| {
@@ -314,18 +337,50 @@ pub(crate) fn parse_combined_invocations(
             let label = lines
                 .next()
                 .and_then(|line| line.strip_prefix("label: "))
-                .unwrap_or_default()
+                .ok_or_else(|| "combined process log omitted label".to_owned())?
                 .to_owned();
             let invocation = lines
                 .next()
                 .and_then(|line| line.strip_prefix("invocation: "))
-                .unwrap_or_default();
-            Ok(LabeledInvocation {
+                .ok_or_else(|| "combined process log omitted invocation".to_owned())?;
+            let invocation = serde_json::from_str(invocation)
+                .map_err(|error| format!("parse combined process invocation: {error}"))?;
+            let _exit_code = lines
+                .next()
+                .and_then(|line| line.strip_prefix("exit_code: "))
+                .ok_or_else(|| "combined process log omitted exit code".to_owned())?;
+            let _timed_out = lines
+                .next()
+                .and_then(|line| line.strip_prefix("timed_out: "))
+                .ok_or_else(|| "combined process log omitted timeout status".to_owned())?;
+            let duration_ms = metric_line(&mut lines, "duration_ms: ")?;
+            let peak_rss_kib = metric_line(&mut lines, "peak_rss_kib: ")?;
+            if peak_rss_kib == 0 {
+                return Err("combined process log omitted peak RSS".to_owned());
+            }
+            Ok(LabeledProcess {
                 label,
-                invocation: serde_json::from_str(invocation)?,
+                invocation,
+                metrics: ProcessMetrics {
+                    duration_ms,
+                    peak_rss_kib,
+                },
             })
         })
-        .collect()
+        .collect::<Result<Vec<_>, _>>()?;
+    if processes.is_empty() {
+        return Err("combined process log contained no process receipt".to_owned());
+    }
+    Ok(processes)
+}
+
+fn metric_line<'a>(lines: &mut impl Iterator<Item = &'a str>, prefix: &str) -> Result<u64, String> {
+    lines
+        .next()
+        .and_then(|line| line.strip_prefix(prefix))
+        .ok_or_else(|| format!("combined process log omitted {prefix}"))?
+        .parse()
+        .map_err(|error| format!("parse combined process metric {prefix}: {error}"))
 }
 
 pub(crate) fn base_environment() -> BTreeMap<String, String> {
@@ -437,8 +492,8 @@ mod tests {
     use std::{collections::BTreeMap, ffi::OsString, path::Path, time::Duration};
 
     use super::{
-        combined_log, digest_environment, json_log, parse_peak_rss, process_rss_kib,
-        timed_with_timeout, timed_with_timeout_and_grace, ProcessLog,
+        combined_log, digest_environment, json_log, parse_combined_processes, parse_peak_rss,
+        process_rss_kib, timed_with_timeout, timed_with_timeout_and_grace, ProcessLog,
     };
 
     #[test]
@@ -500,6 +555,9 @@ mod tests {
             .expect("plain process log is UTF-8");
         assert!(plain.starts_with("schema_version: 2\nlabel: timeout\ninvocation: {"));
         assert!(plain.contains("\"program\":\"sleep\""));
+        let parsed = parse_combined_processes(&plain).expect("combined metrics parse");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].metrics.peak_rss_kib, output.peak_rss_kib);
         let structured: ProcessLog = serde_json::from_slice(
             &json_log("timeout", &output).expect("structured process log serializes"),
         )

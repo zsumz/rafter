@@ -21,7 +21,9 @@ pub(crate) mod tla_output;
 mod unit_tests;
 
 pub(crate) use process::ProcessLog;
-pub(crate) use simulator_model::{canonical_check_id, expected_scheduled_seeds};
+pub(crate) use simulator_model::{
+    canonical_check_id, expected_scheduled_seeds, expected_scheduled_seeds_with_count,
+};
 pub(crate) use tla_contract::java_major;
 
 use std::collections::BTreeSet;
@@ -176,6 +178,7 @@ fn write_bundle(
     bundle: &ResultBundle,
     output_dir: &std::path::Path,
 ) -> Result<PathBuf, Box<dyn Error>> {
+    crate::schema::validate_result_bundle(bundle)?;
     fs::create_dir_all(output_dir)?;
     let path = output_dir.join(format!("{}-{}.json", bundle.profile, bundle.runner));
     let temporary = output_dir.join(format!(

@@ -6,7 +6,6 @@ use crate::{
     types::{
         ClauseVerdict, EvidenceResult, EvidenceStatus, FailureClassification, InvariantVerdict,
         ResultBundle, VerdictIssue, VerdictReport, VerdictStatus, VerdictSummary,
-        RESULT_SCHEMA_VERSION,
     },
 };
 
@@ -68,8 +67,16 @@ pub fn load_evidence(paths: &[PathBuf]) -> LoadedEvidence {
 fn load_bundle(path: &PathBuf) -> Result<ResultBundle, AggregateError> {
     let source = fs::read_to_string(path)
         .map_err(|error| AggregateError(format!("read {}: {error}", path.display())))?;
-    let bundle: ResultBundle = serde_json::from_str(&source)
+    let value: serde_json::Value = serde_json::from_str(&source)
         .map_err(|error| AggregateError(format!("parse {}: {error}", path.display())))?;
+    crate::schema::validate_result_value(&value).map_err(|error| {
+        AggregateError(format!(
+            "validate result schema for {}: {error}",
+            path.display()
+        ))
+    })?;
+    let bundle: ResultBundle = serde_json::from_value(value)
+        .map_err(|error| AggregateError(format!("decode {}: {error}", path.display())))?;
     crate::producer::source::verify_checkout(&bundle.execution.source).map_err(|error| {
         AggregateError(format!(
             "verify source identity for {}: {error}",
@@ -149,7 +156,7 @@ pub fn aggregate_with_harness_errors(
         .filter(|verdict| verdict.status == VerdictStatus::Green)
         .count();
     Ok(VerdictReport {
-        schema_version: RESULT_SCHEMA_VERSION,
+        schema_version: crate::types::VERDICT_SCHEMA_VERSION,
         profile: profile.to_owned(),
         source_ref: source_ref.to_owned(),
         summary: VerdictSummary {

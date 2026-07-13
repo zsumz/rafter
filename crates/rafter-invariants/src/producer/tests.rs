@@ -2,7 +2,6 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
     path::Path,
-    time::Instant,
 };
 
 use crate::types::RESULT_SCHEMA_VERSION;
@@ -34,7 +33,6 @@ pub(super) fn run(
     output_dir: &Path,
     context: &ProducerContext<'_>,
 ) -> Result<ResultBundle, Box<dyn Error>> {
-    let started = Instant::now();
     let runner = contract
         .runners
         .get("tests")
@@ -50,6 +48,7 @@ pub(super) fn run(
     let mut compiled = BTreeMap::new();
     let mut execution_artifacts = Vec::new();
     let mut peak_rss_kib = 0;
+    let mut compile_duration_ms = 0_u64;
     for target in targets {
         let outcome = compile(
             &target,
@@ -59,6 +58,7 @@ pub(super) fn run(
             output_dir,
         )?;
         peak_rss_kib = peak_rss_kib.max(outcome.peak_rss_kib);
+        compile_duration_ms = compile_duration_ms.saturating_add(outcome.duration_ms);
         execution_artifacts.push(outcome.artifact.clone());
         compiled.insert(target, outcome);
     }
@@ -84,6 +84,18 @@ pub(super) fn run(
         "summary",
         summary.as_bytes(),
     )?);
+    let execution_duration_ms = compile_duration_ms.saturating_add(
+        checks
+            .iter()
+            .filter(|check| {
+                !check
+                    .artifacts
+                    .iter()
+                    .any(|artifact| artifact.kind == "compile-log")
+            })
+            .map(|check| check.duration_ms)
+            .sum(),
+    );
     Ok(ResultBundle {
         schema_version: RESULT_SCHEMA_VERSION,
         runner: "tests".to_owned(),
@@ -94,7 +106,7 @@ pub(super) fn run(
             invocation: context.invocation.clone(),
             source,
             checks,
-            duration_ms: process::duration_ms(started.elapsed()),
+            duration_ms: execution_duration_ms,
             peak_rss_kib,
             artifacts: execution_artifacts,
         },

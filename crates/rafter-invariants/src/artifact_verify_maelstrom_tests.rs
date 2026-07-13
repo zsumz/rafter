@@ -205,6 +205,8 @@ fn bundle() -> ResultBundle {
                 profile: "nightly".to_owned(),
                 registry: plan_input("verification/raft-invariants.yaml"),
                 manifest: plan_input("verification/raft-invariant-profiles.json"),
+                result_schema: plan_input("verification/invariant-result-schema.json"),
+                verdict_schema: plan_input("verification/invariant-verdict-schema.json"),
                 contract,
             },
             invocation: InvocationReceipt {

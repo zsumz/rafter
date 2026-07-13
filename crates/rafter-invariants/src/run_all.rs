@@ -87,6 +87,7 @@ pub fn write_report(
     report: &VerdictReport,
     output_dir: &std::path::Path,
 ) -> Result<(), Box<dyn Error>> {
+    crate::schema::validate_verdict_report(report)?;
     fs::create_dir_all(output_dir)?;
     atomic_write(
         output_dir.join(format!("{}.json", report.profile)),

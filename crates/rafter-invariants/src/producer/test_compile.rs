@@ -25,6 +25,7 @@ pub(super) struct CompiledTarget {
     pub artifact: ArtifactRef,
     pub error: Option<String>,
     pub peak_rss_kib: u64,
+    pub duration_ms: u64,
 }
 
 pub(super) fn compile(
@@ -75,6 +76,7 @@ pub(super) fn compile(
         artifact: log,
         error,
         peak_rss_kib: output.peak_rss_kib,
+        duration_ms: process::duration_ms(output.duration),
     })
 }
 

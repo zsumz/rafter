@@ -55,6 +55,8 @@ pub(crate) fn plan_receipt(manifest: &ProfileManifest, profile: &str) -> Executi
         profile: profile.to_owned(),
         registry: plan_input("verification/raft-invariants.yaml"),
         manifest: plan_input("verification/raft-invariant-profiles.json"),
+        result_schema: plan_input("verification/invariant-result-schema.json"),
+        verdict_schema: plan_input("verification/invariant-verdict-schema.json"),
         contract: manifest.profiles[profile].clone(),
     }
 }
@@ -69,7 +71,7 @@ fn plan_input(path: &str) -> PlanInput {
 
 fn invocation_receipt(runner: &str) -> InvocationReceipt {
     InvocationReceipt {
-        program: "target/debug/rafter-invariants".to_owned(),
+        program: "/workspace/rafter/target/debug/rafter-invariants".to_owned(),
         program_sha256: "0".repeat(64),
         arguments: vec![
             "run".to_owned(),

@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 use crate::{
     catalog::{ProfileContract, RunnerContract},
@@ -116,13 +119,18 @@ fn validate_provenance(
         || bundle.execution.plan.contract != *profile_contract
         || !valid_plan_input(&bundle.execution.plan.registry)
         || !valid_plan_input(&bundle.execution.plan.manifest)
+        || !valid_plan_input(&bundle.execution.plan.result_schema)
+        || !valid_plan_input(&bundle.execution.plan.verdict_schema)
     {
         return Err("hashed execution plan does not match profile contract");
     }
     if bundle.execution.invocation.program.trim().is_empty()
         || !is_sha256(&bundle.execution.invocation.program_sha256)
         || bundle.execution.invocation.arguments.is_empty()
-        || bundle.execution.invocation.current_dir.trim().is_empty()
+        || !Path::new(&bundle.execution.invocation.program).is_absolute()
+        || !Path::new(&bundle.execution.invocation.current_dir).is_absolute()
+        || !Path::new(&bundle.execution.invocation.program)
+            .starts_with(&bundle.execution.invocation.current_dir)
         || crate::producer::process::digest_environment(&bundle.execution.invocation.environment)
             != bundle.execution.invocation.environment_sha256
         || !is_sha256(&bundle.execution.invocation.environment_sha256)

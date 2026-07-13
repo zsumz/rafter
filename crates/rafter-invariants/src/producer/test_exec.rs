@@ -37,6 +37,7 @@ pub(super) fn evaluate(
                 .unwrap_or_else(|| "test target did not compile".to_owned()),
             compiled.artifact.clone(),
             compiled.peak_rss_kib,
+            compiled.duration_ms,
         ));
     };
     let program = executable
@@ -74,6 +75,7 @@ pub(super) fn evaluate(
             "libtest discovery process failed".to_owned(),
             artifact,
             discovery_rss,
+            discovery_ms,
         ));
     }
     let discovered = listed_tests(&listed.stdout);
@@ -266,14 +268,19 @@ fn write_log(
     )
 }
 
-fn error_outcome(message: String, artifact: ArtifactRef, peak_rss_kib: u64) -> TestOutcome {
+fn error_outcome(
+    message: String,
+    artifact: ArtifactRef,
+    peak_rss_kib: u64,
+    duration_ms: u64,
+) -> TestOutcome {
     TestOutcome {
         completion: CheckCompletion::HarnessError,
         status: EvidenceStatus::Error,
         classification: Some(FailureClassification::HarnessError),
         message: Some(message),
         observations: observations(0, 0, 0),
-        duration_ms: 0,
+        duration_ms,
         peak_rss_kib,
         artifacts: vec![artifact],
     }
