@@ -17,6 +17,8 @@ serde_json = "1"
 sha2 = "0.10"
 
 [dev-dependencies]
+rafter = { path = "../rafter" }
+rafter-sim = { path = "../rafter-sim" }
 syn = { version = "2", features = ["full", "visit"] }
 
 [lints]
