@@ -34,6 +34,11 @@ pub(in crate::model_check) struct SnapshotBootstrapSeed {
     pub(in crate::model_check) bootstrap: rafter::BootstrapState,
 }
 
+pub(in crate::model_check) struct PendingApplicationReplaySeed {
+    pub(in crate::model_check) node_id: rafter::NodeId,
+    pub(in crate::model_check) bootstrap: rafter::BootstrapState,
+}
+
 enum Transition<'a> {
     Operation(Operation),
     Restart {
@@ -42,6 +47,7 @@ enum Transition<'a> {
     },
     Soak(SoakOperation),
     SnapshotBootstrapSeeds(Vec<SnapshotBootstrapSeed>),
+    PendingApplicationReplaySeed(Box<PendingApplicationReplaySeed>),
     SchedulerIndex(usize),
     RandomReadyPosition,
 }
@@ -86,6 +92,17 @@ fn apply_transition(
         Transition::SnapshotBootstrapSeeds(seeds) => {
             operation::apply_snapshot_bootstrap_seeds_inner(state, seeds)
                 .map_err(TransitionError::Bootstrap)?;
+            TransitionOutcome::Applied
+        }
+        Transition::PendingApplicationReplaySeed(seed) => {
+            let seed = *seed;
+            state
+                .cluster
+                .0
+                .seed_pending_application_replay(seed.node_id, seed.bootstrap)
+                .map_err(TransitionError::Bootstrap)?;
+            state.refresh_log_history();
+            state.refresh_seeded_commit_history();
             TransitionOutcome::Applied
         }
         Transition::SchedulerIndex(len) => {
@@ -158,6 +175,25 @@ pub(in crate::model_check) fn apply_snapshot_bootstrap_seeds(
         Err(TransitionError::Bootstrap(error)) => Err(error),
         Err(TransitionError::Invariant(_)) => {
             unreachable!("snapshot bootstrap seeding does not run invariant checks")
+        }
+    }
+}
+
+pub(in crate::model_check) fn apply_pending_application_replay_seed(
+    state: &mut ExplorationState,
+    seed: PendingApplicationReplaySeed,
+) -> Result<(), BootstrapValidationError> {
+    match apply_transition(
+        state,
+        Transition::PendingApplicationReplaySeed(Box::new(seed)),
+    ) {
+        Ok(TransitionOutcome::Applied) => Ok(()),
+        Ok(TransitionOutcome::SchedulerIndex(_) | TransitionOutcome::RandomReadyPosition(_)) => {
+            unreachable!("pending-replay seeding returns an applied outcome")
+        }
+        Err(TransitionError::Bootstrap(error)) => Err(error),
+        Err(TransitionError::Invariant(_)) => {
+            unreachable!("pending-replay seeding does not run invariant checks")
         }
     }
 }

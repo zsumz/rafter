@@ -24,6 +24,7 @@ pub fn run_raft_random_soak(
     configs: Vec<NodeConfig>,
     config: SoakConfig,
 ) -> Result<SoakSummary, SoakFailure> {
+    let liveness_configs = configs.clone();
     let mut state = ExplorationState::new(Cluster::new_with_seed(configs, config.seed));
     let mut trace = Vec::new();
     let mut observed_actions = BTreeSet::new();
@@ -70,8 +71,18 @@ pub fn run_raft_random_soak(
         }
     }
 
-    let liveness_reports =
-        run_soak_liveness_check(&mut state, config, &mut trace, &mut observed_actions)?;
+    let mut liveness_state =
+        ExplorationState::new(Cluster::new_with_seed(liveness_configs, config.seed));
+    let mut liveness_trace = Vec::new();
+    let mut liveness_actions = BTreeSet::new();
+    let liveness_reports = run_soak_liveness_check(
+        &mut liveness_state,
+        config,
+        &mut liveness_trace,
+        &mut liveness_actions,
+    )?;
+    trace.extend(liveness_trace);
+    observed_actions.extend(liveness_actions);
 
     Ok(SoakSummary::from_trace(
         config,

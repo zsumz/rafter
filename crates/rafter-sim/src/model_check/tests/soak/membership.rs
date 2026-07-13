@@ -35,6 +35,34 @@ fn randomized_membership_soak_exercises_dynamic_membership_actions() {
 }
 
 #[test]
+fn pr_membership_soak_binds_liveness_to_a_stable_baseline() {
+    let config = SoakConfig::new(SimSeed(0x9104), 320)
+        .with_max_proposals(24)
+        .with_max_restarts(12)
+        .with_max_read_indexes(4)
+        .with_max_membership_changes(8)
+        .with_max_transfers(2)
+        .with_max_partitions(2)
+        .with_max_lossy_restarts(2)
+        .with_snapshot_catchup_probe()
+        .with_tick_skew(NodeId(1), 3);
+    let summary = run_raft_random_soak(four_node_future_learner_configs(), config)
+        .expect("the exact PR membership soak should emit valid liveness evidence");
+
+    summary
+        .validate_liveness_report_structure()
+        .expect("every liveness report should satisfy its structural contract");
+    for feature in ["leader-convergence", "leader-usability"] {
+        let report = summary
+            .liveness_reports()
+            .iter()
+            .find(|report| report.feature_id() == feature)
+            .unwrap_or_else(|| panic!("missing {feature} report"));
+        assert_eq!(report.to_json()["preconditions"]["stable_membership"], true);
+    }
+}
+
+#[test]
 fn later_commit_does_not_retroactively_fail_nightly_leader_completeness() {
     let config = SoakConfig::new(SimSeed(0x1f12_1013_6bdc_c08b), 1024)
         .with_max_proposals(64)

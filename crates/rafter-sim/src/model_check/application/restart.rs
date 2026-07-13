@@ -1,6 +1,6 @@
-use rafter::{BootstrapState, LogIndex, Node, NodeId, SharedPayload};
+use rafter::{BootstrapState, LogIndex, Node, NodeId, PendingSnapshotTransfer, SharedPayload};
 
-use crate::DurableStateDigest;
+use crate::{DurableStateDigest, StagedSnapshotTransfer};
 
 use super::super::super::{
     catalog,
@@ -42,32 +42,7 @@ pub(super) fn restart_node_inner(
             )
         })?;
 
-    if let Some(pending) = before_pending.clone() {
-        let Some(node) = state.cluster.0.nodes.get_mut(&node_id) else {
-            return Err(restart_failure(
-                state,
-                trace,
-                FailureKind::HarnessError,
-                catalog::PS_03_EXACT_DURABLE_RESTART,
-                format!("{node_id} restart lost the node record"),
-            ));
-        };
-        let resume_result = node.resume_pending_snapshot_transfer(pending);
-        if let Err(error) = resume_result {
-            return Err(restart_failure(
-                state,
-                trace,
-                FailureKind::HarnessError,
-                catalog::SS_04_SNAPSHOT_TRANSFER_INTEGRITY,
-                format!("{node_id} failed to resume pending snapshot transfer: {error:?}"),
-            ));
-        }
-        // The kernel record resumes only alongside its durably staged byte
-        // prefix; a plain restart would have dropped both together.
-        if let Some(staged) = before_staged {
-            state.cluster.0.snapshot_staging.insert(node_id, staged);
-        }
-    }
+    resume_pending_snapshot_transfer(state, node_id, before_pending.clone(), before_staged, trace)?;
 
     let recovered_applies = state.cluster.applied[before_applied_len..].to_vec();
     check_applied_floor_recovery(
@@ -109,7 +84,16 @@ pub(super) fn restart_node_inner(
         ));
     }
 
-    check_restart_digest(state, node_id, &before_digest, trace)?;
+    let expected_applied_floor = expected_replay
+        .last()
+        .map_or(before_applied_floor, |(index, _)| *index);
+    check_restart_digest(
+        state,
+        node_id,
+        &before_digest,
+        expected_applied_floor,
+        trace,
+    )?;
     mark_restart_observations(
         state,
         &before,
@@ -122,14 +106,57 @@ pub(super) fn restart_node_inner(
     Ok(())
 }
 
+fn resume_pending_snapshot_transfer(
+    state: &mut ExplorationState,
+    node_id: NodeId,
+    pending: Option<PendingSnapshotTransfer>,
+    staged: Option<StagedSnapshotTransfer>,
+    trace: &[Action],
+) -> Result<(), Failure> {
+    let Some(pending) = pending else {
+        return Ok(());
+    };
+    let Some(node) = state.cluster.0.nodes.get_mut(&node_id) else {
+        return Err(restart_failure(
+            state,
+            trace,
+            FailureKind::HarnessError,
+            catalog::PS_03_EXACT_DURABLE_RESTART,
+            format!("{node_id} restart lost the node record"),
+        ));
+    };
+    if let Err(error) = node.resume_pending_snapshot_transfer(pending) {
+        return Err(restart_failure(
+            state,
+            trace,
+            FailureKind::HarnessError,
+            catalog::SS_04_SNAPSHOT_TRANSFER_INTEGRITY,
+            format!("{node_id} failed to resume pending snapshot transfer: {error:?}"),
+        ));
+    }
+    // The kernel record resumes only alongside its durably staged byte prefix.
+    if let Some(staged) = staged {
+        state.cluster.0.snapshot_staging.insert(node_id, staged);
+    }
+    Ok(())
+}
+
 fn check_restart_digest(
     state: &ExplorationState,
     node_id: NodeId,
     before: &DurableStateDigest,
+    expected_applied_floor: LogIndex,
     trace: &[Action],
 ) -> Result<(), Failure> {
     let after = state.cluster.durable_state_digest(node_id);
-    check_exact_durable_restart(&state.cluster, node_id, before, &after, trace)
+    check_exact_durable_restart(
+        &state.cluster,
+        node_id,
+        before,
+        &after,
+        expected_applied_floor,
+        trace,
+    )
 }
 
 fn mark_restart_observations(

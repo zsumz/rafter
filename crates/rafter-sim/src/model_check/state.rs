@@ -18,8 +18,9 @@ mod snapshot;
 
 use self::application::InstrumentedCluster;
 pub(super) use self::application::{
-    apply_snapshot_bootstrap_seeds, apply_soak_action, apply_to_restart_snapshot_state,
-    apply_to_state, restart_node, SnapshotBootstrapSeed,
+    apply_pending_application_replay_seed, apply_snapshot_bootstrap_seeds, apply_soak_action,
+    apply_to_restart_snapshot_state, apply_to_state, restart_node, PendingApplicationReplaySeed,
+    SnapshotBootstrapSeed,
 };
 use self::application_history::ApplicationHistory;
 use super::observations::ObservationSet;

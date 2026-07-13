@@ -6,6 +6,11 @@ use super::super::persistence::{
     check_restart_term_and_vote,
 };
 use super::*;
+use crate::model_check::observations::Observation;
+use crate::model_check::state::{
+    apply_pending_application_replay_seed, restart_node, PendingApplicationReplaySeed,
+};
+use rafter::BootstrapState;
 
 fn durable_restart_fixture() -> DurableStateDigest {
     DurableStateDigest {
@@ -121,8 +126,15 @@ fn exact_durable_restart_detects_application_recovery_metadata_change() {
     let mut after = before.clone();
     after.applied_through = LogIndex(1);
 
-    let failure = check_exact_durable_restart(&cluster, NodeId(1), &before, &after, &[])
-        .expect_err("digest mismatch must fail PS-03");
+    let failure = check_exact_durable_restart(
+        &cluster,
+        NodeId(1),
+        &before,
+        &after,
+        before.applied_through,
+        &[],
+    )
+    .expect_err("digest mismatch must fail PS-03");
     assert_eq!(failure.invariant(), catalog::PS_03_EXACT_DURABLE_RESTART);
     assert!(
         failure.message.contains("application recovery metadata"),
@@ -197,6 +209,51 @@ fn applied_floor_recovery_rejects_missing_committed_suffix_entry() {
     assert!(failure
         .message
         .contains("expected [LogIndex(3), LogIndex(4)]"));
+}
+
+#[test]
+fn pending_application_replay_restarts_through_the_instrumented_transition() {
+    let config = NodeConfig::new(NodeId(1), Vec::new(), 3).expect("test config is valid");
+    let mut state = ExplorationState::new(Cluster::new(vec![config]));
+    let payload = b"pending-application-replay".to_vec();
+    apply_pending_application_replay_seed(
+        &mut state,
+        PendingApplicationReplaySeed {
+            node_id: NodeId(1),
+            bootstrap: BootstrapState {
+                current_term: Term(1),
+                voted_for: None,
+                commit_index: LogIndex(1),
+                committed_configuration: None,
+                snapshot: None,
+                log: vec![BootstrapLogEntry::application(
+                    LogIndex(1),
+                    Term(1),
+                    payload.clone(),
+                )],
+            },
+        },
+    )
+    .expect("pending replay seed is valid");
+    state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(1), Term(1));
+
+    assert!(state.cluster().applied().is_empty());
+    restart_node(&mut state, NodeId(1), &[]).expect("restart replays the committed suffix");
+
+    let recovered = state.cluster().applied();
+    assert_eq!(recovered.len(), 1);
+    assert_eq!(recovered[0].index, LogIndex(1));
+    assert_eq!(recovered[0].payload.as_ref(), payload.as_slice());
+    assert!(state
+        .observation_set()
+        .contains(Observation::RestartNonemptyExpectedReplayComparisons));
+    assert_eq!(
+        state
+            .cluster()
+            .durable_state_digest(NodeId(1))
+            .applied_through,
+        LogIndex(1)
+    );
 }
 
 #[test]

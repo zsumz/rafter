@@ -56,6 +56,37 @@ impl Cluster {
         Ok(())
     }
 
+    /// Seeds a validated node image whose committed application suffix has not
+    /// yet been replayed. The next ordinary restart must drain that suffix.
+    pub(crate) fn seed_pending_application_replay(
+        &mut self,
+        node_id: NodeId,
+        bootstrap: BootstrapState,
+    ) -> Result<(), BootstrapValidationError> {
+        let applied_floor = self.durable_applied_floor(node_id);
+        assert!(
+            bootstrap.log.iter().any(|entry| {
+                entry.index > applied_floor
+                    && entry.index <= bootstrap.commit_index
+                    && entry.kind.is_application()
+            }),
+            "pending-replay seed must contain a committed application entry above its durable floor"
+        );
+        assert!(
+            bootstrap.snapshot.is_none(),
+            "pending-replay seed does not model snapshot restoration"
+        );
+        let config = self
+            .configs
+            .get(&node_id)
+            .expect("simulated node config must exist in cluster")
+            .clone();
+        let node = Node::from_bootstrap_applied_through(config, bootstrap, applied_floor)?;
+        self.nodes.insert(node_id, node);
+        self.snapshot_staging.remove(&node_id);
+        Ok(())
+    }
+
     pub(crate) fn durable_applied_floor(&self, node_id: NodeId) -> LogIndex {
         self.durable_applied
             .get(&node_id)

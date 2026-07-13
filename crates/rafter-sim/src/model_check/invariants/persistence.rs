@@ -9,6 +9,7 @@ pub(crate) fn check_exact_durable_restart(
     node_id: NodeId,
     before: &DurableStateDigest,
     after: &DurableStateDigest,
+    expected_applied_through: LogIndex,
     trace: &[Action],
 ) -> Result<(), Failure> {
     check_restart_term_and_vote(cluster, node_id, before, after, trace)?;
@@ -17,7 +18,7 @@ pub(crate) fn check_exact_durable_restart(
     check_restart_snapshot(cluster, node_id, before, after, trace)?;
     check_restart_acknowledged_entries(cluster, node_id, before, after, trace)?;
     if before.application_epoch != after.application_epoch
-        || before.applied_through != after.applied_through
+        || after.applied_through != expected_applied_through
     {
         return Err(ps03_failure(
             cluster,
