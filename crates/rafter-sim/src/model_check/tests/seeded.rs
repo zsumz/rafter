@@ -243,7 +243,12 @@ fn client_history_records_write_completion_and_read_proof() {
         },
     );
     deliver_all_in_state(&mut state);
-    let read = &state.client_history().reads[&77];
+    let read = state
+        .client_history()
+        .reads
+        .values()
+        .find(|read| read.request_id == 77)
+        .expect("read registration is retained by immutable operation identity");
     match &read.outcome {
         ClientReadOutcome::Completed { proof, result, .. } => {
             assert!(proof.read_index >= read.committed_floor);
@@ -253,6 +258,10 @@ fn client_history_records_write_completion_and_read_proof() {
         ClientReadOutcome::ProofGranted { proof } => {
             assert!(proof.read_index >= read.committed_floor);
         }
-        ClientReadOutcome::Pending => panic!("read should have reached a proof or completion"),
+        ClientReadOutcome::Pending
+        | ClientReadOutcome::Rejected { .. }
+        | ClientReadOutcome::Canceled { .. } => {
+            panic!("read should have reached a proof or completion")
+        }
     }
 }
