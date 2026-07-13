@@ -23,6 +23,18 @@ Most production embeddings should pair this crate with `rafter-runtime` and
 `rafter-storage` so persistence happens before peer or application outputs are
 released.
 
+## Reading the implementation
+
+- [`ARCHITECTURE.md`](./ARCHITECTURE.md) gives a guided reading path, state
+  ownership map, and output-ordering model.
+- [`STYLE.md`](./STYLE.md) defines the protocol-core naming, module, spacing,
+  and test conventions.
+
+The internal source tree is organized by Raft concept while the public API
+remains flat through `rafter::{...}` re-exports. Production files contain no
+embedded test bodies; focused unit checks live in sibling test modules and
+protocol scenarios mirror the source domains under `src/node/tests/`.
+
 ## Public message buffers
 
 `AppendEntries.entries` is a `SharedEntries` value. It behaves like an immutable
