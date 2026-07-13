@@ -9,7 +9,7 @@ use sha2::{Digest, Sha256};
 
 use super::verify;
 use crate::producer::{
-    process::{digest_environment, ProcessLog},
+    process::{digest_environment, ProcessLog, TerminationReceipt},
     tla_output::{
         detector_config_kind, detector_label, detector_log_kind, render_detector_config,
         REGISTERED_PREDICATES,
@@ -89,6 +89,30 @@ fn mismatched_recorded_config_invocation_fails_closed() {
     assert!(verify(&fixture.bundle, &fixture.root).is_err());
 }
 
+#[test]
+fn all_red_bundle_still_verifies_runner_source_binding() {
+    let mut fixture = Fixture::new();
+    for result in &mut fixture.bundle.results {
+        result.status = crate::EvidenceStatus::Error;
+        result.classification = Some(crate::FailureClassification::HarnessError);
+    }
+    fixture.write_kind("tla-runner", b"altered runner");
+    assert!(verify(&fixture.bundle, &fixture.root).is_err());
+}
+
+#[test]
+fn all_red_bundle_still_verifies_exact_invocation() {
+    let mut fixture = Fixture::new();
+    for result in &mut fixture.bundle.results {
+        result.status = crate::EvidenceStatus::Error;
+        result.classification = Some(crate::FailureClassification::HarnessError);
+    }
+    let mut log = fixture.read_log("tla-log");
+    log.invocation.arguments.push("-nowarning".to_owned());
+    fixture.write_log("tla-log", &log);
+    assert!(verify(&fixture.bundle, &fixture.root).is_err());
+}
+
 struct Fixture {
     root: PathBuf,
     bundle: ResultBundle,
@@ -106,6 +130,8 @@ impl Fixture {
             fs::remove_dir_all(&root).expect("remove stale TLA fixture");
         }
         fs::create_dir_all(root.join("specs/tla/raft")).expect("create fixture source directory");
+        fs::create_dir_all(root.join("scripts")).expect("create fixture scripts directory");
+        fs::create_dir_all(root.join("tools/tla")).expect("create fixture tools directory");
         fs::create_dir_all(root.join("artifacts")).expect("create fixture artifact directory");
         let root = fs::canonicalize(root).expect("canonicalize fixture root");
         let (catalog, manifest) = crate::tests::loaded();
@@ -122,6 +148,8 @@ impl Fixture {
             "Raft.tla",
             "RafterInvariantDetectorNegative.tla",
             "RafterInvariantDetectorNegative.cfg",
+            "RaftTraceSample.tla",
+            "RaftTraceSample.cfg",
             "RaftCi.cfg",
         ] {
             fs::copy(
@@ -129,6 +157,18 @@ impl Fixture {
                 fixture.root.join("specs/tla/raft").join(source),
             )
             .expect("copy bound TLA source");
+        }
+        fs::copy(
+            workspace.join("scripts/tla-model-check"),
+            fixture.root.join("scripts/tla-model-check"),
+        )
+        .expect("copy TLA runner");
+        for source in ["ASSET_ID", "SHA256SUMS"] {
+            fs::copy(
+                workspace.join("tools/tla").join(source),
+                fixture.root.join("tools/tla").join(source),
+            )
+            .expect("copy TLA tool pin source");
         }
         fixture.populate(&workspace);
         fixture
@@ -148,6 +188,12 @@ impl Fixture {
         self.write_kind("tla-config", &config);
         let raft = fs::read(workspace.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
         self.write_kind("tla-spec", &raft);
+        let trace_spec = fs::read(workspace.join("specs/tla/raft/RaftTraceSample.tla"))
+            .expect("read trace spec");
+        self.write_kind("tla-trace-spec", &trace_spec);
+        let trace_config = fs::read(workspace.join("specs/tla/raft/RaftTraceSample.cfg"))
+            .expect("read trace config");
+        self.write_kind("tla-trace-config", &trace_config);
         let detector_spec =
             fs::read(workspace.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
                 .expect("read detector spec");
@@ -157,13 +203,13 @@ impl Fixture {
         )
         .expect("read detector config template");
         self.write_kind("tla-detector-config", template.as_bytes());
-        let asset_id = self.configuration("tool_asset_id").to_owned();
-        self.write_kind("tla-tool-asset-id", format!("{asset_id}\n").as_bytes());
+        let runner = fs::read(workspace.join("scripts/tla-model-check")).expect("read TLA runner");
+        self.write_kind("tla-runner", &runner);
+        let asset_id = fs::read(workspace.join("tools/tla/ASSET_ID")).expect("read asset ID");
+        self.write_kind("tla-tool-asset-id", &asset_id);
         let tool_sha = self.configuration("tool_sha256").to_owned();
-        self.write_kind(
-            "tla-tool-checksums",
-            format!("{tool_sha}  tla2tools.jar\n").as_bytes(),
-        );
+        let checksums = fs::read(workspace.join("tools/tla/SHA256SUMS")).expect("read checksums");
+        self.write_kind("tla-tool-checksums", &checksums);
         self.artifact_mut("tla-tool").sha256 = tool_sha;
         for predicate in REGISTERED_PREDICATES {
             let kind = detector_config_kind(predicate).expect("registered predicate");
@@ -205,11 +251,17 @@ impl Fixture {
         exit_code: i32,
     ) {
         let log = ProcessLog {
-            schema_version: 2,
+            schema_version: 3,
             label: label.to_owned(),
             invocation: self.invocation(label, predicate),
             exit_code: Some(exit_code),
             timed_out: false,
+            termination: Some(TerminationReceipt {
+                process_group: true,
+                term_signal_sent: false,
+                grace_ms: 30_000,
+                kill_signal_sent: false,
+            }),
             duration_ms: 1,
             peak_rss_kib: 1,
             stdout,

@@ -131,15 +131,46 @@ fn scheduled_profiles_run_all_evidence_and_exact_aggregates() {
 }
 
 #[test]
-fn weekly_full_tlc_budget_exhaustion_is_red() {
+fn weekly_full_tlc_is_source_bound_checkpointed_and_fail_closed() {
     let root = workspace_root();
     let workflow = read(&root.join(".github/workflows/weekly.yml"));
-    let full = job_block(&workflow, "tlc-full");
-    assert!(full.contains("remains incomplete"));
-    assert_eq!(full.matches("124)").count(), 2);
-    assert!(full.matches("exit \"$code\"").count() >= 2);
-    assert!(full.contains("if: always()"));
-    assert!(full.contains("actions/cache/save@v4"));
+    assert!(!workflow.contains("\n  tlc-full:\n"));
+    assert!(!workflow.contains("best-effort"));
+
+    let tla = job_block(&workflow, "invariants-tla");
+    for required in [
+        "timeout-minutes: 350",
+        "actions/cache/restore@v4",
+        "Restore exact-compatible weekly TLC checkpoint",
+        "target/rafter-invariants/tla-checkpoint/weekly",
+        "tla-weekly-checkpoint-v1-",
+        "cargo run --locked -p rafter-invariants -- run --profile weekly --layer tla",
+        "actions/cache/save@v4",
+        "Save exact-compatible weekly TLC checkpoint",
+        "if: always()",
+    ] {
+        assert!(
+            tla.contains(required),
+            "weekly source-bound TLA job omitted: {required}"
+        );
+    }
+
+    let profile = read(&root.join("verification/raft-invariant-profiles.json"));
+    for required in [
+        "\"config\": \"Raft.cfg\"",
+        "\"soft_timeout\": \"295m\"",
+        "\"workers\": \"auto\"",
+        "\"checkpoint_minutes\": \"30\"",
+        "\"checkpoint_gzip\": \"required\"",
+        "\"max_heap\": \"4g\"",
+        "\"checkpoint_recovery\": \"strict-compatible-if-present\"",
+        "\"unsymmetrized_exploration\": \"required\"",
+    ] {
+        assert!(
+            profile.contains(required),
+            "weekly TLA profile omitted: {required}"
+        );
+    }
 }
 
 #[test]

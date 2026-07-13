@@ -31,6 +31,8 @@ fn complete_execution(exit_succeeded: bool) -> TlaExecution {
         peak_rss_kib: 1,
         duration_ms: 1,
         artifacts: Vec::new(),
+        checkpoint_report: None,
+        checkpoint_error: None,
     }
 }
 
@@ -146,4 +148,17 @@ fn named_counterexample_fails_only_its_predicate() -> Result<(), Box<dyn std::er
                 && result.classification == Some(FailureClassification::CoverageNotReached)
         }));
     Ok(())
+}
+
+#[test]
+fn parsed_named_counterexample_outranks_concurrent_timeout() {
+    let mut execution = complete_execution(false);
+    execution.main_status = MainStatus::TimedOut;
+    execution.main.as_mut().expect("summary").violated_invariant =
+        Some("ElectionSafety".to_owned());
+    let symbols = ["ElectionSafety".to_owned()].into_iter().collect();
+    assert!(matches!(
+        evaluate(&execution, &symbols, &BTreeMap::new()),
+        TlaVerdict::Violation(symbol) if symbol == "ElectionSafety"
+    ));
 }

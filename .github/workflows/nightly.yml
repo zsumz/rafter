@@ -200,7 +200,7 @@ jobs:
           fi
           tar -xjf "$archive" -C /tmp
           echo "/tmp/maelstrom" >> "$GITHUB_PATH"
-      - name: Produce all five nightly Maelstrom evidence scenarios
+      - name: Produce all six nightly Maelstrom evidence scenarios
         run: cargo run --locked -p rafter-invariants -- run --profile nightly --layer maelstrom
       - name: Independently verify nightly Maelstrom evidence
         run: >-

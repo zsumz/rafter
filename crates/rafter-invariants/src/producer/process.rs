@@ -10,6 +10,9 @@ use std::{
     time::{Duration, Instant},
 };
 
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -26,6 +29,16 @@ pub(super) struct ProcessOutput {
     pub duration: Duration,
     pub peak_rss_kib: u64,
     pub timed_out: bool,
+    pub termination: Option<TerminationReceipt>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct TerminationReceipt {
+    pub process_group: bool,
+    pub term_signal_sent: bool,
+    pub grace_ms: u64,
+    pub kill_signal_sent: bool,
 }
 
 #[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -36,6 +49,8 @@ pub(crate) struct ProcessLog {
     pub invocation: InvocationReceipt,
     pub exit_code: Option<i32>,
     pub timed_out: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub termination: Option<TerminationReceipt>,
     pub duration_ms: u64,
     pub peak_rss_kib: u64,
     pub stdout: String,
@@ -105,6 +120,7 @@ pub(super) fn timed(
         duration: started.elapsed(),
         peak_rss_kib,
         timed_out: false,
+        termination: None,
     })
 }
 
@@ -115,6 +131,24 @@ pub(super) fn timed_with_timeout(
     current_dir: &Path,
     timeout: Duration,
 ) -> Result<ProcessOutput, Box<dyn Error>> {
+    timed_with_timeout_and_grace(
+        program,
+        arguments,
+        environment,
+        current_dir,
+        timeout,
+        Duration::from_secs(30),
+    )
+}
+
+fn timed_with_timeout_and_grace(
+    program: &str,
+    arguments: &[OsString],
+    environment: &BTreeMap<String, String>,
+    current_dir: &Path,
+    timeout: Duration,
+    grace: Duration,
+) -> Result<ProcessOutput, Box<dyn Error>> {
     let invocation = expected_invocation(program, arguments, environment, current_dir)?;
     let started = Instant::now();
     let output_prefix = telemetry_path()?.with_extension("");
@@ -122,25 +156,53 @@ pub(super) fn timed_with_timeout(
     let stderr_path = output_prefix.with_extension("stderr");
     let stdout_file = File::create(&stdout_path)?;
     let stderr_file = File::create(&stderr_path)?;
-    let mut child = Command::new(program)
+    let mut command = Command::new(program);
+    command
         .args(arguments)
         .env_clear()
         .envs(environment)
         .current_dir(&invocation.current_dir)
         .stdout(Stdio::from(stdout_file))
-        .stderr(Stdio::from(stderr_file))
-        .spawn()?;
+        .stderr(Stdio::from(stderr_file));
+    #[cfg(unix)]
+    command.process_group(0);
+    let mut child = command.spawn()?;
     let mut peak_rss_kib = 0;
-    let (status, timed_out) = loop {
+    let (status, timed_out, term_signal_sent, kill_signal_sent) = 'wait: loop {
         peak_rss_kib = peak_rss_kib.max(process_rss_kib(child.id()).unwrap_or_default());
         if let Some(status) = child.try_wait()? {
-            break (status, false);
+            break (status, false, false, false);
         }
         if started.elapsed() >= timeout {
-            child.kill()?;
-            break (child.wait()?, true);
+            let process_group = child.id();
+            signal_process_group(process_group, "-TERM")?;
+            let grace_started = Instant::now();
+            let mut leader_status = None;
+            loop {
+                peak_rss_kib = peak_rss_kib.max(process_rss_kib(process_group).unwrap_or_default());
+                if leader_status.is_none() {
+                    leader_status = child.try_wait()?;
+                }
+                if !process_group_alive(process_group)? {
+                    let status = match leader_status {
+                        Some(status) => status,
+                        None => child.wait()?,
+                    };
+                    break 'wait (status, true, true, false);
+                }
+                if grace_started.elapsed() >= grace {
+                    signal_process_group(process_group, "-KILL")?;
+                    let status = match leader_status {
+                        Some(status) => status,
+                        None => child.wait()?,
+                    };
+                    break 'wait (status, true, true, true);
+                }
+                std::thread::sleep(Duration::from_millis(100));
+            }
+        } else {
+            std::thread::sleep(Duration::from_millis(100));
         }
-        std::thread::sleep(Duration::from_millis(100));
     };
     let stdout = std::fs::read(&stdout_path)?;
     let stderr = std::fs::read(&stderr_path)?;
@@ -157,7 +219,31 @@ pub(super) fn timed_with_timeout(
         duration: started.elapsed(),
         peak_rss_kib,
         timed_out,
+        termination: Some(TerminationReceipt {
+            process_group: true,
+            term_signal_sent,
+            grace_ms: duration_ms(grace),
+            kill_signal_sent,
+        }),
     })
+}
+
+fn signal_process_group(pid: u32, signal: &str) -> Result<(), Box<dyn Error>> {
+    let status = Command::new("/bin/kill")
+        .args([signal, &format!("-{pid}")])
+        .status()?;
+    if status.success() || !process_group_alive(pid)? {
+        Ok(())
+    } else {
+        Err(format!("send {signal} to process group {pid}: {status}").into())
+    }
+}
+
+fn process_group_alive(pid: u32) -> Result<bool, Box<dyn Error>> {
+    Ok(Command::new("/bin/kill")
+        .args(["-0", &format!("-{pid}")])
+        .status()?
+        .success())
 }
 
 pub(crate) fn expected_invocation(
@@ -319,6 +405,22 @@ pub(super) fn json_log(label: &str, output: &ProcessOutput) -> Result<Vec<u8>, B
         invocation: output.invocation.clone(),
         exit_code: output.status.code(),
         timed_out: output.timed_out,
+        termination: None,
+        duration_ms: duration_ms(output.duration),
+        peak_rss_kib: output.peak_rss_kib,
+        stdout: String::from_utf8(output.stdout.clone())?,
+        stderr: String::from_utf8(output.stderr.clone())?,
+    })?)
+}
+
+pub(super) fn tla_json_log(label: &str, output: &ProcessOutput) -> Result<Vec<u8>, Box<dyn Error>> {
+    Ok(serde_json::to_vec_pretty(&ProcessLog {
+        schema_version: 3,
+        label: label.to_owned(),
+        invocation: output.invocation.clone(),
+        exit_code: output.status.code(),
+        timed_out: output.timed_out,
+        termination: output.termination.clone(),
         duration_ms: duration_ms(output.duration),
         peak_rss_kib: output.peak_rss_kib,
         stdout: String::from_utf8(output.stdout.clone())?,
@@ -336,7 +438,7 @@ mod tests {
 
     use super::{
         combined_log, digest_environment, json_log, parse_peak_rss, process_rss_kib,
-        timed_with_timeout, ProcessLog,
+        timed_with_timeout, timed_with_timeout_and_grace, ProcessLog,
     };
 
     #[test]
@@ -403,7 +505,56 @@ mod tests {
         )
         .expect("structured process log parses");
         assert_eq!(structured.schema_version, 2);
+        assert!(structured.termination.is_none());
         assert_eq!(structured.invocation, output.invocation);
+    }
+
+    #[test]
+    fn timeout_escalates_from_group_term_to_group_kill() {
+        if process_rss_kib(std::process::id()).is_none() {
+            return;
+        }
+        let output = timed_with_timeout_and_grace(
+            "sh",
+            &[
+                OsString::from("-c"),
+                OsString::from("trap '' TERM; while :; do :; done"),
+            ],
+            &super::base_environment(),
+            Path::new("."),
+            Duration::from_millis(10),
+            Duration::from_millis(20),
+        )
+        .expect("stubborn process group is killed");
+        let termination = output.termination.expect("termination receipt");
+        assert!(output.timed_out);
+        assert!(termination.process_group);
+        assert!(termination.term_signal_sent);
+        assert!(termination.kill_signal_sent);
+        assert_eq!(termination.grace_ms, 20);
+    }
+
+    #[test]
+    fn timeout_kills_descendants_after_the_group_leader_exits() {
+        if process_rss_kib(std::process::id()).is_none() {
+            return;
+        }
+        let output = timed_with_timeout_and_grace(
+            "sh",
+            &[
+                OsString::from("-c"),
+                OsString::from("trap 'exit 0' TERM; (trap '' TERM; while :; do :; done) & wait"),
+            ],
+            &super::base_environment(),
+            Path::new("."),
+            Duration::from_millis(10),
+            Duration::from_millis(20),
+        )
+        .expect("surviving descendant is killed with its process group");
+        let termination = output.termination.expect("termination receipt");
+        assert!(output.timed_out);
+        assert!(termination.term_signal_sent);
+        assert!(termination.kill_signal_sent);
     }
 
     #[test]
@@ -421,6 +572,7 @@ mod tests {
             },
             "exit_code": 0,
             "timed_out": false,
+            "termination": null,
             "duration_ms": 1,
             "peak_rss_kib": 1,
             "stdout": "",

@@ -13,6 +13,7 @@ mod test_compile;
 mod test_exec;
 mod tests;
 mod tla;
+pub(crate) mod tla_checkpoint;
 mod tla_contract;
 mod tla_exec;
 pub(crate) mod tla_output;
