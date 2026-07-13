@@ -108,11 +108,32 @@ pub(super) fn assert_evidence_is_machine_checkable(
             record.symbol,
             record.path,
         );
+        assert_cargo_test_target_matches_path(record);
         assert_negative_fixture_policy(workspace, record, &source);
         assert_atomic_group_policy(record);
     }
 
     assert_coverage_bindings(entries, clauses, evidence);
+}
+
+fn assert_cargo_test_target_matches_path(record: &Evidence) {
+    let Some(identity) = &record.test else {
+        return;
+    };
+    if identity.target_kind != "test" {
+        return;
+    }
+
+    let expected = cargo_integration_test_root(identity);
+    assert_eq!(
+        record.path, expected,
+        "{} tests evidence declares Cargo integration target {} but its source path is not the target root",
+        record.id, identity.target,
+    );
+}
+
+fn cargo_integration_test_root(identity: &rafter_invariants::TestIdentity) -> String {
+    format!("crates/{}/tests/{}.rs", identity.package, identity.target)
 }
 
 fn assert_atomic_group_policy(record: &Evidence) {
@@ -792,6 +813,20 @@ fn negative_fixture_guard_requires_the_exact_detector_module_path() {
         &module,
         &[],
     ));
+}
+
+#[test]
+fn cargo_integration_test_identity_requires_the_target_root_path() {
+    let identity = rafter_invariants::TestIdentity {
+        package: "rafter-sim".to_owned(),
+        target_kind: "test".to_owned(),
+        target: "raft_invariants".to_owned(),
+        test_name: "committed_prefix_is_stable_across_failover".to_owned(),
+    };
+    let expected = cargo_integration_test_root(&identity);
+
+    assert_eq!(expected, "crates/rafter-sim/tests/raft_invariants.rs");
+    assert_ne!(expected, "crates/rafter-sim/src/tests/raft_invariants.rs");
 }
 
 #[test]
