@@ -4,8 +4,8 @@ use serde_json::{json, Value};
 
 use crate::{
     app::{
-        apply_mutation, maybe_crash_after_app_persist_before_reply, persist_app_state,
-        ClientResult, Command, ERROR_TEMPORARILY_UNAVAILABLE,
+        apply_committed_command, maybe_crash_after_app_persist_before_reply, AfterAppPersist,
+        ClientResult, Command, CommandApplyOutcome, ERROR_TEMPORARILY_UNAVAILABLE,
     },
     protocol::{decode_hex, encode_hex, Envelope},
     InitializedNode,
@@ -81,7 +81,7 @@ impl InitializedNode {
         );
     }
 
-    fn handle_outputs(&mut self, outputs: Vec<Output>) {
+    pub(crate) fn handle_outputs(&mut self, outputs: Vec<Output>) {
         for output in outputs {
             match output {
                 Output::Send { to, message } => self.send_raft(to, &message),
@@ -147,13 +147,18 @@ impl InitializedNode {
                 return;
             }
         };
-        let result = apply_mutation(&mut self.app.kv, &command.request);
-        self.app.applied = index;
-        if let Err(error) = persist_app_state(&self.root, &self.app) {
-            eprintln!("failed to persist app state: {error}");
-            return;
-        }
-        maybe_crash_after_app_persist_before_reply(&self.root);
+        let outcome = apply_committed_command(&self.root, &mut self.app, index, &command, |root| {
+            maybe_crash_after_app_persist_before_reply(root);
+            AfterAppPersist::Continue
+        });
+        let result = match outcome {
+            Ok(CommandApplyOutcome::Applied(result)) => result,
+            Ok(CommandApplyOutcome::AlreadyApplied | CommandApplyOutcome::Interrupted) => return,
+            Err(error) => {
+                eprintln!("failed to persist app state: {error}");
+                return;
+            }
+        };
         self.deliver_result(
             &command.origin,
             &command.client,

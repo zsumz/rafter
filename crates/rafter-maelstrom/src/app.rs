@@ -26,6 +26,19 @@ pub(crate) struct AppState {
     pub(crate) kv: BTreeMap<String, Value>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum AfterAppPersist {
+    Continue,
+    Interrupt,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) enum CommandApplyOutcome {
+    Applied(ClientResult),
+    AlreadyApplied,
+    Interrupted,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct Command {
     pub(crate) origin: String,
@@ -83,6 +96,27 @@ pub(crate) fn persist_app_state(root: &Path, app: &AppState) -> Result<(), Box<d
     std::fs::write(&tmp, serde_json::to_vec(&persisted)?)?;
     std::fs::rename(tmp, path)?;
     Ok(())
+}
+
+pub(crate) fn apply_committed_command(
+    root: &Path,
+    app: &mut AppState,
+    index: LogIndex,
+    command: &Command,
+    after_persist: impl FnOnce(&Path) -> AfterAppPersist,
+) -> Result<CommandApplyOutcome, Box<dyn Error>> {
+    if index <= app.applied {
+        return Ok(CommandApplyOutcome::AlreadyApplied);
+    }
+
+    let result = apply_mutation(&mut app.kv, &command.request);
+    app.applied = index;
+    persist_app_state(root, app)?;
+
+    if after_persist(root) == AfterAppPersist::Interrupt {
+        return Ok(CommandApplyOutcome::Interrupted);
+    }
+    Ok(CommandApplyOutcome::Applied(result))
 }
 
 pub(crate) fn maybe_crash_after_app_persist_before_reply(root: &Path) {
@@ -206,3 +240,6 @@ fn canonical_key(key: &Value) -> String {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod ps04_tests;
