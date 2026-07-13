@@ -7,22 +7,41 @@ use crate::catalog::{
 use crate::types::SimulatorLivenessContract;
 
 pub(super) fn parse_registry_schema_version(source: &str) -> Result<u32, CatalogError> {
-    source
-        .lines()
-        .find_map(|line| line.strip_prefix("schema_version: "))
-        .ok_or_else(|| CatalogError("registry is missing schema_version".to_owned()))
-        .and_then(|value| parse_u32(&yaml_value(value)))
+    let mut schema_version = None;
+    for (index, line) in source.lines().enumerate() {
+        if let Some(value) = line.strip_prefix("schema_version: ") {
+            if schema_version.is_some() {
+                return Err(CatalogError(format!(
+                    "registry has duplicate schema_version at line {}",
+                    index + 1
+                )));
+            }
+            schema_version = Some(parse_u32(&parse_scalar(
+                value,
+                index + 1,
+                "schema_version",
+                false,
+            )?)?);
+        } else if line.starts_with("schema_version:") {
+            return Err(CatalogError(format!(
+                "registry has malformed schema_version at line {}",
+                index + 1
+            )));
+        }
+    }
+    schema_version.ok_or_else(|| CatalogError("registry is missing schema_version".to_owned()))
 }
 
 pub(super) fn parse_invariants(
     source: &str,
 ) -> Result<(Vec<InvariantDescriptor>, BTreeSet<String>), CatalogError> {
-    let records = parse_section_records(source, "invariants:");
+    let records = parse_section_records(source, "invariants:")?;
     if records.is_empty() {
         return Err(CatalogError(
             "registry contains no invariant IDs".to_owned(),
         ));
     }
+    ensure_unique_record_ids("invariant", &records)?;
     let invariants = records
         .iter()
         .enumerate()
@@ -45,7 +64,9 @@ pub(super) fn parse_invariants(
 }
 
 pub(super) fn parse_clauses(source: &str) -> Result<Vec<ClauseDescriptor>, CatalogError> {
-    parse_section_records(source, "clauses:")
+    let records = parse_section_records(source, "clauses:")?;
+    ensure_unique_record_ids("clause", &records)?;
+    records
         .into_iter()
         .enumerate()
         .map(|(index, record)| {
@@ -63,7 +84,7 @@ pub(super) fn parse_clauses(source: &str) -> Result<Vec<ClauseDescriptor>, Catal
 }
 
 pub(super) fn parse_evidence(source: &str) -> Result<Vec<EvidenceDescriptor>, CatalogError> {
-    parse_section_records(source, "evidence:")
+    parse_section_records(source, "evidence:")?
         .into_iter()
         .enumerate()
         .map(|(index, record)| parse_evidence_record(index, &record))
@@ -315,53 +336,526 @@ fn required_field<'a>(
     }
 }
 
-fn parse_section_records(source: &str, section: &str) -> Vec<BTreeMap<String, String>> {
+fn parse_section_records(
+    source: &str,
+    section: &'static str,
+) -> Result<Vec<BTreeMap<String, String>>, CatalogError> {
     let mut records = Vec::new();
     let mut current = None::<BTreeMap<String, String>>;
+    let mut nested_field = None::<String>;
+    let mut found = false;
     let mut active = false;
-    for raw_line in source.lines() {
-        let indent = raw_line.chars().take_while(|ch| *ch == ' ').count();
+    for (index, raw_line) in source.lines().enumerate() {
+        let line_number = index + 1;
         let line = raw_line.trim();
-        if indent == 0 {
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if raw_line == line {
+            if line == section {
+                if found {
+                    return Err(CatalogError(format!(
+                        "registry has duplicate {section} section at line {line_number}"
+                    )));
+                }
+                found = true;
+                active = true;
+                continue;
+            }
             if active {
+                if !is_record_section(line) {
+                    return Err(unsupported_line(section, line_number, raw_line));
+                }
                 if let Some(record) = current.take() {
                     records.push(record);
                 }
+                nested_field = None;
+                active = false;
             }
-            active = line == section;
             continue;
         }
-        if !active || line.is_empty() || line.starts_with('#') {
+        if !active {
             continue;
         }
-        if indent == 2 && line.starts_with("- id: ") {
-            if let Some(record) = current.take() {
-                records.push(record);
-            }
-            let mut record = BTreeMap::new();
-            record.insert("id".to_owned(), yaml_value(&line[6..]));
-            current = Some(record);
-        } else if indent == 4 {
-            if let Some((key, value)) = line.split_once(": ") {
-                if let Some(record) = current.as_mut() {
-                    record.insert(key.to_owned(), yaml_value(value));
-                }
-            }
-        }
+        parse_record_line(
+            raw_line,
+            line_number,
+            section,
+            &mut records,
+            &mut current,
+            &mut nested_field,
+        )?;
     }
     if active {
         if let Some(record) = current {
             records.push(record);
         }
     }
-    records
+    if !found {
+        return Err(CatalogError(format!(
+            "registry is missing {section} section"
+        )));
+    }
+    Ok(records)
 }
 
-fn yaml_value(value: &str) -> String {
+fn parse_record_line(
+    raw_line: &str,
+    line_number: usize,
+    section: &str,
+    records: &mut Vec<BTreeMap<String, String>>,
+    current: &mut Option<BTreeMap<String, String>>,
+    nested_field: &mut Option<String>,
+) -> Result<(), CatalogError> {
+    let content = raw_line.trim_start_matches(' ');
+    let indent = raw_line.len() - content.len();
+    if content.starts_with('\t') {
+        return Err(unsupported_line(section, line_number, raw_line));
+    }
+    match indent {
+        2 => {
+            let Some(value) = content.strip_prefix("- id: ") else {
+                return Err(CatalogError(format!(
+                    "malformed record start in {section} at line {line_number}: {}",
+                    raw_line.trim()
+                )));
+            };
+            if let Some(record) = current.take() {
+                records.push(record);
+            }
+            let mut record = BTreeMap::new();
+            record.insert(
+                "id".to_owned(),
+                parse_scalar(value, line_number, "id", true)?,
+            );
+            *current = Some(record);
+            *nested_field = None;
+        }
+        4 => {
+            let Some(record) = current.as_mut() else {
+                return Err(CatalogError(format!(
+                    "field appears before the first {section} record at line {line_number}"
+                )));
+            };
+            if !content.contains(": ") {
+                if let Some(key) = content.strip_suffix(':') {
+                    if nested_fields(section, key).is_none() {
+                        return Err(CatalogError(format!(
+                            "unsupported field {key} in {section} at line {line_number}"
+                        )));
+                    }
+                    insert_field(record, key, String::new(), section, line_number)?;
+                    *nested_field = Some(key.to_owned());
+                    return Ok(());
+                }
+            }
+            let (key, value) = parse_field(content, section, line_number)?;
+            if key != "id" && !section_fields(section).contains(&key) {
+                return Err(CatalogError(format!(
+                    "unsupported field {key} in {section} at line {line_number}"
+                )));
+            }
+            let value = parse_scalar(value, line_number, key, true)?;
+            insert_field(record, key, value, section, line_number)?;
+            *nested_field = None;
+        }
+        6 => {
+            let Some(parent) = nested_field.as_deref() else {
+                return Err(unsupported_line(section, line_number, raw_line));
+            };
+            let (key, value) = parse_field(content, section, line_number)?;
+            let supported =
+                nested_fields(section, parent).is_some_and(|fields| fields.contains(&key));
+            if !supported {
+                return Err(CatalogError(format!(
+                    "unsupported nested field {parent}.{key} in {section} at line {line_number}"
+                )));
+            }
+            let value = parse_scalar(value, line_number, key, true)?;
+            let flattened = format!("{parent}.{key}");
+            let Some(record) = current.as_mut() else {
+                return Err(CatalogError(format!(
+                    "nested field appears before the first {section} record at line {line_number}"
+                )));
+            };
+            insert_field(record, &flattened, value, section, line_number)?;
+        }
+        _ => return Err(unsupported_line(section, line_number, raw_line)),
+    }
+    Ok(())
+}
+
+fn parse_field<'a>(
+    content: &'a str,
+    section: &str,
+    line_number: usize,
+) -> Result<(&'a str, &'a str), CatalogError> {
+    content.split_once(": ").ok_or_else(|| {
+        CatalogError(format!(
+            "malformed field in {section} at line {line_number}: {content}"
+        ))
+    })
+}
+
+fn insert_field(
+    record: &mut BTreeMap<String, String>,
+    key: &str,
+    value: String,
+    section: &str,
+    line_number: usize,
+) -> Result<(), CatalogError> {
+    if record.insert(key.to_owned(), value).is_some() {
+        return Err(CatalogError(format!(
+            "duplicate field {key} in {section} at line {line_number}"
+        )));
+    }
+    Ok(())
+}
+
+fn unsupported_line(section: &str, line_number: usize, raw_line: &str) -> CatalogError {
+    CatalogError(format!(
+        "unsupported syntax in {section} at line {line_number}: {}",
+        raw_line.trim()
+    ))
+}
+
+fn parse_scalar(
+    value: &str,
+    line_number: usize,
+    field: &str,
+    require_quoted: bool,
+) -> Result<String, CatalogError> {
     let value = value.trim();
-    if value.len() >= 2 && value.starts_with('"') && value.ends_with('"') {
-        value[1..value.len() - 1].replace("\\\"", "\"")
-    } else {
-        value.to_owned()
+    if value.is_empty() {
+        return Err(CatalogError(format!(
+            "field {field} has an empty value at line {line_number}"
+        )));
+    }
+    if value.starts_with('"') || value.ends_with('"') {
+        return serde_json::from_str(value).map_err(|error| {
+            CatalogError(format!(
+                "field {field} has a malformed quoted value at line {line_number}: {error}"
+            ))
+        });
+    }
+    if require_quoted {
+        return Err(CatalogError(format!(
+            "field {field} must use a quoted scalar at line {line_number}"
+        )));
+    }
+    if value.contains('#') || value.contains('"') {
+        return Err(CatalogError(format!(
+            "field {field} has unsupported scalar syntax at line {line_number}"
+        )));
+    }
+    Ok(value.to_owned())
+}
+
+fn ensure_unique_record_ids(
+    kind: &str,
+    records: &[BTreeMap<String, String>],
+) -> Result<(), CatalogError> {
+    let mut seen = BTreeSet::new();
+    for (index, record) in records.iter().enumerate() {
+        let Some(id) = record.get("id") else {
+            return Err(CatalogError(format!(
+                "{kind} record {} is missing required field id",
+                index + 1
+            )));
+        };
+        if !seen.insert(id) {
+            return Err(CatalogError(format!(
+                "duplicate {kind} ID {id} in record {}",
+                index + 1
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn section_fields(section: &str) -> &'static [&'static str] {
+    match section {
+        "invariants:" => &[
+            "kind",
+            "family",
+            "tier",
+            "priority",
+            "title",
+            "statement",
+            "scope",
+            "assumptions",
+            "action_class",
+            "next_action",
+        ],
+        "clauses:" => &[
+            "invariant_id",
+            "statement",
+            "scope",
+            "assumptions",
+            "required",
+        ],
+        "evidence:" => &[
+            "clauses",
+            "layer",
+            "strength",
+            "path",
+            "symbol",
+            "package",
+            "target_kind",
+            "target",
+            "test_name",
+            "simulator_check",
+            "minimum_protocol_states",
+            "minimum_verifier_states",
+            "minimum_runs_per_check",
+            "minimum_steps",
+            "required_observation",
+            "minimum_observation",
+            "negative_fixture",
+            "negative_fixture_path",
+            "negative_fixture_detector",
+            "negative_fixture_package",
+            "negative_fixture_target_kind",
+            "negative_fixture_target",
+            "negative_fixture_test_name",
+            "negative_fixture_exemption",
+            "required_liveness_invariant",
+            "required_liveness_clauses",
+            "required_liveness_feature",
+            "required_liveness_scenario",
+            "liveness_fault_requirement",
+            "liveness_stable_leader_retained",
+            "liveness_stable_leader_rounds_minimum",
+            "liveness_stable_leader_rounds_exact",
+            "liveness_stable_leader_rounds_relation",
+            "liveness_proposal_outcome",
+            "liveness_authority_loss_required",
+            "liveness_fault_cycle_required",
+            "liveness_fairness_policy",
+            "liveness_tick_bound_rounds",
+            "liveness_delivery_bound_rounds",
+            "liveness_max_delivery_waves_per_tick",
+            "liveness_round_budget_provenance",
+            "liveness_minimum_rounds",
+            "liveness_rounds_per_node",
+            "liveness_rounds_per_queued_message",
+            "liveness_rounds_per_proposal",
+            "liveness_rounds_per_membership_change",
+            "liveness_rounds_per_partition",
+            "liveness_snapshot_catchup_rounds",
+            "liveness_phase_count",
+            "liveness_fixed_rounds",
+        ],
+        _ => &[],
+    }
+}
+
+fn nested_fields(section: &str, field: &str) -> Option<&'static [&'static str]> {
+    match (section, field) {
+        ("invariants:", "current_coverage") => Some(&["tla", "simulator", "tests", "maelstrom"]),
+        _ => None,
+    }
+}
+
+fn is_record_section(line: &str) -> bool {
+    matches!(line, "evidence:" | "clauses:" | "invariants:")
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::BTreeSet, fs, path::PathBuf};
+
+    use super::{parse_clauses, parse_evidence, parse_invariants, parse_registry_schema_version};
+
+    const VALID_INVARIANT: &str = r#"invariants:
+  - id: "AA-01"
+    kind: "safety"
+    family: "test"
+    tier: "feature"
+    priority: "p1"
+    title: "Test invariant"
+    statement: "The statement holds."
+    scope: "Test scope."
+    assumptions: "Test assumptions."
+    current_coverage:
+      tla: "none"
+      simulator: "direct"
+      tests: "direct"
+      maelstrom: "none"
+    action_class: "retain"
+    next_action: "Keep testing."
+"#;
+
+    const VALID_EVIDENCE: &str = r#"evidence:
+  - id: "AA-01"
+    clauses: "AA-01.a"
+    layer: "tests"
+    strength: "direct"
+    path: "src/lib.rs"
+    symbol: "test_symbol"
+    package: "test-package"
+    target_kind: "lib"
+    target: "test_package"
+    test_name: "tests::test_symbol"
+"#;
+
+    #[test]
+    fn current_registry_parses_as_exactly_44_unique_invariants() {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../..")
+            .join("verification/raft-invariants.yaml");
+        let source = fs::read_to_string(path).expect("read current registry");
+
+        assert_eq!(parse_registry_schema_version(&source).unwrap(), 2);
+        let (invariants, _) = parse_invariants(&source).expect("parse current invariants");
+        assert_eq!(invariants.len(), 44);
+        assert_eq!(
+            invariants
+                .iter()
+                .map(|invariant| invariant.id.as_str())
+                .collect::<BTreeSet<_>>()
+                .len(),
+            44
+        );
+        parse_clauses(&source).expect("parse current clauses");
+        parse_evidence(&source).expect("parse current evidence");
+    }
+
+    #[test]
+    fn malformed_invariant_additions_cannot_disappear() {
+        let cases = [
+            (
+                "unknown field",
+                VALID_INVARIANT.replace(
+                    "    next_action: \"Keep testing.\"",
+                    "    unknown_future_field: \"ignored before\"\n    next_action: \"Keep testing.\"",
+                ),
+            ),
+            (
+                "malformed field",
+                VALID_INVARIANT.replace(
+                    "    statement: \"The statement holds.\"",
+                    "    statement \"The statement disappears.\"",
+                ),
+            ),
+            (
+                "unsupported indentation",
+                VALID_INVARIANT.replace(
+                    "    statement: \"The statement holds.\"",
+                    "   statement: \"The statement disappears.\"",
+                ),
+            ),
+            (
+                "malformed record start",
+                format!("{VALID_INVARIANT}  - statement: \"A future row\"\n"),
+            ),
+            (
+                "unindented record start",
+                format!("{VALID_INVARIANT}- id: \"AA-02\"\n"),
+            ),
+            (
+                "malformed quoted value",
+                VALID_INVARIANT.replace(
+                    "    statement: \"The statement holds.\"",
+                    "    statement: \"The statement disappears.",
+                ),
+            ),
+            (
+                "unquoted value",
+                VALID_INVARIANT.replace(
+                    "    statement: \"The statement holds.\"",
+                    "    statement: The statement disappears.",
+                ),
+            ),
+        ];
+
+        for (case, source) in cases {
+            assert!(
+                parse_invariants(&source).is_err(),
+                "{case} was silently accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_fields_and_nested_fields_are_rejected() {
+        let duplicate_statement = VALID_INVARIANT.replace(
+            "    scope: \"Test scope.\"",
+            "    statement: \"A replacement.\"\n    scope: \"Test scope.\"",
+        );
+        let duplicate_coverage = VALID_INVARIANT.replace(
+            "      simulator: \"direct\"",
+            "      tla: \"replacement\"\n      simulator: \"direct\"",
+        );
+
+        for source in [duplicate_statement, duplicate_coverage] {
+            let error = parse_invariants(&source).expect_err("duplicate field must fail");
+            assert!(error.to_string().contains("duplicate field"));
+        }
+    }
+
+    #[test]
+    fn malformed_evidence_rows_cannot_hide_behind_the_invariant_count() {
+        parse_evidence(VALID_EVIDENCE).expect("control evidence parses");
+        let cases = [
+            VALID_EVIDENCE.replace(
+                "    symbol: \"test_symbol\"",
+                "    unsupported_binding: \"ignored before\"\n    symbol: \"test_symbol\"",
+            ),
+            format!("{VALID_EVIDENCE}  - layer: \"tests\"\n"),
+            VALID_EVIDENCE.replace(
+                "    symbol: \"test_symbol\"",
+                "    path: \"replacement.rs\"\n    symbol: \"test_symbol\"",
+            ),
+        ];
+
+        for source in cases {
+            assert!(
+                parse_evidence(&source).is_err(),
+                "malformed evidence was silently accepted"
+            );
+        }
+    }
+
+    #[test]
+    fn duplicate_invariant_and_clause_ids_are_rejected() {
+        let duplicate_invariant = format!(
+            "{VALID_INVARIANT}{}",
+            VALID_INVARIANT.trim_start_matches("invariants:\n")
+        );
+        let duplicate_clause = r#"clauses:
+  - id: "AA-01.a"
+    invariant_id: "AA-01"
+    statement: "First."
+    scope: "Scope."
+    assumptions: "Assumptions."
+    required: "true"
+  - id: "AA-01.a"
+    invariant_id: "AA-01"
+    statement: "Second."
+    scope: "Scope."
+    assumptions: "Assumptions."
+    required: "true"
+"#;
+
+        assert!(parse_invariants(&duplicate_invariant)
+            .expect_err("duplicate invariant ID must fail")
+            .to_string()
+            .contains("duplicate invariant ID"));
+        assert!(parse_clauses(duplicate_clause)
+            .expect_err("duplicate clause ID must fail")
+            .to_string()
+            .contains("duplicate clause ID"));
+    }
+
+    #[test]
+    fn duplicate_or_malformed_schema_version_is_rejected() {
+        for source in [
+            "schema_version: 2\nschema_version: 2\n",
+            "schema_version:2\n",
+            "schema_version: \"unterminated\n",
+        ] {
+            assert!(parse_registry_schema_version(source).is_err());
+        }
     }
 }
