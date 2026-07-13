@@ -38,7 +38,9 @@ use state::{ExplorationState, RestartSnapshotState};
 
 mod soak;
 
-pub use soak::{SoakAction, SoakActionKind, SoakConfig, SoakFailure, SoakSummary};
+pub use soak::{
+    SoakAction, SoakActionKind, SoakConfig, SoakExecutionParameters, SoakFailure, SoakSummary,
+};
 
 mod liveness;
 
