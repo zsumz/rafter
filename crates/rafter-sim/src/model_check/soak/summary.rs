@@ -38,8 +38,11 @@ impl SoakSummary {
         for action in trace {
             let kind = action.kind();
             *action_counts.entry(kind).or_default() += 1;
-            if let SoakAction::Restart(node_id) = action {
-                restarted_nodes.insert(*node_id);
+            match action {
+                SoakAction::Restart(node_id) | SoakAction::ApplicationLossRestart(node_id) => {
+                    restarted_nodes.insert(*node_id);
+                }
+                _ => {}
             }
         }
         Self {

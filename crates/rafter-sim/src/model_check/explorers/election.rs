@@ -46,7 +46,9 @@ impl ElectionSafetyExplorer {
             return Ok(());
         }
 
-        for action in enabled_actions(state.cluster()) {
+        let actions = enabled_actions(state.cluster())
+            .map_err(|error| error.into_failure(state.cluster(), trace))?;
+        for action in actions {
             let mut next = state.clone();
             apply_to_state(&mut next, action.operation);
             self.budget.record_action();

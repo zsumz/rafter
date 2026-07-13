@@ -1,7 +1,8 @@
-use rafter::{Message, NodeId};
+use rafter::{Message, NodeId, Role};
 
 use super::super::helpers::{config, proposal_payload, request_vote};
 use super::super::{
+    observations::Observation,
     replay_raft_trace,
     scheduling::{deliver_action, Operation},
     state::{apply_to_state, ExplorationState},
@@ -203,8 +204,10 @@ fn replay_delivers_the_selected_envelope_when_routing_and_kind_collide() {
         2,
         "heartbeat and proposal append must collide"
     );
-    let first = deliver_action(state.cluster(), colliding[0]);
-    let second = deliver_action(state.cluster(), colliding[1]);
+    let first = deliver_action(state.cluster(), colliding[0])
+        .expect("enumerated envelope has a scheduler identity");
+    let second = deliver_action(state.cluster(), colliding[1])
+        .expect("enumerated envelope has a scheduler identity");
     assert_ne!(first, second);
     assert!(matches!(
         second,
@@ -228,6 +231,57 @@ fn replay_delivers_the_selected_envelope_when_routing_and_kind_collide() {
     assert_eq!(report.state(), &expected);
 }
 
+#[test]
+fn replay_preserves_application_loss_epoch_transition() {
+    let configs = vec![config(1, &[], 1)];
+    let mut state = ExplorationState::new(Cluster::new(configs.clone()));
+    let mut trace = Vec::new();
+    for _ in 0..4 {
+        if state.cluster().role(NodeId(1)) == Role::Leader {
+            break;
+        }
+        apply_and_record(
+            &mut state,
+            &mut trace,
+            Action::Tick(NodeId(1)),
+            Operation::Tick(NodeId(1)),
+        );
+    }
+    assert_eq!(state.cluster().role(NodeId(1)), Role::Leader);
+    apply_and_record(
+        &mut state,
+        &mut trace,
+        Action::Propose {
+            to: NodeId(1),
+            proposal_id: ProposalId(1),
+        },
+        Operation::Propose {
+            to: NodeId(1),
+            proposal_id: ProposalId(1),
+            stale_leader: false,
+        },
+    );
+    trace.push(Action::ApplicationLossRestart(NodeId(1)));
+    super::super::state::restart_node_losing_application_state(&mut state, NodeId(1), &trace)
+        .expect("application-loss transition replays the committed one-node log");
+    assert_eq!(state.cluster().application_epoch(NodeId(1)), 1);
+    assert!(state
+        .observation_set()
+        .contains(Observation::CrossEpochExecutionWitnessPairs));
+    let expected = summarize(state.cluster());
+
+    let report = replay_raft_trace(
+        configs,
+        &trace,
+        ReplayCheck::CommitSafety,
+        ReplayExpectation::FinalState(&expected),
+    )
+    .expect("application-loss action must replay through the transition engine");
+
+    assert_eq!(report.state(), &expected);
+    assert!(report.failure().is_none());
+}
+
 fn apply_and_record(
     state: &mut ExplorationState,
     trace: &mut Vec<Action>,
@@ -249,6 +303,9 @@ fn record_delivery(
         .iter()
         .position(|queued| predicate(&queued.envelope))
         .expect("planned delivery must be queued");
-    trace.push(deliver_action(state.cluster(), position));
+    trace.push(
+        deliver_action(state.cluster(), position)
+            .expect("enumerated envelope has a scheduler identity"),
+    );
     apply_to_state(state, Operation::DeliverReadyAt(position));
 }

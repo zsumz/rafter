@@ -1,4 +1,7 @@
-use std::collections::BTreeMap;
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+};
 
 use rafter::{LocalProposalDropReason, LogIndex, NodeId, SharedPayload, Term};
 
@@ -14,6 +17,8 @@ pub(crate) struct ClientHistory {
     pub(crate) next_event: u64,
     pub(crate) writes: BTreeMap<ProposalId, ClientWrite>,
     pub(crate) reads: BTreeMap<u64, ClientRead>,
+    pub(crate) tracked_entries: BTreeMap<ProposalId, TrackedProposalEntry>,
+    pub(crate) instrumentation_errors: BTreeSet<ClientInstrumentationError>,
 }
 
 impl ClientHistory {
@@ -63,6 +68,30 @@ pub(crate) enum ClientWriteStatus {
 pub(crate) enum ClientWriteUnknownReason {
     StaleLeader,
     LocalTrackingDropped,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct TrackedProposalEntry {
+    pub(crate) node_id: NodeId,
+    pub(crate) index: LogIndex,
+    pub(crate) term: Term,
+}
+
+#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub(crate) struct ClientInstrumentationError {
+    pub(crate) proposal_id: ProposalId,
+    pub(crate) event: &'static str,
+    pub(crate) detail: String,
+}
+
+impl fmt::Display for ClientInstrumentationError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "tracked proposal {} {} event contradicted recorder state: {}",
+            self.proposal_id.0, self.event, self.detail
+        )
+    }
 }
 
 #[derive(Clone, Debug, Hash)]
@@ -166,6 +195,30 @@ impl ExplorationState {
         );
     }
 
+    #[cfg(test)]
+    pub(in crate::model_check) fn record_client_read_completion_corruption(
+        &mut self,
+        request_id: u64,
+        proof: ClientReadProof,
+        result: Option<SharedPayload>,
+    ) -> Result<(), &'static str> {
+        let completed_at = self.client_history.next_event();
+        let read = self
+            .client_history
+            .reads
+            .get_mut(&request_id)
+            .ok_or("read recorder corruption requires a registered read")?;
+        if !matches!(read.outcome, ClientReadOutcome::Pending) {
+            return Err("read recorder corruption requires a pending read");
+        }
+        read.outcome = ClientReadOutcome::Completed {
+            proof,
+            result,
+            completed_at,
+        };
+        Ok(())
+    }
+
     pub(in crate::model_check) fn refresh_client_history(&mut self) {
         let mut next_event = self.client_history.next_event;
         self.refresh_client_reads(&mut next_event);
@@ -228,20 +281,58 @@ impl ExplorationState {
     ) {
         let proposal_id = ProposalId(proposal_id);
         let Some(write) = self.client_history.writes.get(&proposal_id) else {
+            self.record_client_instrumentation_error(
+                proposal_id,
+                "appended",
+                format!("no client write exists for {node_id} at ({index}, term {term})"),
+            );
             return;
         };
-        let matches_operation = write.node_id == node_id
-            && self
-                .cluster
-                .bootstrap_state(node_id)
-                .log
-                .into_iter()
-                .find(|entry| entry.index == index)
-                .is_some_and(|entry| {
-                    entry.term == term
-                        && entry.kind.application_payload() == Some(write.payload.as_slice())
-                });
-        if matches_operation && matches!(write.status, ClientWriteStatus::Pending) {
+        let expected_node = write.node_id;
+        let status = write.status;
+        let log_has_entry = self
+            .cluster
+            .bootstrap_state(node_id)
+            .log
+            .into_iter()
+            .find(|entry| entry.index == index)
+            .is_some_and(|entry| entry.term == term && entry.kind.application_payload().is_some());
+        let tracked = TrackedProposalEntry {
+            node_id,
+            index,
+            term,
+        };
+        let existing_matches = self
+            .client_history
+            .tracked_entries
+            .get(&proposal_id)
+            .is_none_or(|existing| *existing == tracked);
+        let status_accepts_append = matches!(
+            status,
+            ClientWriteStatus::Pending | ClientWriteStatus::Unknown { .. }
+        ) || matches!(
+            status,
+            ClientWriteStatus::Accepted {
+                    node_id: accepted_by,
+                    index: accepted_index,
+                    term: accepted_term,
+                } if accepted_by == node_id && accepted_index == index && accepted_term == term
+        );
+        if expected_node != node_id || !log_has_entry || !existing_matches || !status_accepts_append
+        {
+            self.record_client_instrumentation_error(
+                proposal_id,
+                "appended",
+                format!(
+                    "event=({node_id}, {index}, term {term}), expected_node={expected_node}, status={status:?}, log_has_entry={log_has_entry}, existing_matches={existing_matches}"
+                ),
+            );
+            return;
+        }
+        self.client_history
+            .tracked_entries
+            .insert(proposal_id, tracked);
+        if matches!(status, ClientWriteStatus::Pending) {
             if let Some(write) = self.client_history.writes.get_mut(&proposal_id) {
                 write.status = ClientWriteStatus::Accepted {
                     node_id,
@@ -262,17 +353,42 @@ impl ExplorationState {
     ) {
         let proposal_id = ProposalId(proposal_id);
         let Some(write) = self.client_history.writes.get(&proposal_id) else {
+            self.record_client_instrumentation_error(
+                proposal_id,
+                "applied",
+                format!("no client write exists for {node_id} at ({index}, term {term})"),
+            );
             return;
         };
-        let exact_acceptance = matches!(
-            write.status,
+        let status = write.status;
+        let expected_payload = write.payload.clone();
+        let tracked = TrackedProposalEntry {
+            node_id,
+            index,
+            term,
+        };
+        let exact_tracking =
+            self.client_history.tracked_entries.get(&proposal_id) == Some(&tracked);
+        let status_accepts_apply = matches!(
+            status,
             ClientWriteStatus::Accepted {
                 node_id: accepted_by,
                 index: accepted_index,
                 term: accepted_term,
             } if accepted_by == node_id && accepted_index == index && accepted_term == term
-        );
-        if !exact_acceptance || write.payload != *payload {
+        ) || matches!(status, ClientWriteStatus::Unknown { .. });
+        if !exact_tracking || !status_accepts_apply || expected_payload != *payload {
+            self.record_client_instrumentation_error(
+                proposal_id,
+                "applied",
+                format!(
+                    "event=({node_id}, {index}, term {term}), status={status:?}, exact_tracking={exact_tracking}, payload_matches={} ",
+                    expected_payload == *payload
+                ),
+            );
+            return;
+        }
+        if matches!(status, ClientWriteStatus::Unknown { .. }) {
             return;
         }
         let completed_at = self.client_history.next_event();
@@ -294,17 +410,41 @@ impl ExplorationState {
         _reason: LocalProposalDropReason,
     ) {
         let proposal_id = ProposalId(proposal_id);
-        let Some(write) = self.client_history.writes.get_mut(&proposal_id) else {
+        let Some(write) = self.client_history.writes.get(&proposal_id) else {
+            self.record_client_instrumentation_error(
+                proposal_id,
+                "dropped",
+                format!("no client write exists for {node_id} at ({index}, term {term})"),
+            );
             return;
         };
-        if matches!(
-            write.status,
-            ClientWriteStatus::Accepted {
-                node_id: accepted_by,
-                index: accepted_index,
-                term: accepted_term,
-            } if accepted_by == node_id && accepted_index == index && accepted_term == term
-        ) {
+        let status = write.status;
+        let exact_tracking = self.client_history.tracked_entries.get(&proposal_id)
+            == Some(&TrackedProposalEntry {
+                node_id,
+                index,
+                term,
+            });
+        if !exact_tracking
+            || !matches!(
+                status,
+                ClientWriteStatus::Accepted {
+                    node_id: accepted_by,
+                    index: accepted_index,
+                    term: accepted_term,
+                } if accepted_by == node_id && accepted_index == index && accepted_term == term
+            )
+        {
+            self.record_client_instrumentation_error(
+                proposal_id,
+                "dropped",
+                format!(
+                    "event=({node_id}, {index}, term {term}), status={status:?}, exact_tracking={exact_tracking}"
+                ),
+            );
+            return;
+        }
+        if let Some(write) = self.client_history.writes.get_mut(&proposal_id) {
             write.status = ClientWriteStatus::Unknown {
                 reason: ClientWriteUnknownReason::LocalTrackingDropped,
             };
@@ -312,12 +452,51 @@ impl ExplorationState {
     }
 
     fn record_local_proposal_rejected(&mut self, node_id: NodeId, proposal_id: u64) {
-        let Some(write) = self.client_history.writes.get_mut(&ProposalId(proposal_id)) else {
+        let proposal_id = ProposalId(proposal_id);
+        let Some(write) = self.client_history.writes.get(&proposal_id) else {
+            self.record_client_instrumentation_error(
+                proposal_id,
+                "rejected",
+                format!("no client write exists for {node_id}"),
+            );
             return;
         };
-        if write.node_id == node_id && matches!(write.status, ClientWriteStatus::Pending) {
+        let expected_node = write.node_id;
+        let status = write.status;
+        if expected_node != node_id
+            || !matches!(
+                status,
+                ClientWriteStatus::Pending
+                    | ClientWriteStatus::Unknown {
+                        reason: ClientWriteUnknownReason::StaleLeader
+                    }
+            )
+        {
+            self.record_client_instrumentation_error(
+                proposal_id,
+                "rejected",
+                format!("event_node={node_id}, expected_node={expected_node}, status={status:?}"),
+            );
+            return;
+        }
+        if let Some(write) = self.client_history.writes.get_mut(&proposal_id) {
             write.status = ClientWriteStatus::Rejected;
         }
+    }
+
+    fn record_client_instrumentation_error(
+        &mut self,
+        proposal_id: ProposalId,
+        event: &'static str,
+        detail: String,
+    ) {
+        self.client_history
+            .instrumentation_errors
+            .insert(ClientInstrumentationError {
+                proposal_id,
+                event,
+                detail,
+            });
     }
 
     fn refresh_client_reads(&mut self, next_event: &mut u64) {

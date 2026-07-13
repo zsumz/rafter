@@ -6,10 +6,14 @@ use super::super::persistence::{
     check_restart_term_and_vote,
 };
 use super::*;
+use crate::model_check::helpers::elect_node_one_in_state;
 use crate::model_check::observations::Observation;
+use crate::model_check::scheduling::Operation;
 use crate::model_check::state::{
-    apply_pending_application_replay_seed, restart_node, PendingApplicationReplaySeed,
+    apply_pending_application_replay_seed, apply_to_state, restart_node,
+    PendingApplicationReplaySeed,
 };
+use crate::model_check::ProposalId;
 use rafter::BootstrapState;
 
 fn durable_restart_fixture() -> DurableStateDigest {
@@ -28,6 +32,7 @@ fn durable_restart_fixture() -> DurableStateDigest {
             hard_state_term: Term(2),
             application_payload_len: 4,
             application_payload_crc32: 17,
+            application_payload: b"data".to_vec(),
             committed_configuration: None,
         }),
         log: vec![
@@ -90,33 +95,149 @@ fn exact_restart_commit_configuration_oracle_detects_identity_change() {
 }
 
 #[test]
-fn exact_restart_snapshot_oracle_detects_payload_identity_change() {
+fn exact_restart_snapshot_oracle_detects_crc32_collision_payload_change() {
     let cluster = one_node_cluster();
-    let before = durable_restart_fixture();
+    let first_payload = [0x29, 0x2c, 0x99, 0xbf, 0xb5, 0xb8, 0x20, 0xb7];
+    let second_payload = [0x11, 0x98, 0x3d, 0x82, 0xcb, 0x0b, 0xeb, 0xd2];
+    let (first_snapshot, _) = test_snapshot(1, 1, 1, 2, &first_payload);
+    let (second_snapshot, _) = test_snapshot(1, 1, 1, 2, &second_payload);
+    assert_eq!(
+        first_snapshot, second_snapshot,
+        "fixture payloads must collide in the descriptor's CRC32 identity"
+    );
+
+    let mut before = durable_restart_fixture();
+    let before_snapshot = before.snapshot.as_mut().expect("fixture has snapshot");
+    before_snapshot.transfer_id = first_snapshot.transfer_id();
+    before_snapshot.last_included_index = first_snapshot.metadata.last_included_index;
+    before_snapshot.last_included_term = first_snapshot.metadata.last_included_term;
+    before_snapshot.hard_state_term = first_snapshot.metadata.hard_state_term;
+    before_snapshot.application_payload_len = first_snapshot.application_payload_len;
+    before_snapshot.application_payload_crc32 = first_snapshot.application_payload_crc32;
+    before_snapshot.application_payload = first_payload.to_vec();
     let mut after = before.clone();
     after
         .snapshot
         .as_mut()
         .expect("fixture has snapshot")
-        .application_payload_crc32 += 1;
+        .application_payload = second_payload.to_vec();
 
     let failure = check_restart_snapshot(&cluster, NodeId(1), &before, &after, &[])
-        .expect_err("snapshot identity change must fail PS-03.d");
+        .expect_err("CRC32-colliding snapshot bytes must fail PS-03.d");
     assert_eq!(failure.invariant(), catalog::PS_03_EXACT_DURABLE_RESTART);
     assert!(failure.message.contains("durable snapshot"));
 }
 
 #[test]
+fn exact_restart_snapshot_reopens_independent_store_with_exact_payload() {
+    let mut state = ExplorationState::new(one_node_cluster());
+    let (snapshot, payload) = test_snapshot(1, 1, 1, 2, b"durable snapshot payload");
+    state.inject_snapshot_payload(NodeId(1), &snapshot, payload.clone());
+    let bootstrap = bootstrap_with_snapshot(Term(2), snapshot.clone(), &[]);
+    state
+        .inject_bootstrap_state(NodeId(1), bootstrap)
+        .expect("snapshot bootstrap opens");
+    let before = state
+        .cluster()
+        .durable_state_digest(NodeId(1))
+        .expect("opened fixture has a complete durable image");
+    let before_payload_address = state
+        .cluster()
+        .snapshot_payload(NodeId(1), &snapshot)
+        .expect("opened store has payload")
+        .as_ptr();
+
+    restart_node(&mut state, NodeId(1), &[]).expect("snapshot bootstrap reopens");
+
+    let after_payload = state
+        .cluster()
+        .snapshot_payload(NodeId(1), &snapshot)
+        .expect("reopened store has payload");
+    assert_ne!(
+        before_payload_address,
+        after_payload.as_ptr(),
+        "restart must hydrate a distinct snapshot-store allocation"
+    );
+    assert_eq!(after_payload, payload);
+    let after = state
+        .cluster()
+        .durable_state_digest(NodeId(1))
+        .expect("reopened fixture has a complete durable image");
+    check_restart_snapshot(state.cluster(), NodeId(1), &before, &after, &[])
+        .expect("separately reopened exact bytes satisfy PS-03.d");
+}
+
+#[test]
 fn exact_restart_acknowledged_entry_oracle_detects_reindexing() {
-    let cluster = one_node_cluster();
+    let state = state_with_acknowledged_uncommitted_entry();
     let before = durable_restart_fixture();
     let mut after = before.clone();
     after.log[0].index = LogIndex(3);
 
-    let failure = check_restart_acknowledged_entries(&cluster, NodeId(1), &before, &after, &[])
-        .expect_err("reindexing an acknowledged entry must fail PS-03.e");
+    let failure =
+        check_restart_acknowledged_entries(state.cluster(), NodeId(2), &before, &after, &[])
+            .expect_err("reindexing an acknowledged entry must fail PS-03.e");
     assert_eq!(failure.invariant(), catalog::PS_03_EXACT_DURABLE_RESTART);
     assert!(failure.message.contains("lost or reindexed"));
+}
+
+#[test]
+fn exact_restart_acknowledged_entry_oracle_checks_acknowledged_uncommitted_entry() {
+    let state = state_with_acknowledged_uncommitted_entry();
+    let before = state
+        .cluster()
+        .durable_state_digest(NodeId(2))
+        .expect("acknowledgement fixture has a complete durable image");
+    let acknowledged_floor = state.cluster().delivered_ack_floor(NodeId(2));
+    let mut after = before.clone();
+    after.log.retain(|entry| entry.index != acknowledged_floor);
+    assert!(acknowledged_floor > before.commit_index);
+    assert_eq!(after.log.len() + 1, before.log.len());
+
+    let failure =
+        check_restart_acknowledged_entries(state.cluster(), NodeId(2), &before, &after, &[])
+            .expect_err("losing an acknowledged but uncommitted entry must fail PS-03.e");
+    assert_eq!(failure.invariant(), catalog::PS_03_EXACT_DURABLE_RESTART);
+    assert!(failure.message.contains("lost or reindexed"));
+}
+
+fn state_with_acknowledged_uncommitted_entry() -> ExplorationState {
+    let mut state = ExplorationState::new(two_node_cluster());
+    elect_node_one_in_state(&mut state);
+    apply_to_state(
+        &mut state,
+        Operation::Propose {
+            to: NodeId(1),
+            proposal_id: ProposalId(1),
+            stale_leader: false,
+        },
+    );
+    deliver_matching_in_state(&mut state, |envelope| {
+        envelope.from == NodeId(1)
+            && envelope.to == NodeId(2)
+            && matches!(envelope.message, Message::AppendEntries(_))
+    });
+    deliver_matching_in_state(&mut state, |envelope| {
+        envelope.from == NodeId(2)
+            && envelope.to == NodeId(1)
+            && matches!(
+                envelope.message,
+                Message::AppendEntriesResponse(ref response) if response.success
+            )
+    });
+    assert!(
+        state.cluster().delivered_ack_floor(NodeId(2)) > state.cluster().commit_index(NodeId(2))
+    );
+    state
+}
+
+fn deliver_matching_in_state(state: &mut ExplorationState, predicate: impl Fn(&Envelope) -> bool) {
+    let position = state
+        .cluster()
+        .pending()
+        .position(predicate)
+        .expect("fixture message is queued");
+    apply_to_state(state, Operation::DeliverReadyAt(position));
 }
 
 #[test]
@@ -231,6 +352,7 @@ fn pending_application_replay_restarts_through_the_instrumented_transition() {
         state
             .cluster()
             .durable_state_digest(NodeId(1))
+            .expect("recovery fixture has a complete durable image")
             .applied_through,
         LogIndex(3)
     );

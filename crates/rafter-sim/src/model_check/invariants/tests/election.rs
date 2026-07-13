@@ -7,7 +7,7 @@ use crate::model_check::{
     helpers::elect_node_one_in_state,
     observations::Observation,
     scheduling::{Operation, SoakOperation},
-    state::{apply_soak_action, apply_to_state, restart_node},
+    state::{apply_to_state, restart_node, try_apply_soak_action},
 };
 
 #[test]
@@ -183,7 +183,8 @@ fn modeled_lossy_restart_preserves_observed_durable_vote() {
         .expect("seeded vote bootstrap is valid");
     let mut state = ExplorationState::new(cluster);
 
-    apply_soak_action(&mut state, SoakOperation::LossyRestart(NodeId(1)));
+    try_apply_soak_action(&mut state, SoakOperation::LossyRestart(NodeId(1)))
+        .expect("fixture lossy restart must remain valid");
 
     check_election_history(&state, &[]).expect("lossy restart must keep durable vote history");
     assert_eq!(
@@ -858,6 +859,54 @@ fn election_history_deduplicates_duplicate_grants() {
             .len(),
         1
     );
+}
+
+#[test]
+fn every_operation_class_records_election_transition_context() {
+    let operations = [
+        Operation::Propose {
+            to: NodeId(1),
+            proposal_id: crate::model_check::ProposalId(31),
+            stale_leader: true,
+        },
+        Operation::ReadIndex {
+            to: NodeId(1),
+            request_id: 31,
+        },
+        Operation::AddLearner {
+            to: NodeId(1),
+            learner_id: NodeId(4),
+        },
+        Operation::Transfer {
+            from: NodeId(1),
+            target: NodeId(2),
+        },
+    ];
+    for operation in operations {
+        let mut state = ExplorationState::new(one_node_cluster());
+        assert_eq!(state.election_transition_contexts_observed(), 0);
+        apply_to_state(&mut state, operation);
+        assert_eq!(state.election_transition_contexts_observed(), 1);
+        check_election_history(&state, &[])
+            .expect("non-election operation must preserve valid election authority");
+    }
+
+    for application_loss in [false, true] {
+        let mut state = ExplorationState::new(one_node_cluster());
+        let result = if application_loss {
+            crate::model_check::state::restart_node_losing_application_state(
+                &mut state,
+                NodeId(1),
+                &[],
+            )
+        } else {
+            crate::model_check::state::restart_node(&mut state, NodeId(1), &[])
+        };
+        result.expect("fixture restart transition must remain valid");
+        assert_eq!(state.election_transition_contexts_observed(), 1);
+        check_election_history(&state, &[])
+            .expect("restart operation must preserve valid election authority");
+    }
 }
 
 fn request_vote_grant_state(

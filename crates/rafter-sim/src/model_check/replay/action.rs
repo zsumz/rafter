@@ -2,7 +2,7 @@ use rafter::NodeId;
 
 use super::super::{
     scheduling::Operation,
-    state::{apply_to_state, restart_node},
+    state::{apply_to_state, restart_node, restart_node_losing_application_state},
     Action, ExplorationState, MessageKind, ProposalId,
 };
 use super::ReplayError;
@@ -35,6 +35,9 @@ pub(super) fn replay_action(
         | Action::EnterJoint { .. }
         | Action::LeaveJoint { .. } => replay_membership_action(state, action_index, action),
         Action::Restart(node_id) => replay_restart_action(state, *node_id, replayed),
+        Action::ApplicationLossRestart(node_id) => {
+            replay_application_loss_restart_action(state, *node_id, replayed)
+        }
         Action::Propose { to, proposal_id } => {
             replay_proposal_action(state, *to, *proposal_id);
             Ok(())
@@ -115,6 +118,7 @@ fn replay_membership_action(
         Action::Tick(_)
         | Action::ReadIndex { .. }
         | Action::Restart(_)
+        | Action::ApplicationLossRestart(_)
         | Action::Propose { .. }
         | Action::Deliver { .. } => unreachable!("caller filters membership replay actions"),
     }
@@ -128,6 +132,19 @@ fn replay_restart_action(
     restart_node(state, node_id, replayed).map_err(|failure| ReplayError::UnexpectedFailure {
         expected: "successful restart replay",
         actual: failure,
+    })
+}
+
+fn replay_application_loss_restart_action(
+    state: &mut ExplorationState,
+    node_id: NodeId,
+    replayed: &[Action],
+) -> Result<(), ReplayError> {
+    restart_node_losing_application_state(state, node_id, replayed).map_err(|failure| {
+        ReplayError::UnexpectedFailure {
+            expected: "successful application-loss restart replay",
+            actual: failure,
+        }
     })
 }
 
@@ -163,22 +180,27 @@ fn replay_deliver_action(
     else {
         unreachable!("caller filters delivery replay actions");
     };
-    let Some(position) =
-        state
-            .cluster()
-            .network
-            .iter()
-            .enumerate()
-            .find_map(|(position, queued)| {
-                (queued.ready_at <= state.cluster().clock.now()
-                    && queued.envelope.from == *from
-                    && queued.envelope.to == *to
-                    && MessageKind::from(&queued.envelope.message) == *message
-                    && super::super::scheduling::envelope_identity(state.cluster(), position)
-                        == *identity)
-                    .then_some(position)
-            })
-    else {
+    let mut selected = None;
+    for (position, queued) in state.cluster().network.iter().enumerate() {
+        let actual_identity =
+            super::super::scheduling::envelope_identity(state.cluster(), position).map_err(
+                |error| ReplayError::SchedulingFailure {
+                    action_index,
+                    action: action.clone(),
+                    message: error.to_string(),
+                },
+            )?;
+        if queued.ready_at <= state.cluster().clock.now()
+            && queued.envelope.from == *from
+            && queued.envelope.to == *to
+            && MessageKind::from(&queued.envelope.message) == *message
+            && actual_identity == *identity
+        {
+            selected = Some(position);
+            break;
+        }
+    }
+    let Some(position) = selected else {
         return Err(ReplayError::MissingReadyMessage {
             action_index,
             action: action.clone(),

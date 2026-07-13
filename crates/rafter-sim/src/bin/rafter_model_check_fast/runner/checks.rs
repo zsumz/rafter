@@ -56,7 +56,7 @@ pub(super) fn run_fast_profile() -> Result<(), Box<dyn Error>> {
         check_raft_joint_membership_restart_and_snapshot_safety(Bounds::new(8).with_max_restarts(1))
     })?;
     run_raft_check("raft-commit-seeded", || {
-        check_raft_seeded_commit_safety(three_node_configs(2), Bounds::new(1))
+        check_raft_seeded_commit_safety(three_node_configs(2), Bounds::new(1).with_max_restarts(1))
     })?;
     run_raft_check("raft-leadership-noop-seeded", || {
         check_raft_leadership_noop_safety(Bounds::new(8))
@@ -117,7 +117,7 @@ pub(super) fn run_raft_deep_profile(
         check_raft_joint_membership_restart_and_snapshot_safety(Bounds::new(9).with_max_restarts(2))
     })?;
     run_raft_check("raft-commit-seeded-deep", || {
-        check_raft_seeded_commit_safety(three_node_configs(2), Bounds::new(2))
+        check_raft_seeded_commit_safety(three_node_configs(2), Bounds::new(2).with_max_restarts(1))
     })?;
     run_raft_check("raft-leadership-noop-seeded-deep", || {
         check_raft_leadership_noop_safety(Bounds::new(8))

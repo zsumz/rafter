@@ -6,7 +6,7 @@ use super::{Action, StateSummary};
 ///
 /// This enum is exhaustive because model-check triage currently uses this
 /// closed set of failure classes.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum FailureKind {
     /// An explored state or transition contradicted the named invariant.
     InvariantViolation,

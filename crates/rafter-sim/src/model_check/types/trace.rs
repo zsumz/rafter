@@ -12,6 +12,7 @@ use crate::SimTick;
 pub enum Action {
     Tick(NodeId),
     Restart(NodeId),
+    ApplicationLossRestart(NodeId),
     Propose {
         to: NodeId,
         proposal_id: ProposalId,
@@ -56,6 +57,9 @@ impl fmt::Display for Action {
         match self {
             Self::Tick(node_id) => write!(formatter, "tick {node_id}"),
             Self::Restart(node_id) => write!(formatter, "restart {node_id}"),
+            Self::ApplicationLossRestart(node_id) => {
+                write!(formatter, "application-loss restart {node_id}")
+            }
             Self::ReadIndex { to, request_id } => {
                 write!(formatter, "read_index {request_id} to {to}")
             }

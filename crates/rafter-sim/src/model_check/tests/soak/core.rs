@@ -42,11 +42,20 @@ fn ordinary_restart_preserves_durable_state_digest() {
     cluster.propose(NodeId(1), b"digest-restart".to_vec());
     cluster.deliver_all();
     let mut state = ExplorationState::new(cluster);
-    let before = state.cluster().durable_state_digest(NodeId(1));
+    let before = state
+        .cluster()
+        .durable_state_digest(NodeId(1))
+        .expect("fixture has a complete durable image");
 
     restart_node(&mut state, NodeId(1), &[]).expect("ordinary restart must preserve digest");
 
-    assert_eq!(state.cluster().durable_state_digest(NodeId(1)), before);
+    assert_eq!(
+        state
+            .cluster()
+            .durable_state_digest(NodeId(1))
+            .expect("restarted fixture has a complete durable image"),
+        before
+    );
 }
 
 #[test]
@@ -57,9 +66,17 @@ fn randomized_soak_exercises_repeated_restarts_across_nodes() {
     let summary = run_raft_random_soak(three_node_configs(), config)
         .expect("restart-heavy random soak should preserve Raft invariants");
 
+    let restart_count = summary.action_count(SoakActionKind::Restart)
+        + summary.action_count(SoakActionKind::ApplicationLossRestart);
     assert!(
-        summary.action_count(SoakActionKind::Restart) >= 8,
+        restart_count >= 8,
         "restart-heavy soak should perform repeated restarts"
+    );
+    assert!(
+        summary
+            .observed_actions()
+            .contains(&SoakActionKind::ApplicationLossRestart),
+        "restart-heavy soak should cross an application epoch"
     );
     assert_eq!(
         summary.restarted_nodes().len(),

@@ -53,7 +53,9 @@ impl RestartSafetyExplorer {
             return Ok(());
         }
 
-        for action in enabled_restart_snapshot_actions(state, self.budget.bounds) {
+        let actions = enabled_restart_snapshot_actions(state, self.budget.bounds)
+            .map_err(|error| error.into_failure(state.state.cluster(), trace))?;
+        for action in actions {
             let mut next = state.clone();
             trace.push(action.trace);
             apply_to_restart_snapshot_state(&mut next, action.operation, trace)?;
@@ -66,9 +68,12 @@ impl RestartSafetyExplorer {
     }
 
     fn observe(&mut self, state: &RestartSnapshotState, trace: &[Action]) {
-        self.observed_restart |= trace
-            .iter()
-            .any(|action| matches!(action, Action::Restart(_)));
+        self.observed_restart |= trace.iter().any(|action| {
+            matches!(
+                action,
+                Action::Restart(_) | Action::ApplicationLossRestart(_)
+            )
+        });
 
         let Some(expected) = &state.expected_snapshot else {
             return;

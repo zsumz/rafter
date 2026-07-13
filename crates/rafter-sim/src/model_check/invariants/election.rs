@@ -36,6 +36,15 @@ pub(crate) fn check_election_history(
     state: &ExplorationState,
     trace: &[Action],
 ) -> Result<(), Failure> {
+    if let Some(error) = state.transition_instrumentation_errors().iter().next() {
+        return Err(Failure {
+            kind: error.kind,
+            invariant: error.invariant,
+            message: error.message.clone(),
+            trace: trace.to_vec(),
+            state: summarize(state.cluster()),
+        });
+    }
     check_term_and_vote_history(state, trace)?;
     check_vote_grants(state, trace)?;
     check_authority_transitions(state, trace)?;

@@ -6,14 +6,46 @@ use super::super::state::{
     ClientWriteUnknownReason,
 };
 use super::super::ProposalId;
+use super::super::{
+    helpers::{deliver_all_in_state, elect_node_one_in_state, three_node_configs},
+    scheduling::Operation,
+    state::ExplorationState,
+};
+use crate::Cluster;
 
 #[test]
 fn linearizer_rejects_read_that_misses_completed_write() {
-    let mut history = ClientHistory::default();
-    insert_completed_write(&mut history, ProposalId(1), 0, 1, LogIndex(1), b"one");
-    insert_completed_read(&mut history, 1, 2, 3, LogIndex(1), None);
+    let mut state = ExplorationState::new(Cluster::new(three_node_configs()));
+    elect_node_one_in_state(&mut state);
+    super::super::state::apply_to_state(
+        &mut state,
+        Operation::Propose {
+            to: NodeId(1),
+            proposal_id: ProposalId(1),
+            stale_leader: false,
+        },
+    );
+    deliver_all_in_state(&mut state);
+    assert!(matches!(
+        state.client_history().writes[&ProposalId(1)].status,
+        ClientWriteStatus::Completed { .. }
+    ));
 
-    let error = check_client_history_linearizable(&history)
+    let read_index = state.cluster().local_applied_index(NodeId(1));
+    state.record_client_read(NodeId(1), 1, read_index);
+    state
+        .record_client_read_completion_corruption(
+            1,
+            ClientReadProof {
+                application_epoch: state.cluster().application_epoch(NodeId(1)),
+                read_index,
+                local_applied_index: read_index,
+            },
+            None,
+        )
+        .expect("registered read is available to the recorder corruption fixture");
+
+    let error = check_client_history_linearizable(state.client_history())
         .expect_err("read after completed write must observe the register value");
 
     assert!(error.contains("not linearizable"));

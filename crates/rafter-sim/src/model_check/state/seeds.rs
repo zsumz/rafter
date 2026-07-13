@@ -120,9 +120,6 @@ impl ExplorationState {
         let mut state = Self::new(cluster);
         state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(2), Term(2));
         state
-            .forbidden_applied_payloads
-            .insert(b"divergent-two".to_vec().into());
-        state
     }
 
     pub(in crate::model_check) fn seeded_single_voter_prior_application_noop() -> Self {

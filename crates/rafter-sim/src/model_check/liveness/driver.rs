@@ -421,7 +421,8 @@ fn drive_soak_liveness_round_observed(
                     break;
                 };
                 let identity =
-                    super::super::scheduling::envelope_identity(state.cluster(), position);
+                    super::super::scheduling::envelope_identity(state.cluster(), position)
+                        .map_err(|_| "scheduler envelope identity")?;
                 apply_to_state(state, Operation::DeliverReadyAt(position));
                 trace.push(SoakAction::Deliver {
                     from: envelope.from,
@@ -627,6 +628,19 @@ pub(in crate::model_check::liveness) fn soak_liveness_failure(
             trace: Vec::new(),
             state: summarize(state.cluster()),
         }),
+    }
+}
+
+pub(in crate::model_check::liveness) fn soak_transition_failure(
+    config: SoakConfig,
+    trace: &[SoakAction],
+    failure: Failure,
+) -> SoakFailure {
+    SoakFailure {
+        seed: config.seed,
+        step: trace.len(),
+        trace: trace.to_vec(),
+        failure: Box::new(failure),
     }
 }
 

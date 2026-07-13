@@ -17,6 +17,7 @@ pub enum SoakActionKind {
     Drop,
     Duplicate,
     Restart,
+    ApplicationLossRestart,
     ReadIndex,
     AddLearner,
     RemoveLearner,
@@ -42,6 +43,7 @@ impl SoakActionKind {
             Self::Drop => "drop",
             Self::Duplicate => "duplicate",
             Self::Restart => "restart",
+            Self::ApplicationLossRestart => "application-loss-restart",
             Self::ReadIndex => "read-index",
             Self::AddLearner => "add-learner",
             Self::RemoveLearner => "remove-learner",
@@ -94,6 +96,7 @@ pub enum SoakAction {
         identity: EnvelopeIdentity,
     },
     Restart(NodeId),
+    ApplicationLossRestart(NodeId),
     ReadIndex {
         to: NodeId,
         request_id: u64,
@@ -143,6 +146,7 @@ impl SoakAction {
             Self::Drop { .. } => SoakActionKind::Drop,
             Self::Duplicate { .. } => SoakActionKind::Duplicate,
             Self::Restart(_) => SoakActionKind::Restart,
+            Self::ApplicationLossRestart(_) => SoakActionKind::ApplicationLossRestart,
             Self::ReadIndex { .. } => SoakActionKind::ReadIndex,
             Self::AddLearner { .. } => SoakActionKind::AddLearner,
             Self::RemoveLearner { .. } => SoakActionKind::RemoveLearner,
@@ -200,6 +204,9 @@ impl fmt::Display for SoakAction {
                 write!(formatter, "duplicate {message} {from}->{to} {identity}")
             }
             Self::Restart(node_id) => write!(formatter, "restart {node_id}"),
+            Self::ApplicationLossRestart(node_id) => {
+                write!(formatter, "application-loss restart {node_id}")
+            }
             Self::ReadIndex { to, request_id } => {
                 write!(formatter, "read-index {request_id} to {to}")
             }

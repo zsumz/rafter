@@ -1,4 +1,6 @@
-use rafter::{BootstrapState, BootstrapValidationError, LogIndex, Node, NodeId};
+use rafter::{
+    BootstrapState, BootstrapValidationError, InMemorySnapshotChunkSource, LogIndex, Node, NodeId,
+};
 
 use crate::Cluster;
 
@@ -41,6 +43,7 @@ impl Cluster {
                 snapshot.transfer_id()
             );
         }
+        self.reopen_snapshot_store(node_id);
         let mut node = Node::from_bootstrap_applied_through(
             config,
             bootstrap,
@@ -129,6 +132,7 @@ impl Cluster {
                 snapshot.transfer_id()
             );
         }
+        self.reopen_snapshot_store(node_id);
         let snapshot_boundary = bootstrap
             .snapshot
             .as_ref()
@@ -237,5 +241,16 @@ impl Cluster {
             .get(&node_id)
             .copied()
             .unwrap_or(LogIndex::ZERO)
+    }
+
+    fn reopen_snapshot_store(&mut self, node_id: NodeId) {
+        // Clone while the old store is still live so restart hydrates a
+        // distinct store allocation from the durable byte image.
+        let durable_image = self
+            .snapshot_sources
+            .get(&node_id)
+            .cloned()
+            .unwrap_or_else(InMemorySnapshotChunkSource::new);
+        self.snapshot_sources.insert(node_id, durable_image);
     }
 }

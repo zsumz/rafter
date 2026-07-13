@@ -1,7 +1,5 @@
 use std::collections::BTreeSet;
 
-use rafter::{CommittedConfiguration, LogEntryKind};
-
 use super::{catalog, summarize, Action, BTreeMap, Cluster, ExplorationState, Failure};
 use super::{LogIndex, NodeId};
 
@@ -19,70 +17,14 @@ pub(super) fn check_execution_history_agreement(
         });
     }
 
-    let mut witness_by_index = BTreeMap::<LogIndex, &crate::ExecutionWitness>::new();
-    for witness in state.application_history() {
-        let derived_result = independently_derive_reference_result(witness);
-        if witness.resulting_state != derived_result {
-            return Err(ap_02_failure(
-                state.cluster(),
-                trace,
-                format!(
-                    "{} epoch {} recorded an invalid reference-state result at log index {}",
-                    witness.node_id, witness.application_epoch, witness.entry.index
-                ),
-            ));
-        }
-
-        if let Some(previous) = witness_by_index.get(&witness.entry.index) {
-            if previous.entry.term != witness.entry.term
-                || previous.entry.kind != witness.entry.kind
-            {
-                return Err(ap_02_failure(
-                    state.cluster(),
-                    trace,
-                    format!(
-                        "{} and {} applied different term/kind/input identities at log index {}",
-                        previous.node_id, witness.node_id, witness.entry.index
-                    ),
-                ));
-            }
-            if previous.prior_state != witness.prior_state
-                || previous.resulting_state != witness.resulting_state
-            {
-                return Err(ap_02_failure(
-                    state.cluster(),
-                    trace,
-                    format!(
-                        "{} and {} obtained different prior/result state identities at log index {}",
-                        previous.node_id, witness.node_id, witness.entry.index
-                    ),
-                ));
-            }
-        } else {
-            witness_by_index.insert(witness.entry.index, witness);
-        }
+    if let Some(violation) = state.execution_history_violations().iter().next() {
+        return Err(ap_02_failure(
+            state.cluster(),
+            trace,
+            violation.message.clone(),
+        ));
     }
     Ok(())
-}
-
-fn independently_derive_reference_result(
-    witness: &crate::ExecutionWitness,
-) -> crate::ReferenceState {
-    let mut result = witness.prior_state.clone();
-    match &witness.entry.kind {
-        LogEntryKind::Application(payload) => {
-            result.application_value.clone_from(payload);
-        }
-        LogEntryKind::Configuration(configuration) => {
-            result.committed_membership = configuration.membership_config();
-            result.committed_configuration = Some(CommittedConfiguration {
-                index: witness.entry.index,
-                config_id: configuration.config_id(),
-            });
-        }
-        LogEntryKind::Noop => {}
-    }
-    result
 }
 
 fn ap_02_failure(cluster: &Cluster, trace: &[Action], message: String) -> Failure {
@@ -265,27 +207,6 @@ pub(super) fn check_applied_commit_bound(
                 ),
                 trace: trace.to_vec(),
                 state: summarize(cluster),
-            });
-        }
-    }
-    Ok(())
-}
-
-pub(super) fn check_forbidden_applied_payloads(
-    state: &ExplorationState,
-    trace: &[Action],
-) -> Result<(), Failure> {
-    for applied in &state.cluster().applied {
-        if state
-            .forbidden_applied_payloads()
-            .contains(&applied.payload)
-        {
-            return Err(Failure {
-                kind: crate::model_check::FailureKind::InvariantViolation,
-                invariant: catalog::LG_04_COMMITTED_PREFIX_STABILITY,
-                message: format!("forbidden payload applied at log index {}", applied.index),
-                trace: trace.to_vec(),
-                state: summarize(state.cluster()),
             });
         }
     }

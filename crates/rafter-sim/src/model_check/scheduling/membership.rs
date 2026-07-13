@@ -111,6 +111,7 @@ fn membership_trace(operation: &Operation) -> Action {
         Operation::LeaveJoint { to } => Action::LeaveJoint { to: *to },
         Operation::Tick(_)
         | Operation::Restart(_)
+        | Operation::ApplicationLossRestart(_)
         | Operation::Propose { .. }
         | Operation::ReadIndex { .. }
         | Operation::Transfer { .. }
@@ -158,6 +159,7 @@ pub(super) fn soak_membership_operation(operation: Operation) -> SoakOperation {
         Operation::LeaveJoint { to } => SoakOperation::LeaveJoint { to },
         Operation::Tick(_)
         | Operation::Restart(_)
+        | Operation::ApplicationLossRestart(_)
         | Operation::Propose { .. }
         | Operation::ReadIndex { .. }
         | Operation::Transfer { .. }

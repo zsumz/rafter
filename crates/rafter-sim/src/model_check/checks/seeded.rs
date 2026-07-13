@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use rafter::{LogIndex, NodeConfig, NodeId};
 
 use super::super::{
-    catalog, explorers::CommitSafetyExplorer, helpers::summarize, state::ExplorationState, Bounds,
-    Failure, StateSummary, Summary,
+    catalog, explorers::CommitSafetyExplorer, helpers::summarize, observations::Observation,
+    state::ExplorationState, Bounds, Failure, StateSummary, Summary,
 };
 
 /// Explores hand-seeded commit-safety states that previously required long,
@@ -21,12 +21,30 @@ pub fn check_raft_seeded_commit_safety(
         ExplorationState::seeded_low_empty_probe(configs.clone()),
         ExplorationState::seeded_divergent_suffix_probe(configs),
     ];
+    let coverage_state = summarize(seeds[0].cluster());
     let mut explorer = CommitSafetyExplorer::new(bounds);
     for state in seeds {
         let mut trace = Vec::new();
         explorer.explore(&state, &mut trace, 0)?;
     }
-    Ok(explorer.summary())
+    let summary = explorer.summary();
+    if bounds.max_restarts() > 0
+        && !summary
+            .observations
+            .contains(Observation::CrossEpochExecutionWitnessPairs)
+    {
+        return Err(Failure {
+            kind: crate::model_check::FailureKind::CoverageNotReached,
+            invariant: catalog::AP_02_STATE_MACHINE_SAFETY,
+            message: format!(
+                "seeded commit exploration did not replay a recorded execution across application epochs within depth {}",
+                bounds.max_depth()
+            ),
+            trace: Vec::new(),
+            state: coverage_state,
+        });
+    }
+    Ok(summary)
 }
 
 /// Explores hand-seeded leadership no-op states.

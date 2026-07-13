@@ -54,6 +54,9 @@ fn project_raft_action_to_tla(action: &Action) -> TlaProjection {
             TlaProjection::Action(TlaAction::RegisterRead { node_id: *to })
         }
         Action::Restart(node_id) => TlaProjection::Action(TlaAction::Restart { node_id: *node_id }),
+        Action::ApplicationLossRestart(_) => {
+            TlaProjection::Gap(TlaAbstractionGap::ApplicationStateLoss)
+        }
         Action::Deliver {
             from,
             to,

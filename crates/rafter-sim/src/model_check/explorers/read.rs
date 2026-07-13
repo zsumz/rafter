@@ -4,7 +4,7 @@ use super::super::{
         check_log_history, check_read_barrier_safety,
     },
     scheduling::enabled_read_index_actions,
-    state::apply_to_state,
+    state::apply_scheduled_operation,
     Action, Bounds, ExplorationState, Failure, Summary,
 };
 use super::budget::ExplorationBudget;
@@ -45,11 +45,13 @@ impl ReadIndexSafetyExplorer {
             return Ok(());
         }
 
-        for action in enabled_read_index_actions(state, self.budget.bounds) {
+        let actions = enabled_read_index_actions(state, self.budget.bounds)
+            .map_err(|error| error.into_failure(state.cluster(), trace))?;
+        for action in actions {
             let mut next = state.clone();
-            apply_to_state(&mut next, action.operation);
-            self.budget.record_action();
             trace.push(action.trace);
+            apply_scheduled_operation(&mut next, action.operation, trace)?;
+            self.budget.record_action();
             self.explore(&next, trace, depth + 1)?;
             trace.pop();
         }

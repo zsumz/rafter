@@ -117,7 +117,7 @@ pub struct SnapshotInstalled {
     pub applied_records_before_install: usize,
 }
 
-/// Compact durable-state fingerprint for one simulated node.
+/// Exact durable-state image for one simulated node.
 ///
 /// This captures the pieces that an ordinary process restart must reconstruct
 /// exactly: Raft hard state, committed local state, retained log suffix,
@@ -135,7 +135,7 @@ pub struct DurableStateDigest {
     pub applied_through: LogIndex,
 }
 
-/// Compact installed-snapshot identity used by [`DurableStateDigest`].
+/// Exact installed-snapshot image used by [`DurableStateDigest`].
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct DurableSnapshotDigest {
     pub transfer_id: SnapshotTransferId,
@@ -144,6 +144,7 @@ pub struct DurableSnapshotDigest {
     pub hard_state_term: Term,
     pub application_payload_len: u64,
     pub application_payload_crc32: u32,
+    pub application_payload: Vec<u8>,
     pub committed_configuration: Option<CommittedConfiguration>,
 }
 

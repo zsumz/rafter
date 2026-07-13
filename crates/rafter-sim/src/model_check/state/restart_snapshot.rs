@@ -1,13 +1,14 @@
 use rafter::{
-    LogIndex, MembershipConfig, MembershipSet, Message, NodeId, RaftSnapshot, SharedPayload, Term,
+    BootstrapLogEntry, BootstrapState, CommittedConfiguration, ConfigurationEntry, ConfigurationId,
+    LogIndex, MembershipConfig, MembershipSet, Message, NodeId, RaftSnapshot, SharedPayload,
+    SnapshotCommittedConfiguration, Term,
 };
 
 use crate::Cluster;
 
 use super::super::helpers::{
-    bootstrap_state, bootstrap_with_snapshot, elect_node_one_with_node_three_in_state,
-    large_snapshot_payload, test_snapshot, test_snapshot_with_committed_membership,
-    three_node_configs,
+    bootstrap_with_snapshot, elect_node_one_with_node_three_in_state, large_snapshot_payload,
+    test_snapshot, test_snapshot_with_committed_membership, three_node_configs,
 };
 use super::super::scheduling::SoakOperation;
 use super::ExplorationState;
@@ -54,34 +55,47 @@ impl RestartSnapshotState {
         committed_membership: Option<MembershipConfig>,
     ) -> Self {
         let mut cluster = Cluster::new(three_node_configs());
-        let (snapshot, payload) = test_snapshot(1, 2, 1, 2, &large_snapshot_payload());
-        let (snapshot, payload) = if let Some(membership) = committed_membership {
-            test_snapshot_with_committed_membership(1, 2, 1, 2, &payload, membership)
-        } else {
-            (snapshot, payload)
-        };
-        let visible_prefix = &[
-            (1, Term(1), b"old prefix".as_slice()),
-            (2, Term(1), b"snapshot boundary".as_slice()),
-        ];
+        let payload = large_snapshot_payload();
+        let (mut snapshot, _) = committed_membership.as_ref().map_or_else(
+            || test_snapshot(1, 2, 1, 2, &payload),
+            |membership| {
+                test_snapshot_with_committed_membership(1, 2, 1, 2, &payload, membership.clone())
+            },
+        );
+        let configuration = committed_membership.map(|membership| {
+            let config_id = ConfigurationId(7);
+            let entry = match &membership {
+                MembershipConfig::Stable(stable) => {
+                    ConfigurationEntry::stable(config_id, stable.clone())
+                }
+                MembershipConfig::Joint(joint) => {
+                    ConfigurationEntry::joint(config_id, joint.clone())
+                }
+            };
+            let committed = CommittedConfiguration {
+                index: LogIndex(1),
+                config_id,
+            };
+            snapshot = RaftSnapshot::from_payload(
+                snapshot.metadata.clone().with_committed_configuration(
+                    SnapshotCommittedConfiguration::new(Some(committed), membership),
+                ),
+                &payload,
+            );
+            (entry, committed)
+        });
+        let visible_prefix = witnessed_prefix_bootstrap(Term(2), &payload, configuration.as_ref());
         cluster
-            .restart_node_from_bootstrap(NodeId(1), bootstrap_state(Term(2), visible_prefix))
+            .restart_node_from_bootstrap(NodeId(1), visible_prefix.clone())
             .expect("visible leader bootstrap is valid");
         cluster
             .restart_node_from_bootstrap(
                 NodeId(2),
-                bootstrap_state(
-                    Term(2),
-                    &[
-                        (1, Term(1), b"old prefix"),
-                        (2, Term(2), b"divergent boundary"),
-                        (3, Term(2), b"divergent suffix"),
-                    ],
-                ),
+                divergent_prefix_bootstrap(Term(2), configuration.as_ref()),
             )
             .expect("divergent follower bootstrap is valid");
         cluster
-            .restart_node_from_bootstrap(NodeId(3), bootstrap_state(Term(2), visible_prefix))
+            .restart_node_from_bootstrap(NodeId(3), visible_prefix)
             .expect("visible voter bootstrap is valid");
         let mut state = ExplorationState::new(cluster);
         apply_snapshot_bootstrap_seeds(
@@ -120,5 +134,49 @@ impl RestartSnapshotState {
                 b"divergent suffix".to_vec().into(),
             ],
         }
+    }
+}
+
+fn witnessed_prefix_bootstrap(
+    current_term: Term,
+    snapshot_payload: &[u8],
+    configuration: Option<&(ConfigurationEntry, CommittedConfiguration)>,
+) -> BootstrapState {
+    let first = configuration.map_or_else(
+        || BootstrapLogEntry::application(LogIndex(1), Term(1), b"old prefix".to_vec()),
+        |(entry, _)| BootstrapLogEntry::configuration(LogIndex(1), Term(1), entry.clone()),
+    );
+    BootstrapState {
+        current_term,
+        voted_for: None,
+        commit_index: LogIndex::ZERO,
+        committed_configuration: None,
+        snapshot: None,
+        log: vec![
+            first,
+            BootstrapLogEntry::application(LogIndex(2), Term(1), snapshot_payload.to_vec()),
+        ],
+    }
+}
+
+fn divergent_prefix_bootstrap(
+    current_term: Term,
+    configuration: Option<&(ConfigurationEntry, CommittedConfiguration)>,
+) -> BootstrapState {
+    let first = configuration.map_or_else(
+        || BootstrapLogEntry::application(LogIndex(1), Term(1), b"old prefix".to_vec()),
+        |(entry, _)| BootstrapLogEntry::configuration(LogIndex(1), Term(1), entry.clone()),
+    );
+    BootstrapState {
+        current_term,
+        voted_for: None,
+        commit_index: LogIndex::ZERO,
+        committed_configuration: None,
+        snapshot: None,
+        log: vec![
+            first,
+            BootstrapLogEntry::application(LogIndex(2), Term(2), b"divergent boundary".to_vec()),
+            BootstrapLogEntry::application(LogIndex(3), Term(2), b"divergent suffix".to_vec()),
+        ],
     }
 }

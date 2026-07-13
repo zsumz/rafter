@@ -128,6 +128,7 @@ fn enabled_soak_kinds(state: &ExplorationState) -> BTreeSet<SoakActionKind> {
         state,
         SoakConfig::new(SimSeed(0xfeed), 1).with_max_membership_changes(1),
     )
+    .expect("fixture actions have valid scheduler identities")
     .into_iter()
     .map(|action| action.trace.kind())
     .collect()

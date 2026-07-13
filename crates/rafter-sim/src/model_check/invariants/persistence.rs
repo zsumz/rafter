@@ -111,10 +111,28 @@ pub(crate) fn check_restart_acknowledged_entries(
     after: &DurableStateDigest,
     trace: &[Action],
 ) -> Result<(), Failure> {
+    let acknowledged_floor = cluster.delivered_ack_floor(node_id);
+    let covered_through = before.log.last().map_or_else(
+        || {
+            before
+                .snapshot
+                .as_ref()
+                .map_or(LogIndex::ZERO, |snapshot| snapshot.last_included_index)
+        },
+        |entry| entry.index,
+    );
+    if acknowledged_floor > covered_through {
+        return Err(ps03_failure(
+            cluster,
+            node_id,
+            trace,
+            "restart image does not cover every acknowledged entry",
+        ));
+    }
     let lost_or_changed = before
         .log
         .iter()
-        .filter(|entry| entry.index <= before.commit_index)
+        .filter(|entry| entry.index <= acknowledged_floor)
         .any(|entry| !after.log.iter().any(|recovered| recovered == entry));
     if lost_or_changed {
         return Err(ps03_failure(
