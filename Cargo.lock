@@ -1045,6 +1045,8 @@ dependencies = [
  "clap",
  "edn-format",
  "jsonschema",
+ "rafter",
+ "rafter-sim",
  "serde",
  "serde_json",
  "sha2",
