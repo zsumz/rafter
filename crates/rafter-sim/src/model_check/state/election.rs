@@ -472,8 +472,18 @@ impl ExplorationState {
                 last_log_index: before_node.last_log_index(),
                 last_log_term: last_log_term_from_bootstrap(&before.bootstrap_state(*node_id)),
             };
+            let leader_is_eligible = certificate.membership.contains_voter(*node_id);
+            let stable_membership = matches!(&certificate.membership, MembershipConfig::Stable(_));
             self.election_history.record_election(certificate);
             self.mark_observation(Observation::ElectionCertificates);
+            if leader_is_eligible {
+                self.mark_observation(Observation::EligibleLeaderCertificates);
+            }
+            self.mark_observation(if stable_membership {
+                Observation::StableElectionCertificates
+            } else {
+                Observation::JointElectionCertificates
+            });
         }
     }
 }

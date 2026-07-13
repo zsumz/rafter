@@ -679,7 +679,7 @@ fn election_certificate_rejects_learner_grant() {
     let certificate = election_certificate(2, 1, stable_membership(&[1, 2, 3], &[4]), &[1, 2, 4]);
     let state = state_with_recorded_certificate(certificate);
 
-    let failure = check_election_history(&state, &[])
+    let failure = check_election_certificate_voters(&state, &[])
         .expect_err("learner grants must not appear in an election certificate");
     assert_eq!(
         failure.invariant(),
@@ -697,7 +697,7 @@ fn election_certificate_requires_joint_quorum() {
     let certificate = election_certificate(3, 1, joint_membership(&[1, 2, 3], &[1, 4, 5]), &[1, 2]);
     let state = state_with_recorded_certificate(certificate);
 
-    let failure = check_election_history(&state, &[])
+    let failure = check_joint_election_quorums(&state, &[])
         .expect_err("joint elections must satisfy both majorities");
     assert_eq!(
         failure.invariant(),
@@ -715,8 +715,8 @@ fn election_certificate_rejects_non_voter_leader() {
     let certificate = election_certificate(5, 4, stable_membership(&[1, 2, 3], &[4]), &[1, 2, 4]);
     let state = state_with_recorded_certificate(certificate);
 
-    let failure =
-        check_election_history(&state, &[]).expect_err("non-voter leaders must be detected");
+    let failure = check_eligible_leader_certificates(&state, &[])
+        .expect_err("non-voter leaders must be detected");
     assert_eq!(
         failure.invariant(),
         catalog::EL_06_LEADER_HAS_VALID_ELECTION_QUORUM
@@ -725,6 +725,24 @@ fn election_certificate_rejects_non_voter_leader() {
         failure
             .message
             .contains("outside the effective voting membership"),
+        "unexpected failure message: {}",
+        failure.message
+    );
+}
+
+#[test]
+fn election_certificate_requires_stable_quorum() {
+    let certificate = election_certificate(6, 1, stable_membership(&[1, 2, 3], &[]), &[1]);
+    let state = state_with_recorded_certificate(certificate);
+
+    let failure = check_stable_election_quorums(&state, &[])
+        .expect_err("stable elections must satisfy the stable majority");
+    assert_eq!(
+        failure.invariant(),
+        catalog::EL_06_LEADER_HAS_VALID_ELECTION_QUORUM
+    );
+    assert!(
+        failure.message.contains("lacks an effective quorum"),
         "unexpected failure message: {}",
         failure.message
     );
