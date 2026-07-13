@@ -100,6 +100,10 @@ fn scheduled_profiles_run_all_evidence_and_exact_aggregates() {
         }
 
         let aggregate = job_block(&source, &format!("invariants-{profile}"));
+        assert!(
+            aggregate.contains("cargo build --locked -p rafter-maelstrom --bins"),
+            "{profile} aggregate must build the source-bound Maelstrom binaries it verifies"
+        );
         for dependency in [
             "invariants-tests",
             "invariants-simulator",
