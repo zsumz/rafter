@@ -25,12 +25,16 @@ fn independent_reports_do_not_relabel_quorum_only_as_post_heal() {
     let reports = run_feature_liveness_checks(config, &mut observed_actions)
         .expect("independent liveness monitors should complete");
 
-    assert_eq!(reports.len(), 3);
+    assert_eq!(reports.len(), 4);
     assert!(reports
         .iter()
         .all(|report| report.feature_id() != "leader-convergence"));
     assert!(reports.iter().any(|report| {
         report.feature_id() == "quorum-only-leader-convergence"
+            && report.scenario_id() == "minority-unavailable-stable-quorum-v1"
+    }));
+    assert!(reports.iter().any(|report| {
+        report.feature_id() == "quorum-only-leader-usability"
             && report.scenario_id() == "minority-unavailable-stable-quorum-v1"
     }));
 }
@@ -54,9 +58,31 @@ fn healed_soak_returns_distinct_measured_convergence_evidence() {
         .iter()
         .find(|report| report.feature_id() == "quorum-only-leader-convergence")
         .expect("independent quorum-only execution must remain distinct");
+    let post_heal_usability = summary
+        .liveness_reports()
+        .iter()
+        .find(|report| report.feature_id() == "leader-usability")
+        .expect("actual healed execution must emit leader-usability evidence");
+    let quorum_only_usability = summary
+        .liveness_reports()
+        .iter()
+        .find(|report| report.feature_id() == "quorum-only-leader-usability")
+        .expect("independent quorum-only usability evidence must remain distinct");
 
     assert_eq!(post_heal.scenario_id(), "post-heal-stable-quorum-v1");
     assert_eq!(post_heal.observation_id(), "post_heal_quiescent_leaders");
+    assert_eq!(
+        post_heal.to_json()["clause_ids"],
+        serde_json::json!(["LV-01.a"])
+    );
+    assert_eq!(
+        post_heal_usability.to_json()["clause_ids"],
+        serde_json::json!(["LV-01.b"])
+    );
+    assert_eq!(
+        quorum_only_usability.to_json()["clause_ids"],
+        serde_json::json!(["LV-01.b"])
+    );
     assert_ne!(post_heal.scenario_id(), quorum_only.scenario_id());
     assert!(summary
         .observed_actions()
@@ -219,7 +245,7 @@ fn optional_features_use_fresh_fixtures_and_emit_honest_evidence() {
     )
     .expect("fresh optional feature fixtures should all complete");
 
-    assert_eq!(summary.liveness_reports().len(), 8);
+    assert_eq!(summary.liveness_reports().len(), 10);
     for report in summary.liveness_reports() {
         report
             .validate_structure()
