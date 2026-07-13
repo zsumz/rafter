@@ -4,6 +4,7 @@ use crate::catalog::{
     CatalogError, ClauseDescriptor, EvidenceDescriptor, InvariantDescriptor, SimulatorIdentity,
     TestIdentity,
 };
+use crate::types::SimulatorLivenessContract;
 
 pub(super) fn parse_registry_schema_version(source: &str) -> Result<u32, CatalogError> {
     source
@@ -150,6 +151,11 @@ fn parse_simulator_identity(
     } else {
         None
     };
+    let liveness_report = record
+        .get("required_liveness_feature")
+        .cloned()
+        .map(|feature_id| parse_liveness_contract(feature_id, required))
+        .transpose()?;
     let identity = SimulatorIdentity {
         checks,
         required_observation: required("required_observation")?,
@@ -158,14 +164,31 @@ fn parse_simulator_identity(
         minimum_verifier_states: optional_usize(record, "minimum_verifier_states")?,
         minimum_runs_per_check: optional_usize(record, "minimum_runs_per_check")?,
         minimum_steps: optional_usize(record, "minimum_steps")?,
-        required_liveness_feature: record.get("required_liveness_feature").cloned(),
+        liveness_report,
         negative_test,
     };
-    let safety = identity.required_liveness_feature.is_none()
+    let safety = identity.liveness_report.is_none()
         && identity.minimum_protocol_states.is_some()
         && identity.minimum_verifier_states.is_some();
-    let liveness = identity.required_liveness_feature.is_some()
-        && identity.minimum_runs_per_check.is_some()
+    let liveness = identity.liveness_report.as_ref().is_some_and(|contract| {
+        contract.invariant_id == record.get("id").cloned().unwrap_or_default()
+            && !contract.clause_ids.is_empty()
+            && split_list(
+                record
+                    .get("clauses")
+                    .map(String::as_str)
+                    .unwrap_or_default(),
+            ) == contract.clause_ids
+            && contract.observation_id == identity.required_observation
+            && !contract.feature_id.is_empty()
+            && !contract.scenario_id.is_empty()
+            && !contract.fairness_policy_id.is_empty()
+            && contract.round_budget_provenance == "liveness-round-budget-v1"
+            && matches!(
+                contract.stable_leader_rounds_relation.as_str(),
+                "none" | "exact" | "probe-rounds"
+            )
+    }) && identity.minimum_runs_per_check.is_some()
         && identity.minimum_steps.is_some();
     if identity.checks.is_empty() || identity.minimum_observation == 0 || !(safety || liveness) {
         return Err(CatalogError(
@@ -173,6 +196,49 @@ fn parse_simulator_identity(
         ));
     }
     Ok(identity)
+}
+
+fn parse_liveness_contract(
+    feature_id: String,
+    required: &impl Fn(&str) -> Result<String, CatalogError>,
+) -> Result<SimulatorLivenessContract, CatalogError> {
+    Ok(SimulatorLivenessContract {
+        invariant_id: required("required_liveness_invariant")?,
+        clause_ids: split_list(&required("required_liveness_clauses")?),
+        feature_id,
+        scenario_id: required("required_liveness_scenario")?,
+        observation_id: required("required_observation")?,
+        fault_requirement: required("liveness_fault_requirement")?,
+        stable_leader_retained: parse_optional_bool(&required("liveness_stable_leader_retained")?)?,
+        stable_leader_rounds_minimum: parse_optional_u64(&required(
+            "liveness_stable_leader_rounds_minimum",
+        )?)?,
+        stable_leader_rounds_exact: parse_optional_u64(&required(
+            "liveness_stable_leader_rounds_exact",
+        )?)?,
+        stable_leader_rounds_relation: required("liveness_stable_leader_rounds_relation")?,
+        proposal_outcome: required("liveness_proposal_outcome")?,
+        authority_loss_required: parse_bool(&required("liveness_authority_loss_required")?)?,
+        fault_cycle_required: parse_bool(&required("liveness_fault_cycle_required")?)?,
+        fairness_policy_id: required("liveness_fairness_policy")?,
+        fairness_tick_bound_rounds: parse_u64(&required("liveness_tick_bound_rounds")?)?,
+        fairness_delivery_bound_rounds: parse_u64(&required("liveness_delivery_bound_rounds")?)?,
+        fairness_max_delivery_waves_per_tick: parse_u64(&required(
+            "liveness_max_delivery_waves_per_tick",
+        )?)?,
+        round_budget_provenance: required("liveness_round_budget_provenance")?,
+        minimum_rounds: parse_u64(&required("liveness_minimum_rounds")?)?,
+        rounds_per_node: parse_u64(&required("liveness_rounds_per_node")?)?,
+        rounds_per_queued_message: parse_u64(&required("liveness_rounds_per_queued_message")?)?,
+        rounds_per_proposal: parse_u64(&required("liveness_rounds_per_proposal")?)?,
+        rounds_per_membership_change: parse_u64(&required(
+            "liveness_rounds_per_membership_change",
+        )?)?,
+        rounds_per_partition: parse_u64(&required("liveness_rounds_per_partition")?)?,
+        snapshot_catchup_rounds: parse_u64(&required("liveness_snapshot_catchup_rounds")?)?,
+        phase_count: parse_u64(&required("liveness_phase_count")?)?,
+        fixed_rounds: parse_u64(&required("liveness_fixed_rounds")?)?,
+    })
 }
 
 fn optional_usize(
@@ -191,6 +257,12 @@ fn parse_usize(value: &str) -> Result<usize, CatalogError> {
         .map_err(|error| CatalogError(format!("invalid integer {value}: {error}")))
 }
 
+fn parse_u64(value: &str) -> Result<u64, CatalogError> {
+    value
+        .parse()
+        .map_err(|error| CatalogError(format!("invalid integer {value}: {error}")))
+}
+
 fn parse_u32(value: &str) -> Result<u32, CatalogError> {
     value
         .parse()
@@ -203,6 +275,29 @@ fn parse_bool(value: &str) -> Result<bool, CatalogError> {
         "false" => Ok(false),
         _ => Err(CatalogError(format!("invalid boolean {value}"))),
     }
+}
+
+fn parse_optional_bool(value: &str) -> Result<Option<bool>, CatalogError> {
+    match value {
+        "none" => Ok(None),
+        _ => parse_bool(value).map(Some),
+    }
+}
+
+fn parse_optional_u64(value: &str) -> Result<Option<u64>, CatalogError> {
+    match value {
+        "none" => Ok(None),
+        _ => parse_u64(value).map(Some),
+    }
+}
+
+fn split_list(value: &str) -> Vec<String> {
+    value
+        .split(',')
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 fn required_field<'a>(
