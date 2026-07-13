@@ -19,7 +19,15 @@ pub(super) struct SimulatorExecution {
     pub artifacts: Vec<ArtifactRef>,
     pub peak_rss_kib: u64,
     pub duration_ms: u64,
+    pub build_duration_ms: u64,
     pub processes_succeeded: bool,
+}
+
+struct SimulatorBuild {
+    binary: PathBuf,
+    artifacts: Vec<ArtifactRef>,
+    peak_rss_kib: u64,
+    duration_ms: u64,
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -33,7 +41,9 @@ pub(super) fn execute(
     source_ref: &str,
     output_dir: &Path,
 ) -> Result<SimulatorExecution, Box<dyn Error>> {
-    let (binary, mut artifacts, build_peak) = build(profile, source_ref, output_dir)?;
+    let build = build(profile, source_ref, output_dir)?;
+    let binary = build.binary;
+    let mut artifacts = build.artifacts;
     let binary_artifact = artifact::capture(
         output_dir,
         Path::new(&format!("{profile}-simulator/inputs")),
@@ -42,7 +52,7 @@ pub(super) fn execute(
     )?;
     artifacts.push(binary_artifact);
     let mut events = BTreeMap::<String, Vec<Value>>::new();
-    let mut peak_rss_kib = build_peak;
+    let mut peak_rss_kib = build.peak_rss_kib;
     let mut duration_ms = 0_u64;
     let mut processes_succeeded = true;
     for run in execution_plan(profile, source_ref)? {
@@ -74,6 +84,7 @@ pub(super) fn execute(
         artifacts,
         peak_rss_kib,
         duration_ms,
+        build_duration_ms: build.duration_ms,
         processes_succeeded,
     })
 }
@@ -118,20 +129,29 @@ fn source_derived_seeds(profile: &str, source_ref: &str, count: usize) -> String
         .join(",")
 }
 
+pub(crate) fn expected_scheduled_seeds_with_count(
+    profile: &str,
+    source_ref: &str,
+    count: usize,
+) -> Option<String> {
+    matches!(profile, "nightly" | "weekly")
+        .then(|| source_derived_seeds(profile, source_ref, count))
+}
+
 pub(crate) fn expected_scheduled_seeds(profile: &str, source_ref: &str) -> Option<String> {
     let count = match profile {
         "nightly" => 6,
         "weekly" => 10,
         _ => return None,
     };
-    Some(source_derived_seeds(profile, source_ref, count))
+    expected_scheduled_seeds_with_count(profile, source_ref, count)
 }
 
 fn build(
     profile: &str,
     source_ref: &str,
     output_dir: &Path,
-) -> Result<(PathBuf, Vec<ArtifactRef>, u64), Box<dyn Error>> {
+) -> Result<SimulatorBuild, Box<dyn Error>> {
     let source_prefix = source_ref.get(..12).unwrap_or(source_ref);
     let target_dir = Path::new("target/rafter-invariants/simulator-build")
         .join(source_prefix)
@@ -166,7 +186,12 @@ fn build(
         return Err("simulator release build failed".into());
     }
     let binary = executable_from_messages(&output.stdout)?;
-    Ok((binary, vec![log], output.peak_rss_kib))
+    Ok(SimulatorBuild {
+        binary,
+        artifacts: vec![log],
+        peak_rss_kib: output.peak_rss_kib,
+        duration_ms: process::duration_ms(output.duration),
+    })
 }
 
 fn executable_from_messages(bytes: &[u8]) -> Result<PathBuf, Box<dyn Error>> {

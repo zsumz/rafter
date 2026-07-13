@@ -15,6 +15,8 @@ pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), Aggregate
     for input in [
         &bundle.execution.plan.registry,
         &bundle.execution.plan.manifest,
+        &bundle.execution.plan.result_schema,
+        &bundle.execution.plan.verdict_schema,
     ] {
         crate::plan::verify_plan_input(input, root).map_err(|error| {
             AggregateError::new(format!(
@@ -60,6 +62,8 @@ pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), Aggregate
             )));
         }
     }
+    verify_producer_invocation_paths(bundle, root)?;
+    verify_resource_metrics(bundle, root)?;
     verify_compile_invocations(bundle, root)?;
     match bundle.runner.as_str() {
         "tests" => verify_test_logs(bundle, root),
@@ -68,6 +72,186 @@ pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), Aggregate
         "maelstrom" => crate::artifact_verify_maelstrom::verify(bundle, root),
         _ => Ok(()),
     }
+}
+
+fn verify_producer_invocation_paths(
+    bundle: &ResultBundle,
+    root: &Path,
+) -> Result<(), AggregateError> {
+    let repository = fs::canonicalize(root)
+        .map_err(|error| AggregateError::new(format!("canonicalize producer root: {error}")))?;
+    let current_dir =
+        fs::canonicalize(&bundle.execution.invocation.current_dir).map_err(|error| {
+            AggregateError::new(format!("canonicalize producer working directory: {error}"))
+        })?;
+    if current_dir != repository {
+        return Err(AggregateError::new(
+            "producer working directory does not match the canonical source checkout".to_owned(),
+        ));
+    }
+    let program = fs::canonicalize(&bundle.execution.invocation.program)
+        .map_err(|error| AggregateError::new(format!("canonicalize producer program: {error}")))?;
+    if !program.starts_with(&repository) {
+        return Err(AggregateError::new(
+            "producer program is outside the canonical source checkout".to_owned(),
+        ));
+    }
+    let binaries = bundle
+        .execution
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == "producer-binary")
+        .collect::<Vec<_>>();
+    let [binary] = binaries.as_slice() else {
+        return Err(AggregateError::new(
+            "producer invocation requires exactly one preserved binary".to_owned(),
+        ));
+    };
+    let program_digest =
+        format!(
+            "{:x}",
+            Sha256::digest(fs::read(program).map_err(|error| {
+                AggregateError::new(format!("read producer program: {error}"))
+            })?)
+        );
+    if program_digest != binary.sha256
+        || program_digest != bundle.execution.invocation.program_sha256
+    {
+        return Err(AggregateError::new(
+            "claimed producer program does not match the preserved producer binary".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn verify_resource_metrics(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateError> {
+    for check in &bundle.execution.checks {
+        let artifacts = check_metric_artifacts(&bundle.runner, &check.artifacts);
+        let derived = derive_process_metrics(artifacts.into_iter(), root)?;
+        if check.duration_ms != derived.duration_ms || check.peak_rss_kib != derived.peak_rss_kib {
+            return Err(AggregateError::new(format!(
+                "check resource metrics disagree with hashed process logs for {}",
+                check.check_id
+            )));
+        }
+    }
+
+    let artifacts = bundle
+        .execution
+        .artifacts
+        .iter()
+        .chain(
+            bundle
+                .execution
+                .checks
+                .iter()
+                .flat_map(|check| check.artifacts.iter()),
+        )
+        .filter(|artifact| is_process_log_kind(&artifact.kind));
+    let derived = derive_process_metrics(artifacts, root)?;
+    let duration_matches = if bundle.runner == "tla" {
+        let maximum_overhead = derived.duration_ms / 10 + 300_000;
+        bundle.execution.duration_ms >= derived.duration_ms
+            && bundle.execution.duration_ms <= derived.duration_ms.saturating_add(maximum_overhead)
+    } else {
+        bundle.execution.duration_ms == derived.duration_ms
+    };
+    if !duration_matches || bundle.execution.peak_rss_kib != derived.peak_rss_kib {
+        return Err(AggregateError::new(
+            "execution resource metrics disagree with hashed process logs".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn check_metric_artifacts<'a>(
+    runner: &str,
+    artifacts: &'a [crate::ArtifactRef],
+) -> Vec<&'a crate::ArtifactRef> {
+    let has_runtime = artifacts.iter().any(|artifact| {
+        matches!(
+            artifact.kind.as_str(),
+            "test-log" | "simulator-log" | "maelstrom-process-log"
+        ) || is_tla_process_log(&artifact.kind)
+    });
+    artifacts
+        .iter()
+        .filter(|artifact| {
+            is_process_log_kind(&artifact.kind)
+                && (runner == "tla" || artifact.kind != "compile-log" || !has_runtime)
+        })
+        .collect()
+}
+
+fn derive_process_metrics<'a>(
+    artifacts: impl Iterator<Item = &'a crate::ArtifactRef>,
+    root: &Path,
+) -> Result<crate::producer::process::ProcessMetrics, AggregateError> {
+    let mut duration_ms = 0_u64;
+    let mut peak_rss_kib = 0_u64;
+    let mut paths = BTreeSet::new();
+    for artifact in artifacts {
+        if !paths.insert(artifact.path.as_str()) {
+            continue;
+        }
+        let bytes = fs::read(root.join(&artifact.path)).map_err(|error| {
+            AggregateError::new(format!("read process log {}: {error}", artifact.path))
+        })?;
+        let metrics = process_log_metrics(&artifact.kind, &bytes).map_err(|error| {
+            AggregateError::new(format!("parse process log {}: {error}", artifact.path))
+        })?;
+        for metric in metrics {
+            duration_ms = duration_ms.checked_add(metric.duration_ms).ok_or_else(|| {
+                AggregateError::new("process duration total overflowed".to_owned())
+            })?;
+            peak_rss_kib = peak_rss_kib.max(metric.peak_rss_kib);
+        }
+    }
+    if paths.is_empty() || peak_rss_kib == 0 {
+        return Err(AggregateError::new(
+            "receipt has no measurable hashed process logs".to_owned(),
+        ));
+    }
+    Ok(crate::producer::process::ProcessMetrics {
+        duration_ms,
+        peak_rss_kib,
+    })
+}
+
+fn process_log_metrics(
+    kind: &str,
+    bytes: &[u8],
+) -> Result<Vec<crate::producer::process::ProcessMetrics>, String> {
+    if matches!(kind, "compile-log" | "test-log" | "simulator-log") {
+        let source = std::str::from_utf8(bytes)
+            .map_err(|error| format!("combined process log is not UTF-8: {error}"))?;
+        return crate::producer::process::parse_combined_processes(source).map(|processes| {
+            processes
+                .into_iter()
+                .map(|process| process.metrics)
+                .collect()
+        });
+    }
+    let process: crate::producer::ProcessLog =
+        serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    if process.peak_rss_kib == 0 {
+        return Err("structured process log omitted peak RSS".to_owned());
+    }
+    Ok(vec![crate::producer::process::ProcessMetrics {
+        duration_ms: process.duration_ms,
+        peak_rss_kib: process.peak_rss_kib,
+    }])
+}
+
+fn is_process_log_kind(kind: &str) -> bool {
+    matches!(
+        kind,
+        "compile-log" | "test-log" | "simulator-log" | "maelstrom-process-log"
+    ) || is_tla_process_log(kind)
+}
+
+fn is_tla_process_log(kind: &str) -> bool {
+    matches!(kind, "tla-log" | "tla-trace-log") || kind.starts_with("tla-detector-log")
 }
 
 fn verify_compile_invocations(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateError> {
@@ -309,6 +493,20 @@ fn verify_simulator_logs(bundle: &ResultBundle, root: &Path) -> Result<(), Aggre
 }
 
 fn verify_simulator_schedule(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateError> {
+    let configuration = bundle
+        .execution
+        .plan
+        .contract
+        .runners
+        .get("simulator")
+        .ok_or_else(|| AggregateError::new("simulator runner contract is missing".to_owned()))?
+        .simulator_configuration()
+        .map_err(|error| {
+            AggregateError::new(format!("parse typed simulator runner contract: {error}"))
+        })?;
+    configuration
+        .validate_profile(&bundle.profile)
+        .map_err(|error| AggregateError::new(format!("validate simulator contract: {error}")))?;
     let logs = bundle
         .execution
         .artifacts
@@ -327,7 +525,12 @@ fn verify_simulator_schedule(bundle: &ResultBundle, root: &Path) -> Result<(), A
         })
         .collect::<Result<Vec<_>, _>>()?;
     verify_simulator_invocations(bundle, root, &sources)?;
-    validate_simulator_schedule(&bundle.profile, &bundle.source_ref, &sources)
+    validate_simulator_schedule(
+        &bundle.profile,
+        &bundle.source_ref,
+        &configuration,
+        &sources,
+    )
 }
 
 fn verify_test_invocations(
@@ -559,12 +762,18 @@ fn verify_simulator_invocations(
 fn validate_simulator_schedule(
     profile: &str,
     source_ref: &str,
+    configuration: &crate::catalog::SimulatorRunnerConfiguration,
     logs: &[String],
 ) -> Result<(), AggregateError> {
     if profile == "pr" {
-        return validate_pr_soak_schedule(logs);
+        return validate_pr_soak_schedule(configuration, logs);
     }
-    let Some(expected_seeds) = crate::producer::expected_scheduled_seeds(profile, source_ref)
+    let seed_count = configuration
+        .seed_count
+        .and_then(|count| usize::try_from(count).ok())
+        .ok_or_else(|| AggregateError::new("scheduled seed count is missing".to_owned()))?;
+    let Some(expected_seeds) =
+        crate::producer::expected_scheduled_seeds_with_count(profile, source_ref, seed_count)
     else {
         return Ok(());
     };
@@ -584,8 +793,13 @@ fn validate_simulator_schedule(
             .lines()
             .any(|line| line.starts_with(&expected_profile))
         || !logs[0].lines().any(|line| line == expected_seed_line)
-        || !profile_total_is_rederived(profile, &model_profile, &events)
-        || !soak_seeds_are_rederived(&model_profile, &expected_seeds, &events)
+        || !profile_total_is_rederived(&model_profile, &configuration.state_floors, &events)
+        || !soak_seeds_are_rederived(
+            &model_profile,
+            &expected_seeds,
+            configuration.soak_steps,
+            &events,
+        )
     {
         return Err(AggregateError::new(format!(
             "scheduled simulator log does not prove the source-derived {profile} execution plan"
@@ -594,7 +808,10 @@ fn validate_simulator_schedule(
     Ok(())
 }
 
-fn validate_pr_soak_schedule(logs: &[String]) -> Result<(), AggregateError> {
+fn validate_pr_soak_schedule(
+    configuration: &crate::catalog::SimulatorRunnerConfiguration,
+    logs: &[String],
+) -> Result<(), AggregateError> {
     const EXPECTED_SEEDS: &str = "0x9103,0x9104,0x9105,0x9106";
     if logs.len() != 2 {
         return Err(AggregateError::new(format!(
@@ -616,7 +833,9 @@ fn validate_pr_soak_schedule(logs: &[String]) -> Result<(), AggregateError> {
         .into_iter()
         .flatten()
         .collect::<Vec<_>>();
-    if seed_line_count != 1 || !soak_seeds_are_rederived("raft", EXPECTED_SEEDS, &events) {
+    if seed_line_count != 1
+        || !soak_seeds_are_rederived("raft", EXPECTED_SEEDS, configuration.soak_steps, &events)
+    {
         return Err(AggregateError::new(
             "PR simulator log does not prove the exact reviewed soak seed inventory".to_owned(),
         ));
@@ -635,11 +854,16 @@ fn parse_machine_events(log: &str) -> Result<Vec<Value>, AggregateError> {
         .collect()
 }
 
-fn profile_total_is_rederived(profile: &str, model_profile: &str, events: &[Value]) -> bool {
-    let (protocol_floor, verifier_floor) = match profile {
-        "nightly" => (100_000_000, 100_000_000),
-        "weekly" => (250_000_000, 250_000_000),
-        _ => return false,
+fn profile_total_is_rederived(
+    model_profile: &str,
+    state_floors: &crate::catalog::SimulatorStateFloors,
+    events: &[Value],
+) -> bool {
+    let (protocol_floor, verifier_floor) = match state_floors {
+        crate::catalog::SimulatorStateFloors::Aggregate { protocol, verifier } => {
+            (*protocol, *verifier)
+        }
+        crate::catalog::SimulatorStateFloors::PerEvidence => return false,
     };
     let exhaustive = events
         .iter()
@@ -671,7 +895,12 @@ fn profile_total_is_rederived(profile: &str, model_profile: &str, events: &[Valu
         && verifier_total >= verifier_floor
 }
 
-fn soak_seeds_are_rederived(model_profile: &str, expected_seeds: &str, events: &[Value]) -> bool {
+fn soak_seeds_are_rederived(
+    model_profile: &str,
+    expected_seeds: &str,
+    expected_steps: u64,
+    events: &[Value],
+) -> bool {
     let expected_values = expected_seeds
         .split(',')
         .map(|seed| u64::from_str_radix(seed.trim_start_matches("0x"), 16))
@@ -694,10 +923,17 @@ fn soak_seeds_are_rederived(model_profile: &str, expected_seeds: &str, events: &
         .collect::<BTreeSet<_>>();
     let mut observed = BTreeMap::<(String, u64), usize>::new();
     for event in events.iter().filter(|event| event["event"] == "soak-check") {
-        let (Some(check), Some(seed)) = (event["check_id"].as_str(), event["seed"].as_u64()) else {
+        let (Some(check), Some(seed), Some(steps)) = (
+            event["check_id"].as_str(),
+            event["seed"].as_u64(),
+            event["steps"].as_u64(),
+        ) else {
             return false;
         };
-        if event["status"] != "pass" || !check.starts_with(&format!("{model_profile}-soak")) {
+        if event["status"] != "pass"
+            || steps != expected_steps
+            || !check.starts_with(&format!("{model_profile}-soak"))
+        {
             return false;
         }
         *observed.entry((check.to_owned(), seed)).or_default() += 1;

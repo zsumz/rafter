@@ -52,6 +52,8 @@ impl ExecutionPlan {
             profile: options.profile.clone(),
             registry: plan_input(&options.registry)?,
             manifest: plan_input(&options.manifest)?,
+            result_schema: plan_input(Path::new("verification/invariant-result-schema.json"))?,
+            verdict_schema: plan_input(Path::new("verification/invariant-verdict-schema.json"))?,
             contract,
         };
         Ok(Self {
@@ -102,7 +104,7 @@ fn capture_invocation_from(mut argv: Vec<OsString>) -> Result<InvocationReceipt,
     if argv.is_empty() {
         return Err("invariant invocation omitted argv[0]".into());
     }
-    let program = argv
+    let _argv_zero = argv
         .remove(0)
         .into_string()
         .map_err(|_| "invariant program path is not UTF-8")?;
@@ -120,7 +122,11 @@ fn capture_invocation_from(mut argv: Vec<OsString>) -> Result<InvocationReceipt,
         .map_err(|_| "invariant working directory is not UTF-8")?;
     let environment = safe_environment();
     let environment_sha256 = digest_environment(&environment);
-    let program_sha256 = format!("{:x}", Sha256::digest(fs::read(env::current_exe()?)?));
+    let program = fs::canonicalize(env::current_exe()?)?
+        .into_os_string()
+        .into_string()
+        .map_err(|_| "invariant executable path is not UTF-8")?;
+    let program_sha256 = format!("{:x}", Sha256::digest(fs::read(&program)?));
     Ok(InvocationReceipt {
         program,
         program_sha256,
@@ -227,7 +233,12 @@ mod tests {
             OsString::from("pr"),
         ])
         .expect("invocation captures");
-        assert_eq!(receipt.program, "target/debug/rafter-invariants");
+        assert_eq!(
+            receipt.program,
+            std::fs::canonicalize(std::env::current_exe().expect("current executable"))
+                .expect("current executable canonicalizes")
+                .to_string_lossy()
+        );
         assert_eq!(receipt.arguments, ["run", "--profile", "pr"]);
         assert_eq!(receipt.environment_sha256.len(), 64);
     }

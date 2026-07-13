@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, error::Error, path::Path, time::Instant};
+use std::{collections::BTreeMap, error::Error, path::Path};
 
 use crate::types::RESULT_SCHEMA_VERSION;
 use crate::{
@@ -12,7 +12,7 @@ use super::{
     maelstrom_edn::Validity,
     maelstrom_exec::{run_trial, LeaseTranscriptStatus, Scenario, ScenarioMarkers, TrialOutcome},
     maelstrom_scenario::{required_configuration, scenario_for},
-    process, source, ProducerContext,
+    source, ProducerContext,
 };
 
 pub(super) fn run(
@@ -23,7 +23,6 @@ pub(super) fn run(
     output_dir: &Path,
     context: &ProducerContext<'_>,
 ) -> Result<ResultBundle, Box<dyn Error>> {
-    let started = Instant::now();
     let runner = contract
         .runners
         .get("maelstrom")
@@ -99,6 +98,7 @@ pub(super) fn run(
     }
     bind_counterexamples(&mut checks, &mut results)?;
     source::verify(&source)?;
+    let execution_duration_ms = checks.iter().map(|check| check.duration_ms).sum();
     Ok(ResultBundle {
         schema_version: RESULT_SCHEMA_VERSION,
         runner: "maelstrom".to_owned(),
@@ -109,7 +109,7 @@ pub(super) fn run(
             invocation: context.invocation.clone(),
             source,
             checks,
-            duration_ms: process::duration_ms(started.elapsed()),
+            duration_ms: execution_duration_ms,
             peak_rss_kib,
             artifacts: execution_artifacts,
         },

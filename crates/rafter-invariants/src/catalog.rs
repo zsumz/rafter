@@ -13,17 +13,19 @@ use crate::types::SimulatorLivenessContract;
 
 mod liveness;
 mod liveness_validation;
+mod simulator_contract;
 
 pub(crate) use liveness::{
     derive_liveness_binding, execution_contract_digest, expected_execution_contract,
     liveness_contract_digest, liveness_reports_digest,
 };
+pub(crate) use simulator_contract::{SimulatorRunnerConfiguration, SimulatorStateFloors};
 
 #[cfg(test)]
 pub(crate) mod liveness_report_tests;
 
 const REGISTRY_SCHEMA_VERSION: u32 = 3;
-const PROFILE_SCHEMA_VERSION: u32 = 2;
+const PROFILE_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Debug)]
 /// Reviewed invariant IDs and their declared executable evidence.
@@ -403,8 +405,28 @@ impl ProfileManifest {
                         "profile {profile} runner {layer} has an incomplete execution contract"
                     )));
                 }
+                if layer == "simulator" {
+                    let configuration = runner.simulator_configuration().map_err(|error| {
+                        CatalogError(format!(
+                            "profile {profile} runner simulator has an invalid typed contract: {error}"
+                        ))
+                    })?;
+                    configuration.validate_profile(profile).map_err(|error| {
+                        CatalogError(format!(
+                            "profile {profile} runner simulator has an invalid typed contract: {error}"
+                        ))
+                    })?;
+                }
             }
         }
         Ok(())
+    }
+}
+
+impl RunnerContract {
+    pub(crate) fn simulator_configuration(
+        &self,
+    ) -> Result<SimulatorRunnerConfiguration, serde_json::Error> {
+        serde_json::from_value(serde_json::to_value(&self.configuration)?)
     }
 }

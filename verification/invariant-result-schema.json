@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "runner", "profile", "source_ref", "execution", "results"],
   "properties": {
-    "schema_version": { "const": 9 },
+    "schema_version": { "const": 10 },
     "runner": { "enum": ["tests", "simulator", "tla", "maelstrom"] },
     "profile": { "enum": ["pr", "nightly", "weekly"] },
     "source_ref": { "type": "string", "minLength": 1 },
@@ -44,12 +44,14 @@
     "plan": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["schema_version", "profile", "registry", "manifest", "contract"],
+      "required": ["schema_version", "profile", "registry", "manifest", "result_schema", "verdict_schema", "contract"],
       "properties": {
-        "schema_version": { "const": 1 },
+        "schema_version": { "const": 2 },
         "profile": { "enum": ["pr", "nightly", "weekly"] },
         "registry": { "$ref": "#/$defs/plan_input" },
         "manifest": { "$ref": "#/$defs/plan_input" },
+        "result_schema": { "$ref": "#/$defs/plan_input" },
+        "verdict_schema": { "$ref": "#/$defs/plan_input" },
         "contract": { "$ref": "#/$defs/profile_contract" }
       }
     },

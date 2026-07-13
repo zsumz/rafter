@@ -18,6 +18,7 @@ mod receipt_tla;
 mod registry_parse;
 mod render;
 mod run_all;
+mod schema;
 mod types;
 
 pub use aggregate::{
