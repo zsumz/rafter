@@ -543,7 +543,7 @@ fn detector_fixtures_have_distinct_evidence_ids() {
             )
         })
         .collect::<std::collections::BTreeSet<_>>();
-    assert_eq!(physical_checks.len(), 53);
+    assert_eq!(physical_checks.len(), 54);
 }
 
 #[test]
