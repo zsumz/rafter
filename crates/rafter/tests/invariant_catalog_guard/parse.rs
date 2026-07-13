@@ -224,6 +224,7 @@ fn set_evidence_field(record: &mut Evidence, key: &str, value: String) {
         "strength" => record.strength = value,
         "path" => record.path = value,
         "symbol" => record.symbol = value,
+        "atomic_group" => record.atomic_group = Some(value),
         "negative_fixture" => record.negative_fixture = Some(value),
         "negative_fixture_path" => record.negative_fixture_path = Some(value),
         "negative_fixture_detector" => record.negative_fixture_detector = Some(value),
