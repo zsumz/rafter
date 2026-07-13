@@ -1,8 +1,6 @@
 use std::collections::BTreeMap;
 
-use rafter::{
-    CommittedConfiguration, LogEntry, LogIndex, MembershipConfig, NodeId, Role, SharedPayload, Term,
-};
+use rafter::{CommittedConfiguration, LogEntry, LogIndex, MembershipConfig, NodeId, Role, Term};
 
 use crate::Cluster;
 
@@ -16,8 +14,9 @@ use super::state::{ClientReadOutcome, ClientWriteStatus};
 use super::state::{ExplorationState, RestartSnapshotState};
 use super::{Action, Failure, ReplayCheck};
 use applied::{
-    check_applied_order, check_applied_payload_agreement, check_forbidden_applied_payloads,
-    check_internal_derived_state, check_required_applied_payloads,
+    check_applied_order, check_applied_payload_agreement, check_execution_history_agreement,
+    check_forbidden_applied_payloads, check_internal_derived_state,
+    check_required_applied_payloads,
 };
 pub(super) use client::check_read_barrier_safety;
 use client::{check_client_history_linearizability, check_client_history_read_write_invariants};
@@ -49,6 +48,7 @@ pub(super) fn check_commit_safety(
     check_internal_derived_state(state.cluster(), trace)?;
     check_commit_index_monotonicity(state, trace)?;
     check_committed_configuration_monotonicity(state, trace)?;
+    check_execution_history_agreement(state, trace)?;
     check_applied_payload_agreement(state.cluster(), trace)?;
     check_applied_order(state.cluster(), trace)?;
     check_snapshot_log_geometry(state.cluster(), trace)?;

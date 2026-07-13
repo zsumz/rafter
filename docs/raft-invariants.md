@@ -196,8 +196,16 @@ named temporal or witness-based verdicts.
 | `AP-01` | `AP-01.c` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/application_epoch.rs#applied_order_detects_apply_before_commit` |
 | `AP-01` | `AP-01.d` | tests | direct | `crates/rafter/src/node/tests/bootstrap/application.rs#committed_entries_above_applied_floor_drain_immediately_after_bootstrap` |
 | `AP-02` | `AP-02.a,AP-02.b` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
-| `AP-02` | `AP-02.a,AP-02.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants.rs#check_applied_payload_agreement`; negative fixture `replayed_index_must_match_prior_command_across_epochs` |
-| `AP-02` | `AP-02.a,AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/applied_agreement.rs#applied_agreement_detects_disagreeing_snapshots_at_same_boundary` |
+| `AP-02` | `AP-02.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/applied.rs#check_execution_history_agreement`; negative fixture `replayed_index_must_match_prior_command_across_epochs` |
+| `AP-02` | `AP-02.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/applied.rs#check_execution_history_agreement`; negative fixture `execution_agreement_detects_mismatched_configuration_application` |
+| `AP-02` | `AP-02.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/applied.rs#check_execution_history_agreement`; negative fixture `execution_agreement_detects_broken_configuration_result` |
+| `AP-02` | `AP-02.a` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/application_epoch.rs#replayed_index_must_match_prior_command_across_epochs` |
+| `AP-02` | `AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/application_epoch.rs#full_prefix_application_replay_matches_snapshot_anchored_replay` |
+| `AP-02` | `AP-02.a` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/applied_agreement.rs#execution_agreement_detects_mismatched_configuration_application` |
+| `AP-02` | `AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/applied_agreement.rs#execution_agreement_detects_mismatched_reference_result` |
+| `AP-02` | `AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/applied_agreement.rs#execution_agreement_detects_broken_configuration_result` |
+| `AP-02` | `AP-02.a,AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/state/application_history.rs#same_node_replay_does_not_qualify_cross_replica_coverage` |
+| `AP-02` | `AP-02.a,AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/state/application_history.rs#distinct_nodes_qualify_each_execution_witness_class` |
 | `AP-02` | `AP-02.a,AP-02.b` | tla | direct | `specs/tla/raft/Raft.tla#StateMachineSafety` |
 | `MB-01` | `MB-01.a,MB-01.b,MB-01.c,MB-01.d` | tests | direct | `crates/rafter/tests/properties.rs#membership_constructor_validation_matches_the_documented_invariant` |
 | `MB-02` | `MB-02.a,MB-02.b,MB-02.c` | tests | direct | `crates/rafter/tests/properties.rs#membership_joint_quorum_holds_iff_both_half_majorities_hold` |
@@ -261,8 +269,10 @@ named temporal or witness-based verdicts.
 | `PS-03` | `PS-03.a,PS-03.b,PS-03.c,PS-03.d,PS-03.e` | tests | direct | `crates/rafter-sim/src/model_check/tests/soak/core.rs#ordinary_restart_preserves_durable_state_digest` |
 | `PS-04` | `PS-04.a,PS-04.b` | maelstrom | e2e | `scripts/maelstrom-lin-kv-app-persist-crash#RAFTER_MAELSTROM_CRASH_AFTER_APP_PERSIST_ONCE` |
 | `PS-04` | `PS-04.a,PS-04.b,PS-04.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_applied_floor_recovery`; negative fixture `applied_floor_recovery_rejects_replay_at_or_below_floor` |
-| `PS-04` | `PS-04.c` | tests | direct | `crates/rafter-maelstrom/src/app/tests.rs#persisted_app_state_round_trips_applied_floor` |
-| `PS-04` | `PS-04.a,PS-04.b` | tests | direct | `crates/rafter-maelstrom/src/app/tests.rs#app_persist_crash_point_fires_once_per_root` |
+| `PS-04` | `PS-04.a,PS-04.b` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests.rs#ps04_app_persist_interrupt_reopens_at_durable_floor_and_replays_suffix_once` |
+| `PS-04` | `PS-04.c` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests/floor.rs#ps04_production_open_rejects_app_floor_beyond_commit` |
+| `PS-04` | `PS-04.c` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests/floor.rs#ps04_production_open_rejects_app_floor_beyond_log_coverage` |
+| `PS-04` | `PS-04.a,PS-04.b` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests/snapshot.rs#ps04_inbound_snapshot_promotion_crash_restores_snapshot_then_dispatches_suffix` |
 | `PS-04` | `PS-04.a` | tests | direct | `crates/rafter/src/node/tests/bootstrap/application.rs#applied_floor_suppresses_reapply_below_it` |
 | `SS-01` | `SS-01.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_boundary_monotonicity`; negative fixture `snapshot_boundary_monotonicity_detects_regression` |
 | `SS-01` | `SS-01.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_payload_binding`; negative fixture `snapshot_payload_binding_detects_metadata_bound_to_different_bytes` |
@@ -849,7 +859,7 @@ Statement: All replicas that apply the same log index apply the same command/con
 
 Scope: Committed application and snapshot delivery histories across application epochs.
 
-Assumptions: The application transition is deterministic; explicit application-state loss starts a new epoch without deleting execution history.
+Assumptions: Simulator evidence uses a deterministic reference application: payloads assign an opaque byte register, configuration entries replace membership plus committed configuration identity, and snapshot payload/metadata carry those same fields canonically; explicit application-state loss starts a new epoch without deleting execution history.
 
 Required clauses:
 - `AP-02.a`: Replicas applying the same logical index apply the same command or configuration payload.
@@ -857,11 +867,11 @@ Required clauses:
 
 Evidence now:
 - TLA+: D: clause-bound executable evidence; see evidence references
-- Simulator: D: clause-bound executable evidence; see evidence references
-- Tests: D: clause-bound executable evidence; see evidence references
+- Simulator: D: immutable exact-input witnesses plus independently rederived deterministic register, membership, and committed-configuration results; command, configuration, and result observations each require distinct nodes
+- Tests: D: detector-level command/configuration/result corruption fixtures, canonical full-prefix-to-snapshot replay, and positive/negative distinct-node coverage tests
 - Maelstrom: E2E: source-bound client-visible evidence; see evidence references
 
-Next (future_strengthening): Retain direct cross-node history; include configuration entries and snapshot-carried state explicitly.
+Next (future_strengthening): Retain the canonical reference-state and cross-node witness checks; replace or supplement the reference register with application-exported state digests when that runtime contract exists.
 
 ### Dynamic Membership
 
@@ -1264,7 +1274,7 @@ Evidence now:
 - Tests: D: clause-bound executable evidence; see evidence references
 - Maelstrom: E2E: source-bound client-visible evidence; see evidence references
 
-Next (future_strengthening): Retain applied-floor replay checker, app-persist crashpoint tests, and the app-persist crashpoint E2E workload.
+Next (future_strengthening): Retain direct app-persist dispatch, snapshot-gap recovery, invalid-floor rejection, and the app-persist crashpoint E2E workload.
 
 #### `SS-01` Atomic monotone snapshot state
 

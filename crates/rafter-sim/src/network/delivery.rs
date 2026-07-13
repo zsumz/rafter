@@ -1,7 +1,10 @@
-use rafter::{Input, LogIndex, NodeId, Output};
+use rafter::{CommittedConfiguration, Input, LogEntryKind, LogIndex, NodeId, Output, RaftSnapshot};
 
 use super::{Envelope, QueuedEnvelope};
-use crate::{Applied, Cluster, ReadGranted, SnapshotInstalled};
+use crate::{
+    Applied, Cluster, ExecutedLogEntry, ExecutionCursor, ExecutionWitness, ReadGranted,
+    ReferenceState, SnapshotInstalled,
+};
 
 impl Cluster {
     /// Returns the currently queued message envelopes in network order.
@@ -102,6 +105,7 @@ impl Cluster {
                     // The kernel emits the descriptor only; the content is
                     // the staged transfer completed earlier in this batch.
                     let payload = self.take_installed_snapshot_payload(from, &snapshot);
+                    self.reset_execution_cursor_to_snapshot(from, &snapshot, payload.clone());
                     let application_epoch = self.application_epoch(from);
                     self.snapshot_installs.push(SnapshotInstalled {
                         node_id: from,
@@ -162,6 +166,7 @@ impl Cluster {
                 }
             }
         }
+        self.record_execution_history(from);
         emitted
     }
 
@@ -196,6 +201,171 @@ impl Cluster {
     fn record_durable_applied(&mut self, node_id: NodeId, index: LogIndex) {
         let floor = self.durable_applied.entry(node_id).or_default();
         *floor = (*floor).max(index);
+    }
+
+    fn record_execution_history(&mut self, node_id: NodeId) {
+        self.refresh_execution_epoch(node_id);
+
+        let cursor = self
+            .execution_cursors
+            .get(&node_id)
+            .expect("every simulated node has an execution cursor")
+            .clone();
+        let applied_through = self.local_applied_index(node_id);
+        if applied_through <= cursor.applied_through {
+            return;
+        }
+
+        let first_index = cursor.applied_through.next();
+        let entries = self.log_entries_from(node_id, first_index);
+        let required = applied_through.0 - cursor.applied_through.0;
+        let required_entries = usize::try_from(required)
+            .expect("an in-memory log prefix must fit in the platform address space");
+        assert!(
+            entries.len() >= required_entries,
+            "{node_id} applied through {applied_through} without retaining entries from {first_index}"
+        );
+
+        let application_epoch = self.application_epoch(node_id);
+        let commit_index_at_emit = self.commit_index(node_id);
+        let mut state = cursor.state;
+        for (index, entry) in
+            (first_index.0..=applied_through.0).zip(entries.into_iter().take(required_entries))
+        {
+            let executed = ExecutedLogEntry {
+                index: LogIndex(index),
+                term: entry.term,
+                kind: entry.kind,
+            };
+            let prior_state = state;
+            let resulting_state = Self::apply_reference_transition(&prior_state, &executed);
+            if matches!(
+                executed.kind,
+                LogEntryKind::Application(_) | LogEntryKind::Configuration(_)
+            ) {
+                self.execution_history.push(ExecutionWitness {
+                    node_id,
+                    application_epoch,
+                    commit_index_at_emit,
+                    entry: executed,
+                    prior_state: prior_state.clone(),
+                    resulting_state: resulting_state.clone(),
+                });
+            }
+            state = resulting_state;
+        }
+
+        self.execution_cursors.insert(
+            node_id,
+            ExecutionCursor {
+                application_epoch,
+                applied_through,
+                state,
+            },
+        );
+    }
+
+    fn refresh_execution_epoch(&mut self, node_id: NodeId) {
+        let application_epoch = self.application_epoch(node_id);
+        let cursor = self
+            .execution_cursors
+            .get(&node_id)
+            .expect("every simulated node has an execution cursor");
+        let snapshot_boundary = self
+            .node(node_id)
+            .snapshot()
+            .map_or(LogIndex::ZERO, |snapshot| {
+                snapshot.metadata.last_included_index
+            });
+        if cursor.application_epoch == application_epoch
+            && cursor.applied_through >= snapshot_boundary
+        {
+            return;
+        }
+
+        let (applied_through, state) = self.node(node_id).snapshot().map_or_else(
+            || (LogIndex::ZERO, self.initial_reference_state(node_id)),
+            |snapshot| {
+                let payload = self
+                    .snapshot_payload(node_id, snapshot)
+                    .expect("restarted snapshot payload remains available")
+                    .to_vec();
+                (
+                    snapshot.metadata.last_included_index,
+                    self.snapshot_reference_state(node_id, snapshot, payload),
+                )
+            },
+        );
+        self.execution_cursors.insert(
+            node_id,
+            ExecutionCursor {
+                application_epoch,
+                applied_through,
+                state,
+            },
+        );
+    }
+
+    fn reset_execution_cursor_to_snapshot(
+        &mut self,
+        node_id: NodeId,
+        snapshot: &RaftSnapshot,
+        payload: Vec<u8>,
+    ) {
+        let state = self.snapshot_reference_state(node_id, snapshot, payload);
+        self.execution_cursors.insert(
+            node_id,
+            ExecutionCursor {
+                application_epoch: self.application_epoch(node_id),
+                applied_through: snapshot.metadata.last_included_index,
+                state,
+            },
+        );
+    }
+
+    fn initial_reference_state(&self, node_id: NodeId) -> ReferenceState {
+        self.initial_reference_states
+            .get(&node_id)
+            .expect("every simulated node has an initial reference state")
+            .clone()
+    }
+
+    fn snapshot_reference_state(
+        &self,
+        node_id: NodeId,
+        snapshot: &RaftSnapshot,
+        payload: Vec<u8>,
+    ) -> ReferenceState {
+        ReferenceState {
+            application_value: payload.into(),
+            committed_membership: snapshot
+                .metadata
+                .committed_membership()
+                .cloned()
+                .unwrap_or_else(|| self.initial_reference_state(node_id).committed_membership),
+            committed_configuration: snapshot.metadata.committed_configuration_state(),
+        }
+    }
+
+    fn apply_reference_transition(
+        prior: &ReferenceState,
+        entry: &ExecutedLogEntry,
+    ) -> ReferenceState {
+        let mut result = prior.clone();
+        match &entry.kind {
+            LogEntryKind::Application(payload) => {
+                result.application_value.clone_from(payload);
+            }
+            LogEntryKind::Configuration(configuration) => {
+                result.committed_membership = configuration.membership_config();
+                result.committed_configuration = Some(CommittedConfiguration {
+                    index: entry.index,
+                    config_id: configuration.config_id(),
+                });
+            }
+            LogEntryKind::Noop => {}
+        }
+        result
     }
 
     fn enqueue(&mut self, envelope: Envelope) {

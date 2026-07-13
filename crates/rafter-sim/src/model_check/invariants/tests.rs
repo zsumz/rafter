@@ -2,8 +2,8 @@ use std::collections::BTreeSet;
 
 use rafter::{
     AppendEntries, AppendEntriesResponse, BootstrapLogEntry, CommittedConfiguration,
-    ConfigurationEntry, ConfigurationId, LogEntry, MembershipConfig, MembershipSet, Message,
-    NodeConfig, NodeId, PendingSnapshotTransfer, PreVote, PreVoteResponse, RequestVote,
+    ConfigurationEntry, ConfigurationId, LogEntry, LogEntryKind, MembershipConfig, MembershipSet,
+    Message, NodeConfig, NodeId, PendingSnapshotTransfer, PreVote, PreVoteResponse, RequestVote,
     RequestVoteResponse, SharedEntries, SnapshotTransferId, Term,
 };
 
@@ -15,7 +15,10 @@ use super::super::state::{
     ElectionCertificate, LogPrefixWitness, LogicalLogHistory, LogicalLogView,
 };
 use super::*;
-use crate::{Applied, Cluster, DurableStateDigest, Envelope, SnapshotInstalled};
+use crate::{
+    Applied, Cluster, DurableStateDigest, Envelope, ExecutedLogEntry, ExecutionWitness,
+    ReferenceState, SnapshotInstalled,
+};
 
 fn one_node_cluster() -> Cluster {
     let config =
@@ -38,6 +41,51 @@ fn joint_membership(old: &[u64], new: &[u64]) -> MembershipConfig {
 
 fn ids(values: &[u64]) -> Vec<NodeId> {
     values.iter().copied().map(NodeId).collect()
+}
+
+fn execution_witness(
+    node_id: u64,
+    application_epoch: u64,
+    index: u64,
+    term: u64,
+    kind: LogEntryKind,
+    prior_state: ReferenceState,
+) -> ExecutionWitness {
+    let entry = ExecutedLogEntry {
+        index: LogIndex(index),
+        term: Term(term),
+        kind,
+    };
+    let mut resulting_state = prior_state.clone();
+    match &entry.kind {
+        LogEntryKind::Application(payload) => {
+            resulting_state.application_value.clone_from(payload);
+        }
+        LogEntryKind::Configuration(configuration) => {
+            resulting_state.committed_membership = configuration.membership_config();
+            resulting_state.committed_configuration = Some(CommittedConfiguration {
+                index: entry.index,
+                config_id: configuration.config_id(),
+            });
+        }
+        LogEntryKind::Noop => {}
+    }
+    ExecutionWitness {
+        node_id: NodeId(node_id),
+        application_epoch,
+        commit_index_at_emit: LogIndex(index),
+        entry,
+        prior_state,
+        resulting_state,
+    }
+}
+
+fn initial_reference_state() -> ReferenceState {
+    ReferenceState {
+        application_value: Vec::new().into(),
+        committed_membership: stable_membership(&[1, 2, 3], &[]),
+        committed_configuration: None,
+    }
 }
 
 fn grant_set(values: &[u64]) -> BTreeSet<NodeId> {

@@ -6,6 +6,7 @@ use crate::{Cluster, Envelope};
 
 #[path = "application.rs"]
 mod application;
+mod application_history;
 mod client;
 mod commit;
 mod coverage;
@@ -20,6 +21,7 @@ pub(super) use self::application::{
     apply_snapshot_bootstrap_seeds, apply_soak_action, apply_to_restart_snapshot_state,
     apply_to_state, restart_node, SnapshotBootstrapSeed,
 };
+use self::application_history::ApplicationHistory;
 use super::observations::ObservationSet;
 use client::initial_register_value;
 pub(super) use client::{ClientHistory, ClientReadOutcome, ClientWriteStatus};
@@ -50,6 +52,7 @@ pub(super) struct ExplorationState {
     lossy_restarts_issued: u64,
     commit_floor_by_node: BTreeMap<NodeId, LogIndex>,
     committed_configuration_floor_by_node: BTreeMap<NodeId, Option<CommittedConfiguration>>,
+    application_history: ApplicationHistory,
     client_history: ClientHistory,
     forbidden_applied_payloads: BTreeSet<SharedPayload>,
     required_applied_payloads: BTreeMap<(NodeId, LogIndex), SharedPayload>,
@@ -76,6 +79,7 @@ impl ExplorationState {
             .map(|(node_id, node)| (*node_id, node.committed_configuration_state()))
             .collect();
         let snapshot_history = snapshot::SnapshotHistory::from_cluster(&cluster);
+        let application_history = ApplicationHistory::from_cluster(&cluster);
         let mut state = Self {
             cluster: InstrumentedCluster::new(cluster),
             proposals_issued: 0,
@@ -87,6 +91,7 @@ impl ExplorationState {
             lossy_restarts_issued: 0,
             commit_floor_by_node,
             committed_configuration_floor_by_node,
+            application_history,
             client_history: ClientHistory::with_initial_value(initial_value),
             forbidden_applied_payloads: BTreeSet::new(),
             required_applied_payloads: BTreeMap::new(),
@@ -150,6 +155,10 @@ impl ExplorationState {
 
     pub(super) const fn client_history(&self) -> &ClientHistory {
         &self.client_history
+    }
+
+    pub(super) fn application_history(&self) -> &[crate::ExecutionWitness] {
+        self.application_history.witnesses()
     }
 
     pub(super) const fn forbidden_applied_payloads(&self) -> &BTreeSet<SharedPayload> {
@@ -263,6 +272,12 @@ impl ExplorationState {
     }
 
     #[cfg(test)]
+    pub(super) fn inject_execution_witness(&mut self, witness: crate::ExecutionWitness) {
+        self.cluster.inject_execution_witness(witness);
+        self.refresh_application_history();
+    }
+
+    #[cfg(test)]
     pub(super) fn inject_read_grant(&mut self, grant: crate::ReadGranted) {
         self.cluster.inject_read_grant(grant);
     }
@@ -324,6 +339,11 @@ impl ExplorationState {
 
     pub(super) fn refresh_log_history(&mut self) {
         let observations = self.logical_log_history.observe_cluster(&self.cluster);
+        self.observations.union_with(observations);
+    }
+
+    pub(super) fn refresh_application_history(&mut self) {
+        let observations = self.application_history.observe_cluster(&self.cluster);
         self.observations.union_with(observations);
     }
 

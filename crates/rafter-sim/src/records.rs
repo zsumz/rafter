@@ -1,5 +1,5 @@
 use rafter::{
-    BootstrapLogEntry, CommittedConfiguration, LogIndex, MembershipConfig, NodeId,
+    BootstrapLogEntry, CommittedConfiguration, LogEntryKind, LogIndex, MembershipConfig, NodeId,
     RaftSnapshotMetadata, SharedPayload, SnapshotTransferId, Term,
 };
 
@@ -11,6 +11,56 @@ pub struct Applied {
     pub commit_index_at_emit: LogIndex,
     pub index: LogIndex,
     pub payload: SharedPayload,
+}
+
+/// Exact identity of one logical entry incorporated into application state.
+/// No-op entries advance the execution cursor but do not produce an
+/// [`ExecutionWitness`] because they leave the reference application state
+/// unchanged.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ExecutedLogEntry {
+    pub index: LogIndex,
+    pub term: Term,
+    pub kind: LogEntryKind,
+}
+
+/// Canonical state of the simulator's deterministic reference application.
+///
+/// Application commands are modeled as assignments to one byte-string
+/// register. Configuration entries update the committed membership and its
+/// exact configuration identity. Snapshot payload bytes are that same
+/// register value, while snapshot metadata carries the same membership state,
+/// so equal application states compare equally whether reached through a full
+/// retained prefix or snapshot installation.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ReferenceState {
+    pub application_value: SharedPayload,
+    pub committed_membership: MembershipConfig,
+    pub committed_configuration: Option<CommittedConfiguration>,
+}
+
+/// Immutable witness for one state-machine-visible committed log application.
+///
+/// Application commands and configuration entries share this record so the
+/// AP-02 oracle can detect cross-kind disagreement at the same logical index.
+/// The prior and resulting reference states are captured when the actual node
+/// applied cursor crosses this entry, then preserved across process restarts,
+/// snapshots, and application epochs.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub struct ExecutionWitness {
+    pub node_id: NodeId,
+    pub application_epoch: u64,
+    pub commit_index_at_emit: LogIndex,
+    pub entry: ExecutedLogEntry,
+    pub prior_state: ReferenceState,
+    pub resulting_state: ReferenceState,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+pub(crate) struct ExecutionCursor {
+    pub(crate) application_epoch: u64,
+    pub(crate) applied_through: LogIndex,
+    pub(crate) state: ReferenceState,
 }
 
 /// A snapshot installation observed on a node, recorded alongside the
