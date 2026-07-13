@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use rafter::{CommittedConfiguration, LogEntry, LogIndex, MembershipConfig, NodeId, Role, Term};
+use rafter::{LogEntry, LogIndex, MembershipConfig, NodeId, Role, Term};
 
 use crate::Cluster;
 
@@ -30,7 +30,10 @@ use commit::{
 #[cfg(test)]
 use election::{
     check_election_certificate_voters, check_eligible_leader_certificates,
-    check_joint_election_quorums, check_stable_election_quorums,
+    check_higher_term_authority_fencing, check_joint_election_quorums,
+    check_pre_vote_leader_stability, check_pre_vote_request_authority,
+    check_stable_election_quorums, check_stale_authority_leadership, check_stale_authority_state,
+    check_stale_pre_vote_response_authority,
 };
 pub(super) use election::{check_election_history, check_election_safety};
 pub(super) use history::{check_commit_history, check_log_history};
