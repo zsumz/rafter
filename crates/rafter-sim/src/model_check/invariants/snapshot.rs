@@ -494,6 +494,14 @@ pub(super) fn check_snapshot_payload_binding(
 ) -> Result<(), Failure> {
     if let Some(message) = state
         .snapshot_history()
+        .payload_binding_coverage_gaps()
+        .iter()
+        .next()
+    {
+        return Err(snapshot_coverage_failure(state, trace, message.clone()));
+    }
+    if let Some(message) = state
+        .snapshot_history()
         .payload_binding_violations()
         .iter()
         .next()
@@ -514,6 +522,14 @@ pub(super) fn check_snapshot_transfer_identity(
 ) -> Result<(), Failure> {
     if let Some(message) = state
         .snapshot_history()
+        .transfer_identity_instrumentation_errors()
+        .iter()
+        .next()
+    {
+        return Err(snapshot_harness_failure(state, trace, message.clone()));
+    }
+    if let Some(message) = state
+        .snapshot_history()
         .transfer_identity_violations()
         .iter()
         .next()
@@ -526,6 +542,34 @@ pub(super) fn check_snapshot_transfer_identity(
 fn snapshot_failure(state: &ExplorationState, trace: &[Action], message: String) -> Failure {
     Failure {
         kind: crate::model_check::FailureKind::InvariantViolation,
+        invariant: catalog::SS_01_ATOMIC_MONOTONE_SNAPSHOT_STATE,
+        message,
+        trace: trace.to_vec(),
+        state: summarize(state.cluster()),
+    }
+}
+
+fn snapshot_harness_failure(
+    state: &ExplorationState,
+    trace: &[Action],
+    message: String,
+) -> Failure {
+    Failure {
+        kind: crate::model_check::FailureKind::HarnessError,
+        invariant: catalog::SS_01_ATOMIC_MONOTONE_SNAPSHOT_STATE,
+        message,
+        trace: trace.to_vec(),
+        state: summarize(state.cluster()),
+    }
+}
+
+fn snapshot_coverage_failure(
+    state: &ExplorationState,
+    trace: &[Action],
+    message: String,
+) -> Failure {
+    Failure {
+        kind: crate::model_check::FailureKind::CoverageNotReached,
         invariant: catalog::SS_01_ATOMIC_MONOTONE_SNAPSHOT_STATE,
         message,
         trace: trace.to_vec(),

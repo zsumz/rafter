@@ -1,6 +1,10 @@
 use super::super::election::{
-    check_vote_candidate_eligibility, check_vote_candidate_log_freshness,
-    check_vote_grant_durability,
+    check_eligible_leader_certificates, check_higher_term_authority_fencing,
+    check_joint_election_quorums, check_pre_vote_leader_stability,
+    check_pre_vote_request_authority, check_stable_election_quorums,
+    check_stale_authority_leadership, check_stale_authority_state,
+    check_stale_pre_vote_response_authority, check_vote_candidate_eligibility,
+    check_vote_candidate_log_freshness, check_vote_grant_durability,
 };
 use super::*;
 use crate::model_check::{
@@ -68,7 +72,7 @@ fn term_monotonicity_history_detects_regression_from_observation() {
     state
         .inject_bootstrap_state(NodeId(1), bootstrap_state(Term(3), &[]))
         .expect("regressed term bootstrap is valid");
-    state.observe_election_authority();
+    record_election_authority_observation(&mut state);
 
     let failure =
         check_election_history(&state, &[]).expect_err("observed term regression must be detected");
@@ -97,7 +101,7 @@ fn durable_vote_history_rejects_second_vote_in_term() {
     state
         .inject_bootstrap_state(NodeId(1), second_vote)
         .expect("second vote bootstrap is valid");
-    state.observe_election_authority();
+    record_election_authority_observation(&mut state);
 
     let failure = check_election_history(&state, &[])
         .expect_err("conflicting durable votes in one term must be detected");
@@ -127,7 +131,7 @@ fn durable_vote_history_detects_lost_vote_same_term() {
     state
         .inject_bootstrap_state(NodeId(1), bootstrap_state(Term(5), &[]))
         .expect("lost vote bootstrap is valid");
-    state.observe_election_authority();
+    record_election_authority_observation(&mut state);
 
     let failure =
         check_election_history(&state, &[]).expect_err("lost durable vote must be detected");
@@ -741,8 +745,8 @@ fn election_history_detects_second_leader_in_same_term() {
     let second = election_certificate(4, 2, membership, &[2, 3]);
     let mut state = ExplorationState::new(one_node_cluster());
 
-    state.election_history_mut().record_election(first);
-    state.election_history_mut().record_election(second);
+    record_election_certificate(&mut state, first);
+    record_election_certificate(&mut state, second);
 
     let failure = check_election_history(&state, &[])
         .expect_err("second leader in one term must be detected");
@@ -952,6 +956,14 @@ fn pre_vote_three_node_cluster() -> Cluster {
         NodeConfig::new(NodeId(2), vec![NodeId(1), NodeId(3)], 9).expect("node-2 config is valid"),
         NodeConfig::new(NodeId(3), vec![NodeId(1), NodeId(2)], 9).expect("node-3 config is valid"),
     ])
+}
+
+fn record_election_authority_observation(state: &mut ExplorationState) {
+    state.observe_election_authority();
+}
+
+fn record_election_certificate(state: &mut ExplorationState, certificate: ElectionCertificate) {
+    state.election_history_mut().record_election(certificate);
 }
 
 fn deliver_all_pending_in_state(state: &mut ExplorationState) {

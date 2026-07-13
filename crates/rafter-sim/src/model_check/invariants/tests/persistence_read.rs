@@ -441,11 +441,13 @@ fn read_barrier_invariant_detects_grant_below_registration_floor() {
     let mut cluster = one_node_cluster();
     cluster.read_registrations.push(crate::ReadRegistered {
         node_id: NodeId(1),
+        operation_id: 0,
         request_id: 7,
         committed_floor: LogIndex(5),
     });
     cluster.read_grants.push(crate::ReadGranted {
         node_id: NodeId(1),
+        operation_id: Some(0),
         application_epoch: 0,
         request_id: 7,
         read_index: LogIndex(3),
@@ -470,6 +472,7 @@ fn read_barrier_invariant_detects_unregistered_grant() {
     let mut cluster = one_node_cluster();
     cluster.read_grants.push(crate::ReadGranted {
         node_id: NodeId(1),
+        operation_id: None,
         application_epoch: 0,
         request_id: 9,
         read_index: LogIndex(1),
@@ -483,4 +486,45 @@ fn read_barrier_invariant_detects_unregistered_grant() {
         catalog::RD_03_READ_BARRIER_COVERS_COMMITTED_FLOOR
     );
     assert!(failure.message.contains("never registered"));
+}
+
+#[test]
+fn read_barrier_invariant_uses_the_exact_reused_id_generation() {
+    let mut cluster = one_node_cluster();
+    cluster.read_registrations.extend([
+        crate::ReadRegistered {
+            node_id: NodeId(1),
+            operation_id: 0,
+            request_id: 7,
+            committed_floor: LogIndex(1),
+        },
+        crate::ReadRegistered {
+            node_id: NodeId(1),
+            operation_id: 1,
+            request_id: 7,
+            committed_floor: LogIndex(5),
+        },
+    ]);
+    cluster.read_grants.extend([
+        crate::ReadGranted {
+            node_id: NodeId(1),
+            operation_id: Some(0),
+            application_epoch: 0,
+            request_id: 7,
+            read_index: LogIndex(1),
+            local_applied_index: LogIndex(1),
+        },
+        crate::ReadGranted {
+            node_id: NodeId(1),
+            operation_id: Some(1),
+            application_epoch: 0,
+            request_id: 7,
+            read_index: LogIndex(3),
+            local_applied_index: LogIndex(3),
+        },
+    ]);
+
+    let failure = check_read_grant_committed_floors(&cluster, &[])
+        .expect_err("the reused ID must retain the newer registration floor");
+    assert!(failure.message.contains("below the committed floor 5"));
 }

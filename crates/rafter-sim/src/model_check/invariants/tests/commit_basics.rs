@@ -1,6 +1,8 @@
 use super::super::commit::{
-    check_commit_index_within_local_log_bounds_shape, check_committed_configuration_identity,
-    check_committed_configuration_index_monotonicity, check_cross_node_committed_prefix_agreement,
+    check_commit_index_monotonicity, check_commit_index_within_local_log_bounds_shape,
+    check_committed_configuration_identity, check_committed_configuration_index_monotonicity,
+    check_cross_node_committed_prefix_agreement,
+    check_no_overlapping_uncommitted_configurations_in_bootstrap,
 };
 use super::*;
 use crate::model_check::observations::Observation;

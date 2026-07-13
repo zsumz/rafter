@@ -27,7 +27,7 @@ fn leader_append_only_detects_leader_term_truncation() {
         .logical_log_history_mut()
         .leader_logs_by_term
         .insert((leader_id, leader_term), previous);
-    state.refresh_log_history();
+    record_log_history_observation(&mut state);
 
     let failure =
         check_log_history(&state, &[]).expect_err("leader append-only violation must be reported");
@@ -167,7 +167,7 @@ fn log_matching_detects_equal_index_term_with_different_prefixes() {
         )
         .expect("node-2 bootstrap is valid");
     let mut state = ExplorationState::new(cluster);
-    state.refresh_log_history();
+    record_log_history_observation(&mut state);
 
     let failure = check_log_history(&state, &[])
         .expect_err("log matching must detect equal index/term with different prefixes");
@@ -438,4 +438,8 @@ fn snapshot_only_view(transfer_sequence: u64, entries: &[(u64, u64, &[u8])]) -> 
         term,
         Some(LogPrefixWitness { through, entries }),
     )
+}
+
+fn record_log_history_observation(state: &mut ExplorationState) {
+    state.refresh_log_history();
 }

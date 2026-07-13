@@ -1,3 +1,4 @@
+use super::super::client::check_client_history_read_write_invariants;
 use super::*;
 
 #[test]
@@ -7,6 +8,7 @@ fn client_history_detects_completed_read_before_local_apply_floor() {
     state.client_history_mut().reads.insert(
         10,
         ClientRead {
+            operation_id: 10,
             node_id: NodeId(1),
             request_id: 10,
             committed_floor: LogIndex(5),

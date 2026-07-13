@@ -386,7 +386,7 @@ fn leader_completeness_rechecks_when_committed_ledger_grows_after_election() {
         .election_history_mut()
         .elected_by_term
         .insert(certificate.term, certificate);
-    state.record_leader_completeness_observation();
+    record_leader_completeness_check(&mut state);
     assert_eq!(
         state
             .commit_history()
@@ -409,7 +409,7 @@ fn leader_completeness_rechecks_when_committed_ledger_grows_after_election() {
     state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(1), Term(3));
     state.refresh_log_history();
     state.refresh_committed_prefixes();
-    state.record_leader_completeness_observation();
+    record_leader_completeness_check(&mut state);
 
     let failure = check_commit_history(&state, &[])
         .expect_err("later lower-term commit must be checked against existing leader");
@@ -432,6 +432,10 @@ pub(super) fn state_with_bootstraps(
             .expect("test bootstrap is valid");
     }
     ExplorationState::new(cluster)
+}
+
+fn record_leader_completeness_check(state: &mut ExplorationState) {
+    state.record_leader_completeness_observation();
 }
 
 fn leader_context(
