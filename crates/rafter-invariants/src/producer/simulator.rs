@@ -121,7 +121,10 @@ pub(super) fn run(
                 .build_duration_ms
                 .saturating_add(model.duration_ms)
                 .saturating_add(detectors.duration_ms),
-            peak_rss_kib: model.peak_rss_kib.max(detectors.peak_rss_kib),
+            peak_rss_kib: model
+                .build_peak_rss_kib
+                .max(model.runtime_peak_rss_kib)
+                .max(detectors.peak_rss_kib),
             artifacts: execution_artifacts,
         },
         results,
@@ -288,7 +291,7 @@ fn evaluate(
             .duration_ms
             .saturating_add(detector_outcome.map_or(0, |outcome| outcome.duration_ms)),
         peak_rss_kib: model
-            .peak_rss_kib
+            .runtime_peak_rss_kib
             .max(detector_outcome.map_or(0, |outcome| outcome.peak_rss_kib)),
     };
     model_evidence
