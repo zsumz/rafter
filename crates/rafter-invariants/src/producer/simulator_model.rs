@@ -17,7 +17,8 @@ const EVENT_PREFIX: &str = "RAFTER_EVENT ";
 pub(super) struct SimulatorExecution {
     pub events: BTreeMap<String, Vec<Value>>,
     pub artifacts: Vec<ArtifactRef>,
-    pub peak_rss_kib: u64,
+    pub runtime_peak_rss_kib: u64,
+    pub build_peak_rss_kib: u64,
     pub duration_ms: u64,
     pub build_duration_ms: u64,
     pub processes_succeeded: bool,
@@ -52,7 +53,7 @@ pub(super) fn execute(
     )?;
     artifacts.push(binary_artifact);
     let mut events = BTreeMap::<String, Vec<Value>>::new();
-    let mut peak_rss_kib = build.peak_rss_kib;
+    let mut runtime_peak_rss_kib = 0_u64;
     let mut duration_ms = 0_u64;
     let mut processes_succeeded = true;
     for run in execution_plan(profile, source_ref)? {
@@ -64,7 +65,7 @@ pub(super) fn execute(
             &process::base_environment(),
             Path::new("."),
         )?;
-        peak_rss_kib = peak_rss_kib.max(output.peak_rss_kib);
+        runtime_peak_rss_kib = runtime_peak_rss_kib.max(output.peak_rss_kib);
         duration_ms = duration_ms.saturating_add(process::duration_ms(output.duration));
         processes_succeeded &= output.status.success();
         collect_events(profile, &output.stdout, &mut events)?;
@@ -82,7 +83,8 @@ pub(super) fn execute(
     Ok(SimulatorExecution {
         events,
         artifacts,
-        peak_rss_kib,
+        runtime_peak_rss_kib,
+        build_peak_rss_kib: build.peak_rss_kib,
         duration_ms,
         build_duration_ms: build.duration_ms,
         processes_succeeded,

@@ -98,6 +98,59 @@ fn process_logs_bind_check_and_execution_resource_metrics() {
 }
 
 #[test]
+fn simulator_check_metrics_exclude_compile_resources() {
+    let root = scratch("simulator-resource-metrics");
+    std::fs::create_dir_all(&root).expect("create scratch root");
+    let process_log = |label: &str, duration_ms: u64, peak_rss_kib: u64| {
+        format!(
+            concat!(
+                "schema_version: 2\n",
+                "label: {label}\n",
+                "invocation: {{\"program\":\"/bin/test\",\"program_sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"arguments\":[\"test\"],\"current_dir\":\"/workspace\",\"environment\":{{}},\"environment_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}}\n",
+                "exit_code: Some(0)\n",
+                "timed_out: false\n",
+                "duration_ms: {duration_ms}\n",
+                "peak_rss_kib: {peak_rss_kib}\n\n",
+                "--- stdout ---\n",
+                "ok\n",
+                "--- stderr ---\n",
+            ),
+            label = label,
+            duration_ms = duration_ms,
+            peak_rss_kib = peak_rss_kib,
+        )
+    };
+    let artifact = |kind: &str, relative: &str, source: &str| {
+        std::fs::write(root.join(relative), source).expect("write process log");
+        crate::ArtifactRef {
+            kind: kind.to_owned(),
+            path: relative.to_owned(),
+            sha256: format!("{:x}", Sha256::digest(source)),
+            size_bytes: source.len() as u64,
+        }
+    };
+    let compile = process_log("compile", 5, 100);
+    let runtime = process_log("runtime", 7, 13);
+    let compile = artifact("compile-log", "simulator-compile.log", &compile);
+    let runtime = artifact("simulator-log", "simulator-runtime.log", &runtime);
+    let (catalog, manifest) = crate::tests::loaded();
+    let mut bundle = crate::tests::passing_bundles(&catalog, &manifest)
+        .into_iter()
+        .find(|bundle| bundle.runner == "simulator")
+        .expect("simulator bundle");
+    bundle.execution.checks.truncate(1);
+    bundle.execution.checks[0].artifacts = vec![compile.clone(), runtime.clone()];
+    bundle.execution.checks[0].duration_ms = 7;
+    bundle.execution.checks[0].peak_rss_kib = 13;
+    bundle.execution.artifacts = vec![compile, runtime];
+    bundle.execution.duration_ms = 12;
+    bundle.execution.peak_rss_kib = 100;
+
+    verify_resource_metrics(&bundle, &root).expect("compile and runtime metrics stay distinct");
+    std::fs::remove_dir_all(root).expect("remove scratch root");
+}
+
+#[test]
 fn tla_execution_duration_must_exactly_match_process_logs() {
     let root = scratch("tla-resource-metrics");
     std::fs::create_dir_all(&root).expect("create scratch root");
