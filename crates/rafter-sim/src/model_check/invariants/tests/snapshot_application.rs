@@ -2,7 +2,7 @@ use super::super::snapshot::{
     check_pending_snapshot_lifecycle_shape, check_snapshot_chunk_identity_history,
     check_snapshot_chunk_offsets_history, check_snapshot_covered_prefix_shape,
     check_snapshot_install_completeness_history, check_snapshot_next_retained_index_shape,
-    check_snapshot_persisted_boundary_shape,
+    check_snapshot_persisted_boundary_shape, check_snapshot_semantic_history,
 };
 use super::*;
 use crate::model_check::{
@@ -72,6 +72,24 @@ fn record_mutated_partial_chunk(request: rafter::InstallSnapshotChunk) -> Explor
     let mut state = ExplorationState::new(after);
     state.record_snapshot_transition(&before, Some(&delivered));
     state
+}
+
+fn install_expected_snapshot_on_follower(state: &mut RestartSnapshotState) {
+    let expected_index = state
+        .expected_snapshot
+        .as_ref()
+        .expect("fixture has an expected snapshot")
+        .snapshot
+        .metadata
+        .last_included_index;
+    for _ in 0..256 {
+        if state.state.cluster().node(NodeId(2)).snapshot_index() >= expected_index {
+            return;
+        }
+        apply_to_restart_snapshot_state(state, Operation::DeliverReadyAt(0), &[])
+            .expect("snapshot installation remains safe");
+    }
+    panic!("snapshot transfer did not install on the follower");
 }
 
 #[test]
@@ -390,16 +408,28 @@ fn restart_snapshot_safety_rejects_snapshot_bytes_as_log_apply() {
         .as_ref()
         .expect("fixture has an expected snapshot")
         .clone();
+    let before = state.state.cluster().clone();
+    state
+        .state
+        .inject_snapshot_payload(NodeId(2), &expected.snapshot, expected.payload.to_vec());
+    state
+        .state
+        .inject_bootstrap_state(
+            NodeId(2),
+            bootstrap_with_snapshot(Term(2), expected.snapshot.clone(), &[]),
+        )
+        .expect("mutated snapshot installation is structurally valid");
     state.state.inject_applied_record(Applied {
-        node_id: NodeId(1),
+        node_id: NodeId(2),
         application_epoch: 0,
-        commit_index_at_emit: LogIndex(1),
-        index: LogIndex(1),
+        commit_index_at_emit: expected.snapshot.metadata.last_included_index,
+        index: expected.snapshot.metadata.last_included_index,
         payload: expected.payload.clone(),
     });
+    state.state.record_snapshot_transition(&before, None);
 
     let failure = check_restart_snapshot_safety(&state, &[])
-        .expect_err("snapshot bytes emitted as a log command must fail SS-05");
+        .expect_err("a snapshot transition without an ApplySnapshot record must fail SS-05");
     assert_eq!(
         failure.invariant(),
         catalog::SS_05_SNAPSHOT_SEMANTIC_EQUIVALENCE
@@ -407,10 +437,137 @@ fn restart_snapshot_safety_rejects_snapshot_bytes_as_log_apply() {
     assert!(
         failure
             .message
-            .contains("snapshot bytes were exposed as an applied log entry"),
+            .contains("without a matching ApplySnapshot output record"),
         "unexpected failure message: {}",
         failure.message
     );
+}
+
+#[test]
+fn snapshot_semantics_rejects_log_apply_alongside_snapshot_output() {
+    let fixture = RestartSnapshotState::snapshot_transfer();
+    let expected = fixture
+        .expected_snapshot
+        .as_ref()
+        .expect("fixture has an expected snapshot")
+        .clone();
+    let before = fixture.state.cluster().clone();
+    let mut after = before.clone();
+    after.seed_snapshot_payload(
+        NodeId(2),
+        &expected.snapshot,
+        expected.payload.as_ref().to_vec(),
+    );
+    after
+        .restart_node_from_bootstrap(
+            NodeId(2),
+            bootstrap_with_snapshot(Term(2), expected.snapshot.clone(), &[]),
+        )
+        .expect("snapshot installation is structurally valid");
+    after.snapshot_installs.push(SnapshotInstalled {
+        node_id: NodeId(2),
+        application_epoch: after.application_epoch(NodeId(2)),
+        last_included_index: expected.snapshot.metadata.last_included_index,
+        last_included_term: expected.snapshot.metadata.last_included_term,
+        committed_membership: expected.snapshot.metadata.committed_membership().cloned(),
+        payload: expected.payload.as_ref().to_vec(),
+        applied_records_before_install: before.applied().len(),
+    });
+    after.applied.push(Applied {
+        node_id: NodeId(2),
+        application_epoch: after.application_epoch(NodeId(2)),
+        commit_index_at_emit: expected.snapshot.metadata.last_included_index,
+        index: expected.snapshot.metadata.last_included_index,
+        payload: expected.payload,
+    });
+    let mut state = ExplorationState::new(after);
+    state.record_snapshot_transition(&before, None);
+
+    let failure = check_snapshot_semantic_history(&state, &[])
+        .expect_err("an ApplySnapshot must not also surface as a log Apply");
+    assert!(
+        failure
+            .message
+            .contains("emitted log Apply for index 2 while installing snapshot boundary 2"),
+        "unexpected failure message: {}",
+        failure.message
+    );
+}
+
+#[test]
+fn snapshot_semantics_allows_snapshot_bytes_equal_to_a_prior_command() {
+    let mut state = RestartSnapshotState::snapshot_transfer();
+    let payload = state
+        .expected_snapshot
+        .as_ref()
+        .expect("fixture has an expected snapshot")
+        .payload
+        .clone();
+    state.state.inject_applied_record(Applied {
+        node_id: NodeId(2),
+        application_epoch: 0,
+        commit_index_at_emit: LogIndex(1),
+        index: LogIndex(1),
+        payload,
+    });
+
+    install_expected_snapshot_on_follower(&mut state);
+
+    check_snapshot_semantic_history(&state.state, &[])
+        .expect("equal bytes do not change an Apply record into an ApplySnapshot record");
+}
+
+#[test]
+fn snapshot_semantics_rejects_exact_overwritten_entry_resurrection() {
+    let mut state = RestartSnapshotState::snapshot_transfer();
+    install_expected_snapshot_on_follower(&mut state);
+    let expected = state
+        .expected_snapshot
+        .as_ref()
+        .expect("fixture has an expected snapshot")
+        .snapshot
+        .clone();
+    state
+        .state
+        .inject_bootstrap_state(
+            NodeId(2),
+            bootstrap_with_snapshot(Term(2), expected, &[(3, Term(2), b"divergent suffix")]),
+        )
+        .expect("resurrected suffix is structurally valid in isolation");
+    state.state.refresh_snapshot_history();
+
+    let failure = check_restart_snapshot_safety(&state, &[])
+        .expect_err("the exact overwritten entry identity must remain absent");
+    assert!(
+        failure
+            .message
+            .contains("resurrected overwritten log entry 3 term 2"),
+        "unexpected failure message: {}",
+        failure.message
+    );
+}
+
+#[test]
+fn snapshot_semantics_allows_later_entry_to_reuse_overwritten_bytes() {
+    let mut state = RestartSnapshotState::snapshot_transfer();
+    install_expected_snapshot_on_follower(&mut state);
+    let expected = state
+        .expected_snapshot
+        .as_ref()
+        .expect("fixture has an expected snapshot")
+        .snapshot
+        .clone();
+    state
+        .state
+        .inject_bootstrap_state(
+            NodeId(2),
+            bootstrap_with_snapshot(Term(3), expected, &[(3, Term(3), b"divergent suffix")]),
+        )
+        .expect("later same-byte command is structurally valid");
+    state.state.refresh_snapshot_history();
+
+    check_snapshot_semantic_history(&state.state, &[])
+        .expect("same bytes at a distinct term are a distinct logical entry");
 }
 
 #[test]

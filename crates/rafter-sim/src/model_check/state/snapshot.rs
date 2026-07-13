@@ -1,8 +1,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use rafter::{
-    InstallSnapshotChunk, LogIndex, Message, NodeId, PendingSnapshotTransfer, RaftSnapshot,
-    SnapshotTransferId,
+    InstallSnapshotChunk, LogEntryKind, LogIndex, Message, NodeId, PendingSnapshotTransfer,
+    RaftSnapshot, SnapshotTransferId, Term,
 };
 
 use crate::{Cluster, Envelope};
@@ -25,6 +25,8 @@ pub(crate) struct SnapshotHistory {
     chunk_offset_violations: BTreeSet<String>,
     install_completeness_violations: BTreeSet<String>,
     pending_lifecycle_violations: BTreeSet<String>,
+    semantic_violations: BTreeSet<String>,
+    overwritten_entries: Vec<OverwrittenLogEntry>,
 }
 
 #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -41,6 +43,14 @@ struct SnapshotGeometryWitness {
     first_retained_index: LogIndex,
     last_log_index: LogIndex,
     retained_log_len: usize,
+}
+
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
+struct OverwrittenLogEntry {
+    node_id: NodeId,
+    index: LogIndex,
+    term: Term,
+    kind: LogEntryKind,
 }
 
 #[derive(Clone, Debug, Eq, Hash, PartialEq)]
@@ -126,6 +136,7 @@ impl SnapshotHistory {
                 None => {}
             }
         }
+        self.record_resurrected_entries(cluster);
         observations
     }
 
@@ -147,6 +158,7 @@ impl SnapshotHistory {
             if node.snapshot_index() <= previous.snapshot_index() {
                 continue;
             }
+            self.record_snapshot_semantics(before, after, *node_id);
             observations.mark(Observation::SnapshotBoundaryAdvances);
             self.record_geometry(after, *node_id, &mut observations);
 
@@ -166,7 +178,82 @@ impl SnapshotHistory {
                 }
             }
         }
+        self.record_resurrected_entries(after);
         observations
+    }
+
+    fn record_snapshot_semantics(&mut self, before: &Cluster, after: &Cluster, node_id: NodeId) {
+        let Some(snapshot) = after.node(node_id).snapshot() else {
+            return;
+        };
+        let new_installs = after
+            .snapshot_installs()
+            .get(before.snapshot_installs().len()..)
+            .unwrap_or_default();
+        let recorded_as_snapshot = new_installs.iter().any(|install| {
+            install.node_id == node_id
+                && install.last_included_index == snapshot.metadata.last_included_index
+                && install.last_included_term == snapshot.metadata.last_included_term
+        });
+        if !recorded_as_snapshot {
+            self.semantic_violations.insert(format!(
+                "{node_id} advanced snapshot boundary to {} term {} without a matching ApplySnapshot output record",
+                snapshot.metadata.last_included_index, snapshot.metadata.last_included_term
+            ));
+        }
+        let new_applies = after
+            .applied()
+            .get(before.applied().len()..)
+            .unwrap_or_default();
+        for applied in new_applies.iter().filter(|applied| {
+            applied.node_id == node_id && applied.index <= snapshot.metadata.last_included_index
+        }) {
+            self.semantic_violations.insert(format!(
+                "{node_id} emitted log Apply for index {} while installing snapshot boundary {}",
+                applied.index, snapshot.metadata.last_included_index
+            ));
+        }
+
+        let boundary = snapshot.metadata.last_included_index;
+        let Some(previous_boundary_term) = before.node(node_id).term_at_index(boundary) else {
+            return;
+        };
+        if previous_boundary_term == snapshot.metadata.last_included_term {
+            return;
+        }
+
+        let before_bootstrap = before.bootstrap_state(node_id);
+        let after_bootstrap = after.bootstrap_state(node_id);
+        for entry in before_bootstrap.log {
+            if entry.index < boundary || after_bootstrap.log.contains(&entry) {
+                continue;
+            }
+            let overwritten = OverwrittenLogEntry {
+                node_id,
+                index: entry.index,
+                term: entry.term,
+                kind: entry.kind,
+            };
+            if !self.overwritten_entries.contains(&overwritten) {
+                self.overwritten_entries.push(overwritten);
+            }
+        }
+    }
+
+    fn record_resurrected_entries(&mut self, cluster: &Cluster) {
+        for overwritten in &self.overwritten_entries {
+            let bootstrap = cluster.bootstrap_state(overwritten.node_id);
+            if bootstrap.log.iter().any(|entry| {
+                entry.index == overwritten.index
+                    && entry.term == overwritten.term
+                    && entry.kind == overwritten.kind
+            }) {
+                self.semantic_violations.insert(format!(
+                    "{} resurrected overwritten log entry {} term {}",
+                    overwritten.node_id, overwritten.index, overwritten.term
+                ));
+            }
+        }
     }
 
     fn record_geometry(
@@ -340,6 +427,10 @@ impl SnapshotHistory {
 
     pub(crate) const fn pending_lifecycle_violations(&self) -> &BTreeSet<String> {
         &self.pending_lifecycle_violations
+    }
+
+    pub(crate) const fn semantic_violations(&self) -> &BTreeSet<String> {
+        &self.semantic_violations
     }
 }
 
