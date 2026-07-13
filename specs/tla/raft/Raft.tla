@@ -3,6 +3,8 @@ EXTENDS Naturals, Sequences, FiniteSets, TLC
 
 \* This is a small, bounded design model. It is not implementation code and it
 \* intentionally does not import or depend on rafter.
+\* The production specification is safety-only. Fair-schedule liveness evidence
+\* is owned by the bounded simulator, whose scheduler states its timing bounds.
 
 CONSTANTS Nodes, Values, MaxTerm, MaxLogLen, ReadRequests
 
@@ -313,6 +315,16 @@ ConfigurationMembershipAt(
           THEN entry.input
           ELSE StableMembership(Nodes)
 
+PriorConfigurationFor(node, configIndex) ==
+  LatestConfigurationIn(LogicalPrefix(node, configIndex - 1))
+
+FrozenCommitContext(
+    leaderRole, leaderTerm, effectiveView, authorityView) ==
+  [leaderRole |-> leaderRole,
+   leaderTerm |-> leaderTerm,
+   effectiveMembership |-> effectiveView,
+   authorityMembership |-> authorityView]
+
 MatchingReplicasFrom(logs, snapshotIndexes, snapshotPrefixes, node, index) ==
   {replica \in Nodes :
     /\ index \in 1..Len(logs[replica])
@@ -325,13 +337,18 @@ MatchingReplicasFrom(logs, snapshotIndexes, snapshotPrefixes, node, index) ==
 MatchingReplicas(node, index) ==
   MatchingReplicasFrom(log, snapshotIndex, snapshotPrefix, node, index)
 
-CommitCertificatesFor(node, oldFloor, newFloor) ==
+CommitCertificatesFor(
+    node, oldFloor, newFloor, context, configIndex) ==
   {[index |-> index,
     entry |-> LogicalEntry(node, index),
-    membership |-> effectiveMembership,
+    leader |-> node,
+    leaderRole |-> context.leaderRole,
+    leaderTerm |-> context.leaderTerm,
+    membership |-> context.effectiveMembership,
+    authorityMembership |-> context.authorityMembership,
     derivedMembership |-> ConfigurationMembershipAt(
-      log, snapshotIndex, snapshotPrefix, node, effectiveConfigIndex),
-    configIndex |-> effectiveConfigIndex,
+      log, snapshotIndex, snapshotPrefix, node, configIndex),
+    configIndex |-> configIndex,
     replicas |-> MatchingReplicas(node, index)] :
       index \in (oldFloor + 1)..newFloor}
 
@@ -394,6 +411,28 @@ UpToDate(candidate, voter) ==
 
 ActiveVoters(config) ==
   IF config.phase = StableConfig THEN config.old ELSE config.old \cup config.new
+
+PendingSelfRemoval(node) ==
+  IF /\ effectiveConfigIndex \in 1..Len(log[node])
+     /\ effectiveConfigIndex > commitIndex[node]
+  THEN LET entry == LogicalEntry(node, effectiveConfigIndex)
+           prior == PriorConfigurationFor(node, effectiveConfigIndex)
+       IN /\ role[node] = Leader
+          /\ currentTerm[node] = entry.term
+          /\ entry.kind = ConfigurationEntryKind
+          /\ entry.input = effectiveMembership
+          /\ effectiveMembership.phase = StableConfig
+          /\ node \notin ActiveVoters(effectiveMembership)
+          /\ prior.configIndex < effectiveConfigIndex
+          /\ prior.config.phase = JointConfig
+          /\ prior.config.new = effectiveMembership.old
+          /\ node \in ActiveVoters(prior.config)
+  ELSE FALSE
+
+CommitAuthorityMembership(node) ==
+  IF PendingSelfRemoval(node)
+  THEN PriorConfigurationFor(node, effectiveConfigIndex).config
+  ELSE effectiveMembership
 
 StableQuorum(voters, ns) ==
   2 * Cardinality(ns \cap voters) > Cardinality(voters)
@@ -495,7 +534,9 @@ TypeOK ==
   /\ effectiveMembership \in MembershipSet
   /\ effectiveConfigIndex \in 0..MaxLogLen
   /\ \A n \in Nodes :
-       n \notin ActiveVoters(effectiveMembership) => role[n] = Follower
+       n \notin ActiveVoters(effectiveMembership) =>
+         \/ role[n] = Follower
+         \/ PendingSelfRemoval(n)
   /\ log \in [Nodes -> LogSet]
   /\ \A n \in Nodes : LogOK(log[n])
   /\ commitIndex \in [Nodes -> 0..MaxLogLen]
@@ -548,11 +589,16 @@ TypeOK ==
        /\ committed.index \in 1..MaxLogLen
        /\ committed.entry \in EntrySet
   /\ \A witness \in commitWitnesses :
-       /\ DOMAIN witness = {"index", "entry", "membership",
+       /\ DOMAIN witness = {"index", "entry", "leader", "leaderRole",
+                             "leaderTerm", "membership", "authorityMembership",
                              "derivedMembership", "configIndex", "replicas"}
        /\ witness.index \in 1..MaxLogLen
        /\ witness.entry \in EntrySet
+       /\ witness.leader \in Nodes
+       /\ witness.leaderRole \in {Follower, Candidate, Leader}
+       /\ witness.leaderTerm \in 1..MaxTerm
        /\ witness.membership \in MembershipSet
+       /\ witness.authorityMembership \in MembershipSet
        /\ witness.derivedMembership \in MembershipSet
        /\ witness.configIndex \in 0..MaxLogLen
        /\ witness.replicas \in SUBSET Nodes
@@ -667,21 +713,27 @@ DeliverRequestVote(m) ==
     /\ UNCHANGED historyVars
 
 BecomeLeader(n) ==
-  /\ role[n] = Candidate
-  /\ n \in ActiveVoters(effectiveMembership)
-  /\ QuorumNodes({v \in Nodes :
-       /\ votedFor[v] = n
-       /\ currentTerm[v] = currentTerm[n]})
-  /\ role' = [role EXCEPT ![n] = Leader]
-  /\ RecordElection(n)
-  /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
-  /\ UNCHANGED <<currentTerm, votedFor, log, commitIndex, messages,
-                  readRequests, readGrants, membership, appliedConfigIndex,
-                  effectiveMembership, effectiveConfigIndex,
-                  higherTermEvidenceSeen, higherTermStepDownFailed>>
-  /\ UNCHANGED snapshotVars
-  /\ UNCHANGED applicationVars
-  /\ UNCHANGED historyVars
+  LET electedConfiguration == EffectiveConfigurationFor(log[n])
+      electedRole == [role EXCEPT ![n] = Leader]
+  IN
+    /\ role[n] = Candidate
+    /\ n \in ActiveVoters(effectiveMembership)
+    /\ n \in ActiveVoters(electedConfiguration.config)
+    /\ QuorumNodes({v \in Nodes :
+         /\ votedFor[v] = n
+         /\ currentTerm[v] = currentTerm[n]})
+    /\ role' = RolesAfterMembershipChange(
+         electedRole, electedConfiguration.config)
+    /\ effectiveMembership' = electedConfiguration.config
+    /\ effectiveConfigIndex' = electedConfiguration.configIndex
+    /\ RecordElection(n)
+    /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
+    /\ UNCHANGED <<currentTerm, votedFor, log, commitIndex, messages,
+                    readRequests, readGrants, membership, appliedConfigIndex,
+                    higherTermEvidenceSeen, higherTermStepDownFailed>>
+    /\ UNCHANGED snapshotVars
+    /\ UNCHANGED applicationVars
+    /\ UNCHANGED historyVars
 
 ClientAppend(n, value) ==
   /\ role[n] = Leader
@@ -724,13 +776,17 @@ SendAppend(l, f) ==
 DeliverAppend(m) ==
   LET higher == m.term > currentTerm[m.to]
       accept == /\ m.term >= currentTerm[m.to]
-                /\ m.from \in ActiveVoters(effectiveMembership)
+                /\ \/ m.from \in ActiveVoters(effectiveMembership)
+                    \/ /\ m.term = currentTerm[m.from]
+                       /\ PendingSelfRemoval(m.from)
                 /\ m.to \in ActiveVoters(effectiveMembership)
                 /\ CanAdoptLog(m.to, m.entries)
       acceptedConfiguration == EffectiveConfigurationFor(m.entries)
       authoritative == AuthoritativeLogReplacement(m, accept)
       baseRole == [role EXCEPT ![m.to] =
         IF higher \/ accept THEN Follower ELSE @]
+      configuredRole ==
+        RolesAfterMembershipChange(baseRole, acceptedConfiguration.config)
       nextLog == IF accept THEN [log EXCEPT ![m.to] = m.entries] ELSE log
       nextCommit ==
         IF accept
@@ -747,9 +803,9 @@ DeliverAppend(m) ==
          IF higher THEN NoVote ELSE @]
     /\ role' =
          IF authoritative
-         THEN RolesAfterMembershipChange(
-                baseRole,
-                acceptedConfiguration.config)
+         THEN IF PendingSelfRemoval(m.from)
+              THEN [configuredRole EXCEPT ![m.from] = baseRole[m.from]]
+              ELSE configuredRole
          ELSE baseRole
     /\ log' = nextLog
     /\ commitIndex' = nextCommit
@@ -772,24 +828,43 @@ DeliverAppend(m) ==
     /\ UNCHANGED snapshotVars
     /\ UNCHANGED applicationVars
 
+RoleAfterCommit(node, selfRemoval) ==
+  IF selfRemoval
+  THEN [role EXCEPT ![node] = Follower]
+  ELSE role
+
 Commit(n, i) ==
-  /\ role[n] = Leader
-  /\ n \in ActiveVoters(effectiveMembership)
-  /\ i \in (commitIndex[n] + 1)..Len(log[n])
-  /\ LogicalEntry(n, i).term = currentTerm[n]
-  /\ QuorumNodes(MatchingReplicas(n, i))
-  /\ commitIndex' = [commitIndex EXCEPT ![n] = i]
-  /\ RecordCommittedEntries(
-       log, snapshotIndex, snapshotPrefix, n, commitIndex[n], i)
-  /\ RecordCommitWitnesses(CommitCertificatesFor(n, commitIndex[n], i))
-  /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
-  /\ UNCHANGED <<currentTerm, votedFor, role, log, messages,
-                  readRequests, readGrants, membership, appliedConfigIndex,
-                  effectiveMembership, effectiveConfigIndex,
-                  electedLeaders, logicalPrefixLedger,
-                  higherTermEvidenceSeen, higherTermStepDownFailed>>
-  /\ UNCHANGED snapshotVars
-  /\ UNCHANGED applicationVars
+  LET preRole == role[n]
+      preTerm == currentTerm[n]
+      preEffectiveMembership == effectiveMembership
+      preAuthorityMembership == CommitAuthorityMembership(n)
+      preEffectiveConfigIndex == effectiveConfigIndex
+      context == FrozenCommitContext(
+        preRole, preTerm, preEffectiveMembership, preAuthorityMembership)
+      selfRemoval == /\ PendingSelfRemoval(n)
+                     /\ i >= preEffectiveConfigIndex
+  IN
+    /\ preRole = Leader
+    /\ \/ n \in ActiveVoters(preEffectiveMembership)
+        \/ selfRemoval
+    /\ i \in (commitIndex[n] + 1)..Len(log[n])
+    /\ LogicalEntry(n, i).term = preTerm
+    /\ MembershipQuorum(
+         preEffectiveMembership, MatchingReplicas(n, i))
+    /\ commitIndex' = [commitIndex EXCEPT ![n] = i]
+    /\ role' = RoleAfterCommit(n, selfRemoval)
+    /\ RecordCommittedEntries(
+         log, snapshotIndex, snapshotPrefix, n, commitIndex[n], i)
+    /\ RecordCommitWitnesses(CommitCertificatesFor(
+         n, commitIndex[n], i, context, preEffectiveConfigIndex))
+    /\ RecordAuthorityAcceptance(preTerm, preTerm, TRUE)
+    /\ UNCHANGED <<currentTerm, votedFor, log, messages,
+                    readRequests, readGrants, membership, appliedConfigIndex,
+                    effectiveMembership, effectiveConfigIndex,
+                    electedLeaders, logicalPrefixLedger,
+                    higherTermEvidenceSeen, higherTermStepDownFailed>>
+    /\ UNCHANGED snapshotVars
+    /\ UNCHANGED applicationVars
 
 Apply(n) ==
   LET next == appliedThrough[n] + 1
@@ -963,7 +1038,6 @@ EnterJoint(n, newVoters) ==
     /\ membership.phase = StableConfig
     /\ newVoters \in VoterSets
     /\ newVoters # effectiveMembership.old
-    /\ n \in newVoters
     /\ role[n] = Leader
     /\ CommittedEntriesHeldBy(newVoters)
     /\ currentTerm[n] \in 1..MaxTerm
@@ -988,10 +1062,10 @@ LeaveJoint(n) ==
       nextIndex == Len(log[n]) + 1
       nextLog == [log EXCEPT ![n] =
         Append(@, ConfigurationEntry(currentTerm[n], next))]
+      nextRole == RoleAfterMembershipChange(next)
   IN
     /\ effectiveMembership.phase = JointConfig
     /\ membership.phase = JointConfig
-    /\ n \in effectiveMembership.new
     /\ role[n] = Leader
     /\ CommittedEntriesHeldBy(effectiveMembership.new)
     /\ currentTerm[n] \in 1..MaxTerm
@@ -1000,7 +1074,10 @@ LeaveJoint(n) ==
     /\ log' = nextLog
     /\ effectiveMembership' = next
     /\ effectiveConfigIndex' = nextIndex
-    /\ role' = RoleAfterMembershipChange(next)
+    /\ role' =
+         IF n \in ActiveVoters(next)
+         THEN nextRole
+         ELSE [nextRole EXCEPT ![n] = role[n]]
     /\ RecordLogicalPrefixes(nextLog, snapshotIndex, snapshotPrefix)
     /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
     /\ UNCHANGED <<currentTerm, votedFor, commitIndex, messages,
@@ -1128,8 +1205,18 @@ StaleLeaderFencing ==
   /\ ~staleAuthorityAccepted
 
 CommitWitnessOK(witness) ==
+  /\ witness.leaderRole = Leader
+  /\ witness.entry.term <= witness.leaderTerm
   /\ witness.membership = witness.derivedMembership
   /\ MembershipQuorum(witness.membership, witness.replicas)
+  /\ IF witness.leader \in ActiveVoters(witness.membership)
+     THEN witness.authorityMembership = witness.membership
+     ELSE /\ witness.index = witness.configIndex
+          /\ witness.entry.kind = ConfigurationEntryKind
+          /\ witness.entry.input = witness.membership
+          /\ witness.authorityMembership.phase = JointConfig
+          /\ witness.authorityMembership.new = witness.membership.old
+          /\ witness.leader \in ActiveVoters(witness.authorityMembership)
 
 CommittedEntriesHaveQuorum ==
   /\ \A witness \in commitWitnesses : CommitWitnessOK(witness)

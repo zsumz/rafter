@@ -73,6 +73,7 @@ pub(super) fn validate_spec_contract(
     let spec = fs::read_to_string(SPEC)?;
     let detector_spec = fs::read_to_string(DETECTOR_SPEC)?;
     let detector_config = fs::read_to_string(DETECTOR_CONFIG)?;
+    validate_safety_only_boundary(&spec, &config_source)?;
     if config_name == "Raft.cfg"
         && config_source
             .lines()
@@ -107,6 +108,30 @@ pub(super) fn validate_spec_contract(
         );
     }
     Ok(configured)
+}
+
+fn validate_safety_only_boundary(spec: &str, config: &str) -> Result<(), Box<dyn Error>> {
+    let stuttering_spec = spec
+        .lines()
+        .any(|line| line.trim() == "Spec == Init /\\ [][Next]_vars");
+    let embeds_fairness = spec.lines().any(|line| {
+        let line = line.trim();
+        line.contains("WF_vars(") || line.contains("SF_vars(")
+    });
+    let configures_property = config.lines().any(|line| {
+        let line = line.trim_start();
+        line == "PROPERTY"
+            || line == "PROPERTIES"
+            || line.starts_with("PROPERTY ")
+            || line.starts_with("PROPERTIES ")
+    });
+    if !stuttering_spec || embeds_fairness || configures_property {
+        return Err(
+            "production TLA is safety-only; bounded fair-schedule liveness belongs to the simulator"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 fn configured_invariants(source: &str) -> Vec<String> {
@@ -271,7 +296,9 @@ mod tests {
     use super::super::tla_output::{
         render_detector_config, DetectorProbe, DEFAULT_FIXTURE_MODE, DETECTOR_PROBES,
     };
-    use super::{configured_invariants, java_major, validate_runner_options};
+    use super::{
+        configured_invariants, java_major, validate_runner_options, validate_safety_only_boundary,
+    };
 
     #[test]
     fn java_major_is_parsed_exactly() {
@@ -279,6 +306,17 @@ mod tests {
         assert_eq!(java_major("openjdk 21.0.7 2025-04-15"), Some(21));
         assert_eq!(java_major("java version \"1.8.0_402\""), Some(8));
         assert_eq!(java_major("java 210.0.1"), Some(210));
+    }
+
+    #[test]
+    fn production_tla_contract_is_safety_only() {
+        let safety_spec = "Spec == Init /\\ [][Next]_vars\n";
+        let safety_config = "INVARIANT TypeOK\n";
+        assert!(validate_safety_only_boundary(safety_spec, safety_config).is_ok());
+
+        let fair_spec = "Spec == Init /\\ [][Next]_vars /\\ WF_vars(Next)\n";
+        assert!(validate_safety_only_boundary(fair_spec, safety_config).is_err());
+        assert!(validate_safety_only_boundary(safety_spec, "PROPERTY EventualLeader\n").is_err());
     }
 
     #[test]

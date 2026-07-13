@@ -411,7 +411,11 @@ FaultyCommitQuorumRecorder ==
   LET witness ==
         [index |-> 1,
          entry |-> Entry(1, FixtureValueA),
+         leader |-> FixtureA,
+         leaderRole |-> Leader,
+         leaderTerm |-> 1,
          membership |-> StableMembership(Nodes),
+         authorityMembership |-> StableMembership(Nodes),
          derivedMembership |-> ApplicationConfig,
          configIndex |-> 1,
          replicas |-> {FixtureA}]
@@ -488,7 +492,11 @@ LegacyTargetCommitWitnesses ==
   IF TargetPredicate = "CommittedEntriesHaveQuorum"
   THEN {[index |-> 1,
          entry |-> Entry(1, FixtureValueA),
+         leader |-> FixtureA,
+         leaderRole |-> Leader,
+         leaderTerm |-> 1,
          membership |-> StableMembership(Nodes),
+         authorityMembership |-> StableMembership(Nodes),
          derivedMembership |-> StableMembership(Nodes),
          configIndex |-> 0,
          replicas |-> {FixtureA}]}
@@ -603,7 +611,11 @@ SnapshotLifecycleResult ==
 SnapshotLifecycleWitness ==
   [index |-> 1,
    entry |-> SnapshotLifecycleEntry,
+   leader |-> FixtureA,
+   leaderRole |-> Leader,
+   leaderTerm |-> 1,
    membership |-> StableMembership(Nodes),
+   authorityMembership |-> StableMembership(Nodes),
    derivedMembership |-> StableMembership(Nodes),
    configIndex |-> 0,
    replicas |-> {FixtureA, FixtureB}]
@@ -760,6 +772,104 @@ ApplicationEpochLifecycleComplete ==
   /\ Len(applied[FixtureA]) = 2
 
 ApplicationEpochLifecycleCompletes == <>ApplicationEpochLifecycleComplete
+
+SelfRemovalNewVoters == {FixtureB, FixtureC}
+
+SelfRemovalJointMembership ==
+  JointMembership(Nodes, SelfRemovalNewVoters)
+
+SelfRemovalStableMembership == StableMembership(SelfRemovalNewVoters)
+
+SelfRemovalJointEntry ==
+  ConfigurationEntry(1, SelfRemovalJointMembership)
+
+SelfRemovalStableEntry ==
+  ConfigurationEntry(1, SelfRemovalStableMembership)
+
+SelfRemovalJointState ==
+  ApplyEntry(InitialApplicationState, SelfRemovalJointEntry)
+
+SelfRemovalJointWitness ==
+  [index |-> 1,
+   entry |-> SelfRemovalJointEntry,
+   leader |-> FixtureA,
+   leaderRole |-> Leader,
+   leaderTerm |-> 1,
+   membership |-> SelfRemovalJointMembership,
+   authorityMembership |-> SelfRemovalJointMembership,
+   derivedMembership |-> SelfRemovalJointMembership,
+   configIndex |-> 1,
+   replicas |-> Nodes]
+
+SelfRemovalCommitInit ==
+  /\ FixtureConstantsOK
+  /\ currentTerm = BaseTerm
+  /\ votedFor = [n \in Nodes |-> FixtureA]
+  /\ role = [n \in Nodes |-> IF n = FixtureA THEN Leader ELSE Follower]
+  /\ log = [n \in Nodes |->
+       <<SelfRemovalJointEntry, SelfRemovalStableEntry>>]
+  /\ commitIndex = [n \in Nodes |-> 1]
+  /\ snapshotIndex = BaseSnapshotIndex
+  /\ snapshotPrefix = BaseSnapshotPrefix
+  /\ compactedIndex = BaseCompactedIndex
+  /\ snapshotTransfer = NoSnapshotTransfer
+  /\ applied = [n \in Nodes |->
+       IF n = FixtureA
+       THEN <<AppliedEvent(
+         0, 0, InitialApplicationState, 1, SelfRemovalJointEntry,
+         InitialApplicationState, SelfRemovalJointState)>>
+       ELSE <<>>]
+  /\ applicationEpoch = BaseApplicationEpoch
+  /\ epochBaseIndex = BaseEpochIndex
+  /\ epochBaseState = BaseApplicationState
+  /\ applicationState = [n \in Nodes |->
+       IF n = FixtureA THEN SelfRemovalJointState ELSE InitialApplicationState]
+  /\ appliedThrough = [n \in Nodes |-> IF n = FixtureA THEN 1 ELSE 0]
+  /\ messages = {}
+  /\ readRequests = {}
+  /\ readGrants = {}
+  /\ membership = SelfRemovalJointMembership
+  /\ appliedConfigIndex = 1
+  /\ effectiveMembership = SelfRemovalStableMembership
+  /\ effectiveConfigIndex = 2
+  /\ electedLeaders = [t \in 1..MaxTerm |->
+       IF t = 1 THEN {FixtureA} ELSE {}]
+  /\ logicalPrefixLedger = {}
+  /\ committedLedger = {[index |-> 1, entry |-> SelfRemovalJointEntry]}
+  /\ commitWitnesses = {SelfRemovalJointWitness}
+  /\ higherTermEvidenceSeen = FALSE
+  /\ higherTermStepDownFailed = FALSE
+  /\ staleAuthorityAccepted = FALSE
+
+SelfRemovalCommitAction ==
+  /\ commitIndex[FixtureA] = 1
+  /\ Commit(FixtureA, 2)
+
+SelfRemovalCommitNext ==
+  \/ SelfRemovalCommitAction
+  \/ /\ commitIndex[FixtureA] = 2
+     /\ UNCHANGED vars
+
+SelfRemovalCommitSpec ==
+  /\ SelfRemovalCommitInit
+  /\ [][SelfRemovalCommitNext]_vars
+  /\ WF_vars(SelfRemovalCommitAction)
+
+SelfRemovalCommitInvariant ==
+  /\ effectiveMembership = SelfRemovalStableMembership
+  /\ effectiveConfigIndex = 2
+  /\ IF commitIndex[FixtureA] = 1
+     THEN /\ role[FixtureA] = Leader
+          /\ PendingSelfRemoval(FixtureA)
+     ELSE /\ commitIndex[FixtureA] = 2
+          /\ role[FixtureA] = Follower
+          /\ ~PendingSelfRemoval(FixtureA)
+
+SelfRemovalCommitComplete ==
+  /\ commitIndex[FixtureA] = 2
+  /\ role[FixtureA] = Follower
+
+SelfRemovalCommitCompletes == <>SelfRemovalCommitComplete
 
 ConfigurationRegressionInit ==
   /\ FixtureConstantsOK
