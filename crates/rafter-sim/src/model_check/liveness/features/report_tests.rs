@@ -21,6 +21,7 @@ use super::{
     LivenessPreconditionProbe, LivenessPreconditions, TerminalRecorderMode,
 };
 use crate::model_check::liveness::driver::soak_liveness_round_budget;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq, oracle_expect_err};
 
 #[test]
 fn independent_reports_do_not_relabel_quorum_only_as_post_heal() {
@@ -274,16 +275,18 @@ fn lv_03_read_barrier_detector_rejects_exhausted_bound() {
     let mut trace = Vec::new();
     let mut observed_actions = BTreeSet::new();
 
-    let failure = run_read_barrier_liveness_detector(
-        &mut state,
-        config,
-        &mut trace,
-        &mut observed_actions,
-        convergence_budget,
-        1,
-        TerminalRecorderMode::DropTerminalRecord,
-    )
-    .expect_err("a fresh read barrier cannot finish in one delayed operation round");
+    let failure = oracle_expect_err!(
+        run_read_barrier_liveness_detector(
+            &mut state,
+            config,
+            &mut trace,
+            &mut observed_actions,
+            convergence_budget,
+            1,
+            TerminalRecorderMode::DropTerminalRecord,
+        ),
+        "a fresh read barrier cannot finish in one delayed operation round",
+    );
 
     assert_bounded_operation_failure(&failure, SoakActionKind::ReadIndex);
 }
@@ -295,16 +298,18 @@ fn lv_03_membership_transition_detector_rejects_exhausted_bound() {
     let mut trace = Vec::new();
     let mut observed_actions = BTreeSet::new();
 
-    let failure = run_membership_transition_liveness_detector(
-        &mut state,
-        config,
-        &mut trace,
-        &mut observed_actions,
-        convergence_budget,
-        1,
-        TerminalRecorderMode::DropTerminalRecord,
-    )
-    .expect_err("an issued membership transition cannot finish in one operation round");
+    let failure = oracle_expect_err!(
+        run_membership_transition_liveness_detector(
+            &mut state,
+            config,
+            &mut trace,
+            &mut observed_actions,
+            convergence_budget,
+            1,
+            TerminalRecorderMode::DropTerminalRecord,
+        ),
+        "an issued membership transition cannot finish in one operation round",
+    );
 
     assert_bounded_operation_failure(&failure, SoakActionKind::RemoveVoter);
 }
@@ -316,16 +321,18 @@ fn lv_03_leadership_transfer_detector_rejects_exhausted_bound() {
     let mut trace = Vec::new();
     let mut observed_actions = BTreeSet::new();
 
-    let failure = run_leadership_transfer_liveness_detector(
-        &mut state,
-        config,
-        &mut trace,
-        &mut observed_actions,
-        convergence_budget,
-        1,
-        TerminalRecorderMode::DropTerminalRecord,
-    )
-    .expect_err("an issued leadership transfer cannot finish in one operation round");
+    let failure = oracle_expect_err!(
+        run_leadership_transfer_liveness_detector(
+            &mut state,
+            config,
+            &mut trace,
+            &mut observed_actions,
+            convergence_budget,
+            1,
+            TerminalRecorderMode::DropTerminalRecord,
+        ),
+        "an issued leadership transfer cannot finish in one operation round",
+    );
 
     assert_bounded_operation_failure(&failure, SoakActionKind::Transfer);
 }
@@ -333,16 +340,17 @@ fn lv_03_leadership_transfer_detector_rejects_exhausted_bound() {
 #[test]
 fn lv_03_snapshot_catch_up_detector_rejects_exhausted_bound() {
     let config = SoakConfig::new(SimSeed(0x51_7e), 0).with_snapshot_catchup_probe();
-    let failure =
-        run_snapshot_catchup_liveness_detector(config, 1, TerminalRecorderMode::DropTerminalRecord)
-            .expect_err("a pending snapshot transfer cannot finish in one bounded round");
+    let failure = oracle_expect_err!(
+        run_snapshot_catchup_liveness_detector(config, 1, TerminalRecorderMode::DropTerminalRecord),
+        "a pending snapshot transfer cannot finish in one bounded round",
+    );
 
-    assert_eq!(
+    oracle_assert_eq!(
         failure.failure.invariant(),
         catalog::LV_03_FEATURE_OPERATION_PROGRESS
     );
-    assert_eq!(failure.failure.kind(), FailureKind::InvariantViolation);
-    assert!(failure
+    oracle_assert_eq!(failure.failure.kind(), FailureKind::InvariantViolation);
+    oracle_assert!(failure
         .failure
         .message()
         .contains("within 1 bounded rounds"));
@@ -385,17 +393,17 @@ fn assert_bounded_operation_failure(
     failure: &crate::model_check::soak::SoakFailure,
     expected_action: SoakActionKind,
 ) {
-    assert_eq!(
+    oracle_assert_eq!(
         failure.failure.invariant(),
         catalog::LV_03_FEATURE_OPERATION_PROGRESS
     );
-    assert_eq!(failure.failure.kind(), FailureKind::InvariantViolation);
-    assert!(failure.failure.message().contains("within 1"));
-    assert!(failure
+    oracle_assert_eq!(failure.failure.kind(), FailureKind::InvariantViolation);
+    oracle_assert!(failure.failure.message().contains("within 1"));
+    oracle_assert!(failure
         .trace
         .iter()
         .any(|action| action.kind() == expected_action));
-    assert!(failure
+    oracle_assert!(failure
         .trace
         .iter()
         .any(|action| matches!(action, SoakAction::Tick(_))));

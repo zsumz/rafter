@@ -14,6 +14,7 @@ use super::{
     TerminalRecorderMode,
 };
 use crate::model_check::SoakConfig;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq, oracle_expect_err};
 
 #[test]
 fn proposal_termination_monitor_reports_unreached_authority_loss_antecedent() {
@@ -35,27 +36,29 @@ fn proposal_termination_monitor_reports_unreached_authority_loss_antecedent() {
 #[test]
 fn lv_02_proposal_progress_detector_rejects_exhausted_bound() {
     let config = SoakConfig::new(SimSeed(0x7e12), 0);
-    let failure = run_proposal_progress_liveness_detector(
-        config,
-        1,
-        TerminalRecorderMode::DropTerminalRecord,
-    )
-    .expect_err("one bounded-fair round is insufficient for the delayed proposal fixture");
+    let failure = oracle_expect_err!(
+        run_proposal_progress_liveness_detector(
+            config,
+            1,
+            TerminalRecorderMode::DropTerminalRecord,
+        ),
+        "one bounded-fair round is insufficient for the delayed proposal fixture",
+    );
 
-    assert_eq!(
+    oracle_assert_eq!(
         failure.failure.invariant(),
         catalog::LV_02_PROPOSAL_PROGRESS
     );
-    assert_eq!(failure.failure.kind(), FailureKind::InvariantViolation);
-    assert!(failure
+    oracle_assert_eq!(failure.failure.kind(), FailureKind::InvariantViolation);
+    oracle_assert!(failure
         .failure
         .message()
         .contains("within 1 bounded-fair rounds"));
-    assert!(failure
+    oracle_assert!(failure
         .trace
         .iter()
         .any(|action| matches!(action, crate::model_check::soak::SoakAction::Propose { .. })));
-    assert!(failure
+    oracle_assert!(failure
         .trace
         .iter()
         .any(|action| matches!(action, crate::model_check::soak::SoakAction::Tick(_))));
@@ -70,18 +73,19 @@ fn proposal_termination_monitor_observes_authority_loss() {
     let report = run_proposal_termination_liveness_check(config, budget, budget)
         .expect("accepted proposal should terminate after isolated leader steps down");
 
-    assert_eq!(report.feature_id, "proposal-termination");
-    assert!(report.rounds_used <= report.round_limit);
-    assert_eq!(
+    oracle_assert_eq!(report.feature_id, "proposal-termination");
+    oracle_assert!(report.rounds_used <= report.round_limit);
+    oracle_assert_eq!(
         report.proposal.map(|proposal| proposal.outcome),
         Some(ProposalTerminalOutcome::Unknown),
         "local proposal drops are an unknown-outcome boundary"
     );
-    assert!(report.preconditions.faults_stopped);
-    assert!(!report.preconditions.partition_active);
-    report
-        .validate_structure()
-        .expect("production monitor should emit an exact derived bound");
+    oracle_assert!(report.preconditions.faults_stopped);
+    oracle_assert!(!report.preconditions.partition_active);
+    oracle_assert!(
+        report.validate_structure().is_ok(),
+        "production monitor should emit an exact derived bound"
+    );
 }
 
 #[test]
@@ -129,28 +133,30 @@ fn lv_02_proposal_termination_detector_rejects_exhausted_bound() {
     let state = production_monitor_state(config, catalog::LV_02_PROPOSAL_PROGRESS)
         .expect("production fixture should be valid");
     let authority_loss_budget = soak_liveness_round_budget(&state, config);
-    let failure = run_proposal_termination_liveness_detector(
-        config,
-        authority_loss_budget,
-        1,
-        TerminalRecorderMode::DropTerminalRecord,
-    )
-    .expect_err("one bounded-fair round is insufficient for explicit termination");
+    let failure = oracle_expect_err!(
+        run_proposal_termination_liveness_detector(
+            config,
+            authority_loss_budget,
+            1,
+            TerminalRecorderMode::DropTerminalRecord,
+        ),
+        "one bounded-fair round is insufficient for explicit termination",
+    );
 
-    assert_eq!(
+    oracle_assert_eq!(
         failure.failure.invariant(),
         catalog::LV_02_PROPOSAL_PROGRESS
     );
-    assert_eq!(failure.failure.kind(), FailureKind::InvariantViolation);
-    assert!(failure
+    oracle_assert_eq!(failure.failure.kind(), FailureKind::InvariantViolation);
+    oracle_assert!(failure
         .failure
         .message()
         .contains("did not reach an explicit terminal state within 1"));
-    assert!(failure
+    oracle_assert!(failure
         .trace
         .iter()
         .any(|action| matches!(action, crate::model_check::soak::SoakAction::Heal)));
-    assert!(failure
+    oracle_assert!(failure
         .trace
         .iter()
         .any(|action| matches!(action, crate::model_check::soak::SoakAction::Tick(_))));

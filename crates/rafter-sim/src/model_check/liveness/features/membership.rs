@@ -184,7 +184,7 @@ fn run_membership_operation(
     }
 
     let mut leave_issued = false;
-    let mut fair_rounds = FairRoundDriver::new();
+    let mut fair_rounds = FairRoundDriver::new(config.seed);
     for round in 0..monitor.operation_budget {
         if terminal_recorder.observe(monitor.outcome(state, monitor.leader)) {
             return report_recorded_membership_operation(
