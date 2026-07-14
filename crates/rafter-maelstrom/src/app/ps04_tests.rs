@@ -1,4 +1,5 @@
 use rafter::NodeId;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
 use crate::runtime::{dispatch_recovery_outputs, open_application_node};
 
@@ -7,6 +8,7 @@ use self::support::{
     recovery_commands, remove_test_root, test_root, write_command,
 };
 
+mod durability;
 mod floor;
 mod live_snapshot;
 mod snapshot;
@@ -31,14 +33,14 @@ fn ps04_app_persist_interrupt_reopens_at_durable_floor_and_replays_suffix_once()
     drop(opened);
 
     let persisted_after_crash = load_persisted_app(&root);
-    assert_eq!(persisted_after_crash.applied, floor);
-    assert_eq!(persisted_after_crash.kv, expected_kv(0));
+    oracle_assert_eq!(persisted_after_crash.applied, floor);
+    oracle_assert_eq!(persisted_after_crash.kv, expected_kv(0));
 
     let reopened = open_application_node(&root, NodeId(1), Vec::new())
         .expect("production Maelstrom reopen path accepts durable application floor");
-    assert_eq!(reopened.app.applied, floor);
-    assert!(reopened.app.applied <= reopened.node.commit_index());
-    assert!(reopened.app.applied <= reopened.node.last_log_index());
+    oracle_assert_eq!(reopened.app.applied, floor);
+    oracle_assert!(reopened.app.applied <= reopened.node.commit_index());
+    oracle_assert!(reopened.app.applied <= reopened.node.last_log_index());
 
     let replay = recovery_commands(&reopened.recovery_outputs);
     let replay_indices = replay.iter().map(|(index, _)| *index).collect::<Vec<_>>();
@@ -46,35 +48,35 @@ fn ps04_app_persist_interrupt_reopens_at_durable_floor_and_replays_suffix_once()
         .iter()
         .map(|(index, _)| *index)
         .collect::<Vec<_>>();
-    assert_eq!(
+    oracle_assert_eq!(
         replay_indices, expected_indices,
         "recovery must suppress Apply through the durable floor and replay the committed suffix in order"
     );
-    assert!(replay_indices.iter().all(|index| *index > floor));
+    oracle_assert!(replay_indices.iter().all(|index| *index > floor));
     let duplicate = reopened.recovery_outputs[0].clone();
     drop(reopened);
 
     let mut process = initialize_process(&root);
     let initialized = process.initialized.as_mut().expect("node initializes");
-    assert_eq!(initialized.app.kv, expected_kv(2));
-    assert_eq!(
+    oracle_assert_eq!(initialized.app.kv, expected_kv(2));
+    oracle_assert_eq!(
         initialized.app.applied,
         *expected_indices.last().expect("committed suffix exists")
     );
-    assert!(initialized
+    oracle_assert!(initialized
         .completed_replies
         .contains(&("client".to_owned(), 2)));
-    assert!(initialized
+    oracle_assert!(initialized
         .completed_replies
         .contains(&("client".to_owned(), 3)));
 
     let state_after_replay = initialized.app.clone();
     dispatch_recovery_outputs(initialized, vec![duplicate]);
-    assert_eq!(initialized.app.applied, state_after_replay.applied);
-    assert_eq!(initialized.app.kv, state_after_replay.kv);
+    oracle_assert_eq!(initialized.app.applied, state_after_replay.applied);
+    oracle_assert_eq!(initialized.app.kv, state_after_replay.kv);
 
     let persisted_after_replay = load_persisted_app(&root);
-    assert_eq!(persisted_after_replay.applied, state_after_replay.applied);
-    assert_eq!(persisted_after_replay.kv, state_after_replay.kv);
+    oracle_assert_eq!(persisted_after_replay.applied, state_after_replay.applied);
+    oracle_assert_eq!(persisted_after_replay.kv, state_after_replay.kv);
     remove_test_root(root);
 }
