@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::Path,
+    path::{Path, PathBuf},
 };
 
 use serde_json::Value;
@@ -59,12 +59,19 @@ fn verify_simulator_invocations(
     root: &Path,
     sources: &[String],
 ) -> Result<(), AggregateError> {
-    let binary = bundle
+    let binaries = bundle
         .execution
         .artifacts
         .iter()
-        .find(|artifact| artifact.kind == "simulator-binary")
-        .ok_or_else(|| AggregateError::new("simulator binary artifact is missing".to_owned()))?;
+        .filter(|artifact| artifact.kind == "simulator-binary")
+        .collect::<Vec<_>>();
+    let [binary] = binaries.as_slice() else {
+        return Err(AggregateError::new(format!(
+            "simulator execution must capture exactly one binary artifact, found {}",
+            binaries.len()
+        )));
+    };
+    let emitted = emitted_simulator_executable(bundle, root)?;
     let environment_sha256 = bundle.execution.source.environment_sha256.as_str();
     let current_dir = fs::canonicalize(root)
         .map_err(|error| AggregateError::new(format!("canonicalize simulator root: {error}")))?
@@ -106,21 +113,20 @@ fn verify_simulator_invocations(
             .iter()
             .find(|source| source.lines().any(|line| line == format!("label: {label}")))
             .ok_or_else(|| AggregateError::new(format!("simulator log {label} is missing")))?;
-        let invocations = crate::producer::process::parse_combined_invocations(source)
+        let processes = crate::producer::process::parse_combined_processes(source)
             .map_err(|error| AggregateError::new(format!("parse simulator invocation: {error}")))?;
-        let [observed] = invocations.as_slice() else {
+        let [observed] = processes.as_slice() else {
             return Err(AggregateError::new(format!(
                 "simulator log {label} must contain exactly one invocation"
             )));
         };
         if observed.label != label
             || observed.invocation.arguments != arguments
-            || observed.invocation.program_sha256 != binary.sha256
+            || !simulator_program_matches(&observed.invocation, &emitted, &binary.sha256)
             || observed.invocation.current_dir != current_dir
             || observed.invocation.environment_sha256 != environment_sha256
             || crate::producer::process::digest_environment(&observed.invocation.environment)
                 != environment_sha256
-            || !Path::new(&observed.invocation.program).is_absolute()
         {
             return Err(AggregateError::new(format!(
                 "simulator log {label} does not match the exact invocation plan"
@@ -128,6 +134,66 @@ fn verify_simulator_invocations(
         }
     }
     Ok(())
+}
+
+fn emitted_simulator_executable(
+    bundle: &ResultBundle,
+    root: &Path,
+) -> Result<PathBuf, AggregateError> {
+    let mut executables = Vec::new();
+    for artifact in bundle
+        .execution
+        .artifacts
+        .iter()
+        .filter(|artifact| artifact.kind == "compile-log")
+    {
+        let source = fs::read_to_string(root.join(&artifact.path)).map_err(|error| {
+            AggregateError::new(format!(
+                "read simulator compile log {}: {error}",
+                artifact.path
+            ))
+        })?;
+        let processes =
+            crate::producer::process::parse_combined_processes(&source).map_err(|error| {
+                AggregateError::new(format!(
+                    "parse simulator compile log {}: {error}",
+                    artifact.path
+                ))
+            })?;
+        for process in processes
+            .iter()
+            .filter(|process| process.label == "simulator compile")
+        {
+            if process.exit_code != Some(0) || process.timed_out {
+                return Err(AggregateError::new(
+                    "simulator compiler-artifact provenance requires a successful build".to_owned(),
+                ));
+            }
+            executables.push(super::compile::compiler_artifact_executable(
+                process.stdout.as_bytes(),
+                "rafter-model-check-fast",
+                "bin",
+                "simulator compile",
+            )?);
+        }
+    }
+    let [executable] = executables.as_slice() else {
+        return Err(AggregateError::new(format!(
+            "simulator compile logs must emit exactly one source-bound executable, found {}",
+            executables.len()
+        )));
+    };
+    Ok(executable.clone())
+}
+
+fn simulator_program_matches(
+    invocation: &crate::InvocationReceipt,
+    emitted: &Path,
+    captured_sha256: &str,
+) -> bool {
+    Path::new(&invocation.program) == emitted
+        && emitted.is_absolute()
+        && invocation.program_sha256 == captured_sha256
 }
 
 pub(super) fn validate_simulator_schedule(
@@ -312,4 +378,45 @@ fn soak_seeds_are_rederived(
     observed.len() == expected.len()
         && observed.keys().cloned().collect::<BTreeSet<_>>() == expected
         && observed.values().all(|count| *count == 1)
+}
+
+#[cfg(test)]
+mod provenance_tests {
+    use std::{collections::BTreeMap, path::Path};
+
+    use super::simulator_program_matches;
+
+    #[test]
+    fn simulator_runtime_path_and_digest_must_both_match_cargo_output() {
+        let emitted = Path::new("/workspace/target/rafter-model-check-fast");
+        let invocation = crate::InvocationReceipt {
+            program: emitted.to_string_lossy().into_owned(),
+            program_sha256: "a".repeat(64),
+            arguments: vec!["--profile".to_owned(), "fast".to_owned()],
+            current_dir: "/workspace".to_owned(),
+            environment: BTreeMap::new(),
+            environment_sha256: crate::producer::process::digest_environment(&BTreeMap::new()),
+        };
+        assert!(simulator_program_matches(
+            &invocation,
+            emitted,
+            &"a".repeat(64),
+        ));
+
+        let mut substituted = invocation.clone();
+        substituted.program = "/workspace/target/substituted-simulator".to_owned();
+        assert!(!simulator_program_matches(
+            &substituted,
+            emitted,
+            &"a".repeat(64),
+        ));
+
+        let mut wrong_digest = invocation;
+        wrong_digest.program_sha256 = "b".repeat(64);
+        assert!(!simulator_program_matches(
+            &wrong_digest,
+            emitted,
+            &"a".repeat(64),
+        ));
+    }
 }

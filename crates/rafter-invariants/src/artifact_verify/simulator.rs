@@ -5,8 +5,8 @@ use serde_json::Value;
 use crate::{aggregate::AggregateError, ResultBundle};
 
 use super::{
-    compile_test::{is_passing, require_exact_test_pass, verify_test_invocations},
     simulator_schedule::verify_simulator_schedule,
+    test_logs::{is_passing, require_exact_test_pass, verify_test_invocations},
     EVENT_PREFIX,
 };
 
@@ -58,13 +58,27 @@ pub(super) fn verify_simulator_logs(
                 check.check_id
             ))
         })?;
+        verify_nonpassing_event_classification(bundle, check, identity, &events)?;
         verify_simulator_observations(bundle, check, identity, &liveness_contracts, &events)?;
         if !is_passing(bundle, &check.execution_id) {
             continue;
         }
-        let Some((_, fixture)) = check.evidence_ids[0].rsplit_once('@') else {
+        let Some(negative_test) = identity.negative_test.as_ref() else {
             continue;
         };
+        let fixture = descriptor.negative_fixture.as_deref().ok_or_else(|| {
+            AggregateError::new(format!(
+                "simulator check {} has a registered negative test without a fixture",
+                check.check_id
+            ))
+        })?;
+        if negative_test.test_name.rsplit("::").next() != Some(fixture) {
+            return Err(AggregateError::new(format!(
+                "simulator check {} fixture does not match registered test identity {}",
+                check.check_id, negative_test.test_name
+            )));
+        }
+        verify_negative_fixture_binding(root, descriptor, fixture, &check.check_id)?;
         let artifact = check
             .artifacts
             .iter()
@@ -81,8 +95,130 @@ pub(super) fn verify_simulator_logs(
             test_logs.insert(artifact.path.clone(), source.clone());
             source
         };
-        verify_test_invocations(bundle, check, &source, fixture, root)?;
-        require_exact_test_pass(&source, fixture, &check.check_id)?;
+        verify_test_invocations(
+            bundle,
+            check,
+            &source,
+            &negative_test.test_name,
+            &negative_test.check_id(),
+            root,
+        )?;
+        require_exact_test_pass(&source, &negative_test.test_name, &check.check_id)?;
+    }
+    Ok(())
+}
+
+fn verify_nonpassing_event_classification(
+    bundle: &ResultBundle,
+    check: &crate::CheckReceipt,
+    identity: &crate::SimulatorIdentity,
+    events: &BTreeMap<String, Vec<Value>>,
+) -> Result<(), AggregateError> {
+    let mut expected = None;
+    for event in identity
+        .checks
+        .iter()
+        .flat_map(|name| events.get(name).into_iter().flatten())
+        .filter(|event| event["status"] != "pass")
+    {
+        let candidate = match event.get("classification").and_then(Value::as_str) {
+            Some("invariant-violation") => (
+                crate::EvidenceStatus::Fail,
+                crate::FailureClassification::InvariantViolation,
+                3,
+            ),
+            Some("harness-error") => (
+                crate::EvidenceStatus::Error,
+                crate::FailureClassification::HarnessError,
+                2,
+            ),
+            Some("coverage-not-reached") => (
+                crate::EvidenceStatus::Incomplete,
+                crate::FailureClassification::CoverageNotReached,
+                1,
+            ),
+            _ => {
+                return Err(AggregateError::new(format!(
+                    "simulator check {} has an invalid raw failure classification",
+                    check.check_id
+                )))
+            }
+        };
+        if expected.is_none_or(|(_, _, rank)| candidate.2 > rank) {
+            expected = Some(candidate);
+        }
+    }
+    let Some((expected_status, expected_classification, _)) = expected else {
+        return Ok(());
+    };
+    let outcomes = bundle
+        .results
+        .iter()
+        .filter(|result| result.execution_id == check.execution_id)
+        .map(|result| (result.status, result.classification))
+        .collect::<Vec<_>>();
+    if outcomes.is_empty()
+        || outcomes
+            .iter()
+            .any(|outcome| *outcome != (expected_status, Some(expected_classification)))
+    {
+        return Err(AggregateError::new(format!(
+            "simulator check {} receipt does not preserve its raw semantic failure classification",
+            check.check_id
+        )));
+    }
+    Ok(())
+}
+
+fn verify_negative_fixture_binding(
+    root: &Path,
+    descriptor: &crate::EvidenceDescriptor,
+    fixture: &str,
+    check_id: &str,
+) -> Result<(), AggregateError> {
+    let fixture_path = descriptor.negative_fixture_path.as_deref().ok_or_else(|| {
+        AggregateError::new(format!(
+            "simulator check {check_id} has no registered negative fixture path"
+        ))
+    })?;
+    let detector = descriptor
+        .negative_fixture_detector
+        .as_deref()
+        .ok_or_else(|| {
+            AggregateError::new(format!(
+                "simulator check {check_id} has no registered detector identity"
+            ))
+        })?;
+    let canonical_root = fs::canonicalize(root)
+        .map_err(|error| AggregateError::new(format!("canonicalize source root: {error}")))?;
+    let canonical_fixture = fs::canonicalize(root.join(fixture_path)).map_err(|error| {
+        AggregateError::new(format!(
+            "read simulator fixture source {fixture_path}: {error}"
+        ))
+    })?;
+    if !canonical_fixture.starts_with(&canonical_root) {
+        return Err(AggregateError::new(format!(
+            "simulator fixture path escapes the source root: {fixture_path}"
+        )));
+    }
+    let fixture_source = fs::read_to_string(&canonical_fixture).map_err(|error| {
+        AggregateError::new(format!(
+            "read simulator fixture source {fixture_path}: {error}"
+        ))
+    })?;
+    let detector_source = fs::read_to_string(root.join(&descriptor.path)).map_err(|error| {
+        AggregateError::new(format!(
+            "read simulator detector source {}: {error}",
+            descriptor.path
+        ))
+    })?;
+    let fixture_declaration = format!("fn {fixture}");
+    if !fixture_source.contains(&fixture_declaration)
+        || (!fixture_source.contains(detector) && !detector_source.contains(detector))
+    {
+        return Err(AggregateError::new(format!(
+            "simulator check {check_id} does not bind fixture {fixture} to detector {detector} in the registered source paths"
+        )));
     }
     Ok(())
 }
