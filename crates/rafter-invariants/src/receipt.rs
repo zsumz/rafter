@@ -129,8 +129,11 @@ fn validate_provenance(
         || bundle.execution.invocation.arguments.is_empty()
         || !Path::new(&bundle.execution.invocation.program).is_absolute()
         || !Path::new(&bundle.execution.invocation.current_dir).is_absolute()
-        || !Path::new(&bundle.execution.invocation.program)
-            .starts_with(&bundle.execution.invocation.current_dir)
+        || Path::new(&bundle.execution.invocation.program)
+            != crate::producer_image::image_path(
+                Path::new(&bundle.execution.invocation.current_dir),
+                &bundle.execution.invocation.program_sha256,
+            )
         || crate::producer::process::digest_environment(&bundle.execution.invocation.environment)
             != bundle.execution.invocation.environment_sha256
         || !is_sha256(&bundle.execution.invocation.environment_sha256)
@@ -172,7 +175,11 @@ fn validate_producer_invocation(bundle: &ResultBundle) -> Result<(), &'static st
     let [binary] = binaries.as_slice() else {
         return Err("producer invocation requires exactly one binary artifact");
     };
-    if binary.sha256 != bundle.execution.invocation.program_sha256 {
+    if bundle.execution.producer.binding != crate::producer_image::PRODUCER_BINDING
+        || bundle.execution.producer.executable.kind != "producer-binary"
+        || &bundle.execution.producer.executable != *binary
+        || binary.sha256 != bundle.execution.invocation.program_sha256
+    {
         return Err("producer invocation binary does not match its artifact");
     }
     let arguments = &bundle.execution.invocation.arguments;

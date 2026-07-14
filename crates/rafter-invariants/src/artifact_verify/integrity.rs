@@ -6,9 +6,11 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use crate::{aggregate::AggregateError, ResultBundle};
+use crate::{aggregate::AggregateError, ArtifactRef, ResultBundle};
 
 pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateError> {
+    let repository = fs::canonicalize(root)
+        .map_err(|error| AggregateError::new(format!("canonicalize artifact root: {error}")))?;
     for input in [
         &bundle.execution.plan.registry,
         &bundle.execution.plan.manifest,
@@ -23,6 +25,7 @@ pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), Aggregate
         })?;
     }
     let mut artifacts = bundle.execution.artifacts.iter().collect::<BTreeSet<_>>();
+    artifacts.insert(&bundle.execution.producer.executable);
     artifacts.extend(
         bundle
             .execution
@@ -37,29 +40,47 @@ pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), Aggregate
             .flat_map(|result| result.artifacts.iter()),
     );
     for artifact in artifacts {
-        let path = Path::new(&artifact.path);
-        if path.is_absolute()
-            || path
-                .components()
-                .any(|component| !matches!(component, Component::Normal(_)))
-        {
-            return Err(AggregateError::new(format!(
-                "artifact path must be repository-relative: {}",
-                artifact.path
-            )));
-        }
-        let bytes = fs::read(root.join(path)).map_err(|error| {
-            AggregateError::new(format!("read artifact {}: {error}", artifact.path))
-        })?;
-        let digest = format!("{:x}", Sha256::digest(&bytes));
-        if artifact.size_bytes != bytes.len() as u64 || artifact.sha256 != digest {
-            return Err(AggregateError::new(format!(
-                "artifact integrity mismatch: {}",
-                artifact.path
-            )));
-        }
+        verify_artifact(artifact, &repository)?;
     }
-    verify_producer_invocation_paths(bundle, root)
+    verify_producer_invocation_paths(bundle, &repository)
+}
+
+fn verify_artifact(artifact: &ArtifactRef, repository: &Path) -> Result<(), AggregateError> {
+    let path = Path::new(&artifact.path);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(AggregateError::new(format!(
+            "artifact path must be repository-relative: {}",
+            artifact.path
+        )));
+    }
+    let expected = repository.join(path);
+    let metadata = fs::symlink_metadata(&expected).map_err(|error| {
+        AggregateError::new(format!("read artifact {}: {error}", artifact.path))
+    })?;
+    let canonical = fs::canonicalize(&expected).map_err(|error| {
+        AggregateError::new(format!("canonicalize artifact {}: {error}", artifact.path))
+    })?;
+    if !metadata.file_type().is_file() || canonical != expected {
+        return Err(AggregateError::new(format!(
+            "artifact must be a regular non-symlink file inside the repository: {}",
+            artifact.path
+        )));
+    }
+    let bytes = fs::read(canonical).map_err(|error| {
+        AggregateError::new(format!("read artifact {}: {error}", artifact.path))
+    })?;
+    let digest = format!("{:x}", Sha256::digest(&bytes));
+    if artifact.size_bytes != bytes.len() as u64 || artifact.sha256 != digest {
+        return Err(AggregateError::new(format!(
+            "artifact integrity mismatch: {}",
+            artifact.path
+        )));
+    }
+    Ok(())
 }
 
 pub(super) fn verify_producer_invocation_paths(
@@ -77,11 +98,12 @@ pub(super) fn verify_producer_invocation_paths(
             "producer working directory does not match the canonical source checkout".to_owned(),
         ));
     }
-    let program = fs::canonicalize(&bundle.execution.invocation.program)
-        .map_err(|error| AggregateError::new(format!("canonicalize producer program: {error}")))?;
-    if !program.starts_with(&repository) {
+    let program = Path::new(&bundle.execution.invocation.program);
+    let expected_program =
+        crate::producer_image::image_path(&repository, &bundle.execution.invocation.program_sha256);
+    if program != expected_program {
         return Err(AggregateError::new(
-            "producer program is outside the canonical source checkout".to_owned(),
+            "producer program does not have the exact managed content-addressed path".to_owned(),
         ));
     }
     let binaries = bundle
@@ -95,19 +117,58 @@ pub(super) fn verify_producer_invocation_paths(
             "producer invocation requires exactly one preserved binary".to_owned(),
         ));
     };
-    let program_digest =
-        format!(
-            "{:x}",
-            Sha256::digest(fs::read(program).map_err(|error| {
-                AggregateError::new(format!("read producer program: {error}"))
-            })?)
-        );
-    if program_digest != binary.sha256
-        || program_digest != bundle.execution.invocation.program_sha256
+    if bundle.execution.producer.binding != crate::producer_image::PRODUCER_BINDING
+        || bundle.execution.producer.executable.kind != "producer-binary"
+        || &bundle.execution.producer.executable != *binary
+        || binary.sha256 != bundle.execution.invocation.program_sha256
     {
         return Err(AggregateError::new(
-            "claimed producer program does not match the preserved producer binary".to_owned(),
+            "producer invocation is not bound to its immutable executable artifact".to_owned(),
         ));
     }
     Ok(())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use sha2::{Digest, Sha256};
+
+    use super::verify_artifact;
+
+    #[test]
+    fn artifact_integrity_rejects_modified_missing_and_symlinked_files() {
+        use std::os::unix::fs::symlink;
+
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let root = std::env::temp_dir().join(format!(
+            "rafter-artifact-integrity-{}-{}",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&root).expect("create artifact scratch root");
+        let repository = std::fs::canonicalize(&root).expect("canonical artifact scratch root");
+        let path = repository.join("artifact");
+        let bytes = b"preserved artifact";
+        std::fs::write(&path, bytes).expect("write preserved artifact");
+        let artifact = crate::ArtifactRef {
+            kind: "producer-binary".to_owned(),
+            path: "artifact".to_owned(),
+            sha256: format!("{:x}", Sha256::digest(bytes)),
+            size_bytes: bytes.len() as u64,
+        };
+
+        verify_artifact(&artifact, &repository).expect("regular artifact verifies");
+        std::fs::write(&path, b"modified artifact").expect("modify artifact");
+        assert!(verify_artifact(&artifact, &repository).is_err());
+        std::fs::remove_file(&path).expect("remove modified artifact");
+        assert!(verify_artifact(&artifact, &repository).is_err());
+
+        let target = repository.join("target");
+        std::fs::write(&target, bytes).expect("write symlink target");
+        symlink(&target, &path).expect("create artifact symlink");
+        assert!(verify_artifact(&artifact, &repository).is_err());
+        std::fs::remove_dir_all(root).expect("remove artifact scratch root");
+    }
 }

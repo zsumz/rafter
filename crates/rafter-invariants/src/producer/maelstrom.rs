@@ -107,6 +107,7 @@ pub(super) fn run(
         execution: ExecutionReceipt {
             plan: context.plan.clone(),
             invocation: context.invocation.clone(),
+            producer: context.producer.clone(),
             source,
             checks,
             duration_ms: execution_duration_ms,

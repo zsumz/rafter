@@ -30,6 +30,13 @@ fn artifact_kind(path: &str, kind: &str) -> ArtifactRef {
     }
 }
 
+fn producer_binding(path: &str) -> ProducerBindingReceipt {
+    ProducerBindingReceipt {
+        binding: crate::producer_image::PRODUCER_BINDING.to_owned(),
+        executable: artifact_kind(path, "producer-binary"),
+    }
+}
+
 fn source_receipt(commit: &str) -> SourceReceipt {
     SourceReceipt {
         commit: commit.to_owned(),
@@ -71,7 +78,10 @@ fn plan_input(path: &str) -> PlanInput {
 
 fn invocation_receipt(runner: &str) -> InvocationReceipt {
     InvocationReceipt {
-        program: "/workspace/rafter/target/debug/rafter-invariants".to_owned(),
+        program: format!(
+            "/workspace/rafter/target/rafter-invariants/producer-images/{}/rafter-invariants",
+            "0".repeat(64)
+        ),
         program_sha256: "0".repeat(64),
         arguments: vec![
             "run".to_owned(),
@@ -333,6 +343,7 @@ pub(crate) fn passing_bundles(catalog: &Catalog, manifest: &ProfileManifest) -> 
                     },
                 );
             }
+            let producer = producer_binding(&format!("artifacts/{runner}-producer"));
             ResultBundle {
                 schema_version: crate::types::RESULT_SCHEMA_VERSION,
                 runner: runner.clone(),
@@ -341,13 +352,14 @@ pub(crate) fn passing_bundles(catalog: &Catalog, manifest: &ProfileManifest) -> 
                 execution: ExecutionReceipt {
                     plan: plan_receipt(manifest, "pr"),
                     invocation: invocation_receipt(&runner),
+                    producer: producer.clone(),
                     source,
                     checks,
                     duration_ms: 1,
                     peak_rss_kib: 1,
                     artifacts: vec![
                         artifact(&format!("artifacts/{runner}.log")),
-                        artifact_kind(&format!("artifacts/{runner}-producer"), "producer-binary"),
+                        producer.executable,
                     ],
                 },
                 results,
@@ -892,6 +904,7 @@ fn old_receipts_without_report_binding_field_are_rejected() {
 #[test]
 fn stale_bundle_is_red_never_green() {
     let (catalog, manifest) = loaded();
+    let producer = producer_binding("artifacts/tests-producer");
     let bundle = ResultBundle {
         schema_version: crate::types::RESULT_SCHEMA_VERSION,
         runner: "tests".to_owned(),
@@ -900,14 +913,12 @@ fn stale_bundle_is_red_never_green() {
         execution: ExecutionReceipt {
             plan: plan_receipt(&manifest, "pr"),
             invocation: invocation_receipt("tests"),
+            producer: producer.clone(),
             source: source_receipt("old"),
             checks: Vec::new(),
             duration_ms: 1,
             peak_rss_kib: 1,
-            artifacts: vec![
-                artifact("artifacts/tests.log"),
-                artifact_kind("artifacts/tests-producer", "producer-binary"),
-            ],
+            artifacts: vec![artifact("artifacts/tests.log"), producer.executable],
         },
         results: Vec::new(),
     };
