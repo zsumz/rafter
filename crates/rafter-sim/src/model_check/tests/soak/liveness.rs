@@ -1,12 +1,15 @@
 use std::collections::BTreeSet;
 
-use super::super::super::helpers::three_node_configs;
+use super::super::super::helpers::{config as node_config, three_node_configs};
 use super::super::super::liveness::{self, run_soak_liveness_check_with_budget_overrides};
 use super::super::super::{
-    run_raft_random_soak, soak::SoakAction, state::ExplorationState, SoakActionKind, SoakConfig,
+    run_raft_random_soak,
+    soak::SoakAction,
+    state::{ClientWriteStatus, ExplorationState},
+    SoakActionKind, SoakConfig,
 };
 use crate::{Cluster, SimSeed};
-use rafter_invariant_test::{oracle_assert, oracle_expect_err};
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq, oracle_expect_err};
 
 #[derive(Clone, Copy, Debug)]
 struct HistoryCounts {
@@ -66,6 +69,128 @@ fn randomized_soak_liveness_phase_elects_leader_and_commits_probe() {
         usability.to_json()["clause_ids"],
         serde_json::json!(["LV-01.b"])
     );
+}
+
+fn reviewed_pr_soak_config(seed: SimSeed) -> SoakConfig {
+    SoakConfig::new(seed, 320)
+        .with_max_proposals(24)
+        .with_max_restarts(12)
+        .with_max_read_indexes(4)
+        .with_max_membership_changes(8)
+        .with_max_transfers(2)
+        .with_max_partitions(2)
+        .with_max_lossy_restarts(2)
+        .with_snapshot_catchup_probe()
+        .with_tick_skew(rafter::NodeId(1), 3)
+}
+
+fn pr_three_node_configs() -> Vec<rafter::NodeConfig> {
+    vec![
+        node_config(1, &[2, 3], 2),
+        node_config(2, &[1, 3], 2),
+        node_config(3, &[1, 2], 2),
+    ]
+}
+
+#[test]
+fn reviewed_soak_seeds_find_a_stable_leader_usability_window() {
+    for seed in [0x9103, 0x9104, 0x9105, 0x9106] {
+        let summary = run_raft_random_soak(
+            pr_three_node_configs(),
+            reviewed_pr_soak_config(SimSeed(seed)),
+        )
+        .unwrap_or_else(|failure| {
+            panic!(
+                "reviewed PR soak seed 0x{seed:x} must find a stable usability window: {failure}"
+            )
+        });
+
+        let convergence = summary
+            .liveness_reports()
+            .iter()
+            .find(|report| report.feature_id() == "leader-convergence")
+            .expect("reviewed seed emits convergence evidence")
+            .to_json();
+        let usability = summary
+            .liveness_reports()
+            .iter()
+            .find(|report| report.feature_id() == "leader-usability")
+            .expect("reviewed seed emits usability evidence")
+            .to_json();
+        oracle_assert_eq!(
+            convergence["stable_leader"]["node_id"],
+            usability["stable_leader"]["node_id"]
+        );
+        oracle_assert_eq!(usability["proposal"]["terminal_outcome"], "committed");
+    }
+}
+
+#[test]
+fn liveness_retry_terminates_each_abandoned_accepted_probe() {
+    let config = reviewed_pr_soak_config(SimSeed(0x9103));
+    let mut state =
+        ExplorationState::new(Cluster::new_with_seed(pr_three_node_configs(), config.seed));
+    let mut trace = Vec::new();
+    let mut observed_actions = BTreeSet::new();
+
+    let reports = run_soak_liveness_check_with_budget_overrides(
+        &mut state,
+        config,
+        &mut trace,
+        &mut observed_actions,
+        None,
+        None,
+    )
+    .expect("reviewed retry seed must eventually find a usable leader");
+    let final_proposal_id = reports
+        .iter()
+        .find(|report| report.feature_id() == "leader-usability")
+        .expect("usability evidence exists")
+        .to_json()["proposal"]["proposal_id"]
+        .as_u64()
+        .expect("proposal ID is numeric");
+
+    oracle_assert!(state.client_history().writes.len() > 1);
+    for (proposal_id, write) in &state.client_history().writes {
+        if proposal_id.0 == final_proposal_id {
+            continue;
+        }
+        oracle_assert!(matches!(
+            write.status,
+            ClientWriteStatus::Completed { .. }
+                | ClientWriteStatus::Rejected
+                | ClientWriteStatus::Unknown { .. }
+        ));
+    }
+}
+
+#[test]
+fn liveness_retry_fails_red_when_candidate_churn_exhausts_the_bound() {
+    let config = reviewed_pr_soak_config(SimSeed(0x9103));
+    let mut state =
+        ExplorationState::new(Cluster::new_with_seed(pr_three_node_configs(), config.seed));
+    let mut trace = Vec::new();
+    let mut observed_actions = BTreeSet::new();
+
+    let failure = oracle_expect_err!(
+        run_soak_liveness_check_with_budget_overrides(
+            &mut state,
+            config,
+            &mut trace,
+            &mut observed_actions,
+            None,
+            Some(2),
+        ),
+        "candidate churn must remain red after the fixed usability bound"
+    );
+
+    oracle_assert!(failure
+        .failure
+        .message()
+        .contains("within 2 bounded-fair usability rounds"));
+    oracle_assert!(trace
+        .iter()
+        .any(|action| matches!(action, SoakAction::Propose { .. })));
 }
 
 #[test]

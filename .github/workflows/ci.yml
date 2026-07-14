@@ -105,6 +105,19 @@ jobs:
           if-no-files-found: warn
           retention-days: 30
 
+  invariants-launcher-macos:
+    name: invariants-launcher-macos
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Validate managed process launcher on macOS
+        run: cargo test --locked -p rafter-invariants producer::process::tests -- --test-threads=1
+
   invariants-simulator:
     name: invariants-simulator
     runs-on: ubuntu-latest
@@ -207,6 +220,7 @@ jobs:
     name: invariants-pr
     needs:
       - invariants-tests
+      - invariants-launcher-macos
       - invariants-simulator
       - invariants-tla
       - invariants-maelstrom
@@ -246,6 +260,7 @@ jobs:
         env:
           AGGREGATE_STATUS: ${{ steps.aggregate.outputs.status }}
           TESTS_RESULT: ${{ needs.invariants-tests.result }}
+          LAUNCHER_MACOS_RESULT: ${{ needs.invariants-launcher-macos.result }}
           SIMULATOR_RESULT: ${{ needs.invariants-simulator.result }}
           TLA_RESULT: ${{ needs.invariants-tla.result }}
           MAELSTROM_RESULT: ${{ needs.invariants-maelstrom.result }}
@@ -263,7 +278,8 @@ jobs:
             complete=false
           fi
           dependencies_green=false
-          if [[ "$TESTS_RESULT" = "success" && "$SIMULATOR_RESULT" = "success" && \
+          if [[ "$TESTS_RESULT" = "success" && "$LAUNCHER_MACOS_RESULT" = "success" && \
+                "$SIMULATOR_RESULT" = "success" && \
                 "$TLA_RESULT" = "success" && "$MAELSTROM_RESULT" = "success" && \
                 "$AGGREGATE_STATUS" = "0" ]]; then
             dependencies_green=true
@@ -310,11 +326,13 @@ jobs:
           AGGREGATE_STATUS: ${{ steps.aggregate.outputs.status }}
           REPORT_READY: ${{ steps.report.outputs.complete }}
           TESTS_RESULT: ${{ needs.invariants-tests.result }}
+          LAUNCHER_MACOS_RESULT: ${{ needs.invariants-launcher-macos.result }}
           SIMULATOR_RESULT: ${{ needs.invariants-simulator.result }}
           TLA_RESULT: ${{ needs.invariants-tla.result }}
           MAELSTROM_RESULT: ${{ needs.invariants-maelstrom.result }}
         run: |
           test "$TESTS_RESULT" = "success"
+          test "$LAUNCHER_MACOS_RESULT" = "success"
           test "$SIMULATOR_RESULT" = "success"
           test "$TLA_RESULT" = "success"
           test "$MAELSTROM_RESULT" = "success"

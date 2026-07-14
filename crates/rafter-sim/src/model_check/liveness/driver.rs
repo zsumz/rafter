@@ -239,6 +239,21 @@ pub(in crate::model_check::liveness) struct FairRoundDriver {
     schedule_seed: SimSeed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::model_check::liveness) struct LivenessScheduleWindow {
+    pub(in crate::model_check::liveness) round_offset: usize,
+    pub(in crate::model_check::liveness) budget: usize,
+}
+
+impl LivenessScheduleWindow {
+    pub(in crate::model_check::liveness) const fn new(round_offset: usize, budget: usize) -> Self {
+        Self {
+            round_offset,
+            budget,
+        }
+    }
+}
+
 impl FairRoundDriver {
     pub(in crate::model_check::liveness) fn new(schedule_seed: SimSeed) -> Self {
         Self {
@@ -334,6 +349,26 @@ pub(in crate::model_check::liveness) fn drive_liveness_rounds_until_observed(
     mut complete: impl FnMut(&ExplorationState) -> bool,
     mut observe: impl FnMut(&ExplorationState) -> bool,
 ) -> Result<BoundedRun, SoakFailure> {
+    drive_liveness_rounds_until_observed_from_round(
+        state,
+        config,
+        trace,
+        observed_actions,
+        LivenessScheduleWindow::new(0, budget),
+        &mut complete,
+        &mut observe,
+    )
+}
+
+pub(in crate::model_check::liveness) fn drive_liveness_rounds_until_observed_from_round(
+    state: &mut ExplorationState,
+    config: SoakConfig,
+    trace: &mut Vec<SoakAction>,
+    observed_actions: &mut BTreeSet<SoakActionKind>,
+    schedule: LivenessScheduleWindow,
+    mut complete: impl FnMut(&ExplorationState) -> bool,
+    mut observe: impl FnMut(&ExplorationState) -> bool,
+) -> Result<BoundedRun, SoakFailure> {
     if complete(state) {
         return Ok(BoundedRun {
             completed: true,
@@ -342,7 +377,8 @@ pub(in crate::model_check::liveness) fn drive_liveness_rounds_until_observed(
         });
     }
     let mut fair_rounds = FairRoundDriver::new(config.seed);
-    for round in 0..budget {
+    for elapsed_round in 0..schedule.budget {
+        let schedule_round = schedule.round_offset.saturating_add(elapsed_round);
         let mut completion_latched = false;
         let mut premise_held = true;
         let mut observe_until_terminal = |state: &ExplorationState| {
@@ -362,7 +398,7 @@ pub(in crate::model_check::liveness) fn drive_liveness_rounds_until_observed(
                 state,
                 trace,
                 observed_actions,
-                round,
+                schedule_round,
                 &mut observe_until_terminal,
             )
             .map_err(|message| soak_liveness_harness_error(state, config, trace, message))?;
@@ -370,21 +406,21 @@ pub(in crate::model_check::liveness) fn drive_liveness_rounds_until_observed(
         if !premise_held || !execution.observer_held {
             return Ok(BoundedRun {
                 completed: false,
-                rounds_used: round + 1,
+                rounds_used: elapsed_round + 1,
                 observer_held: false,
             });
         }
         if completion_latched || complete(state) {
             return Ok(BoundedRun {
                 completed: true,
-                rounds_used: round + 1,
+                rounds_used: elapsed_round + 1,
                 observer_held: true,
             });
         }
     }
     Ok(BoundedRun {
         completed: false,
-        rounds_used: budget,
+        rounds_used: schedule.budget,
         observer_held: true,
     })
 }
@@ -410,10 +446,22 @@ pub(in crate::model_check::liveness) fn drive_until_stable_leader(
     observed_actions: &mut BTreeSet<SoakActionKind>,
     budget: usize,
 ) -> Result<Option<LeaderConvergence>, SoakFailure> {
+    drive_until_stable_leader_from_round(state, config, trace, observed_actions, 0, budget)
+}
+
+pub(in crate::model_check::liveness) fn drive_until_stable_leader_from_round(
+    state: &mut ExplorationState,
+    config: SoakConfig,
+    trace: &mut Vec<SoakAction>,
+    observed_actions: &mut BTreeSet<SoakActionKind>,
+    schedule_round_offset: usize,
+    budget: usize,
+) -> Result<Option<LeaderConvergence>, SoakFailure> {
     let mut stable_leader = None;
     let mut stable_rounds = 0usize;
     let mut fair_rounds = FairRoundDriver::new(config.seed);
-    for round in 0..budget {
+    for elapsed_round in 0..budget {
+        let schedule_round = schedule_round_offset.saturating_add(elapsed_round);
         let round_candidate = single_leader(state);
         let mut candidate_held = round_candidate.is_some();
         let mut observe_candidate = |state: &ExplorationState| {
@@ -426,7 +474,7 @@ pub(in crate::model_check::liveness) fn drive_until_stable_leader(
                 state,
                 trace,
                 observed_actions,
-                round,
+                schedule_round,
                 &mut observe_candidate,
             )
             .map_err(|message| soak_liveness_harness_error(state, config, trace, message))?;
@@ -447,7 +495,7 @@ pub(in crate::model_check::liveness) fn drive_until_stable_leader(
         if stable_rounds >= STABLE_LEADER_WINDOW_ROUNDS {
             return Ok(stable_leader.map(|leader| LeaderConvergence {
                 leader,
-                rounds_used: round + 1,
+                rounds_used: elapsed_round + 1,
                 stable_rounds,
             }));
         }
@@ -821,61 +869,7 @@ fn liveness_payload_visible(state: &ExplorationState, payload: &[u8]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        model_check::{
-            helpers::{config, deliver_all_in_state, elect_node_one_in_state},
-            state::ExplorationState,
-        },
-        Cluster, SimSeed,
-    };
     use rafter_invariant_test::{oracle_assert, oracle_expect_err};
-
-    fn three_node_fast_configs() -> Vec<rafter::NodeConfig> {
-        vec![
-            config(1, &[2, 3], 2),
-            config(2, &[1, 3], 2),
-            config(3, &[1, 2], 2),
-        ]
-    }
-
-    #[test]
-    fn quiescent_leader_monitor_survives_heartbeat_between_observations() {
-        let config = SoakConfig::new(SimSeed(0x1ead), 0);
-        let mut state = ExplorationState::new(Cluster::new_with_seed(
-            three_node_fast_configs(),
-            config.seed,
-        ));
-        elect_node_one_in_state(&mut state);
-        deliver_all_in_state(&mut state);
-        assert_eq!(quiescent_leader(&state), Some(NodeId(1)));
-
-        let mut trace = Vec::new();
-        let mut observed_actions = BTreeSet::new();
-        let leader =
-            drive_until_quiescent_leader(&mut state, config, &mut trace, &mut observed_actions, 12)
-                .expect("leader convergence monitor should preserve same-leader observations");
-
-        assert_eq!(leader, Some(NodeId(1)));
-        assert!(
-            trace
-                .iter()
-                .any(|action| matches!(action, SoakAction::Tick(NodeId(1)))),
-            "regression should exercise a leader tick between quiescent observations"
-        );
-    }
-
-    #[test]
-    fn bounded_fairness_detector_rejects_positive_bound_delivery_starvation() {
-        let mut monitor = BoundedFairnessMonitor::new(3, 2);
-        monitor
-            .observe_round(&[NodeId(1)], &[NodeId(1)], 1, 0)
-            .expect("one missed round remains inside the positive bound");
-        let error = monitor
-            .observe_round(&[NodeId(1)], &[NodeId(1)], 1, 0)
-            .expect_err("the second missed delivery must exhaust the positive bound");
-
-        oracle_assert!(error.contains("delivery starvation"));
-    }
 
     #[test]
     fn bounded_fairness_detector_rejects_positive_bound_tick_starvation() {
@@ -895,72 +889,8 @@ mod tests {
 
         oracle_assert!(error.contains("tick starvation"));
     }
-
-    #[test]
-    fn fair_round_schedule_is_replayable_and_seed_varied() {
-        fn tick_order(seed: SimSeed) -> Vec<NodeId> {
-            let config = SoakConfig::new(seed, 0);
-            let mut state = ExplorationState::new(Cluster::new_with_seed(
-                three_node_fast_configs(),
-                config.seed,
-            ));
-            let mut trace = Vec::new();
-            let mut observed_actions = BTreeSet::new();
-            let mut driver = FairRoundDriver::new(seed);
-            drive_soak_liveness_round(
-                &mut driver,
-                &mut state,
-                config,
-                &mut trace,
-                &mut observed_actions,
-                0,
-            )
-            .expect("one fair round should complete");
-            trace
-                .into_iter()
-                .filter_map(|action| match action {
-                    SoakAction::Tick(node_id) => Some(node_id),
-                    _ => None,
-                })
-                .collect()
-        }
-
-        let first = tick_order(SimSeed(0x9103));
-        let replay = tick_order(SimSeed(0x9103));
-        let varied = tick_order(SimSeed(0x9104));
-
-        assert_eq!(first, replay, "a seed must replay the same fair schedule");
-        assert_ne!(
-            first, varied,
-            "different reviewed seeds must vary the schedule"
-        );
-        assert_eq!(first.iter().copied().collect::<BTreeSet<_>>().len(), 3);
-        assert_eq!(varied.iter().copied().collect::<BTreeSet<_>>().len(), 3);
-    }
-
-    #[test]
-    fn stable_leader_guard_rejects_replacement_inside_positive_window() {
-        let mut guard = StableLeaderGuard::new(NodeId(1), 4);
-        guard
-            .observe(Some(NodeId(1)))
-            .expect("the original leader remains stable initially");
-        guard
-            .observe(Some(NodeId(1)))
-            .expect("the original leader remains stable in round two");
-        let error = guard
-            .observe(Some(NodeId(2)))
-            .expect_err("a replacement inside the positive window must fail");
-
-        assert!(error.contains("replaced"));
-        assert!(error.contains("observation 3 of 4"));
-    }
-
-    #[test]
-    fn delivery_frontier_detector_rejects_cap_exhaustion() {
-        let error = ensure_delivery_frontier_drained(1)
-            .expect_err("ready messages after the final wave must fail closed");
-
-        assert!(error.contains("cap exhausted"));
-        ensure_delivery_frontier_drained(0).expect("a drained frontier satisfies the bound");
-    }
 }
+
+#[cfg(test)]
+#[path = "driver/tests.rs"]
+mod unit_tests;
