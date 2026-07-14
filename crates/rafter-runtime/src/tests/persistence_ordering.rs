@@ -1,4 +1,5 @@
 use super::*;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
 #[test]
 fn leader_proposal_log_entry_is_persisted_before_apply_output_escapes() {
@@ -19,14 +20,14 @@ fn leader_proposal_log_entry_is_persisted_before_apply_output_escapes() {
         })
         .expect("log entry persists");
 
-    assert_eq!(
+    oracle_assert_eq!(
         runtime.log_segment.replay_entries(),
         vec![
             PersistedRaftLogEntry::noop(LogIndex(1), Term(1)),
             PersistedRaftLogEntry::application(LogIndex(2), Term(1), b"create".to_vec(),)
         ]
     );
-    assert_eq!(
+    oracle_assert_eq!(
         outputs,
         vec![RaftOutput::Apply {
             index: LogIndex(2),
@@ -162,14 +163,14 @@ fn committed_configuration_write_failure_suppresses_dependent_membership_output(
         })
         .expect_err("committed configuration write fails before outputs escape");
 
-    assert!(matches!(
+    oracle_assert!(matches!(
         error,
         RaftRuntimeError::HardStateWrite(RaftHardStateStoreWriteError::Io {
             operation: "write committed configuration test hard state",
             ..
         })
     ));
-    assert_eq!(
+    oracle_assert_eq!(
         runtime.hard_state_store.rejected,
         Some(RaftHardState {
             current_term: Term(1),
@@ -178,7 +179,7 @@ fn committed_configuration_write_failure_suppresses_dependent_membership_output(
             committed_configuration: Some(committed_configuration),
         })
     );
-    assert_eq!(
+    oracle_assert_eq!(
         runtime.hard_state_store.current(),
         RaftHardState {
             current_term: Term(1),
@@ -187,7 +188,7 @@ fn committed_configuration_write_failure_suppresses_dependent_membership_output(
             committed_configuration: None,
         }
     );
-    assert_eq!(
+    oracle_assert_eq!(
         runtime.log_segment.replay_entries(),
         vec![
             PersistedRaftLogEntry::noop(LogIndex(1), Term(1)),
@@ -201,13 +202,13 @@ fn committed_configuration_write_failure_suppresses_dependent_membership_output(
         runtime.hard_state_store.durable.clone(),
         runtime.log_segment.clone(),
     );
-    assert_eq!(reopened.commit_index(), LogIndex(1));
-    assert_eq!(reopened.committed_configuration_entry(), None);
-    assert_eq!(
+    oracle_assert_eq!(reopened.commit_index(), LogIndex(1));
+    oracle_assert_eq!(reopened.committed_configuration_entry(), None);
+    oracle_assert_eq!(
         reopened.effective_configuration_entry(),
         Some(configuration)
     );
-    assert_eq!(
+    oracle_assert_eq!(
         reopened.committed_membership(),
         MembershipConfig::stable(membership_set(&[1]))
     );
@@ -232,7 +233,7 @@ fn log_append_failure_suppresses_apply_outputs() {
         })
         .expect_err("log append fails");
 
-    assert!(matches!(
+    oracle_assert!(matches!(
         error,
         RaftRuntimeError::LogAppend(RaftLogSegmentAppendError::Io {
             operation: "append test raft log entries",
@@ -244,7 +245,7 @@ fn log_append_failure_suppresses_apply_outputs() {
     let error = runtime
         .step(RaftInput::Tick)
         .expect_err("a poisoned runtime refuses further inputs");
-    assert!(matches!(error, RaftRuntimeError::Poisoned { .. }));
+    oracle_assert!(matches!(error, RaftRuntimeError::Poisoned { .. }));
 }
 
 #[test]
