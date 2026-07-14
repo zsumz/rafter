@@ -1,5 +1,6 @@
 use std::{
     collections::BTreeMap,
+    fmt::Write as _,
     fs,
     path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -12,7 +13,8 @@ use crate::producer::{
     process::{digest_environment, ProcessLog, TerminationReceipt},
     tla_output::{
         detector_config_kind, detector_label, detector_log_kind, render_detector_config,
-        DetectorProbe, DEFAULT_FIXTURE_MODE, DETECTOR_PROBES,
+        DetectorProbe, DEFAULT_FIXTURE_MODE, DETECTOR_PROBES, MUTATION_SUITE_ARTIFACT_KIND,
+        MUTATION_SUITE_LABEL, REQUIRED_MUTATION_TESTS,
     },
 };
 use crate::{ArtifactRef, InvocationReceipt, ResultBundle};
@@ -23,6 +25,44 @@ static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 fn complete_tla_bundle_verifies() {
     let fixture = Fixture::new();
     verify(&fixture.bundle, &fixture.root).expect("complete TLA bundle verifies");
+}
+
+#[test]
+fn below_floor_membership_trace_fails_closed() {
+    let mut fixture = Fixture::new();
+    let mut trace = fixture.read_log("tla-trace-log");
+    trace.stdout = success_output(28, 28, 28);
+    fixture.write_log("tla-trace-log", &trace);
+    assert!(verify(&fixture.bundle, &fixture.root).is_err());
+}
+
+#[test]
+fn failed_or_incomplete_mutation_suite_fails_closed() {
+    let mut failed = Fixture::new();
+    let mut log = failed.read_log(MUTATION_SUITE_ARTIFACT_KIND);
+    log.exit_code = Some(1);
+    failed.write_log(MUTATION_SUITE_ARTIFACT_KIND, &log);
+    assert!(verify(&failed.bundle, &failed.root).is_err());
+
+    let mut incomplete = Fixture::new();
+    let mut log = incomplete.read_log(MUTATION_SUITE_ARTIFACT_KIND);
+    log.stdout = log
+        .stdout
+        .replace(
+            "test producer::tla_exec::mutation_tests::leader_completeness_uses_commit_authority_term ... ok\n",
+            "",
+        );
+    incomplete.write_log(MUTATION_SUITE_ARTIFACT_KIND, &log);
+    assert!(verify(&incomplete.bundle, &incomplete.root).is_err());
+}
+
+#[test]
+fn mutation_suite_invocation_is_exactly_source_bound() {
+    let mut fixture = Fixture::new();
+    let mut log = fixture.read_log(MUTATION_SUITE_ARTIFACT_KIND);
+    log.invocation.arguments[4] = "another_test_filter".to_owned();
+    fixture.write_log(MUTATION_SUITE_ARTIFACT_KIND, &log);
+    assert!(verify(&fixture.bundle, &fixture.root).is_err());
 }
 
 #[test]
@@ -127,7 +167,7 @@ fn missing_either_fencing_subprobe_fails_closed() {
 fn swapped_detector_pairs_fail_closed() {
     let mut fixture = Fixture::new();
     let election = default_probe("ElectionSafety");
-    let matching = default_probe("LogMatching");
+    let matching = named_probe("LogMatching", "LogMatchingRecorderOnly");
     for kind in [detector_config_kind, detector_log_kind] {
         swap_kinds(
             &mut fixture.bundle,
@@ -165,7 +205,8 @@ fn mismatched_recorded_config_invocation_fails_closed() {
     let mut fixture = Fixture::new();
     let kind = detector_log_kind(default_probe("ElectionSafety")).expect("registered probe");
     let other_config = fixture.canonical_kind(
-        &detector_config_kind(default_probe("LogMatching")).expect("registered probe"),
+        &detector_config_kind(named_probe("LogMatching", "LogMatchingRecorderOnly"))
+            .expect("registered probe"),
     );
     let mut log = fixture.read_log(&kind);
     let position = log
@@ -252,8 +293,8 @@ impl Fixture {
             "Raft.tla",
             "RafterInvariantDetectorNegative.tla",
             "RafterInvariantDetectorNegative.cfg",
-            "RaftTraceSample.tla",
-            "RaftTraceSample.cfg",
+            "RaftMembershipTraceSample.tla",
+            "RaftMembershipTraceSample.cfg",
             "RaftCi.cfg",
         ] {
             fs::copy(
@@ -292,10 +333,10 @@ impl Fixture {
         self.write_kind("tla-config", &config);
         let raft = fs::read(workspace.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
         self.write_kind("tla-spec", &raft);
-        let trace_spec = fs::read(workspace.join("specs/tla/raft/RaftTraceSample.tla"))
+        let trace_spec = fs::read(workspace.join("specs/tla/raft/RaftMembershipTraceSample.tla"))
             .expect("read trace spec");
         self.write_kind("tla-trace-spec", &trace_spec);
-        let trace_config = fs::read(workspace.join("specs/tla/raft/RaftTraceSample.cfg"))
+        let trace_config = fs::read(workspace.join("specs/tla/raft/RaftMembershipTraceSample.cfg"))
             .expect("read trace config");
         self.write_kind("tla-trace-config", &trace_config);
         let detector_spec =
@@ -331,7 +372,7 @@ impl Fixture {
             "tla-trace-log",
             "trace-sample",
             None,
-            success_output(4, 4, 4),
+            success_output(47, 46, 46),
             0,
         );
         for probe in DETECTOR_PROBES {
@@ -344,6 +385,7 @@ impl Fixture {
                 12,
             );
         }
+        self.write_mutation_log();
     }
 
     fn set_counterexample(&mut self, predicate: &str) {
@@ -441,6 +483,57 @@ impl Fixture {
         self.write_log(kind, &log);
     }
 
+    fn write_mutation_log(&mut self) {
+        let mut stdout = String::from("running 32 tests\n");
+        for name in REQUIRED_MUTATION_TESTS {
+            writeln!(
+                stdout,
+                "test producer::tla_exec::mutation_tests::{name} ... ok"
+            )
+            .expect("write mutation fixture output");
+        }
+        stdout.push_str(
+            "test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 179 filtered out\n",
+        );
+        let environment = BTreeMap::new();
+        let log = ProcessLog {
+            schema_version: 3,
+            label: MUTATION_SUITE_LABEL.to_owned(),
+            invocation: InvocationReceipt {
+                program: "cargo".to_owned(),
+                program_sha256: self.bundle.execution.source.cargo_sha256.clone(),
+                arguments: [
+                    "test",
+                    "--locked",
+                    "-p",
+                    "rafter-invariants",
+                    "producer::tla_exec::mutation_tests",
+                    "--",
+                    "--ignored",
+                    "--test-threads=1",
+                ]
+                .map(str::to_owned)
+                .to_vec(),
+                current_dir: self.root.to_string_lossy().into_owned(),
+                environment_sha256: digest_environment(&environment),
+                environment,
+            },
+            exit_code: Some(0),
+            timed_out: false,
+            termination: Some(TerminationReceipt {
+                process_group: true,
+                term_signal_sent: false,
+                grace_ms: 30_000,
+                kill_signal_sent: false,
+            }),
+            duration_ms: 1,
+            peak_rss_kib: 1,
+            stdout,
+            stderr: String::new(),
+        };
+        self.write_log(MUTATION_SUITE_ARTIFACT_KIND, &log);
+    }
+
     fn invocation(&self, label: &str, probe: Option<DetectorProbe>) -> InvocationReceipt {
         let (config, module, workers) = match probe {
             Some(probe) => (
@@ -448,9 +541,11 @@ impl Fixture {
                 "RafterInvariantDetectorNegative.tla",
                 "1",
             ),
-            None if label == "trace-sample" => {
-                ("RaftTraceSample.cfg".to_owned(), "RaftTraceSample.tla", "1")
-            }
+            None if label == "trace-sample" => (
+                "RaftMembershipTraceSample.cfg".to_owned(),
+                "RaftMembershipTraceSample.tla",
+                "1",
+            ),
             None => (
                 self.configuration("config").to_owned(),
                 "Raft.tla",
@@ -462,36 +557,35 @@ impl Fixture {
             .source_ref
             .get(..12)
             .unwrap_or(&self.bundle.source_ref);
+        let mut arguments = vec![
+            "-XX:+UseParallelGC".to_owned(),
+            "-cp".to_owned(),
+            self.root
+                .join("tools/cache/tla2tools.jar")
+                .to_string_lossy()
+                .into_owned(),
+            "tlc2.TLC".to_owned(),
+            "-tool".to_owned(),
+            "-workers".to_owned(),
+            workers.to_owned(),
+            "-seed".to_owned(),
+            self.configuration("seed").to_owned(),
+            "-fp".to_owned(),
+            "0".to_owned(),
+            "-metadir".to_owned(),
+            self.root
+                .join("target/rafter-invariants/tla")
+                .join(source_prefix)
+                .join(&self.bundle.profile)
+                .join(label)
+                .to_string_lossy()
+                .into_owned(),
+        ];
+        arguments.extend(["-config".to_owned(), config, module.to_owned()]);
         InvocationReceipt {
             program: "java".to_owned(),
             program_sha256: self.bundle.execution.source.tools["java"].sha256.clone(),
-            arguments: vec![
-                "-XX:+UseParallelGC".to_owned(),
-                "-cp".to_owned(),
-                self.root
-                    .join("tools/cache/tla2tools.jar")
-                    .to_string_lossy()
-                    .into_owned(),
-                "tlc2.TLC".to_owned(),
-                "-tool".to_owned(),
-                "-workers".to_owned(),
-                workers.to_owned(),
-                "-seed".to_owned(),
-                self.configuration("seed").to_owned(),
-                "-fp".to_owned(),
-                "0".to_owned(),
-                "-metadir".to_owned(),
-                self.root
-                    .join("target/rafter-invariants/tla")
-                    .join(source_prefix)
-                    .join(&self.bundle.profile)
-                    .join(label)
-                    .to_string_lossy()
-                    .into_owned(),
-                "-config".to_owned(),
-                config,
-                module.to_owned(),
-            ],
+            arguments,
             current_dir: self
                 .root
                 .join("specs/tla/raft")
