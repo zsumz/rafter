@@ -62,6 +62,9 @@ pub struct Cluster {
     /// Per-node application incarnation. Explicit application-state-loss
     /// restarts advance this while ordinary process restarts preserve it.
     application_epochs: BTreeMap<NodeId, u64>,
+    /// Immutable applied floor at the beginning of every application epoch.
+    /// Application-state loss retains a snapshot boundary when one survives.
+    application_epoch_start_floors: BTreeMap<(NodeId, u64), LogIndex>,
     /// Per-node durable application floor. Plain restarts preserve this
     /// state-machine durability and replay only committed entries above it.
     durable_applied: BTreeMap<NodeId, LogIndex>,
@@ -118,6 +121,7 @@ impl Cluster {
             execution_cursors: _,
             initial_reference_states: _,
             application_epochs: _,
+            application_epoch_start_floors: _,
             durable_applied,
             snapshot_installs: _,
             snapshot_sources,
@@ -164,6 +168,7 @@ impl Cluster {
             execution_cursors: self.execution_cursors.clone(),
             initial_reference_states: self.initial_reference_states.clone(),
             application_epochs: self.application_epochs.clone(),
+            application_epoch_start_floors: self.application_epoch_start_floors.clone(),
             durable_applied: self.durable_applied.clone(),
             snapshot_installs: self.snapshot_installs.clone(),
             snapshot_sources: self.snapshot_sources.clone(),
@@ -208,6 +213,10 @@ impl Cluster {
             .map(|node_id| (*node_id, LogIndex::ZERO))
             .collect();
         let application_epochs = nodes.keys().map(|node_id| (*node_id, 0)).collect();
+        let application_epoch_start_floors = nodes
+            .keys()
+            .map(|node_id| ((*node_id, 0), LogIndex::ZERO))
+            .collect();
         let initial_reference_states: BTreeMap<_, _> = nodes
             .iter()
             .map(|(node_id, node)| {
@@ -246,6 +255,7 @@ impl Cluster {
             execution_cursors,
             initial_reference_states,
             application_epochs,
+            application_epoch_start_floors,
             durable_applied,
             snapshot_installs: Vec::new(),
             snapshot_sources,
