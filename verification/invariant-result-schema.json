@@ -186,7 +186,7 @@
         "proposal_outcome": { "enum": ["none", "committed", "explicit-terminal"] },
         "authority_loss_required": { "type": "boolean" },
         "fault_cycle_required": { "type": "boolean" },
-        "fairness_policy_id": { "const": "all-node-ticks-fifo-ready-waves-v1" },
+        "fairness_policy_id": { "const": "seeded-rotating-all-node-ticks-ready-wave-permutations-v1" },
         "fairness_tick_bound_rounds": { "type": "integer", "minimum": 1 },
         "fairness_delivery_bound_rounds": { "type": "integer", "minimum": 1 },
         "fairness_max_delivery_waves_per_tick": { "type": "integer", "minimum": 1 },
