@@ -293,6 +293,42 @@ fn snapshot_lifecycle_preserves_logical_identity_through_restart() {
 
 #[test]
 #[ignore = "requires the pinned TLC tool and Java"]
+fn snapshot_compaction_pending_tracks_create_and_compact_transitions() {
+    let root = workspace_root();
+    let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
+    let detector =
+        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
+            .expect("read detector spec");
+    let mutations = [
+        (
+            "snapshot-create-does-not-mark-compaction-pending",
+            "/\\ compactionPending' = [compactionPending EXCEPT ![n] = TRUE]",
+            "/\\ compactionPending' = [compactionPending EXCEPT ![n] = FALSE]",
+        ),
+        (
+            "snapshot-compact-does-not-clear-compaction-pending",
+            "/\\ compactionPending' = [compactionPending EXCEPT ![n] = FALSE]",
+            "/\\ compactionPending' = [compactionPending EXCEPT ![n] = TRUE]",
+        ),
+    ];
+
+    for (name, source, replacement) in mutations {
+        let mutated = replace_exactly_once(&raft, source, replacement);
+        let result =
+            run_tlc_with_config(&root, name, &mutated, &detector, SNAPSHOT_LIFECYCLE_CONFIG);
+        let summary = parse(&result.stdout).expect("parse snapshot compaction mutation output");
+        assert_eq!(result.status.code(), Some(13), "{name} unexpectedly passed");
+        assert!(!summary.completed_without_error, "{name} qualified");
+        assert!(
+            String::from_utf8_lossy(&result.stdout).contains("SnapshotLifecycleCompletes"),
+            "{name} did not fail the lifecycle property: {}",
+            String::from_utf8_lossy(&result.stdout)
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires the pinned TLC tool and Java"]
 fn application_epoch_loss_replays_identically_without_erasing_history() {
     let root = workspace_root();
     let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");

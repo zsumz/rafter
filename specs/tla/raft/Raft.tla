@@ -23,7 +23,7 @@ RequestVote == "RequestVote"
 AppendEntries == "AppendEntries"
 
 VARIABLES currentTerm, votedFor, role, log, commitIndex,
-          snapshotIndex, snapshotPrefix, compactedIndex, snapshotTransfer,
+          snapshotIndex, snapshotPrefix, compactionPending, snapshotTransfer,
           applied, applicationEpoch, epochBaseIndex, epochBaseState,
           applicationState, appliedThrough,
           messages, readRequests, readBarrierViolationSeen,
@@ -35,7 +35,7 @@ VARIABLES currentTerm, votedFor, role, log, commitIndex,
           staleAuthorityAccepted
 
 vars == << currentTerm, votedFor, role, log, commitIndex,
-          snapshotIndex, snapshotPrefix, compactedIndex, snapshotTransfer,
+          snapshotIndex, snapshotPrefix, compactionPending, snapshotTransfer,
           applied, applicationEpoch, epochBaseIndex, epochBaseState,
           applicationState, appliedThrough,
           messages, readRequests, readBarrierViolationSeen,
@@ -47,7 +47,7 @@ vars == << currentTerm, votedFor, role, log, commitIndex,
           staleAuthorityAccepted >>
 
 snapshotVars ==
-  <<snapshotIndex, snapshotPrefix, compactedIndex, snapshotTransfer>>
+  <<snapshotIndex, snapshotPrefix, compactionPending, snapshotTransfer>>
 
 applicationVars ==
   <<applied, applicationEpoch, epochBaseIndex, epochBaseState,
@@ -234,11 +234,11 @@ LogicalPrefix(node, index) ==
 LogicalEntry(node, index) ==
   LogicalEntryFrom(log, snapshotIndex, snapshotPrefix, node, index)
 
-SnapshotIdentitySoundFor(logs, snapshotIndexes, snapshotPrefixes, compactedIndexes) ==
+SnapshotIdentitySoundFor(logs, snapshotIndexes, snapshotPrefixes, compactionPendings) ==
   \A n \in Nodes :
     /\ snapshotIndexes[n] = Len(snapshotPrefixes[n])
     /\ snapshotIndexes[n] <= Len(logs[n])
-    /\ compactedIndexes[n] <= snapshotIndexes[n]
+    /\ compactionPendings[n] => snapshotIndexes[n] > 0
     /\ Prefix(logs[n], snapshotIndexes[n]) = snapshotPrefixes[n]
 
 LogicalPrefixWitnesses(logs, snapshotIndexes, snapshotPrefixes) ==
@@ -575,14 +575,13 @@ TypeOK ==
   /\ \A n \in Nodes : commitIndex[n] <= Len(log[n])
   /\ DOMAIN snapshotIndex = Nodes
   /\ DOMAIN snapshotPrefix = Nodes
-  /\ DOMAIN compactedIndex = Nodes
+  /\ compactionPending \in [Nodes -> BOOLEAN]
   /\ \A n \in Nodes :
        /\ snapshotIndex[n] \in 0..MaxLogLen
        /\ snapshotPrefix[n] \in LogSet
-       /\ compactedIndex[n] \in 0..MaxLogLen
        /\ snapshotIndex[n] = Len(snapshotPrefix[n])
        /\ snapshotIndex[n] <= Len(log[n])
-       /\ compactedIndex[n] <= snapshotIndex[n]
+       /\ compactionPending[n] => snapshotIndex[n] > 0
   /\ DOMAIN snapshotTransfer =
        {"active", "term", "from", "to", "index", "prefix"}
   /\ IF snapshotTransfer.active
@@ -647,7 +646,7 @@ Init ==
   /\ commitIndex = [n \in Nodes |-> 0]
   /\ snapshotIndex = [n \in Nodes |-> 0]
   /\ snapshotPrefix = [n \in Nodes |-> <<>>]
-  /\ compactedIndex = [n \in Nodes |-> 0]
+  /\ compactionPending = [n \in Nodes |-> FALSE]
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = [n \in Nodes |-> <<>>]
   /\ applicationEpoch = [n \in Nodes |-> 0]
@@ -942,9 +941,10 @@ CreateSnapshot(n) ==
     /\ index > snapshotIndex[n]
     /\ snapshotIndex' = [snapshotIndex EXCEPT ![n] = index]
     /\ snapshotPrefix' = [snapshotPrefix EXCEPT ![n] = prefix]
+    /\ compactionPending' = [compactionPending EXCEPT ![n] = TRUE]
     /\ RecordLogicalPrefixes(log, snapshotIndex', snapshotPrefix')
     /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
-                    compactedIndex, snapshotTransfer, messages,
+                    snapshotTransfer, messages,
                     readRequests, readBarrierViolationSeen, membership, appliedConfigIndex,
                     effectiveMembership, effectiveConfigIndex,
                     electedLeaders, committedLedger, commitWitnesses>>
@@ -968,7 +968,7 @@ TransferSnapshot(from, to) ==
         prefix |-> snapshotPrefix[from]]
   /\ RecordAuthorityAcceptance(currentTerm[from], currentTerm[from], TRUE)
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
-                  snapshotIndex, snapshotPrefix, compactedIndex,
+                  snapshotIndex, snapshotPrefix, compactionPending,
                   messages, readRequests, readBarrierViolationSeen, membership,
                   appliedConfigIndex, effectiveMembership,
                   effectiveConfigIndex, electedLeaders,
@@ -1003,7 +1003,7 @@ InstallSnapshot ==
     /\ commitIndex' = nextCommit
     /\ snapshotIndex' = [snapshotIndex EXCEPT ![node] = transfer.index]
     /\ snapshotPrefix' = [snapshotPrefix EXCEPT ![node] = transfer.prefix]
-    /\ compactedIndex' = [compactedIndex EXCEPT ![node] = transfer.index]
+    /\ compactionPending' = [compactionPending EXCEPT ![node] = FALSE]
     /\ snapshotTransfer' = NoSnapshotTransfer
     /\ applicationEpoch' = [applicationEpoch EXCEPT ![node] = 1]
     /\ epochBaseIndex' = [epochBaseIndex EXCEPT ![node] = transfer.index]
@@ -1033,8 +1033,8 @@ InstallSnapshot ==
                     electedLeaders, commitWitnesses>>
 
 CompactSnapshot(n) ==
-  /\ compactedIndex[n] < snapshotIndex[n]
-  /\ compactedIndex' = [compactedIndex EXCEPT ![n] = snapshotIndex[n]]
+  /\ compactionPending[n]
+  /\ compactionPending' = [compactionPending EXCEPT ![n] = FALSE]
   /\ RecordLogicalPrefixes(log, snapshotIndex, snapshotPrefix)
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                   snapshotIndex, snapshotPrefix, snapshotTransfer,
@@ -1184,7 +1184,7 @@ LogMatchingFor(logs, snapshotIndexes, snapshotPrefixes) ==
 
 LogMatching ==
   /\ SnapshotIdentitySoundFor(
-       log, snapshotIndex, snapshotPrefix, compactedIndex)
+       log, snapshotIndex, snapshotPrefix, compactionPending)
   /\ LogicalPrefixLedgerSound
   /\ LogMatchingFor(log, snapshotIndex, snapshotPrefix)
 
