@@ -27,6 +27,33 @@ fn pr_invariant_aggregate_is_stable_and_fail_closed() {
     assert!(maelstrom.contains("Validate scheduled Maelstrom evidence contract"));
     assert!(!maelstrom.contains("--profile pr --layer maelstrom"));
 
+    let tla = job_block(&workflow, "invariants-tla");
+    for required in [
+        "timeout-minutes: 180",
+        "Check TLA state capacity",
+        "required_kib=\"$((8 * 1024 * 1024))\"",
+        "timeout-minutes: 140",
+    ] {
+        assert!(
+            tla.contains(required),
+            "PR TLA job omitted completion-capacity contract: {required}"
+        );
+    }
+
+    let profile = read(&root.join("verification/raft-invariant-profiles.json"));
+    for required in [
+        "\"soft_timeout\": \"115m\"",
+        "\"total_timeout\": \"120m\"",
+        "\"finalization_reserve\": \"2m\"",
+        "\"minimum_generated_states\": \"120000000\"",
+        "\"minimum_distinct_states\": \"16000000\"",
+    ] {
+        assert!(
+            profile.contains(required),
+            "PR TLA profile omitted completion contract: {required}"
+        );
+    }
+
     let aggregate = job_block(&workflow, "invariants-pr");
     for dependency in [
         "invariants-tests",

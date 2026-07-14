@@ -700,7 +700,7 @@ mod budget_tests {
 
     fn pr_budget() -> BTreeMap<String, String> {
         BTreeMap::from([
-            (TOTAL_TIMEOUT_KEY.to_owned(), "45m".to_owned()),
+            (TOTAL_TIMEOUT_KEY.to_owned(), "120m".to_owned()),
             (FINALIZATION_RESERVE_KEY.to_owned(), "2m".to_owned()),
         ])
     }
@@ -717,14 +717,14 @@ mod budget_tests {
         assert_eq!(
             budget.phase_timeout_at(
                 started + Duration::from_secs(20 * 60),
-                Duration::from_secs(40 * 60),
+                Duration::from_secs(115 * 60),
             ),
-            Some(Duration::from_secs(23 * 60))
+            Some(Duration::from_secs(98 * 60))
         );
         assert_eq!(
             budget.phase_timeout_at(
-                started + Duration::from_secs(43 * 60),
-                Duration::from_secs(40 * 60),
+                started + Duration::from_secs(118 * 60),
+                Duration::from_secs(115 * 60),
             ),
             None
         );
@@ -736,7 +736,7 @@ mod budget_tests {
         assert!(ExecutionBudget::at("pr", &BTreeMap::new(), started).is_err());
         assert!(ExecutionBudget::at(
             "pr",
-            &BTreeMap::from([(TOTAL_TIMEOUT_KEY.to_owned(), "45m".to_owned())]),
+            &BTreeMap::from([(TOTAL_TIMEOUT_KEY.to_owned(), "120m".to_owned())]),
             started,
         )
         .is_err());
