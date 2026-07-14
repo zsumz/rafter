@@ -1,0 +1,12 @@
+[package]
+name = "rafter-invariant-test"
+version = "0.0.1"
+description = "Typed test-oracle markers for Rafter's deterministic invariant gate."
+publish = false
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lints]
+workspace = true
