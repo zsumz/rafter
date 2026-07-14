@@ -300,6 +300,34 @@ fn direct_test_evidence_binds_exactly_one_clause_without_an_atomic_escape_hatch(
 }
 
 #[test]
+fn direct_test_identity_is_exact_and_uses_a_supported_cargo_target() {
+    parse_registry_document(&valid_registry(
+        VALID_EVIDENCE,
+        VALID_CLAUSE,
+        VALID_INVARIANT,
+    ))
+    .expect("control direct-test identity parses");
+
+    for evidence in [
+        VALID_EVIDENCE.replace("    target_kind: \"lib\"", "    target_kind: \"bench\""),
+        VALID_EVIDENCE.replace(
+            "    test_name: \"tests::test_symbol\"",
+            "    test_name: \"tests::different_symbol\"",
+        ),
+        VALID_EVIDENCE.replace(
+            "    test_name: \"tests::test_symbol\"",
+            "    test_name: \"tests::::test_symbol\"",
+        ),
+    ] {
+        assert!(
+            parse_registry_document(&valid_registry(&evidence, VALID_CLAUSE, VALID_INVARIANT,))
+                .is_err(),
+            "malformed direct-test identity was accepted"
+        );
+    }
+}
+
+#[test]
 fn duplicate_invariant_and_clause_ids_are_rejected() {
     let duplicate_invariant = format!(
         "{VALID_INVARIANT}{}",
