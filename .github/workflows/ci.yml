@@ -125,7 +125,7 @@ jobs:
   invariants-tla:
     name: invariants-tla
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88
@@ -144,8 +144,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+      - name: Check TLA state capacity
+        shell: bash
+        run: |
+          available_kib="$(df -Pk . | awk 'NR == 2 { print $4 }')"
+          required_kib="$((8 * 1024 * 1024))"
+          if (( available_kib < required_kib )); then
+            echo "TLA PR evidence requires at least 8 GiB free; found ${available_kib} KiB" >&2
+            exit 1
+          fi
       - name: Produce TLA+ evidence
-        timeout-minutes: 60
+        timeout-minutes: 140
         run: cargo run --locked -p rafter-invariants -- run --profile pr --layer tla
       - name: Validate TLA+ detector mutation sensitivity
         timeout-minutes: 15
