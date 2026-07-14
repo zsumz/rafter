@@ -1,4 +1,5 @@
 use super::*;
+use rafter_invariant_test::oracle_assert;
 
 #[test]
 fn reopen_without_crash_is_unchanged() {
@@ -50,7 +51,7 @@ fn reopen_rejects_log_compacted_past_the_snapshot() {
     )
     .expect_err("over-compacted log must be rejected");
 
-    assert!(matches!(
+    oracle_assert!(matches!(
         error,
         RaftRuntimeError::CompactionAheadOfSnapshot {
             compacted_through: LogIndex(3),

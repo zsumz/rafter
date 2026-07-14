@@ -1,4 +1,5 @@
 use super::*;
+use rafter_invariant_test::oracle_assert_eq;
 use rafter_storage::FileRaftNodeStores;
 
 #[test]
@@ -24,9 +25,9 @@ fn reopen_completes_compaction_after_crash_between_snapshot_and_compaction() {
     // The half-installed shape is indistinguishable from a retained full log
     // and boots correctly: the snapshot boundary is intact and the live
     // suffix survives at its true index, with no acknowledged entry lost.
-    assert_eq!(runtime.snapshot_index(), LogIndex(2));
-    assert_eq!(runtime.last_log_index(), LogIndex(3));
-    assert_eq!(
+    oracle_assert_eq!(runtime.snapshot_index(), LogIndex(2));
+    oracle_assert_eq!(runtime.last_log_index(), LogIndex(3));
+    oracle_assert_eq!(
         runtime.log_entries_from(LogIndex(1)),
         vec![LogEntry::application(Term(1), b"live-suffix".to_vec())]
     );
@@ -76,19 +77,19 @@ fn file_backed_reopen_persists_repaired_compaction_after_snapshot_crash_window()
     )
     .expect("runtime repairs the half-installed file-backed compaction");
 
-    assert_eq!(runtime.snapshot_index(), LogIndex(3));
-    assert_eq!(runtime.last_log_index(), LogIndex(3));
-    assert_eq!(runtime.log_segment.compacted_through(), LogIndex(3));
-    assert_eq!(runtime.log_segment.next_index(), LogIndex(4));
-    assert_eq!(runtime.log_segment.replay_entries(), Vec::new());
+    oracle_assert_eq!(runtime.snapshot_index(), LogIndex(3));
+    oracle_assert_eq!(runtime.last_log_index(), LogIndex(3));
+    oracle_assert_eq!(runtime.log_segment.compacted_through(), LogIndex(3));
+    oracle_assert_eq!(runtime.log_segment.next_index(), LogIndex(4));
+    oracle_assert_eq!(runtime.log_segment.replay_entries(), Vec::new());
     drop(runtime);
 
     let (_, reopened_log, _) = FileRaftNodeStores::open(&directory.0)
         .expect("repaired file-backed stores reopen")
         .into_parts();
-    assert_eq!(reopened_log.compacted_through(), LogIndex(3));
-    assert_eq!(reopened_log.next_index(), LogIndex(4));
-    assert_eq!(reopened_log.replay_entries(), Vec::new());
+    oracle_assert_eq!(reopened_log.compacted_through(), LogIndex(3));
+    oracle_assert_eq!(reopened_log.next_index(), LogIndex(4));
+    oracle_assert_eq!(reopened_log.replay_entries(), Vec::new());
 }
 
 #[test]
