@@ -11,7 +11,7 @@ use crate::{
 
 #[derive(Debug)]
 /// Error loading or configuring deterministic evidence aggregation.
-pub struct AggregateError(String);
+pub(crate) struct AggregateError(String);
 
 impl AggregateError {
     pub(super) const fn new(message: String) -> Self {
@@ -29,9 +29,9 @@ impl std::error::Error for AggregateError {}
 
 #[derive(Debug, Default)]
 /// Valid bundles plus fail-closed errors discovered while loading evidence.
-pub struct LoadedEvidence {
-    pub bundles: Vec<ResultBundle>,
-    pub harness_errors: Vec<String>,
+pub(crate) struct LoadedEvidence {
+    pub(crate) bundles: Vec<ResultBundle>,
+    pub(crate) harness_errors: Vec<String>,
 }
 
 struct InvariantEvidence<'a> {
@@ -41,19 +41,9 @@ struct InvariantEvidence<'a> {
     harness_errors: &'a [String],
 }
 
-/// Loads strict result bundles from the requested artifact paths.
-///
-/// # Errors
-///
-/// Returns an error when a path is unreadable or its JSON does not match the
-/// result bundle type.
-pub fn load_bundles(paths: &[PathBuf]) -> Result<Vec<ResultBundle>, AggregateError> {
-    paths.iter().map(load_bundle).collect()
-}
-
 /// Loads every usable bundle while retaining each load failure as a harness error.
 #[must_use]
-pub fn load_evidence(paths: &[PathBuf]) -> LoadedEvidence {
+pub(crate) fn load_evidence(paths: &[PathBuf]) -> LoadedEvidence {
     let mut loaded = LoadedEvidence::default();
     for path in paths {
         match load_bundle(path) {
@@ -93,7 +83,8 @@ fn load_bundle(path: &PathBuf) -> Result<ResultBundle, AggregateError> {
 ///
 /// Returns an error when the profile manifest is invalid or the selected
 /// profile does not exist. Evidence defects are represented as red verdicts.
-pub fn aggregate(
+#[cfg(test)]
+pub(crate) fn aggregate(
     catalog: &Catalog,
     manifest: &ProfileManifest,
     profile: &str,
@@ -108,7 +99,7 @@ pub fn aggregate(
 /// # Errors
 ///
 /// Returns an error when the registry or selected profile contract is invalid.
-pub fn aggregate_with_harness_errors(
+pub(crate) fn aggregate_with_harness_errors(
     catalog: &Catalog,
     manifest: &ProfileManifest,
     profile: &str,
@@ -175,7 +166,7 @@ pub fn aggregate_with_harness_errors(
 ///
 /// Returns an error when the bundle is stale, malformed, incomplete, or contains
 /// any non-passing evidence result.
-pub fn verify_layer_bundle(
+pub(crate) fn verify_layer_bundle(
     catalog: &Catalog,
     manifest: &ProfileManifest,
     profile: &str,
