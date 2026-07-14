@@ -45,6 +45,8 @@ scheduling properties that are not per-group Raft consensus properties.
 - Every client-visible invariant should have an end-to-end workload.
 - Every persistence invariant should have failure-injection or crash/reopen coverage.
 - Every liveness obligation should state its fairness and timing assumptions.
+- TLA+ `CompactSnapshot` retains a ghost logical log for safety witnesses; it is not physical compaction evidence. Simulator and storage tests own retained-prefix, offset, and crash/reopen compaction behavior.
+- Registered direct tests are total deterministic oracles: one exact exit-0 pass is green, zero execution is incomplete, and one canonical exact-test exit-101 failure is an invariant violation. Malformed, duplicate, timed-out, signaled, wrong-name, or other process failures are harness errors.
 
 ## Layer Legend
 
@@ -161,7 +163,7 @@ named temporal or witness-based verdicts.
 | `EL-04` | `EL-04.c` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#hard_state_write_failure_suppresses_higher_term_append_response` |
 | `EL-05` | `EL-05.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `election_history_detects_second_leader_in_same_term` |
 | `EL-05` | `EL-05.a` | tla | direct | `specs/tla/raft/Raft.tla#ElectionSafety` |
-| `EL-06` | `EL-06.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_eligible_leader_certificates`; negative fixture `election_certificate_rejects_non_voter_leader` |
+| `EL-06` | `EL-06.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_eligible_leader_certificates`; negative fixture `election_history_preserves_same_leader_certificates_for_validation` |
 | `EL-06` | `EL-06.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_stable_election_quorums`; negative fixture `election_certificate_requires_stable_quorum` |
 | `EL-06` | `EL-06.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_joint_election_quorums`; negative fixture `election_certificate_requires_joint_quorum` |
 | `EL-06` | `EL-06.b` | tests | direct | `crates/rafter/src/node/tests/election/campaign.rs#candidate_becomes_leader_after_quorum` |
@@ -202,7 +204,7 @@ named temporal or witness-based verdicts.
 | `CM-03` | `CM-03.a,CM-03.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/history.rs#check_current_term_commit_certificates`; negative fixture `commit_certificate_detects_prior_term_candidate_commit`; reviewed atomic group `CM-03/current-term-commit-point` |
 | `CM-03` | `CM-03.b` | tests | direct | `crates/rafter/src/node/tests/election/campaign.rs#single_voter_leadership_noop_does_not_drop_prior_term_apply` |
 | `AP-01` | `AP-01.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/applied.rs#check_applied_cursor_monotonicity`; negative fixture `applied_order_detects_apply_at_or_below_snapshot_boundary` |
-| `AP-01` | `AP-01.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/applied.rs#check_applied_exactly_once`; negative fixture `applied_order_detects_duplicate_apply_within_one_epoch` |
+| `AP-01` | `AP-01.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/applied.rs#check_applied_exactly_once`; negative fixture `applied_order_detects_duplicate_execution_within_one_epoch` |
 | `AP-01` | `AP-01.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/applied.rs#check_applied_commit_bound`; negative fixture `applied_order_detects_apply_before_commit` |
 | `AP-01` | `AP-01.c` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/application_epoch.rs#applied_order_detects_apply_before_commit` |
 | `AP-01` | `AP-01.d` | tests | direct | `crates/rafter/src/node/tests/bootstrap/application.rs#committed_entries_above_applied_floor_drain_immediately_after_bootstrap` |
@@ -216,8 +218,8 @@ named temporal or witness-based verdicts.
 | `AP-02` | `AP-02.a` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/applied_agreement.rs#execution_agreement_detects_mismatched_configuration_application` |
 | `AP-02` | `AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/applied_agreement.rs#execution_agreement_detects_mismatched_reference_result` |
 | `AP-02` | `AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/applied_agreement.rs#execution_agreement_detects_broken_configuration_result` |
-| `AP-02` | `AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/state/application_history.rs#application_pairs_do_not_qualify_configuration_results` |
-| `AP-02` | `AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/state/application_history.rs#configuration_pairs_do_not_qualify_application_results` |
+| `AP-02` | `AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/state/application_history/tests.rs#application_pairs_do_not_qualify_configuration_results` |
+| `AP-02` | `AP-02.b` | tests | direct | `crates/rafter-sim/src/model_check/state/application_history/tests.rs#configuration_pairs_do_not_qualify_application_results` |
 | `AP-02` | `AP-02.a,AP-02.b` | tla | direct | `specs/tla/raft/Raft.tla#StateMachineSafety` |
 | `MB-01` | `MB-01.a` | tests | direct | `crates/rafter/tests/properties.rs#membership_constructor_validation_matches_the_documented_invariant` |
 | `MB-01` | `MB-01.b` | tests | direct | `crates/rafter/tests/properties.rs#membership_constructor_validation_matches_the_documented_invariant` |
@@ -316,6 +318,8 @@ named temporal or witness-based verdicts.
 | `PS-04` | `PS-04.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_recovery_applied_floor_bounds`; negative fixture `applied_floor_recovery_rejects_floor_beyond_durable_bounds` |
 | `PS-04` | `PS-04.a` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests.rs#ps04_app_persist_interrupt_reopens_at_durable_floor_and_replays_suffix_once` |
 | `PS-04` | `PS-04.b` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests.rs#ps04_app_persist_interrupt_reopens_at_durable_floor_and_replays_suffix_once` |
+| `PS-04` | `PS-04.a` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests/durability.rs#ps04_atomic_app_persist_syncs_file_and_directory_before_success` |
+| `PS-04` | `PS-04.b` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests/durability.rs#ps04_atomic_app_persist_syncs_file_and_directory_before_success` |
 | `PS-04` | `PS-04.c` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests/floor.rs#ps04_production_open_rejects_app_floor_beyond_commit` |
 | `PS-04` | `PS-04.c` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests/floor.rs#ps04_production_open_rejects_app_floor_beyond_log_coverage` |
 | `PS-04` | `PS-04.a` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests/snapshot.rs#ps04_inbound_snapshot_promotion_crash_restores_snapshot_then_dispatches_suffix` |
@@ -354,7 +358,7 @@ named temporal or witness-based verdicts.
 | `SS-05` | `SS-05.b` | tests | direct | `crates/rafter-sim/src/tests/snapshot_installation/catchup.rs#simulator_discards_divergent_suffix_when_installing_snapshot` |
 | `LV-01` | `LV-01.a` | simulator | direct | `crates/rafter-sim/src/model_check/liveness.rs#run_soak_liveness_check_with_budget_overrides`; negative fixture `post_heal_leader_convergence_monitor_reports_exhausted_bound` |
 | `LV-01` | `LV-01.b` | simulator | direct | `crates/rafter-sim/src/model_check/liveness.rs#run_soak_liveness_check`; negative fixture `post_heal_leader_usability_monitor_reports_exhausted_bound` |
-| `LV-01` | `LV-01.a` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features/leader.rs#run_quorum_only_leader_convergence_check`; negative fixture `quorum_only_leader_monitor_reports_starved_schedule_bound` |
+| `LV-01` | `LV-01.a` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features/leader.rs#run_quorum_only_leader_convergence_check`; negative fixture `bounded_fairness_detector_rejects_positive_bound_tick_starvation` |
 | `LV-01` | `LV-01.b` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features/leader.rs#run_quorum_only_leader_usability_check`; negative fixture `quorum_only_leader_usability_monitor_reports_exhausted_bound` |
 | `LV-01` | `LV-01.a` | tests | direct | `crates/rafter-sim/src/model_check/liveness/features/leader_tests.rs#quorum_only_leader_monitor_elects_and_serves_with_minority_unavailable` |
 | `LV-01` | `LV-01.b` | tests | direct | `crates/rafter-sim/src/model_check/liveness/features/leader_tests.rs#quorum_only_leader_monitor_elects_and_serves_with_minority_unavailable` |
