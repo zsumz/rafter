@@ -214,7 +214,7 @@ FixtureInit ==
   /\ electedLeaders = InitialElectedLeaders
   /\ logicalPrefixLedger = {}
   /\ committedLedger = InitialCommittedLedger
-  /\ commitWitnesses = {}
+  /\ commitWitnesses = EmptyCommitWitnessHistory
   /\ higherTermEvidenceSeen = FALSE
   /\ higherTermStepDownFailed = FALSE
   /\ staleAuthorityAccepted = FALSE
@@ -420,7 +420,7 @@ FaultyCommitQuorumRecorder ==
          configIndex |-> 1,
          replicas |-> {FixtureA}]
   IN
-    /\ commitWitnesses = {}
+    /\ commitWitnesses = EmptyCommitWitnessHistory
     /\ RecordCommitWitnesses({witness})
     /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                     messages, readRequests, readGrants, membership,
@@ -488,7 +488,7 @@ LegacyTargetCommittedLedger ==
          {[index |-> 1, entry |-> Entry(1, FixtureValueA)]}
     [] OTHER -> {}
 
-LegacyTargetCommitWitnesses ==
+LegacyTargetCommitCertificates ==
   IF TargetPredicate = "CommittedEntriesHaveQuorum"
   THEN {[index |-> 1,
          entry |-> Entry(1, FixtureValueA),
@@ -501,6 +501,12 @@ LegacyTargetCommitWitnesses ==
          configIndex |-> 0,
          replicas |-> {FixtureA}]}
   ELSE {}
+
+LegacyTargetWitnessedCommits ==
+  CommitWitnessKeys(LegacyTargetCommitCertificates)
+
+LegacyTargetInvalidCommitCertificateSeen ==
+  \E witness \in LegacyTargetCommitCertificates : ~CommitWitnessOK(witness)
 
 LegacyTargetElectedLeaders ==
   [t \in 1..MaxTerm |->
@@ -539,7 +545,9 @@ LegacyViolation ==
   /\ electedLeaders' = LegacyTargetElectedLeaders
   /\ logicalPrefixLedger' = {}
   /\ committedLedger' = LegacyTargetCommittedLedger
-  /\ commitWitnesses' = LegacyTargetCommitWitnesses
+  /\ commitWitnesses' = CommitWitnessHistory(
+       LegacyTargetWitnessedCommits,
+       LegacyTargetInvalidCommitCertificateSeen)
   /\ higherTermEvidenceSeen' = FALSE
   /\ higherTermStepDownFailed' = FALSE
   /\ staleAuthorityAccepted' = FALSE
@@ -601,7 +609,7 @@ BaseExtendedState ==
   /\ appliedThrough = BaseAppliedThrough
   /\ logicalPrefixLedger = {}
   /\ committedLedger = {}
-  /\ commitWitnesses = {}
+  /\ commitWitnesses = EmptyCommitWitnessHistory
 
 SnapshotLifecycleEntry == Entry(1, FixtureValueA)
 
@@ -656,7 +664,8 @@ SnapshotLifecycleInit ==
        IF t = 1 THEN {FixtureA} ELSE {}]
   /\ logicalPrefixLedger = {}
   /\ committedLedger = {[index |-> 1, entry |-> SnapshotLifecycleEntry]}
-  /\ commitWitnesses = {SnapshotLifecycleWitness}
+  /\ commitWitnesses = CommitWitnessHistory(
+       CommitWitnessKeys({SnapshotLifecycleWitness}), FALSE)
   /\ higherTermEvidenceSeen = FALSE
   /\ higherTermStepDownFailed = FALSE
   /\ staleAuthorityAccepted = FALSE
@@ -738,7 +747,8 @@ ApplicationEpochLifecycleInit ==
        IF t = 1 THEN {FixtureA} ELSE {}]
   /\ logicalPrefixLedger = {}
   /\ committedLedger = {[index |-> 1, entry |-> SnapshotLifecycleEntry]}
-  /\ commitWitnesses = {SnapshotLifecycleWitness}
+  /\ commitWitnesses = CommitWitnessHistory(
+       CommitWitnessKeys({SnapshotLifecycleWitness}), FALSE)
   /\ higherTermEvidenceSeen = FALSE
   /\ higherTermStepDownFailed = FALSE
   /\ staleAuthorityAccepted = FALSE
@@ -836,7 +846,8 @@ SelfRemovalCommitInit ==
        IF t = 1 THEN {FixtureA} ELSE {}]
   /\ logicalPrefixLedger = {}
   /\ committedLedger = {[index |-> 1, entry |-> SelfRemovalJointEntry]}
-  /\ commitWitnesses = {SelfRemovalJointWitness}
+  /\ commitWitnesses = CommitWitnessHistory(
+       CommitWitnessKeys({SelfRemovalJointWitness}), FALSE)
   /\ higherTermEvidenceSeen = FALSE
   /\ higherTermStepDownFailed = FALSE
   /\ staleAuthorityAccepted = FALSE
