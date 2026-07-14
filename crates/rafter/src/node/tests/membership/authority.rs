@@ -1,6 +1,7 @@
 //! Campaign, vote, removal, and learner authority fencing.
 
 use super::support::*;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
 #[test]
 fn vote_request_from_candidate_outside_effective_membership_is_rejected() {
@@ -20,9 +21,9 @@ fn vote_request_from_candidate_outside_effective_membership_is_rejected() {
         }),
     });
 
-    assert_vote_response(&outputs, NodeId(4), false);
-    assert_eq!(voter.current_term(), Term(2));
-    assert_eq!(voter.voted_for(), None);
+    oracle_assert!(vote_response_matches(&outputs, NodeId(4), false));
+    oracle_assert_eq!(voter.current_term(), Term(2));
+    oracle_assert_eq!(voter.voted_for(), None);
 }
 
 #[test]
@@ -52,15 +53,15 @@ fn pre_vote_from_candidate_outside_effective_membership_is_rejected() {
 fn non_voter_cannot_campaign_or_become_leader() {
     let mut non_voter = node_with_configuration(4, &[1, 2, 3], learner_configuration());
 
-    assert!(!non_voter.is_effective_voter(NodeId(4)));
-    assert!(non_voter.is_effective_voter(NodeId(1)));
-    assert!(non_voter.is_effective_voter(NodeId(2)));
+    oracle_assert!(!non_voter.is_effective_voter(NodeId(4)));
+    oracle_assert!(non_voter.is_effective_voter(NodeId(1)));
+    oracle_assert!(non_voter.is_effective_voter(NodeId(2)));
 
-    assert!(non_voter.step(Input::Tick).is_empty());
-    assert!(non_voter.step(Input::Tick).is_empty());
-    assert!(non_voter.step(Input::Tick).is_empty());
-    assert_eq!(non_voter.role(), Role::Follower);
-    assert_eq!(non_voter.current_term(), Term(1));
+    oracle_assert!(non_voter.step(Input::Tick).is_empty());
+    oracle_assert!(non_voter.step(Input::Tick).is_empty());
+    oracle_assert!(non_voter.step(Input::Tick).is_empty());
+    oracle_assert_eq!(non_voter.role(), Role::Follower);
+    oracle_assert_eq!(non_voter.current_term(), Term(1));
 
     // Even a campaign already holding one effective voter grant is fenced
     // before the next grant could complete the two-of-three voter quorum.
@@ -71,10 +72,10 @@ fn non_voter_cannot_campaign_or_become_leader() {
 
     let outputs = grant_vote(&mut non_voter, NodeId(2));
 
-    assert!(outputs.is_empty());
-    assert_eq!(non_voter.role(), Role::Follower);
-    assert_eq!(non_voter.current_term(), Term(2));
-    assert_eq!(non_voter.last_log_index(), LogIndex(1));
+    oracle_assert!(outputs.is_empty());
+    oracle_assert_eq!(non_voter.role(), Role::Follower);
+    oracle_assert_eq!(non_voter.current_term(), Term(2));
+    oracle_assert_eq!(non_voter.last_log_index(), LogIndex(1));
 }
 
 #[test]
@@ -98,9 +99,9 @@ fn removed_candidate_steps_down_instead_of_winning() {
         }),
     });
 
-    assert!(outputs.is_empty());
-    assert_eq!(candidate.role(), Role::Follower);
-    assert_eq!(candidate.voted_for(), Some(NodeId(2)));
+    oracle_assert!(outputs.is_empty());
+    oracle_assert_eq!(candidate.role(), Role::Follower);
+    oracle_assert_eq!(candidate.voted_for(), Some(NodeId(2)));
 }
 
 #[test]
@@ -166,22 +167,32 @@ fn learner_grant_does_not_create_quorum() {
     assert!(candidate.step(Input::Tick).is_empty());
     let polls = candidate.step(Input::Tick);
 
-    assert_eq!(candidate.role(), Role::PreCandidate);
-    assert_eq!(send_targets(&polls), vec![NodeId(2), NodeId(3)]);
+    oracle_assert_eq!(candidate.role(), Role::PreCandidate);
+    oracle_assert_eq!(send_targets(&polls), vec![NodeId(2), NodeId(3)]);
 
     // The learner's poll grant creates no pre-vote quorum either.
-    assert!(grant_pre_vote(&mut candidate, NodeId(4)).is_empty());
-    assert_eq!(candidate.role(), Role::PreCandidate);
+    oracle_assert!(grant_pre_vote(&mut candidate, NodeId(4)).is_empty());
+    oracle_assert_eq!(candidate.role(), Role::PreCandidate);
 
     let requests = grant_pre_vote(&mut candidate, NodeId(2));
-    assert_eq!(candidate.role(), Role::Candidate);
-    assert_eq!(send_targets(&requests), vec![NodeId(2), NodeId(3)]);
+    oracle_assert_eq!(candidate.role(), Role::Candidate);
+    oracle_assert_eq!(send_targets(&requests), vec![NodeId(2), NodeId(3)]);
 
-    assert!(grant_vote(&mut candidate, NodeId(4)).is_empty());
-    assert_eq!(candidate.role(), Role::Candidate);
+    oracle_assert!(grant_vote(&mut candidate, NodeId(4)).is_empty());
+    oracle_assert_eq!(candidate.role(), Role::Candidate);
 
     let heartbeats = grant_vote(&mut candidate, NodeId(2));
 
-    assert_eq!(candidate.role(), Role::Leader);
-    assert!(!heartbeats.is_empty());
+    oracle_assert_eq!(candidate.role(), Role::Leader);
+    oracle_assert!(!heartbeats.is_empty());
+}
+
+fn vote_response_matches(outputs: &[Output], to: NodeId, vote_granted: bool) -> bool {
+    matches!(
+        outputs,
+        [Output::Send {
+            to: actual_to,
+            message: Message::RequestVoteResponse(response),
+        }] if *actual_to == to && response.vote_granted == vote_granted
+    )
 }

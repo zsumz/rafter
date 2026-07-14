@@ -1,6 +1,7 @@
 //! Read authority, current-term commitment, and cancellation boundaries.
 
 use super::support::*;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
 #[test]
 fn read_rejected_without_current_term_commit() {
@@ -9,7 +10,7 @@ fn read_rejected_without_current_term_commit() {
 
     let outputs = leader.step(read_index(7));
 
-    assert!(matches!(
+    oracle_assert!(matches!(
         outputs.as_slice(),
         [Output::ReadIndexRejected {
             read_id: ReadId(7),
@@ -22,7 +23,7 @@ fn read_rejected_without_current_term_commit() {
 fn read_rejected_on_follower() {
     let mut follower = node(2, &[1, 3]);
     let outputs = follower.step(read_index(3));
-    assert!(matches!(
+    oracle_assert!(matches!(
         outputs.as_slice(),
         [Output::ReadIndexRejected {
             read_id: ReadId(3),
@@ -121,9 +122,9 @@ fn pending_reads_are_cleared_on_step_down() {
         }),
     });
 
-    assert_eq!(leader.role(), Role::Follower);
-    assert_eq!(leader.pending_read_count(), 0);
-    assert_eq!(
+    oracle_assert_eq!(leader.role(), Role::Follower);
+    oracle_assert_eq!(leader.pending_read_count(), 0);
+    oracle_assert_eq!(
         canceled(&outputs),
         vec![
             (ReadId(6), ReadIndexCancelReason::LeadershipLost),

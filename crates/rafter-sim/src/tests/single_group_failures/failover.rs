@@ -5,6 +5,7 @@ use super::super::helpers::{
 };
 use super::super::*;
 use super::fixtures::vote_response;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
 #[test]
 fn simulator_elects_and_fails_over_without_clients_under_delays() {
@@ -166,7 +167,7 @@ fn simulator_isolated_leader_grants_no_reads_while_majority_moves_on() {
 
     // The isolated ex-leader must never confirm barrier 2, no matter how
     // long it keeps believing in itself.
-    assert!(
+    oracle_assert!(
         !cluster
             .read_grants()
             .iter()
@@ -181,12 +182,12 @@ fn simulator_isolated_leader_grants_no_reads_while_majority_moves_on() {
     }
     cluster.deliver_all();
     let _ = cluster.drop_matching(|envelope| envelope.to == NodeId(1));
-    assert_eq!(cluster.role(NodeId(2)), Role::Leader);
+    oracle_assert_eq!(cluster.role(NodeId(2)), Role::Leader);
     cluster.propose(NodeId(2), b"committed-in-term-two".to_vec());
     cluster.deliver_all();
     let _ = cluster.drop_matching(|envelope| envelope.to == NodeId(1));
-    assert_eq!(cluster.commit_index(NodeId(2)), LogIndex(4));
-    assert!(!cluster
+    oracle_assert_eq!(cluster.commit_index(NodeId(2)), LogIndex(4));
+    oracle_assert!(!cluster
         .read_grants()
         .iter()
         .any(|grant| grant.request_id == 2));

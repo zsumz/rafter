@@ -246,6 +246,7 @@ fn expected_workspace_crates() -> BTreeSet<String> {
         "rafter-app",
         "rafter-codec",
         "rafter-crc32",
+        "rafter-invariant-test",
         "rafter-invariants",
         "rafter-maelstrom",
         "rafter-multiraft",
@@ -260,7 +261,7 @@ fn expected_workspace_crates() -> BTreeSet<String> {
 
 fn allowed_normal_workspace_deps(crate_name: &str) -> BTreeSet<String> {
     set(match crate_name {
-        "rafter" | "rafter-crc32" | "rafter-invariants" => &[],
+        "rafter" | "rafter-crc32" | "rafter-invariant-test" | "rafter-invariants" => &[],
         "rafter-app" => &["rafter", "rafter-runtime-api"],
         "rafter-codec" | "rafter-storage" => &["rafter", "rafter-crc32"],
         "rafter-runtime-api" | "rafter-sim" => &["rafter"],
@@ -276,6 +277,10 @@ fn allowed_normal_workspace_deps(crate_name: &str) -> BTreeSet<String> {
 fn allowed_dev_workspace_deps(crate_name: &str) -> BTreeMap<String, &'static str> {
     let entries: &[(&str, &str)] = match crate_name {
         "rafter-app" => &[
+            (
+                "rafter-invariant-test",
+                "registered app tests emit typed invariant-oracle verdicts",
+            ),
             (
                 "rafter-runtime",
                 "app tests/examples may instantiate DurableRaftNode without making app depend on it",
@@ -299,10 +304,16 @@ fn allowed_dev_workspace_deps(crate_name: &str) -> BTreeMap<String, &'static str
                 "multiraft tests may use stores without widening normal deps",
             ),
         ],
-        "rafter-runtime" => &[(
-            "rafter-transport-tcp-insecure",
-            "runtime examples may use the demo TCP transport without making runtime depend on transport",
-        )],
+        "rafter-runtime" => &[
+            (
+                "rafter-invariant-test",
+                "registered runtime tests emit typed invariant-oracle verdicts",
+            ),
+            (
+                "rafter-transport-tcp-insecure",
+                "runtime examples may use the demo TCP transport without making runtime depend on transport",
+            ),
+        ],
         "rafter-invariants" => &[
             (
                 "rafter",
@@ -323,13 +334,26 @@ fn allowed_dev_workspace_deps(crate_name: &str) -> BTreeMap<String, &'static str
                 "service tests/examples may use stores without making service depend on storage",
             ),
         ],
-        "rafter"
-        | "rafter-codec"
+        "rafter" => &[(
+            "rafter-invariant-test",
+            "registered core tests emit typed invariant-oracle verdicts",
+        )],
+        "rafter-maelstrom" => &[(
+            "rafter-invariant-test",
+            "registered Maelstrom tests emit typed invariant-oracle verdicts",
+        )],
+        "rafter-sim" => &[(
+            "rafter-invariant-test",
+            "registered simulator tests emit typed invariant-oracle verdicts",
+        )],
+        "rafter-storage" => &[(
+            "rafter-invariant-test",
+            "registered storage tests emit typed invariant-oracle verdicts",
+        )],
+        "rafter-codec"
         | "rafter-crc32"
-        | "rafter-maelstrom"
+        | "rafter-invariant-test"
         | "rafter-runtime-api"
-        | "rafter-sim"
-        | "rafter-storage"
         | "rafter-transport-tcp-insecure" => &[],
         unexpected => panic!("missing dev dependency policy for `{unexpected}`"),
     };

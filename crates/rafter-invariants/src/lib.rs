@@ -23,28 +23,33 @@ mod run_all;
 mod schema;
 mod types;
 
-pub use aggregate::{
-    aggregate, aggregate_with_harness_errors, load_bundles, load_evidence, verify_layer_bundle,
-    AggregateError, LoadedEvidence,
-};
+#[cfg(test)]
+pub(crate) use aggregate::aggregate;
+pub(crate) use aggregate::{aggregate_with_harness_errors, load_evidence, verify_layer_bundle};
 pub use catalog::{
     Catalog, CatalogError, ClauseDescriptor, EvidenceDescriptor, InvariantDescriptor,
     ProfileContract, ProfileManifest, RunnerContract, SimulatorIdentity, TestIdentity,
 };
-pub use plan::{capture_invocation, verify_bundle_plan, ExecutionPlan, PlanOptions};
-pub use producer::{produce, produce_with_plan, ProducerOptions, ProducerOutcome};
+pub(crate) use plan::{capture_invocation, verify_bundle_plan};
+pub use plan::{ExecutionPlan, PlanOptions};
+pub(crate) use producer::produce_with_plan;
+pub use producer::{produce, ProducerOptions, ProducerOutcome};
 pub use registry::{
     RegistryClause, RegistryCounts, RegistryDocument, RegistryEvidence, RegistryInvariant,
     REGISTRY_SCHEMA_VERSION,
 };
 pub use registry_document::render_registry_markdown;
-pub use render::{render_junit, render_markdown};
-pub use run_all::{run_all, write_report, RunAllOptions, RunAllOutcome};
+pub(crate) use render::{render_junit, render_markdown};
+pub use run_all::{
+    current_source_ref, run_all, verify_and_write_report, verify_layer_evidence,
+    ReportWriteOutcome, RunAllOptions, RunAllOutcome,
+};
+pub(crate) use types::ResultBundle;
 pub use types::{
     ArtifactRef, CheckCompletion, CheckReceipt, ClauseVerdict, EvidenceResult, EvidenceStatus,
     ExecutionPlanReceipt, ExecutionReceipt, FailureClassification, InvariantVerdict,
-    InvocationReceipt, PlanInput, ResultBundle, SourceReceipt, ToolReceipt, VerdictReport,
-    VerdictStatus, PLAN_SCHEMA_VERSION,
+    InvocationReceipt, PlanInput, SourceReceipt, ToolReceipt, VerdictReport, VerdictStatus,
+    PLAN_SCHEMA_VERSION,
 };
 
 #[cfg(test)]

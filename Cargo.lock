@@ -1012,6 +1012,7 @@ version = "0.0.1"
 dependencies = [
  "criterion",
  "proptest",
+ "rafter-invariant-test",
 ]
 
 [[package]]
@@ -1019,6 +1020,7 @@ name = "rafter-app"
 version = "0.0.1"
 dependencies = [
  "rafter",
+ "rafter-invariant-test",
  "rafter-runtime",
  "rafter-runtime-api",
  "rafter-storage",
@@ -1036,6 +1038,10 @@ dependencies = [
 
 [[package]]
 name = "rafter-crc32"
+version = "0.0.1"
+
+[[package]]
+name = "rafter-invariant-test"
 version = "0.0.1"
 
 [[package]]
@@ -1060,6 +1066,7 @@ version = "0.0.1"
 dependencies = [
  "rafter",
  "rafter-codec",
+ "rafter-invariant-test",
  "rafter-runtime",
  "rafter-storage",
  "serde",
@@ -1082,6 +1089,7 @@ name = "rafter-runtime"
 version = "0.0.1"
 dependencies = [
  "rafter",
+ "rafter-invariant-test",
  "rafter-runtime-api",
  "rafter-storage",
  "rafter-transport-tcp-insecure",
@@ -1110,6 +1118,7 @@ name = "rafter-sim"
 version = "0.0.1"
 dependencies = [
  "rafter",
+ "rafter-invariant-test",
  "serde_json",
 ]
 
@@ -1119,6 +1128,7 @@ version = "0.0.1"
 dependencies = [
  "rafter",
  "rafter-crc32",
+ "rafter-invariant-test",
 ]
 
 [[package]]

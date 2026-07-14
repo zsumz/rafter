@@ -1,4 +1,4 @@
-use std::{env, error::Error, fs, path::PathBuf, process::Command};
+use std::{env, error::Error, fs, path::PathBuf};
 
 use sha2::{Digest, Sha256};
 
@@ -6,33 +6,22 @@ use crate::{SourceReceipt, ToolReceipt};
 
 use super::process;
 
+#[derive(Clone, Copy)]
+struct LayerSourceContract {
+    build_profile: &'static str,
+    features: &'static [&'static str],
+    tools: &'static [&'static str],
+}
+
 pub(super) fn capture_for_layer(layer: &str) -> Result<SourceReceipt, Box<dyn Error>> {
-    match layer {
-        "tests" => capture("test", vec!["no-default-features".to_owned()], &[]),
-        "simulator" => capture(
-            "release-and-test",
-            vec!["internal-test-hooks".to_owned()],
-            &[],
-        ),
-        "tla" => capture("tla", Vec::new(), &["java"]),
-        "maelstrom" => capture(
-            "maelstrom-debug",
-            Vec::new(),
-            &["java", "maelstrom", "dot", "gnuplot"],
-        ),
-        _ => Err(format!("unsupported source profile for layer {layer}").into()),
-    }
+    capture(layer_contract(layer)?)
 }
 
 pub(crate) fn head_commit() -> Result<String, Box<dyn Error>> {
     git(&["rev-parse", "HEAD"])
 }
 
-fn capture(
-    build_profile: &str,
-    features: Vec<String>,
-    additional_tools: &[&str],
-) -> Result<SourceReceipt, Box<dyn Error>> {
+fn capture(contract: LayerSourceContract) -> Result<SourceReceipt, Box<dyn Error>> {
     let status = command_output(
         "git",
         &["status", "--porcelain=v1", "--untracked-files=all"],
@@ -52,7 +41,8 @@ fn capture(
         .to_owned();
     let cargo_lock = fs::read("Cargo.lock")?;
     let environment = process::base_environment();
-    let tools = additional_tools
+    let tools = contract
+        .tools
         .iter()
         .map(|name| {
             let version = tool_version(name)?;
@@ -80,8 +70,12 @@ fn capture(
         rustc,
         rustc_sha256: executable_sha256("rustc")?,
         target,
-        build_profile: build_profile.to_owned(),
-        features,
+        build_profile: contract.build_profile.to_owned(),
+        features: contract
+            .features
+            .iter()
+            .map(|value| (*value).to_owned())
+            .collect(),
         tools,
         environment_sha256: format!("{:x}", Sha256::digest(encoded_environment)),
         clean: true,
@@ -89,12 +83,8 @@ fn capture(
 }
 
 pub(super) fn verify(expected: &SourceReceipt) -> Result<(), Box<dyn Error>> {
-    let names = expected
-        .tools
-        .keys()
-        .map(String::as_str)
-        .collect::<Vec<_>>();
-    let observed = capture(&expected.build_profile, expected.features.clone(), &names)?;
+    let contract = contract_for_receipt(expected)?;
+    let observed = capture(contract)?;
     if &observed != expected {
         return Err("source or toolchain identity changed during evidence execution".into());
     }
@@ -102,7 +92,11 @@ pub(super) fn verify(expected: &SourceReceipt) -> Result<(), Box<dyn Error>> {
 }
 
 pub(crate) fn verify_checkout(expected: &SourceReceipt) -> Result<(), Box<dyn Error>> {
-    let observed = capture(&expected.build_profile, expected.features.clone(), &[])?;
+    let contract = contract_for_receipt(expected)?;
+    let observed = capture(LayerSourceContract {
+        tools: &[],
+        ..contract
+    })?;
     if observed.commit != expected.commit
         || observed.tree != expected.tree
         || observed.cargo_lock_sha256 != expected.cargo_lock_sha256
@@ -118,6 +112,77 @@ pub(crate) fn verify_checkout(expected: &SourceReceipt) -> Result<(), Box<dyn Er
     Ok(())
 }
 
+pub(crate) fn verify_layer_contract(
+    layer: &str,
+    receipt: &SourceReceipt,
+) -> Result<(), Box<dyn Error>> {
+    let expected = layer_contract(layer)?;
+    let expected_features = expected
+        .features
+        .iter()
+        .map(|value| (*value).to_owned())
+        .collect::<Vec<_>>();
+    let expected_tools = expected
+        .tools
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    let observed_tools = receipt
+        .tools
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
+    if receipt.build_profile != expected.build_profile
+        || receipt.features != expected_features
+        || observed_tools != expected_tools
+    {
+        return Err(format!(
+            "{layer} source receipt does not match its exact build profile, features, and tools contract"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+fn contract_for_receipt(receipt: &SourceReceipt) -> Result<LayerSourceContract, Box<dyn Error>> {
+    ["tests", "simulator", "tla", "maelstrom"]
+        .into_iter()
+        .find_map(|layer| {
+            let contract = layer_contract(layer).ok()?;
+            verify_layer_contract(layer, receipt).ok().map(|()| contract)
+        })
+        .ok_or_else(|| {
+            "source receipt does not match any reviewed layer build profile, features, and tools contract"
+                .into()
+        })
+}
+
+fn layer_contract(layer: &str) -> Result<LayerSourceContract, Box<dyn Error>> {
+    match layer {
+        "tests" => Ok(LayerSourceContract {
+            build_profile: "test",
+            features: &["no-default-features"],
+            tools: &[],
+        }),
+        "simulator" => Ok(LayerSourceContract {
+            build_profile: "release-and-test",
+            features: &["internal-test-hooks"],
+            tools: &[],
+        }),
+        "tla" => Ok(LayerSourceContract {
+            build_profile: "tla",
+            features: &[],
+            tools: &["java"],
+        }),
+        "maelstrom" => Ok(LayerSourceContract {
+            build_profile: "maelstrom-debug",
+            features: &[],
+            tools: &["java", "maelstrom", "dot", "gnuplot"],
+        }),
+        _ => Err(format!("unsupported source profile for layer {layer}").into()),
+    }
+}
+
 fn git(arguments: &[&str]) -> Result<String, Box<dyn Error>> {
     command_output("git", arguments, false)
 }
@@ -127,15 +192,8 @@ fn command_output(
     arguments: &[&str],
     allow_empty: bool,
 ) -> Result<String, Box<dyn Error>> {
-    let output = Command::new(program).args(arguments).output()?;
-    if !output.status.success() {
-        return Err(format!(
-            "{program} failed: {}",
-            String::from_utf8_lossy(&output.stderr).trim()
-        )
-        .into());
-    }
-    let value = String::from_utf8(output.stdout)?.trim().to_owned();
+    let output = process::identity_command(program, arguments)?;
+    let value = output.stdout.trim().to_owned();
     if value.is_empty() && !allow_empty {
         return Err(format!("{program} produced empty identity output").into());
     }
@@ -148,30 +206,12 @@ fn executable_sha256(name: &str) -> Result<String, Box<dyn Error>> {
 }
 
 fn tool_version(name: &str) -> Result<String, Box<dyn Error>> {
-    let output = Command::new(name).arg("--version").output()?;
-    tool_version_output(name, &output)
+    let output = process::identity_command(name, &["--version"])?;
+    tool_version_output(name, &output.stdout, &output.stderr)
 }
 
-fn tool_version_output(
-    name: &str,
-    output: &std::process::Output,
-) -> Result<String, Box<dyn Error>> {
-    if !output.status.success() {
-        return Err(format!(
-            "{name} --version failed with {}; stdout: {}; stderr: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stdout).trim(),
-            String::from_utf8_lossy(&output.stderr).trim(),
-        )
-        .into());
-    }
-    let value = format!(
-        "{}{}",
-        String::from_utf8(output.stdout.clone())?,
-        String::from_utf8(output.stderr.clone())?
-    )
-    .trim()
-    .to_owned();
+fn tool_version_output(name: &str, stdout: &str, stderr: &str) -> Result<String, Box<dyn Error>> {
+    let value = format!("{stdout}{stderr}").trim().to_owned();
     if value.is_empty() {
         return Err(format!("{name} produced empty identity output").into());
     }
@@ -212,26 +252,77 @@ fn cargo_config_sha256() -> Result<String, Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
-    use std::process::Command;
+    use crate::{SourceReceipt, ToolReceipt};
 
-    use super::tool_version_output;
+    use super::{tool_version_output, verify_layer_contract};
 
     #[test]
     #[cfg(unix)]
-    fn tool_version_rejects_nonzero_status_with_both_output_streams() {
-        let output = Command::new("sh")
-            .args([
-                "-c",
-                "printf 'fixture stdout'; printf 'fixture stderr' >&2; exit 7",
-            ])
-            .output()
-            .expect("run failing version fixture");
-
-        let error = tool_version_output("fixture-tool", &output)
-            .expect_err("nonzero version command must fail")
+    fn tool_version_rejects_empty_combined_output() {
+        let error = tool_version_output("fixture-tool", "", "")
+            .expect_err("empty version command must fail")
             .to_string();
-        assert!(error.contains("exit status: 7"));
-        assert!(error.contains("stdout: fixture stdout"));
-        assert!(error.contains("stderr: fixture stderr"));
+        assert!(error.contains("empty identity output"));
+    }
+
+    fn source(build_profile: &str, features: &[&str], tools: &[&str]) -> SourceReceipt {
+        SourceReceipt {
+            commit: "commit".to_owned(),
+            tree: "tree".to_owned(),
+            cargo_lock_sha256: "0".repeat(64),
+            cargo: "cargo".to_owned(),
+            cargo_sha256: "0".repeat(64),
+            cargo_config_sha256: "0".repeat(64),
+            rustc: "rustc".to_owned(),
+            rustc_sha256: "0".repeat(64),
+            target: "target".to_owned(),
+            build_profile: build_profile.to_owned(),
+            features: features.iter().map(|value| (*value).to_owned()).collect(),
+            tools: tools
+                .iter()
+                .map(|name| {
+                    (
+                        (*name).to_owned(),
+                        ToolReceipt {
+                            version: "version".to_owned(),
+                            sha256: "0".repeat(64),
+                        },
+                    )
+                })
+                .collect(),
+            environment_sha256: "0".repeat(64),
+            clean: true,
+        }
+    }
+
+    #[test]
+    fn layer_contract_rejects_altered_build_profile_and_features() {
+        let exact = source("test", &["no-default-features"], &[]);
+        verify_layer_contract("tests", &exact).expect("exact tests contract");
+
+        let mut altered_profile = exact.clone();
+        altered_profile.build_profile = "release".to_owned();
+        assert!(verify_layer_contract("tests", &altered_profile).is_err());
+
+        let mut altered_features = exact;
+        altered_features.features = vec!["internal-test-hooks".to_owned()];
+        assert!(verify_layer_contract("tests", &altered_features).is_err());
+    }
+
+    #[test]
+    fn layer_contract_rejects_cross_layer_receipts_and_tool_drift() {
+        let simulator = source("release-and-test", &["internal-test-hooks"], &[]);
+        assert!(verify_layer_contract("tests", &simulator).is_err());
+
+        let mut tla = source("tla", &[], &["java"]);
+        verify_layer_contract("tla", &tla).expect("exact TLA contract");
+        tla.tools.insert(
+            "curl".to_owned(),
+            ToolReceipt {
+                version: "version".to_owned(),
+                sha256: "0".repeat(64),
+            },
+        );
+        assert!(verify_layer_contract("tla", &tla).is_err());
     }
 }

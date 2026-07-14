@@ -4,7 +4,7 @@ use super::{
     evaluate, evidence_result, observations, MainStatus, ProbeStatus, TlaExecution, TlaVerdict,
 };
 use crate::{
-    producer::tla_output::{TlcProgress, TlcSummary},
+    producer::tla_output::{TlcProgress, TlcSummary, REQUIRED_MODEL_TRANSITIONS},
     Catalog, CheckCompletion, EvidenceStatus, FailureClassification,
 };
 
@@ -96,6 +96,9 @@ fn observations_report_each_detector_qualification_independently() {
     assert!(!observed.contains_key("detector_negative_passed"));
     for predicate in crate::producer::tla_output::REGISTERED_PREDICATES {
         assert_eq!(observed[&format!("detector_qualified:{predicate}")], 1);
+    }
+    for transition in REQUIRED_MODEL_TRANSITIONS {
+        assert_eq!(observed[&format!("transition_covered:{transition}")], 1);
     }
 }
 

@@ -1,15 +1,14 @@
 use std::{
     env, fs,
     path::{Path, PathBuf},
-    process::{Command, ExitCode},
+    process::ExitCode,
 };
 
 use clap::{Parser, Subcommand};
 use rafter_invariants::{
-    aggregate_with_harness_errors, capture_invocation, load_bundles, load_evidence, produce,
-    render_registry_markdown, run_all, verify_bundle_plan, verify_layer_bundle, write_report,
-    ExecutionPlan, PlanOptions, ProducerOptions, RegistryDocument, RunAllOptions, VerdictReport,
-    VerdictStatus,
+    current_source_ref, produce, render_registry_markdown, run_all, verify_and_write_report,
+    verify_layer_evidence, ExecutionPlan, PlanOptions, ProducerOptions, RegistryDocument,
+    RunAllOptions, VerdictReport, VerdictStatus,
 };
 
 #[derive(Debug, Parser)]
@@ -148,19 +147,15 @@ fn run(cli: Cli) -> Result<bool, Box<dyn std::error::Error>> {
             results_dir,
             output_dir,
         } => {
-            let invocation = capture_invocation()?;
-            let outcome = run_all(
-                &RunAllOptions {
-                    plan: PlanOptions {
-                        profile,
-                        registry,
-                        manifest,
-                    },
-                    results_dir,
-                    output_dir,
+            let outcome = run_all(&RunAllOptions {
+                plan: PlanOptions {
+                    profile,
+                    registry,
+                    manifest,
                 },
-                &invocation,
-            )?;
+                results_dir,
+                output_dir,
+            })?;
             print_report(&outcome.report);
             if !outcome.structural_errors.is_empty() {
                 return Err(outcome.structural_errors.join("; ").into());
@@ -181,12 +176,7 @@ fn run(cli: Cli) -> Result<bool, Box<dyn std::error::Error>> {
                 registry,
                 manifest,
             })?;
-            let bundles = load_bundles(&[result])?;
-            let [bundle] = bundles.as_slice() else {
-                return Err("layer verification requires exactly one result bundle".into());
-            };
-            verify_bundle_plan(bundle, &plan.receipt)?;
-            verify_layer_bundle(&plan.catalog, &plan.manifest, &profile, &layer, bundle)?;
+            verify_layer_evidence(&plan, &profile, &layer, &result)?;
             println!("verified {profile}/{layer} evidence");
             Ok(true)
         }
@@ -247,25 +237,12 @@ fn check(options: CheckOptions) -> Result<bool, Box<dyn std::error::Error>> {
     if results.is_empty() {
         results = profile_result_files(&results_dir, &profile, &plan.contract().required_layers);
     }
-    let source_ref = source_ref
-        .or_else(|| env::var("RAFTER_SOURCE_REF").ok())
-        .unwrap_or_else(git_head);
-    let mut loaded = load_evidence(&results);
-    for bundle in &loaded.bundles {
-        if let Err(error) = verify_bundle_plan(bundle, &plan.receipt) {
-            loaded.harness_errors.push(error.to_string());
-        }
-    }
-    let report = aggregate_with_harness_errors(
-        &plan.catalog,
-        &plan.manifest,
-        &profile,
-        &source_ref,
-        &loaded.bundles,
-        &loaded.harness_errors,
-    )?;
-
-    write_report(&report, &output_dir)?;
+    let source_ref = match source_ref.or_else(|| env::var("RAFTER_SOURCE_REF").ok()) {
+        Some(source_ref) => source_ref,
+        None => current_source_ref()?,
+    };
+    let outcome = verify_and_write_report(&plan, &source_ref, &results, &output_dir)?;
+    let report = outcome.report;
     print_report(&report);
     Ok(report.summary.green == 44 && report.summary.total == 44)
 }
@@ -303,18 +280,6 @@ fn profile_result_files(
         .collect::<Vec<_>>();
     paths.sort();
     paths
-}
-
-fn git_head() -> String {
-    Command::new("git")
-        .args(["rev-parse", "HEAD"])
-        .output()
-        .ok()
-        .filter(|output| output.status.success())
-        .and_then(|output| String::from_utf8(output.stdout).ok())
-        .map(|value| value.trim().to_owned())
-        .filter(|value| !value.is_empty())
-        .unwrap_or_else(|| "unknown".to_owned())
 }
 
 #[cfg(test)]

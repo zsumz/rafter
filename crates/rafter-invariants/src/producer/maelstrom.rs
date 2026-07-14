@@ -177,6 +177,9 @@ fn evaluate(scenario: Scenario, outcomes: &[TrialOutcome]) -> ScenarioVerdict {
             harness_error,
         };
     }
+    if outcomes.iter().any(|outcome| outcome.process_timed_out) {
+        return ScenarioVerdict::Error("Maelstrom process exceeded its trial timeout".to_owned());
+    }
     if let Some(error) = outcomes.iter().find_map(|outcome| outcome.error.as_ref()) {
         return ScenarioVerdict::Error(error.clone());
     }
@@ -474,6 +477,7 @@ mod tests {
             }),
             error: None,
             process_succeeded: true,
+            process_timed_out: false,
             markers: ScenarioMarkers {
                 lease_status: LeaseTranscriptStatus::Violation,
                 ..ScenarioMarkers::default()
@@ -498,6 +502,7 @@ mod tests {
             summary: None,
             error: Some("malformed results.edn".to_owned()),
             process_succeeded: false,
+            process_timed_out: false,
             markers: ScenarioMarkers {
                 lease_status: LeaseTranscriptStatus::ViolationWithHarnessError,
                 lease_post_expiry_read_served: 1,
@@ -515,6 +520,33 @@ mod tests {
                 rd06: false,
                 harness_error: true
             }
+        ));
+    }
+
+    #[test]
+    fn trial_timeout_is_a_harness_error_even_with_a_valid_checker_summary() {
+        let outcome = TrialOutcome {
+            summary: Some(MaelstromSummary {
+                validity: Validity::Valid,
+                linearizability: Validity::Valid,
+                operation_count: 3,
+                ok_count: 3,
+                read_ok: 1,
+                write_ok: 1,
+                cas_ok: 1,
+            }),
+            error: None,
+            process_succeeded: false,
+            process_timed_out: true,
+            markers: ScenarioMarkers::default(),
+            duration_ms: 1,
+            peak_rss_kib: 1,
+            artifacts: Vec::new(),
+        };
+        assert!(matches!(
+            evaluate(Scenario::Base, &[outcome]),
+            ScenarioVerdict::Error(message)
+                if message == "Maelstrom process exceeded its trial timeout"
         ));
     }
 }

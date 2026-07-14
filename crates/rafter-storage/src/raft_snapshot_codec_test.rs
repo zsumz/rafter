@@ -1,4 +1,5 @@
 use super::*;
+use rafter_invariant_test::oracle_assert;
 
 fn snapshot(payload: &[u8]) -> PersistedRaftSnapshot {
     PersistedRaftSnapshot {
@@ -184,7 +185,7 @@ fn decode_rejects_corrupt_snapshot_payload_checksum() {
     encoded[checksum_position] ^= 0xff;
     replace_envelope_checksum(&mut encoded);
 
-    assert!(matches!(
+    oracle_assert!(matches!(
         decode_raft_snapshot(&encoded),
         Err(DecodeRaftSnapshotError::PayloadChecksumMismatch { .. })
     ));

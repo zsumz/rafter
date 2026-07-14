@@ -12,5 +12,8 @@ rust-version.workspace = true
 rafter = { path = "../rafter", version = "0.0.1" }
 rafter-crc32 = { path = "../rafter-crc32", version = "0.0.1" }
 
+[dev-dependencies]
+rafter-invariant-test = { path = "../rafter-invariant-test" }
+
 [lints]
 workspace = true

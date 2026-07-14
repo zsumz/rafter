@@ -1,4 +1,5 @@
 use super::*;
+use rafter_invariant_test::oracle_assert_eq;
 
 #[test]
 fn runtime_local_compaction_fills_committed_dynamic_membership_metadata() {
@@ -13,13 +14,13 @@ fn runtime_local_compaction_fills_committed_dynamic_membership_metadata() {
         })
         .expect("runtime fills Raft-owned membership metadata before compaction");
 
-    assert_eq!(
+    oracle_assert_eq!(
         runtime.snapshot_committed_membership(),
         Some(expected.clone())
     );
-    assert_eq!(runtime.committed_membership(), expected.clone());
-    assert_eq!(runtime.effective_membership(), expected.clone());
-    assert_eq!(runtime.log_segment.replay_entries(), Vec::new());
+    oracle_assert_eq!(runtime.committed_membership(), expected.clone());
+    oracle_assert_eq!(runtime.effective_membership(), expected.clone());
+    oracle_assert_eq!(runtime.log_segment.replay_entries(), Vec::new());
 
     let restarted = DurableRaftNode::with_storage_and_snapshot_store(
         raft_config(1, &[2, 3]),
@@ -29,9 +30,9 @@ fn runtime_local_compaction_fills_committed_dynamic_membership_metadata() {
     )
     .expect("node restarts from snapshot membership alone");
 
-    assert_eq!(restarted.committed_membership(), expected.clone());
-    assert_eq!(restarted.effective_membership(), expected);
-    assert_eq!(restarted.log_entries_from(LogIndex(1)), Vec::new());
+    oracle_assert_eq!(restarted.committed_membership(), expected.clone());
+    oracle_assert_eq!(restarted.effective_membership(), expected);
+    oracle_assert_eq!(restarted.log_entries_from(LogIndex(1)), Vec::new());
 }
 
 #[test]
@@ -40,7 +41,7 @@ fn runtime_local_compaction_rejects_wrong_boundary_term_before_writes() {
     let before_log = runtime.log_segment.replay_entries();
     let before_snapshot = runtime.snapshot_store.current().cloned();
 
-    assert_eq!(
+    oracle_assert_eq!(
         runtime.compact_log_with_snapshot(PersistedRaftSnapshot {
             metadata: snapshot_metadata_for_writer(1, 16, 7, 8),
             application_payload: b"wrong boundary term".to_vec(),
@@ -51,8 +52,8 @@ fn runtime_local_compaction_rejects_wrong_boundary_term_before_writes() {
             local_term: Some(Term(8)),
         })
     );
-    assert_eq!(runtime.log_segment.replay_entries(), before_log);
-    assert_eq!(runtime.snapshot_store.current().cloned(), before_snapshot);
+    oracle_assert_eq!(runtime.log_segment.replay_entries(), before_log);
+    oracle_assert_eq!(runtime.snapshot_store.current().cloned(), before_snapshot);
 }
 
 #[test]
@@ -66,7 +67,7 @@ fn runtime_local_compaction_rejects_wrong_committed_membership_before_writes() {
     let metadata =
         snapshot_metadata_for_writer(1, 16, 8, 8).with_committed_membership(wrong.clone());
 
-    assert_eq!(
+    oracle_assert_eq!(
         runtime.compact_log_with_snapshot(PersistedRaftSnapshot {
             metadata,
             application_payload: b"wrong dynamic state".to_vec(),
@@ -77,8 +78,8 @@ fn runtime_local_compaction_rejects_wrong_committed_membership_before_writes() {
             actual: Box::new(wrong),
         })
     );
-    assert_eq!(runtime.log_segment.replay_entries(), before_log);
-    assert_eq!(runtime.snapshot_store.current().cloned(), before_snapshot);
+    oracle_assert_eq!(runtime.log_segment.replay_entries(), before_log);
+    oracle_assert_eq!(runtime.snapshot_store.current().cloned(), before_snapshot);
 }
 
 #[test]
@@ -99,7 +100,7 @@ fn runtime_local_compaction_rejects_wrong_committed_configuration_identity_befor
         ),
     );
 
-    assert_eq!(
+    oracle_assert_eq!(
         runtime.compact_log_with_snapshot(PersistedRaftSnapshot {
             metadata,
             application_payload: b"wrong dynamic configuration identity".to_vec(),
@@ -110,8 +111,8 @@ fn runtime_local_compaction_rejects_wrong_committed_configuration_identity_befor
             actual,
         })
     );
-    assert_eq!(runtime.log_segment.replay_entries(), before_log);
-    assert_eq!(runtime.snapshot_store.current().cloned(), before_snapshot);
+    oracle_assert_eq!(runtime.log_segment.replay_entries(), before_log);
+    oracle_assert_eq!(runtime.snapshot_store.current().cloned(), before_snapshot);
 }
 
 #[test]

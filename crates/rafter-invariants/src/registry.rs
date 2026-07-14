@@ -146,6 +146,8 @@ impl RegistryDocument {
                     symbol: evidence.symbol.clone(),
                     atomic_group: evidence.atomic_group.clone(),
                     negative_fixture: evidence.negative_fixture.clone(),
+                    negative_fixture_path: evidence.negative_fixture_path.clone(),
+                    negative_fixture_detector: evidence.negative_fixture_detector.clone(),
                     test: evidence.test.clone(),
                     simulator: evidence.simulator.clone(),
                 })

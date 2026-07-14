@@ -1,4 +1,5 @@
 use super::*;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
 #[test]
 fn restart_replays_committed_tracked_entry_without_local_id() {
@@ -40,7 +41,7 @@ fn restart_replays_committed_tracked_entry_without_local_id() {
     .expect("runtime recovers with unapplied committed entry");
     let (mut restarted, recovery_outputs) = recovered.into_parts();
 
-    assert_eq!(
+    oracle_assert_eq!(
         recovery_outputs,
         vec![RaftOutput::Apply {
             index: LogIndex(2),
@@ -62,7 +63,7 @@ fn restart_replays_committed_tracked_entry_without_local_id() {
         })
         .expect("new tracked proposal persists after restart");
 
-    assert!(outputs.iter().any(|output| matches!(
+    oracle_assert!(outputs.iter().any(|output| matches!(
         output,
         RaftOutput::Apply {
             payload,
@@ -70,7 +71,7 @@ fn restart_replays_committed_tracked_entry_without_local_id() {
             ..
         } if payload.as_ref() == b"after-restart" && *id == new_id
     )));
-    assert!(!outputs.iter().any(|output| matches!(
+    oracle_assert!(!outputs.iter().any(|output| matches!(
         output,
         RaftOutput::Apply {
             local_proposal_id: Some(id),

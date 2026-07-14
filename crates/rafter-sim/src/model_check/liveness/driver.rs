@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rafter::NodeId;
 
-use crate::Cluster;
+use crate::{Cluster, SimSeed};
 
 use super::MIN_SOAK_LIVENESS_ROUNDS;
 use crate::model_check::{
@@ -15,8 +15,12 @@ use crate::model_check::{
     Failure, MessageKind, ProposalId, ReplayCheck,
 };
 
+mod schedule;
+
+use schedule::{ready_position, rotate_tick_order, schedule_index};
+
 pub(in crate::model_check::liveness) const FAIR_SCHEDULER_POLICY_ID: &str =
-    "all-node-ticks-fifo-ready-waves-v1";
+    "seeded-rotating-all-node-ticks-ready-wave-permutations-v1";
 pub(in crate::model_check::liveness) const FAIR_TICK_BOUND_ROUNDS: usize = 1;
 pub(in crate::model_check::liveness) const FAIR_DELIVERY_BOUND_ROUNDS: usize = 1;
 pub(in crate::model_check::liveness) const STABLE_LEADER_WINDOW_ROUNDS: usize = 2;
@@ -215,17 +219,34 @@ impl BoundedFairnessMonitor {
     }
 }
 
+fn observe_bounded_fairness_round(
+    monitor: &mut BoundedFairnessMonitor,
+    expected_ticks: &[NodeId],
+    executed_ticks: &[NodeId],
+    ready_at_boundary: usize,
+    boundary_deliveries: usize,
+) -> Result<(), &'static str> {
+    monitor.observe_round(
+        expected_ticks,
+        executed_ticks,
+        ready_at_boundary,
+        boundary_deliveries,
+    )
+}
+
 pub(in crate::model_check::liveness) struct FairRoundDriver {
     fairness: BoundedFairnessMonitor,
+    schedule_seed: SimSeed,
 }
 
 impl FairRoundDriver {
-    pub(in crate::model_check::liveness) fn new() -> Self {
+    pub(in crate::model_check::liveness) fn new(schedule_seed: SimSeed) -> Self {
         Self {
             fairness: BoundedFairnessMonitor::new(
                 FAIR_TICK_BOUND_ROUNDS,
                 FAIR_DELIVERY_BOUND_ROUNDS,
             ),
+            schedule_seed,
         }
     }
 
@@ -244,6 +265,7 @@ impl FairRoundDriver {
             round,
             observe,
             &mut self.fairness,
+            self.schedule_seed,
         )
     }
 }
@@ -319,7 +341,7 @@ pub(in crate::model_check::liveness) fn drive_liveness_rounds_until_observed(
             observer_held: true,
         });
     }
-    let mut fair_rounds = FairRoundDriver::new();
+    let mut fair_rounds = FairRoundDriver::new(config.seed);
     for round in 0..budget {
         let mut completion_latched = false;
         let mut premise_held = true;
@@ -390,7 +412,7 @@ pub(in crate::model_check::liveness) fn drive_until_stable_leader(
 ) -> Result<Option<LeaderConvergence>, SoakFailure> {
     let mut stable_leader = None;
     let mut stable_rounds = 0usize;
-    let mut fair_rounds = FairRoundDriver::new();
+    let mut fair_rounds = FairRoundDriver::new(config.seed);
     for round in 0..budget {
         let round_candidate = single_leader(state);
         let mut candidate_held = round_candidate.is_some();
@@ -471,29 +493,40 @@ fn drive_soak_liveness_round_observed(
     state: &mut ExplorationState,
     trace: &mut Vec<SoakAction>,
     observed_actions: &mut BTreeSet<SoakActionKind>,
-    _round: usize,
+    round: usize,
     observe: &mut dyn FnMut(&ExplorationState) -> bool,
     fairness: &mut BoundedFairnessMonitor,
+    schedule_seed: SimSeed,
 ) -> Result<FairRoundExecution, &'static str> {
-    let node_ids = state.cluster().nodes.keys().copied().collect::<Vec<_>>();
+    let mut node_ids = state.cluster().nodes.keys().copied().collect::<Vec<_>>();
+    rotate_tick_order(&mut node_ids, schedule_seed, round);
     let mut executed_ticks = Vec::with_capacity(node_ids.len());
     let mut observer_held = true;
     let mut ready_at_boundary = 0usize;
     let mut boundary_deliveries = 0usize;
-    for node_id in node_ids.iter().copied() {
+    for (tick_ordinal, node_id) in node_ids.iter().copied().enumerate() {
         apply_to_state(state, Operation::Tick(node_id));
         trace.push(SoakAction::Tick(node_id));
         observed_actions.insert(SoakActionKind::Tick);
         executed_ticks.push(node_id);
         observer_held &= observe(state);
-        for _ in 0..FAIR_MAX_DELIVERY_WAVES_PER_TICK {
+        for wave in 0..FAIR_MAX_DELIVERY_WAVES_PER_TICK {
             let wave_size = ready_message_count(state);
             if wave_size == 0 {
                 break;
             }
             ready_at_boundary = ready_at_boundary.saturating_add(wave_size);
-            for _ in 0..wave_size {
-                let Some(position) = first_ready_position(state) else {
+            for delivery_ordinal in 0..wave_size {
+                let remaining_at_boundary = wave_size - delivery_ordinal;
+                let ready_ordinal = schedule_index(
+                    schedule_seed,
+                    round,
+                    tick_ordinal,
+                    wave,
+                    delivery_ordinal,
+                    remaining_at_boundary,
+                );
+                let Some(position) = ready_position(state, ready_ordinal) else {
                     break;
                 };
                 let Some(envelope) = state.cluster().pending_envelope_at(position).cloned() else {
@@ -517,7 +550,8 @@ fn drive_soak_liveness_round_observed(
         ensure_delivery_frontier_drained(ready_message_count(state))?;
     }
 
-    fairness.observe_round(
+    observe_bounded_fairness_round(
+        fairness,
         &node_ids,
         &executed_ticks,
         ready_at_boundary,
@@ -552,14 +586,6 @@ fn ready_message_count(state: &ExplorationState) -> usize {
         .iter()
         .filter(|queued| queued.ready_at <= state.cluster().clock.now())
         .count()
-}
-
-fn first_ready_position(state: &ExplorationState) -> Option<usize> {
-    state
-        .cluster()
-        .network
-        .iter()
-        .position(|queued| queued.ready_at <= state.cluster().clock.now())
 }
 
 pub(in crate::model_check::liveness) fn check_soak_safety(
@@ -802,6 +828,7 @@ mod tests {
         },
         Cluster, SimSeed,
     };
+    use rafter_invariant_test::{oracle_assert, oracle_expect_err};
 
     fn three_node_fast_configs() -> Vec<rafter::NodeConfig> {
         vec![
@@ -847,20 +874,68 @@ mod tests {
             .observe_round(&[NodeId(1)], &[NodeId(1)], 1, 0)
             .expect_err("the second missed delivery must exhaust the positive bound");
 
-        assert!(error.contains("delivery starvation"));
+        oracle_assert!(error.contains("delivery starvation"));
     }
 
     #[test]
     fn bounded_fairness_detector_rejects_positive_bound_tick_starvation() {
         let mut monitor = BoundedFairnessMonitor::new(2, 3);
-        monitor
-            .observe_round(&[NodeId(1), NodeId(2)], &[NodeId(1)], 0, 0)
+        observe_bounded_fairness_round(&mut monitor, &[NodeId(1), NodeId(2)], &[NodeId(1)], 0, 0)
             .expect("one missed round remains inside the positive bound");
-        let error = monitor
-            .observe_round(&[NodeId(1), NodeId(2)], &[NodeId(1)], 0, 0)
-            .expect_err("the second missed tick must exhaust the positive bound");
+        let error = oracle_expect_err!(
+            observe_bounded_fairness_round(
+                &mut monitor,
+                &[NodeId(1), NodeId(2)],
+                &[NodeId(1)],
+                0,
+                0,
+            ),
+            "the second missed tick must exhaust the positive bound"
+        );
 
-        assert!(error.contains("tick starvation"));
+        oracle_assert!(error.contains("tick starvation"));
+    }
+
+    #[test]
+    fn fair_round_schedule_is_replayable_and_seed_varied() {
+        fn tick_order(seed: SimSeed) -> Vec<NodeId> {
+            let config = SoakConfig::new(seed, 0);
+            let mut state = ExplorationState::new(Cluster::new_with_seed(
+                three_node_fast_configs(),
+                config.seed,
+            ));
+            let mut trace = Vec::new();
+            let mut observed_actions = BTreeSet::new();
+            let mut driver = FairRoundDriver::new(seed);
+            drive_soak_liveness_round(
+                &mut driver,
+                &mut state,
+                config,
+                &mut trace,
+                &mut observed_actions,
+                0,
+            )
+            .expect("one fair round should complete");
+            trace
+                .into_iter()
+                .filter_map(|action| match action {
+                    SoakAction::Tick(node_id) => Some(node_id),
+                    _ => None,
+                })
+                .collect()
+        }
+
+        let first = tick_order(SimSeed(0x9103));
+        let replay = tick_order(SimSeed(0x9103));
+        let varied = tick_order(SimSeed(0x9104));
+
+        assert_eq!(first, replay, "a seed must replay the same fair schedule");
+        assert_ne!(
+            first, varied,
+            "different reviewed seeds must vary the schedule"
+        );
+        assert_eq!(first.iter().copied().collect::<BTreeSet<_>>().len(), 3);
+        assert_eq!(varied.iter().copied().collect::<BTreeSet<_>>().len(), 3);
     }
 
     #[test]

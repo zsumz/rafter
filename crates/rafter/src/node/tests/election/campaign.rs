@@ -1,6 +1,7 @@
 //! Election start, single-voter leadership, and candidate promotion scenarios.
 
 use super::*;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
 #[test]
 fn node_starts_election_after_timeout() {
@@ -41,14 +42,14 @@ fn single_voter_leadership_noop_does_not_drop_prior_term_apply() {
 
     let outputs = node.step(Input::Tick);
 
-    assert_eq!(node.role(), Role::Leader);
-    assert_eq!(node.commit_index(), LogIndex(2));
-    assert!(outputs.iter().any(|output| matches!(
+    oracle_assert_eq!(node.role(), Role::Leader);
+    oracle_assert_eq!(node.commit_index(), LogIndex(2));
+    oracle_assert!(outputs.iter().any(|output| matches!(
         output,
         Output::Apply { index, payload, .. }
             if *index == LogIndex(1) && payload.as_ref() == b"old-entry"
     )));
-    assert!(outputs.iter().all(|output| !matches!(
+    oracle_assert!(outputs.iter().all(|output| !matches!(
         output,
         Output::Apply {
             index: LogIndex(2),
@@ -107,8 +108,8 @@ fn candidate_becomes_leader_after_quorum() {
 
     let outputs = elect_leader(&mut node);
 
-    assert_eq!(node.role(), Role::Leader);
-    assert!(outputs.iter().any(|output| matches!(
+    oracle_assert_eq!(node.role(), Role::Leader);
+    oracle_assert!(outputs.iter().any(|output| matches!(
         output,
         Output::Send {
             message: Message::AppendEntries(_),

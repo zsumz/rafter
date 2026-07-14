@@ -2,13 +2,14 @@ use std::path::Path;
 
 use crate::{aggregate::AggregateError, ResultBundle};
 
-mod compile_test;
+mod compile;
 mod integrity;
 mod resource_metrics;
 mod simulator;
 mod simulator_schedule;
+mod test_logs;
 
-use compile_test::{verify_compile_invocations, verify_test_logs};
+use compile::verify_compile_invocations;
 #[cfg(test)]
 use integrity::verify_producer_invocation_paths;
 use resource_metrics::verify_resource_metrics;
@@ -17,6 +18,7 @@ use simulator::verify_simulator_logs;
 use simulator::verify_simulator_observations;
 #[cfg(test)]
 use simulator_schedule::validate_simulator_schedule;
+use test_logs::verify_test_logs;
 
 const EVENT_PREFIX: &str = "RAFTER_EVENT ";
 
@@ -36,3 +38,7 @@ pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), Aggregate
 #[cfg(test)]
 #[path = "artifact_verify/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "artifact_verify/compile_tests.rs"]
+mod compile_tests;

@@ -18,6 +18,7 @@ use super::{
         validate_runner_options, validate_spec_contract,
     },
     tla_exec::{execute, MainStatus, ProbeStatus, TlaExecution},
+    tla_output::REQUIRED_MODEL_TRANSITIONS,
     ProducerContext,
 };
 
@@ -203,6 +204,13 @@ fn observations(
             u64::from(execution.trace_status == ProbeStatus::Passed),
         ),
     ]);
+    if execution.trace_status == ProbeStatus::Passed {
+        observations.extend(
+            REQUIRED_MODEL_TRANSITIONS
+                .into_iter()
+                .map(|transition| (format!("transition_covered:{transition}"), 1)),
+        );
+    }
     observations.extend(execution.detector_qualifications.clone());
     if let Some(report) = &execution.checkpoint_report {
         observations.extend([

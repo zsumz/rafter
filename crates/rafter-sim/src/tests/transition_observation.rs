@@ -9,6 +9,7 @@ fn transition_observation_snapshot_omits_immutable_execution_payloads() {
     let config = NodeConfig::new(NodeId(1), Vec::new(), 3).expect("node config is valid");
     let mut cluster = Cluster::new(vec![config]);
     let prior_state = cluster.initial_reference_states[&NodeId(1)].clone();
+    let payload = LogEntryKind::application(b"retained execution payload".to_vec());
     cluster.execution_history.push(ExecutionWitness {
         node_id: NodeId(1),
         application_epoch: 0,
@@ -16,7 +17,11 @@ fn transition_observation_snapshot_omits_immutable_execution_payloads() {
         entry: ExecutedLogEntry {
             index: LogIndex(1),
             term: Term(1),
-            kind: LogEntryKind::application(b"retained execution payload".to_vec()),
+            kind: payload.clone(),
+        },
+        emitted_application_payload: match payload {
+            LogEntryKind::Application(payload) => Some(payload),
+            LogEntryKind::Configuration(_) | LogEntryKind::Noop => None,
         },
         prior_state: prior_state.clone(),
         resulting_state: prior_state,

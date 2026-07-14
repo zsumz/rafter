@@ -3,6 +3,7 @@
 use super::super::helpers::elect_leader;
 use super::*;
 use crate::{AppendEntriesResponse, Message, PreVoteResponse, ReadId, RequestVoteResponse};
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
 const ELECTION_TIMEOUT_TICKS: u64 = 8;
 const LEASE_WINDOW_TICKS: u64 = ELECTION_TIMEOUT_TICKS / 2;
@@ -127,10 +128,10 @@ fn ack(leader: &mut Node, follower: u64, sequence: u64) {
 #[test]
 fn a_confirmed_lease_grants_barriers_without_a_round_trip() {
     let mut leader = leader_with_commit_and_confirmed_lease();
-    assert!(leader.read_lease_active());
+    oracle_assert!(leader.read_lease_active());
 
     let outputs = leader.step(read_index(42));
-    assert_eq!(
+    oracle_assert_eq!(
         outputs,
         vec![Output::ReadIndexGranted {
             read_id: ReadId(42),
@@ -138,21 +139,21 @@ fn a_confirmed_lease_grants_barriers_without_a_round_trip() {
         }],
         "the barrier grants immediately, with nothing registered"
     );
-    assert_eq!(leader.pending_read_count(), 0);
+    oracle_assert_eq!(leader.pending_read_count(), 0);
 }
 
 #[test]
 fn the_lease_lapses_without_quorum_acknowledgements() {
     let mut leader = leader_with_commit_and_confirmed_lease();
-    assert!(leader.read_lease_active());
+    oracle_assert!(leader.read_lease_active());
 
     for _ in 0..LEASE_WINDOW_TICKS {
         let _ = leader.step(Input::Tick);
     }
-    assert!(!leader.read_lease_active());
+    oracle_assert!(!leader.read_lease_active());
 
     let outputs = leader.step(read_index(43));
-    assert!(
+    oracle_assert!(
         outputs.iter().any(|output| matches!(
             output,
             Output::Send {
@@ -162,7 +163,7 @@ fn the_lease_lapses_without_quorum_acknowledgements() {
         )),
         "a lapsed lease starts the read-index round trip immediately"
     );
-    assert_eq!(leader.pending_read_count(), 1);
+    oracle_assert_eq!(leader.pending_read_count(), 1);
 }
 
 #[test]
@@ -172,11 +173,11 @@ fn the_lease_boundary_is_the_half_election_window() {
     for _ in 0..(LEASE_WINDOW_TICKS - 1) {
         let _ = leader.step(Input::Tick);
     }
-    assert!(
+    oracle_assert!(
         leader.read_lease_active(),
         "the final tick before the documented skew window still holds"
     );
-    assert_eq!(
+    oracle_assert_eq!(
         leader.step(read_index(45)),
         vec![Output::ReadIndexGranted {
             read_id: ReadId(45),
@@ -185,12 +186,12 @@ fn the_lease_boundary_is_the_half_election_window() {
     );
 
     let _ = leader.step(Input::Tick);
-    assert!(
+    oracle_assert!(
         !leader.read_lease_active(),
         "at the half-election-timeout boundary the lease must lapse"
     );
     let outputs = leader.step(read_index(46));
-    assert!(
+    oracle_assert!(
         outputs.iter().any(|output| matches!(
             output,
             Output::Send {
@@ -200,7 +201,7 @@ fn the_lease_boundary_is_the_half_election_window() {
         )),
         "the first request outside the bound takes the quorum round trip"
     );
-    assert_eq!(leader.pending_read_count(), 1);
+    oracle_assert_eq!(leader.pending_read_count(), 1);
 }
 
 #[test]
@@ -231,7 +232,7 @@ fn acknowledgements_of_rounds_before_the_checkpoint_do_not_confirm_it() {
         let _ = leader.step(Input::Tick);
     }
     ack(&mut leader, 2, sequence);
-    assert!(
+    oracle_assert!(
         !leader.read_lease_active(),
         "an acknowledgement of a pre-re-arm round proves nothing about the fresh basis"
     );
@@ -242,27 +243,27 @@ fn the_lease_opt_in_is_inert_without_its_safety_foundation() {
     let config = NodeConfig::new(NodeId(1), vec![NodeId(2), NodeId(3)], 3)
         .expect("test Raft node config is valid")
         .with_lease_reads(true);
-    assert!(
+    oracle_assert!(
         config.lease_reads(),
         "the default posture carries the lease's safety foundation"
     );
-    assert!(
+    oracle_assert!(
         !config.clone().with_pre_vote(false).lease_reads(),
         "without pre-vote the opt-in reports disabled"
     );
-    assert!(
+    oracle_assert!(
         !config.clone().with_check_quorum(false).lease_reads(),
         "without check-quorum the opt-in reports disabled"
     );
     let degraded = config.with_pre_vote(false).with_check_quorum(false);
-    assert!(!degraded.lease_reads());
+    oracle_assert!(!degraded.lease_reads());
 
     // Behaviorally: acknowledged rounds never activate the lease and
     // barriers take the read-index round trip.
     let mut leader = Node::new(degraded);
     let _ = elect_leader(&mut leader);
     ack(&mut leader, 2, 1);
-    assert_eq!(leader.commit_index(), LogIndex(1));
+    oracle_assert_eq!(leader.commit_index(), LogIndex(1));
 
     let outputs = leader.step(Input::Tick);
     let sequence = outputs
@@ -276,15 +277,15 @@ fn the_lease_opt_in_is_inert_without_its_safety_foundation() {
         })
         .expect("leader tick broadcasts");
     ack(&mut leader, 2, sequence);
-    assert!(!leader.read_lease_active());
+    oracle_assert!(!leader.read_lease_active());
 
     let outputs = leader.step(read_index(44));
-    assert!(outputs.iter().any(|output| matches!(
+    oracle_assert!(outputs.iter().any(|output| matches!(
         output,
         Output::Send {
             message: Message::AppendEntries(_),
             ..
         }
     )));
-    assert_eq!(leader.pending_read_count(), 1);
+    oracle_assert_eq!(leader.pending_read_count(), 1);
 }

@@ -78,6 +78,24 @@ pub(crate) fn check_commit_history(
     state: &ExplorationState,
     trace: &[Action],
 ) -> Result<(), Failure> {
+    if let Some(certificate) = state
+        .election_history()
+        .elected_by_term
+        .values()
+        .flatten()
+        .find(|certificate| certificate.logical_prefix_at_election.is_none())
+    {
+        return Err(Failure {
+            kind: crate::model_check::FailureKind::HarnessError,
+            invariant: super::catalog::LG_05_LEADER_COMPLETENESS,
+            message: format!(
+                "{} election in term {} has no frozen logical-prefix witness",
+                certificate.leader_id, certificate.term
+            ),
+            trace: trace.to_vec(),
+            state: summarize(state.cluster()),
+        });
+    }
     check_committed_prefix_history_stability(state, trace)?;
     check_stable_commit_quorums(state, trace)?;
     check_joint_commit_quorums(state, trace)?;

@@ -332,7 +332,7 @@ fn exercise_post_heal_partition(
     let nodes_exercised = state.cluster().nodes.len();
     let protocol_before = super::explorers::protocol_state_fingerprint(state);
     let exercise_trace_start = trace.len();
-    let mut fair_rounds = FairRoundDriver::new();
+    let mut fair_rounds = FairRoundDriver::new(config.seed);
     for round in 0..POST_HEAL_FAULT_EXERCISE_ROUNDS {
         drive_soak_liveness_round(
             &mut fair_rounds,

@@ -56,16 +56,16 @@ fn process_logs_bind_check_and_execution_resource_metrics() {
     std::fs::create_dir_all(&root).expect("create scratch root");
     let relative = "process.log";
     let source = concat!(
-        "schema_version: 2\n",
+        "schema_version: 3\n",
         "label: exact\n",
         "invocation: {\"program\":\"/bin/test\",\"program_sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"arguments\":[\"test\"],\"current_dir\":\"/workspace\",\"environment\":{},\"environment_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}\n",
         "exit_code: Some(0)\n",
         "timed_out: false\n",
         "duration_ms: 7\n",
-        "peak_rss_kib: 13\n\n",
-        "--- stdout ---\n",
-        "ok\n",
-        "--- stderr ---\n",
+        "peak_rss_kib: 13\n",
+        "stdout_bytes: 2\n",
+        "stderr_bytes: 0\n\n",
+        "ok",
     );
     std::fs::write(root.join(relative), source).expect("write process log");
     let artifact = crate::ArtifactRef {
@@ -104,16 +104,16 @@ fn simulator_check_metrics_exclude_compile_resources() {
     let process_log = |label: &str, duration_ms: u64, peak_rss_kib: u64| {
         format!(
             concat!(
-                "schema_version: 2\n",
+                "schema_version: 3\n",
                 "label: {label}\n",
                 "invocation: {{\"program\":\"/bin/test\",\"program_sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"arguments\":[\"test\"],\"current_dir\":\"/workspace\",\"environment\":{{}},\"environment_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}}\n",
                 "exit_code: Some(0)\n",
                 "timed_out: false\n",
                 "duration_ms: {duration_ms}\n",
-                "peak_rss_kib: {peak_rss_kib}\n\n",
-                "--- stdout ---\n",
-                "ok\n",
-                "--- stderr ---\n",
+                "peak_rss_kib: {peak_rss_kib}\n",
+                "stdout_bytes: 2\n",
+                "stderr_bytes: 0\n\n",
+                "ok",
             ),
             label = label,
             duration_ms = duration_ms,

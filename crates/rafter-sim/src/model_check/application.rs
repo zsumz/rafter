@@ -68,6 +68,8 @@ enum Transition<'a> {
         source: Box<crate::ExecutionWitness>,
         corruption: ExecutionRecorderCorruption,
     },
+    #[cfg(test)]
+    ExecutionCursorRewind(NodeId),
     SchedulerIndex(usize),
     RandomReadyPosition,
 }
@@ -157,6 +159,11 @@ fn apply_transition(
                 }
             }
             state.cluster.0.execution_history.push(*source);
+            TransitionOutcome::Applied
+        }
+        #[cfg(test)]
+        Transition::ExecutionCursorRewind(node_id) => {
+            state.cluster.0.rewind_execution_cursor_for_fixture(node_id);
             TransitionOutcome::Applied
         }
         Transition::SchedulerIndex(len) => {
@@ -389,6 +396,22 @@ pub(in crate::model_check) fn record_execution_corruption(
     }
 }
 
+#[cfg(test)]
+pub(in crate::model_check) fn rewind_execution_cursor_for_fixture(
+    state: &mut ExplorationState,
+    node_id: NodeId,
+) {
+    match apply_transition(state, Transition::ExecutionCursorRewind(node_id)) {
+        Ok(TransitionOutcome::Applied) => {}
+        Ok(TransitionOutcome::SchedulerIndex(_) | TransitionOutcome::RandomReadyPosition(_)) => {
+            unreachable!("execution cursor rewind returned a scheduler outcome")
+        }
+        Err(TransitionError::Invariant(_) | TransitionError::Bootstrap(_)) => {
+            unreachable!("execution cursor rewind returned an unrelated transition error")
+        }
+    }
+}
+
 pub(in crate::model_check) fn scheduler_index(state: &mut ExplorationState, len: usize) -> usize {
     match apply_transition(state, Transition::SchedulerIndex(len)) {
         Ok(TransitionOutcome::SchedulerIndex(index)) => index,
@@ -420,6 +443,30 @@ pub(in crate::model_check) fn apply_to_restart_snapshot_state(
 impl InstrumentedCluster {
     pub(super) const fn new(cluster: Cluster) -> Self {
         Self(cluster)
+    }
+
+    fn initialize_snapshot_seed_epoch_floor(
+        &mut self,
+        node_id: NodeId,
+        snapshot_boundary: rafter::LogIndex,
+    ) {
+        let application_epoch = self.application_epoch(node_id);
+        let has_epoch_history = self.0.applied.iter().any(|applied| {
+            applied.node_id == node_id && applied.application_epoch == application_epoch
+        }) || self.0.execution_history.as_slice().iter().any(|witness| {
+            witness.node_id == node_id && witness.application_epoch == application_epoch
+        }) || self.0.snapshot_installs.iter().any(|install| {
+            install.node_id == node_id && install.application_epoch == application_epoch
+        });
+        if has_epoch_history {
+            return;
+        }
+        let floor = self
+            .0
+            .application_epoch_start_floors
+            .entry((node_id, application_epoch))
+            .or_default();
+        *floor = (*floor).max(snapshot_boundary);
     }
 
     #[cfg(test)]

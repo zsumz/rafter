@@ -230,6 +230,7 @@ impl RaftHardStateStore for FileRaftHardStateStore {
 mod tests {
     use super::*;
     use rafter::{LogIndex, NodeId, Term};
+    use rafter_invariant_test::oracle_assert_eq;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     static TEST_FILE_ID: AtomicU64 = AtomicU64::new(0);
@@ -282,7 +283,7 @@ mod tests {
 
         let reopened = FileRaftHardStateStore::open(&path).expect("store reopens");
 
-        assert_eq!(reopened.current(), hard_state(2, Some(8)));
+        oracle_assert_eq!(reopened.current(), hard_state(2, Some(8)));
         remove_test_file(path);
     }
 

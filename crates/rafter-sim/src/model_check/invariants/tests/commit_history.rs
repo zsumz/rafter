@@ -8,9 +8,15 @@ use super::super::history::{
 };
 use super::*;
 use crate::model_check::observations::Observation;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq, oracle_expect_err};
 
 #[test]
 fn commit_certificate_uses_pre_transition_joint_quorum_for_candidate_below_config() {
+    let pending_configuration = ConfigurationEntry::stable(
+        ConfigurationId(42),
+        MembershipSet::new(vec![NodeId(1), NodeId(2)], Vec::new())
+            .expect("pending membership is valid"),
+    );
     let mut state = state_with_bootstraps(
         voter_configs(&[1, 2, 3]),
         &[
@@ -19,7 +25,14 @@ fn commit_certificate_uses_pre_transition_joint_quorum_for_candidate_below_confi
                 bootstrap_with_log(
                     Term(2),
                     LogIndex(1),
-                    vec![app_entry(1, Term(2), b"candidate")],
+                    vec![
+                        app_entry(1, Term(2), b"candidate"),
+                        BootstrapLogEntry::configuration(
+                            LogIndex(2),
+                            Term(2),
+                            pending_configuration,
+                        ),
+                    ],
                     None,
                 ),
             ),
@@ -42,15 +55,24 @@ fn commit_certificate_uses_pre_transition_joint_quorum_for_candidate_below_confi
         LogIndex::ZERO,
     );
 
-    state.record_commit_observation(&context, None, None);
+    state.record_commit_observation(
+        &context,
+        Some(ConfigurationAppend {
+            proposer: NodeId(1),
+            index: LogIndex(2),
+        }),
+        None,
+    );
 
-    let failure = check_joint_commit_quorums(&state, &[])
-        .expect_err("old-side-only storage must not satisfy the joint quorum");
-    assert_eq!(
+    let failure = oracle_expect_err!(
+        check_joint_commit_quorums(&state, &[]),
+        "old-side-only storage must not satisfy the joint quorum",
+    );
+    oracle_assert_eq!(
         failure.invariant(),
         catalog::CM_02_COMMIT_REQUIRES_EFFECTIVE_QUORUM
     );
-    assert!(
+    oracle_assert!(
         failure.message.contains("without an effective quorum"),
         "unexpected failure message: {}",
         failure.message
@@ -92,9 +114,11 @@ fn commit_certificate_rejects_learner_storage_as_voter_quorum() {
 
     state.record_commit_observation(&context, None, None);
 
-    let failure = check_stable_commit_quorums(&state, &[])
-        .expect_err("a learner replica must not count toward voter quorum");
-    assert_eq!(
+    let failure = oracle_expect_err!(
+        check_stable_commit_quorums(&state, &[]),
+        "a learner replica must not count toward voter quorum",
+    );
+    oracle_assert_eq!(
         failure.invariant(),
         catalog::CM_02_COMMIT_REQUIRES_EFFECTIVE_QUORUM
     );
@@ -172,13 +196,15 @@ fn commit_certificate_detects_prior_term_candidate_commit() {
 
     state.record_commit_observation(&context, None, None);
 
-    let failure = check_current_term_commit_certificates(&state, &[])
-        .expect_err("prior-term candidate commit must fail");
-    assert_eq!(
+    let failure = oracle_expect_err!(
+        check_current_term_commit_certificates(&state, &[]),
+        "prior-term candidate commit must fail",
+    );
+    oracle_assert_eq!(
         failure.invariant(),
         catalog::CM_03_LEADERS_ONLY_COMMIT_CURRENT_TERM_ENTRIES
     );
-    assert!(
+    oracle_assert!(
         failure.message.contains("term 2 while leading term 3"),
         "unexpected failure message: {}",
         failure.message
@@ -222,15 +248,24 @@ fn commit_certificate_uses_post_append_joint_quorum_for_same_operation_commit() 
         LogIndex::ZERO,
     );
 
-    state.record_commit_observation(&context, Some(NodeId(1)), None);
+    state.record_commit_observation(
+        &context,
+        Some(ConfigurationAppend {
+            proposer: NodeId(1),
+            index: LogIndex(1),
+        }),
+        None,
+    );
 
-    let failure = check_joint_commit_quorums(&state, &[])
-        .expect_err("same-operation joint commit must require the new-side majority");
-    assert_eq!(
+    let failure = oracle_expect_err!(
+        check_joint_commit_quorums(&state, &[]),
+        "same-operation joint commit must require the new-side majority",
+    );
+    oracle_assert_eq!(
         failure.invariant(),
         catalog::CM_02_COMMIT_REQUIRES_EFFECTIVE_QUORUM
     );
-    assert!(
+    oracle_assert!(
         failure.message.contains("without an effective quorum"),
         "unexpected failure message: {}",
         failure.message
@@ -239,6 +274,10 @@ fn commit_certificate_uses_post_append_joint_quorum_for_same_operation_commit() 
 
 #[test]
 fn valid_pre_transition_joint_commit_marks_joint_quorum_observation() {
+    let pending_configuration = ConfigurationEntry::stable(
+        ConfigurationId(45),
+        MembershipSet::new(vec![NodeId(1)], Vec::new()).expect("pending membership is valid"),
+    );
     let mut state = state_with_bootstraps(
         voter_configs(&[1, 2, 3, 4, 5]),
         &[
@@ -247,7 +286,14 @@ fn valid_pre_transition_joint_commit_marks_joint_quorum_observation() {
                 bootstrap_with_log(
                     Term(2),
                     LogIndex(1),
-                    vec![app_entry(1, Term(2), b"candidate")],
+                    vec![
+                        app_entry(1, Term(2), b"candidate"),
+                        BootstrapLogEntry::configuration(
+                            LogIndex(2),
+                            Term(2),
+                            pending_configuration,
+                        ),
+                    ],
                     None,
                 ),
             ),
@@ -279,7 +325,14 @@ fn valid_pre_transition_joint_commit_marks_joint_quorum_observation() {
         LogIndex::ZERO,
     );
 
-    state.record_commit_observation(&context, None, None);
+    state.record_commit_observation(
+        &context,
+        Some(ConfigurationAppend {
+            proposer: NodeId(1),
+            index: LogIndex(2),
+        }),
+        None,
+    );
 
     check_joint_commit_quorums(&state, &[]).expect("both joint majorities store the candidate");
     assert!(state
@@ -329,7 +382,14 @@ fn valid_post_append_joint_commit_marks_joint_quorum_observation() {
         LogIndex::ZERO,
     );
 
-    state.record_commit_observation(&context, Some(NodeId(1)), None);
+    state.record_commit_observation(
+        &context,
+        Some(ConfigurationAppend {
+            proposer: NodeId(1),
+            index: LogIndex(1),
+        }),
+        None,
+    );
 
     check_joint_commit_quorums(&state, &[]).expect("post-append joint majorities store the entry");
     assert!(state
@@ -385,15 +445,28 @@ fn leader_completeness_rechecks_when_committed_ledger_grows_after_election() {
     state
         .election_history_mut()
         .elected_by_term
-        .insert(certificate.term, certificate);
+        .insert(certificate.term, vec![certificate]);
     record_leader_completeness_check(&mut state);
     assert_eq!(
         state
             .commit_history()
             .leader_completeness_checked_through
-            .get(&(NodeId(2), Term(4))),
+            .get(&(NodeId(2), Term(4), 0)),
         Some(&LogIndex::ZERO)
     );
+
+    state
+        .inject_bootstrap_state(
+            NodeId(2),
+            bootstrap_with_log(
+                Term(4),
+                LogIndex::ZERO,
+                vec![app_entry(1, Term(3), b"late-commit")],
+                None,
+            ),
+        )
+        .expect("former leader log repair is valid");
+    state.refresh_log_history();
 
     state
         .inject_bootstrap_state(
@@ -411,14 +484,78 @@ fn leader_completeness_rechecks_when_committed_ledger_grows_after_election() {
     state.refresh_committed_prefixes();
     record_leader_completeness_check(&mut state);
 
-    let failure = check_commit_history(&state, &[])
-        .expect_err("later lower-term commit must be checked against existing leader");
-    assert_eq!(failure.invariant(), catalog::LG_05_LEADER_COMPLETENESS);
-    assert!(
+    let failure = oracle_expect_err!(
+        check_commit_history(&state, &[]),
+        "later lower-term commit must be checked against existing leader",
+    );
+    oracle_assert_eq!(failure.invariant(), catalog::LG_05_LEADER_COMPLETENESS);
+    oracle_assert!(
         failure.message.contains("without committed prefix"),
         "unexpected failure message: {}",
         failure.message
     );
+}
+
+#[test]
+fn leader_completeness_checks_every_same_leader_same_term_certificate() {
+    let mut state = state_with_bootstraps(
+        voter_configs(&[1]),
+        &[{
+            (
+                1,
+                bootstrap_with_log(
+                    Term(4),
+                    LogIndex(1),
+                    vec![app_entry(1, Term(3), b"committed")],
+                    None,
+                ),
+            )
+        }],
+    );
+    state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(1), Term(3));
+    let committed_prefix = state
+        .commit_history()
+        .committed_prefix
+        .clone()
+        .expect("fixture has a committed logical prefix");
+    let mut valid = election_certificate(4, 1, stable_membership(&[1], &[]), &[1]);
+    valid.logical_prefix_at_election = Some(committed_prefix);
+    let invalid = election_certificate(4, 1, stable_membership(&[1], &[]), &[1]);
+    state
+        .election_history_mut()
+        .elected_by_term
+        .insert(Term(4), vec![valid, invalid]);
+
+    state.record_leader_completeness_observation();
+
+    let failure = oracle_expect_err!(
+        check_commit_history(&state, &[]),
+        "a valid certificate must not mask a later invalid certificate",
+    );
+    oracle_assert_eq!(failure.invariant(), catalog::LG_05_LEADER_COMPLETENESS);
+}
+
+#[test]
+fn leader_completeness_fails_closed_without_election_prefix_witness() {
+    let mut state = state_with_bootstraps(voter_configs(&[1, 2]), &[]);
+    let mut certificate = election_certificate(4, 2, stable_membership(&[1, 2], &[]), &[1, 2]);
+    certificate.logical_prefix_at_election = None;
+    state
+        .election_history_mut()
+        .elected_by_term
+        .insert(certificate.term, vec![certificate]);
+
+    let failure = oracle_expect_err!(
+        check_commit_history(&state, &[]),
+        "missing election-time prefix identity must fail closed",
+    );
+    oracle_assert_eq!(
+        failure.kind(),
+        crate::model_check::FailureKind::HarnessError
+    );
+    oracle_assert!(failure
+        .message
+        .contains("has no frozen logical-prefix witness"));
 }
 
 pub(super) fn state_with_bootstraps(

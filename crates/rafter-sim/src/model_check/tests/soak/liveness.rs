@@ -6,6 +6,7 @@ use super::super::super::{
     run_raft_random_soak, soak::SoakAction, state::ExplorationState, SoakActionKind, SoakConfig,
 };
 use crate::{Cluster, SimSeed};
+use rafter_invariant_test::{oracle_assert, oracle_expect_err};
 
 #[derive(Clone, Copy, Debug)]
 struct HistoryCounts {
@@ -75,24 +76,26 @@ fn post_heal_leader_convergence_monitor_reports_exhausted_bound() {
     let mut trace = Vec::new();
     let mut observed_actions = BTreeSet::new();
 
-    let failure = run_soak_liveness_check_with_budget_overrides(
-        &mut state,
-        config,
-        &mut trace,
-        &mut observed_actions,
-        Some(0),
-        None,
-    )
-    .expect_err("zero post-heal rounds must fail the convergence detector");
+    let failure = oracle_expect_err!(
+        run_soak_liveness_check_with_budget_overrides(
+            &mut state,
+            config,
+            &mut trace,
+            &mut observed_actions,
+            Some(0),
+            None,
+        ),
+        "zero post-heal rounds must fail the convergence detector"
+    );
 
-    assert!(failure
+    oracle_assert!(failure
         .failure
         .message()
         .contains("within 0 post-heal convergence rounds"));
-    assert!(trace
+    oracle_assert!(trace
         .iter()
         .any(|action| matches!(action, SoakAction::Heal)));
-    assert!(!trace
+    oracle_assert!(!trace
         .iter()
         .any(|action| matches!(action, SoakAction::Propose { .. })));
 }
@@ -105,21 +108,23 @@ fn post_heal_leader_usability_monitor_reports_exhausted_bound() {
     let mut trace = Vec::new();
     let mut observed_actions = BTreeSet::new();
 
-    let failure = run_soak_liveness_check_with_budget_overrides(
-        &mut state,
-        config,
-        &mut trace,
-        &mut observed_actions,
-        None,
-        Some(0),
-    )
-    .expect_err("a converged leader cannot complete a fresh proposal in zero rounds");
+    let failure = oracle_expect_err!(
+        run_soak_liveness_check_with_budget_overrides(
+            &mut state,
+            config,
+            &mut trace,
+            &mut observed_actions,
+            None,
+            Some(0),
+        ),
+        "a converged leader cannot complete a fresh proposal in zero rounds"
+    );
 
-    assert!(failure
+    oracle_assert!(failure
         .failure
         .message()
         .contains("within 0 bounded-fair usability rounds"));
-    assert!(trace
+    oracle_assert!(trace
         .iter()
         .any(|action| matches!(action, SoakAction::Propose { .. })));
 }
@@ -217,6 +222,7 @@ fn liveness_phase_updates_p0_histories_through_instrumented_transitions() {
             .election_history()
             .elected_by_term
             .values()
+            .flatten()
             .any(|certificate| certificate.leader_id == target),
         "the leader elected during transfer liveness should receive an election certificate"
     );

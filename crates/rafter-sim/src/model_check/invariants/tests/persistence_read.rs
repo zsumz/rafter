@@ -15,6 +15,7 @@ use crate::model_check::state::{
 };
 use crate::model_check::ProposalId;
 use rafter::BootstrapState;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq, oracle_expect_err};
 
 fn durable_restart_fixture() -> DurableStateDigest {
     DurableStateDigest {
@@ -59,10 +60,12 @@ fn exact_restart_term_vote_oracle_detects_vote_loss() {
     let mut after = before.clone();
     after.voted_for = None;
 
-    let failure = check_restart_term_and_vote(&cluster, NodeId(1), &before, &after, &[])
-        .expect_err("vote loss must fail PS-03.a");
-    assert_eq!(failure.invariant(), catalog::PS_03_EXACT_DURABLE_RESTART);
-    assert!(failure.message.contains("term or vote"));
+    let failure = oracle_expect_err!(
+        check_restart_term_and_vote(&cluster, NodeId(1), &before, &after, &[]),
+        "vote loss must fail PS-03.a",
+    );
+    oracle_assert_eq!(failure.invariant(), catalog::PS_03_EXACT_DURABLE_RESTART);
+    oracle_assert!(failure.message.contains("term or vote"));
 }
 
 #[test]
@@ -72,10 +75,12 @@ fn exact_restart_log_oracle_detects_payload_change() {
     let mut after = before.clone();
     after.log[1].kind = LogEntryKind::Application(b"changed".to_vec().into());
 
-    let failure = check_restart_log(&cluster, NodeId(1), &before, &after, &[])
-        .expect_err("payload change must fail PS-03.b");
-    assert_eq!(failure.invariant(), catalog::PS_03_EXACT_DURABLE_RESTART);
-    assert!(failure.message.contains("retained log"));
+    let failure = oracle_expect_err!(
+        check_restart_log(&cluster, NodeId(1), &before, &after, &[]),
+        "payload change must fail PS-03.b",
+    );
+    oracle_assert_eq!(failure.invariant(), catalog::PS_03_EXACT_DURABLE_RESTART);
+    oracle_assert!(failure.message.contains("retained log"));
 }
 
 #[test]
@@ -88,10 +93,12 @@ fn exact_restart_commit_configuration_oracle_detects_identity_change() {
         config_id: ConfigurationId(8),
     });
 
-    let failure = check_restart_commit_and_configuration(&cluster, NodeId(1), &before, &after, &[])
-        .expect_err("configuration identity change must fail PS-03.c");
-    assert_eq!(failure.invariant(), catalog::PS_03_EXACT_DURABLE_RESTART);
-    assert!(failure.message.contains("commit or configuration"));
+    let failure = oracle_expect_err!(
+        check_restart_commit_and_configuration(&cluster, NodeId(1), &before, &after, &[]),
+        "configuration identity change must fail PS-03.c",
+    );
+    oracle_assert_eq!(failure.invariant(), catalog::PS_03_EXACT_DURABLE_RESTART);
+    oracle_assert!(failure.message.contains("commit or configuration"));
 }
 
 #[test]
@@ -122,10 +129,12 @@ fn exact_restart_snapshot_oracle_detects_crc32_collision_payload_change() {
         .expect("fixture has snapshot")
         .application_payload = second_payload.to_vec();
 
-    let failure = check_restart_snapshot(&cluster, NodeId(1), &before, &after, &[])
-        .expect_err("CRC32-colliding snapshot bytes must fail PS-03.d");
-    assert_eq!(failure.invariant(), catalog::PS_03_EXACT_DURABLE_RESTART);
-    assert!(failure.message.contains("durable snapshot"));
+    let failure = oracle_expect_err!(
+        check_restart_snapshot(&cluster, NodeId(1), &before, &after, &[]),
+        "CRC32-colliding snapshot bytes must fail PS-03.d",
+    );
+    oracle_assert_eq!(failure.invariant(), catalog::PS_03_EXACT_DURABLE_RESTART);
+    oracle_assert!(failure.message.contains("durable snapshot"));
 }
 
 #[test]
@@ -194,11 +203,12 @@ fn exact_restart_acknowledged_entry_oracle_checks_acknowledged_uncommitted_entry
     assert!(acknowledged_floor > before.commit_index);
     assert_eq!(after.log.len() + 1, before.log.len());
 
-    let failure =
-        check_restart_acknowledged_entries(state.cluster(), NodeId(2), &before, &after, &[])
-            .expect_err("losing an acknowledged but uncommitted entry must fail PS-03.e");
-    assert_eq!(failure.invariant(), catalog::PS_03_EXACT_DURABLE_RESTART);
-    assert!(failure.message.contains("lost or reindexed"));
+    let failure = oracle_expect_err!(
+        check_restart_acknowledged_entries(state.cluster(), NodeId(2), &before, &after, &[]),
+        "losing an acknowledged but uncommitted entry must fail PS-03.e",
+    );
+    oracle_assert_eq!(failure.invariant(), catalog::PS_03_EXACT_DURABLE_RESTART);
+    oracle_assert!(failure.message.contains("lost or reindexed"));
 }
 
 fn state_with_acknowledged_uncommitted_entry() -> ExplorationState {
@@ -268,22 +278,24 @@ fn exact_durable_restart_detects_application_recovery_metadata_change() {
 fn applied_floor_recovery_rejects_replay_at_or_below_floor() {
     let (cluster, expected, recovered) = recorded_mixed_recovery();
 
-    let failure = check_recovery_applied_floor_exclusion(
-        &cluster,
-        AppliedFloorRecovery {
-            node_id: NodeId(1),
-            application_epoch: 0,
-            applied_floor: LogIndex(1),
-            commit_index: LogIndex(3),
-            last_log_index: LogIndex(3),
-            expected_replay: &expected,
-            recovered_execution: &recovered,
-        },
-        &[],
-    )
-    .expect_err("replay at durable floor must fail PS-04");
-    assert_eq!(failure.invariant(), catalog::PS_04_APPLIED_FLOOR_RECOVERY);
-    assert!(
+    let failure = oracle_expect_err!(
+        check_recovery_applied_floor_exclusion(
+            &cluster,
+            AppliedFloorRecovery {
+                node_id: NodeId(1),
+                application_epoch: 0,
+                applied_floor: LogIndex(1),
+                commit_index: LogIndex(3),
+                last_log_index: LogIndex(3),
+                expected_replay: &expected,
+                recovered_execution: &recovered,
+            },
+            &[],
+        ),
+        "replay at durable floor must fail PS-04",
+    );
+    oracle_assert_eq!(failure.invariant(), catalog::PS_04_APPLIED_FLOOR_RECOVERY);
+    oracle_assert!(
         failure
             .message
             .contains("at or below durable applied floor"),
@@ -297,23 +309,25 @@ fn applied_floor_recovery_rejects_missing_committed_suffix_entry() {
     let (cluster, expected, mut recovered) = recorded_mixed_recovery();
     recovered.remove(1);
 
-    let failure = check_recovery_exact_committed_suffix(
-        &cluster,
-        AppliedFloorRecovery {
-            node_id: NodeId(1),
-            application_epoch: 0,
-            applied_floor: LogIndex::ZERO,
-            commit_index: LogIndex(3),
-            last_log_index: LogIndex(3),
-            expected_replay: &expected,
-            recovered_execution: &recovered,
-        },
-        &[],
-    )
-    .expect_err("omitting a committed suffix entry must fail PS-04.b");
-    assert_eq!(failure.invariant(), catalog::PS_04_APPLIED_FLOOR_RECOVERY);
-    assert!(failure.message.contains("replayed logical entries"));
-    assert!(failure.message.contains("Configuration"));
+    let failure = oracle_expect_err!(
+        check_recovery_exact_committed_suffix(
+            &cluster,
+            AppliedFloorRecovery {
+                node_id: NodeId(1),
+                application_epoch: 0,
+                applied_floor: LogIndex::ZERO,
+                commit_index: LogIndex(3),
+                last_log_index: LogIndex(3),
+                expected_replay: &expected,
+                recovered_execution: &recovered,
+            },
+            &[],
+        ),
+        "omitting a committed suffix entry must fail PS-04.b",
+    );
+    oracle_assert_eq!(failure.invariant(), catalog::PS_04_APPLIED_FLOOR_RECOVERY);
+    oracle_assert!(failure.message.contains("replayed logical entries"));
+    oracle_assert!(failure.message.contains("Configuration"));
 }
 
 #[test]
@@ -370,21 +384,25 @@ fn applied_floor_recovery_rejects_floor_beyond_durable_bounds() {
         expected_replay: &expected,
         recovered_execution: &recovered,
     };
-    let commit_failure = check_recovery_applied_floor_bounds(&cluster, base, &[])
-        .expect_err("floor beyond commit must fail PS-04.c");
-    assert!(commit_failure.message.contains("exceeds commit index"));
+    let commit_failure = oracle_expect_err!(
+        check_recovery_applied_floor_bounds(&cluster, base, &[]),
+        "floor beyond commit must fail PS-04.c",
+    );
+    oracle_assert!(commit_failure.message.contains("exceeds commit index"));
 
-    let log_failure = check_recovery_applied_floor_bounds(
-        &cluster,
-        AppliedFloorRecovery {
-            commit_index: LogIndex(4),
-            last_log_index: LogIndex(3),
-            ..base
-        },
-        &[],
-    )
-    .expect_err("floor beyond log coverage must fail PS-04.c");
-    assert!(log_failure.message.contains("exceeds local last log index"));
+    let log_failure = oracle_expect_err!(
+        check_recovery_applied_floor_bounds(
+            &cluster,
+            AppliedFloorRecovery {
+                commit_index: LogIndex(4),
+                last_log_index: LogIndex(3),
+                ..base
+            },
+            &[],
+        ),
+        "floor beyond log coverage must fail PS-04.c",
+    );
+    oracle_assert!(log_failure.message.contains("exceeds local last log index"));
 }
 
 fn recorded_mixed_recovery() -> (Cluster, Vec<ExecutedLogEntry>, Vec<ExecutionWitness>) {
@@ -454,13 +472,15 @@ fn read_barrier_invariant_detects_grant_below_registration_floor() {
         local_applied_index: LogIndex(3),
     });
 
-    let failure = check_read_grant_committed_floors(&cluster, &[])
-        .expect_err("a grant below the committed floor must be detected");
-    assert_eq!(
+    let failure = oracle_expect_err!(
+        check_read_grant_committed_floors(&cluster, &[]),
+        "a grant below the committed floor must be detected",
+    );
+    oracle_assert_eq!(
         failure.invariant(),
         catalog::RD_03_READ_BARRIER_COVERS_COMMITTED_FLOOR
     );
-    assert!(
+    oracle_assert!(
         failure.message.contains("below the committed floor 5"),
         "unexpected failure message: {}",
         failure.message
@@ -479,13 +499,15 @@ fn read_barrier_invariant_detects_unregistered_grant() {
         local_applied_index: LogIndex(1),
     });
 
-    let failure = check_registered_read_grants(&cluster, &[])
-        .expect_err("an unregistered grant must be detected");
-    assert_eq!(
+    let failure = oracle_expect_err!(
+        check_registered_read_grants(&cluster, &[]),
+        "an unregistered grant must be detected",
+    );
+    oracle_assert_eq!(
         failure.invariant(),
         catalog::RD_03_READ_BARRIER_COVERS_COMMITTED_FLOOR
     );
-    assert!(failure.message.contains("never registered"));
+    oracle_assert!(failure.message.contains("never registered"));
 }
 
 #[test]

@@ -35,6 +35,7 @@ use rafter::{
     MembershipConfig, MembershipSet, Message, Node, NodeConfig, NodeId, Output, RaftSnapshot,
     RaftSnapshotMetadata, RequestVoteResponse, Role, SnapshotGroupId, SnapshotMetadataError, Term,
 };
+use rafter_invariant_test::{oracle_prop_assert, oracle_prop_assert_eq};
 
 fn suite_config(cases: u32) -> ProptestConfig {
     ProptestConfig {
@@ -116,8 +117,8 @@ proptest! {
         acks in arb_acks(),
     ) {
         let expected = majority_recount(&set, &acks);
-        prop_assert_eq!(set.has_quorum(acks.iter().copied()), expected);
-        prop_assert_eq!(
+        oracle_prop_assert_eq!(set.has_quorum(acks.iter().copied()), expected);
+        oracle_prop_assert_eq!(
             MembershipConfig::stable(set.clone()).has_quorum(acks.iter().copied()),
             expected
         );
@@ -133,14 +134,14 @@ proptest! {
         let config = MembershipConfig::joint(old.clone(), new.clone());
         let both_halves = majority_recount(&old, &acks) && majority_recount(&new, &acks);
 
-        prop_assert_eq!(joint.has_quorum(acks.iter().copied()), both_halves);
-        prop_assert_eq!(config.has_quorum(acks.iter().copied()), both_halves);
+        oracle_prop_assert_eq!(joint.has_quorum(acks.iter().copied()), both_halves);
+        oracle_prop_assert_eq!(config.has_quorum(acks.iter().copied()), both_halves);
 
         // A joint configuration never grants a quorum either half alone
         // would reject.
         if config.has_quorum(acks.iter().copied()) {
-            prop_assert!(old.has_quorum(acks.iter().copied()));
-            prop_assert!(new.has_quorum(acks.iter().copied()));
+            oracle_prop_assert!(old.has_quorum(acks.iter().copied()));
+            oracle_prop_assert!(new.has_quorum(acks.iter().copied()));
         }
     }
 
@@ -246,7 +247,7 @@ proptest! {
             && unique_learners.len() == learners.len()
             && unique_voters.is_disjoint(&unique_learners);
 
-        prop_assert_eq!(
+        oracle_prop_assert_eq!(
             result.is_ok(),
             valid,
             "validation disagrees for voters {:?} and learners {:?}: {:?}",
@@ -257,13 +258,13 @@ proptest! {
         if let Ok(set) = result {
             // Validation and accessors agree: sorted protocol order over
             // exactly the input id sets.
-            prop_assert!(strictly_ascending(set.voters()));
-            prop_assert!(strictly_ascending(set.learners()));
-            prop_assert_eq!(
+            oracle_prop_assert!(strictly_ascending(set.voters()));
+            oracle_prop_assert!(strictly_ascending(set.learners()));
+            oracle_prop_assert_eq!(
                 set.voters().iter().map(|id| id.0).collect::<BTreeSet<_>>(),
                 unique_voters
             );
-            prop_assert_eq!(
+            oracle_prop_assert_eq!(
                 set.learners().iter().map(|id| id.0).collect::<BTreeSet<_>>(),
                 unique_learners
             );

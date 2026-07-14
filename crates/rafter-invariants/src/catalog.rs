@@ -13,6 +13,7 @@ use crate::{
 
 mod liveness;
 mod liveness_validation;
+mod runner_contract;
 mod simulator_contract;
 
 pub(crate) use liveness::{
@@ -24,7 +25,7 @@ pub(crate) use simulator_contract::{SimulatorRunnerConfiguration, SimulatorState
 #[cfg(test)]
 pub(crate) mod liveness_report_tests;
 
-const PROFILE_SCHEMA_VERSION: u32 = 3;
+const PROFILE_SCHEMA_VERSION: u32 = 4;
 
 #[derive(Clone, Debug)]
 /// Reviewed invariant IDs and their declared executable evidence.
@@ -67,6 +68,8 @@ pub struct EvidenceDescriptor {
     pub symbol: String,
     pub atomic_group: Option<String>,
     pub negative_fixture: Option<String>,
+    pub negative_fixture_path: Option<String>,
+    pub negative_fixture_detector: Option<String>,
     pub test: Option<TestIdentity>,
     pub simulator: Option<SimulatorIdentity>,
 }
@@ -354,7 +357,8 @@ impl ProfileManifest {
         }
         let catalog_ids = catalog.ids.iter().collect::<BTreeSet<_>>();
         let reviewed_ids = self.reviewed_ids.iter().collect::<BTreeSet<_>>();
-        if reviewed_ids.len() != 44 || reviewed_ids != catalog_ids {
+        if self.reviewed_ids.len() != 44 || reviewed_ids.len() != 44 || reviewed_ids != catalog_ids
+        {
             return Err(CatalogError(
                 "reviewed_ids must contain exactly the registry's 44 unique IDs".to_owned(),
             ));
@@ -421,6 +425,11 @@ impl ProfileManifest {
                         ))
                     })?;
                 }
+                runner_contract::validate_runner(profile, layer, runner).map_err(|error| {
+                    CatalogError(format!(
+                        "profile {profile} runner {layer} has an invalid typed contract: {error}"
+                    ))
+                })?;
             }
         }
         Ok(())

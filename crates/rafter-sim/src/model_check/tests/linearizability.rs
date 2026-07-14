@@ -12,6 +12,7 @@ use super::super::{
     state::ExplorationState,
 };
 use crate::Cluster;
+use rafter_invariant_test::{oracle_assert, oracle_expect_err};
 
 #[test]
 fn linearizer_rejects_read_that_misses_completed_write() {
@@ -50,12 +51,14 @@ fn linearizer_rejects_read_that_misses_completed_write() {
         )
         .expect("registered read is available to the recorder corruption fixture");
 
-    let error = check_client_history_linearizable(state.client_history())
-        .expect_err("read after completed write must observe the register value");
+    let error = oracle_expect_err!(
+        check_client_history_linearizable(state.client_history()),
+        "read after completed write must observe the register value"
+    );
 
-    assert!(error.contains("not linearizable"));
-    assert!(error.contains("write 1"));
-    assert!(error.contains("read 0"));
+    oracle_assert!(error.contains("not linearizable"));
+    oracle_assert!(error.contains("write 1"));
+    oracle_assert!(error.contains("read 0"));
 }
 
 #[test]
@@ -97,8 +100,10 @@ fn linearizer_can_include_unknown_write_to_explain_later_read() {
     insert_unknown_write(&mut history, ProposalId(1), 0, b"maybe");
     insert_completed_read(&mut history, 1, 1, 2, LogIndex(1), Some(payload(b"maybe")));
 
-    check_client_history_linearizable(&history)
-        .expect("an unknown write may explain a later observed value");
+    oracle_assert!(
+        check_client_history_linearizable(&history).is_ok(),
+        "an unknown write may explain a later observed value"
+    );
 }
 
 #[test]

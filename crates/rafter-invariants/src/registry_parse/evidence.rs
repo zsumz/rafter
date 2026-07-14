@@ -60,6 +60,9 @@ pub(super) fn parse_evidence_record(
     )?;
     let path = required("path")?;
     let symbol = required("symbol")?;
+    if let Some(identity) = &test {
+        validate_test_identity(index, identity, &symbol)?;
+    }
     Ok(clause_ids
         .into_iter()
         .map(|clause_id| EvidenceDescriptor {
@@ -71,10 +74,42 @@ pub(super) fn parse_evidence_record(
             symbol: symbol.clone(),
             atomic_group: atomic_group.clone(),
             negative_fixture: record.get("negative_fixture").cloned(),
+            negative_fixture_path: record.get("negative_fixture_path").cloned(),
+            negative_fixture_detector: record.get("negative_fixture_detector").cloned(),
             test: test.clone(),
             simulator: simulator.clone(),
         })
         .collect())
+}
+
+fn validate_test_identity(
+    index: usize,
+    identity: &TestIdentity,
+    symbol: &str,
+) -> Result<(), CatalogError> {
+    if !matches!(identity.target_kind.as_str(), "lib" | "test" | "bin") {
+        return Err(CatalogError(format!(
+            "tests evidence record {} has unsupported Cargo target kind {}",
+            index + 1,
+            identity.target_kind
+        )));
+    }
+    if identity.package.trim().is_empty()
+        || identity.target.trim().is_empty()
+        || identity.test_name.split("::").any(str::is_empty)
+    {
+        return Err(CatalogError(format!(
+            "tests evidence record {} has a malformed test identity",
+            index + 1
+        )));
+    }
+    if identity.test_name.rsplit("::").next() != Some(symbol) {
+        return Err(CatalogError(format!(
+            "tests evidence record {} symbol must equal the exact test-name leaf",
+            index + 1
+        )));
+    }
+    Ok(())
 }
 
 fn validate_direct_test_binding(

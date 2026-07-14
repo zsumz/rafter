@@ -1,12 +1,13 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::Path,
+    path::{Path, PathBuf},
+    sync::{Mutex, OnceLock},
 };
 
 use syn::{
     visit::Visit, ExprCall, ExprMethodCall, File, ImplItemFn, ItemConst, ItemFn, ItemMacro,
-    ItemStatic, ItemUse, UseTree,
+    ItemMod, ItemStatic, ItemUse, Macro, UseTree,
 };
 
 use super::{Clause, Entry, Evidence, COVERAGE_LAYERS, VALID_EVIDENCE_STRENGTHS};
@@ -109,11 +110,127 @@ pub(super) fn assert_evidence_is_machine_checkable(
             record.path,
         );
         assert_cargo_test_target_matches_path(record);
+        assert_registered_test_contract(workspace, record, &path, &source);
         assert_negative_fixture_policy(workspace, record, &source);
         assert_atomic_group_policy(record);
     }
 
     assert_coverage_bindings(entries, clauses, evidence);
+}
+
+fn assert_registered_test_contract(workspace: &Path, record: &Evidence, path: &Path, source: &str) {
+    let Some(identity) = &record.test else {
+        return;
+    };
+    assert!(
+        matches!(identity.target_kind.as_str(), "lib" | "test" | "bin"),
+        "{} tests evidence uses unsupported Cargo target kind {}",
+        record.id,
+        identity.target_kind,
+    );
+    assert_eq!(
+        identity.test_name.rsplit("::").next(),
+        Some(record.symbol.as_str()),
+        "{} tests evidence symbol must equal its exact libtest identity leaf",
+        record.id,
+    );
+    let file = syn::parse_file(source).unwrap_or_else(|error| {
+        panic!(
+            "parse registered test source {} for {}: {error}",
+            path.display(),
+            record.id
+        )
+    });
+    let module = test_source_module_path(workspace, Path::new(&record.path), identity)
+        .unwrap_or_else(|| {
+            panic!(
+                "{} tests evidence source {} is outside the registered {}/{}/{} target",
+                record.id, record.path, identity.package, identity.target_kind, identity.target,
+            )
+        });
+    let mut visitor = RegisteredTestVisitor {
+        symbol: &record.symbol,
+        module,
+        inline_modules: Vec::new(),
+        declarations: Vec::new(),
+    };
+    visitor.visit_file(&file);
+    let declarations = visitor
+        .declarations
+        .into_iter()
+        .filter(|(test_name, _, _)| test_name == &identity.test_name)
+        .map(|(_, is_test, should_panic)| (is_test, should_panic))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        declarations,
+        [(true, false)],
+        "{} tests evidence identity `{}` must name one #[test] function without #[should_panic] in {}",
+        record.id, identity.test_name, record.path,
+    );
+    assert!(
+        test_identity_uses_typed_oracle(workspace, &record.path, source, &record.symbol, identity),
+        "{} tests evidence identity `{}` must execute an explicit typed oracle macro",
+        record.id,
+        identity.test_name,
+    );
+}
+
+struct RegisteredTestVisitor<'a> {
+    symbol: &'a str,
+    module: Vec<String>,
+    inline_modules: Vec<String>,
+    declarations: Vec<(String, bool, bool)>,
+}
+
+impl<'ast> Visit<'ast> for RegisteredTestVisitor<'_> {
+    fn visit_item_fn(&mut self, function: &'ast ItemFn) {
+        if function.sig.ident == self.symbol {
+            let mut test_name = self.module.clone();
+            test_name.extend(self.inline_modules.iter().cloned());
+            test_name.push(self.symbol.to_owned());
+            self.declarations.push((
+                test_name.join("::"),
+                function
+                    .attrs
+                    .iter()
+                    .any(|attribute| attribute.path().is_ident("test")),
+                function
+                    .attrs
+                    .iter()
+                    .any(|attribute| attribute.path().is_ident("should_panic")),
+            ));
+        }
+        syn::visit::visit_item_fn(self, function);
+    }
+
+    fn visit_item_mod(&mut self, item: &'ast ItemMod) {
+        let Some((_, items)) = &item.content else {
+            return;
+        };
+        self.inline_modules.push(item.ident.to_string());
+        for item in items {
+            self.visit_item(item);
+        }
+        self.inline_modules.pop();
+    }
+
+    fn visit_item_macro(&mut self, item: &'ast ItemMacro) {
+        if item.mac.path.is_ident("proptest") {
+            let tokens = item.mac.tokens.to_string();
+            let declaration = format!("fn {}", self.symbol);
+            if tokens.contains(&declaration) {
+                let mut test_name = self.module.clone();
+                test_name.extend(self.inline_modules.iter().cloned());
+                test_name.push(self.symbol.to_owned());
+                self.declarations.push((
+                    test_name.join("::"),
+                    tokens.contains(&format!("# [test] {declaration}")),
+                    tokens.contains("# [should_panic]"),
+                ));
+            }
+        }
+        syn::visit::visit_item_macro(self, item);
+    }
 }
 
 fn assert_cargo_test_target_matches_path(record: &Evidence) {
@@ -134,6 +251,201 @@ fn assert_cargo_test_target_matches_path(record: &Evidence) {
 
 fn cargo_integration_test_root(identity: &rafter_invariants::TestIdentity) -> String {
     format!("crates/{}/tests/{}.rs", identity.package, identity.target)
+}
+
+fn test_source_module_path(
+    workspace: &Path,
+    path: &Path,
+    identity: &rafter_invariants::TestIdentity,
+) -> Option<Vec<String>> {
+    type CacheKey = (PathBuf, String, String, String);
+    type ModuleGraph = BTreeMap<PathBuf, BTreeSet<String>>;
+    static MODULE_GRAPHS: OnceLock<Mutex<BTreeMap<CacheKey, ModuleGraph>>> = OnceLock::new();
+
+    let workspace = fs::canonicalize(workspace).ok()?;
+    let target = fs::canonicalize(workspace.join(path)).ok()?;
+    let key = (
+        workspace.clone(),
+        identity.package.clone(),
+        identity.target_kind.clone(),
+        identity.target.clone(),
+    );
+    let mut cache = MODULE_GRAPHS
+        .get_or_init(|| Mutex::new(BTreeMap::new()))
+        .lock()
+        .ok()?;
+    let graph = cache
+        .entry(key)
+        .or_insert_with(|| build_test_target_module_graph(&workspace, identity));
+    let matches = graph.get(&target)?.iter().collect::<Vec<_>>();
+    let [module] = matches.as_slice() else {
+        return None;
+    };
+    Some(
+        module
+            .split("::")
+            .filter(|part| !part.is_empty())
+            .map(str::to_owned)
+            .collect(),
+    )
+}
+
+fn build_test_target_module_graph(
+    workspace: &Path,
+    identity: &rafter_invariants::TestIdentity,
+) -> BTreeMap<PathBuf, BTreeSet<String>> {
+    let mut graph = BTreeMap::new();
+    for root in test_target_roots(workspace, identity) {
+        let Ok(root) = fs::canonicalize(root) else {
+            continue;
+        };
+        let Some(parent) = root.parent() else {
+            continue;
+        };
+        collect_module_graph(&root, &[], parent, parent, &mut BTreeSet::new(), &mut graph);
+    }
+    graph
+}
+
+fn test_target_roots(workspace: &Path, identity: &rafter_invariants::TestIdentity) -> Vec<PathBuf> {
+    let package = workspace.join("crates").join(&identity.package);
+    let candidates = match identity.target_kind.as_str() {
+        "lib" => vec![package.join("src/lib.rs")],
+        "test" => vec![package
+            .join("tests")
+            .join(format!("{}.rs", identity.target))],
+        "bin" => {
+            let mut roots = vec![
+                package
+                    .join("src/bin")
+                    .join(format!("{}.rs", identity.target)),
+                package
+                    .join("src/bin")
+                    .join(&identity.target)
+                    .join("main.rs"),
+            ];
+            if identity.target == identity.package {
+                roots.push(package.join("src/main.rs"));
+            }
+            roots
+        }
+        _ => Vec::new(),
+    };
+    candidates
+        .into_iter()
+        .filter(|candidate| candidate.is_file())
+        .collect()
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_module_graph(
+    source_file: &Path,
+    module: &[String],
+    path_base: &Path,
+    module_dir: &Path,
+    visited: &mut BTreeSet<(PathBuf, String)>,
+    graph: &mut BTreeMap<PathBuf, BTreeSet<String>>,
+) {
+    let key = (source_file.to_owned(), module.join("::"));
+    if !visited.insert(key) {
+        return;
+    }
+    graph
+        .entry(source_file.to_owned())
+        .or_default()
+        .insert(module.join("::"));
+    let Ok(source) = fs::read_to_string(source_file) else {
+        return;
+    };
+    let Ok(file) = syn::parse_file(&source) else {
+        return;
+    };
+    collect_module_graph_from_items(&file.items, module, path_base, module_dir, visited, graph);
+}
+
+fn collect_module_graph_from_items(
+    items: &[syn::Item],
+    module: &[String],
+    path_base: &Path,
+    module_dir: &Path,
+    visited: &mut BTreeSet<(PathBuf, String)>,
+    graph: &mut BTreeMap<PathBuf, BTreeSet<String>>,
+) {
+    for item in items {
+        let syn::Item::Mod(item) = item else {
+            continue;
+        };
+        let mut child_module = module.to_vec();
+        child_module.push(item.ident.to_string());
+        if let Some((_, inline_items)) = &item.content {
+            let inline_dir = module_dir.join(item.ident.to_string());
+            collect_module_graph_from_items(
+                inline_items,
+                &child_module,
+                &inline_dir,
+                &inline_dir,
+                visited,
+                graph,
+            );
+            continue;
+        }
+        let Some(child_file) = resolve_external_module(item, path_base, module_dir) else {
+            continue;
+        };
+        let Ok(child_file) = fs::canonicalize(child_file) else {
+            continue;
+        };
+        let child_dir =
+            if child_file.file_name().and_then(std::ffi::OsStr::to_str) == Some("mod.rs") {
+                child_file.parent().unwrap_or(module_dir).to_owned()
+            } else {
+                module_dir.join(item.ident.to_string())
+            };
+        let child_path_base = child_file.parent().unwrap_or(path_base);
+        collect_module_graph(
+            &child_file,
+            &child_module,
+            child_path_base,
+            &child_dir,
+            visited,
+            graph,
+        );
+    }
+}
+
+fn resolve_external_module(item: &ItemMod, path_base: &Path, module_dir: &Path) -> Option<PathBuf> {
+    if let Some(path) = item.attrs.iter().find_map(module_path_attribute) {
+        return Some(path_base.join(path));
+    }
+    let name = item.ident.to_string();
+    let candidates = [
+        module_dir.join(format!("{name}.rs")),
+        module_dir.join(&name).join("mod.rs"),
+    ];
+    let existing = candidates
+        .into_iter()
+        .filter(|candidate| candidate.is_file())
+        .collect::<Vec<_>>();
+    let [path] = existing.as_slice() else {
+        return None;
+    };
+    Some(path.clone())
+}
+
+fn module_path_attribute(attribute: &syn::Attribute) -> Option<PathBuf> {
+    let syn::Meta::NameValue(name_value) = &attribute.meta else {
+        return None;
+    };
+    if !name_value.path.is_ident("path") {
+        return None;
+    }
+    let syn::Expr::Lit(expression) = &name_value.value else {
+        return None;
+    };
+    let syn::Lit::Str(path) = &expression.lit else {
+        return None;
+    };
+    Some(PathBuf::from(path.value()))
 }
 
 fn assert_atomic_group_policy(record: &Evidence) {
@@ -292,11 +604,18 @@ fn assert_declared_negative_fixture(workspace: &Path, record: &Evidence, source:
             .unwrap_or(record.path.as_str()),
     );
     if record.layer == "simulator" && record.strength == "direct" {
-        assert_simulator_detector_fixture(record, negative_fixture, &fixture_path, &fixture_source);
+        assert_simulator_detector_fixture(
+            workspace,
+            record,
+            negative_fixture,
+            &fixture_path,
+            &fixture_source,
+        );
     }
 }
 
 fn assert_simulator_detector_fixture(
+    workspace: &Path,
     record: &Evidence,
     negative_fixture: &str,
     fixture_path: &Path,
@@ -315,7 +634,18 @@ fn assert_simulator_detector_fixture(
         .negative_fixture_path
         .as_deref()
         .unwrap_or(record.path.as_str());
-    let fixture_module = rust_module_path(Path::new(fixture_path_text));
+    let identity = record
+        .simulator
+        .as_ref()
+        .and_then(|identity| identity.negative_test.as_ref())
+        .expect("direct simulator fixture has executable identity");
+    let fixture_module = test_source_module_path(workspace, Path::new(fixture_path_text), identity)
+        .unwrap_or_else(|| {
+            panic!(
+                "{} simulator fixture source {fixture_path_text} is outside registered target",
+                record.id,
+            )
+        });
     let detector_module = if source_declares_symbol(fixture_path, fixture_source, detector) {
         fixture_module.clone()
     } else {
@@ -332,16 +662,28 @@ fn assert_simulator_detector_fixture(
         "{} simulator direct negative fixture `{negative_fixture}` must exercise detector `{detector}` in {fixture_path_text}",
         record.id,
     );
-    let identity = record
-        .simulator
-        .as_ref()
-        .and_then(|identity| identity.negative_test.as_ref())
-        .expect("direct simulator fixture has executable identity");
     assert!(
-        lib_test_identity_matches(fixture_path_text, negative_fixture, identity),
+        test_identity_matches_source(
+            workspace,
+            fixture_path_text,
+            fixture_source,
+            negative_fixture,
+            identity,
+        ),
         "{} simulator fixture `{negative_fixture}` execution identity `{}` does not match its analyzed module",
         record.id,
         identity.test_name,
+    );
+    assert!(
+        test_identity_uses_typed_oracle(
+            workspace,
+            fixture_path_text,
+            fixture_source,
+            negative_fixture,
+            identity,
+        ),
+        "{} simulator fixture `{negative_fixture}` must execute an explicit typed oracle macro",
+        record.id,
     );
 }
 
@@ -562,31 +904,203 @@ fn rust_module_path(path: &Path) -> Vec<String> {
     modules
 }
 
-fn lib_test_identity_matches(
+fn test_identity_matches_source(
+    workspace: &Path,
     fixture_path: &str,
+    source: &str,
     fixture: &str,
     identity: &rafter_invariants::TestIdentity,
 ) -> bool {
-    let path = Path::new(fixture_path);
-    let components = path
-        .components()
-        .filter_map(|component| component.as_os_str().to_str())
-        .collect::<Vec<_>>();
-    let Some(crates) = components
+    let Ok(file) = syn::parse_file(source) else {
+        return false;
+    };
+    let Some(module) = test_source_module_path(workspace, Path::new(fixture_path), identity) else {
+        return false;
+    };
+    let mut visitor = RegisteredTestVisitor {
+        symbol: fixture,
+        module,
+        inline_modules: Vec::new(),
+        declarations: Vec::new(),
+    };
+    visitor.visit_file(&file);
+    visitor
+        .declarations
         .iter()
-        .position(|component| *component == "crates")
-    else {
+        .filter(|(test_name, is_test, should_panic)| {
+            test_name == &identity.test_name && *is_test && !*should_panic
+        })
+        .count()
+        == 1
+}
+
+fn test_identity_uses_typed_oracle(
+    workspace: &Path,
+    fixture_path: &str,
+    source: &str,
+    fixture: &str,
+    identity: &rafter_invariants::TestIdentity,
+) -> bool {
+    let Ok(file) = syn::parse_file(source) else {
         return false;
     };
-    let Some(package) = components.get(crates + 1) else {
+    if source.contains("RAFTER_INVARIANT_ORACLE_OBSERVED:")
+        || source.contains("RAFTER_INVARIANT_ORACLE_VIOLATION:")
+        || declares_local_oracle_macro(&file)
+    {
+        return false;
+    }
+    let trusted_macros = trusted_oracle_imports(&file);
+    let Some(module) = test_source_module_path(workspace, Path::new(fixture_path), identity) else {
         return false;
     };
-    let mut expected = rust_module_path(path);
-    expected.push(fixture.to_owned());
-    identity.package == *package
-        && identity.target_kind == "lib"
-        && identity.target == package.replace('-', "_")
-        && identity.test_name == expected.join("::")
+    let mut visitor = TypedOracleTestVisitor {
+        symbol: fixture,
+        test_name: &identity.test_name,
+        module,
+        inline_modules: Vec::new(),
+        trusted_macros,
+        matches: 0,
+    };
+    visitor.visit_file(&file);
+    visitor.matches == 1
+}
+
+struct TypedOracleTestVisitor<'a> {
+    symbol: &'a str,
+    test_name: &'a str,
+    module: Vec<String>,
+    inline_modules: Vec<String>,
+    trusted_macros: BTreeSet<String>,
+    matches: usize,
+}
+
+impl Visit<'_> for TypedOracleTestVisitor<'_> {
+    fn visit_item_fn(&mut self, function: &ItemFn) {
+        if function.sig.ident == self.symbol && self.current_test_name() == self.test_name {
+            let mut oracle = OracleMacroVisitor {
+                trusted_macros: &self.trusted_macros,
+                found: false,
+                untrusted: false,
+            };
+            oracle.visit_block(&function.block);
+            self.matches += usize::from(oracle.found && !oracle.untrusted);
+        }
+        syn::visit::visit_item_fn(self, function);
+    }
+
+    fn visit_item_mod(&mut self, item: &ItemMod) {
+        let Some((_, items)) = &item.content else {
+            return;
+        };
+        self.inline_modules.push(item.ident.to_string());
+        for item in items {
+            self.visit_item(item);
+        }
+        self.inline_modules.pop();
+    }
+
+    fn visit_item_macro(&mut self, item: &ItemMacro) {
+        if item.mac.path.is_ident("proptest")
+            && item
+                .mac
+                .tokens
+                .to_string()
+                .contains(&format!("fn {}", self.symbol))
+            && self.current_test_name() == self.test_name
+            && ["oracle_prop_assert", "oracle_prop_assert_eq"]
+                .iter()
+                .any(|name| {
+                    self.trusted_macros.contains(*name)
+                        && item.mac.tokens.to_string().contains(name)
+                })
+        {
+            self.matches += 1;
+        }
+    }
+}
+
+impl TypedOracleTestVisitor<'_> {
+    fn current_test_name(&self) -> String {
+        let mut path = self.module.clone();
+        path.extend(self.inline_modules.iter().cloned());
+        path.push(self.symbol.to_owned());
+        path.join("::")
+    }
+}
+
+struct OracleMacroVisitor<'a> {
+    trusted_macros: &'a BTreeSet<String>,
+    found: bool,
+    untrusted: bool,
+}
+
+impl Visit<'_> for OracleMacroVisitor<'_> {
+    fn visit_macro(&mut self, invocation: &Macro) {
+        let segments = invocation
+            .path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect::<Vec<_>>();
+        let Some(name) = segments.last() else {
+            return;
+        };
+        if is_oracle_macro(name) {
+            let qualified = segments.as_slice() == ["rafter_invariant_test", name.as_str()];
+            let imported = segments.len() == 1 && self.trusted_macros.contains(name);
+            self.found |= qualified || imported;
+            self.untrusted |= !qualified && !imported;
+        }
+        syn::visit::visit_macro(self, invocation);
+    }
+}
+
+fn trusted_oracle_imports(file: &File) -> BTreeSet<String> {
+    imported_paths(file)
+        .explicit
+        .into_iter()
+        .filter_map(|(name, paths)| {
+            (is_oracle_macro(&name)
+                && paths.len() == 1
+                && paths[0].as_slice() == ["rafter_invariant_test", name.as_str()])
+            .then_some(name)
+        })
+        .collect()
+}
+
+fn declares_local_oracle_macro(file: &File) -> bool {
+    #[derive(Default)]
+    struct Visitor {
+        found: bool,
+    }
+
+    impl Visit<'_> for Visitor {
+        fn visit_item_macro(&mut self, item: &ItemMacro) {
+            self.found |= item
+                .ident
+                .as_ref()
+                .is_some_and(|ident| is_oracle_macro(&ident.to_string()));
+            syn::visit::visit_item_macro(self, item);
+        }
+    }
+
+    let mut visitor = Visitor::default();
+    visitor.visit_file(file);
+    visitor.found
+}
+
+fn is_oracle_macro(name: &str) -> bool {
+    matches!(
+        name,
+        "oracle_assert"
+            | "oracle_assert_eq"
+            | "oracle_assert_ne"
+            | "oracle_expect_err"
+            | "oracle_violation"
+            | "oracle_prop_assert"
+            | "oracle_prop_assert_eq"
+    )
 }
 
 fn source_declares_symbol(path: &Path, source: &str, symbol: &str) -> bool {
@@ -744,163 +1258,30 @@ impl<'ast> Visit<'ast> for CallVisitor {
         syn::visit::visit_expr_method_call(self, call);
     }
 
+    fn visit_macro(&mut self, invocation: &'ast Macro) {
+        let is_typed_rejection = invocation
+            .path
+            .segments
+            .last()
+            .is_some_and(|segment| segment.ident == "oracle_expect_err");
+        if is_typed_rejection {
+            let tuple = format!("({})", invocation.tokens);
+            if let Ok(arguments) = syn::parse_str::<syn::ExprTuple>(&tuple) {
+                if let Some(result) = arguments.elems.first() {
+                    self.visit_expr(result);
+                }
+            }
+        }
+    }
+
     fn visit_item_fn(&mut self, _function: &'ast ItemFn) {}
 
     fn visit_impl_item_fn(&mut self, _function: &'ast ImplItemFn) {}
 }
 
-#[test]
-fn negative_fixture_guard_scopes_detector_to_named_test() {
-    let source =
-        "#[test]\nfn target_fixture() { reporter(); }\n\n#[test]\nfn neighbor() { detector(); }\n";
-    assert!(!fixture_exercises_detector(
-        source,
-        "target_fixture",
-        "detector"
-    ));
-}
-
-#[test]
-fn negative_fixture_guard_follows_local_fixture_helpers() {
-    let source = "#[test]\nfn target_fixture() { helper(); }\n\nfn helper() { detector(); }\nfn detector() {}\n";
-    assert!(fixture_exercises_detector(
-        source,
-        "target_fixture",
-        "detector"
-    ));
-}
-
-#[test]
-fn negative_fixture_guard_rejects_aliases_and_unrelated_qualified_calls() {
-    for source in [
-        "use crate::unrelated as detector;\n#[test]\nfn target_fixture() { detector(); }",
-        "use unrelated::detector;\n#[test]\nfn target_fixture() { detector(); }",
-        "use unrelated::*;\n#[test]\nfn target_fixture() { detector(); }",
-        "#[test]\nfn target_fixture() { other::detector(); }",
-        "#[test]\nfn target_fixture() { crate::unrelated::detector(); }",
-        "#[test]\nfn target_fixture() { fixture.detector(); }",
-    ] {
-        assert!(!fixture_exercises_detector(
-            source,
-            "target_fixture",
-            "detector"
-        ));
-    }
-}
-
-#[test]
-fn negative_fixture_guard_requires_the_exact_detector_module_path() {
-    let module = [
-        "model_check".to_owned(),
-        "liveness".to_owned(),
-        "features".to_owned(),
-        "proposal".to_owned(),
-    ];
-    let unrelated =
-        "use unrelated::proposal::detector;\n#[test]\nfn target_fixture() { detector(); }";
-    assert!(!fixture_exercises_detector_from_module(
-        unrelated,
-        "target_fixture",
-        "detector",
-        &module,
-        &[],
-    ));
-    let exact = "use crate::model_check::liveness::features::proposal::detector;\n#[test]\nfn target_fixture() { detector(); }";
-    assert!(fixture_exercises_detector_from_module(
-        exact,
-        "target_fixture",
-        "detector",
-        &module,
-        &[],
-    ));
-}
-
-#[test]
-fn cargo_integration_test_identity_requires_the_target_root_path() {
-    let identity = rafter_invariants::TestIdentity {
-        package: "rafter-sim".to_owned(),
-        target_kind: "test".to_owned(),
-        target: "raft_invariants".to_owned(),
-        test_name: "committed_prefix_is_stable_across_failover".to_owned(),
-    };
-    let expected = cargo_integration_test_root(&identity);
-
-    assert_eq!(expected, "crates/rafter-sim/tests/raft_invariants.rs");
-    assert_ne!(expected, "crates/rafter-sim/src/tests/raft_invariants.rs");
-}
-
-#[test]
-fn negative_fixture_execution_identity_matches_the_analyzed_module() {
-    let fixture_path = "crates/rafter-sim/src/model_check/invariants/tests/election.rs";
-    let mut identity = rafter_invariants::TestIdentity {
-        package: "rafter-sim".to_owned(),
-        target_kind: "lib".to_owned(),
-        target: "rafter_sim".to_owned(),
-        test_name: "model_check::invariants::tests::election::detector_fixture".to_owned(),
-    };
-    assert!(lib_test_identity_matches(
-        fixture_path,
-        "detector_fixture",
-        &identity,
-    ));
-    identity.test_name = "model_check::invariants::tests::election::unrelated_test".to_owned();
-    assert!(!lib_test_identity_matches(
-        fixture_path,
-        "detector_fixture",
-        &identity,
-    ));
-}
-
-#[test]
-fn negative_fixture_guard_ignores_detector_names_in_comments_and_strings() {
-    let source = r#"
-#[test]
-fn target_fixture() {
-    // detector();
-    let _description = "detector()";
-}
-"#;
-    assert!(!fixture_exercises_detector(
-        source,
-        "target_fixture",
-        "detector"
-    ));
-}
-
-#[test]
-fn rust_symbol_guard_requires_a_real_declaration() {
-    let path = Path::new("fixture.rs");
-    assert!(!source_declares_symbol(
-        path,
-        "// fn claimed_symbol() {}\nconst NOTE: &str = \"claimed_symbol\";",
-        "claimed_symbol"
-    ));
-    assert!(source_declares_symbol(
-        path,
-        "fn claimed_symbol() {}",
-        "claimed_symbol"
-    ));
-}
-
-#[test]
-fn rust_symbol_guard_rejects_imported_names_and_aliases() {
-    let path = Path::new("fixture.rs");
-    assert!(!source_declares_symbol(
-        path,
-        "use crate::claimed_symbol;",
-        "claimed_symbol"
-    ));
-    assert!(!source_declares_symbol(
-        path,
-        "use crate::actual_symbol as claimed_symbol;",
-        "claimed_symbol"
-    ));
-    assert!(!source_declares_symbol(
-        path,
-        "pub use crate::{actual_symbol as claimed_symbol, neighbor};",
-        "claimed_symbol"
-    ));
-}
+#[cfg(test)]
+#[path = "evidence_tests.rs"]
+mod tests;
 
 fn evidence_strength_for_coverage(coverage: &str) -> Option<&'static str> {
     let coverage = coverage.trim();

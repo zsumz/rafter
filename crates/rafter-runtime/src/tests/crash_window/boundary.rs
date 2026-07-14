@@ -1,4 +1,5 @@
 use super::*;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
 #[test]
 fn reopen_completes_compaction_when_snapshot_boundary_is_past_the_log_tail() {
@@ -24,11 +25,11 @@ fn reopen_completes_compaction_when_snapshot_boundary_is_past_the_log_tail() {
     )
     .expect("reopen completes the interrupted compaction");
 
-    assert_eq!(runtime.log_segment.compacted_through(), LogIndex(3));
-    assert_eq!(runtime.log_segment.next_index(), LogIndex(4));
-    assert_eq!(runtime.log_segment.replay_entries(), Vec::new());
-    assert_eq!(runtime.snapshot_index(), LogIndex(3));
-    assert_eq!(runtime.last_log_index(), LogIndex(3));
+    oracle_assert_eq!(runtime.log_segment.compacted_through(), LogIndex(3));
+    oracle_assert_eq!(runtime.log_segment.next_index(), LogIndex(4));
+    oracle_assert_eq!(runtime.log_segment.replay_entries(), Vec::new());
+    oracle_assert_eq!(runtime.snapshot_index(), LogIndex(3));
+    oracle_assert_eq!(runtime.last_log_index(), LogIndex(3));
 
     // The next replicated entry is kernel index 4 and must persist AT
     // segment index 4; the success acknowledgement may only escape with
@@ -47,14 +48,14 @@ fn reopen_completes_compaction_when_snapshot_boundary_is_past_the_log_tail() {
             }),
         })
         .expect("append after repair persists");
-    assert!(matches!(
+    oracle_assert!(matches!(
         outputs.as_slice(),
         [RaftOutput::Send {
             message: Message::AppendEntriesResponse(response),
             ..
         }] if response.success && response.match_index == LogIndex(4)
     ));
-    assert_eq!(
+    oracle_assert_eq!(
         runtime.log_segment.replay_entries(),
         vec![persisted_entry(4, 1, b"acked")]
     );
@@ -68,8 +69,8 @@ fn reopen_completes_compaction_when_snapshot_boundary_is_past_the_log_tail() {
         runtime.snapshot_store.clone(),
     )
     .expect("second reopen");
-    assert_eq!(reopened.last_log_index(), LogIndex(4));
-    assert_eq!(
+    oracle_assert_eq!(reopened.last_log_index(), LogIndex(4));
+    oracle_assert_eq!(
         reopened.log_entries_from(LogIndex(4)),
         vec![LogEntry::application(Term(1), b"acked".to_vec())]
     );
@@ -114,7 +115,7 @@ fn append_behind_the_snapshot_boundary_is_refused_not_mislabelled() {
         })
         .expect_err("append behind the boundary is refused");
 
-    assert!(matches!(
+    oracle_assert!(matches!(
         error,
         RaftRuntimeError::LogBehindSnapshotBoundary {
             segment_next_index: LogIndex(3),
@@ -123,7 +124,7 @@ fn append_behind_the_snapshot_boundary_is_refused_not_mislabelled() {
     ));
     // Nothing was mislabelled into the segment, and the runtime is poisoned
     // so no acknowledgement of the refused entry can ever escape.
-    assert_eq!(
+    oracle_assert_eq!(
         runtime.log_segment.replay_entries(),
         vec![
             persisted_entry(1, 1, b"covered-one"),

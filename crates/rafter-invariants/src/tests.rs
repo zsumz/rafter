@@ -133,6 +133,11 @@ fn synthetic_observations(
                     .iter()
                     .map(|descriptor| (format!("checked:{}", descriptor.symbol), 1)),
             );
+            observations.extend(
+                crate::producer::tla_output::REQUIRED_MODEL_TRANSITIONS
+                    .into_iter()
+                    .map(|transition| (format!("transition_covered:{transition}"), 1)),
+            );
             return observations;
         }
         return std::collections::BTreeMap::new();
@@ -237,6 +242,7 @@ fn synthetic_artifacts(descriptor: &EvidenceDescriptor) -> Vec<ArtifactRef> {
                 "tla-config",
                 "tla-trace-config",
                 "tla-detector-config",
+                crate::producer::tla_output::MUTATION_SUITE_ARTIFACT_KIND,
             ]
             .into_iter()
             .map(str::to_owned)
@@ -383,6 +389,33 @@ fn complete_matching_evidence_is_44_of_44_green() {
 }
 
 #[test]
+fn tests_runner_failure_contract_is_pinned_for_every_profile() {
+    let (catalog, mut manifest) = loaded();
+    manifest
+        .validate(&catalog)
+        .expect("control manifest validates");
+    for profile in ["pr", "nightly", "weekly"] {
+        assert_eq!(
+            manifest.profiles[profile].runners["tests"]
+                .configuration
+                .get("failure_contract")
+                .map(String::as_str),
+            Some("typed-oracle-libtest-v4")
+        );
+    }
+    manifest
+        .profiles
+        .get_mut("pr")
+        .expect("PR profile")
+        .runners
+        .get_mut("tests")
+        .expect("tests runner")
+        .configuration
+        .insert("failure_contract".to_owned(), "best-effort".to_owned());
+    assert!(manifest.validate(&catalog).is_err());
+}
+
+#[test]
 fn same_commit_evidence_from_a_different_plan_is_red() {
     let (catalog, manifest) = loaded();
     let mut bundles = passing_bundles(&catalog, &manifest);
@@ -410,14 +443,6 @@ fn missing_actual_invocation_is_red() {
         .any(|issue| issue.message.contains("actual producer invocation"))));
 }
 
-fn relaxed_check_minimums(manifest: &mut ProfileManifest) {
-    for contract in manifest.profiles.values_mut() {
-        for runner in contract.runners.values_mut() {
-            runner.minimum_observed_checks = 1;
-        }
-    }
-}
-
 fn assert_only_parent_red(report: &VerdictReport, invariant_id: &str) {
     assert_eq!(report.summary.total, 44);
     assert_eq!(report.summary.green, 43);
@@ -433,11 +458,14 @@ fn assert_only_parent_red(report: &VerdictReport, invariant_id: &str) {
 
 #[test]
 fn missing_direct_clause_keeps_only_parent_red() {
-    let (mut catalog, mut manifest) = loaded();
-    relaxed_check_minimums(&mut manifest);
-    catalog
+    let (mut catalog, manifest) = loaded();
+    let evidence = catalog
         .evidence
-        .retain(|evidence| evidence.clause_id != "RD-06.b");
+        .iter_mut()
+        .find(|evidence| evidence.clause_id == "RD-06.b" && evidence.strength == "direct")
+        .expect("RD-06.b direct evidence exists");
+    evidence.invariant_id = "RD-05".to_owned();
+    evidence.clause_id = "RD-05.a".to_owned();
     let bundles = passing_bundles(&catalog, &manifest);
 
     let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
@@ -475,8 +503,7 @@ fn e2e_does_not_satisfy_direct_clause() {
 
 #[test]
 fn sibling_clause_evidence_cannot_substitute() {
-    let (mut catalog, mut manifest) = loaded();
-    relaxed_check_minimums(&mut manifest);
+    let (mut catalog, manifest) = loaded();
     let evidence = catalog
         .evidence
         .iter_mut()
@@ -503,22 +530,36 @@ fn incomplete_clause_result_fails_parent() {
         .iter_mut()
         .find(|bundle| bundle.runner == "tests")
         .expect("tests bundle exists");
-    let result = tests
+    let execution_id = tests
         .results
-        .iter_mut()
+        .iter()
         .find(|result| result.evidence_id == evidence_id)
-        .expect("RD-06.b result exists");
-    result.status = EvidenceStatus::Incomplete;
-    result.classification = Some(FailureClassification::CoverageNotReached);
-    result.message = Some("unknown-write branch was not reached".to_owned());
-    result.artifacts = vec![artifact("artifacts/rd-06-b.log")];
+        .expect("RD-06.b result exists")
+        .execution_id
+        .clone();
     let check = tests
         .execution
         .checks
         .iter_mut()
-        .find(|check| check.execution_id == result.execution_id)
+        .find(|check| check.execution_id == execution_id)
         .expect("RD-06.b check exists");
     check.completion = CheckCompletion::CoverageNotReached;
+    check.observations = std::collections::BTreeMap::from([
+        ("discovered".to_owned(), 1),
+        ("executed".to_owned(), 0),
+        ("passed".to_owned(), 0),
+    ]);
+    let artifacts = check.artifacts.clone();
+    for result in tests
+        .results
+        .iter_mut()
+        .filter(|result| result.execution_id == execution_id)
+    {
+        result.status = EvidenceStatus::Incomplete;
+        result.classification = Some(FailureClassification::CoverageNotReached);
+        result.message = Some("unknown-write branch was not reached".to_owned());
+        result.artifacts.clone_from(&artifacts);
+    }
 
     let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
     assert_only_parent_red(&report, "RD-06");
@@ -616,10 +657,12 @@ fn tests_pass_requires_registry_check_identity_and_exact_observations() {
 
     let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
     assert_eq!(report.summary.green, 0);
-    assert!(report.invariants.iter().all(|verdict| verdict
-        .issues
+    assert!(report
+        .invariants
         .iter()
-        .any(|issue| issue.message.contains("exact observations"))));
+        .all(|verdict| verdict.issues.iter().any(|issue| issue
+            .message
+            .contains("observations, and artifacts disagree"))));
 }
 
 #[test]
@@ -712,6 +755,27 @@ fn tla_pass_requires_every_framed_predicate_observation() {
     tla.execution.checks[0]
         .observations
         .remove("detector_qualified:ElectionSafety");
+
+    let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
+    assert_eq!(report.summary.green, 0);
+    assert_eq!(report.summary.red, 44);
+    assert!(report.invariants.iter().any(|verdict| verdict
+        .issues
+        .iter()
+        .any(|issue| issue.message.contains("terminal frames"))));
+}
+
+#[test]
+fn tla_pass_requires_every_model_transition_observation() {
+    let (catalog, manifest) = loaded();
+    let mut bundles = passing_bundles(&catalog, &manifest);
+    let tla = bundles
+        .iter_mut()
+        .find(|bundle| bundle.runner == "tla")
+        .expect("TLA bundle exists");
+    tla.execution.checks[0]
+        .observations
+        .remove("transition_covered:InstallSnapshot");
 
     let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
     assert_eq!(report.summary.green, 0);

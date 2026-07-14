@@ -21,13 +21,24 @@ pub(crate) struct CommitHistory {
     pub(crate) committed_in_terms: Vec<Term>,
     pub(crate) unwitnessed_committed_prefixes: BTreeSet<(NodeId, LogIndex)>,
     pub(crate) unwitnessed_commit_terms: BTreeSet<LogIndex>,
-    pub(crate) leader_completeness_checked_through: BTreeMap<(NodeId, Term), LogIndex>,
+    pub(crate) leader_completeness_checked_through: BTreeMap<(NodeId, Term, usize), LogIndex>,
     pub(crate) violations: BTreeSet<CommitHistoryViolation>,
+}
+
+/// One configuration entry appended by the transition currently being
+/// observed. Commits below `index` still use the frozen pre-transition
+/// membership; commits at or above it use the post-append membership.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(in crate::model_check) struct ConfigurationAppend {
+    pub(in crate::model_check) proposer: NodeId,
+    pub(in crate::model_check) index: LogIndex,
 }
 
 impl Hash for CommitHistory {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        self.certificates.hash(state);
         self.committed_prefix.hash(state);
+        self.committed_prefix_owner.hash(state);
         self.committed_in_terms.hash(state);
         self.unwitnessed_committed_prefixes.hash(state);
         self.unwitnessed_commit_terms.hash(state);
@@ -41,7 +52,7 @@ impl CommitHistory {
         &mut self,
         before: &BTreeMap<NodeId, CommitTransitionContext>,
         cluster: &Cluster,
-        configuration_proposer: Option<NodeId>,
+        configuration_append: Option<ConfigurationAppend>,
         follower_commit_authority: Option<(NodeId, Term)>,
         _logical_logs: &LogicalLogHistory,
     ) -> ObservationSet {
@@ -94,7 +105,9 @@ impl CommitHistory {
                 });
             }
 
-            let used_post_append_membership = configuration_proposer == Some(context.node_id);
+            let used_post_append_membership = configuration_append.is_some_and(|append| {
+                append.proposer == context.node_id && new_commit >= append.index
+            });
             let membership = if used_post_append_membership {
                 node.effective_membership()
             } else {
@@ -291,56 +304,59 @@ impl CommitHistory {
 
     pub(super) fn record_leader_completeness(
         &mut self,
-        cluster: &Cluster,
-        logical_logs: &LogicalLogHistory,
         election_history: &ElectionHistory,
     ) -> ObservationSet {
         let mut observations = ObservationSet::default();
-        for certificate in election_history.elected_by_term.values() {
-            let key = (certificate.leader_id, certificate.term);
-            let checked_through = self
-                .leader_completeness_checked_through
-                .get(&key)
-                .copied()
-                .unwrap_or_default();
-            let Some(committed) = self.committed_prefix.as_ref() else {
-                self.leader_completeness_checked_through
-                    .insert(key, checked_through);
-                continue;
-            };
-            if committed.through <= checked_through {
-                continue;
-            }
-            let leader_view = logical_logs.observed_view(cluster, certificate.leader_id);
-            let checked_entries =
-                usize::try_from(checked_through.0).unwrap_or(committed.entries.len());
-            let relevant_through = committed
-                .entries
-                .iter()
-                .enumerate()
-                .skip(checked_entries)
-                .filter(|(offset, _)| {
-                    self.committed_in_terms
-                        .get(*offset)
-                        .is_some_and(|term| *term < certificate.term)
-                })
-                .map(|(offset, _)| LogIndex(offset as u64 + 1))
-                .next_back();
-            if let Some(relevant_through) = relevant_through {
-                observations.mark(Observation::LaterTermLeaderPriorPrefixChecks);
-                let expected = committed.slice_through(relevant_through);
-                if LogicalLogHistory::prefix_from_view(&leader_view, relevant_through) != expected {
-                    self.violations.insert(CommitHistoryViolation {
-                        invariant: catalog::LG_05_LEADER_COMPLETENESS,
-                        message: format!(
-                            "{} became leader in term {} without committed prefix through {}",
-                            certificate.leader_id, certificate.term, relevant_through
-                        ),
-                    });
+        for certificates in election_history.elected_by_term.values() {
+            for (certificate_ordinal, certificate) in certificates.iter().enumerate() {
+                let key = (certificate.leader_id, certificate.term, certificate_ordinal);
+                let checked_through = self
+                    .leader_completeness_checked_through
+                    .get(&key)
+                    .copied()
+                    .unwrap_or_default();
+                let Some(committed) = self.committed_prefix.as_ref() else {
+                    self.leader_completeness_checked_through
+                        .insert(key, checked_through);
+                    continue;
+                };
+                if committed.through <= checked_through {
+                    continue;
                 }
+                let checked_entries =
+                    usize::try_from(checked_through.0).unwrap_or(committed.entries.len());
+                let relevant_through = committed
+                    .entries
+                    .iter()
+                    .enumerate()
+                    .skip(checked_entries)
+                    .filter(|(offset, _)| {
+                        self.committed_in_terms
+                            .get(*offset)
+                            .is_some_and(|term| *term < certificate.term)
+                    })
+                    .map(|(offset, _)| LogIndex(offset as u64 + 1))
+                    .next_back();
+                if let Some(relevant_through) = relevant_through {
+                    observations.mark(Observation::LaterTermLeaderPriorPrefixChecks);
+                    let expected = committed.slice_through(relevant_through);
+                    let election_prefix = certificate
+                        .logical_prefix_at_election
+                        .as_ref()
+                        .and_then(|prefix| prefix.slice_through(relevant_through));
+                    if election_prefix != expected {
+                        self.violations.insert(CommitHistoryViolation {
+                            invariant: catalog::LG_05_LEADER_COMPLETENESS,
+                            message: format!(
+                                "{} became leader in term {} without committed prefix through {}",
+                                certificate.leader_id, certificate.term, relevant_through
+                            ),
+                        });
+                    }
+                }
+                self.leader_completeness_checked_through
+                    .insert(key, committed.through);
             }
-            self.leader_completeness_checked_through
-                .insert(key, committed.through);
         }
         observations
     }
@@ -445,13 +461,13 @@ impl ExplorationState {
     pub(in crate::model_check) fn record_commit_observation(
         &mut self,
         before: &BTreeMap<NodeId, CommitTransitionContext>,
-        configuration_proposer: Option<NodeId>,
+        configuration_append: Option<ConfigurationAppend>,
         follower_commit_authority: Option<(NodeId, Term)>,
     ) {
         let observations = self.commit_history.record_commit_transitions(
             before,
             &self.cluster,
-            configuration_proposer,
+            configuration_append,
             follower_commit_authority,
             &self.logical_log_history,
         );
@@ -485,11 +501,9 @@ impl ExplorationState {
     }
 
     pub(in crate::model_check) fn record_leader_completeness_observation(&mut self) {
-        let observations = self.commit_history.record_leader_completeness(
-            &self.cluster,
-            &self.logical_log_history,
-            &self.election_history,
-        );
+        let observations = self
+            .commit_history
+            .record_leader_completeness(&self.election_history);
         self.observations.union_with(observations);
     }
 }

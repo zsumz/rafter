@@ -2,6 +2,7 @@
 
 use super::support::*;
 use super::*;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq, oracle_violation};
 
 #[test]
 fn transfer_to_caught_up_target_sends_timeout_now_immediately() {
@@ -9,9 +10,11 @@ fn transfer_to_caught_up_target_sends_timeout_now_immediately() {
 
     let outputs = leader.step(Input::TransferLeadership { target: NodeId(2) });
 
-    let request = timeout_now_to(&outputs, NodeId(2)).expect("timeout-now goes to the target");
-    assert_eq!(request.term, leader.current_term());
-    assert_eq!(request.leader_id, NodeId(1));
+    let Some(request) = timeout_now_to(&outputs, NodeId(2)) else {
+        oracle_violation!("timeout-now must go to the target");
+    };
+    oracle_assert_eq!(request.term, leader.current_term());
+    oracle_assert_eq!(request.leader_id, NodeId(1));
 }
 #[test]
 fn transfer_waits_for_lagging_target_to_catch_up() {
@@ -170,14 +173,14 @@ fn starting_transfer_cancels_pending_reads_and_stale_ack_cannot_grant() {
 
     let transfer_outputs = leader.step(Input::TransferLeadership { target: NodeId(2) });
 
-    assert!(transfer_outputs.iter().any(|output| matches!(
+    oracle_assert!(transfer_outputs.iter().any(|output| matches!(
         output,
         Output::ReadIndexCanceled {
             read_id: ReadId(42),
             reason: ReadIndexCancelReason::LeadershipTransfer { target: NodeId(2) },
         }
     )));
-    assert_eq!(leader.pending_read_count(), 0);
+    oracle_assert_eq!(leader.pending_read_count(), 0);
 
     let delayed_ack_outputs = leader.step(Input::Message {
         from: NodeId(3),
@@ -189,7 +192,7 @@ fn starting_transfer_cancels_pending_reads_and_stale_ack_cannot_grant() {
             match_index: leader.last_log_index(),
         }),
     });
-    assert!(delayed_ack_outputs
+    oracle_assert!(delayed_ack_outputs
         .iter()
         .all(|output| !matches!(output, Output::ReadIndexGranted { .. })));
 }

@@ -1,25 +1,26 @@
 //! Read barrier registration, round sequencing, and ordered confirmation.
 
 use super::support::*;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq, oracle_violation};
 
 #[test]
 fn read_index_broadcasts_confirmation_round_immediately() {
     let mut leader = leader_with_current_term_commit();
 
     let heartbeats = leader.step(read_index(42));
-    assert_eq!(leader.pending_read_count(), 1);
+    oracle_assert_eq!(leader.pending_read_count(), 1);
     let Output::Send {
         message: Message::AppendEntries(AppendEntries { sequence, .. }),
         ..
     } = &heartbeats[0]
     else {
-        panic!("expected heartbeat");
+        oracle_violation!("expected heartbeat");
     };
     let round = *sequence;
 
     let outputs = ack(&mut leader, 2, round);
-    assert_eq!(granted(&outputs), vec![(ReadId(42), LogIndex(1))]);
-    assert_eq!(leader.pending_read_count(), 0);
+    oracle_assert_eq!(granted(&outputs), vec![(ReadId(42), LogIndex(1))]);
+    oracle_assert_eq!(leader.pending_read_count(), 0);
 }
 
 #[test]
@@ -52,15 +53,15 @@ fn delayed_ack_from_an_older_round_never_confirms_a_barrier() {
     // Delayed echoes of pre-registration rounds must not count — even a
     // quorum of them proves nothing about leadership after registration.
     let outputs = ack(&mut leader, 2, pre_round);
-    assert!(granted(&outputs).is_empty());
+    oracle_assert!(granted(&outputs).is_empty());
     let outputs = ack(&mut leader, 3, pre_round);
-    assert!(granted(&outputs).is_empty());
-    assert_eq!(leader.pending_read_count(), 1);
+    oracle_assert!(granted(&outputs).is_empty());
+    oracle_assert_eq!(leader.pending_read_count(), 1);
 
     // An echo of the eagerly broadcast post-registration round confirms.
-    assert!(post_round > pre_round);
+    oracle_assert!(post_round > pre_round);
     let outputs = ack(&mut leader, 2, post_round);
-    assert_eq!(granted(&outputs), vec![(ReadId(9), LogIndex(1))]);
+    oracle_assert_eq!(granted(&outputs), vec![(ReadId(9), LogIndex(1))]);
 }
 
 #[test]
@@ -70,20 +71,20 @@ fn acknowledgement_observed_before_registration_cannot_confirm_later_read() {
     // Process quorum evidence while there is no read to confirm.
     let pre_registration_round = heartbeat_round(&leader.step(Input::Tick));
     let outputs = ack(&mut leader, 2, pre_registration_round);
-    assert!(granted(&outputs).is_empty());
-    assert_eq!(leader.pending_read_count(), 0);
+    oracle_assert!(granted(&outputs).is_empty());
+    oracle_assert_eq!(leader.pending_read_count(), 0);
 
     // Registering afterward must not inherit the already-observed acknowledgement.
     let registration_outputs = leader.step(read_index(10));
     let post_registration_round = heartbeat_round(&registration_outputs);
-    assert!(granted(&registration_outputs).is_empty());
-    assert_eq!(leader.pending_read_count(), 1);
+    oracle_assert!(granted(&registration_outputs).is_empty());
+    oracle_assert_eq!(leader.pending_read_count(), 1);
 
     // Only a fresh quorum round observed after registration confirms the read.
-    assert!(post_registration_round > pre_registration_round);
+    oracle_assert!(post_registration_round > pre_registration_round);
     let outputs = ack(&mut leader, 2, post_registration_round);
-    assert_eq!(granted(&outputs), vec![(ReadId(10), LogIndex(1))]);
-    assert_eq!(leader.pending_read_count(), 0);
+    oracle_assert_eq!(granted(&outputs), vec![(ReadId(10), LogIndex(1))]);
+    oracle_assert_eq!(leader.pending_read_count(), 0);
 }
 
 #[test]
@@ -94,8 +95,8 @@ fn zero_sequence_echo_never_confirms_a_barrier() {
     // A directly constructed or non-codec message with no round information
     // echoes zero.
     let outputs = ack(&mut leader, 2, 0);
-    assert!(granted(&outputs).is_empty());
-    assert_eq!(leader.pending_read_count(), 1);
+    oracle_assert!(granted(&outputs).is_empty());
+    oracle_assert_eq!(leader.pending_read_count(), 1);
 }
 
 #[test]

@@ -1,6 +1,7 @@
 //! Serialization of configuration changes in the replicated log.
 
 use super::support::*;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
 #[test]
 fn follower_rejects_second_uncommitted_configuration_entry() {
@@ -39,8 +40,30 @@ fn follower_rejects_second_uncommitted_configuration_entry() {
         }),
     });
 
-    assert_eq!(follower.last_log_index(), LogIndex(1));
-    assert_append_entries_response(&outputs, NodeId(1), false, LogIndex::ZERO);
+    oracle_assert_eq!(follower.last_log_index(), LogIndex(1));
+    oracle_assert!(append_response_matches(
+        &outputs,
+        NodeId(1),
+        false,
+        LogIndex::ZERO
+    ));
+}
+
+fn append_response_matches(
+    outputs: &[Output],
+    to: NodeId,
+    success: bool,
+    match_index: LogIndex,
+) -> bool {
+    matches!(
+        outputs,
+        [Output::Send {
+            to: actual_to,
+            message: Message::AppendEntriesResponse(response),
+        }] if *actual_to == to
+            && response.success == success
+            && response.match_index == match_index
+    )
 }
 
 #[test]

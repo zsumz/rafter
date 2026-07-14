@@ -280,7 +280,7 @@ pub(super) fn validate_liveness_fairness(
     let valid = fairness
         .get("policy_id")
         .and_then(serde_json::Value::as_str)
-        == Some("all-node-ticks-fifo-ready-waves-v1")
+        == Some("seeded-rotating-all-node-ticks-ready-wave-permutations-v1")
         && fairness
             .get("tick_bound_rounds")
             .and_then(serde_json::Value::as_u64)

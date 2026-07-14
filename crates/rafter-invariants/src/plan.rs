@@ -5,7 +5,6 @@ use std::{
     ffi::OsString,
     fs,
     path::{Component, Path, PathBuf},
-    process::Command,
 };
 
 use sha2::{Digest, Sha256};
@@ -76,7 +75,7 @@ impl ExecutionPlan {
 ///
 /// Returns an error when any plan path, digest, size, profile, or selected
 /// contract differs from the plan loaded by the current invocation.
-pub fn verify_bundle_plan(
+pub(crate) fn verify_bundle_plan(
     bundle: &ResultBundle,
     expected: &ExecutionPlanReceipt,
 ) -> Result<(), Box<dyn Error>> {
@@ -96,7 +95,7 @@ pub fn verify_bundle_plan(
 /// # Errors
 ///
 /// Returns an error when argv or the working directory is not valid UTF-8.
-pub fn capture_invocation() -> Result<InvocationReceipt, Box<dyn Error>> {
+pub(crate) fn capture_invocation() -> Result<InvocationReceipt, Box<dyn Error>> {
     capture_invocation_from(env::args_os().collect())
 }
 
@@ -156,12 +155,11 @@ fn plan_input(path: &Path) -> Result<PlanInput, Box<dyn Error>> {
         .strip_prefix(&root)?
         .to_string_lossy()
         .into_owned();
-    let tracked = Command::new("git")
-        .args(["ls-files", "--error-unmatch", "--", &relative])
-        .output()?;
-    if !tracked.status.success() {
-        return Err(format!("execution-plan input is not tracked: {relative}").into());
-    }
+    crate::producer::process::identity_command(
+        "git",
+        &["ls-files", "--error-unmatch", "--", &relative],
+    )
+    .map_err(|error| format!("execution-plan input is not tracked: {relative}: {error}"))?;
     let bytes = fs::read(canonical)?;
     Ok(PlanInput {
         path: relative,

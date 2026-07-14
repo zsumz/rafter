@@ -5,6 +5,7 @@ use std::{
 
 use super::test_support::{entry, remove_test_file, test_segment_path};
 use super::*;
+use rafter_invariant_test::oracle_assert_eq;
 
 #[test]
 fn file_raft_log_segment_replays_entries_after_reopen() {
@@ -17,8 +18,8 @@ fn file_raft_log_segment_replays_entries_after_reopen() {
 
     let reopened = FileRaftLogSegment::open(&path).expect("segment reopens");
 
-    assert_eq!(reopened.next_index(), LogIndex(3));
-    assert_eq!(reopened.replay_entries(), entries);
+    oracle_assert_eq!(reopened.next_index(), LogIndex(3));
+    oracle_assert_eq!(reopened.replay_entries(), entries);
     remove_test_file(path);
 }
 

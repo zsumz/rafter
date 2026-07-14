@@ -35,23 +35,21 @@ VARIABLES currentTerm, votedFor, role, log, commitIndex,
           snapshotIndex, snapshotPrefix, compactionPending, snapshotTransfer,
           applied,
           messages, readRequests, readBarrierViolationSeen,
-          membership, appliedConfigIndex,
-          effectiveMembership, effectiveConfigIndex,
           electedLeaders, logicalPrefixLedger, committedLedger,
           commitWitnesses,
           higherTermStepDownFailed,
-          staleAuthorityAccepted
+          staleAuthorityAccepted,
+          lastAppendAccepted
 
 vars == << currentTerm, votedFor, role, log, commitIndex,
           snapshotIndex, snapshotPrefix, compactionPending, snapshotTransfer,
           applied,
           messages, readRequests, readBarrierViolationSeen,
-          membership, appliedConfigIndex,
-          effectiveMembership, effectiveConfigIndex,
           electedLeaders, logicalPrefixLedger, committedLedger,
           commitWitnesses,
           higherTermStepDownFailed,
-          staleAuthorityAccepted >>
+          staleAuthorityAccepted,
+          lastAppendAccepted >>
 
 snapshotVars ==
   <<snapshotIndex, snapshotPrefix, compactionPending, snapshotTransfer>>
@@ -62,7 +60,7 @@ applicationVars ==
 historyVars == <<logicalPrefixLedger, committedLedger, commitWitnesses>>
 
 authorityVars ==
-  <<higherTermStepDownFailed, staleAuthorityAccepted>>
+  <<higherTermStepDownFailed, staleAuthorityAccepted, lastAppendAccepted>>
 
 Min(a, b) == IF a <= b THEN a ELSE b
 Max(a, b) == IF a >= b THEN a ELSE b
@@ -72,8 +70,7 @@ ConfigurationEntryKind == "Configuration"
 
 VoterSets ==
   {voters \in SUBSET Nodes :
-      /\ voters # {}
-      /\ Cardinality(voters) >= Cardinality(Nodes) - 1}
+      voters # {}}
 
 StableMembership(voters) ==
   [phase |-> StableConfig, old |-> voters, new |-> voters]
@@ -81,10 +78,21 @@ StableMembership(voters) ==
 JointMembership(oldVoters, newVoters) ==
   [phase |-> JointConfig, old |-> oldVoters, new |-> newVoters]
 
+OneVoterChange(oldVoters, newVoters) ==
+  /\ oldVoters \in VoterSets
+  /\ newVoters \in VoterSets
+  /\ oldVoters # newVoters
+  /\ Cardinality(
+       (oldVoters \ newVoters) \cup (newVoters \ oldVoters)) = 1
+
 MembershipSet ==
   {StableMembership(voters) : voters \in VoterSets}
   \cup {JointMembership(oldVoters, newVoters) :
       oldVoters \in VoterSets, newVoters \in VoterSets}
+
+JointVoterChanges ==
+  {pair \in VoterSets \X VoterSets :
+    OneVoterChange(pair[1], pair[2])}
 
 Entry(term, value) ==
   [term |-> term, kind |-> CommandEntryKind, input |-> value]
@@ -93,32 +101,29 @@ ConfigurationEntry(term, config) ==
   [term |-> term, kind |-> ConfigurationEntryKind, input |-> config]
 
 ConfigurationSet ==
-  {JointMembership(Nodes, voters) :
-      voters \in {candidate \in VoterSets : candidate # Nodes}}
-  \cup {StableMembership(voters) :
-      voters \in {candidate \in VoterSets : candidate # Nodes}}
+  {StableMembership(voters) : voters \in VoterSets}
+  \cup {JointMembership(pair[1], pair[2]) : pair \in JointVoterChanges}
 
 EntrySet ==
   {Entry(t, v) : t \in 1..MaxTerm, v \in Values}
   \cup {ConfigurationEntry(t, config) :
       t \in 1..MaxTerm, config \in ConfigurationSet}
 
-AllLogs ==
-  {<<>>}
-  \cup {<<e1>> : e1 \in EntrySet}
-  \cup {<<e1, e2>> : e1 \in EntrySet, e2 \in EntrySet}
-  \cup {<<e1, e2, e3>> : e1 \in EntrySet, e2 \in EntrySet, e3 \in EntrySet}
+EntryOK(e) ==
+  /\ e \in EntrySet
+  /\ e.term \in 1..MaxTerm
+  /\ e.kind \in {CommandEntryKind, ConfigurationEntryKind}
+  /\ IF e.kind = CommandEntryKind
+     THEN e.input \in Values
+     ELSE e.input \in ConfigurationSet
 
-LogSet == {s \in AllLogs : Len(s) <= MaxLogLen}
+LogOK(s) ==
+  /\ s \in Seq(EntrySet)
+  /\ Len(s) <= MaxLogLen
 
-AllReferenceStates ==
-  {<<>>}
-  \cup {<<v1>> : v1 \in Values}
-  \cup {<<v1, v2>> : v1 \in Values, v2 \in Values}
-  \cup {<<v1, v2, v3>> : v1 \in Values, v2 \in Values, v3 \in Values}
-
-ReferenceStateSet ==
-  {s \in AllReferenceStates : Len(s) <= MaxLogLen}
+ReferenceStateOK(s) ==
+  /\ s \in Seq(Values)
+  /\ Len(s) <= MaxLogLen
 
 ReadRequestSet ==
   {[node |-> n, request |-> request, committedFloor |-> floor] :
@@ -137,7 +142,7 @@ InitialApplicationState ==
 
 ApplicationStateOK(state) ==
   /\ DOMAIN state = {"referenceState", "membership"}
-  /\ state.referenceState \in ReferenceStateSet
+  /\ ReferenceStateOK(state.referenceState)
   /\ state.membership \in MembershipSet
 
 ApplyEntry(state, entry) ==
@@ -145,15 +150,28 @@ ApplyEntry(state, entry) ==
   THEN [state EXCEPT !.referenceState = Append(@, entry.input)]
   ELSE [state EXCEPT !.membership = entry.input]
 
+StateAfterFourEntries(entries) ==
+  ApplyEntry(
+    ApplyEntry(
+      ApplyEntry(ApplyEntry(InitialApplicationState, entries[1]), entries[2]),
+      entries[3]),
+    entries[4])
+
 StateAfterEntries(entries) ==
   CASE Len(entries) = 0 -> InitialApplicationState
     [] Len(entries) = 1 -> ApplyEntry(InitialApplicationState, entries[1])
     [] Len(entries) = 2 ->
          ApplyEntry(ApplyEntry(InitialApplicationState, entries[1]), entries[2])
-    [] OTHER ->
+    [] Len(entries) = 3 ->
          ApplyEntry(
            ApplyEntry(ApplyEntry(InitialApplicationState, entries[1]), entries[2]),
            entries[3])
+    [] Len(entries) = 4 -> StateAfterFourEntries(entries)
+    [] Len(entries) = 5 ->
+         ApplyEntry(StateAfterFourEntries(entries), entries[5])
+    [] OTHER ->
+         ApplyEntry(
+           ApplyEntry(StateAfterFourEntries(entries), entries[5]), entries[6])
 
 AppliedObservation(entry, resultState) ==
   [entry |-> entry, resultState |-> resultState]
@@ -165,7 +183,7 @@ AppliedEpoch(baseIndex, baseState, observations) ==
 
 AppliedObservationOK(observation) ==
   /\ DOMAIN observation = {"entry", "resultState"}
-  /\ observation.entry \in EntrySet
+  /\ EntryOK(observation.entry)
   /\ ApplicationStateOK(observation.resultState)
 
 AppliedEpochOK(epoch) ==
@@ -245,17 +263,6 @@ LatestConfigurationIn(entries) ==
     ELSE LET latest == LatestIndex(candidates)
          IN [configIndex |-> latest, config |-> entries[latest].input]
 
-EffectiveConfigurationFor(entries) ==
-  LET candidates ==
-        {index \in 1..Len(entries) :
-          /\ index > appliedConfigIndex
-          /\ entries[index].kind = ConfigurationEntryKind}
-  IN
-    IF candidates = {}
-    THEN [configIndex |-> appliedConfigIndex, config |-> membership]
-    ELSE LET latest == LatestIndex(candidates)
-         IN [configIndex |-> latest, config |-> entries[latest].input]
-
 LogicalPrefixFrom(logs, snapshotIndexes, snapshotPrefixes, node, index) ==
   IF index = 0
   THEN <<>>
@@ -272,6 +279,12 @@ LogicalPrefix(node, index) ==
 
 LogicalEntry(node, index) ==
   LogicalEntryFrom(log, snapshotIndex, snapshotPrefix, node, index)
+
+AppliedConfiguration(node) ==
+  LatestConfigurationIn(LogicalPrefix(node, AppliedThrough(node)))
+
+EffectiveConfiguration(node) ==
+  LatestConfigurationIn(LogicalPrefix(node, Len(log[node])))
 
 SnapshotIdentitySoundFor(logs, snapshotIndexes, snapshotPrefixes, compactionPendings) ==
   \A n \in Nodes :
@@ -306,12 +319,6 @@ RetainedElections(elections, terms) ==
   [term \in 1..MaxTerm |->
     IF TermClosed(terms, term) THEN {} ELSE elections[term]]
 
-AuthoritativeLogReplacement(message, accepted) ==
-  /\ accepted
-  /\ role[message.from] = Leader
-  /\ currentTerm[message.from] = message.term
-  /\ log[message.from] = message.entries
-
 RecordElection(node) ==
   electedLeaders' = RetainedElections(
     [electedLeaders EXCEPT ![currentTerm[node]] = @ \cup {node}],
@@ -325,10 +332,18 @@ RecordHigherTermOutcome(node, evidenceTerm, observedHigherTerm) ==
     ELSE higherTermStepDownFailed
 
 RecordAuthorityAcceptance(authorityTerm, knownTerm, accepted) ==
-  staleAuthorityAccepted' =
-    IF accepted /\ authorityTerm < knownTerm
-    THEN TRUE
-    ELSE staleAuthorityAccepted
+  /\ staleAuthorityAccepted' =
+       IF accepted /\ authorityTerm < knownTerm
+       THEN TRUE
+       ELSE staleAuthorityAccepted
+  /\ UNCHANGED lastAppendAccepted
+
+RecordAppendOutcome(authorityTerm, knownTerm, accepted) ==
+  /\ staleAuthorityAccepted' =
+       IF accepted /\ authorityTerm < knownTerm
+       THEN TRUE
+       ELSE staleAuthorityAccepted
+  /\ lastAppendAccepted' = accepted
 
 StartApplicationEpoch(node, baseIndex, baseState) ==
   applied' = [applied EXCEPT ![node] =
@@ -339,19 +354,26 @@ RecordApplication(node, entry, resultState) ==
     ![node][Len(applied[node])].observations =
       Append(@, AppliedObservation(entry, resultState))]
 
+CommittedEntry(index, entry, committedInTerm) ==
+  [index |-> index, entry |-> entry, committedInTerm |-> committedInTerm]
+
 CommittedEntriesFor(
-    logs, snapshotIndexes, snapshotPrefixes, node, oldFloor, newFloor) ==
+    logs, snapshotIndexes, snapshotPrefixes, node, oldFloor, newFloor,
+    committedInTerm) ==
   {[index |-> index,
     entry |-> LogicalEntryFrom(
-      logs, snapshotIndexes, snapshotPrefixes, node, index)] :
+      logs, snapshotIndexes, snapshotPrefixes, node, index),
+    committedInTerm |-> committedInTerm] :
       index \in (oldFloor + 1)..newFloor}
 
 RecordCommittedEntries(
-    logs, snapshotIndexes, snapshotPrefixes, node, oldFloor, newFloor) ==
+    logs, snapshotIndexes, snapshotPrefixes, node, oldFloor, newFloor,
+    committedInTerm) ==
   committedLedger' =
     committedLedger \cup
       CommittedEntriesFor(
-        logs, snapshotIndexes, snapshotPrefixes, node, oldFloor, newFloor)
+        logs, snapshotIndexes, snapshotPrefixes, node, oldFloor, newFloor,
+        committedInTerm)
 
 ConfigurationMembershipAt(
     logs, snapshotIndexes, snapshotPrefixes, node, configIndex) ==
@@ -400,51 +422,12 @@ CommitCertificatesFor(
     replicas |-> MatchingReplicas(node, index)] :
       index \in (oldFloor + 1)..newFloor}
 
-NodePairSet ==
-  {pair \in [from: Nodes, to: Nodes] : pair.from # pair.to}
-
-TermLogSet ==
-  {payload \in [term: 1..MaxTerm, entries: LogSet] :
-    \A i \in 1..Len(payload.entries) :
-      payload.entries[i].term <= payload.term}
-
-RequestVoteMessages ==
-  {[type |-> RequestVote,
-    term |-> t,
-    from |-> pair.from,
-    to |-> pair.to] :
-      t \in 1..MaxTerm, pair \in NodePairSet}
-
-AppendEntriesMessages ==
-  {message \in
-    {[type |-> AppendEntries,
-      term |-> payload.term,
-      from |-> pair.from,
-      to |-> pair.to,
-      entries |-> payload.entries,
-      leaderCommit |-> leaderCommit] :
-        pair \in NodePairSet,
-        payload \in TermLogSet,
-        leaderCommit \in 0..MaxLogLen} :
-    message.leaderCommit <= Len(message.entries)}
-
-MessageSet == RequestVoteMessages \cup AppendEntriesMessages
-
 RetainedMessages(pending, terms) ==
   {message \in pending : message.term >= terms[message.to]}
 
 NoSnapshotTransfer ==
   [active |-> FALSE, term |-> 0, from |-> NoVote, to |-> NoVote,
    index |-> 0, prefix |-> <<>>]
-
-EntryOK(e) ==
-  /\ e.term \in 1..MaxTerm
-  /\ e.kind \in {CommandEntryKind, ConfigurationEntryKind}
-  /\ IF e.kind = CommandEntryKind
-     THEN e.input \in Values
-     ELSE e.input \in ConfigurationSet
-
-LogOK(s) == s \in LogSet
 
 LastTerm(s) ==
   IF Len(s) = 0 THEN 0 ELSE s[Len(s)].term
@@ -458,26 +441,28 @@ ActiveVoters(config) ==
   IF config.phase = StableConfig THEN config.old ELSE config.old \cup config.new
 
 PendingSelfRemoval(node) ==
-  IF /\ effectiveConfigIndex \in 1..Len(log[node])
-     /\ effectiveConfigIndex > commitIndex[node]
-  THEN LET entry == LogicalEntry(node, effectiveConfigIndex)
-           prior == PriorConfigurationFor(node, effectiveConfigIndex)
+  LET effective == EffectiveConfiguration(node)
+  IN IF /\ effective.configIndex \in 1..Len(log[node])
+        /\ effective.configIndex > commitIndex[node]
+     THEN LET entry == LogicalEntry(node, effective.configIndex)
+              prior == PriorConfigurationFor(node, effective.configIndex)
        IN /\ role[node] = Leader
           /\ currentTerm[node] = entry.term
           /\ entry.kind = ConfigurationEntryKind
-          /\ entry.input = effectiveMembership
-          /\ effectiveMembership.phase = StableConfig
-          /\ node \notin ActiveVoters(effectiveMembership)
-          /\ prior.configIndex < effectiveConfigIndex
+          /\ entry.input = effective.config
+          /\ effective.config.phase = StableConfig
+          /\ node \notin ActiveVoters(effective.config)
+          /\ prior.configIndex < effective.configIndex
           /\ prior.config.phase = JointConfig
-          /\ prior.config.new = effectiveMembership.old
+          /\ prior.config.new = effective.config.old
           /\ node \in ActiveVoters(prior.config)
-  ELSE FALSE
+     ELSE FALSE
 
 CommitAuthorityMembership(node) ==
   IF PendingSelfRemoval(node)
-  THEN PriorConfigurationFor(node, effectiveConfigIndex).config
-  ELSE effectiveMembership
+  THEN PriorConfigurationFor(
+         node, EffectiveConfiguration(node).configIndex).config
+  ELSE EffectiveConfiguration(node).config
 
 StableQuorum(voters, ns) ==
   2 * Cardinality(ns \cap voters) > Cardinality(voters)
@@ -487,8 +472,6 @@ MembershipQuorum(config, ns) ==
   THEN StableQuorum(config.old, ns)
   ELSE /\ StableQuorum(config.old, ns)
        /\ StableQuorum(config.new, ns)
-
-QuorumNodes(ns) == MembershipQuorum(effectiveMembership, ns)
 
 CommitWitnessOK(witness) ==
   /\ witness.leaderRole = Leader
@@ -531,9 +514,10 @@ RecordReadGrant(grant) ==
   readBarrierViolationSeen' =
     IF ReadGrantOK(grant) THEN readBarrierViolationSeen ELSE TRUE
 
-CanAdoptLog(n, entries) ==
+CanAdoptLog(n, entries, authorityTerm) ==
   /\ LogOK(entries)
-  /\ Len(entries) >= Len(log[n])
+  /\ \/ Len(entries) >= Len(log[n])
+     \/ authorityTerm > currentTerm[n]
   /\ \A i \in 1..commitIndex[n] :
        /\ i \in 1..Len(entries)
        /\ entries[i] = LogicalEntry(n, i)
@@ -551,12 +535,6 @@ CommittedEntriesHeldBy(voters) ==
     \A i \in 1..commitIndex[n] :
       StableQuorum(voters, MatchingReplicas(n, i))
 
-RolesAfterMembershipChange(roles, config) ==
-  [n \in Nodes |-> IF n \in ActiveVoters(config) THEN roles[n] ELSE Follower]
-
-RoleAfterMembershipChange(config) ==
-  RolesAfterMembershipChange(role, config)
-
 MessageOK(m) ==
   \/ /\ m.type = RequestVote
      /\ m.term \in 1..MaxTerm
@@ -570,32 +548,26 @@ MessageOK(m) ==
      /\ m.from # m.to
      /\ LogOK(m.entries)
      /\ m.leaderCommit \in 0..Len(m.entries)
+     /\ m.senderMembership \in MembershipSet
+     /\ m.senderPendingSelfRemoval \in BOOLEAN
+     /\ \/ m.from \in ActiveVoters(m.senderMembership)
+        \/ m.senderPendingSelfRemoval
      /\ \A i \in 1..Len(m.entries) : m.entries[i].term <= m.term
 
 AppliedConfigurationStateOK ==
-  /\ \A n \in Nodes :
-       \A epochPosition \in 1..Len(applied[n]) :
-         LET epoch == applied[n][epochPosition]
-         IN \A position \in 1..Len(epoch.observations) :
-              epoch.observations[position].entry.kind = ConfigurationEntryKind =>
-                epoch.baseIndex + position <= appliedConfigIndex
-  /\ IF appliedConfigIndex = 0
-     THEN membership = InitialApplicationState.membership
-     ELSE \E n \in Nodes :
-            /\ appliedConfigIndex <= Len(log[n])
-            /\ LogicalEntry(n, appliedConfigIndex).kind = ConfigurationEntryKind
-            /\ membership = LogicalEntry(n, appliedConfigIndex).input
+  \A n \in Nodes :
+    /\ AppliedConfiguration(n).configIndex <= AppliedThrough(n)
+    /\ AppliedConfiguration(n).config \in MembershipSet
 
 EffectiveConfigurationStateOK ==
-  /\ appliedConfigIndex <= effectiveConfigIndex
-  /\ IF effectiveConfigIndex = appliedConfigIndex
-     THEN effectiveMembership = membership
-     ELSE \E n \in Nodes :
-            /\ effectiveConfigIndex <= Len(log[n])
-            /\ LogicalEntry(n, effectiveConfigIndex).kind = ConfigurationEntryKind
-            /\ effectiveMembership = LogicalEntry(n, effectiveConfigIndex).input
+  \A n \in Nodes :
+    /\ AppliedConfiguration(n).configIndex
+         <= EffectiveConfiguration(n).configIndex
+    /\ EffectiveConfiguration(n).configIndex <= Len(log[n])
+    /\ EffectiveConfiguration(n).config \in MembershipSet
 
 TypeOK ==
+  /\ MaxLogLen \in 1..6
   /\ currentTerm \in [Nodes -> 0..MaxTerm]
   /\ votedFor \in [Nodes -> (Nodes \cup {NoVote})]
   /\ role \in [Nodes -> {Follower, Candidate, Leader}]
@@ -607,15 +579,12 @@ TypeOK ==
          /\ n \in electedLeaders[currentTerm[n]]
   /\ higherTermStepDownFailed \in BOOLEAN
   /\ staleAuthorityAccepted \in BOOLEAN
-  /\ membership \in MembershipSet
-  /\ appliedConfigIndex \in 0..MaxLogLen
-  /\ effectiveMembership \in MembershipSet
-  /\ effectiveConfigIndex \in 0..MaxLogLen
+  /\ lastAppendAccepted \in BOOLEAN
   /\ \A n \in Nodes :
-       n \notin ActiveVoters(effectiveMembership) =>
+       n \notin ActiveVoters(EffectiveConfiguration(n).config) =>
          \/ role[n] = Follower
          \/ PendingSelfRemoval(n)
-  /\ log \in [Nodes -> LogSet]
+  /\ DOMAIN log = Nodes
   /\ \A n \in Nodes : LogOK(log[n])
   /\ commitIndex \in [Nodes -> 0..MaxLogLen]
   /\ \A n \in Nodes : commitIndex[n] <= Len(log[n])
@@ -624,7 +593,7 @@ TypeOK ==
   /\ compactionPending \in [Nodes -> BOOLEAN]
   /\ \A n \in Nodes :
        /\ snapshotIndex[n] \in 0..MaxLogLen
-       /\ snapshotPrefix[n] \in LogSet
+       /\ LogOK(snapshotPrefix[n])
        /\ snapshotIndex[n] = Len(snapshotPrefix[n])
        /\ snapshotIndex[n] <= Len(log[n])
        /\ compactionPending[n] => snapshotIndex[n] > 0
@@ -636,7 +605,7 @@ TypeOK ==
           /\ snapshotTransfer.to \in Nodes
           /\ snapshotTransfer.from # snapshotTransfer.to
           /\ snapshotTransfer.index \in 1..MaxLogLen
-          /\ snapshotTransfer.prefix \in LogSet
+          /\ LogOK(snapshotTransfer.prefix)
           /\ snapshotTransfer.index = Len(snapshotTransfer.prefix)
      ELSE snapshotTransfer = NoSnapshotTransfer
   /\ DOMAIN applied = Nodes
@@ -653,21 +622,23 @@ TypeOK ==
        /\ DOMAIN witness = {"index", "term", "prefix"}
        /\ witness.index \in 1..MaxLogLen
        /\ witness.term \in 1..MaxTerm
-       /\ witness.prefix \in LogSet
+       /\ LogOK(witness.prefix)
   /\ \A committed \in committedLedger :
-       /\ DOMAIN committed = {"index", "entry"}
+       /\ DOMAIN committed = {"index", "entry", "committedInTerm"}
        /\ committed.index \in 1..MaxLogLen
-       /\ committed.entry \in EntrySet
+       /\ EntryOK(committed.entry)
+       /\ committed.committedInTerm \in 1..MaxTerm
+       /\ committed.entry.term <= committed.committedInTerm
   /\ DOMAIN commitWitnesses =
        {"witnessedCommits", "invalidCertificateSeen"}
   /\ \A witnessed \in commitWitnesses.witnessedCommits :
        /\ DOMAIN witnessed = {"index", "entry"}
        /\ witnessed.index \in 1..MaxLogLen
-       /\ witnessed.entry \in EntrySet
+       /\ EntryOK(witnessed.entry)
   /\ commitWitnesses.invalidCertificateSeen \in BOOLEAN
   /\ AppliedConfigurationStateOK
   /\ EffectiveConfigurationStateOK
-  /\ messages \in SUBSET MessageSet
+  /\ IsFiniteSet(messages)
   /\ \A m \in messages : MessageOK(m)
   /\ messages = RetainedMessages(messages, currentTerm)
   /\ readRequests \in SUBSET ReadRequestSet
@@ -693,28 +664,23 @@ Init ==
   /\ messages = {}
   /\ readRequests = {}
   /\ readBarrierViolationSeen = FALSE
-  /\ membership = StableMembership(Nodes)
-  /\ appliedConfigIndex = 0
-  /\ effectiveMembership = StableMembership(Nodes)
-  /\ effectiveConfigIndex = 0
   /\ electedLeaders = [t \in 1..MaxTerm |-> {}]
   /\ logicalPrefixLedger = {}
   /\ committedLedger = {}
   /\ commitWitnesses = EmptyCommitWitnessHistory
   /\ higherTermStepDownFailed = FALSE
   /\ staleAuthorityAccepted = FALSE
+  /\ lastAppendAccepted = FALSE
 
 Timeout(n) ==
   /\ currentTerm[n] < MaxTerm
-  /\ n \in ActiveVoters(effectiveMembership)
+  /\ n \in ActiveVoters(EffectiveConfiguration(n).config)
   /\ currentTerm' = [currentTerm EXCEPT ![n] = @ + 1]
   /\ votedFor' = [votedFor EXCEPT ![n] = n]
   /\ role' = [role EXCEPT ![n] = Candidate]
   /\ messages' = RetainedMessages(messages, currentTerm')
   /\ electedLeaders' = RetainedElections(electedLeaders, currentTerm')
-  /\ UNCHANGED <<log, commitIndex, readRequests, readBarrierViolationSeen,
-                  membership, appliedConfigIndex, effectiveMembership,
-                  effectiveConfigIndex>>
+  /\ UNCHANGED <<log, commitIndex, readRequests, readBarrierViolationSeen>>
   /\ UNCHANGED snapshotVars
   /\ UNCHANGED applicationVars
   /\ UNCHANGED historyVars
@@ -733,21 +699,33 @@ SendRequestVote(c, v) ==
     /\ messages' = RetainedMessages(messages \cup {msg}, currentTerm)
     /\ RecordAuthorityAcceptance(currentTerm[c], currentTerm[c], TRUE)
     /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
-                    readRequests, readBarrierViolationSeen, membership, appliedConfigIndex,
-                    effectiveMembership, effectiveConfigIndex,
+                    readRequests, readBarrierViolationSeen,
                     electedLeaders, higherTermStepDownFailed>>
     /\ UNCHANGED snapshotVars
     /\ UNCHANGED applicationVars
     /\ UNCHANGED historyVars
 
-DeliverRequestVote(m) ==
+VoteTermAndDurableEligible(m) ==
   LET higher == m.term > currentTerm[m.to]
       eligibleVote == IF higher THEN NoVote ELSE votedFor[m.to]
-      grant == /\ m.term >= currentTerm[m.to]
-               /\ eligibleVote \in {NoVote, m.from}
-               /\ m.from \in ActiveVoters(effectiveMembership)
-               /\ m.to \in ActiveVoters(effectiveMembership)
-               /\ UpToDate(m.from, m.to)
+  IN /\ m.term >= currentTerm[m.to]
+     /\ eligibleVote \in {NoVote, m.from}
+
+VoteMembershipEligible(m) ==
+  /\ m.from \in ActiveVoters(
+       EffectiveConfiguration(m.from).config)
+  /\ m.from \in ActiveVoters(
+       EffectiveConfiguration(m.to).config)
+  /\ m.to \in ActiveVoters(
+       EffectiveConfiguration(m.to).config)
+
+VoteIsFresh(m) == UpToDate(m.from, m.to)
+
+DeliverRequestVote(m) ==
+  LET higher == m.term > currentTerm[m.to]
+      grant == /\ VoteTermAndDurableEligible(m)
+               /\ VoteMembershipEligible(m)
+               /\ VoteIsFresh(m)
   IN
     /\ m \in messages
     /\ m.type = RequestVote
@@ -761,31 +739,26 @@ DeliverRequestVote(m) ==
     /\ RecordHigherTermOutcome(m.to, m.term, higher)
     /\ RecordAuthorityAcceptance(m.term, currentTerm[m.to], grant)
     /\ electedLeaders' = RetainedElections(electedLeaders, currentTerm')
-    /\ UNCHANGED <<log, commitIndex, readRequests, readBarrierViolationSeen,
-                    membership, appliedConfigIndex, effectiveMembership,
-                    effectiveConfigIndex>>
+    /\ UNCHANGED <<log, commitIndex, readRequests, readBarrierViolationSeen>>
     /\ UNCHANGED snapshotVars
     /\ UNCHANGED applicationVars
     /\ UNCHANGED historyVars
 
 BecomeLeader(n) ==
-  LET electedConfiguration == EffectiveConfigurationFor(log[n])
-      electedRole == [role EXCEPT ![n] = Leader]
+  LET electedConfiguration == EffectiveConfiguration(n)
   IN
     /\ role[n] = Candidate
-    /\ n \in ActiveVoters(effectiveMembership)
     /\ n \in ActiveVoters(electedConfiguration.config)
-    /\ QuorumNodes({v \in Nodes :
-         /\ votedFor[v] = n
-         /\ currentTerm[v] = currentTerm[n]})
-    /\ role' = RolesAfterMembershipChange(
-         electedRole, electedConfiguration.config)
-    /\ effectiveMembership' = electedConfiguration.config
-    /\ effectiveConfigIndex' = electedConfiguration.configIndex
+    /\ MembershipQuorum(
+         electedConfiguration.config,
+         {v \in Nodes :
+           /\ votedFor[v] = n
+           /\ currentTerm[v] = currentTerm[n]})
+    /\ role' = [role EXCEPT ![n] = Leader]
     /\ RecordElection(n)
     /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
     /\ UNCHANGED <<currentTerm, votedFor, log, commitIndex, messages,
-                    readRequests, readBarrierViolationSeen, membership, appliedConfigIndex,
+                    readRequests, readBarrierViolationSeen,
                     higherTermStepDownFailed>>
     /\ UNCHANGED snapshotVars
     /\ UNCHANGED applicationVars
@@ -799,20 +772,23 @@ ClientAppend(n, value) ==
   /\ RecordLogicalPrefixes(log', snapshotIndex, snapshotPrefix)
   /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
   /\ UNCHANGED <<currentTerm, votedFor, role, commitIndex, messages,
-                  readRequests, readBarrierViolationSeen, membership, appliedConfigIndex,
-                  effectiveMembership, effectiveConfigIndex, electedLeaders,
+                  readRequests, readBarrierViolationSeen, electedLeaders,
                   committedLedger, commitWitnesses,
                   higherTermStepDownFailed>>
   /\ UNCHANGED snapshotVars
   /\ UNCHANGED applicationVars
 
 SendAppend(l, f) ==
-  LET msg == [type |-> AppendEntries,
+  LET senderMembership == EffectiveConfiguration(l).config
+      senderPendingSelfRemoval == PendingSelfRemoval(l)
+      msg == [type |-> AppendEntries,
               term |-> currentTerm[l],
               from |-> l,
               to |-> f,
               entries |-> log[l],
-              leaderCommit |-> commitIndex[l]]
+              leaderCommit |-> commitIndex[l],
+              senderMembership |-> senderMembership,
+              senderPendingSelfRemoval |-> senderPendingSelfRemoval]
   IN
     /\ role[l] = Leader
     /\ l # f
@@ -821,27 +797,28 @@ SendAppend(l, f) ==
     /\ messages' = RetainedMessages(messages \cup {msg}, currentTerm)
     /\ RecordAuthorityAcceptance(currentTerm[l], currentTerm[l], TRUE)
     /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
-                    readRequests, readBarrierViolationSeen, membership, appliedConfigIndex,
-                    effectiveMembership, effectiveConfigIndex,
+                    readRequests, readBarrierViolationSeen,
                     electedLeaders, higherTermStepDownFailed>>
     /\ UNCHANGED snapshotVars
     /\ UNCHANGED applicationVars
     /\ UNCHANGED historyVars
 
+AppendSenderAuthorized(m) ==
+  \/ m.from \in ActiveVoters(m.senderMembership)
+  \/ m.senderPendingSelfRemoval
+
+AppendReceiverEligible(m) ==
+  \/ m.to \in ActiveVoters(EffectiveConfiguration(m.to).config)
+  \/ m.to \in ActiveVoters(m.senderMembership)
+
 DeliverAppend(m) ==
   LET higher == m.term > currentTerm[m.to]
       accept == /\ m.term >= currentTerm[m.to]
-                /\ \/ m.from \in ActiveVoters(effectiveMembership)
-                    \/ /\ m.term = currentTerm[m.from]
-                       /\ PendingSelfRemoval(m.from)
-                /\ m.to \in ActiveVoters(effectiveMembership)
-                /\ CanAdoptLog(m.to, m.entries)
-      acceptedConfiguration == EffectiveConfigurationFor(m.entries)
-      authoritative == AuthoritativeLogReplacement(m, accept)
+                /\ AppendSenderAuthorized(m)
+                /\ AppendReceiverEligible(m)
+                /\ CanAdoptLog(m.to, m.entries, m.term)
       baseRole == [role EXCEPT ![m.to] =
         IF higher \/ accept THEN Follower ELSE @]
-      configuredRole ==
-        RolesAfterMembershipChange(baseRole, acceptedConfiguration.config)
       nextLog == IF accept THEN [log EXCEPT ![m.to] = m.entries] ELSE log
       nextCommit ==
         IF accept
@@ -856,31 +833,17 @@ DeliverAppend(m) ==
     /\ messages' = RetainedMessages(messages \ {m}, currentTerm')
     /\ votedFor' = [votedFor EXCEPT ![m.to] =
          IF higher THEN NoVote ELSE @]
-    /\ role' =
-         IF authoritative
-         THEN IF PendingSelfRemoval(m.from)
-              THEN [configuredRole EXCEPT ![m.from] = baseRole[m.from]]
-              ELSE configuredRole
-         ELSE baseRole
+    /\ role' = baseRole
     /\ log' = nextLog
     /\ commitIndex' = nextCommit
-    /\ effectiveMembership' =
-         IF authoritative
-         THEN acceptedConfiguration.config
-         ELSE effectiveMembership
-    /\ effectiveConfigIndex' =
-         IF authoritative
-         THEN acceptedConfiguration.configIndex
-         ELSE effectiveConfigIndex
     /\ RecordLogicalPrefixes(nextLog, snapshotIndex, snapshotPrefix)
     /\ RecordCommittedEntries(
          nextLog, snapshotIndex, snapshotPrefix, m.to,
-         commitIndex[m.to], nextCommit[m.to])
+         commitIndex[m.to], nextCommit[m.to], m.term)
     /\ RecordHigherTermOutcome(m.to, m.term, higher)
-    /\ RecordAuthorityAcceptance(m.term, currentTerm[m.to], accept)
+    /\ RecordAppendOutcome(m.term, currentTerm[m.to], accept)
     /\ electedLeaders' = RetainedElections(electedLeaders, currentTerm')
-    /\ UNCHANGED <<readRequests, readBarrierViolationSeen, membership,
-                    appliedConfigIndex, commitWitnesses>>
+    /\ UNCHANGED <<readRequests, readBarrierViolationSeen, commitWitnesses>>
     /\ UNCHANGED snapshotVars
     /\ UNCHANGED applicationVars
 
@@ -892,9 +855,9 @@ RoleAfterCommit(node, selfRemoval) ==
 Commit(n, i) ==
   LET preRole == role[n]
       preTerm == currentTerm[n]
-      preEffectiveMembership == effectiveMembership
+      preEffectiveMembership == EffectiveConfiguration(n).config
       preAuthorityMembership == CommitAuthorityMembership(n)
-      preEffectiveConfigIndex == effectiveConfigIndex
+      preEffectiveConfigIndex == EffectiveConfiguration(n).configIndex
       context == FrozenCommitContext(
         preRole, preTerm, preEffectiveMembership, preAuthorityMembership)
       selfRemoval == /\ PendingSelfRemoval(n)
@@ -910,13 +873,12 @@ Commit(n, i) ==
     /\ commitIndex' = [commitIndex EXCEPT ![n] = i]
     /\ role' = RoleAfterCommit(n, selfRemoval)
     /\ RecordCommittedEntries(
-         log, snapshotIndex, snapshotPrefix, n, commitIndex[n], i)
+         log, snapshotIndex, snapshotPrefix, n, commitIndex[n], i, preTerm)
     /\ RecordCommitWitnesses(CommitCertificatesFor(
          n, commitIndex[n], i, context, preEffectiveConfigIndex))
     /\ RecordAuthorityAcceptance(preTerm, preTerm, TRUE)
     /\ UNCHANGED <<currentTerm, votedFor, log, messages,
-                    readRequests, readBarrierViolationSeen, membership, appliedConfigIndex,
-                    effectiveMembership, effectiveConfigIndex,
+                    readRequests, readBarrierViolationSeen,
                     electedLeaders, logicalPrefixLedger,
                     higherTermStepDownFailed>>
     /\ UNCHANGED snapshotVars
@@ -927,21 +889,14 @@ Apply(n) ==
       entry == LogicalEntry(n, next)
       priorState == ApplicationState(n)
       resultState == ApplyEntry(priorState, entry)
-      isNewConfiguration ==
-        /\ entry.kind = ConfigurationEntryKind
-        /\ next > appliedConfigIndex
   IN
     /\ AppliedThrough(n) < commitIndex[n]
     /\ RecordApplication(n, entry, resultState)
-    /\ membership' =
-         IF isNewConfiguration THEN entry.input ELSE membership
-    /\ appliedConfigIndex' =
-         IF isNewConfiguration THEN next ELSE appliedConfigIndex
     /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex, messages,
-                    readRequests, readBarrierViolationSeen, effectiveMembership,
-                    effectiveConfigIndex, electedLeaders,
+                    readRequests, readBarrierViolationSeen, electedLeaders,
                     logicalPrefixLedger, committedLedger, commitWitnesses,
-                    higherTermStepDownFailed, staleAuthorityAccepted>>
+                    higherTermStepDownFailed, staleAuthorityAccepted,
+                    lastAppendAccepted>>
     /\ UNCHANGED snapshotVars
 
 ApplicationStateLoss(n) ==
@@ -949,9 +904,8 @@ ApplicationStateLoss(n) ==
   /\ AppliedThrough(n) > 0
   /\ StartApplicationEpoch(n, 0, InitialApplicationState)
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
-                  messages, readRequests, readBarrierViolationSeen, membership,
-                  appliedConfigIndex, effectiveMembership,
-                  effectiveConfigIndex, electedLeaders>>
+                  messages, readRequests, readBarrierViolationSeen,
+                  electedLeaders>>
   /\ UNCHANGED snapshotVars
   /\ UNCHANGED historyVars
   /\ UNCHANGED authorityVars
@@ -960,8 +914,7 @@ Restart(n) ==
   /\ role[n] # Follower
   /\ role' = [role EXCEPT ![n] = Follower]
   /\ UNCHANGED <<currentTerm, votedFor, log, commitIndex, messages,
-                  readRequests, readBarrierViolationSeen, membership, appliedConfigIndex,
-                  effectiveMembership, effectiveConfigIndex, electedLeaders>>
+                  readRequests, readBarrierViolationSeen, electedLeaders>>
   /\ UNCHANGED snapshotVars
   /\ UNCHANGED applicationVars
   /\ UNCHANGED historyVars
@@ -978,8 +931,7 @@ CreateSnapshot(n) ==
     /\ RecordLogicalPrefixes(log, snapshotIndex', snapshotPrefix')
     /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                     snapshotTransfer, messages,
-                    readRequests, readBarrierViolationSeen, membership, appliedConfigIndex,
-                    effectiveMembership, effectiveConfigIndex,
+                    readRequests, readBarrierViolationSeen,
                     electedLeaders, committedLedger, commitWitnesses>>
     /\ UNCHANGED applicationVars
     /\ UNCHANGED authorityVars
@@ -1002,9 +954,8 @@ TransferSnapshot(from, to) ==
   /\ RecordAuthorityAcceptance(currentTerm[from], currentTerm[from], TRUE)
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                   snapshotIndex, snapshotPrefix, compactionPending,
-                  messages, readRequests, readBarrierViolationSeen, membership,
-                  appliedConfigIndex, effectiveMembership,
-                  effectiveConfigIndex, electedLeaders,
+                  messages, readRequests, readBarrierViolationSeen,
+                  electedLeaders,
                   higherTermStepDownFailed>>
   /\ UNCHANGED applicationVars
   /\ UNCHANGED historyVars
@@ -1020,7 +971,6 @@ InstallSnapshot ==
       node == transfer.to
       nextLog == [log EXCEPT ![node] = InstallSnapshotLog(node, transfer.prefix)]
       nextCommit == [commitIndex EXCEPT ![node] = Max(@, transfer.index)]
-      nextConfiguration == LatestConfigurationIn(transfer.prefix)
       restoredState == StateAfterEntries(transfer.prefix)
   IN
     /\ transfer.active
@@ -1040,22 +990,10 @@ InstallSnapshot ==
     /\ compactionPending' = [compactionPending EXCEPT ![node] = FALSE]
     /\ snapshotTransfer' = NoSnapshotTransfer
     /\ StartApplicationEpoch(node, transfer.index, restoredState)
-    /\ membership' =
-         IF nextConfiguration.configIndex > appliedConfigIndex
-         THEN nextConfiguration.config
-         ELSE membership
-    /\ appliedConfigIndex' =
-         Max(appliedConfigIndex, nextConfiguration.configIndex)
-    /\ effectiveMembership' =
-         IF nextConfiguration.configIndex > effectiveConfigIndex
-         THEN nextConfiguration.config
-         ELSE effectiveMembership
-    /\ effectiveConfigIndex' =
-         Max(effectiveConfigIndex, nextConfiguration.configIndex)
     /\ RecordLogicalPrefixes(nextLog, snapshotIndex', snapshotPrefix')
     /\ RecordCommittedEntries(
          nextLog, snapshotIndex', snapshotPrefix', node,
-         commitIndex[node], nextCommit[node])
+         commitIndex[node], nextCommit[node], transfer.term)
     /\ RecordHigherTermOutcome(
          node, transfer.term, transfer.term > currentTerm[node])
     /\ RecordAuthorityAcceptance(transfer.term, currentTerm[node], TRUE)
@@ -1063,75 +1001,67 @@ InstallSnapshot ==
     /\ UNCHANGED <<readRequests, readBarrierViolationSeen,
                     commitWitnesses>>
 
+\* `log` is ghost logical history spanning the snapshot prefix. Compaction
+\* completes the modeled snapshot lifecycle but intentionally retains that
+\* history for safety witnesses. Physical prefix retention, storage offsets,
+\* and crash/reopen compaction are simulator and storage-test evidence.
 CompactSnapshot(n) ==
   /\ compactionPending[n]
   /\ compactionPending' = [compactionPending EXCEPT ![n] = FALSE]
   /\ RecordLogicalPrefixes(log, snapshotIndex, snapshotPrefix)
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                   snapshotIndex, snapshotPrefix, snapshotTransfer,
-                  messages, readRequests, readBarrierViolationSeen, membership,
-                  appliedConfigIndex, effectiveMembership,
-                  effectiveConfigIndex, electedLeaders,
+                  messages, readRequests, readBarrierViolationSeen,
+                  electedLeaders,
                   committedLedger, commitWitnesses>>
   /\ UNCHANGED applicationVars
   /\ UNCHANGED authorityVars
 
 EnterJoint(n, newVoters) ==
-  LET next == JointMembership(effectiveMembership.old, newVoters)
-      nextIndex == Len(log[n]) + 1
+  LET effective == EffectiveConfiguration(n)
+      appliedConfiguration == AppliedConfiguration(n)
+      next == JointMembership(effective.config.old, newVoters)
       nextLog == [log EXCEPT ![n] =
         Append(@, ConfigurationEntry(currentTerm[n], next))]
   IN
-    /\ effectiveMembership.phase = StableConfig
-    /\ effectiveMembership.old = Nodes
-    /\ membership.phase = StableConfig
-    /\ newVoters \in VoterSets
-    /\ newVoters # effectiveMembership.old
+    /\ effective.config.phase = StableConfig
+    /\ appliedConfiguration.config.phase = StableConfig
+    /\ appliedConfiguration = effective
+    /\ OneVoterChange(effective.config.old, newVoters)
     /\ role[n] = Leader
     /\ CommittedEntriesHeldBy(newVoters)
     /\ currentTerm[n] \in 1..MaxTerm
     /\ Len(log[n]) = AppliedThrough(n)
     /\ Len(log[n]) < MaxLogLen
     /\ log' = nextLog
-    /\ effectiveMembership' = next
-    /\ effectiveConfigIndex' = nextIndex
-    /\ role' = RoleAfterMembershipChange(next)
     /\ RecordLogicalPrefixes(nextLog, snapshotIndex, snapshotPrefix)
     /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
-    /\ UNCHANGED <<currentTerm, votedFor, commitIndex, messages,
-                    readRequests, readBarrierViolationSeen, membership,
-                    appliedConfigIndex, electedLeaders,
+    /\ UNCHANGED <<currentTerm, votedFor, role, commitIndex, messages,
+                    readRequests, readBarrierViolationSeen, electedLeaders,
                     committedLedger, commitWitnesses,
                     higherTermStepDownFailed>>
     /\ UNCHANGED snapshotVars
     /\ UNCHANGED applicationVars
 
 LeaveJoint(n) ==
-  LET next == StableMembership(effectiveMembership.new)
-      nextIndex == Len(log[n]) + 1
+  LET effective == EffectiveConfiguration(n)
+      appliedConfiguration == AppliedConfiguration(n)
+      next == StableMembership(effective.config.new)
       nextLog == [log EXCEPT ![n] =
         Append(@, ConfigurationEntry(currentTerm[n], next))]
-      nextRole == RoleAfterMembershipChange(next)
   IN
-    /\ effectiveMembership.phase = JointConfig
-    /\ membership.phase = JointConfig
+    /\ effective.config.phase = JointConfig
+    /\ appliedConfiguration.config.phase = JointConfig
     /\ role[n] = Leader
-    /\ CommittedEntriesHeldBy(effectiveMembership.new)
+    /\ CommittedEntriesHeldBy(effective.config.new)
     /\ currentTerm[n] \in 1..MaxTerm
     /\ Len(log[n]) = AppliedThrough(n)
     /\ Len(log[n]) < MaxLogLen
     /\ log' = nextLog
-    /\ effectiveMembership' = next
-    /\ effectiveConfigIndex' = nextIndex
-    /\ role' =
-         IF n \in ActiveVoters(next)
-         THEN nextRole
-         ELSE [nextRole EXCEPT ![n] = role[n]]
     /\ RecordLogicalPrefixes(nextLog, snapshotIndex, snapshotPrefix)
     /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
-    /\ UNCHANGED <<currentTerm, votedFor, commitIndex, messages,
-                    readRequests, readBarrierViolationSeen, membership,
-                    appliedConfigIndex, electedLeaders,
+    /\ UNCHANGED <<currentTerm, votedFor, role, commitIndex, messages,
+                    readRequests, readBarrierViolationSeen, electedLeaders,
                     committedLedger, commitWitnesses,
                     higherTermStepDownFailed>>
     /\ UNCHANGED snapshotVars
@@ -1149,8 +1079,7 @@ RegisterRead(n, request) ==
     /\ readRequests' = readRequests \cup {read}
     /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
     /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
-                    messages, readBarrierViolationSeen, membership, appliedConfigIndex,
-                    effectiveMembership, effectiveConfigIndex,
+                    messages, readBarrierViolationSeen,
                     electedLeaders, higherTermStepDownFailed>>
     /\ UNCHANGED snapshotVars
     /\ UNCHANGED applicationVars
@@ -1168,9 +1097,7 @@ GrantRead(n, request) ==
       /\ RecordReadGrant(grant)
       /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
       /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
-                      messages, readRequests, membership,
-                      appliedConfigIndex, effectiveMembership,
-                      effectiveConfigIndex, electedLeaders,
+                      messages, readRequests, electedLeaders,
                       higherTermStepDownFailed>>
       /\ UNCHANGED snapshotVars
       /\ UNCHANGED applicationVars
@@ -1223,7 +1150,7 @@ LeaderCompleteness ==
   \A leader \in Nodes :
     \A committed \in committedLedger :
       (/\ role[leader] = Leader
-       /\ currentTerm[leader] > committed.entry.term)
+       /\ currentTerm[leader] > committed.committedInTerm)
       => /\ committed.index \in 1..Len(log[leader])
          /\ LogicalEntry(leader, committed.index) = committed.entry
 
@@ -1240,6 +1167,7 @@ StateMachineSafety ==
   /\ \A n \in Nodes :
        /\ AppliedHistoryOK(applied[n])
        /\ AppliedHistorySound(applied[n])
+       /\ AppliedConfiguration(n).config = ApplicationState(n).membership
   /\ \A a, b \in Nodes :
        \A left \in ApplicationObservationWitnesses(applied[a]) :
          \A right \in ApplicationObservationWitnesses(applied[b]) :
@@ -1258,7 +1186,8 @@ StaleLeaderFencing ==
 CommittedEntriesHaveQuorum ==
   /\ ~commitWitnesses.invalidCertificateSeen
   /\ \A committed \in committedLedger :
-       committed \in commitWitnesses.witnessedCommits
+       [index |-> committed.index, entry |-> committed.entry]
+         \in commitWitnesses.witnessedCommits
   /\ \A n \in Nodes :
        \A index \in 1..commitIndex[n] :
          \E committed \in committedLedger :

@@ -1,6 +1,7 @@
 //! Learner replication, snapshots, promotion, and quorum exclusion.
 
 use super::support::*;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq, oracle_violation};
 
 mod quorum;
 
@@ -8,11 +9,11 @@ mod quorum;
 fn learner_does_not_start_election_and_its_grant_is_uncounted() {
     let mut learner = node_with_configuration(4, &[1, 2, 3], learner_configuration());
 
-    assert!(learner.step(Input::Tick).is_empty());
-    assert!(learner.step(Input::Tick).is_empty());
-    assert!(learner.step(Input::Tick).is_empty());
-    assert_eq!(learner.role(), Role::Follower);
-    assert_eq!(learner.current_term(), Term(1));
+    oracle_assert!(learner.step(Input::Tick).is_empty());
+    oracle_assert!(learner.step(Input::Tick).is_empty());
+    oracle_assert!(learner.step(Input::Tick).is_empty());
+    oracle_assert_eq!(learner.role(), Role::Follower);
+    oracle_assert_eq!(learner.current_term(), Term(1));
 
     let outputs = learner.step(Input::Message {
         from: NodeId(1),
@@ -26,7 +27,7 @@ fn learner_does_not_start_election_and_its_grant_is_uncounted() {
 
     // Learners grant on term and log; candidates never count learner votes
     // toward quorum (see learner_grant_does_not_create_quorum).
-    assert_vote_response(&outputs, NodeId(1), true);
+    oracle_assert!(vote_response_matches(&outputs, NodeId(1), true));
 }
 
 #[test]
@@ -87,22 +88,22 @@ fn learner_receives_log_replication_without_counting_for_commit() {
         payload: b"promote-after-catch-up".to_vec(),
     });
 
-    assert_eq!(leader.last_log_index(), LogIndex(3));
-    assert_eq!(
+    oracle_assert_eq!(leader.last_log_index(), LogIndex(3));
+    oracle_assert_eq!(
         send_targets(&outputs),
         vec![NodeId(2), NodeId(3), NodeId(4)]
     );
-    assert!(outputs
+    oracle_assert!(outputs
         .iter()
         .all(|output| append_entries_entry_count(output) == Some(2)));
 
-    assert!(acknowledge(&mut leader, NodeId(4), LogIndex(3)).is_empty());
-    assert_eq!(leader.commit_index(), LogIndex(2));
+    oracle_assert!(acknowledge(&mut leader, NodeId(4), LogIndex(3)).is_empty());
+    oracle_assert_eq!(leader.commit_index(), LogIndex(2));
 
     let commit_outputs = acknowledge(&mut leader, NodeId(2), LogIndex(3));
 
-    assert_eq!(leader.commit_index(), LogIndex(3));
-    assert_eq!(
+    oracle_assert_eq!(leader.commit_index(), LogIndex(3));
+    oracle_assert_eq!(
         commit_outputs.iter().find_map(|output| match output {
             Output::Apply { index, payload, .. } => Some((*index, payload.as_slice())),
             Output::LocalProposalAppended { .. }
@@ -127,18 +128,19 @@ fn learner_receives_log_replication_and_snapshot_catch_up() {
     let payload = b"learner log replication";
     let mut log_leader = committed_leader_with_learner_config();
 
-    assert!(!log_leader.is_effective_voter(learner_id));
-    assert!(log_leader.is_effective_learner(learner_id));
+    oracle_assert!(!log_leader.is_effective_voter(learner_id));
+    oracle_assert!(log_leader.is_effective_learner(learner_id));
 
     let outputs = log_leader.step(Input::ClientProposal {
         payload: payload.to_vec(),
     });
-    let learner_append =
-        append_entries_to(&outputs, learner_id).expect("learner receives append entries");
+    let Some(learner_append) = append_entries_to(&outputs, learner_id) else {
+        oracle_violation!("learner must receive append entries");
+    };
 
-    assert_eq!(learner_append.prev_log_index, LogIndex(1));
-    assert_eq!(learner_append.entries.len(), 2);
-    assert_eq!(
+    oracle_assert_eq!(learner_append.prev_log_index, LogIndex(1));
+    oracle_assert_eq!(learner_append.entries.len(), 2);
+    oracle_assert_eq!(
         learner_append
             .entries
             .iter()
@@ -148,8 +150,8 @@ fn learner_receives_log_replication_and_snapshot_catch_up() {
     );
 
     let (mut snapshot_leader, source) = leader_with_snapshot_and_learner_suffix();
-    assert!(!snapshot_leader.is_effective_voter(learner_id));
-    assert!(snapshot_leader.is_effective_learner(learner_id));
+    oracle_assert!(!snapshot_leader.is_effective_voter(learner_id));
+    oracle_assert!(snapshot_leader.is_effective_learner(learner_id));
     snapshot_leader
         .try_follower_progress_mut(learner_id)
         .expect("learner has replication progress")
@@ -166,16 +168,16 @@ fn learner_receives_log_replication_and_snapshot_catch_up() {
         }),
     });
 
-    assert_eq!(outputs.len(), 1);
+    oracle_assert_eq!(outputs.len(), 1);
     let Output::SendSnapshotChunk { to, chunk } = &outputs[0] else {
-        panic!("expected learner snapshot catch-up");
+        oracle_violation!("expected learner snapshot catch-up");
     };
-    assert_eq!(*to, learner_id);
-    assert_eq!(chunk.metadata.last_included_index, LogIndex(1));
-    assert_eq!(chunk.offset, 0);
-    assert!(chunk.done);
+    oracle_assert_eq!(*to, learner_id);
+    oracle_assert_eq!(chunk.metadata.last_included_index, LogIndex(1));
+    oracle_assert_eq!(chunk.offset, 0);
+    oracle_assert!(chunk.done);
     let request = chunk.resolve(&source).expect("source serves the snapshot");
-    assert_eq!(request.chunk, b"learner snapshot".to_vec());
+    oracle_assert_eq!(request.chunk, b"learner snapshot".to_vec());
 }
 
 #[test]
@@ -224,17 +226,17 @@ fn learner_receives_snapshot_replication() {
         }),
     });
 
-    assert_eq!(outputs.len(), 1);
+    oracle_assert_eq!(outputs.len(), 1);
     let Output::SendSnapshotChunk { to, chunk } = &outputs[0] else {
-        panic!("expected snapshot chunk send");
+        oracle_violation!("expected snapshot chunk send");
     };
-    assert_eq!(*to, NodeId(4));
-    assert_eq!(chunk.leader_id, NodeId(1));
-    assert_eq!(chunk.metadata.last_included_index, LogIndex(1));
-    assert_eq!(chunk.offset, 0);
-    assert!(chunk.done);
+    oracle_assert_eq!(*to, NodeId(4));
+    oracle_assert_eq!(chunk.leader_id, NodeId(1));
+    oracle_assert_eq!(chunk.metadata.last_included_index, LogIndex(1));
+    oracle_assert_eq!(chunk.offset, 0);
+    oracle_assert!(chunk.done);
     let request = chunk.resolve(&source).expect("source serves the snapshot");
-    assert_eq!(request.chunk, b"learner snapshot".to_vec());
+    oracle_assert_eq!(request.chunk, b"learner snapshot".to_vec());
 }
 
 #[test]
@@ -246,8 +248,8 @@ fn learner_promotion_requires_explicit_barrier() {
         promotion_barriers: Vec::new(),
     });
 
-    assert_eq!(leader.last_log_index(), LogIndex(2));
-    assert_eq!(
+    oracle_assert_eq!(leader.last_log_index(), LogIndex(2));
+    oracle_assert_eq!(
         outputs,
         vec![Output::RejectProposal {
             proposal_id: None,
@@ -272,8 +274,8 @@ fn lagging_learner_cannot_be_promoted_with_barrier_alone() {
         promotion_barrier: barrier,
     });
 
-    assert_eq!(leader.last_log_index(), LogIndex(2));
-    assert_eq!(
+    oracle_assert_eq!(leader.last_log_index(), LogIndex(2));
+    oracle_assert_eq!(
         outputs,
         vec![Output::RejectProposal {
             proposal_id: None,
@@ -286,6 +288,16 @@ fn lagging_learner_cannot_be_promoted_with_barrier_alone() {
             ),
         }]
     );
+}
+
+fn vote_response_matches(outputs: &[Output], to: NodeId, vote_granted: bool) -> bool {
+    matches!(
+        outputs,
+        [Output::Send {
+            to: actual_to,
+            message: Message::RequestVoteResponse(response),
+        }] if *actual_to == to && response.vote_granted == vote_granted
+    )
 }
 
 #[test]

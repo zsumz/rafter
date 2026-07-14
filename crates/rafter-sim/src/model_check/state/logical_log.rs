@@ -362,7 +362,7 @@ impl LogicalLogHistory {
         self.violations.insert(violation);
     }
 
-    pub(super) fn prefix_from_view(
+    pub(in crate::model_check) fn prefix_from_view(
         view: &LogicalLogView,
         index: LogIndex,
     ) -> Option<LogPrefixWitness> {

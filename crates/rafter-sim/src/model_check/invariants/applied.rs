@@ -99,7 +99,7 @@ pub(super) fn check_applied_cursor_monotonicity(
     cluster: &Cluster,
     trace: &[Action],
 ) -> Result<(), Failure> {
-    let mut last_applied_by_node_epoch = BTreeMap::<(NodeId, u64), LogIndex>::new();
+    let mut last_applied_by_node_epoch = cluster.application_epoch_start_floors().clone();
     let mut installs = cluster.snapshot_installs().iter().peekable();
     for (position, applied) in cluster.applied.iter().enumerate() {
         while let Some(install) = installs.peek() {
@@ -171,14 +171,34 @@ pub(super) fn check_applied_exactly_once(
     cluster: &Cluster,
     trace: &[Action],
 ) -> Result<(), Failure> {
-    let mut applied_indexes = BTreeSet::new();
-    for applied in &cluster.applied {
-        if !applied_indexes.insert((applied.node_id, applied.application_epoch, applied.index)) {
+    let mut executed_indexes = BTreeSet::new();
+    for witness in cluster.execution_history() {
+        if !executed_indexes.insert((
+            witness.node_id,
+            witness.application_epoch,
+            witness.entry.index,
+        )) {
             return Err(Failure {
                 kind: crate::model_check::FailureKind::InvariantViolation,
                 invariant: catalog::AP_01_ORDERED_EXACTLY_ONCE_COMMITTED_APPLICATION,
                 message: format!(
-                    "{} epoch {} applied index {} more than once",
+                    "{} epoch {} executed logical index {} more than once",
+                    witness.node_id, witness.application_epoch, witness.entry.index
+                ),
+                trace: trace.to_vec(),
+                state: summarize(cluster),
+            });
+        }
+    }
+
+    let mut emitted_indexes = BTreeSet::new();
+    for applied in &cluster.applied {
+        if !emitted_indexes.insert((applied.node_id, applied.application_epoch, applied.index)) {
+            return Err(Failure {
+                kind: crate::model_check::FailureKind::InvariantViolation,
+                invariant: catalog::AP_01_ORDERED_EXACTLY_ONCE_COMMITTED_APPLICATION,
+                message: format!(
+                    "{} epoch {} emitted Apply for logical index {} more than once",
                     applied.node_id, applied.application_epoch, applied.index
                 ),
                 trace: trace.to_vec(),
@@ -204,6 +224,40 @@ pub(super) fn check_applied_commit_bound(
                     applied.application_epoch,
                     applied.index,
                     applied.commit_index_at_emit
+                ),
+                trace: trace.to_vec(),
+                state: summarize(cluster),
+            });
+        }
+    }
+    for witness in cluster.execution_history() {
+        if witness.entry.index > witness.commit_index_at_emit {
+            return Err(Failure {
+                kind: crate::model_check::FailureKind::InvariantViolation,
+                invariant: catalog::AP_01_ORDERED_EXACTLY_ONCE_COMMITTED_APPLICATION,
+                message: format!(
+                    "{} epoch {} executed index {} when its commit index at emit was {}",
+                    witness.node_id,
+                    witness.application_epoch,
+                    witness.entry.index,
+                    witness.commit_index_at_emit
+                ),
+                trace: trace.to_vec(),
+                state: summarize(cluster),
+            });
+        }
+    }
+    for install in cluster.snapshot_installs() {
+        if install.last_included_index > install.commit_index_at_emit {
+            return Err(Failure {
+                kind: crate::model_check::FailureKind::InvariantViolation,
+                invariant: catalog::AP_01_ORDERED_EXACTLY_ONCE_COMMITTED_APPLICATION,
+                message: format!(
+                    "{} epoch {} installed snapshot through {} when its commit index at emit was {}",
+                    install.node_id,
+                    install.application_epoch,
+                    install.last_included_index,
+                    install.commit_index_at_emit
                 ),
                 trace: trace.to_vec(),
                 state: summarize(cluster),

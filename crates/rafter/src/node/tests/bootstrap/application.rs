@@ -1,6 +1,7 @@
 //! Applied-floor recovery and local proposal reincarnation boundaries.
 
 use super::*;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
 #[test]
 fn applied_floor_suppresses_reapply_below_it() {
@@ -44,7 +45,7 @@ fn applied_floor_suppresses_reapply_below_it() {
             _ => None,
         })
         .collect();
-    assert_eq!(
+    oracle_assert_eq!(
         applied,
         vec![LogIndex(3)],
         "entries at or below the floor stay silent"
@@ -70,7 +71,7 @@ fn committed_entries_above_applied_floor_drain_immediately_after_bootstrap() {
     )
     .expect("floor within committed log bootstraps");
 
-    assert_eq!(
+    oracle_assert_eq!(
         node.drain_committed_outputs(),
         vec![
             Output::Apply {
@@ -88,7 +89,7 @@ fn committed_entries_above_applied_floor_drain_immediately_after_bootstrap() {
         ],
         "committed entries above the applied floor replay without another Raft message"
     );
-    assert!(
+    oracle_assert!(
         node.drain_committed_outputs().is_empty(),
         "draining advances the volatile applied index"
     );

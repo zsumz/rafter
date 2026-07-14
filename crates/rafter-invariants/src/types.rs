@@ -6,7 +6,7 @@ use serde::{Deserialize, Deserializer, Serialize};
 pub const RESULT_SCHEMA_VERSION: u32 = 10;
 
 /// Current version of the final aggregate verdict report contract.
-pub const VERDICT_SCHEMA_VERSION: u32 = 1;
+pub const VERDICT_SCHEMA_VERSION: u32 = 2;
 
 /// Current version of the hashed execution-plan contract.
 pub const PLAN_SCHEMA_VERSION: u32 = 2;

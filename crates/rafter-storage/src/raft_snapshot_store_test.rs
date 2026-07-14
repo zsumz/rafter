@@ -1,13 +1,17 @@
 use std::fs;
 
 use rafter::{RaftSnapshot, SnapshotChunkRequest, SnapshotChunkSource};
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
 use super::*;
 use crate::{
     crc32, encode_raft_snapshot, DecodeRaftSnapshotError, RaftSnapshotManifestDecodeError,
 };
 
-use super::test_support::{assert_current_snapshot, remove_test_dir, snapshot, test_store_dir};
+use super::test_support::{
+    assert_current_snapshot, descriptor, read_current_payload, remove_test_dir, snapshot,
+    test_store_dir,
+};
 
 #[test]
 fn in_memory_snapshot_store_returns_latest_snapshot() {
@@ -36,8 +40,12 @@ fn file_snapshot_store_reopens_manifest_selected_snapshot() {
 
     let reopened = FileRaftSnapshotStore::open(&directory).expect("store reopens");
 
-    assert_current_snapshot(&reopened, &expected);
-    assert!(reopened.current_snapshot_file_name().is_some());
+    oracle_assert_eq!(reopened.current_snapshot(), Some(descriptor(&expected)));
+    oracle_assert_eq!(
+        read_current_payload(&reopened).as_deref(),
+        Some(expected.application_payload.as_slice())
+    );
+    oracle_assert!(reopened.current_snapshot_file_name().is_some());
     remove_test_dir(directory);
 }
 
@@ -86,7 +94,7 @@ fn file_snapshot_store_ignores_unmanifested_complete_snapshot_on_open() {
 
     let store = FileRaftSnapshotStore::open(&directory).expect("store opens");
 
-    assert_eq!(store.current_snapshot(), None);
+    oracle_assert_eq!(store.current_snapshot(), None);
     remove_test_dir(directory);
 }
 

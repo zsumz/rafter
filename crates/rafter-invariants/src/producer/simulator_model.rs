@@ -57,7 +57,8 @@ pub(super) fn execute(
     let mut duration_ms = 0_u64;
     let mut processes_succeeded = true;
     for run in execution_plan(profile, source_ref)? {
-        let output = process::timed(
+        let output = process::timed_for(
+            process::ProcessKind::SimulatorExecution,
             binary
                 .to_str()
                 .ok_or("simulator binary path is not UTF-8")?,
@@ -177,7 +178,13 @@ fn build(
         "rafter-model-check-fast".into(),
         "--message-format=json-render-diagnostics".into(),
     ];
-    let output = process::timed("cargo", &arguments, &environment, Path::new("."))?;
+    let output = process::timed_for(
+        process::ProcessKind::Compile,
+        "cargo",
+        &arguments,
+        &environment,
+        Path::new("."),
+    )?;
     let log = artifact::write(
         output_dir,
         Path::new(&format!("{profile}-simulator/{source_prefix}/compile.log")),
@@ -204,6 +211,9 @@ fn executable_from_messages(bytes: &[u8]) -> Result<PathBuf, Box<dyn Error>> {
         };
         if message["reason"] == "compiler-artifact"
             && message["target"]["name"] == "rafter-model-check-fast"
+            && message["target"]["kind"]
+                .as_array()
+                .is_some_and(|kinds| kinds.iter().any(|kind| kind == "bin"))
         {
             if message["fresh"] == true {
                 return Err("fresh cached simulator binary is forbidden".into());
@@ -220,7 +230,11 @@ fn executable_from_messages(bytes: &[u8]) -> Result<PathBuf, Box<dyn Error>> {
         )
         .into());
     }
-    Ok(executables.remove(0))
+    let executable = executables.remove(0);
+    if !executable.is_absolute() {
+        return Err("Cargo emitted a non-absolute simulator executable".into());
+    }
+    Ok(executable)
 }
 
 fn collect_events(

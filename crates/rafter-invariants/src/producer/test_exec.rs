@@ -1,14 +1,12 @@
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    error::Error,
-    ffi::OsString,
-    fs,
-    path::Path,
-};
+use std::{collections::BTreeMap, error::Error, ffi::OsString, fs, path::Path};
 
 use crate::{ArtifactRef, CheckCompletion, EvidenceStatus, FailureClassification, TestIdentity};
 
 use super::{artifact, process, test_compile::CompiledTarget};
+
+pub(crate) const ORACLE_TOKEN_ENV: &str = "RAFTER_INVARIANT_ORACLE_TOKEN";
+const ORACLE_OBSERVED_PREFIX: &str = "RAFTER_INVARIANT_ORACLE_OBSERVED:";
+const ORACLE_MARKER_PREFIX: &str = "RAFTER_INVARIANT_ORACLE_VIOLATION:";
 
 pub(super) struct TestOutcome {
     pub completion: CheckCompletion,
@@ -19,6 +17,12 @@ pub(super) struct TestOutcome {
     pub duration_ms: u64,
     pub peak_rss_kib: u64,
     pub artifacts: Vec<ArtifactRef>,
+}
+
+struct DiscoveryOutput {
+    listed: process::ProcessOutput,
+    ignored: process::ProcessOutput,
+    log: Vec<u8>,
 }
 
 pub(super) fn evaluate(
@@ -38,51 +42,41 @@ pub(super) fn evaluate(
             compiled.artifact.clone(),
             compiled.peak_rss_kib,
             compiled.duration_ms,
+            0,
         ));
     };
     let program = executable
         .to_str()
         .ok_or("test executable path is not valid UTF-8")?;
-    let environment = process::base_environment();
-    let listed = process::timed(
-        program,
-        &["--list".into(), "--format".into(), "terse".into()],
-        &environment,
-        Path::new("."),
-    )?;
-    let ignored = process::timed(
-        program,
-        &[
-            "--ignored".into(),
-            "--list".into(),
-            "--format".into(),
-            "terse".into(),
-        ],
-        &environment,
-        Path::new("."),
-    )?;
-    let mut log = process::combined_log("libtest discovery", &listed)?;
-    log.extend(process::combined_log(
-        "libtest ignored discovery",
-        &ignored,
-    )?);
+    let DiscoveryOutput {
+        listed,
+        ignored,
+        log,
+    } = discover(program, profile, source_ref, execution_id, output_dir)?;
     let discovery_rss = listed.peak_rss_kib.max(ignored.peak_rss_kib);
     let discovery_ms =
         process::duration_ms(listed.duration) + process::duration_ms(ignored.duration);
-    if !listed.status.success() || !ignored.status.success() {
+    let matches = discovery_matches(&listed.stdout, &identity.test_name);
+    let ignored_matches = discovery_matches(&ignored.stdout, &identity.test_name);
+    if listed.timed_out
+        || ignored.timed_out
+        || !listed.status.success()
+        || !ignored.status.success()
+    {
         let artifact = write_log(output_dir, profile, source_ref, execution_id, &log)?;
         return Ok(error_outcome(
-            "libtest discovery process failed".to_owned(),
+            if listed.timed_out || ignored.timed_out {
+                "libtest discovery process timed out".to_owned()
+            } else {
+                "libtest discovery process failed".to_owned()
+            },
             artifact,
             discovery_rss,
             discovery_ms,
+            matches,
         ));
     }
-    let discovered = listed_tests(&listed.stdout);
-    let ignored_tests = listed_tests(&ignored.stdout);
-    let matches = usize::from(discovered.contains(&identity.test_name));
-    let ignored_matches = usize::from(ignored_tests.contains(&identity.test_name));
-    if matches != 1 {
+    if matches == 0 {
         let artifact = write_log(output_dir, profile, source_ref, execution_id, &log)?;
         return Ok(TestOutcome {
             completion: CheckCompletion::CoverageNotReached,
@@ -98,6 +92,19 @@ pub(super) fn evaluate(
             artifacts: vec![artifact],
         });
     }
+    if matches != 1 || ignored_matches > 1 {
+        let artifact = write_log(output_dir, profile, source_ref, execution_id, &log)?;
+        return Ok(error_outcome(
+            format!(
+                "exact libtest identity {} was discovered {matches} times and ignored-discovered {ignored_matches} times",
+                identity.test_name
+            ),
+            artifact,
+            discovery_rss,
+            discovery_ms,
+            matches,
+        ));
+    }
     execute_exact(
         identity,
         profile,
@@ -110,6 +117,47 @@ pub(super) fn evaluate(
         discovery_ms,
         discovery_rss,
     )
+}
+
+fn discover(
+    program: &str,
+    profile: &str,
+    source_ref: &str,
+    execution_id: &str,
+    output_dir: &Path,
+) -> Result<DiscoveryOutput, Box<dyn Error>> {
+    let environment = process::base_environment();
+    let listed = process::timed_for(
+        process::ProcessKind::TestDiscovery,
+        program,
+        &["--list".into(), "--format".into(), "terse".into()],
+        &environment,
+        Path::new("."),
+    )?;
+    let mut log = process::combined_log("libtest discovery", &listed)?;
+    persist_log(output_dir, profile, source_ref, execution_id, &log)?;
+    let ignored = process::timed_for(
+        process::ProcessKind::TestDiscovery,
+        program,
+        &[
+            "--ignored".into(),
+            "--list".into(),
+            "--format".into(),
+            "terse".into(),
+        ],
+        &environment,
+        Path::new("."),
+    )?;
+    log.extend(process::combined_log(
+        "libtest ignored discovery",
+        &ignored,
+    )?);
+    persist_log(output_dir, profile, source_ref, execution_id, &log)?;
+    Ok(DiscoveryOutput {
+        listed,
+        ignored,
+        log,
+    })
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -147,24 +195,67 @@ fn execute_exact(
         ),
     ]);
     run_environment.insert("RUST_BACKTRACE".to_owned(), "1".to_owned());
+    let oracle_token = oracle_token(source_ref, &identity.check_id());
+    run_environment.insert(ORACLE_TOKEN_ENV.to_owned(), oracle_token.clone());
     let mut arguments = vec![
         OsString::from(&identity.test_name),
         "--exact".into(),
         "--test-threads=1".into(),
+        "--show-output".into(),
         "--color".into(),
         "never".into(),
     ];
     if ignored {
         arguments.push("--ignored".into());
     }
-    let executed = process::timed(program, &arguments, &run_environment, Path::new("."))?;
+    let executed = process::timed_for(
+        process::ProcessKind::TestExecution,
+        program,
+        &arguments,
+        &run_environment,
+        Path::new("."),
+    )?;
     log.extend(process::combined_log("exact libtest execution", &executed)?);
+    let execution = classify_exact_execution(
+        &executed.stdout,
+        &executed.stderr,
+        &identity.test_name,
+        &oracle_token,
+        executed.status.code(),
+        executed.timed_out,
+    );
     let artifact = write_log(output_dir, profile, source_ref, execution_id, &log)?;
     let peak_rss_kib = discovery_rss.max(executed.peak_rss_kib);
     let duration_ms = discovery_ms + process::duration_ms(executed.duration);
-    let exact_pass = exact_pass(&executed.stdout, &identity.test_name);
-    if executed.status.success() && exact_pass {
-        Ok(TestOutcome {
+    let exact_passed = !executed.timed_out
+        && executed.status.code() == Some(0)
+        && exact_pass(&executed.stdout, &identity.test_name);
+    let exact_was_run = exact_passed
+        || (executed.status.code() == Some(101)
+            && !executed.timed_out
+            && exact_failure(&executed.stdout, &identity.test_name));
+    Ok(outcome_from_execution(
+        execution,
+        &identity.test_name,
+        artifact,
+        duration_ms,
+        peak_rss_kib,
+        exact_was_run,
+        exact_passed,
+    ))
+}
+
+fn outcome_from_execution(
+    execution: ExactTestExecution,
+    test_name: &str,
+    artifact: ArtifactRef,
+    duration_ms: u64,
+    peak_rss_kib: u64,
+    exact_was_run: bool,
+    exact_passed: bool,
+) -> TestOutcome {
+    match execution {
+        ExactTestExecution::Pass => TestOutcome {
             completion: CheckCompletion::Completed,
             status: EvidenceStatus::Pass,
             classification: None,
@@ -173,36 +264,45 @@ fn execute_exact(
             duration_ms,
             peak_rss_kib,
             artifacts: vec![artifact],
-        })
-    } else if executed.status.success() {
-        Ok(TestOutcome {
+        },
+        ExactTestExecution::CoverageNotReached => TestOutcome {
             completion: CheckCompletion::CoverageNotReached,
             status: EvidenceStatus::Incomplete,
             classification: Some(FailureClassification::CoverageNotReached),
-            message: Some("libtest exited successfully without one exact passing test".to_owned()),
-            observations: observations(1, 0, 0),
+            message: Some("libtest executed zero exact tests".to_owned()),
+            observations: observations(1, usize::from(exact_was_run), usize::from(exact_passed)),
             duration_ms,
             peak_rss_kib,
             artifacts: vec![artifact],
-        })
-    } else {
-        Ok(TestOutcome {
+        },
+        ExactTestExecution::InvariantViolation => TestOutcome {
+            completion: CheckCompletion::Counterexample,
+            status: EvidenceStatus::Fail,
+            classification: Some(FailureClassification::InvariantViolation),
+            message: Some(format!(
+                "direct oracle {test_name} reported an invariant violation"
+            )),
+            observations: observations(1, 1, 0),
+            duration_ms,
+            peak_rss_kib,
+            artifacts: vec![artifact],
+        },
+        ExactTestExecution::HarnessError => TestOutcome {
             completion: CheckCompletion::HarnessError,
             status: EvidenceStatus::Error,
             classification: Some(FailureClassification::HarnessError),
             message: Some(format!(
-                "exact test process {} failed without a source-bound oracle receipt",
-                identity.test_name
+                "exact test process {test_name} failed without one canonical libtest verdict"
             )),
-            observations: observations(1, 0, 0),
+            observations: observations(1, usize::from(exact_was_run), 0),
             duration_ms,
             peak_rss_kib,
             artifacts: vec![artifact],
-        })
+        },
     }
 }
 
-pub(super) fn listed_tests(output: &[u8]) -> BTreeSet<String> {
+pub(crate) fn listed_tests(output: &[u8]) -> Vec<String> {
     String::from_utf8_lossy(output)
         .lines()
         .filter_map(|line| line.strip_suffix(": test"))
@@ -210,15 +310,120 @@ pub(super) fn listed_tests(output: &[u8]) -> BTreeSet<String> {
         .collect()
 }
 
-pub(super) fn exact_pass(output: &[u8], test_name: &str) -> bool {
+fn discovery_matches(output: &[u8], test_name: &str) -> usize {
+    listed_tests(output)
+        .iter()
+        .filter(|test| test.as_str() == test_name)
+        .count()
+}
+
+pub(crate) fn exact_pass(output: &[u8], test_name: &str) -> bool {
     let output = String::from_utf8_lossy(output);
-    output.lines().any(|line| line.trim() == "running 1 test")
-        && output
+    count_exact_line(&output, "running 1 test") == 1
+        && count_exact_line(&output, &format!("test {test_name} ... ok")) == 1
+        && count_summary(&output, "test result: ok. 1 passed; 0 failed; 0 ignored") == 1
+}
+
+pub(crate) fn exact_failure(output: &[u8], test_name: &str) -> bool {
+    let output = String::from_utf8_lossy(output);
+    count_exact_line(&output, "running 1 test") == 1
+        && count_exact_line(&output, &format!("test {test_name} ... FAILED")) == 1
+        && count_summary(
+            &output,
+            "test result: FAILED. 0 passed; 1 failed; 0 ignored",
+        ) == 1
+}
+
+pub(crate) fn oracle_token(source_ref: &str, check_id: &str) -> String {
+    artifact::stable_id("oracle", &format!("{source_ref}\0{check_id}"))
+}
+
+fn oracle_markers(stdout: &[u8], stderr: &[u8], token: &str) -> Option<(usize, usize)> {
+    let observed = format!("{ORACLE_OBSERVED_PREFIX}{token}");
+    let violation = format!("{ORACLE_MARKER_PREFIX}{token}");
+    let stdout = String::from_utf8_lossy(stdout);
+    let stderr = String::from_utf8_lossy(stderr);
+    let streams = [stdout.as_ref(), stderr.as_ref()];
+    let observed_count = streams
+        .iter()
+        .map(|stream| stream.matches(&observed).count())
+        .sum::<usize>();
+    let violation_count = streams
+        .iter()
+        .map(|stream| stream.matches(&violation).count())
+        .sum::<usize>();
+    let all_observed = streams
+        .iter()
+        .map(|stream| stream.matches(ORACLE_OBSERVED_PREFIX).count())
+        .sum::<usize>();
+    let all_violations = streams
+        .iter()
+        .map(|stream| stream.matches(ORACLE_MARKER_PREFIX).count())
+        .sum::<usize>();
+    (observed_count == all_observed && violation_count == all_violations)
+        .then_some((observed_count, violation_count))
+}
+
+fn exact_zero_execution(output: &[u8]) -> bool {
+    let output = String::from_utf8_lossy(output);
+    count_exact_line(&output, "running 0 tests") == 1
+        && count_summary(&output, "test result: ok. 0 passed; 0 failed; 0 ignored") == 1
+        && !output
             .lines()
-            .any(|line| line.trim() == format!("test {test_name} ... ok"))
-        && output
-            .lines()
-            .any(|line| line.contains("1 passed; 0 failed; 0 ignored"))
+            .any(|line| line.trim_start().starts_with("test ") && line.contains(" ... "))
+}
+
+fn count_exact_line(output: &str, expected: &str) -> usize {
+    output
+        .lines()
+        .filter(|line| line.trim() == expected)
+        .count()
+}
+
+fn count_summary(output: &str, expected_prefix: &str) -> usize {
+    output
+        .lines()
+        .filter(|line| line.trim().starts_with(expected_prefix))
+        .count()
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum ExactTestExecution {
+    Pass,
+    InvariantViolation,
+    CoverageNotReached,
+    HarnessError,
+}
+
+pub(crate) fn classify_exact_execution(
+    stdout: &[u8],
+    stderr: &[u8],
+    test_name: &str,
+    oracle_token: &str,
+    exit_code: Option<i32>,
+    timed_out: bool,
+) -> ExactTestExecution {
+    if timed_out {
+        return ExactTestExecution::HarnessError;
+    }
+    let Some((observed, violations)) = oracle_markers(stdout, stderr, oracle_token) else {
+        return ExactTestExecution::HarnessError;
+    };
+    match exit_code {
+        Some(0) if exact_pass(stdout, test_name) && observed == 1 && violations == 0 => {
+            ExactTestExecution::Pass
+        }
+        Some(0) if exact_pass(stdout, test_name) && observed == 0 && violations == 0 => {
+            ExactTestExecution::CoverageNotReached
+        }
+        Some(0) if exact_zero_execution(stdout) && observed == 0 && violations == 0 => {
+            ExactTestExecution::CoverageNotReached
+        }
+        Some(101) if exact_failure(stdout, test_name) && observed <= 1 && violations == 1 => {
+            ExactTestExecution::InvariantViolation
+        }
+        _ => ExactTestExecution::HarnessError,
+    }
 }
 
 fn observations(discovered: usize, executed: usize, passed: usize) -> BTreeMap<String, u64> {
@@ -247,18 +452,29 @@ fn write_log(
     )
 }
 
+fn persist_log(
+    output_dir: &Path,
+    profile: &str,
+    source_ref: &str,
+    execution_id: &str,
+    bytes: &[u8],
+) -> Result<(), Box<dyn Error>> {
+    write_log(output_dir, profile, source_ref, execution_id, bytes).map(|_| ())
+}
+
 fn error_outcome(
     message: String,
     artifact: ArtifactRef,
     peak_rss_kib: u64,
     duration_ms: u64,
+    discovered: usize,
 ) -> TestOutcome {
     TestOutcome {
         completion: CheckCompletion::HarnessError,
         status: EvidenceStatus::Error,
         classification: Some(FailureClassification::HarnessError),
         message: Some(message),
-        observations: observations(0, 0, 0),
+        observations: observations(discovered, 0, 0),
         duration_ms,
         peak_rss_kib,
         artifacts: vec![artifact],

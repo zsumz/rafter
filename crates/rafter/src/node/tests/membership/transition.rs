@@ -1,6 +1,7 @@
 //! Safe stable and joint membership transition derivation.
 
 use super::support::*;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq, oracle_violation};
 
 #[test]
 fn change_membership_derives_joint_configuration_for_voter_changes() {
@@ -13,7 +14,7 @@ fn change_membership_derives_joint_configuration_for_voter_changes() {
         promotion_barriers: Vec::new(),
     });
 
-    assert_eq!(leader.last_log_index(), LogIndex(2));
+    oracle_assert_eq!(leader.last_log_index(), LogIndex(2));
     let Some(ConfigurationEntry::Joint {
         config_id,
         membership: joint,
@@ -21,12 +22,12 @@ fn change_membership_derives_joint_configuration_for_voter_changes() {
         .entry_at(LogIndex(2))
         .and_then(LogEntry::configuration_entry)
     else {
-        panic!("expected derived joint configuration entry");
+        oracle_violation!("expected derived joint configuration entry");
     };
-    assert_eq!(*config_id, ConfigurationId(1));
-    assert_eq!(joint.old(), &membership(&[1, 2, 3]));
-    assert_eq!(joint.new_membership(), &target);
-    assert!(!outputs
+    oracle_assert_eq!(*config_id, ConfigurationId(1));
+    oracle_assert_eq!(joint.old(), &membership(&[1, 2, 3]));
+    oracle_assert_eq!(joint.new_membership(), &target);
+    oracle_assert!(!outputs
         .iter()
         .any(|output| matches!(output, Output::RejectProposal { .. })));
 }

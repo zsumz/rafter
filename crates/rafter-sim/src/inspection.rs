@@ -99,6 +99,12 @@ impl Cluster {
             .unwrap_or_default()
     }
 
+    pub(crate) fn application_epoch_start_floors(
+        &self,
+    ) -> &std::collections::BTreeMap<(NodeId, u64), LogIndex> {
+        &self.application_epoch_start_floors
+    }
+
     /// Returns the simulator-wide stream of applied application payloads.
     #[must_use]
     pub fn applied(&self) -> &[Applied] {

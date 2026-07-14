@@ -1,4 +1,5 @@
 use super::*;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
 #[test]
 fn restarted_node_recovers_persisted_configuration_entry() {
@@ -41,9 +42,9 @@ fn restarted_node_recovers_persisted_configuration_entry() {
 fn restarted_node_recovers_committed_dynamic_membership_suffix_after_snapshot() {
     let (mut restarted, stable, new) = dynamic_membership_recovery_fixture();
 
-    assert_eq!(restarted.commit_index(), LogIndex(16));
-    assert_eq!(restarted.committed_configuration_entry(), Some(stable));
-    assert_eq!(
+    oracle_assert_eq!(restarted.commit_index(), LogIndex(16));
+    oracle_assert_eq!(restarted.committed_configuration_entry(), Some(stable));
+    oracle_assert_eq!(
         restarted.committed_membership(),
         MembershipConfig::stable(new)
     );
@@ -56,8 +57,8 @@ fn restarted_node_recovers_committed_dynamic_membership_suffix_after_snapshot() 
         b"after-restart",
     );
 
-    assert_eq!(restarted.commit_index(), LogIndex(18));
-    assert!(outputs.iter().any(|output| matches!(
+    oracle_assert_eq!(restarted.commit_index(), LogIndex(18));
+    oracle_assert!(outputs.iter().any(|output| matches!(
         output,
         RaftOutput::Apply {
             index: LogIndex(18),

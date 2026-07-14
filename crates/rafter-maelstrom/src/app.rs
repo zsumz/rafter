@@ -1,4 +1,10 @@
-use std::{collections::BTreeMap, error::Error, io::Write, path::Path};
+use std::{
+    collections::BTreeMap,
+    error::Error,
+    fs::{self, File, OpenOptions},
+    io::{self, Write},
+    path::{Path, PathBuf},
+};
 
 use rafter::LogIndex;
 use serde::{Deserialize, Serialize};
@@ -30,6 +36,13 @@ pub(crate) struct AppState {
 pub(crate) enum AfterAppPersist {
     Continue,
     Interrupt,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum AppPersistStage {
+    TempFileSynced,
+    Renamed,
+    DirectorySynced,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -86,15 +99,67 @@ pub(crate) fn load_app_state(root: &Path) -> Result<AppState, Box<dyn Error>> {
 }
 
 pub(crate) fn persist_app_state(root: &Path, app: &AppState) -> Result<(), Box<dyn Error>> {
-    std::fs::create_dir_all(root)?;
+    persist_app_state_with_observer(root, app, |_| Ok(()))
+}
+
+pub(super) fn persist_app_state_with_observer(
+    root: &Path,
+    app: &AppState,
+    mut observer: impl FnMut(AppPersistStage) -> io::Result<()>,
+) -> Result<(), Box<dyn Error>> {
+    create_dir_all_durable(root)?;
     let tmp = root.join("app.json.tmp");
     let path = root.join("app.json");
     let persisted = PersistedApp {
         applied: app.applied.0,
         kv: app.kv.clone(),
     };
-    std::fs::write(&tmp, serde_json::to_vec(&persisted)?)?;
-    std::fs::rename(tmp, path)?;
+    let bytes = serde_json::to_vec(&persisted)?;
+    let mut file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&tmp)?;
+    file.write_all(&bytes)?;
+    file.sync_all()?;
+    observer(AppPersistStage::TempFileSynced)?;
+    drop(file);
+
+    fs::rename(&tmp, &path)?;
+    observer(AppPersistStage::Renamed)?;
+    sync_directory(root)?;
+    observer(AppPersistStage::DirectorySynced)?;
+    Ok(())
+}
+
+fn create_dir_all_durable(path: &Path) -> io::Result<()> {
+    let mut missing = Vec::<PathBuf>::new();
+    let mut candidate = path;
+    while !candidate.exists() {
+        missing.push(candidate.to_path_buf());
+        let Some(parent) = candidate.parent() else {
+            break;
+        };
+        candidate = parent;
+    }
+    fs::create_dir_all(path)?;
+    for directory in missing.iter().rev() {
+        let parent = directory
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        sync_directory(parent)?;
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &Path) -> io::Result<()> {
+    File::open(path)?.sync_all()
+}
+
+#[cfg(not(unix))]
+fn sync_directory(_path: &Path) -> io::Result<()> {
     Ok(())
 }
 

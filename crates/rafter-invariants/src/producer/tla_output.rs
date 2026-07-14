@@ -9,6 +9,67 @@ pub(crate) const REGISTERED_PREDICATES: [&str; 8] = [
     "ReadBarrierLinearizability",
 ];
 
+pub(crate) const REQUIRED_MODEL_TRANSITIONS: [&str; 19] = [
+    "Timeout",
+    "SendRequestVote",
+    "DeliverRequestVote",
+    "BecomeLeader",
+    "ClientAppend",
+    "SendAppend",
+    "DeliverAppend",
+    "Commit",
+    "Apply",
+    "ApplicationStateLoss",
+    "Restart",
+    "CreateSnapshot",
+    "TransferSnapshot",
+    "InstallSnapshot",
+    "CompactSnapshot",
+    "EnterJoint",
+    "LeaveJoint",
+    "RegisterRead",
+    "GrantRead",
+];
+
+pub(crate) const MEMBERSHIP_TRACE_MIN_DISTINCT_STATES: u64 = 46;
+pub(crate) const MEMBERSHIP_TRACE_MIN_DEPTH: u64 = 46;
+pub(crate) const MUTATION_SUITE_ARTIFACT_KIND: &str = "tla-mutation-log";
+pub(crate) const MUTATION_SUITE_LABEL: &str = "detector-mutation-suite";
+pub(crate) const REQUIRED_MUTATION_TESTS: [&str; 32] = [
+    "application_epoch_loss_replays_identically_without_erasing_history",
+    "applied_membership_quorum_mutation_breaks_joint_regression",
+    "closed_term_election_history_is_retired_after_every_node_advances",
+    "corrupted_snapshot_install_breaks_lifecycle_identity",
+    "corrupted_snapshot_restored_state_breaks_empty_epoch_lifecycle",
+    "delayed_append_uses_frozen_sender_authority_after_self_removal",
+    "every_required_detector_probe_reaches_its_named_counterexample",
+    "follower_recomputation_breaks_delayed_heartbeat_regression",
+    "leader_completeness_uses_commit_authority_term",
+    "missing_application_epoch_recorder_cannot_qualify_state_machine_safety",
+    "missing_application_recorder_cannot_qualify_state_machine_safety",
+    "missing_commit_ledger_recorder_cannot_qualify_history_predicates",
+    "missing_commit_witness_recorder_cannot_qualify_quorum_predicate",
+    "missing_effective_recomputation_breaks_overwrite_regression",
+    "missing_election_recorder_cannot_qualify_election_safety",
+    "missing_higher_term_recorder_cannot_qualify_fencing",
+    "missing_log_prefix_recorder_cannot_qualify_log_or_snapshot_paths",
+    "missing_read_grant_recorder_cannot_qualify_read_barrier_predicate",
+    "missing_self_removal_step_down_breaks_commit_regression",
+    "missing_stale_authority_recorder_cannot_qualify_fencing",
+    "non_violating_fixture_cannot_qualify",
+    "recorder_only_fixtures_qualify_before_mutation",
+    "removed_candidate_vote_requires_membership_and_freshness_guards",
+    "self_removing_leader_commits_final_configuration_and_steps_down",
+    "shorter_authoritative_log_repairs_an_uncommitted_suffix",
+    "snapshot_compaction_pending_tracks_create_and_compact_transitions",
+    "snapshot_lifecycle_preserves_logical_identity_through_restart",
+    "stale_messages_are_retired_when_the_target_term_advances",
+    "true_mutation_of_real_predicate_cannot_qualify",
+    "unfrozen_effective_membership_breaks_commit_witness_regression",
+    "unvalidated_commit_certificate_cannot_qualify_quorum_predicate",
+    "unvalidated_read_grant_cannot_qualify_read_barrier_predicate",
+];
+
 pub(crate) const DEFAULT_FIXTURE_MODE: &str = "Default";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -17,13 +78,9 @@ pub(crate) struct DetectorProbe {
     pub(crate) mode: &'static str,
 }
 
-pub(crate) const DETECTOR_PROBES: [DetectorProbe; 16] = [
+pub(crate) const DETECTOR_PROBES: [DetectorProbe; 11] = [
     DetectorProbe {
         predicate: "ElectionSafety",
-        mode: DEFAULT_FIXTURE_MODE,
-    },
-    DetectorProbe {
-        predicate: "LogMatching",
         mode: DEFAULT_FIXTURE_MODE,
     },
     DetectorProbe {
@@ -36,15 +93,7 @@ pub(crate) const DETECTOR_PROBES: [DetectorProbe; 16] = [
     },
     DetectorProbe {
         predicate: "LeaderCompleteness",
-        mode: DEFAULT_FIXTURE_MODE,
-    },
-    DetectorProbe {
-        predicate: "LeaderCompleteness",
         mode: "LeaderCompletenessRecorderOnly",
-    },
-    DetectorProbe {
-        predicate: "CommittedPrefixStability",
-        mode: DEFAULT_FIXTURE_MODE,
     },
     DetectorProbe {
         predicate: "CommittedPrefixStability",
@@ -68,15 +117,7 @@ pub(crate) const DETECTOR_PROBES: [DetectorProbe; 16] = [
     },
     DetectorProbe {
         predicate: "CommittedEntriesHaveQuorum",
-        mode: DEFAULT_FIXTURE_MODE,
-    },
-    DetectorProbe {
-        predicate: "CommittedEntriesHaveQuorum",
         mode: "CommitQuorumRecorderOnly",
-    },
-    DetectorProbe {
-        predicate: "ReadBarrierLinearizability",
-        mode: DEFAULT_FIXTURE_MODE,
     },
     DetectorProbe {
         predicate: "ReadBarrierLinearizability",

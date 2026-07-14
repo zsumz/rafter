@@ -10,6 +10,7 @@ use super::*;
 use crate::model_check::{
     observations::Observation, scheduling::Operation, state::apply_to_restart_snapshot_state,
 };
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq, oracle_expect_err};
 
 fn partial_snapshot_transfer_state() -> RestartSnapshotState {
     let mut state = RestartSnapshotState::snapshot_transfer();
@@ -109,6 +110,7 @@ fn applied_order_detects_snapshot_rewinding_applied_entries() {
     cluster.snapshot_installs.push(SnapshotInstalled {
         node_id: NodeId(1),
         application_epoch: 0,
+        commit_index_at_emit: LogIndex(2),
         last_included_index: LogIndex(2),
         last_included_term: Term(1),
         committed_membership: None,
@@ -134,6 +136,7 @@ fn applied_order_detects_apply_at_or_below_snapshot_boundary() {
     cluster.snapshot_installs.push(SnapshotInstalled {
         node_id: NodeId(1),
         application_epoch: 0,
+        commit_index_at_emit: LogIndex(5),
         last_included_index: LogIndex(5),
         last_included_term: Term(1),
         committed_membership: None,
@@ -148,13 +151,15 @@ fn applied_order_detects_apply_at_or_below_snapshot_boundary() {
         payload: b"stale".to_vec().into(),
     });
 
-    let failure = super::super::applied::check_applied_cursor_monotonicity(&cluster, &[])
-        .expect_err("apply below boundary must be detected");
-    assert_eq!(
+    let failure = oracle_expect_err!(
+        super::super::applied::check_applied_cursor_monotonicity(&cluster, &[]),
+        "apply below boundary must be detected",
+    );
+    oracle_assert_eq!(
         failure.invariant(),
         catalog::AP_01_ORDERED_EXACTLY_ONCE_COMMITTED_APPLICATION
     );
-    assert!(
+    oracle_assert!(
         failure
             .message
             .contains("at or below prior applied/snapshot index 5"),
@@ -174,13 +179,15 @@ fn snapshot_boundary_monotonicity_detects_regression() {
         .expect("older snapshot bootstrap remains structurally valid");
     state.state.observe_snapshot_cluster_for_detector(&observed);
 
-    let failure = check_snapshot_boundary_monotonicity(&state.state, &[])
-        .expect_err("snapshot rewind must fail SS-01.a");
-    assert_eq!(
+    let failure = oracle_expect_err!(
+        check_snapshot_boundary_monotonicity(&state.state, &[]),
+        "snapshot rewind must fail SS-01.a",
+    );
+    oracle_assert_eq!(
         failure.invariant(),
         catalog::SS_01_ATOMIC_MONOTONE_SNAPSHOT_STATE
     );
-    assert!(
+    oracle_assert!(
         failure.message.contains("snapshot boundary regressed"),
         "unexpected failure message: {}",
         failure.message
@@ -291,13 +298,15 @@ fn snapshot_reference_binding_detects_self_consistent_application_identity_chang
         rafter::RaftSnapshot::from_payload(expected.snapshot.metadata.clone(), &wrong_payload);
     install_mutated_source_snapshot(&mut state, wrong_snapshot, wrong_payload);
 
-    let failure = check_snapshot_payload_binding(&state.state, &[])
-        .expect_err("snapshot bytes differing from the witnessed reference state must fail");
-    assert_eq!(
+    let failure = oracle_expect_err!(
+        check_snapshot_payload_binding(&state.state, &[]),
+        "snapshot bytes differing from the witnessed reference state must fail",
+    );
+    oracle_assert_eq!(
         failure.invariant(),
         catalog::SS_01_ATOMIC_MONOTONE_SNAPSHOT_STATE
     );
-    assert!(failure.message.contains("witnessed reference state"));
+    oracle_assert!(failure.message.contains("witnessed reference state"));
 }
 
 #[test]
@@ -438,13 +447,15 @@ fn snapshot_transfer_identity_detects_install_different_from_delivery() {
         .state
         .record_snapshot_transition(&before, Some(&delivered));
 
-    let failure = check_snapshot_transfer_identity(&state.state, &[])
-        .expect_err("installation differing from delivery must fail SS-01.c");
-    assert_eq!(
+    let failure = oracle_expect_err!(
+        check_snapshot_transfer_identity(&state.state, &[]),
+        "installation differing from delivery must fail SS-01.c",
+    );
+    oracle_assert_eq!(
         failure.invariant(),
         catalog::SS_01_ATOMIC_MONOTONE_SNAPSHOT_STATE
     );
-    assert!(
+    oracle_assert!(
         failure.message.contains("instead of delivered transfer"),
         "unexpected failure message: {}",
         failure.message
@@ -586,13 +597,15 @@ fn restart_snapshot_safety_rejects_snapshot_bytes_as_log_apply() {
     });
     state.state.record_snapshot_transition(&before, None);
 
-    let failure = check_restart_snapshot_safety(&state, &[])
-        .expect_err("a snapshot transition without an ApplySnapshot record must fail SS-05");
-    assert_eq!(
+    let failure = oracle_expect_err!(
+        check_restart_snapshot_safety(&state, &[]),
+        "a snapshot transition without an ApplySnapshot record must fail SS-05",
+    );
+    oracle_assert_eq!(
         failure.invariant(),
         catalog::SS_05_SNAPSHOT_SEMANTIC_EQUIVALENCE
     );
-    assert!(
+    oracle_assert!(
         failure
             .message
             .contains("without a matching ApplySnapshot output record"),
@@ -625,6 +638,7 @@ fn snapshot_semantics_rejects_log_apply_alongside_snapshot_output() {
     after.snapshot_installs.push(SnapshotInstalled {
         node_id: NodeId(2),
         application_epoch: after.application_epoch(NodeId(2)),
+        commit_index_at_emit: expected.snapshot.metadata.last_included_index,
         last_included_index: expected.snapshot.metadata.last_included_index,
         last_included_term: expected.snapshot.metadata.last_included_term,
         committed_membership: expected.snapshot.metadata.committed_membership().cloned(),
@@ -756,39 +770,45 @@ fn snapshot_log_geometry_detects_retained_suffix_length_mismatch() {
 #[test]
 fn snapshot_covered_prefix_detector_rejects_visible_covered_entry() {
     let cluster = one_node_cluster();
-    let failure = check_snapshot_covered_prefix_shape(&cluster, NodeId(1), LogIndex(2), 1, &[])
-        .expect_err("SS-03.a must reject a visible covered entry");
-    assert!(failure.message.contains("covered through snapshot index 2"));
+    let failure = oracle_expect_err!(
+        check_snapshot_covered_prefix_shape(&cluster, NodeId(1), LogIndex(2), 1, &[]),
+        "SS-03.a must reject a visible covered entry",
+    );
+    oracle_assert!(failure.message.contains("covered through snapshot index 2"));
 }
 
 #[test]
 fn snapshot_next_retained_index_detector_rejects_gap() {
     let cluster = one_node_cluster();
-    let failure = check_snapshot_next_retained_index_shape(
-        &cluster,
-        NodeId(1),
-        LogIndex(2),
-        LogIndex(4),
-        LogIndex(4),
-        1,
-        &[],
-    )
-    .expect_err("SS-03.b must reject a retained-index gap");
-    assert!(failure.message.contains("does not equal snapshot_index+1"));
+    let failure = oracle_expect_err!(
+        check_snapshot_next_retained_index_shape(
+            &cluster,
+            NodeId(1),
+            LogIndex(2),
+            LogIndex(4),
+            LogIndex(4),
+            1,
+            &[],
+        ),
+        "SS-03.b must reject a retained-index gap",
+    );
+    oracle_assert!(failure.message.contains("does not equal snapshot_index+1"));
 }
 
 #[test]
 fn snapshot_persisted_boundary_detector_rejects_entry_behind_snapshot() {
     let cluster = one_node_cluster();
-    let failure = check_snapshot_persisted_boundary_shape(
-        &cluster,
-        NodeId(1),
-        LogIndex(3),
-        Some(LogIndex(2)),
-        &[],
-    )
-    .expect_err("SS-03.c must reject persisted data behind the boundary");
-    assert!(failure.message.contains("persisted entry 2"));
+    let failure = oracle_expect_err!(
+        check_snapshot_persisted_boundary_shape(
+            &cluster,
+            NodeId(1),
+            LogIndex(3),
+            Some(LogIndex(2)),
+            &[],
+        ),
+        "SS-03.c must reject persisted data behind the boundary",
+    );
+    oracle_assert!(failure.message.contains("persisted entry 2"));
 }
 
 #[test]
@@ -806,9 +826,11 @@ fn snapshot_chunk_identity_history_rejects_descriptor_change() {
         pending.application_payload_crc32.wrapping_add(1),
     );
     let state = record_mutated_partial_chunk(request);
-    let failure = check_snapshot_chunk_identity_history(&state, &[])
-        .expect_err("SS-04.a must retain and compare chunk descriptors");
-    assert!(failure.message.contains("descriptor identity"));
+    let failure = oracle_expect_err!(
+        check_snapshot_chunk_identity_history(&state, &[]),
+        "SS-04.a must retain and compare chunk descriptors",
+    );
+    oracle_assert!(failure.message.contains("descriptor identity"));
 }
 
 #[test]
@@ -826,9 +848,11 @@ fn snapshot_chunk_offset_history_rejects_out_of_order_progress() {
         pending.application_payload_crc32,
     );
     let state = record_mutated_partial_chunk(request);
-    let failure = check_snapshot_chunk_offsets_history(&state, &[])
-        .expect_err("SS-04.b must compare accepted offset with prior staged length");
-    assert!(failure.message.contains("staged prefix ended"));
+    let failure = oracle_expect_err!(
+        check_snapshot_chunk_offsets_history(&state, &[]),
+        "SS-04.b must compare accepted offset with prior staged length",
+    );
+    oracle_assert!(failure.message.contains("staged prefix ended"));
 }
 
 #[test]
@@ -876,9 +900,11 @@ fn snapshot_install_completeness_history_rejects_incomplete_install() {
     };
     let mut state = ExplorationState::new(after);
     state.record_snapshot_transition(&before, Some(&delivered));
-    let failure = check_snapshot_install_completeness_history(&state, &[])
-        .expect_err("SS-04.c must reject installation before all bytes arrive");
-    assert!(failure.message.contains("before the complete byte range"));
+    let failure = oracle_expect_err!(
+        check_snapshot_install_completeness_history(&state, &[]),
+        "SS-04.c must reject installation before all bytes arrive",
+    );
+    oracle_assert!(failure.message.contains("before the complete byte range"));
 }
 
 #[test]
@@ -896,13 +922,15 @@ fn pending_snapshot_lifecycle_detector_rejects_stale_transfer() {
         application_payload_crc32: expected.snapshot.application_payload_crc32,
         received_len: 1,
     };
-    let failure = check_pending_snapshot_lifecycle_shape(
-        transfer.state.cluster(),
-        NodeId(2),
-        expected.snapshot.metadata.last_included_index,
-        Some(&pending),
-        &[],
-    )
-    .expect_err("SS-04.d must reject stale pending state");
-    assert!(failure.message.contains("stale pending snapshot"));
+    let failure = oracle_expect_err!(
+        check_pending_snapshot_lifecycle_shape(
+            transfer.state.cluster(),
+            NodeId(2),
+            expected.snapshot.metadata.last_included_index,
+            Some(&pending),
+            &[],
+        ),
+        "SS-04.d must reject stale pending state",
+    );
+    oracle_assert!(failure.message.contains("stale pending snapshot"));
 }
