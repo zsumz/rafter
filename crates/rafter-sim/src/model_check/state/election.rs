@@ -7,6 +7,7 @@ use rafter::{
 use crate::{Cluster, Envelope};
 
 use super::super::observations::{Observation, ObservationSet};
+use super::logical_log::{LogPrefixWitness, LogicalLogHistory};
 use super::ExplorationState;
 
 #[derive(Clone, Debug, Default, Hash)]
@@ -22,7 +23,7 @@ pub(crate) struct ElectionHistory {
     pub(crate) authority_transition_violations: Vec<AuthorityTransitionViolation>,
     pub(crate) pre_vote_violations: Vec<PreVoteViolation>,
     pub(crate) grants_by_candidate: BTreeMap<(Term, NodeId), BTreeSet<NodeId>>,
-    pub(crate) elected_by_term: BTreeMap<Term, ElectionCertificate>,
+    pub(crate) elected_by_term: BTreeMap<Term, Vec<ElectionCertificate>>,
     pub(crate) conflicting_elections: BTreeSet<ElectionConflict>,
 }
 
@@ -90,7 +91,11 @@ impl ElectionHistory {
     }
 
     pub(in crate::model_check) fn record_election(&mut self, certificate: ElectionCertificate) {
-        if let Some(previous) = self.elected_by_term.get(&certificate.term) {
+        if let Some(previous) = self
+            .elected_by_term
+            .get(&certificate.term)
+            .and_then(|certificates| certificates.first())
+        {
             if previous.leader_id != certificate.leader_id {
                 self.conflicting_elections.insert(ElectionConflict {
                     term: certificate.term,
@@ -98,9 +103,11 @@ impl ElectionHistory {
                     second_leader: certificate.leader_id,
                 });
             }
-            return;
         }
-        self.elected_by_term.insert(certificate.term, certificate);
+        self.elected_by_term
+            .entry(certificate.term)
+            .or_default()
+            .push(certificate);
     }
 }
 
@@ -189,6 +196,7 @@ pub(crate) struct ElectionCertificate {
     pub(crate) granted_by: BTreeSet<NodeId>,
     pub(crate) last_log_index: LogIndex,
     pub(crate) last_log_term: Term,
+    pub(crate) logical_prefix_at_election: Option<LogPrefixWitness>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
@@ -511,6 +519,10 @@ impl ExplorationState {
                 granted_by,
                 last_log_index: before_node.last_log_index(),
                 last_log_term: last_log_term_from_bootstrap(&before.bootstrap_state(*node_id)),
+                logical_prefix_at_election: LogicalLogHistory::prefix_from_view(
+                    &self.logical_log_history.observed_view(before, *node_id),
+                    before_node.last_log_index(),
+                ),
             };
             let leader_is_eligible = certificate.membership.contains_voter(*node_id);
             let stable_membership = matches!(&certificate.membership, MembershipConfig::Stable(_));
