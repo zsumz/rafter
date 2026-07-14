@@ -2,6 +2,7 @@
 
 mod support;
 
+use rafter_invariant_test::oracle_assert;
 use support::*;
 
 #[test]
@@ -224,7 +225,7 @@ fn linearizable_read_helper_returns_result_when_barrier_grants() {
         ))
         .expect("linearizable read succeeds");
 
-    assert!(matches!(
+    oracle_assert!(matches!(
         outcome,
         ReadOutcome::Ready {
             result: Some(ref result),
