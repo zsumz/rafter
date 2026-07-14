@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::BTreeMap,
     hash::{Hash, Hasher},
     time::Instant,
 };
@@ -13,8 +13,10 @@ use super::super::{
 pub(super) struct ExplorationBudget {
     pub(super) bounds: Bounds,
     started_at: Instant,
-    best_remaining_depth_by_state: BTreeMap<StateKey, usize>,
-    unique_protocol_states: BTreeSet<StateKey>,
+    verifier_states: BTreeMap<StateKey, Vec<VerifierStateIdentity>>,
+    protocol_states: BTreeMap<StateKey, Vec<CanonicalStateIdentity>>,
+    unique_verifier_states: usize,
+    unique_protocol_states: usize,
     explored_states: usize,
     explored_actions: usize,
     reached_depth: usize,
@@ -27,8 +29,10 @@ impl ExplorationBudget {
         Self {
             bounds,
             started_at: Instant::now(),
-            best_remaining_depth_by_state: BTreeMap::new(),
-            unique_protocol_states: BTreeSet::new(),
+            verifier_states: BTreeMap::new(),
+            protocol_states: BTreeMap::new(),
+            unique_verifier_states: 0,
+            unique_protocol_states: 0,
             explored_states: 0,
             explored_actions: 0,
             reached_depth: 0,
@@ -40,8 +44,8 @@ impl ExplorationBudget {
     pub(super) fn summary(&self) -> Summary {
         Summary {
             explored_states: self.explored_states,
-            unique_states: self.best_remaining_depth_by_state.len(),
-            unique_protocol_states: self.unique_protocol_states.len(),
+            unique_states: self.unique_verifier_states,
+            unique_protocol_states: self.unique_protocol_states,
             explored_actions: self.explored_actions,
             configured_depth: self.bounds.depth,
             reached_depth: self.reached_depth,
@@ -51,37 +55,74 @@ impl ExplorationBudget {
     }
 
     pub(super) fn enter(&mut self, state: &impl StateIdentity, depth: usize) -> bool {
+        let verifier_identity = ExactStateIdentity::from_hash(state);
+        let protocol_identity = ExactStateIdentity::from_protocol_state(state);
+        self.enter_with_identities(
+            state.observations(),
+            verifier_identity,
+            protocol_identity,
+            depth,
+        )
+    }
+
+    fn enter_with_identities(
+        &mut self,
+        observations: ObservationSet,
+        verifier_identity: ExactStateIdentity,
+        protocol_identity: ExactStateIdentity,
+        depth: usize,
+    ) -> bool {
         self.explored_states += 1;
-        self.observations.union_with(state.observations());
+        self.observations.union_with(observations);
         if self.wall_clock_exhausted() {
             self.completion = ExplorationCompletion::WallClockLimit;
             return false;
         }
 
-        let key = StateKey::from_hash(state);
         let remaining_depth = self.bounds.depth.saturating_sub(depth);
-        if self
-            .best_remaining_depth_by_state
-            .get(&key)
-            .is_some_and(|seen_remaining_depth| *seen_remaining_depth >= remaining_depth)
+        if let Some(identity) = self
+            .verifier_states
+            .get_mut(&verifier_identity.key)
+            .and_then(|bucket| {
+                bucket
+                    .iter_mut()
+                    .find(|seen| seen.canonical == verifier_identity.canonical)
+            })
         {
-            return false;
+            if identity.best_remaining_depth >= remaining_depth {
+                return false;
+            }
+            identity.best_remaining_depth = remaining_depth;
+            self.reached_depth = self.reached_depth.max(depth);
+            return true;
         }
 
-        let is_new_state = !self.best_remaining_depth_by_state.contains_key(&key);
         if self
             .bounds
             .max_unique_states
-            .is_some_and(|max| is_new_state && self.best_remaining_depth_by_state.len() >= max)
+            .is_some_and(|max| self.unique_verifier_states >= max)
         {
             self.completion = ExplorationCompletion::UniqueStateLimit;
             return false;
         }
 
-        self.best_remaining_depth_by_state
-            .insert(key, remaining_depth);
-        self.unique_protocol_states
-            .insert(StateKey::from_protocol_state(state));
+        self.verifier_states
+            .entry(verifier_identity.key)
+            .or_default()
+            .push(VerifierStateIdentity {
+                canonical: verifier_identity.canonical,
+                best_remaining_depth: remaining_depth,
+            });
+        self.unique_verifier_states += 1;
+
+        let protocol_bucket = self
+            .protocol_states
+            .entry(protocol_identity.key)
+            .or_default();
+        if !protocol_bucket.contains(&protocol_identity.canonical) {
+            protocol_bucket.push(protocol_identity.canonical);
+            self.unique_protocol_states += 1;
+        }
         self.reached_depth = self.reached_depth.max(depth);
         true
     }
@@ -131,215 +172,7 @@ impl StateIdentity for RestartSnapshotState {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::{
-        hash::{Hash, Hasher},
-        time::Duration,
-    };
-
-    use rafter::{LogIndex, NodeConfig, NodeId};
-
-    use super::{Bounds, ExplorationBudget, ExplorationState, StateIdentity, StateKey};
-    use crate::{Applied, Cluster};
-
-    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-    enum ToyState {
-        Root,
-        Detour,
-        Shared,
-        Descendant,
-    }
-
-    #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-    struct ToyVerifierState {
-        protocol: u8,
-        verifier_history: u8,
-    }
-
-    impl StateIdentity for ToyState {
-        fn hash_protocol_state<H: Hasher>(&self, state: &mut H) {
-            self.hash(state);
-        }
-
-        fn observations(&self) -> super::ObservationSet {
-            super::ObservationSet::default()
-        }
-    }
-
-    impl StateIdentity for ToyVerifierState {
-        fn hash_protocol_state<H: Hasher>(&self, state: &mut H) {
-            self.protocol.hash(state);
-        }
-
-        fn observations(&self) -> super::ObservationSet {
-            super::ObservationSet::default()
-        }
-    }
-
-    #[test]
-    pub(super) fn depth_aware_dedup_reexpands_shorter_path_to_reach_descendant() {
-        let mut budget = ExplorationBudget::new(Bounds::new(2));
-        let mut entered = Vec::new();
-
-        explore_toy_graph(&mut budget, ToyState::Root, 0, &mut entered);
-
-        assert_eq!(
-            entered
-                .iter()
-                .filter(|state| **state == ToyState::Shared)
-                .count(),
-            2
-        );
-        assert!(entered.contains(&ToyState::Descendant));
-        assert_eq!(budget.summary().unique_states(), 4);
-        assert_eq!(budget.summary().unique_protocol_states(), 4);
-        assert!(budget.summary().explored_states() > budget.summary().unique_states());
-        assert_eq!(budget.summary().reached_depth(), 2);
-    }
-
-    #[test]
-    fn protocol_count_collapses_verifier_history_divergence() {
-        let mut budget = ExplorationBudget::new(Bounds::new(1));
-
-        assert!(budget.enter(
-            &ToyVerifierState {
-                protocol: 7,
-                verifier_history: 1,
-            },
-            0,
-        ));
-        assert!(budget.enter(
-            &ToyVerifierState {
-                protocol: 7,
-                verifier_history: 2,
-            },
-            0,
-        ));
-
-        let summary = budget.summary();
-        assert_eq!(summary.unique_states(), 2);
-        assert_eq!(summary.unique_verifier_states(), 2);
-        assert_eq!(summary.unique_protocol_states(), 1);
-    }
-
-    #[test]
-    fn protocol_count_ignores_cluster_recorder_history() {
-        let config = NodeConfig::new(NodeId(1), Vec::new(), 3).expect("fixture config is valid");
-        let original = ExplorationState::new(Cluster::new(vec![config]));
-        let mut applied_mutated = original.clone();
-        applied_mutated.inject_applied_record(Applied {
-            node_id: NodeId(1),
-            application_epoch: 0,
-            commit_index_at_emit: LogIndex(1),
-            index: LogIndex(1),
-            payload: b"recorder-only".to_vec().into(),
-        });
-
-        let mut cursor_mutated = original.clone();
-        cursor_mutated.clear_execution_cursors();
-        let mut reference_mutated = original.clone();
-        reference_mutated.clear_initial_reference_states();
-        let mut epoch_mutated = original.clone();
-        epoch_mutated.clear_application_epochs();
-
-        for recorder_mutated in [
-            &applied_mutated,
-            &cursor_mutated,
-            &reference_mutated,
-            &epoch_mutated,
-        ] {
-            assert_ne!(
-                StateKey::from_hash(&original),
-                StateKey::from_hash(recorder_mutated),
-                "recorder state remains part of full verifier identity"
-            );
-            assert_eq!(
-                StateKey::from_protocol_state(&original),
-                StateKey::from_protocol_state(recorder_mutated),
-                "recorder state must not change protocol identity"
-            );
-        }
-
-        let mut budget = ExplorationBudget::new(Bounds::new(1));
-        assert!(budget.enter(&original, 0));
-        assert!(budget.enter(&applied_mutated, 0));
-        let summary = budget.summary();
-        assert_eq!(summary.unique_verifier_states(), 2);
-        assert_eq!(summary.unique_protocol_states(), 1);
-    }
-
-    #[test]
-    fn unique_state_cap_still_applies_to_verifier_states() {
-        let mut budget = ExplorationBudget::new(Bounds::new(1).with_max_unique_states(1));
-
-        assert!(budget.enter(
-            &ToyVerifierState {
-                protocol: 7,
-                verifier_history: 1,
-            },
-            0,
-        ));
-        assert!(!budget.enter(
-            &ToyVerifierState {
-                protocol: 7,
-                verifier_history: 2,
-            },
-            0,
-        ));
-
-        let summary = budget.summary();
-        assert_eq!(summary.unique_states(), 1);
-        assert_eq!(summary.unique_verifier_states(), 1);
-        assert_eq!(summary.unique_protocol_states(), 1);
-        assert_eq!(
-            summary.completion(),
-            super::ExplorationCompletion::UniqueStateLimit
-        );
-    }
-
-    #[test]
-    fn wall_clock_exhaustion_is_reported() {
-        let mut budget = ExplorationBudget::new(Bounds::new(1).with_max_wall_clock(Duration::ZERO));
-
-        assert!(!budget.enter(&ToyState::Root, 0));
-        assert_eq!(
-            budget.summary().completion(),
-            super::ExplorationCompletion::WallClockLimit
-        );
-        assert_eq!(budget.summary().reached_depth(), 0);
-    }
-
-    fn explore_toy_graph(
-        budget: &mut ExplorationBudget,
-        state: ToyState,
-        depth: usize,
-        entered: &mut Vec<ToyState>,
-    ) {
-        if !budget.enter(&state, depth) {
-            return;
-        }
-        entered.push(state);
-        if depth == budget.bounds.depth {
-            return;
-        }
-
-        for next in toy_successors(state) {
-            budget.record_action();
-            explore_toy_graph(budget, *next, depth + 1, entered);
-        }
-    }
-
-    fn toy_successors(state: ToyState) -> &'static [ToyState] {
-        use ToyState::{Descendant, Detour, Root, Shared};
-
-        match state {
-            Root => &[Detour, Shared],
-            Detour => &[Shared],
-            Shared => &[Descendant],
-            Descendant => &[],
-        }
-    }
-}
+mod tests;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 struct StateKey {
@@ -348,7 +181,40 @@ struct StateKey {
     hash_b: u64,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct ExactStateIdentity {
+    key: StateKey,
+    canonical: CanonicalStateIdentity,
+}
+
+impl ExactStateIdentity {
+    fn from_hash(state: &impl Hash) -> Self {
+        let mut hasher = ExactStateIdentityHasher::new();
+        state.hash(&mut hasher);
+        hasher.finish_identity()
+    }
+
+    fn from_protocol_state(state: &impl StateIdentity) -> Self {
+        let mut hasher = ExactStateIdentityHasher::new();
+        state.hash_protocol_state(&mut hasher);
+        hasher.finish_identity()
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+// The model states use structural `Hash` implementations as their canonical
+// representation. This is a lossless zero-run encoding of that complete byte
+// stream; `StateKey` is only a compact index into collision buckets.
+struct CanonicalStateIdentity(Box<[u8]>);
+
+#[derive(Debug)]
+struct VerifierStateIdentity {
+    canonical: CanonicalStateIdentity,
+    best_remaining_depth: usize,
+}
+
 impl StateKey {
+    #[cfg(test)]
     pub(super) fn from_hash(state: &impl Hash) -> Self {
         let mut hasher = StateKeyHasher::new();
         state.hash(&mut hasher);
@@ -373,6 +239,67 @@ struct StateKeyHasher {
     len: u64,
     hash_a: u64,
     hash_b: u64,
+}
+
+struct ExactStateIdentityHasher {
+    key: StateKeyHasher,
+    canonical: Vec<u8>,
+    pending_zeros: usize,
+}
+
+impl ExactStateIdentityHasher {
+    const fn new() -> Self {
+        Self {
+            key: StateKeyHasher::new(),
+            canonical: Vec::new(),
+            pending_zeros: 0,
+        }
+    }
+
+    fn finish_identity(mut self) -> ExactStateIdentity {
+        self.flush_zeros();
+        ExactStateIdentity {
+            key: self.key.finish_key(),
+            canonical: CanonicalStateIdentity(self.canonical.into_boxed_slice()),
+        }
+    }
+
+    fn flush_zeros(&mut self) {
+        if self.pending_zeros == 0 {
+            return;
+        }
+
+        self.canonical.push(0);
+        let mut remaining = self.pending_zeros;
+        while remaining >= 0x80 {
+            let chunk = (remaining & 0x7f).to_le_bytes()[0];
+            self.canonical.push(chunk | 0x80);
+            remaining >>= 7;
+        }
+        self.canonical.push(remaining.to_le_bytes()[0]);
+        self.pending_zeros = 0;
+    }
+}
+
+impl Hasher for ExactStateIdentityHasher {
+    fn finish(&self) -> u64 {
+        self.key.finish()
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        self.key.write_bytes(bytes);
+        for byte in bytes {
+            if *byte == 0 {
+                if self.pending_zeros == usize::MAX {
+                    self.flush_zeros();
+                }
+                self.pending_zeros += 1;
+            } else {
+                self.flush_zeros();
+                self.canonical.push(*byte);
+            }
+        }
+    }
 }
 
 impl StateKeyHasher {
