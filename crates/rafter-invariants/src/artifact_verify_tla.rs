@@ -1,16 +1,20 @@
 use std::{collections::BTreeMap, fs, path::Path};
 
-use crate::producer::tla_checkpoint::{
-    expected_contract, CheckpointContract, CheckpointInventory, RecoveryReport, RecoveryStatus,
-    CONTRACT_KIND, INVENTORY_KIND, RECOVERED_CONTRACT_KIND, RECOVERED_INVENTORY_KIND,
-    RECOVERY_REPORT_KIND,
-};
+use crate::producer::tla_checkpoint::{RecoveryReport, RecoveryStatus};
 use crate::producer::tla_output::{
     detector_config_kind, detector_invariant, detector_label, detector_log_kind,
     detector_observation, parse_latest_progress, probe_slug, render_detector_config,
-    DETECTOR_PROBES,
+    DETECTOR_PROBES, MEMBERSHIP_TRACE_MIN_DEPTH, MEMBERSHIP_TRACE_MIN_DISTINCT_STATES,
+    MUTATION_SUITE_ARTIFACT_KIND, MUTATION_SUITE_LABEL, REQUIRED_MODEL_TRANSITIONS,
+    REQUIRED_MUTATION_TESTS,
 };
 use crate::{aggregate::AggregateError, CheckCompletion, EvidenceStatus, ResultBundle};
+
+mod checkpoint;
+mod invocation;
+
+use checkpoint::verify_checkpoint;
+use invocation::{optional_process_log, read_bound_process_log, read_process_log};
 
 pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateError> {
     let check = bundle
@@ -25,9 +29,12 @@ pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), Aggregate
     verify_tool_pin(bundle, check, root)?;
     let checkpoint = verify_checkpoint(bundle, check, root)?;
     let trace_summary = crate::producer::tla_output::parse(trace.stdout.as_bytes()).ok();
-    let trace_passed = trace_summary
-        .as_ref()
-        .is_some_and(|summary| successful_log(&trace) && successful_summary(summary));
+    let trace_passed = trace_summary.as_ref().is_some_and(|summary| {
+        successful_log(&trace)
+            && successful_summary(summary)
+            && summary.distinct_states >= MEMBERSHIP_TRACE_MIN_DISTINCT_STATES
+            && summary.search_depth >= MEMBERSHIP_TRACE_MIN_DEPTH
+    });
     let (detector_observations, detectors_passed) =
         verify_detectors(bundle, check, root, &detector_template)?;
     if !trace_passed && has_kind(check, "tla-log")? {
@@ -41,13 +48,57 @@ pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), Aggregate
         .and_then(|log| crate::producer::tla_output::parse(log.stdout.as_bytes()).ok());
     let main_progress = timeout_progress(main.as_ref())?;
     let symbols = configured_invariants(&config);
+    let derived = derive_observations(
+        &symbols,
+        trace_passed,
+        detector_observations,
+        checkpoint.as_ref(),
+        main_progress,
+        main.as_ref(),
+        main_summary.as_ref(),
+    );
+    if check.observations != derived {
+        return Err(AggregateError::new(
+            "TLA receipt observations disagree with framed proof logs".to_owned(),
+        ));
+    }
+    let violated = main_summary
+        .as_ref()
+        .and_then(|summary| summary.violated_invariant.as_deref());
+    verify_counterexample_binding(bundle, violated)?;
+    verify_completion(
+        bundle,
+        trace_passed,
+        detectors_passed,
+        checkpoint.as_ref(),
+        main.as_ref(),
+        main_summary.as_ref(),
+    )
+}
+
+fn derive_observations(
+    symbols: &[String],
+    trace_passed: bool,
+    detector_observations: BTreeMap<String, u64>,
+    checkpoint: Option<&RecoveryReport>,
+    main_progress: Option<crate::producer::tla_output::TlcProgress>,
+    main: Option<&crate::producer::ProcessLog>,
+    main_summary: Option<&crate::producer::tla_output::TlcSummary>,
+) -> BTreeMap<String, u64> {
     let mut derived = BTreeMap::from([
         ("configured_invariants".to_owned(), symbols.len() as u64),
         ("tool_pin_verified".to_owned(), 1),
         ("trace_sample_passed".to_owned(), u64::from(trace_passed)),
     ]);
+    if trace_passed {
+        derived.extend(
+            REQUIRED_MODEL_TRANSITIONS
+                .into_iter()
+                .map(|transition| (format!("transition_covered:{transition}"), 1)),
+        );
+    }
     derived.extend(detector_observations);
-    if let Some(checkpoint) = &checkpoint {
+    if let Some(checkpoint) = checkpoint {
         derived.extend([
             ("checkpoint_enabled".to_owned(), 1),
             (
@@ -77,39 +128,20 @@ pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), Aggregate
             ("progress_states_left".to_owned(), progress.states_left),
             ("progress_depth".to_owned(), progress.depth),
         ]);
-    } else if let Some(summary) = &main_summary {
+    } else if let Some(summary) = main_summary {
         derived.extend([
             ("generated_states".to_owned(), summary.generated_states),
             ("distinct_states".to_owned(), summary.distinct_states),
             ("states_left_on_queue".to_owned(), summary.states_left),
             ("search_depth".to_owned(), summary.search_depth),
         ]);
-        if main
-            .as_ref()
-            .is_some_and(|log| successful_log(log) && successful_summary(summary))
-        {
+        if main.is_some_and(|log| successful_log(log) && successful_summary(summary)) {
             for symbol in symbols.iter().filter(|symbol| symbol.as_str() != "TypeOK") {
                 derived.insert(format!("checked:{symbol}"), 1);
             }
         }
     }
-    if check.observations != derived {
-        return Err(AggregateError::new(
-            "TLA receipt observations disagree with framed proof logs".to_owned(),
-        ));
-    }
-    let violated = main_summary
-        .as_ref()
-        .and_then(|summary| summary.violated_invariant.as_deref());
-    verify_counterexample_binding(bundle, violated)?;
-    verify_completion(
-        bundle,
-        trace_passed,
-        detectors_passed,
-        checkpoint.as_ref(),
-        main.as_ref(),
-        main_summary.as_ref(),
-    )
+    derived
 }
 
 fn timeout_progress(
@@ -183,7 +215,72 @@ fn verify_detectors(
         let predicate_qualified = observations.entry(observation).or_insert(1);
         *predicate_qualified &= u64::from(qualified);
     }
+    if has_kind(check, MUTATION_SUITE_ARTIFACT_KIND)? {
+        let mutation = read_bound_process_log(
+            check,
+            MUTATION_SUITE_ARTIFACT_KIND,
+            MUTATION_SUITE_LABEL,
+            root,
+        )?;
+        verify_mutation_invocation(bundle, &mutation, root)?;
+        all_passed &= mutation_suite_passed(&mutation);
+    } else {
+        all_passed = false;
+    }
     Ok((observations, all_passed))
+}
+
+fn verify_mutation_invocation(
+    bundle: &ResultBundle,
+    log: &crate::producer::ProcessLog,
+    root: &Path,
+) -> Result<(), AggregateError> {
+    let expected_arguments = [
+        "test",
+        "--locked",
+        "-p",
+        "rafter-invariants",
+        "producer::tla_exec::mutation_tests",
+        "--",
+        "--ignored",
+        "--test-threads=1",
+    ];
+    let current_dir = fs::canonicalize(root)
+        .map_err(|error| AggregateError::new(format!("canonicalize mutation root: {error}")))?
+        .to_string_lossy()
+        .into_owned();
+    if log.invocation.program != "cargo"
+        || log.invocation.program_sha256 != bundle.execution.source.cargo_sha256
+        || log.invocation.arguments != expected_arguments
+        || log.invocation.current_dir != current_dir
+        || log.invocation.environment_sha256 != bundle.execution.source.environment_sha256
+    {
+        return Err(AggregateError::new(
+            "TLA mutation suite invocation is not source-bound to the exact Cargo test command"
+                .to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn mutation_suite_passed(log: &crate::producer::ProcessLog) -> bool {
+    if log.exit_code != Some(0) || log.timed_out {
+        return false;
+    }
+    log.stdout
+        .lines()
+        .any(|line| line.trim() == "running 32 tests")
+        && log.stdout.lines().any(|line| {
+            line.contains("test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured;")
+        })
+        && REQUIRED_MUTATION_TESTS.iter().all(|name| {
+            let expected = format!("test producer::tla_exec::mutation_tests::{name} ... ok");
+            log.stdout
+                .lines()
+                .filter(|line| line.trim() == expected)
+                .count()
+                == 1
+        })
 }
 
 fn verify_source_binding(
@@ -196,7 +293,7 @@ fn verify_source_binding(
         ("tla-spec", "specs/tla/raft/Raft.tla".to_owned()),
         (
             "tla-trace-spec",
-            "specs/tla/raft/RaftTraceSample.tla".to_owned(),
+            "specs/tla/raft/RaftMembershipTraceSample.tla".to_owned(),
         ),
         (
             "tla-detector-spec",
@@ -212,7 +309,7 @@ fn verify_source_binding(
         ("tla-config", format!("specs/tla/raft/{config}")),
         (
             "tla-trace-config",
-            "specs/tla/raft/RaftTraceSample.cfg".to_owned(),
+            "specs/tla/raft/RaftMembershipTraceSample.cfg".to_owned(),
         ),
     ] {
         let artifact = read_kind(check, kind, root)?;
@@ -226,177 +323,6 @@ fn verify_source_binding(
         }
     }
     Ok(())
-}
-
-fn verify_checkpoint(
-    bundle: &ResultBundle,
-    check: &crate::CheckReceipt,
-    root: &Path,
-) -> Result<Option<RecoveryReport>, AggregateError> {
-    let checkpoint_enabled = bundle.execution.plan.contract.runners["tla"]
-        .configuration
-        .contains_key("checkpoint_minutes");
-    if !checkpoint_enabled {
-        for kind in [
-            CONTRACT_KIND,
-            INVENTORY_KIND,
-            RECOVERED_CONTRACT_KIND,
-            RECOVERED_INVENTORY_KIND,
-            RECOVERY_REPORT_KIND,
-        ] {
-            if has_kind(check, kind)? {
-                return Err(AggregateError::new(format!(
-                    "non-checkpointed TLA receipt contains {kind}"
-                )));
-            }
-        }
-        return Ok(None);
-    }
-
-    let report: RecoveryReport = read_json_kind(check, RECOVERY_REPORT_KIND, root)?;
-    let contract = expected_contract(
-        &bundle.profile,
-        &bundle.execution.plan.contract.runners["tla"].configuration,
-        &check.artifacts,
-    )
-    .map_err(|error| AggregateError::new(format!("derive TLA checkpoint contract: {error}")))?;
-    let contract_sha256 = contract
-        .sha256()
-        .map_err(|error| AggregateError::new(format!("digest TLA checkpoint contract: {error}")))?;
-    if report.schema_version != 1 || report.contract_sha256 != contract_sha256 {
-        return Err(AggregateError::new(
-            "TLA checkpoint recovery report does not match the exact execution contract".to_owned(),
-        ));
-    }
-    let report_shape_valid = match report.status {
-        RecoveryStatus::Fresh => {
-            !report.recovery_attempted
-                && report.recovered_checkpoint.is_none()
-                && report.error.is_none()
-        }
-        RecoveryStatus::Compatible => {
-            report.candidate_present
-                && report.recovery_attempted
-                && report.recovered_checkpoint.is_some()
-                && report.error.is_none()
-        }
-        RecoveryStatus::Incompatible => {
-            report.candidate_present
-                && !report.recovery_attempted
-                && report.recovered_checkpoint.is_none()
-                && report.error.as_ref().is_some_and(|error| !error.is_empty())
-        }
-    };
-    if !report_shape_valid {
-        return Err(AggregateError::new(
-            "TLA checkpoint recovery report has inconsistent status fields".to_owned(),
-        ));
-    }
-
-    if report.status != RecoveryStatus::Incompatible {
-        let final_contract: CheckpointContract = read_json_kind(check, CONTRACT_KIND, root)?;
-        let final_inventory: CheckpointInventory = read_json_kind(check, INVENTORY_KIND, root)?;
-        if final_contract != contract {
-            return Err(AggregateError::new(
-                "TLA final checkpoint metadata does not match the execution contract".to_owned(),
-            ));
-        }
-        validate_inventory(&final_inventory, &contract_sha256)?;
-    } else if has_kind(check, CONTRACT_KIND)? || has_kind(check, INVENTORY_KIND)? {
-        return Err(AggregateError::new(
-            "incompatible TLA recovery must not overwrite final checkpoint metadata".to_owned(),
-        ));
-    }
-
-    if report.candidate_present && report.status != RecoveryStatus::Incompatible {
-        let recovered_contract: CheckpointContract =
-            read_json_kind(check, RECOVERED_CONTRACT_KIND, root)?;
-        let recovered_inventory: CheckpointInventory =
-            read_json_kind(check, RECOVERED_INVENTORY_KIND, root)?;
-        if recovered_contract != contract {
-            return Err(AggregateError::new(
-                "restored TLA checkpoint metadata does not match the execution contract".to_owned(),
-            ));
-        }
-        validate_inventory(&recovered_inventory, &contract_sha256)?;
-        if report.status == RecoveryStatus::Compatible
-            && recovered_inventory.latest_checkpoint != report.recovered_checkpoint
-        {
-            return Err(AggregateError::new(
-                "TLA recovery report selected a checkpoint outside the restored inventory"
-                    .to_owned(),
-            ));
-        }
-    }
-    Ok(Some(report))
-}
-
-fn validate_inventory(
-    inventory: &CheckpointInventory,
-    contract_sha256: &str,
-) -> Result<(), AggregateError> {
-    let paths = inventory
-        .files
-        .iter()
-        .map(|file| file.path.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    let top_level = inventory
-        .files
-        .iter()
-        .filter_map(|file| file.path.split_once('/').map(|(directory, _)| directory))
-        .collect::<std::collections::BTreeSet<_>>();
-    let expected_latest = top_level
-        .iter()
-        .next()
-        .map(|directory| (*directory).to_owned());
-    let has_committed_checkpoint = inventory.files.iter().any(|file| {
-        file.path
-            .rsplit('/')
-            .next()
-            .is_some_and(|name| has_tlc_extension(name, "chkpt"))
-    });
-    let has_temporary_checkpoint = inventory.files.iter().any(|file| {
-        file.path
-            .rsplit('/')
-            .next()
-            .is_some_and(|name| has_tlc_extension(name, "tmp"))
-    });
-    let valid_files = inventory.files.iter().all(|file| {
-        file.sha256.len() == 64
-            && file
-                .sha256
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            && file.path.split_once('/').is_some()
-            && !file
-                .path
-                .split('/')
-                .any(|component| component.is_empty() || component == "." || component == "..")
-    });
-    if inventory.schema_version != 1
-        || inventory.contract_sha256 != contract_sha256
-        || paths.len() != inventory.files.len()
-        || !valid_files
-        || top_level.len() > 1
-        || inventory.latest_checkpoint != expected_latest
-        || (!inventory.files.is_empty() && !has_committed_checkpoint)
-        || has_temporary_checkpoint
-    {
-        return Err(AggregateError::new(
-            "TLA checkpoint inventory is malformed or not contract-bound".to_owned(),
-        ));
-    }
-    Ok(())
-}
-
-fn has_tlc_extension(name: &str, expected: &str) -> bool {
-    let path = Path::new(name);
-    path.extension()
-        .is_some_and(|extension| extension.eq_ignore_ascii_case(expected))
-        || path
-            .file_stem()
-            .and_then(|stem| Path::new(stem).extension())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case(expected))
 }
 
 fn verify_tool_pin(
@@ -555,191 +481,6 @@ fn unique_artifact<'a>(
     }
 }
 
-fn read_process_log(
-    bundle: &ResultBundle,
-    check: &crate::CheckReceipt,
-    kind: &str,
-    label: &str,
-    root: &Path,
-) -> Result<crate::producer::ProcessLog, AggregateError> {
-    let source = read_kind(check, kind, root)?;
-    let log: crate::producer::ProcessLog = serde_json::from_str(&source)
-        .map_err(|error| AggregateError::new(format!("parse TLA process log: {error}")))?;
-    let valid_termination = log.termination.as_ref().is_some_and(|termination| {
-        termination.process_group
-            && termination.grace_ms == 30_000
-            && ((!log.timed_out && !termination.term_signal_sent && !termination.kill_signal_sent)
-                || (log.timed_out && termination.term_signal_sent))
-    });
-    if log.schema_version != 3
-        || log.label != label
-        || !log.has_complete_invocation()
-        || !valid_termination
-    {
-        return Err(AggregateError::new(format!(
-            "TLA process log {kind} has the wrong schema, label, invocation, or group termination receipt"
-        )));
-    }
-    verify_tla_invocation(bundle, check, label, &log.invocation, root)?;
-    Ok(log)
-}
-
-fn optional_process_log(
-    bundle: &ResultBundle,
-    check: &crate::CheckReceipt,
-    kind: &str,
-    label: &str,
-    root: &Path,
-) -> Result<Option<crate::producer::ProcessLog>, AggregateError> {
-    has_kind(check, kind)?
-        .then(|| read_process_log(bundle, check, kind, label, root))
-        .transpose()
-}
-
-struct InvocationTarget<'a> {
-    config: String,
-    module: &'a str,
-    workers: &'a str,
-}
-
-fn verify_tla_invocation(
-    bundle: &ResultBundle,
-    check: &crate::CheckReceipt,
-    label: &str,
-    observed: &crate::InvocationReceipt,
-    root: &Path,
-) -> Result<(), AggregateError> {
-    let repository = fs::canonicalize(root)
-        .map_err(|error| AggregateError::new(format!("canonicalize TLA root: {error}")))?;
-    let target = match label {
-        "model-check" => InvocationTarget {
-            config: configuration(bundle, "config")?.to_owned(),
-            module: "Raft.tla",
-            workers: configuration(bundle, "workers")?,
-        },
-        "trace-sample" => InvocationTarget {
-            config: "RaftTraceSample.cfg".to_owned(),
-            module: "RaftTraceSample.tla",
-            workers: "1",
-        },
-        _ => {
-            let probe = DETECTOR_PROBES
-                .iter()
-                .find(|probe| detector_label(**probe).as_deref() == Some(label))
-                .ok_or_else(|| AggregateError::new(format!("unknown TLA log label {label}")))?;
-            let config_kind = detector_config_kind(*probe).ok_or_else(|| {
-                AggregateError::new(format!(
-                    "unregistered TLA detector probe {}",
-                    probe_slug(*probe)
-                ))
-            })?;
-            let artifact = unique_artifact(check, &config_kind)?;
-            let config = fs::canonicalize(root.join(&artifact.path))
-                .map_err(|error| {
-                    AggregateError::new(format!(
-                        "canonicalize TLA detector config {}: {error}",
-                        artifact.path
-                    ))
-                })?
-                .to_string_lossy()
-                .into_owned();
-            InvocationTarget {
-                config,
-                module: "RafterInvariantDetectorNegative.tla",
-                workers: "1",
-            }
-        }
-    };
-    let current_dir = repository.join("specs/tla/raft");
-    let arguments = expected_tla_arguments(bundle, check, label, root, &repository, target)?;
-    let java_sha = bundle
-        .execution
-        .source
-        .tools
-        .get("java")
-        .map(|tool| tool.sha256.as_str());
-    if observed.program != "java"
-        || java_sha != Some(observed.program_sha256.as_str())
-        || observed.arguments != arguments
-        || observed.current_dir != current_dir.to_string_lossy()
-        || observed.environment_sha256 != bundle.execution.source.environment_sha256
-    {
-        return Err(AggregateError::new(format!(
-            "TLA process log {label} does not match the exact invocation plan"
-        )));
-    }
-    Ok(())
-}
-
-fn expected_tla_arguments(
-    bundle: &ResultBundle,
-    check: &crate::CheckReceipt,
-    label: &str,
-    root: &Path,
-    repository: &Path,
-    target: InvocationTarget<'_>,
-) -> Result<Vec<String>, AggregateError> {
-    let source_prefix = bundle.source_ref.get(..12).unwrap_or(&bundle.source_ref);
-    let checkpointed = label == "model-check"
-        && bundle.execution.plan.contract.runners["tla"]
-            .configuration
-            .contains_key("checkpoint_minutes");
-    let state_dir = if checkpointed {
-        repository
-            .join("target/rafter-invariants/tla-checkpoint")
-            .join(&bundle.profile)
-            .join("states")
-    } else {
-        repository
-            .join("target/rafter-invariants/tla")
-            .join(source_prefix)
-            .join(&bundle.profile)
-            .join(label)
-    };
-    let mut arguments = Vec::new();
-    if checkpointed {
-        arguments.push(format!("-Xmx{}", configuration(bundle, "max_heap")?));
-    }
-    arguments.extend([
-        "-XX:+UseParallelGC".to_owned(),
-        "-cp".to_owned(),
-        repository
-            .join("tools/cache/tla2tools.jar")
-            .to_string_lossy()
-            .into_owned(),
-        "tlc2.TLC".to_owned(),
-        "-tool".to_owned(),
-        "-workers".to_owned(),
-        target.workers.to_owned(),
-        "-seed".to_owned(),
-        configuration(bundle, "seed")?.to_owned(),
-        "-fp".to_owned(),
-        "0".to_owned(),
-        "-metadir".to_owned(),
-        state_dir.to_string_lossy().into_owned(),
-    ]);
-    if checkpointed {
-        arguments.extend([
-            "-checkpoint".to_owned(),
-            configuration(bundle, "checkpoint_minutes")?.to_owned(),
-            "-gzip".to_owned(),
-        ]);
-        let report: RecoveryReport = read_json_kind(check, RECOVERY_REPORT_KIND, root)?;
-        if let Some(checkpoint) = report.recovered_checkpoint {
-            arguments.extend([
-                "-recover".to_owned(),
-                state_dir.join(checkpoint).to_string_lossy().into_owned(),
-            ]);
-        }
-    }
-    arguments.extend([
-        "-config".to_owned(),
-        target.config,
-        target.module.to_owned(),
-    ]);
-    Ok(arguments)
-}
-
 fn verify_completion(
     bundle: &ResultBundle,
     trace_passed: bool,
@@ -841,101 +582,8 @@ fn successful_detector(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::{checksum_matches, successful_detector, validate_inventory};
-    use crate::producer::{
-        tla_checkpoint::{CheckpointFile, CheckpointInventory},
-        tla_output::TlcSummary,
-        ProcessLog,
-    };
-    use crate::InvocationReceipt;
-    use std::collections::BTreeMap;
-
-    const SHA: &str = "33de7da9ce1b7fffb9d1c184021178dbb051747be48504e65c584c423721a32e";
-
-    #[test]
-    fn tool_checksum_binding_is_exact_and_unique() {
-        assert!(checksum_matches(
-            &format!("# pinned\n{SHA}  tla2tools.jar\n"),
-            SHA
-        ));
-        assert!(!checksum_matches(
-            &format!("{SHA}  tla2tools.jar\n{SHA}  tla2tools.jar\n"),
-            SHA
-        ));
-        assert!(!checksum_matches(
-            &format!("{}  tla2tools.jar\n", "0".repeat(64)),
-            SHA
-        ));
-    }
-
-    #[test]
-    fn detector_counterexample_identity_must_match_its_predicate() {
-        let log = ProcessLog {
-            schema_version: 2,
-            label: "detector-negative-ElectionSafety".to_owned(),
-            invocation: InvocationReceipt {
-                program: "java".to_owned(),
-                program_sha256: "0".repeat(64),
-                arguments: Vec::new(),
-                current_dir: ".".to_owned(),
-                environment: BTreeMap::new(),
-                environment_sha256: "0".repeat(64),
-            },
-            exit_code: Some(12),
-            timed_out: false,
-            termination: None,
-            duration_ms: 1,
-            peak_rss_kib: 1,
-            stdout: String::new(),
-            stderr: String::new(),
-        };
-        let mut summary = TlcSummary {
-            distinct_states: 2,
-            states_left: 0,
-            search_depth: 2,
-            process_finished: true,
-            violated_invariant: Some("ElectionSafety".to_owned()),
-            ..TlcSummary::default()
-        };
-        assert!(successful_detector(&log, &summary, "ElectionSafety"));
-        assert!(!successful_detector(&log, &summary, "LogMatching"));
-        summary.violated_invariant = Some("ExpectedViolation".to_owned());
-        assert!(!successful_detector(&log, &summary, "ElectionSafety"));
-    }
-
-    #[test]
-    fn checkpoint_inventory_rejects_partial_or_multiple_run_directories() {
-        let contract = "1".repeat(64);
-        let complete = CheckpointInventory {
-            schema_version: 1,
-            contract_sha256: contract.clone(),
-            latest_checkpoint: Some("run-a".to_owned()),
-            files: vec![CheckpointFile {
-                path: "run-a/queue.chkpt".to_owned(),
-                sha256: "2".repeat(64),
-                size_bytes: 0,
-            }],
-        };
-        assert!(validate_inventory(&complete, &contract).is_ok());
-
-        let mut partial = complete.clone();
-        partial.files.push(CheckpointFile {
-            path: "run-a/queue.tmp".to_owned(),
-            sha256: "3".repeat(64),
-            size_bytes: 1,
-        });
-        assert!(validate_inventory(&partial, &contract).is_err());
-
-        let mut multiple = complete;
-        multiple.files.push(CheckpointFile {
-            path: "run-b/queue.chkpt".to_owned(),
-            sha256: "4".repeat(64),
-            size_bytes: 1,
-        });
-        assert!(validate_inventory(&multiple, &contract).is_err());
-    }
-}
+#[path = "artifact_verify_tla/unit_tests.rs"]
+mod tests;
 
 #[cfg(test)]
 #[path = "artifact_verify_tla_tests.rs"]
