@@ -7,7 +7,7 @@ use crate::producer::tla_checkpoint::{
 };
 use crate::producer::tla_output::{
     detector_config_kind, detector_log_kind, detector_observation, DETECTOR_PROBES,
-    REGISTERED_PREDICATES,
+    MUTATION_SUITE_ARTIFACT_KIND, REGISTERED_PREDICATES, REQUIRED_MODEL_TRANSITIONS,
 };
 use crate::{CheckCompletion, EvidenceDescriptor, EvidenceStatus, ResultBundle};
 
@@ -144,6 +144,11 @@ fn validate_pass(
             .iter()
             .filter_map(|predicate| detector_observation(predicate)),
     );
+    expected_observations.extend(
+        REQUIRED_MODEL_TRANSITIONS
+            .iter()
+            .map(|transition| format!("transition_covered:{transition}")),
+    );
     expected_observations.extend(required.values().map(|symbol| format!("checked:{symbol}")));
     let checkpoint_enabled = contract.configuration.contains_key("checkpoint_minutes");
     if checkpoint_enabled {
@@ -162,6 +167,9 @@ fn validate_pass(
             detector_observation(predicate)
                 .is_none_or(|observation| observed(check, &observation) != 1)
         })
+        || REQUIRED_MODEL_TRANSITIONS
+            .iter()
+            .any(|transition| observed(check, &format!("transition_covered:{transition}")) != 1)
         || observed(check, "generated_states") < minimum_generated
         || observed(check, "distinct_states") < minimum_distinct
         || observed(check, "generated_states") < observed(check, "distinct_states")
@@ -215,6 +223,7 @@ fn required_proof_artifact_kinds(
         "tla-config",
         "tla-trace-config",
         "tla-detector-config",
+        MUTATION_SUITE_ARTIFACT_KIND,
     ]
     .into_iter()
     .map(str::to_owned)
@@ -261,7 +270,7 @@ mod tests {
     #[test]
     fn passing_receipt_requires_two_artifacts_per_detector_probe() {
         let kinds = required_proof_artifact_kinds(false, false);
-        assert_eq!(kinds.len(), 12 + 2 * DETECTOR_PROBES.len());
+        assert_eq!(kinds.len(), 13 + 2 * DETECTOR_PROBES.len());
         assert!(!kinds.contains("tla-detector-log"));
         for probe in DETECTOR_PROBES {
             assert!(kinds.contains(&detector_log_kind(probe).expect("registered probe")));
