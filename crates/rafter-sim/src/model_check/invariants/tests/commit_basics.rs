@@ -6,6 +6,7 @@ use super::super::commit::{
 };
 use super::*;
 use crate::model_check::observations::Observation;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq, oracle_expect_err};
 
 #[test]
 fn committed_prefix_checker_detects_divergent_committed_entries() {
@@ -18,13 +19,15 @@ fn committed_prefix_checker_detects_divergent_committed_entries() {
             .expect("committed divergent seed is valid");
     }
 
-    let failure = check_cross_node_committed_prefix_agreement(&cluster, &[])
-        .expect_err("divergent committed entries must be detected");
-    assert_eq!(
+    let failure = oracle_expect_err!(
+        check_cross_node_committed_prefix_agreement(&cluster, &[]),
+        "divergent committed entries must be detected",
+    );
+    oracle_assert_eq!(
         failure.invariant(),
         catalog::LG_04_COMMITTED_PREFIX_STABILITY
     );
-    assert!(
+    oracle_assert!(
         failure.message.contains("committed prefix diverged"),
         "unexpected failure message: {}",
         failure.message
@@ -35,19 +38,21 @@ fn committed_prefix_checker_detects_divergent_committed_entries() {
 fn commit_index_bound_checker_rejects_commit_beyond_local_last_log() {
     let cluster = one_node_cluster();
 
-    let failure = check_commit_index_within_local_log_bounds_shape(
-        &cluster,
-        NodeId(1),
-        LogIndex(2),
-        LogIndex(1),
-        &[],
-    )
-    .expect_err("commit beyond local log coverage must be detected");
-    assert_eq!(
+    let failure = oracle_expect_err!(
+        check_commit_index_within_local_log_bounds_shape(
+            &cluster,
+            NodeId(1),
+            LogIndex(2),
+            LogIndex(1),
+            &[],
+        ),
+        "commit beyond local log coverage must be detected",
+    );
+    oracle_assert_eq!(
         failure.invariant(),
         catalog::CM_01_COMMIT_INDEX_MONOTONICITY_AND_BOUNDS
     );
-    assert!(failure.message.contains("beyond local last log index 1"));
+    oracle_assert!(failure.message.contains("beyond local last log index 1"));
 }
 
 #[test]
@@ -57,13 +62,15 @@ fn commit_index_monotonicity_detects_floor_regression() {
         .commit_floor_by_node_mut()
         .insert(NodeId(1), LogIndex(2));
 
-    let failure = check_commit_index_monotonicity(&state, &[])
-        .expect_err("commit index regression must be detected");
-    assert_eq!(
+    let failure = oracle_expect_err!(
+        check_commit_index_monotonicity(&state, &[]),
+        "commit index regression must be detected",
+    );
+    oracle_assert_eq!(
         failure.invariant(),
         catalog::CM_01_COMMIT_INDEX_MONOTONICITY_AND_BOUNDS
     );
-    assert!(
+    oracle_assert!(
         failure.message.contains("commit index regressed"),
         "unexpected failure message: {}",
         failure.message
@@ -81,13 +88,15 @@ fn committed_configuration_monotonicity_detects_regression() {
         }),
     );
 
-    let failure = check_committed_configuration_index_monotonicity(&state, &[])
-        .expect_err("committed configuration regression must be detected");
-    assert_eq!(
+    let failure = oracle_expect_err!(
+        check_committed_configuration_index_monotonicity(&state, &[]),
+        "committed configuration regression must be detected",
+    );
+    oracle_assert_eq!(
         failure.invariant(),
         catalog::MB_04_MONOTONE_CONFIGURATION_TRANSITION_AND_IDENTITY
     );
-    assert!(
+    oracle_assert!(
         failure
             .message
             .contains("committed configuration regressed"),
@@ -107,13 +116,15 @@ fn committed_configuration_identity_detects_same_index_conflict() {
         }),
     );
 
-    let failure = check_committed_configuration_identity(&state, &[])
-        .expect_err("same-index committed configuration identity conflict must be detected");
-    assert_eq!(
+    let failure = oracle_expect_err!(
+        check_committed_configuration_identity(&state, &[]),
+        "same-index committed configuration identity conflict must be detected",
+    );
+    oracle_assert_eq!(
         failure.invariant(),
         catalog::MB_04_MONOTONE_CONFIGURATION_TRANSITION_AND_IDENTITY
     );
-    assert!(failure
+    oracle_assert!(failure
         .message
         .contains("committed configuration identity changed at index 1"));
 }
@@ -175,18 +186,20 @@ fn serialized_configuration_checker_detects_two_uncommitted_configurations() {
         ));
     }
 
-    let failure = check_no_overlapping_uncommitted_configurations_in_bootstrap(
-        &cluster,
-        NodeId(1),
-        &bootstrap,
-        &[],
-    )
-    .expect_err("two uncommitted configurations must violate MB-03");
-    assert_eq!(
+    let failure = oracle_expect_err!(
+        check_no_overlapping_uncommitted_configurations_in_bootstrap(
+            &cluster,
+            NodeId(1),
+            &bootstrap,
+            &[],
+        ),
+        "two uncommitted configurations must violate MB-03",
+    );
+    oracle_assert_eq!(
         failure.invariant(),
         catalog::MB_03_SERIALIZED_CONFIGURATION_CHANGES
     );
-    assert!(
+    oracle_assert!(
         failure
             .message
             .contains("2 uncommitted configuration entries"),

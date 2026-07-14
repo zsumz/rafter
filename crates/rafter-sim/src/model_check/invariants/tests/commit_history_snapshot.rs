@@ -40,14 +40,9 @@ fn leader_completeness_accepts_committed_prefix_hidden_by_witnessed_snapshot() {
         .inject_bootstrap_state(NodeId(1), bootstrap_with_snapshot(Term(3), snapshot, &[]))
         .expect("compacted bootstrap is valid");
     state.refresh_log_history();
-    state
-        .election_history_mut()
-        .record_election(election_certificate(
-            3,
-            1,
-            stable_membership(&[1], &[]),
-            &[1],
-        ));
+    let certificate =
+        election_certificate_with_observed_prefix(&state, 3, 1, stable_membership(&[1], &[]), &[1]);
+    state.election_history_mut().record_election(certificate);
 
     state.record_leader_completeness_observation();
 
@@ -155,14 +150,14 @@ fn snapshot_transfer_propagates_logical_prefix_witness_to_installed_follower() {
         "node 2 should install the leader's witnessed snapshot transfer"
     );
 
-    state
-        .election_history_mut()
-        .record_election(election_certificate(
-            4,
-            2,
-            stable_membership(&[1, 2, 3], &[]),
-            &[1, 2],
-        ));
+    let certificate = election_certificate_with_observed_prefix(
+        &state,
+        4,
+        2,
+        stable_membership(&[1, 2, 3], &[]),
+        &[1, 2],
+    );
+    state.election_history_mut().record_election(certificate);
     state.record_leader_completeness_observation();
 
     check_commit_history(&state, &[])
@@ -217,4 +212,25 @@ fn drive_until_node_two_installs_snapshot(state: &mut ExplorationState, snapshot
         }
     }
     panic!("node 2 did not install the witnessed snapshot transfer");
+}
+
+fn election_certificate_with_observed_prefix(
+    state: &ExplorationState,
+    term: u64,
+    leader: u64,
+    membership: MembershipConfig,
+    grants: &[u64],
+) -> ElectionCertificate {
+    let leader_id = NodeId(leader);
+    let mut certificate = election_certificate(term, leader, membership, grants);
+    let view = state
+        .logical_log_history()
+        .observed_view(state.cluster(), leader_id);
+    certificate.logical_prefix_at_election =
+        LogicalLogHistory::prefix_from_view(&view, state.cluster().last_log_index(leader_id));
+    assert!(
+        certificate.logical_prefix_at_election.is_some(),
+        "fixture election must have a complete logical-prefix witness"
+    );
+    certificate
 }

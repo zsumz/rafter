@@ -1,18 +1,22 @@
 use std::collections::BTreeSet;
 
 use rafter::{
-    AppendEntries, AppendEntriesResponse, BootstrapLogEntry, CommittedConfiguration,
-    ConfigurationEntry, ConfigurationId, LogEntry, LogEntryKind, MembershipConfig, MembershipSet,
-    Message, NodeConfig, NodeId, PendingSnapshotTransfer, PreVote, PreVoteResponse, RequestVote,
-    RequestVoteResponse, SharedEntries, SnapshotTransferId, Term,
+    AppendEntries, AppendEntriesResponse, BootstrapLogEntry, BootstrapState,
+    CommittedConfiguration, ConfigurationEntry, ConfigurationId, LogEntry, LogEntryKind,
+    MembershipConfig, MembershipSet, Message, Node, NodeConfig, NodeId, Output,
+    PendingSnapshotTransfer, PreVote, PreVoteResponse, RequestVote, RequestVoteResponse,
+    SharedEntries, SnapshotTransferId, Term,
 };
 
 use super::super::helpers::{
     bootstrap_state, bootstrap_with_snapshot, elect_node_one, test_snapshot, three_node_configs,
 };
+use super::super::scheduling::Operation;
 use super::super::state::{
-    ClientRead, ClientReadProof, ClientWrite, ClientWriteUnknownReason, CommitTransitionContext,
-    ElectionCertificate, LogPrefixWitness, LogicalLogHistory, LogicalLogView,
+    apply_snapshot_bootstrap_seeds, apply_to_state, restart_node_losing_application_state,
+    rewind_execution_cursor_for_fixture, ClientRead, ClientReadProof, ClientWrite,
+    ClientWriteUnknownReason, CommitTransitionContext, ConfigurationAppend, ElectionCertificate,
+    LogPrefixWitness, LogicalLogHistory, LogicalLogView, SnapshotBootstrapSeed,
 };
 use super::*;
 use crate::{
@@ -57,6 +61,10 @@ fn execution_witness(
         kind,
     };
     let mut resulting_state = prior_state.clone();
+    let emitted_application_payload = match &entry.kind {
+        LogEntryKind::Application(payload) => Some(payload.clone()),
+        LogEntryKind::Configuration(_) | LogEntryKind::Noop => None,
+    };
     match &entry.kind {
         LogEntryKind::Application(payload) => {
             resulting_state.application_value.clone_from(payload);
@@ -75,6 +83,7 @@ fn execution_witness(
         application_epoch,
         commit_index_at_emit: LogIndex(index),
         entry,
+        emitted_application_payload,
         prior_state,
         resulting_state,
     }
@@ -136,6 +145,7 @@ fn election_certificate(
         granted_by: grant_set(grants),
         last_log_index: LogIndex::ZERO,
         last_log_term: Term::default(),
+        logical_prefix_at_election: Some(LogPrefixWitness::default()),
     }
 }
 

@@ -375,30 +375,32 @@ pub(super) fn check_eligible_leader_certificates(
     state: &ExplorationState,
     trace: &[Action],
 ) -> Result<(), Failure> {
-    for (term, certificate) in &state.election_history().elected_by_term {
-        if certificate.term != *term {
-            return Err(Failure {
-                kind: crate::model_check::FailureKind::InvariantViolation,
-                invariant: catalog::EL_05_ELECTION_SAFETY_OVER_HISTORY,
-                message: format!(
-                    "term {term} stores an election certificate for term {}",
-                    certificate.term
-                ),
-                trace: trace.to_vec(),
-                state: summarize(state.cluster()),
-            });
-        }
-        if !certificate.membership.contains_voter(certificate.leader_id) {
-            return Err(Failure {
-                kind: crate::model_check::FailureKind::InvariantViolation,
-                invariant: catalog::EL_06_LEADER_HAS_VALID_ELECTION_QUORUM,
-                message: format!(
-                    "{} became leader in term {} outside the effective voting membership",
-                    certificate.leader_id, certificate.term
-                ),
-                trace: trace.to_vec(),
-                state: summarize(state.cluster()),
-            });
+    for (term, certificates) in &state.election_history().elected_by_term {
+        for certificate in certificates {
+            if certificate.term != *term {
+                return Err(Failure {
+                    kind: crate::model_check::FailureKind::InvariantViolation,
+                    invariant: catalog::EL_05_ELECTION_SAFETY_OVER_HISTORY,
+                    message: format!(
+                        "term {term} stores an election certificate for term {}",
+                        certificate.term
+                    ),
+                    trace: trace.to_vec(),
+                    state: summarize(state.cluster()),
+                });
+            }
+            if !certificate.membership.contains_voter(certificate.leader_id) {
+                return Err(Failure {
+                    kind: crate::model_check::FailureKind::InvariantViolation,
+                    invariant: catalog::EL_06_LEADER_HAS_VALID_ELECTION_QUORUM,
+                    message: format!(
+                        "{} became leader in term {} outside the effective voting membership",
+                        certificate.leader_id, certificate.term
+                    ),
+                    trace: trace.to_vec(),
+                    state: summarize(state.cluster()),
+                });
+            }
         }
     }
 
@@ -409,7 +411,7 @@ pub(super) fn check_election_certificate_voters(
     state: &ExplorationState,
     trace: &[Action],
 ) -> Result<(), Failure> {
-    for certificate in state.election_history().elected_by_term.values() {
+    for certificate in state.election_history().elected_by_term.values().flatten() {
         if let Some(non_voter) = certificate
             .granted_by
             .iter()
@@ -450,7 +452,7 @@ fn check_election_quorums(
     trace: &[Action],
     joint: bool,
 ) -> Result<(), Failure> {
-    for certificate in state.election_history().elected_by_term.values() {
+    for certificate in state.election_history().elected_by_term.values().flatten() {
         let is_joint = matches!(certificate.membership, MembershipConfig::Joint(_));
         if is_joint != joint {
             continue;

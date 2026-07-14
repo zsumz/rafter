@@ -3,6 +3,7 @@ use super::super::history::{
 };
 use super::*;
 use crate::model_check::observations::Observation;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq, oracle_expect_err};
 
 #[test]
 fn leader_append_only_detects_leader_term_truncation() {
@@ -29,10 +30,12 @@ fn leader_append_only_detects_leader_term_truncation() {
         .insert((leader_id, leader_term), previous);
     record_log_history_observation(&mut state);
 
-    let failure =
-        check_log_history(&state, &[]).expect_err("leader append-only violation must be reported");
-    assert_eq!(failure.invariant(), catalog::LG_01_LEADER_APPEND_ONLY);
-    assert!(
+    let failure = oracle_expect_err!(
+        check_log_history(&state, &[]),
+        "leader append-only violation must be reported",
+    );
+    oracle_assert_eq!(failure.invariant(), catalog::LG_01_LEADER_APPEND_ONLY);
+    oracle_assert!(
         failure.message.contains("rewrote or deleted"),
         "unexpected failure message: {}",
         failure.message
@@ -50,13 +53,15 @@ fn append_entries_oracle_rejects_success_without_matching_prev() {
         append_success(LogIndex(2)),
     );
 
-    let failure = check_append_entries_prev_log_acceptance(&state, &[])
-        .expect_err("success with a mismatched prev term must be detected");
-    assert_eq!(
+    let failure = oracle_expect_err!(
+        check_append_entries_prev_log_acceptance(&state, &[]),
+        "success with a mismatched prev term must be detected",
+    );
+    oracle_assert_eq!(
         failure.invariant(),
         catalog::LG_02_TRUTHFUL_APPEND_ENTRIES_ACCEPTANCE
     );
-    assert!(
+    oracle_assert!(
         failure.message.contains("without matching prev"),
         "unexpected failure message: {}",
         failure.message
@@ -85,13 +90,15 @@ fn append_entries_oracle_detects_success_without_storing_final_entry() {
     let mut state = ExplorationState::new(after);
     state.record_log_transition(&before, Some(&delivered), &emitted);
 
-    let failure = check_append_entries_stored_suffix_acceptance(&state, &[])
-        .expect_err("success without storing the final entry must be detected");
-    assert_eq!(
+    let failure = oracle_expect_err!(
+        check_append_entries_stored_suffix_acceptance(&state, &[]),
+        "success without storing the final entry must be detected",
+    );
+    oracle_assert_eq!(
         failure.invariant(),
         catalog::LG_02_TRUTHFUL_APPEND_ENTRIES_ACCEPTANCE
     );
-    assert!(
+    oracle_assert!(
         failure.message.contains("without storing leader entry"),
         "unexpected failure message: {}",
         failure.message
@@ -169,10 +176,12 @@ fn log_matching_detects_equal_index_term_with_different_prefixes() {
     let mut state = ExplorationState::new(cluster);
     record_log_history_observation(&mut state);
 
-    let failure = check_log_history(&state, &[])
-        .expect_err("log matching must detect equal index/term with different prefixes");
-    assert_eq!(failure.invariant(), catalog::LG_03_LOG_MATCHING);
-    assert!(
+    let failure = oracle_expect_err!(
+        check_log_history(&state, &[]),
+        "log matching must detect equal index/term with different prefixes",
+    );
+    oracle_assert_eq!(failure.invariant(), catalog::LG_03_LOG_MATCHING);
+    oracle_assert!(
         failure.message.contains("different prefix"),
         "unexpected failure message: {}",
         failure.message

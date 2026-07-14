@@ -4,6 +4,7 @@ use super::super::history::check_committed_prefix_history_stability;
 use super::commit_history::{app_entry, bootstrap_with_log, state_with_bootstraps, voter_configs};
 use super::*;
 use crate::model_check::observations::Observation;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq, oracle_expect_err};
 
 #[test]
 fn shorter_matching_commit_observation_preserves_canonical_ledger_identity() {
@@ -82,13 +83,15 @@ fn shorter_commit_mismatch_is_checked_against_canonical_ledger() {
         ],
     );
 
-    let failure = check_committed_prefix_history_stability(&state, &[])
-        .expect_err("shorter divergent committed prefix must be rejected");
-    assert_eq!(
+    let failure = oracle_expect_err!(
+        check_committed_prefix_history_stability(&state, &[]),
+        "shorter divergent committed prefix must be rejected",
+    );
+    oracle_assert_eq!(
         failure.invariant(),
         catalog::LG_04_COMMITTED_PREFIX_STABILITY
     );
-    assert!(failure.message.contains("at or before 1"));
+    oracle_assert!(failure.message.contains("at or before 1"));
 }
 
 #[test]
@@ -116,7 +119,7 @@ fn leader_completeness_checks_prior_term_entry_hidden_by_newer_suffix() {
     state
         .election_history_mut()
         .elected_by_term
-        .insert(certificate.term, certificate);
+        .insert(certificate.term, vec![certificate]);
 
     state.record_leader_completeness_observation();
 
@@ -133,7 +136,7 @@ fn later_commit_does_not_retroactively_invalidate_an_earlier_leader() {
     state
         .election_history_mut()
         .elected_by_term
-        .insert(certificate.term, certificate);
+        .insert(certificate.term, vec![certificate]);
 
     state
         .inject_bootstrap_state(
@@ -231,7 +234,7 @@ fn seeded_current_term_does_not_masquerade_as_commit_authority() {
     state
         .election_history_mut()
         .elected_by_term
-        .insert(certificate.term, certificate);
+        .insert(certificate.term, vec![certificate]);
 
     state.record_leader_completeness_observation();
 

@@ -56,9 +56,10 @@ fn higher_term_follower_commit_is_not_attributed_to_old_leader_authority() {
 }
 
 #[test]
-fn diagnostic_commit_certificates_do_not_change_the_state_hash() {
+fn commit_certificates_change_verifier_hash_but_not_protocol_hash() {
     let base = state_with_committed_single_node_entry();
     let mut with_certificate = base.clone();
+    let protocol_before = protocol_identity(&base);
     let mut context = with_certificate.commit_transition_context();
     let leader = context
         .get_mut(&NodeId(1))
@@ -75,9 +76,10 @@ fn diagnostic_commit_certificates_do_not_change_the_state_hash() {
             .commit_history()
             .certificates
             .contains_key(&(NodeId(1), Term(1), LogIndex(1))),
-        "test setup should differ by a diagnostic commit certificate"
+        "test setup should differ by a commit certificate consumed by the verifier"
     );
-    assert_eq!(state_hash(&base), state_hash(&with_certificate));
+    assert_ne!(state_identity(&base), state_identity(&with_certificate));
+    assert_eq!(protocol_before, protocol_identity(&with_certificate));
 }
 
 fn state_with_committed_single_node_entry() -> ExplorationState {
@@ -106,8 +108,29 @@ fn state_with_committed_single_node_entry() -> ExplorationState {
     state
 }
 
-fn state_hash(state: &ExplorationState) -> u64 {
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+fn state_identity(state: &ExplorationState) -> Vec<u8> {
+    let mut hasher = HashStream::default();
     state.hash(&mut hasher);
-    hasher.finish()
+    hasher.bytes
+}
+
+fn protocol_identity(state: &ExplorationState) -> Vec<u8> {
+    let mut hasher = HashStream::default();
+    state.cluster().hash_protocol_state(&mut hasher);
+    hasher.bytes
+}
+
+#[derive(Default)]
+struct HashStream {
+    bytes: Vec<u8>,
+}
+
+impl Hasher for HashStream {
+    fn finish(&self) -> u64 {
+        0
+    }
+
+    fn write(&mut self, bytes: &[u8]) {
+        self.bytes.extend_from_slice(bytes);
+    }
 }

@@ -1,12 +1,14 @@
 use super::super::applied::{
-    check_applied_commit_bound, check_applied_exactly_once, check_execution_history_agreement,
+    check_applied_commit_bound, check_applied_cursor_monotonicity, check_applied_exactly_once,
+    check_execution_history_agreement,
 };
 use super::super::client::check_client_history_read_write_invariants;
 use super::*;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq, oracle_expect_err};
 
 #[test]
 fn application_loss_restart_preserves_immutable_event_history_positions() {
-    let mut cluster = one_node_cluster();
+    let mut cluster = two_node_cluster();
     cluster.applied.push(Applied {
         node_id: NodeId(1),
         application_epoch: 0,
@@ -24,6 +26,7 @@ fn application_loss_restart_preserves_immutable_event_history_positions() {
     cluster.snapshot_installs.push(SnapshotInstalled {
         node_id: NodeId(2),
         application_epoch: 0,
+        commit_index_at_emit: LogIndex(2),
         last_included_index: LogIndex(2),
         last_included_term: Term(1),
         committed_membership: None,
@@ -69,6 +72,73 @@ fn application_loss_restart_preserves_immutable_event_history_positions() {
 }
 
 #[test]
+fn application_loss_epoch_retains_snapshot_applied_floor() {
+    let mut state = ExplorationState::new(one_node_cluster());
+    let (snapshot, payload) = test_snapshot(1, 2, 1, 2, b"snapshot floor");
+    state.inject_snapshot_payload(NodeId(1), &snapshot, payload);
+    let bootstrap = bootstrap_with_snapshot(Term(2), snapshot, &[]);
+    state
+        .inject_bootstrap_state(NodeId(1), bootstrap)
+        .expect("snapshot-backed fixture state is valid");
+    restart_node_losing_application_state(&mut state, NodeId(1), &[])
+        .expect("snapshot-backed application-loss restart is valid");
+    oracle_assert_eq!(state.cluster().application_epoch(NodeId(1)), 1);
+
+    state.inject_applied_record(Applied {
+        node_id: NodeId(1),
+        application_epoch: 1,
+        commit_index_at_emit: LogIndex(2),
+        index: LogIndex(1),
+        payload: b"below snapshot floor".to_vec().into(),
+    });
+
+    let failure = oracle_expect_err!(
+        check_applied_cursor_monotonicity(state.cluster(), &[]),
+        "new application epoch must retain its surviving snapshot floor",
+    );
+    oracle_assert_eq!(
+        failure.invariant(),
+        catalog::AP_01_ORDERED_EXACTLY_ONCE_COMMITTED_APPLICATION
+    );
+    oracle_assert!(failure
+        .message
+        .contains("applied index 1 at or below prior applied/snapshot index 2"));
+}
+
+#[test]
+fn snapshot_bootstrap_seed_initializes_application_epoch_floor() {
+    let mut state = ExplorationState::new(one_node_cluster());
+    let (snapshot, payload) = test_snapshot(1, 2, 1, 2, b"seeded snapshot floor");
+    let bootstrap = bootstrap_with_snapshot(Term(2), snapshot.clone(), &[]);
+    apply_snapshot_bootstrap_seeds(
+        &mut state,
+        vec![SnapshotBootstrapSeed {
+            node_id: NodeId(1),
+            snapshot,
+            payload,
+            bootstrap,
+        }],
+    )
+    .expect("snapshot bootstrap seed is valid");
+
+    state.inject_applied_record(Applied {
+        node_id: NodeId(1),
+        application_epoch: 0,
+        commit_index_at_emit: LogIndex(2),
+        index: LogIndex(1),
+        payload: b"below seeded snapshot floor".to_vec().into(),
+    });
+
+    let failure = oracle_expect_err!(
+        check_applied_cursor_monotonicity(state.cluster(), &[]),
+        "snapshot-backed initial epoch must begin at the seeded boundary",
+    );
+    oracle_assert!(failure
+        .message
+        .contains("applied index 1 at or below prior applied/snapshot index 2"));
+}
+
+#[test]
 fn ordinary_restart_preserves_application_epoch() {
     let mut cluster = one_node_cluster();
     cluster
@@ -91,29 +161,55 @@ fn ordinary_restart_preserves_application_epoch() {
 }
 
 #[test]
-fn applied_order_detects_duplicate_apply_within_one_epoch() {
+fn applied_order_detects_duplicate_execution_within_one_epoch() {
     let mut cluster = one_node_cluster();
-    for payload in [b"first".as_slice(), b"duplicate".as_slice()] {
-        cluster.applied.push(Applied {
-            node_id: NodeId(1),
-            application_epoch: 0,
-            commit_index_at_emit: LogIndex(1),
-            index: LogIndex(1),
-            payload: payload.to_vec().into(),
-        });
-    }
+    let mut bootstrap = bootstrap_state(Term(1), &[(1, Term(1), b"applied-once")]);
+    bootstrap.commit_index = LogIndex(1);
+    cluster
+        .restart_node_from_bootstrap(NodeId(1), bootstrap)
+        .expect("committed bootstrap is valid");
+    assert_eq!(cluster.execution_history().len(), 1);
+    let mut state = ExplorationState::new(cluster);
 
-    let failure = check_applied_exactly_once(&cluster, &[])
-        .expect_err("same-index apply in one epoch must fail AP-01");
-    assert_eq!(
+    rewind_execution_cursor_for_fixture(&mut state, NodeId(1));
+    apply_to_state(&mut state, Operation::Tick(NodeId(1)));
+
+    let failure = oracle_expect_err!(
+        check_applied_exactly_once(state.cluster(), &[]),
+        "same-index execution in one epoch must fail AP-01",
+    );
+    oracle_assert_eq!(
         failure.invariant(),
         catalog::AP_01_ORDERED_EXACTLY_ONCE_COMMITTED_APPLICATION
     );
-    assert!(
-        failure.message.contains("epoch 0 applied index 1"),
+    oracle_assert!(
+        failure.message.contains("epoch 0 executed logical index 1"),
         "unexpected failure message: {}",
         failure.message
     );
+}
+
+#[test]
+fn applied_exactly_once_includes_configuration_entries() {
+    let mut cluster = one_node_cluster();
+    let configuration = ConfigurationEntry::stable(
+        ConfigurationId(9),
+        MembershipSet::new(ids(&[1, 2, 3]), Vec::new()).expect("fixture membership is valid"),
+    );
+    let witness = execution_witness(
+        1,
+        0,
+        1,
+        1,
+        LogEntryKind::Configuration(configuration),
+        initial_reference_state(),
+    );
+    cluster.execution_history.push(witness.clone());
+    cluster.execution_history.push(witness);
+
+    let failure = check_applied_exactly_once(&cluster, &[])
+        .expect_err("duplicate configuration execution must fail AP-01");
+    assert!(failure.message.contains("epoch 0 executed logical index 1"));
 }
 
 #[test]
@@ -127,19 +223,61 @@ fn applied_order_detects_apply_before_commit() {
         payload: b"uncommitted".to_vec().into(),
     });
 
-    let failure = check_applied_commit_bound(&cluster, &[])
-        .expect_err("Apply above the emit-time commit index must fail AP-01");
-    assert_eq!(
+    let failure = oracle_expect_err!(
+        check_applied_commit_bound(&cluster, &[]),
+        "Apply above the emit-time commit index must fail AP-01",
+    );
+    oracle_assert_eq!(
         failure.invariant(),
         catalog::AP_01_ORDERED_EXACTLY_ONCE_COMMITTED_APPLICATION
     );
-    assert!(
+    oracle_assert!(
         failure
             .message
             .contains("applied index 2 when its commit index at emit was 1"),
         "unexpected failure message: {}",
         failure.message
     );
+
+    for kind in [
+        LogEntryKind::Noop,
+        LogEntryKind::Configuration(ConfigurationEntry::stable(
+            ConfigurationId(10),
+            MembershipSet::new(ids(&[1, 2, 3]), Vec::new()).expect("fixture membership is valid"),
+        )),
+    ] {
+        let mut cluster = one_node_cluster();
+        let mut witness = execution_witness(1, 0, 2, 1, kind, initial_reference_state());
+        witness.commit_index_at_emit = LogIndex(1);
+        cluster.execution_history.push(witness);
+
+        let failure = oracle_expect_err!(
+            check_applied_commit_bound(&cluster, &[]),
+            "non-application execution above the emit-time commit index must fail AP-01",
+        );
+        oracle_assert!(failure
+            .message
+            .contains("executed index 2 when its commit index at emit was 1"));
+    }
+
+    let mut cluster = one_node_cluster();
+    cluster.snapshot_installs.push(SnapshotInstalled {
+        node_id: NodeId(1),
+        application_epoch: 0,
+        commit_index_at_emit: LogIndex(1),
+        last_included_index: LogIndex(2),
+        last_included_term: Term(1),
+        committed_membership: None,
+        payload: b"uncommitted snapshot".to_vec(),
+        applied_records_before_install: 0,
+    });
+    let failure = oracle_expect_err!(
+        check_applied_commit_bound(&cluster, &[]),
+        "snapshot installation above the emit-time commit index must fail AP-01",
+    );
+    oracle_assert!(failure
+        .message
+        .contains("installed snapshot through 2 when its commit index at emit was 1"));
 }
 
 #[test]
@@ -213,16 +351,16 @@ fn full_prefix_application_replay_matches_snapshot_anchored_replay() {
         .iter()
         .filter(|witness| witness.entry.index == LogIndex(2))
         .collect::<Vec<_>>();
-    assert_eq!(witnesses.len(), 2);
-    assert_eq!(witnesses[0].application_epoch, 0);
-    assert_eq!(witnesses[1].application_epoch, 1);
-    assert_eq!(witnesses[0].prior_state, witnesses[1].prior_state);
-    assert_eq!(witnesses[0].resulting_state, witnesses[1].resulting_state);
-    assert_eq!(
+    oracle_assert_eq!(witnesses.len(), 2);
+    oracle_assert_eq!(witnesses[0].application_epoch, 0);
+    oracle_assert_eq!(witnesses[1].application_epoch, 1);
+    oracle_assert_eq!(witnesses[0].prior_state, witnesses[1].prior_state);
+    oracle_assert_eq!(witnesses[0].resulting_state, witnesses[1].resulting_state);
+    oracle_assert_eq!(
         witnesses[1].prior_state.application_value.as_ref(),
         snapshot_payload.as_slice()
     );
-    assert_eq!(
+    oracle_assert_eq!(
         witnesses[1].resulting_state.application_value.as_ref(),
         b"post-snapshot-command"
     );
@@ -329,13 +467,15 @@ fn replayed_index_must_match_prior_command_across_epochs() {
     )
     .expect("real witness is available to the recorder corruption fixture");
 
-    let failure = check_execution_history_agreement(&state, &[])
-        .expect_err("different commands at the same log index must still fail");
-    assert_eq!(failure.invariant(), catalog::AP_02_STATE_MACHINE_SAFETY);
-    assert!(
+    let failure = oracle_expect_err!(
+        check_execution_history_agreement(&state, &[]),
+        "different commands at the same log index must still fail",
+    );
+    oracle_assert_eq!(failure.invariant(), catalog::AP_02_STATE_MACHINE_SAFETY);
+    oracle_assert!(
         failure
             .message
-            .contains("different term/kind/input identities at log index 1"),
+            .contains("for application log index 1 with payload"),
         "unexpected failure message: {}",
         failure.message
     );

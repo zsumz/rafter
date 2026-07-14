@@ -1,5 +1,6 @@
 use super::super::client::check_client_history_read_write_invariants;
 use super::*;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq, oracle_expect_err};
 
 #[test]
 fn client_history_detects_completed_read_before_local_apply_floor() {
@@ -25,13 +26,15 @@ fn client_history_detects_completed_read_before_local_apply_floor() {
         },
     );
 
-    let failure = check_client_history_read_write_invariants(&state, &[])
-        .expect_err("a completed read below its local apply floor must fail");
-    assert_eq!(
+    let failure = oracle_expect_err!(
+        check_client_history_read_write_invariants(&state, &[]),
+        "a completed read below its local apply floor must fail",
+    );
+    oracle_assert_eq!(
         failure.invariant(),
         catalog::RD_04_APPLY_BEFORE_SERVING_A_READ
     );
-    assert!(
+    oracle_assert!(
         failure
             .message
             .contains("local applied 4 below required index 5"),

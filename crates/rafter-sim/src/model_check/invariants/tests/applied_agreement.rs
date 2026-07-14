@@ -1,5 +1,6 @@
 use super::super::applied::{check_applied_payload_agreement, check_execution_history_agreement};
 use super::*;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq, oracle_expect_err};
 
 #[test]
 fn real_transition_persists_recorder_failure_as_a_harness_error() {
@@ -47,10 +48,12 @@ fn execution_agreement_detects_mismatched_configuration_application() {
     )
     .expect("real configuration witness is available to corrupt");
 
-    let failure = check_execution_history_agreement(&state, &[])
-        .expect_err("different configurations at one index must fail AP-02");
-    assert_eq!(failure.invariant(), catalog::AP_02_STATE_MACHINE_SAFETY);
-    assert!(
+    let failure = oracle_expect_err!(
+        check_execution_history_agreement(&state, &[]),
+        "different configurations at one index must fail AP-02",
+    );
+    oracle_assert_eq!(failure.invariant(), catalog::AP_02_STATE_MACHINE_SAFETY);
+    oracle_assert!(
         failure
             .message
             .contains("different term/kind/input identities at log index 1"),
@@ -61,28 +64,44 @@ fn execution_agreement_detects_mismatched_configuration_application() {
 
 #[test]
 fn execution_agreement_detects_mismatched_reference_result() {
-    let mut state = state_with_committed_application_witness(b"same-command");
-    let mut broken = state
-        .cluster()
-        .execution_history()
-        .last()
-        .expect("real application witness is recorded")
-        .resulting_state
-        .clone();
-    broken.application_value = b"broken-result".to_vec().into();
-    crate::model_check::state::record_execution_corruption(
-        &mut state,
-        crate::model_check::state::ExecutionRecorderCorruption::ResultingState(broken),
-    )
-    .expect("real application witness is available to corrupt");
+    let config = NodeConfig::new(NodeId(1), vec![NodeId(2), NodeId(3)], 3)
+        .expect("fixture node config is valid");
+    let bootstrap = BootstrapState {
+        current_term: Term(1),
+        voted_for: None,
+        commit_index: LogIndex(1),
+        committed_configuration: None,
+        snapshot: None,
+        log: vec![BootstrapLogEntry::application(
+            LogIndex(1),
+            Term(1),
+            b"expected-command".to_vec(),
+        )],
+    };
+    let node = Node::from_bootstrap_applied_through(config.clone(), bootstrap, LogIndex(1))
+        .expect("fixture node bootstrap is valid");
+    let mut cluster = Cluster::new(vec![config]);
+    cluster.nodes.insert(NodeId(1), node);
+    cluster.record_outputs(
+        NodeId(1),
+        vec![Output::Apply {
+            index: LogIndex(1),
+            term: Term(1),
+            payload: b"wrong-command".to_vec().into(),
+            local_proposal_id: None,
+        }],
+    );
+    let state = ExplorationState::new(cluster);
 
-    let failure = check_execution_history_agreement(&state, &[])
-        .expect_err("a fabricated application result must fail AP-02");
-    assert_eq!(failure.invariant(), catalog::AP_02_STATE_MACHINE_SAFETY);
-    assert!(
+    let failure = oracle_expect_err!(
+        check_execution_history_agreement(&state, &[]),
+        "an Apply payload that disagrees with the committed log must fail AP-02",
+    );
+    oracle_assert_eq!(failure.invariant(), catalog::AP_02_STATE_MACHINE_SAFETY);
+    oracle_assert!(
         failure
             .message
-            .contains("invalid reference-state result at log index 1"),
+            .contains("for application log index 1 with payload"),
         "unexpected failure message: {}",
         failure.message
     );
@@ -109,10 +128,12 @@ fn execution_agreement_detects_broken_configuration_result() {
     )
     .expect("real configuration witness is available to corrupt");
 
-    let failure = check_execution_history_agreement(&state, &[])
-        .expect_err("a broken configuration result must fail AP-02");
-    assert_eq!(failure.invariant(), catalog::AP_02_STATE_MACHINE_SAFETY);
-    assert!(
+    let failure = oracle_expect_err!(
+        check_execution_history_agreement(&state, &[]),
+        "a broken configuration result must fail AP-02",
+    );
+    oracle_assert_eq!(failure.invariant(), catalog::AP_02_STATE_MACHINE_SAFETY);
+    oracle_assert!(
         failure
             .message
             .contains("invalid reference-state result at log index 1"),
@@ -128,6 +149,7 @@ fn applied_agreement_detects_disagreeing_snapshots_at_same_boundary() {
         cluster.snapshot_installs.push(SnapshotInstalled {
             node_id: NodeId(node),
             application_epoch: 0,
+            commit_index_at_emit: LogIndex(4),
             last_included_index: LogIndex(4),
             last_included_term: Term(1),
             committed_membership: None,
@@ -159,6 +181,7 @@ fn applied_agreement_detects_snapshot_membership_mismatch_at_same_boundary() {
         cluster.snapshot_installs.push(SnapshotInstalled {
             node_id: NodeId(node),
             application_epoch: 0,
+            commit_index_at_emit: LogIndex(4),
             last_included_index: LogIndex(4),
             last_included_term: Term(1),
             committed_membership: Some(membership),
@@ -167,13 +190,15 @@ fn applied_agreement_detects_snapshot_membership_mismatch_at_same_boundary() {
         });
     }
 
-    let failure = check_applied_payload_agreement(&cluster, &[])
-        .expect_err("same-boundary membership mismatch must be detected");
-    assert_eq!(
+    let failure = oracle_expect_err!(
+        check_applied_payload_agreement(&cluster, &[]),
+        "same-boundary membership mismatch must be detected",
+    );
+    oracle_assert_eq!(
         failure.invariant(),
         catalog::SS_05_SNAPSHOT_SEMANTIC_EQUIVALENCE
     );
-    assert!(
+    oracle_assert!(
         failure.message.contains("disagreeing snapshots at index 4"),
         "unexpected failure message: {}",
         failure.message
