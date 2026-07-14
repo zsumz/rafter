@@ -116,7 +116,7 @@ const fn identity() -> EnvelopeIdentity {
 fn raft_trace_renders_tla_tlc_checkable_sample_spec() {
     let trace = vec![
         Action::Tick(NodeId(1)),
-        Action::Restart(NodeId(2)),
+        Action::Restart(NodeId(1)),
         Action::Tick(NodeId(2)),
     ];
     let spec = render_tla_trace_spec("RaftTraceSample", &trace)

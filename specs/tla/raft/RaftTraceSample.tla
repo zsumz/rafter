@@ -25,7 +25,7 @@ TraceAction0 ==
 
 TraceAction1 ==
   /\ traceStep = 1
-  /\ Restart(n2)
+  /\ Restart(n1)
   /\ traceStep' = 2
 
 TraceAction2 ==

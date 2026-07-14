@@ -352,12 +352,6 @@ CommitCertificatesFor(
     replicas |-> MatchingReplicas(node, index)] :
       index \in (oldFloor + 1)..newFloor}
 
-RecordCommitWitnesses(witnesses) ==
-  commitWitnesses' = commitWitnesses \cup witnesses
-
-RecordReadGrant(grant) ==
-  readGrants' = readGrants \cup {grant}
-
 NodePairSet ==
   {pair \in [from: Nodes, to: Nodes] : pair.from # pair.to}
 
@@ -444,6 +438,39 @@ MembershipQuorum(config, ns) ==
        /\ StableQuorum(config.new, ns)
 
 QuorumNodes(ns) == MembershipQuorum(effectiveMembership, ns)
+
+CommitWitnessOK(witness) ==
+  /\ witness.leaderRole = Leader
+  /\ witness.entry.term <= witness.leaderTerm
+  /\ witness.membership = witness.derivedMembership
+  /\ MembershipQuorum(witness.membership, witness.replicas)
+  /\ IF witness.leader \in ActiveVoters(witness.membership)
+     THEN witness.authorityMembership = witness.membership
+     ELSE /\ witness.index = witness.configIndex
+          /\ witness.entry.kind = ConfigurationEntryKind
+          /\ witness.entry.input = witness.membership
+          /\ witness.authorityMembership.phase = JointConfig
+          /\ witness.authorityMembership.new = witness.membership.old
+          /\ witness.leader \in ActiveVoters(witness.authorityMembership)
+
+CommitWitnessKeys(witnesses) ==
+  {[index |-> witness.index, entry |-> witness.entry] :
+      witness \in witnesses}
+
+CommitWitnessHistory(witnessed, invalidCertificateSeen) ==
+  [witnessedCommits |-> witnessed,
+   invalidCertificateSeen |-> invalidCertificateSeen]
+
+EmptyCommitWitnessHistory == CommitWitnessHistory({}, FALSE)
+
+RecordCommitWitnesses(witnesses) ==
+  commitWitnesses' = CommitWitnessHistory(
+    commitWitnesses.witnessedCommits \cup CommitWitnessKeys(witnesses),
+    commitWitnesses.invalidCertificateSeen \/
+      \E witness \in witnesses : ~CommitWitnessOK(witness))
+
+RecordReadGrant(grant) ==
+  readGrants' = readGrants \cup {grant}
 
 CanAdoptLog(n, entries) ==
   /\ LogOK(entries)
@@ -588,20 +615,13 @@ TypeOK ==
        /\ DOMAIN committed = {"index", "entry"}
        /\ committed.index \in 1..MaxLogLen
        /\ committed.entry \in EntrySet
-  /\ \A witness \in commitWitnesses :
-       /\ DOMAIN witness = {"index", "entry", "leader", "leaderRole",
-                             "leaderTerm", "membership", "authorityMembership",
-                             "derivedMembership", "configIndex", "replicas"}
-       /\ witness.index \in 1..MaxLogLen
-       /\ witness.entry \in EntrySet
-       /\ witness.leader \in Nodes
-       /\ witness.leaderRole \in {Follower, Candidate, Leader}
-       /\ witness.leaderTerm \in 1..MaxTerm
-       /\ witness.membership \in MembershipSet
-       /\ witness.authorityMembership \in MembershipSet
-       /\ witness.derivedMembership \in MembershipSet
-       /\ witness.configIndex \in 0..MaxLogLen
-       /\ witness.replicas \in SUBSET Nodes
+  /\ DOMAIN commitWitnesses =
+       {"witnessedCommits", "invalidCertificateSeen"}
+  /\ \A witnessed \in commitWitnesses.witnessedCommits :
+       /\ DOMAIN witnessed = {"index", "entry"}
+       /\ witnessed.index \in 1..MaxLogLen
+       /\ witnessed.entry \in EntrySet
+  /\ commitWitnesses.invalidCertificateSeen \in BOOLEAN
   /\ AppliedConfigurationStateOK
   /\ EffectiveConfigurationStateOK
   /\ messages \in SUBSET MessageSet
@@ -645,7 +665,7 @@ Init ==
   /\ electedLeaders = [t \in 1..MaxTerm |-> {}]
   /\ logicalPrefixLedger = {}
   /\ committedLedger = {}
-  /\ commitWitnesses = {}
+  /\ commitWitnesses = EmptyCommitWitnessHistory
   /\ higherTermEvidenceSeen = FALSE
   /\ higherTermStepDownFailed = FALSE
   /\ staleAuthorityAccepted = FALSE
@@ -908,6 +928,7 @@ ApplicationStateLoss(n) ==
   /\ UNCHANGED authorityVars
 
 Restart(n) ==
+  /\ role[n] # Follower
   /\ role' = [role EXCEPT ![n] = Follower]
   /\ UNCHANGED <<currentTerm, votedFor, log, commitIndex, messages,
                   readRequests, readGrants, membership, appliedConfigIndex,
@@ -1204,26 +1225,10 @@ StaleLeaderFencing ==
   /\ ~higherTermStepDownFailed
   /\ ~staleAuthorityAccepted
 
-CommitWitnessOK(witness) ==
-  /\ witness.leaderRole = Leader
-  /\ witness.entry.term <= witness.leaderTerm
-  /\ witness.membership = witness.derivedMembership
-  /\ MembershipQuorum(witness.membership, witness.replicas)
-  /\ IF witness.leader \in ActiveVoters(witness.membership)
-     THEN witness.authorityMembership = witness.membership
-     ELSE /\ witness.index = witness.configIndex
-          /\ witness.entry.kind = ConfigurationEntryKind
-          /\ witness.entry.input = witness.membership
-          /\ witness.authorityMembership.phase = JointConfig
-          /\ witness.authorityMembership.new = witness.membership.old
-          /\ witness.leader \in ActiveVoters(witness.authorityMembership)
-
 CommittedEntriesHaveQuorum ==
-  /\ \A witness \in commitWitnesses : CommitWitnessOK(witness)
+  /\ ~commitWitnesses.invalidCertificateSeen
   /\ \A committed \in committedLedger :
-       \E witness \in commitWitnesses :
-         /\ witness.index = committed.index
-         /\ witness.entry = committed.entry
+       committed \in commitWitnesses.witnessedCommits
   /\ \A n \in Nodes :
        \A index \in 1..commitIndex[n] :
          \E committed \in committedLedger :

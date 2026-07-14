@@ -759,7 +759,7 @@ fn missing_commit_witness_recorder_cannot_qualify_quorum_predicate() {
         &raft,
         "RecordCommitWitnesses(witnesses)",
         "RecordReadGrant(grant)",
-        "/\\ UNCHANGED commitWitnesses",
+        "UNCHANGED commitWitnesses",
     );
     let detector =
         fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
@@ -783,13 +783,44 @@ fn missing_commit_witness_recorder_cannot_qualify_quorum_predicate() {
 
 #[test]
 #[ignore = "requires the pinned TLC tool and Java"]
+fn unvalidated_commit_certificate_cannot_qualify_quorum_predicate() {
+    let root = workspace_root();
+    let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
+    let mutated = replace_operator(
+        &raft,
+        "RecordCommitWitnesses(witnesses)",
+        "RecordReadGrant(grant)",
+        "commitWitnesses' = CommitWitnessHistory(\n  commitWitnesses.witnessedCommits \\cup CommitWitnessKeys(witnesses),\n  commitWitnesses.invalidCertificateSeen)",
+    );
+    let detector =
+        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
+            .expect("read detector spec");
+    let result = run_tlc_mutation(
+        &root,
+        "unvalidated-commit-certificate",
+        &mutated,
+        &detector,
+        COMMIT_QUORUM_PROBE,
+    );
+    let summary = parse(&result.stdout).expect("parse TLC mutation output");
+    assert!(result.status.success());
+    assert!(!detector_qualified(
+        result.status.code(),
+        false,
+        Some(&summary),
+        COMMIT_QUORUM_PROBE.predicate
+    ));
+}
+
+#[test]
+#[ignore = "requires the pinned TLC tool and Java"]
 fn missing_read_grant_recorder_cannot_qualify_read_barrier_predicate() {
     let root = workspace_root();
     let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
     let mutated = replace_operator(
         &raft,
         "RecordReadGrant(grant)",
-        "NodePairSet",
+        "CanAdoptLog(n, entries)",
         "/\\ UNCHANGED readGrants",
     );
     let detector =
