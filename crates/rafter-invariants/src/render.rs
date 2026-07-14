@@ -4,7 +4,7 @@ use crate::{InvariantVerdict, VerdictReport, VerdictStatus};
 
 /// Renders the exact 44-row human-readable report used in CI summaries.
 #[must_use]
-pub fn render_markdown(report: &VerdictReport) -> String {
+pub(crate) fn render_markdown(report: &VerdictReport) -> String {
     let mut output = format!(
         "# Rafter invariant report: {}\n\nSource: `{}`\n\nVerdict: **{}/{} green**\n\n| Invariant | Verdict | Clauses | Evidence | Detail |\n| --- | --- | ---: | ---: | --- |\n",
         report.profile, report.source_ref, report.summary.green, report.summary.total
@@ -31,7 +31,7 @@ pub fn render_markdown(report: &VerdictReport) -> String {
 
 /// Renders one `JUnit` testcase per reviewed invariant.
 #[must_use]
-pub fn render_junit(report: &VerdictReport) -> String {
+pub(crate) fn render_junit(report: &VerdictReport) -> String {
     let mut output = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<testsuite name=\"rafter-invariants-{}\" tests=\"{}\" failures=\"{}\">\n",
         xml(&report.profile),
