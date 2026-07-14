@@ -727,7 +727,12 @@ mod tests {
         assert!(output.timed_out);
         assert_eq!(output.stdout, b"retained-before-timeout");
 
-        let directory = unique_test_path("timeout-artifact");
+        let unique = unique_test_path("timeout-artifact");
+        let directory = PathBuf::from("target/rafter-invariants/test-artifacts").join(
+            unique
+                .file_name()
+                .expect("timeout artifact path has a file name"),
+        );
         let bytes = combined_log("timeout-retention", &output).expect("frame timeout transcript");
         let artifact = crate::producer::artifact::write(
             &directory,

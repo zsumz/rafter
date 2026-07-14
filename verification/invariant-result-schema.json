@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "runner", "profile", "source_ref", "execution", "results"],
   "properties": {
-    "schema_version": { "const": 10 },
+    "schema_version": { "const": 11 },
     "runner": { "enum": ["tests", "simulator", "tla", "maelstrom"] },
     "profile": { "enum": ["pr", "nightly", "weekly"] },
     "source_ref": { "type": "string", "minLength": 1 },
@@ -20,10 +20,11 @@
     "execution": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["plan", "invocation", "source", "checks", "duration_ms", "peak_rss_kib", "artifacts"],
+      "required": ["plan", "invocation", "producer", "source", "checks", "duration_ms", "peak_rss_kib", "artifacts"],
       "properties": {
         "plan": { "$ref": "#/$defs/plan" },
         "invocation": { "$ref": "#/$defs/invocation" },
+        "producer": { "$ref": "#/$defs/producer_binding" },
         "source": { "$ref": "#/$defs/source" },
         "checks": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/check" } },
         "duration_ms": { "type": "integer", "minimum": 0 },
@@ -70,6 +71,15 @@
         "current_dir": { "type": "string", "minLength": 1 },
         "environment": { "type": "object", "additionalProperties": { "type": "string" } },
         "environment_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "producer_binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["binding", "executable"],
+      "properties": {
+        "binding": { "const": "immutable-reexec-v1" },
+        "executable": { "$ref": "#/$defs/artifact" }
       }
     },
     "profile_contract": {

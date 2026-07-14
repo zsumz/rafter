@@ -95,3 +95,21 @@ breach fails the job after the JSON and Markdown reports have been written.
 The default requires a clean checkout so a commit names the measured source.
 `MODEL_CHECK_ALLOW_DIRTY=1` exists only for directional local experiments; such
 a run records `clean: false` and is not release or threshold evidence.
+
+## Producer Provenance Threat Model
+
+Invariant producers run on a trusted CI host. Before `run` or `run-all` executes
+evidence checks, the CLI publishes its bytes as a regular, non-symlink,
+read-only executable at
+`target/rafter-invariants/producer-images/<sha256>/rafter-invariants` and
+re-executes that image. Schema-v11 receipts bind the exact path, digest, and
+preserved executable artifact. This prevents nested Cargo builds, stale target
+paths, partial publication, symlinked artifact paths, and later deletion of the
+bootstrap executable from changing which producer image the aggregate accepts.
+
+This is deterministic repository provenance, not hostile-host attestation. It
+does not defend against a malicious producer binary, compromised kernel or CI
+runner, SHA-256 compromise, or a hostile same-UID process that can replace files
+between verification and `exec`. Those threats require an external build
+attestation system or OS-specific sealed execution and are outside the portable
+Linux/macOS invariant gate contract.

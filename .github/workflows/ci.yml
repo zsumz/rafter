@@ -116,7 +116,10 @@ jobs:
         with:
           cache-on-failure: true
       - name: Validate managed process launcher on macOS
-        run: cargo test --locked -p rafter-invariants producer::process::tests -- --test-threads=1
+        run: |
+          cargo test --locked -p rafter-invariants producer::process::tests -- --test-threads=1
+          cargo test --locked -p rafter-invariants producer_image::tests -- --test-threads=1
+          cargo test --locked -p rafter-invariants --test producer_reexec -- --test-threads=1
 
   invariants-simulator:
     name: invariants-simulator

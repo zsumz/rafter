@@ -210,12 +210,19 @@ fn bundle() -> ResultBundle {
                 contract,
             },
             invocation: InvocationReceipt {
-                program: "rafter-invariants".to_owned(),
+                program: format!(
+                    "/workspace/rafter/target/rafter-invariants/producer-images/{}/rafter-invariants",
+                    "0".repeat(64)
+                ),
                 program_sha256: "0".repeat(64),
                 arguments: vec!["run".to_owned()],
                 current_dir: "/workspace/rafter".to_owned(),
                 environment: BTreeMap::new(),
                 environment_sha256: crate::producer::process::digest_environment(&BTreeMap::new()),
+            },
+            producer: crate::ProducerBindingReceipt {
+                binding: crate::producer_image::PRODUCER_BINDING.to_owned(),
+                executable: artifact("evidence/producer", "producer-binary"),
             },
             source: source(),
             checks: vec![CheckReceipt {

@@ -92,6 +92,7 @@ pub(super) fn run(
         execution: ExecutionReceipt {
             plan: context.plan.clone(),
             invocation: context.invocation.clone(),
+            producer: context.producer.clone(),
             source,
             checks: vec![check],
             duration_ms: execution.duration_ms,

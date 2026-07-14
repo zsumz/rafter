@@ -10,11 +10,14 @@ use std::{collections::BTreeMap, fmt::Write as _};
 #[test]
 fn producer_paths_bind_to_the_checkout_and_preserved_binary() {
     let root = scratch("producer-paths");
-    let program = root.join("target/debug/rafter-invariants");
-    std::fs::create_dir_all(program.parent().expect("program parent")).expect("create program dir");
     let bytes = b"preserved producer";
-    std::fs::write(&program, bytes).expect("write producer");
     let digest = format!("{:x}", Sha256::digest(bytes));
+    let program = root
+        .join("target/rafter-invariants/producer-images")
+        .join(&digest)
+        .join("rafter-invariants");
+    std::fs::create_dir_all(program.parent().expect("program parent")).expect("create program dir");
+    std::fs::write(&program, bytes).expect("write producer");
     let (catalog, manifest) = crate::tests::loaded();
     let mut bundle = crate::tests::passing_bundles(&catalog, &manifest)
         .into_iter()
@@ -24,28 +27,62 @@ fn producer_paths_bind_to_the_checkout_and_preserved_binary() {
         .expect("canonical program")
         .to_string_lossy()
         .into_owned();
-    bundle.execution.invocation.current_dir = std::fs::canonicalize(&root)
-        .expect("canonical root")
-        .to_string_lossy()
-        .into_owned();
+    let repository = std::fs::canonicalize(&root).expect("canonical root");
+    bundle.execution.invocation.current_dir = repository.to_string_lossy().into_owned();
     bundle
         .execution
         .invocation
         .program_sha256
         .clone_from(&digest);
-    bundle.execution.artifacts = vec![crate::ArtifactRef {
+    let producer = crate::ArtifactRef {
         kind: "producer-binary".to_owned(),
         path: "preserved-producer".to_owned(),
         sha256: digest,
         size_bytes: bytes.len() as u64,
-    }];
+    };
+    bundle.execution.producer = crate::ProducerBindingReceipt {
+        binding: crate::producer_image::PRODUCER_BINDING.to_owned(),
+        executable: producer.clone(),
+    };
+    bundle.execution.artifacts = vec![producer];
 
     verify_producer_invocation_paths(&bundle, &root).expect("bound paths verify");
+    std::fs::write(&program, b"later cargo rebuild").expect("replace mutable program path");
+    verify_producer_invocation_paths(&bundle, &root)
+        .expect("preserved capture remains authoritative after rebuild");
+    std::fs::remove_file(&program).expect("remove historical program path");
+    verify_producer_invocation_paths(&bundle, &root)
+        .expect("preserved capture remains authoritative after path removal");
+
     let mut forged = bundle.clone();
+    forged.execution.artifacts[0].sha256 = "f".repeat(64);
+    assert!(verify_producer_invocation_paths(&forged, &root).is_err());
+    forged = bundle.clone();
+    forged.execution.invocation.program_sha256 = "f".repeat(64);
+    assert!(verify_producer_invocation_paths(&forged, &root).is_err());
+    forged = bundle.clone();
     forged.execution.invocation.current_dir = std::env::temp_dir().to_string_lossy().into_owned();
     assert!(verify_producer_invocation_paths(&forged, &root).is_err());
+    forged = bundle.clone();
+    forged.execution.invocation.program = repository
+        .join("target/debug/rafter-invariants")
+        .to_string_lossy()
+        .into_owned();
+    assert!(verify_producer_invocation_paths(&forged, &root).is_err());
+    forged = bundle.clone();
+    forged.execution.producer.binding = "mutable-path-v0".to_owned();
+    assert!(verify_producer_invocation_paths(&forged, &root).is_err());
+    forged = bundle.clone();
+    forged.execution.producer.executable.sha256 = "f".repeat(64);
+    assert!(verify_producer_invocation_paths(&forged, &root).is_err());
+    forged = bundle.clone();
+    forged.execution.artifacts.clear();
+    assert!(verify_producer_invocation_paths(&forged, &root).is_err());
     forged = bundle;
-    forged.execution.invocation.program = root.join("fabricated").to_string_lossy().into_owned();
+    forged
+        .execution
+        .artifacts
+        .push(forged.execution.producer.executable.clone());
     assert!(verify_producer_invocation_paths(&forged, &root).is_err());
     std::fs::remove_dir_all(root).expect("remove scratch root");
 }

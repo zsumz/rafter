@@ -214,7 +214,21 @@ mod tests {
         let mut value = serde_json::to_value(bundle).expect("bundle serializes");
         value["schema_version"] = serde_json::json!(u64::MAX);
         assert!(validate_result_value(&value).is_err());
+        value["schema_version"] = serde_json::json!(10);
+        assert!(validate_result_value(&value).is_err());
         value["schema_version"] = serde_json::json!(crate::types::RESULT_SCHEMA_VERSION);
+        value["execution"]
+            .as_object_mut()
+            .expect("execution object")
+            .remove("producer");
+        assert!(validate_result_value(&value).is_err());
+        value = serde_json::to_value(
+            crate::tests::passing_bundles(&catalog, &manifest)
+                .into_iter()
+                .next()
+                .expect("bundle"),
+        )
+        .expect("bundle serializes");
         value["execution"]["unreviewed"] = serde_json::json!(true);
         assert!(validate_result_value(&value).is_err());
     }

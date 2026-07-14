@@ -10,6 +10,7 @@ mod artifact_verify_tla;
 mod catalog;
 mod plan;
 mod producer;
+mod producer_image;
 mod receipt;
 mod receipt_maelstrom;
 mod receipt_simulator;
@@ -34,6 +35,7 @@ pub(crate) use plan::{capture_invocation, verify_bundle_plan};
 pub use plan::{ExecutionPlan, PlanOptions};
 pub(crate) use producer::produce_with_plan;
 pub use producer::{produce, ProducerOptions, ProducerOutcome};
+pub use producer_image::ensure_immutable_producer;
 pub use registry::{
     RegistryClause, RegistryCounts, RegistryDocument, RegistryEvidence, RegistryInvariant,
     REGISTRY_SCHEMA_VERSION,
@@ -48,8 +50,8 @@ pub(crate) use types::ResultBundle;
 pub use types::{
     ArtifactRef, CheckCompletion, CheckReceipt, ClauseVerdict, EvidenceResult, EvidenceStatus,
     ExecutionPlanReceipt, ExecutionReceipt, FailureClassification, InvariantVerdict,
-    InvocationReceipt, PlanInput, SourceReceipt, ToolReceipt, VerdictReport, VerdictStatus,
-    PLAN_SCHEMA_VERSION,
+    InvocationReceipt, PlanInput, ProducerBindingReceipt, SourceReceipt, ToolReceipt,
+    VerdictReport, VerdictStatus, PLAN_SCHEMA_VERSION,
 };
 
 #[cfg(test)]

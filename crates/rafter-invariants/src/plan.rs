@@ -30,6 +30,11 @@ pub struct ExecutionPlan {
     pub receipt: ExecutionPlanReceipt,
 }
 
+pub(crate) struct CapturedInvocation {
+    pub receipt: InvocationReceipt,
+    pub program_bytes: Vec<u8>,
+}
+
 impl ExecutionPlan {
     /// Loads, validates, and hashes the registry and profile manifest once.
     ///
@@ -95,11 +100,23 @@ pub(crate) fn verify_bundle_plan(
 /// # Errors
 ///
 /// Returns an error when argv or the working directory is not valid UTF-8.
-pub(crate) fn capture_invocation() -> Result<InvocationReceipt, Box<dyn Error>> {
-    capture_invocation_from(env::args_os().collect())
+pub(crate) fn capture_invocation() -> Result<CapturedInvocation, Box<dyn Error>> {
+    let captured = capture_invocation_from(env::args_os().collect())?;
+    crate::producer_image::verify_capture(
+        Path::new(&captured.receipt.program),
+        &captured.program_bytes,
+    )?;
+    Ok(captured)
 }
 
-fn capture_invocation_from(mut argv: Vec<OsString>) -> Result<InvocationReceipt, Box<dyn Error>> {
+fn capture_invocation_from(argv: Vec<OsString>) -> Result<CapturedInvocation, Box<dyn Error>> {
+    capture_invocation_from_program(argv, &env::current_exe()?)
+}
+
+fn capture_invocation_from_program(
+    mut argv: Vec<OsString>,
+    program: &Path,
+) -> Result<CapturedInvocation, Box<dyn Error>> {
     if argv.is_empty() {
         return Err("invariant invocation omitted argv[0]".into());
     }
@@ -121,18 +138,22 @@ fn capture_invocation_from(mut argv: Vec<OsString>) -> Result<InvocationReceipt,
         .map_err(|_| "invariant working directory is not UTF-8")?;
     let environment = safe_environment();
     let environment_sha256 = digest_environment(&environment);
-    let program = fs::canonicalize(env::current_exe()?)?
+    let program = fs::canonicalize(program)?
         .into_os_string()
         .into_string()
         .map_err(|_| "invariant executable path is not UTF-8")?;
-    let program_sha256 = format!("{:x}", Sha256::digest(fs::read(&program)?));
-    Ok(InvocationReceipt {
-        program,
-        program_sha256,
-        arguments,
-        current_dir,
-        environment,
-        environment_sha256,
+    let program_bytes = fs::read(&program)?;
+    let program_sha256 = format!("{:x}", Sha256::digest(&program_bytes));
+    Ok(CapturedInvocation {
+        receipt: InvocationReceipt {
+            program,
+            program_sha256,
+            arguments,
+            current_dir,
+            environment,
+            environment_sha256,
+        },
+        program_bytes,
     })
 }
 
@@ -214,23 +235,30 @@ fn digest_environment(environment: &BTreeMap<String, String>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::ffi::OsString;
+    use std::{
+        ffi::OsString,
+        sync::atomic::{AtomicU64, Ordering},
+    };
 
     use sha2::{Digest, Sha256};
 
     use crate::{PlanInput, ResultBundle};
 
-    use super::{capture_invocation_from, confined_path, verify_bundle_plan, verify_plan_input};
+    use super::{
+        capture_invocation_from, capture_invocation_from_program, confined_path,
+        verify_bundle_plan, verify_plan_input,
+    };
 
     #[test]
     fn invocation_records_actual_argv_without_manifest_substitution() {
-        let receipt = capture_invocation_from(vec![
+        let captured = capture_invocation_from(vec![
             OsString::from("target/debug/rafter-invariants"),
             OsString::from("run"),
             OsString::from("--profile"),
             OsString::from("pr"),
         ])
         .expect("invocation captures");
+        let receipt = captured.receipt;
         assert_eq!(
             receipt.program,
             std::fs::canonicalize(std::env::current_exe().expect("current executable"))
@@ -239,6 +267,46 @@ mod tests {
         );
         assert_eq!(receipt.arguments, ["run", "--profile", "pr"]);
         assert_eq!(receipt.environment_sha256.len(), 64);
+    }
+
+    #[test]
+    fn invocation_freezes_program_bytes_before_later_cargo_rebuilds() {
+        static NEXT_DIRECTORY: AtomicU64 = AtomicU64::new(0);
+        let directory = std::env::temp_dir().join(format!(
+            "rafter-invariants-invocation-{}-{}",
+            std::process::id(),
+            NEXT_DIRECTORY.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&directory).expect("create temporary program directory");
+        let program = directory.join("rafter-invariants");
+        let initial = b"initial producer image";
+        std::fs::write(&program, initial).expect("write initial producer image");
+
+        let captured = capture_invocation_from_program(
+            vec![
+                OsString::from("rafter-invariants"),
+                OsString::from("run-all"),
+                OsString::from("--profile"),
+                OsString::from("pr"),
+            ],
+            &program,
+        )
+        .expect("invocation captures immutable program bytes");
+        std::fs::write(&program, b"later cargo rebuild").expect("replace producer path");
+
+        assert_eq!(captured.program_bytes, initial);
+        assert_eq!(
+            captured.receipt.program_sha256,
+            format!("{:x}", Sha256::digest(initial))
+        );
+        assert_ne!(
+            captured.receipt.program_sha256,
+            format!(
+                "{:x}",
+                Sha256::digest(std::fs::read(&program).expect("read replacement"))
+            )
+        );
+        std::fs::remove_dir_all(directory).expect("remove temporary program directory");
     }
 
     #[test]

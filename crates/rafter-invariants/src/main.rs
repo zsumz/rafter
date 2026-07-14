@@ -6,9 +6,9 @@ use std::{
 
 use clap::{Parser, Subcommand};
 use rafter_invariants::{
-    current_source_ref, produce, render_registry_markdown, run_all, verify_and_write_report,
-    verify_layer_evidence, ExecutionPlan, PlanOptions, ProducerOptions, RegistryDocument,
-    RunAllOptions, VerdictReport, VerdictStatus,
+    current_source_ref, ensure_immutable_producer, produce, render_registry_markdown, run_all,
+    verify_and_write_report, verify_layer_evidence, ExecutionPlan, PlanOptions, ProducerOptions,
+    RegistryDocument, RunAllOptions, VerdictReport, VerdictStatus,
 };
 
 #[derive(Debug, Parser)]
@@ -91,6 +91,8 @@ enum Commands {
         #[arg(long)]
         check: bool,
     },
+    #[command(name = "producer-probe", hide = true)]
+    ProducerProbe,
 }
 
 fn main() -> ExitCode {
@@ -130,6 +132,7 @@ fn run(cli: Cli) -> Result<bool, Box<dyn std::error::Error>> {
             manifest,
             output_dir,
         } => {
+            ensure_immutable_producer()?;
             let outcome = produce(&ProducerOptions {
                 profile,
                 layer,
@@ -147,6 +150,7 @@ fn run(cli: Cli) -> Result<bool, Box<dyn std::error::Error>> {
             results_dir,
             output_dir,
         } => {
+            ensure_immutable_producer()?;
             let outcome = run_all(&RunAllOptions {
                 plan: PlanOptions {
                     profile,
@@ -185,6 +189,11 @@ fn run(cli: Cli) -> Result<bool, Box<dyn std::error::Error>> {
             output,
             check,
         } => render_doc(&registry, &output, check),
+        Commands::ProducerProbe => {
+            ensure_immutable_producer()?;
+            println!("{}", env::current_exe()?.display());
+            Ok(true)
+        }
     }
 }
 

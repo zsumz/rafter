@@ -1,12 +1,16 @@
 use std::{
     error::Error,
-    fs,
+    fs::{self, File, OpenOptions},
+    io::Write,
     path::{Component, Path},
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use sha2::{Digest, Sha256};
 
 use crate::ArtifactRef;
+
+static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
 
 pub(super) fn validate_output_dir(path: &Path) -> Result<(), Box<dyn Error>> {
     if path.is_absolute()
@@ -26,11 +30,33 @@ pub(super) fn write(
     bytes: &[u8],
 ) -> Result<ArtifactRef, Box<dyn Error>> {
     let path = output_dir.join(relative_name);
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)?;
+    let parent = path.parent().ok_or("artifact path has no parent")?;
+    fs::create_dir_all(parent)?;
+    verify_confined_parent(parent)?;
+    let temporary = parent.join(format!(
+        ".artifact.tmp-{}-{}",
+        std::process::id(),
+        NEXT_TEMPORARY.fetch_add(1, Ordering::Relaxed)
+    ));
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&temporary)?;
+    let publish = (|| -> Result<(), Box<dyn Error>> {
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        fs::rename(&temporary, &path)?;
+        File::open(parent)?.sync_all()?;
+        Ok(())
+    })();
+    let _ = fs::remove_file(&temporary);
+    publish?;
+    let persisted = fs::read(&path)?;
+    if persisted != bytes {
+        return Err(format!("artifact changed during publication: {}", path.display()).into());
     }
-    fs::write(&path, bytes)?;
-    Ok(reference(&path, kind, bytes))
+    Ok(reference(&path, kind, &persisted))
 }
 
 pub(super) fn capture(
@@ -45,9 +71,23 @@ pub(super) fn capture(
         .strip_prefix(&root)
         .map_err(|_| "artifact is outside the repository worktree")?;
     let bytes = fs::read(&canonical)?;
-    let digest = format!("{:x}", Sha256::digest(&bytes));
+    capture_bytes(output_dir, namespace, &bytes, kind)
+}
+
+pub(super) fn capture_bytes(
+    output_dir: &Path,
+    namespace: &Path,
+    bytes: &[u8],
+    kind: &str,
+) -> Result<ArtifactRef, Box<dyn Error>> {
+    let digest = format!("{:x}", Sha256::digest(bytes));
     let relative_name = namespace.join(format!("{kind}-{digest}"));
-    write(output_dir, &relative_name, kind, &bytes)
+    let path = output_dir.join(relative_name);
+    let parent = path.parent().ok_or("artifact path has no parent")?;
+    fs::create_dir_all(parent)?;
+    verify_confined_parent(parent)?;
+    let persisted = crate::producer_image::publish_content_addressed(&path, bytes, false)?;
+    Ok(reference(&path, kind, &persisted))
 }
 
 pub(super) fn capture_as(
@@ -71,13 +111,7 @@ pub(super) fn capture_external(
     kind: &str,
 ) -> Result<ArtifactRef, Box<dyn Error>> {
     let bytes = fs::read(fs::canonicalize(source)?)?;
-    let digest = format!("{:x}", Sha256::digest(&bytes));
-    write(
-        output_dir,
-        &namespace.join(format!("{kind}-{digest}")),
-        kind,
-        &bytes,
-    )
+    capture_bytes(output_dir, namespace, &bytes, kind)
 }
 
 fn reference(path: &Path, kind: &str, bytes: &[u8]) -> ArtifactRef {
@@ -87,6 +121,18 @@ fn reference(path: &Path, kind: &str, bytes: &[u8]) -> ArtifactRef {
         sha256: format!("{:x}", Sha256::digest(bytes)),
         size_bytes: bytes.len() as u64,
     }
+}
+
+fn verify_confined_parent(parent: &Path) -> Result<(), Box<dyn Error>> {
+    if parent.is_absolute() {
+        return Err("artifact parent must be repository-relative".into());
+    }
+    let root = fs::canonicalize(".")?;
+    let canonical = fs::canonicalize(parent)?;
+    if canonical != root.join(parent) {
+        return Err("artifact parent traverses a symlink or leaves the repository".into());
+    }
+    Ok(())
 }
 
 pub(super) fn stable_id(namespace: &str, value: &str) -> String {

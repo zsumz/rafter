@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// Current version of the machine-readable receipt and report contract.
-pub const RESULT_SCHEMA_VERSION: u32 = 10;
+pub const RESULT_SCHEMA_VERSION: u32 = 11;
 
 /// Current version of the final aggregate verdict report contract.
 pub const VERDICT_SCHEMA_VERSION: u32 = 2;
@@ -29,6 +29,7 @@ pub struct ResultBundle {
 pub struct ExecutionReceipt {
     pub plan: ExecutionPlanReceipt,
     pub invocation: InvocationReceipt,
+    pub producer: ProducerBindingReceipt,
     pub source: SourceReceipt,
     pub checks: Vec<CheckReceipt>,
     pub duration_ms: u64,
@@ -68,6 +69,14 @@ pub struct InvocationReceipt {
     pub current_dir: String,
     pub environment: BTreeMap<String, String>,
     pub environment_sha256: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+/// Immutable executable artifact bound to the producer invocation.
+pub struct ProducerBindingReceipt {
+    pub binding: String,
+    pub executable: ArtifactRef,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

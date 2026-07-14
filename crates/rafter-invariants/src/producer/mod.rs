@@ -30,8 +30,8 @@ use std::collections::BTreeSet;
 use std::{error::Error, fs, path::PathBuf};
 
 use crate::{
-    capture_invocation, ExecutionPlan, ExecutionPlanReceipt, InvocationReceipt, PlanOptions,
-    ResultBundle,
+    capture_invocation, plan::CapturedInvocation, ExecutionPlan, ExecutionPlanReceipt,
+    InvocationReceipt, PlanOptions, ProducerBindingReceipt, ResultBundle,
 };
 
 #[derive(Clone, Debug)]
@@ -54,6 +54,7 @@ pub struct ProducerOutcome {
 pub(super) struct ProducerContext<'a> {
     pub plan: &'a ExecutionPlanReceipt,
     pub invocation: &'a InvocationReceipt,
+    pub producer: &'a ProducerBindingReceipt,
 }
 
 /// Executes one profile layer and writes its strict result bundle.
@@ -82,7 +83,7 @@ pub(crate) fn produce_with_plan(
     plan: &ExecutionPlan,
     layer: &str,
     output_dir: &std::path::Path,
-    invocation: &InvocationReceipt,
+    invocation: &CapturedInvocation,
 ) -> Result<ProducerOutcome, Box<dyn Error>> {
     artifact::validate_output_dir(output_dir)?;
     crate::plan::verify_plan_input(&plan.receipt.registry, std::path::Path::new("."))?;
@@ -108,10 +109,21 @@ pub(crate) fn produce_with_plan(
     if path.exists() {
         fs::remove_file(&path)?;
     }
+    let executable = artifact::capture_bytes(
+        output_dir,
+        std::path::Path::new(&format!("{}-{layer}/inputs", plan.receipt.profile)),
+        &invocation.program_bytes,
+        "producer-binary",
+    )?;
+    let producer = ProducerBindingReceipt {
+        binding: crate::producer_image::PRODUCER_BINDING.to_owned(),
+        executable,
+    };
     let source = source::capture_for_layer(layer)?;
     let context = ProducerContext {
         plan: &plan.receipt,
-        invocation,
+        invocation: &invocation.receipt,
+        producer: &producer,
     };
     let mut bundle = match layer {
         "tests" => tests::run(
@@ -148,12 +160,7 @@ pub(crate) fn produce_with_plan(
         )?,
         layer => return Err(format!("producer for layer {layer} is not implemented").into()),
     };
-    bundle.execution.artifacts.push(artifact::capture(
-        output_dir,
-        std::path::Path::new(&format!("{}-{layer}/inputs", plan.receipt.profile)),
-        &std::env::current_exe()?,
-        "producer-binary",
-    )?);
+    bundle.execution.artifacts.push(producer.executable.clone());
     let expected_ids = plan
         .catalog
         .required_evidence(contract)
