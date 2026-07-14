@@ -9,11 +9,11 @@ traceVars == << currentTerm, votedFor, role, log, commitIndex,
                snapshotIndex, snapshotPrefix, compactedIndex, snapshotTransfer,
                applied, applicationEpoch, epochBaseIndex, epochBaseState,
                applicationState, appliedThrough,
-               messages, readRequests, readGrants, membership,
+               messages, readRequests, readBarrierViolationSeen, membership,
                appliedConfigIndex, effectiveMembership, effectiveConfigIndex,
                electedLeaders, logicalPrefixLedger, committedLedger,
                commitWitnesses,
-               higherTermEvidenceSeen, higherTermStepDownFailed,
+               higherTermStepDownFailed,
                staleAuthorityAccepted, traceStep >>
 
 TraceInit == Init /\ traceStep = 0

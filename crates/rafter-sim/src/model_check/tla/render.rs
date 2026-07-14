@@ -47,13 +47,14 @@ fn render_tla_trace_module(module_name: &str, actions: &[TlaRenderedAction]) -> 
     );
     module.push_str("               applied, applicationEpoch, epochBaseIndex, epochBaseState,\n");
     module.push_str("               applicationState, appliedThrough,\n");
-    module.push_str("               messages, readRequests, readGrants, membership,\n");
+    module
+        .push_str("               messages, readRequests, readBarrierViolationSeen, membership,\n");
     module.push_str(
         "               appliedConfigIndex, effectiveMembership, effectiveConfigIndex,\n",
     );
     module.push_str("               electedLeaders, logicalPrefixLedger, committedLedger,\n");
     module.push_str("               commitWitnesses,\n");
-    module.push_str("               higherTermEvidenceSeen, higherTermStepDownFailed,\n");
+    module.push_str("               higherTermStepDownFailed,\n");
     module.push_str("               staleAuthorityAccepted, traceStep >>\n\n");
     module.push_str("TraceInit == Init /\\ traceStep = 0\n\n");
 

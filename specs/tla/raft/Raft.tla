@@ -26,24 +26,24 @@ VARIABLES currentTerm, votedFor, role, log, commitIndex,
           snapshotIndex, snapshotPrefix, compactedIndex, snapshotTransfer,
           applied, applicationEpoch, epochBaseIndex, epochBaseState,
           applicationState, appliedThrough,
-          messages, readRequests, readGrants,
+          messages, readRequests, readBarrierViolationSeen,
           membership, appliedConfigIndex,
           effectiveMembership, effectiveConfigIndex,
           electedLeaders, logicalPrefixLedger, committedLedger,
           commitWitnesses,
-          higherTermEvidenceSeen, higherTermStepDownFailed,
+          higherTermStepDownFailed,
           staleAuthorityAccepted
 
 vars == << currentTerm, votedFor, role, log, commitIndex,
           snapshotIndex, snapshotPrefix, compactedIndex, snapshotTransfer,
           applied, applicationEpoch, epochBaseIndex, epochBaseState,
           applicationState, appliedThrough,
-          messages, readRequests, readGrants,
+          messages, readRequests, readBarrierViolationSeen,
           membership, appliedConfigIndex,
           effectiveMembership, effectiveConfigIndex,
           electedLeaders, logicalPrefixLedger, committedLedger,
           commitWitnesses,
-          higherTermEvidenceSeen, higherTermStepDownFailed,
+          higherTermStepDownFailed,
           staleAuthorityAccepted >>
 
 snapshotVars ==
@@ -56,7 +56,7 @@ applicationVars ==
 historyVars == <<logicalPrefixLedger, committedLedger, commitWitnesses>>
 
 authorityVars ==
-  <<higherTermEvidenceSeen, higherTermStepDownFailed, staleAuthorityAccepted>>
+  <<higherTermStepDownFailed, staleAuthorityAccepted>>
 
 Min(a, b) == IF a <= b THEN a ELSE b
 Max(a, b) == IF a >= b THEN a ELSE b
@@ -271,13 +271,11 @@ RecordElection(node) ==
     ![currentTerm[node]] = @ \cup {node}]
 
 RecordHigherTermOutcome(node, evidenceTerm, observedHigherTerm) ==
-  /\ higherTermEvidenceSeen' =
-       IF observedHigherTerm THEN TRUE ELSE higherTermEvidenceSeen
-  /\ higherTermStepDownFailed' =
-       IF /\ observedHigherTerm
-          /\ (currentTerm'[node] # evidenceTerm \/ role'[node] # Follower)
-       THEN TRUE
-       ELSE higherTermStepDownFailed
+  higherTermStepDownFailed' =
+    IF /\ observedHigherTerm
+       /\ (currentTerm'[node] # evidenceTerm \/ role'[node] # Follower)
+    THEN TRUE
+    ELSE higherTermStepDownFailed
 
 RecordAuthorityAcceptance(authorityTerm, knownTerm, accepted) ==
   staleAuthorityAccepted' =
@@ -469,8 +467,16 @@ RecordCommitWitnesses(witnesses) ==
     commitWitnesses.invalidCertificateSeen \/
       \E witness \in witnesses : ~CommitWitnessOK(witness))
 
+ReadGrantOK(grant) ==
+  /\ grant \in ReadGrantSet
+  /\ \E read \in readRequests :
+       /\ read.node = grant.node
+       /\ read.request = grant.request
+       /\ grant.readIndex >= read.committedFloor
+
 RecordReadGrant(grant) ==
-  readGrants' = readGrants \cup {grant}
+  readBarrierViolationSeen' =
+    IF ReadGrantOK(grant) THEN readBarrierViolationSeen ELSE TRUE
 
 CanAdoptLog(n, entries) ==
   /\ LogOK(entries)
@@ -553,7 +559,6 @@ TypeOK ==
        role[n] = Leader =>
          /\ currentTerm[n] \in 1..MaxTerm
          /\ n \in electedLeaders[currentTerm[n]]
-  /\ higherTermEvidenceSeen \in BOOLEAN
   /\ higherTermStepDownFailed \in BOOLEAN
   /\ staleAuthorityAccepted \in BOOLEAN
   /\ membership \in MembershipSet
@@ -632,12 +637,7 @@ TypeOK ==
          Cardinality({r \in readRequests :
              /\ r.node = n
              /\ r.request = request}) <= 1
-  /\ readGrants \in SUBSET ReadGrantSet
-  /\ \A n \in Nodes :
-       \A request \in ReadRequests :
-         Cardinality({g \in readGrants :
-             /\ g.node = n
-             /\ g.request = request}) <= 1
+  /\ readBarrierViolationSeen \in BOOLEAN
 
 Init ==
   /\ currentTerm = [n \in Nodes |-> 0]
@@ -657,7 +657,7 @@ Init ==
   /\ appliedThrough = [n \in Nodes |-> 0]
   /\ messages = {}
   /\ readRequests = {}
-  /\ readGrants = {}
+  /\ readBarrierViolationSeen = FALSE
   /\ membership = StableMembership(Nodes)
   /\ appliedConfigIndex = 0
   /\ effectiveMembership = StableMembership(Nodes)
@@ -666,7 +666,6 @@ Init ==
   /\ logicalPrefixLedger = {}
   /\ committedLedger = {}
   /\ commitWitnesses = EmptyCommitWitnessHistory
-  /\ higherTermEvidenceSeen = FALSE
   /\ higherTermStepDownFailed = FALSE
   /\ staleAuthorityAccepted = FALSE
 
@@ -676,7 +675,7 @@ Timeout(n) ==
   /\ currentTerm' = [currentTerm EXCEPT ![n] = @ + 1]
   /\ votedFor' = [votedFor EXCEPT ![n] = n]
   /\ role' = [role EXCEPT ![n] = Candidate]
-  /\ UNCHANGED <<log, commitIndex, messages, readRequests, readGrants,
+  /\ UNCHANGED <<log, commitIndex, messages, readRequests, readBarrierViolationSeen,
                   membership, appliedConfigIndex, effectiveMembership,
                   effectiveConfigIndex, electedLeaders>>
   /\ UNCHANGED snapshotVars
@@ -697,10 +696,9 @@ SendRequestVote(c, v) ==
     /\ messages' = messages \cup {msg}
     /\ RecordAuthorityAcceptance(currentTerm[c], currentTerm[c], TRUE)
     /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
-                    readRequests, readGrants, membership, appliedConfigIndex,
+                    readRequests, readBarrierViolationSeen, membership, appliedConfigIndex,
                     effectiveMembership, effectiveConfigIndex,
-                    electedLeaders, higherTermEvidenceSeen,
-                    higherTermStepDownFailed>>
+                    electedLeaders, higherTermStepDownFailed>>
     /\ UNCHANGED snapshotVars
     /\ UNCHANGED applicationVars
     /\ UNCHANGED historyVars
@@ -725,7 +723,7 @@ DeliverRequestVote(m) ==
          IF higher \/ grant THEN Follower ELSE @]
     /\ RecordHigherTermOutcome(m.to, m.term, higher)
     /\ RecordAuthorityAcceptance(m.term, currentTerm[m.to], grant)
-    /\ UNCHANGED <<log, commitIndex, readRequests, readGrants,
+    /\ UNCHANGED <<log, commitIndex, readRequests, readBarrierViolationSeen,
                     membership, appliedConfigIndex, effectiveMembership,
                     effectiveConfigIndex, electedLeaders>>
     /\ UNCHANGED snapshotVars
@@ -749,8 +747,8 @@ BecomeLeader(n) ==
     /\ RecordElection(n)
     /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
     /\ UNCHANGED <<currentTerm, votedFor, log, commitIndex, messages,
-                    readRequests, readGrants, membership, appliedConfigIndex,
-                    higherTermEvidenceSeen, higherTermStepDownFailed>>
+                    readRequests, readBarrierViolationSeen, membership, appliedConfigIndex,
+                    higherTermStepDownFailed>>
     /\ UNCHANGED snapshotVars
     /\ UNCHANGED applicationVars
     /\ UNCHANGED historyVars
@@ -763,10 +761,10 @@ ClientAppend(n, value) ==
   /\ RecordLogicalPrefixes(log', snapshotIndex, snapshotPrefix)
   /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
   /\ UNCHANGED <<currentTerm, votedFor, role, commitIndex, messages,
-                  readRequests, readGrants, membership, appliedConfigIndex,
+                  readRequests, readBarrierViolationSeen, membership, appliedConfigIndex,
                   effectiveMembership, effectiveConfigIndex, electedLeaders,
                   committedLedger, commitWitnesses,
-                  higherTermEvidenceSeen, higherTermStepDownFailed>>
+                  higherTermStepDownFailed>>
   /\ UNCHANGED snapshotVars
   /\ UNCHANGED applicationVars
 
@@ -785,10 +783,9 @@ SendAppend(l, f) ==
     /\ messages' = messages \cup {msg}
     /\ RecordAuthorityAcceptance(currentTerm[l], currentTerm[l], TRUE)
     /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
-                    readRequests, readGrants, membership, appliedConfigIndex,
+                    readRequests, readBarrierViolationSeen, membership, appliedConfigIndex,
                     effectiveMembership, effectiveConfigIndex,
-                    electedLeaders, higherTermEvidenceSeen,
-                    higherTermStepDownFailed>>
+                    electedLeaders, higherTermStepDownFailed>>
     /\ UNCHANGED snapshotVars
     /\ UNCHANGED applicationVars
     /\ UNCHANGED historyVars
@@ -843,7 +840,7 @@ DeliverAppend(m) ==
          commitIndex[m.to], nextCommit[m.to])
     /\ RecordHigherTermOutcome(m.to, m.term, higher)
     /\ RecordAuthorityAcceptance(m.term, currentTerm[m.to], accept)
-    /\ UNCHANGED <<readRequests, readGrants, membership,
+    /\ UNCHANGED <<readRequests, readBarrierViolationSeen, membership,
                     appliedConfigIndex, electedLeaders, commitWitnesses>>
     /\ UNCHANGED snapshotVars
     /\ UNCHANGED applicationVars
@@ -879,10 +876,10 @@ Commit(n, i) ==
          n, commitIndex[n], i, context, preEffectiveConfigIndex))
     /\ RecordAuthorityAcceptance(preTerm, preTerm, TRUE)
     /\ UNCHANGED <<currentTerm, votedFor, log, messages,
-                    readRequests, readGrants, membership, appliedConfigIndex,
+                    readRequests, readBarrierViolationSeen, membership, appliedConfigIndex,
                     effectiveMembership, effectiveConfigIndex,
                     electedLeaders, logicalPrefixLedger,
-                    higherTermEvidenceSeen, higherTermStepDownFailed>>
+                    higherTermStepDownFailed>>
     /\ UNCHANGED snapshotVars
     /\ UNCHANGED applicationVars
 
@@ -904,7 +901,7 @@ Apply(n) ==
     /\ appliedConfigIndex' =
          IF isNewConfiguration THEN next ELSE appliedConfigIndex
     /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex, messages,
-                    readRequests, readGrants, effectiveMembership,
+                    readRequests, readBarrierViolationSeen, effectiveMembership,
                     effectiveConfigIndex, electedLeaders,
                     applicationEpoch, epochBaseIndex, epochBaseState>>
     /\ UNCHANGED snapshotVars
@@ -920,7 +917,7 @@ ApplicationStateLoss(n) ==
   /\ applicationState' = [applicationState EXCEPT ![n] = InitialApplicationState]
   /\ appliedThrough' = [appliedThrough EXCEPT ![n] = 0]
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex, applied,
-                  messages, readRequests, readGrants, membership,
+                  messages, readRequests, readBarrierViolationSeen, membership,
                   appliedConfigIndex, effectiveMembership,
                   effectiveConfigIndex, electedLeaders>>
   /\ UNCHANGED snapshotVars
@@ -931,7 +928,7 @@ Restart(n) ==
   /\ role[n] # Follower
   /\ role' = [role EXCEPT ![n] = Follower]
   /\ UNCHANGED <<currentTerm, votedFor, log, commitIndex, messages,
-                  readRequests, readGrants, membership, appliedConfigIndex,
+                  readRequests, readBarrierViolationSeen, membership, appliedConfigIndex,
                   effectiveMembership, effectiveConfigIndex, electedLeaders>>
   /\ UNCHANGED snapshotVars
   /\ UNCHANGED applicationVars
@@ -948,7 +945,7 @@ CreateSnapshot(n) ==
     /\ RecordLogicalPrefixes(log, snapshotIndex', snapshotPrefix')
     /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                     compactedIndex, snapshotTransfer, messages,
-                    readRequests, readGrants, membership, appliedConfigIndex,
+                    readRequests, readBarrierViolationSeen, membership, appliedConfigIndex,
                     effectiveMembership, effectiveConfigIndex,
                     electedLeaders, committedLedger, commitWitnesses>>
     /\ UNCHANGED applicationVars
@@ -972,10 +969,10 @@ TransferSnapshot(from, to) ==
   /\ RecordAuthorityAcceptance(currentTerm[from], currentTerm[from], TRUE)
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                   snapshotIndex, snapshotPrefix, compactedIndex,
-                  messages, readRequests, readGrants, membership,
+                  messages, readRequests, readBarrierViolationSeen, membership,
                   appliedConfigIndex, effectiveMembership,
                   effectiveConfigIndex, electedLeaders,
-                  higherTermEvidenceSeen, higherTermStepDownFailed>>
+                  higherTermStepDownFailed>>
   /\ UNCHANGED applicationVars
   /\ UNCHANGED historyVars
 
@@ -1032,7 +1029,7 @@ InstallSnapshot ==
     /\ RecordHigherTermOutcome(
          node, transfer.term, transfer.term > currentTerm[node])
     /\ RecordAuthorityAcceptance(transfer.term, currentTerm[node], TRUE)
-    /\ UNCHANGED <<applied, messages, readRequests, readGrants,
+    /\ UNCHANGED <<applied, messages, readRequests, readBarrierViolationSeen,
                     electedLeaders, commitWitnesses>>
 
 CompactSnapshot(n) ==
@@ -1041,7 +1038,7 @@ CompactSnapshot(n) ==
   /\ RecordLogicalPrefixes(log, snapshotIndex, snapshotPrefix)
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                   snapshotIndex, snapshotPrefix, snapshotTransfer,
-                  messages, readRequests, readGrants, membership,
+                  messages, readRequests, readBarrierViolationSeen, membership,
                   appliedConfigIndex, effectiveMembership,
                   effectiveConfigIndex, electedLeaders,
                   committedLedger, commitWitnesses>>
@@ -1071,10 +1068,10 @@ EnterJoint(n, newVoters) ==
     /\ RecordLogicalPrefixes(nextLog, snapshotIndex, snapshotPrefix)
     /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
     /\ UNCHANGED <<currentTerm, votedFor, commitIndex, messages,
-                    readRequests, readGrants, membership,
+                    readRequests, readBarrierViolationSeen, membership,
                     appliedConfigIndex, electedLeaders,
                     committedLedger, commitWitnesses,
-                    higherTermEvidenceSeen, higherTermStepDownFailed>>
+                    higherTermStepDownFailed>>
     /\ UNCHANGED snapshotVars
     /\ UNCHANGED applicationVars
 
@@ -1102,10 +1099,10 @@ LeaveJoint(n) ==
     /\ RecordLogicalPrefixes(nextLog, snapshotIndex, snapshotPrefix)
     /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
     /\ UNCHANGED <<currentTerm, votedFor, commitIndex, messages,
-                    readRequests, readGrants, membership,
+                    readRequests, readBarrierViolationSeen, membership,
                     appliedConfigIndex, electedLeaders,
                     committedLedger, commitWitnesses,
-                    higherTermEvidenceSeen, higherTermStepDownFailed>>
+                    higherTermStepDownFailed>>
     /\ UNCHANGED snapshotVars
     /\ UNCHANGED applicationVars
 
@@ -1121,10 +1118,9 @@ RegisterRead(n, request) ==
     /\ readRequests' = readRequests \cup {read}
     /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
     /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
-                    messages, readGrants, membership, appliedConfigIndex,
+                    messages, readBarrierViolationSeen, membership, appliedConfigIndex,
                     effectiveMembership, effectiveConfigIndex,
-                    electedLeaders, higherTermEvidenceSeen,
-                    higherTermStepDownFailed>>
+                    electedLeaders, higherTermStepDownFailed>>
     /\ UNCHANGED snapshotVars
     /\ UNCHANGED applicationVars
     /\ UNCHANGED historyVars
@@ -1138,15 +1134,13 @@ GrantRead(n, request) ==
       /\ read.request = request
       /\ role[n] = Leader
       /\ commitIndex[n] >= read.committedFloor
-      /\ \A existing \in readGrants :
-           ~(existing.node = n /\ existing.request = request)
       /\ RecordReadGrant(grant)
       /\ RecordAuthorityAcceptance(currentTerm[n], currentTerm[n], TRUE)
       /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                       messages, readRequests, membership,
                       appliedConfigIndex, effectiveMembership,
                       effectiveConfigIndex, electedLeaders,
-                      higherTermEvidenceSeen, higherTermStepDownFailed>>
+                      higherTermStepDownFailed>>
       /\ UNCHANGED snapshotVars
       /\ UNCHANGED applicationVars
       /\ UNCHANGED historyVars
@@ -1236,10 +1230,6 @@ CommittedEntriesHaveQuorum ==
            /\ committed.entry = LogicalEntry(n, index)
 
 ReadBarrierLinearizability ==
-  \A grant \in readGrants :
-    \E read \in readRequests :
-      /\ read.node = grant.node
-      /\ read.request = grant.request
-      /\ grant.readIndex >= read.committedFloor
+  ~readBarrierViolationSeen
 
 ====

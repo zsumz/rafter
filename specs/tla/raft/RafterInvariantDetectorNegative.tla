@@ -206,7 +206,7 @@ FixtureInit ==
   /\ appliedThrough = BaseAppliedThrough
   /\ messages = {}
   /\ readRequests = InitialReadRequests
-  /\ readGrants = {}
+  /\ readBarrierViolationSeen = FALSE
   /\ membership = StableMembership(Nodes)
   /\ appliedConfigIndex = 0
   /\ effectiveMembership = InitialEffectiveMembership
@@ -215,7 +215,6 @@ FixtureInit ==
   /\ logicalPrefixLedger = {}
   /\ committedLedger = InitialCommittedLedger
   /\ commitWitnesses = EmptyCommitWitnessHistory
-  /\ higherTermEvidenceSeen = FALSE
   /\ higherTermStepDownFailed = FALSE
   /\ staleAuthorityAccepted = FALSE
 
@@ -229,7 +228,7 @@ PrepareSequentialCandidate ==
   /\ votedFor' = [n \in Nodes |-> FixtureB]
   /\ role' = [n \in Nodes |-> IF n = FixtureB THEN Candidate ELSE Follower]
   /\ UNCHANGED <<currentTerm, log, commitIndex, messages,
-                  readRequests, readGrants, membership, appliedConfigIndex,
+                  readRequests, readBarrierViolationSeen, membership, appliedConfigIndex,
                   effectiveMembership, effectiveConfigIndex,
                   electedLeaders>>
   /\ UNCHANGED snapshotVars
@@ -243,15 +242,16 @@ FaultySequentialLeader ==
   /\ RecordElection(FixtureB)
   /\ RecordAuthorityAcceptance(1, 1, TRUE)
   /\ UNCHANGED <<currentTerm, votedFor, log, commitIndex, messages,
-                  readRequests, readGrants, membership, appliedConfigIndex,
+                  readRequests, readBarrierViolationSeen, membership, appliedConfigIndex,
                   effectiveMembership, effectiveConfigIndex,
-                  higherTermEvidenceSeen, higherTermStepDownFailed>>
+                  higherTermStepDownFailed>>
   /\ UNCHANGED snapshotVars
   /\ UNCHANGED applicationVars
   /\ UNCHANGED historyVars
 
 FaultyHigherTermAndAuthority ==
-  /\ ~higherTermEvidenceSeen
+  /\ currentTerm[FixtureA] = 1
+  /\ role[FixtureA] = Leader
   /\ ~higherTermStepDownFailed
   /\ ~staleAuthorityAccepted
   /\ currentTerm' = [currentTerm EXCEPT ![FixtureA] = 2]
@@ -260,7 +260,7 @@ FaultyHigherTermAndAuthority ==
   /\ RecordHigherTermOutcome(FixtureA, 2, TRUE)
   /\ RecordAuthorityAcceptance(
        1, 2, FixtureMode # HigherTermRecorderMode)
-  /\ UNCHANGED <<log, commitIndex, messages, readRequests, readGrants,
+  /\ UNCHANGED <<log, commitIndex, messages, readRequests, readBarrierViolationSeen,
                   membership, appliedConfigIndex, effectiveMembership,
                   effectiveConfigIndex, electedLeaders>>
   /\ UNCHANGED snapshotVars
@@ -268,13 +268,14 @@ FaultyHigherTermAndAuthority ==
   /\ UNCHANGED historyVars
 
 FaultyStaleAuthorityOnly ==
-  /\ ~higherTermEvidenceSeen
+  /\ currentTerm[FixtureA] = 2
+  /\ role[FixtureA] = Follower
   /\ ~higherTermStepDownFailed
   /\ ~staleAuthorityAccepted
   /\ RecordHigherTermOutcome(FixtureA, currentTerm[FixtureA], FALSE)
   /\ RecordAuthorityAcceptance(1, currentTerm[FixtureA], TRUE)
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
-                  messages, readRequests, readGrants, membership,
+                  messages, readRequests, readBarrierViolationSeen, membership,
                   appliedConfigIndex, effectiveMembership,
                   effectiveConfigIndex, electedLeaders>>
   /\ UNCHANGED snapshotVars
@@ -299,7 +300,7 @@ FaultyApplicationResult ==
          [applicationState EXCEPT ![FixtureB] = corruptedResult]
     /\ appliedThrough' = [appliedThrough EXCEPT ![FixtureB] = 1]
     /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
-                    messages, readRequests, readGrants, membership,
+                    messages, readRequests, readBarrierViolationSeen, membership,
                     appliedConfigIndex, effectiveMembership,
                     effectiveConfigIndex, electedLeaders,
                     applicationEpoch, epochBaseIndex, epochBaseState>>
@@ -329,7 +330,7 @@ FaultyApplicationEpochReplay ==
          [applicationState EXCEPT ![FixtureA] = resultState]
     /\ appliedThrough' = [appliedThrough EXCEPT ![FixtureA] = 1]
     /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
-                    messages, readRequests, readGrants, membership,
+                    messages, readRequests, readBarrierViolationSeen, membership,
                     appliedConfigIndex, effectiveMembership,
                     effectiveConfigIndex, electedLeaders,
                     applicationEpoch, epochBaseIndex, epochBaseState>>
@@ -342,7 +343,7 @@ FaultyLogMatchingRecorder ==
   /\ RecordLogicalPrefixes(
        DivergentLogs, BaseSnapshotIndex, BaseSnapshotPrefix)
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
-                  messages, readRequests, readGrants, membership,
+                  messages, readRequests, readBarrierViolationSeen, membership,
                   appliedConfigIndex, effectiveMembership,
                   effectiveConfigIndex, electedLeaders,
                   committedLedger, commitWitnesses>>
@@ -354,7 +355,7 @@ ObserveSnapshotSource ==
   /\ logicalPrefixLedger = {}
   /\ RecordLogicalPrefixes(log, snapshotIndex, snapshotPrefix)
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
-                  messages, readRequests, readGrants, membership,
+                  messages, readRequests, readBarrierViolationSeen, membership,
                   appliedConfigIndex, effectiveMembership,
                   effectiveConfigIndex, electedLeaders,
                   committedLedger, commitWitnesses>>
@@ -372,7 +373,7 @@ FaultySnapshotTransfer ==
         prefix |-> <<Entry(1, FixtureValueB)>>]
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                   snapshotIndex, snapshotPrefix, compactedIndex,
-                  messages, readRequests, readGrants, membership,
+                  messages, readRequests, readBarrierViolationSeen, membership,
                   appliedConfigIndex, effectiveMembership,
                   effectiveConfigIndex, electedLeaders>>
   /\ UNCHANGED applicationVars
@@ -385,7 +386,7 @@ FaultyLeaderCompletenessRecorder ==
        SingleAEntryLogs, BaseSnapshotIndex, BaseSnapshotPrefix,
        FixtureA, 0, 1)
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
-                  messages, readRequests, readGrants, membership,
+                  messages, readRequests, readBarrierViolationSeen, membership,
                   appliedConfigIndex, effectiveMembership,
                   effectiveConfigIndex, electedLeaders,
                   logicalPrefixLedger, commitWitnesses>>
@@ -399,7 +400,7 @@ FaultyCommittedPrefixRecorder ==
        SingleBEntryLogs, BaseSnapshotIndex, BaseSnapshotPrefix,
        FixtureB, 0, 1)
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
-                  messages, readRequests, readGrants, membership,
+                  messages, readRequests, readBarrierViolationSeen, membership,
                   appliedConfigIndex, effectiveMembership,
                   effectiveConfigIndex, electedLeaders,
                   logicalPrefixLedger, commitWitnesses>>
@@ -423,7 +424,7 @@ FaultyCommitQuorumRecorder ==
     /\ commitWitnesses = EmptyCommitWitnessHistory
     /\ RecordCommitWitnesses({witness})
     /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
-                    messages, readRequests, readGrants, membership,
+                    messages, readRequests, readBarrierViolationSeen, membership,
                     appliedConfigIndex, effectiveMembership,
                     effectiveConfigIndex, electedLeaders,
                     logicalPrefixLedger, committedLedger>>
@@ -435,7 +436,7 @@ FaultyReadBarrierRecorder ==
   LET grant ==
         [node |-> FixtureA, request |-> FixtureRead, readIndex |-> 0]
   IN
-    /\ readGrants = {}
+    /\ readBarrierViolationSeen = FALSE
     /\ RecordReadGrant(grant)
     /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                     messages, readRequests, membership,
@@ -514,10 +515,8 @@ LegacyTargetElectedLeaders ==
     THEN {FixtureB}
     ELSE {}]
 
-LegacyTargetReadGrants ==
-  IF TargetPredicate = "ReadBarrierLinearizability"
-  THEN {[node |-> FixtureA, request |-> FixtureRead, readIndex |-> 0]}
-  ELSE {}
+LegacyTargetReadBarrierViolationSeen ==
+  TargetPredicate = "ReadBarrierLinearizability"
 
 LegacyViolation ==
   /\ currentTerm' = LegacyTargetTerm
@@ -537,7 +536,7 @@ LegacyViolation ==
   /\ appliedThrough' = BaseAppliedThrough
   /\ messages' = {}
   /\ readRequests' = {}
-  /\ readGrants' = LegacyTargetReadGrants
+  /\ readBarrierViolationSeen' = LegacyTargetReadBarrierViolationSeen
   /\ membership' = StableMembership(Nodes)
   /\ appliedConfigIndex' = 0
   /\ effectiveMembership' = StableMembership(Nodes)
@@ -548,7 +547,6 @@ LegacyViolation ==
   /\ commitWitnesses' = CommitWitnessHistory(
        LegacyTargetWitnessedCommits,
        LegacyTargetInvalidCommitCertificateSeen)
-  /\ higherTermEvidenceSeen' = FALSE
   /\ higherTermStepDownFailed' = FALSE
   /\ staleAuthorityAccepted' = FALSE
 
@@ -655,7 +653,7 @@ SnapshotLifecycleInit ==
        [n \in Nodes |-> IF n = FixtureA THEN 1 ELSE 0]
   /\ messages = {}
   /\ readRequests = {}
-  /\ readGrants = {}
+  /\ readBarrierViolationSeen = FALSE
   /\ membership = StableMembership(Nodes)
   /\ appliedConfigIndex = 0
   /\ effectiveMembership = StableMembership(Nodes)
@@ -666,7 +664,6 @@ SnapshotLifecycleInit ==
   /\ committedLedger = {[index |-> 1, entry |-> SnapshotLifecycleEntry]}
   /\ commitWitnesses = CommitWitnessHistory(
        CommitWitnessKeys({SnapshotLifecycleWitness}), FALSE)
-  /\ higherTermEvidenceSeen = FALSE
   /\ higherTermStepDownFailed = FALSE
   /\ staleAuthorityAccepted = FALSE
 
@@ -738,7 +735,7 @@ ApplicationEpochLifecycleInit ==
   /\ appliedThrough = BaseAppliedThrough
   /\ messages = {}
   /\ readRequests = {}
-  /\ readGrants = {}
+  /\ readBarrierViolationSeen = FALSE
   /\ membership = StableMembership(Nodes)
   /\ appliedConfigIndex = 0
   /\ effectiveMembership = StableMembership(Nodes)
@@ -749,7 +746,6 @@ ApplicationEpochLifecycleInit ==
   /\ committedLedger = {[index |-> 1, entry |-> SnapshotLifecycleEntry]}
   /\ commitWitnesses = CommitWitnessHistory(
        CommitWitnessKeys({SnapshotLifecycleWitness}), FALSE)
-  /\ higherTermEvidenceSeen = FALSE
   /\ higherTermStepDownFailed = FALSE
   /\ staleAuthorityAccepted = FALSE
 
@@ -837,7 +833,7 @@ SelfRemovalCommitInit ==
   /\ appliedThrough = [n \in Nodes |-> IF n = FixtureA THEN 1 ELSE 0]
   /\ messages = {}
   /\ readRequests = {}
-  /\ readGrants = {}
+  /\ readBarrierViolationSeen = FALSE
   /\ membership = SelfRemovalJointMembership
   /\ appliedConfigIndex = 1
   /\ effectiveMembership = SelfRemovalStableMembership
@@ -848,7 +844,6 @@ SelfRemovalCommitInit ==
   /\ committedLedger = {[index |-> 1, entry |-> SelfRemovalJointEntry]}
   /\ commitWitnesses = CommitWitnessHistory(
        CommitWitnessKeys({SelfRemovalJointWitness}), FALSE)
-  /\ higherTermEvidenceSeen = FALSE
   /\ higherTermStepDownFailed = FALSE
   /\ staleAuthorityAccepted = FALSE
 
@@ -899,13 +894,12 @@ ConfigurationRegressionInit ==
   /\ BaseExtendedState
   /\ messages = {}
   /\ readRequests = {}
-  /\ readGrants = {}
+  /\ readBarrierViolationSeen = FALSE
   /\ membership = StableMembership(Nodes)
   /\ appliedConfigIndex = 0
   /\ effectiveMembership = RegressionStableConfig
   /\ effectiveConfigIndex = 2
   /\ electedLeaders = [t \in 1..MaxTerm |-> {}]
-  /\ higherTermEvidenceSeen = FALSE
   /\ higherTermStepDownFailed = FALSE
   /\ staleAuthorityAccepted = FALSE
 
@@ -957,14 +951,13 @@ JointQuorumRegressionInit ==
   /\ BaseExtendedState
   /\ messages = {}
   /\ readRequests = {}
-  /\ readGrants = {}
+  /\ readBarrierViolationSeen = FALSE
   /\ membership = StableMembership(Nodes)
   /\ appliedConfigIndex = 0
   /\ effectiveMembership = StableMembership(Nodes)
   /\ effectiveConfigIndex = 0
   /\ electedLeaders = [t \in 1..MaxTerm |->
        IF t = 1 THEN {FixtureA} ELSE {}]
-  /\ higherTermEvidenceSeen = FALSE
   /\ higherTermStepDownFailed = FALSE
   /\ staleAuthorityAccepted = FALSE
 
@@ -1026,7 +1019,7 @@ PrepareEffectiveOverwriteLeader ==
   /\ log' = [log EXCEPT ![FixtureB] = <<Entry(2, FixtureValueA)>>]
   /\ electedLeaders' = [electedLeaders EXCEPT ![2] = @ \cup {FixtureB}]
   /\ RecordLogicalPrefixes(log', snapshotIndex, snapshotPrefix)
-  /\ UNCHANGED <<commitIndex, messages, readRequests, readGrants,
+  /\ UNCHANGED <<commitIndex, messages, readRequests, readBarrierViolationSeen,
                   membership, appliedConfigIndex, effectiveMembership,
                   effectiveConfigIndex, committedLedger, commitWitnesses>>
   /\ UNCHANGED snapshotVars
