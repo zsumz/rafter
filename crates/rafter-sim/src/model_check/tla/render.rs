@@ -46,11 +46,7 @@ fn render_tla_trace_module(module_name: &str, actions: &[TlaRenderedAction]) -> 
         "               snapshotIndex, snapshotPrefix, compactionPending, snapshotTransfer,\n",
     );
     module.push_str("               applied,\n");
-    module
-        .push_str("               messages, readRequests, readBarrierViolationSeen, membership,\n");
-    module.push_str(
-        "               appliedConfigIndex, effectiveMembership, effectiveConfigIndex,\n",
-    );
+    module.push_str("               messages, readRequests, readBarrierViolationSeen,\n");
     module.push_str("               electedLeaders, logicalPrefixLedger, committedLedger,\n");
     module.push_str("               commitWitnesses,\n");
     module.push_str("               higherTermStepDownFailed,\n");
