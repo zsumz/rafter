@@ -2,6 +2,7 @@ use super::super::super::{
     observations::Observation, scheduling::Operation, Action, ExplorationState, Failure,
     RestartSnapshotState,
 };
+use super::super::ConfigurationAppend;
 use super::cluster::apply_to_cluster;
 use super::SnapshotBootstrapSeed;
 
@@ -10,6 +11,10 @@ pub(super) fn apply_snapshot_bootstrap_seeds_inner(
     seeds: Vec<SnapshotBootstrapSeed>,
 ) -> Result<(), rafter::BootstrapValidationError> {
     for seed in seeds {
+        state.cluster.initialize_snapshot_seed_epoch_floor(
+            seed.node_id,
+            seed.snapshot.metadata.last_included_index,
+        );
         state
             .cluster
             .0
@@ -40,6 +45,8 @@ pub(super) fn apply_to_state_inner(state: &mut ExplorationState, operation: Oper
         | Operation::Transfer { .. }
         | Operation::DeliverReadyAt(_) => None,
     };
+    let configuration_last_index_before =
+        configuration_proposer.map(|proposer| (proposer, state.cluster.last_log_index(proposer)));
     let delivered = match &operation {
         Operation::DeliverReadyAt(position) => state
             .cluster
@@ -90,6 +97,13 @@ pub(super) fn apply_to_state_inner(state: &mut ExplorationState, operation: Oper
         state.transfers_issued += 1;
     }
     let effects = apply_to_cluster(&mut state.cluster.0, operation);
+    let configuration_append = configuration_last_index_before.and_then(|(proposer, before)| {
+        let after = state.cluster.last_log_index(proposer);
+        (after > before).then_some(ConfigurationAppend {
+            proposer,
+            index: after,
+        })
+    });
     if let Some(registration) = &effects.read_registration {
         state.record_client_read(registration);
         state.read_indexes_issued += 1;
@@ -104,7 +118,7 @@ pub(super) fn apply_to_state_inner(state: &mut ExplorationState, operation: Oper
     state.refresh_log_history();
     state.record_commit_observation(
         &commit_context,
-        configuration_proposer,
+        configuration_append,
         follower_commit_authority,
     );
     state.record_leader_completeness_observation();
