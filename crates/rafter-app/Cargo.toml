@@ -13,6 +13,7 @@ rafter = { path = "../rafter", version = "0.0.1" }
 rafter-runtime-api = { path = "../rafter-runtime-api", version = "0.0.1" }
 
 [dev-dependencies]
+rafter-invariant-test = { path = "../rafter-invariant-test" }
 rafter-runtime = { path = "../rafter-runtime", version = "0.0.1" }
 rafter-storage = { path = "../rafter-storage", version = "0.0.1" }
 
