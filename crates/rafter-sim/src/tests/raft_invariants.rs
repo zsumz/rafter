@@ -4,6 +4,7 @@ use super::helpers::{
 };
 use super::*;
 use rafter::Message;
+use rafter_invariant_test::oracle_assert_eq;
 
 #[test]
 fn three_node_cluster_elects_one_leader() {
@@ -169,8 +170,8 @@ fn committed_prefix_is_stable_across_failover() {
         1
     );
 
-    assert_eq!(cluster.commit_index(NodeId(3)), LogIndex(4));
-    assert_eq!(
+    oracle_assert_eq!(cluster.commit_index(NodeId(3)), LogIndex(4));
+    oracle_assert_eq!(
         cluster.applied(),
         &[
             Applied {
