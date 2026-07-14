@@ -633,6 +633,37 @@ mod tests {
     }
 
     #[test]
+    fn telemetry_paths_remain_valid_from_a_nested_child_working_directory() {
+        let working_directory = unique_test_path("nested-child-working-directory");
+        std::fs::create_dir_all(&working_directory).expect("create nested working directory");
+
+        let output = timed_with_timeout(
+            "sh",
+            &[
+                OsString::from("-c"),
+                OsString::from("printf nested; printf nested-err >&2"),
+            ],
+            &super::base_environment(),
+            &working_directory,
+            Duration::from_secs(2),
+        )
+        .expect("nested child produces absolute-path telemetry");
+
+        assert!(output.status.success());
+        assert!(!output.timed_out);
+        assert_eq!(output.stdout, b"nested");
+        assert_eq!(output.stderr, b"nested-err");
+        assert!(output.peak_rss_kib > 0);
+        assert_eq!(
+            output.invocation.current_dir,
+            std::fs::canonicalize(&working_directory)
+                .expect("nested working directory canonicalizes")
+                .to_string_lossy()
+        );
+        std::fs::remove_dir_all(working_directory).expect("remove nested working directory");
+    }
+
+    #[test]
     fn timed_child_is_killed_at_its_soft_timeout() {
         let environment = super::base_environment();
         let output = timed_with_timeout(

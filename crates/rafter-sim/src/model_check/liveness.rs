@@ -10,13 +10,12 @@ use super::{
 
 pub(in crate::model_check::liveness) mod driver;
 mod features;
+mod post_heal;
 
 use driver::{
-    check_soak_safety, drive_liveness_rounds_until_observed, drive_soak_liveness_round,
-    drive_until_stable_leader, has_partition, issue_liveness_proposal, liveness_proposal_accepted,
-    liveness_proposal_completed, liveness_proposal_terminal_outcome, single_leader,
-    soak_liveness_coverage_failure, soak_liveness_invariant_failure, soak_transition_failure,
-    FairRoundDriver, LivenessRoundBudget, ProposalTerminalOutcome, StableLeaderGuard,
+    check_soak_safety, drive_soak_liveness_round, drive_until_stable_leader, has_partition,
+    single_leader, soak_liveness_coverage_failure, soak_liveness_invariant_failure,
+    soak_transition_failure, FairRoundDriver, LivenessRoundBudget, ProposalTerminalOutcome,
 };
 pub(in crate::model_check) use features::LivenessFeatureReport;
 use features::{
@@ -24,6 +23,7 @@ use features::{
     LivenessPreconditionProbe, LivenessPreconditions, ProposalEvidence, StableLeaderEvidence,
     LV_01_CONVERGENCE_CLAUSE_IDS, LV_01_USABILITY_CLAUSE_IDS,
 };
+use post_heal::{drive_until_stable_leader_commits, PostHealBudgets};
 
 #[cfg(test)]
 pub(super) use features::run_snapshot_catchup_liveness_check;
@@ -74,60 +74,33 @@ pub(in crate::model_check) fn run_soak_liveness_check_with_budget_overrides(
             format!("no leader elected within {convergence_budget} post-heal convergence rounds"),
         ));
     };
-    let leader = convergence.leader;
-    let convergence_report = successful_post_heal_convergence_report(
-        state,
-        convergence_round_budget,
-        convergence,
-        fault_cycle,
-    );
-
-    let Some(proposal_id) = issue_liveness_proposal(state, leader, trace, observed_actions) else {
-        return Err(soak_liveness_invariant_failure(
-            state,
-            config,
-            trace,
-            catalog::LV_01_POST_HEAL_LEADER_CONVERGENCE,
-            "post-heal stable leader rejected the usability proposal".to_owned(),
-        ));
-    };
-    let accepted_proposal = liveness_proposal_accepted(state, proposal_id);
-    check_soak_safety(state, config, trace)?;
-    let mut guard = StableLeaderGuard::new(leader, usability_budget);
-    let completion = drive_liveness_rounds_until_observed(
+    let usability = drive_until_stable_leader_commits(
         state,
         config,
         trace,
         observed_actions,
-        usability_budget,
-        |state| liveness_proposal_completed(state, proposal_id),
-        |state| guard.observe(single_leader(state)).is_ok(),
+        convergence,
+        PostHealBudgets {
+            schedule_round_offset: convergence.rounds_used,
+            convergence_rounds: convergence_budget,
+            usability_rounds: usability_budget,
+        },
     )?;
-    let outcome = liveness_proposal_terminal_outcome(state, proposal_id);
-    if !completion.completed
-        || !completion.observer_held
-        || outcome != Some(ProposalTerminalOutcome::Committed)
-        || single_leader(state) != Some(leader)
-    {
-        return Err(soak_liveness_invariant_failure(
-            state,
-            config,
-            trace,
-            catalog::LV_01_POST_HEAL_LEADER_CONVERGENCE,
-            format!(
-                "post-heal leader {leader} did not commit proposal {} within {usability_budget} bounded-fair usability rounds",
-                proposal_id.0
-            ),
-        ));
-    }
+
+    let convergence_report = successful_post_heal_convergence_report(
+        state,
+        convergence_round_budget,
+        usability.convergence,
+        fault_cycle,
+    );
 
     let usability_report = successful_post_heal_usability_report(
         state,
         usability_round_budget,
-        convergence,
-        completion,
-        proposal_id,
-        accepted_proposal,
+        usability.convergence,
+        usability.completion,
+        usability.proposal_id,
+        usability.accepted_proposal,
     );
     let mut reports = vec![convergence_report, usability_report];
     reports.extend(run_feature_liveness_checks(config, observed_actions)?);

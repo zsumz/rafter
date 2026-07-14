@@ -185,7 +185,8 @@ pub(crate) fn base_environment() -> BTreeMap<String, String> {
 pub(super) fn telemetry_path() -> Result<(PathBuf, PathBuf), Box<dyn Error>> {
     let directory = Path::new("target/rafter-invariants/telemetry");
     std::fs::create_dir_all(directory)?;
-    allocate_telemetry_path(directory, std::process::id(), &TELEMETRY_SEQUENCE)
+    let directory = std::fs::canonicalize(directory)?;
+    allocate_telemetry_path(&directory, std::process::id(), &TELEMETRY_SEQUENCE)
 }
 
 pub(super) fn allocate_telemetry_path(
