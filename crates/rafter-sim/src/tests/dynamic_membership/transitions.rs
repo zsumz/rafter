@@ -9,6 +9,7 @@ use super::fixtures::{
     flush_commit_notifications, learner_four_node_cluster,
 };
 use rafter::ConfigurationId;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
 #[test]
 fn add_voter_transition_preserves_committed_prefix() {
@@ -73,12 +74,12 @@ fn remove_voter_transition_preserves_prefix_and_steps_down_removed_leader() {
     cluster.deliver_all();
     commit_remove_node_two_transition(&mut cluster, ConfigurationId(30));
 
-    assert_eq!(cluster.role(NodeId(2)), Role::Follower);
+    oracle_assert_eq!(cluster.role(NodeId(2)), Role::Follower);
     for retained in [NodeId(1), NodeId(3), NodeId(4)] {
-        assert!(!cluster
+        oracle_assert!(!cluster
             .effective_membership(retained)
             .contains_voter(NodeId(2)));
-        assert_eq!(
+        oracle_assert_eq!(
             applied_payloads(&cluster, retained),
             vec![b"before-remove".to_vec()],
             "{retained} should keep the prefix committed before removal"
@@ -91,13 +92,13 @@ fn remove_voter_transition_preserves_prefix_and_steps_down_removed_leader() {
     flush_commit_notifications(&mut cluster, NodeId(1));
 
     for retained in [NodeId(1), NodeId(3), NodeId(4)] {
-        assert_eq!(
+        oracle_assert_eq!(
             applied_payloads(&cluster, retained),
             vec![b"before-remove".to_vec(), b"after-remove".to_vec()],
             "{retained} should commit after removal"
         );
     }
-    assert_eq!(
+    oracle_assert_eq!(
         applied_payloads(&cluster, NodeId(2)),
         vec![b"before-remove".to_vec()],
         "removed voter should not receive post-removal proposals"
