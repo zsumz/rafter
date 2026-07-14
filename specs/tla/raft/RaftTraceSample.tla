@@ -7,8 +7,7 @@ VARIABLE traceStep
 
 traceVars == << currentTerm, votedFor, role, log, commitIndex,
                snapshotIndex, snapshotPrefix, compactionPending, snapshotTransfer,
-               applied, applicationEpoch, epochBaseIndex, epochBaseState,
-               applicationState, appliedThrough,
+               applied,
                messages, readRequests, readBarrierViolationSeen, membership,
                appliedConfigIndex, effectiveMembership, effectiveConfigIndex,
                electedLeaders, logicalPrefixLedger, committedLedger,

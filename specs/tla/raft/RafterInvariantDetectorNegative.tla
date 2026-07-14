@@ -58,14 +58,11 @@ BaseVote == [n \in Nodes |-> NoVote]
 BaseRole == [n \in Nodes |-> Follower]
 BaseLog == [n \in Nodes |-> <<>>]
 BaseCommit == [n \in Nodes |-> 0]
-BaseApplied == [n \in Nodes |-> <<>>]
+BaseApplied == [n \in Nodes |->
+  <<AppliedEpoch(0, InitialApplicationState, <<>>)>>]
 BaseSnapshotIndex == [n \in Nodes |-> 0]
 BaseSnapshotPrefix == [n \in Nodes |-> <<>>]
 BaseCompactionPending == [n \in Nodes |-> FALSE]
-BaseApplicationEpoch == [n \in Nodes |-> 0]
-BaseEpochIndex == [n \in Nodes |-> 0]
-BaseApplicationState == [n \in Nodes |-> InitialApplicationState]
-BaseAppliedThrough == [n \in Nodes |-> 0]
 
 ApplicationConfig ==
   JointMembership(Nodes, {FixtureA, FixtureB})
@@ -196,11 +193,6 @@ FixtureInit ==
   /\ compactionPending = InitialCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = BaseApplied
-  /\ applicationEpoch = BaseApplicationEpoch
-  /\ epochBaseIndex = BaseEpochIndex
-  /\ epochBaseState = BaseApplicationState
-  /\ applicationState = BaseApplicationState
-  /\ appliedThrough = BaseAppliedThrough
   /\ messages = {}
   /\ readRequests = InitialReadRequests
   /\ readBarrierViolationSeen = FALSE
@@ -280,57 +272,47 @@ FaultyStaleAuthorityOnly ==
   /\ UNCHANGED historyVars
 
 ApplicationFirstApply ==
-  /\ Len(applied[FixtureA]) = 0
-  /\ Len(applied[FixtureB]) = 0
+  /\ Len(ApplicationObservations(FixtureA)) = 0
+  /\ Len(ApplicationObservations(FixtureB)) = 0
   /\ Apply(FixtureA)
 
 FaultyApplicationResult ==
   LET entry == log[FixtureB][1]
-      priorState == InitialApplicationState
       corruptedResult ==
         [referenceState |-> <<>>, membership |-> CorruptedApplicationConfig]
   IN
-    /\ Len(applied[FixtureA]) = 1
-    /\ Len(applied[FixtureB]) = 0
-    /\ RecordApplication(FixtureB, 1, entry, priorState, corruptedResult)
-    /\ applicationState' =
-         [applicationState EXCEPT ![FixtureB] = corruptedResult]
-    /\ appliedThrough' = [appliedThrough EXCEPT ![FixtureB] = 1]
+    /\ Len(ApplicationObservations(FixtureA)) = 1
+    /\ Len(ApplicationObservations(FixtureB)) = 0
+    /\ RecordApplication(FixtureB, entry, corruptedResult)
     /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                     messages, readRequests, readBarrierViolationSeen, membership,
                     appliedConfigIndex, effectiveMembership,
-                    effectiveConfigIndex, electedLeaders,
-                    applicationEpoch, epochBaseIndex, epochBaseState>>
+                    effectiveConfigIndex, electedLeaders>>
     /\ UNCHANGED snapshotVars
     /\ UNCHANGED historyVars
     /\ UNCHANGED authorityVars
 
 ApplicationEpochFirstApply ==
-  /\ applicationEpoch[FixtureA] = 0
-  /\ appliedThrough[FixtureA] = 0
+  /\ ApplicationEpoch(FixtureA) = 0
+  /\ AppliedThrough(FixtureA) = 0
   /\ Apply(FixtureA)
 
 ApplicationEpochLoss ==
-  /\ applicationEpoch[FixtureA] = 0
-  /\ appliedThrough[FixtureA] = 1
+  /\ ApplicationEpoch(FixtureA) = 0
+  /\ AppliedThrough(FixtureA) = 1
   /\ ApplicationStateLoss(FixtureA)
 
 FaultyApplicationEpochReplay ==
   LET entry == Entry(1, FixtureValueB)
-      priorState == InitialApplicationState
-      resultState == ApplyEntry(priorState, entry)
+      resultState == ApplyEntry(InitialApplicationState, entry)
   IN
-    /\ applicationEpoch[FixtureA] = 1
-    /\ appliedThrough[FixtureA] = 0
-    /\ RecordApplication(FixtureA, 1, entry, priorState, resultState)
-    /\ applicationState' =
-         [applicationState EXCEPT ![FixtureA] = resultState]
-    /\ appliedThrough' = [appliedThrough EXCEPT ![FixtureA] = 1]
+    /\ ApplicationEpoch(FixtureA) = 1
+    /\ AppliedThrough(FixtureA) = 0
+    /\ RecordApplication(FixtureA, entry, resultState)
     /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                     messages, readRequests, readBarrierViolationSeen, membership,
                     appliedConfigIndex, effectiveMembership,
-                    effectiveConfigIndex, electedLeaders,
-                    applicationEpoch, epochBaseIndex, epochBaseState>>
+                    effectiveConfigIndex, electedLeaders>>
     /\ UNCHANGED snapshotVars
     /\ UNCHANGED historyVars
     /\ UNCHANGED authorityVars
@@ -526,11 +508,6 @@ LegacyViolation ==
   /\ compactionPending' = BaseCompactionPending
   /\ snapshotTransfer' = NoSnapshotTransfer
   /\ applied' = BaseApplied
-  /\ applicationEpoch' = BaseApplicationEpoch
-  /\ epochBaseIndex' = BaseEpochIndex
-  /\ epochBaseState' = BaseApplicationState
-  /\ applicationState' = BaseApplicationState
-  /\ appliedThrough' = BaseAppliedThrough
   /\ messages' = {}
   /\ readRequests' = {}
   /\ readBarrierViolationSeen' = LegacyTargetReadBarrierViolationSeen
@@ -597,11 +574,6 @@ BaseExtendedState ==
   /\ compactionPending = BaseCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = BaseApplied
-  /\ applicationEpoch = BaseApplicationEpoch
-  /\ epochBaseIndex = BaseEpochIndex
-  /\ epochBaseState = BaseApplicationState
-  /\ applicationState = BaseApplicationState
-  /\ appliedThrough = BaseAppliedThrough
   /\ logicalPrefixLedger = {}
   /\ committedLedger = {}
   /\ commitWitnesses = EmptyCommitWitnessHistory
@@ -681,17 +653,9 @@ SnapshotLifecycleInit ==
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = [n \in Nodes |->
        IF n = FixtureA
-       THEN <<AppliedEvent(
-         0, 0, InitialApplicationState, 1, SnapshotLifecycleEntry,
-         InitialApplicationState, SnapshotLifecycleResult)>>
-       ELSE <<>>]
-  /\ applicationEpoch = BaseApplicationEpoch
-  /\ epochBaseIndex = BaseEpochIndex
-  /\ epochBaseState = BaseApplicationState
-  /\ applicationState = [n \in Nodes |->
-       IF n = FixtureA THEN SnapshotLifecycleResult ELSE InitialApplicationState]
-  /\ appliedThrough =
-       [n \in Nodes |-> IF n = FixtureA THEN 1 ELSE 0]
+       THEN <<AppliedEpoch(0, InitialApplicationState,
+         <<AppliedObservation(SnapshotLifecycleEntry, SnapshotLifecycleResult)>>)>>
+       ELSE <<AppliedEpoch(0, InitialApplicationState, <<>>)>>]
   /\ messages = {}
   /\ readRequests = {}
   /\ readBarrierViolationSeen = FALSE
@@ -754,7 +718,8 @@ SnapshotLifecycleComplete ==
   /\ snapshotIndex[FixtureB] = 1
   /\ ~compactionPending[FixtureA]
   /\ ~compactionPending[FixtureB]
-  /\ applicationEpoch[FixtureB] = 1
+  /\ ApplicationEpoch(FixtureB) = 1
+  /\ Len(ApplicationObservations(FixtureB)) = 0
   /\ currentTerm[FixtureB] = 2
   /\ role[FixtureB] = Follower
 
@@ -773,11 +738,6 @@ ApplicationEpochLifecycleInit ==
   /\ compactionPending = BaseCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = BaseApplied
-  /\ applicationEpoch = BaseApplicationEpoch
-  /\ epochBaseIndex = BaseEpochIndex
-  /\ epochBaseState = BaseApplicationState
-  /\ applicationState = BaseApplicationState
-  /\ appliedThrough = BaseAppliedThrough
   /\ messages = {}
   /\ readRequests = {}
   /\ readBarrierViolationSeen = FALSE
@@ -795,17 +755,17 @@ ApplicationEpochLifecycleInit ==
   /\ staleAuthorityAccepted = FALSE
 
 ApplicationEpochLifecycleNext ==
-  \/ /\ applicationEpoch[FixtureA] = 0
-     /\ appliedThrough[FixtureA] = 0
+  \/ /\ ApplicationEpoch(FixtureA) = 0
+     /\ AppliedThrough(FixtureA) = 0
      /\ Apply(FixtureA)
-  \/ /\ applicationEpoch[FixtureA] = 0
-     /\ appliedThrough[FixtureA] = 1
+  \/ /\ ApplicationEpoch(FixtureA) = 0
+     /\ AppliedThrough(FixtureA) = 1
      /\ ApplicationStateLoss(FixtureA)
-  \/ /\ applicationEpoch[FixtureA] = 1
-     /\ appliedThrough[FixtureA] = 0
+  \/ /\ ApplicationEpoch(FixtureA) = 1
+     /\ AppliedThrough(FixtureA) = 0
      /\ Apply(FixtureA)
-  \/ /\ applicationEpoch[FixtureA] = 1
-     /\ appliedThrough[FixtureA] = 1
+  \/ /\ ApplicationEpoch(FixtureA) = 1
+     /\ AppliedThrough(FixtureA) = 1
      /\ UNCHANGED vars
 
 ApplicationEpochLifecycleSpec ==
@@ -818,9 +778,11 @@ ApplicationEpochLifecycleInvariant ==
   /\ CommittedEntriesHaveQuorum
 
 ApplicationEpochLifecycleComplete ==
-  /\ applicationEpoch[FixtureA] = 1
-  /\ appliedThrough[FixtureA] = 1
+  /\ ApplicationEpoch(FixtureA) = 1
+  /\ AppliedThrough(FixtureA) = 1
   /\ Len(applied[FixtureA]) = 2
+  /\ \A epochPosition \in 1..Len(applied[FixtureA]) :
+       Len(applied[FixtureA][epochPosition].observations) = 1
 
 ApplicationEpochLifecycleCompletes == <>ApplicationEpochLifecycleComplete
 
@@ -866,16 +828,9 @@ SelfRemovalCommitInit ==
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = [n \in Nodes |->
        IF n = FixtureA
-       THEN <<AppliedEvent(
-         0, 0, InitialApplicationState, 1, SelfRemovalJointEntry,
-         InitialApplicationState, SelfRemovalJointState)>>
-       ELSE <<>>]
-  /\ applicationEpoch = BaseApplicationEpoch
-  /\ epochBaseIndex = BaseEpochIndex
-  /\ epochBaseState = BaseApplicationState
-  /\ applicationState = [n \in Nodes |->
-       IF n = FixtureA THEN SelfRemovalJointState ELSE InitialApplicationState]
-  /\ appliedThrough = [n \in Nodes |-> IF n = FixtureA THEN 1 ELSE 0]
+       THEN <<AppliedEpoch(0, InitialApplicationState,
+         <<AppliedObservation(SelfRemovalJointEntry, SelfRemovalJointState)>>)>>
+       ELSE <<AppliedEpoch(0, InitialApplicationState, <<>>)>>]
   /\ messages = {}
   /\ readRequests = {}
   /\ readBarrierViolationSeen = FALSE
@@ -949,15 +904,15 @@ ConfigurationRegressionInit ==
   /\ staleAuthorityAccepted = FALSE
 
 ConfigurationRegressionNext ==
-  \/ /\ appliedThrough[FixtureA] = 0
+  \/ /\ AppliedThrough(FixtureA) = 0
      /\ Apply(FixtureA)
-  \/ /\ appliedThrough[FixtureA] = 1
+  \/ /\ AppliedThrough(FixtureA) = 1
      /\ Apply(FixtureA)
-  \/ /\ appliedThrough[FixtureA] = 2
-     /\ appliedThrough[FixtureB] = 0
+  \/ /\ AppliedThrough(FixtureA) = 2
+     /\ AppliedThrough(FixtureB) = 0
      /\ Apply(FixtureB)
-  \/ /\ appliedThrough[FixtureA] = 2
-     /\ appliedThrough[FixtureB] = 1
+  \/ /\ AppliedThrough(FixtureA) = 2
+     /\ AppliedThrough(FixtureB) = 1
      /\ UNCHANGED vars
 
 ConfigurationRegressionSpec ==
@@ -968,10 +923,10 @@ ConfigurationRegressionSpec ==
 ConfigurationRegressionInvariant ==
   /\ effectiveConfigIndex = 2
   /\ effectiveMembership = RegressionStableConfig
-  /\ CASE appliedThrough[FixtureA] >= 2 ->
+  /\ CASE AppliedThrough(FixtureA) >= 2 ->
             /\ appliedConfigIndex = 2
             /\ membership = RegressionStableConfig
-       [] appliedThrough[FixtureA] = 1 ->
+       [] AppliedThrough(FixtureA) = 1 ->
             /\ appliedConfigIndex = 1
             /\ membership = ApplicationConfig
        [] OTHER ->
@@ -979,8 +934,8 @@ ConfigurationRegressionInvariant ==
             /\ membership = StableMembership(Nodes)
 
 ConfigurationRegressionComplete ==
-  /\ appliedThrough[FixtureA] = 2
-  /\ appliedThrough[FixtureB] = 1
+  /\ AppliedThrough(FixtureA) = 2
+  /\ AppliedThrough(FixtureB) = 1
 
 ConfigurationRegressionCompletes == <>ConfigurationRegressionComplete
 
@@ -1032,9 +987,9 @@ JointQuorumRegressionNext ==
      /\ messages = {}
      /\ Commit(FixtureA, 1)
   \/ /\ commitIndex[FixtureA] = 1
-     /\ appliedThrough[FixtureA] = 0
+     /\ AppliedThrough(FixtureA) = 0
      /\ Apply(FixtureA)
-  \/ /\ appliedThrough[FixtureA] = 1
+  \/ /\ AppliedThrough(FixtureA) = 1
      /\ UNCHANGED vars
 
 JointQuorumRegressionSpec ==
@@ -1048,7 +1003,7 @@ JointQuorumOldSideCannotCommit ==
     /\ Len(log[FixtureC]) = 1 ) =>
     commitIndex[FixtureA] = 0
 
-JointQuorumRegressionComplete == appliedThrough[FixtureA] = 1
+JointQuorumRegressionComplete == AppliedThrough(FixtureA) = 1
 
 JointQuorumRegressionCompletes == <>JointQuorumRegressionComplete
 
@@ -1158,9 +1113,9 @@ DelayedHeartbeatRegressionNext ==
      /\ messages = {}
      /\ Commit(FixtureA, 1)
   \/ /\ commitIndex[FixtureA] = 1
-     /\ appliedThrough[FixtureA] = 0
+     /\ AppliedThrough(FixtureA) = 0
      /\ Apply(FixtureA)
-  \/ /\ appliedThrough[FixtureA] = 1
+  \/ /\ AppliedThrough(FixtureA) = 1
      /\ UNCHANGED vars
 
 DelayedHeartbeatRegressionSpec ==
@@ -1180,7 +1135,7 @@ DelayedHeartbeatRegressionInvariant ==
        /\ messages = {} ) =>
        commitIndex[FixtureA] = 0
 
-DelayedHeartbeatRegressionComplete == appliedThrough[FixtureA] = 1
+DelayedHeartbeatRegressionComplete == AppliedThrough(FixtureA) = 1
 
 DelayedHeartbeatRegressionCompletes ==
   <>DelayedHeartbeatRegressionComplete

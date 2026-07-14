@@ -33,8 +33,7 @@ AppendEntries == "AppendEntries"
 
 VARIABLES currentTerm, votedFor, role, log, commitIndex,
           snapshotIndex, snapshotPrefix, compactionPending, snapshotTransfer,
-          applied, applicationEpoch, epochBaseIndex, epochBaseState,
-          applicationState, appliedThrough,
+          applied,
           messages, readRequests, readBarrierViolationSeen,
           membership, appliedConfigIndex,
           effectiveMembership, effectiveConfigIndex,
@@ -45,8 +44,7 @@ VARIABLES currentTerm, votedFor, role, log, commitIndex,
 
 vars == << currentTerm, votedFor, role, log, commitIndex,
           snapshotIndex, snapshotPrefix, compactionPending, snapshotTransfer,
-          applied, applicationEpoch, epochBaseIndex, epochBaseState,
-          applicationState, appliedThrough,
+          applied,
           messages, readRequests, readBarrierViolationSeen,
           membership, appliedConfigIndex,
           effectiveMembership, effectiveConfigIndex,
@@ -59,8 +57,7 @@ snapshotVars ==
   <<snapshotIndex, snapshotPrefix, compactionPending, snapshotTransfer>>
 
 applicationVars ==
-  <<applied, applicationEpoch, epochBaseIndex, epochBaseState,
-    applicationState, appliedThrough>>
+  <<applied>>
 
 historyVars == <<logicalPrefixLedger, committedLedger, commitWitnesses>>
 
@@ -158,46 +155,79 @@ StateAfterEntries(entries) ==
            ApplyEntry(ApplyEntry(InitialApplicationState, entries[1]), entries[2]),
            entries[3])
 
-AppliedEvent(epoch, baseIndex, baseState, index, entry, priorState, resultState) ==
-  [epoch |-> epoch,
-   baseIndex |-> baseIndex,
-   baseState |-> baseState,
-   index |-> index,
-   entry |-> entry,
-   priorState |-> priorState,
-   resultState |-> resultState]
+AppliedObservation(entry, resultState) ==
+  [entry |-> entry, resultState |-> resultState]
 
-AppliedEventOK(event) ==
-  /\ DOMAIN event = {"epoch", "baseIndex", "baseState", "index", "entry",
-                      "priorState", "resultState"}
-  /\ event.epoch \in 0..1
-  /\ event.baseIndex \in 0..MaxLogLen
-  /\ ApplicationStateOK(event.baseState)
-  /\ event.index \in 1..MaxLogLen
-  /\ event.baseIndex < event.index
-  /\ event.entry \in EntrySet
-  /\ ApplicationStateOK(event.priorState)
-  /\ ApplicationStateOK(event.resultState)
+AppliedEpoch(baseIndex, baseState, observations) ==
+  [baseIndex |-> baseIndex,
+   baseState |-> baseState,
+   observations |-> observations]
+
+AppliedObservationOK(observation) ==
+  /\ DOMAIN observation = {"entry", "resultState"}
+  /\ observation.entry \in EntrySet
+  /\ ApplicationStateOK(observation.resultState)
+
+AppliedEpochOK(epoch) ==
+  /\ DOMAIN epoch = {"baseIndex", "baseState", "observations"}
+  /\ epoch.baseIndex \in 0..MaxLogLen
+  /\ ApplicationStateOK(epoch.baseState)
+  /\ epoch.baseIndex + Len(epoch.observations) <= MaxLogLen
+  /\ \A position \in 1..Len(epoch.observations) :
+       AppliedObservationOK(epoch.observations[position])
+
+AppliedHistoryOK(history) ==
+  /\ Len(history) \in 1..2
+  /\ \A epochPosition \in 1..Len(history) :
+       AppliedEpochOK(history[epochPosition])
+
+ApplicationEpoch(n) == Len(applied[n]) - 1
+
+CurrentAppliedEpoch(n) == applied[n][Len(applied[n])]
+
+EpochBaseIndex(n) == CurrentAppliedEpoch(n).baseIndex
+
+EpochBaseState(n) == CurrentAppliedEpoch(n).baseState
+
+ApplicationObservations(n) == CurrentAppliedEpoch(n).observations
+
+ApplicationState(n) ==
+  IF Len(ApplicationObservations(n)) = 0
+  THEN EpochBaseState(n)
+  ELSE ApplicationObservations(n)[Len(ApplicationObservations(n))].resultState
+
+AppliedThrough(n) == EpochBaseIndex(n) + Len(ApplicationObservations(n))
 
 AppliedHistorySound(history) ==
-  \A position \in 1..Len(history) :
-    LET event == history[position]
-        firstInEpoch ==
-          position = 1 \/ history[position - 1].epoch # event.epoch
-    IN
-      /\ AppliedEventOK(event)
-      /\ IF firstInEpoch
-         THEN /\ event.index = event.baseIndex + 1
-              /\ event.priorState = event.baseState
-              /\ IF position = 1
-                 THEN TRUE
-                 ELSE event.epoch = history[position - 1].epoch + 1
-         ELSE /\ event.epoch = history[position - 1].epoch
-              /\ event.baseIndex = history[position - 1].baseIndex
-              /\ event.baseState = history[position - 1].baseState
-              /\ event.index = history[position - 1].index + 1
-              /\ event.priorState = history[position - 1].resultState
-      /\ event.resultState = ApplyEntry(event.priorState, event.entry)
+  \A epochPosition \in 1..Len(history) :
+    LET epoch == history[epochPosition]
+    IN \A position \in 1..Len(epoch.observations) :
+         LET observation == epoch.observations[position]
+             priorState ==
+               IF position = 1
+               THEN epoch.baseState
+               ELSE epoch.observations[position - 1].resultState
+         IN observation.resultState = ApplyEntry(priorState, observation.entry)
+
+AppliedEpochObservationWitnesses(epoch) ==
+  {[index |-> epoch.baseIndex + position,
+    entry |-> epoch.observations[position].entry,
+    resultState |-> epoch.observations[position].resultState] :
+      position \in 1..Len(epoch.observations)}
+
+ApplicationObservationWitnesses(history) ==
+  UNION {AppliedEpochObservationWitnesses(history[epochPosition]) :
+    epochPosition \in 1..Len(history)}
+
+AppliedEpochStateWitnesses(epoch) ==
+  {[index |-> epoch.baseIndex, state |-> epoch.baseState]}
+  \cup {[index |-> epoch.baseIndex + position,
+         state |-> epoch.observations[position].resultState] :
+           position \in 1..Len(epoch.observations)}
+
+ApplicationStateWitnesses(history) ==
+  UNION {AppliedEpochStateWitnesses(history[epochPosition]) :
+    epochPosition \in 1..Len(history)}
 
 LatestIndex(indexes) ==
   CHOOSE index \in indexes : \A other \in indexes : other <= index
@@ -292,11 +322,14 @@ RecordAuthorityAcceptance(authorityTerm, knownTerm, accepted) ==
     THEN TRUE
     ELSE staleAuthorityAccepted
 
-RecordApplication(node, index, entry, priorState, resultState) ==
+StartApplicationEpoch(node, baseIndex, baseState) ==
   applied' = [applied EXCEPT ![node] =
-    Append(@, AppliedEvent(
-      applicationEpoch[node], epochBaseIndex[node], epochBaseState[node],
-      index, entry, priorState, resultState))]
+    Append(@, AppliedEpoch(baseIndex, baseState, <<>>))]
+
+RecordApplication(node, entry, resultState) ==
+  applied' = [applied EXCEPT
+    ![node][Len(applied[node])].observations =
+      Append(@, AppliedObservation(entry, resultState))]
 
 CommittedEntriesFor(
     logs, snapshotIndexes, snapshotPrefixes, node, oldFloor, newFloor) ==
@@ -533,9 +566,11 @@ MessageOK(m) ==
 
 AppliedConfigurationStateOK ==
   /\ \A n \in Nodes :
-       \A position \in 1..Len(applied[n]) :
-         applied[n][position].entry.kind = ConfigurationEntryKind =>
-           applied[n][position].index <= appliedConfigIndex
+       \A epochPosition \in 1..Len(applied[n]) :
+         LET epoch == applied[n][epochPosition]
+         IN \A position \in 1..Len(epoch.observations) :
+              epoch.observations[position].entry.kind = ConfigurationEntryKind =>
+                epoch.baseIndex + position <= appliedConfigIndex
   /\ IF appliedConfigIndex = 0
      THEN membership = InitialApplicationState.membership
      ELSE \E n \in Nodes :
@@ -551,16 +586,6 @@ EffectiveConfigurationStateOK ==
             /\ effectiveConfigIndex <= Len(log[n])
             /\ LogicalEntry(n, effectiveConfigIndex).kind = ConfigurationEntryKind
             /\ effectiveMembership = LogicalEntry(n, effectiveConfigIndex).input
-
-ApplicationEpochStateOK(n) ==
-  /\ epochBaseIndex[n] <= appliedThrough[n]
-  /\ appliedThrough[n] <= commitIndex[n]
-  /\ IF appliedThrough[n] = epochBaseIndex[n]
-     THEN applicationState[n] = epochBaseState[n]
-     ELSE /\ Len(applied[n]) > 0
-          /\ applied[n][Len(applied[n])].epoch = applicationEpoch[n]
-          /\ applied[n][Len(applied[n])].index = appliedThrough[n]
-          /\ applicationState[n] = applied[n][Len(applied[n])].resultState
 
 TypeOK ==
   /\ currentTerm \in [Nodes -> 0..MaxTerm]
@@ -606,22 +631,15 @@ TypeOK ==
           /\ snapshotTransfer.index = Len(snapshotTransfer.prefix)
      ELSE snapshotTransfer = NoSnapshotTransfer
   /\ DOMAIN applied = Nodes
-  /\ DOMAIN applicationEpoch = Nodes
-  /\ DOMAIN epochBaseIndex = Nodes
-  /\ DOMAIN epochBaseState = Nodes
-  /\ DOMAIN applicationState = Nodes
-  /\ DOMAIN appliedThrough = Nodes
   /\ \A n \in Nodes :
-       /\ applicationEpoch[n] \in 0..1
-       /\ epochBaseIndex[n] \in 0..MaxLogLen
-       /\ ApplicationStateOK(epochBaseState[n])
-       /\ ApplicationStateOK(applicationState[n])
-       /\ appliedThrough[n] \in 0..MaxLogLen
-       /\ ApplicationEpochStateOK(n)
-       /\ \A position \in 1..Len(applied[n]) :
-            LET event == applied[n][position]
-            IN /\ AppliedEventOK(event)
-               /\ event.epoch <= applicationEpoch[n]
+       /\ AppliedHistoryOK(applied[n])
+       /\ ApplicationEpoch(n) \in 0..1
+       /\ EpochBaseIndex(n) \in 0..MaxLogLen
+       /\ ApplicationStateOK(EpochBaseState(n))
+       /\ ApplicationStateOK(ApplicationState(n))
+       /\ AppliedThrough(n) \in 0..MaxLogLen
+       /\ EpochBaseIndex(n) <= AppliedThrough(n)
+       /\ AppliedThrough(n) <= commitIndex[n]
   /\ \A witness \in logicalPrefixLedger :
        /\ DOMAIN witness = {"index", "term", "prefix"}
        /\ witness.index \in 1..MaxLogLen
@@ -661,12 +679,8 @@ Init ==
   /\ snapshotPrefix = [n \in Nodes |-> <<>>]
   /\ compactionPending = [n \in Nodes |-> FALSE]
   /\ snapshotTransfer = NoSnapshotTransfer
-  /\ applied = [n \in Nodes |-> <<>>]
-  /\ applicationEpoch = [n \in Nodes |-> 0]
-  /\ epochBaseIndex = [n \in Nodes |-> 0]
-  /\ epochBaseState = [n \in Nodes |-> InitialApplicationState]
-  /\ applicationState = [n \in Nodes |-> InitialApplicationState]
-  /\ appliedThrough = [n \in Nodes |-> 0]
+  /\ applied = [n \in Nodes |->
+       <<AppliedEpoch(0, InitialApplicationState, <<>>)>>]
   /\ messages = {}
   /\ readRequests = {}
   /\ readBarrierViolationSeen = FALSE
@@ -897,18 +911,16 @@ Commit(n, i) ==
     /\ UNCHANGED applicationVars
 
 Apply(n) ==
-  LET next == appliedThrough[n] + 1
+  LET next == AppliedThrough(n) + 1
       entry == LogicalEntry(n, next)
-      priorState == applicationState[n]
+      priorState == ApplicationState(n)
       resultState == ApplyEntry(priorState, entry)
       isNewConfiguration ==
         /\ entry.kind = ConfigurationEntryKind
         /\ next > appliedConfigIndex
   IN
-    /\ appliedThrough[n] < commitIndex[n]
-    /\ RecordApplication(n, next, entry, priorState, resultState)
-    /\ applicationState' = [applicationState EXCEPT ![n] = resultState]
-    /\ appliedThrough' = [appliedThrough EXCEPT ![n] = next]
+    /\ AppliedThrough(n) < commitIndex[n]
+    /\ RecordApplication(n, entry, resultState)
     /\ membership' =
          IF isNewConfiguration THEN entry.input ELSE membership
     /\ appliedConfigIndex' =
@@ -916,20 +928,15 @@ Apply(n) ==
     /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex, messages,
                     readRequests, readBarrierViolationSeen, effectiveMembership,
                     effectiveConfigIndex, electedLeaders,
-                    applicationEpoch, epochBaseIndex, epochBaseState>>
+                    logicalPrefixLedger, committedLedger, commitWitnesses,
+                    higherTermStepDownFailed, staleAuthorityAccepted>>
     /\ UNCHANGED snapshotVars
-    /\ UNCHANGED historyVars
-    /\ UNCHANGED authorityVars
 
 ApplicationStateLoss(n) ==
-  /\ applicationEpoch[n] = 0
-  /\ appliedThrough[n] > 0
-  /\ applicationEpoch' = [applicationEpoch EXCEPT ![n] = 1]
-  /\ epochBaseIndex' = [epochBaseIndex EXCEPT ![n] = 0]
-  /\ epochBaseState' = [epochBaseState EXCEPT ![n] = InitialApplicationState]
-  /\ applicationState' = [applicationState EXCEPT ![n] = InitialApplicationState]
-  /\ appliedThrough' = [appliedThrough EXCEPT ![n] = 0]
-  /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex, applied,
+  /\ ApplicationEpoch(n) = 0
+  /\ AppliedThrough(n) > 0
+  /\ StartApplicationEpoch(n, 0, InitialApplicationState)
+  /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                   messages, readRequests, readBarrierViolationSeen, membership,
                   appliedConfigIndex, effectiveMembership,
                   effectiveConfigIndex, electedLeaders>>
@@ -949,7 +956,7 @@ Restart(n) ==
   /\ UNCHANGED authorityVars
 
 CreateSnapshot(n) ==
-  LET index == appliedThrough[n]
+  LET index == AppliedThrough(n)
       prefix == LogicalPrefix(n, index)
   IN
     /\ index > snapshotIndex[n]
@@ -970,8 +977,8 @@ TransferSnapshot(from, to) ==
   /\ from # to
   /\ snapshotIndex[from] > 0
   /\ snapshotIndex[to] < snapshotIndex[from]
-  /\ appliedThrough[to] <= snapshotIndex[from]
-  /\ applicationEpoch[to] = 0
+  /\ AppliedThrough(to) <= snapshotIndex[from]
+  /\ ApplicationEpoch(to) = 0
   /\ ~snapshotTransfer.active
   /\ snapshotTransfer' =
        [active |-> TRUE,
@@ -1007,8 +1014,8 @@ InstallSnapshot ==
     /\ transfer.active
     /\ transfer.term >= currentTerm[node]
     /\ transfer.index > snapshotIndex[node]
-    /\ transfer.index >= appliedThrough[node]
-    /\ applicationEpoch[node] = 0
+    /\ transfer.index >= AppliedThrough(node)
+    /\ ApplicationEpoch(node) = 0
     /\ currentTerm' = [currentTerm EXCEPT ![node] = transfer.term]
     /\ votedFor' = [votedFor EXCEPT ![node] =
          IF transfer.term > currentTerm[node] THEN NoVote ELSE @]
@@ -1020,11 +1027,7 @@ InstallSnapshot ==
     /\ snapshotPrefix' = [snapshotPrefix EXCEPT ![node] = transfer.prefix]
     /\ compactionPending' = [compactionPending EXCEPT ![node] = FALSE]
     /\ snapshotTransfer' = NoSnapshotTransfer
-    /\ applicationEpoch' = [applicationEpoch EXCEPT ![node] = 1]
-    /\ epochBaseIndex' = [epochBaseIndex EXCEPT ![node] = transfer.index]
-    /\ epochBaseState' = [epochBaseState EXCEPT ![node] = restoredState]
-    /\ applicationState' = [applicationState EXCEPT ![node] = restoredState]
-    /\ appliedThrough' = [appliedThrough EXCEPT ![node] = transfer.index]
+    /\ StartApplicationEpoch(node, transfer.index, restoredState)
     /\ membership' =
          IF nextConfiguration.configIndex > appliedConfigIndex
          THEN nextConfiguration.config
@@ -1044,7 +1047,7 @@ InstallSnapshot ==
     /\ RecordHigherTermOutcome(
          node, transfer.term, transfer.term > currentTerm[node])
     /\ RecordAuthorityAcceptance(transfer.term, currentTerm[node], TRUE)
-    /\ UNCHANGED <<applied, readRequests, readBarrierViolationSeen,
+    /\ UNCHANGED <<readRequests, readBarrierViolationSeen,
                     electedLeaders, commitWitnesses>>
 
 CompactSnapshot(n) ==
@@ -1074,7 +1077,7 @@ EnterJoint(n, newVoters) ==
     /\ role[n] = Leader
     /\ CommittedEntriesHeldBy(newVoters)
     /\ currentTerm[n] \in 1..MaxTerm
-    /\ Len(log[n]) = appliedThrough[n]
+    /\ Len(log[n]) = AppliedThrough(n)
     /\ Len(log[n]) < MaxLogLen
     /\ log' = nextLog
     /\ effectiveMembership' = next
@@ -1102,7 +1105,7 @@ LeaveJoint(n) ==
     /\ role[n] = Leader
     /\ CommittedEntriesHeldBy(effectiveMembership.new)
     /\ currentTerm[n] \in 1..MaxTerm
-    /\ Len(log[n]) = appliedThrough[n]
+    /\ Len(log[n]) = AppliedThrough(n)
     /\ Len(log[n]) < MaxLogLen
     /\ log' = nextLog
     /\ effectiveMembership' = next
@@ -1221,14 +1224,19 @@ CommittedPrefixStability ==
          => LogicalEntry(a, i) = LogicalEntry(b, i)
 
 StateMachineSafety ==
-  /\ \A n \in Nodes : AppliedHistorySound(applied[n])
+  /\ \A n \in Nodes :
+       /\ AppliedHistoryOK(applied[n])
+       /\ AppliedHistorySound(applied[n])
   /\ \A a, b \in Nodes :
-       \A pa \in 1..Len(applied[a]) :
-         \A pb \in 1..Len(applied[b]) :
-           applied[a][pa].index = applied[b][pb].index
-           => /\ applied[a][pa].entry = applied[b][pb].entry
-              /\ applied[a][pa].priorState = applied[b][pb].priorState
-              /\ applied[a][pa].resultState = applied[b][pb].resultState
+       \A left \in ApplicationObservationWitnesses(applied[a]) :
+         \A right \in ApplicationObservationWitnesses(applied[b]) :
+           left.index = right.index
+           => /\ left.entry = right.entry
+              /\ left.resultState = right.resultState
+  /\ \A a, b \in Nodes :
+       \A left \in ApplicationStateWitnesses(applied[a]) :
+         \A right \in ApplicationStateWitnesses(applied[b]) :
+           left.index = right.index => left.state = right.state
 
 StaleLeaderFencing ==
   /\ ~higherTermStepDownFailed

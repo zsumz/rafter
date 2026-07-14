@@ -428,6 +428,37 @@ fn application_epoch_loss_replays_identically_without_erasing_history() {
 
 #[test]
 #[ignore = "requires the pinned TLC tool and Java"]
+fn missing_application_epoch_recorder_cannot_qualify_state_machine_safety() {
+    let root = workspace_root();
+    let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
+    let mutated = replace_operator(
+        &raft,
+        "StartApplicationEpoch(node, baseIndex, baseState)",
+        "RecordApplication(node, entry, resultState)",
+        "/\\ UNCHANGED applied",
+    );
+    let detector =
+        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
+            .expect("read detector spec");
+    let result = run_tlc_mutation(
+        &root,
+        "missing-application-epoch-recorder",
+        &mutated,
+        &detector,
+        APPLICATION_EPOCH_PROBE,
+    );
+    let summary = parse(&result.stdout).expect("parse application epoch recorder mutation output");
+    assert!(result.status.success());
+    assert!(!detector_qualified(
+        result.status.code(),
+        false,
+        Some(&summary),
+        APPLICATION_EPOCH_PROBE.predicate
+    ));
+}
+
+#[test]
+#[ignore = "requires the pinned TLC tool and Java"]
 fn self_removing_leader_commits_final_configuration_and_steps_down() {
     let root = workspace_root();
     let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
@@ -530,6 +561,36 @@ fn corrupted_snapshot_install_breaks_lifecycle_identity() {
         SNAPSHOT_LIFECYCLE_CONFIG,
     );
     let summary = parse(&result.stdout).expect("parse corrupted snapshot output");
+    assert_eq!(result.status.code(), Some(12));
+    assert_eq!(
+        summary.violated_invariant.as_deref(),
+        Some("SnapshotLifecycleInvariant")
+    );
+}
+
+#[test]
+#[ignore = "requires the pinned TLC tool and Java"]
+fn corrupted_snapshot_restored_state_breaks_empty_epoch_lifecycle() {
+    let root = workspace_root();
+    let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
+    let mutated = replace_exactly_once_in_operator(
+        &raft,
+        "InstallSnapshot",
+        "CompactSnapshot(n)",
+        "restoredState == StateAfterEntries(transfer.prefix)",
+        "restoredState == InitialApplicationState",
+    );
+    let detector =
+        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
+            .expect("read detector spec");
+    let result = run_tlc_with_config(
+        &root,
+        "corrupted-snapshot-restored-state",
+        &mutated,
+        &detector,
+        SNAPSHOT_LIFECYCLE_CONFIG,
+    );
+    let summary = parse(&result.stdout).expect("parse corrupted snapshot state output");
     assert_eq!(result.status.code(), Some(12));
     assert_eq!(
         summary.violated_invariant.as_deref(),
@@ -710,7 +771,7 @@ fn missing_stale_authority_recorder_cannot_qualify_fencing() {
     let mutated = replace_operator(
         &raft,
         "RecordAuthorityAcceptance(authorityTerm, knownTerm, accepted)",
-        "RecordApplication(node, index, entry, priorState, resultState)",
+        "StartApplicationEpoch(node, baseIndex, baseState)",
         "/\\ UNCHANGED staleAuthorityAccepted",
     );
     let detector =
@@ -770,7 +831,7 @@ fn missing_application_recorder_cannot_qualify_state_machine_safety() {
     let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
     let mutated = replace_operator(
         &raft,
-        "RecordApplication(node, index, entry, priorState, resultState)",
+        "RecordApplication(node, entry, resultState)",
         "RequestVoteMessages",
         "/\\ UNCHANGED applied",
     );

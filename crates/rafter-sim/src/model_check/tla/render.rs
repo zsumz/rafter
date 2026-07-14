@@ -45,8 +45,7 @@ fn render_tla_trace_module(module_name: &str, actions: &[TlaRenderedAction]) -> 
     module.push_str(
         "               snapshotIndex, snapshotPrefix, compactionPending, snapshotTransfer,\n",
     );
-    module.push_str("               applied, applicationEpoch, epochBaseIndex, epochBaseState,\n");
-    module.push_str("               applicationState, appliedThrough,\n");
+    module.push_str("               applied,\n");
     module
         .push_str("               messages, readRequests, readBarrierViolationSeen, membership,\n");
     module.push_str(
