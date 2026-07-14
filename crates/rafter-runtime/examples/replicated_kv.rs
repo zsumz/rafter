@@ -39,6 +39,10 @@ pub use process::{run_process_demo_with_spawn, run_process_node_from_env, Proces
 pub use types::{ScenarioOptions, ScenarioReport};
 
 #[cfg(test)]
+#[allow(
+    unused_imports,
+    reason = "re-exported for replicated_kv_example integration tests"
+)]
 pub(crate) use app_state::{load_app_state, persist_app_state};
 
 fn main() {
