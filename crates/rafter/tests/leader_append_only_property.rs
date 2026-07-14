@@ -4,6 +4,7 @@ use rafter::{
     AppendEntriesResponse, Input, LogIndex, Message, Node, NodeConfig, NodeId, ReadId,
     RequestVoteResponse, Role,
 };
+use rafter_invariant_test::oracle_prop_assert;
 
 fn elected_leader() -> Node {
     let config = NodeConfig::new(NodeId(1), vec![NodeId(2), NodeId(3)], 3)
@@ -80,10 +81,11 @@ proptest! {
                 continue;
             }
             let after = leader.log_entries_from(LogIndex(1));
-            prop_assert!(
+            oracle_prop_assert!(
                 after.starts_with(&before),
                 "term-{before_term} leader rewrote or removed its own prefix: before={before:?} after={after:?}"
             );
         }
+        oracle_prop_assert!(true, "every retained same-term leader prefix was monotone");
     }
 }
