@@ -1,6 +1,7 @@
 use std::{
     collections::BTreeMap,
     error::Error,
+    ffi::OsString,
     fs,
     path::Path,
     time::{Duration, Instant},
@@ -10,10 +11,11 @@ use super::{artifact, process, tla_checkpoint, tla_contract::required_configurat
 use tla_output::{
     detector_config_kind, detector_invariant, detector_label, detector_log_kind,
     detector_observation, probe_slug, render_detector_config, DetectorProbe, DETECTOR_PROBES,
-    REGISTERED_PREDICATES,
+    MEMBERSHIP_TRACE_MIN_DEPTH, MEMBERSHIP_TRACE_MIN_DISTINCT_STATES, MUTATION_SUITE_ARTIFACT_KIND,
+    MUTATION_SUITE_LABEL, REGISTERED_PREDICATES, REQUIRED_MUTATION_TESTS,
 };
 
-const TRACE_CONFIG: &str = "RaftTraceSample.cfg";
+const TRACE_CONFIG: &str = "RaftMembershipTraceSample.cfg";
 const DETECTOR_CONFIG: &str = "RafterInvariantDetectorNegative.cfg";
 const JAR: &str = "tools/cache/tla2tools.jar";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(120);
@@ -77,9 +79,9 @@ pub(super) fn execute(
         && trace_summary.as_ref().is_some_and(|summary| {
             summary.completed_without_error
                 && summary.process_finished
-                && summary.distinct_states >= 4
+                && summary.distinct_states >= MEMBERSHIP_TRACE_MIN_DISTINCT_STATES
                 && summary.states_left == 0
-                && summary.search_depth >= 4
+                && summary.search_depth >= MEMBERSHIP_TRACE_MIN_DEPTH
         });
     if !trace_succeeded {
         return Ok(trace_failure(&trace, artifacts));
@@ -343,7 +345,7 @@ fn run_trace_probe(
         profile,
         source_ref,
         config: TRACE_CONFIG,
-        module: "RaftTraceSample.tla",
+        module: "RaftMembershipTraceSample.tla",
         workers: "1",
         seed: required_configuration(configuration, "seed")?,
         timeout,
@@ -396,7 +398,75 @@ fn run_detector_probes(
         aggregate.artifacts.push(detector.config_artifact);
         aggregate.artifacts.push(detector.run.artifact);
     }
+    if aggregate.succeeded {
+        let Some(timeout) = budget.phase_timeout(PROBE_TIMEOUT) else {
+            aggregate.succeeded = false;
+            return Ok(aggregate);
+        };
+        let mutation = run_mutation_suite(profile, source_ref, output_dir, timeout)?;
+        aggregate.peak_rss_kib = aggregate.peak_rss_kib.max(mutation.output.peak_rss_kib);
+        aggregate.duration_ms = aggregate
+            .duration_ms
+            .saturating_add(process::duration_ms(mutation.output.duration));
+        aggregate.succeeded &= mutation_suite_passed(&mutation.output);
+        aggregate.artifacts.push(mutation.artifact);
+    }
     Ok(aggregate)
+}
+
+fn run_mutation_suite(
+    profile: &str,
+    source_ref: &str,
+    output_dir: &Path,
+    timeout: Duration,
+) -> Result<TlcRun, Box<dyn Error>> {
+    let arguments = [
+        "test",
+        "--locked",
+        "-p",
+        "rafter-invariants",
+        "producer::tla_exec::mutation_tests",
+        "--",
+        "--ignored",
+        "--test-threads=1",
+    ]
+    .map(OsString::from);
+    let output = process::timed_with_timeout(
+        "cargo",
+        &arguments,
+        &process::base_environment(),
+        Path::new("."),
+        timeout,
+    )?;
+    let source_prefix = source_ref.get(..12).unwrap_or(source_ref);
+    let artifact = artifact::write(
+        output_dir,
+        Path::new(&format!(
+            "{profile}-tla/{source_prefix}/detector-mutation-suite.json"
+        )),
+        MUTATION_SUITE_ARTIFACT_KIND,
+        &process::tla_json_log(MUTATION_SUITE_LABEL, &output)?,
+    )?;
+    Ok(TlcRun { output, artifact })
+}
+
+fn mutation_suite_passed(output: &process::ProcessOutput) -> bool {
+    if !output.status.success() || output.timed_out {
+        return false;
+    }
+    let source = String::from_utf8_lossy(&output.stdout);
+    source.lines().any(|line| line.trim() == "running 32 tests")
+        && source.lines().any(|line| {
+            line.contains("test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured;")
+        })
+        && REQUIRED_MUTATION_TESTS.iter().all(|name| {
+            let expected = format!("test producer::tla_exec::mutation_tests::{name} ... ok");
+            source
+                .lines()
+                .filter(|line| line.trim() == expected)
+                .count()
+                == 1
+        })
 }
 
 fn run_detector_probe(

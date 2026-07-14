@@ -3,6 +3,7 @@ use std::{
     error::Error,
     fs,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 use crate::ArtifactRef;
@@ -15,6 +16,7 @@ pub(super) struct TrialOutcome {
     pub summary: Option<maelstrom_edn::MaelstromSummary>,
     pub error: Option<String>,
     pub process_succeeded: bool,
+    pub process_timed_out: bool,
     pub markers: ScenarioMarkers,
     pub duration_ms: u64,
     pub peak_rss_kib: u64,
@@ -82,13 +84,16 @@ pub(super) fn run_trial(
     fs::create_dir_all(&durable)?;
     let script = fs::canonicalize(scenario.script())?;
     let environment = trial_environment(configuration, &durable, scenario)?;
-    let output = process::timed(
+    let timeout = trial_process_timeout(configuration)?;
+    let output = process::timed_for_with_cap(
+        process::ProcessKind::MaelstromTrial,
         script
             .to_str()
             .ok_or("Maelstrom script path is not UTF-8")?,
         &["--test-count".into(), "1".into()],
         &environment,
         &state_dir,
+        Some(timeout),
     )?;
     let namespace = Path::new(&format!(
         "{profile}-maelstrom/{source_prefix}/{}/trial-{trial}",
@@ -153,12 +158,27 @@ pub(super) fn run_trial(
     Ok(TrialOutcome {
         summary,
         error,
-        process_succeeded: output.status.success(),
+        process_succeeded: output.status.success() && !output.timed_out,
+        process_timed_out: output.timed_out,
         markers,
         duration_ms: process::duration_ms(output.duration),
         peak_rss_kib: output.peak_rss_kib,
         artifacts,
     })
+}
+
+fn trial_process_timeout(
+    configuration: &BTreeMap<String, String>,
+) -> Result<Duration, Box<dyn Error>> {
+    let workload_seconds = required_configuration(configuration, "duration_seconds")?
+        .parse::<u64>()
+        .map_err(|error| format!("invalid Maelstrom duration_seconds: {error}"))?;
+    if workload_seconds == 0 {
+        return Err("Maelstrom duration_seconds must be positive".into());
+    }
+    Duration::from_secs(workload_seconds)
+        .checked_add(Duration::from_secs(2 * 60))
+        .ok_or_else(|| "Maelstrom trial timeout overflowed".into())
 }
 
 fn trial_environment(
@@ -621,9 +641,11 @@ fn validate_lease_transcript(events: &[LeaseMarker]) -> Result<LeaseTranscriptSt
 
 #[cfg(test)]
 mod lease_transcript_tests {
+    use std::{collections::BTreeMap, time::Duration};
+
     use super::{
-        bind_lease_history, finish_lease_transcript, validate_lease_transcript, LeaseMarker,
-        LeaseTranscriptStatus, ScenarioMarkers,
+        bind_lease_history, finish_lease_transcript, trial_process_timeout,
+        validate_lease_transcript, LeaseMarker, LeaseTranscriptStatus, ScenarioMarkers,
     };
 
     fn good() -> Vec<LeaseMarker> {
@@ -641,6 +663,26 @@ mod lease_transcript_tests {
                 .expect("fixture parses")
         })
         .collect()
+    }
+
+    #[test]
+    fn trial_timeout_is_bound_to_workload_duration_with_teardown_time() {
+        let configuration = BTreeMap::from([("duration_seconds".to_owned(), "45".to_owned())]);
+        assert_eq!(
+            trial_process_timeout(&configuration).expect("valid trial timeout"),
+            Duration::from_secs(45 + 2 * 60)
+        );
+        assert!(trial_process_timeout(&BTreeMap::from([(
+            "duration_seconds".to_owned(),
+            "0".to_owned()
+        )]))
+        .is_err());
+        assert!(trial_process_timeout(&BTreeMap::from([(
+            "duration_seconds".to_owned(),
+            "not-a-duration".to_owned()
+        )]))
+        .is_err());
+        assert!(trial_process_timeout(&BTreeMap::new()).is_err());
     }
 
     #[test]

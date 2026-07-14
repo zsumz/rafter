@@ -10,7 +10,7 @@ mod simulator;
 mod simulator_model;
 pub(crate) mod source;
 mod test_compile;
-mod test_exec;
+pub(crate) mod test_exec;
 mod tests;
 mod tla;
 pub(crate) mod tla_checkpoint;
@@ -78,7 +78,7 @@ pub fn produce(options: &ProducerOptions) -> Result<ProducerOutcome, Box<dyn Err
 /// # Errors
 ///
 /// Returns an error when the selected layer cannot produce a complete receipt.
-pub fn produce_with_plan(
+pub(crate) fn produce_with_plan(
     plan: &ExecutionPlan,
     layer: &str,
     output_dir: &std::path::Path,
@@ -99,6 +99,11 @@ pub fn produce_with_plan(
         )
         .into());
     }
+    let runner = contract
+        .runners
+        .get(layer)
+        .ok_or_else(|| format!("profile {} omitted runner {layer}", plan.receipt.profile))?;
+    let _process_budget = process::LayerBudgetGuard::enter(&plan.receipt.profile, layer, runner)?;
     let path = output_dir.join(format!("{}-{layer}.json", plan.receipt.profile));
     if path.exists() {
         fs::remove_file(&path)?;

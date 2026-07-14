@@ -4,10 +4,14 @@ use std::{
     error::Error,
     ffi::OsString,
     fmt,
-    fs::{self, File},
+    fs::{self, OpenOptions},
+    io::Read,
     path::{Path, PathBuf},
-    process::{Command, ExitStatus, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
+    process::{Child, Command, ExitStatus, Stdio},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Mutex, MutexGuard,
+    },
     time::{Duration, Instant},
 };
 
@@ -17,7 +21,7 @@ use std::os::unix::process::CommandExt;
 #[cfg(unix)]
 use rustix::{
     io::Errno,
-    process::{kill_process_group, test_kill_process_group, Pid, Signal},
+    process::{kill_process_group, Pid, Signal},
 };
 
 use serde::{Deserialize, Serialize};
@@ -25,56 +29,50 @@ use sha2::{Digest, Sha256};
 
 use crate::InvocationReceipt;
 
+mod budget;
+mod evidence;
+mod managed;
+mod output;
+mod termination;
+
+use budget::{active_process_timeout, ProcessPolicy};
+#[cfg(test)]
+use budget::{layer_budget, DEFAULT_KILL_CONFIRMATION_TIMEOUT};
+pub(super) use budget::{LayerBudgetGuard, ProcessKind};
+#[cfg(test)]
+use evidence::{allocate_telemetry_path, parse_process_group_observation};
+pub(crate) use evidence::{
+    base_environment, digest_environment, expected_invocation, parse_combined_processes,
+};
+pub(super) use evidence::{combined_log, duration_ms, json_log, tla_json_log};
+use evidence::{parse_peak_rss, process_group_observation, process_group_rss_kib, telemetry_path};
+use managed::{
+    take_fallback_cleanup_failures, CollectedProcessStatus, ManagedProcess, ProcessCleanupError,
+    ProcessGroupObservation, ProcessGroupState, ProcessSignal, SignalDelivery, TimeoutTermination,
+};
+use output::{collect_process_output, finish_managed_process};
+use termination::{
+    await_target_process_group, confirm_process_group_absent, measurement_error,
+    process_group_state, retained_error, retained_result, signal_process_group,
+    terminate_after_timeout,
+};
+#[cfg(test)]
+use termination::{classify_signal_delivery, cleanup_error, confirm_process_group_absent_with};
+
 static TELEMETRY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static FALLBACK_CLEANUP_FAILURES: Mutex<Vec<String>> = Mutex::new(Vec::new());
 const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
-const KILL_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(5);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ProcessGroupState {
-    Alive,
-    Absent,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum SignalDelivery {
-    Sent,
-    GroupAbsent,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum ProcessSignal {
-    Term,
-    Kill,
-}
-
-#[derive(Debug)]
-struct ProcessCleanupError {
-    detail: String,
-    stdout_path: PathBuf,
-    stderr_path: PathBuf,
-}
-
-impl fmt::Display for ProcessCleanupError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(
-            formatter,
-            "{}; retained subprocess stdout at {} and stderr at {}",
-            self.detail,
-            self.stdout_path.display(),
-            self.stderr_path.display()
-        )
-    }
-}
-
-impl Error for ProcessCleanupError {}
-
-#[derive(Debug)]
-struct TimeoutTermination {
-    status: ExitStatus,
-    timed_out: bool,
-    term_signal_sent: bool,
-    kill_signal_sent: bool,
-}
+const IDENTITY_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
+const PS_TELEMETRY_TIMEOUT: Duration = Duration::from_secs(2);
+const TARGET_GROUP_ENV: &str = "RAFTER_INVARIANT_TARGET_GROUP_FILE";
+const TARGET_GROUP_LAUNCHER: &str = r#"
+my $path = delete $ENV{'RAFTER_INVARIANT_TARGET_GROUP_FILE'};
+POSIX::setpgid(0, 0) == 0 or die "setpgid: $!";
+open(my $group, '>', $path) or die "open process-group receipt: $!";
+print {$group} "$$\n" or die "write process-group receipt: $!";
+close($group) or die "close process-group receipt: $!";
+exec {$ARGV[0]} @ARGV or die "exec $ARGV[0]: $!";
+"#;
 
 #[derive(Debug)]
 pub(super) struct ProcessOutput {
@@ -86,6 +84,12 @@ pub(super) struct ProcessOutput {
     pub peak_rss_kib: u64,
     pub timed_out: bool,
     pub termination: Option<TerminationReceipt>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) struct IdentityOutput {
+    pub stdout: String,
+    pub stderr: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -113,23 +117,21 @@ pub(crate) struct ProcessLog {
     pub stderr: String,
 }
 
-#[derive(Debug, Eq, PartialEq)]
-pub(crate) struct LabeledInvocation {
-    pub label: String,
-    pub invocation: InvocationReceipt,
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) struct ProcessMetrics {
     pub duration_ms: u64,
     pub peak_rss_kib: u64,
 }
 
-#[derive(Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct LabeledProcess {
     pub label: String,
     pub invocation: InvocationReceipt,
+    pub exit_code: Option<i32>,
+    pub timed_out: bool,
     pub metrics: ProcessMetrics,
+    pub stdout: String,
+    pub stderr: String,
 }
 
 impl ProcessLog {
@@ -152,45 +154,33 @@ impl ProcessLog {
     }
 }
 
-pub(super) fn timed(
+pub(super) fn timed_for(
+    kind: ProcessKind,
     program: &str,
     arguments: &[OsString],
     environment: &BTreeMap<String, String>,
     current_dir: &Path,
 ) -> Result<ProcessOutput, Box<dyn Error>> {
-    let invocation = expected_invocation(program, arguments, environment, current_dir)?;
-    let started = Instant::now();
-    let telemetry_path = telemetry_path()?;
-    let mut command = Command::new("/usr/bin/time");
-    command.arg("-o").arg(&telemetry_path);
-    if cfg!(target_os = "macos") {
-        command.arg("-l");
-    } else if cfg!(target_os = "linux") {
-        command.arg("-v");
-    } else {
-        return Err("peak RSS collection supports macOS and Linux".into());
-    }
-    let output = command
-        .arg(program)
-        .args(arguments)
-        .env_clear()
-        .envs(environment)
-        .current_dir(&invocation.current_dir)
-        .output()?;
-    let telemetry = std::fs::read(&telemetry_path)?;
-    std::fs::remove_file(&telemetry_path)?;
-    let peak_rss_kib = parse_peak_rss(&telemetry)
-        .ok_or("/usr/bin/time did not report maximum resident set size")?;
-    Ok(ProcessOutput {
-        invocation,
-        status: output.status,
-        stdout: output.stdout,
-        stderr: output.stderr,
-        duration: started.elapsed(),
-        peak_rss_kib,
-        timed_out: false,
-        termination: None,
-    })
+    timed_for_with_cap(kind, program, arguments, environment, current_dir, None)
+}
+
+pub(super) fn timed_for_with_cap(
+    kind: ProcessKind,
+    program: &str,
+    arguments: &[OsString],
+    environment: &BTreeMap<String, String>,
+    current_dir: &Path,
+    requested_cap: Option<Duration>,
+) -> Result<ProcessOutput, Box<dyn Error>> {
+    let (timeout, policy) = active_process_timeout(kind, requested_cap)?;
+    timed_with_timeout_and_policy(
+        program,
+        arguments,
+        environment,
+        current_dir,
+        timeout,
+        policy,
+    )
 }
 
 pub(super) fn timed_with_timeout(
@@ -200,16 +190,53 @@ pub(super) fn timed_with_timeout(
     current_dir: &Path,
     timeout: Duration,
 ) -> Result<ProcessOutput, Box<dyn Error>> {
-    timed_with_timeout_and_grace(
+    timed_with_timeout_and_policy(
         program,
         arguments,
         environment,
         current_dir,
         timeout,
-        Duration::from_secs(30),
+        ProcessPolicy::default(),
     )
 }
 
+pub(crate) fn identity_command(
+    program: &str,
+    arguments: &[&str],
+) -> Result<IdentityOutput, Box<dyn Error>> {
+    identity_command_with_timeout(program, arguments, IDENTITY_COMMAND_TIMEOUT)
+}
+
+fn identity_command_with_timeout(
+    program: &str,
+    arguments: &[&str],
+    timeout: Duration,
+) -> Result<IdentityOutput, Box<dyn Error>> {
+    let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
+    let output = timed_with_timeout_and_policy(
+        program,
+        &arguments,
+        &base_environment(),
+        Path::new("."),
+        timeout,
+        ProcessPolicy::default(),
+    )?;
+    let stdout = String::from_utf8(output.stdout)?;
+    let stderr = String::from_utf8(output.stderr)?;
+    if output.timed_out || !output.status.success() {
+        return Err(format!(
+            "bounded identity command {program} failed with {:?} (timed_out={}): stdout: {}; stderr: {}",
+            output.status.code(),
+            output.timed_out,
+            stdout.trim(),
+            stderr.trim(),
+        )
+        .into());
+    }
+    Ok(IdentityOutput { stdout, stderr })
+}
+
+#[cfg(test)]
 fn timed_with_timeout_and_grace(
     program: &str,
     arguments: &[OsString],
@@ -218,495 +245,96 @@ fn timed_with_timeout_and_grace(
     timeout: Duration,
     grace: Duration,
 ) -> Result<ProcessOutput, Box<dyn Error>> {
+    timed_with_timeout_and_policy(
+        program,
+        arguments,
+        environment,
+        current_dir,
+        timeout,
+        ProcessPolicy {
+            termination_grace: grace,
+            ..ProcessPolicy::default()
+        },
+    )
+}
+
+fn timed_with_timeout_and_policy(
+    program: &str,
+    arguments: &[OsString],
+    environment: &BTreeMap<String, String>,
+    current_dir: &Path,
+    timeout: Duration,
+    policy: ProcessPolicy,
+) -> Result<ProcessOutput, Box<dyn Error>> {
+    let prior_cleanup_failures = take_fallback_cleanup_failures();
+    if !prior_cleanup_failures.is_empty() {
+        return Err(format!(
+            "prior fallback subprocess cleanup failed: {}",
+            prior_cleanup_failures.join("; ")
+        )
+        .into());
+    }
     let invocation = expected_invocation(program, arguments, environment, current_dir)?;
     let started = Instant::now();
-    let output_prefix = telemetry_path()?.with_extension("");
+    let (telemetry_path, reservation_path) = telemetry_path()?;
+    let output_prefix = telemetry_path.with_extension("");
     let stdout_path = output_prefix.with_extension("stdout");
     let stderr_path = output_prefix.with_extension("stderr");
-    let stdout_file = File::create(&stdout_path)?;
-    let stderr_file = File::create(&stderr_path)?;
-    let mut command = Command::new(program);
+    let resource_path = output_prefix.with_extension("time");
+    let process_group_path = output_prefix.with_extension("pgid");
+    let stdout_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&stdout_path)?;
+    let stderr_file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&stderr_path)?;
+    let mut command = Command::new("/usr/bin/time");
+    command.arg("-o").arg(&resource_path);
+    if cfg!(target_os = "macos") {
+        command.arg("-l");
+    } else if cfg!(target_os = "linux") {
+        command.arg("-v");
+    } else {
+        return Err("peak RSS collection supports macOS and Linux".into());
+    }
+    let mut launcher_environment = environment.clone();
+    launcher_environment.insert(
+        TARGET_GROUP_ENV.to_owned(),
+        process_group_path.to_string_lossy().into_owned(),
+    );
     command
+        .arg("/usr/bin/perl")
+        .arg("-MPOSIX")
+        .arg("-e")
+        .arg(TARGET_GROUP_LAUNCHER)
+        .arg(program)
         .args(arguments)
         .env_clear()
-        .envs(environment)
+        .envs(&launcher_environment)
         .current_dir(&invocation.current_dir)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     #[cfg(unix)]
     command.process_group(0);
-    let mut child = command.spawn()?;
-    let mut peak_rss_kib = 0;
-    let (status, timed_out, term_signal_sent, kill_signal_sent) = loop {
-        peak_rss_kib = peak_rss_kib.max(process_rss_kib(child.id()).unwrap_or_default());
-        if let Some(status) = child.try_wait()? {
-            break (status, false, false, false);
-        }
-        if started.elapsed() >= timeout {
-            let termination = terminate_after_timeout(
-                &mut child,
-                grace,
-                &mut peak_rss_kib,
-                &stdout_path,
-                &stderr_path,
-            )?;
-            break (
-                termination.status,
-                termination.timed_out,
-                termination.term_signal_sent,
-                termination.kill_signal_sent,
-            );
-        }
-        std::thread::sleep(PROCESS_POLL_INTERVAL);
-    };
-    let stdout = std::fs::read(&stdout_path)?;
-    let stderr = std::fs::read(&stderr_path)?;
-    std::fs::remove_file(stdout_path)?;
-    std::fs::remove_file(stderr_path)?;
-    if peak_rss_kib == 0 {
-        return Err("process RSS polling did not observe the child".into());
-    }
-    Ok(ProcessOutput {
+    let child = command
+        .spawn()
+        .map_err(|error| retained_error(error, &stdout_path, &stderr_path, Some(&resource_path)))?;
+    let mut process = ManagedProcess::new(child, policy.kill_confirmation_timeout);
+    let result = collect_process_output(
+        &mut process,
         invocation,
-        status,
-        stdout,
-        stderr,
-        duration: started.elapsed(),
-        peak_rss_kib,
-        timed_out,
-        termination: Some(TerminationReceipt {
-            process_group: true,
-            term_signal_sent,
-            grace_ms: duration_ms(grace),
-            kill_signal_sent,
-        }),
-    })
-}
-
-fn terminate_after_timeout(
-    child: &mut std::process::Child,
-    grace: Duration,
-    peak_rss_kib: &mut u64,
-    stdout_path: &Path,
-    stderr_path: &Path,
-) -> Result<TimeoutTermination, Box<dyn Error>> {
-    if let Some(status) = cleanup_result(child.try_wait(), stdout_path, stderr_path)? {
-        return Ok(TimeoutTermination {
-            status,
-            timed_out: false,
-            term_signal_sent: false,
-            kill_signal_sent: false,
-        });
-    }
-    let process_group = child.id();
-    let term_signal_sent = match signal_process_group(process_group, ProcessSignal::Term) {
-        Ok(SignalDelivery::Sent) => true,
-        Ok(SignalDelivery::GroupAbsent) => {
-            return Ok(TimeoutTermination {
-                status: cleanup_result(child.wait(), stdout_path, stderr_path)?,
-                timed_out: false,
-                term_signal_sent: false,
-                kill_signal_sent: false,
-            });
-        }
-        Err(error) => return Err(cleanup_error(error, stdout_path, stderr_path)),
-    };
-    let grace_started = Instant::now();
-    let mut leader_status = None;
-    loop {
-        *peak_rss_kib = (*peak_rss_kib).max(process_rss_kib(process_group).unwrap_or_default());
-        if leader_status.is_none() {
-            leader_status = cleanup_result(child.try_wait(), stdout_path, stderr_path)?;
-        }
-        match process_group_state(process_group) {
-            Ok(ProcessGroupState::Absent) => {
-                let status = match leader_status {
-                    Some(status) => status,
-                    None => cleanup_result(child.wait(), stdout_path, stderr_path)?,
-                };
-                return Ok(TimeoutTermination {
-                    status,
-                    timed_out: true,
-                    term_signal_sent,
-                    kill_signal_sent: false,
-                });
-            }
-            Ok(ProcessGroupState::Alive) => {}
-            Err(error) => return Err(cleanup_error(error, stdout_path, stderr_path)),
-        }
-        if grace_started.elapsed() >= grace {
-            return kill_process_group_after_grace(
-                child,
-                process_group,
-                leader_status,
-                term_signal_sent,
-                stdout_path,
-                stderr_path,
-            );
-        }
-        std::thread::sleep(PROCESS_POLL_INTERVAL);
-    }
-}
-
-fn kill_process_group_after_grace(
-    child: &mut std::process::Child,
-    process_group: u32,
-    leader_status: Option<ExitStatus>,
-    term_signal_sent: bool,
-    stdout_path: &Path,
-    stderr_path: &Path,
-) -> Result<TimeoutTermination, Box<dyn Error>> {
-    let kill_signal_sent = match signal_process_group(process_group, ProcessSignal::Kill) {
-        Ok(SignalDelivery::Sent) => true,
-        Ok(SignalDelivery::GroupAbsent) => false,
-        Err(error) => return Err(cleanup_error(error, stdout_path, stderr_path)),
-    };
-    let status = match leader_status {
-        Some(status) => status,
-        None => cleanup_result(child.wait(), stdout_path, stderr_path)?,
-    };
-    if let Err(error) = confirm_process_group_absent(process_group, KILL_CONFIRMATION_TIMEOUT) {
-        return Err(cleanup_error(error, stdout_path, stderr_path));
-    }
-    Ok(TimeoutTermination {
-        status,
-        timed_out: true,
-        term_signal_sent,
-        kill_signal_sent,
-    })
-}
-
-fn cleanup_error(
-    error: impl fmt::Display,
-    stdout_path: &Path,
-    stderr_path: &Path,
-) -> Box<dyn Error> {
-    Box::new(ProcessCleanupError {
-        detail: error.to_string(),
-        stdout_path: stdout_path.to_owned(),
-        stderr_path: stderr_path.to_owned(),
-    })
-}
-
-fn cleanup_result<T>(
-    result: std::io::Result<T>,
-    stdout_path: &Path,
-    stderr_path: &Path,
-) -> Result<T, Box<dyn Error>> {
-    result.map_err(|error| cleanup_error(error, stdout_path, stderr_path))
-}
-
-#[cfg(unix)]
-fn process_group_pid(pid: u32) -> Result<Pid, Box<dyn Error>> {
-    let pid = i32::try_from(pid).map_err(|_| format!("process group ID exceeds i32: {pid}"))?;
-    Pid::from_raw(pid).ok_or_else(|| format!("process group ID must be positive: {pid}").into())
-}
-
-#[cfg(unix)]
-fn classify_process_group_probe(result: Result<(), Errno>) -> Result<ProcessGroupState, Errno> {
-    match result {
-        Ok(()) => Ok(ProcessGroupState::Alive),
-        Err(Errno::SRCH) => Ok(ProcessGroupState::Absent),
-        Err(error) => Err(error),
-    }
-}
-
-#[cfg(unix)]
-fn classify_signal_delivery(result: Result<(), Errno>) -> Result<SignalDelivery, Errno> {
-    match result {
-        Ok(()) => Ok(SignalDelivery::Sent),
-        Err(Errno::SRCH) => Ok(SignalDelivery::GroupAbsent),
-        Err(error) => Err(error),
-    }
-}
-
-#[cfg(unix)]
-fn process_group_state(pid: u32) -> Result<ProcessGroupState, Box<dyn Error>> {
-    let process_group = process_group_pid(pid)?;
-    classify_process_group_probe(test_kill_process_group(process_group))
-        .map_err(|error| format!("probe process group {pid}: {error}").into())
-}
-
-#[cfg(not(unix))]
-fn process_group_state(_pid: u32) -> Result<ProcessGroupState, Box<dyn Error>> {
-    Err("process-group cleanup requires Unix".into())
-}
-
-#[cfg(unix)]
-fn signal_process_group(pid: u32, signal: ProcessSignal) -> Result<SignalDelivery, Box<dyn Error>> {
-    let process_group = process_group_pid(pid)?;
-    let unix_signal = match signal {
-        ProcessSignal::Term => Signal::TERM,
-        ProcessSignal::Kill => Signal::KILL,
-    };
-    let signal_name = match signal {
-        ProcessSignal::Term => "SIGTERM",
-        ProcessSignal::Kill => "SIGKILL",
-    };
-    classify_signal_delivery(kill_process_group(process_group, unix_signal))
-        .map_err(|error| format!("send {signal_name} to process group {pid}: {error}").into())
-}
-
-#[cfg(not(unix))]
-fn signal_process_group(
-    _pid: u32,
-    _signal: ProcessSignal,
-) -> Result<SignalDelivery, Box<dyn Error>> {
-    Err("process-group cleanup requires Unix".into())
-}
-
-fn confirm_process_group_absent(pid: u32, timeout: Duration) -> Result<(), Box<dyn Error>> {
-    confirm_process_group_absent_with(timeout, || process_group_state(pid)).map_err(|error| {
-        format!("confirm process group {pid} exited after SIGKILL: {error}").into()
-    })
-}
-
-fn confirm_process_group_absent_with(
-    timeout: Duration,
-    mut probe: impl FnMut() -> Result<ProcessGroupState, Box<dyn Error>>,
-) -> Result<(), Box<dyn Error>> {
-    let started = Instant::now();
-    loop {
-        match probe()? {
-            ProcessGroupState::Absent => return Ok(()),
-            ProcessGroupState::Alive if started.elapsed() >= timeout => {
-                return Err(format!(
-                    "process group remained alive for {} ms",
-                    duration_ms(timeout)
-                )
-                .into());
-            }
-            ProcessGroupState::Alive => std::thread::sleep(PROCESS_POLL_INTERVAL),
-        }
-    }
-}
-
-pub(crate) fn expected_invocation(
-    program: &str,
-    arguments: &[OsString],
-    environment: &BTreeMap<String, String>,
-    current_dir: &Path,
-) -> Result<InvocationReceipt, Box<dyn Error>> {
-    let arguments = arguments
-        .iter()
-        .map(|argument| {
-            argument
-                .to_str()
-                .map(str::to_owned)
-                .ok_or("subprocess argument is not UTF-8")
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    let current_dir = fs::canonicalize(current_dir)?
-        .into_os_string()
-        .into_string()
-        .map_err(|_| "subprocess working directory is not UTF-8")?;
-    Ok(InvocationReceipt {
-        program: program.to_owned(),
-        program_sha256: executable_sha256(program, environment)?,
-        arguments,
-        current_dir,
-        environment: environment.clone(),
-        environment_sha256: digest_environment(environment),
-    })
-}
-
-fn executable_sha256(
-    program: &str,
-    environment: &BTreeMap<String, String>,
-) -> Result<String, Box<dyn Error>> {
-    let path = if Path::new(program).components().count() > 1 {
-        fs::canonicalize(program)?
-    } else {
-        environment
-            .get("PATH")
-            .and_then(|path| {
-                env::split_paths(path)
-                    .map(|directory| directory.join(program))
-                    .find(|candidate| candidate.is_file())
-            })
-            .ok_or_else(|| format!("subprocess program is not present on PATH: {program}"))?
-    };
-    Ok(format!("{:x}", Sha256::digest(fs::read(path)?)))
-}
-
-pub(crate) fn digest_environment(environment: &BTreeMap<String, String>) -> String {
-    let encoded = environment
-        .iter()
-        .map(|(name, value)| format!("{name}={value}"))
-        .collect::<Vec<_>>()
-        .join("\0");
-    format!("{:x}", Sha256::digest(encoded))
-}
-
-pub(crate) fn parse_combined_invocations(source: &str) -> Result<Vec<LabeledInvocation>, String> {
-    parse_combined_processes(source).map(|processes| {
-        processes
-            .into_iter()
-            .map(|process| LabeledInvocation {
-                label: process.label,
-                invocation: process.invocation,
-            })
-            .collect()
-    })
-}
-
-pub(crate) fn parse_combined_processes(source: &str) -> Result<Vec<LabeledProcess>, String> {
-    let processes = source
-        .split("schema_version: 2\n")
-        .skip(1)
-        .map(|section| {
-            let mut lines = section.lines();
-            let label = lines
-                .next()
-                .and_then(|line| line.strip_prefix("label: "))
-                .ok_or_else(|| "combined process log omitted label".to_owned())?
-                .to_owned();
-            let invocation = lines
-                .next()
-                .and_then(|line| line.strip_prefix("invocation: "))
-                .ok_or_else(|| "combined process log omitted invocation".to_owned())?;
-            let invocation = serde_json::from_str(invocation)
-                .map_err(|error| format!("parse combined process invocation: {error}"))?;
-            let _exit_code = lines
-                .next()
-                .and_then(|line| line.strip_prefix("exit_code: "))
-                .ok_or_else(|| "combined process log omitted exit code".to_owned())?;
-            let _timed_out = lines
-                .next()
-                .and_then(|line| line.strip_prefix("timed_out: "))
-                .ok_or_else(|| "combined process log omitted timeout status".to_owned())?;
-            let duration_ms = metric_line(&mut lines, "duration_ms: ")?;
-            let peak_rss_kib = metric_line(&mut lines, "peak_rss_kib: ")?;
-            if peak_rss_kib == 0 {
-                return Err("combined process log omitted peak RSS".to_owned());
-            }
-            Ok(LabeledProcess {
-                label,
-                invocation,
-                metrics: ProcessMetrics {
-                    duration_ms,
-                    peak_rss_kib,
-                },
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    if processes.is_empty() {
-        return Err("combined process log contained no process receipt".to_owned());
-    }
-    Ok(processes)
-}
-
-fn metric_line<'a>(lines: &mut impl Iterator<Item = &'a str>, prefix: &str) -> Result<u64, String> {
-    lines
-        .next()
-        .and_then(|line| line.strip_prefix(prefix))
-        .ok_or_else(|| format!("combined process log omitted {prefix}"))?
-        .parse()
-        .map_err(|error| format!("parse combined process metric {prefix}: {error}"))
-}
-
-pub(crate) fn base_environment() -> BTreeMap<String, String> {
-    const ALLOWED: &[&str] = &[
-        "CARGO_HOME",
-        "DEVELOPER_DIR",
-        "HOME",
-        "PATH",
-        "RUSTUP_HOME",
-        "SDKROOT",
-        "SYSTEMROOT",
-    ];
-    ALLOWED
-        .iter()
-        .filter_map(|name| env::var(name).ok().map(|value| ((*name).to_owned(), value)))
-        .collect()
-}
-
-fn telemetry_path() -> Result<PathBuf, Box<dyn Error>> {
-    let directory = Path::new("target/rafter-invariants/telemetry");
-    std::fs::create_dir_all(directory)?;
-    let sequence = TELEMETRY_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-    Ok(directory.join(format!("{}-{sequence}.time", std::process::id())))
-}
-
-fn parse_peak_rss(stderr: &[u8]) -> Option<u64> {
-    let stderr = String::from_utf8_lossy(stderr);
-    if cfg!(target_os = "macos") {
-        stderr.lines().find_map(|line| {
-            line.trim()
-                .strip_suffix("  maximum resident set size")
-                .and_then(|bytes| bytes.trim().parse::<u64>().ok())
-                .map(|bytes| bytes.div_ceil(1024))
-        })
-    } else {
-        stderr.lines().find_map(|line| {
-            line.trim()
-                .strip_prefix("Maximum resident set size (kbytes):")
-                .and_then(|kib| kib.trim().parse::<u64>().ok())
-        })
-    }
-}
-
-fn process_rss_kib(pid: u32) -> Option<u64> {
-    let output = Command::new("ps")
-        .args(["-o", "rss=", "-p", &pid.to_string()])
-        .output()
-        .ok()?;
-    output
-        .status
-        .success()
-        .then(|| String::from_utf8_lossy(&output.stdout).trim().parse().ok())
-        .flatten()
-}
-
-pub(super) fn combined_log(
-    label: &str,
-    output: &ProcessOutput,
-) -> Result<Vec<u8>, serde_json::Error> {
-    let invocation = serde_json::to_string(&output.invocation)?;
-    Ok(format!(
-        "schema_version: 2\nlabel: {label}\ninvocation: {invocation}\nexit_code: {:?}\ntimed_out: {}\nduration_ms: {}\npeak_rss_kib: {}\n\n--- stdout ---\n{}\n--- stderr ---\n{}",
-        output.status.code(),
-        output.timed_out,
-        output.duration.as_millis(),
-        output.peak_rss_kib,
-        String::from_utf8_lossy(&output.stdout),
-        String::from_utf8_lossy(&output.stderr)
-    )
-    .into_bytes())
-}
-
-pub(super) fn json_log(label: &str, output: &ProcessOutput) -> Result<Vec<u8>, Box<dyn Error>> {
-    Ok(serde_json::to_vec_pretty(&ProcessLog {
-        schema_version: 2,
-        label: label.to_owned(),
-        invocation: output.invocation.clone(),
-        exit_code: output.status.code(),
-        timed_out: output.timed_out,
-        termination: None,
-        duration_ms: duration_ms(output.duration),
-        peak_rss_kib: output.peak_rss_kib,
-        stdout: String::from_utf8(output.stdout.clone())?,
-        stderr: String::from_utf8(output.stderr.clone())?,
-    })?)
-}
-
-pub(super) fn tla_json_log(label: &str, output: &ProcessOutput) -> Result<Vec<u8>, Box<dyn Error>> {
-    Ok(serde_json::to_vec_pretty(&ProcessLog {
-        schema_version: 3,
-        label: label.to_owned(),
-        invocation: output.invocation.clone(),
-        exit_code: output.status.code(),
-        timed_out: output.timed_out,
-        termination: output.termination.clone(),
-        duration_ms: duration_ms(output.duration),
-        peak_rss_kib: output.peak_rss_kib,
-        stdout: String::from_utf8(output.stdout.clone())?,
-        stderr: String::from_utf8(output.stderr.clone())?,
-    })?)
-}
-
-pub(super) fn duration_ms(duration: Duration) -> u64 {
-    u64::try_from(duration.as_millis()).unwrap_or(u64::MAX)
+        started,
+        timeout,
+        policy,
+        &stdout_path,
+        &stderr_path,
+        &resource_path,
+        &process_group_path,
+        &reservation_path,
+    );
+    finish_managed_process(process, result, &stdout_path, &stderr_path, &resource_path)
 }
 
 #[cfg(test)]
@@ -715,20 +343,30 @@ mod tests {
         collections::BTreeMap,
         ffi::OsString,
         path::{Path, PathBuf},
-        time::Duration,
+        sync::atomic::AtomicU64,
+        time::{Duration, Instant},
     };
+
+    #[cfg(unix)]
+    use std::os::unix::process::CommandExt;
 
     #[cfg(unix)]
     use rustix::io::Errno;
 
     use super::{
-        cleanup_error, combined_log, confirm_process_group_absent_with, digest_environment,
-        json_log, parse_combined_processes, parse_peak_rss, process_rss_kib, timed_with_timeout,
-        timed_with_timeout_and_grace, ProcessGroupState, ProcessLog,
+        allocate_telemetry_path, cleanup_error, combined_log, confirm_process_group_absent_with,
+        digest_environment, identity_command_with_timeout, json_log, layer_budget,
+        parse_combined_processes, parse_peak_rss, timed_for, timed_with_timeout,
+        timed_with_timeout_and_grace, ProcessGroupState, ProcessKind, ProcessLog,
+        DEFAULT_KILL_CONFIRMATION_TIMEOUT,
     };
 
     #[cfg(unix)]
-    use super::{classify_process_group_probe, classify_signal_delivery, SignalDelivery};
+    use super::{
+        classify_signal_delivery, process_group_state, take_fallback_cleanup_failures,
+        ManagedProcess, SignalDelivery,
+    };
+    use super::{parse_process_group_observation, ProcessGroupObservation};
 
     #[test]
     fn parses_platform_peak_rss() {
@@ -752,21 +390,101 @@ mod tests {
         );
     }
 
-    #[cfg(unix)]
     #[test]
-    fn process_group_probe_distinguishes_absent_from_permission_denied() {
+    fn layer_budget_consumes_validated_runner_durations_without_profile_tables() {
+        let runner = crate::RunnerContract {
+            producer: "fixture".to_owned(),
+            command: Vec::new(),
+            configuration: BTreeMap::from([
+                ("layer_timeout".to_owned(), "17m".to_owned()),
+                ("finalization_reserve".to_owned(), "2m".to_owned()),
+                ("compile_timeout".to_owned(), "73s".to_owned()),
+                ("discovery_timeout".to_owned(), "11s".to_owned()),
+                ("execution_timeout".to_owned(), "13s".to_owned()),
+                ("termination_grace".to_owned(), "7s".to_owned()),
+                ("kill_confirmation_timeout".to_owned(), "3s".to_owned()),
+                ("receipt_finalization_allowance".to_owned(), "4s".to_owned()),
+            ]),
+            minimum_observed_checks: 1,
+            require_peak_rss: true,
+        };
+        let budget = layer_budget("arbitrary-profile", "tests", &runner)
+            .expect("manifest-driven producer budget")
+            .expect("non-TLA layer has a scoped budget");
+        let remaining = budget
+            .finalization_deadline
+            .checked_duration_since(Instant::now())
+            .expect("deadline remains in the future");
+        assert!(remaining <= Duration::from_secs(15 * 60));
+        assert!(remaining > Duration::from_secs(14 * 60 + 59));
+        assert_eq!(budget.finalization_reserve, Duration::from_secs(2 * 60));
+        assert_eq!(budget.compile_timeout, Some(Duration::from_secs(73)));
+        assert_eq!(budget.discovery_timeout, Some(Duration::from_secs(11)));
+        assert_eq!(budget.execution_timeout, Some(Duration::from_secs(13)));
+        assert_eq!(budget.policy.termination_grace, Duration::from_secs(7));
         assert_eq!(
-            classify_process_group_probe(Err(Errno::SRCH)),
-            Ok(ProcessGroupState::Absent)
+            budget.policy.kill_confirmation_timeout,
+            Duration::from_secs(3)
         );
         assert_eq!(
-            classify_process_group_probe(Err(Errno::PERM)),
-            Err(Errno::PERM)
+            budget.policy.receipt_finalization_allowance,
+            Duration::from_secs(4)
+        );
+        assert!(layer_budget("pr", "tla", &runner)
+            .expect("TLA remains explicit")
+            .is_none());
+        assert!(layer_budget("pr", "unknown", &runner).is_err());
+
+        let mut drifted = runner;
+        drifted.configuration.remove("termination_grace");
+        assert!(layer_budget("pr", "tests", &drifted).is_err());
+    }
+
+    #[test]
+    fn implicit_producer_process_without_a_layer_budget_fails_closed() {
+        let error = timed_for(
+            ProcessKind::SimulatorExecution,
+            "printf",
+            &[OsString::from("unreachable")],
+            &super::base_environment(),
+            Path::new("."),
+        )
+        .expect_err("unscoped producer subprocess must not start");
+        assert!(error.to_string().contains("outside an active layer budget"));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn identity_command_timeout_is_finite_and_retains_diagnostics() {
+        let error = identity_command_with_timeout(
+            "sh",
+            &["-c", "printf identity-started; sleep 5"],
+            Duration::from_millis(50),
+        )
+        .expect_err("stalled identity command must time out")
+        .to_string();
+        assert!(error.contains("timed_out=true"));
+        assert!(error.contains("identity-started"));
+    }
+
+    #[test]
+    fn process_group_observation_combines_membership_and_rss() {
+        assert_eq!(
+            parse_process_group_observation(" 42 100\n 7 5\n 42 23\n", 42)
+                .expect("parse process inventory"),
+            ProcessGroupObservation {
+                state: ProcessGroupState::Alive,
+                rss_kib: 123,
+            }
         );
         assert_eq!(
-            classify_process_group_probe(Ok(())),
-            Ok(ProcessGroupState::Alive)
+            parse_process_group_observation(" 7 5\n", 42).expect("parse absent process group"),
+            ProcessGroupObservation {
+                state: ProcessGroupState::Absent,
+                rss_kib: 0,
+            }
         );
+        assert!(parse_process_group_observation("42 100 extra\n", 42).is_err());
     }
 
     #[cfg(unix)]
@@ -788,6 +506,77 @@ mod tests {
         assert!(error.to_string().contains("remained alive"));
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn managed_process_drop_kills_and_reaps_an_armed_group() {
+        let mut command = std::process::Command::new("sh");
+        command
+            .args(["-c", "trap '' TERM; while :; do :; done"])
+            .process_group(0);
+        let child = command.spawn().expect("spawn isolated process group");
+        let process_group = child.id();
+        let mut process = ManagedProcess::new(child, DEFAULT_KILL_CONFIRMATION_TIMEOUT);
+        process.set_target_group(process_group);
+
+        drop(process);
+
+        assert_eq!(
+            process_group_state(process_group).expect("probe cleaned process group"),
+            ProcessGroupState::Absent
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn fallback_cleanup_failure_is_loud_and_rejected_by_the_next_producer_process() {
+        const CHILD_ENV: &str = "RAFTER_TEST_CROSS_THREAD_CLEANUP_FAILURE";
+        if std::env::var_os(CHILD_ENV).is_none() {
+            let output = std::process::Command::new(
+                std::env::current_exe().expect("resolve invariant test executable"),
+            )
+            .args([
+                "--exact",
+                "producer::process::tests::fallback_cleanup_failure_is_loud_and_rejected_by_the_next_producer_process",
+                "--nocapture",
+            ])
+            .env(CHILD_ENV, "1")
+            .output()
+            .expect("run isolated cleanup-failure test");
+            assert!(
+                output.status.success(),
+                "isolated cleanup-failure test failed\nstdout:\n{}\nstderr:\n{}",
+                String::from_utf8_lossy(&output.stdout),
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+
+        assert!(take_fallback_cleanup_failures().is_empty());
+        std::thread::spawn(|| {
+            let mut command = std::process::Command::new("sh");
+            command.args(["-c", "exit 0"]).process_group(0);
+            let child = command.spawn().expect("spawn isolated process group");
+            let mut process = ManagedProcess::new(child, DEFAULT_KILL_CONFIRMATION_TIMEOUT);
+            process.set_target_group(u32::MAX);
+            drop(process);
+        })
+        .join()
+        .expect("cleanup worker exits normally");
+
+        let error = timed_with_timeout(
+            "printf",
+            &[OsString::from("unreachable")],
+            &super::base_environment(),
+            Path::new("."),
+            Duration::from_secs(1),
+        )
+        .expect_err("the next process must surface the fallback cleanup diagnostic");
+        assert!(error
+            .to_string()
+            .contains("prior fallback subprocess cleanup failed"));
+        assert!(take_fallback_cleanup_failures().is_empty());
+    }
+
     #[test]
     fn cleanup_errors_name_retained_telemetry() {
         let error = cleanup_error(
@@ -802,10 +591,49 @@ mod tests {
     }
 
     #[test]
-    fn timed_child_is_killed_at_its_soft_timeout() {
-        if process_rss_kib(std::process::id()).is_none() {
-            return;
+    fn telemetry_allocation_never_reuses_stale_process_receipts() {
+        let directory = unique_test_path("telemetry-collision");
+        std::fs::create_dir_all(&directory).expect("create telemetry scratch directory");
+        let first_sequence = AtomicU64::new(0);
+        let (first_path, first_reservation) =
+            allocate_telemetry_path(&directory, 42, &first_sequence)
+                .expect("reserve first telemetry path");
+        let first_prefix = first_path.with_extension("");
+        std::fs::remove_file(first_reservation).expect("release simulated crashed reservation");
+        std::fs::write(first_prefix.with_extension("stdout"), b"stale")
+            .expect("retain stale stdout receipt");
+
+        let reused_process_sequence = AtomicU64::new(0);
+        let (second_path, second_reservation) =
+            allocate_telemetry_path(&directory, 42, &reused_process_sequence)
+                .expect("skip stale telemetry path");
+        assert_ne!(second_path, first_path);
+        assert_eq!(second_path, directory.join("42-1.time"));
+
+        std::fs::remove_file(second_reservation).expect("release second reservation");
+        std::fs::remove_dir_all(directory).expect("remove telemetry scratch directory");
+    }
+
+    #[test]
+    fn short_lived_children_always_produce_resource_telemetry() {
+        for iteration in 0..32 {
+            let output = timed_with_timeout(
+                "sh",
+                &[OsString::from("-c"), OsString::from("printf short")],
+                &super::base_environment(),
+                Path::new("."),
+                Duration::from_secs(2),
+            )
+            .unwrap_or_else(|error| panic!("short child {iteration} lost telemetry: {error}"));
+            assert!(output.status.success());
+            assert!(!output.timed_out);
+            assert_eq!(output.stdout, b"short");
+            assert!(output.peak_rss_kib > 0);
         }
+    }
+
+    #[test]
+    fn timed_child_is_killed_at_its_soft_timeout() {
         let environment = super::base_environment();
         let output = timed_with_timeout(
             "sleep",
@@ -836,10 +664,12 @@ mod tests {
 
         let plain = String::from_utf8(combined_log("timeout", &output).expect("log serializes"))
             .expect("plain process log is UTF-8");
-        assert!(plain.starts_with("schema_version: 2\nlabel: timeout\ninvocation: {"));
+        assert!(plain.starts_with("schema_version: 3\nlabel: timeout\ninvocation: {"));
         assert!(plain.contains("\"program\":\"sleep\""));
         let parsed = parse_combined_processes(&plain).expect("combined metrics parse");
         assert_eq!(parsed.len(), 1);
+        assert!(parsed[0].timed_out);
+        assert_ne!(parsed[0].exit_code, Some(0));
         assert_eq!(parsed[0].metrics.peak_rss_kib, output.peak_rss_kib);
         let structured: ProcessLog = serde_json::from_slice(
             &json_log("timeout", &output).expect("structured process log serializes"),
@@ -851,10 +681,97 @@ mod tests {
     }
 
     #[test]
+    fn timed_out_process_transcript_retains_output_and_timeout_classification() {
+        let output = timed_with_timeout(
+            "sh",
+            &[
+                OsString::from("-c"),
+                OsString::from("printf retained-before-timeout; sleep 5"),
+            ],
+            &super::base_environment(),
+            Path::new("."),
+            Duration::from_millis(10),
+        )
+        .expect("timed-out process returns a replayable receipt");
+        assert!(output.timed_out);
+        assert_eq!(output.stdout, b"retained-before-timeout");
+
+        let directory = unique_test_path("timeout-artifact");
+        let bytes = combined_log("timeout-retention", &output).expect("frame timeout transcript");
+        let artifact = crate::producer::artifact::write(
+            &directory,
+            Path::new("timeout.log"),
+            "test-log",
+            &bytes,
+        )
+        .expect("persist timeout transcript");
+        let retained = std::fs::read_to_string(&artifact.path).expect("read timeout transcript");
+        let [parsed] = parse_combined_processes(&retained)
+            .expect("parse retained timeout transcript")
+            .try_into()
+            .expect("one retained process");
+        assert!(parsed.timed_out);
+        assert_eq!(parsed.stdout, "retained-before-timeout");
+        assert_eq!(artifact.size_bytes, bytes.len() as u64);
+        std::fs::remove_dir_all(directory).expect("remove timeout artifact directory");
+    }
+
+    #[test]
+    fn combined_processes_preserve_failed_and_timed_out_semantic_statuses() {
+        let source = concat!(
+            "schema_version: 3\n",
+            "label: test\n",
+            "invocation: {\"program\":\"cargo\",\"program_sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"arguments\":[\"test\"],\"current_dir\":\"/workspace\",\"environment\":{},\"environment_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}\n",
+            "exit_code: Some(0)\n",
+            "timed_out: false\n",
+            "duration_ms: 1\n",
+            "peak_rss_kib: 1\n",
+            "stdout_bytes: 2\n",
+            "stderr_bytes: 0\n",
+            "\n",
+            "ok",
+        );
+        let parsed = parse_combined_processes(source).expect("successful receipt parses");
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].stdout, "ok");
+        assert_eq!(parsed[0].stderr, "");
+        let failed = parse_combined_processes(&source.replace("Some(0)", "Some(1)"))
+            .expect("failed semantic receipt remains parseable");
+        assert_eq!(failed[0].exit_code, Some(1));
+        let timed_out = parse_combined_processes(&source.replace("false", "true"))
+            .expect("timed-out semantic receipt remains parseable");
+        assert!(timed_out[0].timed_out);
+        assert!(parse_combined_processes(&source.replace("Some(0)", "0")).is_err());
+        assert!(
+            parse_combined_processes(&source.replace("stdout_bytes: 2", "stdout_bytes: 20"))
+                .is_err()
+        );
+        assert!(parse_combined_processes(&format!("{source}trailing junk")).is_err());
+    }
+
+    #[test]
+    fn length_framing_preserves_process_log_tokens_inside_stdout() {
+        let payload = "schema_version: 3\n\nstdout_bytes: 999\n--- stderr ---";
+        let output = timed_with_timeout(
+            "printf",
+            &[OsString::from("%s"), OsString::from(payload)],
+            &super::base_environment(),
+            Path::new("."),
+            Duration::from_secs(2),
+        )
+        .expect("capture adversarial stdout");
+        let log = String::from_utf8(combined_log("framing", &output).expect("serialize log"))
+            .expect("combined log is UTF-8");
+        let [parsed] = parse_combined_processes(&log)
+            .expect("length framing ignores payload tokens")
+            .try_into()
+            .expect("one process receipt");
+        assert_eq!(parsed.stdout, payload);
+        assert_eq!(parsed.stderr, "");
+    }
+
+    #[test]
     fn timeout_escalates_from_group_term_to_group_kill() {
-        if process_rss_kib(std::process::id()).is_none() {
-            return;
-        }
         let output = timed_with_timeout_and_grace(
             "sh",
             &[
@@ -877,9 +794,6 @@ mod tests {
 
     #[test]
     fn timeout_term_cleans_up_descendants_without_escalation() {
-        if process_rss_kib(std::process::id()).is_none() {
-            return;
-        }
         let marker = unique_test_path("descendant-term");
         let mut environment = super::base_environment();
         environment.insert(
@@ -913,9 +827,6 @@ mod tests {
 
     #[test]
     fn timeout_kills_descendants_after_the_group_leader_exits() {
-        if process_rss_kib(std::process::id()).is_none() {
-            return;
-        }
         let output = timed_with_timeout_and_grace(
             "sh",
             &[
@@ -932,6 +843,27 @@ mod tests {
         assert!(output.timed_out);
         assert!(termination.term_signal_sent);
         assert!(termination.kill_signal_sent);
+    }
+
+    #[test]
+    fn successful_leader_exit_does_not_hide_a_live_descendant() {
+        let output = timed_with_timeout_and_grace(
+            "sh",
+            &[
+                OsString::from("-c"),
+                OsString::from("(trap '' TERM; sleep 5) & exit 0"),
+            ],
+            &super::base_environment(),
+            Path::new("."),
+            Duration::from_millis(50),
+            Duration::from_millis(20),
+        )
+        .expect("the surviving descendant is detected and killed");
+        let termination = output.termination.expect("termination receipt");
+        assert!(output.timed_out);
+        assert!(termination.term_signal_sent);
+        assert!(termination.kill_signal_sent);
+        assert!(output.duration < Duration::from_secs(2));
     }
 
     #[test]

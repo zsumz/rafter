@@ -1,11 +1,13 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
+    ffi::OsString,
     fs,
     path::Path,
-    process::Command,
     time::Duration,
 };
+
+use sha2::{Digest, Sha256};
 
 use crate::SourceReceipt;
 
@@ -13,12 +15,19 @@ use super::tla_checkpoint;
 use super::{artifact, process};
 
 const SPEC: &str = "specs/tla/raft/Raft.tla";
-const TRACE_SPEC: &str = "specs/tla/raft/RaftTraceSample.tla";
+const TRACE_SPEC: &str = "specs/tla/raft/RaftMembershipTraceSample.tla";
+const TRACE_CONFIG: &str = "specs/tla/raft/RaftMembershipTraceSample.cfg";
+const TRACE_SPEC_SHA256: &str = "85456c645d34abed091955a80b6acf02b7403d65702ba2b3c154f737542f9f55";
+const TRACE_CONFIG_SHA256: &str =
+    "1286edee2df96b702937d9c1340f8412c060a6e9a0df53dd46b0149d2027b96e";
 const DETECTOR_SPEC: &str = "specs/tla/raft/RafterInvariantDetectorNegative.tla";
 const DETECTOR_CONFIG: &str = "specs/tla/raft/RafterInvariantDetectorNegative.cfg";
 const JAR: &str = "tools/cache/tla2tools.jar";
+const TOOL_FETCH_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 
-use super::tla_output::{render_detector_config, DETECTOR_PROBES, REGISTERED_PREDICATES};
+use super::tla_output::{
+    render_detector_config, DETECTOR_PROBES, REGISTERED_PREDICATES, REQUIRED_MODEL_TRANSITIONS,
+};
 
 pub(super) fn validate_runner_options(
     configuration: &BTreeMap<String, String>,
@@ -81,6 +90,7 @@ pub(super) fn validate_spec_contract(
     let spec = fs::read_to_string(SPEC)?;
     let detector_spec = fs::read_to_string(DETECTOR_SPEC)?;
     let detector_config = fs::read_to_string(DETECTOR_CONFIG)?;
+    validate_trace_contract(symbols)?;
     validate_safety_only_boundary(&spec, &config_source)?;
     validate_symmetry_contract(config_name, &config_source)?;
     if configured_set != expected
@@ -110,6 +120,140 @@ pub(super) fn validate_spec_contract(
         );
     }
     Ok(configured)
+}
+
+fn validate_trace_contract(symbols: &BTreeSet<String>) -> Result<(), Box<dyn Error>> {
+    let trace_spec = fs::read_to_string(TRACE_SPEC)?;
+    let trace_config = fs::read_to_string(TRACE_CONFIG)?;
+    validate_trace_contract_sources(symbols, &trace_spec, &trace_config)
+}
+
+fn validate_trace_contract_sources(
+    symbols: &BTreeSet<String>,
+    trace_spec: &str,
+    trace_config: &str,
+) -> Result<(), Box<dyn Error>> {
+    let mut expected_invariants = symbols.clone();
+    expected_invariants.insert("TypeOK".to_owned());
+    let configured = configured_invariants(trace_config)
+        .into_iter()
+        .collect::<BTreeSet<_>>();
+    let specifications = trace_config
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("SPECIFICATION "))
+        .collect::<Vec<_>>();
+    let properties = trace_config
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("PROPERTY ") || line.starts_with("PROPERTIES "))
+        .collect::<Vec<_>>();
+    let required_definitions = [
+        "ReaddCheckpointReady ==",
+        "ReaddCheckpointReached ==",
+        "TraceAction44 ==",
+        "TraceSpec ==",
+        "TraceComplete ==",
+        "TraceCompletes ==",
+    ];
+    if configured != expected_invariants {
+        return Err("membership trace must bind the exact registered safety invariants".into());
+    }
+    if specifications.as_slice() != ["SPECIFICATION TraceSpec"] {
+        return Err("membership trace must configure exactly TraceSpec".into());
+    }
+    if properties.as_slice() != ["PROPERTY TraceCompletes"] {
+        return Err("membership trace must configure exactly TraceCompletes".into());
+    }
+    if let Some(definition) = required_definitions.iter().find(|definition| {
+        !trace_spec
+            .lines()
+            .any(|line| line.trim_start().starts_with(*definition))
+    }) {
+        return Err(format!("membership trace is missing required definition {definition}").into());
+    }
+    validate_trace_transition_coverage(trace_spec)?;
+    for required_line in [
+        "EXTENDS Raft",
+        "/\\ WF_traceVars(TraceNext)",
+        "TraceComplete == traceStep = 45",
+        "TraceCompletes == <>TraceComplete",
+        "\\/ /\\ traceStep = 45",
+    ] {
+        if !trace_spec.lines().any(|line| line.trim() == required_line) {
+            return Err(
+                format!("membership trace is missing exact contract line {required_line}").into(),
+            );
+        }
+    }
+    for required_line in ["Nodes = {n1, n2, n3}", "MaxTerm = 2", "MaxLogLen = 6"] {
+        if !trace_config
+            .lines()
+            .any(|line| line.trim() == required_line)
+        {
+            return Err(
+                format!("membership trace config is missing exact bound {required_line}").into(),
+            );
+        }
+    }
+    if format!("{:x}", Sha256::digest(trace_spec.as_bytes())) != TRACE_SPEC_SHA256 {
+        return Err("membership trace module bytes do not match the reviewed contract".into());
+    }
+    if format!("{:x}", Sha256::digest(trace_config.as_bytes())) != TRACE_CONFIG_SHA256 {
+        return Err("membership trace config bytes do not match the reviewed contract".into());
+    }
+    Ok(())
+}
+
+fn validate_trace_transition_coverage(trace_spec: &str) -> Result<(), Box<dyn Error>> {
+    let lines = trace_spec.lines().collect::<Vec<_>>();
+    let mut blocks = BTreeMap::new();
+    for step in 0..=44 {
+        let definition = format!("TraceAction{step} ==");
+        let start = lines
+            .iter()
+            .position(|line| line.trim() == definition)
+            .ok_or_else(|| format!("membership trace is missing {definition}"))?;
+        let end = lines[start + 1..]
+            .iter()
+            .position(|line| {
+                !line.chars().next().is_some_and(char::is_whitespace)
+                    && line.trim_end().ends_with(" ==")
+            })
+            .map_or(lines.len(), |offset| start + 1 + offset);
+        let body = lines[start + 1..end].join("\n");
+        for required in [
+            format!("/\\ traceStep = {step}"),
+            format!("/\\ traceStep' = {}", step + 1),
+            format!("\\/ TraceAction{step}"),
+        ] {
+            if required.starts_with("\\/") {
+                if !lines.iter().any(|line| line.trim() == required) {
+                    return Err(format!("membership trace is missing chain edge {required}").into());
+                }
+            } else if !body.lines().any(|line| line.trim() == required) {
+                return Err(format!("membership trace action {step} is missing {required}").into());
+            }
+        }
+        blocks.insert(step, body);
+    }
+    for transition in REQUIRED_MODEL_TRANSITIONS {
+        let call = if transition == "InstallSnapshot" {
+            "/\\ InstallSnapshot".to_owned()
+        } else {
+            format!("/\\ {transition}(")
+        };
+        if !blocks
+            .values()
+            .any(|body| body.lines().any(|line| line.trim().starts_with(&call)))
+        {
+            return Err(format!(
+                "membership trace does not execute required transition {transition}"
+            )
+            .into());
+        }
+    }
+    Ok(())
 }
 
 fn validate_symmetry_contract(config_name: &str, config: &str) -> Result<(), Box<dyn Error>> {
@@ -238,7 +382,7 @@ pub(super) fn source_artifacts(
         artifact::capture(
             output_dir,
             &namespace,
-            Path::new("specs/tla/raft/RaftTraceSample.cfg"),
+            Path::new(TRACE_CONFIG),
             "tla-trace-config",
         )?,
         artifact::capture(
@@ -251,14 +395,31 @@ pub(super) fn source_artifacts(
 }
 
 pub(super) fn fetch_tool() -> Result<(), Box<dyn Error>> {
-    let output = Command::new("scripts/tla-model-check")
-        .arg("--fetch-tool")
-        .env_clear()
-        .envs(process::base_environment())
-        .output()?;
-    if !output.status.success() {
+    fetch_tool_with(
+        "scripts/tla-model-check",
+        &[OsString::from("--fetch-tool")],
+        TOOL_FETCH_TIMEOUT,
+    )
+}
+
+fn fetch_tool_with(
+    program: &str,
+    arguments: &[OsString],
+    timeout: Duration,
+) -> Result<(), Box<dyn Error>> {
+    let output = process::timed_with_timeout(
+        program,
+        arguments,
+        &process::base_environment(),
+        Path::new("."),
+        timeout,
+    )?;
+    if output.timed_out || !output.status.success() {
         return Err(format!(
-            "fetch pinned TLC tool: {}",
+            "fetch pinned TLC tool failed with {:?} (timed_out={}): stdout: {}; stderr: {}",
+            output.status.code(),
+            output.timed_out,
+            String::from_utf8_lossy(&output.stdout).trim(),
             String::from_utf8_lossy(&output.stderr).trim()
         )
         .into());
@@ -314,14 +475,16 @@ pub(super) fn parse_timeout(value: &str) -> Result<Duration, Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
-    use std::collections::BTreeMap;
+    use std::{collections::BTreeMap, ffi::OsString, time::Duration};
 
     use super::super::tla_output::{
         render_detector_config, DetectorProbe, DEFAULT_FIXTURE_MODE, DETECTOR_PROBES,
+        REGISTERED_PREDICATES,
     };
     use super::{
-        configured_invariants, java_major, validate_runner_options, validate_safety_only_boundary,
-        validate_symmetry_contract,
+        configured_invariants, fetch_tool_with, java_major, validate_runner_options,
+        validate_safety_only_boundary, validate_symmetry_contract, validate_trace_contract_sources,
+        TRACE_CONFIG, TRACE_SPEC,
     };
 
     #[test]
@@ -330,6 +493,23 @@ mod tests {
         assert_eq!(java_major("openjdk 21.0.7 2025-04-15"), Some(21));
         assert_eq!(java_major("java version \"1.8.0_402\""), Some(8));
         assert_eq!(java_major("java 210.0.1"), Some(210));
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn tool_fetch_is_managed_and_times_out_with_retained_diagnostics() {
+        let error = fetch_tool_with(
+            "sh",
+            &[
+                OsString::from("-c"),
+                OsString::from("printf fetch-started; sleep 5"),
+            ],
+            Duration::from_millis(50),
+        )
+        .expect_err("stalled tool fetch must time out")
+        .to_string();
+        assert!(error.contains("timed_out=true"));
+        assert!(error.contains("fetch-started"));
     }
 
     #[test]
@@ -447,5 +627,46 @@ mod tests {
         };
         assert!(render_detector_config(template, invalid).is_err());
         assert!(render_detector_config("INIT Init\n", DETECTOR_PROBES[0]).is_err());
+    }
+
+    #[test]
+    fn membership_trace_contract_rejects_any_reviewed_source_drift() {
+        let symbols = REGISTERED_PREDICATES
+            .iter()
+            .map(|predicate| (*predicate).to_owned())
+            .collect::<std::collections::BTreeSet<_>>();
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let spec =
+            std::fs::read_to_string(root.join(TRACE_SPEC)).expect("read membership trace spec");
+        let config =
+            std::fs::read_to_string(root.join(TRACE_CONFIG)).expect("read membership trace config");
+        validate_trace_contract_sources(&symbols, &spec, &config)
+            .expect("checked-in trace contract is exact");
+
+        for mutated in [
+            spec.replace("/\\ WF_traceVars(TraceNext)", "/\\ TRUE"),
+            spec.replace("/\\ InstallSnapshot", "/\\ TRUE"),
+            spec.replace("\\/ TraceAction28", "\\/ TraceAction27"),
+            spec.replace("/\\ Timeout(n1)", "/\\ TRUE"),
+            spec.replace("/\\ ClientAppend(n1, v1)", "/\\ TRUE"),
+            spec.replace(
+                "TraceComplete == traceStep = 45",
+                "TraceComplete == traceStep \\in 44..45",
+            ),
+        ] {
+            assert!(validate_trace_contract_sources(&symbols, &mutated, &config).is_err());
+        }
+        assert!(validate_trace_contract_sources(
+            &symbols,
+            &spec,
+            &config.replace("  LeaderCompleteness\n", "")
+        )
+        .is_err());
+        assert!(validate_trace_contract_sources(
+            &symbols,
+            &spec,
+            &config.replace("  MaxLogLen = 6", "  MaxLogLen = 5")
+        )
+        .is_err());
     }
 }

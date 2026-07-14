@@ -3,10 +3,10 @@ use std::{
     error::Error,
     ffi::OsString,
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
-use serde_json::Value;
+use serde::Deserialize;
 
 use crate::{ArtifactRef, TestIdentity};
 
@@ -28,6 +28,22 @@ pub(super) struct CompiledTarget {
     pub duration_ms: u64,
 }
 
+#[derive(Debug, Deserialize)]
+struct CargoCompilerMessage {
+    reason: String,
+    package_id: Option<String>,
+    target: Option<CargoMessageTarget>,
+    fresh: Option<bool>,
+    executable: Option<PathBuf>,
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoMessageTarget {
+    kind: Vec<String>,
+    name: String,
+    src_path: PathBuf,
+}
+
 pub(super) fn compile(
     target: &Target,
     profile: &str,
@@ -47,7 +63,13 @@ pub(super) fn compile(
         "--no-run".into(),
         "--message-format=json-render-diagnostics".into(),
     ]);
-    let output = process::timed("cargo", &arguments, environment, Path::new("."))?;
+    let output = process::timed_for(
+        process::ProcessKind::Compile,
+        "cargo",
+        &arguments,
+        environment,
+        Path::new("."),
+    )?;
     let artifact_id = artifact::stable_id(
         "compile",
         &format!("{profile}\0{source_ref}\0{}", target.key()),
@@ -84,6 +106,15 @@ fn compile_result(
     output: &process::ProcessOutput,
     target: &Target,
 ) -> (Option<PathBuf>, Option<String>) {
+    if output.timed_out {
+        return (
+            None,
+            Some(format!(
+                "cargo test --no-run timed out for {}",
+                target.key()
+            )),
+        );
+    }
     if output.status.success() {
         match executable_from_messages(&output.stdout, target) {
             Ok(executable) => (Some(executable), None),
@@ -100,25 +131,35 @@ fn compile_result(
 fn executable_from_messages(bytes: &[u8], target: &Target) -> Result<PathBuf, String> {
     let mut executables = Vec::new();
     for line in String::from_utf8_lossy(bytes).lines() {
-        let Ok(message) = serde_json::from_str::<Value>(line) else {
+        let Ok(message) = serde_json::from_str::<CargoCompilerMessage>(line) else {
             continue;
         };
-        if message["reason"] == "compiler-artifact"
-            && message["target"]["name"] == target.name
-            && message["target"]["kind"]
-                .as_array()
-                .is_some_and(|kinds| kinds.iter().any(|kind| kind == &target.kind))
-        {
-            if message["fresh"] == true {
-                return Err(format!(
-                    "fresh cached executable is forbidden for {}",
-                    target.key()
-                ));
-            }
-            if let Some(executable) = message["executable"].as_str() {
-                executables.push(PathBuf::from(executable));
-            }
+        if message.reason != "compiler-artifact" {
+            continue;
         }
+        let Some(message_target) = message.target else {
+            continue;
+        };
+        if message_target.name != target.name || message_target.kind != [target.kind.as_str()] {
+            continue;
+        }
+        if message.fresh == Some(true) {
+            return Err(format!(
+                "fresh cached executable is forbidden for {}",
+                target.key()
+            ));
+        }
+        let package_id = message.package_id.ok_or_else(|| {
+            format!(
+                "compiler-artifact omitted Cargo package_id for {}",
+                target.key()
+            )
+        })?;
+        verify_package_identity(&package_id, &message_target.src_path, target)?;
+        let executable = message
+            .executable
+            .ok_or_else(|| format!("compiler-artifact omitted executable for {}", target.key()))?;
+        executables.push(canonical_test_executable(&executable, target)?);
     }
     if executables.len() == 1 {
         Ok(executables.remove(0))
@@ -129,6 +170,91 @@ fn executable_from_messages(bytes: &[u8], target: &Target) -> Result<PathBuf, St
             executables.len()
         ))
     }
+}
+
+fn verify_package_identity(
+    package_id: &str,
+    src_path: &Path,
+    target: &Target,
+) -> Result<(), String> {
+    let current =
+        fs::canonicalize(".").map_err(|error| format!("canonicalize workspace: {error}"))?;
+    let expected_package_dir = current
+        .ancestors()
+        .map(|ancestor| ancestor.join("crates").join(&target.package))
+        .find(|candidate| candidate.join("Cargo.toml").is_file())
+        .ok_or_else(|| format!("workspace package {} is not present", target.package))?;
+    let encoded = package_id.strip_prefix("path+file://").ok_or_else(|| {
+        format!(
+            "Cargo package_id for {} is not a workspace path package",
+            target.package
+        )
+    })?;
+    let (package_path, version) = encoded
+        .rsplit_once('#')
+        .ok_or_else(|| format!("Cargo package_id for {} has no version", target.package))?;
+    if version.is_empty() {
+        return Err(format!(
+            "Cargo package_id for {} has an empty version",
+            target.package
+        ));
+    }
+    let observed_package_dir = fs::canonicalize(package_path).map_err(|error| {
+        format!(
+            "canonicalize Cargo package_id for {}: {error}",
+            target.package
+        )
+    })?;
+    let observed_source = fs::canonicalize(src_path).map_err(|error| {
+        format!(
+            "canonicalize Cargo target source for {}: {error}",
+            target.key()
+        )
+    })?;
+    if observed_package_dir != expected_package_dir
+        || !observed_source.starts_with(&expected_package_dir)
+    {
+        return Err(format!(
+            "Cargo package_id or source path does not match workspace package {}",
+            target.package
+        ));
+    }
+    Ok(())
+}
+
+fn canonical_test_executable(executable: &Path, target: &Target) -> Result<PathBuf, String> {
+    if !executable.is_absolute()
+        || executable
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err(format!(
+            "Cargo emitted a non-canonical executable for {}",
+            target.key()
+        ));
+    }
+    let canonical = fs::canonicalize(executable).map_err(|error| {
+        format!(
+            "canonicalize Cargo executable for {}: {error}",
+            target.key()
+        )
+    })?;
+    let expected_prefix = target.name.replace('-', "_");
+    let file_name = canonical
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| format!("Cargo executable for {} is not UTF-8", target.key()))?;
+    if file_name != expected_prefix
+        && !file_name
+            .strip_prefix(&expected_prefix)
+            .is_some_and(|suffix| suffix.starts_with('-'))
+    {
+        return Err(format!(
+            "Cargo executable {file_name} does not match target {}",
+            target.name
+        ));
+    }
+    Ok(canonical)
 }
 
 pub(super) fn prepare_target_dir(
@@ -168,5 +294,51 @@ impl Target {
             "bin" => Ok(vec!["--bin".into(), self.name.clone().into()]),
             kind => Err(format!("unsupported Cargo target kind {kind}").into()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{executable_from_messages, Target};
+
+    #[test]
+    fn compiler_artifact_binds_package_identity_and_target() {
+        let package_dir = std::fs::canonicalize(env!("CARGO_MANIFEST_DIR"))
+            .expect("canonical invariant package directory");
+        let executable = std::fs::canonicalize(
+            std::env::current_exe().expect("resolve invariant test executable"),
+        )
+        .expect("canonical invariant test executable");
+        let target = Target {
+            package: "rafter-invariants".to_owned(),
+            kind: "lib".to_owned(),
+            name: "rafter_invariants".to_owned(),
+        };
+        let artifact = |package_path: &std::path::Path| {
+            serde_json::json!({
+                "reason": "compiler-artifact",
+                "package_id": format!("path+file://{}#0.0.1", package_path.display()),
+                "target": {
+                    "name": "rafter_invariants",
+                    "kind": ["lib"],
+                    "src_path": package_dir.join("src/lib.rs"),
+                },
+                "fresh": false,
+                "executable": executable,
+            })
+            .to_string()
+        };
+        let exact = artifact(&package_dir);
+        assert_eq!(
+            executable_from_messages(exact.as_bytes(), &target)
+                .expect("exact Cargo package artifact"),
+            executable
+        );
+
+        let other_package = package_dir
+            .parent()
+            .expect("workspace crates directory")
+            .join("rafter");
+        assert!(executable_from_messages(artifact(&other_package).as_bytes(), &target).is_err());
     }
 }
