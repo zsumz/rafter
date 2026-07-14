@@ -5,6 +5,7 @@ use super::fixtures::{
     force_snapshot_catchup_to_node_two, test_snapshot,
 };
 use rafter::{InstallSnapshot, Message};
+use rafter_invariant_test::oracle_assert_eq;
 
 #[test]
 fn simulator_installs_snapshot_when_follower_is_behind_compacted_prefix() {
@@ -48,6 +49,7 @@ fn simulator_installs_snapshot_when_follower_is_behind_compacted_prefix() {
         [SnapshotInstalled {
             node_id: NodeId(2),
             application_epoch: 0,
+            commit_index_at_emit: LogIndex(2),
             last_included_index: LogIndex(2),
             last_included_term: Term(1),
             committed_membership: snapshot.metadata.committed_membership().cloned(),
@@ -61,6 +63,25 @@ fn simulator_installs_snapshot_when_follower_is_behind_compacted_prefix() {
             LogEntry::application(Term(2), suffix),
             LogEntry::noop(Term(3))
         ]
+    );
+    cluster.deliver_message(
+        NodeId(1),
+        NodeId(2),
+        Message::AppendEntries(rafter::AppendEntries {
+            sequence: 999,
+            term: Term(3),
+            leader_id: NodeId(1),
+            prev_log_index: LogIndex(4),
+            prev_log_term: Term(3),
+            entries: Vec::<LogEntry>::new().into(),
+            leader_commit: LogIndex(3),
+        }),
+    );
+    assert_eq!(cluster.commit_index(NodeId(2)), LogIndex(3));
+    assert_eq!(
+        cluster.snapshot_installs()[0].commit_index_at_emit,
+        LogIndex(2),
+        "later commit advancement must not rewrite snapshot recorder history"
     );
     assert!(
         cluster
@@ -108,8 +129,8 @@ fn simulator_discards_divergent_suffix_when_installing_snapshot() {
 
     force_snapshot_catchup_to_node_two(&mut cluster);
 
-    assert_eq!(cluster.bootstrap_state(NodeId(2)).snapshot, Some(snapshot));
-    assert_eq!(
+    oracle_assert_eq!(cluster.bootstrap_state(NodeId(2)).snapshot, Some(snapshot));
+    oracle_assert_eq!(
         cluster.log_entries_from(NodeId(2), LogIndex(3)),
         vec![LogEntry::noop(Term(3))]
     );
