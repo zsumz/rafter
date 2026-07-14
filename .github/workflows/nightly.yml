@@ -83,8 +83,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: invariants-nightly-tests
-          path: artifacts/invariants/
+          name: invariants-nightly-tests-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/invariants/
+            target/rafter-invariants/telemetry/
           if-no-files-found: warn
           retention-days: 30
 
@@ -104,8 +106,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: invariants-nightly-simulator
-          path: artifacts/invariants/
+          name: invariants-nightly-simulator-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/invariants/
+            target/rafter-invariants/telemetry/
           if-no-files-found: warn
           retention-days: 30
 
@@ -137,8 +141,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: invariants-nightly-tla
-          path: artifacts/invariants/
+          name: invariants-nightly-tla-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/invariants/
+            target/rafter-invariants/telemetry/
           if-no-files-found: warn
           retention-days: 30
 
@@ -171,7 +177,7 @@ jobs:
   invariants-maelstrom:
     name: invariants-maelstrom-nightly
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88
@@ -211,8 +217,10 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: invariants-nightly-maelstrom
-          path: artifacts/invariants/
+          name: invariants-nightly-maelstrom-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            artifacts/invariants/
+            target/rafter-invariants/telemetry/
           if-no-files-found: error
           retention-days: 30
 
@@ -226,6 +234,8 @@ jobs:
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    env:
+      INVARIANT_REPORT_DIR: rafter-invariants-nightly-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88
@@ -236,8 +246,8 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
-          pattern: invariants-nightly-*
-          path: artifacts/invariants
+          pattern: invariants-nightly-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .
           merge-multiple: true
       - name: Build source-bound Maelstrom verification binaries
         run: cargo build --locked -p rafter-maelstrom --bins
@@ -245,36 +255,83 @@ jobs:
         if: always()
         id: aggregate
         run: |
+          report_dir="$RUNNER_TEMP/$INVARIANT_REPORT_DIR"
+          mkdir -p "$report_dir"
           set +e
-          cargo run --locked -p rafter-invariants -- check --profile nightly --source-ref "$GITHUB_SHA"
+          cargo run --locked -p rafter-invariants -- check --profile nightly --source-ref "$GITHUB_SHA" \
+            --output-dir "$report_dir"
           status=$?
           set -e
           echo "status=$status" >> "$GITHUB_OUTPUT"
+      - name: Validate current-run nightly reports
+        if: always()
+        id: report
+        env:
+          AGGREGATE_STATUS: ${{ steps.aggregate.outputs.status }}
+          TESTS_RESULT: ${{ needs.invariants-tests.result }}
+          SIMULATOR_RESULT: ${{ needs.invariants-simulator.result }}
+          TLA_RESULT: ${{ needs.invariants-tla.result }}
+          MAELSTROM_RESULT: ${{ needs.invariants-maelstrom.result }}
+        run: |
+          report_dir="$RUNNER_TEMP/$INVARIANT_REPORT_DIR"
+          complete=true
+          for extension in json xml md; do
+            if [[ ! -s "$report_dir/nightly.$extension" ]]; then
+              complete=false
+            fi
+          done
+          if [[ "$complete" = "true" ]] && ! jq -e \
+            '.profile == "nightly" and .summary.total == 44 and (.invariants | length) == 44' \
+            "$report_dir/nightly.json" >/dev/null; then
+            complete=false
+          fi
+          dependencies_green=false
+          if [[ "$TESTS_RESULT" = "success" && "$SIMULATOR_RESULT" = "success" && \
+                "$TLA_RESULT" = "success" && "$MAELSTROM_RESULT" = "success" && \
+                "$AGGREGATE_STATUS" = "0" ]]; then
+            dependencies_green=true
+          fi
+          verdict_green=false
+          if [[ "$complete" = "true" ]] && jq -e \
+            '.summary.green == 44 and .summary.red == 0' \
+            "$report_dir/nightly.json" >/dev/null; then
+            verdict_green=true
+          fi
+          publishable=false
+          if [[ "$complete" = "true" && \
+                ("$verdict_green" = "false" || "$dependencies_green" = "true") ]]; then
+            publishable=true
+          fi
+          echo "complete=$complete" >> "$GITHUB_OUTPUT"
+          echo "publishable=$publishable" >> "$GITHUB_OUTPUT"
       - name: Render the 44-row nightly report
         if: always()
         run: |
-          if [[ -f target/rafter-invariants/nightly.md ]]; then
-            cat target/rafter-invariants/nightly.md >> "$GITHUB_STEP_SUMMARY"
+          if [[ "${{ steps.report.outputs.publishable }}" = "true" ]]; then
+            cat "$RUNNER_TEMP/$INVARIANT_REPORT_DIR/nightly.md" >> "$GITHUB_STEP_SUMMARY"
+          elif [[ "${{ steps.report.outputs.complete }}" = "true" ]]; then
+            echo "## Raft invariant gate" >> "$GITHUB_STEP_SUMMARY"
+            echo "A green report was withheld because a required producer or the aggregate failed; the gate is red." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "## Raft invariant gate" >> "$GITHUB_STEP_SUMMARY"
-            echo "No 44-row nightly report was produced; the aggregate is red." >> "$GITHUB_STEP_SUMMARY"
+            echo "No complete current-run 44-row nightly report was produced; the aggregate is red." >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: Upload nightly aggregate reports
-        if: always()
+        if: always() && steps.report.outputs.publishable == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: invariants-nightly-report
+          name: invariants-nightly-report-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            target/rafter-invariants/nightly.json
-            target/rafter-invariants/nightly.xml
-            target/rafter-invariants/nightly.md
-            artifacts/invariants/
-          if-no-files-found: warn
+            ${{ runner.temp }}/${{ env.INVARIANT_REPORT_DIR }}/nightly.json
+            ${{ runner.temp }}/${{ env.INVARIANT_REPORT_DIR }}/nightly.xml
+            ${{ runner.temp }}/${{ env.INVARIANT_REPORT_DIR }}/nightly.md
+          if-no-files-found: error
           retention-days: 30
       - name: Require 44 of 44 nightly invariants green
         if: always()
         env:
           AGGREGATE_STATUS: ${{ steps.aggregate.outputs.status }}
+          REPORT_READY: ${{ steps.report.outputs.complete }}
           TESTS_RESULT: ${{ needs.invariants-tests.result }}
           SIMULATOR_RESULT: ${{ needs.invariants-simulator.result }}
           TLA_RESULT: ${{ needs.invariants-tla.result }}
@@ -285,8 +342,9 @@ jobs:
           test "$TLA_RESULT" = "success"
           test "$MAELSTROM_RESULT" = "success"
           test "$AGGREGATE_STATUS" = "0"
+          test "$REPORT_READY" = "true"
           jq -e '.summary.total == 44 and .summary.green == 44 and .summary.red == 0 and (.invariants | length) == 44' \
-            target/rafter-invariants/nightly.json >/dev/null
+            "$RUNNER_TEMP/$INVARIANT_REPORT_DIR/nightly.json" >/dev/null
 
   fuzz-long:
     name: fuzz-long (${{ matrix.target }})
