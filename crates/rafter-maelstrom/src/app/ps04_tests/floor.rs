@@ -1,6 +1,7 @@
 use std::path::Path;
 
 use rafter::{BootstrapValidationError, LogIndex, NodeId};
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 use rafter_runtime::RaftRuntimeError;
 use rafter_storage::{FileRaftNodeStores, PersistedRaftLogEntry, RaftLogSegment};
 
@@ -32,12 +33,21 @@ pub(super) fn ps04_production_open_rejects_app_floor_beyond_commit() {
     .expect("uncommitted durable tail appends");
     persist_invalid_floor(&root, uncommitted_index);
 
-    assert_open_error(
-        &root,
-        BootstrapValidationError::AppliedFloorBeyondCommit {
+    let error = open_application_node(&root, NodeId(1), Vec::new()).err();
+    oracle_assert!(
+        error.is_some(),
+        "production open must reject an application floor beyond commit"
+    );
+    let runtime_error = *error
+        .expect("typed oracle established that production open failed")
+        .downcast::<RaftRuntimeError>()
+        .expect("production open must preserve the typed runtime error");
+    oracle_assert_eq!(
+        runtime_error,
+        RaftRuntimeError::Bootstrap(BootstrapValidationError::AppliedFloorBeyondCommit {
             applied_through: uncommitted_index,
             commit_index,
-        },
+        }),
     );
     remove_test_root(root);
 }
@@ -52,12 +62,21 @@ pub(super) fn ps04_production_open_rejects_app_floor_beyond_log_coverage() {
     let beyond_log = LogIndex(last_log_index.0 + 1);
     persist_invalid_floor(&root, beyond_log);
 
-    assert_open_error(
-        &root,
-        BootstrapValidationError::AppliedFloorBeyondLog {
+    let error = open_application_node(&root, NodeId(1), Vec::new()).err();
+    oracle_assert!(
+        error.is_some(),
+        "production open must reject an application floor beyond log coverage"
+    );
+    let runtime_error = *error
+        .expect("typed oracle established that production open failed")
+        .downcast::<RaftRuntimeError>()
+        .expect("production open must preserve the typed runtime error");
+    oracle_assert_eq!(
+        runtime_error,
+        RaftRuntimeError::Bootstrap(BootstrapValidationError::AppliedFloorBeyondLog {
             applied_through: beyond_log,
             last_log_index,
-        },
+        }),
     );
     remove_test_root(root);
 }
@@ -71,14 +90,4 @@ fn persist_invalid_floor(root: &Path, applied: LogIndex) {
         },
     )
     .expect("invalid app floor persists for reopen test");
-}
-
-fn assert_open_error(root: &Path, expected: BootstrapValidationError) {
-    let error = open_application_node(root, NodeId(1), Vec::new())
-        .err()
-        .expect("invalid durable application floor must fail closed");
-    let runtime_error = error
-        .downcast::<RaftRuntimeError>()
-        .expect("production open must preserve the typed runtime error");
-    assert_eq!(*runtime_error, RaftRuntimeError::Bootstrap(expected));
 }

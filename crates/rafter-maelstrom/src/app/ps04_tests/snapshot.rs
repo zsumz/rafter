@@ -2,6 +2,7 @@ use rafter::{
     AppendEntries, ApplicationSnapshotKind, Input, InstallSnapshot, LogEntry, LogIndex,
     MembershipConfig, MembershipSet, Message, NodeId, Output, RaftSnapshot, Term,
 };
+use rafter_invariant_test::oracle_assert_eq;
 
 use super::support::{
     cas_command_for, expected_kv, initialize_cluster_process, load_persisted_app, remove_test_root,
@@ -51,15 +52,15 @@ pub(super) fn ps04_inbound_snapshot_promotion_crash_restores_snapshot_then_dispa
 
     let reopened = open_application_node(&root, FOLLOWER, peers)
         .expect("production reopen restores the promoted application snapshot");
-    assert_eq!(reopened.app.applied, SNAPSHOT_INDEX);
-    assert_eq!(reopened.app.kv, expected_kv(1));
-    assert_eq!(reopened.node.snapshot(), Some(&expected_snapshot));
-    assert_eq!(
+    oracle_assert_eq!(reopened.app.applied, SNAPSHOT_INDEX);
+    oracle_assert_eq!(reopened.app.kv, expected_kv(1));
+    oracle_assert_eq!(reopened.node.snapshot(), Some(&expected_snapshot));
+    oracle_assert_eq!(
         read_snapshot_payload(&reopened.node, &expected_snapshot)
             .expect("reopened snapshot serves the exact durable payload"),
         snapshot_payload
     );
-    assert_eq!(
+    oracle_assert_eq!(
         reopened.recovery_outputs,
         vec![Output::Apply {
             index: SUFFIX_INDEX,
@@ -73,17 +74,17 @@ pub(super) fn ps04_inbound_snapshot_promotion_crash_restores_snapshot_then_dispa
 
     let process = initialize_cluster_process(&root, "n2", &["n1", "n2", "n3"]);
     let initialized = process.initialized.as_ref().expect("follower initializes");
-    assert_eq!(initialized.app.applied, SUFFIX_INDEX);
-    assert_eq!(
+    oracle_assert_eq!(initialized.app.applied, SUFFIX_INDEX);
+    oracle_assert_eq!(
         initialized.app.kv,
         expected_kv(2),
         "production dispatch must apply the CAS after restoring snapshot state"
     );
-    assert_eq!(initialized.node.committed_membership(), membership);
+    oracle_assert_eq!(initialized.node.committed_membership(), membership);
 
     let persisted = load_persisted_app(&root);
-    assert_eq!(persisted.applied, SUFFIX_INDEX);
-    assert_eq!(persisted.kv, expected_kv(2));
+    oracle_assert_eq!(persisted.applied, SUFFIX_INDEX);
+    oracle_assert_eq!(persisted.kv, expected_kv(2));
     remove_test_root(root);
 }
 
