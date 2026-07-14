@@ -43,7 +43,7 @@ fn render_tla_trace_module(module_name: &str, actions: &[TlaRenderedAction]) -> 
     module.push_str("VARIABLE traceStep\n\n");
     module.push_str("traceVars == << currentTerm, votedFor, role, log, commitIndex,\n");
     module.push_str(
-        "               snapshotIndex, snapshotPrefix, compactedIndex, snapshotTransfer,\n",
+        "               snapshotIndex, snapshotPrefix, compactionPending, snapshotTransfer,\n",
     );
     module.push_str("               applied, applicationEpoch, epochBaseIndex, epochBaseState,\n");
     module.push_str("               applicationState, appliedThrough,\n");

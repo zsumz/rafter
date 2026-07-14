@@ -61,7 +61,7 @@ BaseCommit == [n \in Nodes |-> 0]
 BaseApplied == [n \in Nodes |-> <<>>]
 BaseSnapshotIndex == [n \in Nodes |-> 0]
 BaseSnapshotPrefix == [n \in Nodes |-> <<>>]
-BaseCompactedIndex == [n \in Nodes |-> 0]
+BaseCompactionPending == [n \in Nodes |-> FALSE]
 BaseApplicationEpoch == [n \in Nodes |-> 0]
 BaseEpochIndex == [n \in Nodes |-> 0]
 BaseApplicationState == [n \in Nodes |-> InitialApplicationState]
@@ -147,10 +147,7 @@ InitialSnapshotPrefix ==
     IF n = FixtureA THEN <<Entry(1, FixtureValueA)>> ELSE <<>>]
   ELSE BaseSnapshotPrefix
 
-InitialCompactedIndex ==
-  IF IsMode("LogMatching", SnapshotPrefixRecorderMode)
-  THEN [n \in Nodes |-> IF n = FixtureA THEN 1 ELSE 0]
-  ELSE BaseCompactedIndex
+InitialCompactionPending == BaseCompactionPending
 
 InitialEffectiveMembership ==
   IF TargetPredicate = "StateMachineSafety" /\
@@ -196,7 +193,7 @@ FixtureInit ==
   /\ commitIndex = InitialCommit
   /\ snapshotIndex = InitialSnapshotIndex
   /\ snapshotPrefix = InitialSnapshotPrefix
-  /\ compactedIndex = InitialCompactedIndex
+  /\ compactionPending = InitialCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = BaseApplied
   /\ applicationEpoch = BaseApplicationEpoch
@@ -372,7 +369,7 @@ FaultySnapshotTransfer ==
         from |-> FixtureA, to |-> FixtureB, index |-> 1,
         prefix |-> <<Entry(1, FixtureValueB)>>]
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
-                  snapshotIndex, snapshotPrefix, compactedIndex,
+                  snapshotIndex, snapshotPrefix, compactionPending,
                   messages, readRequests, readBarrierViolationSeen, membership,
                   appliedConfigIndex, effectiveMembership,
                   effectiveConfigIndex, electedLeaders>>
@@ -526,7 +523,7 @@ LegacyViolation ==
   /\ commitIndex' = LegacyTargetCommit
   /\ snapshotIndex' = BaseSnapshotIndex
   /\ snapshotPrefix' = BaseSnapshotPrefix
-  /\ compactedIndex' = BaseCompactedIndex
+  /\ compactionPending' = BaseCompactionPending
   /\ snapshotTransfer' = NoSnapshotTransfer
   /\ applied' = BaseApplied
   /\ applicationEpoch' = BaseApplicationEpoch
@@ -597,7 +594,7 @@ FixtureSpec == FixtureInit /\ [][FixtureNext]_vars
 BaseExtendedState ==
   /\ snapshotIndex = BaseSnapshotIndex
   /\ snapshotPrefix = BaseSnapshotPrefix
-  /\ compactedIndex = BaseCompactedIndex
+  /\ compactionPending = BaseCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = BaseApplied
   /\ applicationEpoch = BaseApplicationEpoch
@@ -636,7 +633,7 @@ SnapshotLifecycleInit ==
   /\ commitIndex = [n \in Nodes |-> IF n = FixtureA THEN 1 ELSE 0]
   /\ snapshotIndex = BaseSnapshotIndex
   /\ snapshotPrefix = BaseSnapshotPrefix
-  /\ compactedIndex = BaseCompactedIndex
+  /\ compactionPending = BaseCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = [n \in Nodes |->
        IF n = FixtureA
@@ -670,10 +667,13 @@ SnapshotLifecycleInit ==
 SnapshotLifecycleNext ==
   \/ /\ snapshotIndex[FixtureA] = 0
      /\ CreateSnapshot(FixtureA)
+     /\ compactionPending'[FixtureA]
   \/ /\ snapshotIndex[FixtureA] = 1
-     /\ compactedIndex[FixtureA] = 0
+     /\ compactionPending[FixtureA]
      /\ CompactSnapshot(FixtureA)
-  \/ /\ compactedIndex[FixtureA] = 1
+     /\ ~compactionPending'[FixtureA]
+  \/ /\ snapshotIndex[FixtureA] = 1
+     /\ ~compactionPending[FixtureA]
      /\ snapshotIndex[FixtureB] = 0
      /\ ~snapshotTransfer.active
      /\ TransferSnapshot(FixtureA, FixtureB)
@@ -699,7 +699,7 @@ SnapshotLifecycleSpec ==
 
 SnapshotLifecycleInvariant ==
   /\ SnapshotIdentitySoundFor(
-       log, snapshotIndex, snapshotPrefix, compactedIndex)
+       log, snapshotIndex, snapshotPrefix, compactionPending)
   /\ LogMatching
   /\ LeaderCompleteness
   /\ CommittedPrefixStability
@@ -708,7 +708,8 @@ SnapshotLifecycleInvariant ==
 
 SnapshotLifecycleComplete ==
   /\ snapshotIndex[FixtureB] = 1
-  /\ compactedIndex[FixtureB] = 1
+  /\ ~compactionPending[FixtureA]
+  /\ ~compactionPending[FixtureB]
   /\ applicationEpoch[FixtureB] = 1
   /\ currentTerm[FixtureB] = 2
   /\ role[FixtureB] = Follower
@@ -725,7 +726,7 @@ ApplicationEpochLifecycleInit ==
   /\ commitIndex = [n \in Nodes |-> IF n = FixtureA THEN 1 ELSE 0]
   /\ snapshotIndex = BaseSnapshotIndex
   /\ snapshotPrefix = BaseSnapshotPrefix
-  /\ compactedIndex = BaseCompactedIndex
+  /\ compactionPending = BaseCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = BaseApplied
   /\ applicationEpoch = BaseApplicationEpoch
@@ -817,7 +818,7 @@ SelfRemovalCommitInit ==
   /\ commitIndex = [n \in Nodes |-> 1]
   /\ snapshotIndex = BaseSnapshotIndex
   /\ snapshotPrefix = BaseSnapshotPrefix
-  /\ compactedIndex = BaseCompactedIndex
+  /\ compactionPending = BaseCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = [n \in Nodes |->
        IF n = FixtureA
