@@ -54,6 +54,9 @@ pub struct ExecutionWitness {
     pub application_epoch: u64,
     pub commit_index_at_emit: LogIndex,
     pub entry: ExecutedLogEntry,
+    /// Payload carried by the actual `Output::Apply` for an application entry.
+    /// Configuration and no-op entries have no application output.
+    pub emitted_application_payload: Option<SharedPayload>,
     pub prior_state: ReferenceState,
     pub resulting_state: ReferenceState,
 }
@@ -63,42 +66,21 @@ pub struct ExecutionWitness {
 /// Production code can only append. Test-only corruption hooks advance a
 /// revision so the incremental verifier can detect rewritten consumed history
 /// without rescanning every payload-rich prefix after each transition.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub(crate) struct ExecutionLedger {
     witnesses: Vec<ExecutionWitness>,
     rewrite_revision: u64,
-    identity_a: u64,
-    identity_b: u64,
-}
-
-impl Default for ExecutionLedger {
-    fn default() -> Self {
-        Self {
-            witnesses: Vec::new(),
-            rewrite_revision: 0,
-            identity_a: EXECUTION_IDENTITY_SEED_A,
-            identity_b: EXECUTION_IDENTITY_SEED_B,
-        }
-    }
 }
 
 impl Hash for ExecutionLedger {
     fn hash<H: Hasher>(&self, state: &mut H) {
-        self.witnesses.len().hash(state);
+        self.witnesses.hash(state);
         self.rewrite_revision.hash(state);
-        self.identity_a.hash(state);
-        self.identity_b.hash(state);
     }
 }
 
 impl ExecutionLedger {
     pub(crate) fn push(&mut self, witness: ExecutionWitness) {
-        (self.identity_a, self.identity_b) = fold_execution_witness_identity(
-            self.identity_a,
-            self.identity_b,
-            self.witnesses.len(),
-            &witness,
-        );
         self.witnesses.push(witness);
     }
 
@@ -123,73 +105,12 @@ impl ExecutionLedger {
     pub(crate) fn rewrite(&mut self, index: usize, witness: ExecutionWitness) {
         self.witnesses[index] = witness;
         self.rewrite_revision = self.rewrite_revision.saturating_add(1);
-        self.recompute_identity();
     }
 
     #[cfg(test)]
     pub(crate) fn swap(&mut self, first: usize, second: usize) {
         self.witnesses.swap(first, second);
         self.rewrite_revision = self.rewrite_revision.saturating_add(1);
-        self.recompute_identity();
-    }
-
-    #[cfg(test)]
-    fn recompute_identity(&mut self) {
-        let mut identity_a = EXECUTION_IDENTITY_SEED_A;
-        let mut identity_b = EXECUTION_IDENTITY_SEED_B;
-        for (position, witness) in self.witnesses.iter().enumerate() {
-            (identity_a, identity_b) =
-                fold_execution_witness_identity(identity_a, identity_b, position, witness);
-        }
-        self.identity_a = identity_a;
-        self.identity_b = identity_b;
-    }
-}
-
-const EXECUTION_IDENTITY_SEED_A: u64 = 0xcbf2_9ce4_8422_2325;
-const EXECUTION_IDENTITY_SEED_B: u64 = 0x55c5_e55d_ba2d_fa91;
-
-pub(crate) fn fold_execution_witness_identity(
-    current_a: u64,
-    current_b: u64,
-    position: usize,
-    witness: &ExecutionWitness,
-) -> (u64, u64) {
-    let mut a = ExecutionIdentityHasher::new(EXECUTION_IDENTITY_SEED_A);
-    witness.hash(&mut a);
-    let mut b = ExecutionIdentityHasher::new(EXECUTION_IDENTITY_SEED_B);
-    witness.hash(&mut b);
-    let position = position as u64;
-    (
-        current_a
-            .rotate_left(9)
-            .wrapping_add(a.finish())
-            .wrapping_add(position.wrapping_mul(0x9e37_79b9_7f4a_7c15)),
-        current_b
-            .rotate_left(17)
-            .wrapping_mul(0x0000_0100_0000_01b3)
-            .wrapping_add(b.finish() ^ position.rotate_left(23)),
-    )
-}
-
-struct ExecutionIdentityHasher(u64);
-
-impl ExecutionIdentityHasher {
-    const fn new(seed: u64) -> Self {
-        Self(seed)
-    }
-}
-
-impl Hasher for ExecutionIdentityHasher {
-    fn finish(&self) -> u64 {
-        self.0
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for byte in bytes {
-            self.0 ^= u64::from(*byte);
-            self.0 = self.0.wrapping_mul(0x0000_0100_0000_01b3);
-        }
     }
 }
 
@@ -259,6 +180,7 @@ pub(crate) struct ExecutionCursor {
 pub struct SnapshotInstalled {
     pub node_id: NodeId,
     pub application_epoch: u64,
+    pub commit_index_at_emit: LogIndex,
     pub last_included_index: LogIndex,
     pub last_included_term: Term,
     pub committed_membership: Option<MembershipConfig>,
