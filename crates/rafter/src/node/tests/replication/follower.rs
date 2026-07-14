@@ -2,6 +2,7 @@
 
 use super::support::*;
 use super::*;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
 #[test]
 fn follower_accepts_current_term_heartbeat() {
@@ -255,15 +256,20 @@ fn follower_rejects_append_that_would_truncate_committed_entry() {
         }),
     });
 
-    assert_eq!(follower.last_log_index(), LogIndex(1));
-    assert_eq!(
+    oracle_assert_eq!(follower.last_log_index(), LogIndex(1));
+    oracle_assert_eq!(
         follower
             .entry_at(LogIndex(1))
             .and_then(LogEntry::application_payload),
         Some(&b"committed"[..])
     );
-    assert_eq!(follower.commit_index(), LogIndex(1));
-    assert_append_entries_response(&outputs, NodeId(1), false, LogIndex::ZERO);
+    oracle_assert_eq!(follower.commit_index(), LogIndex(1));
+    oracle_assert!(append_response_matches(
+        &outputs,
+        NodeId(1),
+        false,
+        LogIndex::ZERO
+    ));
 }
 
 /// An empty pipelined append (probe retry or keep-alive) confirms nothing
@@ -331,6 +337,23 @@ fn empty_append_never_commits_the_followers_unconfirmed_suffix() {
     )));
 }
 
+fn append_response_matches(
+    outputs: &[Output],
+    to: NodeId,
+    success: bool,
+    match_index: LogIndex,
+) -> bool {
+    matches!(
+        outputs,
+        [Output::Send {
+            to: actual_to,
+            message: Message::AppendEntriesResponse(response),
+        }] if *actual_to == to
+            && response.success == success
+            && response.match_index == match_index
+    )
+}
+
 /// Commit-index monotonicity (found by the `node_message_sequences` fuzzer):
 /// a leader probing back to a low prev index sends an empty append that
 /// confirms little, but its higher `leader_commit` must never drag an
@@ -369,12 +392,12 @@ fn a_probe_with_a_high_leader_commit_never_regresses_the_commit_index() {
             leader_commit: LogIndex(3),
         }),
     });
-    assert_eq!(
+    oracle_assert_eq!(
         follower.commit_index(),
         LogIndex(1),
         "an empty probe never un-commits an already-committed index"
     );
-    assert!(!outputs.iter().any(|output| matches!(
+    oracle_assert!(!outputs.iter().any(|output| matches!(
         output,
         Output::Apply {
             index: LogIndex(0),

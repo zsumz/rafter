@@ -1,6 +1,7 @@
 //! Chunk identity, offset, checksum, retransmission, and final installation.
 
 use super::*;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
 #[test]
 fn newly_added_leader_with_older_boundary_snapshot_chunk_is_rejected() {
@@ -211,9 +212,9 @@ fn out_of_order_snapshot_chunk_requests_expected_offset() {
         message: Message::InstallSnapshotChunk(out_of_order),
     });
     let response = install_snapshot_response_from_outputs(&outputs);
-    assert!(!response.success);
-    assert_eq!(response.next_offset, 0);
-    assert_eq!(follower.snapshot_index(), LogIndex::ZERO);
+    oracle_assert!(!response.success);
+    oracle_assert_eq!(response.next_offset, 0);
+    oracle_assert_eq!(follower.snapshot_index(), LogIndex::ZERO);
 }
 #[test]
 fn mixed_snapshot_transfer_id_is_rejected_deterministically() {

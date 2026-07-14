@@ -5,6 +5,7 @@ use std::collections::{BTreeMap, VecDeque};
 use super::helpers::node;
 use super::*;
 use crate::{AppendEntries, PreVote, PreVoteResponse, RequestVote, RequestVoteResponse};
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
 fn tick_to_timeout(node: &mut Node) -> Vec<Output> {
     assert!(node.step(Input::Tick).is_empty());
@@ -36,6 +37,21 @@ fn assert_pre_vote_response(outputs: &[Output], to: NodeId, term: Term, vote_gra
     assert_eq!(*actual_to, to);
     assert_eq!(response.term, term);
     assert_eq!(response.vote_granted, vote_granted);
+}
+
+fn pre_vote_response_matches(
+    outputs: &[Output],
+    to: NodeId,
+    term: Term,
+    vote_granted: bool,
+) -> bool {
+    matches!(
+        outputs,
+        [Output::Send {
+            to: actual_to,
+            message: Message::PreVoteResponse(response),
+        }] if *actual_to == to && response.term == term && response.vote_granted == vote_granted
+    )
 }
 
 fn heartbeat_from(leader_id: u64, term: u64) -> Input {
@@ -235,20 +251,30 @@ fn pre_vote_grant_is_not_persisted_and_does_not_set_voted_for() {
     let elapsed_before = node.election.elapsed();
 
     let outputs = node.step(pre_vote_from(2, 1));
-    assert_pre_vote_response(&outputs, NodeId(2), Term(1), true);
+    oracle_assert!(pre_vote_response_matches(
+        &outputs,
+        NodeId(2),
+        Term(1),
+        true
+    ));
 
     // Hard state {current_term, voted_for} is untouched, so the runtime never
     // persists anything for a pre-vote grant, and the granter's election
     // timer keeps running.
-    assert_eq!(node.current_term(), Term(0));
-    assert_eq!(node.voted_for(), None);
-    assert_eq!(node.election.elapsed(), elapsed_before);
+    oracle_assert_eq!(node.current_term(), Term(0));
+    oracle_assert_eq!(node.voted_for(), None);
+    oracle_assert_eq!(node.election.elapsed(), elapsed_before);
 
     // A second grant to a DIFFERENT candidate in the same proposed term is
     // allowed by design: pre-votes are non-binding polls.
     let outputs = node.step(pre_vote_from(3, 1));
-    assert_pre_vote_response(&outputs, NodeId(3), Term(1), true);
-    assert_eq!(node.voted_for(), None);
+    oracle_assert!(pre_vote_response_matches(
+        &outputs,
+        NodeId(3),
+        Term(1),
+        true
+    ));
+    oracle_assert_eq!(node.voted_for(), None);
 }
 
 #[test]

@@ -1,6 +1,7 @@
 //! Binding vote eligibility, identity, durability, and term-fencing scenarios.
 
 use super::*;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
 #[test]
 fn follower_grants_one_vote_per_term() {
@@ -25,8 +26,8 @@ fn follower_grants_one_vote_per_term() {
         }),
     });
 
-    assert_vote_response(&first, NodeId(2), true);
-    assert_vote_response(&second, NodeId(3), false);
+    oracle_assert!(vote_response_matches(&first, NodeId(2), true));
+    oracle_assert!(vote_response_matches(&second, NodeId(3), false));
 }
 #[test]
 fn same_term_append_entries_step_down_preserves_recorded_vote() {
@@ -141,8 +142,8 @@ fn stale_vote_request_is_rejected() {
         }),
     });
 
-    assert_vote_response(&outputs, NodeId(2), false);
-    assert_eq!(node.current_term(), Term(4));
+    oracle_assert!(vote_response_matches(&outputs, NodeId(2), false));
+    oracle_assert_eq!(node.current_term(), Term(4));
 }
 #[test]
 fn public_transitions_do_not_decrease_current_term() {
@@ -192,6 +193,16 @@ fn public_transitions_do_not_decrease_current_term() {
             from: NodeId(3),
             message,
         });
-        assert_eq!(node.current_term(), Term(5));
+        oracle_assert_eq!(node.current_term(), Term(5));
     }
+}
+
+fn vote_response_matches(outputs: &[Output], to: NodeId, vote_granted: bool) -> bool {
+    matches!(
+        outputs,
+        [Output::Send {
+            to: actual_to,
+            message: Message::RequestVoteResponse(response),
+        }] if *actual_to == to && response.vote_granted == vote_granted
+    )
 }

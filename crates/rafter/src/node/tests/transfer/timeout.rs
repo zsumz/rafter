@@ -1,6 +1,7 @@
 //! `TimeoutNow` election, term fencing, learner exclusion, and old-leader step-down.
 
 use super::support::*;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
 #[test]
 fn timeout_now_elects_immediately_even_with_pre_vote_enabled() {
@@ -106,9 +107,9 @@ fn stale_term_timeout_now_is_ignored() {
         }),
     });
 
-    assert!(outputs.is_empty());
-    assert_eq!(node.role(), Role::Follower);
-    assert_eq!(node.current_term(), Term(5));
+    oracle_assert!(outputs.is_empty());
+    oracle_assert_eq!(node.role(), Role::Follower);
+    oracle_assert_eq!(node.current_term(), Term(5));
 }
 #[test]
 fn timeout_now_to_a_stale_leader_sheds_all_leader_state_first() {

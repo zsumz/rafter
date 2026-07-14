@@ -8,6 +8,7 @@ use crate::{
     ApplicationSnapshotVersion, BootstrapLogEntry, ConfigurationEntry, ConfigurationId, LogEntry,
     MembershipSet, RaftSnapshot, RaftSnapshotMetadata, ReadId, SnapshotGroupId,
 };
+use rafter_invariant_test::{oracle_assert, oracle_expect_err};
 
 #[test]
 fn derived_state_is_valid_after_bootstrap() {
@@ -32,8 +33,11 @@ fn derived_state_is_valid_after_bootstrap() {
     )
     .expect("bootstrap state is valid");
 
-    node.validate_derived_state()
-        .expect("bootstrap rebuilds configuration offsets");
+    let validation = node.validate_derived_state();
+    oracle_assert!(
+        validation.is_ok(),
+        "bootstrap must rebuild configuration offsets: {validation:?}"
+    );
 }
 
 #[test]
@@ -154,9 +158,11 @@ fn derived_state_rejects_log_geometry_overflow() {
         LogEntry::application(Term(1), b"overflow-2".to_vec()),
     ]);
 
-    let error = detect_derived_state_violation(&node)
-        .expect_err("overflowing logical log geometry must be rejected");
-    assert!(error.contains("overflows LogIndex"), "{error}");
+    let error = oracle_expect_err!(
+        detect_derived_state_violation(&node),
+        "overflowing logical log geometry must be rejected"
+    );
+    oracle_assert!(error.contains("overflows LogIndex"), "{error}");
 }
 
 #[test]
@@ -164,9 +170,11 @@ fn derived_state_rejects_commit_beyond_log() {
     let mut node = node(1, &[2, 3]);
     node.volatile.commit_index = LogIndex(1);
 
-    let error = detect_derived_state_violation(&node)
-        .expect_err("commit beyond logical log must be rejected");
-    assert!(error.contains("commit index 1 exceeds logical last index 0"));
+    let error = oracle_expect_err!(
+        detect_derived_state_violation(&node),
+        "commit beyond logical log must be rejected"
+    );
+    oracle_assert!(error.contains("commit index 1 exceeds logical last index 0"));
 }
 
 #[test]
@@ -175,9 +183,11 @@ fn derived_state_rejects_apply_beyond_commit() {
     node.append_log_entry(LogEntry::application(Term(1), b"entry".to_vec()));
     node.volatile.applied_index = LogIndex(1);
 
-    let error =
-        detect_derived_state_violation(&node).expect_err("apply beyond commit must be rejected");
-    assert!(error.contains("applied index 1 exceeds commit index 0"));
+    let error = oracle_expect_err!(
+        detect_derived_state_violation(&node),
+        "apply beyond commit must be rejected"
+    );
+    oracle_assert!(error.contains("applied index 1 exceeds commit index 0"));
 }
 
 #[test]
@@ -192,9 +202,11 @@ fn derived_state_rejects_non_leader_pending_read_round() {
         acks: AcknowledgementSet::new(&membership, node.id()),
     });
 
-    let error =
-        detect_derived_state_violation(&node).expect_err("a follower cannot retain pending reads");
-    assert!(error.contains("non-leader retains pending read-index rounds"));
+    let error = oracle_expect_err!(
+        detect_derived_state_violation(&node),
+        "a follower cannot retain pending reads"
+    );
+    oracle_assert!(error.contains("non-leader retains pending read-index rounds"));
 }
 
 #[test]
@@ -202,9 +214,11 @@ fn derived_state_rejects_stale_configuration_offsets() {
     let mut node = node(1, &[2, 3]);
     node.derived.push_configuration_offset_for_test(0);
 
-    let error = detect_derived_state_violation(&node)
-        .expect_err("stale configuration offsets must be rejected");
-    assert!(error.contains("configuration_offsets mismatch"));
+    let error = oracle_expect_err!(
+        detect_derived_state_violation(&node),
+        "stale configuration offsets must be rejected"
+    );
+    oracle_assert!(error.contains("configuration_offsets mismatch"));
 }
 
 fn config() -> NodeConfig {
