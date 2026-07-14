@@ -1,74 +1,19 @@
-use std::fmt;
-
 use rafter::{CommittedConfiguration, Input, LogEntryKind, LogIndex, NodeId, Output, RaftSnapshot};
 
 use super::{Envelope, QueuedEnvelope};
-use crate::records::{LocalProposalEvent, ProposalRejected, RecordedOutputs, TransferRejected};
+use crate::records::{ProposalRejected, RecordedOutputs, TransferRejected};
 use crate::{
     Applied, Cluster, ExecutedLogEntry, ExecutionCursor, ExecutionWitness, ReadGranted,
     ReadTerminalOutput, ReferenceState, SnapshotInstalled,
 };
 
-#[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub(crate) enum ExecutionInstrumentationError {
-    CursorUnavailable {
-        node_id: NodeId,
-    },
-    RetainedLogGap {
-        node_id: NodeId,
-        first_index: LogIndex,
-        applied_through: LogIndex,
-        available_entries: usize,
-    },
-    SnapshotPayloadUnavailable {
-        node_id: NodeId,
-        snapshot_index: LogIndex,
-    },
-    SnapshotReferenceUnavailable {
-        node_id: NodeId,
-        snapshot_index: LogIndex,
-    },
-    InitialReferenceUnavailable {
-        node_id: NodeId,
-    },
-}
+#[path = "delivery_error.rs"]
+mod error;
+#[path = "delivery_proposal.rs"]
+mod proposal;
 
-impl fmt::Display for ExecutionInstrumentationError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::CursorUnavailable { node_id } => {
-                write!(formatter, "{node_id} has no execution-history cursor")
-            }
-            Self::RetainedLogGap {
-                node_id,
-                first_index,
-                applied_through,
-                available_entries,
-            } => write!(
-                formatter,
-                "{node_id} applied through {applied_through} without retaining every execution-history entry from {first_index} ({available_entries} available)"
-            ),
-            Self::SnapshotPayloadUnavailable {
-                node_id,
-                snapshot_index,
-            } => write!(
-                formatter,
-                "{node_id} cannot resume execution history at snapshot index {snapshot_index}: snapshot payload is missing"
-            ),
-            Self::SnapshotReferenceUnavailable {
-                node_id,
-                snapshot_index,
-            } => write!(
-                formatter,
-                "{node_id} cannot resume execution history at snapshot index {snapshot_index}: snapshot reference state is missing"
-            ),
-            Self::InitialReferenceUnavailable { node_id } => write!(
-                formatter,
-                "{node_id} cannot resume execution history: initial reference state is missing"
-            ),
-        }
-    }
-}
+pub(crate) use error::ExecutionInstrumentationError;
+use proposal::local_proposal_event;
 
 impl Cluster {
     /// Returns the currently queued message envelopes in network order.
@@ -309,6 +254,7 @@ impl Cluster {
     }
 
     fn record_snapshot_apply(&mut self, from: NodeId, snapshot: &RaftSnapshot) {
+        let commit_index_at_emit = self.commit_index(from);
         self.record_durable_applied(from, snapshot.metadata.last_included_index);
         let payload = self.take_installed_snapshot_payload(from, snapshot);
         self.reset_execution_cursor_to_snapshot(from, snapshot, payload.clone());
@@ -316,6 +262,7 @@ impl Cluster {
         self.snapshot_installs.push(SnapshotInstalled {
             node_id: from,
             application_epoch,
+            commit_index_at_emit,
             last_included_index: snapshot.metadata.last_included_index,
             last_included_term: snapshot.metadata.last_included_term,
             committed_membership: snapshot.metadata.committed_membership().cloned(),
@@ -416,13 +363,31 @@ impl Cluster {
                 term: entry.term,
                 kind: entry.kind,
             };
+            let emitted_application_payload =
+                matches!(&executed.kind, LogEntryKind::Application(_))
+                    .then(|| {
+                        self.applied
+                            .iter()
+                            .find(|applied| {
+                                applied.node_id == node_id
+                                    && applied.application_epoch == application_epoch
+                                    && applied.index == executed.index
+                            })
+                            .map(|applied| applied.payload.clone())
+                    })
+                    .flatten();
             let prior_state = state;
-            let resulting_state = Self::apply_reference_transition(&prior_state, &executed);
+            let resulting_state = Self::apply_reference_transition(
+                &prior_state,
+                &executed,
+                emitted_application_payload.as_ref(),
+            );
             self.execution_history.push(ExecutionWitness {
                 node_id,
                 application_epoch,
                 commit_index_at_emit,
                 entry: executed,
+                emitted_application_payload,
                 prior_state: prior_state.clone(),
                 resulting_state: resulting_state.clone(),
             });
@@ -438,6 +403,21 @@ impl Cluster {
             },
         );
         self.record_durable_applied(node_id, applied_through);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn rewind_execution_cursor_for_fixture(&mut self, node_id: NodeId) {
+        let state = self.initial_reference_state(node_id).unwrap_or_else(|| {
+            std::panic::panic_any("fixture node has an initial reference state")
+        });
+        self.execution_cursors.insert(
+            node_id,
+            ExecutionCursor {
+                application_epoch: self.application_epoch(node_id),
+                applied_through: LogIndex::ZERO,
+                state,
+            },
+        );
     }
 
     fn refresh_execution_epoch(&mut self, node_id: NodeId) {
@@ -643,10 +623,14 @@ impl Cluster {
     fn apply_reference_transition(
         prior: &ReferenceState,
         entry: &ExecutedLogEntry,
+        emitted_application_payload: Option<&rafter::SharedPayload>,
     ) -> ReferenceState {
         let mut result = prior.clone();
         match &entry.kind {
-            LogEntryKind::Application(payload) => {
+            LogEntryKind::Application(_) => {
+                let Some(payload) = emitted_application_payload else {
+                    return result;
+                };
                 result.application_value.clone_from(payload);
             }
             LogEntryKind::Configuration(configuration) => {
@@ -681,307 +665,10 @@ impl Cluster {
     }
 }
 
-fn local_proposal_event(from: NodeId, output: &Output) -> Option<LocalProposalEvent> {
-    match output {
-        Output::LocalProposalAppended {
-            proposal_id,
-            index,
-            term,
-        } => Some(LocalProposalEvent::Appended {
-            node_id: from,
-            proposal_id: *proposal_id,
-            index: *index,
-            term: *term,
-        }),
-        Output::Apply {
-            index,
-            term,
-            payload,
-            local_proposal_id: Some(proposal_id),
-        } => Some(LocalProposalEvent::Applied {
-            node_id: from,
-            proposal_id: *proposal_id,
-            index: *index,
-            term: *term,
-            payload: payload.clone(),
-        }),
-        Output::LocalProposalDropped {
-            proposal_id,
-            index,
-            term,
-            reason,
-        } => Some(LocalProposalEvent::Dropped {
-            node_id: from,
-            proposal_id: *proposal_id,
-            index: *index,
-            term: *term,
-            reason: *reason,
-        }),
-        Output::RejectProposal {
-            proposal_id: Some(proposal_id),
-            reason,
-        } => Some(LocalProposalEvent::Rejected {
-            node_id: from,
-            proposal_id: *proposal_id,
-            reason: reason.clone(),
-        }),
-        Output::Apply {
-            local_proposal_id: None,
-            ..
-        }
-        | Output::ApplySnapshot { .. }
-        | Output::SendSnapshotChunk { .. }
-        | Output::StageSnapshotChunk { .. }
-        | Output::RejectProposal {
-            proposal_id: None, ..
-        }
-        | Output::LeadershipTransferRejected { .. }
-        | Output::ReadIndexGranted { .. }
-        | Output::ReadIndexRejected { .. }
-        | Output::ReadIndexCanceled { .. }
-        | Output::Send { .. } => None,
-    }
-}
-
 #[cfg(test)]
 #[path = "delivery_read_tests.rs"]
 mod read_tests;
 
 #[cfg(test)]
-mod tests {
-    use rafter::{
-        ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion,
-        BootstrapLogEntry, BootstrapState, LogIndex, Node, NodeConfig, NodeId, RaftSnapshot,
-        RaftSnapshotMetadata, SnapshotGroupId, Term,
-    };
-
-    use super::{Cluster, ExecutionCursor, ExecutionInstrumentationError};
-
-    const NODE_ID: NodeId = NodeId(1);
-
-    #[test]
-    fn recorder_detects_each_missing_execution_input() {
-        let mut cursor = one_node_cluster();
-        cursor.execution_cursors.remove(&NODE_ID);
-        assert!(!cursor.execution_cursors.contains_key(&NODE_ID));
-        cursor.record_execution_history(NODE_ID);
-
-        let mut initial_reference = one_node_cluster();
-        initial_reference.application_epochs.insert(NODE_ID, 1);
-        initial_reference.initial_reference_states.remove(&NODE_ID);
-        assert!(!initial_reference
-            .initial_reference_states
-            .contains_key(&NODE_ID));
-        initial_reference.record_execution_history(NODE_ID);
-
-        let mut snapshot_payload = cluster_with_snapshot(true, false);
-        let snapshot = snapshot_payload
-            .node(NODE_ID)
-            .snapshot()
-            .expect("fixture has a snapshot");
-        assert!(snapshot_payload
-            .snapshot_payload(NODE_ID, snapshot)
-            .is_none());
-        snapshot_payload.record_execution_history(NODE_ID);
-
-        let mut snapshot_reference = cluster_with_snapshot(false, true);
-        snapshot_reference.initial_reference_states.remove(&NODE_ID);
-        let snapshot = snapshot_reference
-            .node(NODE_ID)
-            .snapshot()
-            .expect("fixture has a snapshot");
-        assert!(snapshot_reference
-            .snapshot_reference_membership(NODE_ID, snapshot)
-            .is_none());
-        snapshot_reference.record_execution_history(NODE_ID);
-
-        let cases = [
-            (
-                cursor.execution_instrumentation_errors(),
-                ExecutionInstrumentationError::CursorUnavailable { node_id: NODE_ID },
-            ),
-            (
-                initial_reference.execution_instrumentation_errors(),
-                ExecutionInstrumentationError::InitialReferenceUnavailable { node_id: NODE_ID },
-            ),
-            (
-                snapshot_payload.execution_instrumentation_errors(),
-                ExecutionInstrumentationError::SnapshotPayloadUnavailable {
-                    node_id: NODE_ID,
-                    snapshot_index: LogIndex(2),
-                },
-            ),
-            (
-                snapshot_reference.execution_instrumentation_errors(),
-                ExecutionInstrumentationError::SnapshotReferenceUnavailable {
-                    node_id: NODE_ID,
-                    snapshot_index: LogIndex(2),
-                },
-            ),
-        ];
-
-        for (actual, expected) in cases {
-            assert_eq!(actual, vec![expected]);
-        }
-    }
-
-    #[test]
-    fn recorder_detects_a_retained_log_gap_from_its_log_lookup() {
-        let cluster = cluster_applied_through_two();
-        assert!(cluster.execution_instrumentation_errors().is_empty());
-        let mut retained_entries = cluster.log_entries_from(NODE_ID, LogIndex(1));
-        assert_eq!(retained_entries.len(), 2);
-        retained_entries.remove(0);
-
-        let errors = cluster.execution_instrumentation_errors_with_log_len(|_, first_index| {
-            assert_eq!(first_index, LogIndex(1));
-            retained_entries.len()
-        });
-
-        assert_eq!(
-            errors,
-            vec![ExecutionInstrumentationError::RetainedLogGap {
-                node_id: NODE_ID,
-                first_index: LogIndex(1),
-                applied_through: LogIndex(2),
-                available_entries: 1,
-            }]
-        );
-    }
-
-    #[test]
-    fn recorder_preserves_every_committed_log_entry_kind() {
-        let mut cluster = one_node_cluster();
-        let configuration = rafter::ConfigurationEntry::stable(
-            rafter::ConfigurationId(7),
-            rafter::MembershipSet::new(vec![NodeId(1), NodeId(2), NodeId(3)], Vec::new())
-                .expect("fixture membership is valid"),
-        );
-        let bootstrap = BootstrapState {
-            current_term: Term(1),
-            voted_for: None,
-            commit_index: LogIndex(3),
-            committed_configuration: Some(rafter::CommittedConfiguration {
-                index: LogIndex(2),
-                config_id: rafter::ConfigurationId(7),
-            }),
-            snapshot: None,
-            log: vec![
-                BootstrapLogEntry::noop(LogIndex(1), Term(1)),
-                BootstrapLogEntry::configuration(LogIndex(2), Term(1), configuration.clone()),
-                BootstrapLogEntry::application(LogIndex(3), Term(1), b"value".to_vec()),
-            ],
-        };
-        let mut node =
-            Node::from_bootstrap_applied_through(node_config(), bootstrap, LogIndex::ZERO)
-                .expect("fixture bootstrap is valid");
-        let outputs = node.drain_committed_outputs();
-        cluster.nodes.insert(NODE_ID, node);
-        cluster.record_outputs(NODE_ID, outputs);
-
-        let recorded: Vec<_> = cluster
-            .execution_history()
-            .iter()
-            .map(|witness| {
-                (
-                    witness.entry.index,
-                    witness.entry.term,
-                    witness.entry.kind.clone(),
-                )
-            })
-            .collect();
-        assert_eq!(
-            recorded,
-            vec![
-                (LogIndex(1), Term(1), rafter::LogEntryKind::Noop),
-                (
-                    LogIndex(2),
-                    Term(1),
-                    rafter::LogEntryKind::Configuration(configuration),
-                ),
-                (
-                    LogIndex(3),
-                    Term(1),
-                    rafter::LogEntryKind::Application(b"value".to_vec().into()),
-                ),
-            ]
-        );
-    }
-
-    fn one_node_cluster() -> Cluster {
-        Cluster::new(vec![node_config()])
-    }
-
-    fn node_config() -> NodeConfig {
-        NodeConfig::new(NODE_ID, vec![NodeId(2), NodeId(3)], 3).expect("test node config is valid")
-    }
-
-    fn cluster_applied_through_two() -> Cluster {
-        let mut cluster = one_node_cluster();
-        let bootstrap = BootstrapState {
-            current_term: Term(1),
-            voted_for: None,
-            commit_index: LogIndex(2),
-            committed_configuration: None,
-            snapshot: None,
-            log: vec![
-                BootstrapLogEntry::application(LogIndex(1), Term(1), b"one".to_vec()),
-                BootstrapLogEntry::application(LogIndex(2), Term(1), b"two".to_vec()),
-            ],
-        };
-        let node = Node::from_bootstrap_applied_through(node_config(), bootstrap, LogIndex(2))
-            .expect("fixture bootstrap is valid");
-        cluster.nodes.insert(NODE_ID, node);
-        cluster
-    }
-
-    fn cluster_with_snapshot(include_reference_membership: bool, seed_payload: bool) -> Cluster {
-        let mut cluster = one_node_cluster();
-        let payload = b"snapshot-state".to_vec();
-        let metadata = RaftSnapshotMetadata::new(
-            SnapshotGroupId::new("execution-recorder").expect("valid snapshot group"),
-            NODE_ID,
-            LogIndex(2),
-            Term(1),
-            Term(1),
-            ApplicationSnapshotMetadata::new(
-                ApplicationSnapshotKind::new("register").expect("valid snapshot kind"),
-                ApplicationSnapshotVersion::new(1).expect("valid snapshot version"),
-            ),
-        )
-        .expect("valid snapshot metadata");
-        let metadata = if include_reference_membership {
-            metadata.with_committed_membership(
-                cluster.initial_reference_states[&NODE_ID]
-                    .committed_membership
-                    .clone(),
-            )
-        } else {
-            metadata
-        };
-        let snapshot = RaftSnapshot::from_payload(metadata, &payload);
-        if seed_payload {
-            cluster.seed_snapshot_payload(NODE_ID, &snapshot, payload);
-        }
-        let bootstrap = BootstrapState {
-            current_term: Term(1),
-            voted_for: None,
-            commit_index: LogIndex(2),
-            committed_configuration: None,
-            snapshot: Some(snapshot),
-            log: Vec::new(),
-        };
-        let node = Node::from_bootstrap_applied_through(node_config(), bootstrap, LogIndex(2))
-            .expect("snapshot fixture bootstrap is valid");
-        cluster.nodes.insert(NODE_ID, node);
-        cluster.execution_cursors.insert(
-            NODE_ID,
-            ExecutionCursor {
-                application_epoch: 0,
-                applied_through: LogIndex::ZERO,
-                state: cluster.initial_reference_states[&NODE_ID].clone(),
-            },
-        );
-        cluster
-    }
-}
+#[path = "delivery_execution_tests.rs"]
+mod tests;
