@@ -22,6 +22,7 @@ const FINALIZATION_RESERVE_KEY: &str = "finalization_reserve";
 
 pub(super) struct TlaExecution {
     pub(super) main: Option<tla_output::TlcSummary>,
+    pub(super) main_progress: Option<tla_output::TlcProgress>,
     pub(super) main_parse_error: Option<String>,
     pub(super) main_status: MainStatus,
     pub(super) trace_status: ProbeStatus,
@@ -168,6 +169,15 @@ fn complete_main_execution(
         Ok(summary) => (Some(summary), None),
         Err(error) => (None, Some(error)),
     };
+    let main_progress = main
+        .output
+        .timed_out
+        .then(|| {
+            tla_output::parse_latest_progress(&main.output.stdout)
+                .ok()
+                .flatten()
+        })
+        .flatten();
     let peak_rss_kib = trace
         .output
         .peak_rss_kib
@@ -183,6 +193,7 @@ fn complete_main_execution(
     }
     Ok(TlaExecution {
         main: summary,
+        main_progress,
         main_parse_error,
         main_status,
         trace_status: ProbeStatus::Passed,
@@ -221,6 +232,7 @@ fn prepare_checkpoint(
 fn trace_failure(trace: &TlcRun, artifacts: Vec<crate::ArtifactRef>) -> TlaExecution {
     TlaExecution {
         main: None,
+        main_progress: None,
         main_parse_error: None,
         main_status: MainStatus::NotRun,
         trace_status: ProbeStatus::Failed,
@@ -237,6 +249,7 @@ fn trace_failure(trace: &TlcRun, artifacts: Vec<crate::ArtifactRef>) -> TlaExecu
 fn trace_budget_failure(artifacts: Vec<crate::ArtifactRef>) -> TlaExecution {
     TlaExecution {
         main: None,
+        main_progress: None,
         main_parse_error: None,
         main_status: MainStatus::NotRun,
         trace_status: ProbeStatus::Failed,
@@ -257,6 +270,7 @@ fn detector_failure(
 ) -> TlaExecution {
     TlaExecution {
         main: None,
+        main_progress: None,
         main_parse_error: None,
         main_status: MainStatus::NotRun,
         trace_status: ProbeStatus::Passed,
@@ -280,6 +294,7 @@ fn checkpoint_failure(
 ) -> TlaExecution {
     TlaExecution {
         main: None,
+        main_progress: None,
         main_parse_error: None,
         main_status: MainStatus::NotRun,
         trace_status: ProbeStatus::Passed,
@@ -302,6 +317,7 @@ fn main_budget_failure(
 ) -> TlaExecution {
     TlaExecution {
         main: None,
+        main_progress: None,
         main_parse_error: None,
         main_status: MainStatus::TimedOut,
         trace_status: ProbeStatus::Passed,

@@ -26,6 +26,78 @@ fn complete_tla_bundle_verifies() {
 }
 
 #[test]
+fn timed_out_tla_bundle_verifies_progress_without_terminal_proof() {
+    let mut fixture = Fixture::new();
+    fixture.set_timeout();
+
+    let check = &fixture.bundle.execution.checks[0];
+    assert_eq!(check.observations["progress_generated_states"], 181_490_601);
+    assert_eq!(check.observations["progress_distinct_states"], 40_062_465);
+    assert_eq!(check.observations["progress_states_left"], 19_012_042);
+    assert_eq!(check.observations["progress_depth"], 23);
+    assert!(!check
+        .observations
+        .keys()
+        .any(|name| name.starts_with("checked:")));
+    for terminal in [
+        "generated_states",
+        "distinct_states",
+        "states_left_on_queue",
+        "search_depth",
+    ] {
+        assert!(!check.observations.contains_key(terminal));
+    }
+    assert!(fixture.bundle.results.iter().all(|result| {
+        result.status == crate::EvidenceStatus::Incomplete
+            && result.classification == Some(crate::FailureClassification::CoverageNotReached)
+    }));
+    verify(&fixture.bundle, &fixture.root).expect("timed-out TLA progress verifies");
+}
+
+#[test]
+fn forged_timeout_progress_fails_closed() {
+    let mut fixture = Fixture::new();
+    fixture.set_timeout();
+    fixture.bundle.execution.checks[0]
+        .observations
+        .insert("progress_generated_states".to_owned(), 999_999_999);
+    assert!(verify(&fixture.bundle, &fixture.root).is_err());
+}
+
+#[test]
+fn missing_timeout_progress_fails_closed() {
+    let mut fixture = Fixture::new();
+    fixture.set_timeout();
+    fixture.bundle.execution.checks[0]
+        .observations
+        .remove("progress_depth");
+    assert!(verify(&fixture.bundle, &fixture.root).is_err());
+}
+
+#[test]
+fn timeout_without_a_complete_progress_frame_fails_closed() {
+    let mut fixture = Fixture::new();
+    fixture.set_timeout();
+    let mut log = fixture.read_log("tla-log");
+    log.stdout = "@!@!@STARTMSG 2185:0 @!@!@\nStarting...\n@!@!@ENDMSG 2185 @!@!@\n".to_owned();
+    fixture.write_log("tla-log", &log);
+    fixture.bundle.execution.checks[0]
+        .observations
+        .retain(|name, _| !name.starts_with("progress_"));
+    assert!(verify(&fixture.bundle, &fixture.root).is_err());
+}
+
+#[test]
+fn mismatched_timeout_log_progress_fails_closed() {
+    let mut fixture = Fixture::new();
+    fixture.set_timeout();
+    let mut log = fixture.read_log("tla-log");
+    log.stdout = progress_output(181_490_602, 40_062_466, 19_012_043, 24);
+    fixture.write_log("tla-log", &log);
+    assert!(verify(&fixture.bundle, &fixture.root).is_err());
+}
+
+#[test]
 fn missing_one_detector_pair_fails_closed() {
     let mut fixture = Fixture::new();
     let probe = default_probe("ElectionSafety");
@@ -304,6 +376,43 @@ impl Fixture {
         }
     }
 
+    fn set_timeout(&mut self) {
+        let mut log = self.read_log("tla-log");
+        log.exit_code = None;
+        log.timed_out = true;
+        log.termination = Some(TerminationReceipt {
+            process_group: true,
+            term_signal_sent: true,
+            grace_ms: 30_000,
+            kill_signal_sent: true,
+        });
+        log.stdout = progress_output(181_490_601, 40_062_465, 19_012_042, 23);
+        self.write_log("tla-log", &log);
+
+        let check = &mut self.bundle.execution.checks[0];
+        check.completion = crate::CheckCompletion::Timeout;
+        check.observations.retain(|name, _| {
+            !name.starts_with("checked:")
+                && !matches!(
+                    name.as_str(),
+                    "generated_states"
+                        | "distinct_states"
+                        | "states_left_on_queue"
+                        | "search_depth"
+                )
+        });
+        check.observations.extend([
+            ("progress_generated_states".to_owned(), 181_490_601),
+            ("progress_distinct_states".to_owned(), 40_062_465),
+            ("progress_states_left".to_owned(), 19_012_042),
+            ("progress_depth".to_owned(), 23),
+        ]);
+        for result in &mut self.bundle.results {
+            result.status = crate::EvidenceStatus::Incomplete;
+            result.classification = Some(crate::FailureClassification::CoverageNotReached);
+        }
+    }
+
     fn write_process_log(
         &mut self,
         kind: &str,
@@ -492,5 +601,12 @@ fn violation_output(predicate: &str) -> String {
          @!@!@STARTMSG 2199:0 @!@!@\n2 states generated, 2 distinct states found, 0 states left on queue.\n@!@!@ENDMSG 2199 @!@!@\n\
          @!@!@STARTMSG 2194:0 @!@!@\nThe depth of the complete state graph search is 2.\n@!@!@ENDMSG 2194 @!@!@\n\
          @!@!@STARTMSG 2186:0 @!@!@\nFinished.\n@!@!@ENDMSG 2186 @!@!@\n"
+    )
+}
+
+fn progress_output(generated: u64, distinct: u64, states_left: u64, depth: u64) -> String {
+    format!(
+        "@!@!@STARTMSG 2200:0 @!@!@\nProgress(21) at 2026-07-13 19:18:31: 23,784,130 states generated (4,670,725 s/min), 6,246,309 distinct states found (1,150,848 ds/min), 3,294,097 states left on queue.\n@!@!@ENDMSG 2200 @!@!@\n\
+         @!@!@STARTMSG 2200:0 @!@!@\nProgress({depth}) at 2026-07-13 19:52:32: {generated} states generated (4,966,137 s/min), {distinct} distinct states found (1,000,915 ds/min), {states_left} states left on queue.\n@!@!@ENDMSG 2200 @!@!@\n"
     )
 }

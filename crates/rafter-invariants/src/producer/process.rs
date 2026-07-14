@@ -3,6 +3,7 @@ use std::{
     env,
     error::Error,
     ffi::OsString,
+    fmt,
     fs::{self, File},
     path::{Path, PathBuf},
     process::{Command, ExitStatus, Stdio},
@@ -13,12 +14,67 @@ use std::{
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
+#[cfg(unix)]
+use rustix::{
+    io::Errno,
+    process::{kill_process_group, test_kill_process_group, Pid, Signal},
+};
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use crate::InvocationReceipt;
 
 static TELEMETRY_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
+const KILL_CONFIRMATION_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProcessGroupState {
+    Alive,
+    Absent,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum SignalDelivery {
+    Sent,
+    GroupAbsent,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ProcessSignal {
+    Term,
+    Kill,
+}
+
+#[derive(Debug)]
+struct ProcessCleanupError {
+    detail: String,
+    stdout_path: PathBuf,
+    stderr_path: PathBuf,
+}
+
+impl fmt::Display for ProcessCleanupError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "{}; retained subprocess stdout at {} and stderr at {}",
+            self.detail,
+            self.stdout_path.display(),
+            self.stderr_path.display()
+        )
+    }
+}
+
+impl Error for ProcessCleanupError {}
+
+#[derive(Debug)]
+struct TimeoutTermination {
+    status: ExitStatus,
+    timed_out: bool,
+    term_signal_sent: bool,
+    kill_signal_sent: bool,
+}
 
 #[derive(Debug)]
 pub(super) struct ProcessOutput {
@@ -181,41 +237,27 @@ fn timed_with_timeout_and_grace(
     command.process_group(0);
     let mut child = command.spawn()?;
     let mut peak_rss_kib = 0;
-    let (status, timed_out, term_signal_sent, kill_signal_sent) = 'wait: loop {
+    let (status, timed_out, term_signal_sent, kill_signal_sent) = loop {
         peak_rss_kib = peak_rss_kib.max(process_rss_kib(child.id()).unwrap_or_default());
         if let Some(status) = child.try_wait()? {
             break (status, false, false, false);
         }
         if started.elapsed() >= timeout {
-            let process_group = child.id();
-            signal_process_group(process_group, "-TERM")?;
-            let grace_started = Instant::now();
-            let mut leader_status = None;
-            loop {
-                peak_rss_kib = peak_rss_kib.max(process_rss_kib(process_group).unwrap_or_default());
-                if leader_status.is_none() {
-                    leader_status = child.try_wait()?;
-                }
-                if !process_group_alive(process_group)? {
-                    let status = match leader_status {
-                        Some(status) => status,
-                        None => child.wait()?,
-                    };
-                    break 'wait (status, true, true, false);
-                }
-                if grace_started.elapsed() >= grace {
-                    signal_process_group(process_group, "-KILL")?;
-                    let status = match leader_status {
-                        Some(status) => status,
-                        None => child.wait()?,
-                    };
-                    break 'wait (status, true, true, true);
-                }
-                std::thread::sleep(Duration::from_millis(100));
-            }
-        } else {
-            std::thread::sleep(Duration::from_millis(100));
+            let termination = terminate_after_timeout(
+                &mut child,
+                grace,
+                &mut peak_rss_kib,
+                &stdout_path,
+                &stderr_path,
+            )?;
+            break (
+                termination.status,
+                termination.timed_out,
+                termination.term_signal_sent,
+                termination.kill_signal_sent,
+            );
         }
+        std::thread::sleep(PROCESS_POLL_INTERVAL);
     };
     let stdout = std::fs::read(&stdout_path)?;
     let stderr = std::fs::read(&stderr_path)?;
@@ -241,22 +283,202 @@ fn timed_with_timeout_and_grace(
     })
 }
 
-fn signal_process_group(pid: u32, signal: &str) -> Result<(), Box<dyn Error>> {
-    let status = Command::new("/bin/kill")
-        .args([signal, &format!("-{pid}")])
-        .status()?;
-    if status.success() || !process_group_alive(pid)? {
-        Ok(())
-    } else {
-        Err(format!("send {signal} to process group {pid}: {status}").into())
+fn terminate_after_timeout(
+    child: &mut std::process::Child,
+    grace: Duration,
+    peak_rss_kib: &mut u64,
+    stdout_path: &Path,
+    stderr_path: &Path,
+) -> Result<TimeoutTermination, Box<dyn Error>> {
+    if let Some(status) = cleanup_result(child.try_wait(), stdout_path, stderr_path)? {
+        return Ok(TimeoutTermination {
+            status,
+            timed_out: false,
+            term_signal_sent: false,
+            kill_signal_sent: false,
+        });
+    }
+    let process_group = child.id();
+    let term_signal_sent = match signal_process_group(process_group, ProcessSignal::Term) {
+        Ok(SignalDelivery::Sent) => true,
+        Ok(SignalDelivery::GroupAbsent) => {
+            return Ok(TimeoutTermination {
+                status: cleanup_result(child.wait(), stdout_path, stderr_path)?,
+                timed_out: false,
+                term_signal_sent: false,
+                kill_signal_sent: false,
+            });
+        }
+        Err(error) => return Err(cleanup_error(error, stdout_path, stderr_path)),
+    };
+    let grace_started = Instant::now();
+    let mut leader_status = None;
+    loop {
+        *peak_rss_kib = (*peak_rss_kib).max(process_rss_kib(process_group).unwrap_or_default());
+        if leader_status.is_none() {
+            leader_status = cleanup_result(child.try_wait(), stdout_path, stderr_path)?;
+        }
+        match process_group_state(process_group) {
+            Ok(ProcessGroupState::Absent) => {
+                let status = match leader_status {
+                    Some(status) => status,
+                    None => cleanup_result(child.wait(), stdout_path, stderr_path)?,
+                };
+                return Ok(TimeoutTermination {
+                    status,
+                    timed_out: true,
+                    term_signal_sent,
+                    kill_signal_sent: false,
+                });
+            }
+            Ok(ProcessGroupState::Alive) => {}
+            Err(error) => return Err(cleanup_error(error, stdout_path, stderr_path)),
+        }
+        if grace_started.elapsed() >= grace {
+            return kill_process_group_after_grace(
+                child,
+                process_group,
+                leader_status,
+                term_signal_sent,
+                stdout_path,
+                stderr_path,
+            );
+        }
+        std::thread::sleep(PROCESS_POLL_INTERVAL);
     }
 }
 
-fn process_group_alive(pid: u32) -> Result<bool, Box<dyn Error>> {
-    Ok(Command::new("/bin/kill")
-        .args(["-0", &format!("-{pid}")])
-        .status()?
-        .success())
+fn kill_process_group_after_grace(
+    child: &mut std::process::Child,
+    process_group: u32,
+    leader_status: Option<ExitStatus>,
+    term_signal_sent: bool,
+    stdout_path: &Path,
+    stderr_path: &Path,
+) -> Result<TimeoutTermination, Box<dyn Error>> {
+    let kill_signal_sent = match signal_process_group(process_group, ProcessSignal::Kill) {
+        Ok(SignalDelivery::Sent) => true,
+        Ok(SignalDelivery::GroupAbsent) => false,
+        Err(error) => return Err(cleanup_error(error, stdout_path, stderr_path)),
+    };
+    let status = match leader_status {
+        Some(status) => status,
+        None => cleanup_result(child.wait(), stdout_path, stderr_path)?,
+    };
+    if let Err(error) = confirm_process_group_absent(process_group, KILL_CONFIRMATION_TIMEOUT) {
+        return Err(cleanup_error(error, stdout_path, stderr_path));
+    }
+    Ok(TimeoutTermination {
+        status,
+        timed_out: true,
+        term_signal_sent,
+        kill_signal_sent,
+    })
+}
+
+fn cleanup_error(
+    error: impl fmt::Display,
+    stdout_path: &Path,
+    stderr_path: &Path,
+) -> Box<dyn Error> {
+    Box::new(ProcessCleanupError {
+        detail: error.to_string(),
+        stdout_path: stdout_path.to_owned(),
+        stderr_path: stderr_path.to_owned(),
+    })
+}
+
+fn cleanup_result<T>(
+    result: std::io::Result<T>,
+    stdout_path: &Path,
+    stderr_path: &Path,
+) -> Result<T, Box<dyn Error>> {
+    result.map_err(|error| cleanup_error(error, stdout_path, stderr_path))
+}
+
+#[cfg(unix)]
+fn process_group_pid(pid: u32) -> Result<Pid, Box<dyn Error>> {
+    let pid = i32::try_from(pid).map_err(|_| format!("process group ID exceeds i32: {pid}"))?;
+    Pid::from_raw(pid).ok_or_else(|| format!("process group ID must be positive: {pid}").into())
+}
+
+#[cfg(unix)]
+fn classify_process_group_probe(result: Result<(), Errno>) -> Result<ProcessGroupState, Errno> {
+    match result {
+        Ok(()) => Ok(ProcessGroupState::Alive),
+        Err(Errno::SRCH) => Ok(ProcessGroupState::Absent),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(unix)]
+fn classify_signal_delivery(result: Result<(), Errno>) -> Result<SignalDelivery, Errno> {
+    match result {
+        Ok(()) => Ok(SignalDelivery::Sent),
+        Err(Errno::SRCH) => Ok(SignalDelivery::GroupAbsent),
+        Err(error) => Err(error),
+    }
+}
+
+#[cfg(unix)]
+fn process_group_state(pid: u32) -> Result<ProcessGroupState, Box<dyn Error>> {
+    let process_group = process_group_pid(pid)?;
+    classify_process_group_probe(test_kill_process_group(process_group))
+        .map_err(|error| format!("probe process group {pid}: {error}").into())
+}
+
+#[cfg(not(unix))]
+fn process_group_state(_pid: u32) -> Result<ProcessGroupState, Box<dyn Error>> {
+    Err("process-group cleanup requires Unix".into())
+}
+
+#[cfg(unix)]
+fn signal_process_group(pid: u32, signal: ProcessSignal) -> Result<SignalDelivery, Box<dyn Error>> {
+    let process_group = process_group_pid(pid)?;
+    let unix_signal = match signal {
+        ProcessSignal::Term => Signal::TERM,
+        ProcessSignal::Kill => Signal::KILL,
+    };
+    let signal_name = match signal {
+        ProcessSignal::Term => "SIGTERM",
+        ProcessSignal::Kill => "SIGKILL",
+    };
+    classify_signal_delivery(kill_process_group(process_group, unix_signal))
+        .map_err(|error| format!("send {signal_name} to process group {pid}: {error}").into())
+}
+
+#[cfg(not(unix))]
+fn signal_process_group(
+    _pid: u32,
+    _signal: ProcessSignal,
+) -> Result<SignalDelivery, Box<dyn Error>> {
+    Err("process-group cleanup requires Unix".into())
+}
+
+fn confirm_process_group_absent(pid: u32, timeout: Duration) -> Result<(), Box<dyn Error>> {
+    confirm_process_group_absent_with(timeout, || process_group_state(pid)).map_err(|error| {
+        format!("confirm process group {pid} exited after SIGKILL: {error}").into()
+    })
+}
+
+fn confirm_process_group_absent_with(
+    timeout: Duration,
+    mut probe: impl FnMut() -> Result<ProcessGroupState, Box<dyn Error>>,
+) -> Result<(), Box<dyn Error>> {
+    let started = Instant::now();
+    loop {
+        match probe()? {
+            ProcessGroupState::Absent => return Ok(()),
+            ProcessGroupState::Alive if started.elapsed() >= timeout => {
+                return Err(format!(
+                    "process group remained alive for {} ms",
+                    duration_ms(timeout)
+                )
+                .into());
+            }
+            ProcessGroupState::Alive => std::thread::sleep(PROCESS_POLL_INTERVAL),
+        }
+    }
 }
 
 pub(crate) fn expected_invocation(
@@ -489,12 +711,24 @@ pub(super) fn duration_ms(duration: Duration) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, ffi::OsString, path::Path, time::Duration};
+    use std::{
+        collections::BTreeMap,
+        ffi::OsString,
+        path::{Path, PathBuf},
+        time::Duration,
+    };
+
+    #[cfg(unix)]
+    use rustix::io::Errno;
 
     use super::{
-        combined_log, digest_environment, json_log, parse_combined_processes, parse_peak_rss,
-        process_rss_kib, timed_with_timeout, timed_with_timeout_and_grace, ProcessLog,
+        cleanup_error, combined_log, confirm_process_group_absent_with, digest_environment,
+        json_log, parse_combined_processes, parse_peak_rss, process_rss_kib, timed_with_timeout,
+        timed_with_timeout_and_grace, ProcessGroupState, ProcessLog,
     };
+
+    #[cfg(unix)]
+    use super::{classify_process_group_probe, classify_signal_delivery, SignalDelivery};
 
     #[test]
     fn parses_platform_peak_rss() {
@@ -516,6 +750,55 @@ mod tests {
             digest_environment(&environment),
             "45f7a365bc34bcfbb88705678cd819fd3c0a5ccb9b6a72dc65e6506f4211c6fc"
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_group_probe_distinguishes_absent_from_permission_denied() {
+        assert_eq!(
+            classify_process_group_probe(Err(Errno::SRCH)),
+            Ok(ProcessGroupState::Absent)
+        );
+        assert_eq!(
+            classify_process_group_probe(Err(Errno::PERM)),
+            Err(Errno::PERM)
+        );
+        assert_eq!(
+            classify_process_group_probe(Ok(())),
+            Ok(ProcessGroupState::Alive)
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn process_group_signal_distinguishes_absent_from_permission_denied() {
+        assert_eq!(
+            classify_signal_delivery(Err(Errno::SRCH)),
+            Ok(SignalDelivery::GroupAbsent)
+        );
+        assert_eq!(classify_signal_delivery(Err(Errno::PERM)), Err(Errno::PERM));
+        assert_eq!(classify_signal_delivery(Ok(())), Ok(SignalDelivery::Sent));
+    }
+
+    #[test]
+    fn group_absence_confirmation_is_fail_closed() {
+        let error =
+            confirm_process_group_absent_with(Duration::ZERO, || Ok(ProcessGroupState::Alive))
+                .expect_err("a group that remains alive must fail confirmation");
+        assert!(error.to_string().contains("remained alive"));
+    }
+
+    #[test]
+    fn cleanup_errors_name_retained_telemetry() {
+        let error = cleanup_error(
+            "permission denied",
+            Path::new("target/telemetry.stdout"),
+            Path::new("target/telemetry.stderr"),
+        );
+        let message = error.to_string();
+        assert!(message.contains("permission denied"));
+        assert!(message.contains("target/telemetry.stdout"));
+        assert!(message.contains("target/telemetry.stderr"));
     }
 
     #[test]
@@ -593,6 +876,42 @@ mod tests {
     }
 
     #[test]
+    fn timeout_term_cleans_up_descendants_without_escalation() {
+        if process_rss_kib(std::process::id()).is_none() {
+            return;
+        }
+        let marker = unique_test_path("descendant-term");
+        let mut environment = super::base_environment();
+        environment.insert(
+            "MARKER_PATH".to_owned(),
+            marker.to_string_lossy().into_owned(),
+        );
+        let output = timed_with_timeout_and_grace(
+            "sh",
+            &[
+                OsString::from("-c"),
+                OsString::from(
+                    "(trap 'printf term > \"$MARKER_PATH\"; exit 0' TERM; while :; do sleep 1; done) & wait",
+                ),
+            ],
+            &environment,
+            Path::new("."),
+            Duration::from_millis(200),
+            Duration::from_secs(2),
+        )
+        .expect("TERM cleans up the leader and descendant process");
+        let termination = output.termination.expect("termination receipt");
+        assert!(output.timed_out);
+        assert!(termination.term_signal_sent);
+        assert!(!termination.kill_signal_sent);
+        assert_eq!(
+            std::fs::read_to_string(&marker).expect("descendant records TERM"),
+            "term"
+        );
+        std::fs::remove_file(marker).expect("remove TERM marker");
+    }
+
+    #[test]
     fn timeout_kills_descendants_after_the_group_leader_exits() {
         if process_rss_kib(std::process::id()).is_none() {
             return;
@@ -638,5 +957,13 @@ mod tests {
             "trusted": true
         }"#;
         assert!(serde_json::from_str::<ProcessLog>(source).is_err());
+    }
+
+    fn unique_test_path(label: &str) -> PathBuf {
+        let sequence = super::TELEMETRY_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        std::env::temp_dir().join(format!(
+            "rafter-invariants-{label}-{}-{sequence}",
+            std::process::id()
+        ))
     }
 }

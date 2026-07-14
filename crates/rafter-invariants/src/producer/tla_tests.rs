@@ -3,7 +3,10 @@ use std::{collections::BTreeMap, path::PathBuf};
 use super::{
     evaluate, evidence_result, observations, MainStatus, ProbeStatus, TlaExecution, TlaVerdict,
 };
-use crate::{producer::tla_output::TlcSummary, Catalog, EvidenceStatus, FailureClassification};
+use crate::{
+    producer::tla_output::{TlcProgress, TlcSummary},
+    Catalog, CheckCompletion, EvidenceStatus, FailureClassification,
+};
 
 fn complete_execution(exit_succeeded: bool) -> TlaExecution {
     TlaExecution {
@@ -16,6 +19,7 @@ fn complete_execution(exit_succeeded: bool) -> TlaExecution {
             process_finished: true,
             violated_invariant: None,
         }),
+        main_progress: None,
         main_parse_error: None,
         main_status: if exit_succeeded {
             MainStatus::Succeeded
@@ -198,4 +202,38 @@ fn parsed_named_counterexample_outranks_concurrent_timeout() {
         evaluate(&execution, &symbols, &BTreeMap::new()),
         TlaVerdict::Violation(symbol) if symbol == "ElectionSafety"
     ));
+}
+
+#[test]
+fn timeout_reports_progress_without_claiming_terminal_proof() {
+    let mut execution = complete_execution(false);
+    execution.main_status = MainStatus::TimedOut;
+    execution.main = Some(TlcSummary::default());
+    execution.main_progress = Some(TlcProgress {
+        generated_states: 181_490_601,
+        distinct_states: 40_062_465,
+        states_left: 19_012_042,
+        depth: 23,
+    });
+    let symbols = ["ElectionSafety".to_owned()].into_iter().collect();
+    let verdict = evaluate(&execution, &symbols, &BTreeMap::new());
+    assert!(matches!(
+        verdict,
+        TlaVerdict::Incomplete(CheckCompletion::Timeout, _)
+    ));
+
+    let observed = observations(&execution, &symbols, 9);
+    assert_eq!(observed["progress_generated_states"], 181_490_601);
+    assert_eq!(observed["progress_distinct_states"], 40_062_465);
+    assert_eq!(observed["progress_states_left"], 19_012_042);
+    assert_eq!(observed["progress_depth"], 23);
+    for terminal in [
+        "generated_states",
+        "distinct_states",
+        "states_left_on_queue",
+        "search_depth",
+        "checked:ElectionSafety",
+    ] {
+        assert!(!observed.contains_key(terminal));
+    }
 }
