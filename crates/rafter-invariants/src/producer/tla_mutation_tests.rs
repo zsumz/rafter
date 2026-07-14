@@ -233,12 +233,12 @@ fn recorder_only_fixtures_qualify_before_mutation() {
     ] {
         let result = run_tlc_mutation(&root, name, &raft, &detector, probe);
         let summary = parse(&result.stdout).expect("parse TLC recorder baseline output");
-        assert!(detector_qualified(
-            result.status.code(),
-            false,
-            Some(&summary),
-            probe.predicate
-        ));
+        assert!(
+            detector_qualified(result.status.code(), false, Some(&summary), probe.predicate),
+            "{name} did not qualify:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
     }
 }
 
@@ -572,7 +572,7 @@ fn missing_higher_term_recorder_cannot_qualify_fencing() {
         &raft,
         "RecordHigherTermOutcome(node, evidenceTerm, observedHigherTerm)",
         "RecordAuthorityAcceptance(authorityTerm, knownTerm, accepted)",
-        "/\\ UNCHANGED << higherTermEvidenceSeen, higherTermStepDownFailed >>",
+        "/\\ UNCHANGED higherTermStepDownFailed",
     );
     let detector =
         fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
@@ -758,7 +758,7 @@ fn missing_commit_witness_recorder_cannot_qualify_quorum_predicate() {
     let mutated = replace_operator(
         &raft,
         "RecordCommitWitnesses(witnesses)",
-        "RecordReadGrant(grant)",
+        "ReadGrantOK(grant)",
         "UNCHANGED commitWitnesses",
     );
     let detector =
@@ -789,7 +789,7 @@ fn unvalidated_commit_certificate_cannot_qualify_quorum_predicate() {
     let mutated = replace_operator(
         &raft,
         "RecordCommitWitnesses(witnesses)",
-        "RecordReadGrant(grant)",
+        "ReadGrantOK(grant)",
         "commitWitnesses' = CommitWitnessHistory(\n  commitWitnesses.witnessedCommits \\cup CommitWitnessKeys(witnesses),\n  commitWitnesses.invalidCertificateSeen)",
     );
     let detector =
@@ -821,7 +821,7 @@ fn missing_read_grant_recorder_cannot_qualify_read_barrier_predicate() {
         &raft,
         "RecordReadGrant(grant)",
         "CanAdoptLog(n, entries)",
-        "/\\ UNCHANGED readGrants",
+        "/\\ UNCHANGED readBarrierViolationSeen",
     );
     let detector =
         fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
@@ -829,6 +829,37 @@ fn missing_read_grant_recorder_cannot_qualify_read_barrier_predicate() {
     let result = run_tlc_mutation(
         &root,
         "missing-read-grant-recorder",
+        &mutated,
+        &detector,
+        READ_BARRIER_PROBE,
+    );
+    let summary = parse(&result.stdout).expect("parse TLC mutation output");
+    assert!(result.status.success());
+    assert!(!detector_qualified(
+        result.status.code(),
+        false,
+        Some(&summary),
+        READ_BARRIER_PROBE.predicate
+    ));
+}
+
+#[test]
+#[ignore = "requires the pinned TLC tool and Java"]
+fn unvalidated_read_grant_cannot_qualify_read_barrier_predicate() {
+    let root = workspace_root();
+    let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
+    let mutated = replace_operator(
+        &raft,
+        "ReadGrantOK(grant)",
+        "RecordReadGrant(grant)",
+        "TRUE",
+    );
+    let detector =
+        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
+            .expect("read detector spec");
+    let result = run_tlc_mutation(
+        &root,
+        "unvalidated-read-grant",
         &mutated,
         &detector,
         READ_BARRIER_PROBE,
