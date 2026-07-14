@@ -13,8 +13,9 @@ const PAYLOAD_BYTES: usize = 256;
 /// Elects node 1 leader of {1, 2, 3} through the public API by scripting
 /// node 2's vote.
 fn elected_leader() -> Node {
-    let config =
-        NodeConfig::new(NodeId(1), vec![NodeId(2), NodeId(3)], 1).expect("bench config is valid");
+    let config = NodeConfig::new(NodeId(1), vec![NodeId(2), NodeId(3)], 1)
+        .expect("bench config is valid")
+        .with_pre_vote(false);
     let mut node = Node::new(config);
     let outputs = node.step(Input::Tick);
     let term = outputs
