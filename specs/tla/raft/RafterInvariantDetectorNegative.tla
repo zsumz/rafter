@@ -578,6 +578,53 @@ BaseExtendedState ==
   /\ committedLedger = {}
   /\ commitWitnesses = EmptyCommitWitnessHistory
 
+ClosedElectionLifecycleInit ==
+  /\ FixtureConstantsOK
+  /\ currentTerm = BaseTerm
+  /\ votedFor = [n \in Nodes |-> FixtureA]
+  /\ role = [n \in Nodes |-> IF n = FixtureA THEN Leader ELSE Follower]
+  /\ log = BaseLog
+  /\ commitIndex = BaseCommit
+  /\ BaseExtendedState
+  /\ messages = {}
+  /\ readRequests = {}
+  /\ readBarrierViolationSeen = FALSE
+  /\ membership = StableMembership(Nodes)
+  /\ appliedConfigIndex = 0
+  /\ effectiveMembership = StableMembership(Nodes)
+  /\ effectiveConfigIndex = 0
+  /\ electedLeaders = [term \in 1..MaxTerm |->
+       IF term = 1 THEN {FixtureA} ELSE {}]
+  /\ higherTermStepDownFailed = FALSE
+  /\ staleAuthorityAccepted = FALSE
+
+ClosedElectionLifecycleNext ==
+  \/ /\ currentTerm[FixtureA] = 1
+     /\ Timeout(FixtureA)
+  \/ /\ currentTerm[FixtureA] = 2
+     /\ currentTerm[FixtureB] = 1
+     /\ Timeout(FixtureB)
+  \/ /\ currentTerm[FixtureA] = 2
+     /\ currentTerm[FixtureB] = 2
+     /\ currentTerm[FixtureC] = 1
+     /\ Timeout(FixtureC)
+  \/ /\ \A n \in Nodes : currentTerm[n] = 2
+     /\ electedLeaders[1] = {}
+     /\ UNCHANGED vars
+
+ClosedElectionLifecycleSpec ==
+  /\ ClosedElectionLifecycleInit
+  /\ [][ClosedElectionLifecycleNext]_vars
+  /\ WF_vars(ClosedElectionLifecycleNext)
+
+ClosedElectionLifecycleInvariant == TypeOK /\ ElectionSafety
+
+ClosedElectionLifecycleComplete ==
+  /\ \A n \in Nodes : currentTerm[n] = 2
+  /\ electedLeaders[1] = {}
+
+ClosedElectionLifecycleCompletes == <>ClosedElectionLifecycleComplete
+
 StaleMessageLifecycleInit ==
   /\ FixtureConstantsOK
   /\ currentTerm = [n \in Nodes |-> IF n = FixtureA THEN 1 ELSE 0]

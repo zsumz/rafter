@@ -299,6 +299,13 @@ LogicalPrefixLedgerSound ==
   \A a, b \in logicalPrefixLedger :
     (a.index = b.index /\ a.term = b.term) => a.prefix = b.prefix
 
+TermClosed(terms, term) ==
+  \A n \in Nodes : terms[n] > term
+
+RetainedElections(elections, terms) ==
+  [term \in 1..MaxTerm |->
+    IF TermClosed(terms, term) THEN {} ELSE elections[term]]
+
 AuthoritativeLogReplacement(message, accepted) ==
   /\ accepted
   /\ role[message.from] = Leader
@@ -306,8 +313,9 @@ AuthoritativeLogReplacement(message, accepted) ==
   /\ log[message.from] = message.entries
 
 RecordElection(node) ==
-  electedLeaders' = [electedLeaders EXCEPT
-    ![currentTerm[node]] = @ \cup {node}]
+  electedLeaders' = RetainedElections(
+    [electedLeaders EXCEPT ![currentTerm[node]] = @ \cup {node}],
+    currentTerm)
 
 RecordHigherTermOutcome(node, evidenceTerm, observedHigherTerm) ==
   higherTermStepDownFailed' =
@@ -592,6 +600,7 @@ TypeOK ==
   /\ votedFor \in [Nodes -> (Nodes \cup {NoVote})]
   /\ role \in [Nodes -> {Follower, Candidate, Leader}]
   /\ electedLeaders \in [1..MaxTerm -> SUBSET Nodes]
+  /\ electedLeaders = RetainedElections(electedLeaders, currentTerm)
   /\ \A n \in Nodes :
        role[n] = Leader =>
          /\ currentTerm[n] \in 1..MaxTerm
@@ -702,9 +711,10 @@ Timeout(n) ==
   /\ votedFor' = [votedFor EXCEPT ![n] = n]
   /\ role' = [role EXCEPT ![n] = Candidate]
   /\ messages' = RetainedMessages(messages, currentTerm')
+  /\ electedLeaders' = RetainedElections(electedLeaders, currentTerm')
   /\ UNCHANGED <<log, commitIndex, readRequests, readBarrierViolationSeen,
                   membership, appliedConfigIndex, effectiveMembership,
-                  effectiveConfigIndex, electedLeaders>>
+                  effectiveConfigIndex>>
   /\ UNCHANGED snapshotVars
   /\ UNCHANGED applicationVars
   /\ UNCHANGED historyVars
@@ -750,9 +760,10 @@ DeliverRequestVote(m) ==
          IF higher \/ grant THEN Follower ELSE @]
     /\ RecordHigherTermOutcome(m.to, m.term, higher)
     /\ RecordAuthorityAcceptance(m.term, currentTerm[m.to], grant)
+    /\ electedLeaders' = RetainedElections(electedLeaders, currentTerm')
     /\ UNCHANGED <<log, commitIndex, readRequests, readBarrierViolationSeen,
                     membership, appliedConfigIndex, effectiveMembership,
-                    effectiveConfigIndex, electedLeaders>>
+                    effectiveConfigIndex>>
     /\ UNCHANGED snapshotVars
     /\ UNCHANGED applicationVars
     /\ UNCHANGED historyVars
@@ -867,8 +878,9 @@ DeliverAppend(m) ==
          commitIndex[m.to], nextCommit[m.to])
     /\ RecordHigherTermOutcome(m.to, m.term, higher)
     /\ RecordAuthorityAcceptance(m.term, currentTerm[m.to], accept)
+    /\ electedLeaders' = RetainedElections(electedLeaders, currentTerm')
     /\ UNCHANGED <<readRequests, readBarrierViolationSeen, membership,
-                    appliedConfigIndex, electedLeaders, commitWitnesses>>
+                    appliedConfigIndex, commitWitnesses>>
     /\ UNCHANGED snapshotVars
     /\ UNCHANGED applicationVars
 
@@ -1047,8 +1059,9 @@ InstallSnapshot ==
     /\ RecordHigherTermOutcome(
          node, transfer.term, transfer.term > currentTerm[node])
     /\ RecordAuthorityAcceptance(transfer.term, currentTerm[node], TRUE)
+    /\ electedLeaders' = RetainedElections(electedLeaders, currentTerm')
     /\ UNCHANGED <<readRequests, readBarrierViolationSeen,
-                    electedLeaders, commitWitnesses>>
+                    commitWitnesses>>
 
 CompactSnapshot(n) ==
   /\ compactionPending[n]
