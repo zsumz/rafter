@@ -389,6 +389,9 @@ AppendEntriesMessages ==
 
 MessageSet == RequestVoteMessages \cup AppendEntriesMessages
 
+RetainedMessages(pending, terms) ==
+  {message \in pending : message.term >= terms[message.to]}
+
 NoSnapshotTransfer ==
   [active |-> FALSE, term |-> 0, from |-> NoVote, to |-> NoVote,
    index |-> 0, prefix |-> <<>>]
@@ -639,6 +642,7 @@ TypeOK ==
   /\ EffectiveConfigurationStateOK
   /\ messages \in SUBSET MessageSet
   /\ \A m \in messages : MessageOK(m)
+  /\ messages = RetainedMessages(messages, currentTerm)
   /\ readRequests \in SUBSET ReadRequestSet
   /\ \A n \in Nodes :
        \A request \in ReadRequests :
@@ -683,7 +687,8 @@ Timeout(n) ==
   /\ currentTerm' = [currentTerm EXCEPT ![n] = @ + 1]
   /\ votedFor' = [votedFor EXCEPT ![n] = n]
   /\ role' = [role EXCEPT ![n] = Candidate]
-  /\ UNCHANGED <<log, commitIndex, messages, readRequests, readBarrierViolationSeen,
+  /\ messages' = RetainedMessages(messages, currentTerm')
+  /\ UNCHANGED <<log, commitIndex, readRequests, readBarrierViolationSeen,
                   membership, appliedConfigIndex, effectiveMembership,
                   effectiveConfigIndex, electedLeaders>>
   /\ UNCHANGED snapshotVars
@@ -701,7 +706,7 @@ SendRequestVote(c, v) ==
     /\ c # v
     /\ currentTerm[c] \in 1..MaxTerm
     /\ msg \notin messages
-    /\ messages' = messages \cup {msg}
+    /\ messages' = RetainedMessages(messages \cup {msg}, currentTerm)
     /\ RecordAuthorityAcceptance(currentTerm[c], currentTerm[c], TRUE)
     /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                     readRequests, readBarrierViolationSeen, membership, appliedConfigIndex,
@@ -722,9 +727,9 @@ DeliverRequestVote(m) ==
   IN
     /\ m \in messages
     /\ m.type = RequestVote
-    /\ messages' = messages \ {m}
     /\ currentTerm' = [currentTerm EXCEPT ![m.to] =
          IF higher THEN m.term ELSE @]
+    /\ messages' = RetainedMessages(messages \ {m}, currentTerm')
     /\ votedFor' = [votedFor EXCEPT ![m.to] =
          IF grant THEN m.from ELSE IF higher THEN NoVote ELSE @]
     /\ role' = [role EXCEPT ![m.to] =
@@ -788,7 +793,7 @@ SendAppend(l, f) ==
     /\ l # f
     /\ currentTerm[l] \in 1..MaxTerm
     /\ msg \notin messages
-    /\ messages' = messages \cup {msg}
+    /\ messages' = RetainedMessages(messages \cup {msg}, currentTerm)
     /\ RecordAuthorityAcceptance(currentTerm[l], currentTerm[l], TRUE)
     /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                     readRequests, readBarrierViolationSeen, membership, appliedConfigIndex,
@@ -821,9 +826,9 @@ DeliverAppend(m) ==
   IN
     /\ m \in messages
     /\ m.type = AppendEntries
-    /\ messages' = messages \ {m}
     /\ currentTerm' = [currentTerm EXCEPT ![m.to] =
          IF higher THEN m.term ELSE @]
+    /\ messages' = RetainedMessages(messages \ {m}, currentTerm')
     /\ votedFor' = [votedFor EXCEPT ![m.to] =
          IF higher THEN NoVote ELSE @]
     /\ role' =
@@ -1008,6 +1013,7 @@ InstallSnapshot ==
     /\ votedFor' = [votedFor EXCEPT ![node] =
          IF transfer.term > currentTerm[node] THEN NoVote ELSE @]
     /\ role' = [role EXCEPT ![node] = Follower]
+    /\ messages' = RetainedMessages(messages, currentTerm')
     /\ log' = nextLog
     /\ commitIndex' = nextCommit
     /\ snapshotIndex' = [snapshotIndex EXCEPT ![node] = transfer.index]
@@ -1038,7 +1044,7 @@ InstallSnapshot ==
     /\ RecordHigherTermOutcome(
          node, transfer.term, transfer.term > currentTerm[node])
     /\ RecordAuthorityAcceptance(transfer.term, currentTerm[node], TRUE)
-    /\ UNCHANGED <<applied, messages, readRequests, readBarrierViolationSeen,
+    /\ UNCHANGED <<applied, readRequests, readBarrierViolationSeen,
                     electedLeaders, commitWitnesses>>
 
 CompactSnapshot(n) ==

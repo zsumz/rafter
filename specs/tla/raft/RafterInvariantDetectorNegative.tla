@@ -606,6 +606,50 @@ BaseExtendedState ==
   /\ committedLedger = {}
   /\ commitWitnesses = EmptyCommitWitnessHistory
 
+StaleMessageLifecycleInit ==
+  /\ FixtureConstantsOK
+  /\ currentTerm = [n \in Nodes |-> IF n = FixtureA THEN 1 ELSE 0]
+  /\ votedFor = BaseVote
+  /\ role = [n \in Nodes |-> IF n = FixtureA THEN Leader ELSE Follower]
+  /\ log = BaseLog
+  /\ commitIndex = BaseCommit
+  /\ BaseExtendedState
+  /\ messages = {}
+  /\ readRequests = {}
+  /\ readBarrierViolationSeen = FALSE
+  /\ membership = StableMembership(Nodes)
+  /\ appliedConfigIndex = 0
+  /\ effectiveMembership = StableMembership(Nodes)
+  /\ effectiveConfigIndex = 0
+  /\ electedLeaders = [t \in 1..MaxTerm |->
+       IF t = 1 THEN {FixtureA} ELSE {}]
+  /\ higherTermStepDownFailed = FALSE
+  /\ staleAuthorityAccepted = FALSE
+
+StaleMessageLifecycleNext ==
+  \/ /\ currentTerm[FixtureB] = 0
+     /\ messages = {}
+     /\ SendAppend(FixtureA, FixtureB)
+  \/ /\ currentTerm[FixtureB] < 2
+     /\ messages # {}
+     /\ Timeout(FixtureB)
+  \/ /\ currentTerm[FixtureB] = 2
+     /\ messages = {}
+     /\ UNCHANGED vars
+
+StaleMessageLifecycleSpec ==
+  /\ StaleMessageLifecycleInit
+  /\ [][StaleMessageLifecycleNext]_vars
+  /\ WF_vars(StaleMessageLifecycleNext)
+
+StaleMessageLifecycleInvariant == TypeOK
+
+StaleMessageLifecycleComplete ==
+  /\ currentTerm[FixtureB] = 2
+  /\ messages = {}
+
+StaleMessageLifecycleCompletes == <>StaleMessageLifecycleComplete
+
 SnapshotLifecycleEntry == Entry(1, FixtureValueA)
 
 SnapshotLifecycleResult ==

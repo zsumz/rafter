@@ -178,6 +178,30 @@ PROPERTY ApplicationEpochLifecycleCompletes
 CHECK_DEADLOCK FALSE
 "#;
 
+const STALE_MESSAGE_LIFECYCLE_CONFIG: &str = r#"SPECIFICATION StaleMessageLifecycleSpec
+
+CONSTANTS
+  Nodes = {n1, n2, n3}
+  Values = {v1, v2}
+  MaxTerm = 2
+  MaxLogLen = 2
+  ReadRequests = {r1}
+  FixtureA = n1
+  FixtureB = n2
+  FixtureC = n3
+  FixtureValueA = v1
+  FixtureValueB = v2
+  FixtureRead = r1
+  FixtureMode = "Default"
+  TargetPredicate = "StaleLeaderFencing"
+
+INVARIANT StaleMessageLifecycleInvariant
+
+PROPERTY StaleMessageLifecycleCompletes
+
+CHECK_DEADLOCK FALSE
+"#;
+
 const SELF_REMOVAL_COMMIT_CONFIG: &str = r#"SPECIFICATION SelfRemovalCommitSpec
 
 CONSTANTS
@@ -289,6 +313,54 @@ fn snapshot_lifecycle_preserves_logical_identity_through_restart() {
     assert!(summary.process_finished);
     assert!(summary.distinct_states >= 7);
     assert!(summary.search_depth >= 7);
+}
+
+#[test]
+#[ignore = "requires the pinned TLC tool and Java"]
+fn stale_messages_are_retired_when_the_target_term_advances() {
+    let root = workspace_root();
+    let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
+    let detector =
+        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
+            .expect("read detector spec");
+    let baseline = run_tlc_with_config(
+        &root,
+        "stale-message-lifecycle",
+        &raft,
+        &detector,
+        STALE_MESSAGE_LIFECYCLE_CONFIG,
+    );
+    let baseline_summary = parse(&baseline.stdout).expect("parse stale-message lifecycle output");
+    assert!(
+        baseline.status.success(),
+        "{}",
+        String::from_utf8_lossy(&baseline.stdout)
+    );
+    assert!(baseline_summary.completed_without_error);
+    assert!(baseline_summary.process_finished);
+    assert!(baseline_summary.distinct_states >= 4);
+    assert!(baseline_summary.search_depth >= 4);
+
+    let mutated = replace_exactly_once_in_operator(
+        &raft,
+        "Timeout(n)",
+        "SendRequestVote(c, v)",
+        "/\\ messages' = RetainedMessages(messages, currentTerm')",
+        "/\\ messages' = messages",
+    );
+    let mutation = run_tlc_with_config(
+        &root,
+        "stale-message-timeout-retirement-missing",
+        &mutated,
+        &detector,
+        STALE_MESSAGE_LIFECYCLE_CONFIG,
+    );
+    let mutation_summary = parse(&mutation.stdout).expect("parse stale-message mutation output");
+    assert_eq!(mutation.status.code(), Some(12));
+    assert_eq!(
+        mutation_summary.violated_invariant.as_deref(),
+        Some("StaleMessageLifecycleInvariant")
+    );
 }
 
 #[test]
@@ -925,6 +997,22 @@ fn replace_operator(source: &str, operator: &str, next: &str, body: &str) -> Str
 fn replace_exactly_once(source: &str, from: &str, to: &str) -> String {
     assert_eq!(source.matches(from).count(), 1, "mutation target is exact");
     source.replacen(from, to, 1)
+}
+
+fn replace_exactly_once_in_operator(
+    source: &str,
+    operator: &str,
+    next: &str,
+    from: &str,
+    to: &str,
+) -> String {
+    let start = format!("{operator} ==");
+    let end = format!("{next} ==");
+    let (prefix, rest) = source.split_once(&start).expect("operator exists");
+    let (body, suffix) = rest.split_once(&end).expect("next operator exists");
+    assert_eq!(body.matches(from).count(), 1, "operator mutation is exact");
+    let mutated = body.replacen(from, to, 1);
+    format!("{prefix}{start}{mutated}{end}{suffix}")
 }
 
 fn run_tlc_mutation(
