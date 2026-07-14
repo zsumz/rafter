@@ -1047,6 +1047,7 @@ dependencies = [
  "jsonschema",
  "rafter",
  "rafter-sim",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

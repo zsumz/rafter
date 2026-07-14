@@ -221,7 +221,22 @@ fn observations(
             ),
         ]);
     }
-    if let Some(summary) = &execution.main {
+    if execution.main_status == MainStatus::TimedOut {
+        if let Some(progress) = execution.main_progress {
+            observations.extend([
+                (
+                    "progress_generated_states".to_owned(),
+                    progress.generated_states,
+                ),
+                (
+                    "progress_distinct_states".to_owned(),
+                    progress.distinct_states,
+                ),
+                ("progress_states_left".to_owned(), progress.states_left),
+                ("progress_depth".to_owned(), progress.depth),
+            ]);
+        }
+    } else if let Some(summary) = &execution.main {
         observations.extend([
             ("generated_states".to_owned(), summary.generated_states),
             ("distinct_states".to_owned(), summary.distinct_states),

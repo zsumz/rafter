@@ -7,7 +7,8 @@ use crate::producer::tla_checkpoint::{
 };
 use crate::producer::tla_output::{
     detector_config_kind, detector_invariant, detector_label, detector_log_kind,
-    detector_observation, probe_slug, render_detector_config, DETECTOR_PROBES,
+    detector_observation, parse_latest_progress, probe_slug, render_detector_config,
+    DETECTOR_PROBES,
 };
 use crate::{aggregate::AggregateError, CheckCompletion, EvidenceStatus, ResultBundle};
 
@@ -38,6 +39,7 @@ pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), Aggregate
     let main_summary = main
         .as_ref()
         .and_then(|log| crate::producer::tla_output::parse(log.stdout.as_bytes()).ok());
+    let main_progress = timeout_progress(main.as_ref())?;
     let symbols = configured_invariants(&config);
     let mut derived = BTreeMap::from([
         ("configured_invariants".to_owned(), symbols.len() as u64),
@@ -62,7 +64,20 @@ pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), Aggregate
             ),
         ]);
     }
-    if let Some(summary) = &main_summary {
+    if let Some(progress) = main_progress {
+        derived.extend([
+            (
+                "progress_generated_states".to_owned(),
+                progress.generated_states,
+            ),
+            (
+                "progress_distinct_states".to_owned(),
+                progress.distinct_states,
+            ),
+            ("progress_states_left".to_owned(), progress.states_left),
+            ("progress_depth".to_owned(), progress.depth),
+        ]);
+    } else if let Some(summary) = &main_summary {
         derived.extend([
             ("generated_states".to_owned(), summary.generated_states),
             ("distinct_states".to_owned(), summary.distinct_states),
@@ -95,6 +110,20 @@ pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), Aggregate
         main.as_ref(),
         main_summary.as_ref(),
     )
+}
+
+fn timeout_progress(
+    main: Option<&crate::producer::ProcessLog>,
+) -> Result<Option<crate::producer::tla_output::TlcProgress>, AggregateError> {
+    let Some(log) = main.filter(|log| log.timed_out) else {
+        return Ok(None);
+    };
+    parse_latest_progress(log.stdout.as_bytes())
+        .map_err(|error| AggregateError::new(format!("parse timed-out TLA progress: {error}")))?
+        .map(Some)
+        .ok_or_else(|| {
+            AggregateError::new("timed-out TLA log omitted a complete progress frame".to_owned())
+        })
 }
 
 fn verify_detectors(

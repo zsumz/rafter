@@ -223,6 +223,14 @@ pub(crate) struct TlcSummary {
     pub violated_invariant: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct TlcProgress {
+    pub generated_states: u64,
+    pub distinct_states: u64,
+    pub states_left: u64,
+    pub depth: u64,
+}
+
 struct Frame {
     code: u16,
     class: u8,
@@ -232,7 +240,7 @@ struct Frame {
 pub(crate) fn parse(bytes: &[u8]) -> Result<TlcSummary, String> {
     let source = String::from_utf8(bytes.to_vec())
         .map_err(|error| format!("TLC tool output is not UTF-8: {error}"))?;
-    let frames = parse_frames(&source)?;
+    let frames = parse_frames(&source, false)?;
     let mut summary = TlcSummary::default();
     let mut success_frames = 0;
     let mut statistics_frames = 0;
@@ -285,7 +293,24 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<TlcSummary, String> {
     Ok(summary)
 }
 
-fn parse_frames(source: &str) -> Result<Vec<Frame>, String> {
+pub(crate) fn parse_latest_progress(bytes: &[u8]) -> Result<Option<TlcProgress>, String> {
+    let source = String::from_utf8(bytes.to_vec())
+        .map_err(|error| format!("TLC tool output is not UTF-8: {error}"))?;
+    let frames = parse_frames(&source, true)?;
+    let mut latest = None;
+    for frame in frames {
+        if frame.code != 2200 || frame.class != 0 {
+            continue;
+        }
+        latest = Some(
+            parse_progress(&frame.body)
+                .ok_or("TLC 2200 frame has malformed progress statistics")?,
+        );
+    }
+    Ok(latest)
+}
+
+fn parse_frames(source: &str, allow_trailing_frame: bool) -> Result<Vec<Frame>, String> {
     let mut frames = Vec::new();
     let mut current: Option<(u16, u8, Vec<&str>)> = None;
     for line in source.lines() {
@@ -327,13 +352,38 @@ fn parse_frames(source: &str) -> Result<Vec<Frame>, String> {
             body.push(line);
         }
     }
-    if current.is_some() {
+    if current.is_some() && !allow_trailing_frame {
         return Err("truncated TLC tool frame".to_owned());
     }
     if frames.is_empty() {
         return Err("TLC output contained no tool frames".to_owned());
     }
     Ok(frames)
+}
+
+fn parse_progress(body: &str) -> Option<TlcProgress> {
+    let line = body
+        .lines()
+        .find(|line| line.trim().starts_with("Progress("))?;
+    let line = line.trim();
+    let depth = line
+        .strip_prefix("Progress(")?
+        .split_once(')')?
+        .0
+        .parse()
+        .ok()?;
+    let (_, statistics) = line.split_once(": ")?;
+    let (generated, statistics) = statistics.split_once(" states generated (")?;
+    let (_, statistics) = statistics.split_once("), ")?;
+    let (distinct, statistics) = statistics.split_once(" distinct states found (")?;
+    let (_, states_left) = statistics.split_once("), ")?;
+    let states_left = states_left.strip_suffix(" states left on queue.")?;
+    Some(TlcProgress {
+        generated_states: parse_u64(generated)?,
+        distinct_states: parse_u64(distinct)?,
+        states_left: parse_u64(states_left)?,
+        depth,
+    })
 }
 
 fn parse_state_counts(body: &str) -> Option<(u64, u64, u64)> {
@@ -375,7 +425,7 @@ fn parse_u64(value: &str) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse, TlcSummary};
+    use super::{parse, parse_latest_progress, TlcProgress, TlcSummary};
 
     #[test]
     fn parses_framed_success_with_grouped_counts() {
@@ -427,6 +477,34 @@ mod tests {
     fn rejects_unframed_success_prose() {
         assert!(parse(
             b"Model checking completed. No error has been found. 120,000,001 distinct states found."
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn parses_the_latest_complete_progress_frame() {
+        let progress = parse_latest_progress(
+            b"@!@!@STARTMSG 2200:0 @!@!@\nProgress(21) at 2026-07-13 19:18:31: 23,784,130 states generated (4,670,725 s/min), 6,246,309 distinct states found (1,150,848 ds/min), 3,294,097 states left on queue.\n@!@!@ENDMSG 2200 @!@!@\n\
+              @!@!@STARTMSG 2200:0 @!@!@\nProgress(23) at 2026-07-13 19:52:32: 181,490,601 states generated (4,966,137 s/min), 40,062,465 distinct states found (1,000,915 ds/min), 19,012,042 states left on queue.\n@!@!@ENDMSG 2200 @!@!@\n\
+              @!@!@STARTMSG 2200:0 @!@!@\nProgress(24) at",
+        )
+        .expect("complete progress frames parse")
+        .expect("latest progress exists");
+        assert_eq!(
+            progress,
+            TlcProgress {
+                generated_states: 181_490_601,
+                distinct_states: 40_062_465,
+                states_left: 19_012_042,
+                depth: 23,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_a_malformed_complete_progress_frame() {
+        assert!(parse_latest_progress(
+            b"@!@!@STARTMSG 2200:0 @!@!@\nProgress without statistics.\n@!@!@ENDMSG 2200 @!@!@\n"
         )
         .is_err());
     }
