@@ -1,6 +1,7 @@
 use super::super::*;
 use super::fixtures::pre_vote_grant;
 use rafter::{AppendEntries, Message, RequestVote};
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
 #[test]
 fn election_persists_term_and_vote_before_vote_requests_escape() {
@@ -24,7 +25,7 @@ fn election_persists_term_and_vote_before_vote_requests_escape() {
         .step(pre_vote_grant(2, Term(1)))
         .expect("hard state writes");
 
-    assert_eq!(
+    oracle_assert_eq!(
         runtime.hard_state_store.current(),
         RaftHardState {
             current_term: Term(1),
@@ -33,8 +34,8 @@ fn election_persists_term_and_vote_before_vote_requests_escape() {
             committed_configuration: None,
         }
     );
-    assert_eq!(outputs.len(), 2);
-    assert!(outputs.iter().all(|output| matches!(
+    oracle_assert_eq!(outputs.len(), 2);
+    oracle_assert!(outputs.iter().all(|output| matches!(
         output,
         RaftOutput::Send {
             message: Message::RequestVote(_),
@@ -59,7 +60,7 @@ fn granted_vote_is_persisted_before_vote_response_escapes() {
         })
         .expect("hard state writes");
 
-    assert_eq!(
+    oracle_assert_eq!(
         runtime.hard_state_store.current(),
         RaftHardState {
             current_term: Term(3),
@@ -68,7 +69,7 @@ fn granted_vote_is_persisted_before_vote_response_escapes() {
             committed_configuration: None,
         }
     );
-    assert!(matches!(
+    oracle_assert!(matches!(
         outputs.as_slice(),
         [RaftOutput::Send {
             message: Message::RequestVoteResponse(response),
@@ -93,7 +94,7 @@ fn higher_term_vote_rejection_persists_term_before_response_escapes() {
         })
         .expect("hard state writes");
 
-    assert_eq!(
+    oracle_assert_eq!(
         runtime.hard_state_store.current(),
         RaftHardState {
             current_term: Term(3),
@@ -102,7 +103,7 @@ fn higher_term_vote_rejection_persists_term_before_response_escapes() {
             committed_configuration: None,
         }
     );
-    assert!(matches!(
+    oracle_assert!(matches!(
         outputs.as_slice(),
         [RaftOutput::Send {
             message: Message::RequestVoteResponse(response),
@@ -130,7 +131,7 @@ fn higher_term_append_persists_term_before_response_escapes() {
         })
         .expect("hard state writes");
 
-    assert_eq!(
+    oracle_assert_eq!(
         runtime.hard_state_store.current(),
         RaftHardState {
             current_term: Term(3),
@@ -139,7 +140,7 @@ fn higher_term_append_persists_term_before_response_escapes() {
             committed_configuration: None,
         }
     );
-    assert!(matches!(
+    oracle_assert!(matches!(
         outputs.as_slice(),
         [RaftOutput::Send {
             message: Message::AppendEntriesResponse(response),
@@ -169,7 +170,7 @@ fn hard_state_write_failure_suppresses_vote_requests() {
         .step(pre_vote_grant(2, Term(1)))
         .expect_err("hard-state write fails");
 
-    assert!(matches!(
+    oracle_assert!(matches!(
         error,
         RaftRuntimeError::HardStateWrite(RaftHardStateStoreWriteError::Io {
             operation: "write test raft hard state",
@@ -182,7 +183,7 @@ fn hard_state_write_failure_suppresses_vote_requests() {
     let error = runtime
         .step(RaftInput::Tick)
         .expect_err("a poisoned runtime refuses further inputs");
-    assert!(matches!(error, RaftRuntimeError::Poisoned { .. }));
+    oracle_assert!(matches!(error, RaftRuntimeError::Poisoned { .. }));
 }
 
 #[test]
@@ -207,8 +208,8 @@ fn hard_state_write_failure_suppresses_granted_vote_response() {
         })
         .expect_err("hard-state write fails before granted vote response escapes");
 
-    assert!(matches!(error, RaftRuntimeError::HardStateWrite(_)));
-    assert_eq!(runtime.hard_state_store.current(), RaftHardState::default());
+    oracle_assert!(matches!(error, RaftRuntimeError::HardStateWrite(_)));
+    oracle_assert_eq!(runtime.hard_state_store.current(), RaftHardState::default());
     assert_poisoned_after_failure(&mut runtime, |cause| {
         matches!(cause, RaftRuntimeFatalError::HardStateWrite(_))
     });
@@ -236,8 +237,8 @@ fn hard_state_write_failure_suppresses_higher_term_vote_rejection() {
         })
         .expect_err("hard-state write fails before denied vote response escapes");
 
-    assert!(matches!(error, RaftRuntimeError::HardStateWrite(_)));
-    assert_eq!(runtime.hard_state_store.current(), RaftHardState::default());
+    oracle_assert!(matches!(error, RaftRuntimeError::HardStateWrite(_)));
+    oracle_assert_eq!(runtime.hard_state_store.current(), RaftHardState::default());
     assert_poisoned_after_failure(&mut runtime, |cause| {
         matches!(cause, RaftRuntimeFatalError::HardStateWrite(_))
     });
@@ -268,8 +269,8 @@ fn hard_state_write_failure_suppresses_higher_term_append_response() {
         })
         .expect_err("hard-state write fails before append response escapes");
 
-    assert!(matches!(error, RaftRuntimeError::HardStateWrite(_)));
-    assert_eq!(runtime.hard_state_store.current(), RaftHardState::default());
+    oracle_assert!(matches!(error, RaftRuntimeError::HardStateWrite(_)));
+    oracle_assert_eq!(runtime.hard_state_store.current(), RaftHardState::default());
     assert_poisoned_after_failure(&mut runtime, |cause| {
         matches!(cause, RaftRuntimeFatalError::HardStateWrite(_))
     });
@@ -325,7 +326,7 @@ fn restarted_node_preserves_persisted_vote() {
         })
         .expect("unchanged hard state does not write");
 
-    assert!(matches!(
+    oracle_assert!(matches!(
         outputs.as_slice(),
         [RaftOutput::Send {
             message: Message::RequestVoteResponse(response),

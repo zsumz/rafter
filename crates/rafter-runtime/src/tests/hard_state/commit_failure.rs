@@ -1,5 +1,6 @@
 use super::super::*;
 use super::fixtures::committed_append_entries_input;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
 #[test]
 fn final_hard_state_write_failure_suppresses_apply_and_success_response() {
@@ -50,9 +51,9 @@ fn final_hard_state_write_failure_suppresses_apply_and_success_response() {
     let error = runtime
         .step(committed_append_entries_input())
         .expect_err("final commit hard-state write fails");
-    assert!(matches!(error, RaftRuntimeError::HardStateWrite(_)));
+    oracle_assert!(matches!(error, RaftRuntimeError::HardStateWrite(_)));
 
-    assert_eq!(
+    oracle_assert_eq!(
         runtime.log_segment.replay_entries(),
         vec![PersistedRaftLogEntry::application(
             LogIndex(1),
@@ -60,7 +61,7 @@ fn final_hard_state_write_failure_suppresses_apply_and_success_response() {
             b"committed".to_vec(),
         )]
     );
-    assert_eq!(
+    oracle_assert_eq!(
         runtime.hard_state_store.current().commit_index,
         LogIndex::ZERO
     );
@@ -73,9 +74,9 @@ fn final_hard_state_write_failure_suppresses_apply_and_success_response() {
     )
     .expect("restart hydrates from the durable state");
     let (restarted, recovery_outputs) = recovered.into_parts();
-    assert!(recovery_outputs.is_empty());
-    assert_eq!(restarted.commit_index(), LogIndex::ZERO);
-    assert_eq!(restarted.last_log_index(), LogIndex(1));
+    oracle_assert!(recovery_outputs.is_empty());
+    oracle_assert_eq!(restarted.commit_index(), LogIndex::ZERO);
+    oracle_assert_eq!(restarted.last_log_index(), LogIndex(1));
 
     assert_poisoned_after_failure(&mut runtime, |cause| {
         matches!(cause, RaftRuntimeFatalError::HardStateWrite(_))
