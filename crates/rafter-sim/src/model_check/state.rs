@@ -24,7 +24,9 @@ pub(super) use self::application::{
     PendingApplicationReplaySeed, SnapshotBootstrapSeed,
 };
 #[cfg(test)]
-pub(super) use self::application::{record_execution_corruption, ExecutionRecorderCorruption};
+pub(super) use self::application::{
+    record_execution_corruption, rewind_execution_cursor_for_fixture, ExecutionRecorderCorruption,
+};
 use self::application_history::{
     ApplicationHistory, ExecutionHistoryInstrumentationError, ExecutionHistoryViolation,
 };
@@ -35,9 +37,9 @@ pub(super) use client::{
 };
 #[cfg(test)]
 pub(super) use client::{ClientWrite, ClientWriteUnknownReason};
-pub(super) use commit::CommitHistory;
 #[cfg(test)]
 pub(super) use commit::CommitTransitionContext;
+pub(super) use commit::{CommitHistory, ConfigurationAppend};
 #[cfg(test)]
 pub(super) use election::ElectionCertificate;
 pub(super) use election::ElectionHistory;
