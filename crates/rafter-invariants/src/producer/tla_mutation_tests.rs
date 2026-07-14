@@ -202,6 +202,30 @@ PROPERTY StaleMessageLifecycleCompletes
 CHECK_DEADLOCK FALSE
 "#;
 
+const CLOSED_ELECTION_LIFECYCLE_CONFIG: &str = r#"SPECIFICATION ClosedElectionLifecycleSpec
+
+CONSTANTS
+  Nodes = {n1, n2, n3}
+  Values = {v1, v2}
+  MaxTerm = 2
+  MaxLogLen = 2
+  ReadRequests = {r1}
+  FixtureA = n1
+  FixtureB = n2
+  FixtureC = n3
+  FixtureValueA = v1
+  FixtureValueB = v2
+  FixtureRead = r1
+  FixtureMode = "Default"
+  TargetPredicate = "ElectionSafety"
+
+INVARIANT ClosedElectionLifecycleInvariant
+
+PROPERTY ClosedElectionLifecycleCompletes
+
+CHECK_DEADLOCK FALSE
+"#;
+
 const SELF_REMOVAL_COMMIT_CONFIG: &str = r#"SPECIFICATION SelfRemovalCommitSpec
 
 CONSTANTS
@@ -360,6 +384,54 @@ fn stale_messages_are_retired_when_the_target_term_advances() {
     assert_eq!(
         mutation_summary.violated_invariant.as_deref(),
         Some("StaleMessageLifecycleInvariant")
+    );
+}
+
+#[test]
+#[ignore = "requires the pinned TLC tool and Java"]
+fn closed_term_election_history_is_retired_after_every_node_advances() {
+    let root = workspace_root();
+    let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
+    let detector =
+        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
+            .expect("read detector spec");
+    let baseline = run_tlc_with_config(
+        &root,
+        "closed-election-lifecycle",
+        &raft,
+        &detector,
+        CLOSED_ELECTION_LIFECYCLE_CONFIG,
+    );
+    let baseline_summary = parse(&baseline.stdout).expect("parse closed-election lifecycle output");
+    assert!(
+        baseline.status.success(),
+        "{}",
+        String::from_utf8_lossy(&baseline.stdout)
+    );
+    assert!(baseline_summary.completed_without_error);
+    assert!(baseline_summary.process_finished);
+    assert!(baseline_summary.distinct_states >= 4);
+    assert!(baseline_summary.search_depth >= 4);
+
+    let mutated = replace_exactly_once_in_operator(
+        &raft,
+        "Timeout(n)",
+        "SendRequestVote(c, v)",
+        "/\\ electedLeaders' = RetainedElections(electedLeaders, currentTerm')",
+        "/\\ electedLeaders' = electedLeaders",
+    );
+    let mutation = run_tlc_with_config(
+        &root,
+        "closed-election-timeout-retirement-missing",
+        &mutated,
+        &detector,
+        CLOSED_ELECTION_LIFECYCLE_CONFIG,
+    );
+    let mutation_summary = parse(&mutation.stdout).expect("parse closed-election mutation output");
+    assert_eq!(mutation.status.code(), Some(12));
+    assert_eq!(
+        mutation_summary.violated_invariant.as_deref(),
+        Some("ClosedElectionLifecycleInvariant")
     );
 }
 
