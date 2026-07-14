@@ -34,6 +34,14 @@ pub(super) fn validate_runner_options(
             return Err(format!("TLA runner requires {name}={expected}").into());
         }
     }
+    if matches!(
+        configuration.get("config").map(String::as_str),
+        Some("RaftCi.cfg" | "RaftNightly.cfg")
+    ) && required_configuration(configuration, "symmetry")?
+        != "nodes-values-read-requests-product"
+    {
+        return Err("bounded TLA runner requires the complete model-value symmetry".into());
+    }
     if tla_checkpoint::enabled(configuration) {
         for (name, expected) in [
             ("config", "Raft.cfg"),
@@ -74,13 +82,7 @@ pub(super) fn validate_spec_contract(
     let detector_spec = fs::read_to_string(DETECTOR_SPEC)?;
     let detector_config = fs::read_to_string(DETECTOR_CONFIG)?;
     validate_safety_only_boundary(&spec, &config_source)?;
-    if config_name == "Raft.cfg"
-        && config_source
-            .lines()
-            .any(|line| line.trim_start().starts_with("SYMMETRY "))
-    {
-        return Err("full weekly TLA config must be unsymmetrized".into());
-    }
+    validate_symmetry_contract(config_name, &config_source)?;
     if configured_set != expected
         || symbols.iter().any(|symbol| {
             !spec
@@ -108,6 +110,27 @@ pub(super) fn validate_spec_contract(
         );
     }
     Ok(configured)
+}
+
+fn validate_symmetry_contract(config_name: &str, config: &str) -> Result<(), Box<dyn Error>> {
+    let declarations = config
+        .lines()
+        .map(str::trim)
+        .filter(|line| line.starts_with("SYMMETRY "))
+        .collect::<Vec<_>>();
+    match config_name {
+        "RaftCi.cfg" | "RaftNightly.cfg"
+            if declarations.as_slice() == ["SYMMETRY ModelPermutations"] =>
+        {
+            Ok(())
+        }
+        "RaftCi.cfg" | "RaftNightly.cfg" => {
+            Err("bounded TLA config must use the complete model-value product symmetry".into())
+        }
+        "Raft.cfg" if declarations.is_empty() => Ok(()),
+        "Raft.cfg" => Err("full weekly TLA config must be unsymmetrized".into()),
+        _ => Ok(()),
+    }
 }
 
 fn validate_safety_only_boundary(spec: &str, config: &str) -> Result<(), Box<dyn Error>> {
@@ -298,6 +321,7 @@ mod tests {
     };
     use super::{
         configured_invariants, java_major, validate_runner_options, validate_safety_only_boundary,
+        validate_symmetry_contract,
     };
 
     #[test]
@@ -320,6 +344,17 @@ mod tests {
     }
 
     #[test]
+    fn bounded_and_weekly_symmetry_contracts_are_exact() {
+        assert!(validate_symmetry_contract("RaftCi.cfg", "SYMMETRY ModelPermutations\n").is_ok());
+        assert!(
+            validate_symmetry_contract("RaftNightly.cfg", "SYMMETRY NodePermutations\n").is_err()
+        );
+        assert!(validate_symmetry_contract("RaftCi.cfg", "CHECK_DEADLOCK FALSE\n").is_err());
+        assert!(validate_symmetry_contract("Raft.cfg", "CHECK_DEADLOCK FALSE\n").is_ok());
+        assert!(validate_symmetry_contract("Raft.cfg", "SYMMETRY ModelPermutations\n").is_err());
+    }
+
+    #[test]
     fn fixed_runner_options_cannot_drift_from_execution() {
         let mut options = BTreeMap::from([
             ("module".to_owned(), "Raft.tla".to_owned()),
@@ -330,6 +365,25 @@ mod tests {
         ]);
         assert!(validate_runner_options(&options).is_ok());
         options.insert("fp".to_owned(), "1".to_owned());
+        assert!(validate_runner_options(&options).is_err());
+    }
+
+    #[test]
+    fn bounded_runner_symmetry_label_cannot_drift_from_execution() {
+        let mut options = BTreeMap::from([
+            ("module".to_owned(), "Raft.tla".to_owned()),
+            ("fp".to_owned(), "0".to_owned()),
+            ("tool_mode".to_owned(), "required".to_owned()),
+            ("trace_sample".to_owned(), "required".to_owned()),
+            ("detector_negative".to_owned(), "required".to_owned()),
+            ("config".to_owned(), "RaftCi.cfg".to_owned()),
+            (
+                "symmetry".to_owned(),
+                "nodes-values-read-requests-product".to_owned(),
+            ),
+        ]);
+        assert!(validate_runner_options(&options).is_ok());
+        options.insert("symmetry".to_owned(), "nodes-only".to_owned());
         assert!(validate_runner_options(&options).is_err());
     }
 

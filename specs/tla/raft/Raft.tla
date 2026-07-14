@@ -8,7 +8,16 @@ EXTENDS Naturals, Sequences, FiniteSets, TLC
 
 CONSTANTS Nodes, Values, MaxTerm, MaxLogLen, ReadRequests
 
-NodePermutations == Permutations(Nodes)
+\* Bounded profiles quotient only independent model-value renamings. The weekly
+\* profile intentionally omits this symmetry and explores the full graph.
+ModelPermutations ==
+  {[modelValue \in Nodes \cup Values \cup ReadRequests |->
+      CASE modelValue \in Nodes -> nodePermutation[modelValue]
+        [] modelValue \in Values -> valuePermutation[modelValue]
+        [] OTHER -> requestPermutation[modelValue]] :
+    nodePermutation \in Permutations(Nodes),
+    valuePermutation \in Permutations(Values),
+    requestPermutation \in Permutations(ReadRequests)}
 
 NoVote == "none"
 
