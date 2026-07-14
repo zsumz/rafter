@@ -155,6 +155,7 @@ fn seeded_leadership_transfer_reaches_target_noop_commit() {
             .election_history()
             .elected_by_term
             .values()
+            .flatten()
             .any(|certificate| certificate.leader_id == NodeId(2)),
         "instrumented seeded transfer should record the target leader certificate"
     );
