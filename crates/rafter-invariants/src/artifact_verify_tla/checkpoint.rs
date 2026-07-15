@@ -5,7 +5,7 @@ use crate::producer::tla_checkpoint::{
     CONTRACT_KIND, INVENTORY_KIND, RECOVERED_CONTRACT_KIND, RECOVERED_INVENTORY_KIND,
     RECOVERY_REPORT_KIND,
 };
-use crate::{aggregate::AggregateError, ResultBundle};
+use crate::{aggregate::AggregateError, CheckCompletion, ResultBundle};
 
 use super::{has_kind, read_json_kind};
 
@@ -13,6 +13,7 @@ pub(super) fn verify_checkpoint(
     bundle: &ResultBundle,
     check: &crate::CheckReceipt,
     root: &Path,
+    main_has_violation: bool,
 ) -> Result<Option<RecoveryReport>, AggregateError> {
     let checkpoint_enabled = bundle.execution.plan.contract.runners["tla"]
         .configuration
@@ -74,20 +75,14 @@ pub(super) fn verify_checkpoint(
         ));
     }
 
-    if report.status != RecoveryStatus::Incompatible {
-        let final_contract: CheckpointContract = read_json_kind(check, CONTRACT_KIND, root)?;
-        let final_inventory: CheckpointInventory = read_json_kind(check, INVENTORY_KIND, root)?;
-        if final_contract != contract {
-            return Err(AggregateError::new(
-                "TLA final checkpoint metadata does not match the execution contract".to_owned(),
-            ));
-        }
-        validate_inventory(&final_inventory, &contract_sha256)?;
-    } else if has_kind(check, CONTRACT_KIND)? || has_kind(check, INVENTORY_KIND)? {
-        return Err(AggregateError::new(
-            "incompatible TLA recovery must not overwrite final checkpoint metadata".to_owned(),
-        ));
-    }
+    verify_final_metadata(
+        check,
+        root,
+        report.status,
+        &contract,
+        &contract_sha256,
+        main_has_violation,
+    )?;
 
     if report.candidate_present && report.status != RecoveryStatus::Incompatible {
         let recovered_contract: CheckpointContract =
@@ -111,6 +106,56 @@ pub(super) fn verify_checkpoint(
     }
     Ok(Some(report))
 }
+
+fn verify_final_metadata(
+    check: &crate::CheckReceipt,
+    root: &Path,
+    recovery_status: RecoveryStatus,
+    contract: &CheckpointContract,
+    contract_sha256: &str,
+    main_has_violation: bool,
+) -> Result<(), AggregateError> {
+    let final_contract_present = has_kind(check, CONTRACT_KIND)?;
+    let final_inventory_present = has_kind(check, INVENTORY_KIND)?;
+    if final_contract_present != final_inventory_present {
+        return Err(AggregateError::new(
+            "TLA final checkpoint contract and inventory must be retained together".to_owned(),
+        ));
+    }
+    if recovery_status == RecoveryStatus::Incompatible {
+        if final_contract_present {
+            return Err(AggregateError::new(
+                "incompatible TLA recovery must not overwrite final checkpoint metadata".to_owned(),
+            ));
+        }
+        return Ok(());
+    }
+    if main_has_violation
+        && matches!(
+            check.completion,
+            CheckCompletion::Counterexample | CheckCompletion::HarnessError
+        )
+    {
+        if final_contract_present {
+            return Err(AggregateError::new(
+                "violating TLA execution must abandon final checkpoint publication".to_owned(),
+            ));
+        }
+        return Ok(());
+    }
+    let final_contract: CheckpointContract = read_json_kind(check, CONTRACT_KIND, root)?;
+    let final_inventory: CheckpointInventory = read_json_kind(check, INVENTORY_KIND, root)?;
+    if final_contract != *contract {
+        return Err(AggregateError::new(
+            "TLA final checkpoint metadata does not match the execution contract".to_owned(),
+        ));
+    }
+    validate_inventory(&final_inventory, contract_sha256)
+}
+
+#[cfg(test)]
+#[path = "checkpoint_tests.rs"]
+mod tests;
 
 pub(super) fn validate_inventory(
     inventory: &CheckpointInventory,
