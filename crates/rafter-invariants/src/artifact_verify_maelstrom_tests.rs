@@ -1,9 +1,14 @@
-use std::{collections::BTreeMap, fs, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
 
 use crate::{
     ArtifactRef, CheckCompletion, CheckReceipt, EvidenceResult, EvidenceStatus,
-    ExecutionPlanReceipt, ExecutionReceipt, InvocationReceipt, PlanInput, ProfileContract,
-    ResultBundle, RunnerContract, SourceReceipt, PLAN_SCHEMA_VERSION,
+    ExecutionPlanReceipt, ExecutionReceipt, FailureClassification, InvocationReceipt, PlanInput,
+    ProfileContract, ResultBundle, RunnerContract, SourceReceipt, ToolReceipt, PLAN_SCHEMA_VERSION,
 };
 use sha2::{Digest, Sha256};
 
@@ -132,7 +137,18 @@ fn invalid_history_can_only_fail_client_linearizability() -> Result<(), Box<dyn 
     bundle.execution.checks[0].completion = CheckCompletion::Counterexample;
     bundle.results[0].status = EvidenceStatus::Fail;
 
-    crate::artifact_verify_maelstrom::verify(&bundle, &root)?;
+    let diagnostics = crate::artifact_verify_maelstrom::verify(&bundle, &root)?;
+    assert!(diagnostics.is_empty());
+
+    write(
+        &root,
+        "evidence/trial-0/process.json",
+        &process_log(&root, 1, "checker exited after reporting a counterexample")?,
+    )?;
+    let diagnostics = crate::artifact_verify_maelstrom::verify(&bundle, &root)?;
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].contains("counterexample alongside a harness error"));
+
     bundle.results[0].invariant_id = "LG-04".to_owned();
     assert!(crate::artifact_verify_maelstrom::verify(&bundle, &root).is_err());
     fs::remove_dir_all(root)?;
@@ -167,6 +183,233 @@ fn nonzero_process_exit_is_always_a_harness_error() -> Result<(), Box<dyn std::e
     Ok(())
 }
 
+#[test]
+fn serialized_counterexample_retains_secondary_harness_diagnostic(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let root = temporary_root()?;
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    materialize_checkout(&root, &workspace)?;
+    write(&root, "scripts/maelstrom-lin-kv", "runner")?;
+    prepare_state(&root)?;
+    write(&root, "target/debug/rafter-maelstrom", "binary")?;
+    write(&root, "evidence/trial-0/runner", "runner")?;
+    write(&root, "evidence/trial-0/binary", "binary")?;
+    write(&root, "evidence/trial-0/maelstrom.jar", "jar")?;
+    write(
+        &root,
+        "evidence/trial-0/results.edn",
+        &VALID.replace(
+            ":linearizable {:valid? true}",
+            ":linearizable {:valid? false}",
+        ),
+    )?;
+    write(
+        &root,
+        "evidence/trial-0/process.json",
+        &process_log(&root, 1, "checker exited after reporting a counterexample")?,
+    )?;
+    write(&root, "evidence/trial-0/node.log", "role=leader")?;
+    write(&root, "evidence/producer", "producer")?;
+    initialize_fixture_repository(&root)?;
+
+    let mut bundle = bundle();
+    bind_serialized_bundle(&mut bundle, &root, &workspace)?;
+    let result_path = root.with_extension("result.json");
+    fs::write(&result_path, serde_json::to_vec_pretty(&bundle)?)?;
+
+    let loaded = crate::aggregate::load_evidence_at(std::slice::from_ref(&result_path), &root);
+    assert_eq!(loaded.bundles.len(), 1, "{:?}", loaded.harness_errors);
+    assert_eq!(loaded.harness_errors.len(), 1);
+    assert!(loaded.harness_errors[0].contains("counterexample alongside a harness error"));
+    assert_eq!(
+        loaded.bundles[0].results[0].classification,
+        Some(FailureClassification::InvariantViolation)
+    );
+
+    let (catalog, manifest) = crate::tests::loaded();
+    let report = crate::aggregate_with_harness_errors(
+        &catalog,
+        &manifest,
+        "nightly",
+        &bundle.source_ref,
+        &loaded.bundles,
+        &loaded.harness_errors,
+    )?;
+    assert_eq!(report.summary.total, 44);
+    assert_eq!(report.summary.green, 0);
+    assert!(report
+        .invariants
+        .iter()
+        .all(|verdict| verdict.issues.iter().any(|issue| {
+            issue.classification == FailureClassification::HarnessError
+                && issue
+                    .message
+                    .contains("counterexample alongside a harness error")
+        })));
+
+    let _ = fs::remove_file(result_path);
+    fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+fn materialize_checkout(root: &Path, workspace: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    fs::copy(workspace.join("Cargo.lock"), root.join("Cargo.lock"))?;
+    for path in [
+        "verification/raft-invariants.yaml",
+        "verification/raft-invariant-profiles.json",
+        "verification/invariant-result-schema.json",
+        "verification/invariant-verdict-schema.json",
+    ] {
+        let destination = root.join(path);
+        fs::create_dir_all(destination.parent().ok_or("plan input has no parent")?)?;
+        fs::copy(workspace.join(path), destination)?;
+    }
+    write(root, ".gitignore", "artifacts/\nevidence/\ntarget/\n")?;
+    Ok(())
+}
+
+fn initialize_fixture_repository(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    for arguments in [
+        vec!["init", "-q"],
+        vec!["add", "."],
+        vec![
+            "-c",
+            "user.name=Rafter Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "-q",
+            "-m",
+            "test: materialize Maelstrom evidence fixture",
+        ],
+    ] {
+        let output = Command::new("git")
+            .args(&arguments)
+            .current_dir(root)
+            .output()?;
+        if !output.status.success() {
+            return Err(format!(
+                "git {arguments:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
+    }
+    Ok(())
+}
+
+fn bind_serialized_bundle(
+    bundle: &mut ResultBundle,
+    root: &Path,
+    workspace: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (path, input) in [
+        (
+            "verification/raft-invariants.yaml",
+            &mut bundle.execution.plan.registry,
+        ),
+        (
+            "verification/raft-invariant-profiles.json",
+            &mut bundle.execution.plan.manifest,
+        ),
+        (
+            "verification/invariant-result-schema.json",
+            &mut bundle.execution.plan.result_schema,
+        ),
+        (
+            "verification/invariant-verdict-schema.json",
+            &mut bundle.execution.plan.verdict_schema,
+        ),
+    ] {
+        let bytes = fs::read(workspace.join(path))?;
+        input.path = path.to_owned();
+        input.sha256 = format!("{:x}", Sha256::digest(&bytes));
+        input.size_bytes = bytes.len() as u64;
+    }
+
+    let mut source = crate::producer::source::capture_for_layer_at("tests", root)?;
+    source.build_profile = "maelstrom-debug".to_owned();
+    source.features.clear();
+    source.tools = ["java", "maelstrom", "dot", "gnuplot"]
+        .into_iter()
+        .map(|name| {
+            (
+                name.to_owned(),
+                ToolReceipt {
+                    version: format!("{name} fixture"),
+                    sha256: "0".repeat(64),
+                },
+            )
+        })
+        .collect();
+    bundle.execution.source = source;
+
+    let producer = bound_artifact(root, "evidence/producer", "producer-binary")?;
+    bundle.execution.artifacts = vec![producer.clone()];
+    bundle.execution.producer.executable = producer.clone();
+    let repository = fs::canonicalize(root)?;
+    bundle.execution.invocation.current_dir = repository.to_string_lossy().into_owned();
+    bundle.execution.invocation.program_sha256 = producer.sha256.clone();
+    bundle.execution.invocation.program =
+        crate::producer_image::image_path(&repository, &producer.sha256)
+            .to_string_lossy()
+            .into_owned();
+    bundle.execution.invocation.environment = crate::producer::process::base_environment();
+    bundle.execution.invocation.environment_sha256 =
+        crate::producer::process::digest_environment(&bundle.execution.invocation.environment);
+
+    let check = &mut bundle.execution.checks[0];
+    check.completion = CheckCompletion::Counterexample;
+    check.observations.insert("valid_trials".to_owned(), 0);
+    check.observations.insert("invalid_trials".to_owned(), 1);
+    for artifact in &mut check.artifacts {
+        *artifact = bound_artifact(root, &artifact.path, &artifact.kind)?;
+    }
+    let jar = check
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.kind == "maelstrom-tool-jar")
+        .ok_or("Maelstrom fixture omitted jar")?;
+    bundle
+        .execution
+        .plan
+        .contract
+        .runners
+        .get_mut("maelstrom")
+        .ok_or("Maelstrom fixture omitted runner contract")?
+        .configuration
+        .insert("maelstrom_jar_sha256".to_owned(), jar.sha256.clone());
+
+    let replay = check
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.kind == "maelstrom-process-log")
+        .ok_or("Maelstrom fixture omitted process log")?
+        .clone();
+    let result = &mut bundle.results[0];
+    result.status = EvidenceStatus::Fail;
+    result.classification = Some(FailureClassification::InvariantViolation);
+    result.message = Some("Maelstrom reported a non-linearizable client history".to_owned());
+    result.artifacts = vec![replay];
+    Ok(())
+}
+
+fn bound_artifact(
+    root: &Path,
+    path: &str,
+    kind: &str,
+) -> Result<ArtifactRef, Box<dyn std::error::Error>> {
+    let bytes = fs::read(root.join(path))?;
+    Ok(ArtifactRef {
+        kind: kind.to_owned(),
+        path: path.to_owned(),
+        sha256: format!("{:x}", Sha256::digest(&bytes)),
+        size_bytes: bytes.len() as u64,
+    })
+}
+
 fn bundle() -> ResultBundle {
     let execution_id = "maelstrom-base".to_owned();
     let configuration = BTreeMap::from([
@@ -195,7 +438,7 @@ fn bundle() -> ResultBundle {
         )]),
     };
     ResultBundle {
-        schema_version: 7,
+        schema_version: crate::types::RESULT_SCHEMA_VERSION,
         runner: "maelstrom".to_owned(),
         profile: "nightly".to_owned(),
         source_ref: "abc".to_owned(),
@@ -388,8 +631,8 @@ fn source() -> SourceReceipt {
 }
 
 fn temporary_root() -> Result<PathBuf, std::io::Error> {
-    let root = std::env::temp_dir().join(format!(
-        "rafter-maelstrom-artifact-test-{}-{:?}",
+    let root = Path::new("target/rafter-invariants/tests").join(format!(
+        "maelstrom-artifact-{}-{:?}",
         std::process::id(),
         std::thread::current().id()
     ));
