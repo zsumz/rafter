@@ -1,4 +1,5 @@
 pub(crate) mod artifact;
+mod filesystem;
 mod maelstrom;
 mod maelstrom_binding;
 pub(crate) mod maelstrom_edn;
@@ -20,14 +21,24 @@ pub(crate) mod tla_output;
 #[cfg(test)]
 mod unit_tests;
 
+#[cfg(test)]
+#[path = "filesystem_tests.rs"]
+mod filesystem_tests;
+
 pub(crate) use process::ProcessLog;
+#[cfg(test)]
+pub(crate) use simulator::evaluate_model_fixture;
 pub(crate) use simulator_model::{
     canonical_check_id, expected_scheduled_seeds, expected_scheduled_seeds_with_count,
+};
+#[cfg(all(test, unix))]
+pub(crate) use simulator_model::{
+    later_launch_error_fixture_at, timed_out_zero_exit_fixture_at, SimulatorFixtureInvocation,
 };
 pub(crate) use tla_contract::java_major;
 
 use std::collections::BTreeSet;
-use std::{error::Error, fs, path::PathBuf};
+use std::{error::Error, io::Write, path::PathBuf};
 
 use crate::{
     capture_invocation, plan::CapturedInvocation, ExecutionPlan, ExecutionPlanReceipt,
@@ -106,9 +117,7 @@ pub(crate) fn produce_with_plan(
         .ok_or_else(|| format!("profile {} omitted runner {layer}", plan.receipt.profile))?;
     let _process_budget = process::LayerBudgetGuard::enter(&plan.receipt.profile, layer, runner)?;
     let path = output_dir.join(format!("{}-{layer}.json", plan.receipt.profile));
-    if path.exists() {
-        fs::remove_file(&path)?;
-    }
+    filesystem::HeldDirectory::workspace()?.remove_file_if_exists(&path)?;
     let executable = artifact::capture_bytes(
         output_dir,
         std::path::Path::new(&format!("{}-{layer}/inputs", plan.receipt.profile)),
@@ -182,16 +191,56 @@ pub(crate) fn produce_with_plan(
             .results
             .iter()
             .all(|result| result.status == crate::EvidenceStatus::Pass);
-    let path = write_bundle(&bundle, output_dir)?;
+    let path = publish_bundle(&bundle, output_dir, &plan.receipt.profile, layer)?;
     Ok(ProducerOutcome { path, all_passed })
 }
 
-fn write_bundle(
+fn publish_bundle(
     bundle: &ResultBundle,
     output_dir: &std::path::Path,
+    profile: &str,
+    layer: &str,
 ) -> Result<PathBuf, Box<dyn Error>> {
+    if layer == "tla" {
+        process::ensure_total_deadline(profile, layer, "TLA receipt serialization", true)?;
+    }
+    let staged = stage_bundle(bundle, output_dir)?;
+    if layer == "tla" {
+        process::ensure_total_deadline(profile, layer, "TLA receipt publication", false)?;
+    }
+    staged.publish()
+}
+
+struct StagedBundle {
+    workspace: filesystem::HeldDirectory,
+    temporary: PathBuf,
+    path: PathBuf,
+    published: bool,
+}
+
+impl StagedBundle {
+    fn publish(mut self) -> Result<PathBuf, Box<dyn Error>> {
+        self.workspace.rename(&self.temporary, &self.path)?;
+        self.published = true;
+        Ok(self.path.clone())
+    }
+}
+
+impl Drop for StagedBundle {
+    fn drop(&mut self) {
+        if !self.published {
+            let _ = self.workspace.remove_file_if_exists(&self.temporary);
+        }
+    }
+}
+
+fn stage_bundle(
+    bundle: &ResultBundle,
+    output_dir: &std::path::Path,
+) -> Result<StagedBundle, Box<dyn Error>> {
     crate::schema::validate_result_bundle(bundle)?;
-    fs::create_dir_all(output_dir)?;
+    let workspace = filesystem::HeldDirectory::workspace()?;
+    workspace.create_dir_all(output_dir)?;
     let path = output_dir.join(format!("{}-{}.json", bundle.profile, bundle.runner));
     let temporary = output_dir.join(format!(
         ".{}-{}.json.tmp-{}",
@@ -199,10 +248,14 @@ fn write_bundle(
         bundle.runner,
         std::process::id()
     ));
-    fs::write(
-        &temporary,
-        format!("{}\n", serde_json::to_string_pretty(bundle)?),
-    )?;
-    fs::rename(temporary, &path)?;
-    Ok(path)
+    workspace.remove_file_if_exists(&temporary)?;
+    let mut file = workspace.create_new_file(&temporary)?;
+    file.write_all(format!("{}\n", serde_json::to_string_pretty(bundle)?).as_bytes())?;
+    file.sync_all()?;
+    Ok(StagedBundle {
+        workspace,
+        temporary,
+        path,
+        published: false,
+    })
 }

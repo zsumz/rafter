@@ -22,16 +22,16 @@ use test_logs::verify_test_logs;
 
 const EVENT_PREFIX: &str = "RAFTER_EVENT ";
 
-pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateError> {
+pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<Vec<String>, AggregateError> {
     integrity::verify(bundle, root)?;
     verify_resource_metrics(bundle, root)?;
     verify_compile_invocations(bundle, root)?;
     match bundle.runner.as_str() {
-        "tests" => verify_test_logs(bundle, root),
+        "tests" => verify_test_logs(bundle, root).map(|()| Vec::new()),
         "simulator" => verify_simulator_logs(bundle, root),
         "tla" => crate::artifact_verify_tla::verify(bundle, root),
         "maelstrom" => crate::artifact_verify_maelstrom::verify(bundle, root),
-        _ => Ok(()),
+        _ => Ok(Vec::new()),
     }
 }
 

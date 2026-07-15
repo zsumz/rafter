@@ -947,10 +947,14 @@ fn evidence_load_error_still_emits_exactly_44_red_verdicts() {
     assert_eq!(report.summary.total, 44);
     assert_eq!(report.summary.green, 0);
     assert_eq!(report.summary.red, 44);
-    assert!(report.invariants.iter().all(|verdict| verdict
-        .issues
+    assert!(report
+        .invariants
         .iter()
-        .any(|issue| issue.message.contains("malformed JSON"))));
+        .all(|verdict| verdict.issues.iter().any(|issue| {
+            issue.message.contains("malformed JSON")
+                && issue.classification == FailureClassification::HarnessError
+                && issue.status == EvidenceStatus::Error
+        })));
 }
 
 #[test]

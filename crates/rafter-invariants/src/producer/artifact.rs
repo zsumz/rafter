@@ -1,16 +1,14 @@
 use std::{
     error::Error,
-    fs::{self, File, OpenOptions},
-    io::Write,
+    fs,
     path::{Component, Path},
-    sync::atomic::{AtomicU64, Ordering},
 };
 
 use sha2::{Digest, Sha256};
 
 use crate::ArtifactRef;
 
-static NEXT_TEMPORARY: AtomicU64 = AtomicU64::new(0);
+use super::filesystem::HeldDirectory;
 
 pub(super) fn validate_output_dir(path: &Path) -> Result<(), Box<dyn Error>> {
     if path.is_absolute()
@@ -30,29 +28,9 @@ pub(super) fn write(
     bytes: &[u8],
 ) -> Result<ArtifactRef, Box<dyn Error>> {
     let path = output_dir.join(relative_name);
-    let parent = path.parent().ok_or("artifact path has no parent")?;
-    fs::create_dir_all(parent)?;
-    verify_confined_parent(parent)?;
-    let temporary = parent.join(format!(
-        ".artifact.tmp-{}-{}",
-        std::process::id(),
-        NEXT_TEMPORARY.fetch_add(1, Ordering::Relaxed)
-    ));
-    let mut file = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(&temporary)?;
-    let publish = (|| -> Result<(), Box<dyn Error>> {
-        file.write_all(bytes)?;
-        file.sync_all()?;
-        drop(file);
-        fs::rename(&temporary, &path)?;
-        File::open(parent)?.sync_all()?;
-        Ok(())
-    })();
-    let _ = fs::remove_file(&temporary);
-    publish?;
-    let persisted = fs::read(&path)?;
+    let workspace = HeldDirectory::workspace()?;
+    workspace.write_atomic(&path, bytes)?;
+    let persisted = workspace.read(&path)?;
     if persisted != bytes {
         return Err(format!("artifact changed during publication: {}", path.display()).into());
     }
@@ -65,12 +43,7 @@ pub(super) fn capture(
     source: &Path,
     kind: &str,
 ) -> Result<ArtifactRef, Box<dyn Error>> {
-    let root = fs::canonicalize(".")?;
-    let canonical = fs::canonicalize(source)?;
-    canonical
-        .strip_prefix(&root)
-        .map_err(|_| "artifact is outside the repository worktree")?;
-    let bytes = fs::read(&canonical)?;
+    let bytes = read_confined(source)?;
     capture_bytes(output_dir, namespace, &bytes, kind)
 }
 
@@ -83,25 +56,28 @@ pub(super) fn capture_bytes(
     let digest = format!("{:x}", Sha256::digest(bytes));
     let relative_name = namespace.join(format!("{kind}-{digest}"));
     let path = output_dir.join(relative_name);
-    let parent = path.parent().ok_or("artifact path has no parent")?;
-    fs::create_dir_all(parent)?;
-    verify_confined_parent(parent)?;
-    let persisted = crate::producer_image::publish_content_addressed(&path, bytes, false)?;
+    let workspace = HeldDirectory::workspace()?;
+    match workspace.read(&path) {
+        Ok(persisted) if persisted == bytes => return Ok(reference(&path, kind, &persisted)),
+        Ok(_) => {
+            return Err(format!(
+                "conflicting content at content-addressed artifact {}",
+                path.display()
+            )
+            .into())
+        }
+        Err(error)
+            if error
+                .downcast_ref::<std::io::Error>()
+                .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) => {}
+        Err(error) => return Err(error),
+    }
+    workspace.write_atomic(&path, bytes)?;
+    let persisted = workspace.read(&path)?;
+    if persisted != bytes {
+        return Err(format!("artifact changed during publication: {}", path.display()).into());
+    }
     Ok(reference(&path, kind, &persisted))
-}
-
-pub(super) fn capture_as(
-    output_dir: &Path,
-    relative_name: &Path,
-    source: &Path,
-    kind: &str,
-) -> Result<ArtifactRef, Box<dyn Error>> {
-    let root = fs::canonicalize(".")?;
-    let canonical = fs::canonicalize(source)?;
-    canonical
-        .strip_prefix(&root)
-        .map_err(|_| "artifact is outside the repository worktree")?;
-    write(output_dir, relative_name, kind, &fs::read(canonical)?)
 }
 
 pub(super) fn capture_external(
@@ -123,16 +99,8 @@ fn reference(path: &Path, kind: &str, bytes: &[u8]) -> ArtifactRef {
     }
 }
 
-fn verify_confined_parent(parent: &Path) -> Result<(), Box<dyn Error>> {
-    if parent.is_absolute() {
-        return Err("artifact parent must be repository-relative".into());
-    }
-    let root = fs::canonicalize(".")?;
-    let canonical = fs::canonicalize(parent)?;
-    if canonical != root.join(parent) {
-        return Err("artifact parent traverses a symlink or leaves the repository".into());
-    }
-    Ok(())
+fn read_confined(source: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
+    super::filesystem::read_file(source)
 }
 
 pub(super) fn stable_id(namespace: &str, value: &str) -> String {

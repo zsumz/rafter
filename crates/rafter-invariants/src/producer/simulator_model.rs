@@ -2,19 +2,23 @@ use std::{
     collections::BTreeMap,
     error::Error,
     ffi::OsString,
-    fs,
     path::{Path, PathBuf},
+    time::Instant,
 };
 
 use serde_json::Value;
 
 use crate::ArtifactRef;
 
-use super::{artifact, process};
+use super::{
+    artifact,
+    filesystem::{self as producer_fs, HeldDirectory, HeldFile, OperationDeadline, TREE_LIMITS},
+    process,
+};
 
 const EVENT_PREFIX: &str = "RAFTER_EVENT ";
 
-pub(super) struct SimulatorExecution {
+pub(crate) struct SimulatorExecution {
     pub events: BTreeMap<String, Vec<Value>>,
     pub artifacts: Vec<ArtifactRef>,
     pub runtime_peak_rss_kib: u64,
@@ -22,13 +26,44 @@ pub(super) struct SimulatorExecution {
     pub duration_ms: u64,
     pub build_duration_ms: u64,
     pub processes_succeeded: bool,
+    pub harness_errors: Vec<String>,
 }
 
 struct SimulatorBuild {
     binary: PathBuf,
+    binary_handle: HeldFile,
+    target_dir: HeldDirectory,
     artifacts: Vec<ArtifactRef>,
     peak_rss_kib: u64,
     duration_ms: u64,
+}
+
+fn completed_successfully(output: &process::ProcessOutput) -> bool {
+    output.status.success() && !output.timed_out
+}
+
+fn record_model_run(
+    profile: &str,
+    source_ref: &str,
+    label: &str,
+    output_dir: &Path,
+    output: &process::ProcessOutput,
+    execution: &mut SimulatorExecution,
+) -> Result<(), Box<dyn Error>> {
+    execution.runtime_peak_rss_kib = execution.runtime_peak_rss_kib.max(output.peak_rss_kib);
+    execution.duration_ms = execution
+        .duration_ms
+        .saturating_add(process::duration_ms(output.duration));
+    execution.processes_succeeded &= completed_successfully(output);
+    let source_prefix = source_ref.get(..12).unwrap_or(source_ref);
+    execution.artifacts.push(artifact::write(
+        output_dir,
+        Path::new(&format!("{profile}-simulator/{source_prefix}/{label}.log")),
+        "simulator-log",
+        &process::combined_log(label, output)?,
+    )?);
+    collect_events(profile, &output.stdout, &mut execution.events)?;
+    Ok(())
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -44,7 +79,11 @@ pub(super) fn execute(
 ) -> Result<SimulatorExecution, Box<dyn Error>> {
     let build = build(profile, source_ref, output_dir)?;
     let binary = build.binary;
+    let binary_handle = build.binary_handle;
+    let target_guard = build.target_dir;
     let mut artifacts = build.artifacts;
+    binary_handle.verify_path_binding()?;
+    target_guard.verify_path_binding()?;
     let binary_artifact = artifact::capture(
         output_dir,
         Path::new(&format!("{profile}-simulator/inputs")),
@@ -52,43 +91,275 @@ pub(super) fn execute(
         "simulator-binary",
     )?;
     artifacts.push(binary_artifact);
-    let mut events = BTreeMap::<String, Vec<Value>>::new();
-    let mut runtime_peak_rss_kib = 0_u64;
-    let mut duration_ms = 0_u64;
-    let mut processes_succeeded = true;
-    for run in execution_plan(profile, source_ref)? {
-        let output = process::timed_for(
-            process::ProcessKind::SimulatorExecution,
-            binary
-                .to_str()
-                .ok_or("simulator binary path is not UTF-8")?,
-            &run.arguments,
-            &process::base_environment(),
-            Path::new("."),
-        )?;
-        runtime_peak_rss_kib = runtime_peak_rss_kib.max(output.peak_rss_kib);
-        duration_ms = duration_ms.saturating_add(process::duration_ms(output.duration));
-        processes_succeeded &= output.status.success();
-        collect_events(profile, &output.stdout, &mut events)?;
-        let source_prefix = source_ref.get(..12).unwrap_or(source_ref);
-        artifacts.push(artifact::write(
-            output_dir,
-            Path::new(&format!(
-                "{profile}-simulator/{source_prefix}/{}.log",
-                run.label
-            )),
-            "simulator-log",
-            &process::combined_log(&run.label, &output)?,
-        )?);
-    }
-    Ok(SimulatorExecution {
-        events,
+    let execution = SimulatorExecution {
+        events: BTreeMap::new(),
         artifacts,
-        runtime_peak_rss_kib,
+        runtime_peak_rss_kib: 0,
         build_peak_rss_kib: build.peak_rss_kib,
-        duration_ms,
+        duration_ms: 0,
         build_duration_ms: build.duration_ms,
-        processes_succeeded,
+        processes_succeeded: true,
+        harness_errors: Vec::new(),
+    };
+    let program = binary
+        .to_str()
+        .ok_or("simulator binary path is not UTF-8")?;
+    Ok(execute_plan(
+        profile,
+        source_ref,
+        output_dir,
+        execution_plan(profile, source_ref)?,
+        execution,
+        |run| {
+            binary_handle.verify_path_binding()?;
+            target_guard.verify_path_binding()?;
+            process::timed_for(
+                process::ProcessKind::SimulatorExecution,
+                program,
+                &run.arguments,
+                &process::base_environment(),
+                Path::new("."),
+            )
+        },
+    ))
+}
+
+fn execute_plan<F>(
+    profile: &str,
+    source_ref: &str,
+    output_dir: &Path,
+    runs: Vec<ModelRun>,
+    mut execution: SimulatorExecution,
+    mut invoke: F,
+) -> SimulatorExecution
+where
+    F: FnMut(&ModelRun) -> Result<process::ProcessOutput, Box<dyn Error>>,
+{
+    for run in runs {
+        let output = match invoke(&run) {
+            Ok(output) => output,
+            Err(error) => {
+                execution.processes_succeeded = false;
+                execution.harness_errors.push(format!(
+                    "simulator invocation {} failed before producing a receipt: {error}",
+                    run.label
+                ));
+                break;
+            }
+        };
+        if let Err(error) = record_model_run(
+            profile,
+            source_ref,
+            &run.label,
+            output_dir,
+            &output,
+            &mut execution,
+        ) {
+            execution.processes_succeeded = false;
+            execution.harness_errors.push(format!(
+                "simulator invocation {} could not be recorded: {error}",
+                run.label
+            ));
+            break;
+        }
+        if !completed_successfully(&output) {
+            execution.harness_errors.push(format!(
+                "simulator invocation {} did not complete successfully",
+                run.label
+            ));
+            break;
+        }
+    }
+    execution
+}
+
+#[cfg(all(test, unix))]
+pub(crate) struct SimulatorFixtureInvocation<'a> {
+    pub label: &'a str,
+    pub program: &'a str,
+    pub arguments: &'a [OsString],
+    pub environment: &'a BTreeMap<String, String>,
+    pub current_dir: &'a Path,
+    pub output_dir: &'a Path,
+}
+
+#[cfg(all(test, unix))]
+pub(super) fn timed_out_zero_exit_fixture(
+    profile: &str,
+    source_ref: &str,
+    stdout: &str,
+    output_dir: &Path,
+) -> Result<(SimulatorExecution, process::LabeledProcess), Box<dyn Error>> {
+    const SCRIPT: &str = r#"trap 'exit 0' TERM
+printf '%s\n' 'RAFTER_FIXTURE_READY'
+printf '%s' "$1"
+while :; do
+    sleep 1
+done
+"#;
+    timed_out_zero_exit_fixture_at(
+        profile,
+        source_ref,
+        &SimulatorFixtureInvocation {
+            label: "fast",
+            program: "/bin/sh",
+            arguments: &[
+                OsString::from("-c"),
+                OsString::from(SCRIPT),
+                OsString::from("simulator-timeout-fixture"),
+                OsString::from(stdout),
+            ],
+            environment: &process::base_environment(),
+            current_dir: Path::new("."),
+            output_dir,
+        },
+    )
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn timed_out_zero_exit_fixture_at(
+    profile: &str,
+    source_ref: &str,
+    invocation: &SimulatorFixtureInvocation<'_>,
+) -> Result<(SimulatorExecution, process::LabeledProcess), Box<dyn Error>> {
+    let output = process::timed_with_timeout(
+        invocation.program,
+        invocation.arguments,
+        invocation.environment,
+        invocation.current_dir,
+        std::time::Duration::from_secs(1),
+    )?;
+    if !output.status.success() || !output.timed_out {
+        return Err(format!(
+            "simulator timeout fixture expected a timed-out zero exit, got {:?} (timed_out={})",
+            output.status.code(),
+            output.timed_out
+        )
+        .into());
+    }
+    if !output.stdout.starts_with(b"RAFTER_FIXTURE_READY\n") {
+        return Err(
+            "simulator timeout fixture was terminated before installing its TERM trap".into(),
+        );
+    }
+    let receipt = process::combined_log(invocation.label, &output)?;
+    let mut parsed = process::parse_combined_processes(&String::from_utf8(receipt)?)?;
+    let [observed] = parsed.as_mut_slice() else {
+        return Err("simulator timeout fixture emitted an invalid process receipt".into());
+    };
+    let observed = observed.clone();
+    let execution = SimulatorExecution {
+        events: BTreeMap::new(),
+        artifacts: Vec::new(),
+        runtime_peak_rss_kib: 0,
+        build_peak_rss_kib: 0,
+        duration_ms: 0,
+        build_duration_ms: 0,
+        processes_succeeded: true,
+        harness_errors: Vec::new(),
+    };
+    let run = ModelRun {
+        label: invocation.label.to_owned(),
+        arguments: invocation.arguments.to_vec(),
+    };
+    let mut output = Some(output);
+    let execution = execute_plan(
+        profile,
+        source_ref,
+        invocation.output_dir,
+        vec![run],
+        execution,
+        |_| {
+            output
+                .take()
+                .ok_or_else(|| "timeout fixture invoked more than once".into())
+        },
+    );
+    Ok((execution, observed))
+}
+
+#[cfg(all(test, unix))]
+pub(crate) fn later_launch_error_fixture_at(
+    profile: &str,
+    source_ref: &str,
+    invocation: &SimulatorFixtureInvocation<'_>,
+) -> SimulatorExecution {
+    let execution = SimulatorExecution {
+        events: BTreeMap::new(),
+        artifacts: Vec::new(),
+        runtime_peak_rss_kib: 0,
+        build_peak_rss_kib: 0,
+        duration_ms: 0,
+        build_duration_ms: 0,
+        processes_succeeded: true,
+        harness_errors: Vec::new(),
+    };
+    let runs = vec![model_run("fast", None), model_run("raft-soak", None)];
+    let mut first = true;
+    execute_plan(
+        profile,
+        source_ref,
+        invocation.output_dir,
+        runs,
+        execution,
+        |_| {
+            if first {
+                first = false;
+                process::timed_with_timeout(
+                    invocation.program,
+                    invocation.arguments,
+                    invocation.environment,
+                    invocation.current_dir,
+                    std::time::Duration::from_secs(5),
+                )
+            } else {
+                Err("injected raft-soak launch failure".into())
+            }
+        },
+    )
+}
+
+#[cfg(all(test, unix))]
+pub(super) fn later_launch_error_fixture(
+    profile: &str,
+    source_ref: &str,
+    stdout: &str,
+    output_dir: &Path,
+) -> SimulatorExecution {
+    let execution = SimulatorExecution {
+        events: BTreeMap::new(),
+        artifacts: Vec::new(),
+        runtime_peak_rss_kib: 0,
+        build_peak_rss_kib: 0,
+        duration_ms: 0,
+        build_duration_ms: 0,
+        processes_succeeded: true,
+        harness_errors: Vec::new(),
+    };
+    let runs = vec![model_run("fast", None), model_run("raft-soak", None)];
+    execute_plan(profile, source_ref, output_dir, runs, execution, |run| {
+        if run.label == "fast" {
+            process::timed_with_timeout(
+                "/bin/sh",
+                &[
+                    OsString::from("-c"),
+                    OsString::from("printf '%s' \"$1\""),
+                    OsString::from("simulator-first-run"),
+                    OsString::from(stdout),
+                ],
+                &process::base_environment(),
+                Path::new("."),
+                std::time::Duration::from_secs(5),
+            )
+        } else {
+            process::timed_with_timeout(
+                "/definitely/missing/rafter-model-check-fast",
+                &run.arguments,
+                &process::base_environment(),
+                Path::new("."),
+                std::time::Duration::from_secs(5),
+            )
+        }
     })
 }
 
@@ -159,14 +430,13 @@ fn build(
     let target_dir = Path::new("target/rafter-invariants/simulator-build")
         .join(source_prefix)
         .join(profile);
-    if target_dir.exists() {
-        fs::remove_dir_all(&target_dir)?;
-    }
-    fs::create_dir_all(&target_dir)?;
+    let (execution_deadline, _) = process::active_layer_deadlines(profile, "simulator")?;
+    let target_guard = reset_simulator_build_scratch(&target_dir, execution_deadline)?;
+    target_guard.verify_path_binding()?;
     let mut environment = process::base_environment();
     environment.insert(
         "CARGO_TARGET_DIR".to_owned(),
-        target_dir.to_string_lossy().into_owned(),
+        target_guard.external_path().to_string_lossy().into_owned(),
     );
     let arguments = [
         "build".into(),
@@ -178,6 +448,7 @@ fn build(
         "rafter-model-check-fast".into(),
         "--message-format=json-render-diagnostics".into(),
     ];
+    target_guard.verify_path_binding()?;
     let output = process::timed_for(
         process::ProcessKind::Compile,
         "cargo",
@@ -191,16 +462,31 @@ fn build(
         "compile-log",
         &process::combined_log("simulator compile", &output)?,
     )?;
-    if !output.status.success() {
+    if !completed_successfully(&output) {
         return Err("simulator release build failed".into());
     }
     let binary = executable_from_messages(&output.stdout)?;
+    let binary_handle = producer_fs::hold_file(&binary)?;
+    binary_handle.verify_path_binding()?;
     Ok(SimulatorBuild {
         binary,
+        binary_handle,
+        target_dir: target_guard,
         artifacts: vec![log],
         peak_rss_kib: output.peak_rss_kib,
         duration_ms: process::duration_ms(output.duration),
     })
+}
+
+pub(super) fn reset_simulator_build_scratch(
+    path: &Path,
+    deadline: Instant,
+) -> Result<HeldDirectory, Box<dyn Error>> {
+    HeldDirectory::replace_tree(
+        path,
+        TREE_LIMITS,
+        OperationDeadline::at(deadline, "simulator build scratch cleanup"),
+    )
 }
 
 fn executable_from_messages(bytes: &[u8]) -> Result<PathBuf, Box<dyn Error>> {

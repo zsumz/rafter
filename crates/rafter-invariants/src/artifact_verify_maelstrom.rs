@@ -12,14 +12,20 @@ use crate::artifact_verify_maelstrom_support::{
     verify_matches_file, LeaseArtifactStatus,
 };
 
-pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateError> {
+pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<Vec<String>, AggregateError> {
     let trials = configuration(bundle, "trials")?
         .parse::<u64>()
         .map_err(|parse_error| error(format!("parse Maelstrom trial count: {parse_error}")))?;
+    let mut diagnostics = Vec::new();
     for check in &bundle.execution.checks {
-        verify_check(bundle, check, trials, root)?;
+        if verify_check(bundle, check, trials, root)? {
+            diagnostics.push(format!(
+                "{} preserved a Maelstrom counterexample alongside a harness error",
+                check.check_id
+            ));
+        }
     }
-    Ok(())
+    Ok(diagnostics)
 }
 
 fn verify_check(
@@ -27,7 +33,7 @@ fn verify_check(
     check: &CheckReceipt,
     trials: u64,
     root: &Path,
-) -> Result<(), AggregateError> {
+) -> Result<bool, AggregateError> {
     let scenario = check
         .check_id
         .strip_prefix("maelstrom/")
@@ -251,7 +257,7 @@ fn verify_statuses(
     process_successes: &[bool],
     coverage: &[bool],
     lease_statuses: &[LeaseArtifactStatus],
-) -> Result<(), AggregateError> {
+) -> Result<bool, AggregateError> {
     let statuses = bundle
         .results
         .iter()
@@ -274,6 +280,8 @@ fn verify_statuses(
             LeaseArtifactStatus::Violation | LeaseArtifactStatus::ViolationWithHarnessError
         )
     });
+    let harness_error =
+        has_harness_error(result_parse_successes, process_successes, lease_statuses);
     let expected_failures =
         expected_counterexample_invariants(lease_violation, non_linearizable, owns_rd06);
     let globally_bound_rd06 = bundle
@@ -291,10 +299,7 @@ fn verify_statuses(
         )
     } else if non_linearizable {
         supporting_counterexample_statuses(bundle, check, &statuses)
-    } else if result_parse_successes.contains(&false)
-        || process_successes.contains(&false)
-        || lease_statuses.contains(&LeaseArtifactStatus::HarnessError)
-    {
+    } else if harness_error {
         uniform_statuses(
             check,
             &statuses,
@@ -317,13 +322,28 @@ fn verify_statuses(
         )
     };
     if agrees {
-        Ok(())
+        Ok((lease_violation || non_linearizable) && harness_error)
     } else {
         Err(error(format!(
             "{} evidence statuses disagree with Maelstrom artifacts",
             check.check_id
         )))
     }
+}
+
+fn has_harness_error(
+    result_parse_successes: &[bool],
+    process_successes: &[bool],
+    lease_statuses: &[LeaseArtifactStatus],
+) -> bool {
+    result_parse_successes.contains(&false)
+        || process_successes.contains(&false)
+        || lease_statuses.iter().any(|status| {
+            matches!(
+                status,
+                LeaseArtifactStatus::HarnessError | LeaseArtifactStatus::ViolationWithHarnessError
+            )
+        })
 }
 
 fn local_counterexample_agrees(
@@ -425,8 +445,18 @@ mod tests {
     use crate::{CheckCompletion, CheckReceipt, EvidenceStatus};
 
     use super::{
-        counterexample_statuses, expected_counterexample_invariants, local_counterexample_agrees,
+        counterexample_statuses, expected_counterexample_invariants, has_harness_error,
+        local_counterexample_agrees, LeaseArtifactStatus,
     };
+
+    #[test]
+    fn combined_lease_violation_retains_secondary_harness_classification() {
+        assert!(has_harness_error(
+            &[true],
+            &[true],
+            &[LeaseArtifactStatus::ViolationWithHarnessError]
+        ));
+    }
 
     #[test]
     fn independent_verifier_requires_both_rd05_and_rd06_failures_when_both_rederive() {

@@ -10,7 +10,11 @@ use serde::Deserialize;
 
 use crate::{ArtifactRef, TestIdentity};
 
-use super::{artifact, process};
+use super::{
+    artifact,
+    filesystem::{self as producer_fs, HeldDirectory, HeldFile, OperationDeadline, TREE_LIMITS},
+    process,
+};
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) struct Target {
@@ -21,11 +25,26 @@ pub(super) struct Target {
 
 pub(super) struct CompiledTarget {
     pub executable: Option<PathBuf>,
+    pub executable_handle: Option<HeldFile>,
     pub binary_artifact: Option<ArtifactRef>,
     pub artifact: ArtifactRef,
     pub error: Option<String>,
     pub peak_rss_kib: u64,
     pub duration_ms: u64,
+}
+
+pub(super) struct PreparedTargetDir {
+    handle: HeldDirectory,
+}
+
+impl PreparedTargetDir {
+    pub(super) fn external_path(&self) -> PathBuf {
+        self.handle.external_path()
+    }
+
+    pub(super) fn verify(&self) -> Result<(), Box<dyn Error>> {
+        self.handle.verify_path_binding()
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -81,6 +100,10 @@ pub(super) fn compile(
         &process::combined_log(&target.key(), &output)?,
     )?;
     let (executable, error) = compile_result(&output, target);
+    let executable_handle = executable
+        .as_deref()
+        .map(producer_fs::hold_file)
+        .transpose()?;
     let binary_artifact = executable
         .as_deref()
         .map(|path| {
@@ -94,6 +117,7 @@ pub(super) fn compile(
         .transpose()?;
     Ok(CompiledTarget {
         executable,
+        executable_handle,
         binary_artifact,
         artifact: log,
         error,
@@ -260,16 +284,21 @@ fn canonical_test_executable(executable: &Path, target: &Target) -> Result<PathB
 pub(super) fn prepare_target_dir(
     profile: &str,
     source_ref: &str,
-) -> Result<PathBuf, Box<dyn Error>> {
+    deadline: std::time::Instant,
+) -> Result<PreparedTargetDir, Box<dyn Error>> {
     let source_prefix = source_ref.get(..12).unwrap_or(source_ref);
     let directory = Path::new("target/rafter-invariants/build")
         .join(source_prefix)
         .join(format!("{profile}-tests"));
-    if directory.exists() {
-        fs::remove_dir_all(&directory)?;
-    }
-    fs::create_dir_all(&directory)?;
-    Ok(directory)
+    let directory_guard = HeldDirectory::replace_tree(
+        &directory,
+        TREE_LIMITS,
+        OperationDeadline::at(deadline, "test compile scratch cleanup"),
+    )?;
+    directory_guard.verify_path_binding()?;
+    Ok(PreparedTargetDir {
+        handle: directory_guard,
+    })
 }
 
 impl From<&TestIdentity> for Target {

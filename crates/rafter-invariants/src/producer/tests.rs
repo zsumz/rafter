@@ -37,11 +37,12 @@ pub(super) fn run(
         .runners
         .get("tests")
         .ok_or("tests runner missing")?;
-    let target_dir = prepare_target_dir(profile, &source.commit)?;
+    let (execution_deadline, _) = process::active_layer_deadlines(profile, "tests")?;
+    let target_dir = prepare_target_dir(profile, &source.commit, execution_deadline)?;
     let mut build_environment = process::base_environment();
     build_environment.insert(
         "CARGO_TARGET_DIR".to_owned(),
-        target_dir.to_string_lossy().into_owned(),
+        target_dir.external_path().to_string_lossy().into_owned(),
     );
     let identities = test_evidence(catalog, contract);
     let targets = identities.keys().map(Target::from).collect::<BTreeSet<_>>();
@@ -50,6 +51,7 @@ pub(super) fn run(
     let mut peak_rss_kib = 0;
     let mut compile_duration_ms = 0_u64;
     for target in targets {
+        target_dir.verify()?;
         let outcome = compile(
             &target,
             profile,

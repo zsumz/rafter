@@ -12,7 +12,7 @@ use crate::{
 };
 
 use super::{
-    artifact, source,
+    artifact, process, source,
     tla_contract::{
         fetch_tool, parse_timeout, required_configuration, source_artifacts, validate_java,
         validate_runner_options, validate_spec_contract,
@@ -31,10 +31,13 @@ pub(super) fn run(
     context: &ProducerContext<'_>,
 ) -> Result<ResultBundle, Box<dyn Error>> {
     let runner = contract.runners.get("tla").ok_or("TLA runner missing")?;
+    process::ensure_execution_deadline(profile, "tla", "TLA runner validation")?;
     validate_runner_options(&runner.configuration)?;
     validate_java(&source, &runner.configuration)?;
     fetch_tool()?;
+    process::ensure_execution_deadline(profile, "tla", "TLA tool preparation")?;
     let artifacts = source_artifacts(&runner.configuration, output_dir, profile, &source.commit)?;
+    process::ensure_execution_deadline(profile, "tla", "TLA input capture")?;
     let descriptors = catalog
         .required_evidence(contract)
         .into_values()
@@ -47,6 +50,7 @@ pub(super) fn run(
         .collect::<BTreeSet<_>>();
     let config_name = required_configuration(&runner.configuration, "config")?;
     let configured = validate_spec_contract(config_name, &symbols)?;
+    process::ensure_execution_deadline(profile, "tla", "TLA specification validation")?;
     let timeout = parse_timeout(required_configuration(
         &runner.configuration,
         "soft_timeout",
@@ -84,6 +88,7 @@ pub(super) fn run(
         artifacts: execution.artifacts.clone(),
     };
     source::verify(&source)?;
+    process::ensure_total_deadline(profile, "tla", "TLA receipt construction", false)?;
     Ok(ResultBundle {
         schema_version: RESULT_SCHEMA_VERSION,
         runner: "tla".to_owned(),
@@ -132,11 +137,6 @@ fn evaluate(
     if execution.detector_status != ProbeStatus::Passed {
         return error("TLC negative detector did not report its named counterexample");
     }
-    if let Some(checkpoint_error) = &execution.checkpoint_error {
-        return error(&format!(
-            "TLC checkpoint recovery rejected: {checkpoint_error}"
-        ));
-    }
     if let Some(invariant) = execution
         .main
         .as_ref()
@@ -147,6 +147,11 @@ fn evaluate(
         }
         return error(&format!(
             "TLC violated unregistered harness predicate {invariant}"
+        ));
+    }
+    if let Some(checkpoint_error) = &execution.checkpoint_error {
+        return error(&format!(
+            "TLC checkpoint recovery rejected: {checkpoint_error}"
         ));
     }
     if execution.main_status == MainStatus::TimedOut {

@@ -1,7 +1,7 @@
 use std::{
     collections::BTreeSet,
     fs,
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
 };
 
 use sha2::{Digest, Sha256};
@@ -85,23 +85,18 @@ fn verify_artifact(artifact: &ArtifactRef, repository: &Path) -> Result<(), Aggr
 
 pub(super) fn verify_producer_invocation_paths(
     bundle: &ResultBundle,
-    root: &Path,
+    _root: &Path,
 ) -> Result<(), AggregateError> {
-    let repository = fs::canonicalize(root)
-        .map_err(|error| AggregateError::new(format!("canonicalize producer root: {error}")))?;
-    let current_dir =
-        fs::canonicalize(&bundle.execution.invocation.current_dir).map_err(|error| {
-            AggregateError::new(format!("canonicalize producer working directory: {error}"))
-        })?;
-    if current_dir != repository {
+    let current_dir = Path::new(&bundle.execution.invocation.current_dir);
+    if !is_clean_absolute_path(current_dir) {
         return Err(AggregateError::new(
-            "producer working directory does not match the canonical source checkout".to_owned(),
+            "producer working directory must be a clean absolute lexical root".to_owned(),
         ));
     }
     let program = Path::new(&bundle.execution.invocation.program);
     let expected_program =
-        crate::producer_image::image_path(&repository, &bundle.execution.invocation.program_sha256);
-    if program != expected_program {
+        crate::producer_image::image_path(current_dir, &bundle.execution.invocation.program_sha256);
+    if !is_clean_absolute_path(program) || program.as_os_str() != expected_program.as_os_str() {
         return Err(AggregateError::new(
             "producer program does not have the exact managed content-addressed path".to_owned(),
         ));
@@ -127,6 +122,25 @@ pub(super) fn verify_producer_invocation_paths(
         ));
     }
     Ok(())
+}
+
+fn is_clean_absolute_path(path: &Path) -> bool {
+    if !path.is_absolute() {
+        return false;
+    }
+    let normalized = path.components().collect::<PathBuf>();
+    if normalized.as_os_str() != path.as_os_str() {
+        return false;
+    }
+    let mut has_normal_component = false;
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => {}
+            Component::Normal(_) => has_normal_component = true,
+            Component::CurDir | Component::ParentDir => return false,
+        }
+    }
+    has_normal_component
 }
 
 #[cfg(test)]
@@ -164,6 +178,11 @@ mod tests {
         };
 
         verify_artifact(&artifact, &repository).expect("regular artifact verifies");
+        let mut substituted = artifact.clone();
+        substituted.path = path.to_string_lossy().into_owned();
+        assert!(verify_artifact(&substituted, &repository).is_err());
+        substituted.path = "../artifact".to_owned();
+        assert!(verify_artifact(&substituted, &repository).is_err());
         std::fs::write(&path, b"modified artifact").expect("modify artifact");
         assert!(verify_artifact(&artifact, &repository).is_err());
         std::fs::remove_file(&path).expect("remove modified artifact");

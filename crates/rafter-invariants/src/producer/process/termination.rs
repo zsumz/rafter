@@ -283,8 +283,8 @@ pub(super) fn measurement_error(
     retained_error(error, stdout_path, stderr_path, Some(telemetry_path))
 }
 
-pub(super) fn retained_result<T>(
-    result: std::io::Result<T>,
+pub(super) fn retained_result<T, E: fmt::Display>(
+    result: Result<T, E>,
     stdout_path: &Path,
     stderr_path: &Path,
     telemetry_path: Option<&Path>,

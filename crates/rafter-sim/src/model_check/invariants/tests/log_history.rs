@@ -3,31 +3,39 @@ use super::super::history::{
 };
 use super::*;
 use crate::model_check::observations::Observation;
-use rafter_invariant_test::{oracle_assert, oracle_assert_eq, oracle_expect_err};
+use rafter_invariant_test::{
+    oracle_assert, oracle_assert_eq, oracle_detector_witness, oracle_expect_err,
+};
 
 #[test]
 fn leader_append_only_detects_leader_term_truncation() {
     let mut cluster = Cluster::new(three_node_configs());
-    elect_node_one(&mut cluster);
+    let full_log = [
+        (1, Term(1), b"retained".as_slice()),
+        (2, Term(1), b"later-truncated".as_slice()),
+    ];
+    for node_id in [NodeId(1), NodeId(2), NodeId(3)] {
+        cluster
+            .restart_node_from_bootstrap(node_id, bootstrap_state(Term(1), &full_log))
+            .expect("full uncommitted log bootstrap is valid");
+    }
     let mut state = ExplorationState::new(cluster);
+    elect_node_one_with_node_three_in_state(&mut state);
     let leader_id = NodeId(1);
     let leader_term = state.cluster().current_term(leader_id);
+    oracle_assert_eq!(leader_term, Term(2));
+    oracle_assert_eq!(state.cluster().last_log_index(leader_id), LogIndex(3));
 
-    let mut previous = state
-        .logical_log_history_mut()
-        .leader_logs_by_term
-        .get(&(leader_id, leader_term))
-        .expect("leader observation should be recorded")
-        .clone();
-    let stale_tail_index = state.cluster().last_log_index(leader_id).next();
-    previous.entries.insert(
-        stale_tail_index,
-        LogEntry::application(leader_term, b"stale-leader-tail".to_vec()),
-    );
-    state
-        .logical_log_history_mut()
-        .leader_logs_by_term
-        .insert((leader_id, leader_term), previous);
+    for node_id in [NodeId(1), NodeId(2), NodeId(3)] {
+        state
+            .inject_bootstrap_state(
+                node_id,
+                bootstrap_state(Term(1), &[(1, Term(1), b"retained")]),
+            )
+            .expect("truncated node bootstrap is valid");
+    }
+    elect_node_one_with_node_three_in_state(&mut state);
+    oracle_assert_eq!(state.cluster().current_term(leader_id), leader_term);
     record_log_history_observation(&mut state);
 
     let failure = oracle_expect_err!(
@@ -451,4 +459,5 @@ fn snapshot_only_view(transfer_sequence: u64, entries: &[(u64, u64, &[u8])]) -> 
 
 fn record_log_history_observation(state: &mut ExplorationState) {
     state.refresh_log_history();
+    oracle_detector_witness!(record_log_history_observation);
 }

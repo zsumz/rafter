@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 const TOKEN_ENV: &str = "RAFTER_INVARIANT_ORACLE_TOKEN";
 const OBSERVED_PREFIX: &str = "RAFTER_INVARIANT_ORACLE_OBSERVED:";
 const VIOLATION_PREFIX: &str = "RAFTER_INVARIANT_ORACLE_VIOLATION:";
+const DETECTOR_WITNESS_PREFIX: &str = "RAFTER_INVARIANT_DETECTOR_WITNESS:";
 
 static OBSERVED: AtomicBool = AtomicBool::new(false);
 
@@ -19,6 +20,13 @@ pub fn __oracle_observed() {
         if let Ok(token) = std::env::var(TOKEN_ENV) {
             eprintln!("{OBSERVED_PREFIX}{token}");
         }
+    }
+}
+
+#[doc(hidden)]
+pub fn __oracle_detector_witness(detector: &str) {
+    if let Ok(token) = std::env::var(TOKEN_ENV) {
+        eprintln!("{DETECTOR_WITNESS_PREFIX}{token}:{detector}");
     }
 }
 
@@ -121,6 +129,7 @@ macro_rules! oracle_expect_err {
     ($result:expr, $message:expr $(,)?) => {{
         match $result {
             ::core::result::Result::Err(error) => {
+                $crate::__oracle_detector_witness(stringify!($result));
                 $crate::__oracle_observed();
                 error
             }
@@ -128,6 +137,14 @@ macro_rules! oracle_expect_err {
                 $crate::__oracle_violation(format_args!("{}: {value:?}", $message))
             }
         }
+    }};
+}
+
+/// Record that a named detector or recorder completed its runtime observation.
+#[macro_export]
+macro_rules! oracle_detector_witness {
+    ($detector:ident $(,)?) => {{
+        $crate::__oracle_detector_witness(concat!(stringify!($detector), "()"));
     }};
 }
 
@@ -182,6 +199,20 @@ macro_rules! oracle_prop_assert_eq {
 
 #[cfg(test)]
 mod tests {
+    fn token_bound_regression_detector() -> Result<(), &'static str> {
+        Err("expected detector rejection")
+    }
+
+    #[test]
+    #[ignore = "subprocess fixture for rafter-invariants"]
+    fn token_bound_detector_witness_subprocess_fixture() {
+        let error = oracle_expect_err!(
+            token_bound_regression_detector(),
+            "fixture detector must reject"
+        );
+        assert_eq!(error, "expected detector rejection");
+    }
+
     #[test]
     fn ordinary_success_does_not_require_gate_environment() {
         oracle_assert!(true);

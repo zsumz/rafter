@@ -8,7 +8,9 @@ use super::super::history::{
 };
 use super::*;
 use crate::model_check::observations::Observation;
-use rafter_invariant_test::{oracle_assert, oracle_assert_eq, oracle_expect_err};
+use rafter_invariant_test::{
+    oracle_assert, oracle_assert_eq, oracle_detector_witness, oracle_expect_err,
+};
 
 #[test]
 fn commit_certificate_uses_pre_transition_joint_quorum_for_candidate_below_config() {
@@ -573,6 +575,7 @@ pub(super) fn state_with_bootstraps(
 
 fn record_leader_completeness_check(state: &mut ExplorationState) {
     state.record_leader_completeness_observation();
+    oracle_detector_witness!(record_leader_completeness_check);
 }
 
 fn leader_context(

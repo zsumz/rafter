@@ -407,7 +407,8 @@ fn fetch_tool_with(
     arguments: &[OsString],
     timeout: Duration,
 ) -> Result<(), Box<dyn Error>> {
-    let output = process::timed_with_timeout(
+    let output = process::timed_with_optional_layer_budget(
+        process::ProcessKind::TlaExecution,
         program,
         arguments,
         &process::base_environment(),

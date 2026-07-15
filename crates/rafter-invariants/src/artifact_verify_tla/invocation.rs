@@ -1,4 +1,7 @@
-use std::{fs, path::Path};
+use std::{
+    fs,
+    path::{Component, Path, PathBuf},
+};
 
 use crate::producer::tla_checkpoint::{RecoveryReport, RECOVERY_REPORT_KIND};
 use crate::producer::tla_output::{
@@ -14,10 +17,38 @@ pub(super) fn read_process_log(
     kind: &str,
     label: &str,
     root: &Path,
+    producer_repository: &Path,
 ) -> Result<crate::producer::ProcessLog, AggregateError> {
     let log = read_bound_process_log(check, kind, label, root)?;
-    verify_tla_invocation(bundle, check, label, &log.invocation, root)?;
+    verify_tla_invocation(
+        bundle,
+        check,
+        label,
+        &log.invocation,
+        root,
+        producer_repository,
+    )?;
     Ok(log)
+}
+
+pub(super) fn read_initial_process_log(
+    bundle: &ResultBundle,
+    check: &crate::CheckReceipt,
+    kind: &str,
+    label: &str,
+    root: &Path,
+) -> Result<(crate::producer::ProcessLog, PathBuf), AggregateError> {
+    let log = read_bound_process_log(check, kind, label, root)?;
+    let producer_repository = producer_repository(&log.invocation.current_dir)?;
+    verify_tla_invocation(
+        bundle,
+        check,
+        label,
+        &log.invocation,
+        root,
+        &producer_repository,
+    )?;
+    Ok((log, producer_repository))
 }
 
 pub(super) fn read_bound_process_log(
@@ -53,9 +84,10 @@ pub(super) fn optional_process_log(
     kind: &str,
     label: &str,
     root: &Path,
+    producer_repository: &Path,
 ) -> Result<Option<crate::producer::ProcessLog>, AggregateError> {
     has_kind(check, kind)?
-        .then(|| read_process_log(bundle, check, kind, label, root))
+        .then(|| read_process_log(bundle, check, kind, label, root, producer_repository))
         .transpose()
 }
 
@@ -71,6 +103,7 @@ fn verify_tla_invocation(
     label: &str,
     observed: &crate::InvocationReceipt,
     root: &Path,
+    producer_repository: &Path,
 ) -> Result<(), AggregateError> {
     let repository = fs::canonicalize(root)
         .map_err(|error| AggregateError::new(format!("canonicalize TLA root: {error}")))?;
@@ -97,13 +130,19 @@ fn verify_tla_invocation(
                 ))
             })?;
             let artifact = unique_artifact(check, &config_kind)?;
-            let config = fs::canonicalize(root.join(&artifact.path))
-                .map_err(|error| {
+            let config = fs::canonicalize(root.join(&artifact.path)).map_err(|error| {
+                AggregateError::new(format!(
+                    "canonicalize TLA detector config {}: {error}",
+                    artifact.path
+                ))
+            })?;
+            let config = producer_repository
+                .join(config.strip_prefix(&repository).map_err(|_| {
                     AggregateError::new(format!(
-                        "canonicalize TLA detector config {}: {error}",
+                        "TLA detector config escaped the aggregate checkout: {}",
                         artifact.path
                     ))
-                })?
+                })?)
                 .to_string_lossy()
                 .into_owned();
             InvocationTarget {
@@ -113,8 +152,9 @@ fn verify_tla_invocation(
             }
         }
     };
-    let current_dir = repository.join("specs/tla/raft");
-    let arguments = expected_tla_arguments(bundle, check, label, root, &repository, target)?;
+    let current_dir = producer_repository.join("specs/tla/raft");
+    let arguments =
+        expected_tla_arguments(bundle, check, label, root, producer_repository, target)?;
     let java_sha = bundle
         .execution
         .source
@@ -134,12 +174,40 @@ fn verify_tla_invocation(
     Ok(())
 }
 
+fn producer_repository(current_dir: &str) -> Result<PathBuf, AggregateError> {
+    let current_dir = Path::new(current_dir);
+    let suffix = Path::new("specs/tla/raft");
+    let clean_absolute = current_dir.is_absolute()
+        && current_dir
+            .components()
+            .all(|component| !matches!(component, Component::CurDir | Component::ParentDir));
+    let repository = current_dir
+        .ancestors()
+        .nth(suffix.components().count())
+        .filter(|repository| {
+            repository
+                .components()
+                .any(|part| matches!(part, Component::Normal(_)))
+        });
+    let Some(repository) = repository else {
+        return Err(AggregateError::new(
+            "TLA working directory does not identify a producer checkout".to_owned(),
+        ));
+    };
+    if !clean_absolute || repository.join(suffix) != current_dir {
+        return Err(AggregateError::new(
+            "TLA working directory is not the exact repository-relative spec path".to_owned(),
+        ));
+    }
+    Ok(repository.to_owned())
+}
+
 fn expected_tla_arguments(
     bundle: &ResultBundle,
     check: &crate::CheckReceipt,
     label: &str,
     root: &Path,
-    repository: &Path,
+    producer_repository: &Path,
     target: InvocationTarget<'_>,
 ) -> Result<Vec<String>, AggregateError> {
     let source_prefix = bundle.source_ref.get(..12).unwrap_or(&bundle.source_ref);
@@ -148,12 +216,12 @@ fn expected_tla_arguments(
             .configuration
             .contains_key("checkpoint_minutes");
     let state_dir = if checkpointed {
-        repository
+        producer_repository
             .join("target/rafter-invariants/tla-checkpoint")
             .join(&bundle.profile)
             .join("states")
     } else {
-        repository
+        producer_repository
             .join("target/rafter-invariants/tla")
             .join(source_prefix)
             .join(&bundle.profile)
@@ -166,7 +234,7 @@ fn expected_tla_arguments(
     arguments.extend([
         "-XX:+UseParallelGC".to_owned(),
         "-cp".to_owned(),
-        repository
+        producer_repository
             .join("tools/cache/tla2tools.jar")
             .to_string_lossy()
             .into_owned(),

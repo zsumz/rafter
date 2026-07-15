@@ -21,6 +21,9 @@ use crate::{ArtifactRef, InvocationReceipt, ResultBundle};
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+#[path = "artifact_verify_tla/serialized_tests.rs"]
+mod serialized_tests;
+
 #[test]
 fn complete_tla_bundle_verifies() {
     let fixture = Fixture::new();
@@ -92,6 +95,17 @@ fn timed_out_tla_bundle_verifies_progress_without_terminal_proof() {
             && result.classification == Some(crate::FailureClassification::CoverageNotReached)
     }));
     verify(&fixture.bundle, &fixture.root).expect("timed-out TLA progress verifies");
+}
+
+#[test]
+fn named_violation_with_malformed_terminal_statistics_returns_a_diagnostic() {
+    let mut fixture = Fixture::new();
+    fixture.set_malformed_terminal_counterexample("ElectionSafety");
+
+    let diagnostics =
+        verify(&fixture.bundle, &fixture.root).expect("named counterexample still verifies");
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].contains("TLC 2199 frame has malformed state statistics"));
 }
 
 #[test]
@@ -245,6 +259,33 @@ fn all_red_bundle_still_verifies_exact_invocation() {
 }
 
 #[test]
+fn producer_root_rebasing_preserves_exact_tla_paths() {
+    let mut fixture = Fixture::new();
+    let producer_root = fixture.root.with_extension("producer-root-a");
+    fixture.rebase_process_invocations(&producer_root);
+    let mutation = fixture.read_log(MUTATION_SUITE_ARTIFACT_KIND);
+    assert_eq!(
+        mutation.invocation.current_dir,
+        producer_root.to_string_lossy()
+    );
+    verify(&fixture.bundle, &fixture.root).expect("root-rebased TLA invocations verify");
+
+    let mut forged = fixture.read_log("tla-log");
+    let classpath = forged
+        .invocation
+        .arguments
+        .iter()
+        .position(|argument| argument == "-cp")
+        .expect("classpath argument exists");
+    forged.invocation.arguments[classpath + 1] = producer_root
+        .join("arbitrary/tla2tools.jar")
+        .to_string_lossy()
+        .into_owned();
+    fixture.write_log("tla-log", &forged);
+    assert!(verify(&fixture.bundle, &fixture.root).is_err());
+}
+
+#[test]
 fn multi_clause_counterexample_verifies_complete_predicate_fanout() {
     let mut fixture = Fixture::new();
     fixture.set_counterexample("CommittedEntriesHaveQuorum");
@@ -265,9 +306,11 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let manifest_dir = fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")))
+            .expect("canonicalize manifest directory");
+        let workspace = manifest_dir.join("../..");
         let sequence = FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
+        let root = manifest_dir.join("target/test-fixtures").join(format!(
             "rafter-tla-bundle-{}-{sequence}",
             std::process::id()
         ));
@@ -415,6 +458,76 @@ impl Fixture {
                 result.status = crate::EvidenceStatus::Incomplete;
                 result.classification = Some(crate::FailureClassification::CoverageNotReached);
             }
+        }
+    }
+
+    fn set_harness_violation(&mut self, predicate: &str) {
+        let mut log = self.read_log("tla-log");
+        log.exit_code = Some(12);
+        log.stdout = violation_output(predicate);
+        self.write_log("tla-log", &log);
+        let check = &mut self.bundle.execution.checks[0];
+        check.completion = crate::CheckCompletion::HarnessError;
+        check
+            .observations
+            .retain(|name, _| !name.starts_with("checked:"));
+        check.observations.extend([
+            ("generated_states".to_owned(), 2),
+            ("distinct_states".to_owned(), 2),
+            ("states_left_on_queue".to_owned(), 0),
+            ("search_depth".to_owned(), 2),
+        ]);
+        for result in &mut self.bundle.results {
+            result.status = crate::EvidenceStatus::Error;
+            result.classification = Some(crate::FailureClassification::HarnessError);
+        }
+    }
+
+    fn set_timed_out_counterexample(&mut self, predicate: &str) {
+        self.set_counterexample(predicate);
+        let mut log = self.read_log("tla-log");
+        log.exit_code = None;
+        log.timed_out = true;
+        log.termination = Some(TerminationReceipt {
+            process_group: true,
+            term_signal_sent: true,
+            grace_ms: 30_000,
+            kill_signal_sent: true,
+        });
+        log.stdout
+            .push_str("@!@!@STARTMSG 2200:0 @!@!@\nmalformed progress\n@!@!@ENDMSG 2200 @!@!@\n");
+        self.write_log("tla-log", &log);
+        self.bundle.execution.checks[0]
+            .observations
+            .retain(|name, _| {
+                !matches!(
+                    name.as_str(),
+                    "generated_states"
+                        | "distinct_states"
+                        | "states_left_on_queue"
+                        | "search_depth"
+                )
+            });
+    }
+
+    fn set_malformed_terminal_counterexample(&mut self, predicate: &str) {
+        self.set_counterexample(predicate);
+        let mut log = self.read_log("tla-log");
+        log.stdout = log.stdout.replacen(
+            "2 states generated, 2 distinct states found, 0 states left on queue.",
+            "malformed statistics",
+            1,
+        );
+        self.write_log("tla-log", &log);
+        for observation in [
+            "generated_states",
+            "distinct_states",
+            "states_left_on_queue",
+            "search_depth",
+        ] {
+            self.bundle.execution.checks[0]
+                .observations
+                .insert(observation.to_owned(), 0);
         }
     }
 
@@ -614,6 +727,33 @@ impl Fixture {
         serde_json::from_str(&self.read_kind(kind)).expect("read process log")
     }
 
+    fn rebase_process_invocations(&mut self, producer_root: &Path) {
+        assert!(producer_root.is_absolute());
+        let aggregate_root = self.root.clone();
+        let kinds = self.bundle.execution.checks[0]
+            .artifacts
+            .iter()
+            .filter(|artifact| {
+                matches!(
+                    artifact.kind.as_str(),
+                    "tla-log" | "tla-trace-log" | MUTATION_SUITE_ARTIFACT_KIND
+                ) || artifact.kind.starts_with("tla-detector-log")
+            })
+            .map(|artifact| artifact.kind.clone())
+            .collect::<Vec<_>>();
+        for kind in kinds {
+            let mut log = self.read_log(&kind);
+            log.invocation.current_dir =
+                rebase_fixture_path(&log.invocation.current_dir, &aggregate_root, producer_root);
+            for argument in &mut log.invocation.arguments {
+                if Path::new(argument).is_absolute() {
+                    *argument = rebase_fixture_path(argument, &aggregate_root, producer_root);
+                }
+            }
+            self.write_log(&kind, &log);
+        }
+    }
+
     fn write_log(&mut self, kind: &str, log: &ProcessLog) {
         self.write_kind(
             kind,
@@ -665,6 +805,17 @@ fn swap_kinds(bundle: &mut ResultBundle, first: &str, second: &str) {
         } else if artifact.kind == second {
             artifact.kind = first.to_owned();
         }
+    }
+}
+
+fn rebase_fixture_path(path: &str, from: &Path, to: &Path) -> String {
+    let relative = Path::new(path)
+        .strip_prefix(from)
+        .expect("fixture invocation path belongs to the aggregate checkout");
+    if relative.as_os_str().is_empty() {
+        to.to_string_lossy().into_owned()
+    } else {
+        to.join(relative).to_string_lossy().into_owned()
     }
 }
 

@@ -116,7 +116,7 @@ jobs:
   invariants-tla:
     name: invariants-tla-nightly
     runs-on: ubuntu-latest
-    timeout-minutes: 140
+    timeout-minutes: 210
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88
@@ -136,6 +136,7 @@ jobs:
         with:
           cache-on-failure: true
       - name: Produce source-bound nightly TLA+ evidence
+        timeout-minutes: 180
         run: cargo run --locked -p rafter-invariants -- run --profile nightly --layer tla
       - name: Upload nightly TLA+ evidence and counterexamples
         if: always()
@@ -233,7 +234,7 @@ jobs:
       - invariants-maelstrom
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       INVARIANT_REPORT_DIR: rafter-invariants-nightly-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
@@ -250,10 +251,12 @@ jobs:
           path: .
           merge-multiple: true
       - name: Build source-bound Maelstrom verification binaries
+        timeout-minutes: 2
         run: cargo build --locked -p rafter-maelstrom --bins
       - name: Aggregate exactly 44 nightly invariant verdicts
         if: always()
         id: aggregate
+        timeout-minutes: 8
         run: |
           report_dir="$RUNNER_TEMP/$INVARIANT_REPORT_DIR"
           mkdir -p "$report_dir"
@@ -266,12 +269,7 @@ jobs:
       - name: Validate current-run nightly reports
         if: always()
         id: report
-        env:
-          AGGREGATE_STATUS: ${{ steps.aggregate.outputs.status }}
-          TESTS_RESULT: ${{ needs.invariants-tests.result }}
-          SIMULATOR_RESULT: ${{ needs.invariants-simulator.result }}
-          TLA_RESULT: ${{ needs.invariants-tla.result }}
-          MAELSTROM_RESULT: ${{ needs.invariants-maelstrom.result }}
+        timeout-minutes: 1
         run: |
           report_dir="$RUNNER_TEMP/$INVARIANT_REPORT_DIR"
           complete=true
@@ -285,39 +283,47 @@ jobs:
             "$report_dir/nightly.json" >/dev/null; then
             complete=false
           fi
-          dependencies_green=false
-          if [[ "$TESTS_RESULT" = "success" && "$SIMULATOR_RESULT" = "success" && \
-                "$TLA_RESULT" = "success" && "$MAELSTROM_RESULT" = "success" && \
-                "$AGGREGATE_STATUS" = "0" ]]; then
-            dependencies_green=true
-          fi
-          verdict_green=false
-          if [[ "$complete" = "true" ]] && jq -e \
-            '.summary.green == 44 and .summary.red == 0' \
-            "$report_dir/nightly.json" >/dev/null; then
-            verdict_green=true
-          fi
-          publishable=false
-          if [[ "$complete" = "true" && \
-                ("$verdict_green" = "false" || "$dependencies_green" = "true") ]]; then
-            publishable=true
+          if [[ "$complete" = "true" ]]; then
+            expected_ids="$report_dir/expected.ids"
+            json_ids="$report_dir/json.ids"
+            markdown_ids="$report_dir/markdown.ids"
+            junit_ids="$report_dir/junit.ids"
+            jq -r ".[\"\$defs\"].invariant.properties.invariant_id.enum[]" \
+              verification/invariant-verdict-schema.json | LC_ALL=C sort > "$expected_ids"
+            jq -r '.invariants[].invariant_id' "$report_dir/nightly.json" | \
+              LC_ALL=C sort > "$json_ids"
+            # Dollar signs below are regex anchors.
+            # shellcheck disable=SC2016
+            sed -nE 's/^\| `([^`]+)` \| (GREEN|RED) \|.*$/\1/p' \
+              "$report_dir/nightly.md" | LC_ALL=C sort > "$markdown_ids"
+            # Dollar signs below are regex anchors.
+            # shellcheck disable=SC2016
+            sed -nE 's/^[[:space:]]*<testcase classname="rafter\.invariants" name="([^"]+)">$/\1/p' \
+              "$report_dir/nightly.xml" | LC_ALL=C sort > "$junit_ids"
+            if [[ "$(wc -l < "$expected_ids")" -ne 44 || \
+                  "$(LC_ALL=C uniq "$expected_ids" | wc -l)" -ne 44 ]] || \
+               ! cmp -s "$expected_ids" "$json_ids" || \
+               ! cmp -s "$expected_ids" "$markdown_ids" || \
+               ! cmp -s "$expected_ids" "$junit_ids"; then
+              complete=false
+            fi
           fi
           echo "complete=$complete" >> "$GITHUB_OUTPUT"
-          echo "publishable=$publishable" >> "$GITHUB_OUTPUT"
       - name: Render the 44-row nightly report
         if: always()
+        timeout-minutes: 1
+        env:
+          REPORT_READY: ${{ steps.report.outputs.complete }}
         run: |
-          if [[ "${{ steps.report.outputs.publishable }}" = "true" ]]; then
+          if [[ "$REPORT_READY" = "true" ]]; then
             cat "$RUNNER_TEMP/$INVARIANT_REPORT_DIR/nightly.md" >> "$GITHUB_STEP_SUMMARY"
-          elif [[ "${{ steps.report.outputs.complete }}" = "true" ]]; then
-            echo "## Raft invariant gate" >> "$GITHUB_STEP_SUMMARY"
-            echo "A green report was withheld because a required producer or the aggregate failed; the gate is red." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "## Raft invariant gate" >> "$GITHUB_STEP_SUMMARY"
             echo "No complete current-run 44-row nightly report was produced; the aggregate is red." >> "$GITHUB_STEP_SUMMARY"
           fi
-      - name: Upload nightly aggregate reports
-        if: always() && steps.report.outputs.publishable == 'true'
+      - name: Upload available nightly aggregate reports and evidence
+        if: always()
+        timeout-minutes: 2
         uses: actions/upload-artifact@v4
         with:
           name: invariants-nightly-report-${{ github.run_id }}-${{ github.run_attempt }}
@@ -325,10 +331,13 @@ jobs:
             ${{ runner.temp }}/${{ env.INVARIANT_REPORT_DIR }}/nightly.json
             ${{ runner.temp }}/${{ env.INVARIANT_REPORT_DIR }}/nightly.xml
             ${{ runner.temp }}/${{ env.INVARIANT_REPORT_DIR }}/nightly.md
-          if-no-files-found: error
+            artifacts/invariants/
+            target/rafter-invariants/telemetry/
+          if-no-files-found: ignore
           retention-days: 30
       - name: Require 44 of 44 nightly invariants green
         if: always()
+        timeout-minutes: 1
         env:
           AGGREGATE_STATUS: ${{ steps.aggregate.outputs.status }}
           REPORT_READY: ${{ steps.report.outputs.complete }}

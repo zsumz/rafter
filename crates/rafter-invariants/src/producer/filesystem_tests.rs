@@ -1,0 +1,264 @@
+use std::{fs, path::PathBuf, time::Instant};
+
+use crate::ArtifactRef;
+
+use super::{
+    filesystem::{HeldDirectory, OperationDeadline, TreeLimits, TREE_LIMITS},
+    maelstrom_exec, simulator_model, test_compile, test_exec,
+};
+
+fn test_path(label: &str) -> PathBuf {
+    PathBuf::from("target/rafter-invariants/filesystem-tests")
+        .join(format!("{label}-{}", std::process::id()))
+}
+
+fn limits_with(nodes: usize, depth: usize) -> TreeLimits {
+    TreeLimits {
+        nodes,
+        depth,
+        ..TREE_LIMITS
+    }
+}
+
+#[test]
+fn layer_scratch_cleanup_rejects_expired_deadlines_before_mutation() {
+    let source_ref = format!("deadline-{}", std::process::id());
+    let compile_profile = format!("compile-expired-{}", std::process::id());
+    let compile_path = PathBuf::from("target/rafter-invariants/build")
+        .join(&source_ref)
+        .join(format!("{compile_profile}-tests"));
+    let test_scratch_path = test_path("test-expired");
+    let simulator_path = test_path("simulator-expired");
+    let maelstrom_path = test_path("maelstrom-expired");
+    for path in [
+        &compile_path,
+        &test_scratch_path,
+        &simulator_path,
+        &maelstrom_path,
+    ] {
+        let _ = fs::remove_dir_all(path);
+    }
+
+    assert!(
+        test_compile::prepare_target_dir(&compile_profile, &source_ref, Instant::now()).is_err()
+    );
+    assert!(test_exec::reset_test_scratch(&test_scratch_path, Instant::now()).is_err());
+    assert!(
+        simulator_model::reset_simulator_build_scratch(&simulator_path, Instant::now()).is_err()
+    );
+    assert!(maelstrom_exec::reset_state_directory(&maelstrom_path, Instant::now()).is_err());
+
+    for path in [
+        &compile_path,
+        &test_scratch_path,
+        &simulator_path,
+        &maelstrom_path,
+    ] {
+        assert!(!path.exists(), "expired cleanup created {}", path.display());
+    }
+}
+
+#[test]
+fn maelstrom_discovery_and_evidence_traversal_obey_expired_deadlines() {
+    let root = test_path("maelstrom-traversal-expired");
+    let output = test_path("maelstrom-traversal-output");
+    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&output);
+    fs::create_dir_all(root.join("store/lin-kv/run/node-logs"))
+        .expect("create Maelstrom traversal fixture");
+    fs::write(root.join("store/lin-kv/run/results.edn"), b"{}").expect("write results fixture");
+    let held = HeldDirectory::open(&root).expect("hold Maelstrom fixture");
+
+    assert!(maelstrom_exec::discover_store(&held, Instant::now()).is_err());
+    let mut artifacts = Vec::<ArtifactRef>::new();
+    assert!(maelstrom_exec::capture_tree(
+        &output,
+        std::path::Path::new("fixture"),
+        &held,
+        &mut artifacts,
+        Instant::now(),
+    )
+    .is_err());
+    assert!(artifacts.is_empty());
+    assert!(!output.exists());
+
+    fs::remove_dir_all(root).expect("remove Maelstrom traversal fixture");
+}
+
+#[test]
+fn bounded_cleanup_rejects_node_overflow_before_removing_anything() {
+    let root = test_path("node-limit");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create node-limit fixture");
+    for name in ["one", "two", "three"] {
+        fs::write(root.join(name), name).expect("write node-limit fixture");
+    }
+
+    let held = HeldDirectory::open(&root).expect("hold node-limit fixture");
+    let error = held
+        .remove_contents(
+            limits_with(2, TREE_LIMITS.depth),
+            OperationDeadline::none("node-limit test"),
+        )
+        .expect_err("cleanup must reject an oversized tree");
+    assert!(error.to_string().contains("node limit of 2"));
+    for name in ["one", "two", "three"] {
+        assert!(root.join(name).is_file());
+    }
+
+    fs::remove_dir_all(root).expect("remove node-limit fixture");
+}
+
+#[test]
+fn bounded_cleanup_rejects_deep_trees_before_removing_anything() {
+    let root = test_path("depth-limit");
+    let leaf = root.join("one/two/three");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&leaf).expect("create depth-limit fixture");
+    fs::write(leaf.join("sentinel"), b"inside").expect("write depth-limit fixture");
+
+    let held = HeldDirectory::open(&root).expect("hold depth-limit fixture");
+    let error = held
+        .remove_contents(
+            limits_with(TREE_LIMITS.nodes, 2),
+            OperationDeadline::none("depth-limit test"),
+        )
+        .expect_err("cleanup must reject a deep tree");
+    assert!(error.to_string().contains("depth limit of 2"));
+    assert!(leaf.join("sentinel").is_file());
+
+    fs::remove_dir_all(root).expect("remove depth-limit fixture");
+}
+
+#[cfg(unix)]
+#[test]
+fn cleanup_unlinks_symlinks_without_touching_external_sentinels() {
+    use std::os::unix::fs::symlink;
+
+    let root = test_path("external-sentinel");
+    let external = test_path("external-target");
+    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&external);
+    fs::create_dir_all(&root).expect("create cleanup fixture");
+    fs::create_dir_all(&external).expect("create external target");
+    fs::write(external.join("sentinel"), b"outside").expect("write external sentinel");
+    symlink(&external, root.join("linked-outside")).expect("link cleanup fixture outside");
+
+    let replacement = HeldDirectory::replace_tree(
+        &root,
+        TREE_LIMITS,
+        OperationDeadline::none("external-sentinel cleanup"),
+    )
+    .expect("replace scratch tree without following symlink");
+    assert!(replacement
+        .entries(OperationDeadline::none("inspect replacement"))
+        .expect("read replacement")
+        .is_empty());
+    assert_eq!(
+        fs::read(external.join("sentinel")).expect("read external sentinel"),
+        b"outside"
+    );
+
+    fs::remove_dir_all(root).expect("remove replacement fixture");
+    fs::remove_dir_all(external).expect("remove external fixture");
+}
+
+#[cfg(unix)]
+#[test]
+fn create_rejects_symlinked_ancestors() {
+    use std::os::unix::fs::symlink;
+
+    let root = test_path("ancestor-symlink");
+    let external = test_path("ancestor-external");
+    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&external);
+    fs::create_dir_all(&root).expect("create ancestor fixture");
+    fs::create_dir_all(&external).expect("create ancestor external target");
+    fs::write(external.join("sentinel"), b"outside").expect("write ancestor sentinel");
+    symlink(&external, root.join("linked-parent")).expect("create ancestor symlink");
+
+    assert!(HeldDirectory::create_all(&root.join("linked-parent/created")).is_err());
+    assert!(!external.join("created").exists());
+    assert_eq!(
+        fs::read(external.join("sentinel")).expect("read ancestor sentinel"),
+        b"outside"
+    );
+
+    fs::remove_dir_all(root).expect("remove ancestor fixture");
+    fs::remove_dir_all(external).expect("remove ancestor external target");
+}
+
+#[cfg(unix)]
+#[test]
+fn leaf_swap_during_cleanup_is_detected_without_following_replacement() {
+    use std::os::unix::fs::symlink;
+
+    let root = test_path("leaf-swap");
+    let moved = test_path("leaf-swap-moved");
+    let external = test_path("leaf-swap-external");
+    let _ = fs::remove_file(&root);
+    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&moved);
+    let _ = fs::remove_dir_all(&external);
+    fs::create_dir_all(&root).expect("create leaf-swap fixture");
+    fs::write(root.join("inside"), b"scratch").expect("write leaf-swap fixture");
+    fs::create_dir_all(&external).expect("create leaf-swap external target");
+    fs::write(external.join("sentinel"), b"outside").expect("write leaf-swap sentinel");
+
+    let error = HeldDirectory::replace_tree_with_hook(
+        &root,
+        TREE_LIMITS,
+        OperationDeadline::none("leaf-swap cleanup"),
+        || {
+            fs::rename(&root, &moved).expect("move held scratch leaf");
+            symlink(&external, &root).expect("replace scratch leaf with symlink");
+        },
+    )
+    .expect_err("leaf replacement must invalidate cleanup publication");
+    assert!(!error.to_string().is_empty());
+    assert_eq!(
+        fs::read(external.join("sentinel")).expect("read leaf-swap sentinel"),
+        b"outside"
+    );
+
+    fs::remove_file(root).expect("remove replacement symlink");
+    fs::remove_dir_all(moved).expect("remove moved fixture");
+    fs::remove_dir_all(external).expect("remove leaf-swap external target");
+}
+
+#[cfg(unix)]
+#[test]
+fn held_file_detects_leaf_replacement_before_external_launch() {
+    use std::os::unix::fs::symlink;
+
+    let root = test_path("held-file-swap");
+    let external = test_path("held-file-external");
+    let file = root.join("state.chkpt");
+    let moved = root.join("state.original");
+    let _ = fs::remove_dir_all(&root);
+    let _ = fs::remove_dir_all(&external);
+    fs::create_dir_all(&root).expect("create held-file fixture");
+    fs::write(&file, b"checkpoint").expect("write held checkpoint");
+    fs::create_dir_all(&external).expect("create held-file external target");
+    fs::write(external.join("sentinel"), b"outside").expect("write held-file sentinel");
+
+    let held = HeldDirectory::workspace()
+        .expect("open workspace")
+        .hold_file(&file)
+        .expect("hold checkpoint file");
+    fs::rename(&file, &moved).expect("move held checkpoint");
+    symlink(external.join("sentinel"), &file).expect("replace checkpoint with symlink");
+
+    assert!(held.verify_path_binding().is_err());
+    assert_eq!(
+        fs::read(&moved).expect("read original checkpoint"),
+        b"checkpoint"
+    );
+    assert_eq!(
+        fs::read(external.join("sentinel")).expect("read held-file sentinel"),
+        b"outside"
+    );
+
+    fs::remove_dir_all(root).expect("remove held-file fixture");
+    fs::remove_dir_all(external).expect("remove held-file external target");
+}

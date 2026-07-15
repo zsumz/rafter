@@ -1,8 +1,13 @@
-use std::{collections::BTreeMap, error::Error, ffi::OsString, fs, path::Path};
+use std::{collections::BTreeMap, error::Error, ffi::OsString, path::Path, time::Instant};
 
 use crate::{ArtifactRef, CheckCompletion, EvidenceStatus, FailureClassification, TestIdentity};
 
-use super::{artifact, process, test_compile::CompiledTarget};
+use super::{
+    artifact,
+    filesystem::{HeldDirectory, OperationDeadline, TREE_LIMITS},
+    process,
+    test_compile::CompiledTarget,
+};
 
 pub(crate) const ORACLE_TOKEN_ENV: &str = "RAFTER_INVARIANT_ORACLE_TOKEN";
 const ORACLE_OBSERVED_PREFIX: &str = "RAFTER_INVARIANT_ORACLE_OBSERVED:";
@@ -48,6 +53,11 @@ pub(super) fn evaluate(
     let program = executable
         .to_str()
         .ok_or("test executable path is not valid UTF-8")?;
+    let executable_handle = compiled
+        .executable_handle
+        .as_ref()
+        .ok_or("compiled test executable omitted its held file capability")?;
+    executable_handle.verify_path_binding()?;
     let DiscoveryOutput {
         listed,
         ignored,
@@ -105,6 +115,7 @@ pub(super) fn evaluate(
             matches,
         ));
     }
+    executable_handle.verify_path_binding()?;
     execute_exact(
         identity,
         profile,
@@ -117,6 +128,106 @@ pub(super) fn evaluate(
         discovery_ms,
         discovery_rss,
     )
+}
+
+#[cfg(test)]
+pub(crate) fn capture_detector_witness_fixture_log(
+    source_ref: &str,
+) -> Result<(String, String), Box<dyn Error>> {
+    let identity = TestIdentity {
+        package: "rafter-invariant-test".to_owned(),
+        target_kind: "lib".to_owned(),
+        target: "rafter_invariant_test".to_owned(),
+        test_name: "tests::token_bound_detector_witness_subprocess_fixture".to_owned(),
+    };
+    let check_id = identity.check_id();
+    let target_dir = Path::new("target/rafter-invariants")
+        .join(format!("detector-witness-e2e-build-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&target_dir);
+
+    let result = (|| {
+        let compiled = std::process::Command::new("cargo")
+            .args([
+                "test",
+                "--locked",
+                "--no-default-features",
+                "-p",
+                "rafter-invariant-test",
+                "--lib",
+                "--no-run",
+                "--message-format=json-render-diagnostics",
+            ])
+            .env("CARGO_TARGET_DIR", &target_dir)
+            .output()?;
+        if !compiled.status.success() {
+            return Err(format!(
+                "compile detector witness fixture: {}",
+                String::from_utf8_lossy(&compiled.stderr)
+            )
+            .into());
+        }
+        let mut executables = String::from_utf8_lossy(&compiled.stdout)
+            .lines()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter(|message| message["reason"] == "compiler-artifact")
+            .filter(|message| message["target"]["name"] == "rafter_invariant_test")
+            .filter(|message| message["target"]["kind"] == serde_json::json!(["lib"]))
+            .filter_map(|message| message["executable"].as_str().map(std::path::PathBuf::from))
+            .collect::<Vec<_>>();
+        if executables.len() != 1 {
+            return Err(format!(
+                "expected one detector witness fixture executable, found {}",
+                executables.len()
+            )
+            .into());
+        }
+        let executable = std::fs::canonicalize(executables.remove(0))?;
+        let program = executable
+            .to_str()
+            .ok_or("detector witness fixture path is not valid UTF-8")?;
+        let arguments = vec![
+            identity.test_name.clone().into(),
+            "--exact".into(),
+            "--test-threads=1".into(),
+            "--show-output".into(),
+            "--color".into(),
+            "never".into(),
+            "--ignored".into(),
+        ];
+        let mut environment = process::base_environment();
+        environment.insert(
+            ORACLE_TOKEN_ENV.to_owned(),
+            oracle_token(source_ref, &check_id),
+        );
+        let invocation =
+            process::expected_invocation(program, &arguments, &environment, Path::new("."))?;
+        let started = Instant::now();
+        let captured = std::process::Command::new(program)
+            .args(&arguments)
+            .env_clear()
+            .envs(&environment)
+            .current_dir(".")
+            .output()?;
+        let captured = process::ProcessOutput {
+            invocation,
+            status: captured.status,
+            stdout: captured.stdout,
+            stderr: captured.stderr,
+            duration: started.elapsed(),
+            peak_rss_kib: 1,
+            timed_out: false,
+            termination: None,
+        };
+        if !captured.status.success() {
+            return Err("detector witness fixture exact libtest execution failed".into());
+        }
+        let source =
+            String::from_utf8(process::combined_log("exact libtest execution", &captured)?)?;
+        Ok((check_id, source))
+    })();
+
+    let _ = std::fs::remove_dir_all(target_dir);
+    result
 }
 
 fn discover(
@@ -174,10 +285,8 @@ fn execute_exact(
     discovery_rss: u64,
 ) -> Result<TestOutcome, Box<dyn Error>> {
     let temporary = Path::new("target/rafter-invariants/tmp").join(execution_id);
-    if temporary.exists() {
-        fs::remove_dir_all(&temporary)?;
-    }
-    fs::create_dir_all(&temporary)?;
+    let (execution_deadline, _) = process::active_layer_deadlines(profile, "tests")?;
+    let temporary_guard = reset_test_scratch(&temporary, execution_deadline)?;
     let seed = artifact::deterministic_u64(
         "rafter-tests/v1",
         &format!("{profile}\0{source_ref}\0{}", identity.test_name),
@@ -191,7 +300,10 @@ fn execute_exact(
         ),
         (
             "TMPDIR".to_owned(),
-            temporary.to_string_lossy().into_owned(),
+            temporary_guard
+                .external_path()
+                .to_string_lossy()
+                .into_owned(),
         ),
     ]);
     run_environment.insert("RUST_BACKTRACE".to_owned(), "1".to_owned());
@@ -208,6 +320,7 @@ fn execute_exact(
     if ignored {
         arguments.push("--ignored".into());
     }
+    temporary_guard.verify_path_binding()?;
     let executed = process::timed_for(
         process::ProcessKind::TestExecution,
         program,
@@ -243,6 +356,17 @@ fn execute_exact(
         exact_was_run,
         exact_passed,
     ))
+}
+
+pub(super) fn reset_test_scratch(
+    path: &Path,
+    deadline: Instant,
+) -> Result<HeldDirectory, Box<dyn Error>> {
+    HeldDirectory::replace_tree(
+        path,
+        TREE_LIMITS,
+        OperationDeadline::at(deadline, "test scratch cleanup"),
+    )
 }
 
 fn outcome_from_execution(

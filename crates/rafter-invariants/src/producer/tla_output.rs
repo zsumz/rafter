@@ -300,10 +300,34 @@ struct Frame {
     body: String,
 }
 
+struct SummaryError {
+    summary: TlcSummary,
+    message: &'static str,
+}
+
 pub(crate) fn parse(bytes: &[u8]) -> Result<TlcSummary, String> {
+    parse_summary(bytes, false)
+}
+
+pub(crate) fn parse_complete_prefix(bytes: &[u8]) -> Result<TlcSummary, String> {
     let source = String::from_utf8(bytes.to_vec())
         .map_err(|error| format!("TLC tool output is not UTF-8: {error}"))?;
-    let frames = parse_frames(&source, false)?;
+    let frames = parse_frame_prefix(&source)?;
+    match summarize_frames(frames) {
+        Ok(summary) => Ok(summary),
+        Err(error) if error.summary.violated_invariant.is_some() => Ok(error.summary),
+        Err(error) => Err(error.message.to_owned()),
+    }
+}
+
+fn parse_summary(bytes: &[u8], allow_trailing_frame: bool) -> Result<TlcSummary, String> {
+    let source = String::from_utf8(bytes.to_vec())
+        .map_err(|error| format!("TLC tool output is not UTF-8: {error}"))?;
+    let frames = parse_frames(&source, allow_trailing_frame)?;
+    summarize_frames(frames).map_err(|error| error.message.to_owned())
+}
+
+fn summarize_frames(frames: Vec<Frame>) -> Result<TlcSummary, SummaryError> {
     let mut summary = TlcSummary::default();
     let mut success_frames = 0;
     let mut statistics_frames = 0;
@@ -320,30 +344,46 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<TlcSummary, String> {
             }
             2199 => {
                 statistics_frames += 1;
-                let (generated, distinct, left) = parse_state_counts(&frame.body)
-                    .ok_or("TLC 2199 frame has malformed state statistics")?;
+                let Some((generated, distinct, left)) = parse_state_counts(&frame.body) else {
+                    return Err(SummaryError {
+                        summary,
+                        message: "TLC 2199 frame has malformed state statistics",
+                    });
+                };
                 summary.generated_states = generated;
                 summary.distinct_states = distinct;
                 summary.states_left = left;
             }
             2194 => {
                 depth_frames += 1;
-                summary.search_depth = parse_search_depth(&frame.body)
-                    .ok_or("TLC 2194 frame has malformed search depth")?;
+                let Some(search_depth) = parse_search_depth(&frame.body) else {
+                    return Err(SummaryError {
+                        summary,
+                        message: "TLC 2194 frame has malformed search depth",
+                    });
+                };
+                summary.search_depth = search_depth;
             }
             2186 => {
                 finished_frames += 1;
                 summary.process_finished = true;
             }
             2107 | 2110 => {
-                let invariant = parse_violated_invariant(&frame.body)
-                    .ok_or("TLC violation frame omitted invariant name")?;
+                let Some(invariant) = parse_violated_invariant(&frame.body) else {
+                    return Err(SummaryError {
+                        summary,
+                        message: "TLC violation frame omitted invariant name",
+                    });
+                };
                 if summary
                     .violated_invariant
                     .as_ref()
                     .is_some_and(|previous| previous != &invariant)
                 {
-                    return Err("TLC reported multiple distinct invariant violations".to_owned());
+                    return Err(SummaryError {
+                        summary,
+                        message: "TLC reported multiple distinct invariant violations",
+                    });
                 }
                 summary.violated_invariant = Some(invariant);
             }
@@ -351,7 +391,10 @@ pub(crate) fn parse(bytes: &[u8]) -> Result<TlcSummary, String> {
         }
     }
     if success_frames > 1 || statistics_frames > 1 || depth_frames > 1 || finished_frames > 1 {
-        return Err("TLC tool output duplicated a terminal frame".to_owned());
+        return Err(SummaryError {
+            summary,
+            message: "TLC tool output duplicated a terminal frame",
+        });
     }
     Ok(summary)
 }
@@ -424,6 +467,53 @@ fn parse_frames(source: &str, allow_trailing_frame: bool) -> Result<Vec<Frame>, 
     Ok(frames)
 }
 
+fn parse_frame_prefix(source: &str) -> Result<Vec<Frame>, String> {
+    let mut frames = Vec::new();
+    let mut current: Option<(u16, u8, Vec<&str>)> = None;
+    for line in source.lines() {
+        if let Some(header) = line
+            .strip_prefix("@!@!@STARTMSG ")
+            .and_then(|line| line.strip_suffix(" @!@!@"))
+        {
+            if current.is_some() {
+                break;
+            }
+            let Some((code, class)) = header.split_once(':') else {
+                break;
+            };
+            let (Ok(code), Ok(class)) = (code.parse(), class.parse()) else {
+                break;
+            };
+            current = Some((code, class, Vec::new()));
+            continue;
+        }
+        if let Some(footer) = line
+            .strip_prefix("@!@!@ENDMSG ")
+            .and_then(|line| line.strip_suffix(" @!@!@"))
+        {
+            let Some((code, class, body)) = current.take() else {
+                break;
+            };
+            if footer.parse::<u16>().ok() != Some(code) {
+                break;
+            }
+            frames.push(Frame {
+                code,
+                class,
+                body: body.join("\n"),
+            });
+            continue;
+        }
+        if let Some((_, _, body)) = current.as_mut() {
+            body.push(line);
+        }
+    }
+    if frames.is_empty() {
+        return Err("TLC output contained no complete tool-frame prefix".to_owned());
+    }
+    Ok(frames)
+}
+
 fn parse_progress(body: &str) -> Option<TlcProgress> {
     let line = body
         .lines()
@@ -488,7 +578,7 @@ fn parse_u64(value: &str) -> Option<u64> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse, parse_latest_progress, TlcProgress, TlcSummary};
+    use super::{parse, parse_complete_prefix, parse_latest_progress, TlcProgress, TlcSummary};
 
     #[test]
     fn parses_framed_success_with_grouped_counts() {
@@ -524,6 +614,84 @@ mod tests {
             Some("ElectionSafety")
         );
         assert!(!summary.completed_without_error);
+    }
+
+    #[test]
+    fn complete_violation_survives_a_truncated_trailing_frame() {
+        let output = b"@!@!@STARTMSG 2110:1 @!@!@\nInvariant ElectionSafety is violated.\n@!@!@ENDMSG 2110 @!@!@\n\
+@!@!@STARTMSG 2200:0 @!@!@\nProgress(3) at";
+        assert!(parse(output).is_err());
+        assert_eq!(
+            parse_complete_prefix(output)
+                .expect("parse complete frame prefix")
+                .violated_invariant
+                .as_deref(),
+            Some("ElectionSafety")
+        );
+    }
+
+    #[test]
+    fn complete_violation_survives_later_malformed_terminal_frames() {
+        let violation = "@!@!@STARTMSG 2110:1 @!@!@\nInvariant ElectionSafety is violated.\n@!@!@ENDMSG 2110 @!@!@\n";
+        let cases = [
+            (
+                format!(
+                    "{violation}@!@!@STARTMSG 2199:0 @!@!@\nmalformed statistics\n@!@!@ENDMSG 2199 @!@!@\n"
+                ),
+                "TLC 2199 frame has malformed state statistics",
+                0,
+            ),
+            (
+                format!(
+                    "{violation}@!@!@STARTMSG 2199:0 @!@!@\n2 states generated, 2 distinct states found, 0 states left on queue.\n@!@!@ENDMSG 2199 @!@!@\n\
+                     @!@!@STARTMSG 2194:0 @!@!@\nmalformed depth\n@!@!@ENDMSG 2194 @!@!@\n"
+                ),
+                "TLC 2194 frame has malformed search depth",
+                2,
+            ),
+        ];
+
+        for (output, expected_error, expected_states) in cases {
+            assert_eq!(parse(output.as_bytes()).unwrap_err(), expected_error);
+            let summary =
+                parse_complete_prefix(output.as_bytes()).expect("recover named violation");
+            assert_eq!(
+                summary.violated_invariant.as_deref(),
+                Some("ElectionSafety")
+            );
+            assert_eq!(summary.generated_states, expected_states);
+        }
+
+        assert!(parse_complete_prefix(
+            b"@!@!@STARTMSG 2199:0 @!@!@\nmalformed statistics\n@!@!@ENDMSG 2199 @!@!@\n"
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn complete_violation_survives_later_framing_and_duplicate_defects() {
+        let violation = "@!@!@STARTMSG 2110:1 @!@!@\nInvariant ElectionSafety is violated.\n@!@!@ENDMSG 2110 @!@!@\n";
+        let statistics = "@!@!@STARTMSG 2199:0 @!@!@\n2 states generated, 2 distinct states found, 0 states left on queue.\n@!@!@ENDMSG 2199 @!@!@\n";
+        let cases = [
+            format!("{violation}{statistics}{statistics}"),
+            format!(
+                "{violation}@!@!@STARTMSG 2194:0 @!@!@\nThe depth of the complete state graph search is 2.\n@!@!@ENDMSG 2199 @!@!@\n"
+            ),
+            format!(
+                "{violation}@!@!@STARTMSG 2194:0 @!@!@\n@!@!@STARTMSG 2199:0 @!@!@\n"
+            ),
+        ];
+
+        for output in cases {
+            assert!(parse(output.as_bytes()).is_err());
+            assert_eq!(
+                parse_complete_prefix(output.as_bytes())
+                    .expect("recover named violation before parser defect")
+                    .violated_invariant
+                    .as_deref(),
+                Some("ElectionSafety")
+            );
+        }
     }
 
     #[test]

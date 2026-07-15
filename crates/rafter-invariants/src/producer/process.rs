@@ -3,8 +3,7 @@ use std::{
     env,
     error::Error,
     ffi::OsString,
-    fmt,
-    fs::{self, OpenOptions},
+    fmt, fs,
     io::Read,
     path::{Path, PathBuf},
     process::{Child, Command, ExitStatus, Stdio},
@@ -16,13 +15,16 @@ use std::{
 };
 
 #[cfg(unix)]
-use std::os::unix::process::CommandExt;
-
+use command_fds::{CommandFdExt, FdMapping};
 #[cfg(unix)]
 use rustix::{
     io::Errno,
     process::{kill_process_group, Pid, Signal},
 };
+#[cfg(unix)]
+use std::os::fd::{AsRawFd, BorrowedFd};
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -35,15 +37,21 @@ mod managed;
 mod output;
 mod termination;
 
-use budget::{active_process_timeout, ProcessPolicy};
+pub(super) use budget::{
+    active_layer_deadlines, ensure_execution_deadline, ensure_total_deadline, LayerBudgetGuard,
+    ProcessKind,
+};
+use budget::{
+    active_process_timeout, active_total_process_timeout, has_active_layer_budget, ProcessPolicy,
+};
 #[cfg(test)]
 use budget::{layer_budget, DEFAULT_KILL_CONFIRMATION_TIMEOUT};
-pub(super) use budget::{LayerBudgetGuard, ProcessKind};
+use evidence::bind_invocation;
+#[cfg(test)]
+pub(crate) use evidence::expected_invocation;
 #[cfg(test)]
 use evidence::{allocate_telemetry_path, parse_process_group_observation};
-pub(crate) use evidence::{
-    base_environment, digest_environment, expected_invocation, parse_combined_processes,
-};
+pub(crate) use evidence::{base_environment, digest_environment, parse_combined_processes};
 pub(super) use evidence::{combined_log, duration_ms, json_log, tla_json_log};
 use evidence::{parse_peak_rss, process_group_observation, process_group_rss_kib, telemetry_path};
 use managed::{
@@ -65,13 +73,24 @@ const PROCESS_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const IDENTITY_COMMAND_TIMEOUT: Duration = Duration::from_secs(30);
 const PS_TELEMETRY_TIMEOUT: Duration = Duration::from_secs(2);
 const TARGET_GROUP_ENV: &str = "RAFTER_INVARIANT_TARGET_GROUP_FILE";
+#[cfg(unix)]
+const INHERITED_FD_MAX_ENV: &str = "RAFTER_INVARIANT_INHERITED_FD_MAX";
+#[cfg(unix)]
+const WORKING_DIRECTORY_FD_ENV: &str = "RAFTER_INVARIANT_WORKING_DIRECTORY_FD";
 const TARGET_GROUP_LAUNCHER: &str = r#"
 my $path = delete $ENV{'RAFTER_INVARIANT_TARGET_GROUP_FILE'};
+my $inherited_fd_max = delete $ENV{'RAFTER_INVARIANT_INHERITED_FD_MAX'};
+my $working_directory_fd = delete $ENV{'RAFTER_INVARIANT_WORKING_DIRECTORY_FD'};
+$^F = $inherited_fd_max if defined($inherited_fd_max) && $inherited_fd_max > $^F;
 POSIX::setpgid(0, 0) == 0 or die "setpgid: $!";
 open(my $group, '>', $path) or die "open process-group receipt: $!";
 print {$group} "$$\n" or die "write process-group receipt: $!";
 close($group) or die "close process-group receipt: $!";
-exec {$ARGV[0]} @ARGV or die "exec $ARGV[0]: $!";
+open(my $working_directory, '<&=', $working_directory_fd) or die "open working-directory descriptor: $!";
+chdir($working_directory) or die "chdir working-directory descriptor: $!";
+my $executable = shift @ARGV;
+my $logical_program = shift @ARGV;
+exec {$executable} $logical_program, @ARGV or die "exec $executable: $!";
 "#;
 
 #[derive(Debug)]
@@ -183,6 +202,49 @@ pub(super) fn timed_for_with_cap(
     )
 }
 
+#[cfg(target_os = "linux")]
+pub(super) fn timed_for_with_cap_and_descriptors(
+    kind: ProcessKind,
+    program: &str,
+    arguments: &[OsString],
+    environment: &BTreeMap<String, String>,
+    current_dir: &Path,
+    requested_cap: Option<Duration>,
+    inherited_descriptors: &[BorrowedFd<'_>],
+) -> Result<ProcessOutput, Box<dyn Error>> {
+    let (timeout, policy) = active_process_timeout(kind, requested_cap)?;
+    timed_with_timeout_and_policy_and_descriptors(
+        program,
+        arguments,
+        environment,
+        current_dir,
+        timeout,
+        policy,
+        inherited_descriptors,
+    )
+}
+
+pub(super) fn timed_with_optional_layer_budget(
+    kind: ProcessKind,
+    program: &str,
+    arguments: &[OsString],
+    environment: &BTreeMap<String, String>,
+    current_dir: &Path,
+    requested_cap: Duration,
+) -> Result<ProcessOutput, Box<dyn Error>> {
+    if has_active_layer_budget() {
+        return timed_for_with_cap(
+            kind,
+            program,
+            arguments,
+            environment,
+            current_dir,
+            Some(requested_cap),
+        );
+    }
+    timed_with_timeout(program, arguments, environment, current_dir, requested_cap)
+}
+
 pub(super) fn timed_with_timeout(
     program: &str,
     arguments: &[OsString],
@@ -204,22 +266,71 @@ pub(crate) fn identity_command(
     program: &str,
     arguments: &[&str],
 ) -> Result<IdentityOutput, Box<dyn Error>> {
-    identity_command_with_timeout(program, arguments, IDENTITY_COMMAND_TIMEOUT)
+    identity_command_in(program, arguments, Path::new("."))
 }
 
+pub(crate) fn identity_command_in(
+    program: &str,
+    arguments: &[&str],
+    current_dir: &Path,
+) -> Result<IdentityOutput, Box<dyn Error>> {
+    identity_command_with_timeout_in(
+        program,
+        arguments,
+        current_dir,
+        IDENTITY_COMMAND_TIMEOUT,
+        false,
+    )
+}
+
+pub(crate) fn identity_command_in_total_budget(
+    program: &str,
+    arguments: &[&str],
+    current_dir: &Path,
+) -> Result<IdentityOutput, Box<dyn Error>> {
+    identity_command_with_timeout_in(
+        program,
+        arguments,
+        current_dir,
+        IDENTITY_COMMAND_TIMEOUT,
+        true,
+    )
+}
+
+#[cfg(test)]
 fn identity_command_with_timeout(
     program: &str,
     arguments: &[&str],
     timeout: Duration,
 ) -> Result<IdentityOutput, Box<dyn Error>> {
+    identity_command_with_timeout_in(program, arguments, Path::new("."), timeout, false)
+}
+
+fn identity_command_with_timeout_in(
+    program: &str,
+    arguments: &[&str],
+    current_dir: &Path,
+    timeout: Duration,
+    use_total_budget: bool,
+) -> Result<IdentityOutput, Box<dyn Error>> {
     let arguments = arguments.iter().map(OsString::from).collect::<Vec<_>>();
+    let environment = base_environment();
+    let (timeout, policy) = if has_active_layer_budget() {
+        if use_total_budget {
+            active_total_process_timeout(ProcessKind::Identity, Some(timeout))?
+        } else {
+            active_process_timeout(ProcessKind::Identity, Some(timeout))?
+        }
+    } else {
+        (timeout, ProcessPolicy::default())
+    };
     let output = timed_with_timeout_and_policy(
         program,
         &arguments,
-        &base_environment(),
-        Path::new("."),
+        &environment,
+        current_dir,
         timeout,
-        ProcessPolicy::default(),
+        policy,
     )?;
     let stdout = String::from_utf8(output.stdout)?;
     let stderr = String::from_utf8(output.stderr)?;
@@ -266,6 +377,71 @@ fn timed_with_timeout_and_policy(
     timeout: Duration,
     policy: ProcessPolicy,
 ) -> Result<ProcessOutput, Box<dyn Error>> {
+    timed_with_timeout_and_policy_and_descriptors(
+        program,
+        arguments,
+        environment,
+        current_dir,
+        timeout,
+        policy,
+        &[],
+    )
+}
+
+fn timed_with_timeout_and_policy_and_descriptors(
+    program: &str,
+    arguments: &[OsString],
+    environment: &BTreeMap<String, String>,
+    current_dir: &Path,
+    timeout: Duration,
+    policy: ProcessPolicy,
+    inherited_descriptors: &[BorrowedFd<'_>],
+) -> Result<ProcessOutput, Box<dyn Error>> {
+    timed_with_timeout_and_policy_and_descriptors_after_bind(
+        program,
+        arguments,
+        environment,
+        current_dir,
+        timeout,
+        policy,
+        inherited_descriptors,
+        || {},
+    )
+}
+
+#[cfg(test)]
+fn timed_with_timeout_after_bind(
+    program: &str,
+    arguments: &[OsString],
+    environment: &BTreeMap<String, String>,
+    current_dir: &Path,
+    timeout: Duration,
+    after_bind: impl FnOnce(),
+) -> Result<ProcessOutput, Box<dyn Error>> {
+    timed_with_timeout_and_policy_and_descriptors_after_bind(
+        program,
+        arguments,
+        environment,
+        current_dir,
+        timeout,
+        ProcessPolicy::default(),
+        &[],
+        after_bind,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn timed_with_timeout_and_policy_and_descriptors_after_bind(
+    program: &str,
+    arguments: &[OsString],
+    environment: &BTreeMap<String, String>,
+    current_dir: &Path,
+    timeout: Duration,
+    policy: ProcessPolicy,
+    inherited_descriptors: &[BorrowedFd<'_>],
+    after_bind: impl FnOnce(),
+) -> Result<ProcessOutput, Box<dyn Error>> {
+    require_sound_process_execution()?;
     let prior_cleanup_failures = take_fallback_cleanup_failures();
     if !prior_cleanup_failures.is_empty() {
         return Err(format!(
@@ -274,22 +450,18 @@ fn timed_with_timeout_and_policy(
         )
         .into());
     }
-    let invocation = expected_invocation(program, arguments, environment, current_dir)?;
+    let invocation_binding = bind_invocation(program, arguments, environment, current_dir)?;
+    let invocation = invocation_binding.receipt().clone();
+    after_bind();
     let started = Instant::now();
-    let (telemetry_path, reservation_path) = telemetry_path()?;
+    let (telemetry_directory, telemetry_path, reservation_path) = telemetry_path()?;
     let output_prefix = telemetry_path.with_extension("");
     let stdout_path = output_prefix.with_extension("stdout");
     let stderr_path = output_prefix.with_extension("stderr");
     let resource_path = output_prefix.with_extension("time");
     let process_group_path = output_prefix.with_extension("pgid");
-    let stdout_file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&stdout_path)?;
-    let stderr_file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&stderr_path)?;
+    let stdout_file = super::filesystem::create_new_file(&stdout_path)?;
+    let stderr_file = super::filesystem::create_new_file(&stderr_path)?;
     let mut command = Command::new("/usr/bin/time");
     command.arg("-o").arg(&resource_path);
     if cfg!(target_os = "macos") {
@@ -304,20 +476,45 @@ fn timed_with_timeout_and_policy(
         TARGET_GROUP_ENV.to_owned(),
         process_group_path.to_string_lossy().into_owned(),
     );
+    let mut child_descriptors = inherited_descriptors.to_vec();
+    #[cfg(unix)]
+    {
+        child_descriptors.push(invocation_binding.executable_descriptor());
+        child_descriptors.push(invocation_binding.current_dir_descriptor());
+        launcher_environment.insert(
+            WORKING_DIRECTORY_FD_ENV.to_owned(),
+            invocation_binding
+                .current_dir_descriptor()
+                .as_raw_fd()
+                .to_string(),
+        );
+    }
+    child_descriptors.sort_unstable_by_key(AsRawFd::as_raw_fd);
+    child_descriptors.dedup_by_key(|descriptor| descriptor.as_raw_fd());
+    #[cfg(unix)]
+    if let Some(maximum) = child_descriptors.iter().map(AsRawFd::as_raw_fd).max() {
+        launcher_environment.insert(INHERITED_FD_MAX_ENV.to_owned(), maximum.to_string());
+    }
     command
         .arg("/usr/bin/perl")
         .arg("-MPOSIX")
         .arg("-e")
         .arg(TARGET_GROUP_LAUNCHER)
+        .arg(invocation_binding.executable_path())
         .arg(program)
         .args(arguments)
         .env_clear()
         .envs(&launcher_environment)
-        .current_dir(&invocation.current_dir)
         .stdout(Stdio::from(stdout_file))
         .stderr(Stdio::from(stderr_file));
     #[cfg(unix)]
     command.process_group(0);
+    telemetry_directory.verify_path_binding()?;
+    invocation_binding.verify_path_bindings()?;
+    #[cfg(unix)]
+    let child = spawn_with_descriptors(&mut command, &child_descriptors)
+        .map_err(|error| retained_error(error, &stdout_path, &stderr_path, Some(&resource_path)))?;
+    #[cfg(not(unix))]
     let child = command
         .spawn()
         .map_err(|error| retained_error(error, &stdout_path, &stderr_path, Some(&resource_path)))?;
@@ -334,604 +531,46 @@ fn timed_with_timeout_and_policy(
         &process_group_path,
         &reservation_path,
     );
+    telemetry_directory.verify_path_binding()?;
+    let result = result.and_then(|output| {
+        invocation_binding.verify_path_bindings()?;
+        Ok(output)
+    });
     finish_managed_process(process, result, &stdout_path, &stderr_path, &resource_path)
 }
 
-#[cfg(test)]
-mod tests {
-    use std::{
-        collections::BTreeMap,
-        ffi::OsString,
-        path::{Path, PathBuf},
-        sync::atomic::AtomicU64,
-        time::{Duration, Instant},
-    };
+fn require_sound_process_execution() -> Result<(), Box<dyn Error>> {
+    process_execution_policy(cfg!(target_os = "linux"), cfg!(test))
+}
 
-    #[cfg(unix)]
-    use std::os::unix::process::CommandExt;
-
-    #[cfg(unix)]
-    use rustix::io::Errno;
-
-    use super::{
-        allocate_telemetry_path, cleanup_error, combined_log, confirm_process_group_absent_with,
-        digest_environment, identity_command_with_timeout, json_log, layer_budget,
-        parse_combined_processes, parse_peak_rss, timed_for, timed_with_timeout,
-        timed_with_timeout_and_grace, ProcessGroupState, ProcessKind, ProcessLog,
-        DEFAULT_KILL_CONFIRMATION_TIMEOUT,
-    };
-
-    #[cfg(unix)]
-    use super::{
-        classify_signal_delivery, process_group_state, take_fallback_cleanup_failures,
-        ManagedProcess, SignalDelivery,
-    };
-    use super::{parse_process_group_observation, ProcessGroupObservation};
-
-    #[test]
-    fn parses_platform_peak_rss() {
-        let input = if cfg!(target_os = "macos") {
-            b"  1048576  maximum resident set size\n".as_slice()
-        } else {
-            b"\tMaximum resident set size (kbytes): 1024\n".as_slice()
-        };
-        assert_eq!(parse_peak_rss(input), Some(1024));
-    }
-
-    #[test]
-    fn environment_digest_binds_the_exact_sorted_map() {
-        let environment = BTreeMap::from([
-            ("Z".to_owned(), "last".to_owned()),
-            ("A".to_owned(), "first".to_owned()),
-        ]);
-        assert_eq!(
-            digest_environment(&environment),
-            "45f7a365bc34bcfbb88705678cd819fd3c0a5ccb9b6a72dc65e6506f4211c6fc"
-        );
-    }
-
-    #[test]
-    fn layer_budget_consumes_validated_runner_durations_without_profile_tables() {
-        let runner = crate::RunnerContract {
-            producer: "fixture".to_owned(),
-            command: Vec::new(),
-            configuration: BTreeMap::from([
-                ("layer_timeout".to_owned(), "17m".to_owned()),
-                ("finalization_reserve".to_owned(), "2m".to_owned()),
-                ("compile_timeout".to_owned(), "73s".to_owned()),
-                ("discovery_timeout".to_owned(), "11s".to_owned()),
-                ("execution_timeout".to_owned(), "13s".to_owned()),
-                ("termination_grace".to_owned(), "7s".to_owned()),
-                ("kill_confirmation_timeout".to_owned(), "3s".to_owned()),
-                ("receipt_finalization_allowance".to_owned(), "4s".to_owned()),
-            ]),
-            minimum_observed_checks: 1,
-            require_peak_rss: true,
-        };
-        let budget = layer_budget("arbitrary-profile", "tests", &runner)
-            .expect("manifest-driven producer budget")
-            .expect("non-TLA layer has a scoped budget");
-        let remaining = budget
-            .finalization_deadline
-            .checked_duration_since(Instant::now())
-            .expect("deadline remains in the future");
-        assert!(remaining <= Duration::from_secs(15 * 60));
-        assert!(remaining > Duration::from_secs(14 * 60 + 59));
-        assert_eq!(budget.finalization_reserve, Duration::from_secs(2 * 60));
-        assert_eq!(budget.compile_timeout, Some(Duration::from_secs(73)));
-        assert_eq!(budget.discovery_timeout, Some(Duration::from_secs(11)));
-        assert_eq!(budget.execution_timeout, Some(Duration::from_secs(13)));
-        assert_eq!(budget.policy.termination_grace, Duration::from_secs(7));
-        assert_eq!(
-            budget.policy.kill_confirmation_timeout,
-            Duration::from_secs(3)
-        );
-        assert_eq!(
-            budget.policy.receipt_finalization_allowance,
-            Duration::from_secs(4)
-        );
-        assert!(layer_budget("pr", "tla", &runner)
-            .expect("TLA remains explicit")
-            .is_none());
-        assert!(layer_budget("pr", "unknown", &runner).is_err());
-
-        let mut drifted = runner;
-        drifted.configuration.remove("termination_grace");
-        assert!(layer_budget("pr", "tests", &drifted).is_err());
-    }
-
-    #[test]
-    fn implicit_producer_process_without_a_layer_budget_fails_closed() {
-        let error = timed_for(
-            ProcessKind::SimulatorExecution,
-            "printf",
-            &[OsString::from("unreachable")],
-            &super::base_environment(),
-            Path::new("."),
-        )
-        .expect_err("unscoped producer subprocess must not start");
-        assert!(error.to_string().contains("outside an active layer budget"));
-    }
-
-    #[test]
-    #[cfg(unix)]
-    fn identity_command_timeout_is_finite_and_retains_diagnostics() {
-        let error = identity_command_with_timeout(
-            "sh",
-            &["-c", "printf identity-started; sleep 5"],
-            Duration::from_millis(50),
-        )
-        .expect_err("stalled identity command must time out")
-        .to_string();
-        assert!(error.contains("timed_out=true"));
-        assert!(error.contains("identity-started"));
-    }
-
-    #[test]
-    fn process_group_observation_combines_membership_and_rss() {
-        assert_eq!(
-            parse_process_group_observation(" 42 100\n 7 5\n 42 23\n", 42)
-                .expect("parse process inventory"),
-            ProcessGroupObservation {
-                state: ProcessGroupState::Alive,
-                rss_kib: 123,
-            }
-        );
-        assert_eq!(
-            parse_process_group_observation(" 7 5\n", 42).expect("parse absent process group"),
-            ProcessGroupObservation {
-                state: ProcessGroupState::Absent,
-                rss_kib: 0,
-            }
-        );
-        assert!(parse_process_group_observation("42 100 extra\n", 42).is_err());
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn process_group_signal_distinguishes_absent_from_permission_denied() {
-        assert_eq!(
-            classify_signal_delivery(Err(Errno::SRCH)),
-            Ok(SignalDelivery::GroupAbsent)
-        );
-        assert_eq!(classify_signal_delivery(Err(Errno::PERM)), Err(Errno::PERM));
-        assert_eq!(classify_signal_delivery(Ok(())), Ok(SignalDelivery::Sent));
-    }
-
-    #[test]
-    fn group_absence_confirmation_is_fail_closed() {
-        let error =
-            confirm_process_group_absent_with(Duration::ZERO, || Ok(ProcessGroupState::Alive))
-                .expect_err("a group that remains alive must fail confirmation");
-        assert!(error.to_string().contains("remained alive"));
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn managed_process_drop_kills_and_reaps_an_armed_group() {
-        let mut command = std::process::Command::new("sh");
-        command
-            .args(["-c", "trap '' TERM; while :; do :; done"])
-            .process_group(0);
-        let child = command.spawn().expect("spawn isolated process group");
-        let process_group = child.id();
-        let mut process = ManagedProcess::new(child, DEFAULT_KILL_CONFIRMATION_TIMEOUT);
-        process.set_target_group(process_group);
-
-        drop(process);
-
-        assert_eq!(
-            process_group_state(process_group).expect("probe cleaned process group"),
-            ProcessGroupState::Absent
-        );
-    }
-
-    #[cfg(unix)]
-    #[test]
-    fn fallback_cleanup_failure_is_loud_and_rejected_by_the_next_producer_process() {
-        const CHILD_ENV: &str = "RAFTER_TEST_CROSS_THREAD_CLEANUP_FAILURE";
-        if std::env::var_os(CHILD_ENV).is_none() {
-            let output = std::process::Command::new(
-                std::env::current_exe().expect("resolve invariant test executable"),
-            )
-            .args([
-                "--exact",
-                "producer::process::tests::fallback_cleanup_failure_is_loud_and_rejected_by_the_next_producer_process",
-                "--nocapture",
-            ])
-            .env(CHILD_ENV, "1")
-            .output()
-            .expect("run isolated cleanup-failure test");
-            assert!(
-                output.status.success(),
-                "isolated cleanup-failure test failed\nstdout:\n{}\nstderr:\n{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
-            );
-            return;
-        }
-
-        assert!(take_fallback_cleanup_failures().is_empty());
-        std::thread::spawn(|| {
-            let mut command = std::process::Command::new("sh");
-            command.args(["-c", "exit 0"]).process_group(0);
-            let child = command.spawn().expect("spawn isolated process group");
-            let mut process = ManagedProcess::new(child, DEFAULT_KILL_CONFIRMATION_TIMEOUT);
-            process.set_target_group(u32::MAX);
-            drop(process);
-        })
-        .join()
-        .expect("cleanup worker exits normally");
-
-        let error = timed_with_timeout(
-            "printf",
-            &[OsString::from("unreachable")],
-            &super::base_environment(),
-            Path::new("."),
-            Duration::from_secs(1),
-        )
-        .expect_err("the next process must surface the fallback cleanup diagnostic");
-        assert!(error
-            .to_string()
-            .contains("prior fallback subprocess cleanup failed"));
-        assert!(take_fallback_cleanup_failures().is_empty());
-    }
-
-    #[test]
-    fn cleanup_errors_name_retained_telemetry() {
-        let error = cleanup_error(
-            "permission denied",
-            Path::new("target/telemetry.stdout"),
-            Path::new("target/telemetry.stderr"),
-        );
-        let message = error.to_string();
-        assert!(message.contains("permission denied"));
-        assert!(message.contains("target/telemetry.stdout"));
-        assert!(message.contains("target/telemetry.stderr"));
-    }
-
-    #[test]
-    fn telemetry_allocation_never_reuses_stale_process_receipts() {
-        let directory = unique_test_path("telemetry-collision");
-        std::fs::create_dir_all(&directory).expect("create telemetry scratch directory");
-        let first_sequence = AtomicU64::new(0);
-        let (first_path, first_reservation) =
-            allocate_telemetry_path(&directory, 42, &first_sequence)
-                .expect("reserve first telemetry path");
-        let first_prefix = first_path.with_extension("");
-        std::fs::remove_file(first_reservation).expect("release simulated crashed reservation");
-        std::fs::write(first_prefix.with_extension("stdout"), b"stale")
-            .expect("retain stale stdout receipt");
-
-        let reused_process_sequence = AtomicU64::new(0);
-        let (second_path, second_reservation) =
-            allocate_telemetry_path(&directory, 42, &reused_process_sequence)
-                .expect("skip stale telemetry path");
-        assert_ne!(second_path, first_path);
-        assert_eq!(second_path, directory.join("42-1.time"));
-
-        std::fs::remove_file(second_reservation).expect("release second reservation");
-        std::fs::remove_dir_all(directory).expect("remove telemetry scratch directory");
-    }
-
-    #[test]
-    fn short_lived_children_always_produce_resource_telemetry() {
-        for iteration in 0..32 {
-            let output = timed_with_timeout(
-                "sh",
-                &[OsString::from("-c"), OsString::from("printf short")],
-                &super::base_environment(),
-                Path::new("."),
-                Duration::from_secs(2),
-            )
-            .unwrap_or_else(|error| panic!("short child {iteration} lost telemetry: {error}"));
-            assert!(output.status.success());
-            assert!(!output.timed_out);
-            assert_eq!(output.stdout, b"short");
-            assert!(output.peak_rss_kib > 0);
-        }
-    }
-
-    #[test]
-    fn telemetry_paths_remain_valid_from_a_nested_child_working_directory() {
-        let working_directory = unique_test_path("nested-child-working-directory");
-        std::fs::create_dir_all(&working_directory).expect("create nested working directory");
-
-        let output = timed_with_timeout(
-            "sh",
-            &[
-                OsString::from("-c"),
-                OsString::from("printf nested; printf nested-err >&2"),
-            ],
-            &super::base_environment(),
-            &working_directory,
-            Duration::from_secs(2),
-        )
-        .expect("nested child produces absolute-path telemetry");
-
-        assert!(output.status.success());
-        assert!(!output.timed_out);
-        assert_eq!(output.stdout, b"nested");
-        assert_eq!(output.stderr, b"nested-err");
-        assert!(output.peak_rss_kib > 0);
-        assert_eq!(
-            output.invocation.current_dir,
-            std::fs::canonicalize(&working_directory)
-                .expect("nested working directory canonicalizes")
-                .to_string_lossy()
-        );
-        std::fs::remove_dir_all(working_directory).expect("remove nested working directory");
-    }
-
-    #[test]
-    fn timed_child_is_killed_at_its_soft_timeout() {
-        let environment = super::base_environment();
-        let output = timed_with_timeout(
-            "sleep",
-            &[OsString::from("5")],
-            &environment,
-            Path::new("."),
-            Duration::from_millis(10),
-        )
-        .expect("timed child produces telemetry");
-
-        assert!(output.timed_out);
-        assert!(!output.status.success());
-        assert!(output.duration < Duration::from_secs(2));
-        assert!(output.peak_rss_kib > 0);
-        assert_eq!(output.invocation.program, "sleep");
-        assert_eq!(output.invocation.arguments, ["5"]);
-        assert_eq!(
-            output.invocation.current_dir,
-            std::fs::canonicalize(".")
-                .expect("working directory canonicalizes")
-                .to_string_lossy()
-                .into_owned()
-        );
-        assert_eq!(
-            output.invocation.environment_sha256,
-            digest_environment(&environment)
-        );
-
-        let plain = String::from_utf8(combined_log("timeout", &output).expect("log serializes"))
-            .expect("plain process log is UTF-8");
-        assert!(plain.starts_with("schema_version: 3\nlabel: timeout\ninvocation: {"));
-        assert!(plain.contains("\"program\":\"sleep\""));
-        let parsed = parse_combined_processes(&plain).expect("combined metrics parse");
-        assert_eq!(parsed.len(), 1);
-        assert!(parsed[0].timed_out);
-        assert_ne!(parsed[0].exit_code, Some(0));
-        assert_eq!(parsed[0].metrics.peak_rss_kib, output.peak_rss_kib);
-        let structured: ProcessLog = serde_json::from_slice(
-            &json_log("timeout", &output).expect("structured process log serializes"),
-        )
-        .expect("structured process log parses");
-        assert_eq!(structured.schema_version, 2);
-        assert!(structured.termination.is_none());
-        assert_eq!(structured.invocation, output.invocation);
-    }
-
-    #[test]
-    fn timed_out_process_transcript_retains_output_and_timeout_classification() {
-        let output = timed_with_timeout(
-            "sh",
-            &[
-                OsString::from("-c"),
-                OsString::from("printf retained-before-timeout; sleep 5"),
-            ],
-            &super::base_environment(),
-            Path::new("."),
-            Duration::from_millis(10),
-        )
-        .expect("timed-out process returns a replayable receipt");
-        assert!(output.timed_out);
-        assert_eq!(output.stdout, b"retained-before-timeout");
-
-        let unique = unique_test_path("timeout-artifact");
-        let directory = PathBuf::from("target/rafter-invariants/test-artifacts").join(
-            unique
-                .file_name()
-                .expect("timeout artifact path has a file name"),
-        );
-        let bytes = combined_log("timeout-retention", &output).expect("frame timeout transcript");
-        let artifact = crate::producer::artifact::write(
-            &directory,
-            Path::new("timeout.log"),
-            "test-log",
-            &bytes,
-        )
-        .expect("persist timeout transcript");
-        let retained = std::fs::read_to_string(&artifact.path).expect("read timeout transcript");
-        let [parsed] = parse_combined_processes(&retained)
-            .expect("parse retained timeout transcript")
-            .try_into()
-            .expect("one retained process");
-        assert!(parsed.timed_out);
-        assert_eq!(parsed.stdout, "retained-before-timeout");
-        assert_eq!(artifact.size_bytes, bytes.len() as u64);
-        std::fs::remove_dir_all(directory).expect("remove timeout artifact directory");
-    }
-
-    #[test]
-    fn combined_processes_preserve_failed_and_timed_out_semantic_statuses() {
-        let source = concat!(
-            "schema_version: 3\n",
-            "label: test\n",
-            "invocation: {\"program\":\"cargo\",\"program_sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"arguments\":[\"test\"],\"current_dir\":\"/workspace\",\"environment\":{},\"environment_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}\n",
-            "exit_code: Some(0)\n",
-            "timed_out: false\n",
-            "duration_ms: 1\n",
-            "peak_rss_kib: 1\n",
-            "stdout_bytes: 2\n",
-            "stderr_bytes: 0\n",
-            "\n",
-            "ok",
-        );
-        let parsed = parse_combined_processes(source).expect("successful receipt parses");
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].stdout, "ok");
-        assert_eq!(parsed[0].stderr, "");
-        let failed = parse_combined_processes(&source.replace("Some(0)", "Some(1)"))
-            .expect("failed semantic receipt remains parseable");
-        assert_eq!(failed[0].exit_code, Some(1));
-        let timed_out = parse_combined_processes(&source.replace("false", "true"))
-            .expect("timed-out semantic receipt remains parseable");
-        assert!(timed_out[0].timed_out);
-        assert!(parse_combined_processes(&source.replace("Some(0)", "0")).is_err());
-        assert!(
-            parse_combined_processes(&source.replace("stdout_bytes: 2", "stdout_bytes: 20"))
-                .is_err()
-        );
-        assert!(parse_combined_processes(&format!("{source}trailing junk")).is_err());
-    }
-
-    #[test]
-    fn length_framing_preserves_process_log_tokens_inside_stdout() {
-        let payload = "schema_version: 3\n\nstdout_bytes: 999\n--- stderr ---";
-        let output = timed_with_timeout(
-            "printf",
-            &[OsString::from("%s"), OsString::from(payload)],
-            &super::base_environment(),
-            Path::new("."),
-            Duration::from_secs(2),
-        )
-        .expect("capture adversarial stdout");
-        let log = String::from_utf8(combined_log("framing", &output).expect("serialize log"))
-            .expect("combined log is UTF-8");
-        let [parsed] = parse_combined_processes(&log)
-            .expect("length framing ignores payload tokens")
-            .try_into()
-            .expect("one process receipt");
-        assert_eq!(parsed.stdout, payload);
-        assert_eq!(parsed.stderr, "");
-    }
-
-    #[test]
-    fn timeout_escalates_from_group_term_to_group_kill() {
-        let output = timed_with_timeout_and_grace(
-            "sh",
-            &[
-                OsString::from("-c"),
-                OsString::from("trap '' TERM; while :; do :; done"),
-            ],
-            &super::base_environment(),
-            Path::new("."),
-            Duration::from_millis(10),
-            Duration::from_millis(20),
-        )
-        .expect("stubborn process group is killed");
-        let termination = output.termination.expect("termination receipt");
-        assert!(output.timed_out);
-        assert!(termination.process_group);
-        assert!(termination.term_signal_sent);
-        assert!(termination.kill_signal_sent);
-        assert_eq!(termination.grace_ms, 20);
-    }
-
-    #[test]
-    fn timeout_term_cleans_up_descendants_without_escalation() {
-        let marker = unique_test_path("descendant-term");
-        let mut environment = super::base_environment();
-        environment.insert(
-            "MARKER_PATH".to_owned(),
-            marker.to_string_lossy().into_owned(),
-        );
-        let output = timed_with_timeout_and_grace(
-            "sh",
-            &[
-                OsString::from("-c"),
-                OsString::from(
-                    "(trap 'printf term > \"$MARKER_PATH\"; exit 0' TERM; while :; do sleep 1; done) & wait",
-                ),
-            ],
-            &environment,
-            Path::new("."),
-            Duration::from_millis(200),
-            Duration::from_secs(2),
-        )
-        .expect("TERM cleans up the leader and descendant process");
-        let termination = output.termination.expect("termination receipt");
-        assert!(output.timed_out);
-        assert!(termination.term_signal_sent);
-        assert!(!termination.kill_signal_sent);
-        assert_eq!(
-            std::fs::read_to_string(&marker).expect("descendant records TERM"),
-            "term"
-        );
-        std::fs::remove_file(marker).expect("remove TERM marker");
-    }
-
-    #[test]
-    fn timeout_kills_descendants_after_the_group_leader_exits() {
-        let output = timed_with_timeout_and_grace(
-            "sh",
-            &[
-                OsString::from("-c"),
-                OsString::from("trap 'exit 0' TERM; (trap '' TERM; while :; do :; done) & wait"),
-            ],
-            &super::base_environment(),
-            Path::new("."),
-            Duration::from_millis(10),
-            Duration::from_millis(20),
-        )
-        .expect("surviving descendant is killed with its process group");
-        let termination = output.termination.expect("termination receipt");
-        assert!(output.timed_out);
-        assert!(termination.term_signal_sent);
-        assert!(termination.kill_signal_sent);
-    }
-
-    #[test]
-    fn successful_leader_exit_does_not_hide_a_live_descendant() {
-        let output = timed_with_timeout_and_grace(
-            "sh",
-            &[
-                OsString::from("-c"),
-                OsString::from("(trap '' TERM; sleep 5) & exit 0"),
-            ],
-            &super::base_environment(),
-            Path::new("."),
-            Duration::from_millis(50),
-            Duration::from_millis(20),
-        )
-        .expect("the surviving descendant is detected and killed");
-        let termination = output.termination.expect("termination receipt");
-        assert!(output.timed_out);
-        assert!(termination.term_signal_sent);
-        assert!(termination.kill_signal_sent);
-        assert!(output.duration < Duration::from_secs(2));
-    }
-
-    #[test]
-    fn structured_process_log_rejects_unknown_fields() {
-        let source = r#"{
-            "schema_version": 2,
-            "label": "model-check",
-            "invocation": {
-                "program": "java",
-                "program_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
-                "arguments": ["-jar", "tla2tools.jar"],
-                "current_dir": "/workspace/rafter",
-                "environment": {},
-                "environment_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
-            },
-            "exit_code": 0,
-            "timed_out": false,
-            "termination": null,
-            "duration_ms": 1,
-            "peak_rss_kib": 1,
-            "stdout": "",
-            "stderr": "",
-            "trusted": true
-        }"#;
-        assert!(serde_json::from_str::<ProcessLog>(source).is_err());
-    }
-
-    fn unique_test_path(label: &str) -> PathBuf {
-        let sequence = super::TELEMETRY_SEQUENCE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        std::env::temp_dir().join(format!(
-            "rafter-invariants-{label}-{}-{sequence}",
-            std::process::id()
-        ))
+fn process_execution_policy(
+    descriptor_execution_supported: bool,
+    test_only_fallback: bool,
+) -> Result<(), Box<dyn Error>> {
+    if descriptor_execution_supported || test_only_fallback {
+        Ok(())
+    } else {
+        Err("evidence subprocess execution requires Linux descriptor-based executable launch; this host cannot atomically bind a hash to exec".into())
     }
 }
+
+#[cfg(unix)]
+fn spawn_with_descriptors(
+    command: &mut Command,
+    descriptors: &[BorrowedFd<'_>],
+) -> Result<Child, Box<dyn Error>> {
+    let mappings = descriptors
+        .iter()
+        .map(|descriptor| {
+            Ok(FdMapping {
+                parent_fd: descriptor.try_clone_to_owned()?,
+                child_fd: descriptor.as_raw_fd(),
+            })
+        })
+        .collect::<Result<Vec<_>, std::io::Error>>()?;
+    command.fd_mappings(mappings)?;
+    Ok(command.spawn()?)
+}
+
+#[cfg(test)]
+mod tests;

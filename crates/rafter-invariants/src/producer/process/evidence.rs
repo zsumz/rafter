@@ -1,16 +1,80 @@
 use super::{
     env, fs, AtomicU64, BTreeMap, Command, CommandExt, Digest, Duration, Error, Instant,
-    InvocationReceipt, LabeledProcess, OpenOptions, Ordering, OsString, Path, PathBuf,
-    ProcessGroupObservation, ProcessGroupState, ProcessLog, ProcessMetrics, ProcessOutput, Read,
-    Sha256, Stdio, PS_TELEMETRY_TIMEOUT, TELEMETRY_SEQUENCE,
+    InvocationReceipt, LabeledProcess, Ordering, OsString, Path, PathBuf, ProcessGroupObservation,
+    ProcessGroupState, ProcessLog, ProcessMetrics, ProcessOutput, Read, Sha256, Stdio,
+    PS_TELEMETRY_TIMEOUT, TELEMETRY_SEQUENCE,
 };
 
+#[cfg(target_os = "linux")]
+use std::os::fd::AsRawFd;
+#[cfg(unix)]
+use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
+
+use crate::producer::filesystem::{self as producer_fs, ChildDirectory, HeldDirectory, HeldFile};
+
+pub(super) struct BoundInvocation {
+    receipt: InvocationReceipt,
+    executable: BoundExecutable,
+    current_dir: HeldDirectory,
+    child_current_dir: ChildDirectory,
+}
+
+impl BoundInvocation {
+    pub(super) fn receipt(&self) -> &InvocationReceipt {
+        &self.receipt
+    }
+
+    #[cfg(test)]
+    pub(super) fn into_receipt(self) -> InvocationReceipt {
+        self.receipt
+    }
+
+    pub(super) fn executable_path(&self) -> &Path {
+        &self.executable.path
+    }
+
+    #[cfg(unix)]
+    pub(super) fn executable_descriptor(&self) -> BorrowedFd<'_> {
+        self.executable.descriptor.as_fd()
+    }
+
+    #[cfg(unix)]
+    pub(super) fn current_dir_descriptor(&self) -> BorrowedFd<'_> {
+        self.child_current_dir.descriptor()
+    }
+
+    pub(super) fn verify_path_bindings(&self) -> Result<(), Box<dyn Error>> {
+        if let Some(held) = &self.executable.held {
+            held.verify_path_binding()?;
+        }
+        self.current_dir.verify_path_binding()?;
+        Ok(())
+    }
+}
+
+struct BoundExecutable {
+    #[cfg(unix)]
+    descriptor: OwnedFd,
+    path: PathBuf,
+    held: Option<HeldFile>,
+}
+
+#[cfg(test)]
 pub(crate) fn expected_invocation(
     program: &str,
     arguments: &[OsString],
     environment: &BTreeMap<String, String>,
     current_dir: &Path,
 ) -> Result<InvocationReceipt, Box<dyn Error>> {
+    Ok(bind_invocation(program, arguments, environment, current_dir)?.into_receipt())
+}
+
+pub(super) fn bind_invocation(
+    program: &str,
+    arguments: &[OsString],
+    environment: &BTreeMap<String, String>,
+    current_dir: &Path,
+) -> Result<BoundInvocation, Box<dyn Error>> {
     let arguments = arguments
         .iter()
         .map(|argument| {
@@ -20,37 +84,98 @@ pub(crate) fn expected_invocation(
                 .ok_or("subprocess argument is not UTF-8")
         })
         .collect::<Result<Vec<_>, _>>()?;
-    let current_dir = fs::canonicalize(current_dir)?
+    let current_dir = HeldDirectory::open(current_dir)?;
+    let current_dir_receipt = current_dir
+        .external_path()
         .into_os_string()
         .into_string()
         .map_err(|_| "subprocess working directory is not UTF-8")?;
-    Ok(InvocationReceipt {
+    let (executable, program_sha256) = bind_executable(program, environment)?;
+    let receipt = InvocationReceipt {
         program: program.to_owned(),
-        program_sha256: executable_sha256(program, environment)?,
+        program_sha256,
         arguments,
-        current_dir,
+        current_dir: current_dir_receipt,
         environment: environment.clone(),
         environment_sha256: digest_environment(environment),
+    };
+    let child_current_dir = current_dir.bind_for_child()?;
+    Ok(BoundInvocation {
+        receipt,
+        executable,
+        current_dir,
+        child_current_dir,
     })
 }
 
-fn executable_sha256(
+fn bind_executable(
     program: &str,
     environment: &BTreeMap<String, String>,
-) -> Result<String, Box<dyn Error>> {
-    let path = if Path::new(program).components().count() > 1 {
-        fs::canonicalize(program)?
+) -> Result<(BoundExecutable, String), Box<dyn Error>> {
+    let (file, held, executable_path) = if Path::new(program).components().count() > 1 {
+        let path = PathBuf::from(program);
+        let workspace_path =
+            !path.is_absolute()
+                || path.starts_with(std::env::current_dir().map_err(|error| {
+                    format!("resolve workspace for executable evidence: {error}")
+                })?);
+        if workspace_path {
+            let held = producer_fs::hold_file(&path)?;
+            let file = held.try_clone_std()?;
+            let executable_path = held.external_path();
+            (file, Some(held), executable_path)
+        } else {
+            let path = fs::canonicalize(path)?;
+            (fs::File::open(&path)?, None, path)
+        }
     } else {
-        environment
+        let path = environment
             .get("PATH")
             .and_then(|path| {
                 env::split_paths(path)
                     .map(|directory| directory.join(program))
                     .find(|candidate| candidate.is_file())
             })
-            .ok_or_else(|| format!("subprocess program is not present on PATH: {program}"))?
+            .ok_or_else(|| format!("subprocess program is not present on PATH: {program}"))?;
+        let path = fs::canonicalize(path)?;
+        (fs::File::open(&path)?, None, path)
     };
-    Ok(format!("{:x}", Sha256::digest(fs::read(path)?)))
+    if !file.metadata()?.is_file() {
+        return Err(format!("subprocess program is not a regular file: {program}").into());
+    }
+    let program_sha256 = sha256_file(&file)?;
+    #[cfg(unix)]
+    {
+        let descriptor = rustix::io::fcntl_dupfd_cloexec(&file, 3)?;
+        #[cfg(target_os = "linux")]
+        let path = PathBuf::from(format!("/proc/self/fd/{}", descriptor.as_raw_fd()));
+        #[cfg(not(target_os = "linux"))]
+        let path = executable_path;
+        Ok((
+            BoundExecutable {
+                descriptor,
+                path,
+                held,
+            },
+            program_sha256,
+        ))
+    }
+    #[cfg(not(unix))]
+    Err("descriptor-bound subprocess execution requires Unix".into())
+}
+
+fn sha256_file(file: &fs::File) -> Result<String, Box<dyn Error>> {
+    let mut file = file.try_clone()?;
+    let mut digest = Sha256::new();
+    let mut buffer = vec![0_u8; 64 * 1024];
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
 }
 
 pub(crate) fn digest_environment(environment: &BTreeMap<String, String>) -> String {
@@ -182,11 +307,15 @@ pub(crate) fn base_environment() -> BTreeMap<String, String> {
         .collect()
 }
 
-pub(super) fn telemetry_path() -> Result<(PathBuf, PathBuf), Box<dyn Error>> {
+pub(super) fn telemetry_path() -> Result<(HeldDirectory, PathBuf, PathBuf), Box<dyn Error>> {
     let directory = Path::new("target/rafter-invariants/telemetry");
-    std::fs::create_dir_all(directory)?;
-    let directory = std::fs::canonicalize(directory)?;
-    allocate_telemetry_path(&directory, std::process::id(), &TELEMETRY_SEQUENCE)
+    let directory = HeldDirectory::create_all(directory)?;
+    let (path, reservation) = allocate_telemetry_path(
+        &directory.external_path(),
+        std::process::id(),
+        &TELEMETRY_SEQUENCE,
+    )?;
+    Ok((directory, path, reservation))
 }
 
 pub(super) fn allocate_telemetry_path(
@@ -199,23 +328,28 @@ pub(super) fn allocate_telemetry_path(
         let path = directory.join(format!("{process_id}-{sequence}.time"));
         let prefix = path.with_extension("");
         let reservation = prefix.with_extension("reserve");
-        match OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&reservation)
-        {
+        match producer_fs::create_new_file(&reservation) {
             Ok(_) => {
-                let collision = ["stdout", "stderr", "time", "pgid"]
-                    .iter()
-                    .any(|extension| prefix.with_extension(extension).exists());
+                let collision = ["stdout", "stderr", "time", "pgid"].iter().try_fold(
+                    false,
+                    |collision, extension| {
+                        Ok::<_, Box<dyn Error>>(
+                            collision
+                                || producer_fs::path_exists(&prefix.with_extension(extension))?,
+                        )
+                    },
+                )?;
                 if collision {
-                    std::fs::remove_file(&reservation)?;
+                    producer_fs::remove_file(&reservation)?;
                     continue;
                 }
                 return Ok((path, reservation));
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error.into()),
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::AlreadyExists) => {}
+            Err(error) => return Err(error),
         }
     }
 }

@@ -1,7 +1,7 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
-    path::{Path, PathBuf},
+    path::{Component, Path, PathBuf},
 };
 
 use serde_json::Value;
@@ -10,10 +10,24 @@ use crate::{aggregate::AggregateError, ResultBundle};
 
 use super::EVENT_PREFIX;
 
+const SIMULATOR_PACKAGE: &str = "rafter-sim";
+const SIMULATOR_PACKAGE_VERSION: &str = "0.0.1";
+const SIMULATOR_TARGET: &str = "rafter-model-check-fast";
+
+struct InvocationVerification {
+    diagnostics: Vec<String>,
+    complete: bool,
+}
+
+struct SimulatorRoots {
+    producer: PathBuf,
+    active: PathBuf,
+}
+
 pub(super) fn verify_simulator_schedule(
     bundle: &ResultBundle,
     root: &Path,
-) -> Result<(), AggregateError> {
+) -> Result<Vec<String>, AggregateError> {
     let configuration = bundle
         .execution
         .plan
@@ -45,20 +59,35 @@ pub(super) fn verify_simulator_schedule(
             })
         })
         .collect::<Result<Vec<_>, _>>()?;
-    verify_simulator_invocations(bundle, root, &sources)?;
-    validate_simulator_schedule(
-        &bundle.profile,
-        &bundle.source_ref,
-        &configuration,
-        &sources,
-    )
+    let invocation = verify_simulator_invocations(bundle, root, &sources)?;
+    let mut diagnostics = invocation.diagnostics;
+    let event_diagnostics = sources
+        .iter()
+        .enumerate()
+        .flat_map(|(index, source)| {
+            scan_machine_events(source, &format!("simulator log {index}"))
+                .1
+                .into_iter()
+        })
+        .collect::<Vec<_>>();
+    if invocation.complete && event_diagnostics.is_empty() {
+        validate_simulator_schedule(
+            &bundle.profile,
+            &bundle.source_ref,
+            &configuration,
+            &sources,
+        )?;
+    }
+    diagnostics.extend(event_diagnostics);
+    Ok(diagnostics)
 }
 
 fn verify_simulator_invocations(
     bundle: &ResultBundle,
     root: &Path,
     sources: &[String],
-) -> Result<(), AggregateError> {
+) -> Result<InvocationVerification, AggregateError> {
+    let roots = simulator_roots(bundle, root)?;
     let binaries = bundle
         .execution
         .artifacts
@@ -71,12 +100,8 @@ fn verify_simulator_invocations(
             binaries.len()
         )));
     };
-    let emitted = emitted_simulator_executable(bundle, root)?;
+    let emitted = emitted_simulator_executable(bundle, root, &roots)?;
     let environment_sha256 = bundle.execution.source.environment_sha256.as_str();
-    let current_dir = fs::canonicalize(root)
-        .map_err(|error| AggregateError::new(format!("canonicalize simulator root: {error}")))?
-        .to_string_lossy()
-        .into_owned();
     let expected: Vec<(String, Vec<String>)> = match bundle.profile.as_str() {
         "pr" => vec![
             (
@@ -103,16 +128,25 @@ fn verify_simulator_invocations(
             )))
         }
     };
-    if sources.len() != expected.len() {
+    if sources.len() > expected.len() {
         return Err(AggregateError::new(
-            "simulator log count does not match the execution plan".to_owned(),
+            "simulator log count exceeds the execution plan".to_owned(),
         ));
     }
+    let mut diagnostics = Vec::new();
+    let expected_count = expected.len();
+    let mut matched = 0_usize;
     for (label, arguments) in expected {
-        let source = sources
+        let Some(source) = sources
             .iter()
             .find(|source| source.lines().any(|line| line == format!("label: {label}")))
-            .ok_or_else(|| AggregateError::new(format!("simulator log {label} is missing")))?;
+        else {
+            diagnostics.push(format!(
+                "simulator execution plan did not run required profile {label}"
+            ));
+            continue;
+        };
+        matched += 1;
         let processes = crate::producer::process::parse_combined_processes(source)
             .map_err(|error| AggregateError::new(format!("parse simulator invocation: {error}")))?;
         let [observed] = processes.as_slice() else {
@@ -120,10 +154,15 @@ fn verify_simulator_invocations(
                 "simulator log {label} must contain exactly one invocation"
             )));
         };
+        if let Err(error) =
+            verify_simulator_invocation_outcome(&label, observed.exit_code, observed.timed_out)
+        {
+            diagnostics.push(error.to_string());
+        }
         if observed.label != label
             || observed.invocation.arguments != arguments
             || !simulator_program_matches(&observed.invocation, &emitted, &binary.sha256)
-            || observed.invocation.current_dir != current_dir
+            || Path::new(&observed.invocation.current_dir) != roots.producer
             || observed.invocation.environment_sha256 != environment_sha256
             || crate::producer::process::digest_environment(&observed.invocation.environment)
                 != environment_sha256
@@ -133,12 +172,51 @@ fn verify_simulator_invocations(
             )));
         }
     }
+    if matched != sources.len() {
+        return Err(AggregateError::new(
+            "simulator logs contain an unexpected or duplicate invocation".to_owned(),
+        ));
+    }
+    Ok(InvocationVerification {
+        diagnostics,
+        complete: matched == expected_count,
+    })
+}
+
+fn simulator_roots(bundle: &ResultBundle, root: &Path) -> Result<SimulatorRoots, AggregateError> {
+    let producer = PathBuf::from(&bundle.execution.invocation.current_dir);
+    if !clean_absolute_path(&producer) {
+        return Err(AggregateError::new(
+            "simulator producer root must be a clean absolute path".to_owned(),
+        ));
+    }
+    let active = fs::canonicalize(root)
+        .map_err(|error| AggregateError::new(format!("canonicalize simulator root: {error}")))?;
+    if !clean_absolute_path(&active) {
+        return Err(AggregateError::new(
+            "simulator active root is not a clean canonical path".to_owned(),
+        ));
+    }
+    Ok(SimulatorRoots { producer, active })
+}
+
+fn verify_simulator_invocation_outcome(
+    label: &str,
+    exit_code: Option<i32>,
+    timed_out: bool,
+) -> Result<(), AggregateError> {
+    if exit_code != Some(0) || timed_out {
+        return Err(AggregateError::new(format!(
+            "simulator log {label} requires a zero-exit invocation that did not time out"
+        )));
+    }
     Ok(())
 }
 
 fn emitted_simulator_executable(
     bundle: &ResultBundle,
     root: &Path,
+    roots: &SimulatorRoots,
 ) -> Result<PathBuf, AggregateError> {
     let mut executables = Vec::new();
     for artifact in bundle
@@ -169,12 +247,26 @@ fn emitted_simulator_executable(
                     "simulator compiler-artifact provenance requires a successful build".to_owned(),
                 ));
             }
-            executables.push(super::compile::compiler_artifact_executable(
+            let target_dir = simulator_compile_target_dir(bundle, process, roots)?;
+            let named_executable = super::compile::compiler_artifact_executable(
                 process.stdout.as_bytes(),
-                "rafter-model-check-fast",
+                SIMULATOR_TARGET,
                 "bin",
                 "simulator compile",
-            )?);
+            )?;
+            let source_bound_executable = simulator_compiler_artifact_executable(
+                process.stdout.as_bytes(),
+                &roots.producer,
+                &roots.active,
+                &target_dir,
+            )?;
+            if named_executable != source_bound_executable {
+                return Err(AggregateError::new(
+                    "simulator compiler-artifact selectors resolved different executables"
+                        .to_owned(),
+                ));
+            }
+            executables.push(source_bound_executable);
         }
     }
     let [executable] = executables.as_slice() else {
@@ -184,6 +276,256 @@ fn emitted_simulator_executable(
         )));
     };
     Ok(executable.clone())
+}
+
+fn simulator_compile_target_dir(
+    bundle: &ResultBundle,
+    process: &crate::producer::process::LabeledProcess,
+    roots: &SimulatorRoots,
+) -> Result<PathBuf, AggregateError> {
+    let expected_arguments = [
+        "build",
+        "--release",
+        "--locked",
+        "-p",
+        SIMULATOR_PACKAGE,
+        "--bin",
+        SIMULATOR_TARGET,
+        "--message-format=json-render-diagnostics",
+    ];
+    let mut base_environment = process.invocation.environment.clone();
+    let recorded_target_dir = base_environment.remove("CARGO_TARGET_DIR").ok_or_else(|| {
+        AggregateError::new("simulator compile invocation omitted CARGO_TARGET_DIR".to_owned())
+    })?;
+    let target_dir = resolve_producer_path(&roots.producer, Path::new(&recorded_target_dir))?;
+    let source_prefix = bundle.source_ref.get(..12).unwrap_or(&bundle.source_ref);
+    let expected_target_dir = roots
+        .producer
+        .join("target/rafter-invariants/simulator-build")
+        .join(source_prefix)
+        .join(&bundle.profile);
+    if process.label != "simulator compile"
+        || process.invocation.program != "cargo"
+        || process.invocation.program_sha256 != bundle.execution.source.cargo_sha256
+        || process.invocation.arguments != expected_arguments
+        || Path::new(&process.invocation.current_dir) != roots.producer
+        || crate::producer::process::digest_environment(&process.invocation.environment)
+            != process.invocation.environment_sha256
+        || crate::producer::process::digest_environment(&base_environment)
+            != bundle.execution.source.environment_sha256
+        || target_dir != expected_target_dir
+    {
+        return Err(AggregateError::new(
+            "simulator compile log does not match its recorded producer invocation and source contract"
+                .to_owned(),
+        ));
+    }
+    Ok(target_dir)
+}
+
+fn resolve_producer_path(root: &Path, recorded: &Path) -> Result<PathBuf, AggregateError> {
+    let resolved = if recorded.is_absolute() {
+        recorded.to_owned()
+    } else {
+        if recorded
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+        {
+            return Err(AggregateError::new(
+                "simulator compile invocation recorded an unsafe relative Cargo target directory"
+                    .to_owned(),
+            ));
+        }
+        root.join(recorded)
+    };
+    if !clean_absolute_path(&resolved) {
+        return Err(AggregateError::new(
+            "simulator compile invocation recorded a non-canonical Cargo target directory"
+                .to_owned(),
+        ));
+    }
+    Ok(resolved)
+}
+
+fn simulator_compiler_artifact_executable(
+    bytes: &[u8],
+    producer_root: &Path,
+    active_root: &Path,
+    target_dir: &Path,
+) -> Result<PathBuf, AggregateError> {
+    if !clean_absolute_path(producer_root)
+        || !clean_absolute_path(active_root)
+        || !clean_absolute_path(target_dir)
+    {
+        return Err(AggregateError::new(
+            "simulator compiler-artifact path contract is not canonical".to_owned(),
+        ));
+    }
+    let producer_package = producer_root.join("crates").join(SIMULATOR_PACKAGE);
+    let producer_source = producer_package
+        .join("src/bin")
+        .join(format!("{SIMULATOR_TARGET}.rs"));
+    let active_package = active_root.join("crates").join(SIMULATOR_PACKAGE);
+    let active_source = active_package
+        .join("src/bin")
+        .join(format!("{SIMULATOR_TARGET}.rs"));
+    verify_active_path(&active_package, true, "simulator package")?;
+    verify_active_path(&active_source, false, "simulator target source")?;
+    let mut executables = Vec::new();
+    for line in String::from_utf8_lossy(bytes).lines() {
+        let Ok(message) = serde_json::from_str::<Value>(line) else {
+            continue;
+        };
+        if message["reason"] != "compiler-artifact"
+            || message["target"]["name"] != SIMULATOR_TARGET
+            || !exact_string_array(&message["target"]["kind"], "bin")
+            || !exact_string_array(&message["target"]["crate_types"], "bin")
+        {
+            continue;
+        }
+        if message["fresh"].as_bool() != Some(false) {
+            return Err(AggregateError::new(
+                "simulator compiler-artifact must record a non-fresh executable".to_owned(),
+            ));
+        }
+        let package_id = message["package_id"].as_str().ok_or_else(|| {
+            AggregateError::new("simulator compiler-artifact omitted Cargo package_id".to_owned())
+        })?;
+        let package_path = simulator_package_path(package_id)?;
+        let mapped_package = map_producer_path(
+            &package_path,
+            producer_root,
+            active_root,
+            "simulator package_id",
+        )?;
+        if package_path != producer_package || mapped_package != active_package {
+            return Err(AggregateError::new(
+                "simulator compiler-artifact package_id does not match rafter-sim".to_owned(),
+            ));
+        }
+        let src_path = message["target"]["src_path"].as_str().ok_or_else(|| {
+            AggregateError::new(
+                "simulator compiler-artifact omitted its target source path".to_owned(),
+            )
+        })?;
+        let producer_src_path = Path::new(src_path);
+        let mapped_source = map_producer_path(
+            producer_src_path,
+            producer_root,
+            active_root,
+            "simulator target source",
+        )?;
+        if producer_src_path != producer_source || mapped_source != active_source {
+            return Err(AggregateError::new(
+                "simulator compiler-artifact source path does not match the exact workspace bin target"
+                    .to_owned(),
+            ));
+        }
+        let executable = message["executable"].as_str().ok_or_else(|| {
+            AggregateError::new("simulator compiler-artifact omitted its executable".to_owned())
+        })?;
+        let executable = PathBuf::from(executable);
+        let expected_executable = target_dir.join("release").join(format!(
+            "{SIMULATOR_TARGET}{}",
+            std::env::consts::EXE_SUFFIX
+        ));
+        if !clean_absolute_path(&executable) || executable != expected_executable {
+            return Err(AggregateError::new(
+                "simulator compiler-artifact executable does not match the exact release target"
+                    .to_owned(),
+            ));
+        }
+        executables.push(executable);
+    }
+    let [executable] = executables.as_slice() else {
+        return Err(AggregateError::new(format!(
+            "simulator compile log must preserve exactly one package- and source-bound executable, found {}",
+            executables.len()
+        )));
+    };
+    Ok(executable.clone())
+}
+
+fn simulator_package_path(package_id: &str) -> Result<PathBuf, AggregateError> {
+    let encoded = package_id.strip_prefix("path+file://").ok_or_else(|| {
+        AggregateError::new(
+            "simulator compiler-artifact package_id is not a workspace path package".to_owned(),
+        )
+    })?;
+    let (path, version) = encoded.rsplit_once('#').ok_or_else(|| {
+        AggregateError::new("simulator compiler-artifact package_id has no version".to_owned())
+    })?;
+    if version != SIMULATOR_PACKAGE_VERSION {
+        return Err(AggregateError::new(
+            "simulator compiler-artifact package_id has the wrong rafter-sim version".to_owned(),
+        ));
+    }
+    Ok(PathBuf::from(path))
+}
+
+fn map_producer_path(
+    path: &Path,
+    producer_root: &Path,
+    active_root: &Path,
+    context: &str,
+) -> Result<PathBuf, AggregateError> {
+    if !clean_absolute_path(path) {
+        return Err(AggregateError::new(format!(
+            "{context} is not a clean absolute producer path"
+        )));
+    }
+    let relative = path.strip_prefix(producer_root).map_err(|_| {
+        AggregateError::new(format!("{context} escapes the recorded producer root"))
+    })?;
+    if relative.as_os_str().is_empty()
+        || relative
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(AggregateError::new(format!(
+            "{context} cannot be safely mapped into the active root"
+        )));
+    }
+    Ok(active_root.join(relative))
+}
+
+fn verify_active_path(path: &Path, directory: bool, context: &str) -> Result<(), AggregateError> {
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| AggregateError::new(format!("read active {context}: {error}")))?;
+    let canonical = fs::canonicalize(path)
+        .map_err(|error| AggregateError::new(format!("canonicalize active {context}: {error}")))?;
+    let expected_type = if directory {
+        metadata.file_type().is_dir()
+    } else {
+        metadata.file_type().is_file()
+    };
+    if !expected_type || canonical != path {
+        return Err(AggregateError::new(format!(
+            "active {context} is not the exact non-symlink workspace path"
+        )));
+    }
+    Ok(())
+}
+
+fn exact_string_array(value: &Value, expected: &str) -> bool {
+    value
+        .as_array()
+        .is_some_and(|values| values.len() == 1 && values[0].as_str() == Some(expected))
+}
+
+fn clean_absolute_path(path: &Path) -> bool {
+    if !path.is_absolute() || path.components().collect::<PathBuf>() != path {
+        return false;
+    }
+    let mut has_normal_component = false;
+    for component in path.components() {
+        match component {
+            Component::Prefix(_) | Component::RootDir => {}
+            Component::Normal(_) => has_normal_component = true,
+            Component::CurDir | Component::ParentDir => return false,
+        }
+    }
+    has_normal_component
 }
 
 fn simulator_program_matches(
@@ -281,14 +623,34 @@ fn validate_pr_soak_schedule(
 }
 
 fn parse_machine_events(log: &str) -> Result<Vec<Value>, AggregateError> {
-    log.lines()
+    let (events, diagnostics) = scan_machine_events(log, "scheduled simulator event");
+    if let Some(error) = diagnostics.into_iter().next() {
+        return Err(AggregateError::new(error));
+    }
+    Ok(events)
+}
+
+pub(super) fn scan_machine_events(log: &str, context: &str) -> (Vec<Value>, Vec<String>) {
+    let mut events = Vec::new();
+    let mut diagnostics = Vec::new();
+    for source in log
+        .lines()
         .filter_map(|line| line.strip_prefix(EVENT_PREFIX))
-        .map(|line| {
-            serde_json::from_str(line).map_err(|error| {
-                AggregateError::new(format!("parse scheduled simulator event: {error}"))
-            })
-        })
-        .collect()
+    {
+        let event = match serde_json::from_str::<Value>(source) {
+            Ok(event) => event,
+            Err(error) => {
+                diagnostics.push(format!("parse {context}: {error}"));
+                break;
+            }
+        };
+        if event["check_id"].as_str().is_none() {
+            diagnostics.push(format!("parse {context}: event omitted check_id"));
+            break;
+        }
+        events.push(event);
+    }
+    (events, diagnostics)
 }
 
 fn profile_total_is_rederived(
@@ -381,42 +743,5 @@ fn soak_seeds_are_rederived(
 }
 
 #[cfg(test)]
-mod provenance_tests {
-    use std::{collections::BTreeMap, path::Path};
-
-    use super::simulator_program_matches;
-
-    #[test]
-    fn simulator_runtime_path_and_digest_must_both_match_cargo_output() {
-        let emitted = Path::new("/workspace/target/rafter-model-check-fast");
-        let invocation = crate::InvocationReceipt {
-            program: emitted.to_string_lossy().into_owned(),
-            program_sha256: "a".repeat(64),
-            arguments: vec!["--profile".to_owned(), "fast".to_owned()],
-            current_dir: "/workspace".to_owned(),
-            environment: BTreeMap::new(),
-            environment_sha256: crate::producer::process::digest_environment(&BTreeMap::new()),
-        };
-        assert!(simulator_program_matches(
-            &invocation,
-            emitted,
-            &"a".repeat(64),
-        ));
-
-        let mut substituted = invocation.clone();
-        substituted.program = "/workspace/target/substituted-simulator".to_owned();
-        assert!(!simulator_program_matches(
-            &substituted,
-            emitted,
-            &"a".repeat(64),
-        ));
-
-        let mut wrong_digest = invocation;
-        wrong_digest.program_sha256 = "b".repeat(64);
-        assert!(!simulator_program_matches(
-            &wrong_digest,
-            emitted,
-            &"a".repeat(64),
-        ));
-    }
-}
+#[path = "simulator_schedule_provenance_tests.rs"]
+mod provenance_tests;

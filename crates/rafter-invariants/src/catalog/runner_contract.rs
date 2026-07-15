@@ -105,8 +105,8 @@ pub(super) fn validate_runner(
 ) -> Result<(), String> {
     let (producer, minimum_observed_checks) = match layer {
         "tests" => ("rafter-invariants-tests-v13", 82),
-        "simulator" => ("rafter-invariants-simulator-v15", 79),
-        "tla" => ("rafter-invariants-tla-v14", 1),
+        "simulator" => ("rafter-invariants-simulator-v16", 79),
+        "tla" => ("rafter-invariants-tla-v15", 1),
         "maelstrom" => ("rafter-invariants-maelstrom-v10", 6),
         _ => return Err(format!("unsupported runner layer {layer}")),
     };
@@ -201,7 +201,7 @@ fn validate_tla(profile: &str, configuration: &BTreeMap<String, String>) -> Resu
                 && contract.workers == "4"
                 && contract.finalization_reserve.as_deref() == Some("2m")
                 && contract.symmetry.as_deref() == Some("nodes-values-read-requests-product")
-                && contract.total_timeout.as_deref() == Some("120m")
+                && contract.total_timeout.as_deref() == Some("155m")
                 && no_checkpoint_configuration(&contract)
         }
         "nightly" => {
@@ -210,8 +210,8 @@ fn validate_tla(profile: &str, configuration: &BTreeMap<String, String>) -> Resu
                 && contract.soft_timeout == "115m"
                 && contract.workers == "4"
                 && contract.symmetry.as_deref() == Some("nodes-values-read-requests-product")
-                && contract.finalization_reserve.is_none()
-                && contract.total_timeout.is_none()
+                && contract.finalization_reserve.as_deref() == Some("10m")
+                && contract.total_timeout.as_deref() == Some("165m")
                 && no_checkpoint_configuration(&contract)
         }
         "weekly" => {
@@ -224,9 +224,9 @@ fn validate_tla(profile: &str, configuration: &BTreeMap<String, String>) -> Resu
                 && contract.checkpoint_recovery.as_deref() == Some("strict-compatible-if-present")
                 && contract.max_heap.as_deref() == Some("4g")
                 && contract.unsymmetrized_exploration.as_deref() == Some("required")
-                && contract.finalization_reserve.is_none()
+                && contract.finalization_reserve.as_deref() == Some("10m")
                 && contract.symmetry.is_none()
-                && contract.total_timeout.is_none()
+                && contract.total_timeout.as_deref() == Some("350m")
         }
         _ => false,
     };
@@ -308,7 +308,7 @@ mod tests {
     fn runner(layer: &str, configuration: serde_json::Value) -> RunnerContract {
         let producer = match layer {
             "tests" => "rafter-invariants-tests-v13",
-            "tla" => "rafter-invariants-tla-v14",
+            "tla" => "rafter-invariants-tla-v15",
             "maelstrom" => "rafter-invariants-maelstrom-v10",
             _ => unreachable!(),
         };
@@ -387,7 +387,7 @@ mod tests {
                 "tool_asset_id": "471380474",
                 "tool_mode": "required",
                 "tool_sha256": "33de7da9ce1b7fffb9d1c184021178dbb051747be48504e65c584c423721a32e",
-                "total_timeout": "120m",
+                "total_timeout": "155m",
                 "trace_sample": "required",
                 "workers": "4"
             }),
