@@ -7,7 +7,7 @@ VARIABLE traceStep
 
 traceVars == << currentTerm, votedFor, role, log, commitIndex,
                snapshotIndex, snapshotPrefix, compactionPending, snapshotTransfer,
-               applied,
+               applied, applicationBases, applicationTransitions,
                messages, readRequests, readBarrierViolationSeen,
                electedLeaders, logicalPrefixLedger, committedLedger,
                commitWitnesses,
@@ -16,18 +16,11 @@ traceVars == << currentTerm, votedFor, role, log, commitIndex,
 
 TraceInit == Init /\ traceStep = 0
 
-TraceCurrentAppliedEpoch(applications, node) ==
-  applications[node][Len(applications[node])]
-
 TraceApplicationState(applications, node) ==
-  LET epoch == TraceCurrentAppliedEpoch(applications, node)
-  IN IF Len(epoch.observations) = 0
-     THEN epoch.baseState
-     ELSE epoch.observations[Len(epoch.observations)].resultState
+  applications[node].state
 
 TraceAppliedThrough(applications, node) ==
-  LET epoch == TraceCurrentAppliedEpoch(applications, node)
-  IN epoch.baseIndex + Len(epoch.observations)
+  applications[node].through
 
 RemovedVoters == {n1, n2}
 RemoveJoint == JointMembership(Nodes, RemovedVoters)

@@ -321,6 +321,54 @@ PROPERTY ClosedElectionLifecycleCompletes
 CHECK_DEADLOCK FALSE
 "#;
 
+pub(super) const CLOSED_LOGICAL_PREFIX_LIFECYCLE_CONFIG: &str = r#"SPECIFICATION ClosedLogicalPrefixLifecycleSpec
+
+CONSTANTS
+  Nodes = {n1, n2, n3}
+  Values = {v1, v2}
+  MaxTerm = 2
+  MaxLogLen = 2
+  ReadRequests = {r1}
+  FixtureA = n1
+  FixtureB = n2
+  FixtureC = n3
+  FixtureValueA = v1
+  FixtureValueB = v2
+  FixtureRead = r1
+  FixtureMode = "Default"
+  TargetPredicate = "LogMatching"
+
+INVARIANT ClosedLogicalPrefixLifecycleInvariant
+
+PROPERTY ClosedLogicalPrefixLifecycleCompletes
+
+CHECK_DEADLOCK FALSE
+"#;
+
+pub(super) const CLOSED_TERM_PREFIX_CONFLICT_CONFIG: &str = r#"SPECIFICATION ClosedTermPrefixConflictSpec
+
+CONSTANTS
+  Nodes = {n1, n2, n3}
+  Values = {v1, v2}
+  MaxTerm = 2
+  MaxLogLen = 2
+  ReadRequests = {r1}
+  FixtureA = n1
+  FixtureB = n2
+  FixtureC = n3
+  FixtureValueA = v1
+  FixtureValueB = v2
+  FixtureRead = r1
+  FixtureMode = "Default"
+  TargetPredicate = "LogMatching"
+
+INVARIANT ClosedTermPrefixConflictInvariant
+
+PROPERTY ClosedTermPrefixConflictCompletes
+
+CHECK_DEADLOCK FALSE
+"#;
+
 pub(super) const COMMIT_AUTHORITY_TERM_REGRESSION_CONFIG: &str = r#"SPECIFICATION CommitAuthorityTermRegressionSpec
 
 CONSTANTS

@@ -484,7 +484,8 @@ impl Fixture {
     }
 
     fn write_mutation_log(&mut self) {
-        let mut stdout = String::from("running 32 tests\n");
+        let expected_count = REQUIRED_MUTATION_TESTS.len();
+        let mut stdout = format!("running {expected_count} tests\n");
         for name in REQUIRED_MUTATION_TESTS {
             writeln!(
                 stdout,
@@ -492,9 +493,11 @@ impl Fixture {
             )
             .expect("write mutation fixture output");
         }
-        stdout.push_str(
-            "test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured; 179 filtered out\n",
-        );
+        writeln!(
+            stdout,
+            "test result: ok. {expected_count} passed; 0 failed; 0 ignored; 0 measured; 179 filtered out"
+        )
+        .expect("write mutation fixture summary");
         let environment = BTreeMap::new();
         let log = ProcessLog {
             schema_version: 3,

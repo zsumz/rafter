@@ -44,7 +44,7 @@ pub(super) fn snapshot_lifecycle_preserves_logical_identity_through_restart() {
     let four_entry_only = replace_exactly_once_in_operator(
         &raft,
         "StateAfterEntries(entries)",
-        "AppliedObservation(entry, resultState)",
+        "AppliedCursor(epoch, through, state)",
         "[] Len(entries) = 5 ->\n         ApplyEntry(StateAfterFourEntries(entries), entries[5])\n    [] OTHER ->\n         ApplyEntry(\n           ApplyEntry(StateAfterFourEntries(entries), entries[5]), entries[6])",
         "[] OTHER -> StateAfterFourEntries(entries)",
     );
@@ -152,6 +152,91 @@ pub(super) fn closed_term_election_history_is_retired_after_every_node_advances(
     );
 }
 
+pub(super) fn closed_term_prefix_history_retires_without_erasing_conflicts() {
+    let root = workspace_root();
+    let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
+    let detector =
+        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
+            .expect("read detector spec");
+    let baseline = run_tlc_with_config(
+        &root,
+        "closed-logical-prefix-lifecycle",
+        &raft,
+        &detector,
+        CLOSED_LOGICAL_PREFIX_LIFECYCLE_CONFIG,
+    );
+    let baseline_summary = parse(&baseline.stdout).expect("parse closed-prefix lifecycle output");
+    assert!(
+        baseline.status.success(),
+        "{}",
+        String::from_utf8_lossy(&baseline.stdout)
+    );
+    assert!(baseline_summary.completed_without_error);
+    assert!(baseline_summary.process_finished);
+    assert!(baseline_summary.distinct_states >= 4);
+    assert!(baseline_summary.search_depth >= 4);
+
+    let missing_retirement = replace_exactly_once_in_operator(
+        &raft,
+        "Timeout(n)",
+        "SendRequestVote(c, v)",
+        "/\\ RetireLogicalPrefixes(currentTerm')",
+        "/\\ UNCHANGED logicalPrefixLedger",
+    );
+    let missing_result = run_tlc_with_config(
+        &root,
+        "closed-logical-prefix-retirement-missing",
+        &missing_retirement,
+        &detector,
+        CLOSED_LOGICAL_PREFIX_LIFECYCLE_CONFIG,
+    );
+    let missing_summary =
+        parse(&missing_result.stdout).expect("parse missing prefix-retirement output");
+    assert_eq!(missing_result.status.code(), Some(12));
+    assert_eq!(
+        missing_summary.violated_invariant.as_deref(),
+        Some("ClosedLogicalPrefixLifecycleInvariant")
+    );
+
+    let conflict = run_tlc_with_config(
+        &root,
+        "closed-term-prefix-conflict",
+        &raft,
+        &detector,
+        CLOSED_TERM_PREFIX_CONFLICT_CONFIG,
+    );
+    let conflict_summary =
+        parse(&conflict.stdout).expect("parse closed-term prefix conflict output");
+    assert_eq!(conflict.status.code(), Some(12));
+    assert_eq!(
+        conflict_summary.violated_invariant.as_deref(),
+        Some("ClosedTermPrefixConflictInvariant")
+    );
+
+    let naive_retirement = replace_operator(
+        &raft,
+        "RetainedLogicalPrefixes(observed, terms)",
+        "RecordLogicalPrefixes(logs, snapshotIndexes, snapshotPrefixes, terms)",
+        "{witness \\in observed : ~TermClosed(terms, witness.term)}",
+    );
+    let erased_conflict = run_tlc_with_config(
+        &root,
+        "closed-term-prefix-conflict-erased",
+        &naive_retirement,
+        &detector,
+        CLOSED_TERM_PREFIX_CONFLICT_CONFIG,
+    );
+    let erased_summary =
+        parse(&erased_conflict.stdout).expect("parse erased prefix-conflict output");
+    assert!(
+        erased_conflict.status.success(),
+        "{}",
+        String::from_utf8_lossy(&erased_conflict.stdout)
+    );
+    assert!(erased_summary.completed_without_error);
+    assert!(erased_summary.process_finished);
+}
+
 pub(super) fn snapshot_compaction_pending_tracks_create_and_compact_transitions() {
     let root = workspace_root();
     let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
@@ -209,6 +294,28 @@ pub(super) fn application_epoch_loss_replays_identically_without_erasing_history
     assert!(summary.process_finished);
     assert!(summary.distinct_states >= 4);
     assert!(summary.search_depth >= 4);
+
+    let cleared_history = replace_exactly_once_in_operator(
+        &raft,
+        "StartApplicationEpoch(node, baseIndex, baseState)",
+        "RecordApplication(node, entry, resultState)",
+        "/\\ UNCHANGED applicationTransitions",
+        "/\\ applicationTransitions' = {}",
+    );
+    let mutation = run_tlc_with_config(
+        &root,
+        "application-epoch-clears-history",
+        &cleared_history,
+        &detector,
+        APPLICATION_EPOCH_LIFECYCLE_CONFIG,
+    );
+    let mutation_summary =
+        parse(&mutation.stdout).expect("parse application-history clearing output");
+    assert_eq!(mutation.status.code(), Some(12));
+    assert_eq!(
+        mutation_summary.violated_invariant.as_deref(),
+        Some("ApplicationEpochLifecycleInvariant")
+    );
 }
 
 pub(super) fn missing_application_epoch_recorder_cannot_qualify_state_machine_safety() {
@@ -218,7 +325,7 @@ pub(super) fn missing_application_epoch_recorder_cannot_qualify_state_machine_sa
         &raft,
         "StartApplicationEpoch(node, baseIndex, baseState)",
         "RecordApplication(node, entry, resultState)",
-        "/\\ UNCHANGED applied",
+        "/\\ UNCHANGED applicationVars",
     );
     let detector =
         fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))

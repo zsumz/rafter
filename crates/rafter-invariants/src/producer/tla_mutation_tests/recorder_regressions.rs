@@ -97,7 +97,7 @@ pub(super) fn missing_application_recorder_cannot_qualify_state_machine_safety()
         &raft,
         "RecordApplication(node, entry, resultState)",
         "CommittedEntry(index, entry, committedInTerm)",
-        "/\\ UNCHANGED applied",
+        "/\\ UNCHANGED applicationVars",
     );
     let detector =
         fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
@@ -120,13 +120,50 @@ pub(super) fn missing_application_recorder_cannot_qualify_state_machine_safety()
     }
 }
 
+pub(super) fn sanitized_application_result_cannot_qualify_detector_fixture() {
+    let root = workspace_root();
+    let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
+    let sanitized_transition = replace_exactly_once_in_operator(
+        &raft,
+        "RecordApplication(node, entry, resultState)",
+        "CommittedEntry(index, entry, committedInTerm)",
+        "node, index, ApplicationState(node), entry, resultState)",
+        "node, index, ApplicationState(node), entry,\n        ApplyEntry(ApplicationState(node), entry))",
+    );
+    let sanitized = replace_exactly_once_in_operator(
+        &sanitized_transition,
+        "RecordApplication(node, entry, resultState)",
+        "CommittedEntry(index, entry, committedInTerm)",
+        "AppliedCursor(ApplicationEpoch(node), index, resultState)",
+        "AppliedCursor(\n           ApplicationEpoch(node), index,\n           ApplyEntry(ApplicationState(node), entry))",
+    );
+    let detector =
+        fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))
+            .expect("read detector spec");
+    let result = run_tlc_mutation(
+        &root,
+        "sanitized-application-result",
+        &sanitized,
+        &detector,
+        APPLICATION_PROBE,
+    );
+    let summary = parse(&result.stdout).expect("parse sanitized application output");
+    assert!(result.status.success());
+    assert!(!detector_qualified(
+        result.status.code(),
+        false,
+        Some(&summary),
+        APPLICATION_PROBE.predicate
+    ));
+}
+
 pub(super) fn missing_log_prefix_recorder_cannot_qualify_log_or_snapshot_paths() {
     let root = workspace_root();
     let raft = fs::read_to_string(root.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
     let mutated = replace_operator(
         &raft,
-        "RecordLogicalPrefixes(logs, snapshotIndexes, snapshotPrefixes)",
-        "LogicalPrefixLedgerSound",
+        "RecordLogicalPrefixes(logs, snapshotIndexes, snapshotPrefixes, terms)",
+        "RetireLogicalPrefixes(terms)",
         "/\\ UNCHANGED logicalPrefixLedger",
     );
     let detector =

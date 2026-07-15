@@ -40,6 +40,10 @@ ignored_tlc_mutation_test!(
     closed_term_election_history_is_retired_after_every_node_advances
 );
 ignored_tlc_mutation_test!(
+    lifecycle,
+    closed_term_prefix_history_retires_without_erasing_conflicts
+);
+ignored_tlc_mutation_test!(
     protocol_regressions,
     shorter_authoritative_log_repairs_an_uncommitted_suffix
 );
@@ -119,6 +123,10 @@ ignored_tlc_mutation_test!(
 ignored_tlc_mutation_test!(
     recorder_regressions,
     missing_application_recorder_cannot_qualify_state_machine_safety
+);
+ignored_tlc_mutation_test!(
+    recorder_regressions,
+    sanitized_application_result_cannot_qualify_detector_fixture
 );
 ignored_tlc_mutation_test!(
     recorder_regressions,
