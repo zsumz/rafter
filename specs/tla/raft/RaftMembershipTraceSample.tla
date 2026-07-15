@@ -12,7 +12,7 @@ traceVars == << currentTerm, votedFor, role, log, commitIndex,
                electedLeaders, logicalPrefixLedger, committedLedger,
                commitWitnesses,
                higherTermStepDownFailed,
-               staleAuthorityAccepted, lastAppendAccepted, traceStep >>
+               staleAuthorityAccepted, frozenAppendAuthorityFailed, traceStep >>
 
 TraceInit == Init /\ traceStep = 0
 
@@ -41,14 +41,14 @@ AddJointEntry == ConfigurationEntry(1, AddJoint)
 AddStableEntry == ConfigurationEntry(1, AddStable)
 CommandEntry == Entry(1, v1)
 
-TraceAppendMessage(to, entries, leaderCommit, senderMembership) ==
+TraceAppendMessage(to, entries, leaderCommit) ==
   [type |-> AppendEntries,
    term |-> 1,
    from |-> n1,
    to |-> to,
    entries |-> entries,
    leaderCommit |-> leaderCommit,
-   senderMembership |-> senderMembership,
+   senderMembership |-> LatestConfigurationIn(entries).config,
    senderPendingSelfRemoval |-> FALSE]
 
 TraceAction0 ==
@@ -84,7 +84,7 @@ TraceAction5 ==
 
 TraceAction6 ==
   /\ traceStep = 6
-  /\ DeliverAppend(TraceAppendMessage(n2, <<RemoveJointEntry>>, 0, RemoveJoint))
+  /\ DeliverAppend(TraceAppendMessage(n2, <<RemoveJointEntry>>, 0))
   /\ traceStep' = 7
 
 TraceAction7 ==
@@ -111,7 +111,7 @@ TraceAction11 ==
   /\ traceStep = 11
   /\ DeliverAppend(
        TraceAppendMessage(
-         n2, <<RemoveJointEntry, RemoveStableEntry>>, 1, RemoveStable))
+         n2, <<RemoveJointEntry, RemoveStableEntry>>, 1))
   /\ traceStep' = 12
 
 TraceAction12 ==
@@ -138,7 +138,7 @@ TraceAction16 ==
   /\ traceStep = 16
   /\ DeliverAppend(
        TraceAppendMessage(
-         n2, <<RemoveJointEntry, RemoveStableEntry, AddJointEntry>>, 2, AddJoint))
+         n2, <<RemoveJointEntry, RemoveStableEntry, AddJointEntry>>, 2))
   /\ traceStep' = 17
 
 TraceAction17 ==
@@ -150,7 +150,7 @@ TraceAction18 ==
   /\ traceStep = 18
   /\ DeliverAppend(
        TraceAppendMessage(
-         n3, <<RemoveJointEntry, RemoveStableEntry, AddJointEntry>>, 2, AddJoint))
+         n3, <<RemoveJointEntry, RemoveStableEntry, AddJointEntry>>, 2))
   /\ traceStep' = 19
 
 TraceAction19 ==
@@ -179,8 +179,7 @@ TraceAction23 ==
        TraceAppendMessage(
          n2,
          <<RemoveJointEntry, RemoveStableEntry, AddJointEntry, AddStableEntry>>,
-         3,
-         AddStable))
+         3))
   /\ traceStep' = 24
 
 TraceAction24 ==
@@ -194,8 +193,7 @@ TraceAction25 ==
        TraceAppendMessage(
          n3,
          <<RemoveJointEntry, RemoveStableEntry, AddJointEntry, AddStableEntry>>,
-         3,
-         AddStable))
+         3))
   /\ traceStep' = 26
 
 TraceAction26 ==
@@ -245,8 +243,7 @@ TraceAction30 ==
          n2,
          <<RemoveJointEntry, RemoveStableEntry, AddJointEntry, AddStableEntry,
            CommandEntry>>,
-         4,
-         AddStable))
+         4))
   /\ traceStep' = 31
 
 TraceAction31 ==

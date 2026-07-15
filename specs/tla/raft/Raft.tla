@@ -39,7 +39,7 @@ VARIABLES currentTerm, votedFor, role, log, commitIndex,
           commitWitnesses,
           higherTermStepDownFailed,
           staleAuthorityAccepted,
-          lastAppendAccepted
+          frozenAppendAuthorityFailed
 
 vars == << currentTerm, votedFor, role, log, commitIndex,
           snapshotIndex, snapshotPrefix, compactionPending, snapshotTransfer,
@@ -49,7 +49,7 @@ vars == << currentTerm, votedFor, role, log, commitIndex,
           commitWitnesses,
           higherTermStepDownFailed,
           staleAuthorityAccepted,
-          lastAppendAccepted >>
+          frozenAppendAuthorityFailed >>
 
 snapshotVars ==
   <<snapshotIndex, snapshotPrefix, compactionPending, snapshotTransfer>>
@@ -60,7 +60,7 @@ applicationVars ==
 historyVars == <<logicalPrefixLedger, committedLedger, commitWitnesses>>
 
 authorityVars ==
-  <<higherTermStepDownFailed, staleAuthorityAccepted, lastAppendAccepted>>
+  <<higherTermStepDownFailed, staleAuthorityAccepted, frozenAppendAuthorityFailed>>
 
 Min(a, b) == IF a <= b THEN a ELSE b
 Max(a, b) == IF a >= b THEN a ELSE b
@@ -336,14 +336,20 @@ RecordAuthorityAcceptance(authorityTerm, knownTerm, accepted) ==
        IF accepted /\ authorityTerm < knownTerm
        THEN TRUE
        ELSE staleAuthorityAccepted
-  /\ UNCHANGED lastAppendAccepted
+  /\ UNCHANGED frozenAppendAuthorityFailed
 
-RecordAppendOutcome(authorityTerm, knownTerm, accepted) ==
+RecordAppendOutcome(message, knownTerm, accepted, receiverWouldAccept) ==
   /\ staleAuthorityAccepted' =
-       IF accepted /\ authorityTerm < knownTerm
+       IF accepted /\ message.term < knownTerm
        THEN TRUE
        ELSE staleAuthorityAccepted
-  /\ lastAppendAccepted' = accepted
+  /\ frozenAppendAuthorityFailed' =
+       IF /\ message.senderPendingSelfRemoval
+          /\ role[message.from] # Leader
+          /\ receiverWouldAccept
+          /\ ~accepted
+       THEN TRUE
+       ELSE frozenAppendAuthorityFailed
 
 StartApplicationEpoch(node, baseIndex, baseState) ==
   applied' = [applied EXCEPT ![node] =
@@ -366,14 +372,32 @@ CommittedEntriesFor(
     committedInTerm |-> committedInTerm] :
       index \in (oldFloor + 1)..newFloor}
 
+SameCommittedIdentity(left, right) ==
+  /\ left.index = right.index
+  /\ left.entry = right.entry
+
+RetainedCommittedEntries(existing, candidates) ==
+  {committed \in existing :
+    ~\E candidate \in candidates :
+      /\ SameCommittedIdentity(committed, candidate)
+      /\ candidate.committedInTerm < committed.committedInTerm}
+  \cup {candidate \in candidates :
+    ~\E committed \in existing :
+      /\ SameCommittedIdentity(committed, candidate)
+      /\ committed.committedInTerm <= candidate.committedInTerm}
+
+CommittedLedgerCanonical(entries) ==
+  \A left, right \in entries :
+    SameCommittedIdentity(left, right) =>
+      left.committedInTerm = right.committedInTerm
+
 RecordCommittedEntries(
     logs, snapshotIndexes, snapshotPrefixes, node, oldFloor, newFloor,
     committedInTerm) ==
-  committedLedger' =
-    committedLedger \cup
-      CommittedEntriesFor(
+  LET candidates == CommittedEntriesFor(
         logs, snapshotIndexes, snapshotPrefixes, node, oldFloor, newFloor,
         committedInTerm)
+  IN committedLedger' = RetainedCommittedEntries(committedLedger, candidates)
 
 ConfigurationMembershipAt(
     logs, snapshotIndexes, snapshotPrefixes, node, configIndex) ==
@@ -579,7 +603,7 @@ TypeOK ==
          /\ n \in electedLeaders[currentTerm[n]]
   /\ higherTermStepDownFailed \in BOOLEAN
   /\ staleAuthorityAccepted \in BOOLEAN
-  /\ lastAppendAccepted \in BOOLEAN
+  /\ frozenAppendAuthorityFailed \in BOOLEAN
   /\ \A n \in Nodes :
        n \notin ActiveVoters(EffectiveConfiguration(n).config) =>
          \/ role[n] = Follower
@@ -629,6 +653,7 @@ TypeOK ==
        /\ EntryOK(committed.entry)
        /\ committed.committedInTerm \in 1..MaxTerm
        /\ committed.entry.term <= committed.committedInTerm
+  /\ CommittedLedgerCanonical(committedLedger)
   /\ DOMAIN commitWitnesses =
        {"witnessedCommits", "invalidCertificateSeen"}
   /\ \A witnessed \in commitWitnesses.witnessedCommits :
@@ -670,7 +695,7 @@ Init ==
   /\ commitWitnesses = EmptyCommitWitnessHistory
   /\ higherTermStepDownFailed = FALSE
   /\ staleAuthorityAccepted = FALSE
-  /\ lastAppendAccepted = FALSE
+  /\ frozenAppendAuthorityFailed = FALSE
 
 Timeout(n) ==
   /\ currentTerm[n] < MaxTerm
@@ -817,6 +842,10 @@ DeliverAppend(m) ==
                 /\ AppendSenderAuthorized(m)
                 /\ AppendReceiverEligible(m)
                 /\ CanAdoptLog(m.to, m.entries, m.term)
+      receiverWouldAccept ==
+        /\ m.term >= currentTerm[m.to]
+        /\ AppendReceiverEligible(m)
+        /\ CanAdoptLog(m.to, m.entries, m.term)
       baseRole == [role EXCEPT ![m.to] =
         IF higher \/ accept THEN Follower ELSE @]
       nextLog == IF accept THEN [log EXCEPT ![m.to] = m.entries] ELSE log
@@ -837,11 +866,10 @@ DeliverAppend(m) ==
     /\ log' = nextLog
     /\ commitIndex' = nextCommit
     /\ RecordLogicalPrefixes(nextLog, snapshotIndex, snapshotPrefix)
-    /\ RecordCommittedEntries(
-         nextLog, snapshotIndex, snapshotPrefix, m.to,
-         commitIndex[m.to], nextCommit[m.to], m.term)
+    /\ UNCHANGED committedLedger
     /\ RecordHigherTermOutcome(m.to, m.term, higher)
-    /\ RecordAppendOutcome(m.term, currentTerm[m.to], accept)
+    /\ RecordAppendOutcome(
+         m, currentTerm[m.to], accept, receiverWouldAccept)
     /\ electedLeaders' = RetainedElections(electedLeaders, currentTerm')
     /\ UNCHANGED <<readRequests, readBarrierViolationSeen, commitWitnesses>>
     /\ UNCHANGED snapshotVars
@@ -896,7 +924,7 @@ Apply(n) ==
                     readRequests, readBarrierViolationSeen, electedLeaders,
                     logicalPrefixLedger, committedLedger, commitWitnesses,
                     higherTermStepDownFailed, staleAuthorityAccepted,
-                    lastAppendAccepted>>
+                    frozenAppendAuthorityFailed>>
     /\ UNCHANGED snapshotVars
 
 ApplicationStateLoss(n) ==
@@ -991,9 +1019,7 @@ InstallSnapshot ==
     /\ snapshotTransfer' = NoSnapshotTransfer
     /\ StartApplicationEpoch(node, transfer.index, restoredState)
     /\ RecordLogicalPrefixes(nextLog, snapshotIndex', snapshotPrefix')
-    /\ RecordCommittedEntries(
-         nextLog, snapshotIndex', snapshotPrefix', node,
-         commitIndex[node], nextCommit[node], transfer.term)
+    /\ UNCHANGED committedLedger
     /\ RecordHigherTermOutcome(
          node, transfer.term, transfer.term > currentTerm[node])
     /\ RecordAuthorityAcceptance(transfer.term, currentTerm[node], TRUE)
@@ -1008,7 +1034,7 @@ InstallSnapshot ==
 CompactSnapshot(n) ==
   /\ compactionPending[n]
   /\ compactionPending' = [compactionPending EXCEPT ![n] = FALSE]
-  /\ RecordLogicalPrefixes(log, snapshotIndex, snapshotPrefix)
+  /\ UNCHANGED logicalPrefixLedger
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                   snapshotIndex, snapshotPrefix, snapshotTransfer,
                   messages, readRequests, readBarrierViolationSeen,
@@ -1103,14 +1129,16 @@ GrantRead(n, request) ==
       /\ UNCHANGED applicationVars
       /\ UNCHANGED historyVars
 
-Next ==
+ProtocolNext ==
   \/ \E n \in Nodes : Timeout(n)
   \/ \E c, v \in Nodes : SendRequestVote(c, v)
-  \/ \E m \in messages : DeliverRequestVote(m)
+  \/ \E m \in {message \in messages : message.type = RequestVote} :
+       DeliverRequestVote(m)
   \/ \E n \in Nodes : BecomeLeader(n)
   \/ \E n \in Nodes, value \in Values : ClientAppend(n, value)
   \/ \E l, f \in Nodes : SendAppend(l, f)
-  \/ \E m \in messages : DeliverAppend(m)
+  \/ \E m \in {message \in messages : message.type = AppendEntries} :
+       DeliverAppend(m)
   \/ \E n \in Nodes, i \in 1..MaxLogLen : Commit(n, i)
   \/ \E n \in Nodes : Apply(n)
   \/ \E n \in Nodes : ApplicationStateLoss(n)
@@ -1118,11 +1146,17 @@ Next ==
   \/ \E n \in Nodes : CreateSnapshot(n)
   \/ \E from, to \in Nodes : TransferSnapshot(from, to)
   \/ InstallSnapshot
-  \/ \E n \in Nodes : CompactSnapshot(n)
   \/ \E n \in Nodes, voters \in VoterSets : EnterJoint(n, voters)
   \/ \E n \in Nodes : LeaveJoint(n)
   \/ \E n \in Nodes, request \in ReadRequests : RegisterRead(n, request)
   \/ \E n \in Nodes, request \in ReadRequests : GrantRead(n, request)
+
+\* Compaction changes only verifier bookkeeping, so complete it before
+\* exploring independent protocol transitions and their equivalent schedules.
+Next ==
+  IF \E n \in Nodes : compactionPending[n]
+  THEN \E n \in Nodes : CompactSnapshot(n)
+  ELSE ProtocolNext
 
 Spec == Init /\ [][Next]_vars
 

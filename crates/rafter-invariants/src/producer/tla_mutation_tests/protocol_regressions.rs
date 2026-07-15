@@ -185,6 +185,40 @@ pub(super) fn leader_completeness_uses_commit_authority_term() {
         summary.violated_invariant.as_deref(),
         Some("CommitAuthorityTermRegressionInvariant")
     );
+
+    let canonicalization = run_tlc_with_config(
+        &root,
+        "committed-ledger-canonicalization-baseline",
+        &raft,
+        &detector,
+        COMMITTED_LEDGER_CANONICALIZATION_CONFIG,
+    );
+    let canonicalization_summary =
+        parse(&canonicalization.stdout).expect("parse ledger canonicalization output");
+    assert!(
+        canonicalization.status.success(),
+        "{}",
+        String::from_utf8_lossy(&canonicalization.stdout)
+    );
+    assert!(canonicalization_summary.completed_without_error);
+    assert!(canonicalization_summary.process_finished);
+
+    let union_mutation = replace_operator(
+        &raft,
+        "RetainedCommittedEntries(existing, candidates)",
+        "CommittedLedgerCanonical(entries)",
+        "existing \\cup candidates",
+    );
+    let union_result = run_tlc_with_config(
+        &root,
+        "committed-ledger-union-mutation",
+        &union_mutation,
+        &detector,
+        COMMITTED_LEDGER_CANONICALIZATION_CONFIG,
+    );
+    let union_summary = parse(&union_result.stdout).expect("parse ledger union mutation output");
+    assert_eq!(union_result.status.code(), Some(12));
+    assert_eq!(union_summary.violated_invariant.as_deref(), Some("TypeOK"));
 }
 
 pub(super) fn self_removing_leader_commits_final_configuration_and_steps_down() {

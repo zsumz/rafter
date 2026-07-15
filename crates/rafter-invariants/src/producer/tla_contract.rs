@@ -17,7 +17,7 @@ use super::{artifact, process};
 const SPEC: &str = "specs/tla/raft/Raft.tla";
 const TRACE_SPEC: &str = "specs/tla/raft/RaftMembershipTraceSample.tla";
 const TRACE_CONFIG: &str = "specs/tla/raft/RaftMembershipTraceSample.cfg";
-const TRACE_SPEC_SHA256: &str = "85456c645d34abed091955a80b6acf02b7403d65702ba2b3c154f737542f9f55";
+const TRACE_SPEC_SHA256: &str = "e0d4d66e2ef1ae70d5605244e3e8102a54a539c7c9914a72703a83f6eda5a407";
 const TRACE_CONFIG_SHA256: &str =
     "1286edee2df96b702937d9c1340f8412c060a6e9a0df53dd46b0149d2027b96e";
 const DETECTOR_SPEC: &str = "specs/tla/raft/RafterInvariantDetectorNegative.tla";

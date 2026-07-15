@@ -214,7 +214,7 @@ FixtureInit ==
   /\ commitWitnesses = EmptyCommitWitnessHistory
   /\ higherTermStepDownFailed = FALSE
   /\ staleAuthorityAccepted = FALSE
-  /\ lastAppendAccepted = FALSE
+  /\ frozenAppendAuthorityFailed = FALSE
 
 ElectionFirstLeader ==
   /\ role[FixtureA] = Candidate
@@ -473,7 +473,7 @@ ShorterConflictAppend ==
    to |-> FixtureA,
    entries |-> <<>>,
    leaderCommit |-> 0,
-   senderMembership |-> StableMembership(Nodes),
+   senderMembership |-> LatestConfigurationIn(<<>>).config,
    senderPendingSelfRemoval |-> FALSE]
 
 ShorterConflictRepairInit ==
@@ -550,21 +550,37 @@ FrozenAuthorityStableEntry ==
 FrozenAuthorityLog ==
   <<FrozenAuthorityJointEntry, FrozenAuthorityStableEntry>>
 
-FrozenAuthorityAppend(
-    to, entries, leaderCommit, frozenMembership, pendingRemoval) ==
+FrozenAuthorityPendingRemoval(entries, leaderCommit) ==
+  LET effective == LatestConfigurationIn(entries)
+  IN IF /\ effective.configIndex \in 1..Len(entries)
+        /\ effective.configIndex > leaderCommit
+     THEN LET entry == entries[effective.configIndex]
+              prior == LatestConfigurationIn(
+                Prefix(entries, effective.configIndex - 1))
+       IN /\ entry.term = 1
+          /\ entry.kind = ConfigurationEntryKind
+          /\ entry.input = effective.config
+          /\ effective.config.phase = StableConfig
+          /\ FixtureA \notin ActiveVoters(effective.config)
+          /\ prior.configIndex < effective.configIndex
+          /\ prior.config.phase = JointConfig
+          /\ prior.config.new = effective.config.old
+          /\ FixtureA \in ActiveVoters(prior.config)
+     ELSE FALSE
+
+FrozenAuthorityAppend(to, entries, leaderCommit) ==
   [type |-> AppendEntries,
    term |-> 1,
    from |-> FixtureA,
    to |-> to,
    entries |-> entries,
    leaderCommit |-> leaderCommit,
-   senderMembership |-> frozenMembership,
-   senderPendingSelfRemoval |-> pendingRemoval]
+   senderMembership |-> LatestConfigurationIn(entries).config,
+   senderPendingSelfRemoval |->
+     FrozenAuthorityPendingRemoval(entries, leaderCommit)]
 
 FrozenAuthorityDelayedAppend ==
-  FrozenAuthorityAppend(
-    FixtureC, FrozenAuthorityLog, 1,
-    FrozenAuthorityStable, TRUE)
+  FrozenAuthorityAppend(FixtureC, FrozenAuthorityLog, 1)
 
 FrozenAppendAuthorityInit ==
   /\ FixtureConstantsOK
@@ -579,8 +595,7 @@ FrozenAppendAuthorityDelivered ==
   /\ ~PendingSelfRemoval(FixtureA)
 
 FrozenAppendAuthorityDone ==
-  /\ FrozenAppendAuthorityDelivered
-  /\ lastAppendAccepted
+  FrozenAppendAuthorityDelivered
 
 FrozenAppendAuthorityNext ==
   \/ /\ currentTerm[FixtureA] = 0
@@ -601,20 +616,16 @@ FrozenAppendAuthorityNext ==
      /\ log[FixtureB] = <<>>
      /\ SendAppend(FixtureA, FixtureB)
   \/ /\ FrozenAuthorityAppend(
-          FixtureB, <<FrozenAuthorityJointEntry>>, 0,
-          FrozenAuthorityJoint, FALSE) \in messages
+          FixtureB, <<FrozenAuthorityJointEntry>>, 0) \in messages
      /\ DeliverAppend(FrozenAuthorityAppend(
-          FixtureB, <<FrozenAuthorityJointEntry>>, 0,
-          FrozenAuthorityJoint, FALSE))
+          FixtureB, <<FrozenAuthorityJointEntry>>, 0))
   \/ /\ log[FixtureA] = <<FrozenAuthorityJointEntry>>
      /\ log[FixtureC] = <<>>
      /\ SendAppend(FixtureA, FixtureC)
   \/ /\ FrozenAuthorityAppend(
-          FixtureC, <<FrozenAuthorityJointEntry>>, 0,
-          FrozenAuthorityJoint, FALSE) \in messages
+          FixtureC, <<FrozenAuthorityJointEntry>>, 0) \in messages
      /\ DeliverAppend(FrozenAuthorityAppend(
-          FixtureC, <<FrozenAuthorityJointEntry>>, 0,
-          FrozenAuthorityJoint, FALSE))
+          FixtureC, <<FrozenAuthorityJointEntry>>, 0))
   \/ /\ commitIndex[FixtureA] = 0
      /\ log[FixtureB] = <<FrozenAuthorityJointEntry>>
      /\ log[FixtureC] = <<FrozenAuthorityJointEntry>>
@@ -629,21 +640,17 @@ FrozenAppendAuthorityNext ==
      /\ Len(log[FixtureB]) = 1
      /\ SendAppend(FixtureA, FixtureB)
   \/ /\ FrozenAuthorityAppend(
-          FixtureB, FrozenAuthorityLog, 1,
-          FrozenAuthorityStable, TRUE) \in messages
+          FixtureB, FrozenAuthorityLog, 1) \in messages
      /\ DeliverAppend(FrozenAuthorityAppend(
-          FixtureB, FrozenAuthorityLog, 1,
-          FrozenAuthorityStable, TRUE))
+          FixtureB, FrozenAuthorityLog, 1))
   \/ /\ log[FixtureA] = FrozenAuthorityLog
      /\ Len(log[FixtureC]) = 1
      /\ SendAppend(FixtureA, FixtureC)
   \/ /\ FrozenAuthorityAppend(
-          FixtureC, FrozenAuthorityLog, 1,
-          FrozenAuthorityStable, TRUE) \in messages
+          FixtureC, FrozenAuthorityLog, 1) \in messages
      /\ Len(log[FixtureC]) = 1
      /\ DeliverAppend(FrozenAuthorityAppend(
-          FixtureC, FrozenAuthorityLog, 1,
-          FrozenAuthorityStable, TRUE))
+          FixtureC, FrozenAuthorityLog, 1))
   \/ /\ role[FixtureA] = Leader
      /\ commitIndex[FixtureA] = 1
      /\ log[FixtureB] = FrozenAuthorityLog
@@ -676,7 +683,7 @@ FrozenAppendAuthorityInvariant ==
   /\ LogMatching
   /\ LeaderCompleteness
   /\ CommittedPrefixStability
-  /\ (FrozenAppendAuthorityDelivered => lastAppendAccepted)
+  /\ ~frozenAppendAuthorityFailed
 
 CommitAuthorityTermRegressionEntry == Entry(1, FixtureValueA)
 
@@ -699,7 +706,8 @@ CommitAuthorityAppend ==
    to |-> FixtureC,
    entries |-> CommitAuthorityTermRegressionLog,
    leaderCommit |-> 0,
-   senderMembership |-> StableMembership(Nodes),
+   senderMembership |->
+     LatestConfigurationIn(CommitAuthorityTermRegressionLog).config,
    senderPendingSelfRemoval |-> FALSE]
 
 CommitAuthorityTermRegressionDone ==
@@ -795,6 +803,58 @@ CommitAuthorityTermRegressionInvariant ==
   /\ LeaderCompleteness
   /\ CommittedEntriesHaveQuorum
 
+CommittedLedgerCanonicalizationEntry == Entry(1, FixtureValueA)
+
+CommittedLedgerCanonicalizationLogs ==
+  [node \in Nodes |->
+    IF node = FixtureA
+    THEN <<CommittedLedgerCanonicalizationEntry>>
+    ELSE <<>>]
+
+CommittedLedgerCanonicalizationSnapshotIndex ==
+  [node \in Nodes |-> 0]
+
+CommittedLedgerCanonicalizationSnapshotPrefix ==
+  [node \in Nodes |-> <<>>]
+
+RecordCanonicalizationCommit(term) ==
+  /\ RecordCommittedEntries(
+       CommittedLedgerCanonicalizationLogs,
+       CommittedLedgerCanonicalizationSnapshotIndex,
+       CommittedLedgerCanonicalizationSnapshotPrefix,
+       FixtureA, 0, 1, term)
+  /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
+                  messages, readRequests, readBarrierViolationSeen,
+                  electedLeaders, logicalPrefixLedger, commitWitnesses>>
+  /\ UNCHANGED snapshotVars
+  /\ UNCHANGED applicationVars
+  /\ UNCHANGED authorityVars
+
+CommittedLedgerCanonicalizationInit ==
+  /\ FixtureConstantsOK
+  /\ Init
+
+CommittedLedgerCanonicalizationDone ==
+  committedLedger = {
+    CommittedEntry(1, CommittedLedgerCanonicalizationEntry, 1)}
+
+CommittedLedgerCanonicalizationNext ==
+  \/ /\ committedLedger = {}
+     /\ RecordCanonicalizationCommit(3)
+  \/ /\ committedLedger = {
+          CommittedEntry(1, CommittedLedgerCanonicalizationEntry, 3)}
+     /\ RecordCanonicalizationCommit(1)
+  \/ /\ CommittedLedgerCanonicalizationDone
+     /\ UNCHANGED vars
+
+CommittedLedgerCanonicalizationSpec ==
+  /\ CommittedLedgerCanonicalizationInit
+  /\ [][CommittedLedgerCanonicalizationNext]_vars
+  /\ WF_vars(CommittedLedgerCanonicalizationNext)
+
+CommittedLedgerCanonicalizationCompletes ==
+  <>CommittedLedgerCanonicalizationDone
+
 RemovedCandidateJointEntry == ConfigurationEntry(1, ApplicationConfig)
 
 RemovedCandidateStableEntry ==
@@ -809,14 +869,14 @@ RemovedCandidateVote ==
    from |-> FixtureC,
    to |-> FixtureB]
 
-RemovedCandidateAppend(entries, leaderCommit, senderMembership) ==
+RemovedCandidateAppend(entries, leaderCommit) ==
   [type |-> AppendEntries,
    term |-> 1,
    from |-> FixtureA,
    to |-> FixtureB,
    entries |-> entries,
    leaderCommit |-> leaderCommit,
-   senderMembership |-> senderMembership,
+   senderMembership |-> LatestConfigurationIn(entries).config,
    senderPendingSelfRemoval |-> FALSE]
 
 RemovedCandidateVoteGuardInit ==
@@ -848,9 +908,9 @@ RemovedCandidateVoteGuardNext ==
      /\ log[FixtureB] = <<>>
      /\ SendAppend(FixtureA, FixtureB)
   \/ /\ RemovedCandidateAppend(
-          <<RemovedCandidateJointEntry>>, 0, ApplicationConfig) \in messages
+          <<RemovedCandidateJointEntry>>, 0) \in messages
      /\ DeliverAppend(RemovedCandidateAppend(
-          <<RemovedCandidateJointEntry>>, 0, ApplicationConfig))
+          <<RemovedCandidateJointEntry>>, 0))
   \/ /\ commitIndex[FixtureA] = 0
      /\ log[FixtureB] = <<RemovedCandidateJointEntry>>
      /\ Commit(FixtureA, 1)
@@ -864,9 +924,9 @@ RemovedCandidateVoteGuardNext ==
      /\ Len(log[FixtureB]) = 1
      /\ SendAppend(FixtureA, FixtureB)
   \/ /\ RemovedCandidateAppend(
-          RemovedCandidateLog, 1, RegressionStableConfig) \in messages
+          RemovedCandidateLog, 1) \in messages
      /\ DeliverAppend(RemovedCandidateAppend(
-          RemovedCandidateLog, 1, RegressionStableConfig))
+          RemovedCandidateLog, 1))
   \/ /\ commitIndex[FixtureA] = 1
      /\ log[FixtureB] = RemovedCandidateLog
      /\ Commit(FixtureA, 2)
@@ -938,7 +998,7 @@ ClosedElectionLifecycleInit ==
        IF term = 1 THEN {FixtureA} ELSE {}]
   /\ higherTermStepDownFailed = FALSE
   /\ staleAuthorityAccepted = FALSE
-  /\ lastAppendAccepted = FALSE
+  /\ frozenAppendAuthorityFailed = FALSE
 
 ClosedElectionLifecycleNext ==
   \/ /\ currentTerm[FixtureA] = 1
@@ -986,7 +1046,7 @@ StaleMessageLifecycleInit ==
        IF t = 1 THEN {FixtureA} ELSE {}]
   /\ higherTermStepDownFailed = FALSE
   /\ staleAuthorityAccepted = FALSE
-  /\ lastAppendAccepted = FALSE
+  /\ frozenAppendAuthorityFailed = FALSE
 
 StaleMessageLifecycleNext ==
   \/ /\ currentTerm[FixtureB] = 0
@@ -1083,7 +1143,7 @@ SnapshotLifecycleInit ==
        CommitWitnessKeys({SnapshotLifecycleWitness}), FALSE)
   /\ higherTermStepDownFailed = FALSE
   /\ staleAuthorityAccepted = FALSE
-  /\ lastAppendAccepted = FALSE
+  /\ frozenAppendAuthorityFailed = FALSE
 
 SnapshotLifecycleNext ==
   \/ /\ snapshotIndex[FixtureA] = 0
@@ -1166,7 +1226,7 @@ ApplicationEpochLifecycleInit ==
        CommitWitnessKeys({SnapshotLifecycleWitness}), FALSE)
   /\ higherTermStepDownFailed = FALSE
   /\ staleAuthorityAccepted = FALSE
-  /\ lastAppendAccepted = FALSE
+  /\ frozenAppendAuthorityFailed = FALSE
 
 ApplicationEpochLifecycleNext ==
   \/ /\ ApplicationEpoch(FixtureA) = 0
@@ -1260,7 +1320,7 @@ SelfRemovalCommitInit ==
        CommitWitnessKeys({SelfRemovalJointWitness}), FALSE)
   /\ higherTermStepDownFailed = FALSE
   /\ staleAuthorityAccepted = FALSE
-  /\ lastAppendAccepted = FALSE
+  /\ frozenAppendAuthorityFailed = FALSE
 
 SelfRemovalCommitAction ==
   /\ commitIndex[FixtureA] = 1
@@ -1317,7 +1377,7 @@ ConfigurationRegressionInit ==
   /\ electedLeaders = [t \in 1..MaxTerm |-> {}]
   /\ higherTermStepDownFailed = FALSE
   /\ staleAuthorityAccepted = FALSE
-  /\ lastAppendAccepted = FALSE
+  /\ frozenAppendAuthorityFailed = FALSE
 
 ConfigurationRegressionNext ==
   \/ /\ AppliedThrough(FixtureA) = 0
@@ -1387,7 +1447,7 @@ JointQuorumRegressionInit ==
        IF t = 1 THEN {FixtureA} ELSE {}]
   /\ higherTermStepDownFailed = FALSE
   /\ staleAuthorityAccepted = FALSE
-  /\ lastAppendAccepted = FALSE
+  /\ frozenAppendAuthorityFailed = FALSE
 
 JointQuorumRegressionNext ==
   \/ /\ Len(log[FixtureA]) = 0

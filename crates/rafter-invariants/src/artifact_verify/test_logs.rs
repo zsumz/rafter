@@ -392,7 +392,7 @@ fn verify_test_process_plan(
             "test log does not contain the exact discovery invocation plan".to_owned(),
         ));
     }
-    verify_reconstructed_test_observations(check, &invocations, test_name)?;
+    verify_runner_test_observations(bundle, check, &invocations, test_name)?;
     if let Some(exact) = invocations.get(2) {
         let ignored_matches =
             crate::producer::test_exec::listed_tests(invocations[1].stdout.as_bytes())
@@ -513,6 +513,21 @@ pub(super) fn verify_reconstructed_test_observations(
         )));
     }
     Ok(())
+}
+
+pub(super) fn verify_runner_test_observations(
+    bundle: &ResultBundle,
+    check: &crate::CheckReceipt,
+    invocations: &[crate::producer::process::LabeledProcess],
+    test_name: &str,
+) -> Result<(), AggregateError> {
+    match bundle.runner.as_str() {
+        "tests" => verify_reconstructed_test_observations(check, invocations, test_name),
+        "simulator" => require_unique_discovery(invocations, test_name),
+        runner => Err(AggregateError::new(format!(
+            "test transcript verification is unsupported for runner {runner}"
+        ))),
+    }
 }
 
 fn exact_test_environment(

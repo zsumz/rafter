@@ -7,6 +7,7 @@ use super::{
     },
     test_logs::{
         require_unique_discovery, verify_exact_environment, verify_reconstructed_test_observations,
+        verify_runner_test_observations,
     },
 };
 use crate::{
@@ -30,16 +31,7 @@ fn discovery_counts_are_reconstructed_instead_of_trusting_the_receipt() {
         ("passed".to_owned(), 1),
     ]);
     let exact_name = "module::oracle";
-    let exact_pass = format!(
-            "running 1 test\ntest {exact_name} ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored\n"
-        );
-    let mut exact = process("exact libtest execution", &exact_pass);
-    exact.invocation.arguments = vec![exact_name.to_owned()];
-    let valid = vec![
-        process("libtest discovery", &format!("{exact_name}: test\n")),
-        process("libtest ignored discovery", ""),
-        exact,
-    ];
+    let valid = passing_test_processes(exact_name);
     verify_reconstructed_test_observations(&check, &valid, exact_name)
         .expect("one discovered identity reconstructs");
     require_unique_discovery(&valid, exact_name).expect("one discovery is unique");
@@ -54,6 +46,50 @@ fn discovery_counts_are_reconstructed_instead_of_trusting_the_receipt() {
     duplicate[0].stdout = format!("{exact_name}: test\n{exact_name}: test\n");
     assert!(verify_reconstructed_test_observations(&check, &duplicate, exact_name).is_err());
     assert!(require_unique_discovery(&duplicate, exact_name).is_err());
+}
+
+#[test]
+fn simulator_detector_observations_remain_model_specific() {
+    let (catalog, manifest) = crate::tests::loaded();
+    let exact_name = "module::oracle";
+    let invocations = passing_test_processes(exact_name);
+    let bundles = crate::tests::passing_bundles(&catalog, &manifest);
+    let tests = bundles
+        .iter()
+        .find(|bundle| bundle.runner == "tests")
+        .expect("tests bundle");
+    let tests_check = &tests.execution.checks[0];
+    verify_runner_test_observations(tests, tests_check, &invocations, exact_name)
+        .expect("tests runner retains exact transcript observations");
+
+    let simulator = bundles
+        .iter()
+        .find(|bundle| bundle.runner == "simulator")
+        .expect("simulator bundle");
+    let simulator_check = &simulator.execution.checks[0];
+    assert!(
+        verify_reconstructed_test_observations(simulator_check, &invocations, exact_name).is_err(),
+        "simulator model observations are not a test-runner count map"
+    );
+    verify_runner_test_observations(simulator, simulator_check, &invocations, exact_name)
+        .expect("simulator detector transcript does not replace model observations");
+
+    let mut duplicate = invocations.clone();
+    duplicate[0].stdout = format!("{exact_name}: test\n{exact_name}: test\n");
+    assert!(
+        verify_runner_test_observations(simulator, simulator_check, &duplicate, exact_name,)
+            .is_err()
+    );
+
+    let mut unsupported = simulator.clone();
+    unsupported.runner = "unknown".to_owned();
+    assert!(verify_runner_test_observations(
+        &unsupported,
+        simulator_check,
+        &invocations,
+        exact_name,
+    )
+    .is_err());
 }
 
 #[test]
@@ -170,4 +206,17 @@ fn process(label: &str, stdout: &str) -> LabeledProcess {
         stdout: stdout.to_owned(),
         stderr: String::new(),
     }
+}
+
+fn passing_test_processes(exact_name: &str) -> Vec<LabeledProcess> {
+    let exact_pass = format!(
+        "running 1 test\ntest {exact_name} ... ok\ntest result: ok. 1 passed; 0 failed; 0 ignored\n"
+    );
+    let mut exact = process("exact libtest execution", &exact_pass);
+    exact.invocation.arguments = vec![exact_name.to_owned()];
+    vec![
+        process("libtest discovery", &format!("{exact_name}: test\n")),
+        process("libtest ignored discovery", ""),
+        exact,
+    ]
 }
