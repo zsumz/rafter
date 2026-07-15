@@ -1,4 +1,8 @@
-use std::{collections::BTreeMap, fmt, fs, path::PathBuf};
+use std::{
+    collections::BTreeMap,
+    fmt, fs,
+    path::{Path, PathBuf},
+};
 
 use crate::{
     catalog::{Catalog, ProfileManifest},
@@ -44,17 +48,29 @@ struct InvariantEvidence<'a> {
 /// Loads every usable bundle while retaining each load failure as a harness error.
 #[must_use]
 pub(crate) fn load_evidence(paths: &[PathBuf]) -> LoadedEvidence {
+    load_evidence_at(paths, Path::new("."))
+}
+
+#[must_use]
+pub(crate) fn load_evidence_at(paths: &[PathBuf], root: &Path) -> LoadedEvidence {
     let mut loaded = LoadedEvidence::default();
     for path in paths {
-        match load_bundle(path) {
-            Ok(bundle) => loaded.bundles.push(bundle),
+        match load_bundle(path, root) {
+            Ok((bundle, diagnostics)) => {
+                loaded.bundles.push(bundle);
+                loaded.harness_errors.extend(
+                    diagnostics
+                        .into_iter()
+                        .map(|error| format!("verify {}: {error}", path.display())),
+                );
+            }
             Err(error) => loaded.harness_errors.push(error.to_string()),
         }
     }
     loaded
 }
 
-fn load_bundle(path: &PathBuf) -> Result<ResultBundle, AggregateError> {
+fn load_bundle(path: &PathBuf, root: &Path) -> Result<(ResultBundle, Vec<String>), AggregateError> {
     let source = fs::read_to_string(path)
         .map_err(|error| AggregateError(format!("read {}: {error}", path.display())))?;
     let value: serde_json::Value = serde_json::from_str(&source)
@@ -67,14 +83,16 @@ fn load_bundle(path: &PathBuf) -> Result<ResultBundle, AggregateError> {
     })?;
     let bundle: ResultBundle = serde_json::from_value(value)
         .map_err(|error| AggregateError(format!("decode {}: {error}", path.display())))?;
-    crate::producer::source::verify_checkout(&bundle.execution.source).map_err(|error| {
-        AggregateError(format!(
-            "verify source identity for {}: {error}",
-            path.display()
-        ))
-    })?;
-    crate::artifact_verify::verify(&bundle, std::path::Path::new("."))?;
-    Ok(bundle)
+    crate::producer::source::verify_checkout_at(&bundle.execution.source, root).map_err(
+        |error| {
+            AggregateError(format!(
+                "verify source identity for {}: {error}",
+                path.display()
+            ))
+        },
+    )?;
+    let diagnostics = crate::artifact_verify::verify(&bundle, root)?;
+    Ok((bundle, diagnostics))
 }
 
 /// Produces one fail-closed verdict for every reviewed invariant.
