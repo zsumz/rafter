@@ -127,5 +127,6 @@ fn is_process_log_kind(kind: &str) -> bool {
 }
 
 fn is_tla_process_log(kind: &str) -> bool {
-    matches!(kind, "tla-log" | "tla-trace-log") || kind.starts_with("tla-detector-log")
+    matches!(kind, "tla-log" | "tla-trace-log" | "tla-mutation-log")
+        || kind.starts_with("tla-detector-log")
 }

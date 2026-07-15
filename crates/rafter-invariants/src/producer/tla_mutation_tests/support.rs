@@ -345,6 +345,30 @@ PROPERTY CommitAuthorityTermRegressionCompletes
 CHECK_DEADLOCK FALSE
 "#;
 
+pub(super) const COMMITTED_LEDGER_CANONICALIZATION_CONFIG: &str = r#"SPECIFICATION CommittedLedgerCanonicalizationSpec
+
+CONSTANTS
+  Nodes = {n1, n2, n3}
+  Values = {v1, v2}
+  MaxTerm = 3
+  MaxLogLen = 2
+  ReadRequests = {r1}
+  FixtureA = n1
+  FixtureB = n2
+  FixtureC = n3
+  FixtureValueA = v1
+  FixtureValueB = v2
+  FixtureRead = r1
+  FixtureMode = "Default"
+  TargetPredicate = "LeaderCompleteness"
+
+INVARIANT TypeOK
+
+PROPERTY CommittedLedgerCanonicalizationCompletes
+
+CHECK_DEADLOCK FALSE
+"#;
+
 pub(super) const SELF_REMOVAL_COMMIT_CONFIG: &str = r#"SPECIFICATION SelfRemovalCommitSpec
 
 CONSTANTS

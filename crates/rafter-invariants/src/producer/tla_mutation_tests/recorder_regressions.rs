@@ -39,8 +39,8 @@ pub(super) fn missing_stale_authority_recorder_cannot_qualify_fencing() {
     let mutated = replace_operator(
         &raft,
         "RecordAuthorityAcceptance(authorityTerm, knownTerm, accepted)",
-        "RecordAppendOutcome(authorityTerm, knownTerm, accepted)",
-        "/\\ UNCHANGED <<staleAuthorityAccepted, lastAppendAccepted>>",
+        "RecordAppendOutcome(message, knownTerm, accepted, receiverWouldAccept)",
+        "/\\ UNCHANGED <<staleAuthorityAccepted, frozenAppendAuthorityFailed>>",
     );
     let detector =
         fs::read_to_string(root.join("specs/tla/raft/RafterInvariantDetectorNegative.tla"))

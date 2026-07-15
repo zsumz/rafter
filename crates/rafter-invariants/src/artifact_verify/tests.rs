@@ -188,10 +188,70 @@ fn simulator_check_metrics_exclude_compile_resources() {
 }
 
 #[test]
-fn tla_execution_duration_must_exactly_match_process_logs() {
+fn tla_execution_metrics_include_the_mutation_process_log() {
     let root = scratch("tla-resource-metrics");
     std::fs::create_dir_all(&root).expect("create scratch root");
-    let relative = "tla-process.json";
+    let main = write_tla_process_log(&root, "tla-process.json", "tla-log", 7, 13);
+    let mutation = write_tla_process_log(
+        &root,
+        "tla-mutation-process.json",
+        "tla-mutation-log",
+        5,
+        29,
+    );
+    let (catalog, manifest) = crate::tests::loaded();
+    let mut bundle = crate::tests::passing_bundles(&catalog, &manifest)
+        .into_iter()
+        .find(|bundle| bundle.runner == "tla")
+        .expect("TLA bundle");
+    bundle.execution.checks.truncate(1);
+    bundle.execution.checks[0].artifacts = vec![main.clone(), mutation.clone()];
+    bundle.execution.checks[0].duration_ms = 12;
+    bundle.execution.checks[0].peak_rss_kib = 29;
+    bundle.execution.artifacts = vec![main, mutation];
+    bundle.execution.duration_ms = 12;
+    bundle.execution.peak_rss_kib = 29;
+
+    verify_resource_metrics(&bundle, &root).expect("exact TLA metrics verify");
+
+    let mut duration_tampered = bundle.clone();
+    let mutation = write_tla_process_log(
+        &root,
+        "tla-mutation-process.json",
+        "tla-mutation-log",
+        6,
+        29,
+    );
+    duration_tampered.execution.checks[0].artifacts[1] = mutation.clone();
+    duration_tampered.execution.artifacts[1] = mutation;
+    assert!(verify_resource_metrics(&duration_tampered, &root).is_err());
+
+    let mut peak_tampered = bundle.clone();
+    let mutation = write_tla_process_log(
+        &root,
+        "tla-mutation-process.json",
+        "tla-mutation-log",
+        5,
+        31,
+    );
+    peak_tampered.execution.checks[0].artifacts[1] = mutation.clone();
+    peak_tampered.execution.artifacts[1] = mutation;
+    assert!(verify_resource_metrics(&peak_tampered, &root).is_err());
+
+    let mut omitted = bundle;
+    omitted.execution.checks[0].artifacts.pop();
+    omitted.execution.artifacts.pop();
+    assert!(verify_resource_metrics(&omitted, &root).is_err());
+    std::fs::remove_dir_all(root).expect("remove scratch root");
+}
+
+fn write_tla_process_log(
+    root: &std::path::Path,
+    relative: &str,
+    kind: &str,
+    duration_ms: u64,
+    peak_rss_kib: u64,
+) -> crate::ArtifactRef {
     let source = serde_json::to_vec(&json!({
         "schema_version": 1,
         "label": "model-check",
@@ -205,36 +265,19 @@ fn tla_execution_duration_must_exactly_match_process_logs() {
         },
         "exit_code": 0,
         "timed_out": false,
-        "duration_ms": 7,
-        "peak_rss_kib": 13,
+        "duration_ms": duration_ms,
+        "peak_rss_kib": peak_rss_kib,
         "stdout": "ok",
         "stderr": ""
     }))
     .expect("serialize process log");
     std::fs::write(root.join(relative), &source).expect("write process log");
-    let artifact = crate::ArtifactRef {
-        kind: "tla-log".to_owned(),
+    crate::ArtifactRef {
+        kind: kind.to_owned(),
         path: relative.to_owned(),
         sha256: format!("{:x}", Sha256::digest(&source)),
         size_bytes: source.len() as u64,
-    };
-    let (catalog, manifest) = crate::tests::loaded();
-    let mut bundle = crate::tests::passing_bundles(&catalog, &manifest)
-        .into_iter()
-        .find(|bundle| bundle.runner == "tla")
-        .expect("TLA bundle");
-    bundle.execution.checks.truncate(1);
-    bundle.execution.checks[0].artifacts = vec![artifact.clone()];
-    bundle.execution.checks[0].duration_ms = 7;
-    bundle.execution.checks[0].peak_rss_kib = 13;
-    bundle.execution.artifacts = vec![artifact];
-    bundle.execution.duration_ms = 7;
-    bundle.execution.peak_rss_kib = 13;
-
-    verify_resource_metrics(&bundle, &root).expect("exact TLA metrics verify");
-    bundle.execution.duration_ms = 8;
-    assert!(verify_resource_metrics(&bundle, &root).is_err());
-    std::fs::remove_dir_all(root).expect("remove scratch root");
+    }
 }
 
 fn scratch(label: &str) -> std::path::PathBuf {

@@ -129,14 +129,18 @@ pub(super) fn verify_producer_invocation_paths(
     Ok(())
 }
 
-#[cfg(all(test, unix))]
+#[cfg(test)]
 mod tests {
+    #[cfg(unix)]
     use std::sync::atomic::{AtomicU64, Ordering};
 
+    #[cfg(unix)]
     use sha2::{Digest, Sha256};
 
+    #[cfg(unix)]
     use super::verify_artifact;
 
+    #[cfg(unix)]
     #[test]
     fn artifact_integrity_rejects_modified_missing_and_symlinked_files() {
         use std::os::unix::fs::symlink;
