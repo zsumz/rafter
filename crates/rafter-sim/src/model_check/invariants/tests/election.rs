@@ -13,7 +13,9 @@ use crate::model_check::{
     scheduling::{Operation, SoakOperation},
     state::{apply_to_state, restart_node, try_apply_soak_action},
 };
-use rafter_invariant_test::{oracle_assert, oracle_assert_eq, oracle_expect_err};
+use rafter_invariant_test::{
+    oracle_assert, oracle_assert_eq, oracle_detector_witness, oracle_expect_err,
+};
 
 #[test]
 fn authority_history_records_seeded_term_and_vote() {
@@ -1016,10 +1018,12 @@ fn pre_vote_three_node_cluster() -> Cluster {
 
 fn record_election_authority_observation(state: &mut ExplorationState) {
     state.observe_election_authority();
+    oracle_detector_witness!(record_election_authority_observation);
 }
 
 fn record_election_certificate(state: &mut ExplorationState, certificate: ElectionCertificate) {
     state.election_history_mut().record_election(certificate);
+    oracle_detector_witness!(record_election_certificate);
 }
 
 fn deliver_all_pending_in_state(state: &mut ExplorationState) {

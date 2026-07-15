@@ -9,7 +9,8 @@ use rafter::{
 };
 
 use super::super::helpers::{
-    bootstrap_state, bootstrap_with_snapshot, elect_node_one, test_snapshot, three_node_configs,
+    bootstrap_state, bootstrap_with_snapshot, elect_node_one,
+    elect_node_one_with_node_three_in_state, test_snapshot, three_node_configs,
 };
 use super::super::scheduling::Operation;
 use super::super::state::{
