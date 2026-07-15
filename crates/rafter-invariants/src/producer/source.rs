@@ -1,4 +1,9 @@
-use std::{env, error::Error, fs, path::PathBuf};
+use std::{
+    env,
+    error::Error,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use sha2::{Digest, Sha256};
 
@@ -13,8 +18,22 @@ struct LayerSourceContract {
     tools: &'static [&'static str],
 }
 
+#[derive(Clone, Copy)]
+enum CaptureBudget {
+    Execution,
+    Total,
+}
+
 pub(super) fn capture_for_layer(layer: &str) -> Result<SourceReceipt, Box<dyn Error>> {
     capture(layer_contract(layer)?)
+}
+
+#[cfg(test)]
+pub(crate) fn capture_for_layer_at(
+    layer: &str,
+    root: &Path,
+) -> Result<SourceReceipt, Box<dyn Error>> {
+    capture_at(layer_contract(layer)?, root, CaptureBudget::Execution)
 }
 
 pub(crate) fn head_commit() -> Result<String, Box<dyn Error>> {
@@ -22,30 +41,40 @@ pub(crate) fn head_commit() -> Result<String, Box<dyn Error>> {
 }
 
 fn capture(contract: LayerSourceContract) -> Result<SourceReceipt, Box<dyn Error>> {
-    let status = command_output(
+    capture_at(contract, Path::new("."), CaptureBudget::Execution)
+}
+
+fn capture_at(
+    contract: LayerSourceContract,
+    root: &Path,
+    budget: CaptureBudget,
+) -> Result<SourceReceipt, Box<dyn Error>> {
+    let status = command_output_at(
         "git",
         &["status", "--porcelain=v1", "--untracked-files=all"],
         true,
+        root,
+        budget,
     )?;
     if !status.trim().is_empty() {
         return Err("evidence producers require a clean tracked and untracked worktree".into());
     }
-    let commit = git(&["rev-parse", "HEAD"])?;
-    let tree = git(&["rev-parse", "HEAD^{tree}"])?;
-    let cargo = command_output("cargo", &["-vV"], false)?;
-    let rustc = command_output("rustc", &["-vV"], false)?;
+    let commit = command_output_at("git", &["rev-parse", "HEAD"], false, root, budget)?;
+    let tree = command_output_at("git", &["rev-parse", "HEAD^{tree}"], false, root, budget)?;
+    let cargo = command_output_at("cargo", &["-vV"], false, root, budget)?;
+    let rustc = command_output_at("rustc", &["-vV"], false, root, budget)?;
     let target = rustc
         .lines()
         .find_map(|line| line.strip_prefix("host: "))
-        .ok_or("rustc -vV omitted host target")?
+        .ok_or_else(|| format!("rustc -vV omitted host target from output: {rustc:?}"))?
         .to_owned();
-    let cargo_lock = fs::read("Cargo.lock")?;
+    let cargo_lock = fs::read(root.join("Cargo.lock"))?;
     let environment = process::base_environment();
     let tools = contract
         .tools
         .iter()
         .map(|name| {
-            let version = tool_version(name)?;
+            let version = tool_version(name, root, budget)?;
             Ok((
                 (*name).to_owned(),
                 ToolReceipt {
@@ -66,7 +95,7 @@ fn capture(contract: LayerSourceContract) -> Result<SourceReceipt, Box<dyn Error
         cargo_lock_sha256: format!("{:x}", Sha256::digest(cargo_lock)),
         cargo,
         cargo_sha256: executable_sha256("cargo")?,
-        cargo_config_sha256: cargo_config_sha256()?,
+        cargo_config_sha256: cargo_config_sha256(root)?,
         rustc,
         rustc_sha256: executable_sha256("rustc")?,
         target,
@@ -84,19 +113,26 @@ fn capture(contract: LayerSourceContract) -> Result<SourceReceipt, Box<dyn Error
 
 pub(super) fn verify(expected: &SourceReceipt) -> Result<(), Box<dyn Error>> {
     let contract = contract_for_receipt(expected)?;
-    let observed = capture(contract)?;
+    let observed = capture_at(contract, Path::new("."), CaptureBudget::Total)?;
     if &observed != expected {
         return Err("source or toolchain identity changed during evidence execution".into());
     }
     Ok(())
 }
 
-pub(crate) fn verify_checkout(expected: &SourceReceipt) -> Result<(), Box<dyn Error>> {
+pub(crate) fn verify_checkout_at(
+    expected: &SourceReceipt,
+    root: &Path,
+) -> Result<(), Box<dyn Error>> {
     let contract = contract_for_receipt(expected)?;
-    let observed = capture(LayerSourceContract {
-        tools: &[],
-        ..contract
-    })?;
+    let observed = capture_at(
+        LayerSourceContract {
+            tools: &[],
+            ..contract
+        },
+        root,
+        CaptureBudget::Total,
+    )?;
     if observed.commit != expected.commit
         || observed.tree != expected.tree
         || observed.cargo_lock_sha256 != expected.cargo_lock_sha256
@@ -192,7 +228,28 @@ fn command_output(
     arguments: &[&str],
     allow_empty: bool,
 ) -> Result<String, Box<dyn Error>> {
-    let output = process::identity_command(program, arguments)?;
+    command_output_at(
+        program,
+        arguments,
+        allow_empty,
+        Path::new("."),
+        CaptureBudget::Execution,
+    )
+}
+
+fn command_output_at(
+    program: &str,
+    arguments: &[&str],
+    allow_empty: bool,
+    root: &Path,
+    budget: CaptureBudget,
+) -> Result<String, Box<dyn Error>> {
+    let output = match budget {
+        CaptureBudget::Execution => process::identity_command_in(program, arguments, root)?,
+        CaptureBudget::Total => {
+            process::identity_command_in_total_budget(program, arguments, root)?
+        }
+    };
     let value = output.stdout.trim().to_owned();
     if value.is_empty() && !allow_empty {
         return Err(format!("{program} produced empty identity output").into());
@@ -205,8 +262,13 @@ fn executable_sha256(name: &str) -> Result<String, Box<dyn Error>> {
     Ok(format!("{:x}", Sha256::digest(fs::read(path)?)))
 }
 
-fn tool_version(name: &str) -> Result<String, Box<dyn Error>> {
-    let output = process::identity_command(name, &["--version"])?;
+fn tool_version(name: &str, root: &Path, budget: CaptureBudget) -> Result<String, Box<dyn Error>> {
+    let output = match budget {
+        CaptureBudget::Execution => process::identity_command_in(name, &["--version"], root)?,
+        CaptureBudget::Total => {
+            process::identity_command_in_total_budget(name, &["--version"], root)?
+        }
+    };
     tool_version_output(name, &output.stdout, &output.stderr)
 }
 
@@ -228,21 +290,26 @@ pub(super) fn tool_path(name: &str) -> Option<PathBuf> {
     find_tool(name)
 }
 
-fn cargo_config_sha256() -> Result<String, Box<dyn Error>> {
-    let mut paths = vec![
+fn cargo_config_sha256(root: &Path) -> Result<String, Box<dyn Error>> {
+    let local_paths = [
         PathBuf::from(".cargo/config"),
         PathBuf::from(".cargo/config.toml"),
     ];
+    let mut paths = local_paths
+        .iter()
+        .map(|relative| (relative.clone(), root.join(relative)))
+        .collect::<Vec<_>>();
     if let Some(home) = env::var_os("CARGO_HOME")
         .map(PathBuf::from)
         .or_else(|| env::var_os("HOME").map(|home| PathBuf::from(home).join(".cargo")))
     {
-        paths.push(home.join("config"));
-        paths.push(home.join("config.toml"));
+        for path in [home.join("config"), home.join("config.toml")] {
+            paths.push((path.clone(), path));
+        }
     }
     let mut hasher = Sha256::new();
-    for path in paths.into_iter().filter(|path| path.is_file()) {
-        hasher.update(path.to_string_lossy().as_bytes());
+    for (identity, path) in paths.into_iter().filter(|(_, path)| path.is_file()) {
+        hasher.update(identity.to_string_lossy().as_bytes());
         hasher.update([0]);
         hasher.update(fs::read(path)?);
         hasher.update([0]);

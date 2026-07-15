@@ -7,7 +7,16 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::{artifact, process, tla_checkpoint, tla_contract::required_configuration, tla_output};
+#[cfg(target_os = "linux")]
+use std::os::fd::BorrowedFd;
+
+use super::{
+    artifact,
+    filesystem::{HeldDirectory, OperationDeadline, TREE_LIMITS},
+    process, tla_checkpoint,
+    tla_contract::required_configuration,
+    tla_output,
+};
 use tla_output::{
     detector_config_kind, detector_invariant, detector_label, detector_log_kind,
     detector_observation, probe_slug, render_detector_config, DetectorProbe, DETECTOR_PROBES,
@@ -19,6 +28,7 @@ const TRACE_CONFIG: &str = "RaftMembershipTraceSample.cfg";
 const DETECTOR_CONFIG: &str = "RafterInvariantDetectorNegative.cfg";
 const JAR: &str = "tools/cache/tla2tools.jar";
 const PROBE_TIMEOUT: Duration = Duration::from_secs(120);
+const QUALIFICATION_PHASE_COUNT: usize = DETECTOR_PROBES.len() + 2;
 const TOTAL_TIMEOUT_KEY: &str = "total_timeout";
 const FINALIZATION_RESERVE_KEY: &str = "finalization_reserve";
 
@@ -73,17 +83,7 @@ pub(super) fn execute(
         trace_timeout,
     )?;
     artifacts.push(trace.artifact.clone());
-    let trace_summary = tla_output::parse(&trace.output.stdout).ok();
-    let trace_succeeded = trace.output.status.success()
-        && !trace.output.timed_out
-        && trace_summary.as_ref().is_some_and(|summary| {
-            summary.completed_without_error
-                && summary.process_finished
-                && summary.distinct_states >= MEMBERSHIP_TRACE_MIN_DISTINCT_STATES
-                && summary.states_left == 0
-                && summary.search_depth >= MEMBERSHIP_TRACE_MIN_DEPTH
-        });
-    if !trace_succeeded {
+    if !trace_succeeded(&trace) {
         return Ok(trace_failure(&trace, artifacts));
     }
     let mut detectors =
@@ -92,8 +92,14 @@ pub(super) fn execute(
     if !detectors.succeeded {
         return Ok(detector_failure(&trace, detectors, artifacts));
     }
-    let mut checkpoint =
-        prepare_checkpoint(profile, source_ref, configuration, &artifacts, output_dir)?;
+    let mut checkpoint = prepare_checkpoint(
+        profile,
+        source_ref,
+        configuration,
+        &artifacts,
+        output_dir,
+        budget,
+    )?;
     let checkpoint_report = checkpoint
         .as_ref()
         .map(|preparation| preparation.report.clone());
@@ -104,7 +110,7 @@ pub(super) fn execute(
         let Some(preparation) = checkpoint.take() else {
             return Err("checkpoint error was reported without checkpoint state".into());
         };
-        artifacts.extend(preparation.finish(output_dir)?);
+        artifacts.extend(preparation.finish(output_dir, budget.total_deadline)?);
         return Ok(checkpoint_failure(
             &trace,
             detectors,
@@ -115,7 +121,7 @@ pub(super) fn execute(
     }
     let Some(main_timeout) = budget.phase_timeout(timeout) else {
         if let Some(preparation) = checkpoint {
-            artifacts.extend(preparation.finish(output_dir)?);
+            artifacts.extend(preparation.finish(output_dir, budget.total_deadline)?);
         }
         return Ok(main_budget_failure(
             &trace,
@@ -126,8 +132,11 @@ pub(super) fn execute(
     };
     let state = if let Some(preparation) = checkpoint.as_ref() {
         TlcState::Checkpoint {
-            state_dir: &preparation.state_dir,
-            recover_from: preparation.recover_from.as_deref(),
+            state_dir: preparation
+                .state_handle
+                .as_ref()
+                .ok_or("compatible checkpoint preparation omitted state handle")?,
+            recover_from: preparation.recover_handle.as_ref(),
             checkpoint_minutes: required_configuration(configuration, "checkpoint_minutes")?,
             max_heap: required_configuration(configuration, "max_heap")?,
         }
@@ -148,29 +157,69 @@ pub(super) fn execute(
         state,
     })?;
     complete_main_execution(
-        &trace,
-        detectors,
-        artifacts,
-        checkpoint,
-        checkpoint_report,
-        output_dir,
+        MainCompletion {
+            trace: &trace,
+            detectors,
+            artifacts,
+            checkpoint,
+            checkpoint_report,
+            output_dir,
+            total_deadline: budget.total_deadline,
+        },
         main,
     )
 }
 
-fn complete_main_execution(
-    trace: &TlcRun,
+fn trace_succeeded(trace: &TlcRun) -> bool {
+    trace.output.status.success()
+        && !trace.output.timed_out
+        && tla_output::parse(&trace.output.stdout)
+            .ok()
+            .is_some_and(|summary| {
+                summary.completed_without_error
+                    && summary.process_finished
+                    && summary.distinct_states >= MEMBERSHIP_TRACE_MIN_DISTINCT_STATES
+                    && summary.states_left == 0
+                    && summary.search_depth >= MEMBERSHIP_TRACE_MIN_DEPTH
+            })
+}
+
+struct MainCompletion<'a> {
+    trace: &'a TlcRun,
     detectors: DetectorProbes,
-    mut artifacts: Vec<crate::ArtifactRef>,
+    artifacts: Vec<crate::ArtifactRef>,
     checkpoint: Option<tla_checkpoint::Preparation>,
     checkpoint_report: Option<tla_checkpoint::RecoveryReport>,
-    output_dir: &Path,
+    output_dir: &'a Path,
+    total_deadline: Instant,
+}
+
+pub(super) fn parse_main_summary(
+    output: &[u8],
+) -> (Option<tla_output::TlcSummary>, Option<String>) {
+    match tla_output::parse(output) {
+        Ok(summary) => (Some(summary), None),
+        Err(error) => match tla_output::parse_complete_prefix(output) {
+            Ok(summary) if summary.violated_invariant.is_some() => (Some(summary), Some(error)),
+            _ => (None, Some(error)),
+        },
+    }
+}
+
+fn complete_main_execution(
+    completion: MainCompletion<'_>,
     main: TlcRun,
 ) -> Result<TlaExecution, Box<dyn Error>> {
-    let (summary, main_parse_error) = match tla_output::parse(&main.output.stdout) {
-        Ok(summary) => (Some(summary), None),
-        Err(error) => (None, Some(error)),
-    };
+    let MainCompletion {
+        trace,
+        detectors,
+        mut artifacts,
+        checkpoint,
+        checkpoint_report,
+        output_dir,
+        total_deadline,
+    } = completion;
+    let (summary, main_parse_error) = parse_main_summary(&main.output.stdout);
     let main_progress = main
         .output
         .timed_out
@@ -191,7 +240,15 @@ fn complete_main_execution(
     let main_status = classify_main_status(&main.output);
     artifacts.push(main.artifact);
     if let Some(preparation) = checkpoint {
-        artifacts.extend(preparation.finish(output_dir)?);
+        if summary
+            .as_ref()
+            .and_then(|summary| summary.violated_invariant.as_ref())
+            .is_some()
+        {
+            artifacts.extend(preparation.abandon());
+        } else {
+            artifacts.extend(preparation.finish(output_dir, total_deadline)?);
+        }
     }
     Ok(TlaExecution {
         main: summary,
@@ -225,9 +282,19 @@ fn prepare_checkpoint(
     configuration: &BTreeMap<String, String>,
     artifacts: &[crate::ArtifactRef],
     output_dir: &Path,
+    budget: ExecutionBudget,
 ) -> Result<Option<tla_checkpoint::Preparation>, Box<dyn Error>> {
     tla_checkpoint::enabled(configuration)
-        .then(|| tla_checkpoint::prepare(profile, source_ref, configuration, artifacts, output_dir))
+        .then(|| {
+            tla_checkpoint::prepare(
+                profile,
+                source_ref,
+                configuration,
+                artifacts,
+                output_dir,
+                budget.execution_deadline,
+            )
+        })
         .transpose()
 }
 
@@ -435,12 +502,13 @@ fn run_mutation_suite(
         "--test-threads=1",
     ]
     .map(OsString::from);
-    let output = process::timed_with_timeout(
+    let output = process::timed_for_with_cap(
+        process::ProcessKind::TlaExecution,
         "cargo",
         &arguments,
         &process::base_environment(),
         Path::new("."),
-        timeout,
+        Some(timeout),
     )?;
     let source_prefix = source_ref.get(..12).unwrap_or(source_ref);
     let artifact = artifact::write(
@@ -475,9 +543,9 @@ fn run_detector_probe(
         &config_kind,
         config_source.as_bytes(),
     )?;
-    let config = fs::canonicalize(&config_artifact.path)?
-        .to_string_lossy()
-        .into_owned();
+    let config_guard = HeldDirectory::workspace()?.hold_file(Path::new(&config_artifact.path))?;
+    config_guard.verify_path_binding()?;
+    let config = config_guard.external_path().to_string_lossy().into_owned();
     let label = detector_label(probe).ok_or("unregistered detector probe")?;
     let artifact_kind = detector_log_kind(probe).ok_or("unregistered detector probe")?;
     let run = run_tlc(TlcRequest {
@@ -556,7 +624,8 @@ fn detector_qualified(
 
 #[derive(Clone, Copy, Debug)]
 struct ExecutionBudget {
-    execution_deadline: Option<Instant>,
+    execution_deadline: Instant,
+    total_deadline: Instant,
 }
 
 impl ExecutionBudget {
@@ -564,7 +633,12 @@ impl ExecutionBudget {
         profile: &str,
         configuration: &BTreeMap<String, String>,
     ) -> Result<Self, Box<dyn Error>> {
-        Self::at(profile, configuration, Instant::now())
+        Self::at(profile, configuration, Instant::now())?;
+        let (execution_deadline, total_deadline) = process::active_layer_deadlines(profile, "tla")?;
+        Ok(Self {
+            execution_deadline,
+            total_deadline,
+        })
     }
 
     fn at(
@@ -574,15 +648,14 @@ impl ExecutionBudget {
     ) -> Result<Self, Box<dyn Error>> {
         let total = configured_budget_duration(configuration, TOTAL_TIMEOUT_KEY)?;
         let reserve = configured_budget_duration(configuration, FINALIZATION_RESERVE_KEY)?;
-        let execution_deadline = match (total, reserve) {
-            (None, None) if profile != "pr" => None,
+        match (total, reserve) {
             (Some(total), Some(reserve)) => {
                 let execution_window = total
                     .checked_sub(reserve)
                     .filter(|window| !window.is_zero())
                     .ok_or("TLA total_timeout must exceed finalization_reserve")?;
                 let maximum_probe_time = PROBE_TIMEOUT
-                    .checked_mul(u32::try_from(DETECTOR_PROBES.len() + 1)?)
+                    .checked_mul(u32::try_from(QUALIFICATION_PHASE_COUNT)?)
                     .ok_or("TLA probe budget overflow")?;
                 if execution_window <= maximum_probe_time {
                     return Err(
@@ -590,22 +663,25 @@ impl ExecutionBudget {
                             .into(),
                     );
                 }
-                Some(
-                    started
-                        .checked_add(execution_window)
-                        .ok_or("TLA shared execution deadline overflow")?,
-                )
+                let execution_deadline = started
+                    .checked_add(execution_window)
+                    .ok_or("TLA shared execution deadline overflow")?;
+                let total_deadline = started
+                    .checked_add(total)
+                    .ok_or("TLA total deadline overflow")?;
+                Ok(Self {
+                    execution_deadline,
+                    total_deadline,
+                })
             }
-            (None, None) => {
-                return Err("PR TLA runner requires total_timeout and finalization_reserve".into())
-            }
+            (None, None) => Err(format!(
+                "{profile} TLA runner requires total_timeout and finalization_reserve"
+            )
+            .into()),
             _ => {
-                return Err(
-                    "TLA total_timeout and finalization_reserve must be configured together".into(),
-                )
+                Err("TLA total_timeout and finalization_reserve must be configured together".into())
             }
-        };
-        Ok(Self { execution_deadline })
+        }
     }
 
     fn phase_timeout(self, cap: Duration) -> Option<Duration> {
@@ -613,10 +689,7 @@ impl ExecutionBudget {
     }
 
     fn phase_timeout_at(self, now: Instant, cap: Duration) -> Option<Duration> {
-        let Some(deadline) = self.execution_deadline else {
-            return Some(cap);
-        };
-        let remaining = deadline.checked_duration_since(now)?;
+        let remaining = self.execution_deadline.checked_duration_since(now)?;
         (!remaining.is_zero()).then_some(cap.min(remaining))
     }
 }
@@ -644,8 +717,8 @@ fn configured_budget_duration(
 enum TlcState<'a> {
     Ephemeral,
     Checkpoint {
-        state_dir: &'a Path,
-        recover_from: Option<&'a Path>,
+        state_dir: &'a HeldDirectory,
+        recover_from: Option<&'a HeldDirectory>,
         checkpoint_minutes: &'a str,
         max_heap: &'a str,
     },
@@ -667,24 +740,119 @@ struct TlcRequest<'a> {
 }
 
 fn run_tlc(request: TlcRequest<'_>) -> Result<TlcRun, Box<dyn Error>> {
+    require_sound_tlc_state_binding()?;
     let source_prefix = request.source_ref.get(..12).unwrap_or(request.source_ref);
-    let state_dir = match request.state {
-        TlcState::Ephemeral => {
-            let state_dir = Path::new("target/rafter-invariants/tla")
-                .join(source_prefix)
-                .join(request.profile)
-                .join(request.label);
-            if state_dir.exists() {
-                fs::remove_dir_all(&state_dir)?;
-            }
-            fs::create_dir_all(&state_dir)?;
-            fs::canonicalize(state_dir)?
-        }
-        TlcState::Checkpoint { state_dir, .. } => {
-            fs::create_dir_all(state_dir)?;
-            fs::canonicalize(state_dir)?
-        }
-    };
+    process::ensure_execution_deadline(
+        request.profile,
+        "tla",
+        &format!("{} TLC state preparation", request.label),
+    )?;
+    let ephemeral_state = prepare_ephemeral_state(request, source_prefix)?;
+    let (state_handle, recover_handle) = state_handles(request.state, ephemeral_state.as_ref())?;
+    process::ensure_execution_deadline(
+        request.profile,
+        "tla",
+        &format!("{} TLC process launch", request.label),
+    )?;
+    verify_tlc_state_binding(state_handle, recover_handle)?;
+    let state_binding = state_handle.bind_for_child()?;
+    let recover_binding = recover_handle
+        .map(HeldDirectory::bind_for_child)
+        .transpose()?;
+    let arguments = tlc_arguments(
+        request,
+        state_binding.path(),
+        recover_binding
+            .as_ref()
+            .map(super::filesystem::ChildDirectory::path),
+    )?;
+    verify_tlc_state_binding(state_handle, recover_handle)?;
+    let environment = process::base_environment();
+    #[cfg(target_os = "linux")]
+    let descriptors = tlc_directory_descriptors(&state_binding, recover_binding.as_ref());
+    #[cfg(target_os = "linux")]
+    let output = process::timed_for_with_cap_and_descriptors(
+        process::ProcessKind::TlaExecution,
+        "java",
+        &arguments,
+        &environment,
+        Path::new("specs/tla/raft"),
+        Some(request.timeout),
+        &descriptors,
+    )?;
+    #[cfg(not(target_os = "linux"))]
+    let output = process::timed_for_with_cap(
+        process::ProcessKind::TlaExecution,
+        "java",
+        &arguments,
+        &environment,
+        Path::new("specs/tla/raft"),
+        Some(request.timeout),
+    )?;
+    verify_tlc_state_binding(state_handle, recover_handle)?;
+    let artifact = artifact::write(
+        request.output_dir,
+        Path::new(&format!(
+            "{}-tla/{source_prefix}/{}.log",
+            request.profile, request.label
+        )),
+        request.artifact_kind,
+        &process::tla_json_log(request.label, &output)?,
+    )?;
+    Ok(TlcRun { output, artifact })
+}
+
+#[cfg(target_os = "linux")]
+fn require_sound_tlc_state_binding() -> Result<(), Box<dyn Error>> {
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn require_sound_tlc_state_binding() -> Result<(), Box<dyn Error>> {
+    Err("TLC execution requires Linux descriptor-relative state directories; this host cannot soundly expose a held directory tree to Java".into())
+}
+
+fn prepare_ephemeral_state(
+    request: TlcRequest<'_>,
+    source_prefix: &str,
+) -> Result<Option<HeldDirectory>, Box<dyn Error>> {
+    if !matches!(request.state, TlcState::Ephemeral) {
+        return Ok(None);
+    }
+    let state_dir = Path::new("target/rafter-invariants/tla")
+        .join(source_prefix)
+        .join(request.profile)
+        .join(request.label);
+    let (execution_deadline, _) = process::active_layer_deadlines(request.profile, "tla")?;
+    Ok(Some(HeldDirectory::replace_tree(
+        &state_dir,
+        TREE_LIMITS,
+        OperationDeadline::at(execution_deadline, "stale TLC state cleanup"),
+    )?))
+}
+
+fn state_handles<'a>(
+    state: TlcState<'a>,
+    ephemeral_state: Option<&'a HeldDirectory>,
+) -> Result<(&'a HeldDirectory, Option<&'a HeldDirectory>), Box<dyn Error>> {
+    match state {
+        TlcState::Ephemeral => Ok((
+            ephemeral_state.ok_or("ephemeral TLC state handle was not initialized")?,
+            None,
+        )),
+        TlcState::Checkpoint {
+            state_dir,
+            recover_from,
+            ..
+        } => Ok((state_dir, recover_from)),
+    }
+}
+
+fn tlc_arguments(
+    request: TlcRequest<'_>,
+    state_dir: &Path,
+    recover_from: Option<&Path>,
+) -> Result<Vec<OsString>, Box<dyn Error>> {
     let jar = fs::canonicalize(JAR)?;
     let mut arguments = Vec::new();
     if let TlcState::Checkpoint { max_heap, .. } = request.state {
@@ -703,12 +871,10 @@ fn run_tlc(request: TlcRequest<'_>) -> Result<TlcRun, Box<dyn Error>> {
         "-fp".into(),
         "0".into(),
         "-metadir".into(),
-        state_dir.into_os_string(),
+        state_dir.as_os_str().to_os_string(),
     ]);
     if let TlcState::Checkpoint {
-        checkpoint_minutes,
-        recover_from,
-        ..
+        checkpoint_minutes, ..
     } = request.state
     {
         arguments.extend([
@@ -717,10 +883,7 @@ fn run_tlc(request: TlcRequest<'_>) -> Result<TlcRun, Box<dyn Error>> {
             "-gzip".into(),
         ]);
         if let Some(recover_from) = recover_from {
-            arguments.extend([
-                "-recover".into(),
-                fs::canonicalize(recover_from)?.into_os_string(),
-            ]);
+            arguments.extend(["-recover".into(), recover_from.as_os_str().to_os_string()]);
         }
     }
     arguments.extend([
@@ -728,95 +891,35 @@ fn run_tlc(request: TlcRequest<'_>) -> Result<TlcRun, Box<dyn Error>> {
         request.config.into(),
         request.module.into(),
     ]);
-    let output = process::timed_with_timeout(
-        "java",
-        &arguments,
-        &process::base_environment(),
-        Path::new("specs/tla/raft"),
-        request.timeout,
-    )?;
-    let artifact = artifact::write(
-        request.output_dir,
-        Path::new(&format!(
-            "{}-tla/{source_prefix}/{}.log",
-            request.profile, request.label
-        )),
-        request.artifact_kind,
-        &process::tla_json_log(request.label, &output)?,
-    )?;
-    Ok(TlcRun { output, artifact })
+    Ok(arguments)
+}
+
+#[cfg(target_os = "linux")]
+fn tlc_directory_descriptors<'a>(
+    state: &'a super::filesystem::ChildDirectory,
+    recover: Option<&'a super::filesystem::ChildDirectory>,
+) -> Vec<BorrowedFd<'a>> {
+    let mut descriptors = vec![state.descriptor()];
+    if let Some(recover) = recover {
+        descriptors.push(recover.descriptor());
+    }
+    descriptors
+}
+
+fn verify_tlc_state_binding(
+    state: &HeldDirectory,
+    recover: Option<&HeldDirectory>,
+) -> Result<(), Box<dyn Error>> {
+    state.verify_path_binding()?;
+    if let Some(recover) = recover {
+        recover.verify_path_binding()?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
-mod budget_tests {
-    use std::{collections::BTreeMap, time::Duration};
-
-    use super::{ExecutionBudget, FINALIZATION_RESERVE_KEY, PROBE_TIMEOUT, TOTAL_TIMEOUT_KEY};
-
-    fn pr_budget() -> BTreeMap<String, String> {
-        BTreeMap::from([
-            (TOTAL_TIMEOUT_KEY.to_owned(), "120m".to_owned()),
-            (FINALIZATION_RESERVE_KEY.to_owned(), "2m".to_owned()),
-        ])
-    }
-
-    #[test]
-    fn shared_pr_budget_reduces_the_main_timeout_and_preserves_the_reserve() {
-        let started = std::time::Instant::now();
-        let budget = ExecutionBudget::at("pr", &pr_budget(), started).expect("valid PR budget");
-
-        assert_eq!(
-            budget.phase_timeout_at(started, PROBE_TIMEOUT),
-            Some(PROBE_TIMEOUT)
-        );
-        assert_eq!(
-            budget.phase_timeout_at(
-                started + Duration::from_secs(20 * 60),
-                Duration::from_secs(115 * 60),
-            ),
-            Some(Duration::from_secs(98 * 60))
-        );
-        assert_eq!(
-            budget.phase_timeout_at(
-                started + Duration::from_secs(118 * 60),
-                Duration::from_secs(115 * 60),
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn pr_budget_requires_a_paired_reserve_and_time_for_the_main_run() {
-        let started = std::time::Instant::now();
-        assert!(ExecutionBudget::at("pr", &BTreeMap::new(), started).is_err());
-        assert!(ExecutionBudget::at(
-            "pr",
-            &BTreeMap::from([(TOTAL_TIMEOUT_KEY.to_owned(), "120m".to_owned())]),
-            started,
-        )
-        .is_err());
-        assert!(ExecutionBudget::at(
-            "pr",
-            &BTreeMap::from([
-                (TOTAL_TIMEOUT_KEY.to_owned(), "20m".to_owned()),
-                (FINALIZATION_RESERVE_KEY.to_owned(), "2m".to_owned()),
-            ]),
-            started,
-        )
-        .is_err());
-    }
-
-    #[test]
-    fn scheduled_profiles_keep_their_existing_per_phase_bounds() {
-        let started = std::time::Instant::now();
-        let budget = ExecutionBudget::at("weekly", &BTreeMap::new(), started)
-            .expect("scheduled profile remains unbounded across phases");
-        assert_eq!(
-            budget.phase_timeout_at(started + Duration::from_secs(24 * 60 * 60), PROBE_TIMEOUT,),
-            Some(PROBE_TIMEOUT)
-        );
-    }
-}
+#[path = "tla_exec_budget_tests.rs"]
+mod budget_tests;
 
 #[cfg(test)]
 #[path = "tla_mutation_tests.rs"]

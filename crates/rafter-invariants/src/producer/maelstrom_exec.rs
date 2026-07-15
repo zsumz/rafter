@@ -2,13 +2,19 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,
     fs,
-    path::{Path, PathBuf},
-    time::Duration,
+    path::Path,
+    time::{Duration, Instant},
 };
 
 use crate::ArtifactRef;
 
-use super::{artifact, maelstrom_edn, maelstrom_scenario::required_configuration, process};
+use super::{
+    artifact,
+    filesystem::{self as producer_fs, EntryKind, HeldDirectory, OperationDeadline, TREE_LIMITS},
+    maelstrom_edn,
+    maelstrom_scenario::required_configuration,
+    process,
+};
 
 pub(super) use super::maelstrom_scenario::Scenario;
 
@@ -21,6 +27,16 @@ pub(super) struct TrialOutcome {
     pub duration_ms: u64,
     pub peak_rss_kib: u64,
     pub artifacts: Vec<ArtifactRef>,
+}
+
+struct TrialEvidence<'a> {
+    scenario: Scenario,
+    output_dir: &'a Path,
+    namespace: &'a Path,
+    script: &'a Path,
+    state_dir: &'a HeldDirectory,
+    durable: &'a HeldDirectory,
+    deadline: Instant,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
@@ -72,19 +88,27 @@ pub(super) fn run_trial(
     configuration: &BTreeMap<String, String>,
     output_dir: &Path,
 ) -> Result<TrialOutcome, Box<dyn Error>> {
+    let (execution_deadline, total_deadline) =
+        process::active_layer_deadlines(profile, "maelstrom")?;
     let source_prefix = source_ref.get(..12).unwrap_or(source_ref);
     let state_dir = reset_state_directory(
-        Path::new("target/rafter-invariants/maelstrom")
+        &Path::new("target/rafter-invariants/maelstrom")
             .join(source_prefix)
             .join(profile)
             .join(scenario.name())
             .join(format!("trial-{trial}")),
+        execution_deadline,
     )?;
-    let durable = state_dir.join("durable");
-    fs::create_dir_all(&durable)?;
+    let durable = state_dir.create_dir_all(Path::new("durable"))?;
     let script = fs::canonicalize(scenario.script())?;
-    let environment = trial_environment(configuration, &durable, scenario)?;
+    let script_handle = producer_fs::hold_file(&script)?;
+    let durable_path = durable.external_path();
+    let environment = trial_environment(configuration, &durable_path, scenario)?;
     let timeout = trial_process_timeout(configuration)?;
+    state_dir.verify_path_binding()?;
+    durable.verify_path_binding()?;
+    script_handle.verify_path_binding()?;
+    let state_path = state_dir.path().to_path_buf();
     let output = process::timed_for_with_cap(
         process::ProcessKind::MaelstromTrial,
         script
@@ -92,7 +116,7 @@ pub(super) fn run_trial(
             .ok_or("Maelstrom script path is not UTF-8")?,
         &["--test-count".into(), "1".into()],
         &environment,
-        &state_dir,
+        &state_path,
         Some(timeout),
     )?;
     let namespace = Path::new(&format!(
@@ -100,48 +124,78 @@ pub(super) fn run_trial(
         scenario.name()
     ))
     .to_path_buf();
+    collect_trial_evidence(
+        &TrialEvidence {
+            scenario,
+            output_dir,
+            namespace: &namespace,
+            script: &script,
+            state_dir: &state_dir,
+            durable: &durable,
+            deadline: total_deadline,
+        },
+        &output,
+    )
+}
+
+fn collect_trial_evidence(
+    evidence: &TrialEvidence<'_>,
+    output: &process::ProcessOutput,
+) -> Result<TrialOutcome, Box<dyn Error>> {
     let mut artifacts = vec![artifact::write(
-        output_dir,
-        &namespace.join("process.json"),
+        evidence.output_dir,
+        &evidence.namespace.join("process.json"),
         "maelstrom-process-log",
-        &process::json_log(scenario.name(), &output)?,
+        &process::json_log(evidence.scenario.name(), output)?,
     )?];
     let script_artifact = artifact::capture(
-        output_dir,
-        &namespace.join("inputs"),
-        &script,
+        evidence.output_dir,
+        &evidence.namespace.join("inputs"),
+        evidence.script,
         "maelstrom-runner",
     )?;
     artifacts.push(script_artifact);
-    artifacts.push(super::maelstrom_tool::capture_jar(output_dir, &namespace)?);
+    artifacts.push(super::maelstrom_tool::capture_jar(
+        evidence.output_dir,
+        evidence.namespace,
+    )?);
     capture_binary(
-        output_dir,
-        &namespace,
+        evidence.output_dir,
+        evidence.namespace,
         Path::new("target/debug/rafter-maelstrom"),
         "maelstrom-binary",
         &mut artifacts,
     )?;
     if matches!(
-        scenario,
+        evidence.scenario,
         Scenario::Restart | Scenario::AppCrash | Scenario::Snapshot | Scenario::LeaseIsolation
     ) {
         capture_binary(
-            output_dir,
-            &namespace,
+            evidence.output_dir,
+            evidence.namespace,
             Path::new("target/debug/rafter-maelstrom-leader-restart-proxy"),
             "maelstrom-proxy-binary",
             &mut artifacts,
         )?;
     }
-    let run_store = discover_store(&state_dir);
+    let run_store = discover_store(evidence.state_dir, evidence.deadline);
     let (summary, error, markers) = match run_store {
         Ok(store) => {
-            capture_tree(output_dir, &namespace.join("store"), &store, &mut artifacts)?;
-            let results = fs::read_to_string(store.join("results.edn"));
+            capture_tree(
+                evidence.output_dir,
+                &evidence.namespace.join("store"),
+                &store,
+                &mut artifacts,
+                evidence.deadline,
+            )?;
+            let results = store.read_to_string_with_deadline(
+                Path::new("results.edn"),
+                OperationDeadline::at(evidence.deadline, "Maelstrom results read"),
+            );
             let parsed = results
                 .map_err(|error| format!("read Maelstrom results.edn: {error}"))
                 .and_then(|source| maelstrom_edn::parse(&source));
-            let markers = read_markers(&store)?;
+            let markers = read_markers(&store, evidence.deadline)?;
             match parsed {
                 Ok(summary) => (Some(summary), None, markers),
                 Err(error) => (None, Some(error), markers),
@@ -150,10 +204,11 @@ pub(super) fn run_trial(
         Err(error) => (None, Some(error), ScenarioMarkers::default()),
     };
     capture_tree(
-        output_dir,
-        &namespace.join("durable"),
-        &durable,
+        evidence.output_dir,
+        &evidence.namespace.join("durable"),
+        evidence.durable,
         &mut artifacts,
+        evidence.deadline,
     )?;
     Ok(TrialOutcome {
         summary,
@@ -229,12 +284,15 @@ fn trial_environment(
     Ok(environment)
 }
 
-fn reset_state_directory(path: PathBuf) -> Result<PathBuf, Box<dyn Error>> {
-    if path.exists() {
-        fs::remove_dir_all(&path)?;
-    }
-    fs::create_dir_all(&path)?;
-    Ok(fs::canonicalize(path)?)
+pub(super) fn reset_state_directory(
+    path: &Path,
+    deadline: Instant,
+) -> Result<HeldDirectory, Box<dyn Error>> {
+    HeldDirectory::replace_tree(
+        path,
+        TREE_LIMITS,
+        OperationDeadline::at(deadline, "Maelstrom scratch cleanup"),
+    )
 }
 
 fn capture_binary(
@@ -256,17 +314,26 @@ fn capture_binary(
     Ok(())
 }
 
-fn discover_store(state_dir: &Path) -> Result<PathBuf, String> {
-    let root = state_dir.join("store/lin-kv");
-    let mut stores = fs::read_dir(&root)
-        .map_err(|error| format!("read Maelstrom store {}: {error}", root.display()))?
-        .filter_map(Result::ok)
-        .filter(|entry| entry.file_type().is_ok_and(|kind| kind.is_dir()))
-        .map(|entry| entry.path())
+pub(super) fn discover_store(
+    state_dir: &HeldDirectory,
+    deadline: Instant,
+) -> Result<HeldDirectory, String> {
+    OperationDeadline::at(deadline, "Maelstrom store discovery")
+        .check()
+        .map_err(|error| error.to_string())?;
+    let root = state_dir
+        .open_dir(Path::new("store/lin-kv"))
+        .map_err(|error| format!("read Maelstrom store: {error}"))?;
+    let stores = root
+        .entries(OperationDeadline::at(deadline, "Maelstrom store discovery"))
+        .map_err(|error| format!("read Maelstrom store: {error}"))?
+        .into_iter()
+        .filter_map(|(name, kind)| (kind == EntryKind::Directory).then_some(name))
         .collect::<Vec<_>>();
-    stores.sort();
     match stores.as_slice() {
-        [store] => Ok(store.clone()),
+        [store] => root
+            .open_dir(Path::new(store))
+            .map_err(|error| format!("open Maelstrom store: {error}")),
         _ => Err(format!(
             "expected one Maelstrom retained store, found {}",
             stores.len()
@@ -274,14 +341,19 @@ fn discover_store(state_dir: &Path) -> Result<PathBuf, String> {
     }
 }
 
-fn capture_tree(
+pub(super) fn capture_tree(
     output_dir: &Path,
     namespace: &Path,
-    root: &Path,
+    root: &HeldDirectory,
     artifacts: &mut Vec<ArtifactRef>,
+    deadline: Instant,
 ) -> Result<(), Box<dyn Error>> {
-    for file in files_below(root)? {
-        let relative = file.strip_prefix(root)?;
+    for relative in root.files_below(
+        TREE_LIMITS,
+        OperationDeadline::at(deadline, "Maelstrom evidence traversal"),
+    )? {
+        let read_deadline = OperationDeadline::at(deadline, "Maelstrom evidence file read");
+        read_deadline.check()?;
         let kind = if relative == Path::new("results.edn") {
             "maelstrom-results"
         } else if relative.starts_with("node-logs") {
@@ -291,45 +363,38 @@ fn capture_tree(
         } else {
             "maelstrom-store-file"
         };
-        artifacts.push(artifact::capture_as(
+        artifacts.push(artifact::write(
             output_dir,
-            &namespace.join(relative),
-            &file,
+            &namespace.join(&relative),
             kind,
+            &root.read_with_deadline(&relative, read_deadline)?,
         )?);
+        read_deadline.check()?;
     }
     Ok(())
 }
 
-fn files_below(root: &Path) -> Result<Vec<PathBuf>, Box<dyn Error>> {
-    let mut pending = vec![root.to_path_buf()];
-    let mut files = Vec::new();
-    while let Some(directory) = pending.pop() {
-        for entry in fs::read_dir(directory)? {
-            let entry = entry?;
-            let kind = entry.file_type()?;
-            if kind.is_dir() {
-                pending.push(entry.path());
-            } else if kind.is_file() {
-                files.push(entry.path());
-            }
-        }
-    }
-    files.sort();
-    Ok(files)
-}
-
-fn read_markers(store: &Path) -> Result<ScenarioMarkers, Box<dyn Error>> {
+fn read_markers(
+    store: &HeldDirectory,
+    deadline: Instant,
+) -> Result<ScenarioMarkers, Box<dyn Error>> {
     let mut markers = ScenarioMarkers::default();
     let mut lease_events = Vec::new();
     let mut lease_parse_errors = 0;
-    for file in files_below(&store.join("node-logs"))? {
+    let node_logs = store.open_dir(Path::new("node-logs"))?;
+    for file in node_logs.files_below(
+        TREE_LIMITS,
+        OperationDeadline::at(deadline, "Maelstrom marker traversal"),
+    )? {
         let source_node = file
             .file_stem()
             .and_then(|name| name.to_str())
             .ok_or("Maelstrom node log has no UTF-8 file stem")?;
         scan_markers(
-            &fs::read_to_string(&file)?,
+            &node_logs.read_to_string_with_deadline(
+                &file,
+                OperationDeadline::at(deadline, "Maelstrom marker log read"),
+            )?,
             source_node,
             &mut markers,
             &mut lease_events,
@@ -337,7 +402,12 @@ fn read_markers(store: &Path) -> Result<ScenarioMarkers, Box<dyn Error>> {
         );
     }
     finish_lease_transcript(&mut markers, &lease_events, lease_parse_errors);
-    let history = fs::read_to_string(store.join("history.edn")).ok();
+    let history = store
+        .read_to_string_with_deadline(
+            Path::new("history.edn"),
+            OperationDeadline::at(deadline, "Maelstrom history read"),
+        )
+        .ok();
     bind_lease_history(&mut markers, &lease_events, history.as_deref());
     Ok(markers)
 }

@@ -4,6 +4,7 @@ use super::{
     evaluate, evidence_result, observations, MainStatus, ProbeStatus, TlaExecution, TlaVerdict,
 };
 use crate::{
+    producer::tla_exec::parse_main_summary,
     producer::tla_output::{TlcProgress, TlcSummary, REQUIRED_MODEL_TRANSITIONS},
     Catalog, CheckCompletion, EvidenceStatus, FailureClassification,
 };
@@ -201,6 +202,40 @@ fn parsed_named_counterexample_outranks_concurrent_timeout() {
     execution.main.as_mut().expect("summary").violated_invariant =
         Some("ElectionSafety".to_owned());
     let symbols = ["ElectionSafety".to_owned()].into_iter().collect();
+    assert!(matches!(
+        evaluate(&execution, &symbols, &BTreeMap::new()),
+        TlaVerdict::Violation(symbol) if symbol == "ElectionSafety"
+    ));
+}
+
+#[test]
+fn named_counterexample_outranks_a_later_malformed_terminal_frame() {
+    let output = b"@!@!@STARTMSG 2110:1 @!@!@\nInvariant ElectionSafety is violated.\n@!@!@ENDMSG 2110 @!@!@\n\
+                   @!@!@STARTMSG 2199:0 @!@!@\nmalformed statistics\n@!@!@ENDMSG 2199 @!@!@\n";
+    let (summary, parse_error) = parse_main_summary(output);
+    assert_eq!(
+        parse_error.as_deref(),
+        Some("TLC 2199 frame has malformed state statistics")
+    );
+
+    let mut execution = complete_execution(false);
+    execution.main = summary;
+    execution.main_parse_error = parse_error;
+    let symbols = ["ElectionSafety".to_owned()].into_iter().collect();
+    assert!(matches!(
+        evaluate(&execution, &symbols, &BTreeMap::new()),
+        TlaVerdict::Violation(symbol) if symbol == "ElectionSafety"
+    ));
+}
+
+#[test]
+fn parsed_named_counterexample_outranks_checkpoint_finalization_failure() {
+    let mut execution = complete_execution(false);
+    execution.main.as_mut().expect("summary").violated_invariant =
+        Some("ElectionSafety".to_owned());
+    execution.checkpoint_error = Some("checkpoint deadline expired".to_owned());
+    let symbols = ["ElectionSafety".to_owned()].into_iter().collect();
+
     assert!(matches!(
         evaluate(&execution, &symbols, &BTreeMap::new()),
         TlaVerdict::Violation(symbol) if symbol == "ElectionSafety"
