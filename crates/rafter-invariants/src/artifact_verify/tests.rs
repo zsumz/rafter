@@ -8,27 +8,24 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fmt::Write as _};
 
 #[test]
-fn producer_paths_bind_to_the_checkout_and_preserved_binary() {
+fn producer_paths_bind_to_the_recorded_checkout_and_preserved_binary() {
     let root = scratch("producer-paths");
+    std::fs::create_dir_all(&root).expect("create aggregate checkout B");
+    let root = std::fs::canonicalize(root).expect("canonical aggregate checkout B");
     let bytes = b"preserved producer";
     let digest = format!("{:x}", Sha256::digest(bytes));
-    let program = root
-        .join("target/rafter-invariants/producer-images")
-        .join(&digest)
-        .join("rafter-invariants");
-    std::fs::create_dir_all(program.parent().expect("program parent")).expect("create program dir");
-    std::fs::write(&program, bytes).expect("write producer");
+    let producer_root = root.with_extension("producer-root-a");
+    assert!(!producer_root.exists());
     let (catalog, manifest) = crate::tests::loaded();
     let mut bundle = crate::tests::passing_bundles(&catalog, &manifest)
         .into_iter()
         .find(|bundle| bundle.runner == "tests")
         .expect("tests bundle");
-    bundle.execution.invocation.program = std::fs::canonicalize(&program)
-        .expect("canonical program")
-        .to_string_lossy()
-        .into_owned();
-    let repository = std::fs::canonicalize(&root).expect("canonical root");
-    bundle.execution.invocation.current_dir = repository.to_string_lossy().into_owned();
+    bundle.execution.invocation.program =
+        crate::producer_image::image_path(&producer_root, &digest)
+            .to_string_lossy()
+            .into_owned();
+    bundle.execution.invocation.current_dir = producer_root.to_string_lossy().into_owned();
     bundle
         .execution
         .invocation
@@ -37,7 +34,7 @@ fn producer_paths_bind_to_the_checkout_and_preserved_binary() {
     let producer = crate::ArtifactRef {
         kind: "producer-binary".to_owned(),
         path: "preserved-producer".to_owned(),
-        sha256: digest,
+        sha256: digest.clone(),
         size_bytes: bytes.len() as u64,
     };
     bundle.execution.producer = crate::ProducerBindingReceipt {
@@ -46,13 +43,8 @@ fn producer_paths_bind_to_the_checkout_and_preserved_binary() {
     };
     bundle.execution.artifacts = vec![producer];
 
-    verify_producer_invocation_paths(&bundle, &root).expect("bound paths verify");
-    std::fs::write(&program, b"later cargo rebuild").expect("replace mutable program path");
     verify_producer_invocation_paths(&bundle, &root)
-        .expect("preserved capture remains authoritative after rebuild");
-    std::fs::remove_file(&program).expect("remove historical program path");
-    verify_producer_invocation_paths(&bundle, &root)
-        .expect("preserved capture remains authoritative after path removal");
+        .expect("nonexistent producer checkout remains verifiable from checkout B");
 
     let mut forged = bundle.clone();
     forged.execution.artifacts[0].sha256 = "f".repeat(64);
@@ -61,11 +53,38 @@ fn producer_paths_bind_to_the_checkout_and_preserved_binary() {
     forged.execution.invocation.program_sha256 = "f".repeat(64);
     assert!(verify_producer_invocation_paths(&forged, &root).is_err());
     forged = bundle.clone();
-    forged.execution.invocation.current_dir = std::env::temp_dir().to_string_lossy().into_owned();
+    forged.execution.invocation.current_dir = "producer-root-a".to_owned();
     assert!(verify_producer_invocation_paths(&forged, &root).is_err());
     forged = bundle.clone();
-    forged.execution.invocation.program = repository
-        .join("target/debug/rafter-invariants")
+    let current_root = producer_root.join(".");
+    forged.execution.invocation.current_dir = current_root.to_string_lossy().into_owned();
+    forged.execution.invocation.program = crate::producer_image::image_path(&current_root, &digest)
+        .to_string_lossy()
+        .into_owned();
+    assert!(verify_producer_invocation_paths(&forged, &root).is_err());
+    forged = bundle.clone();
+    let parent_root = producer_root.join("nested/..");
+    forged.execution.invocation.current_dir = parent_root.to_string_lossy().into_owned();
+    forged.execution.invocation.program = crate::producer_image::image_path(&parent_root, &digest)
+        .to_string_lossy()
+        .into_owned();
+    assert!(verify_producer_invocation_paths(&forged, &root).is_err());
+    forged = bundle.clone();
+    forged.execution.invocation.current_dir = root.to_string_lossy().into_owned();
+    assert!(verify_producer_invocation_paths(&forged, &root).is_err());
+    forged = bundle.clone();
+    forged.execution.invocation.program = crate::producer_image::image_path(&root, &digest)
+        .to_string_lossy()
+        .into_owned();
+    assert!(verify_producer_invocation_paths(&forged, &root).is_err());
+    forged = bundle.clone();
+    forged.execution.invocation.program = "/absolute/substituted/rafter-invariants".to_owned();
+    assert!(verify_producer_invocation_paths(&forged, &root).is_err());
+    forged = bundle.clone();
+    forged.execution.invocation.program = producer_root
+        .join("target/rafter-invariants/producer-images")
+        .join(&digest)
+        .join("nested/../rafter-invariants")
         .to_string_lossy()
         .into_owned();
     assert!(verify_producer_invocation_paths(&forged, &root).is_err());

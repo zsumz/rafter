@@ -6,6 +6,8 @@ use std::{
 
 use crate::{aggregate::AggregateError, EvidenceStatus, FailureClassification, ResultBundle};
 
+const DETECTOR_WITNESS_PREFIX: &str = "RAFTER_INVARIANT_DETECTOR_WITNESS:";
+
 pub(super) fn verify_test_logs(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateError> {
     let catalog =
         crate::Catalog::load(root.join(&bundle.execution.plan.registry.path).as_path())
@@ -163,6 +165,66 @@ pub(super) fn verify_test_invocations(
         ));
     }
     Ok(())
+}
+
+pub(super) fn require_detector_witness(
+    bundle: &ResultBundle,
+    source: &str,
+    oracle_check_id: &str,
+    detector: &str,
+) -> Result<(), AggregateError> {
+    let processes = crate::producer::process::parse_combined_processes(source)
+        .map_err(|error| AggregateError::new(format!("parse detector invocation: {error}")))?;
+    let exact = processes
+        .iter()
+        .find(|process| process.label == "exact libtest execution")
+        .ok_or_else(|| {
+            AggregateError::new("detector log omitted its exact invocation".to_owned())
+        })?;
+    let token = crate::producer::test_exec::oracle_token(&bundle.source_ref, oracle_check_id);
+    require_detector_witness_in_streams(&exact.stdout, &exact.stderr, &token, detector)
+}
+
+fn require_detector_witness_in_streams(
+    stdout: &str,
+    stderr: &str,
+    token: &str,
+    detector: &str,
+) -> Result<(), AggregateError> {
+    let expected_prefix = format!("{DETECTOR_WITNESS_PREFIX}{token}:");
+    let mut witnesses = Vec::new();
+    for line in stdout.lines().chain(stderr.lines()) {
+        let line = line.trim();
+        if let Some(witness) = line.strip_prefix(&expected_prefix) {
+            witnesses.push(witness);
+        } else if line.starts_with(DETECTOR_WITNESS_PREFIX) {
+            return Err(AggregateError::new(
+                "detector log contains a witness bound to another execution token".to_owned(),
+            ));
+        }
+    }
+    if !witnesses
+        .iter()
+        .any(|witness| witness_names_detector(witness, detector))
+    {
+        return Err(AggregateError::new(format!(
+            "detector log does not contain a runtime witness from {detector}"
+        )));
+    }
+    Ok(())
+}
+
+fn witness_names_detector(witness: &str, detector: &str) -> bool {
+    witness.match_indices(detector).any(|(offset, _)| {
+        let boundary = witness[..offset]
+            .chars()
+            .next_back()
+            .is_none_or(|character| !(character.is_ascii_alphanumeric() || character == '_'));
+        boundary
+            && witness[offset + detector.len()..]
+                .trim_start()
+                .starts_with('(')
+    })
 }
 
 fn verify_oracle_failure_invocations(
@@ -639,4 +701,81 @@ pub(super) fn is_passing(bundle: &ResultBundle, execution_id: &str) -> bool {
         .results
         .iter()
         .any(|result| result.execution_id == execution_id && result.status == EvidenceStatus::Pass)
+}
+
+#[cfg(test)]
+mod detector_witness_tests {
+    use super::{
+        require_detector_witness, require_detector_witness_in_streams, DETECTOR_WITNESS_PREFIX,
+    };
+
+    #[test]
+    fn adversarial_noop_oracle_observation_cannot_qualify_a_detector() {
+        let token = "source-bound-token";
+        let stdout = format!("RAFTER_INVARIANT_ORACLE_OBSERVED:{token}\n");
+
+        let error = require_detector_witness_in_streams(
+            &stdout,
+            "",
+            token,
+            "check_committed_prefix_history_stability",
+        )
+        .expect_err("a generic true assertion must not qualify a detector");
+
+        assert!(error.to_string().contains("runtime witness"));
+    }
+
+    #[test]
+    fn detector_expression_witness_qualifies_only_its_named_detector() {
+        let token = "source-bound-token";
+        let stderr = format!(
+            "{DETECTOR_WITNESS_PREFIX}{token}:check_committed_prefix_history_stability(&state, &[])\n"
+        );
+
+        require_detector_witness_in_streams(
+            "",
+            &stderr,
+            token,
+            "check_committed_prefix_history_stability",
+        )
+        .expect("the actual detector expression is witnessed");
+        assert!(require_detector_witness_in_streams(
+            "",
+            &stderr,
+            token,
+            "check_stable_commit_quorums",
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn token_bound_macro_witness_survives_libtest_capture_and_process_framing() {
+        let (catalog, manifest) = crate::tests::loaded();
+        let mut bundle = crate::tests::passing_bundles(&catalog, &manifest)
+            .into_iter()
+            .next()
+            .expect("passing fixture bundle");
+        bundle.source_ref = format!("e2e{:09}-detector-witness", std::process::id());
+        let (check_id, source) =
+            crate::producer::test_exec::capture_detector_witness_fixture_log(&bundle.source_ref)
+                .expect("capture the real oracle macro through an exact libtest subprocess");
+
+        require_detector_witness(
+            &bundle,
+            &source,
+            &check_id,
+            "token_bound_regression_detector",
+        )
+        .expect("the framed exact-process log retains the source-bound detector witness");
+
+        bundle.source_ref.push_str("-foreign");
+        let error = require_detector_witness(
+            &bundle,
+            &source,
+            &check_id,
+            "token_bound_regression_detector",
+        )
+        .expect_err("the captured witness must not qualify another source token");
+        assert!(error.to_string().contains("another execution token"));
+    }
 }
