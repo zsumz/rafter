@@ -14,20 +14,22 @@ mod checkpoint;
 mod invocation;
 
 use checkpoint::verify_checkpoint;
-use invocation::{optional_process_log, read_bound_process_log, read_process_log};
+use invocation::{
+    optional_process_log, read_bound_process_log, read_initial_process_log, read_process_log,
+};
 
-pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateError> {
+pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<Vec<String>, AggregateError> {
     let check = bundle
         .execution
         .checks
         .first()
         .ok_or_else(|| AggregateError::new("TLA receipt has no check".to_owned()))?;
-    let trace = read_process_log(bundle, check, "tla-trace-log", "trace-sample", root)?;
+    let (trace, producer_repository) =
+        read_initial_process_log(bundle, check, "tla-trace-log", "trace-sample", root)?;
     let config = read_kind(check, "tla-config", root)?;
     let detector_template = read_kind(check, "tla-detector-config", root)?;
     verify_source_binding(bundle, check, root)?;
     verify_tool_pin(bundle, check, root)?;
-    let checkpoint = verify_checkpoint(bundle, check, root)?;
     let trace_summary = crate::producer::tla_output::parse(trace.stdout.as_bytes()).ok();
     let trace_passed = trace_summary.as_ref().is_some_and(|summary| {
         successful_log(&trace)
@@ -35,18 +37,55 @@ pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), Aggregate
             && summary.distinct_states >= MEMBERSHIP_TRACE_MIN_DISTINCT_STATES
             && summary.search_depth >= MEMBERSHIP_TRACE_MIN_DEPTH
     });
-    let (detector_observations, detectors_passed) =
-        verify_detectors(bundle, check, root, &detector_template)?;
+    let (detector_observations, detectors_passed) = verify_detectors(
+        bundle,
+        check,
+        root,
+        &producer_repository,
+        &detector_template,
+    )?;
     if !trace_passed && has_kind(check, "tla-log")? {
         return Err(AggregateError::new(
             "TLA main log exists after a failed trace probe".to_owned(),
         ));
     }
-    let main = optional_process_log(bundle, check, "tla-log", "model-check", root)?;
-    let main_summary = main
-        .as_ref()
-        .and_then(|log| crate::producer::tla_output::parse(log.stdout.as_bytes()).ok());
-    let main_progress = timeout_progress(main.as_ref())?;
+    let main = optional_process_log(
+        bundle,
+        check,
+        "tla-log",
+        "model-check",
+        root,
+        &producer_repository,
+    )?;
+    let (main_summary, main_parse_diagnostic) = match main.as_ref() {
+        Some(log) => match crate::producer::tla_output::parse(log.stdout.as_bytes()) {
+            Ok(summary) => (Some(summary), None),
+            Err(error) => {
+                match crate::producer::tla_output::parse_complete_prefix(log.stdout.as_bytes()) {
+                    Ok(summary) if summary.violated_invariant.is_some() => (
+                        Some(summary),
+                        Some(format!("parse TLA main output: {error}")),
+                    ),
+                    _ => (None, None),
+                }
+            }
+        },
+        None => (None, None),
+    };
+    let checkpoint = verify_checkpoint(
+        bundle,
+        check,
+        root,
+        main_summary
+            .as_ref()
+            .is_some_and(|summary| summary.violated_invariant.is_some()),
+    )?;
+    let (main_progress, progress_diagnostic) = timeout_progress(
+        main.as_ref(),
+        main_summary
+            .as_ref()
+            .is_some_and(|summary| summary.violated_invariant.is_some()),
+    )?;
     let symbols = configured_invariants(&config);
     let derived = derive_observations(
         &symbols,
@@ -73,7 +112,11 @@ pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<(), Aggregate
         checkpoint.as_ref(),
         main.as_ref(),
         main_summary.as_ref(),
-    )
+    )?;
+    Ok(main_parse_diagnostic
+        .into_iter()
+        .chain(progress_diagnostic)
+        .collect())
 }
 
 fn derive_observations(
@@ -115,19 +158,21 @@ fn derive_observations(
             ),
         ]);
     }
-    if let Some(progress) = main_progress {
-        derived.extend([
-            (
-                "progress_generated_states".to_owned(),
-                progress.generated_states,
-            ),
-            (
-                "progress_distinct_states".to_owned(),
-                progress.distinct_states,
-            ),
-            ("progress_states_left".to_owned(), progress.states_left),
-            ("progress_depth".to_owned(), progress.depth),
-        ]);
+    if main.is_some_and(|log| log.timed_out) {
+        if let Some(progress) = main_progress {
+            derived.extend([
+                (
+                    "progress_generated_states".to_owned(),
+                    progress.generated_states,
+                ),
+                (
+                    "progress_distinct_states".to_owned(),
+                    progress.distinct_states,
+                ),
+                ("progress_states_left".to_owned(), progress.states_left),
+                ("progress_depth".to_owned(), progress.depth),
+            ]);
+        }
     } else if let Some(summary) = main_summary {
         derived.extend([
             ("generated_states".to_owned(), summary.generated_states),
@@ -146,22 +191,41 @@ fn derive_observations(
 
 fn timeout_progress(
     main: Option<&crate::producer::ProcessLog>,
-) -> Result<Option<crate::producer::tla_output::TlcProgress>, AggregateError> {
+    main_has_violation: bool,
+) -> Result<
+    (
+        Option<crate::producer::tla_output::TlcProgress>,
+        Option<String>,
+    ),
+    AggregateError,
+> {
     let Some(log) = main.filter(|log| log.timed_out) else {
-        return Ok(None);
+        return Ok((None, None));
     };
-    parse_latest_progress(log.stdout.as_bytes())
-        .map_err(|error| AggregateError::new(format!("parse timed-out TLA progress: {error}")))?
-        .map(Some)
-        .ok_or_else(|| {
-            AggregateError::new("timed-out TLA log omitted a complete progress frame".to_owned())
-        })
+    let progress = match parse_latest_progress(log.stdout.as_bytes()) {
+        Ok(progress) => progress,
+        Err(error) if main_has_violation => {
+            return Ok((None, Some(format!("parse timed-out TLA progress: {error}"))));
+        }
+        Err(error) => {
+            return Err(AggregateError::new(format!(
+                "parse timed-out TLA progress: {error}"
+            )));
+        }
+    };
+    if main_has_violation || progress.is_some() {
+        return Ok((progress, None));
+    }
+    Err(AggregateError::new(
+        "timed-out TLA log omitted a complete progress frame".to_owned(),
+    ))
 }
 
 fn verify_detectors(
     bundle: &ResultBundle,
     check: &crate::CheckReceipt,
     root: &Path,
+    producer_repository: &Path,
     template: &str,
 ) -> Result<(BTreeMap<String, u64>, bool), AggregateError> {
     let mut observations = BTreeMap::new();
@@ -203,7 +267,8 @@ fn verify_detectors(
         let label = detector_label(probe).ok_or_else(|| {
             AggregateError::new(format!("unregistered TLA detector probe {identity}"))
         })?;
-        let detector = read_process_log(bundle, check, &log_kind, &label, root)?;
+        let detector =
+            read_process_log(bundle, check, &log_kind, &label, root, producer_repository)?;
         let summary = crate::producer::tla_output::parse(detector.stdout.as_bytes()).ok();
         let expected = detector_invariant(probe).ok_or_else(|| {
             AggregateError::new(format!("unregistered TLA detector probe {identity}"))
@@ -222,7 +287,7 @@ fn verify_detectors(
             MUTATION_SUITE_LABEL,
             root,
         )?;
-        verify_mutation_invocation(bundle, &mutation, root)?;
+        verify_mutation_invocation(bundle, &mutation, producer_repository)?;
         all_passed &=
             mutation_suite_passed(mutation.exit_code, mutation.timed_out, &mutation.stdout);
     } else {
@@ -234,7 +299,7 @@ fn verify_detectors(
 fn verify_mutation_invocation(
     bundle: &ResultBundle,
     log: &crate::producer::ProcessLog,
-    root: &Path,
+    producer_repository: &Path,
 ) -> Result<(), AggregateError> {
     let expected_arguments = [
         "test",
@@ -246,10 +311,7 @@ fn verify_mutation_invocation(
         "--ignored",
         "--test-threads=1",
     ];
-    let current_dir = fs::canonicalize(root)
-        .map_err(|error| AggregateError::new(format!("canonicalize mutation root: {error}")))?
-        .to_string_lossy()
-        .into_owned();
+    let current_dir = producer_repository.to_string_lossy();
     if log.invocation.program != "cargo"
         || log.invocation.program_sha256 != bundle.execution.source.cargo_sha256
         || log.invocation.arguments != expected_arguments
@@ -375,6 +437,14 @@ fn verify_counterexample_binding(
         {
             Ok(())
         }
+        Some("TypeOK")
+            if bundle.results.iter().all(|result| {
+                result.status == EvidenceStatus::Error
+                    && result.classification == Some(crate::FailureClassification::HarnessError)
+            }) =>
+        {
+            Ok(())
+        }
         Some(symbol) => {
             let bound = bundle
                 .results
@@ -475,11 +545,13 @@ fn verify_completion(
         || checkpoint.is_some_and(|report| report.status == RecoveryStatus::Incompatible)
     {
         CheckCompletion::HarnessError
-    } else if summary
-        .and_then(|summary| summary.violated_invariant.as_ref())
-        .is_some()
+    } else if let Some(violated) = summary.and_then(|summary| summary.violated_invariant.as_deref())
     {
-        CheckCompletion::Counterexample
+        if violated == "TypeOK" {
+            CheckCompletion::HarnessError
+        } else {
+            CheckCompletion::Counterexample
+        }
     } else if main.is_some_and(|log| log.timed_out) {
         CheckCompletion::Timeout
     } else if let (Some(main), Some(summary)) = (main, summary) {
