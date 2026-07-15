@@ -156,19 +156,19 @@ fn finalize_process_output(
     reservation_path: &Path,
 ) -> Result<ProcessOutput, Box<dyn Error>> {
     let stdout = retained_result(
-        std::fs::read(stdout_path),
+        crate::producer::filesystem::read_file(stdout_path),
         stdout_path,
         stderr_path,
         Some(resource_path),
     )?;
     let stderr = retained_result(
-        std::fs::read(stderr_path),
+        crate::producer::filesystem::read_file(stderr_path),
         stdout_path,
         stderr_path,
         Some(resource_path),
     )?;
     let resource_telemetry = retained_result(
-        std::fs::read(resource_path),
+        crate::producer::filesystem::read_file(resource_path),
         stdout_path,
         stderr_path,
         Some(resource_path),
@@ -190,11 +190,11 @@ fn finalize_process_output(
             resource_path,
         ));
     }
-    std::fs::remove_file(stdout_path)?;
-    std::fs::remove_file(stderr_path)?;
-    std::fs::remove_file(resource_path)?;
-    std::fs::remove_file(process_group_path)?;
-    std::fs::remove_file(reservation_path)?;
+    crate::producer::filesystem::remove_file(stdout_path)?;
+    crate::producer::filesystem::remove_file(stderr_path)?;
+    crate::producer::filesystem::remove_file(resource_path)?;
+    crate::producer::filesystem::remove_file(process_group_path)?;
+    crate::producer::filesystem::remove_file(reservation_path)?;
     Ok(ProcessOutput {
         invocation,
         status: completion.status,

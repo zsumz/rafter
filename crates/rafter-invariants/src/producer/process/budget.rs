@@ -22,6 +22,7 @@ pub(super) struct ActiveLayerBudget {
     pub(super) profile: String,
     pub(super) layer: String,
     pub(super) finalization_deadline: Instant,
+    pub(super) total_deadline: Instant,
     pub(super) finalization_reserve: Duration,
     pub(super) compile_timeout: Option<Duration>,
     pub(super) discovery_timeout: Option<Duration>,
@@ -49,9 +50,11 @@ impl Default for ProcessPolicy {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::producer) enum ProcessKind {
     Compile,
+    Identity,
     TestDiscovery,
     TestExecution,
     SimulatorExecution,
+    TlaExecution,
     MaelstromTrial,
 }
 
@@ -61,7 +64,10 @@ impl ProcessKind {
             Self::Compile => budget.compile_timeout,
             Self::TestDiscovery => budget.discovery_timeout,
             Self::TestExecution => budget.execution_timeout,
-            Self::SimulatorExecution | Self::MaelstromTrial => None,
+            Self::Identity
+            | Self::SimulatorExecution
+            | Self::TlaExecution
+            | Self::MaelstromTrial => None,
         }
     }
 }
@@ -110,10 +116,14 @@ pub(super) fn layer_budget(
     if !matches!(layer, "tests" | "simulator" | "tla" | "maelstrom") {
         return Err(format!("unsupported producer layer {layer}").into());
     }
-    if layer == "tla" {
-        return Ok(None);
-    }
-    let total = configured_duration(runner, "layer_timeout")?;
+    let total = configured_duration(
+        runner,
+        if layer == "tla" {
+            "total_timeout"
+        } else {
+            "layer_timeout"
+        },
+    )?;
     let finalization_reserve = configured_duration(runner, "finalization_reserve")?;
     let execution_window = total
         .checked_sub(finalization_reserve)
@@ -126,16 +136,106 @@ pub(super) fn layer_budget(
             .map(|value| parse_contract_duration(name, value))
             .transpose()
     };
+    let started = Instant::now();
     Ok(Some(ActiveLayerBudget {
         profile: profile.to_owned(),
         layer: layer.to_owned(),
-        finalization_deadline: Instant::now() + execution_window,
+        finalization_deadline: started
+            .checked_add(execution_window)
+            .ok_or("producer execution deadline overflow")?,
+        total_deadline: started
+            .checked_add(total)
+            .ok_or("producer total deadline overflow")?,
         finalization_reserve,
         compile_timeout: optional("compile_timeout")?,
         discovery_timeout: optional("discovery_timeout")?,
         execution_timeout: optional("execution_timeout")?,
         policy: process_policy(runner)?,
     }))
+}
+
+pub(in crate::producer) fn active_layer_deadlines(
+    profile: &str,
+    layer: &str,
+) -> Result<(Instant, Instant), Box<dyn Error>> {
+    ACTIVE_LAYER_BUDGET.with(|active| {
+        let active = active.borrow();
+        let budget = active
+            .as_ref()
+            .ok_or("invariant producer has no active layer budget")?;
+        if budget.profile != profile || budget.layer != layer {
+            return Err(format!(
+                "active invariant producer budget is {}/{}, expected {profile}/{layer}",
+                budget.profile, budget.layer
+            )
+            .into());
+        }
+        Ok((budget.finalization_deadline, budget.total_deadline))
+    })
+}
+
+pub(in crate::producer) fn ensure_execution_deadline(
+    profile: &str,
+    layer: &str,
+    operation: &str,
+) -> Result<(), Box<dyn Error>> {
+    ACTIVE_LAYER_BUDGET.with(|active| {
+        let active = active.borrow();
+        let budget = active
+            .as_ref()
+            .ok_or("invariant producer has no active layer budget")?;
+        if budget.profile != profile || budget.layer != layer {
+            return Err(format!(
+                "active invariant producer budget is {}/{}, expected {profile}/{layer}",
+                budget.profile, budget.layer
+            )
+            .into());
+        }
+        if Instant::now() >= budget.finalization_deadline {
+            return Err(format!(
+                "invariant profile {profile} layer {layer} exhausted its execution budget before {operation}"
+            )
+            .into());
+        }
+        Ok(())
+    })
+}
+
+pub(in crate::producer) fn ensure_total_deadline(
+    profile: &str,
+    layer: &str,
+    operation: &str,
+    require_receipt_allowance: bool,
+) -> Result<(), Box<dyn Error>> {
+    ACTIVE_LAYER_BUDGET.with(|active| {
+        let active = active.borrow();
+        let budget = active
+            .as_ref()
+            .ok_or("invariant producer has no active layer budget")?;
+        if budget.profile != profile || budget.layer != layer {
+            return Err(format!(
+                "active invariant producer budget is {}/{}, expected {profile}/{layer}",
+                budget.profile, budget.layer
+            )
+            .into());
+        }
+        let remaining = budget
+            .total_deadline
+            .checked_duration_since(Instant::now())
+            .unwrap_or(Duration::ZERO);
+        let required = if require_receipt_allowance {
+            budget.policy.receipt_finalization_allowance
+        } else {
+            Duration::ZERO
+        };
+        if remaining <= required {
+            return Err(format!(
+                "invariant profile {profile} layer {layer} exhausted its total budget before {operation}"
+            )
+            .into());
+        }
+        Ok(())
+    })
 }
 
 fn process_policy(runner: &RunnerContract) -> Result<ProcessPolicy, Box<dyn Error>> {
@@ -202,13 +302,36 @@ pub(super) fn active_process_timeout(
     kind: ProcessKind,
     requested_cap: Option<Duration>,
 ) -> Result<(Duration, ProcessPolicy), Box<dyn Error>> {
+    active_process_timeout_for(kind, requested_cap, false)
+}
+
+pub(super) fn active_total_process_timeout(
+    kind: ProcessKind,
+    requested_cap: Option<Duration>,
+) -> Result<(Duration, ProcessPolicy), Box<dyn Error>> {
+    active_process_timeout_for(kind, requested_cap, true)
+}
+
+pub(super) fn has_active_layer_budget() -> bool {
+    ACTIVE_LAYER_BUDGET.with(|active| active.borrow().is_some())
+}
+
+fn active_process_timeout_for(
+    kind: ProcessKind,
+    requested_cap: Option<Duration>,
+    use_total_deadline: bool,
+) -> Result<(Duration, ProcessPolicy), Box<dyn Error>> {
     ACTIVE_LAYER_BUDGET.with(|active| {
         let active = active.borrow();
         let budget = active.as_ref().ok_or_else(|| {
             "bounded producer subprocess invoked outside an active layer budget".to_owned()
         })?;
-        let remaining = budget
-            .finalization_deadline
+        let deadline = if use_total_deadline {
+            budget.total_deadline
+        } else {
+            budget.finalization_deadline
+        };
+        let remaining = deadline
             .checked_duration_since(Instant::now())
             .unwrap_or(Duration::ZERO);
         let cleanup_allowance = budget
@@ -216,12 +339,23 @@ pub(super) fn active_process_timeout(
             .termination_grace
             .saturating_add(budget.policy.kill_confirmation_timeout)
             .saturating_add(budget.policy.receipt_finalization_allowance);
+        let deadline_scope = if use_total_deadline {
+            "total"
+        } else {
+            "execution"
+        };
+        let preserved_allowance = if use_total_deadline {
+            "subprocess termination and receipt cleanup allowance".to_owned()
+        } else {
+            format!(
+                "{}ms layer finalization reserve plus subprocess termination and receipt cleanup allowance",
+                duration_ms(budget.finalization_reserve)
+            )
+        };
         let available = remaining.checked_sub(cleanup_allowance).ok_or_else(|| {
             format!(
-                "invariant profile {} layer {} exhausted its subprocess window before {kind:?}; preserving {}ms finalization reserve",
-                budget.profile,
-                budget.layer,
-                duration_ms(budget.finalization_reserve)
+                "invariant profile {} layer {} exhausted its {deadline_scope} subprocess window before {kind:?}; preserving {preserved_allowance}",
+                budget.profile, budget.layer
             )
         })?;
         let timeout = [kind.timeout_cap(budget), requested_cap]
@@ -230,10 +364,8 @@ pub(super) fn active_process_timeout(
             .fold(available, std::cmp::min);
         if timeout.is_zero() {
             return Err(format!(
-                "invariant profile {} layer {} has no execution time left for {kind:?}; preserving {}ms finalization reserve",
-                budget.profile,
-                budget.layer,
-                duration_ms(budget.finalization_reserve)
+                "invariant profile {} layer {} has no {deadline_scope} time left for {kind:?}; preserving {preserved_allowance}",
+                budget.profile, budget.layer
             ));
         }
         Ok((timeout, budget.policy))
