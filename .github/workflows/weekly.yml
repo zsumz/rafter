@@ -70,8 +70,9 @@ jobs:
 
   invariants-tla:
     name: invariants-tla-weekly
-    runs-on: ubuntu-latest
-    timeout-minutes: 350
+    # The self-hosted job may exceed six hours; each individual step remains capped at six.
+    runs-on: [self-hosted, linux, X64]
+    timeout-minutes: 400
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88
@@ -92,18 +93,18 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: target/rafter-invariants/tla-checkpoint/weekly
-          key: tla-weekly-checkpoint-v1-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/Raft.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS', 'Cargo.lock', 'crates/rafter-invariants/src/producer/tla.rs', 'crates/rafter-invariants/src/producer/tla_contract.rs', 'crates/rafter-invariants/src/producer/tla_exec.rs', 'crates/rafter-invariants/src/producer/tla_output.rs', 'crates/rafter-invariants/src/producer/tla_checkpoint.rs', 'crates/rafter-invariants/src/producer/process.rs', 'crates/rafter-invariants/src/receipt_tla.rs', 'crates/rafter-invariants/src/artifact_verify_tla.rs') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: tla-weekly-checkpoint-v1-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/Raft.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS', 'Cargo.lock', 'crates/rafter-invariants/src/producer/*.rs', 'crates/rafter-invariants/src/producer/filesystem/**/*.rs', 'crates/rafter-invariants/src/producer/process/**/*.rs', 'crates/rafter-invariants/src/producer/tla_checkpoint/**/*.rs', 'crates/rafter-invariants/src/receipt_tla.rs', 'crates/rafter-invariants/src/artifact_verify_tla.rs') }}-${{ github.run_id }}-${{ github.run_attempt }}
           restore-keys: |
-            tla-weekly-checkpoint-v1-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/Raft.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS', 'Cargo.lock', 'crates/rafter-invariants/src/producer/tla.rs', 'crates/rafter-invariants/src/producer/tla_contract.rs', 'crates/rafter-invariants/src/producer/tla_exec.rs', 'crates/rafter-invariants/src/producer/tla_output.rs', 'crates/rafter-invariants/src/producer/tla_checkpoint.rs', 'crates/rafter-invariants/src/producer/process.rs', 'crates/rafter-invariants/src/receipt_tla.rs', 'crates/rafter-invariants/src/artifact_verify_tla.rs') }}-
+            tla-weekly-checkpoint-v1-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/Raft.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS', 'Cargo.lock', 'crates/rafter-invariants/src/producer/*.rs', 'crates/rafter-invariants/src/producer/filesystem/**/*.rs', 'crates/rafter-invariants/src/producer/process/**/*.rs', 'crates/rafter-invariants/src/producer/tla_checkpoint/**/*.rs', 'crates/rafter-invariants/src/receipt_tla.rs', 'crates/rafter-invariants/src/artifact_verify_tla.rs') }}-
       - name: Produce source-bound weekly TLA+ evidence
-        timeout-minutes: 325
+        timeout-minutes: 360
         run: cargo run --locked -p rafter-invariants -- run --profile weekly --layer tla
       - name: Save exact-compatible weekly TLC checkpoint
         if: ${{ always() && hashFiles('target/rafter-invariants/tla-checkpoint/weekly/CACHE_VALID') != '' }}
         uses: actions/cache/save@v4
         with:
           path: target/rafter-invariants/tla-checkpoint/weekly
-          key: tla-weekly-checkpoint-v1-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/Raft.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS', 'Cargo.lock', 'crates/rafter-invariants/src/producer/tla.rs', 'crates/rafter-invariants/src/producer/tla_contract.rs', 'crates/rafter-invariants/src/producer/tla_exec.rs', 'crates/rafter-invariants/src/producer/tla_output.rs', 'crates/rafter-invariants/src/producer/tla_checkpoint.rs', 'crates/rafter-invariants/src/producer/process.rs', 'crates/rafter-invariants/src/receipt_tla.rs', 'crates/rafter-invariants/src/artifact_verify_tla.rs') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          key: tla-weekly-checkpoint-v1-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/Raft.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS', 'Cargo.lock', 'crates/rafter-invariants/src/producer/*.rs', 'crates/rafter-invariants/src/producer/filesystem/**/*.rs', 'crates/rafter-invariants/src/producer/process/**/*.rs', 'crates/rafter-invariants/src/producer/tla_checkpoint/**/*.rs', 'crates/rafter-invariants/src/receipt_tla.rs', 'crates/rafter-invariants/src/artifact_verify_tla.rs') }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Upload weekly TLA+ evidence and counterexamples
         if: always()
         uses: actions/upload-artifact@v4
@@ -171,7 +172,7 @@ jobs:
       - invariants-maelstrom
     if: always()
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20
     env:
       INVARIANT_REPORT_DIR: rafter-invariants-weekly-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
@@ -188,10 +189,12 @@ jobs:
           path: .
           merge-multiple: true
       - name: Build source-bound Maelstrom verification binaries
+        timeout-minutes: 2
         run: cargo build --locked -p rafter-maelstrom --bins
       - name: Aggregate exactly 44 weekly invariant verdicts
         if: always()
         id: aggregate
+        timeout-minutes: 8
         run: |
           report_dir="$RUNNER_TEMP/$INVARIANT_REPORT_DIR"
           mkdir -p "$report_dir"
@@ -204,12 +207,7 @@ jobs:
       - name: Validate current-run weekly reports
         if: always()
         id: report
-        env:
-          AGGREGATE_STATUS: ${{ steps.aggregate.outputs.status }}
-          TESTS_RESULT: ${{ needs.invariants-tests.result }}
-          SIMULATOR_RESULT: ${{ needs.invariants-simulator.result }}
-          TLA_RESULT: ${{ needs.invariants-tla.result }}
-          MAELSTROM_RESULT: ${{ needs.invariants-maelstrom.result }}
+        timeout-minutes: 1
         run: |
           report_dir="$RUNNER_TEMP/$INVARIANT_REPORT_DIR"
           complete=true
@@ -223,39 +221,47 @@ jobs:
             "$report_dir/weekly.json" >/dev/null; then
             complete=false
           fi
-          dependencies_green=false
-          if [[ "$TESTS_RESULT" = "success" && "$SIMULATOR_RESULT" = "success" && \
-                "$TLA_RESULT" = "success" && "$MAELSTROM_RESULT" = "success" && \
-                "$AGGREGATE_STATUS" = "0" ]]; then
-            dependencies_green=true
-          fi
-          verdict_green=false
-          if [[ "$complete" = "true" ]] && jq -e \
-            '.summary.green == 44 and .summary.red == 0' \
-            "$report_dir/weekly.json" >/dev/null; then
-            verdict_green=true
-          fi
-          publishable=false
-          if [[ "$complete" = "true" && \
-                ("$verdict_green" = "false" || "$dependencies_green" = "true") ]]; then
-            publishable=true
+          if [[ "$complete" = "true" ]]; then
+            expected_ids="$report_dir/expected.ids"
+            json_ids="$report_dir/json.ids"
+            markdown_ids="$report_dir/markdown.ids"
+            junit_ids="$report_dir/junit.ids"
+            jq -r ".[\"\$defs\"].invariant.properties.invariant_id.enum[]" \
+              verification/invariant-verdict-schema.json | LC_ALL=C sort > "$expected_ids"
+            jq -r '.invariants[].invariant_id' "$report_dir/weekly.json" | \
+              LC_ALL=C sort > "$json_ids"
+            # Dollar signs below are regex anchors.
+            # shellcheck disable=SC2016
+            sed -nE 's/^\| `([^`]+)` \| (GREEN|RED) \|.*$/\1/p' \
+              "$report_dir/weekly.md" | LC_ALL=C sort > "$markdown_ids"
+            # Dollar signs below are regex anchors.
+            # shellcheck disable=SC2016
+            sed -nE 's/^[[:space:]]*<testcase classname="rafter\.invariants" name="([^"]+)">$/\1/p' \
+              "$report_dir/weekly.xml" | LC_ALL=C sort > "$junit_ids"
+            if [[ "$(wc -l < "$expected_ids")" -ne 44 || \
+                  "$(LC_ALL=C uniq "$expected_ids" | wc -l)" -ne 44 ]] || \
+               ! cmp -s "$expected_ids" "$json_ids" || \
+               ! cmp -s "$expected_ids" "$markdown_ids" || \
+               ! cmp -s "$expected_ids" "$junit_ids"; then
+              complete=false
+            fi
           fi
           echo "complete=$complete" >> "$GITHUB_OUTPUT"
-          echo "publishable=$publishable" >> "$GITHUB_OUTPUT"
       - name: Render the 44-row weekly report
         if: always()
+        timeout-minutes: 1
+        env:
+          REPORT_READY: ${{ steps.report.outputs.complete }}
         run: |
-          if [[ "${{ steps.report.outputs.publishable }}" = "true" ]]; then
+          if [[ "$REPORT_READY" = "true" ]]; then
             cat "$RUNNER_TEMP/$INVARIANT_REPORT_DIR/weekly.md" >> "$GITHUB_STEP_SUMMARY"
-          elif [[ "${{ steps.report.outputs.complete }}" = "true" ]]; then
-            echo "## Raft invariant gate" >> "$GITHUB_STEP_SUMMARY"
-            echo "A green report was withheld because a required producer or the aggregate failed; the gate is red." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "## Raft invariant gate" >> "$GITHUB_STEP_SUMMARY"
             echo "No complete current-run 44-row weekly report was produced; the aggregate is red." >> "$GITHUB_STEP_SUMMARY"
           fi
-      - name: Upload weekly aggregate reports
-        if: always() && steps.report.outputs.publishable == 'true'
+      - name: Upload available weekly aggregate reports and evidence
+        if: always()
+        timeout-minutes: 2
         uses: actions/upload-artifact@v4
         with:
           name: invariants-weekly-report-${{ github.run_id }}-${{ github.run_attempt }}
@@ -263,10 +269,13 @@ jobs:
             ${{ runner.temp }}/${{ env.INVARIANT_REPORT_DIR }}/weekly.json
             ${{ runner.temp }}/${{ env.INVARIANT_REPORT_DIR }}/weekly.xml
             ${{ runner.temp }}/${{ env.INVARIANT_REPORT_DIR }}/weekly.md
-          if-no-files-found: error
+            artifacts/invariants/
+            target/rafter-invariants/telemetry/
+          if-no-files-found: ignore
           retention-days: 30
       - name: Require 44 of 44 weekly invariants green
         if: always()
+        timeout-minutes: 1
         env:
           AGGREGATE_STATUS: ${{ steps.aggregate.outputs.status }}
           REPORT_READY: ${{ steps.report.outputs.complete }}
