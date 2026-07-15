@@ -12,7 +12,7 @@ use tla_output::{
     detector_config_kind, detector_invariant, detector_label, detector_log_kind,
     detector_observation, probe_slug, render_detector_config, DetectorProbe, DETECTOR_PROBES,
     MEMBERSHIP_TRACE_MIN_DEPTH, MEMBERSHIP_TRACE_MIN_DISTINCT_STATES, MUTATION_SUITE_ARTIFACT_KIND,
-    MUTATION_SUITE_LABEL, REGISTERED_PREDICATES, REQUIRED_MUTATION_TESTS,
+    MUTATION_SUITE_LABEL, REGISTERED_PREDICATES,
 };
 
 const TRACE_CONFIG: &str = "RaftMembershipTraceSample.cfg";
@@ -408,7 +408,11 @@ fn run_detector_probes(
         aggregate.duration_ms = aggregate
             .duration_ms
             .saturating_add(process::duration_ms(mutation.output.duration));
-        aggregate.succeeded &= mutation_suite_passed(&mutation.output);
+        aggregate.succeeded &= tla_output::mutation_suite_passed(
+            mutation.output.status.code(),
+            mutation.output.timed_out,
+            &String::from_utf8_lossy(&mutation.output.stdout),
+        );
         aggregate.artifacts.push(mutation.artifact);
     }
     Ok(aggregate)
@@ -448,25 +452,6 @@ fn run_mutation_suite(
         &process::tla_json_log(MUTATION_SUITE_LABEL, &output)?,
     )?;
     Ok(TlcRun { output, artifact })
-}
-
-fn mutation_suite_passed(output: &process::ProcessOutput) -> bool {
-    if !output.status.success() || output.timed_out {
-        return false;
-    }
-    let source = String::from_utf8_lossy(&output.stdout);
-    source.lines().any(|line| line.trim() == "running 32 tests")
-        && source.lines().any(|line| {
-            line.contains("test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured;")
-        })
-        && REQUIRED_MUTATION_TESTS.iter().all(|name| {
-            let expected = format!("test producer::tla_exec::mutation_tests::{name} ... ok");
-            source
-                .lines()
-                .filter(|line| line.trim() == expected)
-                .count()
-                == 1
-        })
 }
 
 fn run_detector_probe(

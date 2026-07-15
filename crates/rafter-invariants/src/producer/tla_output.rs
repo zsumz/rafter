@@ -35,10 +35,11 @@ pub(crate) const MEMBERSHIP_TRACE_MIN_DISTINCT_STATES: u64 = 46;
 pub(crate) const MEMBERSHIP_TRACE_MIN_DEPTH: u64 = 46;
 pub(crate) const MUTATION_SUITE_ARTIFACT_KIND: &str = "tla-mutation-log";
 pub(crate) const MUTATION_SUITE_LABEL: &str = "detector-mutation-suite";
-pub(crate) const REQUIRED_MUTATION_TESTS: [&str; 32] = [
+pub(crate) const REQUIRED_MUTATION_TESTS: [&str; 34] = [
     "application_epoch_loss_replays_identically_without_erasing_history",
     "applied_membership_quorum_mutation_breaks_joint_regression",
     "closed_term_election_history_is_retired_after_every_node_advances",
+    "closed_term_prefix_history_retires_without_erasing_conflicts",
     "corrupted_snapshot_install_breaks_lifecycle_identity",
     "corrupted_snapshot_restored_state_breaks_empty_epoch_lifecycle",
     "delayed_append_uses_frozen_sender_authority_after_self_removal",
@@ -59,6 +60,7 @@ pub(crate) const REQUIRED_MUTATION_TESTS: [&str; 32] = [
     "non_violating_fixture_cannot_qualify",
     "recorder_only_fixtures_qualify_before_mutation",
     "removed_candidate_vote_requires_membership_and_freshness_guards",
+    "sanitized_application_result_cannot_qualify_detector_fixture",
     "self_removing_leader_commits_final_configuration_and_steps_down",
     "shorter_authoritative_log_repairs_an_uncommitted_suffix",
     "snapshot_compaction_pending_tracks_create_and_compact_transitions",
@@ -69,6 +71,26 @@ pub(crate) const REQUIRED_MUTATION_TESTS: [&str; 32] = [
     "unvalidated_commit_certificate_cannot_qualify_quorum_predicate",
     "unvalidated_read_grant_cannot_qualify_read_barrier_predicate",
 ];
+
+pub(crate) fn mutation_suite_passed(exit_code: Option<i32>, timed_out: bool, stdout: &str) -> bool {
+    if exit_code != Some(0) || timed_out {
+        return false;
+    }
+    let expected_count = REQUIRED_MUTATION_TESTS.len();
+    let running = format!("running {expected_count} tests");
+    let result =
+        format!("test result: ok. {expected_count} passed; 0 failed; 0 ignored; 0 measured;");
+    stdout.lines().any(|line| line.trim() == running)
+        && stdout.lines().any(|line| line.contains(&result))
+        && REQUIRED_MUTATION_TESTS.iter().all(|name| {
+            let expected = format!("test producer::tla_exec::mutation_tests::{name} ... ok");
+            stdout
+                .lines()
+                .filter(|line| line.trim() == expected)
+                .count()
+                == 1
+        })
+}
 
 pub(crate) const DEFAULT_FIXTURE_MODE: &str = "Default";
 

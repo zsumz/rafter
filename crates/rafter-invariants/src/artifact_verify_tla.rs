@@ -3,10 +3,10 @@ use std::{collections::BTreeMap, fs, path::Path};
 use crate::producer::tla_checkpoint::{RecoveryReport, RecoveryStatus};
 use crate::producer::tla_output::{
     detector_config_kind, detector_invariant, detector_label, detector_log_kind,
-    detector_observation, parse_latest_progress, probe_slug, render_detector_config,
-    DETECTOR_PROBES, MEMBERSHIP_TRACE_MIN_DEPTH, MEMBERSHIP_TRACE_MIN_DISTINCT_STATES,
-    MUTATION_SUITE_ARTIFACT_KIND, MUTATION_SUITE_LABEL, REQUIRED_MODEL_TRANSITIONS,
-    REQUIRED_MUTATION_TESTS,
+    detector_observation, mutation_suite_passed, parse_latest_progress, probe_slug,
+    render_detector_config, DETECTOR_PROBES, MEMBERSHIP_TRACE_MIN_DEPTH,
+    MEMBERSHIP_TRACE_MIN_DISTINCT_STATES, MUTATION_SUITE_ARTIFACT_KIND, MUTATION_SUITE_LABEL,
+    REQUIRED_MODEL_TRANSITIONS,
 };
 use crate::{aggregate::AggregateError, CheckCompletion, EvidenceStatus, ResultBundle};
 
@@ -223,7 +223,8 @@ fn verify_detectors(
             root,
         )?;
         verify_mutation_invocation(bundle, &mutation, root)?;
-        all_passed &= mutation_suite_passed(&mutation);
+        all_passed &=
+            mutation_suite_passed(mutation.exit_code, mutation.timed_out, &mutation.stdout);
     } else {
         all_passed = false;
     }
@@ -261,26 +262,6 @@ fn verify_mutation_invocation(
         ));
     }
     Ok(())
-}
-
-fn mutation_suite_passed(log: &crate::producer::ProcessLog) -> bool {
-    if log.exit_code != Some(0) || log.timed_out {
-        return false;
-    }
-    log.stdout
-        .lines()
-        .any(|line| line.trim() == "running 32 tests")
-        && log.stdout.lines().any(|line| {
-            line.contains("test result: ok. 32 passed; 0 failed; 0 ignored; 0 measured;")
-        })
-        && REQUIRED_MUTATION_TESTS.iter().all(|name| {
-            let expected = format!("test producer::tla_exec::mutation_tests::{name} ... ok");
-            log.stdout
-                .lines()
-                .filter(|line| line.trim() == expected)
-                .count()
-                == 1
-        })
 }
 
 fn verify_source_binding(

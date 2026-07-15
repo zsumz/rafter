@@ -58,8 +58,11 @@ BaseVote == [n \in Nodes |-> NoVote]
 BaseRole == [n \in Nodes |-> Follower]
 BaseLog == [n \in Nodes |-> <<>>]
 BaseCommit == [n \in Nodes |-> 0]
-BaseApplied == [n \in Nodes |->
-  <<AppliedEpoch(0, InitialApplicationState, <<>>)>>]
+BaseApplied ==
+  [n \in Nodes |-> AppliedCursor(0, 0, InitialApplicationState)]
+BaseApplicationBases ==
+  {ApplicationBase(n, 0, InitialApplicationState) : n \in Nodes}
+BaseApplicationTransitions == {}
 BaseSnapshotIndex == [n \in Nodes |-> 0]
 BaseSnapshotPrefix == [n \in Nodes |-> <<>>]
 BaseCompactionPending == [n \in Nodes |-> FALSE]
@@ -201,6 +204,8 @@ FixtureInit ==
   /\ compactionPending = InitialCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = BaseApplied
+  /\ applicationBases = BaseApplicationBases
+  /\ applicationTransitions = BaseApplicationTransitions
   /\ messages = {}
   /\ readRequests = InitialReadRequests
   /\ readBarrierViolationSeen = FALSE
@@ -277,8 +282,8 @@ FaultyStaleAuthorityOnly ==
   /\ UNCHANGED historyVars
 
 ApplicationFirstApply ==
-  /\ Len(ApplicationObservations(FixtureA)) = 0
-  /\ Len(ApplicationObservations(FixtureB)) = 0
+  /\ ApplicationObservationWitnesses(FixtureA) = {}
+  /\ ApplicationObservationWitnesses(FixtureB) = {}
   /\ Apply(FixtureA)
 
 FaultyApplicationResult ==
@@ -286,8 +291,8 @@ FaultyApplicationResult ==
       corruptedResult ==
         [referenceState |-> <<>>, membership |-> CorruptedApplicationConfig]
   IN
-    /\ Len(ApplicationObservations(FixtureA)) = 1
-    /\ Len(ApplicationObservations(FixtureB)) = 0
+    /\ Cardinality(ApplicationObservationWitnesses(FixtureA)) = 1
+    /\ ApplicationObservationWitnesses(FixtureB) = {}
     /\ RecordApplication(FixtureB, entry, corruptedResult)
     /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                     messages, readRequests, readBarrierViolationSeen,
@@ -323,7 +328,7 @@ FaultyApplicationEpochReplay ==
 FaultyLogMatchingRecorder ==
   /\ logicalPrefixLedger = {}
   /\ RecordLogicalPrefixes(
-       DivergentLogs, BaseSnapshotIndex, BaseSnapshotPrefix)
+       DivergentLogs, BaseSnapshotIndex, BaseSnapshotPrefix, currentTerm)
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                   messages, readRequests, readBarrierViolationSeen,
                   electedLeaders,
@@ -334,7 +339,8 @@ FaultyLogMatchingRecorder ==
 
 ObserveSnapshotSource ==
   /\ logicalPrefixLedger = {}
-  /\ RecordLogicalPrefixes(log, snapshotIndex, snapshotPrefix)
+  /\ RecordLogicalPrefixes(
+       log, snapshotIndex, snapshotPrefix, currentTerm)
   /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
                   messages, readRequests, readBarrierViolationSeen,
                   electedLeaders,
@@ -975,6 +981,8 @@ BaseExtendedState ==
   /\ compactionPending = BaseCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = BaseApplied
+  /\ applicationBases = BaseApplicationBases
+  /\ applicationTransitions = BaseApplicationTransitions
   /\ logicalPrefixLedger = {}
   /\ committedLedger = {}
   /\ commitWitnesses = EmptyCommitWitnessHistory
@@ -1026,6 +1034,125 @@ ClosedElectionLifecycleComplete ==
   /\ electedLeaders[1] = {}
 
 ClosedElectionLifecycleCompletes == <>ClosedElectionLifecycleComplete
+
+ClosedLogicalPrefixWitness ==
+  [index |-> 1,
+   term |-> 1,
+   prefix |-> <<Entry(1, FixtureValueA)>>]
+
+ClosedLogicalPrefixLifecycleInit ==
+  /\ FixtureConstantsOK
+  /\ currentTerm = BaseTerm
+  /\ votedFor = BaseVote
+  /\ role = BaseRole
+  /\ log = BaseLog
+  /\ commitIndex = BaseCommit
+  /\ snapshotIndex = BaseSnapshotIndex
+  /\ snapshotPrefix = BaseSnapshotPrefix
+  /\ compactionPending = BaseCompactionPending
+  /\ snapshotTransfer = NoSnapshotTransfer
+  /\ applied = BaseApplied
+  /\ applicationBases = BaseApplicationBases
+  /\ applicationTransitions = BaseApplicationTransitions
+  /\ messages = {}
+  /\ readRequests = {}
+  /\ readBarrierViolationSeen = FALSE
+  /\ membership = StableMembership(Nodes)
+  /\ appliedConfigIndex = 0
+  /\ effectiveMembership = StableMembership(Nodes)
+  /\ effectiveConfigIndex = 0
+  /\ electedLeaders = [term \in 1..MaxTerm |-> {}]
+  /\ logicalPrefixLedger = {ClosedLogicalPrefixWitness}
+  /\ committedLedger = {}
+  /\ commitWitnesses = EmptyCommitWitnessHistory
+  /\ higherTermStepDownFailed = FALSE
+  /\ staleAuthorityAccepted = FALSE
+  /\ frozenAppendAuthorityFailed = FALSE
+
+ClosedLogicalPrefixLifecycleNext ==
+  \/ /\ currentTerm[FixtureA] = 1
+     /\ Timeout(FixtureA)
+  \/ /\ currentTerm[FixtureA] = 2
+     /\ currentTerm[FixtureB] = 1
+     /\ Timeout(FixtureB)
+  \/ /\ currentTerm[FixtureA] = 2
+     /\ currentTerm[FixtureB] = 2
+     /\ currentTerm[FixtureC] = 1
+     /\ Timeout(FixtureC)
+  \/ /\ \A n \in Nodes : currentTerm[n] = 2
+     /\ logicalPrefixLedger = {}
+     /\ UNCHANGED vars
+
+ClosedLogicalPrefixLifecycleSpec ==
+  /\ ClosedLogicalPrefixLifecycleInit
+  /\ [][ClosedLogicalPrefixLifecycleNext]_vars
+  /\ WF_vars(ClosedLogicalPrefixLifecycleNext)
+
+ClosedLogicalPrefixLifecycleInvariant ==
+  /\ TypeOK
+  /\ (TermClosed(currentTerm, 1) => logicalPrefixLedger = {})
+
+ClosedLogicalPrefixLifecycleComplete ==
+  /\ \A n \in Nodes : currentTerm[n] = 2
+  /\ logicalPrefixLedger = {}
+
+ClosedLogicalPrefixLifecycleCompletes ==
+  <>ClosedLogicalPrefixLifecycleComplete
+
+ClosedTermPrefixConflictInit ==
+  /\ FixtureConstantsOK
+  /\ currentTerm = [n \in Nodes |-> 2]
+  /\ votedFor = BaseVote
+  /\ role = BaseRole
+  /\ log = BaseLog
+  /\ commitIndex = BaseCommit
+  /\ snapshotIndex = BaseSnapshotIndex
+  /\ snapshotPrefix = BaseSnapshotPrefix
+  /\ compactionPending = BaseCompactionPending
+  /\ snapshotTransfer = NoSnapshotTransfer
+  /\ applied = BaseApplied
+  /\ applicationBases = BaseApplicationBases
+  /\ applicationTransitions = BaseApplicationTransitions
+  /\ messages = {}
+  /\ readRequests = {}
+  /\ readBarrierViolationSeen = FALSE
+  /\ membership = StableMembership(Nodes)
+  /\ appliedConfigIndex = 0
+  /\ effectiveMembership = StableMembership(Nodes)
+  /\ effectiveConfigIndex = 0
+  /\ electedLeaders = [term \in 1..MaxTerm |-> {}]
+  /\ logicalPrefixLedger = {}
+  /\ committedLedger = {}
+  /\ commitWitnesses = EmptyCommitWitnessHistory
+  /\ higherTermStepDownFailed = FALSE
+  /\ staleAuthorityAccepted = FALSE
+  /\ frozenAppendAuthorityFailed = FALSE
+
+RecordClosedTermPrefixConflict ==
+  /\ ~higherTermStepDownFailed
+  /\ RecordLogicalPrefixes(
+       DivergentLogs, BaseSnapshotIndex, BaseSnapshotPrefix, currentTerm)
+  /\ higherTermStepDownFailed' = TRUE
+  /\ UNCHANGED <<currentTerm, votedFor, role, log, commitIndex,
+                  messages, readRequests, readBarrierViolationSeen,
+                  electedLeaders, committedLedger, commitWitnesses>>
+  /\ UNCHANGED snapshotVars
+  /\ UNCHANGED applicationVars
+  /\ UNCHANGED <<staleAuthorityAccepted, frozenAppendAuthorityFailed>>
+
+ClosedTermPrefixConflictNext ==
+  \/ RecordClosedTermPrefixConflict
+  \/ /\ higherTermStepDownFailed
+     /\ UNCHANGED vars
+
+ClosedTermPrefixConflictSpec ==
+  /\ ClosedTermPrefixConflictInit
+  /\ [][ClosedTermPrefixConflictNext]_vars
+  /\ WF_vars(ClosedTermPrefixConflictNext)
+
+ClosedTermPrefixConflictInvariant == TypeOK /\ LogMatching
+
+ClosedTermPrefixConflictCompletes == <>higherTermStepDownFailed
 
 StaleMessageLifecycleInit ==
   /\ FixtureConstantsOK
@@ -1099,6 +1226,11 @@ SixEntryReplayInvariant ==
 SnapshotLifecycleResult ==
   ApplyEntry(InitialApplicationState, SnapshotLifecycleEntry)
 
+SnapshotLifecycleTransition ==
+  ApplicationTransition(
+    FixtureA, 1, InitialApplicationState,
+    SnapshotLifecycleEntry, SnapshotLifecycleResult)
+
 SnapshotLifecycleWitness ==
   [index |-> 1,
    entry |-> SnapshotLifecycleEntry,
@@ -1125,9 +1257,10 @@ SnapshotLifecycleInit ==
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = [n \in Nodes |->
        IF n = FixtureA
-       THEN <<AppliedEpoch(0, InitialApplicationState,
-         <<AppliedObservation(SnapshotLifecycleEntry, SnapshotLifecycleResult)>>)>>
-       ELSE <<AppliedEpoch(0, InitialApplicationState, <<>>)>>]
+       THEN AppliedCursor(0, 1, SnapshotLifecycleResult)
+       ELSE AppliedCursor(0, 0, InitialApplicationState)]
+  /\ applicationBases = BaseApplicationBases
+  /\ applicationTransitions = {SnapshotLifecycleTransition}
   /\ messages = {}
   /\ readRequests = {}
   /\ readBarrierViolationSeen = FALSE
@@ -1192,7 +1325,7 @@ SnapshotLifecycleComplete ==
   /\ ~compactionPending[FixtureA]
   /\ ~compactionPending[FixtureB]
   /\ ApplicationEpoch(FixtureB) = 1
-  /\ Len(ApplicationObservations(FixtureB)) = 0
+  /\ ApplicationObservationWitnesses(FixtureB) = {}
   /\ currentTerm[FixtureB] = 2
   /\ role[FixtureB] = Follower
 
@@ -1211,6 +1344,8 @@ ApplicationEpochLifecycleInit ==
   /\ compactionPending = BaseCompactionPending
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = BaseApplied
+  /\ applicationBases = BaseApplicationBases
+  /\ applicationTransitions = BaseApplicationTransitions
   /\ messages = {}
   /\ readRequests = {}
   /\ readBarrierViolationSeen = FALSE
@@ -1250,13 +1385,16 @@ ApplicationEpochLifecycleSpec ==
 ApplicationEpochLifecycleInvariant ==
   /\ StateMachineSafety
   /\ CommittedEntriesHaveQuorum
+  /\ (ApplicationEpoch(FixtureA) = 1 =>
+       Cardinality({transition \in applicationTransitions :
+         transition.node = FixtureA}) = 1)
 
 ApplicationEpochLifecycleComplete ==
   /\ ApplicationEpoch(FixtureA) = 1
   /\ AppliedThrough(FixtureA) = 1
-  /\ Len(applied[FixtureA]) = 2
-  /\ \A epochPosition \in 1..Len(applied[FixtureA]) :
-       Len(applied[FixtureA][epochPosition].observations) = 1
+  /\ Cardinality({transition \in applicationTransitions :
+       transition.node = FixtureA}) = 1
+  /\ Cardinality({base \in applicationBases : base.node = FixtureA}) = 1
 
 ApplicationEpochLifecycleCompletes == <>ApplicationEpochLifecycleComplete
 
@@ -1275,6 +1413,11 @@ SelfRemovalStableEntry ==
 
 SelfRemovalJointState ==
   ApplyEntry(InitialApplicationState, SelfRemovalJointEntry)
+
+SelfRemovalJointTransition ==
+  ApplicationTransition(
+    FixtureA, 1, InitialApplicationState,
+    SelfRemovalJointEntry, SelfRemovalJointState)
 
 SelfRemovalJointWitness ==
   [index |-> 1,
@@ -1302,9 +1445,10 @@ SelfRemovalCommitInit ==
   /\ snapshotTransfer = NoSnapshotTransfer
   /\ applied = [n \in Nodes |->
        IF n = FixtureA
-       THEN <<AppliedEpoch(0, InitialApplicationState,
-         <<AppliedObservation(SelfRemovalJointEntry, SelfRemovalJointState)>>)>>
-       ELSE <<AppliedEpoch(0, InitialApplicationState, <<>>)>>]
+       THEN AppliedCursor(0, 1, SelfRemovalJointState)
+       ELSE AppliedCursor(0, 0, InitialApplicationState)]
+  /\ applicationBases = BaseApplicationBases
+  /\ applicationTransitions = {SelfRemovalJointTransition}
   /\ messages = {}
   /\ readRequests = {}
   /\ readBarrierViolationSeen = FALSE
@@ -1506,7 +1650,8 @@ PrepareEffectiveOverwriteLeader ==
   /\ role' = [n \in Nodes |-> IF n = FixtureB THEN Leader ELSE Follower]
   /\ log' = [log EXCEPT ![FixtureB] = <<Entry(2, FixtureValueA)>>]
   /\ electedLeaders' = [electedLeaders EXCEPT ![2] = @ \cup {FixtureB}]
-  /\ RecordLogicalPrefixes(log', snapshotIndex, snapshotPrefix)
+  /\ RecordLogicalPrefixes(
+       log', snapshotIndex, snapshotPrefix, currentTerm')
   /\ UNCHANGED <<commitIndex, messages, readRequests,
                   readBarrierViolationSeen, committedLedger, commitWitnesses>>
   /\ UNCHANGED snapshotVars
