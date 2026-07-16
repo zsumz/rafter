@@ -6,8 +6,8 @@ use std::{
 };
 
 use syn::{
-    visit::Visit, ExprCall, ExprMethodCall, File, ImplItemFn, ItemConst, ItemFn, ItemMacro,
-    ItemMod, ItemStatic, ItemUse, Macro, UseTree,
+    visit::Visit, Expr, ExprCall, File, ImplItemFn, Item, ItemConst, ItemFn, ItemMacro, ItemMod,
+    ItemStatic, ItemUse, Lit, Macro, UseTree,
 };
 
 use super::{Clause, Entry, Evidence, COVERAGE_LAYERS, VALID_EVIDENCE_STRENGTHS};
@@ -116,6 +116,76 @@ pub(super) fn assert_evidence_is_machine_checkable(
     }
 
     assert_coverage_bindings(entries, clauses, evidence);
+    assert_pr_model_check_inventory_is_registered(workspace, evidence);
+}
+
+fn assert_pr_model_check_inventory_is_registered(workspace: &Path, evidence: &[Evidence]) {
+    let path = workspace.join("crates/rafter-sim/src/bin/rafter_model_check_fast/runner/checks.rs");
+    let source = fs::read_to_string(&path)
+        .unwrap_or_else(|error| panic!("read PR model-check runner {}: {error}", path.display()));
+    let file = syn::parse_file(&source)
+        .unwrap_or_else(|error| panic!("parse PR model-check runner {}: {error}", path.display()));
+    let function = file
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Fn(function) if function.sig.ident == "run_fast_profile" => Some(function),
+            _ => None,
+        })
+        .expect("PR model-check runner must define run_fast_profile");
+    let mut visitor = ModelCheckCallVisitor::default();
+    visitor.visit_item_fn(function);
+    assert!(
+        !visitor.checks.is_empty(),
+        "PR model-check inventory is empty"
+    );
+    assert_eq!(
+        visitor.calls,
+        visitor.checks.len(),
+        "every PR run_raft_check call must use a unique literal check ID",
+    );
+
+    let claimed = evidence
+        .iter()
+        .filter_map(|record| record.simulator.as_ref())
+        .flat_map(|identity| identity.checks.iter().map(String::as_str))
+        .collect::<BTreeSet<_>>();
+    let unclaimed = visitor
+        .checks
+        .iter()
+        .map(String::as_str)
+        .filter(|check| !claimed.contains(check))
+        .collect::<Vec<_>>();
+    assert!(
+        unclaimed.is_empty(),
+        "PR model-check runner emits check IDs absent from invariant evidence: {}",
+        unclaimed.join(", "),
+    );
+}
+
+#[derive(Default)]
+struct ModelCheckCallVisitor {
+    calls: usize,
+    checks: BTreeSet<String>,
+}
+
+impl<'ast> Visit<'ast> for ModelCheckCallVisitor {
+    fn visit_expr_call(&mut self, call: &'ast ExprCall) {
+        let is_model_check = matches!(
+            call.func.as_ref(),
+            Expr::Path(path)
+                if path.path.segments.last().is_some_and(|segment| segment.ident == "run_raft_check")
+        );
+        if is_model_check {
+            self.calls += 1;
+            if let Some(Expr::Lit(literal)) = call.args.first() {
+                if let Lit::Str(check) = &literal.lit {
+                    self.checks.insert(check.value());
+                }
+            }
+        }
+        syn::visit::visit_expr_call(self, call);
+    }
 }
 
 fn assert_registered_test_contract(workspace: &Path, record: &Evidence, path: &Path, source: &str) {
@@ -190,10 +260,15 @@ impl<'ast> Visit<'ast> for RegisteredTestVisitor<'_> {
             test_name.push(self.symbol.to_owned());
             self.declarations.push((
                 test_name.join("::"),
-                function
-                    .attrs
-                    .iter()
-                    .any(|attribute| attribute.path().is_ident("test")),
+                function.attrs.iter().any(|attribute| {
+                    attribute.path().is_ident("test")
+                        || attribute
+                            .path()
+                            .segments
+                            .iter()
+                            .map(|segment| segment.ident.to_string())
+                            .eq(["rafter_invariant_test", "detector_test"].map(str::to_owned))
+                }),
                 function
                     .attrs
                     .iter()
@@ -634,33 +709,35 @@ fn assert_simulator_detector_fixture(
         .negative_fixture_path
         .as_deref()
         .unwrap_or(record.path.as_str());
+    let detector_path = workspace.join(&record.path);
+    let detector_source = fs::read_to_string(&detector_path).unwrap_or_else(|error| {
+        panic!(
+            "read simulator detector source {}: {error}",
+            detector_path.display()
+        )
+    });
     let identity = record
         .simulator
         .as_ref()
         .and_then(|identity| identity.negative_test.as_ref())
         .expect("direct simulator fixture has executable identity");
-    let fixture_module = test_source_module_path(workspace, Path::new(fixture_path_text), identity)
-        .unwrap_or_else(|| {
-            panic!(
-                "{} simulator fixture source {fixture_path_text} is outside registered target",
-                record.id,
-            )
-        });
-    let detector_module = if source_declares_symbol(fixture_path, fixture_source, detector) {
-        fixture_module.clone()
-    } else {
-        rust_module_path(Path::new(&record.path))
-    };
-    assert!(
-        fixture_exercises_detector_from_module(
+    let source_contract = rafter_invariants::validate_detector_fixture_sources(
+        &rafter_invariants::DetectorFixtureSourceBinding {
             fixture_source,
-            negative_fixture,
+            detector_source: &detector_source,
+            source_root: workspace,
+            fixture_path,
+            detector_path: &detector_path,
+            test_identity: identity,
+            fixture: negative_fixture,
             detector,
-            &detector_module,
-            &fixture_module,
-        ),
-        "{} simulator direct negative fixture `{negative_fixture}` must exercise detector `{detector}` in {fixture_path_text}",
+        },
+    );
+    assert!(
+        source_contract.is_ok(),
+        "{} simulator fixture `{negative_fixture}` has no invocation-bound detector contract: {}",
         record.id,
+        source_contract.expect_err("failed source contract has an error"),
     );
     assert!(
         test_identity_matches_source(
@@ -709,84 +786,10 @@ fn assert_direct_simulator_fixture_policy(record: &Evidence) {
     );
 }
 
-fn fixture_exercises_detector(source: &str, fixture: &str, detector: &str) -> bool {
-    fixture_exercises_detector_from_module(source, fixture, detector, &[], &[])
-}
-
-fn fixture_exercises_detector_from_module(
-    source: &str,
-    fixture: &str,
-    detector: &str,
-    detector_module: &[String],
-    fixture_module: &[String],
-) -> bool {
-    let Ok(file) = syn::parse_file(source) else {
-        return false;
-    };
-    let imports = imported_paths(&file);
-    let detector_declared_locally = declared_symbols(&file).contains(detector);
-    let detector_imports = imports.explicit.get(detector);
-    if !detector_declared_locally
-        && (imports.aliases.contains(detector)
-            || detector_imports.is_some_and(|paths| {
-                paths
-                    .iter()
-                    .any(|path| !trusted_import_path(path, detector_module, fixture_module))
-            }))
-    {
-        return false;
-    }
-    let detector_unqualified_trusted = detector_declared_locally
-        || detector_imports.is_some_and(|paths| {
-            !paths.is_empty()
-                && paths
-                    .iter()
-                    .all(|path| trusted_import_path(path, detector_module, fixture_module))
-        })
-        || imports
-            .globs
-            .iter()
-            .any(|path| trusted_import_path(path, detector_module, fixture_module));
-    let functions = function_calls(
-        &file,
-        detector,
-        detector_unqualified_trusted,
-        detector_module,
-        fixture_module,
-    );
-    let mut pending = vec![fixture.to_owned()];
-    let mut visited = BTreeSet::new();
-    while let Some(function) = pending.pop() {
-        if !visited.insert(function.clone()) {
-            continue;
-        }
-        let Some(calls) = functions.get(&function) else {
-            continue;
-        };
-        if calls.contains(detector) {
-            return true;
-        }
-        pending.extend(
-            calls
-                .iter()
-                .filter(|call| {
-                    imports.explicit.get(*call).is_none_or(|paths| {
-                        paths
-                            .iter()
-                            .all(|path| trusted_import_path(path, detector_module, fixture_module))
-                    }) && functions.contains_key(*call)
-                })
-                .cloned(),
-        );
-    }
-    false
-}
-
 #[derive(Default)]
 struct ImportedPaths {
     explicit: BTreeMap<String, Vec<Vec<String>>>,
-    globs: Vec<Vec<String>>,
-    aliases: BTreeSet<String>,
+    local_rafter_invariant_test: bool,
 }
 
 fn imported_paths(file: &File) -> ImportedPaths {
@@ -816,6 +819,10 @@ fn collect_use_tree(tree: &UseTree, prefix: &mut Vec<String>, imports: &mut Impo
         UseTree::Name(name) => {
             let mut path = prefix.clone();
             path.push(name.ident.to_string());
+            if name.ident == "rafter_invariant_test" && path != ["rafter_invariant_test".to_owned()]
+            {
+                imports.local_rafter_invariant_test = true;
+            }
             imports
                 .explicit
                 .entry(name.ident.to_string())
@@ -830,78 +837,17 @@ fn collect_use_tree(tree: &UseTree, prefix: &mut Vec<String>, imports: &mut Impo
                 .entry(rename.rename.to_string())
                 .or_default()
                 .push(path);
-            imports.aliases.insert(rename.rename.to_string());
+            if rename.rename == "rafter_invariant_test" {
+                imports.local_rafter_invariant_test = true;
+            }
         }
-        UseTree::Glob(_) => imports.globs.push(prefix.clone()),
+        UseTree::Glob(_) => {}
         UseTree::Group(group) => {
             for item in &group.items {
                 collect_use_tree(item, prefix, imports);
             }
         }
     }
-}
-
-fn trusted_import_path(
-    path: &[String],
-    detector_module: &[String],
-    fixture_module: &[String],
-) -> bool {
-    if detector_module.is_empty() {
-        return path
-            .first()
-            .is_some_and(|segment| segment == "self" || segment == "super")
-            && path.len() <= 2;
-    }
-    let mut exact = vec!["crate".to_owned()];
-    exact.extend_from_slice(detector_module);
-    if path == exact || path.len() == exact.len() + 1 && path.starts_with(&exact) {
-        return true;
-    }
-    resolve_relative_module(path, fixture_module).is_some_and(|resolved| {
-        resolved == detector_module
-            || resolved.len() == detector_module.len() + 1 && resolved.starts_with(detector_module)
-    })
-}
-
-fn resolve_relative_module(path: &[String], fixture_module: &[String]) -> Option<Vec<String>> {
-    let first = path.first()?;
-    if first != "self" && first != "super" {
-        return None;
-    }
-    let mut resolved = fixture_module.to_vec();
-    let mut position = 0;
-    if first == "self" {
-        position = 1;
-    }
-    while path.get(position).is_some_and(|segment| segment == "super") {
-        resolved.pop()?;
-        position += 1;
-    }
-    resolved.extend_from_slice(&path[position..]);
-    Some(resolved)
-}
-
-fn rust_module_path(path: &Path) -> Vec<String> {
-    let components = path
-        .components()
-        .filter_map(|component| component.as_os_str().to_str().map(str::to_owned))
-        .collect::<Vec<_>>();
-    let Some(src) = components.iter().position(|component| component == "src") else {
-        return Vec::new();
-    };
-    let mut modules = components[src + 1..].to_vec();
-    let Some(last) = modules.last_mut() else {
-        return modules;
-    };
-    *last = Path::new(last)
-        .file_stem()
-        .and_then(std::ffi::OsStr::to_str)
-        .unwrap_or_default()
-        .to_owned();
-    if matches!(last.as_str(), "lib" | "mod") {
-        modules.pop();
-    }
-    modules
 }
 
 fn test_identity_matches_source(
@@ -946,11 +892,13 @@ fn test_identity_uses_typed_oracle(
     };
     if source.contains("RAFTER_INVARIANT_ORACLE_OBSERVED:")
         || source.contains("RAFTER_INVARIANT_ORACLE_VIOLATION:")
+        || source.contains("RAFTER_INVARIANT_DETECTOR_WITNESS:")
         || declares_local_oracle_macro(&file)
     {
         return false;
     }
     let trusted_macros = trusted_oracle_imports(&file);
+    let qualified_crate_trusted = !imported_paths(&file).local_rafter_invariant_test;
     let Some(module) = test_source_module_path(workspace, Path::new(fixture_path), identity) else {
         return false;
     };
@@ -960,6 +908,7 @@ fn test_identity_uses_typed_oracle(
         module,
         inline_modules: Vec::new(),
         trusted_macros,
+        qualified_crate_trusted,
         matches: 0,
     };
     visitor.visit_file(&file);
@@ -972,6 +921,7 @@ struct TypedOracleTestVisitor<'a> {
     module: Vec<String>,
     inline_modules: Vec<String>,
     trusted_macros: BTreeSet<String>,
+    qualified_crate_trusted: bool,
     matches: usize,
 }
 
@@ -980,6 +930,7 @@ impl Visit<'_> for TypedOracleTestVisitor<'_> {
         if function.sig.ident == self.symbol && self.current_test_name() == self.test_name {
             let mut oracle = OracleMacroVisitor {
                 trusted_macros: &self.trusted_macros,
+                qualified_crate_trusted: self.qualified_crate_trusted,
                 found: false,
                 untrusted: false,
             };
@@ -1031,6 +982,7 @@ impl TypedOracleTestVisitor<'_> {
 
 struct OracleMacroVisitor<'a> {
     trusted_macros: &'a BTreeSet<String>,
+    qualified_crate_trusted: bool,
     found: bool,
     untrusted: bool,
 }
@@ -1047,7 +999,8 @@ impl Visit<'_> for OracleMacroVisitor<'_> {
             return;
         };
         if is_oracle_macro(name) {
-            let qualified = segments.as_slice() == ["rafter_invariant_test", name.as_str()];
+            let qualified = self.qualified_crate_trusted
+                && segments.as_slice() == ["rafter_invariant_test", name.as_str()];
             let imported = segments.len() == 1 && self.trusted_macros.contains(name);
             self.found |= qualified || imported;
             self.untrusted |= !qualified && !imported;
@@ -1057,7 +1010,11 @@ impl Visit<'_> for OracleMacroVisitor<'_> {
 }
 
 fn trusted_oracle_imports(file: &File) -> BTreeSet<String> {
-    imported_paths(file)
+    let imports = imported_paths(file);
+    if imports.local_rafter_invariant_test {
+        return BTreeSet::new();
+    }
+    imports
         .explicit
         .into_iter()
         .filter_map(|(name, paths)| {
@@ -1097,6 +1054,7 @@ fn is_oracle_macro(name: &str) -> bool {
             | "oracle_assert_eq"
             | "oracle_assert_ne"
             | "oracle_expect_err"
+            | "oracle_invoke_recorder"
             | "oracle_violation"
             | "oracle_prop_assert"
             | "oracle_prop_assert_eq"
@@ -1159,124 +1117,6 @@ impl<'ast> Visit<'ast> for DeclarationVisitor {
         }
         syn::visit::visit_item_macro(self, item);
     }
-}
-
-fn function_calls(
-    file: &File,
-    detector: &str,
-    detector_unqualified_trusted: bool,
-    detector_module: &[String],
-    fixture_module: &[String],
-) -> BTreeMap<String, BTreeSet<String>> {
-    let mut visitor = FunctionVisitor {
-        functions: BTreeMap::new(),
-        detector: detector.to_owned(),
-        detector_unqualified_trusted,
-        detector_module: detector_module.to_owned(),
-        fixture_module: fixture_module.to_owned(),
-    };
-    visitor.visit_file(file);
-    visitor.functions
-}
-
-struct FunctionVisitor {
-    functions: BTreeMap<String, BTreeSet<String>>,
-    detector: String,
-    detector_unqualified_trusted: bool,
-    detector_module: Vec<String>,
-    fixture_module: Vec<String>,
-}
-
-impl<'ast> Visit<'ast> for FunctionVisitor {
-    fn visit_item_fn(&mut self, function: &'ast ItemFn) {
-        let mut calls = CallVisitor {
-            calls: BTreeSet::new(),
-            detector: self.detector.clone(),
-            detector_unqualified_trusted: self.detector_unqualified_trusted,
-            detector_module: self.detector_module.clone(),
-            fixture_module: self.fixture_module.clone(),
-        };
-        calls.visit_block(&function.block);
-        self.functions
-            .entry(function.sig.ident.to_string())
-            .or_default()
-            .extend(calls.calls);
-        syn::visit::visit_item_fn(self, function);
-    }
-
-    fn visit_impl_item_fn(&mut self, function: &'ast ImplItemFn) {
-        let mut calls = CallVisitor {
-            calls: BTreeSet::new(),
-            detector: self.detector.clone(),
-            detector_unqualified_trusted: self.detector_unqualified_trusted,
-            detector_module: self.detector_module.clone(),
-            fixture_module: self.fixture_module.clone(),
-        };
-        calls.visit_block(&function.block);
-        self.functions
-            .entry(function.sig.ident.to_string())
-            .or_default()
-            .extend(calls.calls);
-        syn::visit::visit_impl_item_fn(self, function);
-    }
-}
-
-struct CallVisitor {
-    calls: BTreeSet<String>,
-    detector: String,
-    detector_unqualified_trusted: bool,
-    detector_module: Vec<String>,
-    fixture_module: Vec<String>,
-}
-
-impl<'ast> Visit<'ast> for CallVisitor {
-    fn visit_expr_call(&mut self, call: &'ast ExprCall) {
-        if let syn::Expr::Path(path) = call.func.as_ref() {
-            if path.qself.is_none() {
-                let segments = &path.path.segments;
-                let path = segments
-                    .iter()
-                    .map(|segment| segment.ident.to_string())
-                    .collect::<Vec<_>>();
-                let called = path.last().map(String::as_str).unwrap_or_default();
-                let rooted_locally = if segments.len() == 1 {
-                    called != self.detector || self.detector_unqualified_trusted
-                } else {
-                    trusted_import_path(&path, &self.detector_module, &self.fixture_module)
-                };
-                if rooted_locally {
-                    if let Some(segment) = segments.last() {
-                        self.calls.insert(segment.ident.to_string());
-                    }
-                }
-            }
-        }
-        syn::visit::visit_expr_call(self, call);
-    }
-
-    fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
-        syn::visit::visit_expr_method_call(self, call);
-    }
-
-    fn visit_macro(&mut self, invocation: &'ast Macro) {
-        let is_typed_rejection = invocation
-            .path
-            .segments
-            .last()
-            .is_some_and(|segment| segment.ident == "oracle_expect_err");
-        if is_typed_rejection {
-            let tuple = format!("({})", invocation.tokens);
-            if let Ok(arguments) = syn::parse_str::<syn::ExprTuple>(&tuple) {
-                if let Some(result) = arguments.elems.first() {
-                    self.visit_expr(result);
-                }
-            }
-        }
-    }
-
-    fn visit_item_fn(&mut self, _function: &'ast ItemFn) {}
-
-    fn visit_impl_item_fn(&mut self, _function: &'ast ImplItemFn) {}
 }
 
 #[cfg(test)]
