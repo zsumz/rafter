@@ -3,6 +3,7 @@ use std::path::Path;
 use crate::{aggregate::AggregateError, ResultBundle};
 
 mod compile;
+mod detector_source;
 mod integrity;
 mod resource_metrics;
 mod simulator;
@@ -21,6 +22,12 @@ use simulator_schedule::validate_simulator_schedule;
 use test_logs::verify_test_logs;
 
 const EVENT_PREFIX: &str = "RAFTER_EVENT ";
+
+pub(crate) fn validate_detector_fixture_sources(
+    binding: &crate::DetectorFixtureSourceBinding<'_>,
+) -> Result<(), String> {
+    detector_source::verify_invocation_bound_detector(binding).map(|_| ())
+}
 
 pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<Vec<String>, AggregateError> {
     integrity::verify(bundle, root)?;
