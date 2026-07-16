@@ -740,6 +740,7 @@ struct TlcRequest<'a> {
 }
 
 fn run_tlc(request: TlcRequest<'_>) -> Result<TlcRun, Box<dyn Error>> {
+    #[cfg(not(target_os = "linux"))]
     require_sound_tlc_state_binding()?;
     let source_prefix = request.source_ref.get(..12).unwrap_or(request.source_ref);
     process::ensure_execution_deadline(
@@ -800,11 +801,6 @@ fn run_tlc(request: TlcRequest<'_>) -> Result<TlcRun, Box<dyn Error>> {
         &process::tla_json_log(request.label, &output)?,
     )?;
     Ok(TlcRun { output, artifact })
-}
-
-#[cfg(target_os = "linux")]
-fn require_sound_tlc_state_binding() -> Result<(), Box<dyn Error>> {
-    Ok(())
 }
 
 #[cfg(not(target_os = "linux"))]

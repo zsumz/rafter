@@ -16,6 +16,12 @@ use cap_std::{
     fs::{Dir, File, Metadata, OpenOptions},
 };
 
+mod sync;
+
+use sync::sync_directory;
+#[cfg(all(test, any(target_os = "android", target_os = "linux")))]
+pub(super) use sync::{complete_directory_sync, complete_filesystem_sync};
+
 #[cfg(unix)]
 use std::os::fd::{AsFd, AsRawFd, BorrowedFd, OwnedFd};
 
@@ -494,7 +500,7 @@ impl HeldDirectory {
             file.sync_all()?;
             drop(file);
             parent.dir.rename(&temporary, &parent.dir, &name)?;
-            parent.dir.try_clone()?.into_std_file().sync_all()?;
+            sync_directory(&parent.dir, &name)?;
             Ok(())
         })();
         let _ = parent.dir.remove_file_or_symlink(&temporary);
@@ -502,7 +508,17 @@ impl HeldDirectory {
     }
 
     pub(super) fn remove_file_if_exists(&self, path: &Path) -> Result<(), Box<dyn Error>> {
-        let (parent, name) = self.parent_and_name(path, false)?;
+        let (parent, name) = match self.parent_and_name(path, false) {
+            Ok(value) => value,
+            Err(error)
+                if error
+                    .downcast_ref::<io::Error>()
+                    .is_some_and(|error| error.kind() == io::ErrorKind::NotFound) =>
+            {
+                return Ok(());
+            }
+            Err(error) => return Err(error),
+        };
         match parent.dir.remove_file_or_symlink(&name) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),

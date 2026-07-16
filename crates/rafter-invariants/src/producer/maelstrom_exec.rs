@@ -102,8 +102,11 @@ pub(super) fn run_trial(
     let durable = state_dir.create_dir_all(Path::new("durable"))?;
     let script = fs::canonicalize(scenario.script())?;
     let script_handle = producer_fs::hold_file(&script)?;
+    let script_dir = script
+        .parent()
+        .ok_or("Maelstrom scenario script omitted its parent directory")?;
     let durable_path = durable.external_path();
-    let environment = trial_environment(configuration, &durable_path, scenario)?;
+    let environment = trial_environment(configuration, &durable_path, script_dir, scenario)?;
     let timeout = trial_process_timeout(configuration)?;
     state_dir.verify_path_binding()?;
     durable.verify_path_binding()?;
@@ -239,6 +242,7 @@ fn trial_process_timeout(
 fn trial_environment(
     configuration: &BTreeMap<String, String>,
     durable: &Path,
+    script_dir: &Path,
     scenario: Scenario,
 ) -> Result<BTreeMap<String, String>, String> {
     let mut environment = process::base_environment();
@@ -246,6 +250,10 @@ fn trial_environment(
         (
             "RAFTER_MAELSTROM_ROOT".to_owned(),
             durable.to_string_lossy().into_owned(),
+        ),
+        (
+            "RAFTER_MAELSTROM_SCRIPT_DIR".to_owned(),
+            script_dir.to_string_lossy().into_owned(),
         ),
         (
             "RAFTER_MAELSTROM_TIME_LIMIT".to_owned(),

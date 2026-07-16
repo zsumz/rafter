@@ -21,6 +21,88 @@ fn limits_with(nodes: usize, depth: usize) -> TreeLimits {
 }
 
 #[test]
+fn remove_file_if_exists_accepts_a_missing_parent_without_creating_it() {
+    let root = test_path("remove-missing-parent");
+    let _ = fs::remove_dir_all(&root);
+
+    HeldDirectory::workspace()
+        .expect("open workspace")
+        .remove_file_if_exists(&root.join("missing/result.json"))
+        .expect("a file below a missing parent is already absent");
+
+    assert!(!root.exists(), "absence check must not create parents");
+}
+
+#[test]
+fn nested_atomic_publication_syncs_the_real_directory_descriptor() {
+    let root = test_path("atomic-directory-sync");
+    let artifact = root.join("nested/result.json");
+    let _ = fs::remove_dir_all(&root);
+
+    HeldDirectory::workspace()
+        .expect("open workspace")
+        .write_atomic(&artifact, br#"{"green":44}"#)
+        .expect("publish and sync nested artifact");
+
+    assert_eq!(
+        fs::read(&artifact).expect("read published artifact"),
+        br#"{"green":44}"#
+    );
+    fs::remove_dir_all(root).expect("remove atomic publication fixture");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn unsupported_directory_fsync_uses_and_propagates_filesystem_sync() {
+    use std::cell::Cell;
+
+    let called = Cell::new(false);
+    super::filesystem::complete_directory_sync(Err(rustix::io::Errno::BADF), || {
+        called.set(true);
+        Ok(())
+    })
+    .expect("filesystem-wide sync substitutes for unsupported directory fsync");
+    assert!(called.get());
+
+    let error = super::filesystem::complete_directory_sync(
+        Err(rustix::io::Errno::BADF),
+        || -> Result<(), Box<dyn std::error::Error>> { Err(Box::new(rustix::io::Errno::IO)) },
+    )
+    .expect_err("filesystem sync failure remains fatal");
+    assert_eq!(error.to_string(), rustix::io::Errno::IO.to_string());
+
+    let called = Cell::new(false);
+    let error = super::filesystem::complete_directory_sync(Err(rustix::io::Errno::PERM), || {
+        called.set(true);
+        Ok(())
+    })
+    .expect_err("unrelated directory fsync failures remain fatal");
+    assert_eq!(error.to_string(), rustix::io::Errno::PERM.to_string());
+    assert!(!called.get());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn unsupported_filesystem_sync_uses_global_sync_without_masking_other_errors() {
+    use std::cell::Cell;
+
+    let called = Cell::new(false);
+    super::filesystem::complete_filesystem_sync(Err(rustix::io::Errno::BADF), || {
+        called.set(true);
+    })
+    .expect("global sync substitutes for unsupported filesystem sync");
+    assert!(called.get());
+
+    let called = Cell::new(false);
+    let error = super::filesystem::complete_filesystem_sync(Err(rustix::io::Errno::PERM), || {
+        called.set(true);
+    })
+    .expect_err("unrelated filesystem sync failures remain fatal");
+    assert_eq!(error.to_string(), rustix::io::Errno::PERM.to_string());
+    assert!(!called.get());
+}
+
+#[test]
 fn layer_scratch_cleanup_rejects_expired_deadlines_before_mutation() {
     let source_ref = format!("deadline-{}", std::process::id());
     let compile_profile = format!("compile-expired-{}", std::process::id());
