@@ -1,0 +1,88 @@
+#!/usr/bin/env python3
+"""Generate and ratchet the local rafter-codec line/branch coverage report."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+REPORT = REPO_ROOT / "target" / "rafter-codec-coverage.json"
+MINIMUM_LINE_PERCENT = 92.0
+MINIMUM_BRANCH_PERCENT = 95.0
+
+
+def metric(totals: dict[str, object], name: str) -> dict[str, int | float]:
+    value = totals.get(name)
+    if not isinstance(value, dict):
+        raise ValueError(f"coverage report has no {name!r} totals")
+    return value
+
+
+def render_metric(name: str, value: dict[str, int | float], minimum: float | None) -> str:
+    covered = int(value["covered"])
+    count = int(value["count"])
+    percent = float(value["percent"])
+    threshold = "" if minimum is None else f"; minimum {minimum:.2f}%"
+    return f"  {name}: {percent:.2f}% ({covered}/{count}{threshold})"
+
+
+def main() -> int:
+    command = [
+        "cargo",
+        "+nightly",
+        "llvm-cov",
+        "-p",
+        "rafter-codec",
+        "--branch",
+        "--json",
+        "--summary-only",
+        "--output-path",
+        str(REPORT),
+        "--locked",
+    ]
+    try:
+        subprocess.run(command, cwd=REPO_ROOT, check=True)
+        payload = json.loads(REPORT.read_text())
+        totals = payload["data"][0]["totals"]
+        lines = metric(totals, "lines")
+        branches = metric(totals, "branches")
+        regions = metric(totals, "regions")
+        functions = metric(totals, "functions")
+    except (FileNotFoundError, subprocess.CalledProcessError) as error:
+        print(
+            "coverage command failed; install cargo-llvm-cov and the nightly "
+            "llvm-tools-preview component",
+            file=sys.stderr,
+        )
+        return getattr(error, "returncode", 1)
+    except (KeyError, IndexError, TypeError, ValueError, json.JSONDecodeError) as error:
+        print(f"invalid coverage report {REPORT}: {error}", file=sys.stderr)
+        return 1
+
+    print("rafter-codec coverage")
+    print(render_metric("lines", lines, MINIMUM_LINE_PERCENT))
+    print(render_metric("branches", branches, MINIMUM_BRANCH_PERCENT))
+    print(render_metric("regions", regions, None))
+    print(render_metric("functions", functions, None))
+    print(f"  report: {REPORT.relative_to(REPO_ROOT)}")
+
+    failures = []
+    if float(lines["percent"]) < MINIMUM_LINE_PERCENT:
+        failures.append("line coverage")
+    if float(branches["percent"]) < MINIMUM_BRANCH_PERCENT:
+        failures.append("branch coverage")
+    if failures:
+        print(
+            f"coverage ratchet failed: {', '.join(failures)} fell below its minimum",
+            file=sys.stderr,
+        )
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
