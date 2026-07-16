@@ -29,7 +29,7 @@ fn real_transition_persists_recorder_failure_as_a_harness_error() {
     }
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn execution_agreement_detects_mismatched_configuration_application() {
     let original = ConfigurationEntry::stable(
         ConfigurationId(7),
@@ -62,7 +62,7 @@ fn execution_agreement_detects_mismatched_configuration_application() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn execution_agreement_detects_mismatched_reference_result() {
     let config = NodeConfig::new(NodeId(1), vec![NodeId(2), NodeId(3)], 3)
         .expect("fixture node config is valid");
@@ -107,7 +107,7 @@ fn execution_agreement_detects_mismatched_reference_result() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn execution_agreement_detects_broken_configuration_result() {
     let configuration = ConfigurationEntry::stable(
         ConfigurationId(7),
@@ -171,7 +171,7 @@ fn applied_agreement_detects_disagreeing_snapshots_at_same_boundary() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn applied_agreement_detects_snapshot_membership_mismatch_at_same_boundary() {
     let mut cluster = one_node_cluster();
     for (node, membership) in [

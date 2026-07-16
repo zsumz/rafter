@@ -57,7 +57,7 @@ fn shorter_matching_commit_observation_preserves_canonical_ledger_identity() {
     check_commit_history(&state, &[]).expect("matching shorter prefix must remain valid");
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn shorter_commit_mismatch_is_checked_against_canonical_ledger() {
     let state = state_with_bootstraps(
         voter_configs(&[1, 2]),
