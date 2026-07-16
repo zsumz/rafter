@@ -21,6 +21,7 @@ mod registry_document;
 mod registry_parse;
 mod render;
 mod run_all;
+mod rust_target;
 mod schema;
 mod types;
 
@@ -29,7 +30,8 @@ pub(crate) use aggregate::aggregate;
 pub(crate) use aggregate::{aggregate_with_harness_errors, load_evidence, verify_layer_bundle};
 pub use catalog::{
     Catalog, CatalogError, ClauseDescriptor, EvidenceDescriptor, InvariantDescriptor,
-    ProfileContract, ProfileManifest, RunnerContract, SimulatorIdentity, TestIdentity,
+    ProfileContract, ProfileManifest, RunnerContract, SimulatorCheckContract, SimulatorIdentity,
+    TestIdentity,
 };
 pub(crate) use plan::{capture_invocation, verify_bundle_plan};
 pub use plan::{ExecutionPlan, PlanOptions};
@@ -46,6 +48,26 @@ pub use run_all::{
     current_source_ref, run_all, verify_and_write_report, verify_layer_evidence,
     ReportWriteOutcome, RunAllOptions, RunAllOutcome,
 };
+
+#[doc(hidden)]
+#[derive(Debug)]
+pub struct DetectorFixtureSourceBinding<'a> {
+    pub fixture_source: &'a str,
+    pub detector_source: &'a str,
+    pub source_root: &'a std::path::Path,
+    pub fixture_path: &'a std::path::Path,
+    pub detector_path: &'a std::path::Path,
+    pub test_identity: &'a TestIdentity,
+    pub fixture: &'a str,
+    pub detector: &'a str,
+}
+
+#[doc(hidden)]
+pub fn validate_detector_fixture_sources(
+    binding: &DetectorFixtureSourceBinding<'_>,
+) -> Result<(), String> {
+    artifact_verify::validate_detector_fixture_sources(binding)
+}
 pub(crate) use types::ResultBundle;
 pub use types::{
     ArtifactRef, CheckCompletion, CheckReceipt, ClauseVerdict, EvidenceResult, EvidenceStatus,
