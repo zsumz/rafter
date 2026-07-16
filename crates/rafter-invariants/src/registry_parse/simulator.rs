@@ -3,11 +3,13 @@ use std::collections::BTreeMap;
 use crate::catalog::{CatalogError, SimulatorIdentity, TestIdentity};
 use crate::types::SimulatorLivenessContract;
 
+use super::evidence::validate_test_identity;
 use super::syntax::{
     parse_bool, parse_optional_bool, parse_optional_u64, parse_u64, parse_usize, split_list,
 };
 
 pub(super) fn parse_simulator_identity(
+    index: usize,
     record: &BTreeMap<String, String>,
     required: &impl Fn(&str) -> Result<String, CatalogError>,
 ) -> Result<SimulatorIdentity, CatalogError> {
@@ -17,13 +19,15 @@ pub(super) fn parse_simulator_identity(
         .filter(|value| !value.is_empty())
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let negative_test = if record.contains_key("negative_fixture") {
-        Some(TestIdentity {
+    let negative_test = if let Some(fixture) = record.get("negative_fixture") {
+        let identity = TestIdentity {
             package: required("negative_fixture_package")?,
             target_kind: required("negative_fixture_target_kind")?,
             target: required("negative_fixture_target")?,
             test_name: required("negative_fixture_test_name")?,
-        })
+        };
+        validate_test_identity(index, &identity, fixture, "simulator negative fixture")?;
+        Some(identity)
     } else {
         None
     };
