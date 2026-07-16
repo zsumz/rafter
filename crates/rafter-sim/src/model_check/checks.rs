@@ -1,4 +1,5 @@
 mod bounded;
+mod purpose;
 mod read;
 mod restart;
 mod seeded;
@@ -6,6 +7,10 @@ mod witnesses;
 
 pub use bounded::{
     check_raft_commit_safety, check_raft_election_safety, check_raft_membership_safety,
+};
+pub use purpose::{
+    check_raft_lease_fast_path_read_safety, check_raft_production_config_commit_safety,
+    check_raft_window_one_backpressure_safety,
 };
 pub use read::check_raft_read_index_safety;
 pub use restart::{

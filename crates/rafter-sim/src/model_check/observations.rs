@@ -76,9 +76,13 @@ pub(super) enum Observation {
     NodesWithNonzeroSnapshotIndex,
     PartialSnapshotTransfersChecked,
     SameBoundarySnapshotInstallPairs,
+    ProductionConfigCommitObserved,
+    WindowOneBackpressureObserved,
+    LeaseFastPathReadGranted,
+    JointConfigRestartSnapshotRecovered,
 }
 
-const ALL: [Observation; 73] = [
+const ALL: [Observation; 77] = [
     Observation::WellFormedStatesChecked,
     Observation::TermAdvances,
     Observation::SameTermVoteReobservations,
@@ -152,6 +156,10 @@ const ALL: [Observation; 73] = [
     Observation::NodesWithNonzeroSnapshotIndex,
     Observation::PartialSnapshotTransfersChecked,
     Observation::SameBoundarySnapshotInstallPairs,
+    Observation::ProductionConfigCommitObserved,
+    Observation::WindowOneBackpressureObserved,
+    Observation::LeaseFastPathReadGranted,
+    Observation::JointConfigRestartSnapshotRecovered,
 ];
 
 impl Observation {
@@ -248,6 +256,10 @@ impl Observation {
             Self::NodesWithNonzeroSnapshotIndex => "nodes_with_nonzero_snapshot_index",
             Self::PartialSnapshotTransfersChecked => "partial_snapshot_transfers_checked",
             Self::SameBoundarySnapshotInstallPairs => "same_boundary_snapshot_install_pairs",
+            Self::ProductionConfigCommitObserved => "production_config_commit_observed",
+            Self::WindowOneBackpressureObserved => "window_one_backpressure_observed",
+            Self::LeaseFastPathReadGranted => "lease_fast_path_read_granted",
+            Self::JointConfigRestartSnapshotRecovered => "joint_config_restart_snapshot_recovered",
         }
     }
 }
