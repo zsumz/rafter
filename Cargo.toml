@@ -9,6 +9,7 @@ members = [
     "crates/rafter-multiraft",
     "crates/rafter-runtime",
     "crates/rafter-invariant-test",
+    "crates/rafter-invariant-test-macros",
     "crates/rafter-invariants",
     "crates/rafter-sim",
     "crates/rafter-storage",
