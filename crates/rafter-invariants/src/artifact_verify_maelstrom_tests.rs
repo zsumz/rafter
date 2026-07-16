@@ -432,6 +432,7 @@ fn bundle() -> ResultBundle {
                 producer: "test".to_owned(),
                 command: vec!["test".to_owned()],
                 configuration,
+                simulator_checks: BTreeMap::new(),
                 minimum_observed_checks: 1,
                 require_peak_rss: true,
             },
@@ -516,6 +517,12 @@ fn process_log(
             (
                 "RAFTER_MAELSTROM_ROOT".to_owned(),
                 durable.to_string_lossy().into_owned(),
+            ),
+            (
+                "RAFTER_MAELSTROM_SCRIPT_DIR".to_owned(),
+                fs::canonicalize(root.join("scripts"))?
+                    .to_string_lossy()
+                    .into_owned(),
             ),
             ("RAFTER_MAELSTROM_TIME_LIMIT".to_owned(), "5".to_owned()),
             ("RAFTER_MAELSTROM_RATE".to_owned(), "10".to_owned()),
