@@ -16,18 +16,20 @@ fn production_modules_begin_with_an_architectural_contract() {
     let workspace = workspace_root();
     let mut violations = Vec::new();
 
-    for path in production_rust_files(&workspace.join("crates/rafter/src")) {
-        let source = read(&path);
-        if !source
-            .trim_start_matches(|character: char| {
-                matches!(character, '\u{feff}' | '\n' | '\r' | '\t' | ' ')
-            })
-            .starts_with("//!")
-        {
-            violations.push(format!(
-                "{} must begin with a `//!` module contract",
-                display_path(&workspace, &path)
-            ));
+    for source_root in source_roots(&workspace) {
+        for path in production_rust_files(&source_root) {
+            let source = read(&path);
+            if !source
+                .trim_start_matches(|character: char| {
+                    matches!(character, '\u{feff}' | '\n' | '\r' | '\t' | ' ')
+                })
+                .starts_with("//!")
+            {
+                violations.push(format!(
+                    "{} must begin with a `//!` module contract",
+                    display_path(&workspace, &path)
+                ));
+            }
         }
     }
 
@@ -43,18 +45,20 @@ fn test_modules_begin_with_a_scenario_contract() {
     let workspace = workspace_root();
     let mut violations = Vec::new();
 
-    for path in test_rust_files(&workspace.join("crates/rafter/src")) {
-        let source = read(&path);
-        if !source
-            .trim_start_matches(|character: char| {
-                matches!(character, '\u{feff}' | '\n' | '\r' | '\t' | ' ')
-            })
-            .starts_with("//!")
-        {
-            violations.push(format!(
-                "{} must begin with a `//!` scenario contract",
-                display_path(&workspace, &path)
-            ));
+    for source_root in source_roots(&workspace) {
+        for path in test_rust_files(&source_root) {
+            let source = read(&path);
+            if !source
+                .trim_start_matches(|character: char| {
+                    matches!(character, '\u{feff}' | '\n' | '\r' | '\t' | ' ')
+                })
+                .starts_with("//!")
+            {
+                violations.push(format!(
+                    "{} must begin with a `//!` scenario contract",
+                    display_path(&workspace, &path)
+                ));
+            }
         }
     }
 
@@ -70,28 +74,30 @@ fn production_modules_keep_test_bodies_in_separate_files() {
     let workspace = workspace_root();
     let mut violations = Vec::new();
 
-    for path in production_rust_files(&workspace.join("crates/rafter/src")) {
-        let source = read(&path);
-        let lines = source.lines().collect::<Vec<_>>();
-        for (line_index, line) in lines.iter().enumerate() {
-            if line.trim() != "#[cfg(test)]" {
-                continue;
-            }
-            let Some((next_index, next)) = lines
-                .iter()
-                .enumerate()
-                .skip(line_index + 1)
-                .find(|(_, candidate)| !candidate.trim().is_empty())
-            else {
-                continue;
-            };
-            let next = next.trim_start();
-            if next.starts_with("mod ") && next.contains('{') {
-                violations.push(format!(
-                    "{}:{} embeds a test module body; move it to a sibling test file",
-                    display_path(&workspace, &path),
-                    next_index + 1
-                ));
+    for source_root in source_roots(&workspace) {
+        for path in production_rust_files(&source_root) {
+            let source = read(&path);
+            let lines = source.lines().collect::<Vec<_>>();
+            for (line_index, line) in lines.iter().enumerate() {
+                if line.trim() != "#[cfg(test)]" {
+                    continue;
+                }
+                let Some((next_index, next)) = lines
+                    .iter()
+                    .enumerate()
+                    .skip(line_index + 1)
+                    .find(|(_, candidate)| !candidate.trim().is_empty())
+                else {
+                    continue;
+                };
+                let next = next.trim_start();
+                if next.starts_with("mod ") && next.contains('{') {
+                    violations.push(format!(
+                        "{}:{} embeds a test module body; move it to a sibling test file",
+                        display_path(&workspace, &path),
+                        next_index + 1
+                    ));
+                }
             }
         }
     }
@@ -99,6 +105,54 @@ fn production_modules_keep_test_bodies_in_separate_files() {
     assert!(
         violations.is_empty(),
         "embedded production-test violations:\n{}",
+        violations.join("\n")
+    );
+}
+
+#[test]
+fn codec_wire_tag_numbers_have_one_owner() {
+    let workspace = workspace_root();
+    let codec_root = workspace.join("crates/rafter-codec/src");
+    let tags_path = codec_root.join("v1/tags.rs");
+    let tags = read(&tags_path);
+
+    for registry in ["enum MessageTag", "enum LogEntryTag", "enum MembershipTag"] {
+        assert!(tags.contains(registry), "v1/tags.rs must own {registry}");
+    }
+    assert!(
+        tags.contains("5 is permanently reserved"),
+        "v1/tags.rs must preserve the whole-snapshot tag reservation"
+    );
+
+    let mut violations = Vec::new();
+    for path in production_rust_files(&codec_root) {
+        if path == tags_path {
+            continue;
+        }
+        for (line_index, line) in read(&path).lines().enumerate() {
+            let compact = line
+                .chars()
+                .filter(|character| !character.is_whitespace())
+                .collect::<String>();
+            let legacy_declaration = ["constMSG_", "constENTRY_", "constMEMBERSHIP_"]
+                .iter()
+                .any(|marker| compact.contains(marker));
+            let numeric_tag_write = (0..=10)
+                .map(|tag| format!(".u8({tag})"))
+                .any(|marker| compact.contains(&marker));
+            if legacy_declaration || numeric_tag_write {
+                violations.push(format!(
+                    "{}:{} declares or writes a numeric wire tag outside v1/tags.rs",
+                    display_path(&workspace, &path),
+                    line_index + 1
+                ));
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "codec wire-tag ownership violations:\n{}",
         violations.join("\n")
     );
 }
@@ -362,6 +416,13 @@ fn collect_rust_files(root: &Path, files: &mut Vec<PathBuf>) {
             files.push(path);
         }
     }
+}
+
+fn source_roots(workspace: &Path) -> [PathBuf; 2] {
+    [
+        workspace.join("crates/rafter/src"),
+        workspace.join("crates/rafter-codec/src"),
+    ]
 }
 
 fn compact_whitespace(source: &str) -> String {
