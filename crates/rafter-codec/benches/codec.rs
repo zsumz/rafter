@@ -7,7 +7,7 @@ use rafter::{
     ApplicationSnapshotVersion, InstallSnapshotChunk, LogEntry, LogIndex, Message, NodeId,
     RaftSnapshot, RaftSnapshotMetadata, SnapshotGroupId, Term,
 };
-use rafter_codec::{decode_message, encode_message};
+use rafter_codec::{decode_message, encode_message, encode_message_into};
 
 fn append_batch() -> Message {
     let entries: Vec<LogEntry> = (0..16)
@@ -55,8 +55,15 @@ fn bench_message(criterion: &mut Criterion, name: &str, message: &Message) {
     let encoded = encode_message(message).expect("message encodes");
     let mut group = criterion.benchmark_group(name);
     group.throughput(Throughput::Bytes(encoded.len() as u64));
-    group.bench_function("encode", |bencher| {
+    group.bench_function("encode_allocating", |bencher| {
         bencher.iter(|| encode_message(std::hint::black_box(message)).expect("message encodes"));
+    });
+    let mut scratch = Vec::with_capacity(encoded.len());
+    group.bench_function("encode_reused_buffer", |bencher| {
+        bencher.iter(|| {
+            encode_message_into(&mut scratch, std::hint::black_box(message))
+                .expect("message encodes into reusable buffer");
+        });
     });
     group.bench_function("decode", |bencher| {
         bencher.iter(|| decode_message(std::hint::black_box(&encoded)).expect("frame decodes"));
