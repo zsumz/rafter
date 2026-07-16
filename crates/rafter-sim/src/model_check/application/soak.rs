@@ -10,7 +10,7 @@ pub(super) fn apply_soak_action_inner(
 ) -> Result<(), Failure> {
     let operation = match classify_operation(operation) {
         Ok(operation) => {
-            super::operation::apply_to_state_inner(state, operation);
+            super::operation::apply_to_state_inner(state, &operation);
             return Ok(());
         }
         Err(operation) => operation,
@@ -34,12 +34,12 @@ pub(super) fn apply_soak_action_inner(
         }
         SoakOperation::Restart(node_id) => {
             super::restart::restart_node_inner(state, node_id, trace)?;
-            super::observe_restart_transition(state, &before);
+            super::observe_restart_transition(state, &before, node_id);
             return Ok(());
         }
         SoakOperation::ApplicationLossRestart(node_id) => {
             super::restart_node_losing_application_state_inner(state, node_id, trace)?;
-            super::observe_restart_transition(state, &before);
+            super::observe_restart_transition(state, &before, node_id);
             return Ok(());
         }
         SoakOperation::Partition { a, b } => {

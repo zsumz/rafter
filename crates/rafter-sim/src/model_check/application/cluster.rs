@@ -15,12 +15,12 @@ pub(in crate::model_check::state::application) struct AppliedOperationEffects {
 
 pub(in crate::model_check::state::application) fn apply_to_cluster(
     cluster: &mut Cluster,
-    operation: Operation,
+    operation: &Operation,
 ) -> AppliedOperationEffects {
     match operation {
         Operation::Tick(node_id) => {
-            let outputs = cluster.node_mut(node_id).step(Input::Tick);
-            let recorded = cluster.record_outputs_observed(node_id, outputs);
+            let outputs = cluster.node_mut(*node_id).step(Input::Tick);
+            let recorded = cluster.record_outputs_observed(*node_id, outputs);
             return AppliedOperationEffects {
                 emitted: recorded.emitted,
                 local_proposals: recorded.local_proposals,
@@ -33,11 +33,11 @@ pub(in crate::model_check::state::application) fn apply_to_cluster(
         Operation::Propose {
             to, proposal_id, ..
         } => {
-            let outputs = cluster.node_mut(to).step(Input::TrackedClientProposal {
+            let outputs = cluster.node_mut(*to).step(Input::TrackedClientProposal {
                 proposal_id: LocalProposalId(proposal_id.0),
-                payload: proposal_payload(proposal_id),
+                payload: proposal_payload(*proposal_id),
             });
-            let recorded = cluster.record_outputs_observed(to, outputs);
+            let recorded = cluster.record_outputs_observed(*to, outputs);
             return AppliedOperationEffects {
                 emitted: recorded.emitted,
                 local_proposals: recorded.local_proposals,
@@ -45,35 +45,35 @@ pub(in crate::model_check::state::application) fn apply_to_cluster(
             };
         }
         Operation::ReadIndex { to, request_id } => {
-            let read_registration = cluster.read_index(to, request_id);
+            let read_registration = cluster.read_index(*to, *request_id);
             return AppliedOperationEffects {
                 read_registration: Some(read_registration),
                 ..AppliedOperationEffects::default()
             };
         }
-        Operation::AddLearner { to, learner_id } => cluster.add_learner(to, learner_id),
+        Operation::AddLearner { to, learner_id } => cluster.add_learner(*to, *learner_id),
         Operation::RemoveLearner { to, learner_id } => {
             if let Some(target) =
-                remove_learner_target(cluster.effective_membership(to), learner_id)
+                remove_learner_target(cluster.effective_membership(*to), *learner_id)
             {
-                cluster.change_membership(to, target, Vec::new());
+                cluster.change_membership(*to, target, Vec::new());
             }
         }
         Operation::PromoteLearner {
             to,
             learner_id,
             promotion_barrier,
-        } => cluster.promote_learner(to, learner_id, promotion_barrier),
-        Operation::RemoveVoter { to, voter_id } => cluster.remove_voter(to, voter_id),
+        } => cluster.promote_learner(*to, *learner_id, *promotion_barrier),
+        Operation::RemoveVoter { to, voter_id } => cluster.remove_voter(*to, *voter_id),
         Operation::EnterJoint {
             to,
             target,
             promotion_barriers,
-        } => cluster.enter_joint(to, target, promotion_barriers),
-        Operation::LeaveJoint { to } => cluster.leave_joint(to),
-        Operation::Transfer { from, target } => cluster.transfer_leadership(from, target),
+        } => cluster.enter_joint(*to, target.clone(), promotion_barriers.clone()),
+        Operation::LeaveJoint { to } => cluster.leave_joint(*to),
+        Operation::Transfer { from, target } => cluster.transfer_leadership(*from, *target),
         Operation::DeliverReadyAt(position) => {
-            if let Some(queued) = cluster.network.remove(position) {
+            if let Some(queued) = cluster.network.remove(*position) {
                 let recorded = cluster.deliver_observed(queued.envelope);
                 return AppliedOperationEffects {
                     emitted: recorded.emitted,

@@ -3,7 +3,7 @@ use super::super::super::{
     RestartSnapshotState,
 };
 use super::super::ConfigurationAppend;
-use super::cluster::apply_to_cluster;
+use super::cluster::{apply_to_cluster, AppliedOperationEffects};
 use super::SnapshotBootstrapSeed;
 
 pub(super) fn apply_snapshot_bootstrap_seeds_inner(
@@ -27,10 +27,10 @@ pub(super) fn apply_snapshot_bootstrap_seeds_inner(
     Ok(())
 }
 
-pub(super) fn apply_to_state_inner(state: &mut ExplorationState, operation: Operation) {
+pub(super) fn apply_to_state_inner(state: &mut ExplorationState, operation: &Operation) {
     let commit_context = state.commit_transition_context();
     let before = state.cluster.transition_observation_snapshot();
-    let configuration_proposer = match &operation {
+    let configuration_proposer = match operation {
         Operation::AddLearner { to, .. }
         | Operation::RemoveLearner { to, .. }
         | Operation::PromoteLearner { to, .. }
@@ -47,7 +47,7 @@ pub(super) fn apply_to_state_inner(state: &mut ExplorationState, operation: Oper
     };
     let configuration_last_index_before =
         configuration_proposer.map(|proposer| (proposer, state.cluster.last_log_index(proposer)));
-    let delivered = match &operation {
+    let delivered = match operation {
         Operation::DeliverReadyAt(position) => state
             .cluster
             .network
@@ -71,13 +71,13 @@ pub(super) fn apply_to_state_inner(state: &mut ExplorationState, operation: Oper
         Some((envelope.to, term))
     });
     let records_protocol_transition =
-        matches!(&operation, Operation::Tick(_)) || delivered.is_some();
+        matches!(operation, Operation::Tick(_)) || delivered.is_some();
 
     if let Operation::Propose {
         to,
         proposal_id,
         stale_leader,
-    } = &operation
+    } = operation
     {
         state.record_client_proposal(*to, *proposal_id, *stale_leader);
         state.proposals_issued += 1;
@@ -109,6 +109,7 @@ pub(super) fn apply_to_state_inner(state: &mut ExplorationState, operation: Oper
         state.read_indexes_issued += 1;
     }
     state.record_local_proposal_events(&effects.local_proposals);
+    record_purpose_observations(state, &before, operation, &effects);
     state.observe_election_authority();
     state.record_election_observation(&before, delivered.as_ref(), &effects.emitted);
     if records_protocol_transition {
@@ -125,6 +126,21 @@ pub(super) fn apply_to_state_inner(state: &mut ExplorationState, operation: Oper
     state.refresh_commit_floors();
     state.refresh_client_history();
     state.observe_state_coverage();
+}
+
+fn record_purpose_observations(
+    state: &mut ExplorationState,
+    before: &crate::Cluster,
+    operation: &Operation,
+    effects: &AppliedOperationEffects,
+) {
+    state.record_purpose_transition(
+        before,
+        operation,
+        &effects.emitted,
+        &effects.local_proposals,
+        effects.read_registration.as_ref(),
+    );
 }
 
 pub(super) fn apply_to_restart_snapshot_state(
