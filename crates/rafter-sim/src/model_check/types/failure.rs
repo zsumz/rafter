@@ -58,6 +58,12 @@ impl Failure {
         self.invariant
     }
 
+    /// Returns the reviewed invariant ID when the full label is registered.
+    #[must_use]
+    pub fn invariant_id(&self) -> Option<&'static str> {
+        crate::model_check::reviewed_invariant_id(self.invariant)
+    }
+
     /// Returns a human-readable failure message.
     #[must_use]
     pub fn message(&self) -> &str {
