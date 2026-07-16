@@ -86,6 +86,9 @@ fn bounded_joint_membership_restart_and_snapshot_safety_passes() {
     assert!(summary.unique_states() <= summary.explored_states());
     assert!(summary.explored_actions() > 1);
     assert_eq!(summary.max_depth(), 12);
+    assert!(summary
+        .observation_labels()
+        .any(|label| label == "joint_config_restart_snapshot_recovered"));
 }
 
 #[test]

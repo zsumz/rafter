@@ -201,7 +201,8 @@ fn transition_capability_is_owned_by_state_and_has_no_mutable_deref() {
     }
     assert!(application.contains("fn apply_transition("));
     assert!(application.contains("Transition::SchedulerIndex"));
-    assert!(application.contains("Transition::RandomReadyPosition"));
+    assert!(!application.contains("RandomReadyPosition"));
+    assert!(!state.contains("random_ready_position"));
     assert!(application.contains("impl Deref for InstrumentedCluster"));
     assert!(!application.contains("DerefMut"));
     assert!(!root.contains("mod application;"));
