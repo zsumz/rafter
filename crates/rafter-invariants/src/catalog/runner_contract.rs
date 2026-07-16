@@ -105,6 +105,7 @@ pub(super) fn validate_runner(
 ) -> Result<(), String> {
     let (producer, minimum_observed_checks) = match layer {
         "tests" => ("rafter-invariants-tests-v13", 82),
+        "simulator" if profile == "pr" => ("rafter-invariants-simulator-v17", 79),
         "simulator" => ("rafter-invariants-simulator-v16", 79),
         "tla" => ("rafter-invariants-tla-v15", 1),
         "maelstrom" => ("rafter-invariants-maelstrom-v10", 6),
@@ -336,6 +337,7 @@ mod tests {
             .map(str::to_owned)
             .to_vec(),
             configuration: serde_json::from_value(configuration).expect("string map"),
+            simulator_checks: std::collections::BTreeMap::new(),
             minimum_observed_checks,
             require_peak_rss: true,
         }
@@ -363,6 +365,24 @@ mod tests {
             }),
         );
         assert!(validate_runner("pr", "tests", &contract).is_err());
+    }
+
+    #[test]
+    fn simulator_producer_contract_is_exact_and_profile_specific() {
+        let (_, manifest) = crate::tests::loaded();
+        let pr = &manifest.profiles["pr"].runners["simulator"];
+        validate_runner("pr", "simulator", pr).expect("PR simulator v17 contract");
+
+        let mut stale_pr = pr.clone();
+        stale_pr.producer = "rafter-invariants-simulator-v16".to_owned();
+        assert!(validate_runner("pr", "simulator", &stale_pr).is_err());
+
+        let nightly = &manifest.profiles["nightly"].runners["simulator"];
+        validate_runner("nightly", "simulator", nightly).expect("nightly simulator v16 contract");
+
+        let mut premature_nightly = nightly.clone();
+        premature_nightly.producer = "rafter-invariants-simulator-v17".to_owned();
+        assert!(validate_runner("nightly", "simulator", &premature_nightly).is_err());
     }
 
     #[test]
