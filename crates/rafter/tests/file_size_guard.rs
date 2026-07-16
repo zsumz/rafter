@@ -207,7 +207,8 @@ fn limits_for(relative_path: &str) -> SizeLimits {
 }
 
 fn is_rafter_core_test(relative_path: &str) -> bool {
-    relative_path.starts_with("crates/rafter/src/")
+    (relative_path.starts_with("crates/rafter/src/")
+        || relative_path.starts_with("crates/rafter-codec/src/"))
         && (relative_path.contains("/tests/")
             || relative_path.ends_with("/tests.rs")
             || relative_path.ends_with("_test.rs")
