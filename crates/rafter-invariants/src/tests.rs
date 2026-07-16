@@ -113,6 +113,7 @@ fn synthetic_check_id(descriptor: &EvidenceDescriptor) -> String {
 
 fn synthetic_observations(
     descriptors: &[EvidenceDescriptor],
+    manifest: &ProfileManifest,
 ) -> std::collections::BTreeMap<String, u64> {
     let descriptor = &descriptors[0];
     if descriptor.layer == "tests" {
@@ -175,6 +176,25 @@ fn synthetic_observations(
         observations.insert(format!("runs:{check}"), runs);
         if let Some(steps) = identity.minimum_steps {
             observations.insert(format!("steps:{check}"), steps as u64);
+        }
+        if let Some(contract) = manifest.profiles["pr"].runners["simulator"]
+            .simulator_checks
+            .get(check)
+        {
+            observations.insert(
+                crate::catalog::per_check_protocol_states_key(check),
+                contract.minimum_protocol_states,
+            );
+            observations.insert(
+                crate::catalog::per_check_verifier_states_key(check),
+                contract.minimum_verifier_states,
+            );
+            observations.extend(contract.required_observations.iter().map(|observation| {
+                (
+                    crate::catalog::per_check_observation_key(check, observation),
+                    1,
+                )
+            }));
         }
     }
     observations
@@ -325,7 +345,7 @@ pub(crate) fn passing_bundles(catalog: &Catalog, manifest: &ProfileManifest) -> 
                         check_id,
                         evidence_ids,
                         completion,
-                        observations: synthetic_observations(&descriptors),
+                        observations: synthetic_observations(&descriptors, manifest),
                         simulator_liveness: synthetic_liveness_binding(&descriptors[0]),
                         duration_ms: 1,
                         peak_rss_kib: 1,
@@ -730,6 +750,74 @@ fn simulator_pass_requires_its_registry_semantic_witness() {
         .issues
         .iter()
         .any(|issue| issue.message.contains("lacks semantic coverage")));
+}
+
+#[test]
+fn simulator_pass_requires_profile_owned_per_check_floors_and_observations() {
+    let (catalog, manifest) = loaded();
+    for (key, expected) in [
+        (
+            crate::catalog::per_check_protocol_states_key("raft-commit-production"),
+            "profile-owned per-check state floor",
+        ),
+        (
+            crate::catalog::per_check_observation_key(
+                "raft-commit-production",
+                "production_config_commit_observed",
+            ),
+            "profile-owned per-check semantic observation",
+        ),
+    ] {
+        let mut bundles = passing_bundles(&catalog, &manifest);
+        let simulator = bundles
+            .iter_mut()
+            .find(|bundle| bundle.runner == "simulator")
+            .expect("simulator bundle exists");
+        let check = simulator
+            .execution
+            .checks
+            .iter_mut()
+            .find(|check| check.observations.contains_key(&key))
+            .expect("production check receipt exists");
+        check.observations.remove(&key);
+
+        let report =
+            aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
+        assert_eq!(report.summary.green, 0);
+        assert!(report.invariants.iter().all(|verdict| verdict
+            .issues
+            .iter()
+            .any(|issue| issue.message.contains(expected))));
+    }
+}
+
+#[test]
+fn profile_owned_check_floors_do_not_replace_descriptor_floors() {
+    let (catalog, manifest) = loaded();
+    let mut bundles = passing_bundles(&catalog, &manifest);
+    let simulator = bundles
+        .iter_mut()
+        .find(|bundle| bundle.runner == "simulator")
+        .expect("simulator bundle exists");
+    let per_check_key = crate::catalog::per_check_protocol_states_key("raft-commit-production");
+    let check = simulator
+        .execution
+        .checks
+        .iter_mut()
+        .find(|check| check.observations.contains_key(&per_check_key))
+        .expect("production check receipt exists");
+    check
+        .observations
+        .insert("unique_protocol_states".to_owned(), 0);
+
+    let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
+    assert_eq!(report.summary.green, 0);
+    assert!(report
+        .invariants
+        .iter()
+        .all(|verdict| verdict.issues.iter().any(|issue| issue
+            .message
+            .contains("descriptor state or completion floor"))));
 }
 
 #[test]
