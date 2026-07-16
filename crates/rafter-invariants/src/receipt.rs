@@ -284,7 +284,7 @@ fn validate_runner_receipt(
     if bundle.runner == "tests" {
         crate::receipt_tests::validate(bundle, expected)?;
     } else if bundle.runner == "simulator" {
-        crate::receipt_simulator::validate(bundle, expected)?;
+        crate::receipt_simulator::validate(bundle, expected, runner_contract)?;
     } else if bundle.runner == "tla" {
         crate::receipt_tla::validate(bundle, expected, runner_contract)?;
     } else if bundle.runner == "maelstrom" {
