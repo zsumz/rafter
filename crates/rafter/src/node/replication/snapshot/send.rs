@@ -4,10 +4,13 @@ use crate::{NodeId, RaftSnapshot, SnapshotChunkSend};
 
 use crate::node::{state::ProgressMode, Node, Output};
 
-/// Bytes of snapshot payload per chunk directive. Comfortably below the
-/// default append budget (`DEFAULT_MAX_APPEND_ENTRIES_BYTES`, 512 KiB), so a
-/// transport whose frame limit accommodates the append budget accommodates
-/// snapshot chunks too.
+/// Bytes of opaque snapshot payload per chunk directive.
+///
+/// This bounds the chunk, not its encoded peer frame. Snapshot identifiers,
+/// application metadata, committed membership, the frame envelope, and the
+/// checksum add variable overhead. The append budget is only a batching target;
+/// transport receive limits must independently accommodate snapshot metadata
+/// plus this payload. See `rafter-codec/WIRE_FORMAT_V1.md` for frame sizing.
 const INSTALL_SNAPSHOT_CHUNK_BYTES: u32 = 64 * 1024;
 
 impl Node {

@@ -1,18 +1,15 @@
 //! Domain-validation and canonical-reconstruction rejection contracts.
 
-use rafter::{
-    ConfigurationEntry, ConfigurationId, LogEntry, MembershipSet, MembershipValidationError,
-    NodeId, SnapshotIdError, SnapshotMetadataError, Term,
-};
+use rafter::{MembershipValidationError, NodeId, SnapshotIdError, SnapshotMetadataError, Term};
 
 use super::support::{
-    append_entries_with, first_stable_membership_offset, rewrite_frame_checksum, snapshot_chunk,
-    snapshot_chunk_hard_state_term_offset, snapshot_chunk_last_included_index_offset,
-    snapshot_chunk_last_included_term_offset, snapshot_group_bytes_offset,
-    snapshot_kind_length_offset, snapshot_metadata, snapshot_metadata_offset,
-    snapshot_version_offset, stable_configuration_entry,
+    first_stable_membership_offset, raw_v1_snapshot_chunk_frame, raw_v1_stable_membership_append,
+    rewrite_frame_checksum, snapshot_chunk_hard_state_term_offset,
+    snapshot_chunk_last_included_index_offset, snapshot_chunk_last_included_term_offset,
+    snapshot_group_bytes_offset, snapshot_kind_length_offset, snapshot_metadata_offset,
+    snapshot_version_offset,
 };
-use crate::{decode_message, encode_message, DecodePeerMessageError};
+use crate::{decode_message, DecodePeerMessageError};
 
 const MAX_SNAPSHOT_ID_BYTES: usize = 128;
 
@@ -169,8 +166,7 @@ fn decode_reports_every_snapshot_boundary_validation_class() {
 
 #[test]
 fn decode_reports_every_voter_validation_class() {
-    let encoded = encode_message(&append_entries_with(vec![stable_configuration_entry()]))
-        .expect("configuration entry encodes");
+    let encoded = raw_v1_stable_membership_append(&[1, 2], &[3]);
     let membership_offset = first_stable_membership_offset();
 
     let mut empty = encoded.clone();
@@ -247,17 +243,11 @@ fn decode_reports_every_learner_validation_class() {
 }
 
 fn encoded_snapshot_chunk() -> Vec<u8> {
-    encode_message(&snapshot_chunk(snapshot_metadata(None))).expect("snapshot chunk encodes")
+    raw_v1_snapshot_chunk_frame(b"data-group-10", b"stream_data", 1, 42, 8, 9)
 }
 
 fn encoded_membership_with_two_learners() -> Vec<u8> {
-    let membership = MembershipSet::new(vec![NodeId(1), NodeId(2)], vec![NodeId(3), NodeId(4)])
-        .expect("membership is valid before byte mutation");
-    let entry = LogEntry::configuration(
-        Term(8),
-        ConfigurationEntry::stable(ConfigurationId(1), membership),
-    );
-    encode_message(&append_entries_with(vec![entry])).expect("configuration entry encodes")
+    raw_v1_stable_membership_append(&[1, 2], &[3, 4])
 }
 
 fn lengthen_string(encoded: &mut Vec<u8>, length_offset: usize, target_len: usize) {

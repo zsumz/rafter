@@ -24,6 +24,12 @@ is a `TrailingBytes` error. A stream transport must provide an outer framing
 mechanism, such as a length prefix; outer framing is not covered by this
 specification.
 
+The decoder must parse enough structure to locate the checksum before it can
+verify that checksum. It therefore validates the envelope and payload in wire
+order, verifies the checksum, and finally rejects trailing bytes. Which error
+wins when a frame contains multiple independent defects is diagnostic behavior,
+not part of v1 wire compatibility; callers must not rely on that precedence.
+
 ## Scalar and collection rules
 
 - Integers are unsigned and big-endian.
@@ -208,6 +214,12 @@ the preceding section. These checks apply wherever the corresponding nested
 value appears. Scalar fields without a rule here or in their payload section
 accept their full encoded range.
 
+These semantic domains are part of the version 1 wire contract even though the
+decoder reconstructs them through `rafter` model constructors. Tightening or
+loosening one of those constructors is a v1 compatibility change and requires
+codec review. Existing v1 acceptance must remain stable unless a new wire
+version deliberately replaces it.
+
 ## Receive limits and transport responsibility
 
 The codec imposes no receive limit. A transport must enforce its limit before
@@ -226,5 +238,6 @@ Human-readable exact-byte fixtures live under `tests/vectors/v1/`. The
 `wire_v1_vectors` integration test checks both directions: every fixture is the
 exact encoder output for its message and decodes back to that message. These
 vectors pin the format independently of the internal module layout. Tokens use
-two-digit hexadecimal bytes; `5a*65536` is the compact notation for 65,536
-consecutive `5a` bytes in the maximum snapshot-chunk vector.
+two-digit hexadecimal bytes, whitespace is insignificant, and `#` begins a
+comment through the end of the line. `5a*65536` is the compact notation for
+65,536 consecutive `5a` bytes in the maximum snapshot-chunk vector.

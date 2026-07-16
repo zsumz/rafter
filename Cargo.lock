@@ -1226,7 +1226,6 @@ dependencies = [
  "criterion",
  "proc-macro2",
  "proptest",
- "rafter-invariant-test",
  "syn",
 ]
 

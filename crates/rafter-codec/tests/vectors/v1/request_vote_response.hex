@@ -1,1 +1,11 @@
-52 46 50 4d 01 02 00 00 00 00 00 00 00 07 00 00 00 00 00 00 00 03 01 73 5d 7b c7
+# magic
+52 46 50 4d
+# version, RequestVoteResponse tag
+01 02
+# term, voter_id
+00 00 00 00 00 00 00 07
+00 00 00 00 00 00 00 03
+# vote_granted
+01
+# checksum
+73 5d 7b c7

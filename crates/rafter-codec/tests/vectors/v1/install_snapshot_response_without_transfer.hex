@@ -1,1 +1,16 @@
-52 46 50 4d 01 06 00 00 00 00 00 00 00 09 00 00 00 00 00 00 00 02 01 00 00 00 00 00 00 00 2a 00 00 00 00 00 00 00 00 11 7c ff 50 b2
+# magic
+52 46 50 4d
+# version, InstallSnapshotResponse tag
+01 06
+# term, follower_id
+00 00 00 00 00 00 00 09
+00 00 00 00 00 00 00 02
+# success, last_included_index
+01
+00 00 00 00 00 00 00 2a
+# transfer_id absent
+00
+# next_offset
+00 00 00 00 00 00 00 11
+# checksum
+7c ff 50 b2

@@ -149,6 +149,11 @@ fn append_vectors() -> Vec<Vector> {
             include_str!("vectors/v1/append_entries_application.hex"),
         ),
         vector(
+            "append_entries_application_empty",
+            append_entries(vec![LogEntry::application(Term(8), Vec::new())]),
+            include_str!("vectors/v1/append_entries_application_empty.hex"),
+        ),
+        vector(
             "append_entries_noop",
             append_entries(vec![LogEntry::noop(Term(8))]),
             include_str!("vectors/v1/append_entries_noop.hex"),
@@ -201,6 +206,16 @@ fn snapshot_vectors() -> Vec<Vector> {
                 vec![0, 1, 250, 255],
             ),
             include_str!("vectors/v1/install_snapshot_chunk_stable_configuration.hex"),
+        ),
+        vector(
+            "install_snapshot_chunk_membership_without_identity",
+            snapshot_chunk(
+                metadata_without_configuration_identity(MembershipConfig::stable(
+                    stable_membership(),
+                )),
+                Vec::new(),
+            ),
+            include_str!("vectors/v1/install_snapshot_chunk_membership_without_identity.hex"),
         ),
         vector(
             "install_snapshot_chunk_joint_configuration",
@@ -291,6 +306,10 @@ fn metadata(membership: Option<MembershipConfig>) -> RaftSnapshotMetadata {
     })
 }
 
+fn metadata_without_configuration_identity(membership: MembershipConfig) -> RaftSnapshotMetadata {
+    metadata(None).with_committed_membership(membership)
+}
+
 fn snapshot_chunk(metadata: RaftSnapshotMetadata, chunk: Vec<u8>) -> Message {
     Message::InstallSnapshotChunk(InstallSnapshotChunk {
         term: Term(9),
@@ -318,7 +337,12 @@ fn snapshot_response(transfer_id: Option<SnapshotTransferId>) -> Message {
 
 fn parse_hex(source: &str) -> Vec<u8> {
     source
-        .split_whitespace()
+        .lines()
+        .flat_map(|line| {
+            line.split_once('#')
+                .map_or(line, |(bytes, _comment)| bytes)
+                .split_whitespace()
+        })
         .flat_map(|token| {
             let (byte, count) = token.split_once('*').map_or((token, 1), |(byte, count)| {
                 (byte, count.parse::<usize>().expect("valid repeat count"))

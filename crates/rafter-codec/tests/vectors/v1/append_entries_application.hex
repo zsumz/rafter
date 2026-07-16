@@ -1,1 +1,22 @@
-52 46 50 4d 01 03 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00 0a 00 00 00 00 00 00 00 07 00 00 00 01 00 00 00 00 00 00 00 08 00 00 00 00 05 00 9f 92 96 ff 00 00 00 00 00 00 00 0b 00 00 00 00 00 00 00 03 35 50 0f 3f
+# magic
+52 46 50 4d
+# version, AppendEntries tag
+01 03
+# term, leader_id, prev_log_index, prev_log_term
+00 00 00 00 00 00 00 08
+00 00 00 00 00 00 00 01
+00 00 00 00 00 00 00 0a
+00 00 00 00 00 00 00 07
+# entry_count = 1
+00 00 00 01
+# entry term, application tag
+00 00 00 00 00 00 00 08
+00
+# payload length, opaque payload
+00 00 00 05
+00 9f 92 96 ff
+# leader_commit, sequence
+00 00 00 00 00 00 00 0b
+00 00 00 00 00 00 00 03
+# checksum
+35 50 0f 3f

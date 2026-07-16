@@ -1,1 +1,39 @@
-52 46 50 4d 01 07 00 00 00 00 00 00 00 09 00 00 00 00 00 00 00 01 00 00 00 00 00 01 e2 40 00 0c 76 65 63 74 6f 72 2d 67 72 6f 75 70 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00 2a 00 00 00 00 00 00 00 08 00 00 00 00 00 00 00 09 00 0c 76 65 63 74 6f 72 5f 73 74 61 74 65 00 01 01 01 00 00 00 00 00 00 00 28 00 00 00 00 00 00 00 0a 00 00 02 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00 02 00 01 00 00 00 00 00 00 00 03 00 00 00 00 00 00 00 04 12 34 ab cd 00 00 00 00 00 00 00 00 00 00 00 04 00 01 fa ff 01 b3 a1 bb 7e
+# magic
+52 46 50 4d
+# version, InstallSnapshotChunk tag
+01 07
+# term, leader_id, transfer_id
+00 00 00 00 00 00 00 09
+00 00 00 00 00 00 00 01
+00 00 00 00 00 01 e2 40
+# group_id = "vector-group"
+00 0c 76 65 63 74 6f 72 2d 67 72 6f 75 70
+# writer_id, last_included_index, last_included_term, hard_state_term
+00 00 00 00 00 00 00 01
+00 00 00 00 00 00 00 2a
+00 00 00 00 00 00 00 08
+00 00 00 00 00 00 00 09
+# application kind = "vector_state", version = 1
+00 0c 76 65 63 74 6f 72 5f 73 74 61 74 65
+00 01
+# committed configuration and identity present: index 40, config_id 10
+01 01
+00 00 00 00 00 00 00 28
+00 00 00 00 00 00 00 0a
+# stable membership: voters [1, 2], learners [3]
+00
+00 02
+00 00 00 00 00 00 00 01
+00 00 00 00 00 00 00 02
+00 01
+00 00 00 00 00 00 00 03
+# total_payload_len = 4, application_payload_crc32, offset
+00 00 00 00 00 00 00 04
+12 34 ab cd
+00 00 00 00 00 00 00 00
+# chunk length, chunk, done
+00 00 00 04
+00 01 fa ff
+01
+# checksum
+b3 a1 bb 7e

@@ -7,3 +7,4 @@ mod sizing;
 mod snapshot;
 mod support;
 mod validation;
+mod wire_v1_semantics;

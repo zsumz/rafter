@@ -17,7 +17,6 @@ internal-test-hooks = []
 criterion = { version = "0.5", default-features = false }
 proc-macro2 = "1"
 proptest = "1"
-rafter-invariant-test = { path = "../rafter-invariant-test" }
 syn = { version = "2", features = ["full", "visit"] }
 
 [[bench]]

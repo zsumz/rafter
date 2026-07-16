@@ -7,10 +7,14 @@
 00 00 00 00 00 00 00 01
 00 00 00 00 00 00 00 0a
 00 00 00 00 00 00 00 07
-# entry_count = 0
+# entry_count
+00 00 00 01
+# entry term, application tag, zero payload length
+00 00 00 00 00 00 00 08
+00
 00 00 00 00
 # leader_commit, sequence
 00 00 00 00 00 00 00 0b
 00 00 00 00 00 00 00 03
 # checksum
-6f 71 90 39
+9e 22 55 63

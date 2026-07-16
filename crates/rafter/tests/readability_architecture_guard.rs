@@ -3,6 +3,11 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use syn::{
+    visit::{self, Visit},
+    Expr, ExprMethodCall,
+};
+
 #[path = "support/mutation_ownership.rs"]
 mod mutation_ownership;
 #[path = "support/readability.rs"]
@@ -129,7 +134,9 @@ fn codec_wire_tag_numbers_have_one_owner() {
         if path == tags_path {
             continue;
         }
-        for (line_index, line) in read(&path).lines().enumerate() {
+        let source = read(&path);
+        let relative = display_path(&workspace, &path);
+        for (line_index, line) in source.lines().enumerate() {
             let compact = line
                 .chars()
                 .filter(|character| !character.is_whitespace())
@@ -137,17 +144,15 @@ fn codec_wire_tag_numbers_have_one_owner() {
             let legacy_declaration = ["constMSG_", "constENTRY_", "constMEMBERSHIP_"]
                 .iter()
                 .any(|marker| compact.contains(marker));
-            let numeric_tag_write = (0..=10)
-                .map(|tag| format!(".u8({tag})"))
-                .any(|marker| compact.contains(&marker));
-            if legacy_declaration || numeric_tag_write {
+            if legacy_declaration {
                 violations.push(format!(
-                    "{}:{} declares or writes a numeric wire tag outside v1/tags.rs",
-                    display_path(&workspace, &path),
-                    line_index + 1
+                    "{relative}:{} declares a wire-tag alias outside v1/tags.rs",
+                    line_index + 1,
                 ));
             }
         }
+
+        violations.extend(unapproved_u8_writes(&relative, &source));
     }
 
     assert!(
@@ -155,6 +160,112 @@ fn codec_wire_tag_numbers_have_one_owner() {
         "codec wire-tag ownership violations:\n{}",
         violations.join("\n")
     );
+}
+
+struct CodecU8WriteVisitor<'a> {
+    relative_path: &'a str,
+    violations: Vec<String>,
+}
+
+impl<'ast> Visit<'ast> for CodecU8WriteVisitor<'_> {
+    fn visit_expr_method_call(&mut self, call: &'ast ExprMethodCall) {
+        if call.method == "u8"
+            && call.args.len() == 1
+            && !u8_write_is_approved(
+                self.relative_path,
+                call.args.first().expect("one argument was checked"),
+            )
+        {
+            self.violations.push(format!(
+                "{} writes an untyped u8 value; protocol tags must be converted from v1/tags.rs",
+                self.relative_path,
+            ));
+        }
+        visit::visit_expr_method_call(self, call);
+    }
+}
+
+fn unapproved_u8_writes(relative_path: &str, source: &str) -> Vec<String> {
+    let syntax = syn::parse_file(source)
+        .unwrap_or_else(|error| panic!("parse {relative_path} for tag ownership: {error}"));
+    let mut visitor = CodecU8WriteVisitor {
+        relative_path,
+        violations: Vec::new(),
+    };
+    visitor.visit_file(&syntax);
+    visitor.violations
+}
+
+fn u8_write_is_approved(relative_path: &str, argument: &Expr) -> bool {
+    (relative_path == "crates/rafter-codec/src/frame.rs" && expr_is_path(argument, &["VERSION"]))
+        || (relative_path == "crates/rafter-codec/src/wire.rs"
+            && is_u8_from_named_value(argument, "value"))
+        || (relative_path == "crates/rafter-codec/src/v1/message.rs"
+            && is_into_from_named_value(argument, "tag"))
+        || is_typed_tag_conversion(argument)
+}
+
+fn is_typed_tag_conversion(expression: &Expr) -> bool {
+    match expression {
+        Expr::MethodCall(call) => {
+            call.method == "into" && call.args.is_empty() && is_tag_variant(&call.receiver)
+        }
+        Expr::Call(call) => {
+            expr_is_path(&call.func, &["u8", "from"])
+                && call.args.len() == 1
+                && call.args.first().is_some_and(is_tag_variant)
+        }
+        _ => false,
+    }
+}
+
+fn is_tag_variant(expression: &Expr) -> bool {
+    let Expr::Path(path) = expression else {
+        return false;
+    };
+    let segments = path
+        .path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .collect::<Vec<_>>();
+    segments.windows(2).any(|pair| {
+        matches!(
+            pair[0].as_str(),
+            "MessageTag" | "LogEntryTag" | "MembershipTag"
+        )
+    })
+}
+
+fn is_into_from_named_value(expression: &Expr, value: &str) -> bool {
+    matches!(
+        expression,
+        Expr::MethodCall(call)
+            if call.method == "into"
+                && call.args.is_empty()
+                && expr_is_path(&call.receiver, &[value])
+    )
+}
+
+fn is_u8_from_named_value(expression: &Expr, value: &str) -> bool {
+    matches!(
+        expression,
+        Expr::Call(call)
+            if expr_is_path(&call.func, &["u8", "from"])
+                && call.args.len() == 1
+                && call.args.first().is_some_and(|argument| expr_is_path(argument, &[value]))
+    )
+}
+
+fn expr_is_path(expression: &Expr, expected: &[&str]) -> bool {
+    let Expr::Path(path) = expression else {
+        return false;
+    };
+    path.path
+        .segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .eq(expected.iter().copied())
 }
 
 #[test]
@@ -484,5 +595,32 @@ mod tests {
         assert!(is_production_source(Path::new(
             "crates/rafter/src/node/election.rs"
         )));
+    }
+
+    #[test]
+    fn codec_tag_write_detector_accepts_typed_tags_and_rejects_every_untyped_form() {
+        let append = "crates/rafter-codec/src/v1/append.rs";
+        assert!(unapproved_u8_writes(
+            append,
+            "fn encode(writer: &mut Writer) { writer.u8(LogEntryTag::Noop.into()); }",
+        )
+        .is_empty());
+
+        for untyped in [
+            "writer.u8(11);",
+            "writer.u8(0x0b);",
+            "writer.u8(0o13);",
+            "writer.u8(0b1011);",
+            "writer.u8(NEXT_MESSAGE_TAG);",
+            "writer.u8(11u8);",
+            "writer.u8(\n    NEXT_MESSAGE_TAG,\n);",
+        ] {
+            let source = format!("fn encode(writer: &mut Writer) {{ {untyped} }}");
+            assert_eq!(
+                unapproved_u8_writes(append, &source).len(),
+                1,
+                "untyped tag write escaped detection: {untyped}",
+            );
+        }
     }
 }

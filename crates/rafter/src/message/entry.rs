@@ -75,9 +75,14 @@ impl LogEntry {
         max_replication_bytes.saturating_sub(APPLICATION_LOG_ENTRY_REPLICATION_OVERHEAD_BYTES)
     }
 
-    /// Size this entry contributes to an append-entries batch budget: an
-    /// upper bound of its wire encoding, so transports can derive frame
-    /// limits from the configured budget.
+    /// Size this entry contributes to the append-entries batching target: an
+    /// upper bound of its wire encoding.
+    ///
+    /// This is batch accounting, not a maximum encoded-frame size. A permitted
+    /// individual entry may exceed the target. Transport receive limits must
+    /// independently accommodate the largest permitted application entry plus
+    /// append-frame overhead, and snapshot metadata plus a full chunk. See
+    /// `rafter-codec/WIRE_FORMAT_V1.md` for the peer-frame sizing contract.
     #[must_use]
     pub fn replication_bytes(&self) -> usize {
         match &self.kind {

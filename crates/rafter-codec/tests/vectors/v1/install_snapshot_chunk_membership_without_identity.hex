@@ -16,30 +16,21 @@
 # application kind = "vector_state", version = 1
 00 0c 76 65 63 74 6f 72 5f 73 74 61 74 65
 00 01
-# committed configuration and identity present: index 40, config_id 10
-01 01
-00 00 00 00 00 00 00 28
-00 00 00 00 00 00 00 0a
-# joint membership
-01
-# old voters [1, 2], old learners [3]
+# committed configuration present, configuration identity absent
+01 00
+# stable membership: voters [1, 2], learners [3]
+00
 00 02
 00 00 00 00 00 00 00 01
 00 00 00 00 00 00 00 02
 00 01
 00 00 00 00 00 00 00 03
-# new voters [1, 3], no new learners
-00 02
-00 00 00 00 00 00 00 01
-00 00 00 00 00 00 00 03
-00 00
-# total_payload_len = 14, application_payload_crc32, offset
-00 00 00 00 00 00 00 0e
+# total_payload_len, application_payload_crc32, offset
+00 00 00 00 00 00 00 00
 12 34 ab cd
 00 00 00 00 00 00 00 00
-# chunk length, chunk = "joint snapshot", done
-00 00 00 0e
-6a 6f 69 6e 74 20 73 6e 61 70 73 68 6f 74
+# empty chunk, done
+00 00 00 00
 01
 # checksum
-73 9c 7a 95
+10 78 0d a2

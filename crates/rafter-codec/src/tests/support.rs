@@ -176,3 +176,112 @@ pub(super) fn rewrite_frame_checksum(encoded: &mut [u8]) {
     let checksum = crc32(&encoded[..checksum_offset]);
     encoded[checksum_offset..].copy_from_slice(&checksum.to_be_bytes());
 }
+
+/// Builds snapshot bytes from the written v1 grammar without model
+/// constructors, so semantic-acceptance tests cannot drift with those
+/// constructors.
+pub(super) fn raw_v1_snapshot_chunk_frame(
+    group_id: &[u8],
+    application_kind: &[u8],
+    application_version: u16,
+    last_included_index: u64,
+    last_included_term: u64,
+    hard_state_term: u64,
+) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(b"RFPM");
+    encoded.push(1); // v1
+    encoded.push(7); // InstallSnapshotChunk
+    push_u64(&mut encoded, 9); // term
+    push_u64(&mut encoded, 1); // leader id
+    push_u64(&mut encoded, 123_456); // transfer id
+    push_bytes_u16(&mut encoded, group_id);
+    push_u64(&mut encoded, 1); // writer id
+    push_u64(&mut encoded, last_included_index);
+    push_u64(&mut encoded, last_included_term);
+    push_u64(&mut encoded, hard_state_term);
+    push_bytes_u16(&mut encoded, application_kind);
+    push_u16(&mut encoded, application_version);
+    encoded.push(0); // no committed configuration
+    push_u64(&mut encoded, 0); // total payload length
+    push_u32(&mut encoded, 0); // application payload CRC32
+    push_u64(&mut encoded, 0); // offset
+    push_u32(&mut encoded, 0); // empty chunk
+    encoded.push(1); // done
+    encoded.extend_from_slice(&[0; 4]);
+    rewrite_frame_checksum(&mut encoded);
+    encoded
+}
+
+pub(super) fn raw_v1_stable_membership_append(voters: &[u64], learners: &[u64]) -> Vec<u8> {
+    raw_v1_configuration_append(1, &[(voters, learners)])
+}
+
+pub(super) fn raw_v1_joint_membership_append(
+    old_voters: &[u64],
+    old_learners: &[u64],
+    new_voters: &[u64],
+    new_learners: &[u64],
+) -> Vec<u8> {
+    raw_v1_configuration_append(2, &[(old_voters, old_learners), (new_voters, new_learners)])
+}
+
+fn raw_v1_configuration_append(entry_tag: u8, memberships: &[(&[u64], &[u64])]) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(b"RFPM");
+    encoded.push(1); // v1
+    encoded.push(3); // AppendEntries
+    push_u64(&mut encoded, 8); // term
+    push_u64(&mut encoded, 1); // leader id
+    push_u64(&mut encoded, 10); // previous log index
+    push_u64(&mut encoded, 7); // previous log term
+    push_u32(&mut encoded, 1); // entry count
+    push_u64(&mut encoded, 8); // entry term
+    encoded.push(entry_tag);
+    push_u64(&mut encoded, 1); // configuration id
+    for &(voters, learners) in memberships {
+        push_membership_set(&mut encoded, voters, learners);
+    }
+    push_u64(&mut encoded, 11); // leader commit
+    push_u64(&mut encoded, 0); // sequence
+    encoded.extend_from_slice(&[0; 4]);
+    rewrite_frame_checksum(&mut encoded);
+    encoded
+}
+
+fn push_membership_set(encoded: &mut Vec<u8>, voters: &[u64], learners: &[u64]) {
+    push_u16(
+        encoded,
+        u16::try_from(voters.len()).expect("raw voter count fits v1"),
+    );
+    for &voter in voters {
+        push_u64(encoded, voter);
+    }
+    push_u16(
+        encoded,
+        u16::try_from(learners.len()).expect("raw learner count fits v1"),
+    );
+    for &learner in learners {
+        push_u64(encoded, learner);
+    }
+}
+
+fn push_bytes_u16(encoded: &mut Vec<u8>, bytes: &[u8]) {
+    push_u16(
+        encoded,
+        u16::try_from(bytes.len()).expect("raw byte length fits v1"),
+    );
+    encoded.extend_from_slice(bytes);
+}
+
+fn push_u16(encoded: &mut Vec<u8>, value: u16) {
+    encoded.extend_from_slice(&value.to_be_bytes());
+}
+
+fn push_u32(encoded: &mut Vec<u8>, value: u32) {
+    encoded.extend_from_slice(&value.to_be_bytes());
+}
+
+fn push_u64(encoded: &mut Vec<u8>, value: u64) {
+    encoded.extend_from_slice(&value.to_be_bytes());
+}
