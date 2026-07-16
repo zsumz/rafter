@@ -3,9 +3,11 @@ use std::{error::Error, io, time::Instant};
 use rafter_sim::model_check::{
     check_raft_commit_safety, check_raft_election_safety,
     check_raft_joint_membership_restart_and_snapshot_safety, check_raft_leadership_noop_safety,
-    check_raft_membership_safety, check_raft_read_index_safety,
+    check_raft_lease_fast_path_read_safety, check_raft_membership_safety,
+    check_raft_production_config_commit_safety, check_raft_read_index_safety,
     check_raft_restart_and_snapshot_safety, check_raft_seeded_commit_safety,
-    check_raft_semantic_witness_safety, Bounds, ExplorationCompletion, Failure, Summary,
+    check_raft_semantic_witness_safety, check_raft_window_one_backpressure_safety, Bounds,
+    ExplorationCompletion, Failure, Summary,
 };
 use rafter_sim::SimSeed;
 
@@ -38,13 +40,13 @@ pub(super) fn run_fast_profile() -> Result<(), Box<dyn Error>> {
         )
     })?;
     run_raft_check("raft-commit-window1", || {
-        check_raft_commit_safety(
+        check_raft_window_one_backpressure_safety(
             three_node_configs_with_inflight_window(2, 1),
             Bounds::new(bounds.commit_depth).with_max_proposals(bounds.commit_proposals),
         )
     })?;
     run_raft_check("raft-commit-production", || {
-        check_raft_commit_safety(
+        check_raft_production_config_commit_safety(
             three_node_production_configs(3),
             Bounds::new(bounds.commit_production_depth).with_max_proposals(1),
         )
@@ -98,7 +100,7 @@ pub(super) fn run_fast_profile() -> Result<(), Box<dyn Error>> {
         )
     })?;
     run_raft_check("raft-lease-read", || {
-        check_raft_read_index_safety(
+        check_raft_lease_fast_path_read_safety(
             three_node_lease_configs(8),
             Bounds::new(bounds.lease_read_depth)
                 .with_max_proposals(1)

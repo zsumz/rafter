@@ -18,14 +18,52 @@ fn machine_failure_event_preserves_classification_and_message() {
     let event = failure_event(
         "raft-commit",
         FailureKind::CoverageNotReached,
-        "CM-02",
+        "CM-02 commit requires effective quorum",
         "required witness absent",
     );
     assert_eq!(event["event"], "check-failure");
+    assert_eq!(event["event_version"], 2);
     assert_eq!(event["status"], "incomplete");
     assert_eq!(event["classification"], "coverage-not-reached");
-    assert_eq!(event["invariant"], "CM-02");
+    assert_eq!(event["invariant_id"], "CM-02");
+    assert_eq!(event["invariant"], "CM-02 commit requires effective quorum");
     assert_eq!(event["message"], "required witness absent");
+}
+
+#[test]
+fn machine_failure_event_fails_closed_on_changed_reviewed_label() {
+    let event = failure_event(
+        "raft-commit",
+        FailureKind::InvariantViolation,
+        "CM-02 renamed quorum statement",
+        "committed without a quorum",
+    );
+
+    assert_eq!(event["event_version"], 2);
+    assert_eq!(event["status"], "error");
+    assert_eq!(event["classification"], "harness-error");
+    assert!(event["invariant_id"].is_null());
+    assert_eq!(event["invariant"], "CM-02 renamed quorum statement");
+    assert_eq!(event["reported_classification"], "invariant-violation");
+    assert_eq!(event["reported_message"], "committed without a quorum");
+    assert!(event["message"]
+        .as_str()
+        .is_some_and(|message| message.contains("unregistered invariant label")));
+}
+
+#[test]
+fn machine_failure_event_fails_closed_on_non_reviewed_harness_label() {
+    let event = failure_event(
+        "raft-commit",
+        FailureKind::CoverageNotReached,
+        "model-check scheduling harness",
+        "schedule identity missing",
+    );
+
+    assert_eq!(event["status"], "error");
+    assert_eq!(event["classification"], "harness-error");
+    assert!(event["invariant_id"].is_null());
+    assert_eq!(event["reported_classification"], "coverage-not-reached");
 }
 
 #[test]
