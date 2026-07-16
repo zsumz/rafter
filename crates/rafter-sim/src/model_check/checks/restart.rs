@@ -4,9 +4,11 @@ use super::super::{
     catalog,
     explorers::RestartSafetyExplorer,
     helpers::{summarize, three_node_configs},
+    observations::Observation,
     state::{ExplorationState, RestartSnapshotState},
     Bounds, Failure, Summary,
 };
+use super::purpose::require_observation;
 
 /// Exhaustively explores restart and snapshot-transfer schedules while the
 /// snapshot carries a committed joint membership.
@@ -55,7 +57,12 @@ pub fn check_raft_joint_membership_restart_and_snapshot_safety(
             state: summarize(state.state.cluster()),
         });
     }
-    Ok(explorer.summary())
+    require_observation(
+        explorer.summary(),
+        Observation::JointConfigRestartSnapshotRecovered,
+        catalog::PS_03_EXACT_DURABLE_RESTART,
+        summarize(state.state.cluster()),
+    )
 }
 
 /// Exhaustively explores bounded Raft restart and snapshot-transfer schedules.
