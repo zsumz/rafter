@@ -149,6 +149,8 @@ fn bind_executable(
         let descriptor = rustix::io::fcntl_dupfd_cloexec(&file, 3)?;
         #[cfg(target_os = "linux")]
         let path = PathBuf::from(format!("/proc/self/fd/{}", descriptor.as_raw_fd()));
+        #[cfg(target_os = "linux")]
+        let _ = executable_path;
         #[cfg(not(target_os = "linux"))]
         let path = executable_path;
         Ok((
@@ -379,7 +381,11 @@ pub(super) fn process_group_rss_kib(process_group: u32) -> Result<u64, Box<dyn E
 pub(super) fn process_group_observation(
     process_group: u32,
 ) -> Result<ProcessGroupObservation, Box<dyn Error>> {
-    let output = bounded_internal_output("ps", &["-e", "-o", "pgid=,rss="], PS_TELEMETRY_TIMEOUT)?;
+    let output = bounded_internal_output(
+        "ps",
+        &["-e", "-o", "pgid=,rss=,stat="],
+        PS_TELEMETRY_TIMEOUT,
+    )?;
     if !output.status.success() {
         return Err(format!(
             "sample process-group RSS with ps exited {:?}: {}",
@@ -476,10 +482,13 @@ pub(super) fn parse_process_group_observation(
             .next()
             .ok_or("ps RSS row omitted resident-set size")?
             .parse::<u64>()?;
+        let state = fields.next().ok_or("ps RSS row omitted process state")?;
         if fields.next().is_some() {
             return Err("ps RSS row contained unexpected fields".into());
         }
-        if pgid == process_group {
+        // A zombie retains its process-group ID until its parent reaps it, but
+        // it cannot execute, fork, hold descriptors, or survive a signal.
+        if pgid == process_group && !state.starts_with('Z') {
             observation.state = ProcessGroupState::Alive;
             observation.rss_kib = observation
                 .rss_kib
