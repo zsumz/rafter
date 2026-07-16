@@ -149,7 +149,7 @@ fn derived_state_is_valid_after_snapshot_install() {
         .expect("snapshot compaction rebuilds retained configuration offsets");
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn derived_state_rejects_log_geometry_overflow() {
     let mut node = node(1, &[2, 3]);
     node.persistent.snapshot = Some(snapshot_descriptor(u64::MAX - 1, 1, 1));
@@ -165,7 +165,7 @@ fn derived_state_rejects_log_geometry_overflow() {
     oracle_assert!(error.contains("overflows LogIndex"), "{error}");
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn derived_state_rejects_commit_beyond_log() {
     let mut node = node(1, &[2, 3]);
     node.volatile.commit_index = LogIndex(1);
@@ -177,7 +177,7 @@ fn derived_state_rejects_commit_beyond_log() {
     oracle_assert!(error.contains("commit index 1 exceeds logical last index 0"));
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn derived_state_rejects_apply_beyond_commit() {
     let mut node = node(1, &[2, 3]);
     node.append_log_entry(LogEntry::application(Term(1), b"entry".to_vec()));
@@ -190,7 +190,7 @@ fn derived_state_rejects_apply_beyond_commit() {
     oracle_assert!(error.contains("applied index 1 exceeds commit index 0"));
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn derived_state_rejects_non_leader_pending_read_round() {
     let mut node = node(1, &[2, 3]);
     let membership = node.effective_membership();
@@ -209,7 +209,7 @@ fn derived_state_rejects_non_leader_pending_read_round() {
     oracle_assert!(error.contains("non-leader retains pending read-index rounds"));
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn derived_state_rejects_stale_configuration_offsets() {
     let mut node = node(1, &[2, 3]);
     node.derived.push_configuration_offset_for_test(0);
