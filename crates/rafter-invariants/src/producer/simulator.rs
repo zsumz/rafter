@@ -6,7 +6,8 @@ use crate::types::{SimulatorLivenessBinding, RESULT_SCHEMA_VERSION};
 use crate::{
     catalog::{Catalog, ProfileContract},
     CheckCompletion, CheckReceipt, EvidenceDescriptor, EvidenceResult, EvidenceStatus,
-    ExecutionReceipt, FailureClassification, ResultBundle, SimulatorIdentity, SourceReceipt,
+    ExecutionReceipt, FailureClassification, ResultBundle, SimulatorCheckContract,
+    SimulatorIdentity, SourceReceipt,
 };
 
 use super::{
@@ -15,6 +16,11 @@ use super::{
     test_exec::{self, TestOutcome},
     ProducerContext,
 };
+
+#[path = "simulator_events.rs"]
+mod events;
+
+use events::{simulator_event_inventory_issue, simulator_event_issue};
 
 struct EvaluatedEvidence {
     completion: CheckCompletion,
@@ -36,6 +42,7 @@ struct ResourceMetrics {
 
 struct ModelEvidence {
     observations: BTreeMap<String, u64>,
+    per_check_required_observations: BTreeMap<String, u64>,
     simulator_liveness: Option<SimulatorLivenessBinding>,
     issue: Option<SimulatorIssue>,
 }
@@ -63,7 +70,7 @@ pub(super) fn run(
     output_dir: &Path,
     context: &ProducerContext<'_>,
 ) -> Result<ResultBundle, Box<dyn Error>> {
-    contract
+    let runner = contract
         .runners
         .get("simulator")
         .ok_or("simulator runner missing")?;
@@ -88,6 +95,7 @@ pub(super) fn run(
     let (checks, results) = evaluate_descriptors(
         &descriptors,
         profile,
+        &runner.simulator_checks,
         &liveness_contracts,
         &model,
         &detectors,
@@ -123,6 +131,7 @@ pub(super) fn run(
 fn evaluate_descriptors(
     descriptors: &[EvidenceDescriptor],
     profile: &str,
+    check_contracts: &BTreeMap<String, SimulatorCheckContract>,
     liveness_contracts: &[crate::types::SimulatorLivenessContract],
     model: &simulator_model::SimulatorExecution,
     detectors: &DetectorRun,
@@ -135,6 +144,7 @@ fn evaluate_descriptors(
         let evaluated = evaluate_with_inventory_issue(
             descriptor,
             profile,
+            check_contracts,
             liveness_contracts,
             model,
             detectors,
@@ -181,9 +191,12 @@ pub(crate) fn evaluate_model_fixture(
         .cloned()
         .collect::<Vec<_>>();
     let contracts = liveness_contracts(&descriptors)?;
+    let (_, manifest) = crate::tests::loaded();
+    let check_contracts = &manifest.profiles[profile].runners["simulator"].simulator_checks;
     evaluate_descriptors(
         &descriptors,
         profile,
+        check_contracts,
         &contracts,
         model,
         &DetectorRun {
@@ -241,6 +254,7 @@ fn run_detectors(
         &detector_profile,
         source_ref,
         output_dir,
+        execution_deadline,
     )
 }
 
@@ -267,6 +281,7 @@ fn evaluate_detectors(
     profile: &str,
     source_ref: &str,
     output_dir: &Path,
+    scratch_deadline: std::time::Instant,
 ) -> Result<DetectorRun, Box<dyn Error>> {
     let mut outcomes = BTreeMap::new();
     let mut peak_rss_kib = compiled
@@ -298,6 +313,7 @@ fn evaluate_detectors(
             source_ref,
             &execution_id,
             output_dir,
+            scratch_deadline,
         )?;
         if let Some(binary) = &compiled_target.binary_artifact {
             outcome.artifacts.push(binary.clone());
@@ -334,6 +350,7 @@ fn evaluate(
     evaluate_with_inventory_issue(
         descriptor,
         profile,
+        &BTreeMap::new(),
         liveness_contracts,
         model,
         detectors,
@@ -344,6 +361,7 @@ fn evaluate(
 fn evaluate_with_inventory_issue(
     descriptor: &EvidenceDescriptor,
     profile: &str,
+    check_contracts: &BTreeMap<String, SimulatorCheckContract>,
     liveness_contracts: &[crate::types::SimulatorLivenessContract],
     model: &simulator_model::SimulatorExecution,
     detectors: &DetectorRun,
@@ -355,9 +373,17 @@ fn evaluate_with_inventory_issue(
         .ok_or("simulator descriptor omitted execution identity")?;
     let ModelEvidence {
         mut observations,
+        per_check_required_observations,
         simulator_liveness,
         issue,
-    } = model_observations(profile, identity, liveness_contracts, &model.events);
+    } = model_observations(
+        profile,
+        &descriptor.invariant_id,
+        identity,
+        check_contracts,
+        liveness_contracts,
+        &model.events,
+    );
     let mut artifacts = model.artifacts.clone();
     let detector_outcome = identity
         .negative_test
@@ -407,7 +433,7 @@ fn evaluate_with_inventory_issue(
             peak_rss_kib: resources.peak_rss_kib,
         });
     }
-    let coverage = coverage_reached(identity, &observations);
+    let coverage = coverage_reached(identity, &observations, &per_check_required_observations);
     if coverage {
         return Ok(EvaluatedEvidence {
             completion: if identity.liveness_report.is_some() {
@@ -527,48 +553,30 @@ fn evaluate_issue(
 }
 
 #[cfg(test)]
-mod detector_identity_tests {
-    use super::unique_detector_identities;
-    use crate::TestIdentity;
-
-    fn identity(package: &str, kind: &str, target: &str) -> TestIdentity {
-        TestIdentity {
-            package: package.to_owned(),
-            target_kind: kind.to_owned(),
-            target: target.to_owned(),
-            test_name: "same_test_name".to_owned(),
-        }
-    }
-
-    #[test]
-    fn detector_inventory_deduplicates_only_complete_test_identities() {
-        let first = identity("first", "lib", "first");
-        let second = identity("second", "test", "second");
-        let unique = unique_detector_identities(vec![first.clone(), first, second])
-            .expect("complete identities remain distinct");
-        assert_eq!(unique.len(), 2);
-        assert_ne!(unique[0].check_id(), unique[1].check_id());
-    }
-
-    #[test]
-    fn detector_inventory_rejects_ambiguous_check_id_encoding() {
-        let first = identity("a/b", "c", "d");
-        let second = identity("a", "b/c", "d");
-        assert_eq!(first.check_id(), second.check_id());
-        assert!(unique_detector_identities(vec![first, second]).is_err());
-    }
-}
+#[path = "simulator_detector_identity_tests.rs"]
+mod detector_identity_tests;
 
 fn model_observations(
     profile: &str,
+    invariant_id: &str,
     identity: &SimulatorIdentity,
+    check_contracts: &BTreeMap<String, SimulatorCheckContract>,
     liveness_contracts: &[crate::types::SimulatorLivenessContract],
     events: &BTreeMap<String, Vec<Value>>,
 ) -> ModelEvidence {
     let mut observations = BTreeMap::new();
+    let mut per_check_required_observations = BTreeMap::new();
     let mut issue = None;
     for check in &identity.checks {
         let matching = events.get(check).map(Vec::as_slice).unwrap_or_default();
+        per_check_required_observations.insert(
+            check.clone(),
+            matching
+                .iter()
+                .filter(|event| event.get("status").and_then(Value::as_str) == Some("pass"))
+                .filter_map(|event| event["observations"][&identity.required_observation].as_u64())
+                .sum(),
+        );
         observations.insert(format!("runs:{check}"), matching.len() as u64);
         observations.insert(
             format!("passes:{check}"),
@@ -583,8 +591,17 @@ fn model_observations(
             .min()
             .unwrap_or_default();
         observations.insert(format!("steps:{check}"), minimum_steps);
+        if let Some(contract) = check_contracts.get(check) {
+            merge_issue(
+                &mut issue,
+                simulator_check_contract_issue(check, matching, contract, &mut observations),
+            );
+        }
         for event in matching {
-            merge_issue(&mut issue, simulator_event_issue(check, event));
+            merge_issue(
+                &mut issue,
+                simulator_event_issue(check, invariant_id, event),
+            );
             if identity.liveness_report.is_none() {
                 merge_event_observations(event, &mut observations);
             }
@@ -593,6 +610,7 @@ fn model_observations(
     if identity.liveness_report.is_none() {
         return ModelEvidence {
             observations,
+            per_check_required_observations,
             simulator_liveness: None,
             issue,
         };
@@ -625,6 +643,7 @@ fn model_observations(
     };
     ModelEvidence {
         observations,
+        per_check_required_observations,
         simulator_liveness,
         issue,
     }
@@ -651,98 +670,100 @@ fn liveness_contracts(
     Ok(by_feature.into_values().collect())
 }
 
-fn simulator_event_issue(check: &str, event: &Value) -> Option<SimulatorIssue> {
-    let message = event.get("message").and_then(Value::as_str).map_or_else(
-        || format!("simulator check `{check}` did not pass"),
-        str::to_owned,
-    );
-    match (
-        event.get("status").and_then(Value::as_str),
-        event.get("classification"),
-    ) {
-        (Some("pass"), None | Some(Value::Null)) => None,
-        (Some("fail"), Some(Value::String(classification)))
-            if classification == "invariant-violation" =>
-        {
-            Some(SimulatorIssue::InvariantViolation(message))
-        }
-        (Some("incomplete"), Some(Value::String(classification)))
-            if classification == "coverage-not-reached" =>
-        {
-            Some(SimulatorIssue::CoverageNotReached(message))
-        }
-        (Some("error"), Some(Value::String(classification)))
-            if classification == "harness-error" =>
-        {
-            Some(SimulatorIssue::HarnessError(message))
-        }
-        _ => Some(SimulatorIssue::HarnessError(invalid_event_pair_message(
-            check, event,
-        ))),
-    }
-}
-
-fn simulator_event_inventory_issue(
-    profile: &str,
-    descriptors: &[EvidenceDescriptor],
-    events: &BTreeMap<String, Vec<Value>>,
+fn simulator_check_contract_issue(
+    check: &str,
+    events: &[Value],
+    contract: &SimulatorCheckContract,
+    observations: &mut BTreeMap<String, u64>,
 ) -> Option<SimulatorIssue> {
-    let claimed = descriptors
-        .iter()
-        .filter_map(|descriptor| descriptor.simulator.as_ref())
-        .flat_map(|identity| identity.checks.iter().cloned())
-        .collect::<std::collections::BTreeSet<_>>();
-    let mut unknown = std::collections::BTreeSet::new();
-    let mut issue = None;
-    for (indexed_check_id, indexed_events) in events {
-        for event in indexed_events.iter().filter(|event| {
-            event.get("check_id").and_then(Value::as_str) == Some(indexed_check_id.as_str())
-        }) {
-            let check_id = indexed_check_id.as_str();
-            let canonical = simulator_model::canonical_check_id(profile, check_id);
-            if claimed.contains(check_id)
-                || canonical
-                    .as_ref()
-                    .is_some_and(|canonical| claimed.contains(canonical))
-            {
-                continue;
-            }
-            if allowed_summary_event(profile, check_id, event) {
-                merge_issue(&mut issue, simulator_event_issue(check_id, event));
-            } else {
-                unknown.insert(check_id.to_owned());
-            }
-        }
-    }
-    if !unknown.is_empty() {
-        merge_issue(
-            &mut issue,
-            Some(SimulatorIssue::HarnessError(format!(
-                "simulator emitted unclaimed machine event check IDs: {}",
-                unknown.into_iter().collect::<Vec<_>>().join(", ")
-            ))),
+    let protocol_key = crate::catalog::per_check_protocol_states_key(check);
+    let verifier_key = crate::catalog::per_check_verifier_states_key(check);
+    observations.insert(protocol_key, 0);
+    observations.insert(verifier_key, 0);
+    for observation in &contract.required_observations {
+        observations.insert(
+            crate::catalog::per_check_observation_key(check, observation),
+            0,
         );
     }
-    issue
-}
-
-fn allowed_summary_event(profile: &str, check_id: &str, event: &Value) -> bool {
-    matches!(profile, "nightly" | "weekly")
-        && event.get("event").and_then(Value::as_str) == Some("profile-total")
-        && check_id == format!("raft-profile-total-{profile}")
-}
-
-fn invalid_event_pair_message(check: &str, event: &Value) -> String {
-    let field = |name| {
-        event
-            .get(name)
-            .map_or_else(|| "<missing>".to_owned(), Value::to_string)
+    let [event] = events else {
+        return Some(if events.is_empty() {
+            SimulatorIssue::CoverageNotReached(format!(
+                "profile contract did not observe simulator check `{check}`"
+            ))
+        } else {
+            SimulatorIssue::HarnessError(format!(
+                "profile contract requires exactly one event for simulator check `{check}`, found {}",
+                events.len()
+            ))
+        });
     };
-    format!(
-        "simulator check `{check}` has invalid status/classification pair: status={}, classification={}",
-        field("status"),
-        field("classification")
-    )
+    let protocol_states = event
+        .get("unique_protocol_states")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let verifier_states = event
+        .get("unique_verifier_states")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    observations.insert(
+        crate::catalog::per_check_protocol_states_key(check),
+        protocol_states,
+    );
+    observations.insert(
+        crate::catalog::per_check_verifier_states_key(check),
+        verifier_states,
+    );
+    for observation in &contract.required_observations {
+        observations.insert(
+            crate::catalog::per_check_observation_key(check, observation),
+            event["observations"][observation]
+                .as_u64()
+                .unwrap_or_default(),
+        );
+    }
+    if event.get("status").and_then(Value::as_str) != Some("pass") {
+        return None;
+    }
+    if event.get("event").and_then(Value::as_str) != Some("exhaustive-check")
+        || event.get("check_id").and_then(Value::as_str) != Some(check)
+        || event
+            .get("unique_protocol_states")
+            .and_then(Value::as_u64)
+            .is_none()
+        || event
+            .get("unique_verifier_states")
+            .and_then(Value::as_u64)
+            .is_none()
+        || !event.get("observations").is_some_and(Value::is_object)
+    {
+        return Some(SimulatorIssue::HarnessError(format!(
+            "simulator check `{check}` has a malformed per-check profile receipt"
+        )));
+    }
+    let missing_observations = contract
+        .required_observations
+        .iter()
+        .filter(|observation| {
+            event["observations"][observation.as_str()]
+                .as_u64()
+                .unwrap_or_default()
+                == 0
+        })
+        .cloned()
+        .collect::<Vec<_>>();
+    if protocol_states < contract.minimum_protocol_states
+        || verifier_states < contract.minimum_verifier_states
+        || !missing_observations.is_empty()
+    {
+        return Some(SimulatorIssue::CoverageNotReached(format!(
+            "simulator check `{check}` missed its profile contract: protocol states {protocol_states}/{}, verifier states {verifier_states}/{}, missing observations [{}]",
+            contract.minimum_protocol_states,
+            contract.minimum_verifier_states,
+            missing_observations.join(", ")
+        )));
+    }
+    None
 }
 
 fn merge_issue(current: &mut Option<SimulatorIssue>, candidate: Option<SimulatorIssue>) {
@@ -780,7 +801,11 @@ fn merge_event_observations(event: &Value, observations: &mut BTreeMap<String, u
     }
 }
 
-fn coverage_reached(identity: &SimulatorIdentity, observations: &BTreeMap<String, u64>) -> bool {
+fn coverage_reached(
+    identity: &SimulatorIdentity,
+    observations: &BTreeMap<String, u64>,
+    per_check_required_observations: &BTreeMap<String, u64>,
+) -> bool {
     let witness = observations
         .get(&identity.required_observation)
         .copied()
@@ -809,6 +834,13 @@ fn coverage_reached(identity: &SimulatorIdentity, observations: &BTreeMap<String
             && !contract.feature_id.is_empty();
     }
     witness
+        && identity.checks.iter().any(|check| {
+            per_check_required_observations
+                .get(check)
+                .copied()
+                .unwrap_or_default()
+                >= identity.minimum_observation as u64
+        })
         && identity.checks.iter().all(|check| {
             observations
                 .get(&format!("passes:{check}"))

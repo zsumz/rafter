@@ -1,4 +1,4 @@
-use rafter_sim::model_check::{Failure, FailureKind, SoakFailure};
+use rafter_sim::model_check::{reviewed_invariant_id, Failure, FailureKind, SoakFailure};
 use serde_json::json;
 
 use super::EVENT_PREFIX;
@@ -61,6 +61,22 @@ pub(super) fn failure_event(
     invariant: &str,
     message: &str,
 ) -> serde_json::Value {
+    let Some(invariant_id) = reviewed_invariant_id(invariant) else {
+        return json!({
+            "event": "check-failure",
+            "event_version": 2,
+            "check_id": name,
+            "status": "error",
+            "classification": FailureKind::HarnessError.as_str(),
+            "invariant_id": serde_json::Value::Null,
+            "invariant": invariant,
+            "message": format!(
+                "check failure used an unregistered invariant label {invariant:?}; original {kind}: {message}"
+            ),
+            "reported_classification": kind.as_str(),
+            "reported_message": message,
+        });
+    };
     let status = match kind {
         FailureKind::InvariantViolation => "fail",
         FailureKind::CoverageNotReached => "incomplete",
@@ -68,9 +84,11 @@ pub(super) fn failure_event(
     };
     json!({
         "event": "check-failure",
+        "event_version": 2,
         "check_id": name,
         "status": status,
         "classification": kind.as_str(),
+        "invariant_id": invariant_id,
         "invariant": invariant,
         "message": message,
     })

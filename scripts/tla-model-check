@@ -13,7 +13,7 @@
 # into tools/cache/ and verifies it against tools/tla/SHA256SUMS before running.
 set -euo pipefail
 
-repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+repo_root="${RAFTER_TLA_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 config="RaftCi.cfg"
 module="Raft.tla"
 print_config=false

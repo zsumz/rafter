@@ -1,10 +1,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{CheckReceipt, EvidenceDescriptor, EvidenceStatus, ResultBundle, SimulatorIdentity};
+use crate::{
+    CheckReceipt, EvidenceDescriptor, EvidenceStatus, ResultBundle, RunnerContract,
+    SimulatorIdentity,
+};
 
 pub(super) fn validate(
     bundle: &ResultBundle,
     expected: &BTreeMap<String, &EvidenceDescriptor>,
+    runner_contract: &RunnerContract,
 ) -> Result<(), &'static str> {
     let required = expected
         .iter()
@@ -33,7 +37,7 @@ pub(super) fn validate(
         if check.evidence_ids != [evidence_id] {
             return Err("simulator evidence fanout does not match the registry");
         }
-        validate_check(bundle, check, descriptor, identity)?;
+        validate_check(bundle, check, descriptor, identity, runner_contract)?;
     }
     Ok(())
 }
@@ -43,6 +47,7 @@ fn validate_check(
     check: &CheckReceipt,
     descriptor: &EvidenceDescriptor,
     identity: &SimulatorIdentity,
+    runner_contract: &RunnerContract,
 ) -> Result<(), &'static str> {
     let statuses = bundle
         .results
@@ -89,7 +94,9 @@ fn validate_check(
                 .iter()
                 .any(|name| observed(check, &format!("passes:{name}")) < 1)
         {
-            return Err("passing simulator safety check is below its state or completion floor");
+            return Err(
+                "passing simulator safety check is below its descriptor state or completion floor",
+            );
         }
     }
     if let (Some(runs), Some(steps)) = (identity.minimum_runs_per_check, identity.minimum_steps) {
@@ -108,6 +115,41 @@ fn validate_check(
         }
     } else if check.simulator_liveness.is_some() {
         return Err("simulator safety check has an unexpected liveness report binding");
+    }
+    validate_profile_check_contract(check, identity, runner_contract)?;
+    Ok(())
+}
+
+fn validate_profile_check_contract(
+    check: &CheckReceipt,
+    identity: &SimulatorIdentity,
+    runner_contract: &RunnerContract,
+) -> Result<(), &'static str> {
+    for check_id in &identity.checks {
+        let Some(contract) = runner_contract.simulator_checks.get(check_id) else {
+            continue;
+        };
+        if observed(
+            check,
+            &crate::catalog::per_check_protocol_states_key(check_id),
+        ) < contract.minimum_protocol_states
+            || observed(
+                check,
+                &crate::catalog::per_check_verifier_states_key(check_id),
+            ) < contract.minimum_verifier_states
+        {
+            return Err("passing simulator check is below its profile-owned per-check state floor");
+        }
+        if contract.required_observations.iter().any(|observation| {
+            observed(
+                check,
+                &crate::catalog::per_check_observation_key(check_id, observation),
+            ) < 1
+        }) {
+            return Err(
+                "passing simulator check lacks a profile-owned per-check semantic observation",
+            );
+        }
     }
     Ok(())
 }

@@ -9,7 +9,8 @@ use super::{
     simulator_event_issue, DetectorRun, SimulatorIssue,
 };
 use crate::{
-    CheckCompletion, EvidenceDescriptor, EvidenceStatus, FailureClassification, SimulatorIdentity,
+    CheckCompletion, EvidenceDescriptor, EvidenceStatus, FailureClassification,
+    SimulatorCheckContract, SimulatorIdentity,
 };
 use serde_json::json;
 
@@ -17,7 +18,15 @@ use serde_json::json;
 fn simulator_failure_classifications_remain_distinct() {
     let invariant = simulator_event_issue(
         "raft-soak",
-        &json!({"status": "fail", "classification": "invariant-violation"}),
+        "CM-02",
+        &json!({
+            "event": "check-failure",
+            "event_version": 2,
+            "status": "fail",
+            "classification": "invariant-violation",
+            "invariant_id": "CM-02",
+            "invariant": "CM-02 commit requires effective quorum",
+        }),
     );
     assert!(matches!(
         invariant,
@@ -26,6 +35,7 @@ fn simulator_failure_classifications_remain_distinct() {
 
     let incomplete = simulator_event_issue(
         "raft-soak",
+        "CM-02",
         &json!({"status": "incomplete", "classification": "coverage-not-reached"}),
     );
     assert!(matches!(
@@ -35,6 +45,7 @@ fn simulator_failure_classifications_remain_distinct() {
 
     let malformed = simulator_event_issue(
         "raft-soak",
+        "CM-02",
         &json!({"status": "error", "classification": "harness-error"}),
     );
     assert!(matches!(malformed, Some(SimulatorIssue::HarnessError(_))));
@@ -56,19 +67,82 @@ fn safety_model_events_preserve_their_structured_failure_classification() {
     let events = BTreeMap::from([(
         "raft-commit".to_owned(),
         vec![json!({
+            "event": "check-failure",
+            "event_version": 2,
             "status": "fail",
             "classification": "invariant-violation",
+            "invariant_id": "CM-02",
+            "invariant": "CM-02 commit requires effective quorum",
             "message": "commit witness violated"
         })],
     )]);
 
-    let evidence = model_observations("pr", &identity, &[], &events);
+    let evidence = model_observations("pr", "CM-02", &identity, &BTreeMap::new(), &[], &events);
 
     assert!(matches!(
         evidence.issue,
         Some(SimulatorIssue::InvariantViolation(message))
             if message == "commit witness violated"
     ));
+}
+
+#[test]
+fn shared_model_check_routes_a_counterexample_only_to_its_invariant() {
+    let (catalog, _) = crate::tests::loaded();
+    let mut matching = standalone_safety_descriptor(&catalog.evidence);
+    matching.invariant_id = "LG-03".to_owned();
+    matching.clause_id = "LG-03.a".to_owned();
+    let mut sibling = matching.clone();
+    sibling.invariant_id = "LG-04".to_owned();
+    sibling.clause_id = "LG-04.a".to_owned();
+    let check_id = matching
+        .simulator
+        .as_ref()
+        .expect("simulator identity")
+        .checks[0]
+        .clone();
+    let model = model_fixture(BTreeMap::from([(
+        check_id.clone(),
+        vec![json!({
+            "event": "check-failure",
+            "event_version": 2,
+            "check_id": check_id,
+            "status": "fail",
+            "classification": "invariant-violation",
+            "invariant_id": "LG-03",
+            "invariant": "LG-03 log matching",
+            "message": "shared check found a log-matching counterexample",
+        })],
+    )]));
+
+    let (_, results) = evaluate_descriptors(
+        &[matching, sibling],
+        "pr",
+        &BTreeMap::new(),
+        &[],
+        &model,
+        &empty_detectors(),
+    )
+    .expect("route shared-check counterexample");
+
+    let matching = results
+        .iter()
+        .find(|result| result.invariant_id == "LG-03")
+        .expect("matching invariant result");
+    assert_eq!(matching.status, EvidenceStatus::Fail);
+    assert_eq!(
+        matching.classification,
+        Some(FailureClassification::InvariantViolation)
+    );
+    let sibling = results
+        .iter()
+        .find(|result| result.invariant_id == "LG-04")
+        .expect("sibling invariant result");
+    assert_eq!(sibling.status, EvidenceStatus::Incomplete);
+    assert_eq!(
+        sibling.classification,
+        Some(FailureClassification::CoverageNotReached)
+    );
 }
 
 #[test]
@@ -93,6 +167,7 @@ fn contradictory_pass_reduces_to_a_harness_error() {
     let (_, results) = evaluate_descriptors(
         std::slice::from_ref(&descriptor),
         "pr",
+        &BTreeMap::new(),
         &[],
         &model,
         &empty_detectors(),
@@ -118,15 +193,20 @@ fn unknown_pass_and_invariant_violation_reduce_to_the_same_deterministic_harness
     for event in [
         json!({"check_id": "unknown-check", "status": "pass"}),
         json!({
+            "event": "check-failure",
+            "event_version": 2,
             "check_id": "unknown-check",
             "status": "fail",
             "classification": "invariant-violation",
+            "invariant_id": descriptor.invariant_id,
+            "invariant": format!("{} test invariant", descriptor.invariant_id),
         }),
     ] {
         let model = model_fixture(BTreeMap::from([("unknown-check".to_owned(), vec![event])]));
         let (_, results) = evaluate_descriptors(
             std::slice::from_ref(&descriptor),
             "pr",
+            &BTreeMap::new(),
             &[],
             &model,
             &empty_detectors(),
@@ -175,9 +255,20 @@ fn timed_out_zero_exit_model_run_is_a_typed_harness_error_despite_passing_covera
     assert_eq!(receipt.exit_code, Some(0));
     assert!(receipt.timed_out);
     assert!(!model.processes_succeeded);
-    let observations = model_observations("pr", identity, &[], &model.events);
+    let observations = model_observations(
+        "pr",
+        &descriptor.invariant_id,
+        identity,
+        &BTreeMap::new(),
+        &[],
+        &model.events,
+    );
     assert!(observations.issue.is_none());
-    assert!(coverage_reached(identity, &observations.observations));
+    assert!(coverage_reached(
+        identity,
+        &observations.observations,
+        &observations.per_check_required_observations,
+    ));
 
     let result = evaluate(descriptor, "pr", &[], &model, &passing_detectors(identity))
         .expect("evaluate timed-out simulator evidence");
@@ -201,6 +292,166 @@ fn timed_out_zero_exit_model_run_is_a_typed_harness_error_despite_passing_covera
     fs::remove_dir_all(output_dir).expect("remove timeout fixture artifacts");
 }
 
+#[test]
+fn composite_safety_evidence_allows_complementary_checks_to_supply_the_witness() {
+    let identity = SimulatorIdentity {
+        checks: vec!["primary".to_owned(), "variant".to_owned()],
+        required_observation: "commit_floor_advances".to_owned(),
+        minimum_observation: 1,
+        minimum_protocol_states: Some(10),
+        minimum_verifier_states: Some(10),
+        minimum_runs_per_check: None,
+        minimum_steps: None,
+        liveness_report: None,
+        negative_test: None,
+    };
+    let events = BTreeMap::from([
+        (
+            "primary".to_owned(),
+            vec![json!({
+                "check_id": "primary",
+                "status": "pass",
+                "unique_protocol_states": 10,
+                "unique_verifier_states": 10,
+                "observations": {"commit_floor_advances": 1},
+            })],
+        ),
+        (
+            "variant".to_owned(),
+            vec![json!({
+                "check_id": "variant",
+                "status": "pass",
+                "unique_protocol_states": 1,
+                "unique_verifier_states": 1,
+                "observations": {},
+            })],
+        ),
+    ]);
+
+    let evidence = model_observations("pr", "CM-02", &identity, &BTreeMap::new(), &[], &events);
+
+    assert_eq!(evidence.observations["commit_floor_advances"], 1);
+    assert!(coverage_reached(
+        &identity,
+        &evidence.observations,
+        &evidence.per_check_required_observations,
+    ));
+}
+
+#[test]
+fn composite_safety_evidence_cannot_split_one_witness_minimum_across_checks() {
+    let identity = SimulatorIdentity {
+        checks: vec!["primary".to_owned(), "variant".to_owned()],
+        required_observation: "commit_floor_advances".to_owned(),
+        minimum_observation: 2,
+        minimum_protocol_states: Some(10),
+        minimum_verifier_states: Some(10),
+        minimum_runs_per_check: None,
+        minimum_steps: None,
+        liveness_report: None,
+        negative_test: None,
+    };
+    let event = |check: &str| {
+        json!({
+            "check_id": check,
+            "status": "pass",
+            "unique_protocol_states": 10,
+            "unique_verifier_states": 10,
+            "observations": {"commit_floor_advances": 1},
+        })
+    };
+    let events = BTreeMap::from([
+        ("primary".to_owned(), vec![event("primary")]),
+        ("variant".to_owned(), vec![event("variant")]),
+    ]);
+
+    let evidence = model_observations("pr", "CM-02", &identity, &BTreeMap::new(), &[], &events);
+
+    assert_eq!(evidence.observations["commit_floor_advances"], 2);
+    assert!(!coverage_reached(
+        &identity,
+        &evidence.observations,
+        &evidence.per_check_required_observations,
+    ));
+}
+
+#[test]
+fn per_check_profile_floor_cannot_be_borrowed_from_an_established_leg() {
+    let identity = SimulatorIdentity {
+        checks: vec!["primary".to_owned(), "variant".to_owned()],
+        required_observation: "commit_floor_advances".to_owned(),
+        minimum_observation: 1,
+        minimum_protocol_states: Some(10),
+        minimum_verifier_states: Some(10),
+        minimum_runs_per_check: None,
+        minimum_steps: None,
+        liveness_report: None,
+        negative_test: None,
+    };
+    let events = BTreeMap::from([
+        (
+            "primary".to_owned(),
+            vec![json!({
+                "event": "exhaustive-check",
+                "check_id": "primary",
+                "status": "pass",
+                "unique_protocol_states": 100_000,
+                "unique_verifier_states": 100_000,
+                "observations": {
+                    "commit_floor_advances": 1,
+                    "primary_purpose": 1,
+                },
+            })],
+        ),
+        (
+            "variant".to_owned(),
+            vec![json!({
+                "event": "exhaustive-check",
+                "check_id": "variant",
+                "status": "pass",
+                "unique_protocol_states": 1,
+                "unique_verifier_states": 1,
+                "observations": {"commit_floor_advances": 1},
+            })],
+        ),
+    ]);
+    let contracts = BTreeMap::from([
+        (
+            "primary".to_owned(),
+            SimulatorCheckContract {
+                minimum_protocol_states: 10,
+                minimum_verifier_states: 10,
+                required_observations: vec!["primary_purpose".to_owned()],
+            },
+        ),
+        (
+            "variant".to_owned(),
+            SimulatorCheckContract {
+                minimum_protocol_states: 10,
+                minimum_verifier_states: 10,
+                required_observations: vec!["variant_purpose".to_owned()],
+            },
+        ),
+    ]);
+
+    let evidence = model_observations("pr", "CM-02", &identity, &contracts, &[], &events);
+
+    assert!(coverage_reached(
+        &identity,
+        &evidence.observations,
+        &evidence.per_check_required_observations,
+    ));
+    assert!(matches!(
+        evidence.issue,
+        Some(SimulatorIssue::CoverageNotReached(message))
+            if message.contains("variant") && message.contains("variant_purpose")
+    ));
+    assert_eq!(
+        evidence.observations[&crate::catalog::per_check_protocol_states_key("variant")],
+        1
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn recorded_counterexample_outranks_a_later_process_timeout() {
@@ -212,9 +463,13 @@ fn recorded_counterexample_outranks_a_later_process_timeout() {
         stdout,
         "RAFTER_EVENT {}",
         json!({
+            "event": "check-failure",
+            "event_version": 2,
             "check_id": identity.checks[0],
             "status": "fail",
             "classification": "invariant-violation",
+            "invariant_id": descriptor.invariant_id,
+            "invariant": format!("{} test invariant", descriptor.invariant_id),
             "message": "timeout fixture found a real counterexample",
         })
     )
@@ -263,9 +518,13 @@ fn counterexample_survives_a_later_event_error_and_run_launch_failure() {
         stdout,
         "RAFTER_EVENT {}",
         json!({
+            "event": "check-failure",
+            "event_version": 2,
             "check_id": identity.checks[0],
             "status": "fail",
             "classification": "invariant-violation",
+            "invariant_id": descriptor.invariant_id,
+            "invariant": format!("{} test invariant", descriptor.invariant_id),
             "message": "first run found a real counterexample",
         })
     )
@@ -274,9 +533,13 @@ fn counterexample_survives_a_later_event_error_and_run_launch_failure() {
         stdout,
         "RAFTER_EVENT {}",
         json!({
+            "event": "check-failure",
+            "event_version": 2,
             "check_id": "unknown-later-check",
             "status": "fail",
             "classification": "invariant-violation",
+            "invariant_id": descriptor.invariant_id,
+            "invariant": format!("{} test invariant", descriptor.invariant_id),
             "message": "an unclaimed event cannot replace the known counterexample",
         })
     )
@@ -299,6 +562,7 @@ fn counterexample_survives_a_later_event_error_and_run_launch_failure() {
     let (_, results) = evaluate_descriptors(
         &descriptors,
         "pr",
+        &BTreeMap::new(),
         &contracts,
         &model,
         &passing_detectors_for_descriptors(&descriptors),

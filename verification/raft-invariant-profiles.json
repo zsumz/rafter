@@ -1,5 +1,5 @@
 {
-  "schema_version": 4,
+  "schema_version": 5,
   "reviewed_ids": [
     "ST-01",
     "EL-01", "EL-02", "EL-03", "EL-04", "EL-05", "EL-06", "EL-07", "EL-08",
@@ -30,9 +30,24 @@
           "require_peak_rss": true
         },
         "simulator": {
-          "producer": "rafter-invariants-simulator-v16",
+          "producer": "rafter-invariants-simulator-v17",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "pr", "--layer", "simulator"],
           "configuration": {"build": "release-and-test-locked", "compile_timeout": "10m", "completion": "frontier-and-semantic-floor", "execution_contract": "rafter-soak-execution-v1", "finalization_reserve": "3m", "kill_confirmation_timeout": "5s", "layer_timeout": "25m", "liveness_report_binding": "typed-canonical-json-sha256-v3", "model_profile": "fast+raft-soak", "model_timeout_policy": "remaining-layer-budget", "receipt_finalization_allowance": "5s", "seed_policy": "curated-0x9103-through-0x9106", "snapshot_catchup_probe": "required", "soak_steps": "320", "state_floors": "per-evidence", "termination_grace": "30s"},
+          "simulator_checks": {
+            "raft-commit": {"minimum_protocol_states": 96000, "minimum_verifier_states": 101000, "required_observations": ["commit_floor_advances", "same_term_leader_log_growth"]},
+            "raft-commit-production": {"minimum_protocol_states": 500, "minimum_verifier_states": 600, "required_observations": ["eligible_leader_certificates", "pre_vote_request_deliveries", "production_config_commit_observed"]},
+            "raft-commit-seeded": {"minimum_protocol_states": 10, "minimum_verifier_states": 10, "required_observations": ["cross_epoch_execution_witness_pairs", "multiple_ordered_applies_same_epoch"]},
+            "raft-commit-window1": {"minimum_protocol_states": 96000, "minimum_verifier_states": 101000, "required_observations": ["commit_floor_advances", "same_term_leader_log_growth", "window_one_backpressure_observed"]},
+            "raft-election": {"minimum_protocol_states": 14000, "minimum_verifier_states": 18000, "required_observations": ["election_certificates", "same_term_vote_reobservations"]},
+            "raft-election-prevote": {"minimum_protocol_states": 13900, "minimum_verifier_states": 13900, "required_observations": ["pre_vote_request_deliveries", "stale_pre_vote_responses"]},
+            "raft-leadership-noop-seeded": {"minimum_protocol_states": 96000, "minimum_verifier_states": 101000, "required_observations": ["current_term_commit_covering_prior_term_prefix"]},
+            "raft-lease-read": {"minimum_protocol_states": 2000, "minimum_verifier_states": 3000, "required_observations": ["completed_write_before_read_histories", "pre_vote_request_deliveries", "lease_fast_path_read_granted"]},
+            "raft-membership": {"minimum_protocol_states": 44000, "minimum_verifier_states": 44000, "required_observations": ["committed_configuration_advances", "states_with_one_uncommitted_configuration"]},
+            "raft-membership-restart-snapshot": {"minimum_protocol_states": 40, "minimum_verifier_states": 40, "required_observations": ["durable_restart_comparisons", "joint_election_certificates", "snapshot_transfer_identities_checked", "joint_config_restart_snapshot_recovered"]},
+            "raft-read-index": {"minimum_protocol_states": 29000, "minimum_verifier_states": 30000, "required_observations": ["completed_write_before_read_histories", "matched_read_grant_registrations"]},
+            "raft-restart-snapshot": {"minimum_protocol_states": 14000, "minimum_verifier_states": 15000, "required_observations": ["durable_restart_comparisons", "snapshot_transfer_identities_checked"]},
+            "raft-semantic-witnesses": {"minimum_protocol_states": 9, "minimum_verifier_states": 9, "required_observations": ["nonvoter_vote_decisions", "post_append_joint_commit_certificates"]}
+          },
           "minimum_observed_checks": 79,
           "require_peak_rss": true
         },

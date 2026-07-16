@@ -1,72 +1,6 @@
 use super::*;
 
 #[test]
-fn negative_fixture_guard_scopes_detector_to_named_test() {
-    let source =
-        "#[test]\nfn target_fixture() { reporter(); }\n\n#[test]\nfn neighbor() { detector(); }\n";
-    assert!(!fixture_exercises_detector(
-        source,
-        "target_fixture",
-        "detector"
-    ));
-}
-
-#[test]
-fn negative_fixture_guard_follows_local_fixture_helpers() {
-    let source = "#[test]\nfn target_fixture() { helper(); }\n\nfn helper() { detector(); }\nfn detector() {}\n";
-    assert!(fixture_exercises_detector(
-        source,
-        "target_fixture",
-        "detector"
-    ));
-}
-
-#[test]
-fn negative_fixture_guard_rejects_aliases_and_unrelated_qualified_calls() {
-    for source in [
-        "use crate::unrelated as detector;\n#[test]\nfn target_fixture() { detector(); }",
-        "use unrelated::detector;\n#[test]\nfn target_fixture() { detector(); }",
-        "use unrelated::*;\n#[test]\nfn target_fixture() { detector(); }",
-        "#[test]\nfn target_fixture() { other::detector(); }",
-        "#[test]\nfn target_fixture() { crate::unrelated::detector(); }",
-        "#[test]\nfn target_fixture() { fixture.detector(); }",
-    ] {
-        assert!(!fixture_exercises_detector(
-            source,
-            "target_fixture",
-            "detector"
-        ));
-    }
-}
-
-#[test]
-fn negative_fixture_guard_requires_the_exact_detector_module_path() {
-    let module = [
-        "model_check".to_owned(),
-        "liveness".to_owned(),
-        "features".to_owned(),
-        "proposal".to_owned(),
-    ];
-    let unrelated =
-        "use unrelated::proposal::detector;\n#[test]\nfn target_fixture() { detector(); }";
-    assert!(!fixture_exercises_detector_from_module(
-        unrelated,
-        "target_fixture",
-        "detector",
-        &module,
-        &[],
-    ));
-    let exact = "use crate::model_check::liveness::features::proposal::detector;\n#[test]\nfn target_fixture() { detector(); }";
-    assert!(fixture_exercises_detector_from_module(
-        exact,
-        "target_fixture",
-        "detector",
-        &module,
-        &[],
-    ));
-}
-
-#[test]
 fn cargo_integration_test_identity_requires_the_target_root_path() {
     let identity = rafter_invariants::TestIdentity {
         package: "rafter-sim".to_owned(),
@@ -196,22 +130,6 @@ fn workspace_root() -> PathBuf {
 }
 
 #[test]
-fn negative_fixture_guard_ignores_detector_names_in_comments_and_strings() {
-    let source = r#"
-#[test]
-fn target_fixture() {
-    // detector();
-    let _description = "detector()";
-}
-"#;
-    assert!(!fixture_exercises_detector(
-        source,
-        "target_fixture",
-        "detector"
-    ));
-}
-
-#[test]
 fn rust_symbol_guard_requires_a_real_declaration() {
     let path = Path::new("fixture.rs");
     assert!(!source_declares_symbol(
@@ -282,6 +200,7 @@ fn typed_oracle_guard_requires_the_helper_crate_binding() {
     let trusted_imports = trusted_oracle_imports(&trusted);
     let mut trusted_visitor = OracleMacroVisitor {
         trusted_macros: &trusted_imports,
+        qualified_crate_trusted: true,
         found: false,
         untrusted: false,
     };
@@ -296,6 +215,7 @@ fn typed_oracle_guard_requires_the_helper_crate_binding() {
     let shadowed_imports = trusted_oracle_imports(&shadowed);
     let mut shadowed_visitor = OracleMacroVisitor {
         trusted_macros: &shadowed_imports,
+        qualified_crate_trusted: true,
         found: false,
         untrusted: false,
     };
@@ -307,9 +227,16 @@ fn typed_oracle_guard_requires_the_helper_crate_binding() {
     let qualified_imports = trusted_oracle_imports(&qualified);
     let mut qualified_visitor = OracleMacroVisitor {
         trusted_macros: &qualified_imports,
+        qualified_crate_trusted: true,
         found: false,
         untrusted: false,
     };
     qualified_visitor.visit_file(&qualified);
     assert!(qualified_visitor.found && !qualified_visitor.untrusted);
+
+    let aliased = syn::parse_file(
+        "use crate::fake as rafter_invariant_test; use rafter_invariant_test::oracle_assert; fn oracle() { oracle_assert!(true); }",
+    )
+    .expect("aliased source parses");
+    assert!(trusted_oracle_imports(&aliased).is_empty());
 }

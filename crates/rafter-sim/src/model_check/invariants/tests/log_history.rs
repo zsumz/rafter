@@ -4,10 +4,10 @@ use super::super::history::{
 use super::*;
 use crate::model_check::observations::Observation;
 use rafter_invariant_test::{
-    oracle_assert, oracle_assert_eq, oracle_detector_witness, oracle_expect_err,
+    oracle_assert, oracle_assert_eq, oracle_expect_err, oracle_invoke_recorder,
 };
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn leader_append_only_detects_leader_term_truncation() {
     let mut cluster = Cluster::new(three_node_configs());
     let full_log = [
@@ -36,7 +36,7 @@ fn leader_append_only_detects_leader_term_truncation() {
     }
     elect_node_one_with_node_three_in_state(&mut state);
     oracle_assert_eq!(state.cluster().current_term(leader_id), leader_term);
-    record_log_history_observation(&mut state);
+    oracle_invoke_recorder!(record_log_history_observation(&mut state));
 
     let failure = oracle_expect_err!(
         check_log_history(&state, &[]),
@@ -50,7 +50,7 @@ fn leader_append_only_detects_leader_term_truncation() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn append_entries_oracle_rejects_success_without_matching_prev() {
     let entry = LogEntry::application(Term(2), b"two".to_vec());
     let request = append_request(Term(9), vec![entry.clone()]);
@@ -76,7 +76,7 @@ fn append_entries_oracle_rejects_success_without_matching_prev() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn append_entries_oracle_detects_success_without_storing_final_entry() {
     let entry = LogEntry::application(Term(2), b"two".to_vec());
     let request = append_request(Term(1), vec![entry]);
@@ -160,7 +160,7 @@ fn append_entries_oracle_marks_clause_specific_success_observations() {
         .contains(Observation::SuccessfulAppendStoredSuffixMatches));
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn log_matching_detects_equal_index_term_with_different_prefixes() {
     let mut cluster = two_node_cluster();
     cluster
@@ -182,7 +182,7 @@ fn log_matching_detects_equal_index_term_with_different_prefixes() {
         )
         .expect("node-2 bootstrap is valid");
     let mut state = ExplorationState::new(cluster);
-    record_log_history_observation(&mut state);
+    oracle_invoke_recorder!(record_log_history_observation(&mut state));
 
     let failure = oracle_expect_err!(
         check_log_history(&state, &[]),
@@ -459,5 +459,4 @@ fn snapshot_only_view(transfer_sequence: u64, entries: &[(u64, u64, &[u8])]) -> 
 
 fn record_log_history_observation(state: &mut ExplorationState) {
     state.refresh_log_history();
-    oracle_detector_witness!(record_log_history_observation);
 }

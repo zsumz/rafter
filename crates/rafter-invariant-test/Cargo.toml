@@ -8,5 +8,8 @@ license.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
+[dependencies]
+rafter-invariant-test-macros = { path = "../rafter-invariant-test-macros" }
+
 [lints]
 workspace = true

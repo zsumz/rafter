@@ -12,6 +12,7 @@ mod commit;
 mod coverage;
 mod election;
 mod logical_log;
+mod purpose;
 mod restart_snapshot;
 mod seeds;
 mod snapshot;
@@ -47,6 +48,7 @@ pub(super) use election::{AuthorityTransitionViolationKind, PreVoteViolationKind
 pub(super) use logical_log::LogicalLogHistory;
 #[cfg(test)]
 pub(super) use logical_log::{LogPrefixWitness, LogicalLogView};
+use purpose::PurposeWitnessHistory;
 pub(super) use restart_snapshot::{ExpectedSnapshot, RestartSnapshotState};
 pub(super) use snapshot::snapshot_payload_binding_issue;
 
@@ -78,6 +80,7 @@ pub(super) struct ExplorationState {
     logical_log_history: LogicalLogHistory,
     commit_history: CommitHistory,
     snapshot_history: snapshot::SnapshotHistory,
+    purpose_witness_history: PurposeWitnessHistory,
     observations: ObservationSet,
     transition_instrumentation_errors: BTreeSet<TransitionInstrumentationError>,
 }
@@ -117,6 +120,7 @@ impl ExplorationState {
             logical_log_history: LogicalLogHistory::default(),
             commit_history: CommitHistory::default(),
             snapshot_history,
+            purpose_witness_history: PurposeWitnessHistory::default(),
             observations: ObservationSet::default(),
             transition_instrumentation_errors: BTreeSet::new(),
         };
@@ -272,10 +276,6 @@ impl ExplorationState {
 
     pub(super) fn scheduler_index(&mut self, len: usize) -> usize {
         application::scheduler_index(self, len)
-    }
-
-    pub(super) fn random_ready_position(&mut self) -> Option<usize> {
-        application::random_ready_position(self)
     }
 
     #[cfg(test)]
@@ -447,6 +447,40 @@ impl ExplorationState {
             self.snapshot_history
                 .record_transition(before, &self.cluster, delivered);
         self.observations.union_with(observations);
+    }
+
+    pub(in crate::model_check) fn record_purpose_transition(
+        &mut self,
+        before: &Cluster,
+        operation: &super::scheduling::Operation,
+        emitted: &[Envelope],
+        local_proposals: &[crate::records::LocalProposalEvent],
+        read_registration: Option<&crate::ReadRegistered>,
+    ) {
+        let observations = self.purpose_witness_history.record_transition(
+            before,
+            &self.cluster,
+            operation,
+            emitted,
+            local_proposals,
+            read_registration,
+        );
+        for observation in observations {
+            self.mark_observation(observation);
+        }
+    }
+
+    pub(in crate::model_check) fn record_purpose_restart(
+        &mut self,
+        before: &Cluster,
+        node_id: NodeId,
+    ) {
+        let observations =
+            self.purpose_witness_history
+                .record_restart(before, &self.cluster, node_id);
+        for observation in observations {
+            self.mark_observation(observation);
+        }
     }
 
     fn require_applied_payload(

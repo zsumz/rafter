@@ -120,10 +120,6 @@ fn calculate_liveness_round_budget(
         .saturating_add(usize::from(snapshot_catchup_probe).saturating_mul(64))
 }
 
-// Keep the instrumented random-choice transition available to the randomized
-// soak scheduler even though bounded liveness rounds no longer call it.
-const _: fn(&mut ExplorationState) -> Option<usize> = ExplorationState::random_ready_position;
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(in crate::model_check::liveness) struct BoundedRun {
     pub(in crate::model_check::liveness) completed: bool,
@@ -871,7 +867,7 @@ mod tests {
     use super::*;
     use rafter_invariant_test::{oracle_assert, oracle_expect_err};
 
-    #[test]
+    #[rafter_invariant_test::detector_test]
     fn bounded_fairness_detector_rejects_positive_bound_tick_starvation() {
         let mut monitor = BoundedFairnessMonitor::new(2, 3);
         observe_bounded_fairness_round(&mut monitor, &[NodeId(1), NodeId(2)], &[NodeId(1)], 0, 0)

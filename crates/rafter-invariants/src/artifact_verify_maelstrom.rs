@@ -127,6 +127,7 @@ fn verify_exact_invocation(
     let mut base_environment = observed.environment.clone();
     for name in [
         "RAFTER_MAELSTROM_ROOT",
+        "RAFTER_MAELSTROM_SCRIPT_DIR",
         "RAFTER_MAELSTROM_TIME_LIMIT",
         "RAFTER_MAELSTROM_RATE",
         "RAFTER_MAELSTROM_CONCURRENCY",
@@ -143,6 +144,10 @@ fn verify_exact_invocation(
         (
             "RAFTER_MAELSTROM_ROOT".to_owned(),
             durable.to_string_lossy().into_owned(),
+        ),
+        (
+            "RAFTER_MAELSTROM_SCRIPT_DIR".to_owned(),
+            repository.join("scripts").to_string_lossy().into_owned(),
         ),
         (
             "RAFTER_MAELSTROM_TIME_LIMIT".to_owned(),

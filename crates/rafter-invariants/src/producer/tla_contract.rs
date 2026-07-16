@@ -407,11 +407,12 @@ fn fetch_tool_with(
     arguments: &[OsString],
     timeout: Duration,
 ) -> Result<(), Box<dyn Error>> {
+    let environment = tool_fetch_environment();
     let output = process::timed_with_optional_layer_budget(
         process::ProcessKind::TlaExecution,
         program,
         arguments,
-        &process::base_environment(),
+        &environment,
         Path::new("."),
         timeout,
     )?;
@@ -426,6 +427,12 @@ fn fetch_tool_with(
         .into());
     }
     Ok(())
+}
+
+fn tool_fetch_environment() -> BTreeMap<String, String> {
+    let mut environment = process::base_environment();
+    environment.insert("RAFTER_TLA_REPO_ROOT".to_owned(), ".".to_owned());
+    environment
 }
 
 pub(super) fn validate_java(
@@ -483,9 +490,9 @@ mod tests {
         REGISTERED_PREDICATES,
     };
     use super::{
-        configured_invariants, fetch_tool_with, java_major, validate_runner_options,
-        validate_safety_only_boundary, validate_symmetry_contract, validate_trace_contract_sources,
-        TRACE_CONFIG, TRACE_SPEC,
+        configured_invariants, fetch_tool_with, java_major, tool_fetch_environment,
+        validate_runner_options, validate_safety_only_boundary, validate_symmetry_contract,
+        validate_trace_contract_sources, TRACE_CONFIG, TRACE_SPEC,
     };
 
     #[test]
@@ -511,6 +518,13 @@ mod tests {
         .to_string();
         assert!(error.contains("timed_out=true"));
         assert!(error.contains("fetch-started"));
+    }
+
+    #[test]
+    fn descriptor_bound_tool_fetch_receives_the_held_repository_root() {
+        let environment = tool_fetch_environment();
+
+        assert_eq!(environment["RAFTER_TLA_REPO_ROOT"], ".");
     }
 
     #[test]

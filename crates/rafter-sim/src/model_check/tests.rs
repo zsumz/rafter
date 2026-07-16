@@ -1,5 +1,6 @@
 mod bounded;
 mod linearizability;
+mod purpose_witnesses;
 mod replay;
 mod seeded;
 mod soak;

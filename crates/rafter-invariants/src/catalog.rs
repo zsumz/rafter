@@ -20,12 +20,15 @@ pub(crate) use liveness::{
     derive_liveness_binding, execution_contract_digest, expected_execution_contract,
     liveness_contract_digest, liveness_reports_digest,
 };
-pub(crate) use simulator_contract::{SimulatorRunnerConfiguration, SimulatorStateFloors};
+pub(crate) use simulator_contract::{
+    per_check_observation_key, per_check_protocol_states_key, per_check_verifier_states_key,
+    SimulatorRunnerConfiguration, SimulatorStateFloors,
+};
 
 #[cfg(test)]
 pub(crate) mod liveness_report_tests;
 
-const PROFILE_SCHEMA_VERSION: u32 = 4;
+const PROFILE_SCHEMA_VERSION: u32 = 5;
 
 #[derive(Clone, Debug)]
 /// Reviewed invariant IDs and their declared executable evidence.
@@ -170,8 +173,19 @@ pub struct RunnerContract {
     /// recorded separately in each execution receipt.
     pub command: Vec<String>,
     pub configuration: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub simulator_checks: BTreeMap<String, SimulatorCheckContract>,
     pub minimum_observed_checks: usize,
     pub require_peak_rss: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+/// Profile-owned exploration and semantic floors for one simulator check.
+pub struct SimulatorCheckContract {
+    pub minimum_protocol_states: u64,
+    pub minimum_verifier_states: u64,
+    pub required_observations: Vec<String>,
 }
 
 #[derive(Debug)]
@@ -413,18 +427,7 @@ impl ProfileManifest {
                         "profile {profile} runner {layer} has an incomplete execution contract"
                     )));
                 }
-                if layer == "simulator" {
-                    let configuration = runner.simulator_configuration().map_err(|error| {
-                        CatalogError(format!(
-                            "profile {profile} runner simulator has an invalid typed contract: {error}"
-                        ))
-                    })?;
-                    configuration.validate_profile(profile).map_err(|error| {
-                        CatalogError(format!(
-                            "profile {profile} runner simulator has an invalid typed contract: {error}"
-                        ))
-                    })?;
-                }
+                validate_simulator_runner(profile, layer, runner, catalog)?;
                 runner_contract::validate_runner(profile, layer, runner).map_err(|error| {
                     CatalogError(format!(
                         "profile {profile} runner {layer} has an invalid typed contract: {error}"
@@ -434,6 +437,32 @@ impl ProfileManifest {
         }
         Ok(())
     }
+}
+
+fn validate_simulator_runner(
+    profile: &str,
+    layer: &str,
+    runner: &RunnerContract,
+    catalog: &Catalog,
+) -> Result<(), CatalogError> {
+    if layer == "simulator" {
+        let configuration = runner.simulator_configuration().map_err(|error| {
+            CatalogError(format!(
+                "profile {profile} runner simulator has an invalid typed contract: {error}"
+            ))
+        })?;
+        configuration.validate_profile(profile).map_err(|error| {
+            CatalogError(format!(
+                "profile {profile} runner simulator has an invalid typed contract: {error}"
+            ))
+        })?;
+    }
+    simulator_contract::validate_check_contracts(profile, layer, &runner.simulator_checks, catalog)
+        .map_err(|error| {
+            CatalogError(format!(
+                "profile {profile} runner {layer} has an invalid simulator check contract: {error}"
+            ))
+        })
 }
 
 impl RunnerContract {

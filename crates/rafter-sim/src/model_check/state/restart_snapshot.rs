@@ -51,6 +51,14 @@ impl RestartSnapshotState {
         Self::snapshot_transfer_with_committed_membership(Some(MembershipConfig::joint(old, new)))
     }
 
+    #[cfg(test)]
+    pub(crate) fn stable_snapshot_transfer() -> Option<Self> {
+        let stable = MembershipSet::new(vec![NodeId(1), NodeId(2), NodeId(3)], Vec::new()).ok()?;
+        Some(Self::snapshot_transfer_with_committed_membership(Some(
+            MembershipConfig::stable(stable),
+        )))
+    }
+
     fn snapshot_transfer_with_committed_membership(
         committed_membership: Option<MembershipConfig>,
     ) -> Self {

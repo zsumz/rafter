@@ -69,6 +69,7 @@ fn layer_budget_consumes_validated_runner_durations_without_profile_tables() {
             ("kill_confirmation_timeout".to_owned(), "3s".to_owned()),
             ("receipt_finalization_allowance".to_owned(), "4s".to_owned()),
         ]),
+        simulator_checks: BTreeMap::new(),
         minimum_observed_checks: 1,
         require_peak_rss: true,
     };
@@ -151,7 +152,7 @@ fn identity_command_timeout_is_finite_and_retains_diagnostics() {
 #[test]
 fn process_group_observation_combines_membership_and_rss() {
     assert_eq!(
-        parse_process_group_observation(" 42 100\n 7 5\n 42 23\n", 42)
+        parse_process_group_observation(" 42 100 S\n 7 5 R+\n 42 23 D\n", 42)
             .expect("parse process inventory"),
         ProcessGroupObservation {
             state: ProcessGroupState::Alive,
@@ -159,13 +160,22 @@ fn process_group_observation_combines_membership_and_rss() {
         }
     );
     assert_eq!(
-        parse_process_group_observation(" 7 5\n", 42).expect("parse absent process group"),
+        parse_process_group_observation(" 7 5 S\n", 42).expect("parse absent process group"),
         ProcessGroupObservation {
             state: ProcessGroupState::Absent,
             rss_kib: 0,
         }
     );
-    assert!(parse_process_group_observation("42 100 extra\n", 42).is_err());
+    assert_eq!(
+        parse_process_group_observation("42 0 Z\n42 0 Z+\n", 42)
+            .expect("zombies do not keep a process group alive"),
+        ProcessGroupObservation {
+            state: ProcessGroupState::Absent,
+            rss_kib: 0,
+        }
+    );
+    assert!(parse_process_group_observation("42 100\n", 42).is_err());
+    assert!(parse_process_group_observation("42 100 S extra\n", 42).is_err());
 }
 
 #[cfg(unix)]

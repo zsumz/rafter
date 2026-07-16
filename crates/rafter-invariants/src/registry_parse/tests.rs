@@ -260,6 +260,39 @@ fn direct_simulator_evidence_requires_an_executable_detector_fixture() {
 }
 
 #[test]
+fn simulator_negative_fixture_identity_is_validated_when_the_registry_loads() {
+    for (source, expected) in [
+        (
+            VALID_ATOMIC_SIMULATOR_EVIDENCE.replace(
+                "    negative_fixture_target_kind: \"lib\"",
+                "    negative_fixture_target_kind: \"proc-macro\"",
+            ),
+            "unsupported Cargo target kind",
+        ),
+        (
+            VALID_ATOMIC_SIMULATOR_EVIDENCE.replace(
+                "tests::atomic_rule_rejects_mutation",
+                "tests::another_fixture",
+            ),
+            "exact test-name leaf",
+        ),
+        (
+            VALID_ATOMIC_SIMULATOR_EVIDENCE.replace(
+                "tests::atomic_rule_rejects_mutation",
+                "tests::::atomic_rule_rejects_mutation",
+            ),
+            "malformed test identity",
+        ),
+    ] {
+        let error =
+            parse_registry_document(&valid_registry(&source, VALID_CLAUSE, VALID_INVARIANT))
+                .expect_err("malformed simulator test identity must fail at registry load")
+                .to_string();
+        assert!(error.contains(expected), "unexpected error: {error}");
+    }
+}
+
+#[test]
 fn non_direct_non_simulator_evidence_may_retain_a_fixture_exemption() {
     let evidence = VALID_EVIDENCE
         .replace("    strength: \"direct\"", "    strength: \"e2e\"")

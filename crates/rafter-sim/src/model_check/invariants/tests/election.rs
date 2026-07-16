@@ -14,7 +14,7 @@ use crate::model_check::{
     state::{apply_to_state, restart_node, try_apply_soak_action},
 };
 use rafter_invariant_test::{
-    oracle_assert, oracle_assert_eq, oracle_detector_witness, oracle_expect_err,
+    oracle_assert, oracle_assert_eq, oracle_expect_err, oracle_invoke_recorder,
 };
 
 #[test]
@@ -64,7 +64,7 @@ fn pre_elected_constructor_state_is_coverage_not_reached() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn term_monotonicity_history_detects_regression_from_observation() {
     let mut cluster = one_node_cluster();
     cluster
@@ -75,7 +75,7 @@ fn term_monotonicity_history_detects_regression_from_observation() {
     state
         .inject_bootstrap_state(NodeId(1), bootstrap_state(Term(3), &[]))
         .expect("regressed term bootstrap is valid");
-    record_election_authority_observation(&mut state);
+    oracle_invoke_recorder!(record_election_authority_observation(&mut state));
 
     let failure = oracle_expect_err!(
         check_election_history(&state, &[]),
@@ -91,7 +91,7 @@ fn term_monotonicity_history_detects_regression_from_observation() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn durable_vote_history_rejects_second_vote_in_term() {
     let mut cluster = one_node_cluster();
     let mut first_vote = bootstrap_state(Term(7), &[]);
@@ -106,7 +106,7 @@ fn durable_vote_history_rejects_second_vote_in_term() {
     state
         .inject_bootstrap_state(NodeId(1), second_vote)
         .expect("second vote bootstrap is valid");
-    record_election_authority_observation(&mut state);
+    oracle_invoke_recorder!(record_election_authority_observation(&mut state));
 
     let failure = oracle_expect_err!(
         check_election_history(&state, &[]),
@@ -125,7 +125,7 @@ fn durable_vote_history_rejects_second_vote_in_term() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn durable_vote_history_detects_lost_vote_same_term() {
     let mut cluster = one_node_cluster();
     let mut first_vote = bootstrap_state(Term(5), &[]);
@@ -138,7 +138,7 @@ fn durable_vote_history_detects_lost_vote_same_term() {
     state
         .inject_bootstrap_state(NodeId(1), bootstrap_state(Term(5), &[]))
         .expect("lost vote bootstrap is valid");
-    record_election_authority_observation(&mut state);
+    oracle_invoke_recorder!(record_election_authority_observation(&mut state));
 
     let failure = oracle_expect_err!(
         check_election_history(&state, &[]),
@@ -266,7 +266,7 @@ fn instrumented_delivery_observes_higher_term_append_entries_response() {
     check_election_history(&state, &[]).expect("higher-term response should fence cleanly");
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn authority_fencing_oracle_rejects_unfenced_higher_term_response() {
     let mut before = two_node_cluster();
     elect_node_one(&mut before);
@@ -303,7 +303,7 @@ fn authority_fencing_oracle_rejects_unfenced_higher_term_response() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn authority_fencing_oracle_rejects_stale_response_leadership() {
     let mut before = two_node_cluster();
     before
@@ -344,7 +344,7 @@ fn authority_fencing_oracle_rejects_stale_response_leadership() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn authority_fencing_oracle_rejects_stale_authority_regression() {
     let mut before = one_node_cluster();
     let mut authority = bootstrap_state(Term(3), &[]);
@@ -423,7 +423,7 @@ fn pre_vote_observation_accepts_non_binding_request() {
     check_election_history(&state, &[]).expect("non-binding pre-vote request should pass");
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn pre_vote_oracle_rejects_request_term_mutation() {
     let before = one_node_cluster();
     let mut after = one_node_cluster();
@@ -458,7 +458,7 @@ fn pre_vote_oracle_rejects_request_term_mutation() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn pre_vote_oracle_rejects_request_disrupting_leader() {
     let mut before = two_node_cluster();
     elect_node_one(&mut before);
@@ -496,7 +496,7 @@ fn pre_vote_oracle_rejects_request_disrupting_leader() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn pre_vote_oracle_rejects_stale_response_authority_advance() {
     let mut before = one_node_cluster();
     before
@@ -678,7 +678,7 @@ fn vote_grant_observation_ignores_denied_response() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn vote_grant_oracle_rejects_non_voter_candidate() {
     let state = request_vote_grant_state(
         NodeId(4),
@@ -706,7 +706,7 @@ fn vote_grant_oracle_rejects_non_voter_candidate() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn vote_grant_oracle_rejects_stale_candidate_log() {
     let state = request_vote_grant_state(
         NodeId(2),
@@ -763,15 +763,15 @@ fn vote_grant_oracle_requires_durable_vote_for_candidate() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn election_history_detects_second_leader_in_same_term() {
     let membership = stable_membership(&[1, 2, 3], &[]);
     let first = election_certificate(4, 1, membership.clone(), &[1, 2]);
     let second = election_certificate(4, 2, membership, &[2, 3]);
     let mut state = ExplorationState::new(one_node_cluster());
 
-    record_election_certificate(&mut state, first);
-    record_election_certificate(&mut state, second);
+    oracle_invoke_recorder!(record_election_certificate(&mut state, first));
+    oracle_invoke_recorder!(record_election_certificate(&mut state, second));
 
     let failure = oracle_expect_err!(
         check_election_history(&state, &[]),
@@ -790,14 +790,14 @@ fn election_history_detects_second_leader_in_same_term() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn election_history_preserves_same_leader_certificates_for_validation() {
     let first = election_certificate(4, 1, stable_membership(&[1, 2, 3], &[]), &[1, 2]);
     let second = election_certificate(4, 1, stable_membership(&[2, 3, 4], &[1]), &[2, 3]);
     let mut state = ExplorationState::new(one_node_cluster());
 
-    record_election_certificate(&mut state, first);
-    record_election_certificate(&mut state, second);
+    oracle_invoke_recorder!(record_election_certificate(&mut state, first));
+    oracle_invoke_recorder!(record_election_certificate(&mut state, second));
 
     assert_eq!(state.election_history().elected_by_term[&Term(4)].len(), 2);
     let failure = oracle_expect_err!(
@@ -835,7 +835,7 @@ fn election_certificate_rejects_learner_grant() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn election_certificate_requires_joint_quorum() {
     let certificate = election_certificate(3, 1, joint_membership(&[1, 2, 3], &[1, 4, 5]), &[1, 2]);
     let state = state_with_recorded_certificate(certificate);
@@ -875,7 +875,7 @@ fn election_certificate_rejects_non_voter_leader() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn election_certificate_requires_stable_quorum() {
     let certificate = election_certificate(6, 1, stable_membership(&[1, 2, 3], &[]), &[1]);
     let state = state_with_recorded_certificate(certificate);
@@ -1018,12 +1018,10 @@ fn pre_vote_three_node_cluster() -> Cluster {
 
 fn record_election_authority_observation(state: &mut ExplorationState) {
     state.observe_election_authority();
-    oracle_detector_witness!(record_election_authority_observation);
 }
 
 fn record_election_certificate(state: &mut ExplorationState, certificate: ElectionCertificate) {
     state.election_history_mut().record_election(certificate);
-    oracle_detector_witness!(record_election_certificate);
 }
 
 fn deliver_all_pending_in_state(state: &mut ExplorationState) {

@@ -24,6 +24,8 @@ use helpers::summarize;
 
 mod catalog;
 
+pub use catalog::reviewed_invariant_id;
+
 mod invariants;
 
 mod linearizability;
@@ -51,9 +53,10 @@ mod checks;
 pub use checks::{
     check_raft_commit_safety, check_raft_election_safety,
     check_raft_joint_membership_restart_and_snapshot_safety, check_raft_leadership_noop_safety,
-    check_raft_membership_safety, check_raft_read_index_safety,
+    check_raft_lease_fast_path_read_safety, check_raft_membership_safety,
+    check_raft_production_config_commit_safety, check_raft_read_index_safety,
     check_raft_restart_and_snapshot_safety, check_raft_seeded_commit_safety,
-    check_raft_semantic_witness_safety,
+    check_raft_semantic_witness_safety, check_raft_window_one_backpressure_safety,
 };
 
 mod soak_runner;

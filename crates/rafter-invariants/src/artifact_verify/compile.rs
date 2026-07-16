@@ -109,7 +109,7 @@ pub(super) fn verify_compile_invocations(
                 }
             }
         } else {
-            verify_simulator_compile(bundle, observed)?;
+            verify_simulator_compile(bundle, observed, root)?;
         }
         verify_compile_process_outcome(bundle, observed)?;
     }
@@ -170,10 +170,13 @@ fn verify_test_compile(
     let execution_profile = test_execution_profile(bundle);
     let expected_target =
         format!("target/rafter-invariants/build/{source_prefix}/{execution_profile}-tests");
+    let expected_target_dir = fs::canonicalize(root)
+        .map_err(|error| AggregateError::new(format!("canonicalize compile root: {error}")))?
+        .join(&expected_target);
     let mut base_environment = observed.invocation.environment.clone();
     let target_dir = base_environment.remove("CARGO_TARGET_DIR");
     if observed.invocation.arguments != expected
-        || target_dir.as_deref() != Some(expected_target.as_str())
+        || !target_directory_matches(target_dir.as_deref(), &expected_target_dir)
         || crate::producer::process::digest_environment(&observed.invocation.environment)
             != observed.invocation.environment_sha256
         || crate::producer::process::digest_environment(&base_environment)
@@ -192,9 +195,6 @@ fn verify_test_compile(
             observed.label
         ))
     })?;
-    let expected_target_dir = fs::canonicalize(root)
-        .map_err(|error| AggregateError::new(format!("canonicalize compile root: {error}")))?
-        .join(expected_target);
     let artifact = compiler_artifact_for_test(
         observed.stdout.as_bytes(),
         &target_key,
@@ -543,6 +543,7 @@ pub(super) fn verify_target_process_binding(
 fn verify_simulator_compile(
     bundle: &ResultBundle,
     observed: &crate::producer::process::LabeledProcess,
+    root: &Path,
 ) -> Result<(), AggregateError> {
     let expected_arguments = [
         "build",
@@ -559,6 +560,9 @@ fn verify_simulator_compile(
         "target/rafter-invariants/simulator-build/{source_prefix}/{}",
         bundle.profile
     );
+    let expected_target_dir = fs::canonicalize(root)
+        .map_err(|error| AggregateError::new(format!("canonicalize compile root: {error}")))?
+        .join(expected_target);
     let mut base_environment = observed.invocation.environment.clone();
     let target = base_environment.remove("CARGO_TARGET_DIR");
     if observed.label != "simulator compile" {
@@ -571,7 +575,7 @@ fn verify_simulator_compile(
             "simulator compile log has the wrong Cargo arguments".to_owned(),
         ));
     }
-    if target.as_deref() != Some(expected_target.as_str()) {
+    if !target_directory_matches(target.as_deref(), &expected_target_dir) {
         return Err(AggregateError::new(
             "simulator compile log has the wrong Cargo target directory".to_owned(),
         ));
@@ -584,6 +588,10 @@ fn verify_simulator_compile(
         ));
     }
     Ok(())
+}
+
+pub(super) fn target_directory_matches(recorded: Option<&str>, expected: &Path) -> bool {
+    recorded.is_some_and(|recorded| Path::new(recorded) == expected && expected.is_absolute())
 }
 
 fn verify_compile_process_outcome(

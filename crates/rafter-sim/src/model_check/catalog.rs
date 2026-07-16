@@ -42,3 +42,48 @@ pub(super) const SS_05_SNAPSHOT_SEMANTIC_EQUIVALENCE: &str = "SS-05 snapshot sem
 pub(super) const LV_01_POST_HEAL_LEADER_CONVERGENCE: &str = "LV-01 post-heal leader convergence";
 pub(super) const LV_02_PROPOSAL_PROGRESS: &str = "LV-02 proposal progress";
 pub(super) const LV_03_FEATURE_OPERATION_PROGRESS: &str = "LV-03 feature-operation progress";
+
+/// Returns the stable ID only when `label` exactly matches a simulator-owned
+/// reviewed invariant label.
+#[must_use]
+pub fn reviewed_invariant_id(label: &str) -> Option<&str> {
+    let registered = matches!(
+        label,
+        ST_01_STATE_WELL_FORMEDNESS
+            | EL_01_TERM_MONOTONICITY
+            | EL_02_ONE_DURABLE_VOTE_PER_TERM
+            | EL_03_SAFE_VOTE_ELIGIBILITY
+            | EL_05_ELECTION_SAFETY_OVER_HISTORY
+            | EL_06_LEADER_HAS_VALID_ELECTION_QUORUM
+            | EL_07_TERM_AND_AUTHORITY_FENCING
+            | EL_08_PRE_VOTE_NON_BINDING
+            | LG_01_LEADER_APPEND_ONLY
+            | LG_02_TRUTHFUL_APPEND_ENTRIES_ACCEPTANCE
+            | LG_03_LOG_MATCHING
+            | LG_04_COMMITTED_PREFIX_STABILITY
+            | LG_05_LEADER_COMPLETENESS
+            | CM_01_COMMIT_INDEX_MONOTONICITY_AND_BOUNDS
+            | CM_02_COMMIT_REQUIRES_EFFECTIVE_QUORUM
+            | CM_03_LEADERS_ONLY_COMMIT_CURRENT_TERM_ENTRIES
+            | AP_01_ORDERED_EXACTLY_ONCE_COMMITTED_APPLICATION
+            | AP_02_STATE_MACHINE_SAFETY
+            | MB_01_MEMBERSHIP_WELL_FORMEDNESS
+            | MB_03_SERIALIZED_CONFIGURATION_CHANGES
+            | MB_04_MONOTONE_CONFIGURATION_TRANSITION_AND_IDENTITY
+            | RD_03_READ_BARRIER_COVERS_COMMITTED_FLOOR
+            | RD_04_APPLY_BEFORE_SERVING_A_READ
+            | RD_06_CLIENT_HISTORY_LINEARIZABILITY
+            | PS_03_EXACT_DURABLE_RESTART
+            | PS_04_APPLIED_FLOOR_RECOVERY
+            | SS_01_ATOMIC_MONOTONE_SNAPSHOT_STATE
+            | SS_03_SNAPSHOT_LOG_INDEX_GEOMETRY
+            | SS_04_SNAPSHOT_TRANSFER_INTEGRITY
+            | SS_05_SNAPSHOT_SEMANTIC_EQUIVALENCE
+            | LV_01_POST_HEAL_LEADER_CONVERGENCE
+            | LV_02_PROPOSAL_PROGRESS
+            | LV_03_FEATURE_OPERATION_PROGRESS
+    );
+    registered
+        .then(|| label.split_once(' ').map(|(invariant_id, _)| invariant_id))
+        .flatten()
+}

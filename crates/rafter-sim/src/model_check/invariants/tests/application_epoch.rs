@@ -160,7 +160,7 @@ fn ordinary_restart_preserves_application_epoch() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn applied_order_detects_duplicate_execution_within_one_epoch() {
     let mut cluster = one_node_cluster();
     let mut bootstrap = bootstrap_state(Term(1), &[(1, Term(1), b"applied-once")]);
@@ -212,7 +212,7 @@ fn applied_exactly_once_includes_configuration_entries() {
     assert!(failure.message.contains("epoch 0 executed logical index 1"));
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn applied_order_detects_apply_before_commit() {
     let mut cluster = one_node_cluster();
     cluster.applied.push(Applied {
@@ -239,26 +239,13 @@ fn applied_order_detects_apply_before_commit() {
         failure.message
     );
 
-    for kind in [
-        LogEntryKind::Noop,
-        LogEntryKind::Configuration(ConfigurationEntry::stable(
+    assert_non_application_execution_above_commit_fails(LogEntryKind::Noop);
+    assert_non_application_execution_above_commit_fails(LogEntryKind::Configuration(
+        ConfigurationEntry::stable(
             ConfigurationId(10),
             MembershipSet::new(ids(&[1, 2, 3]), Vec::new()).expect("fixture membership is valid"),
-        )),
-    ] {
-        let mut cluster = one_node_cluster();
-        let mut witness = execution_witness(1, 0, 2, 1, kind, initial_reference_state());
-        witness.commit_index_at_emit = LogIndex(1);
-        cluster.execution_history.push(witness);
-
-        let failure = oracle_expect_err!(
-            check_applied_commit_bound(&cluster, &[]),
-            "non-application execution above the emit-time commit index must fail AP-01",
-        );
-        oracle_assert!(failure
-            .message
-            .contains("executed index 2 when its commit index at emit was 1"));
-    }
+        ),
+    ));
 
     let mut cluster = one_node_cluster();
     cluster.snapshot_installs.push(SnapshotInstalled {
@@ -278,6 +265,21 @@ fn applied_order_detects_apply_before_commit() {
     oracle_assert!(failure
         .message
         .contains("installed snapshot through 2 when its commit index at emit was 1"));
+}
+
+fn assert_non_application_execution_above_commit_fails(kind: LogEntryKind) {
+    let mut cluster = one_node_cluster();
+    let mut witness = execution_witness(1, 0, 2, 1, kind, initial_reference_state());
+    witness.commit_index_at_emit = LogIndex(1);
+    cluster.execution_history.push(witness);
+
+    let failure = oracle_expect_err!(
+        check_applied_commit_bound(&cluster, &[]),
+        "non-application execution above the emit-time commit index must fail AP-01",
+    );
+    oracle_assert!(failure
+        .message
+        .contains("executed index 2 when its commit index at emit was 1"));
 }
 
 #[test]
@@ -453,7 +455,7 @@ fn read_grant_from_a_previous_application_epoch_fails_closed() {
     assert!(failure.message().contains("retained grant epoch 0"));
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn replayed_index_must_match_prior_command_across_epochs() {
     let mut state = state_with_committed_application_witness(b"original");
     crate::model_check::state::restart_node_losing_application_state(&mut state, NodeId(1), &[])

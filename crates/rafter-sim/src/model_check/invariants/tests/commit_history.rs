@@ -9,10 +9,10 @@ use super::super::history::{
 use super::*;
 use crate::model_check::observations::Observation;
 use rafter_invariant_test::{
-    oracle_assert, oracle_assert_eq, oracle_detector_witness, oracle_expect_err,
+    oracle_assert, oracle_assert_eq, oracle_expect_err, oracle_invoke_recorder,
 };
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn commit_certificate_uses_pre_transition_joint_quorum_for_candidate_below_config() {
     let pending_configuration = ConfigurationEntry::stable(
         ConfigurationId(42),
@@ -81,7 +81,7 @@ fn commit_certificate_uses_pre_transition_joint_quorum_for_candidate_below_confi
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn commit_certificate_rejects_learner_storage_as_voter_quorum() {
     let mut state = state_with_bootstraps(
         voter_and_learner_configs(&[1, 2, 3], &[4]),
@@ -174,7 +174,7 @@ fn commit_certificate_records_self_removing_leader_after_stepdown() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn commit_certificate_detects_prior_term_candidate_commit() {
     let mut state = state_with_bootstraps(
         voter_configs(&[1]),
@@ -213,7 +213,7 @@ fn commit_certificate_detects_prior_term_candidate_commit() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn commit_certificate_uses_post_append_joint_quorum_for_same_operation_commit() {
     let config_id = ConfigurationId(43);
     let old = MembershipSet::new(vec![NodeId(1)], Vec::new()).expect("old membership is valid");
@@ -440,7 +440,7 @@ fn current_term_commit_covering_prior_term_prefix_marks_atomic_observation() {
         .contains(Observation::CurrentTermCommitCoveringPriorTermPrefix));
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn leader_completeness_rechecks_when_committed_ledger_grows_after_election() {
     let mut state = state_with_bootstraps(voter_configs(&[1, 2]), &[]);
     let certificate = election_certificate(4, 2, stable_membership(&[1, 2], &[]), &[1, 2]);
@@ -448,7 +448,7 @@ fn leader_completeness_rechecks_when_committed_ledger_grows_after_election() {
         .election_history_mut()
         .elected_by_term
         .insert(certificate.term, vec![certificate]);
-    record_leader_completeness_check(&mut state);
+    oracle_invoke_recorder!(record_leader_completeness_check(&mut state));
     assert_eq!(
         state
             .commit_history()
@@ -484,7 +484,7 @@ fn leader_completeness_rechecks_when_committed_ledger_grows_after_election() {
     state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(1), Term(3));
     state.refresh_log_history();
     state.refresh_committed_prefixes();
-    record_leader_completeness_check(&mut state);
+    oracle_invoke_recorder!(record_leader_completeness_check(&mut state));
 
     let failure = oracle_expect_err!(
         check_commit_history(&state, &[]),
@@ -575,7 +575,6 @@ pub(super) fn state_with_bootstraps(
 
 fn record_leader_completeness_check(state: &mut ExplorationState) {
     state.record_leader_completeness_observation();
-    oracle_detector_witness!(record_leader_completeness_check);
 }
 
 fn leader_context(

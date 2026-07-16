@@ -1,4 +1,7 @@
-use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
+use std::{
+    cmp::Ordering,
+    collections::{btree_map::Entry, BTreeMap, BTreeSet},
+};
 
 use rafter::{
     BootstrapState, LogIndex, MembershipConfig, Message, NodeId, RequestVoteResponse, Term,
@@ -48,15 +51,19 @@ impl ElectionHistory {
                 }
                 Entry::Occupied(mut entry) => {
                     let floor = *entry.get();
-                    if observed_term < floor {
-                        self.term_regressions.insert(TermRegression {
-                            node_id: *node_id,
-                            previous_floor: floor,
-                            observed: observed_term,
-                        });
-                    } else if observed_term > floor {
-                        entry.insert(observed_term);
-                        observations.mark(Observation::TermAdvances);
+                    match observed_term.cmp(&floor) {
+                        Ordering::Less => {
+                            self.term_regressions.insert(TermRegression {
+                                node_id: *node_id,
+                                previous_floor: floor,
+                                observed: observed_term,
+                            });
+                        }
+                        Ordering::Equal => {}
+                        Ordering::Greater => {
+                            entry.insert(observed_term);
+                            observations.mark(Observation::TermAdvances);
+                        }
                     }
                 }
             }

@@ -53,7 +53,7 @@ fn durable_restart_fixture() -> DurableStateDigest {
     }
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn exact_restart_term_vote_oracle_detects_vote_loss() {
     let cluster = one_node_cluster();
     let before = durable_restart_fixture();
@@ -68,7 +68,7 @@ fn exact_restart_term_vote_oracle_detects_vote_loss() {
     oracle_assert!(failure.message.contains("term or vote"));
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn exact_restart_log_oracle_detects_payload_change() {
     let cluster = one_node_cluster();
     let before = durable_restart_fixture();
@@ -83,7 +83,7 @@ fn exact_restart_log_oracle_detects_payload_change() {
     oracle_assert!(failure.message.contains("retained log"));
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn exact_restart_commit_configuration_oracle_detects_identity_change() {
     let cluster = one_node_cluster();
     let before = durable_restart_fixture();
@@ -101,7 +101,7 @@ fn exact_restart_commit_configuration_oracle_detects_identity_change() {
     oracle_assert!(failure.message.contains("commit or configuration"));
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn exact_restart_snapshot_oracle_detects_crc32_collision_payload_change() {
     let cluster = one_node_cluster();
     let first_payload = [0x29, 0x2c, 0x99, 0xbf, 0xb5, 0xb8, 0x20, 0xb7];
@@ -190,7 +190,7 @@ fn exact_restart_acknowledged_entry_oracle_detects_reindexing() {
     assert!(failure.message.contains("lost or reindexed"));
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn exact_restart_acknowledged_entry_oracle_checks_acknowledged_uncommitted_entry() {
     let state = state_with_acknowledged_uncommitted_entry();
     let before = state
@@ -274,7 +274,7 @@ fn exact_durable_restart_detects_application_recovery_metadata_change() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn applied_floor_recovery_rejects_replay_at_or_below_floor() {
     let (cluster, expected, recovered) = recorded_mixed_recovery();
 
@@ -304,7 +304,7 @@ fn applied_floor_recovery_rejects_replay_at_or_below_floor() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn applied_floor_recovery_rejects_missing_committed_suffix_entry() {
     let (cluster, expected, mut recovered) = recorded_mixed_recovery();
     recovered.remove(1);
@@ -372,7 +372,7 @@ fn pending_application_replay_restarts_through_the_instrumented_transition() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn applied_floor_recovery_rejects_floor_beyond_durable_bounds() {
     let (cluster, expected, recovered) = recorded_mixed_recovery();
     let base = AppliedFloorRecovery {
@@ -454,7 +454,7 @@ fn mixed_replay_bootstrap() -> BootstrapState {
     }
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn read_barrier_invariant_detects_grant_below_registration_floor() {
     let mut cluster = one_node_cluster();
     cluster.read_registrations.push(crate::ReadRegistered {
@@ -487,7 +487,7 @@ fn read_barrier_invariant_detects_grant_below_registration_floor() {
     );
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn read_barrier_invariant_detects_unregistered_grant() {
     let mut cluster = one_node_cluster();
     cluster.read_grants.push(crate::ReadGranted {

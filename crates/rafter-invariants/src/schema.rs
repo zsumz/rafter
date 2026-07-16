@@ -214,7 +214,7 @@ mod tests {
         let mut value = serde_json::to_value(bundle).expect("bundle serializes");
         value["schema_version"] = serde_json::json!(u64::MAX);
         assert!(validate_result_value(&value).is_err());
-        value["schema_version"] = serde_json::json!(10);
+        value["schema_version"] = serde_json::json!(11);
         assert!(validate_result_value(&value).is_err());
         value["schema_version"] = serde_json::json!(crate::types::RESULT_SCHEMA_VERSION);
         value["execution"]
@@ -231,6 +231,57 @@ mod tests {
         .expect("bundle serializes");
         value["execution"]["unreviewed"] = serde_json::json!(true);
         assert!(validate_result_value(&value).is_err());
+    }
+
+    #[test]
+    fn result_schema_rejects_invalid_profile_owned_simulator_check_contracts() {
+        let (catalog, manifest) = crate::tests::loaded();
+        let bundle = crate::tests::passing_bundles(&catalog, &manifest)
+            .into_iter()
+            .find(|bundle| bundle.runner == "simulator")
+            .expect("simulator bundle");
+        let value = serde_json::to_value(bundle).expect("bundle serializes");
+        let path = [
+            "execution",
+            "plan",
+            "contract",
+            "runners",
+            "simulator",
+            "simulator_checks",
+            "raft-election",
+        ];
+
+        let mut unknown = value.clone();
+        let mut contract = &mut unknown;
+        for segment in path {
+            contract = &mut contract[segment];
+        }
+        contract["unreviewed"] = serde_json::json!(true);
+        assert!(validate_result_value(&unknown).is_err());
+
+        let mut zero_floor = value.clone();
+        let mut contract = &mut zero_floor;
+        for segment in path {
+            contract = &mut contract[segment];
+        }
+        contract["minimum_protocol_states"] = serde_json::json!(0);
+        assert!(validate_result_value(&zero_floor).is_err());
+
+        let mut duplicate = value.clone();
+        let mut contract = &mut duplicate;
+        for segment in path {
+            contract = &mut contract[segment];
+        }
+        contract["required_observations"] = serde_json::json!(["same", "same"]);
+        assert!(validate_result_value(&duplicate).is_err());
+
+        let mut blank = value;
+        let mut contract = &mut blank;
+        for segment in path {
+            contract = &mut contract[segment];
+        }
+        contract["required_observations"] = serde_json::json!(["  "]);
+        assert!(validate_result_value(&blank).is_err());
     }
 
     #[test]

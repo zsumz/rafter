@@ -382,7 +382,12 @@ fn materialize_compile_fixture(
 ) -> CompileFixture {
     let cargo_sha256 = executable_sha256("cargo");
     let source_prefix = source_ref.get(..12).unwrap_or(source_ref);
-    let target_dir = format!("target/rafter-invariants/simulator-build/{source_prefix}/pr");
+    let target_dir = current_dir
+        .join(format!(
+            "target/rafter-invariants/simulator-build/{source_prefix}/pr"
+        ))
+        .to_string_lossy()
+        .into_owned();
     let mut compile_environment = environment.clone();
     compile_environment.insert("CARGO_TARGET_DIR".to_owned(), target_dir.clone());
     let arguments = [
@@ -417,7 +422,7 @@ fn materialize_compile_fixture(
         environment_sha256: crate::producer::process::digest_environment(&compile_environment),
         environment: compile_environment,
     };
-    let absolute_target_dir = current_dir.join(target_dir);
+    let absolute_target_dir = PathBuf::from(&target_dir);
     let binary_path = simulator_compiler_artifact_executable(
         stdout.as_bytes(),
         current_dir,
@@ -539,10 +544,13 @@ fn materialize_provenance_runtime(
         environment_sha256: crate::producer::process::digest_environment(environment),
     };
     let event = serde_json::json!({
-        "event": "exhaustive-check",
+        "event": "check-failure",
+        "event_version": 2,
         "check_id": "raft-commit",
         "status": "fail",
         "classification": "invariant-violation",
+        "invariant_id": "CM-02",
+        "invariant": "CM-02 commit requires effective quorum",
     });
     let stdout = format!("RAFTER_EVENT {event}\n");
     let log = framed_process_log("fast", &invocation, false, &stdout, "");
@@ -667,10 +675,13 @@ fn simulator_fixture_source(defect: RuntimeDefect) -> String {
         })
     } else {
         serde_json::json!({
-            "event": "exhaustive-check",
+            "event": "check-failure",
+            "event_version": 2,
             "check_id": "raft-commit",
             "status": "fail",
             "classification": "invariant-violation",
+            "invariant_id": "CM-02",
+            "invariant": "CM-02 commit requires effective quorum",
             "message": if matches!(defect, RuntimeDefect::CounterexampleExitOne) {
                 "real exit-one fixture found a counterexample"
             } else {

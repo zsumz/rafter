@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use super::{
     compile::{
-        compiler_artifact_executable, verify_target_process_binding, CargoTargetKey,
-        EmittedTestExecutable,
+        compiler_artifact_executable, target_directory_matches, verify_target_process_binding,
+        CargoTargetKey, EmittedTestExecutable,
     },
     test_logs::{
         require_unique_discovery, verify_exact_environment, verify_reconstructed_test_observations,
@@ -106,6 +106,21 @@ fn exact_environment_map_is_rehashed_not_just_compared_by_claimed_digest() {
         .environment
         .insert("A".to_owned(), "tampered".to_owned());
     assert!(verify_exact_environment(&exact, &expected, &digest).is_err());
+}
+
+#[test]
+fn compile_target_directory_requires_the_exact_absolute_path() {
+    let expected =
+        std::path::Path::new("/workspace/rafter/target/rafter-invariants/build/source/pr-tests");
+    assert!(target_directory_matches(expected.to_str(), expected,));
+    assert!(!target_directory_matches(
+        Some("target/rafter-invariants/build/source/pr-tests"),
+        expected,
+    ));
+    assert!(!target_directory_matches(
+        Some("/workspace/rafter/target/rafter-invariants/build/source/sibling"),
+        expected,
+    ));
 }
 
 #[test]

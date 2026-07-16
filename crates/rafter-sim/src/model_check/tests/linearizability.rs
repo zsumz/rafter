@@ -14,7 +14,7 @@ use super::super::{
 use crate::Cluster;
 use rafter_invariant_test::{oracle_assert, oracle_expect_err};
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn linearizer_rejects_read_that_misses_completed_write() {
     let mut state = ExplorationState::new(Cluster::new(three_node_configs()));
     elect_node_one_in_state(&mut state);

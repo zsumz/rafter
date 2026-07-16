@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "runner", "profile", "source_ref", "execution", "results"],
   "properties": {
-    "schema_version": { "const": 11 },
+    "schema_version": { "const": 12 },
     "runner": { "enum": ["tests", "simulator", "tla", "maelstrom"] },
     "profile": { "enum": ["pr", "nightly", "weekly"] },
     "source_ref": { "type": "string", "minLength": 1 },
@@ -47,7 +47,7 @@
       "additionalProperties": false,
       "required": ["schema_version", "profile", "registry", "manifest", "result_schema", "verdict_schema", "contract"],
       "properties": {
-        "schema_version": { "const": 2 },
+        "schema_version": { "const": 3 },
         "profile": { "enum": ["pr", "nightly", "weekly"] },
         "registry": { "$ref": "#/$defs/plan_input" },
         "manifest": { "$ref": "#/$defs/plan_input" },
@@ -128,8 +128,28 @@
           "minProperties": 1,
           "additionalProperties": { "type": "string" }
         },
+        "simulator_checks": {
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": { "$ref": "#/$defs/simulator_check_contract" }
+        },
         "minimum_observed_checks": { "type": "integer", "minimum": 1 },
         "require_peak_rss": { "type": "boolean" }
+      }
+    },
+    "simulator_check_contract": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minimum_protocol_states", "minimum_verifier_states", "required_observations"],
+      "properties": {
+        "minimum_protocol_states": { "type": "integer", "minimum": 1 },
+        "minimum_verifier_states": { "type": "integer", "minimum": 1 },
+        "required_observations": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "type": "string", "minLength": 1, "pattern": ".*\\S.*" }
+        }
       }
     },
     "test_identity": {

@@ -65,7 +65,14 @@ pub(super) fn run(
         compiled.insert(target, outcome);
     }
 
-    let check_results = run_checks(identities, &compiled, profile, &source.commit, output_dir)?;
+    let check_results = run_checks(
+        identities,
+        &compiled,
+        profile,
+        &source.commit,
+        output_dir,
+        execution_deadline,
+    )?;
     peak_rss_kib = peak_rss_kib.max(check_results.peak_rss_kib);
     let checks = check_results.checks;
     let results = check_results.results;
@@ -137,6 +144,7 @@ fn run_checks(
     profile: &str,
     source_ref: &str,
     output_dir: &Path,
+    scratch_deadline: std::time::Instant,
 ) -> Result<CheckResults, Box<dyn Error>> {
     let mut checks = Vec::with_capacity(identities.len());
     let mut results = Vec::new();
@@ -159,6 +167,7 @@ fn run_checks(
             source_ref,
             &execution_id,
             output_dir,
+            scratch_deadline,
         )?;
         if let Some(binary) = &compiled_target.binary_artifact {
             outcome.artifacts.push(binary.clone());

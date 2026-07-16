@@ -11,7 +11,8 @@ use crate::{aggregate::AggregateError, ResultBundle};
 use super::{
     simulator_schedule::verify_simulator_schedule,
     test_logs::{
-        is_passing, require_detector_witness, require_exact_test_pass, verify_test_invocations,
+        is_passing, require_detector_witness_contract, require_exact_test_pass,
+        verify_test_invocations,
     },
 };
 
@@ -74,6 +75,7 @@ pub(super) fn verify_simulator_logs(
         verify_nonpassing_event_classification(
             bundle,
             check,
+            &descriptor.invariant_id,
             identity,
             &events,
             inspection.global_issue,
@@ -119,16 +121,8 @@ fn verify_passing_negative_detector(
             check.check_id, negative_test.test_name
         )));
     }
-    let detector = descriptor
-        .negative_fixture_detector
-        .as_deref()
-        .ok_or_else(|| {
-            AggregateError::new(format!(
-                "simulator check {} has no registered detector identity",
-                check.check_id
-            ))
-        })?;
-    verify_negative_fixture_binding(root, descriptor, fixture, &check.check_id)?;
+    let invocation_contract =
+        verify_negative_fixture_binding(root, descriptor, fixture, &check.check_id)?;
     let artifact = check
         .artifacts
         .iter()
@@ -153,7 +147,13 @@ fn verify_passing_negative_detector(
         &negative_test.check_id(),
         root,
     )?;
-    require_detector_witness(bundle, &source, &negative_test.check_id(), detector)?;
+    require_detector_witness_contract(
+        bundle,
+        &source,
+        &negative_test.check_id(),
+        invocation_contract.registered_identity(),
+        invocation_contract.witnesses(),
+    )?;
     require_exact_test_pass(&source, &negative_test.test_name, &check.check_id)
 }
 
@@ -172,23 +172,6 @@ impl RawEventIssue {
             Self::CoverageNotReached => 1,
         }
     }
-
-    const fn receipt_outcome(self) -> (crate::EvidenceStatus, crate::FailureClassification) {
-        match self {
-            Self::InvariantViolation => (
-                crate::EvidenceStatus::Fail,
-                crate::FailureClassification::InvariantViolation,
-            ),
-            Self::HarnessError => (
-                crate::EvidenceStatus::Error,
-                crate::FailureClassification::HarnessError,
-            ),
-            Self::CoverageNotReached => (
-                crate::EvidenceStatus::Incomplete,
-                crate::FailureClassification::CoverageNotReached,
-            ),
-        }
-    }
 }
 
 struct MachineEventInspection {
@@ -199,6 +182,7 @@ struct MachineEventInspection {
 fn verify_nonpassing_event_classification(
     bundle: &ResultBundle,
     check: &crate::CheckReceipt,
+    invariant_id: &str,
     identity: &crate::SimulatorIdentity,
     events: &BTreeMap<String, Vec<Value>>,
     global_issue: Option<RawEventIssue>,
@@ -215,6 +199,7 @@ fn verify_nonpassing_event_classification(
                 .and_then(Value::as_str)
                 .unwrap_or("<missing>"),
             event,
+            Some(invariant_id),
         );
         if candidate.is_some_and(|candidate| {
             expected.is_none_or(|expected| candidate.rank() > expected.rank())
@@ -225,7 +210,6 @@ fn verify_nonpassing_event_classification(
     let Some(expected) = expected else {
         return Ok(());
     };
-    let (expected_status, expected_classification) = expected.receipt_outcome();
     let outcomes = bundle
         .results
         .iter()
@@ -233,9 +217,13 @@ fn verify_nonpassing_event_classification(
         .map(|result| (result.status, result.classification))
         .collect::<Vec<_>>();
     if outcomes.is_empty()
-        || outcomes
-            .iter()
-            .any(|outcome| *outcome != (expected_status, Some(expected_classification)))
+        || outcomes.iter().any(|outcome| {
+            receipt_issue(*outcome).is_none_or(|actual| {
+                actual.rank() < expected.rank()
+                    || (actual == RawEventIssue::InvariantViolation
+                        && expected != RawEventIssue::InvariantViolation)
+            })
+        })
     {
         return Err(AggregateError::new(format!(
             "simulator check {} receipt does not preserve its raw semantic failure classification",
@@ -250,11 +238,17 @@ fn inspect_machine_events(
     descriptors: &[crate::EvidenceDescriptor],
     events: &BTreeMap<String, Vec<Value>>,
 ) -> MachineEventInspection {
-    let claimed = descriptors
-        .iter()
-        .filter_map(|descriptor| descriptor.simulator.as_ref())
-        .flat_map(|identity| identity.checks.iter().cloned())
-        .collect::<BTreeSet<_>>();
+    let mut routes = BTreeMap::<String, BTreeSet<String>>::new();
+    for descriptor in descriptors {
+        if let Some(identity) = descriptor.simulator.as_ref() {
+            for check in &identity.checks {
+                routes
+                    .entry(check.clone())
+                    .or_default()
+                    .insert(descriptor.invariant_id.clone());
+            }
+        }
+    }
     let mut unknown = BTreeSet::new();
     let mut diagnostics = BTreeSet::new();
     let mut global_issue = None;
@@ -263,14 +257,30 @@ fn inspect_machine_events(
             event.get("check_id").and_then(Value::as_str) == Some(indexed_check_id.as_str())
         }) {
             let check_id = indexed_check_id.as_str();
-            let (event_issue, diagnostic) = raw_event_issue(check_id, event);
+            let (event_issue, diagnostic) = raw_event_issue(check_id, event, None);
             diagnostics.extend(diagnostic);
             let canonical = crate::producer::canonical_check_id(profile, check_id);
-            if claimed.contains(check_id)
-                || canonical
+            let route = routes.get(check_id).or_else(|| {
+                canonical
                     .as_ref()
-                    .is_some_and(|canonical| claimed.contains(canonical))
-            {
+                    .and_then(|canonical| routes.get(canonical))
+            });
+            if let Some(route) = route {
+                if event_issue == Some(RawEventIssue::InvariantViolation) {
+                    match machine_invariant_id(check_id, event) {
+                        Ok(invariant_id) if route.contains(invariant_id) => {}
+                        Ok(invariant_id) => {
+                            diagnostics.insert(format!(
+                                "simulator check `{check_id}` emitted invariant {invariant_id} without a registered failure route"
+                            ));
+                            merge_raw_issue(&mut global_issue, Some(RawEventIssue::HarnessError));
+                        }
+                        Err(error) => {
+                            diagnostics.insert(error);
+                            merge_raw_issue(&mut global_issue, Some(RawEventIssue::HarnessError));
+                        }
+                    }
+                }
                 continue;
             }
             if allowed_summary_event(profile, check_id, event) {
@@ -293,7 +303,11 @@ fn inspect_machine_events(
     }
 }
 
-fn raw_event_issue(check_id: &str, event: &Value) -> (Option<RawEventIssue>, Option<String>) {
+fn raw_event_issue(
+    check_id: &str,
+    event: &Value,
+    expected_invariant_id: Option<&str>,
+) -> (Option<RawEventIssue>, Option<String>) {
     let issue = match (
         event.get("status").and_then(Value::as_str),
         event.get("classification"),
@@ -302,7 +316,15 @@ fn raw_event_issue(check_id: &str, event: &Value) -> (Option<RawEventIssue>, Opt
         (Some("fail"), Some(Value::String(classification)))
             if classification == "invariant-violation" =>
         {
-            RawEventIssue::InvariantViolation
+            match machine_invariant_id(check_id, event) {
+                Ok(observed)
+                    if expected_invariant_id.is_none_or(|expected| expected == observed) =>
+                {
+                    RawEventIssue::InvariantViolation
+                }
+                Ok(_) => RawEventIssue::CoverageNotReached,
+                Err(error) => return (Some(RawEventIssue::HarnessError), Some(error)),
+            }
         }
         (Some("incomplete"), Some(Value::String(classification)))
             if classification == "coverage-not-reached" =>
@@ -322,6 +344,44 @@ fn raw_event_issue(check_id: &str, event: &Value) -> (Option<RawEventIssue>, Opt
         }
     };
     (Some(issue), None)
+}
+
+fn machine_invariant_id<'a>(check_id: &str, event: &'a Value) -> Result<&'a str, String> {
+    if event.get("event").and_then(Value::as_str) != Some("check-failure")
+        || event.get("event_version").and_then(Value::as_u64) != Some(2)
+    {
+        return Err(format!(
+            "simulator check `{check_id}` invariant violation used an unsupported machine-event contract"
+        ));
+    }
+    let invariant_id = event
+        .get("invariant_id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            format!("simulator check `{check_id}` invariant violation omitted invariant_id")
+        })?;
+    let valid_shape = invariant_id.len() == 5
+        && invariant_id.as_bytes()[0..2]
+            .iter()
+            .all(u8::is_ascii_uppercase)
+        && invariant_id.as_bytes()[2] == b'-'
+        && invariant_id.as_bytes()[3..5].iter().all(u8::is_ascii_digit);
+    let label = event
+        .get("invariant")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            format!("simulator check `{check_id}` invariant violation omitted its invariant label")
+        })?;
+    if !valid_shape
+        || !label
+            .strip_prefix(invariant_id)
+            .is_some_and(|suffix| suffix.starts_with(' '))
+    {
+        return Err(format!(
+            "simulator check `{check_id}` has an invalid invariant identity: id={invariant_id:?}, label={label:?}"
+        ));
+    }
+    Ok(invariant_id)
 }
 
 fn merge_raw_issue(current: &mut Option<RawEventIssue>, candidate: Option<RawEventIssue>) {
@@ -356,7 +416,7 @@ fn verify_negative_fixture_binding(
     descriptor: &crate::EvidenceDescriptor,
     fixture: &str,
     check_id: &str,
-) -> Result<(), AggregateError> {
+) -> Result<super::detector_source::DetectorInvocationContract, AggregateError> {
     let fixture_path = descriptor.negative_fixture_path.as_deref().ok_or_else(|| {
         AggregateError::new(format!(
             "simulator check {check_id} has no registered negative fixture path"
@@ -368,6 +428,15 @@ fn verify_negative_fixture_binding(
         .ok_or_else(|| {
             AggregateError::new(format!(
                 "simulator check {check_id} has no registered detector identity"
+            ))
+        })?;
+    let test_identity = descriptor
+        .simulator
+        .as_ref()
+        .and_then(|identity| identity.negative_test.as_ref())
+        .ok_or_else(|| {
+            AggregateError::new(format!(
+                "simulator check {check_id} has no registered detector test identity"
             ))
         })?;
     let canonical_root = fs::canonicalize(root)
@@ -382,26 +451,46 @@ fn verify_negative_fixture_binding(
             "simulator fixture path escapes the source root: {fixture_path}"
         )));
     }
-    let fixture_source = fs::read_to_string(&canonical_fixture).map_err(|error| {
-        AggregateError::new(format!(
-            "read simulator fixture source {fixture_path}: {error}"
-        ))
-    })?;
-    let detector_source = fs::read_to_string(root.join(&descriptor.path)).map_err(|error| {
+    let canonical_detector = fs::canonicalize(root.join(&descriptor.path)).map_err(|error| {
         AggregateError::new(format!(
             "read simulator detector source {}: {error}",
             descriptor.path
         ))
     })?;
-    let fixture_declaration = format!("fn {fixture}");
-    if !fixture_source.contains(&fixture_declaration)
-        || (!fixture_source.contains(detector) && !detector_source.contains(detector))
-    {
+    if !canonical_detector.starts_with(&canonical_root) {
         return Err(AggregateError::new(format!(
-            "simulator check {check_id} does not bind fixture {fixture} to detector {detector} in the registered source paths"
+            "simulator detector path escapes the source root: {}",
+            descriptor.path
         )));
     }
-    Ok(())
+    let fixture_source = fs::read_to_string(&canonical_fixture).map_err(|error| {
+        AggregateError::new(format!(
+            "read simulator fixture source {fixture_path}: {error}"
+        ))
+    })?;
+    let detector_source = fs::read_to_string(&canonical_detector).map_err(|error| {
+        AggregateError::new(format!(
+            "read simulator detector source {}: {error}",
+            descriptor.path
+        ))
+    })?;
+    super::detector_source::verify_invocation_bound_detector(
+        &crate::DetectorFixtureSourceBinding {
+            fixture_source: &fixture_source,
+            detector_source: &detector_source,
+            source_root: &canonical_root,
+            fixture_path: &canonical_fixture,
+            detector_path: &canonical_detector,
+            test_identity,
+            fixture,
+            detector,
+        },
+    )
+    .map_err(|error| {
+        AggregateError::new(format!(
+            "simulator check {check_id} does not bind fixture {fixture} to detector {detector}: {error}"
+        ))
+    })
 }
 
 struct ScannedSimulatorEvents {
@@ -478,7 +567,50 @@ pub(super) fn verify_simulator_observations(
             check.check_id
         )));
     }
+    let (mut derived, profile_issue) =
+        derive_simulator_observation_counts(bundle, identity, events)?;
+    verify_profile_issue_outcome(bundle, check, profile_issue)?;
+    verify_liveness_observations(
+        bundle,
+        check,
+        identity,
+        liveness_contracts,
+        events,
+        &mut derived,
+    )?;
+    verify_composite_observation(bundle, check, identity, events)?;
+    let claimed = check
+        .observations
+        .iter()
+        .filter(|(name, _)| name.as_str() != "detector_qualified")
+        .map(|(name, value)| (name.clone(), *value))
+        .collect::<BTreeMap<_, _>>();
+    if claimed != derived {
+        return Err(AggregateError::new(format!(
+            "simulator receipt observations disagree with logs for {}",
+            check.check_id
+        )));
+    }
+    Ok(())
+}
+
+fn derive_simulator_observation_counts(
+    bundle: &ResultBundle,
+    identity: &crate::SimulatorIdentity,
+    events: &BTreeMap<String, Vec<Value>>,
+) -> Result<(BTreeMap<String, u64>, Option<RawEventIssue>), AggregateError> {
+    let check_contracts = &bundle
+        .execution
+        .plan
+        .contract
+        .runners
+        .get("simulator")
+        .ok_or_else(|| {
+            AggregateError::new("simulator plan omitted its runner contract".to_owned())
+        })?
+        .simulator_checks;
     let mut derived = BTreeMap::new();
+    let mut profile_issue = None;
     for name in &identity.checks {
         let matching = events.get(name).map(Vec::as_slice).unwrap_or_default();
         derived.insert(format!("runs:{name}"), matching.len() as u64);
@@ -497,12 +629,74 @@ pub(super) fn verify_simulator_observations(
                 .min()
                 .unwrap_or_default(),
         );
+        if let Some(contract) = check_contracts.get(name) {
+            merge_raw_issue(
+                &mut profile_issue,
+                derive_check_contract_issue(name, matching, contract, &mut derived),
+            );
+        }
         if identity.liveness_report.is_none() {
             for event in matching {
                 merge_event_observations(event, &mut derived);
             }
         }
     }
+    Ok((derived, profile_issue))
+}
+
+fn verify_profile_issue_outcome(
+    bundle: &ResultBundle,
+    check: &crate::CheckReceipt,
+    profile_issue: Option<RawEventIssue>,
+) -> Result<(), AggregateError> {
+    let Some(expected) = profile_issue else {
+        return Ok(());
+    };
+    let outcomes = bundle
+        .results
+        .iter()
+        .filter(|result| result.execution_id == check.execution_id)
+        .map(|result| (result.status, result.classification))
+        .collect::<Vec<_>>();
+    if outcomes.is_empty()
+        || outcomes.iter().any(|outcome| {
+            receipt_issue(*outcome).is_none_or(|issue| issue.rank() < expected.rank())
+        })
+    {
+        return Err(AggregateError::new(format!(
+            "simulator check {} receipt downgrades its per-check profile failure",
+            check.check_id
+        )));
+    }
+    Ok(())
+}
+
+fn receipt_issue(
+    outcome: (crate::EvidenceStatus, Option<crate::FailureClassification>),
+) -> Option<RawEventIssue> {
+    match outcome {
+        (crate::EvidenceStatus::Fail, Some(crate::FailureClassification::InvariantViolation)) => {
+            Some(RawEventIssue::InvariantViolation)
+        }
+        (crate::EvidenceStatus::Error, Some(crate::FailureClassification::HarnessError)) => {
+            Some(RawEventIssue::HarnessError)
+        }
+        (
+            crate::EvidenceStatus::Incomplete,
+            Some(crate::FailureClassification::CoverageNotReached),
+        ) => Some(RawEventIssue::CoverageNotReached),
+        _ => None,
+    }
+}
+
+fn verify_liveness_observations(
+    bundle: &ResultBundle,
+    check: &crate::CheckReceipt,
+    identity: &crate::SimulatorIdentity,
+    liveness_contracts: &[crate::types::SimulatorLivenessContract],
+    events: &BTreeMap<String, Vec<Value>>,
+    derived: &mut BTreeMap<String, u64>,
+) -> Result<(), AggregateError> {
     if identity.liveness_report.is_some() {
         if is_passing(bundle, &check.execution_id) {
             let binding = crate::catalog::derive_liveness_binding(
@@ -542,19 +736,110 @@ pub(super) fn verify_simulator_observations(
             check.check_id
         )));
     }
-    let claimed = check
-        .observations
-        .iter()
-        .filter(|(name, _)| name.as_str() != "detector_qualified")
-        .map(|(name, value)| (name.clone(), *value))
-        .collect::<BTreeMap<_, _>>();
-    if claimed != derived {
+    Ok(())
+}
+
+fn verify_composite_observation(
+    bundle: &ResultBundle,
+    check: &crate::CheckReceipt,
+    identity: &crate::SimulatorIdentity,
+    events: &BTreeMap<String, Vec<Value>>,
+) -> Result<(), AggregateError> {
+    if identity.liveness_report.is_some() || !is_passing(bundle, &check.execution_id) {
+        return Ok(());
+    }
+    let independently_reached = identity.checks.iter().any(|name| {
+        events
+            .get(name)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+            .iter()
+            .filter(|event| event.get("status").and_then(Value::as_str) == Some("pass"))
+            .filter_map(|event| event["observations"][&identity.required_observation].as_u64())
+            .sum::<u64>()
+            >= identity.minimum_observation as u64
+    });
+    if !independently_reached {
         return Err(AggregateError::new(format!(
-            "simulator receipt observations disagree with logs for {}",
-            check.check_id
+            "simulator check {} claims passing composite evidence, but no model check independently reached observation {}",
+            check.check_id, identity.required_observation
         )));
     }
     Ok(())
+}
+
+fn derive_check_contract_issue(
+    check: &str,
+    events: &[Value],
+    contract: &crate::SimulatorCheckContract,
+    observations: &mut BTreeMap<String, u64>,
+) -> Option<RawEventIssue> {
+    observations.insert(crate::catalog::per_check_protocol_states_key(check), 0);
+    observations.insert(crate::catalog::per_check_verifier_states_key(check), 0);
+    for observation in &contract.required_observations {
+        observations.insert(
+            crate::catalog::per_check_observation_key(check, observation),
+            0,
+        );
+    }
+    let [event] = events else {
+        return Some(if events.is_empty() {
+            RawEventIssue::CoverageNotReached
+        } else {
+            RawEventIssue::HarnessError
+        });
+    };
+    let protocol_states = event
+        .get("unique_protocol_states")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    let verifier_states = event
+        .get("unique_verifier_states")
+        .and_then(Value::as_u64)
+        .unwrap_or_default();
+    observations.insert(
+        crate::catalog::per_check_protocol_states_key(check),
+        protocol_states,
+    );
+    observations.insert(
+        crate::catalog::per_check_verifier_states_key(check),
+        verifier_states,
+    );
+    for observation in &contract.required_observations {
+        observations.insert(
+            crate::catalog::per_check_observation_key(check, observation),
+            event["observations"][observation]
+                .as_u64()
+                .unwrap_or_default(),
+        );
+    }
+    if event.get("status").and_then(Value::as_str) != Some("pass") {
+        return None;
+    }
+    if event.get("event").and_then(Value::as_str) != Some("exhaustive-check")
+        || event.get("check_id").and_then(Value::as_str) != Some(check)
+        || event
+            .get("unique_protocol_states")
+            .and_then(Value::as_u64)
+            .is_none()
+        || event
+            .get("unique_verifier_states")
+            .and_then(Value::as_u64)
+            .is_none()
+        || !event.get("observations").is_some_and(Value::is_object)
+    {
+        return Some(RawEventIssue::HarnessError);
+    }
+    let observations_reached = contract.required_observations.iter().all(|observation| {
+        event["observations"][observation]
+            .as_u64()
+            .unwrap_or_default()
+            > 0
+    });
+    (protocol_states < contract.minimum_protocol_states
+        || verifier_states < contract.minimum_verifier_states
+        || !observations_reached)
+        .then_some(RawEventIssue::CoverageNotReached)
 }
 
 fn merge_event_observations(event: &Value, observations: &mut BTreeMap<String, u64>) {
@@ -576,125 +861,5 @@ fn merge_event_observations(event: &Value, observations: &mut BTreeMap<String, u
 }
 
 #[cfg(test)]
-mod event_semantics_tests {
-    use std::collections::BTreeMap;
-
-    use serde_json::{json, Value};
-
-    use super::{
-        index_simulator_event, inspect_machine_events, verify_nonpassing_event_classification,
-        RawEventIssue,
-    };
-
-    #[test]
-    fn serialized_verifier_rejects_contradictory_and_missing_event_pairs() {
-        let (catalog, manifest) = crate::tests::loaded();
-        let bundle = simulator_bundle(&catalog, &manifest);
-        let check = &bundle.execution.checks[0];
-        let descriptor = catalog
-            .evidence
-            .iter()
-            .find(|descriptor| descriptor.evidence_id() == check.evidence_ids[0])
-            .expect("registered simulator descriptor");
-        let identity = descriptor.simulator.as_ref().expect("simulator identity");
-        let check_id = &identity.checks[0];
-
-        for event in [
-            json!({
-                "check_id": check_id,
-                "status": "pass",
-                "classification": "invariant-violation",
-            }),
-            json!({"check_id": check_id, "status": "fail"}),
-            json!({
-                "check_id": check_id,
-                "status": "incomplete",
-                "classification": null,
-            }),
-            json!({
-                "check_id": check_id,
-                "status": "unknown",
-                "classification": "harness-error",
-            }),
-        ] {
-            let events = serialized_events("pr", &event);
-            let inspection =
-                inspect_machine_events("pr", std::slice::from_ref(descriptor), &events);
-            assert_eq!(inspection.global_issue, None);
-            assert_eq!(inspection.diagnostics.len(), 1);
-            assert!(inspection.diagnostics[0].contains("invalid status/classification pair"));
-            assert!(verify_nonpassing_event_classification(
-                &bundle,
-                check,
-                identity,
-                &events,
-                inspection.global_issue,
-            )
-            .is_err());
-        }
-    }
-
-    #[test]
-    fn serialized_verifier_rejects_unknown_invariant_violation_as_harness_error() {
-        let (catalog, manifest) = crate::tests::loaded();
-        let bundle = simulator_bundle(&catalog, &manifest);
-        let check = &bundle.execution.checks[0];
-        let descriptor = catalog
-            .evidence
-            .iter()
-            .find(|descriptor| descriptor.evidence_id() == check.evidence_ids[0])
-            .expect("registered simulator descriptor");
-        let identity = descriptor.simulator.as_ref().expect("simulator identity");
-        let event = json!({
-            "check_id": "unknown-invariant",
-            "status": "fail",
-            "classification": "invariant-violation",
-        });
-        let events = serialized_events("pr", &event);
-        let profile_descriptors = catalog
-            .required_evidence(&bundle.execution.plan.contract)
-            .into_values()
-            .flatten()
-            .filter(|descriptor| descriptor.layer == "simulator")
-            .collect::<Vec<_>>();
-        let inspection = inspect_machine_events("pr", &profile_descriptors, &events);
-
-        assert_eq!(inspection.global_issue, Some(RawEventIssue::HarnessError));
-        assert_eq!(
-            inspection.diagnostics,
-            ["simulator emitted unclaimed machine event check IDs: unknown-invariant"]
-        );
-        assert!(verify_nonpassing_event_classification(
-            &bundle,
-            check,
-            identity,
-            &events,
-            inspection.global_issue,
-        )
-        .is_err());
-    }
-
-    fn simulator_bundle(
-        catalog: &crate::Catalog,
-        manifest: &crate::ProfileManifest,
-    ) -> crate::ResultBundle {
-        crate::tests::passing_bundles(catalog, manifest)
-            .into_iter()
-            .find(|bundle| bundle.runner == "simulator")
-            .expect("simulator bundle")
-    }
-
-    fn serialized_events(profile: &str, event: &Value) -> BTreeMap<String, Vec<Value>> {
-        let source = format!("{}{}", crate::artifact_verify::EVENT_PREFIX, event);
-        let (parsed, diagnostics) = super::super::simulator_schedule::scan_machine_events(
-            &source,
-            "serialized simulator fixture",
-        );
-        assert!(diagnostics.is_empty());
-        let mut events = BTreeMap::new();
-        for event in parsed {
-            index_simulator_event(profile, event, &mut events).expect("index serialized event");
-        }
-        events
-    }
-}
+#[path = "simulator_event_semantics_tests.rs"]
+mod event_semantics_tests;

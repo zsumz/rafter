@@ -71,7 +71,6 @@ enum Transition<'a> {
     #[cfg(test)]
     ExecutionCursorRewind(NodeId),
     SchedulerIndex(usize),
-    RandomReadyPosition,
 }
 
 enum TransitionError {
@@ -82,7 +81,6 @@ enum TransitionError {
 enum TransitionOutcome {
     Applied,
     SchedulerIndex(usize),
-    RandomReadyPosition(Option<usize>),
 }
 
 fn apply_transition(
@@ -91,21 +89,21 @@ fn apply_transition(
 ) -> Result<TransitionOutcome, TransitionError> {
     let outcome = match transition {
         Transition::Operation(operation) => {
-            operation::apply_to_state_inner(state, operation);
+            operation::apply_to_state_inner(state, &operation);
             TransitionOutcome::Applied
         }
         Transition::Restart { node_id, trace } => {
             let before = state.cluster.transition_observation_snapshot();
             restart::restart_node_inner(state, node_id, trace)
                 .map_err(TransitionError::Invariant)?;
-            observe_restart_transition(state, &before);
+            observe_restart_transition(state, &before, node_id);
             TransitionOutcome::Applied
         }
         Transition::ApplicationLossRestart { node_id, trace } => {
             let before = state.cluster.transition_observation_snapshot();
             restart_node_losing_application_state_inner(state, node_id, trace)
                 .map_err(TransitionError::Invariant)?;
-            observe_restart_transition(state, &before);
+            observe_restart_transition(state, &before, node_id);
             TransitionOutcome::Applied
         }
         Transition::Soak { operation, trace } => {
@@ -169,9 +167,6 @@ fn apply_transition(
         Transition::SchedulerIndex(len) => {
             TransitionOutcome::SchedulerIndex(state.cluster.0.rng.index(len))
         }
-        Transition::RandomReadyPosition => {
-            TransitionOutcome::RandomReadyPosition(state.cluster.0.random_ready_position())
-        }
     };
     if matches!(outcome, TransitionOutcome::Applied) {
         state.refresh_application_history();
@@ -192,8 +187,9 @@ fn observe_seeded_transition(state: &mut ExplorationState) {
     state.observe_state_coverage();
 }
 
-fn observe_restart_transition(state: &mut ExplorationState, before: &Cluster) {
+fn observe_restart_transition(state: &mut ExplorationState, before: &Cluster, node_id: NodeId) {
     state.restarts_issued += 1;
+    state.record_purpose_restart(before, node_id);
     state.observe_election_authority();
     state.record_election_observation(before, None, &[]);
     state.refresh_log_history();
@@ -242,7 +238,7 @@ fn restart_node_losing_application_state_inner(
 pub(in crate::model_check) fn apply_to_state(state: &mut ExplorationState, operation: Operation) {
     match apply_transition(state, Transition::Operation(operation)) {
         Ok(TransitionOutcome::Applied) => {}
-        Ok(TransitionOutcome::SchedulerIndex(_) | TransitionOutcome::RandomReadyPosition(_)) => {
+        Ok(TransitionOutcome::SchedulerIndex(_)) => {
             unreachable!("ordinary model operations return an applied outcome")
         }
         Err(TransitionError::Invariant(_) | TransitionError::Bootstrap(_)) => {
@@ -258,7 +254,7 @@ pub(in crate::model_check) fn restart_node(
 ) -> Result<(), Failure> {
     match apply_transition(state, Transition::Restart { node_id, trace }) {
         Ok(TransitionOutcome::Applied) => Ok(()),
-        Ok(TransitionOutcome::SchedulerIndex(_) | TransitionOutcome::RandomReadyPosition(_)) => {
+        Ok(TransitionOutcome::SchedulerIndex(_)) => {
             unreachable!("restart transitions return an applied outcome")
         }
         Err(TransitionError::Invariant(failure)) => Err(failure),
@@ -275,7 +271,7 @@ pub(in crate::model_check) fn restart_node_losing_application_state(
 ) -> Result<(), Failure> {
     match apply_transition(state, Transition::ApplicationLossRestart { node_id, trace }) {
         Ok(TransitionOutcome::Applied) => Ok(()),
-        Ok(TransitionOutcome::SchedulerIndex(_) | TransitionOutcome::RandomReadyPosition(_)) => {
+        Ok(TransitionOutcome::SchedulerIndex(_)) => {
             unreachable!("application-loss restart transitions return an applied outcome")
         }
         Err(TransitionError::Invariant(failure)) => Err(failure),
@@ -314,7 +310,7 @@ pub(in crate::model_check) fn try_apply_soak_action(
         },
     ) {
         Ok(TransitionOutcome::Applied) => Ok(()),
-        Ok(TransitionOutcome::SchedulerIndex(_) | TransitionOutcome::RandomReadyPosition(_)) => {
+        Ok(TransitionOutcome::SchedulerIndex(_)) => {
             unreachable!("soak transitions return an applied outcome")
         }
         Err(TransitionError::Invariant(failure)) => Err(failure),
@@ -339,7 +335,7 @@ pub(in crate::model_check) fn apply_snapshot_bootstrap_seeds(
 ) -> Result<(), BootstrapValidationError> {
     match apply_transition(state, Transition::SnapshotBootstrapSeeds(seeds)) {
         Ok(TransitionOutcome::Applied) => Ok(()),
-        Ok(TransitionOutcome::SchedulerIndex(_) | TransitionOutcome::RandomReadyPosition(_)) => {
+        Ok(TransitionOutcome::SchedulerIndex(_)) => {
             unreachable!("snapshot bootstrap seeding returns an applied outcome")
         }
         Err(TransitionError::Bootstrap(error)) => Err(error),
@@ -358,7 +354,7 @@ pub(in crate::model_check) fn apply_pending_application_replay_seed(
         Transition::PendingApplicationReplaySeed(Box::new(seed)),
     ) {
         Ok(TransitionOutcome::Applied) => Ok(()),
-        Ok(TransitionOutcome::SchedulerIndex(_) | TransitionOutcome::RandomReadyPosition(_)) => {
+        Ok(TransitionOutcome::SchedulerIndex(_)) => {
             unreachable!("pending-replay seeding returns an applied outcome")
         }
         Err(TransitionError::Bootstrap(error)) => Err(error),
@@ -387,7 +383,7 @@ pub(in crate::model_check) fn record_execution_corruption(
         },
     ) {
         Ok(TransitionOutcome::Applied) => Ok(()),
-        Ok(TransitionOutcome::SchedulerIndex(_) | TransitionOutcome::RandomReadyPosition(_)) => {
+        Ok(TransitionOutcome::SchedulerIndex(_)) => {
             Err("execution recorder corruption returned a scheduler outcome")
         }
         Err(TransitionError::Invariant(_) | TransitionError::Bootstrap(_)) => {
@@ -403,7 +399,7 @@ pub(in crate::model_check) fn rewind_execution_cursor_for_fixture(
 ) {
     match apply_transition(state, Transition::ExecutionCursorRewind(node_id)) {
         Ok(TransitionOutcome::Applied) => {}
-        Ok(TransitionOutcome::SchedulerIndex(_) | TransitionOutcome::RandomReadyPosition(_)) => {
+        Ok(TransitionOutcome::SchedulerIndex(_)) => {
             unreachable!("execution cursor rewind returned a scheduler outcome")
         }
         Err(TransitionError::Invariant(_) | TransitionError::Bootstrap(_)) => {
@@ -415,19 +411,9 @@ pub(in crate::model_check) fn rewind_execution_cursor_for_fixture(
 pub(in crate::model_check) fn scheduler_index(state: &mut ExplorationState, len: usize) -> usize {
     match apply_transition(state, Transition::SchedulerIndex(len)) {
         Ok(TransitionOutcome::SchedulerIndex(index)) => index,
-        Ok(TransitionOutcome::Applied | TransitionOutcome::RandomReadyPosition(_))
+        Ok(TransitionOutcome::Applied)
         | Err(TransitionError::Invariant(_) | TransitionError::Bootstrap(_)) => {
             unreachable!("scheduler choice returns an index")
-        }
-    }
-}
-
-pub(in crate::model_check) fn random_ready_position(state: &mut ExplorationState) -> Option<usize> {
-    match apply_transition(state, Transition::RandomReadyPosition) {
-        Ok(TransitionOutcome::RandomReadyPosition(position)) => position,
-        Ok(TransitionOutcome::Applied | TransitionOutcome::SchedulerIndex(_))
-        | Err(TransitionError::Invariant(_) | TransitionError::Bootstrap(_)) => {
-            unreachable!("ready-message choice returns an optional position")
         }
     }
 }

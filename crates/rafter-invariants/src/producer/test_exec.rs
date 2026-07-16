@@ -37,6 +37,7 @@ pub(super) fn evaluate(
     source_ref: &str,
     execution_id: &str,
     output_dir: &Path,
+    scratch_deadline: Instant,
 ) -> Result<TestOutcome, Box<dyn Error>> {
     let Some(executable) = compiled.executable.as_ref() else {
         return Ok(error_outcome(
@@ -127,73 +128,97 @@ pub(super) fn evaluate(
         log,
         discovery_ms,
         discovery_rss,
+        scratch_deadline,
     )
 }
 
 #[cfg(test)]
 pub(crate) fn capture_detector_witness_fixture_log(
     source_ref: &str,
+    fixture: &str,
 ) -> Result<(String, String), Box<dyn Error>> {
     let identity = TestIdentity {
         package: "rafter-invariant-test".to_owned(),
         target_kind: "lib".to_owned(),
         target: "rafter_invariant_test".to_owned(),
-        test_name: "tests::token_bound_detector_witness_subprocess_fixture".to_owned(),
+        test_name: format!("tests::{fixture}"),
     };
+    capture_detector_witness_identity_log(source_ref, &identity, true, true)
+}
+
+#[cfg(test)]
+pub(crate) fn capture_fabricated_detector_witness_fixture_log(
+    source_ref: &str,
+    fixture: &str,
+) -> Result<(String, String), Box<dyn Error>> {
+    let identity = TestIdentity {
+        package: "rafter-invariant-test".to_owned(),
+        target_kind: "lib".to_owned(),
+        target: "rafter_invariant_test".to_owned(),
+        test_name: format!("tests::{fixture}"),
+    };
+    capture_detector_witness_identity_log(source_ref, &identity, true, false)
+}
+
+#[cfg(test)]
+pub(crate) fn capture_removed_token_detector_fixture_log(
+    source_ref: &str,
+) -> Result<(String, String), Box<dyn Error>> {
+    let identity = TestIdentity {
+        package: "rafter-invariant-test".to_owned(),
+        target_kind: "lib".to_owned(),
+        target: "rafter_invariant_test".to_owned(),
+        test_name: "tests::detector_witness_with_removed_token_subprocess_fixture".to_owned(),
+    };
+    capture_detector_witness_identity_log(source_ref, &identity, true, false)
+}
+
+#[cfg(test)]
+pub(crate) fn capture_registered_detector_fixture_log(
+    source_ref: &str,
+    identity: &TestIdentity,
+) -> Result<(String, String), Box<dyn Error>> {
+    capture_detector_witness_identity_log(source_ref, identity, false, true)
+}
+
+#[cfg(test)]
+fn capture_detector_witness_identity_log(
+    source_ref: &str,
+    identity: &TestIdentity,
+    ignored: bool,
+    expect_success: bool,
+) -> Result<(String, String), Box<dyn Error>> {
+    if identity.target_kind != "lib" {
+        return Err("detector witness regression helper requires a library target".into());
+    }
     let check_id = identity.check_id();
-    let target_dir = Path::new("target/rafter-invariants")
-        .join(format!("detector-witness-e2e-build-{}", std::process::id()));
+    let fixture = identity
+        .test_name
+        .rsplit("::")
+        .next()
+        .ok_or("detector witness fixture has no leaf name")?;
+    let target_dir = Path::new("target/rafter-invariants").join(format!(
+        "detector-witness-e2e-build-{}-{fixture}",
+        std::process::id()
+    ));
     let _ = std::fs::remove_dir_all(&target_dir);
 
     let result = (|| {
-        let compiled = std::process::Command::new("cargo")
-            .args([
-                "test",
-                "--locked",
-                "--no-default-features",
-                "-p",
-                "rafter-invariant-test",
-                "--lib",
-                "--no-run",
-                "--message-format=json-render-diagnostics",
-            ])
-            .env("CARGO_TARGET_DIR", &target_dir)
-            .output()?;
-        if !compiled.status.success() {
-            return Err(format!(
-                "compile detector witness fixture: {}",
-                String::from_utf8_lossy(&compiled.stderr)
-            )
-            .into());
-        }
-        let mut executables = String::from_utf8_lossy(&compiled.stdout)
-            .lines()
-            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
-            .filter(|message| message["reason"] == "compiler-artifact")
-            .filter(|message| message["target"]["name"] == "rafter_invariant_test")
-            .filter(|message| message["target"]["kind"] == serde_json::json!(["lib"]))
-            .filter_map(|message| message["executable"].as_str().map(std::path::PathBuf::from))
-            .collect::<Vec<_>>();
-        if executables.len() != 1 {
-            return Err(format!(
-                "expected one detector witness fixture executable, found {}",
-                executables.len()
-            )
-            .into());
-        }
-        let executable = std::fs::canonicalize(executables.remove(0))?;
+        let executable = compile_detector_witness_executable(identity, &target_dir)?;
         let program = executable
             .to_str()
             .ok_or("detector witness fixture path is not valid UTF-8")?;
-        let arguments = vec![
+        let mut arguments = vec![
             identity.test_name.clone().into(),
             "--exact".into(),
             "--test-threads=1".into(),
             "--show-output".into(),
             "--color".into(),
             "never".into(),
-            "--ignored".into(),
         ];
+        if ignored {
+            arguments.push("--ignored".into());
+        }
         let mut environment = process::base_environment();
         environment.insert(
             ORACLE_TOKEN_ENV.to_owned(),
@@ -218,8 +243,12 @@ pub(crate) fn capture_detector_witness_fixture_log(
             timed_out: false,
             termination: None,
         };
-        if !captured.status.success() {
-            return Err("detector witness fixture exact libtest execution failed".into());
+        if captured.status.success() != expect_success {
+            return Err(format!(
+                "detector witness fixture exact libtest execution success={} expected={expect_success}",
+                captured.status.success()
+            )
+            .into());
         }
         let source =
             String::from_utf8(process::combined_log("exact libtest execution", &captured)?)?;
@@ -228,6 +257,49 @@ pub(crate) fn capture_detector_witness_fixture_log(
 
     let _ = std::fs::remove_dir_all(target_dir);
     result
+}
+
+#[cfg(test)]
+fn compile_detector_witness_executable(
+    identity: &TestIdentity,
+    target_dir: &Path,
+) -> Result<std::path::PathBuf, Box<dyn Error>> {
+    let compiled = std::process::Command::new("cargo")
+        .args([
+            "test",
+            "--locked",
+            "--no-default-features",
+            "-p",
+            &identity.package,
+            "--lib",
+            "--no-run",
+            "--message-format=json-render-diagnostics",
+        ])
+        .env("CARGO_TARGET_DIR", target_dir)
+        .output()?;
+    if !compiled.status.success() {
+        return Err(format!(
+            "compile detector witness fixture: {}",
+            String::from_utf8_lossy(&compiled.stderr)
+        )
+        .into());
+    }
+    let executables = String::from_utf8_lossy(&compiled.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter(|message| message["reason"] == "compiler-artifact")
+        .filter(|message| message["target"]["name"] == identity.target)
+        .filter(|message| message["target"]["kind"] == serde_json::json!(["lib"]))
+        .filter_map(|message| message["executable"].as_str().map(std::path::PathBuf::from))
+        .collect::<Vec<_>>();
+    let [executable] = executables.as_slice() else {
+        return Err(format!(
+            "expected one detector witness fixture executable, found {}",
+            executables.len()
+        )
+        .into());
+    };
+    Ok(std::fs::canonicalize(executable)?)
 }
 
 fn discover(
@@ -283,10 +355,10 @@ fn execute_exact(
     mut log: Vec<u8>,
     discovery_ms: u64,
     discovery_rss: u64,
+    scratch_deadline: Instant,
 ) -> Result<TestOutcome, Box<dyn Error>> {
     let temporary = Path::new("target/rafter-invariants/tmp").join(execution_id);
-    let (execution_deadline, _) = process::active_layer_deadlines(profile, "tests")?;
-    let temporary_guard = reset_test_scratch(&temporary, execution_deadline)?;
+    let temporary_guard = reset_test_scratch(&temporary, scratch_deadline)?;
     let seed = artifact::deterministic_u64(
         "rafter-tests/v1",
         &format!("{profile}\0{source_ref}\0{}", identity.test_name),

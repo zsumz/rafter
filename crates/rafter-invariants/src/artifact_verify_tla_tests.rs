@@ -668,11 +668,6 @@ impl Fixture {
                 self.configuration("workers"),
             ),
         };
-        let source_prefix = self
-            .bundle
-            .source_ref
-            .get(..12)
-            .unwrap_or(&self.bundle.source_ref);
         let mut arguments = vec![
             "-XX:+UseParallelGC".to_owned(),
             "-cp".to_owned(),
@@ -689,13 +684,7 @@ impl Fixture {
             "-fp".to_owned(),
             "0".to_owned(),
             "-metadir".to_owned(),
-            self.root
-                .join("target/rafter-invariants/tla")
-                .join(source_prefix)
-                .join(&self.bundle.profile)
-                .join(label)
-                .to_string_lossy()
-                .into_owned(),
+            "/proc/self/fd/3".to_owned(),
         ];
         arguments.extend(["-config".to_owned(), config, module.to_owned()]);
         InvocationReceipt {
@@ -746,7 +735,7 @@ impl Fixture {
             log.invocation.current_dir =
                 rebase_fixture_path(&log.invocation.current_dir, &aggregate_root, producer_root);
             for argument in &mut log.invocation.arguments {
-                if Path::new(argument).is_absolute() {
+                if Path::new(argument).starts_with(&aggregate_root) {
                     *argument = rebase_fixture_path(argument, &aggregate_root, producer_root);
                 }
             }

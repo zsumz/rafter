@@ -10,10 +10,7 @@ pub(super) fn capture_jar(
 ) -> Result<ArtifactRef, Box<dyn Error>> {
     let launcher =
         source::tool_path("maelstrom").ok_or("Maelstrom launcher is not present on PATH")?;
-    let jar = launcher
-        .parent()
-        .ok_or("Maelstrom launcher has no installation directory")?
-        .join("lib/maelstrom.jar");
+    let jar = source::maelstrom_jar_path(&launcher)?;
     artifact::capture_external(
         output_dir,
         &namespace.join("inputs"),

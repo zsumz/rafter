@@ -268,7 +268,7 @@ fn optional_features_use_fresh_fixtures_and_emit_honest_evidence() {
     }
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn lv_03_read_barrier_detector_rejects_exhausted_bound() {
     let config = SoakConfig::new(SimSeed(0x51_7e), 0).with_max_read_indexes(1);
     let (mut state, convergence_budget) = optional_monitor_fixture(config);
@@ -291,7 +291,7 @@ fn lv_03_read_barrier_detector_rejects_exhausted_bound() {
     assert_bounded_operation_failure(&failure, SoakActionKind::ReadIndex);
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn lv_03_membership_transition_detector_rejects_exhausted_bound() {
     let config = SoakConfig::new(SimSeed(0x51_7e), 0).with_max_membership_changes(1);
     let (mut state, convergence_budget) = optional_monitor_fixture(config);
@@ -314,7 +314,7 @@ fn lv_03_membership_transition_detector_rejects_exhausted_bound() {
     assert_bounded_operation_failure(&failure, SoakActionKind::RemoveVoter);
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn lv_03_leadership_transfer_detector_rejects_exhausted_bound() {
     let config = SoakConfig::new(SimSeed(0x51_7e), 0).with_max_transfers(1);
     let (mut state, convergence_budget) = optional_monitor_fixture(config);
@@ -337,7 +337,7 @@ fn lv_03_leadership_transfer_detector_rejects_exhausted_bound() {
     assert_bounded_operation_failure(&failure, SoakActionKind::Transfer);
 }
 
-#[test]
+#[rafter_invariant_test::detector_test]
 fn lv_03_snapshot_catch_up_detector_rejects_exhausted_bound() {
     let config = SoakConfig::new(SimSeed(0x51_7e), 0).with_snapshot_catchup_probe();
     let failure = oracle_expect_err!(

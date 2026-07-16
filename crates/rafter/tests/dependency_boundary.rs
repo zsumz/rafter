@@ -247,6 +247,7 @@ fn expected_workspace_crates() -> BTreeSet<String> {
         "rafter-codec",
         "rafter-crc32",
         "rafter-invariant-test",
+        "rafter-invariant-test-macros",
         "rafter-invariants",
         "rafter-maelstrom",
         "rafter-multiraft",
@@ -261,7 +262,8 @@ fn expected_workspace_crates() -> BTreeSet<String> {
 
 fn allowed_normal_workspace_deps(crate_name: &str) -> BTreeSet<String> {
     set(match crate_name {
-        "rafter" | "rafter-crc32" | "rafter-invariant-test" | "rafter-invariants" => &[],
+        "rafter" | "rafter-crc32" | "rafter-invariant-test-macros" | "rafter-invariants" => &[],
+        "rafter-invariant-test" => &["rafter-invariant-test-macros"],
         "rafter-app" => &["rafter", "rafter-runtime-api"],
         "rafter-codec" | "rafter-storage" => &["rafter", "rafter-crc32"],
         "rafter-runtime-api" | "rafter-sim" => &["rafter"],
@@ -353,6 +355,7 @@ fn allowed_dev_workspace_deps(crate_name: &str) -> BTreeMap<String, &'static str
         "rafter-codec"
         | "rafter-crc32"
         | "rafter-invariant-test"
+        | "rafter-invariant-test-macros"
         | "rafter-runtime-api"
         | "rafter-transport-tcp-insecure" => &[],
         unexpected => panic!("missing dev dependency policy for `{unexpected}`"),

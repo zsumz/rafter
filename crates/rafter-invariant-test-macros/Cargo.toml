@@ -1,0 +1,20 @@
+[package]
+name = "rafter-invariant-test-macros"
+version = "0.0.1"
+description = "Trusted detector-test wrapper for Rafter's deterministic invariant gate."
+publish = false
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro2 = "1"
+quote = "1"
+syn = { version = "2", features = ["full"] }
+
+[lints]
+workspace = true

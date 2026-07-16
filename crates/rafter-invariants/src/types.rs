@@ -3,13 +3,13 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// Current version of the machine-readable receipt and report contract.
-pub const RESULT_SCHEMA_VERSION: u32 = 11;
+pub const RESULT_SCHEMA_VERSION: u32 = 12;
 
 /// Current version of the final aggregate verdict report contract.
 pub const VERDICT_SCHEMA_VERSION: u32 = 2;
 
 /// Current version of the hashed execution-plan contract.
-pub const PLAN_SCHEMA_VERSION: u32 = 2;
+pub const PLAN_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
