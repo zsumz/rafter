@@ -37,3 +37,10 @@ rafter_maelstrom_export_root() {
   root="${RAFTER_MAELSTROM_ROOT:-$(mktemp -d "${TMPDIR:-/tmp}/rafter-maelstrom.XXXXXX")}"
   export RAFTER_MAELSTROM_ROOT="$root"
 }
+
+rafter_maelstrom_cargo_build() {
+  (
+    cd "$REPO_ROOT"
+    cargo build --locked "$@"
+  )
+}
