@@ -163,7 +163,7 @@ fn verify_tla_invocation(
         .map(|tool| tool.sha256.as_str());
     if observed.program != "java"
         || java_sha != Some(observed.program_sha256.as_str())
-        || observed.arguments != arguments
+        || !tla_arguments_match(&arguments, &observed.arguments)
         || observed.current_dir != current_dir.to_string_lossy()
         || observed.environment_sha256 != bundle.execution.source.environment_sha256
     {
@@ -172,6 +172,42 @@ fn verify_tla_invocation(
         )));
     }
     Ok(())
+}
+
+fn tla_arguments_match(expected: &[String], observed: &[String]) -> bool {
+    if expected.len() != observed.len() {
+        return false;
+    }
+
+    let mut descriptors = Vec::new();
+    for (index, (expected_argument, observed_argument)) in expected.iter().zip(observed).enumerate()
+    {
+        let descriptor_argument =
+            index > 0 && matches!(expected[index - 1].as_str(), "-metadir" | "-recover");
+        if descriptor_argument {
+            let Some(descriptor) = linux_descriptor(observed_argument) else {
+                return false;
+            };
+            if descriptors.contains(&descriptor) {
+                return false;
+            }
+            descriptors.push(descriptor);
+        } else if expected_argument != observed_argument {
+            return false;
+        }
+    }
+    true
+}
+
+fn linux_descriptor(argument: &str) -> Option<u32> {
+    let descriptor = argument.strip_prefix("/proc/self/fd/")?;
+    if descriptor.is_empty()
+        || (descriptor.len() > 1 && descriptor.starts_with('0'))
+        || !descriptor.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    descriptor.parse::<u32>().ok().filter(|fd| *fd >= 3)
 }
 
 fn producer_repository(current_dir: &str) -> Result<PathBuf, AggregateError> {
@@ -269,4 +305,80 @@ fn expected_tla_arguments(
         target.module.to_owned(),
     ]);
     Ok(arguments)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::tla_arguments_match;
+
+    fn arguments(state: &str) -> Vec<String> {
+        [
+            "-XX:+UseParallelGC",
+            "-cp",
+            "/workspace/tools/cache/tla2tools.jar",
+            "tlc2.TLC",
+            "-metadir",
+            state,
+            "-config",
+            "RaftCi.cfg",
+            "Raft.tla",
+        ]
+        .map(str::to_owned)
+        .to_vec()
+    }
+
+    #[test]
+    fn held_state_descriptor_matches_path_based_plan() {
+        assert!(tla_arguments_match(
+            &arguments("/workspace/target/rafter-invariants/tla/states"),
+            &arguments("/proc/self/fd/3")
+        ));
+    }
+
+    #[test]
+    fn state_path_cannot_replace_held_descriptor() {
+        let arguments = arguments("/workspace/target/rafter-invariants/tla/states");
+        assert!(!tla_arguments_match(&arguments, &arguments));
+    }
+
+    #[test]
+    fn malformed_or_standard_descriptors_are_rejected() {
+        let expected = arguments("/workspace/target/rafter-invariants/tla/states");
+        for observed in [
+            "/proc/self/fd/0",
+            "/proc/self/fd/03",
+            "/proc/self/fd/-3",
+            "/proc/self/fd/3/child",
+            "/dev/fd/3",
+        ] {
+            assert!(!tla_arguments_match(&expected, &arguments(observed)));
+        }
+    }
+
+    #[test]
+    fn checkpoint_state_and_recovery_require_distinct_descriptors() {
+        let mut expected = arguments("/workspace/target/rafter-invariants/tla/states");
+        expected.splice(
+            6..6,
+            [
+                "-recover".to_owned(),
+                "/workspace/target/rafter-invariants/tla/checkpoint".to_owned(),
+            ],
+        );
+        let mut observed = expected.clone();
+        observed[5] = "/proc/self/fd/3".to_owned();
+        observed[7] = "/proc/self/fd/4".to_owned();
+        assert!(tla_arguments_match(&expected, &observed));
+
+        observed[7] = "/proc/self/fd/3".to_owned();
+        assert!(!tla_arguments_match(&expected, &observed));
+    }
+
+    #[test]
+    fn non_descriptor_arguments_remain_exact() {
+        let expected = arguments("/workspace/target/rafter-invariants/tla/states");
+        let mut observed = arguments("/proc/self/fd/3");
+        observed[7] = "Other.cfg".to_owned();
+        assert!(!tla_arguments_match(&expected, &observed));
+    }
 }
