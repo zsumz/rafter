@@ -4,84 +4,11 @@ use std::{
     path::Path,
 };
 
-use crate::{aggregate::AggregateError, EvidenceStatus, FailureClassification, ResultBundle};
+use crate::{aggregate::AggregateError, EvidenceStatus, ResultBundle};
 
-const DETECTOR_WITNESS_PREFIX: &str = "RAFTER_INVARIANT_DETECTOR_WITNESS:";
+mod runner;
 
-pub(super) fn verify_test_logs(bundle: &ResultBundle, root: &Path) -> Result<(), AggregateError> {
-    let catalog =
-        crate::Catalog::load(root.join(&bundle.execution.plan.registry.path).as_path())
-            .map_err(|error| AggregateError::new(format!("reload tests registry: {error}")))?;
-    for check in &bundle.execution.checks {
-        let outcomes = bundle
-            .results
-            .iter()
-            .filter(|result| result.execution_id == check.execution_id)
-            .map(|result| (result.status, result.classification))
-            .collect::<Vec<_>>();
-        let Some(outcome) = outcomes.first().copied() else {
-            return Err(AggregateError::new(format!(
-                "tests check {} has no evidence result",
-                check.check_id
-            )));
-        };
-        if outcomes.iter().any(|candidate| *candidate != outcome) {
-            return Err(AggregateError::new(format!(
-                "tests check {} has conflicting evidence outcomes",
-                check.check_id
-            )));
-        }
-        let test_name = registered_test_name(&catalog, check)?;
-        let Some(test_log) = check
-            .artifacts
-            .iter()
-            .find(|artifact| artifact.kind == "test-log")
-        else {
-            if outcome
-                == (
-                    EvidenceStatus::Error,
-                    Some(FailureClassification::HarnessError),
-                )
-                && check
-                    .artifacts
-                    .iter()
-                    .any(|artifact| artifact.kind == "compile-log")
-            {
-                continue;
-            }
-            return Err(AggregateError::new(format!(
-                "tests check {} is missing its runtime transcript",
-                check.check_id
-            )));
-        };
-        let source = fs::read_to_string(root.join(&test_log.path)).map_err(|error| {
-            AggregateError::new(format!("read test-log {}: {error}", test_log.path))
-        })?;
-        match outcome {
-            (EvidenceStatus::Pass, None) => {
-                verify_test_invocations(bundle, check, &source, &test_name, &check.check_id, root)?;
-                require_exact_test_pass(&source, &test_name, &check.check_id)?;
-            }
-            (EvidenceStatus::Fail, Some(FailureClassification::InvariantViolation)) => {
-                verify_oracle_failure_invocations(bundle, check, &source, &test_name, root)?;
-                require_exact_test_failure(&source, &test_name, &check.check_id)?;
-            }
-            (EvidenceStatus::Incomplete, Some(FailureClassification::CoverageNotReached)) => {
-                verify_incomplete_test_invocations(bundle, check, &source, &test_name, root)?;
-            }
-            (EvidenceStatus::Error, Some(FailureClassification::HarnessError)) => {
-                verify_harness_error_test_invocations(bundle, check, &source, &test_name, root)?;
-            }
-            _ => {
-                return Err(AggregateError::new(format!(
-                    "tests check {} has an invalid status/classification pair",
-                    check.check_id
-                )))
-            }
-        }
-    }
-    Ok(())
-}
+pub(super) use runner::verify_test_logs;
 
 fn registered_test_name(
     catalog: &crate::Catalog,
@@ -213,10 +140,14 @@ pub(super) fn require_detector_witness_contract(
             AggregateError::new("detector log omitted its exact invocation".to_owned())
         })?;
     let token = crate::producer::test_exec::oracle_token(&bundle.source_ref, oracle_check_id);
+    let challenge = exact.detector_challenge.as_deref().ok_or_else(|| {
+        AggregateError::new("detector log omitted its parent-issued challenge".to_owned())
+    })?;
     require_detector_witness_contract_in_streams(
         &exact.stdout,
         &exact.stderr,
         &token,
+        challenge,
         expected_witnesses,
     )
 }
@@ -226,6 +157,7 @@ fn require_detector_witness_in_streams(
     stdout: &str,
     stderr: &str,
     token: &str,
+    challenge: &str,
     registered_identity: &str,
 ) -> Result<(), AggregateError> {
     valid_witness_identity(registered_identity).ok_or_else(|| {
@@ -237,6 +169,7 @@ fn require_detector_witness_in_streams(
         stdout,
         stderr,
         token,
+        challenge,
         &BTreeMap::from([(format!("expect-err:{registered_identity}"), 1)]),
     )
 }
@@ -245,25 +178,11 @@ fn require_detector_witness_contract_in_streams(
     stdout: &str,
     stderr: &str,
     token: &str,
+    challenge: &str,
     expected_witnesses: &BTreeMap<String, usize>,
 ) -> Result<(), AggregateError> {
-    let expected_prefix = format!("{DETECTOR_WITNESS_PREFIX}{token}:");
-    let mut witnesses = BTreeMap::<String, usize>::new();
-    for line in stdout.lines().chain(stderr.lines()) {
-        let line = line.trim();
-        if let Some(witness) = line.strip_prefix(&expected_prefix) {
-            let Some((kind, name)) = witness_name(witness) else {
-                return Err(AggregateError::new(format!(
-                    "detector log contains a malformed runtime witness: {witness}"
-                )));
-            };
-            *witnesses.entry(format!("{kind}:{name}")).or_default() += 1;
-        } else if line.starts_with(DETECTOR_WITNESS_PREFIX) {
-            return Err(AggregateError::new(
-                "detector log contains a witness bound to another execution token".to_owned(),
-            ));
-        }
-    }
+    let witnesses = crate::detector_proof::verify_transcript(stdout, stderr, token, challenge)
+        .map_err(|error| AggregateError::new(format!("detector proof failed: {error}")))?;
     if &witnesses != expected_witnesses {
         return Err(AggregateError::new(format!(
             "detector log witness contract mismatch: expected {expected_witnesses:?}, observed {witnesses:?}"
@@ -272,14 +191,7 @@ fn require_detector_witness_contract_in_streams(
     Ok(())
 }
 
-fn witness_name(witness: &str) -> Option<(&str, &str)> {
-    let witness = witness.trim();
-    let (kind, name) = witness.split_once(':')?;
-    matches!(kind, "expect-err" | "recorder").then_some(())?;
-    let name = name.strip_suffix("()")?;
-    valid_witness_identity(name).map(|()| (kind, name))
-}
-
+#[cfg(test)]
 fn valid_witness_identity(identity: &str) -> Option<()> {
     let mut segments = identity.split("::");
     valid_identifier(segments.next()?)?;
@@ -289,6 +201,7 @@ fn valid_witness_identity(identity: &str) -> Option<()> {
     Some(())
 }
 
+#[cfg(test)]
 fn valid_identifier(identifier: &str) -> Option<()> {
     (!identifier.is_empty()
         && identifier.chars().enumerate().all(|(index, character)| {
@@ -402,10 +315,11 @@ fn verify_harness_error_test_invocations(
     check: &crate::CheckReceipt,
     source: &str,
     test_name: &str,
+    oracle_check_id: &str,
     root: &Path,
 ) -> Result<(), AggregateError> {
     let processes =
-        verify_test_process_plan(bundle, check, source, test_name, &check.check_id, root)?;
+        verify_test_process_plan(bundle, check, source, test_name, oracle_check_id, root)?;
     match processes.as_slice() {
         [listed, ignored] => {
             let discovery_failed = [listed, ignored]
@@ -437,7 +351,7 @@ fn verify_harness_error_test_invocations(
                     exact.stdout.as_bytes(),
                     exact.stderr.as_bytes(),
                     executed_test_name,
-                    &crate::producer::test_exec::oracle_token(&bundle.source_ref, &check.check_id),
+                    &crate::producer::test_exec::oracle_token(&bundle.source_ref, oracle_check_id),
                     exact.exit_code,
                     exact.timed_out,
                 ) != crate::producer::test_exec::ExactTestExecution::HarnessError
@@ -451,6 +365,37 @@ fn verify_harness_error_test_invocations(
         _ => unreachable!("test process plan has two or three invocations"),
     }
     Ok(())
+}
+
+pub(super) fn verify_detector_harness_error_invocations(
+    bundle: &ResultBundle,
+    check: &crate::CheckReceipt,
+    source: &str,
+    test_name: &str,
+    oracle_check_id: &str,
+    root: &Path,
+) -> Result<(), AggregateError> {
+    verify_harness_error_test_invocations(bundle, check, source, test_name, oracle_check_id, root)?;
+    let processes = crate::producer::process::parse_combined_processes(source)
+        .map_err(|error| AggregateError::new(format!("parse detector invocation: {error}")))?;
+    if let Some(exact) = processes
+        .iter()
+        .find(|process| process.label == "exact libtest execution")
+    {
+        verify_detector_harness_challenge(exact.detector_challenge.as_deref())?;
+    }
+    Ok(())
+}
+
+fn verify_detector_harness_challenge(challenge: Option<&str>) -> Result<(), AggregateError> {
+    let challenge = challenge.ok_or_else(|| {
+        AggregateError::new("detector harness-error log omitted its challenge".to_owned())
+    })?;
+    crate::detector_proof::validate_challenge(challenge).map_err(|error| {
+        AggregateError::new(format!(
+            "detector harness-error challenge is invalid: {error}"
+        ))
+    })
 }
 
 pub(super) fn require_unique_discovery(
@@ -719,7 +664,36 @@ fn exact_test_environment(
             crate::producer::test_exec::oracle_token(&bundle.source_ref, oracle_check_id),
         ),
     ]);
+    if bundle.runner == "simulator" {
+        let detector_environment = invocations
+            .get(2)
+            .map(|invocation| &invocation.invocation.environment)
+            .ok_or_else(|| {
+                AggregateError::new("detector log omitted its exact invocation".to_owned())
+            })?;
+        let socket = detector_environment
+            .get(crate::detector_proof::PROOF_SOCKET_ENV)
+            .ok_or_else(|| {
+                AggregateError::new(
+                    "detector execution environment omitted its proof socket".to_owned(),
+                )
+            })?;
+        let socket_path = Path::new(socket);
+        if !managed_detector_proof_socket(socket_path) {
+            return Err(AggregateError::new(
+                "detector proof socket is outside its managed scratch directory".to_owned(),
+            ));
+        }
+        environment.insert(
+            crate::detector_proof::PROOF_SOCKET_ENV.to_owned(),
+            socket.clone(),
+        );
+    }
     Ok(environment)
+}
+
+fn managed_detector_proof_socket(path: &Path) -> bool {
+    crate::detector_proof::managed_socket_path(path)
 }
 
 pub(super) fn test_execution_profile(bundle: &ResultBundle) -> String {
@@ -784,26 +758,78 @@ pub(super) fn is_passing(bundle: &ResultBundle, execution_id: &str) -> bool {
 #[cfg(test)]
 mod detector_witness_tests {
     use std::collections::BTreeMap;
+    use std::fmt::Write as _;
 
     use super::{
         require_detector_witness, require_detector_witness_contract_in_streams,
-        require_detector_witness_in_streams, DETECTOR_WITNESS_PREFIX,
+        require_detector_witness_in_streams, verify_detector_harness_challenge,
     };
+
+    const CHALLENGE: [u8; crate::detector_proof::CHALLENGE_BYTES] = [0x5a; 32];
+
+    fn proven_transcript(token: &str, witnesses: &[&str]) -> (String, String) {
+        let challenge = crate::detector_proof::encode_challenge(&CHALLENGE);
+        let mut transcript = String::new();
+        for witness in witnesses {
+            write!(
+                transcript,
+                "{}{token}:{witness}()\n{}{token}:{witness}():{challenge}\n",
+                crate::detector_proof::WITNESS_PREFIX,
+                crate::detector_proof::PROOF_PREFIX,
+            )
+            .expect("writing to a String cannot fail");
+        }
+        (challenge, transcript)
+    }
+
+    #[test]
+    fn detector_proof_socket_must_be_a_normal_managed_relative_path() {
+        assert!(super::managed_detector_proof_socket(std::path::Path::new(
+            "target/rafter-invariants/tmp/detector-proof/12-3-5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a.sock",
+        )));
+        for path in [
+            "/target/rafter-invariants/tmp/detector-proof/12-3-5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a.sock",
+            "target/rafter-invariants/tmp/detector-proof/../12-3-5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a.sock",
+            "target/rafter-invariants/tmp/detector-proof/nested/12-3-5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a.sock",
+            "target/rafter-invariants/tmp/detector-proof/12-3.txt",
+        ] {
+            assert!(!super::managed_detector_proof_socket(std::path::Path::new(
+                path
+            )));
+        }
+    }
+
+    #[test]
+    fn exact_detector_harness_receipt_requires_a_valid_parent_challenge() {
+        let challenge = crate::detector_proof::encode_challenge(&CHALLENGE);
+        verify_detector_harness_challenge(Some(&challenge))
+            .expect("a parent-issued challenge is valid harness evidence");
+
+        let missing = verify_detector_harness_challenge(None)
+            .expect_err("an exact detector receipt cannot omit its challenge");
+        assert!(missing.to_string().contains("omitted its challenge"));
+
+        let malformed = verify_detector_harness_challenge(Some("not-a-challenge"))
+            .expect_err("an exact detector receipt cannot invent a challenge");
+        assert!(malformed.to_string().contains("challenge is invalid"));
+    }
 
     #[test]
     fn adversarial_noop_oracle_observation_cannot_qualify_a_detector() {
         let token = "source-bound-token";
         let stdout = format!("RAFTER_INVARIANT_ORACLE_OBSERVED:{token}\n");
+        let challenge = crate::detector_proof::encode_challenge(&CHALLENGE);
 
         let error = require_detector_witness_in_streams(
             &stdout,
             "",
             token,
+            &challenge,
             "fixture::check_committed_prefix_history_stability",
         )
         .expect_err("a generic true assertion must not qualify a detector");
 
-        assert!(error.to_string().contains("witness contract mismatch"));
+        assert!(error.to_string().contains("no runtime witnesses"));
     }
 
     #[test]
@@ -813,38 +839,54 @@ mod detector_witness_tests {
             ("recorder:fixture::record_observation".to_owned(), 1),
             ("expect-err:fixture::check_history".to_owned(), 1),
         ]);
-        let exact = format!(
-            "{DETECTOR_WITNESS_PREFIX}{token}:recorder:fixture::record_observation()\n\
-             {DETECTOR_WITNESS_PREFIX}{token}:expect-err:fixture::check_history()\n"
+        let (challenge, exact) = proven_transcript(
+            token,
+            &[
+                "recorder:fixture::record_observation",
+                "expect-err:fixture::check_history",
+            ],
         );
-        require_detector_witness_contract_in_streams("", &exact, token, &expected)
+        require_detector_witness_contract_in_streams("", &exact, token, &challenge, &expected)
             .expect("the exact source-derived witness multiset qualifies");
 
-        for altered in [
-            format!("{DETECTOR_WITNESS_PREFIX}{token}:recorder:fixture::record_observation()\n"),
-            format!(
-                "{exact}{DETECTOR_WITNESS_PREFIX}{token}:recorder:fixture::record_observation()\n"
-            ),
-            format!("{exact}{DETECTOR_WITNESS_PREFIX}{token}:recorder:fixture::unregistered()\n"),
+        for witnesses in [
+            vec!["recorder:fixture::record_observation"],
+            vec![
+                "recorder:fixture::record_observation",
+                "expect-err:fixture::check_history",
+                "recorder:fixture::record_observation",
+            ],
+            vec![
+                "recorder:fixture::record_observation",
+                "expect-err:fixture::check_history",
+                "recorder:fixture::unregistered",
+            ],
         ] {
-            assert!(
-                require_detector_witness_contract_in_streams("", &altered, token, &expected,)
-                    .is_err()
-            );
+            let (altered_challenge, altered) = proven_transcript(token, &witnesses);
+            assert!(require_detector_witness_contract_in_streams(
+                "",
+                &altered,
+                token,
+                &altered_challenge,
+                &expected,
+            )
+            .is_err());
         }
     }
 
     #[test]
     fn detector_expression_witness_qualifies_only_its_named_detector() {
         let token = "source-bound-token";
-        let stderr = format!(
-            "{DETECTOR_WITNESS_PREFIX}{token}:expect-err:fixture::check_committed_prefix_history_stability()\n"
+        let (challenge, stderr) = proven_transcript(
+            token,
+            &["expect-err:fixture::check_committed_prefix_history_stability"],
         );
 
         require_detector_witness_in_streams(
             "",
             &stderr,
             token,
+            &challenge,
             "fixture::check_committed_prefix_history_stability",
         )
         .expect("the actual detector expression is witnessed");
@@ -852,15 +894,19 @@ mod detector_witness_tests {
             "",
             &stderr,
             token,
+            &challenge,
             "fixture::check_stable_commit_quorums",
         )
         .is_err());
         assert!(require_detector_witness_in_streams(
             "",
-            &format!(
-                "{DETECTOR_WITNESS_PREFIX}{token}:expect-err:other(check_committed_prefix_history_stability())\n"
-            ),
+            &proven_transcript(
+                token,
+                &["expect-err:other(check_committed_prefix_history_stability())"],
+            )
+            .1,
             token,
+            &challenge,
             "fixture::check_committed_prefix_history_stability",
         )
         .is_err());
@@ -869,11 +915,16 @@ mod detector_witness_tests {
     #[test]
     fn same_leaf_decoy_identity_cannot_qualify_the_registered_detector() {
         let token = "source-bound-token";
-        let stderr =
-            format!("{DETECTOR_WITNESS_PREFIX}{token}:expect-err:fixture::decoy::detector()\n");
-        let error =
-            require_detector_witness_in_streams("", &stderr, token, "fixture::detector::detector")
-                .expect_err("a compiler-resolved same-leaf decoy must not qualify");
+        let (challenge, stderr) =
+            proven_transcript(token, &["expect-err:fixture::decoy::detector"]);
+        let error = require_detector_witness_in_streams(
+            "",
+            &stderr,
+            token,
+            &challenge,
+            "fixture::detector::detector",
+        )
+        .expect_err("a compiler-resolved same-leaf decoy must not qualify");
         assert!(error.to_string().contains("witness contract mismatch"));
     }
 

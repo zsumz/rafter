@@ -12,7 +12,7 @@ use super::{
     simulator_schedule::verify_simulator_schedule,
     test_logs::{
         is_passing, require_detector_witness_contract, require_exact_test_pass,
-        verify_test_invocations,
+        verify_detector_harness_error_invocations, verify_test_invocations,
     },
 };
 
@@ -53,6 +53,7 @@ pub(super) fn verify_simulator_logs(
         .into_values()
         .collect::<Vec<_>>();
     let mut test_logs = BTreeMap::<String, String>::new();
+    let mut detector_sources = super::detector_source::DetectorSourceCache::default();
     for check in &bundle.execution.checks {
         let [evidence_id] = check.evidence_ids.as_slice() else {
             return Err(AggregateError::new(format!(
@@ -81,12 +82,13 @@ pub(super) fn verify_simulator_logs(
             inspection.global_issue,
         )?;
         verify_simulator_observations(bundle, check, identity, &liveness_contracts, &events)?;
-        verify_passing_negative_detector(
+        verify_negative_detector_evidence(
             bundle,
             root,
             check,
             descriptor,
             identity,
+            &mut detector_sources,
             &mut test_logs,
         )?;
     }
@@ -95,17 +97,15 @@ pub(super) fn verify_simulator_logs(
     Ok(diagnostics)
 }
 
-fn verify_passing_negative_detector(
+fn verify_negative_detector_evidence(
     bundle: &ResultBundle,
     root: &Path,
     check: &crate::CheckReceipt,
     descriptor: &crate::EvidenceDescriptor,
     identity: &crate::SimulatorIdentity,
+    detector_sources: &mut super::detector_source::DetectorSourceCache,
     test_logs: &mut BTreeMap<String, String>,
 ) -> Result<(), AggregateError> {
-    if !is_passing(bundle, &check.execution_id) {
-        return Ok(());
-    }
     let Some(negative_test) = identity.negative_test.as_ref() else {
         return Ok(());
     };
@@ -121,15 +121,54 @@ fn verify_passing_negative_detector(
             check.check_id, negative_test.test_name
         )));
     }
-    let invocation_contract =
-        verify_negative_fixture_binding(root, descriptor, fixture, &check.check_id)?;
+    let invocation_contract = verify_negative_fixture_binding_cached(
+        root,
+        descriptor,
+        fixture,
+        &check.check_id,
+        detector_sources,
+    )?;
+    let qualified = check
+        .observations
+        .get("detector_qualified")
+        .copied()
+        .ok_or_else(|| {
+            AggregateError::new(format!(
+                "simulator check {} omits detector qualification status",
+                check.check_id
+            ))
+        })?;
+    if qualified > 1 {
+        return Err(AggregateError::new(format!(
+            "simulator check {} has invalid detector qualification count {qualified}",
+            check.check_id
+        )));
+    }
+    if qualified == 0 && is_passing(bundle, &check.execution_id) {
+        return Err(AggregateError::new(format!(
+            "passing simulator check {} did not qualify its detector",
+            check.check_id
+        )));
+    }
     let artifact = check
         .artifacts
         .iter()
         .find(|artifact| artifact.kind == "test-log")
-        .ok_or_else(|| {
-            AggregateError::new(format!("detector log missing for {}", check.check_id))
-        })?;
+        .cloned();
+    let Some(artifact) = artifact else {
+        if qualified == 0
+            && check
+                .artifacts
+                .iter()
+                .any(|artifact| artifact.kind == "compile-log")
+        {
+            return Ok(());
+        }
+        return Err(AggregateError::new(format!(
+            "detector log missing for {}",
+            check.check_id
+        )));
+    };
     let source = if let Some(source) = test_logs.get(&artifact.path) {
         source.clone()
     } else {
@@ -139,6 +178,16 @@ fn verify_passing_negative_detector(
         test_logs.insert(artifact.path.clone(), source.clone());
         source
     };
+    if qualified == 0 {
+        return verify_detector_harness_error_invocations(
+            bundle,
+            check,
+            &source,
+            &negative_test.test_name,
+            &negative_test.check_id(),
+            root,
+        );
+    }
     verify_test_invocations(
         bundle,
         check,
@@ -312,7 +361,15 @@ fn raw_event_issue(
         event.get("status").and_then(Value::as_str),
         event.get("classification"),
     ) {
-        (Some("pass"), None | Some(Value::Null)) => return (None, None),
+        (Some("pass"), None | Some(Value::Null)) => {
+            if event.get("event").and_then(Value::as_str) == Some("profile-total") {
+                return (None, None);
+            }
+            return match verified_passing_simulator_event_contract(check_id, event) {
+                Ok(()) => (None, None),
+                Err(error) => (Some(RawEventIssue::HarnessError), Some(error)),
+            };
+        }
         (Some("fail"), Some(Value::String(classification)))
             if classification == "invariant-violation" =>
         {
@@ -344,6 +401,64 @@ fn raw_event_issue(
         }
     };
     (Some(issue), None)
+}
+
+fn verified_passing_simulator_event_contract(check_id: &str, event: &Value) -> Result<(), String> {
+    let expected_event_kind = if check_id.split('-').any(|segment| segment == "soak") {
+        "soak-check"
+    } else {
+        "exhaustive-check"
+    };
+    let observations_are_counts = event
+        .get("observations")
+        .and_then(Value::as_object)
+        .is_some_and(|observations| observations.values().all(Value::is_u64));
+    let common = event.get("check_id").and_then(Value::as_str) == Some(check_id)
+        && event.get("status").and_then(Value::as_str) == Some("pass")
+        && matches!(event.get("classification"), None | Some(Value::Null))
+        && observations_are_counts;
+    let expected_shape = match expected_event_kind {
+        "exhaustive-check" => {
+            event.get("event").and_then(Value::as_str) == Some(expected_event_kind)
+                && event
+                    .get("unique_protocol_states")
+                    .and_then(Value::as_u64)
+                    .is_some()
+                && event
+                    .get("unique_verifier_states")
+                    .and_then(Value::as_u64)
+                    .is_some()
+        }
+        "soak-check" => {
+            event.get("event").and_then(Value::as_str) == Some(expected_event_kind)
+                && event.get("seed").and_then(Value::as_u64).is_some()
+                && event.get("steps").and_then(Value::as_u64).is_some()
+                && event.get("duration_ms").and_then(Value::as_u64).is_some()
+                && event
+                    .get("execution_contract")
+                    .is_some_and(Value::is_object)
+                && verified_string_array(event.get("observed_actions"))
+                && verified_string_array(event.get("liveness_features"))
+                && event.get("liveness_reports").is_some_and(Value::is_array)
+        }
+        _ => unreachable!("simulator passing event kinds are exhaustive or soak"),
+    };
+    if common && expected_shape {
+        return Ok(());
+    }
+    Err(format!(
+        "simulator check `{check_id}` has a malformed passing machine event: expected {expected_event_kind}, found {}",
+        event
+            .get("event")
+            .and_then(Value::as_str)
+            .unwrap_or("<missing>")
+    ))
+}
+
+fn verified_string_array(value: Option<&Value>) -> bool {
+    value
+        .and_then(Value::as_array)
+        .is_some_and(|values| values.iter().all(Value::is_string))
 }
 
 fn machine_invariant_id<'a>(check_id: &str, event: &'a Value) -> Result<&'a str, String> {
@@ -411,11 +526,28 @@ fn invalid_event_pair_message(check_id: &str, event: &Value) -> String {
     )
 }
 
+#[cfg(test)]
 fn verify_negative_fixture_binding(
     root: &Path,
     descriptor: &crate::EvidenceDescriptor,
     fixture: &str,
     check_id: &str,
+) -> Result<super::detector_source::DetectorInvocationContract, AggregateError> {
+    verify_negative_fixture_binding_cached(
+        root,
+        descriptor,
+        fixture,
+        check_id,
+        &mut super::detector_source::DetectorSourceCache::default(),
+    )
+}
+
+fn verify_negative_fixture_binding_cached(
+    root: &Path,
+    descriptor: &crate::EvidenceDescriptor,
+    fixture: &str,
+    check_id: &str,
+    cache: &mut super::detector_source::DetectorSourceCache,
 ) -> Result<super::detector_source::DetectorInvocationContract, AggregateError> {
     let fixture_path = descriptor.negative_fixture_path.as_deref().ok_or_else(|| {
         AggregateError::new(format!(
@@ -474,7 +606,7 @@ fn verify_negative_fixture_binding(
             descriptor.path
         ))
     })?;
-    super::detector_source::verify_invocation_bound_detector(
+    super::detector_source::verify_invocation_bound_detector_cached(
         &crate::DetectorFixtureSourceBinding {
             fixture_source: &fixture_source,
             detector_source: &detector_source,
@@ -485,6 +617,7 @@ fn verify_negative_fixture_binding(
             fixture,
             detector,
         },
+        cache,
     )
     .map_err(|error| {
         AggregateError::new(format!(
@@ -618,7 +751,7 @@ fn derive_simulator_observation_counts(
             format!("passes:{name}"),
             matching
                 .iter()
-                .filter(|event| event["status"] == "pass")
+                .filter(|event| verified_passing_simulator_event_contract(name, event).is_ok())
                 .count() as u64,
         );
         derived.insert(
@@ -637,7 +770,9 @@ fn derive_simulator_observation_counts(
         }
         if identity.liveness_report.is_none() {
             for event in matching {
-                merge_event_observations(event, &mut derived);
+                if verified_passing_simulator_event_contract(name, event).is_ok() {
+                    merge_event_observations(event, &mut derived);
+                }
             }
         }
     }
@@ -754,7 +889,7 @@ fn verify_composite_observation(
             .map(Vec::as_slice)
             .unwrap_or_default()
             .iter()
-            .filter(|event| event.get("status").and_then(Value::as_str) == Some("pass"))
+            .filter(|event| verified_passing_simulator_event_contract(name, event).is_ok())
             .filter_map(|event| event["observations"][&identity.required_observation].as_u64())
             .sum::<u64>()
             >= identity.minimum_observation as u64
@@ -816,18 +951,7 @@ fn derive_check_contract_issue(
     if event.get("status").and_then(Value::as_str) != Some("pass") {
         return None;
     }
-    if event.get("event").and_then(Value::as_str) != Some("exhaustive-check")
-        || event.get("check_id").and_then(Value::as_str) != Some(check)
-        || event
-            .get("unique_protocol_states")
-            .and_then(Value::as_u64)
-            .is_none()
-        || event
-            .get("unique_verifier_states")
-            .and_then(Value::as_u64)
-            .is_none()
-        || !event.get("observations").is_some_and(Value::is_object)
-    {
+    if verified_passing_simulator_event_contract(check, event).is_err() {
         return Some(RawEventIssue::HarnessError);
     }
     let observations_reached = contract.required_observations.iter().all(|observation| {

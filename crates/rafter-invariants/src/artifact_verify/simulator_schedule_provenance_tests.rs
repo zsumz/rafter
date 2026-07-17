@@ -361,7 +361,9 @@ fn real_timed_out_zero_exit_receipt_fails_closed_through_loading_and_aggregation
             issue.classification == crate::FailureClassification::InvariantViolation
                 && issue.message == "real timeout fixture found a counterexample"
         })
-        .unwrap_or_else(|| panic!("counterexample missing from final verdict: {verdict:?}"));
+        .unwrap_or_else(|| {
+            panic!("counterexample {counterexample:?} missing from final verdict: {verdict:?}")
+        });
     assert_eq!(issue.evidence_id, counterexample.evidence_id);
     assert_eq!(issue.status, crate::EvidenceStatus::Fail);
     assert_eq!(issue.artifacts, counterexample.artifacts);
@@ -476,7 +478,7 @@ fn real_valid_looking_pass_then_exit_one_is_rejected_through_final_aggregation()
         "exit-one bundle was discarded: {:?}",
         loaded.harness_errors
     );
-    let raw_log = fs::read_to_string(fixture.root.join("artifacts/fast.log"))
+    let raw_log = fs::read_to_string(fixture.root.join("artifacts/invariants/fast.log"))
         .expect("read serialized exit-one simulator log");
     assert!(raw_log.lines().any(|line| line == "exit_code: Some(1)"));
     assert!(raw_log.contains("\"status\":\"pass\""));
@@ -515,7 +517,7 @@ fn real_counterexample_then_exit_one_preserves_semantics_through_final_aggregati
         "counterexample exit-one bundle was discarded: {:?}",
         loaded.harness_errors
     );
-    let raw_log = fs::read_to_string(fixture.root.join("artifacts/fast.log"))
+    let raw_log = fs::read_to_string(fixture.root.join("artifacts/invariants/fast.log"))
         .expect("read serialized counterexample exit-one simulator log");
     assert!(raw_log.lines().any(|line| line == "exit_code: Some(1)"));
     assert!(raw_log.contains("real exit-one fixture found a counterexample"));

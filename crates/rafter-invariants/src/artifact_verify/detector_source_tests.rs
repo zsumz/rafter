@@ -1,21 +1,26 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
+    process::Command,
     sync::atomic::{AtomicU64, Ordering},
 };
 
 use super::verify_invocation_bound_detector;
+use crate::artifact_verify::DetectorFixtureSourceBatchVerifier;
 
-const DETECTOR_SOURCE: &str = "fn detector() -> Result<(), ()> { Err(()) }";
-const FIXTURE_PATH: &str = "crates/fixture/src/tests.rs";
-const DETECTOR_PATH: &str = "crates/fixture/src/mapped_detector.rs";
+pub(super) const DETECTOR_SOURCE: &str = "fn detector() -> Result<(), ()> { Err(()) }";
+pub(super) const FIXTURE_PATH: &str = "crates/fixture/src/tests.rs";
+pub(super) const DETECTOR_PATH: &str = "crates/fixture/src/mapped_detector.rs";
 
-fn verify(source: &str) -> Result<super::DetectorInvocationContract, String> {
-    let source = detector_fixture(source);
-    let root = synthetic_workspace(&source, DETECTOR_SOURCE);
+pub(super) fn verify(source: &str) -> Result<super::DetectorInvocationContract, String> {
+    verify_with_identity(source, &synthetic_identity())
+}
+
+pub(super) fn verify_decorated(source: &str) -> Result<super::DetectorInvocationContract, String> {
+    let root = synthetic_workspace(source, DETECTOR_SOURCE);
     verify_invocation_bound_detector(&crate::DetectorFixtureSourceBinding {
-        fixture_source: &source,
+        fixture_source: source,
         detector_source: DETECTOR_SOURCE,
         source_root: &root,
         fixture_path: &root.join(FIXTURE_PATH),
@@ -26,15 +31,33 @@ fn verify(source: &str) -> Result<super::DetectorInvocationContract, String> {
     })
 }
 
-fn detector_fixture(source: &str) -> String {
+fn verify_with_identity(
+    source: &str,
+    identity: &crate::TestIdentity,
+) -> Result<super::DetectorInvocationContract, String> {
+    let source = detector_fixture(source);
+    let root = synthetic_workspace(&source, DETECTOR_SOURCE);
+    verify_invocation_bound_detector(&crate::DetectorFixtureSourceBinding {
+        fixture_source: &source,
+        detector_source: DETECTOR_SOURCE,
+        source_root: &root,
+        fixture_path: &root.join(FIXTURE_PATH),
+        detector_path: &root.join(DETECTOR_PATH),
+        test_identity: identity,
+        fixture: "fixture",
+        detector: "detector",
+    })
+}
+
+pub(super) fn detector_fixture(source: &str) -> String {
     source.replacen(
         "fn fixture()",
-        "#[rafter_invariant_test::detector_test]\nfn fixture()",
+        "#[::rafter_invariant_test::detector_test]\nfn fixture()",
         1,
     )
 }
 
-fn synthetic_identity() -> crate::TestIdentity {
+pub(super) fn synthetic_identity() -> crate::TestIdentity {
     crate::TestIdentity {
         package: "fixture".to_owned(),
         target_kind: "lib".to_owned(),
@@ -43,7 +66,7 @@ fn synthetic_identity() -> crate::TestIdentity {
     }
 }
 
-fn synthetic_workspace(fixture_source: &str, detector_source: &str) -> PathBuf {
+pub(super) fn synthetic_workspace(fixture_source: &str, detector_source: &str) -> PathBuf {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     let root = std::env::temp_dir()
         .join("rafter-detector-source-tests")
@@ -72,7 +95,25 @@ fn synthetic_workspace(fixture_source: &str, detector_source: &str) -> PathBuf {
     fs::write(root.join(FIXTURE_PATH), fixture_source).expect("write fixture source");
     fs::write(root.join(DETECTOR_PATH), detector_source).expect("write detector source");
     fs::write(root.join("crates/fixture/src/other.rs"), "").expect("write auxiliary source");
+    let status = Command::new("git")
+        .args(["init", "-q"])
+        .current_dir(&root)
+        .status()
+        .expect("initialize synthetic detector repository");
+    assert!(status.success(), "initialize synthetic detector repository");
+    track_workspace_paths(&root, &["."]);
     root
+}
+
+pub(super) fn track_workspace_paths(root: &Path, paths: &[&str]) {
+    let status = Command::new("git")
+        .arg("add")
+        .arg("--")
+        .args(paths)
+        .current_dir(root)
+        .status()
+        .expect("track synthetic detector source");
+    assert!(status.success(), "track synthetic detector source");
 }
 
 #[test]
@@ -150,6 +191,20 @@ fn fake_macro_dead_branch_and_uncalled_closure_are_rejected() {
             verify(source).is_err(),
             "accepted adversarial source: {source}"
         );
+    }
+}
+
+#[test]
+fn invocation_macro_syntax_matches_the_runtime_macro_contract() {
+    for source in [
+        r#"use crate::detector::detector; use rafter_invariant_test::oracle_expect_err; fn fixture() { oracle_expect_err!((detector)(), "reject"); }"#,
+        r#"use crate::detector::detector; use rafter_invariant_test::oracle_expect_err; fn fixture() { oracle_expect_err!(crate::detector::detector(), "reject"); }"#,
+        r"use crate::detector::detector; use rafter_invariant_test::oracle_expect_err; fn fixture() { oracle_expect_err!(detector()); }",
+        r#"use crate::detector::detector; use rafter_invariant_test::oracle_invoke_recorder; fn fixture() { oracle_invoke_recorder!(detector(), "extra"); }"#,
+    ] {
+        assert!(verify(source)
+            .expect_err("source syntax rejected by the runtime macro must fail closed")
+            .contains("malformed invocation-bound oracle macro"));
     }
 }
 
@@ -274,7 +329,7 @@ fn analyzed_fixture_source_must_own_the_exact_executed_test_identity() {
         detector: "detector",
     })
     .expect_err("analyzed source and executed test identity must be inseparable");
-    assert!(error.contains("not its bound fixture source"), "{error}");
+    assert!(error.contains("has no declaration"), "{error}");
 }
 
 #[test]
@@ -291,7 +346,7 @@ fn fixture() { oracle_expect_err!(detector(), "reject"); }
 }
 
 #[test]
-fn same_leaf_auxiliary_oracles_are_ambiguous_across_the_target_graph() {
+fn exact_auxiliary_identity_ignores_unrelated_same_leaf_declarations() {
     let detector_source = r"
 fn detector() {}
 fn auxiliary() -> Result<(), ()> { Err(()) }
@@ -312,7 +367,7 @@ fn fixture() {
         "fn auxiliary() -> Result<(), ()> { Err(()) }\n",
     )
     .expect("write same-leaf decoy");
-    let error = verify_invocation_bound_detector(&crate::DetectorFixtureSourceBinding {
+    let contract = verify_invocation_bound_detector(&crate::DetectorFixtureSourceBinding {
         fixture_source: &source,
         detector_source,
         source_root: &root,
@@ -322,8 +377,14 @@ fn fixture() {
         fixture: "fixture",
         detector: "detector",
     })
-    .expect_err("same-leaf auxiliary declarations must fail closed");
-    assert!(error.contains("auxiliary` resolves to 2"), "{error}");
+    .expect("an exact import disambiguates unrelated same-leaf declarations");
+    assert_eq!(
+        contract.witnesses(),
+        &BTreeMap::from([
+            ("expect-err:fixture::detector::auxiliary".to_owned(), 1),
+            ("recorder:fixture::detector::detector".to_owned(), 1),
+        ])
+    );
 }
 
 #[test]
@@ -359,6 +420,87 @@ fn emit() { oracle_expect_err!(detector(), "reject"); }
         .contains("does not invoke registered detector"));
 }
 
+include!("detector_source_tests/call_flow.rs");
+
+#[test]
+fn exact_inline_fixture_identity_ignores_same_leaf_decoys() {
+    let source = r#"
+use crate::detector::detector;
+use rafter_invariant_test::oracle_expect_err;
+mod selected {
+    use super::*;
+    fn fixture() { oracle_expect_err!(detector(), "reject"); }
+}
+mod decoy { fn fixture() {} }
+"#;
+    let mut identity = synthetic_identity();
+    identity.test_name = "tests::selected::fixture".to_owned();
+    verify_with_identity(source, &identity)
+        .expect("the exact inline fixture identity must not be leaf-global");
+}
+
+#[test]
+fn inline_detector_uses_its_exact_compiler_identity() {
+    let source = detector_fixture(
+        r#"
+use rafter_invariant_test::oracle_expect_err;
+mod nested {
+    pub(super) fn detector() -> Result<(), ()> { Err(()) }
+}
+use self::nested::detector;
+fn fixture() { oracle_expect_err!(detector(), "reject"); }
+"#,
+    );
+    let root = synthetic_workspace(&source, "");
+    let fixture_path = root.join(FIXTURE_PATH);
+    let contract = verify_invocation_bound_detector(&crate::DetectorFixtureSourceBinding {
+        fixture_source: &source,
+        detector_source: &source,
+        source_root: &root,
+        fixture_path: &fixture_path,
+        detector_path: &fixture_path,
+        test_identity: &synthetic_identity(),
+        fixture: "fixture",
+        detector: "detector",
+    })
+    .expect("inline detector must resolve by exact module identity");
+    assert_eq!(
+        contract.registered_identity(),
+        "fixture::tests::nested::detector"
+    );
+}
+
+#[test]
+fn imported_detector_identity_ignores_same_leaf_module_decoys() {
+    let detector_source = r"
+pub(super) mod selected { pub fn detector() -> Result<(), ()> { Err(()) } }
+mod decoy { fn detector() -> Result<(), ()> { Ok(()) } }
+";
+    let source = detector_fixture(
+        r#"
+use crate::detector::selected::detector;
+use rafter_invariant_test::oracle_expect_err;
+fn fixture() { oracle_expect_err!(detector(), "reject"); }
+"#,
+    );
+    let root = synthetic_workspace(&source, detector_source);
+    let contract = verify_invocation_bound_detector(&crate::DetectorFixtureSourceBinding {
+        fixture_source: &source,
+        detector_source,
+        source_root: &root,
+        fixture_path: &root.join(FIXTURE_PATH),
+        detector_path: &root.join(DETECTOR_PATH),
+        test_identity: &synthetic_identity(),
+        fixture: "fixture",
+        detector: "detector",
+    })
+    .expect("the exact detector import must select one same-leaf declaration");
+    assert_eq!(
+        contract.registered_identity(),
+        "fixture::detector::selected::detector"
+    );
+}
+
 #[test]
 fn module_value_bindings_cannot_shadow_the_registered_detector() {
     let source = r#"
@@ -371,93 +513,6 @@ fn fixture() { oracle_expect_err!(detector(), "reject"); }
     assert!(verify(source)
         .expect_err("module const shadow must fail")
         .contains("shadowed"));
-}
-
-#[test]
-fn source_root_stripping_ignores_ancestor_src_components() {
-    let source = detector_fixture(
-        r#"use crate::detector::detector; use rafter_invariant_test::oracle_expect_err; fn fixture() { oracle_expect_err!(detector(), "reject"); }"#,
-    );
-    let root = synthetic_workspace(&source, DETECTOR_SOURCE);
-    let fixture_path = root.join(FIXTURE_PATH);
-    let detector_path = root.join(DETECTOR_PATH);
-    let contract = verify_invocation_bound_detector(&crate::DetectorFixtureSourceBinding {
-        fixture_source: &source,
-        detector_source: DETECTOR_SOURCE,
-        source_root: &root,
-        fixture_path: &fixture_path,
-        detector_path: &detector_path,
-        test_identity: &synthetic_identity(),
-        fixture: "fixture",
-        detector: "detector",
-    })
-    .expect("workspace-relative module inference ignores host path components");
-    assert_eq!(
-        contract.registered_identity(),
-        "fixture::detector::detector"
-    );
-}
-
-#[test]
-fn cargo_test_cfg_and_cfg_attr_path_select_the_actual_fixture_module() {
-    let source = detector_fixture(
-        r#"use crate::detector::detector; use rafter_invariant_test::oracle_expect_err; fn fixture() { oracle_expect_err!(detector(), "reject"); }"#,
-    );
-    let root = synthetic_workspace(&source, DETECTOR_SOURCE);
-    let alternate_fixture = root.join("crates/fixture/src/alternate_tests.rs");
-    fs::write(&alternate_fixture, &source).expect("write cfg_attr-selected fixture source");
-    fs::write(
-        root.join("crates/fixture/src/lib.rs"),
-        r#"#[path = "mapped_detector.rs"]
-mod detector;
-mod other;
-#[cfg(any(unix, windows))]
-#[cfg(not(feature = "disabled"))]
-#[cfg_attr(test, path = "alternate_tests.rs")]
-mod tests;
-"#,
-    )
-    .expect("write cfg-selected target root");
-
-    verify_invocation_bound_detector(&crate::DetectorFixtureSourceBinding {
-        fixture_source: &source,
-        detector_source: DETECTOR_SOURCE,
-        source_root: &root,
-        fixture_path: &alternate_fixture,
-        detector_path: &root.join(DETECTOR_PATH),
-        test_identity: &synthetic_identity(),
-        fixture: "fixture",
-        detector: "detector",
-    })
-    .expect("ordinary Cargo test cfg and active cfg_attr path must resolve exactly");
-}
-
-#[test]
-fn unknown_custom_cfg_fails_closed_instead_of_omitting_the_module() {
-    let source = detector_fixture(
-        r#"use crate::detector::detector; use rafter_invariant_test::oracle_expect_err; fn fixture() { oracle_expect_err!(detector(), "reject"); }"#,
-    );
-    let root = synthetic_workspace(&source, DETECTOR_SOURCE);
-    fs::write(
-        root.join("crates/fixture/src/lib.rs"),
-        "#[path = \"mapped_detector.rs\"]\nmod detector;\nmod other;\n#[cfg(custom_build_flag)]\nmod tests;\n",
-    )
-    .expect("write custom-cfg target root");
-    let error = verify_invocation_bound_detector(&crate::DetectorFixtureSourceBinding {
-        fixture_source: &source,
-        detector_source: DETECTOR_SOURCE,
-        source_root: &root,
-        fixture_path: &root.join(FIXTURE_PATH),
-        detector_path: &root.join(DETECTOR_PATH),
-        test_identity: &synthetic_identity(),
-        fixture: "fixture",
-        detector: "detector",
-    })
-    .expect_err("unbound custom cfg must fail closed");
-    assert!(
-        error.contains("outside the reviewed test context"),
-        "{error}"
-    );
 }
 
 #[test]
@@ -482,6 +537,21 @@ fn detector() -> Result<(), ()> { Err(()) }
 }
 
 #[test]
+fn explicit_external_import_takes_precedence_over_detector_glob() {
+    let source = r#"
+use external_crate::detector;
+use crate::detector::*;
+use rafter_invariant_test::oracle_expect_err;
+fn fixture() { oracle_expect_err!(detector(), "reject"); }
+"#;
+
+    assert!(
+        verify(source).is_err(),
+        "an explicit external import must not resolve through an in-tree glob"
+    );
+}
+
+#[test]
 fn a_forged_helper_is_rejected_even_when_a_real_invocation_is_found_first() {
     let source = r#"
 use crate::detector::detector;
@@ -494,61 +564,4 @@ fn forged() { __oracle_detector_witness("detector()"); }
         .contains("arbitrary detector witness"));
 }
 
-#[test]
-fn reviewed_registry_fixtures_have_source_bound_invocation_contracts() {
-    let (catalog, _) = crate::tests::loaded();
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let root = fs::canonicalize(root).expect("canonical workspace root");
-    let mut failures = Vec::new();
-
-    for descriptor in catalog
-        .evidence
-        .iter()
-        .filter(|evidence| evidence.layer == "simulator" && evidence.strength == "direct")
-    {
-        let Some(fixture) = descriptor.negative_fixture.as_deref() else {
-            continue;
-        };
-        let Some(fixture_path) = descriptor.negative_fixture_path.as_deref() else {
-            continue;
-        };
-        let Some(detector) = descriptor.negative_fixture_detector.as_deref() else {
-            continue;
-        };
-        let fixture_path =
-            fs::canonicalize(root.join(fixture_path)).expect("canonical registered fixture source");
-        let detector_path = fs::canonicalize(root.join(&descriptor.path))
-            .expect("canonical registered detector source");
-        let fixture_source =
-            fs::read_to_string(&fixture_path).expect("read registered fixture source");
-        let detector_source =
-            fs::read_to_string(&detector_path).expect("read registered detector source");
-        let identity = descriptor
-            .simulator
-            .as_ref()
-            .and_then(|identity| identity.negative_test.as_ref())
-            .expect("registered direct simulator fixture identity");
-
-        if let Err(error) = verify_invocation_bound_detector(&crate::DetectorFixtureSourceBinding {
-            fixture_source: &fixture_source,
-            detector_source: &detector_source,
-            source_root: &root,
-            fixture_path: &fixture_path,
-            detector_path: &detector_path,
-            test_identity: identity,
-            fixture,
-            detector,
-        }) {
-            failures.push(format!(
-                "{} {fixture} -> {detector}: {error}",
-                descriptor.invariant_id
-            ));
-        }
-    }
-
-    assert!(
-        failures.is_empty(),
-        "registered detector invocation contracts failed:\n{}",
-        failures.join("\n")
-    );
-}
+include!("detector_source_tests/registry.rs");

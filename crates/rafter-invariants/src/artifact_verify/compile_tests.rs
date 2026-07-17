@@ -166,6 +166,63 @@ fn cross_target_binary_substitution_is_rejected() {
 }
 
 #[test]
+fn protected_compiler_targets_require_exact_canonical_artifacts() {
+    let workspace =
+        std::fs::canonicalize(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+            .expect("canonical workspace");
+    let artifact = |package: &str, name: &str, kind: &str, fresh: bool| {
+        let package_path = workspace.join("crates").join(package);
+        serde_json::json!({
+            "reason": "compiler-artifact",
+            "package_id": format!("path+file://{}#0.0.1", package_path.display()),
+            "target": {
+                "name": name,
+                "kind": [kind],
+                "src_path": package_path.join("src/lib.rs"),
+            },
+            "fresh": fresh,
+            "executable": null,
+        })
+        .to_string()
+    };
+    let oracle = artifact(
+        "rafter-invariant-test",
+        "rafter_invariant_test",
+        "lib",
+        true,
+    );
+    let macros = artifact(
+        "rafter-invariant-test-macros",
+        "rafter_invariant_test_macros",
+        "proc-macro",
+        false,
+    );
+    let exact = format!("{oracle}\n{macros}\n");
+    crate::rust_target::verify_protected_compiler_artifacts(exact.as_bytes(), &workspace)
+        .expect("canonical fresh and rebuilt artifacts both verify");
+
+    let substituted = format!(
+        "{}\n{macros}\n",
+        artifact("rafter", "rafter_invariant_test", "lib", false)
+    );
+    assert!(crate::rust_target::verify_protected_compiler_artifacts(
+        substituted.as_bytes(),
+        &workspace,
+    )
+    .is_err());
+    assert!(
+        crate::rust_target::verify_protected_compiler_artifacts(oracle.as_bytes(), &workspace)
+            .is_err()
+    );
+    let duplicate = format!("{oracle}\n{oracle}\n{macros}\n");
+    assert!(crate::rust_target::verify_protected_compiler_artifacts(
+        duplicate.as_bytes(),
+        &workspace,
+    )
+    .is_err());
+}
+
+#[test]
 fn simulator_compiler_artifact_requires_the_exact_absolute_bin_target() {
     let cargo = |kind: &str, executable: &str| {
         serde_json::json!({
@@ -220,6 +277,7 @@ fn process(label: &str, stdout: &str) -> LabeledProcess {
         },
         stdout: stdout.to_owned(),
         stderr: String::new(),
+        detector_challenge: None,
     }
 }
 

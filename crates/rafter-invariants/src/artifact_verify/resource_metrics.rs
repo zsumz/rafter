@@ -59,6 +59,16 @@ fn check_metric_artifacts<'a>(
         .collect()
 }
 
+#[cfg(test)]
+impl ResultBundle {
+    pub(crate) fn verify_resource_metrics_for_test(
+        &self,
+        root: &Path,
+    ) -> Result<(), AggregateError> {
+        verify_resource_metrics(self, root)
+    }
+}
+
 fn derive_process_metrics<'a>(
     artifacts: impl Iterator<Item = &'a crate::ArtifactRef>,
     root: &Path,
