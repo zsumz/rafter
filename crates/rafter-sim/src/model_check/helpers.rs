@@ -4,7 +4,9 @@ use rafter::{
     RaftSnapshot, RaftSnapshotMetadata, Role, SnapshotGroupId, Term,
 };
 
-use crate::{Cluster, Envelope};
+use crate::Cluster;
+#[cfg(test)]
+use crate::Envelope;
 
 use super::{
     scheduling::Operation, state::apply_to_state, state::ExplorationState, NodeSummary, ProposalId,
@@ -105,9 +107,18 @@ pub(super) fn elect_node_one_with_node_three_in_state(state: &mut ExplorationSta
     for _ in 0..3 {
         apply_to_state(state, Operation::Tick(NodeId(1)));
     }
-    deliver_one_in_state(state, request_vote(NodeId(1), NodeId(3)));
-    deliver_one_in_state(state, request_vote_response(NodeId(3), NodeId(1)));
-    debug_assert_eq!(state.cluster().role(NodeId(1)), Role::Leader);
+    deliver_one_election_message_in_state(
+        state,
+        NodeId(1),
+        NodeId(3),
+        ElectionMessageKind::Request,
+    );
+    deliver_one_election_message_in_state(
+        state,
+        NodeId(3),
+        NodeId(1),
+        ElectionMessageKind::Response,
+    );
 }
 
 pub(super) fn propose_to_node_one_and_deliver_in_state(state: &mut ExplorationState) {
@@ -128,12 +139,30 @@ pub(super) fn deliver_all_in_state(state: &mut ExplorationState) {
     }
 }
 
-fn deliver_one_in_state(
+#[derive(Clone, Copy)]
+enum ElectionMessageKind {
+    Request,
+    Response,
+}
+
+fn deliver_one_election_message_in_state(
     state: &mut ExplorationState,
-    mut predicate: impl FnMut(&Envelope) -> bool,
+    from: NodeId,
+    to: NodeId,
+    kind: ElectionMessageKind,
 ) {
     let Some(position) = state.cluster().network.iter().position(|queued| {
-        queued.ready_at <= state.cluster().clock.now() && predicate(&queued.envelope)
+        queued.ready_at <= state.cluster().clock.now()
+            && queued.envelope.from == from
+            && queued.envelope.to == to
+            && matches!(
+                (&kind, &queued.envelope.message),
+                (ElectionMessageKind::Request, Message::RequestVote(_))
+                    | (
+                        ElectionMessageKind::Response,
+                        Message::RequestVoteResponse(_)
+                    )
+            )
     }) else {
         panic!("expected one ready message to deliver");
     };
@@ -148,19 +177,12 @@ fn first_ready_position(state: &ExplorationState) -> Option<usize> {
         .position(|queued| queued.ready_at <= state.cluster().clock.now())
 }
 
+#[cfg(test)]
 pub(super) fn request_vote(from: NodeId, to: NodeId) -> impl FnMut(&Envelope) -> bool {
     move |envelope| {
         envelope.from == from
             && envelope.to == to
             && matches!(envelope.message, Message::RequestVote(_))
-    }
-}
-
-pub(super) fn request_vote_response(from: NodeId, to: NodeId) -> impl FnMut(&Envelope) -> bool {
-    move |envelope| {
-        envelope.from == from
-            && envelope.to == to
-            && matches!(envelope.message, Message::RequestVoteResponse(_))
     }
 }
 
