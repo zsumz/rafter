@@ -102,10 +102,47 @@ Invariant producers run on a trusted CI host. Before `run` or `run-all` executes
 evidence checks, the CLI publishes its bytes as a regular, non-symlink,
 read-only executable at
 `target/rafter-invariants/producer-images/<sha256>/rafter-invariants` and
-re-executes that image. Schema-v11 receipts bind the exact path, digest, and
+re-executes that image. Schema-v13 receipts bind the exact path, digest, and
 preserved executable artifact. This prevents nested Cargo builds, stale target
 paths, partial publication, symlinked artifact paths, and later deletion of the
 bootstrap executable from changing which producer image the aggregate accepts.
+
+Schema-v13 source receipts also carry a `git-head-worktree-raw-v1`
+materialization. The producer enumerates the immutable `HEAD` tree with Git
+replacement objects disabled, rejects tracked symlinks, and reads each tracked
+regular file as raw bytes. It checks every Git blob ID and the exact owner
+executable bit, then SHA-256 binds the ordered mode, path, and content inventory.
+This catches index flags such as
+`assume-unchanged` and `skip-worktree` that can make porcelain status appear
+clean after bytes or modes change. Ignored paths are permitted only in reviewed
+generated-output roots (including the invariant harness's own nested Cargo
+target), and ignored symlinks fail closed. Rust input validation starts from
+each exact resolved workspace and path-package Cargo target root, treats those
+roots as Rust regardless of filename extension, and follows only actual tracked
+module, `include!`, and literal `#[path]` edges transitively with the same rule;
+unreferenced source files do not create inputs. Raw include and path identifiers
+are normalized, and direct, qualified, transitively included, and multi-hop use
+aliases are resolved to a fixed point before validation. Macro-generated,
+dynamically selected, or target-conditional compiler inputs fail closed.
+Workspace and path-package build scripts are prohibited. Registry
+build scripts are admitted only from
+the full locked metadata graph when their crate archive has a Cargo.lock
+checksum; the lockfile binds their source archive and the preserved producer
+executable digest binds their compiled effects. Gitlinks, noncanonical paths,
+filesystem aliases, and platform materializations that cannot preserve the
+reviewed raw-byte and mode semantics fail closed; symlinks and submodules are
+not part of the contract.
+
+The registry checksum is a source-identity proof, not a hermetic-build proof.
+A registry build script can observe host files, clocks, kernel behavior, or
+other runner state that Cargo.lock does not describe. Effects that reach the
+producer executable are nevertheless frozen by the independently preserved
+executable digest, and aggregation executes that exact artifact rather than
+rebuilding it. Effects that depend on external state without being reflected in
+the executable, malicious build scripts, and compromised build runners remain
+outside this portable contract. Proving the stronger source-to-binary claim
+would require a hermetic build sandbox and external build attestation; the
+invariant report does not claim that property.
 
 This is deterministic repository provenance, not hostile-host attestation. It
 does not defend against a malicious producer binary, compromised kernel or CI
@@ -113,3 +150,38 @@ runner, SHA-256 compromise, or a hostile same-UID process that can replace files
 between verification and `exec`. Those threats require an external build
 attestation system or OS-specific sealed execution and are outside the portable
 Linux/macOS invariant gate contract.
+
+Source capture also fails closed on Cargo configuration that can alter the
+compiled dependency graph without identifying the replacement source. In
+particular, every top-level `[patch]` configuration is forbidden, including a
+patch whose path currently points inside the checkout. The receipt binds the
+configuration bytes and path string, but it does not recursively bind an
+arbitrary replacement source tree. Reviewed overrides therefore belong in the
+tracked workspace manifests and lockfile, not in ancestor or Cargo-home
+configuration.
+
+Receipt `duration_ms` and `peak_rss_kib` fields are execution metrics derived
+only from the hashed child-process logs attached to that receipt. They measure
+the compiled tests, simulator/model checker, TLC, or Maelstrom process groups;
+they do not claim to measure parent-producer planning, source capture, artifact
+hashing, or report rendering. Model-check performance comparisons use the
+simulator process group's wall time and peak RSS together with separately
+reported protocol-state and verifier-state counts.
+
+Simulator detector fixtures have two independent execution checks. Source
+preflight resolves local calls by exact crate-module identity across the tracked
+Cargo target graph and recursively inspects every plausible reachable helper.
+Untracked, symlinked, out-of-tree, or item-macro-generated source outside the
+bound test context fails closed. The analyzer binds `test`, the host target,
+and disabled package features to the exact host-targeted
+`--no-default-features` detector compile contract; custom and profile-sensitive
+`cfg` predicates without an execution binding remain red. At runtime, the parent
+producer creates a fresh challenge but withholds it until the trusted detector
+wrapper has recorded at least one real rejecting invocation. The final verifier
+requires the ordinary witness inventory and the challenge-bound proof inventory
+to match exactly. An early return cannot qualify without that post-invocation
+challenge. The proof socket uses a separate random pathname, rejects symlinked
+managed-directory components, and prunes stale managed sockets; the challenge
+itself never appears in the pathname. The proof channel is covered by the same
+trusted-host boundary described above; hostile same-UID processes are not part
+of this repository-local provenance contract.
