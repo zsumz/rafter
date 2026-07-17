@@ -9,7 +9,8 @@ use std::{
 use std::os::unix::fs::PermissionsExt;
 
 use super::{
-    capture_materialization, reviewed_generated_output, validate_ignored_inventory, CaptureBudget,
+    capture_materialization, reviewed_generated_output, validate_ignored_inventory,
+    validate_ignored_path_types, CaptureBudget,
 };
 
 struct TestRepository {
@@ -303,6 +304,19 @@ fn reviewed_generated_output_roots_do_not_change_source_materialization() {
     repository
         .capture()
         .expect("reviewed generated outputs are not compiler source inputs");
+}
+
+#[test]
+fn vanished_files_under_generated_roots_do_not_change_source_materialization() {
+    let repository = TestRepository::new();
+    fs::create_dir_all(repository.root.join("target/rafter-invariants/telemetry"))
+        .expect("create generated telemetry root");
+
+    validate_ignored_path_types(
+        &repository.root,
+        "target/rafter-invariants/telemetry/1234-7.pgid\0",
+    )
+    .expect("vanished generated telemetry is ignored churn");
 }
 
 #[cfg(unix)]

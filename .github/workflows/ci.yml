@@ -222,6 +222,8 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+      - name: Prefetch locked registry for offline source identity
+        run: cargo fetch --locked
       - name: Validate scheduled Maelstrom evidence contract
         run: cargo test --locked -p rafter-invariants maelstrom
       - name: Validate Maelstrom runner scripts

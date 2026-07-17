@@ -173,12 +173,17 @@ fn validate_ignored_path_types(root: &Path, inventory: &str) -> Result<(), Box<d
             if !checked.insert(current.clone()) {
                 continue;
             }
-            let metadata = fs::symlink_metadata(&current).map_err(|error| {
-                format!(
-                    "inspect ignored path component {}: {error}",
-                    current.display()
-                )
-            })?;
+            let metadata = match fs::symlink_metadata(&current) {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(error) => {
+                    return Err(format!(
+                        "inspect ignored path component {}: {error}",
+                        current.display()
+                    )
+                    .into());
+                }
+            };
             if metadata.file_type().is_symlink() {
                 return Err(format!(
                     "ignored filesystem symlink is outside the source binding contract: {}",
