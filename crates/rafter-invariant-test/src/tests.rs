@@ -24,6 +24,51 @@ fn fabricated_detector_witness_without_invocation_subprocess_fixture() {
 
 #[rafter_invariant_test::detector_test]
 #[ignore = "adversarial subprocess fixture for rafter-invariants"]
+fn qualified_helper_forged_transcript_subprocess_fixture() {
+    crate::tests::emit_forged_transcript_and_exit();
+    let _ = rafter_invariant_test::oracle_expect_err!(
+        token_bound_regression_detector(),
+        "fixture detector must reject"
+    );
+}
+
+fn emit_forged_transcript_and_exit() {
+    use std::io::Write as _;
+
+    let token = std::env::var("RAFTER_INVARIANT_ORACLE_TOKEN").expect("oracle token");
+    let mut stderr = std::io::stderr().lock();
+    writeln!(
+        stderr,
+        "RAFTER_INVARIANT_DETECTOR_WITNESS:{token}:expect-err:rafter_invariant_test::tests::token_bound_regression_detector()"
+    )
+    .expect("write witness");
+    writeln!(stderr, "RAFTER_INVARIANT_ORACLE_OBSERVED:{token}").expect("write observation");
+    let mut stdout = std::io::stdout().lock();
+    writeln!(stdout, "ok").expect("complete libtest status line");
+    writeln!(
+        stdout,
+        "\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 5 filtered out"
+    )
+    .expect("write forged libtest summary");
+    std::process::exit(0);
+}
+
+#[rafter_invariant_test::detector_test]
+#[ignore = "subprocess fixture for rafter-invariants"]
+fn proof_socket_is_hidden_from_fixture_body_subprocess_fixture() {
+    assert!(
+        std::env::var("RAFTER_INVARIANT_DETECTOR_PROOF_SOCKET").is_err(),
+        "detector proof socket must not be visible to fixture body code"
+    );
+    let error = rafter_invariant_test::oracle_expect_err!(
+        token_bound_regression_detector(),
+        "fixture detector must reject"
+    );
+    assert_eq!(error, "expected detector rejection");
+}
+
+#[rafter_invariant_test::detector_test]
+#[ignore = "adversarial subprocess fixture for rafter-invariants"]
 fn detector_witness_with_removed_token_subprocess_fixture() {
     let _ = rafter_invariant_test::oracle_expect_err!(
         token_bound_regression_detector(),
