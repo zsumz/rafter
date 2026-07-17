@@ -2,6 +2,7 @@ use std::{
     fmt::Write as _,
     fs,
     path::{Path, PathBuf},
+    process::Command,
 };
 
 #[path = "support/readability.rs"]
@@ -237,35 +238,37 @@ fn workspace_root() -> PathBuf {
 }
 
 fn guarded_rust_files(workspace: &Path) -> Vec<PathBuf> {
-    let mut files = rust_files(&workspace.join("crates"));
-    let fuzz_root = workspace.join("fuzz");
-    if fuzz_root.exists() {
-        files.extend(rust_files(&fuzz_root));
-    }
+    let output = Command::new("/usr/bin/git")
+        .args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+            "--",
+            "crates",
+            "fuzz",
+        ])
+        .current_dir(workspace)
+        .output()
+        .expect("enumerate repository-owned Rust files");
+    assert!(
+        output.status.success(),
+        "git ls-files failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let inventory = String::from_utf8(output.stdout).expect("Git path inventory must be UTF-8");
+    let mut files = inventory
+        .split('\0')
+        .filter(|path| {
+            Path::new(path)
+                .extension()
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
+        })
+        .map(|path| workspace.join(path))
+        .collect::<Vec<_>>();
     files.sort();
     files
-}
-
-fn rust_files(root: &Path) -> Vec<PathBuf> {
-    let mut files = Vec::new();
-    collect_rust_files(root, &mut files);
-    files.sort();
-    files
-}
-
-fn collect_rust_files(root: &Path, files: &mut Vec<PathBuf>) {
-    let entries =
-        fs::read_dir(root).unwrap_or_else(|error| panic!("read {}: {error}", root.display()));
-    for entry in entries {
-        let path = entry
-            .unwrap_or_else(|error| panic!("read entry under {}: {error}", root.display()))
-            .path();
-        if path.is_dir() {
-            collect_rust_files(&path, files);
-        } else if path.extension().and_then(|extension| extension.to_str()) == Some("rs") {
-            files.push(path);
-        }
-    }
 }
 
 fn count_lines(path: &Path) -> usize {

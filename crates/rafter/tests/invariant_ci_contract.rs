@@ -106,6 +106,99 @@ fn pr_invariant_aggregate_is_stable_and_fail_closed() {
 
     let readme = read(&root.join("README.md"));
     assert!(readme.contains("Branch protection on `main` requires the stable `invariants-pr`"));
+    assert!(readme.contains("Evidence artifacts are isolated by workflow run attempt"));
+}
+
+#[test]
+fn pr_invariant_evidence_is_isolated_by_run_attempt() {
+    let root = workspace_root();
+    let source = read(&root.join(".github/workflows/ci.yml"));
+    let producers = [
+        ArtifactProducerContract {
+            job: "invariants-tests",
+            layer: "tests",
+            upload_step: "Upload test evidence",
+        },
+        ArtifactProducerContract {
+            job: "invariants-simulator",
+            layer: "simulator",
+            upload_step: "Upload simulator evidence",
+        },
+        ArtifactProducerContract {
+            job: "invariants-tla",
+            layer: "tla",
+            upload_step: "Upload TLA+ evidence",
+        },
+    ];
+
+    for producer in producers {
+        let upload = workflow_step(job_block(&source, producer.job), producer.upload_step);
+        assert!(upload.contains("if: always()"));
+        assert!(upload.contains("overwrite: true"));
+        assert!(upload.contains("if-no-files-found: error"));
+        assert!(upload.contains(&format!(
+            "name: invariants-pr-evidence-{}-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}",
+            producer.layer
+        )));
+    }
+
+    let aggregate = job_block(&source, "invariants-pr");
+    assert!(aggregate.contains("if: always()"));
+    let download = workflow_step(aggregate, "Download available evidence");
+    assert!(download.contains(
+        "pattern: invariants-pr-evidence-*-${{ github.run_id }}-${{ github.run_attempt }}"
+    ));
+
+    let report = workflow_step(aggregate, "Upload available aggregate reports and evidence");
+    assert!(report
+        .contains("name: invariants-pr-report-${{ github.run_id }}-${{ github.run_attempt }}"));
+    assert!(report.contains("overwrite: true"));
+}
+
+#[test]
+fn scheduled_invariant_evidence_is_isolated_by_run_attempt() {
+    let root = workspace_root();
+    for (workflow, profile, aggregate_job, download_step) in [
+        (
+            ".github/workflows/nightly.yml",
+            "nightly",
+            "invariants-nightly",
+            "Download available nightly evidence",
+        ),
+        (
+            ".github/workflows/weekly.yml",
+            "weekly",
+            "invariants-weekly",
+            "Download available weekly evidence",
+        ),
+    ] {
+        let source = read(&root.join(workflow));
+        for (job, layer) in [
+            ("invariants-tests", "tests"),
+            ("invariants-simulator", "simulator"),
+            ("invariants-tla", "tla"),
+            ("invariants-maelstrom", "maelstrom"),
+        ] {
+            let block = job_block(&source, job);
+            assert!(block.contains(&format!(
+                "name: invariants-{profile}-evidence-{layer}-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}"
+            )));
+            assert!(block.contains("if-no-files-found: error"));
+        }
+
+        let aggregate = job_block(&source, aggregate_job);
+        let download = workflow_step(aggregate, download_step);
+        assert!(download.contains(&format!(
+            "pattern: invariants-{profile}-evidence-*-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}"
+        )));
+    }
+}
+
+#[derive(Clone, Copy)]
+struct ArtifactProducerContract {
+    job: &'static str,
+    layer: &'static str,
+    upload_step: &'static str,
 }
 
 #[test]

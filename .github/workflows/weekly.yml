@@ -38,11 +38,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: invariants-weekly-tests-${{ github.run_id }}-${{ github.run_attempt }}
+          name: invariants-weekly-evidence-tests-${{ github.run_id }}-${{ github.run_attempt }}
+          overwrite: true
           path: |
             artifacts/invariants/
             target/rafter-invariants/telemetry/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 30
 
   invariants-simulator:
@@ -61,11 +62,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: invariants-weekly-simulator-${{ github.run_id }}-${{ github.run_attempt }}
+          name: invariants-weekly-evidence-simulator-${{ github.run_id }}-${{ github.run_attempt }}
+          overwrite: true
           path: |
             artifacts/invariants/
             target/rafter-invariants/telemetry/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 30
 
   invariants-tla:
@@ -109,11 +111,12 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: invariants-weekly-tla-${{ github.run_id }}-${{ github.run_attempt }}
+          name: invariants-weekly-evidence-tla-${{ github.run_id }}-${{ github.run_attempt }}
+          overwrite: true
           path: |
             artifacts/invariants/
             target/rafter-invariants/telemetry/
-          if-no-files-found: warn
+          if-no-files-found: error
           retention-days: 30
 
   invariants-maelstrom:
@@ -156,7 +159,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: invariants-weekly-maelstrom-${{ github.run_id }}-${{ github.run_attempt }}
+          name: invariants-weekly-evidence-maelstrom-${{ github.run_id }}-${{ github.run_attempt }}
+          overwrite: true
           path: |
             artifacts/invariants/
             target/rafter-invariants/telemetry/
@@ -185,7 +189,7 @@ jobs:
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
-          pattern: invariants-weekly-*-${{ github.run_id }}-${{ github.run_attempt }}
+          pattern: invariants-weekly-evidence-*-${{ github.run_id }}-${{ github.run_attempt }}
           path: .
           merge-multiple: true
       - name: Build source-bound Maelstrom verification binaries
@@ -265,6 +269,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: invariants-weekly-report-${{ github.run_id }}-${{ github.run_attempt }}
+          overwrite: true
           path: |
             ${{ runner.temp }}/${{ env.INVARIANT_REPORT_DIR }}/weekly.json
             ${{ runner.temp }}/${{ env.INVARIANT_REPORT_DIR }}/weekly.xml

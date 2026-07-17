@@ -13,9 +13,9 @@ use std::os::unix::process::CommandExt;
 use rustix::io::Errno;
 
 use super::{
-    allocate_telemetry_path, cleanup_error, combined_log, confirm_process_group_absent_with,
-    digest_environment, identity_command_with_timeout, json_log, layer_budget,
-    parse_combined_processes, parse_peak_rss, timed_for, timed_with_timeout,
+    allocate_telemetry_path, cleanup_error, combined_detector_log, combined_log,
+    confirm_process_group_absent_with, digest_environment, identity_command_with_timeout, json_log,
+    layer_budget, parse_combined_processes, parse_peak_rss, timed_for, timed_with_timeout,
     timed_with_timeout_after_bind, timed_with_timeout_and_grace, ProcessGroupState, ProcessKind,
     ProcessLog, DEFAULT_KILL_CONFIRMATION_TIMEOUT,
 };
@@ -396,6 +396,17 @@ fn timed_child_is_killed_at_its_soft_timeout() {
     assert!(parsed[0].timed_out);
     assert_ne!(parsed[0].exit_code, Some(0));
     assert_eq!(parsed[0].metrics.peak_rss_kib, output.peak_rss_kib);
+    assert!(parsed[0].detector_challenge.is_none());
+    let challenge = "5a".repeat(32);
+    let detector = String::from_utf8(
+        combined_detector_log("timeout", &output, &challenge).expect("detector log serializes"),
+    )
+    .expect("detector process log is UTF-8");
+    let detector = parse_combined_processes(&detector).expect("detector process log parses");
+    assert_eq!(
+        detector[0].detector_challenge.as_deref(),
+        Some(challenge.as_str())
+    );
     let structured: ProcessLog = serde_json::from_slice(
         &json_log("timeout", &output).expect("structured process log serializes"),
     )
@@ -461,6 +472,24 @@ fn combined_processes_preserve_failed_and_timed_out_semantic_statuses() {
     assert_eq!(parsed.len(), 1);
     assert_eq!(parsed[0].stdout, "ok");
     assert_eq!(parsed[0].stderr, "");
+    assert!(parsed[0].detector_challenge.is_none());
+    let challenge = "5a".repeat(32);
+    let detector_source = source
+        .replacen("schema_version: 3", "schema_version: 4", 1)
+        .replacen(
+            "\nexit_code:",
+            &format!("\ndetector_challenge: {challenge}\nexit_code:"),
+            1,
+        );
+    let detector =
+        parse_combined_processes(&detector_source).expect("detector process receipt parses");
+    assert_eq!(
+        detector[0].detector_challenge.as_deref(),
+        Some(challenge.as_str())
+    );
+    assert!(
+        parse_combined_processes(&detector_source.replace(&challenge, &"A".repeat(64))).is_err()
+    );
     let failed = parse_combined_processes(&source.replace("Some(0)", "Some(1)"))
         .expect("failed semantic receipt remains parseable");
     assert_eq!(failed[0].exit_code, Some(1));

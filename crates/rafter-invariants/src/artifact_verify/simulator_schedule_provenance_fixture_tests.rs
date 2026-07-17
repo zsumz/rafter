@@ -79,13 +79,54 @@ pub(super) struct SimulatorFixture {
     _serial: MutexGuard<'static, ()>,
 }
 
+struct PendingSimulatorFixture {
+    root: PathBuf,
+    producer_root: PathBuf,
+    bundle_path: PathBuf,
+    timeout_output_dir: PathBuf,
+    armed: bool,
+}
+
+impl PendingSimulatorFixture {
+    fn disarm(mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for PendingSimulatorFixture {
+    fn drop(&mut self) {
+        if self.armed {
+            cleanup_fixture_artifacts(
+                &self.root,
+                &self.producer_root,
+                &self.bundle_path,
+                &self.timeout_output_dir,
+            );
+        }
+    }
+}
+
 impl Drop for SimulatorFixture {
     fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.timeout_output_dir);
-        let _ = fs::remove_file(&self.bundle_path);
-        let _ = fs::remove_dir_all(&self.root);
-        let _ = fs::remove_dir_all(&self.producer_root);
+        cleanup_fixture_artifacts(
+            &self.root,
+            &self.producer_root,
+            &self.bundle_path,
+            &self.timeout_output_dir,
+        );
     }
+}
+
+fn cleanup_fixture_artifacts(
+    root: &Path,
+    producer_root: &Path,
+    bundle_path: &Path,
+    timeout_output_dir: &Path,
+) {
+    let _ = fs::remove_dir_all(timeout_output_dir);
+    let _ = fs::remove_file(bundle_path);
+    let _ = fs::remove_dir_all(root);
+    let _ = fs::remove_dir_all(producer_root);
 }
 
 impl SimulatorFixture {
@@ -253,10 +294,14 @@ fn materialize_fixture_with_roots(defect: RuntimeDefect, cross_root: bool) -> Si
     let bundle_path = fixture_base.with_extension("bundle.json");
     let timeout_output_dir = Path::new("target/rafter-invariants/tests")
         .join(format!("simulator-loader-real-timeout-{fixture_suffix}"));
-    let _ = fs::remove_dir_all(&root);
-    let _ = fs::remove_dir_all(&producer_root);
-    let _ = fs::remove_file(&bundle_path);
-    let _ = fs::remove_dir_all(&timeout_output_dir);
+    cleanup_fixture_artifacts(&root, &producer_root, &bundle_path, &timeout_output_dir);
+    let pending = PendingSimulatorFixture {
+        root: root.clone(),
+        producer_root: producer_root.clone(),
+        bundle_path: bundle_path.clone(),
+        timeout_output_dir: timeout_output_dir.clone(),
+        armed: true,
+    };
     fs::create_dir_all(&producer_root).expect("create simulator provenance fixture");
     let current_dir = fs::canonicalize(&producer_root).expect("canonical producer fixture root");
 
@@ -266,14 +311,10 @@ fn materialize_fixture_with_roots(defect: RuntimeDefect, cross_root: bool) -> Si
         .find(|bundle| bundle.runner == "simulator")
         .expect("simulator bundle");
     copy_fixture_plan_inputs(&workspace, &producer_root, &mut bundle);
-    materialize_fixture_checkout(&producer_root, defect);
+    materialize_fixture_checkout(&workspace, &producer_root, defect);
     initialize_fixture_repository(&producer_root);
-    let source = if cross_root {
-        fixture_source_receipt(&producer_root, &bundle.execution.source)
-    } else {
-        crate::producer::source::capture_for_layer_at("simulator", &producer_root)
-            .expect("capture clean fixture source identity")
-    };
+    let source = crate::producer::source::capture_for_layer_at("simulator", &producer_root)
+        .expect("capture clean fixture source identity");
     bundle.source_ref = source.commit.clone();
     bundle.execution.source = source;
     let environment = crate::producer::process::base_environment();
@@ -305,7 +346,7 @@ fn materialize_fixture_with_roots(defect: RuntimeDefect, cross_root: bool) -> Si
     if cross_root {
         fs::rename(&producer_root, &root).expect("move producer checkout A to aggregate root B");
     }
-    SimulatorFixture {
+    let fixture = SimulatorFixture {
         root,
         producer_root,
         bundle_path,
@@ -313,7 +354,9 @@ fn materialize_fixture_with_roots(defect: RuntimeDefect, cross_root: bool) -> Si
         catalog,
         manifest,
         _serial: serial,
-    }
+    };
+    pending.disarm();
+    fixture
 }
 
 fn copy_fixture_plan_inputs(workspace: &Path, root: &Path, bundle: &mut crate::ResultBundle) {
@@ -328,50 +371,6 @@ fn copy_fixture_plan_inputs(workspace: &Path, root: &Path, bundle: &mut crate::R
         root,
         "verification/invariant-verdict-schema.json",
     );
-}
-
-fn fixture_source_receipt(root: &Path, template: &crate::SourceReceipt) -> crate::SourceReceipt {
-    let mut source = template.clone();
-    source.commit = command_stdout(root, "git", &["rev-parse", "HEAD"]);
-    source.tree = command_stdout(root, "git", &["rev-parse", "HEAD^{tree}"]);
-    source.cargo_lock_sha256 = format!(
-        "{:x}",
-        Sha256::digest(fs::read(root.join("Cargo.lock")).expect("read fixture Cargo.lock"))
-    );
-    source.cargo = command_stdout(root, "cargo", &["-vV"]);
-    source.cargo_sha256 = executable_sha256("cargo");
-    source.rustc = command_stdout(root, "rustc", &["-vV"]);
-    source.rustc_sha256 = executable_sha256("rustc");
-    source.target = source
-        .rustc
-        .lines()
-        .find_map(|line| line.strip_prefix("host: "))
-        .expect("rustc identity includes host target")
-        .to_owned();
-    source.build_profile = "release-and-test".to_owned();
-    source.features = vec!["internal-test-hooks".to_owned()];
-    source.tools.clear();
-    source.environment_sha256 =
-        crate::producer::process::digest_environment(&crate::producer::process::base_environment());
-    source.clean = true;
-    source
-}
-
-fn command_stdout(root: &Path, program: &str, arguments: &[&str]) -> String {
-    let output = Command::new(program)
-        .args(arguments)
-        .current_dir(root)
-        .output()
-        .unwrap_or_else(|error| panic!("run fixture identity command {program}: {error}"));
-    assert!(
-        output.status.success(),
-        "fixture identity command {program} failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    String::from_utf8(output.stdout)
-        .expect("fixture identity output is UTF-8")
-        .trim()
-        .to_owned()
 }
 
 fn materialize_compile_fixture(
@@ -436,13 +435,13 @@ fn materialize_compile_fixture(
         binary_path,
         binary_artifact: write_fixture_artifact(
             root,
-            "artifacts/rafter-model-check-fast",
+            "artifacts/invariants/rafter-model-check-fast",
             "simulator-binary",
             &binary_bytes,
         ),
         compile_artifact: write_fixture_artifact(
             root,
-            "artifacts/compile.log",
+            "artifacts/invariants/compile.log",
             "compile-log",
             log.as_bytes(),
         ),
@@ -507,8 +506,12 @@ fn materialize_runtime_fixture(
         panic!("timeout fixture must retain one simulator log")
     };
     let real_log = fs::read(&real_artifact.path).expect("read timeout process artifact");
-    let fast_artifact =
-        write_fixture_artifact(root, "artifacts/fast.log", "simulator-log", &real_log);
+    let fast_artifact = write_fixture_artifact(
+        root,
+        "artifacts/invariants/fast.log",
+        "simulator-log",
+        &real_log,
+    );
     let environment_sha256 = crate::producer::process::digest_environment(environment);
     let (catalog, _) = crate::tests::loaded();
     let (checks, results) = crate::producer::evaluate_model_fixture(&catalog, "pr", &model)
@@ -517,7 +520,7 @@ fn materialize_runtime_fixture(
         fast_artifact,
         producer_artifact: write_fixture_artifact(
             root,
-            "artifacts/rafter-invariants",
+            "artifacts/invariants/rafter-invariants",
             "producer-binary",
             b"fixture producer binary",
         ),
@@ -557,13 +560,13 @@ fn materialize_provenance_runtime(
     RuntimeFixture {
         fast_artifact: write_fixture_artifact(
             root,
-            "artifacts/fast.log",
+            "artifacts/invariants/fast.log",
             "simulator-log",
             log.as_bytes(),
         ),
         producer_artifact: write_fixture_artifact(
             root,
-            "artifacts/rafter-invariants",
+            "artifacts/invariants/rafter-invariants",
             "producer-binary",
             b"fixture producer binary",
         ),
@@ -591,8 +594,25 @@ fn bind_fixture_evidence(
             .to_string_lossy()
             .into_owned();
     bundle.execution.invocation.current_dir = current_dir.to_string_lossy().into_owned();
-    if !runtime.checks.is_empty() {
-        bundle.execution.checks = runtime.checks.clone();
+    let has_runtime_checks = !runtime.checks.is_empty();
+    if has_runtime_checks {
+        // The fixture runs the simulator process but deliberately does not run a detector test.
+        // Preserve every semantic receipt while binding the detector failures to the real compile
+        // artifact, so later process failures cannot erase an earlier counterexample.
+        bundle.execution.checks = runtime
+            .checks
+            .iter()
+            .cloned()
+            .map(|mut check| {
+                check
+                    .observations
+                    .insert("detector_qualified".to_owned(), 0);
+                check.artifacts = vec![compile.compile_artifact.clone()];
+                check
+            })
+            .collect();
+    } else {
+        bundle.execution.checks.truncate(1);
     }
     if !runtime.results.is_empty() {
         bundle.results = runtime.results.clone();
@@ -603,9 +623,14 @@ fn bind_fixture_evidence(
         }
     }
     for check in &mut bundle.execution.checks {
-        check.artifacts = vec![runtime.fast_artifact.clone()];
-        check.duration_ms = runtime.duration_ms;
-        check.peak_rss_kib = runtime.peak_rss_kib;
+        if has_runtime_checks {
+            check.duration_ms = 1;
+            check.peak_rss_kib = 1;
+        } else {
+            check.artifacts = vec![runtime.fast_artifact.clone()];
+            check.duration_ms = runtime.duration_ms;
+            check.peak_rss_kib = runtime.peak_rss_kib;
+        }
     }
     bundle.execution.artifacts = vec![
         runtime.producer_artifact.clone(),
@@ -617,12 +642,39 @@ fn bind_fixture_evidence(
     bundle.execution.peak_rss_kib = runtime.peak_rss_kib;
 }
 
-fn materialize_fixture_checkout(root: &Path, defect: RuntimeDefect) {
+fn materialize_fixture_checkout(workspace: &Path, root: &Path, defect: RuntimeDefect) {
     fs::write(
         root.join("Cargo.toml"),
-        "[workspace]\nmembers = [\"crates/rafter-sim\"]\nresolver = \"2\"\n",
+        "[workspace]\nmembers = [\"crates/rafter\", \"crates/rafter-sim\", \"crates/rafter-invariant-test\", \"crates/rafter-invariant-test-macros\"]\nresolver = \"2\"\n",
     )
     .expect("write fixture workspace manifest");
+    let rafter_dir = root.join("crates/rafter");
+    fs::create_dir_all(&rafter_dir).expect("create fixture rafter package");
+    fs::write(
+        rafter_dir.join("Cargo.toml"),
+        "[package]\nname = \"rafter\"\nversion = \"0.0.1\"\nedition = \"2021\"\n\n[dev-dependencies]\nrafter-invariant-test = { path = \"../rafter-invariant-test\" }\n",
+    )
+    .expect("write fixture rafter manifest");
+    copy_source_tree(
+        &workspace.join("crates/rafter/src"),
+        &rafter_dir.join("src"),
+    );
+    let oracle_dir = root.join("crates/rafter-invariant-test");
+    fs::create_dir_all(oracle_dir.join("src")).expect("create fixture oracle package");
+    fs::write(
+        oracle_dir.join("Cargo.toml"),
+        "[package]\nname = \"rafter-invariant-test\"\nversion = \"0.0.1\"\nedition = \"2021\"\n\n[dependencies]\nrafter-invariant-test-macros = { path = \"../rafter-invariant-test-macros\" }\n",
+    )
+    .expect("write fixture oracle manifest");
+    fs::write(oracle_dir.join("src/lib.rs"), "").expect("write fixture oracle library source");
+    let macros_dir = root.join("crates/rafter-invariant-test-macros");
+    fs::create_dir_all(macros_dir.join("src")).expect("create fixture oracle macros package");
+    fs::write(
+        macros_dir.join("Cargo.toml"),
+        "[package]\nname = \"rafter-invariant-test-macros\"\nversion = \"0.0.1\"\nedition = \"2021\"\n\n[lib]\nproc-macro = true\n",
+    )
+    .expect("write fixture oracle macros manifest");
+    fs::write(macros_dir.join("src/lib.rs"), "").expect("write fixture oracle macros source");
     let package_dir = root.join("crates/rafter-sim");
     fs::create_dir_all(package_dir.join("src/bin")).expect("create fixture package source tree");
     fs::write(
@@ -632,12 +684,17 @@ fn materialize_fixture_checkout(root: &Path, defect: RuntimeDefect) {
             "name = \"rafter-sim\"\n",
             "version = \"0.0.1\"\n",
             "edition = \"2021\"\n\n",
+            "autolib = false\n\n",
             "[[bin]]\n",
             "name = \"rafter-model-check-fast\"\n",
             "path = \"src/bin/rafter-model-check-fast.rs\"\n",
         ),
     )
     .expect("write fixture package manifest");
+    copy_source_tree(
+        &workspace.join("crates/rafter-sim/src"),
+        &package_dir.join("src"),
+    );
     fs::write(
         package_dir.join("src/bin/rafter-model-check-fast.rs"),
         simulator_fixture_source(defect),
@@ -658,6 +715,20 @@ fn materialize_fixture_checkout(root: &Path, defect: RuntimeDefect) {
         "generate fixture Cargo.lock failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn copy_source_tree(source: &Path, destination: &Path) {
+    fs::create_dir_all(destination).expect("create copied source directory");
+    for entry in fs::read_dir(source).expect("read source directory") {
+        let entry = entry.expect("read source entry");
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        if entry.file_type().expect("read source entry type").is_dir() {
+            copy_source_tree(&source_path, &destination_path);
+        } else {
+            fs::copy(&source_path, &destination_path).expect("copy source fixture file");
+        }
+    }
 }
 
 fn simulator_fixture_source(defect: RuntimeDefect) -> String {

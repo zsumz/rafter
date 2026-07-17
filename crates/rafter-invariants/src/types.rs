@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// Current version of the machine-readable receipt and report contract.
-pub const RESULT_SCHEMA_VERSION: u32 = 12;
+pub const RESULT_SCHEMA_VERSION: u32 = 13;
 
 /// Current version of the final aggregate verdict report contract.
 pub const VERDICT_SCHEMA_VERSION: u32 = 2;
@@ -85,6 +85,7 @@ pub struct ProducerBindingReceipt {
 pub struct SourceReceipt {
     pub commit: String,
     pub tree: String,
+    pub materialization: SourceMaterializationReceipt,
     pub cargo_lock_sha256: String,
     pub cargo: String,
     pub cargo_sha256: String,
@@ -97,6 +98,16 @@ pub struct SourceReceipt {
     pub tools: BTreeMap<String, ToolReceipt>,
     pub environment_sha256: String,
     pub clean: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+/// Exact raw worktree materialization proven against the recorded Git tree.
+pub struct SourceMaterializationReceipt {
+    pub contract: String,
+    pub sha256: String,
+    pub tracked_entries: u64,
+    pub submodules: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

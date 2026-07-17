@@ -2,12 +2,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use syn::{
     visit::{self, Visit},
-    File, ItemConst, ItemExternCrate, ItemMacro, ItemMod, ItemStatic, ItemUse, UseTree,
+    File, Item, ItemConst, ItemExternCrate, ItemFn, ItemMacro, ItemMod, ItemStatic, ItemUse,
+    UseTree,
 };
 
 use super::{FORBIDDEN_WITNESS_HELPERS, ORACLE_MACROS, SAFE_BUILTIN_MACROS};
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct ImportedPaths {
     explicit: BTreeMap<String, Vec<Vec<String>>>,
     globs: Vec<Vec<String>>,
@@ -15,11 +16,15 @@ pub(super) struct ImportedPaths {
     pub(super) local_macros: BTreeSet<String>,
     local_oracle_macros: BTreeSet<String>,
     local_rafter_invariant_test: bool,
-    local_value_bindings: BTreeSet<String>,
+    pub(super) local_value_bindings: BTreeSet<String>,
     forbidden_witness_import: bool,
 }
 
 pub(super) fn collect_imports(file: &File) -> ImportedPaths {
+    collect_item_imports(&file.items)
+}
+
+pub(super) fn collect_item_imports(items: &[Item]) -> ImportedPaths {
     #[derive(Default)]
     struct ImportVisitor {
         imports: ImportedPaths,
@@ -27,26 +32,22 @@ pub(super) fn collect_imports(file: &File) -> ImportedPaths {
 
     impl<'ast> Visit<'ast> for ImportVisitor {
         fn visit_item_use(&mut self, item: &'ast ItemUse) {
+            if !crate::rust_target::module_active_for_test(&item.attrs).unwrap_or(false) {
+                return;
+            }
             collect_use_tree(&item.tree, &mut Vec::new(), &mut self.imports);
         }
 
+        fn visit_item_fn(&mut self, _item: &'ast ItemFn) {}
+
         fn visit_item_macro(&mut self, item: &'ast ItemMacro) {
-            if let Some(name) = &item.ident {
-                let name = name.to_string();
-                self.imports.local_macros.insert(name.clone());
-                if ORACLE_MACROS.contains(&name.as_str())
-                    || matches!(
-                        name.as_str(),
-                        "oracle_detector_witness" | "oracle_fabricated_detector_witness"
-                    )
-                {
-                    self.imports.local_oracle_macros.insert(name);
-                }
-            }
             visit::visit_item_macro(self, item);
         }
 
         fn visit_item_const(&mut self, item: &'ast ItemConst) {
+            if !crate::rust_target::module_active_for_test(&item.attrs).unwrap_or(false) {
+                return;
+            }
             self.imports
                 .local_value_bindings
                 .insert(item.ident.to_string());
@@ -54,6 +55,9 @@ pub(super) fn collect_imports(file: &File) -> ImportedPaths {
         }
 
         fn visit_item_static(&mut self, item: &'ast ItemStatic) {
+            if !crate::rust_target::module_active_for_test(&item.attrs).unwrap_or(false) {
+                return;
+            }
             self.imports
                 .local_value_bindings
                 .insert(item.ident.to_string());
@@ -61,13 +65,18 @@ pub(super) fn collect_imports(file: &File) -> ImportedPaths {
         }
 
         fn visit_item_mod(&mut self, item: &'ast ItemMod) {
+            if !crate::rust_target::module_active_for_test(&item.attrs).unwrap_or(false) {
+                return;
+            }
             if item.ident == "rafter_invariant_test" {
                 self.imports.local_rafter_invariant_test = true;
             }
-            visit::visit_item_mod(self, item);
         }
 
         fn visit_item_extern_crate(&mut self, item: &'ast ItemExternCrate) {
+            if !crate::rust_target::module_active_for_test(&item.attrs).unwrap_or(false) {
+                return;
+            }
             let effective = item
                 .rename
                 .as_ref()
@@ -80,8 +89,66 @@ pub(super) fn collect_imports(file: &File) -> ImportedPaths {
     }
 
     let mut visitor = ImportVisitor::default();
-    visitor.visit_file(file);
+    for item in items {
+        visitor.visit_item(item);
+    }
     visitor.imports
+}
+
+impl ImportedPaths {
+    pub(super) fn add_macro_declaration(&mut self, item: &ItemMacro) {
+        if !crate::rust_target::module_active_for_test(&item.attrs).unwrap_or(false) {
+            return;
+        }
+        let Some(name) = &item.ident else {
+            return;
+        };
+        let name = name.to_string();
+        self.local_macros.insert(name.clone());
+        if ORACLE_MACROS.contains(&name.as_str())
+            || matches!(
+                name.as_str(),
+                "oracle_detector_witness" | "oracle_fabricated_detector_witness"
+            )
+        {
+            self.local_oracle_macros.insert(name);
+        }
+    }
+
+    pub(super) fn add_item(&mut self, item: &Item) {
+        let imports = collect_item_imports(std::slice::from_ref(item));
+        self.merge(imports);
+    }
+
+    pub(super) fn inherits_parent_glob(&self) -> bool {
+        self.globs
+            .iter()
+            .any(|path| path.iter().map(String::as_str).eq(["super"]))
+    }
+
+    pub(super) fn inherit(&mut self, parent: &Self) {
+        self.merge(parent.clone());
+    }
+
+    pub(super) fn inherit_parent_macros(&mut self, parent: &Self) {
+        self.local_macros
+            .extend(parent.local_macros.iter().cloned());
+        self.local_oracle_macros
+            .extend(parent.local_oracle_macros.iter().cloned());
+    }
+
+    fn merge(&mut self, other: Self) {
+        for (name, mut paths) in other.explicit {
+            self.explicit.entry(name).or_default().append(&mut paths);
+        }
+        self.globs.extend(other.globs);
+        self.aliases.extend(other.aliases);
+        self.local_macros.extend(other.local_macros);
+        self.local_oracle_macros.extend(other.local_oracle_macros);
+        self.local_rafter_invariant_test |= other.local_rafter_invariant_test;
+        self.local_value_bindings.extend(other.local_value_bindings);
+        self.forbidden_witness_import |= other.forbidden_witness_import;
+    }
 }
 
 fn collect_use_tree(tree: &UseTree, prefix: &mut Vec<String>, imports: &mut ImportedPaths) {
@@ -174,10 +241,25 @@ pub(super) fn trusted_oracle_macro(path: &syn::Path, imports: &ImportedPaths) ->
         [krate, qualified] => {
             krate == "rafter_invariant_test"
                 && qualified == name
-                && !imports.aliases.contains("rafter_invariant_test")
+                && trusted_rafter_invariant_test_path(path, imports)
         }
         _ => false,
     }
+}
+
+pub(super) fn trusted_detector_test_attribute(path: &syn::Path, imports: &ImportedPaths) -> bool {
+    path.segments
+        .iter()
+        .map(|segment| segment.ident.to_string())
+        .eq(["rafter_invariant_test", "detector_test"].map(str::to_owned))
+        && trusted_rafter_invariant_test_path(path, imports)
+}
+
+fn trusted_rafter_invariant_test_path(path: &syn::Path, imports: &ImportedPaths) -> bool {
+    path.leading_colon.is_some()
+        || imports.globs.is_empty()
+            && !imports.local_rafter_invariant_test
+            && !imports.aliases.contains("rafter_invariant_test")
 }
 
 pub(super) fn safe_builtin_macro(path: &syn::Path, imports: &ImportedPaths) -> bool {
@@ -193,77 +275,4 @@ pub(super) fn safe_builtin_macro(path: &syn::Path, imports: &ImportedPaths) -> b
         && !imports.local_macros.contains(name)
         && !imports.explicit.contains_key(name)
         && !imports.aliases.contains(name)
-}
-
-pub(super) fn verify_detector_resolution(
-    imports: &ImportedPaths,
-    fixture_module: &[String],
-    detector_module: Option<&[String]>,
-    detector: &str,
-    declared_locally: bool,
-) -> Result<(), String> {
-    if imports.local_value_bindings.contains(detector) {
-        return Err(format!(
-            "registered detector `{detector}` is shadowed by a module value binding"
-        ));
-    }
-    if declared_locally {
-        if imports.explicit.contains_key(detector) || imports.aliases.contains(detector) {
-            return Err(format!(
-                "registered detector `{detector}` is ambiguous between a local declaration and an import"
-            ));
-        }
-        return Ok(());
-    }
-
-    let detector_module = detector_module.ok_or_else(|| {
-        format!("registered detector `{detector}` source is outside its executable Cargo target")
-    })?;
-    let explicit = imports.explicit.get(detector).is_some_and(|paths| {
-        !paths.is_empty()
-            && paths
-                .iter()
-                .all(|path| trusted_import_path(path, detector_module, fixture_module))
-    });
-    let glob = imports
-        .globs
-        .iter()
-        .any(|path| trusted_import_path(path, detector_module, fixture_module));
-    if imports.aliases.contains(detector) || !(explicit || glob) {
-        return Err(format!(
-            "registered detector `{detector}` is not imported from its bound detector source"
-        ));
-    }
-    Ok(())
-}
-
-fn trusted_import_path(
-    path: &[String],
-    detector_module: &[String],
-    fixture_module: &[String],
-) -> bool {
-    let mut exact = vec!["crate".to_owned()];
-    exact.extend_from_slice(detector_module);
-    if path == exact || path.len() == exact.len() + 1 && path.starts_with(&exact) {
-        return true;
-    }
-    resolve_relative_module(path, fixture_module).is_some_and(|resolved| {
-        resolved == detector_module
-            || resolved.len() == detector_module.len() + 1 && resolved.starts_with(detector_module)
-    })
-}
-
-fn resolve_relative_module(path: &[String], fixture_module: &[String]) -> Option<Vec<String>> {
-    let first = path.first()?;
-    if first != "self" && first != "super" {
-        return None;
-    }
-    let mut resolved = fixture_module.to_vec();
-    let mut position = usize::from(first == "self");
-    while path.get(position).is_some_and(|segment| segment == "super") {
-        resolved.pop()?;
-        position += 1;
-    }
-    resolved.extend_from_slice(&path[position..]);
-    Some(resolved)
 }

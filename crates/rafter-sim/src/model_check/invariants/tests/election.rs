@@ -64,7 +64,7 @@ fn pre_elected_constructor_state_is_coverage_not_reached() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn term_monotonicity_history_detects_regression_from_observation() {
     let mut cluster = one_node_cluster();
     cluster
@@ -91,7 +91,7 @@ fn term_monotonicity_history_detects_regression_from_observation() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn durable_vote_history_rejects_second_vote_in_term() {
     let mut cluster = one_node_cluster();
     let mut first_vote = bootstrap_state(Term(7), &[]);
@@ -125,7 +125,7 @@ fn durable_vote_history_rejects_second_vote_in_term() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn durable_vote_history_detects_lost_vote_same_term() {
     let mut cluster = one_node_cluster();
     let mut first_vote = bootstrap_state(Term(5), &[]);
@@ -266,11 +266,10 @@ fn instrumented_delivery_observes_higher_term_append_entries_response() {
     check_election_history(&state, &[]).expect("higher-term response should fence cleanly");
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn authority_fencing_oracle_rejects_unfenced_higher_term_response() {
     let mut before = two_node_cluster();
     elect_node_one(&mut before);
-    assert_eq!(before.role(NodeId(1)), rafter::Role::Leader);
     let mut state = ExplorationState::new(before.clone());
     let delivered = Envelope {
         from: NodeId(2),
@@ -290,6 +289,7 @@ fn authority_fencing_oracle_rejects_unfenced_higher_term_response() {
         check_higher_term_authority_fencing(&state, &[]),
         "higher-term authority must fence a leader",
     );
+    assert_eq!(before.role(NodeId(1)), rafter::Role::Leader);
     oracle_assert_eq!(
         failure.invariant(),
         catalog::EL_07_TERM_AND_AUTHORITY_FENCING
@@ -303,17 +303,14 @@ fn authority_fencing_oracle_rejects_unfenced_higher_term_response() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn authority_fencing_oracle_rejects_stale_response_leadership() {
     let mut before = two_node_cluster();
     before
         .restart_node_from_bootstrap(NodeId(1), bootstrap_state(Term(3), &[]))
         .expect("before bootstrap is valid");
-    assert_eq!(before.role(NodeId(1)), rafter::Role::Follower);
     let mut after = before.clone();
     elect_node_one(&mut after);
-    assert_eq!(after.role(NodeId(1)), rafter::Role::Leader);
-    assert!(after.current_term(NodeId(1)) > before.current_term(NodeId(1)));
     let mut state = ExplorationState::new(after);
     let delivered = Envelope {
         from: NodeId(2),
@@ -331,6 +328,9 @@ fn authority_fencing_oracle_rejects_stale_response_leadership() {
         check_stale_authority_leadership(&state, &[]),
         "stale-term traffic must not create leadership",
     );
+    assert_eq!(before.role(NodeId(1)), rafter::Role::Follower);
+    assert_eq!(state.cluster().role(NodeId(1)), rafter::Role::Leader);
+    assert!(state.cluster().current_term(NodeId(1)) > before.current_term(NodeId(1)));
     oracle_assert_eq!(
         failure.invariant(),
         catalog::EL_07_TERM_AND_AUTHORITY_FENCING
@@ -344,7 +344,7 @@ fn authority_fencing_oracle_rejects_stale_response_leadership() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn authority_fencing_oracle_rejects_stale_authority_regression() {
     let mut before = one_node_cluster();
     let mut authority = bootstrap_state(Term(3), &[]);
@@ -423,7 +423,7 @@ fn pre_vote_observation_accepts_non_binding_request() {
     check_election_history(&state, &[]).expect("non-binding pre-vote request should pass");
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn pre_vote_oracle_rejects_request_term_mutation() {
     let before = one_node_cluster();
     let mut after = one_node_cluster();
@@ -458,16 +458,14 @@ fn pre_vote_oracle_rejects_request_term_mutation() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn pre_vote_oracle_rejects_request_disrupting_leader() {
     let mut before = two_node_cluster();
     elect_node_one(&mut before);
-    assert_eq!(before.role(NodeId(1)), rafter::Role::Leader);
     let mut after = before.clone();
     after
         .restart_node_from_bootstrap(NodeId(1), before.bootstrap_state(NodeId(1)))
         .expect("same-authority follower bootstrap is valid");
-    assert_eq!(after.role(NodeId(1)), rafter::Role::Follower);
     let mut state = ExplorationState::new(after);
     let delivered = Envelope {
         from: NodeId(2),
@@ -486,6 +484,8 @@ fn pre_vote_oracle_rejects_request_disrupting_leader() {
         check_pre_vote_leader_stability(&state, &[]),
         "pre-vote request must not disrupt an established leader",
     );
+    assert_eq!(before.role(NodeId(1)), rafter::Role::Leader);
+    assert_eq!(state.cluster().role(NodeId(1)), rafter::Role::Follower);
     oracle_assert_eq!(failure.invariant(), catalog::EL_08_PRE_VOTE_NON_BINDING);
     oracle_assert!(
         failure
@@ -496,7 +496,7 @@ fn pre_vote_oracle_rejects_request_disrupting_leader() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn pre_vote_oracle_rejects_stale_response_authority_advance() {
     let mut before = one_node_cluster();
     before
@@ -678,7 +678,7 @@ fn vote_grant_observation_ignores_denied_response() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn vote_grant_oracle_rejects_non_voter_candidate() {
     let state = request_vote_grant_state(
         NodeId(4),
@@ -706,7 +706,7 @@ fn vote_grant_oracle_rejects_non_voter_candidate() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn vote_grant_oracle_rejects_stale_candidate_log() {
     let state = request_vote_grant_state(
         NodeId(2),
@@ -763,7 +763,7 @@ fn vote_grant_oracle_requires_durable_vote_for_candidate() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn election_history_detects_second_leader_in_same_term() {
     let membership = stable_membership(&[1, 2, 3], &[]);
     let first = election_certificate(4, 1, membership.clone(), &[1, 2]);
@@ -790,7 +790,7 @@ fn election_history_detects_second_leader_in_same_term() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn election_history_preserves_same_leader_certificates_for_validation() {
     let first = election_certificate(4, 1, stable_membership(&[1, 2, 3], &[]), &[1, 2]);
     let second = election_certificate(4, 1, stable_membership(&[2, 3, 4], &[1]), &[2, 3]);
@@ -799,11 +799,11 @@ fn election_history_preserves_same_leader_certificates_for_validation() {
     oracle_invoke_recorder!(record_election_certificate(&mut state, first));
     oracle_invoke_recorder!(record_election_certificate(&mut state, second));
 
-    assert_eq!(state.election_history().elected_by_term[&Term(4)].len(), 2);
     let failure = oracle_expect_err!(
         check_eligible_leader_certificates(&state, &[]),
         "every same-term certificate must be validated",
     );
+    assert_eq!(state.election_history().elected_by_term[&Term(4)].len(), 2);
     oracle_assert_eq!(
         failure.invariant(),
         catalog::EL_06_LEADER_HAS_VALID_ELECTION_QUORUM
@@ -835,7 +835,7 @@ fn election_certificate_rejects_learner_grant() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn election_certificate_requires_joint_quorum() {
     let certificate = election_certificate(3, 1, joint_membership(&[1, 2, 3], &[1, 4, 5]), &[1, 2]);
     let state = state_with_recorded_certificate(certificate);
@@ -875,7 +875,7 @@ fn election_certificate_rejects_non_voter_leader() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn election_certificate_requires_stable_quorum() {
     let certificate = election_certificate(6, 1, stable_membership(&[1, 2, 3], &[]), &[1]);
     let state = state_with_recorded_certificate(certificate);

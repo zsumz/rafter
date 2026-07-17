@@ -1,16 +1,28 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashSet},
     fs,
     path::{Path, PathBuf},
 };
 
 use syn::{parse::Parser, punctuated::Punctuated, Attribute, ItemMod, Meta, Token};
 
-use crate::TestIdentity;
+mod cfg;
+mod protected_compiler;
+
+pub(crate) use cfg::module_active_for_test;
+pub(crate) use protected_compiler::verify_protected_compiler_artifacts;
 
 type ModuleMap = BTreeMap<PathBuf, BTreeSet<Vec<String>>>;
 type DeclarationMap = BTreeMap<String, BTreeSet<String>>;
 type DeclarationSourceMap = BTreeMap<String, BTreeSet<PathBuf>>;
+type OracleShadowMap = BTreeMap<String, BTreeSet<PathBuf>>;
+
+struct OracleShadowImplMethod {
+    module: Vec<String>,
+    self_ty: syn::Type,
+    name: String,
+    source: PathBuf,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct SourceModule {
@@ -23,6 +35,8 @@ pub(crate) struct TargetSourceGraph {
     modules: ModuleMap,
     declarations: DeclarationMap,
     declaration_sources: DeclarationSourceMap,
+    oracle_shadow_sources: OracleShadowMap,
+    oracle_shadow_impl_methods: Vec<OracleShadowImplMethod>,
 }
 
 impl TargetSourceGraph {
@@ -56,6 +70,26 @@ impl TargetSourceGraph {
             .collect()
     }
 
+    pub(crate) fn module_paths(&self) -> BTreeSet<Vec<String>> {
+        self.modules
+            .values()
+            .flat_map(BTreeSet::iter)
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn source_modules(&self) -> Vec<(PathBuf, Vec<String>)> {
+        self.modules
+            .iter()
+            .flat_map(|(source, modules)| {
+                modules
+                    .iter()
+                    .cloned()
+                    .map(|module| (source.clone(), module))
+            })
+            .collect()
+    }
+
     pub(crate) fn require_declaration_source(
         &self,
         identity: &str,
@@ -83,47 +117,82 @@ impl TargetSourceGraph {
                 source.display()
             ));
         }
+        self.require_unshadowed_oracle_macros(identity)
+    }
+
+    pub(crate) fn require_unshadowed_oracle_macros(&self, identity: &str) -> Result<(), String> {
+        if let Some(sources) = self.oracle_shadow_sources.get(identity) {
+            let locations = sources
+                .iter()
+                .map(|source| source.display().to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            return Err(format!(
+                "registered Cargo target declares a macro that shadows a trusted oracle macro for function `{identity}` in {locations}"
+            ));
+        }
         Ok(())
+    }
+
+    pub(crate) fn resolve_oracle_shadowed_impl_methods(
+        &mut self,
+        resolve_type: impl Fn(&syn::Type, &[String]) -> Option<Vec<String>>,
+    ) {
+        for method in &self.oracle_shadow_impl_methods {
+            let Some(mut identity) = resolve_type(&method.self_ty, &method.module) else {
+                continue;
+            };
+            identity.push(method.name.clone());
+            self.oracle_shadow_sources
+                .entry(identity.join("::"))
+                .or_default()
+                .insert(method.source.clone());
+        }
     }
 }
 
 pub(crate) fn target_source_graph(
     workspace: &Path,
-    identity: &TestIdentity,
+    package_name: &str,
+    target_kind: &str,
+    target_name: &str,
 ) -> Result<TargetSourceGraph, String> {
     let workspace =
         fs::canonicalize(workspace).map_err(|error| format!("canonicalize workspace: {error}"))?;
-    let package = package_manifest(&workspace, &identity.package)?;
+    let package = package_manifest(&workspace, package_name)?;
+    let tracked = crate::producer::source::tracked_source_paths_at(&workspace)?;
     let manifest_source = fs::read_to_string(&package.manifest)
         .map_err(|error| format!("read {}: {error}", package.manifest.display()))?;
     let manifest = manifest_source
         .parse::<toml::Value>()
         .map_err(|error| format!("parse {}: {error}", package.manifest.display()))?;
-    let target = target_root(&package.root, &manifest, identity)?;
-    let mut collector = ModuleGraphCollector::new(&target.crate_name);
+    let target = target_root(&package.root, &manifest, target_kind, target_name)?;
+    let mut collector = ModuleGraphCollector::new(&target.crate_name, &workspace, &tracked);
+    let target_path = collector.bound_source_path(&target.path)?;
+    let target_parent = target_path
+        .parent()
+        .ok_or_else(|| format!("target root has no parent: {}", target_path.display()))?;
     collector.collect_file(
-        &fs::canonicalize(&target.path).map_err(|error| {
-            format!(
-                "canonicalize target root {}: {error}",
-                target.path.display()
-            )
-        })?,
+        &target_path,
         &[],
-        target
-            .path
-            .parent()
-            .ok_or_else(|| format!("target root has no parent: {}", target.path.display()))?,
-        target
-            .path
-            .parent()
-            .ok_or_else(|| format!("target root has no parent: {}", target.path.display()))?,
+        target_parent,
+        target_parent,
+        &BTreeSet::new(),
     )?;
-    let (modules, declarations, declaration_sources) = collector.finish();
+    let (
+        modules,
+        declarations,
+        declaration_sources,
+        oracle_shadow_sources,
+        oracle_shadow_impl_methods,
+    ) = collector.finish();
     Ok(TargetSourceGraph {
         crate_name: target.crate_name,
         modules,
         declarations,
         declaration_sources,
+        oracle_shadow_sources,
+        oracle_shadow_impl_methods,
     })
 }
 
@@ -196,7 +265,8 @@ struct TargetRoot {
 fn target_root(
     package: &Path,
     manifest: &toml::Value,
-    identity: &TestIdentity,
+    target_kind: &str,
+    target_name: &str,
 ) -> Result<TargetRoot, String> {
     let package_name = manifest
         .get("package")
@@ -204,7 +274,7 @@ fn target_root(
         .and_then(toml::Value::as_str)
         .ok_or("package manifest omits package.name")?;
     let normalized_package = package_name.replace('-', "_");
-    let (crate_name, relative) = match identity.target_kind.as_str() {
+    let (crate_name, relative) = match target_kind {
         "lib" => {
             let table = manifest.get("lib").and_then(toml::Value::as_table);
             let name = table
@@ -219,42 +289,34 @@ fn target_root(
             (name, PathBuf::from(path))
         }
         "bin" | "test" => {
-            let table_name = if identity.target_kind == "bin" {
-                "bin"
-            } else {
-                "test"
-            };
+            let table_name = if target_kind == "bin" { "bin" } else { "test" };
             let configured = manifest
                 .get(table_name)
                 .and_then(toml::Value::as_array)
                 .into_iter()
                 .flatten()
                 .filter_map(toml::Value::as_table)
-                .find(|table| {
-                    table.get("name").and_then(toml::Value::as_str)
-                        == Some(identity.target.as_str())
-                });
-            let default = if identity.target_kind == "bin" {
-                if identity.target == package_name {
+                .find(|table| table.get("name").and_then(toml::Value::as_str) == Some(target_name));
+            let default = if target_kind == "bin" {
+                if target_name == package_name {
                     PathBuf::from("src/main.rs")
                 } else {
-                    PathBuf::from("src/bin").join(format!("{}.rs", identity.target))
+                    PathBuf::from("src/bin").join(format!("{target_name}.rs"))
                 }
             } else {
-                PathBuf::from("tests").join(format!("{}.rs", identity.target))
+                PathBuf::from("tests").join(format!("{target_name}.rs"))
             };
             let path = configured
                 .and_then(|table| table.get("path"))
                 .and_then(toml::Value::as_str)
                 .map_or(default, PathBuf::from);
-            (identity.target.replace('-', "_"), path)
+            (target_name.replace('-', "_"), path)
         }
         kind => return Err(format!("unsupported registered target kind {kind}")),
     };
-    if crate_name != identity.target.replace('-', "_") {
+    if crate_name != target_name.replace('-', "_") {
         return Err(format!(
-            "registered target {} disagrees with manifest crate name {crate_name}",
-            identity.target
+            "registered target {target_name} disagrees with manifest crate name {crate_name}"
         ));
     }
     let path = package.join(relative);
@@ -269,25 +331,47 @@ fn target_root(
 
 struct ModuleGraphCollector<'a> {
     crate_name: &'a str,
+    workspace: &'a Path,
+    tracked: &'a HashSet<PathBuf>,
     visited: BTreeSet<(PathBuf, Vec<String>)>,
     modules: ModuleMap,
     declarations: DeclarationMap,
     declaration_sources: DeclarationSourceMap,
+    oracle_shadow_sources: OracleShadowMap,
+    oracle_shadow_impl_methods: Vec<OracleShadowImplMethod>,
 }
 
 impl<'a> ModuleGraphCollector<'a> {
-    fn new(crate_name: &'a str) -> Self {
+    fn new(crate_name: &'a str, workspace: &'a Path, tracked: &'a HashSet<PathBuf>) -> Self {
         Self {
             crate_name,
+            workspace,
+            tracked,
             visited: BTreeSet::new(),
             modules: BTreeMap::new(),
             declarations: BTreeMap::new(),
             declaration_sources: BTreeMap::new(),
+            oracle_shadow_sources: BTreeMap::new(),
+            oracle_shadow_impl_methods: Vec::new(),
         }
     }
 
-    fn finish(self) -> (ModuleMap, DeclarationMap, DeclarationSourceMap) {
-        (self.modules, self.declarations, self.declaration_sources)
+    fn finish(
+        self,
+    ) -> (
+        ModuleMap,
+        DeclarationMap,
+        DeclarationSourceMap,
+        OracleShadowMap,
+        Vec<OracleShadowImplMethod>,
+    ) {
+        (
+            self.modules,
+            self.declarations,
+            self.declaration_sources,
+            self.oracle_shadow_sources,
+            self.oracle_shadow_impl_methods,
+        )
     }
 
     fn collect_file(
@@ -296,20 +380,29 @@ impl<'a> ModuleGraphCollector<'a> {
         module: &[String],
         path_base: &Path,
         module_dir: &Path,
+        visible_oracle_macros: &BTreeSet<String>,
     ) -> Result<(), String> {
-        let key = (source_file.to_owned(), module.to_vec());
+        let source_file = self.bound_source_path(source_file)?;
+        let key = (source_file.clone(), module.to_vec());
         if !self.visited.insert(key) {
             return Ok(());
         }
         self.modules
-            .entry(source_file.to_owned())
+            .entry(source_file.clone())
             .or_default()
             .insert(module.to_vec());
-        let source = fs::read_to_string(source_file)
+        let source = fs::read_to_string(&source_file)
             .map_err(|error| format!("read module source {}: {error}", source_file.display()))?;
         let file = syn::parse_file(&source)
             .map_err(|error| format!("parse module source {}: {error}", source_file.display()))?;
-        self.collect_items(&file.items, module, path_base, module_dir, source_file)
+        self.collect_items(
+            &file.items,
+            module,
+            path_base,
+            module_dir,
+            &source_file,
+            visible_oracle_macros,
+        )
     }
 
     fn collect_items(
@@ -319,232 +412,286 @@ impl<'a> ModuleGraphCollector<'a> {
         path_base: &Path,
         module_dir: &Path,
         source_file: &Path,
+        inherited_oracle_macros: &BTreeSet<String>,
     ) -> Result<(), String> {
+        let mut visible_oracle_macros = inherited_oracle_macros.clone();
         for item in items {
             match item {
                 syn::Item::Fn(function) => {
-                    if !module_active_for_test(&function.attrs)? {
-                        continue;
-                    }
-                    let name = function.sig.ident.to_string();
-                    let identity = std::iter::once(self.crate_name.to_owned())
-                        .chain(module.iter().cloned())
-                        .chain(std::iter::once(name.clone()))
-                        .collect::<Vec<_>>()
-                        .join("::");
-                    let test_identity = module
-                        .iter()
-                        .cloned()
-                        .chain(std::iter::once(name.clone()))
-                        .collect::<Vec<_>>()
-                        .join("::");
-                    self.declarations.entry(name).or_default().insert(identity);
-                    self.declaration_sources
-                        .entry(test_identity)
-                        .or_default()
-                        .insert(source_file.to_owned());
+                    self.collect_function_item(
+                        function,
+                        module,
+                        source_file,
+                        &visible_oracle_macros,
+                    )?;
                 }
                 syn::Item::Mod(item) => {
-                    if !module_active_for_test(&item.attrs)? {
-                        continue;
-                    }
-                    let mut child_module = module.to_vec();
-                    child_module.push(item.ident.to_string());
-                    if let Some((_, inline_items)) = &item.content {
-                        let inline_dir = module_dir.join(item.ident.to_string());
-                        self.collect_items(
-                            inline_items,
-                            &child_module,
-                            &inline_dir,
-                            &inline_dir,
-                            source_file,
-                        )?;
-                        continue;
-                    }
-                    let child_file = resolve_external_module(item, path_base, module_dir)?;
-                    let child_file = fs::canonicalize(&child_file).map_err(|error| {
-                        format!("canonicalize module {}: {error}", child_file.display())
-                    })?;
-                    let child_dir = if child_file.file_name().and_then(std::ffi::OsStr::to_str)
-                        == Some("mod.rs")
-                    {
-                        child_file.parent().unwrap_or(module_dir).to_owned()
-                    } else {
-                        module_dir.join(item.ident.to_string())
-                    };
-                    let child_path_base = child_file.parent().unwrap_or(path_base);
-                    self.collect_file(&child_file, &child_module, child_path_base, &child_dir)?;
+                    self.collect_module_item(
+                        item,
+                        module,
+                        path_base,
+                        module_dir,
+                        source_file,
+                        &visible_oracle_macros,
+                    )?;
                 }
+                syn::Item::Macro(item) => {
+                    self.collect_macro_item(item, module, source_file, &mut visible_oracle_macros)?;
+                }
+                syn::Item::Use(item) => {
+                    module_active_for_test(&item.attrs)?;
+                }
+                syn::Item::ExternCrate(item) => {
+                    module_active_for_test(&item.attrs)?;
+                    Self::reject_macro_use(&item.attrs, source_file)?;
+                }
+                syn::Item::Impl(item) => {
+                    self.collect_impl_item(item, module, source_file, &visible_oracle_macros)?;
+                }
+                syn::Item::Trait(item) => Self::validate_trait_item(item, source_file)?,
                 _ => {}
             }
         }
         Ok(())
     }
-}
 
-fn module_active_for_test(attributes: &[Attribute]) -> Result<bool, String> {
-    attributes
-        .iter()
-        .map(|attribute| meta_keeps_item_active(&attribute.meta))
-        .try_fold(true, |active, keep| keep.map(|keep| active && keep))
-}
-
-fn meta_keeps_item_active(meta: &Meta) -> Result<bool, String> {
-    let Meta::List(list) = meta else {
-        return Ok(true);
-    };
-    if list.path.is_ident("cfg") {
-        let predicate = syn::parse2::<Meta>(list.tokens.clone())
-            .map_err(|error| format!("parse cfg predicate: {error}"))?;
-        return cfg_value_for_test(&predicate).into_result();
-    }
-    if !list.path.is_ident("cfg_attr") {
-        return Ok(true);
-    }
-    let arguments = Punctuated::<Meta, Token![,]>::parse_terminated
-        .parse2(list.tokens.clone())
-        .map_err(|error| format!("parse cfg_attr arguments: {error}"))?;
-    let mut arguments = arguments.iter();
-    let predicate = arguments.next().ok_or("cfg_attr requires a predicate")?;
-    if !cfg_value_for_test(predicate).into_result()? {
-        return Ok(true);
-    }
-    arguments
-        .map(meta_keeps_item_active)
-        .try_fold(true, |active, keep| keep.map(|keep| active && keep))
-}
-
-#[derive(Clone, Copy, Eq, PartialEq)]
-enum CfgValue {
-    False,
-    True,
-    Unknown,
-}
-
-impl CfgValue {
-    fn into_result(self) -> Result<bool, String> {
-        match self {
-            Self::False => Ok(false),
-            Self::True => Ok(true),
-            Self::Unknown => Err(
-                "registered Cargo target uses a cfg predicate outside the reviewed test context"
-                    .to_owned(),
-            ),
+    fn collect_function_item(
+        &mut self,
+        function: &syn::ItemFn,
+        module: &[String],
+        source_file: &Path,
+        visible_oracle_macros: &BTreeSet<String>,
+    ) -> Result<(), String> {
+        if !module_active_for_test(&function.attrs)? {
+            return Ok(());
         }
+        let name = function.sig.ident.to_string();
+        let identity = std::iter::once(self.crate_name.to_owned())
+            .chain(module.iter().cloned())
+            .chain(std::iter::once(name.clone()))
+            .collect::<Vec<_>>()
+            .join("::");
+        let test_identity = module
+            .iter()
+            .cloned()
+            .chain(std::iter::once(name.clone()))
+            .collect::<Vec<_>>()
+            .join("::");
+        self.declarations
+            .entry(name.clone())
+            .or_default()
+            .insert(identity);
+        self.declaration_sources
+            .entry(test_identity.clone())
+            .or_default()
+            .insert(source_file.to_owned());
+        if !visible_oracle_macros.is_empty() {
+            self.oracle_shadow_sources
+                .entry(test_identity)
+                .or_default()
+                .insert(source_file.to_owned());
+        }
+        Ok(())
     }
-}
 
-fn cfg_value_for_test(predicate: &Meta) -> CfgValue {
-    match predicate {
-        Meta::Path(path) => cfg_path_value_for_test(path),
-        Meta::List(list) if list.path.is_ident("any") || list.path.is_ident("all") => {
-            let Ok(items) =
-                Punctuated::<Meta, Token![,]>::parse_terminated.parse2(list.tokens.clone())
-            else {
-                return CfgValue::Unknown;
-            };
-            if list.path.is_ident("any") {
-                if items
-                    .iter()
-                    .any(|item| cfg_value_for_test(item) == CfgValue::True)
-                {
-                    CfgValue::True
-                } else if items
-                    .iter()
-                    .all(|item| cfg_value_for_test(item) == CfgValue::False)
-                {
-                    CfgValue::False
-                } else {
-                    CfgValue::Unknown
-                }
-            } else if items
-                .iter()
-                .any(|item| cfg_value_for_test(item) == CfgValue::False)
-            {
-                CfgValue::False
-            } else if items
-                .iter()
-                .all(|item| cfg_value_for_test(item) == CfgValue::True)
-            {
-                CfgValue::True
+    fn collect_module_item(
+        &mut self,
+        item: &ItemMod,
+        module: &[String],
+        path_base: &Path,
+        module_dir: &Path,
+        source_file: &Path,
+        visible_oracle_macros: &BTreeSet<String>,
+    ) -> Result<(), String> {
+        if !module_active_for_test(&item.attrs)? {
+            return Ok(());
+        }
+        Self::reject_macro_use(&item.attrs, source_file)?;
+        let mut child_module = module.to_vec();
+        child_module.push(item.ident.to_string());
+        if let Some((_, inline_items)) = &item.content {
+            let inline_dir = module_dir.join(item.ident.to_string());
+            return self.collect_items(
+                inline_items,
+                &child_module,
+                &inline_dir,
+                &inline_dir,
+                source_file,
+                visible_oracle_macros,
+            );
+        }
+        let child_file =
+            self.bound_source_path(&resolve_external_module(item, path_base, module_dir)?)?;
+        let child_dir =
+            if child_file.file_name().and_then(std::ffi::OsStr::to_str) == Some("mod.rs") {
+                child_file.parent().unwrap_or(module_dir).to_owned()
             } else {
-                CfgValue::Unknown
+                module_dir.join(item.ident.to_string())
+            };
+        let child_path_base = child_file.parent().unwrap_or(path_base);
+        self.collect_file(
+            &child_file,
+            &child_module,
+            child_path_base,
+            &child_dir,
+            visible_oracle_macros,
+        )
+    }
+
+    fn collect_macro_item(
+        &self,
+        item: &syn::ItemMacro,
+        module: &[String],
+        source_file: &Path,
+        visible_oracle_macros: &mut BTreeSet<String>,
+    ) -> Result<(), String> {
+        if !module_active_for_test(&item.attrs)? {
+            return Ok(());
+        }
+        if let Some(name) = item
+            .ident
+            .as_ref()
+            .filter(|name| crate::artifact_verify::is_reserved_oracle_macro(&name.to_string()))
+        {
+            let canonical_oracle_definition =
+                self.crate_name == "rafter_invariant_test" && module.is_empty();
+            if !canonical_oracle_definition {
+                visible_oracle_macros.insert(name.to_string());
             }
         }
-        Meta::List(list) if list.path.is_ident("not") => {
-            match syn::parse2::<Meta>(list.tokens.clone()).map(|item| cfg_value_for_test(&item)) {
-                Ok(CfgValue::True) => CfgValue::False,
-                Ok(CfgValue::False) => CfgValue::True,
-                Ok(CfgValue::Unknown) | Err(_) => CfgValue::Unknown,
-            }
+        if item.ident.is_none() && !self.reviewed_support_item_macro(item, source_file) {
+            return Err(format!(
+                "registered Cargo target uses an unexpanded item macro outside the reviewed module graph in {}",
+                source_file.display()
+            ));
         }
-        Meta::NameValue(value) => cfg_name_value_for_test(value),
-        Meta::List(_) => CfgValue::Unknown,
+        Ok(())
     }
-}
 
-fn cfg_path_value_for_test(path: &syn::Path) -> CfgValue {
-    if path.is_ident("test") || path.is_ident("debug_assertions") {
-        CfgValue::True
-    } else if path.is_ident("unix") {
-        bool_cfg(cfg!(unix))
-    } else if path.is_ident("windows") {
-        bool_cfg(cfg!(windows))
-    } else if path.is_ident("doctest") || path.is_ident("miri") {
-        CfgValue::False
-    } else {
-        CfgValue::Unknown
+    fn reject_macro_use(attributes: &[Attribute], source_file: &Path) -> Result<(), String> {
+        if attributes
+            .iter()
+            .any(|attribute| attribute.path().is_ident("macro_use"))
+        {
+            return Err(format!(
+                "registered Cargo target uses #[macro_use] outside the reviewed lexical macro graph in {}",
+                source_file.display()
+            ));
+        }
+        Ok(())
     }
-}
 
-fn cfg_name_value_for_test(value: &syn::MetaNameValue) -> CfgValue {
-    let syn::Expr::Lit(expression) = &value.value else {
-        return CfgValue::Unknown;
-    };
-    let syn::Lit::Str(expected) = &expression.lit else {
-        return CfgValue::Unknown;
-    };
-    let expected = expected.value();
-    if value.path.is_ident("feature") {
-        return CfgValue::False;
+    fn collect_impl_item(
+        &mut self,
+        item: &syn::ItemImpl,
+        module: &[String],
+        source_file: &Path,
+        visible_oracle_macros: &BTreeSet<String>,
+    ) -> Result<(), String> {
+        if !module_active_for_test(&item.attrs)? {
+            return Ok(());
+        }
+        for member in &item.items {
+            let attributes = match member {
+                syn::ImplItem::Fn(method) => {
+                    if module_active_for_test(&method.attrs)? && !visible_oracle_macros.is_empty() {
+                        self.oracle_shadow_impl_methods
+                            .push(OracleShadowImplMethod {
+                                module: module.to_vec(),
+                                self_ty: (*item.self_ty).clone(),
+                                name: method.sig.ident.to_string(),
+                                source: source_file.to_owned(),
+                            });
+                    }
+                    continue;
+                }
+                syn::ImplItem::Const(item) => &item.attrs,
+                syn::ImplItem::Type(item) => &item.attrs,
+                syn::ImplItem::Macro(item) => {
+                    module_active_for_test(&item.attrs)?;
+                    return Err(format!(
+                        "registered Cargo target uses an unexpanded impl macro outside the reviewed module graph in {}",
+                        source_file.display()
+                    ));
+                }
+                _ => continue,
+            };
+            module_active_for_test(attributes)?;
+        }
+        Ok(())
     }
-    let actual = if value.path.is_ident("target_arch") {
-        Some(std::env::consts::ARCH)
-    } else if value.path.is_ident("target_os") {
-        Some(std::env::consts::OS)
-    } else if value.path.is_ident("target_family") {
-        if cfg!(unix) {
-            Some("unix")
-        } else if cfg!(windows) {
-            Some("windows")
-        } else {
-            None
-        }
-    } else if value.path.is_ident("target_endian") {
-        if cfg!(target_endian = "little") {
-            Some("little")
-        } else {
-            Some("big")
-        }
-    } else if value.path.is_ident("target_pointer_width") {
-        return bool_cfg(expected.parse::<u32>() == Ok(usize::BITS));
-    } else if value.path.is_ident("panic") {
-        if cfg!(panic = "unwind") {
-            Some("unwind")
-        } else {
-            Some("abort")
-        }
-    } else {
-        None
-    };
-    actual.map_or(CfgValue::Unknown, |actual| bool_cfg(actual == expected))
-}
 
-const fn bool_cfg(value: bool) -> CfgValue {
-    if value {
-        CfgValue::True
-    } else {
-        CfgValue::False
+    fn validate_trait_item(item: &syn::ItemTrait, source_file: &Path) -> Result<(), String> {
+        if !module_active_for_test(&item.attrs)? {
+            return Ok(());
+        }
+        for member in &item.items {
+            let attributes = match member {
+                syn::TraitItem::Fn(item) => &item.attrs,
+                syn::TraitItem::Const(item) => &item.attrs,
+                syn::TraitItem::Type(item) => &item.attrs,
+                syn::TraitItem::Macro(item) => {
+                    module_active_for_test(&item.attrs)?;
+                    return Err(format!(
+                        "registered Cargo target uses an unexpanded trait macro outside the reviewed module graph in {}",
+                        source_file.display()
+                    ));
+                }
+                _ => continue,
+            };
+            module_active_for_test(attributes)?;
+        }
+        Ok(())
+    }
+
+    fn reviewed_support_item_macro(&self, item: &syn::ItemMacro, source_file: &Path) -> bool {
+        if self.crate_name != "rafter_invariant_test"
+            || source_file.strip_prefix(self.workspace).ok()
+                != Some(Path::new("crates/rafter-invariant-test/src/lib.rs"))
+        {
+            return false;
+        }
+        let path = item
+            .mac
+            .path
+            .segments
+            .iter()
+            .map(|segment| segment.ident.to_string())
+            .collect::<Vec<_>>();
+        matches!(path.as_slice(), [name] if name == "impl_oracle_call")
+            || matches!(path.as_slice(), [krate, name] if krate == "std" && name == "thread_local")
+    }
+
+    fn bound_source_path(&self, path: &Path) -> Result<PathBuf, String> {
+        let metadata = fs::symlink_metadata(path)
+            .map_err(|error| format!("inspect module source {}: {error}", path.display()))?;
+        if !metadata.file_type().is_file() {
+            return Err(format!(
+                "module source is not a regular file: {}",
+                path.display()
+            ));
+        }
+        let canonical = fs::canonicalize(path)
+            .map_err(|error| format!("canonicalize module source {}: {error}", path.display()))?;
+        if canonical != path {
+            return Err(format!(
+                "module source traverses a filesystem alias or noncanonical path: {}",
+                path.display()
+            ));
+        }
+        let relative = canonical.strip_prefix(self.workspace).map_err(|_| {
+            format!(
+                "module source is outside the bound source tree: {}",
+                canonical.display()
+            )
+        })?;
+        if !self.tracked.contains(relative) {
+            return Err(format!(
+                "module source is not tracked by the bound source tree: {}",
+                canonical.display()
+            ));
+        }
+        Ok(canonical)
     }
 }
 
@@ -602,7 +749,7 @@ fn collect_effective_module_paths(meta: &Meta, paths: &mut Vec<PathBuf>) -> Resu
         .map_err(|error| format!("parse cfg_attr arguments: {error}"))?;
     let mut arguments = arguments.iter();
     let predicate = arguments.next().ok_or("cfg_attr requires a predicate")?;
-    if cfg_value_for_test(predicate).into_result()? {
+    if cfg::cfg_predicate_active_for_test(predicate)? {
         for attribute in arguments {
             collect_effective_module_paths(attribute, paths)?;
         }
@@ -620,8 +767,8 @@ fn module_path_meta(meta: &Meta) -> Option<PathBuf> {
     let syn::Expr::Lit(expression) = &name_value.value else {
         return None;
     };
-    let syn::Lit::Str(path) = &expression.lit else {
-        return None;
-    };
-    Some(PathBuf::from(path.value()))
+    match &expression.lit {
+        syn::Lit::Str(path) => Some(PathBuf::from(path.value())),
+        _ => None,
+    }
 }

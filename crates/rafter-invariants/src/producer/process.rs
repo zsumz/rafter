@@ -52,7 +52,9 @@ pub(crate) use evidence::expected_invocation;
 #[cfg(test)]
 use evidence::{allocate_telemetry_path, parse_process_group_observation};
 pub(crate) use evidence::{base_environment, digest_environment, parse_combined_processes};
-pub(super) use evidence::{combined_log, duration_ms, json_log, tla_json_log};
+pub(super) use evidence::{
+    combined_detector_log, combined_log, duration_ms, json_log, tla_json_log,
+};
 use evidence::{parse_peak_rss, process_group_observation, process_group_rss_kib, telemetry_path};
 use managed::{
     take_fallback_cleanup_failures, CollectedProcessStatus, ManagedProcess, ProcessCleanupError,
@@ -151,6 +153,7 @@ pub(crate) struct LabeledProcess {
     pub metrics: ProcessMetrics,
     pub stdout: String,
     pub stderr: String,
+    pub detector_challenge: Option<String>,
 }
 
 impl ProcessLog {

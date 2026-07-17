@@ -231,6 +231,30 @@ mod tests {
         .expect("bundle serializes");
         value["execution"]["unreviewed"] = serde_json::json!(true);
         assert!(validate_result_value(&value).is_err());
+
+        value = serde_json::to_value(
+            crate::tests::passing_bundles(&catalog, &manifest)
+                .into_iter()
+                .next()
+                .expect("bundle"),
+        )
+        .expect("bundle serializes");
+        value["execution"]["source"]
+            .as_object_mut()
+            .expect("source object")
+            .remove("materialization");
+        assert!(validate_result_value(&value).is_err());
+
+        value = serde_json::to_value(
+            crate::tests::passing_bundles(&catalog, &manifest)
+                .into_iter()
+                .next()
+                .expect("bundle"),
+        )
+        .expect("bundle serializes");
+        value["execution"]["source"]["materialization"]["contract"] =
+            serde_json::json!("git-status-only-v0");
+        assert!(validate_result_value(&value).is_err());
     }
 
     #[test]

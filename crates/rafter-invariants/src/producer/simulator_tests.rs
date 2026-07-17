@@ -1,18 +1,53 @@
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
-
-#[cfg(unix)]
-use std::{fs, path::Path};
+use std::fs;
+use std::path::Path;
 
 use super::{
-    coverage_reached, evaluate, evaluate_descriptors, liveness_contracts, model_observations,
-    simulator_event_issue, DetectorRun, SimulatorIssue,
+    coverage_reached, evaluate, evaluate_descriptors, execution_resource_metrics,
+    liveness_contracts, model_observations, preflight_detector_sources_at, simulator_event_issue,
+    DetectorRun, SimulatorIssue,
 };
 use crate::{
     CheckCompletion, EvidenceDescriptor, EvidenceStatus, FailureClassification,
     SimulatorCheckContract, SimulatorIdentity,
 };
 use serde_json::json;
+
+#[test]
+fn detector_source_preflight_rejects_the_compiled_qualified_helper_fixture() {
+    let (catalog, _) = crate::tests::loaded();
+    let mut descriptor = catalog
+        .evidence
+        .iter()
+        .find(|descriptor| descriptor.layer == "simulator" && descriptor.strength == "direct")
+        .expect("registered direct simulator descriptor")
+        .clone();
+    let fixture = "qualified_helper_forged_transcript_subprocess_fixture";
+    descriptor.path = "crates/rafter-invariant-test/src/tests.rs".to_owned();
+    descriptor.negative_fixture = Some(fixture.to_owned());
+    descriptor.negative_fixture_path = Some(descriptor.path.clone());
+    descriptor.negative_fixture_detector = Some("token_bound_regression_detector".to_owned());
+    descriptor
+        .simulator
+        .as_mut()
+        .expect("direct simulator identity")
+        .negative_test = Some(crate::TestIdentity {
+        package: "rafter-invariant-test".to_owned(),
+        target_kind: "lib".to_owned(),
+        target: "rafter_invariant_test".to_owned(),
+        test_name: format!("tests::{fixture}"),
+    });
+
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let error = preflight_detector_sources_at(&root, &[descriptor])
+        .expect_err("producer preflight must reject the invalid fixture source")
+        .to_string();
+    assert!(
+        error.contains("can emit an arbitrary detector witness"),
+        "{error}"
+    );
+}
 
 #[test]
 fn simulator_failure_classifications_remain_distinct() {
@@ -309,8 +344,10 @@ fn composite_safety_evidence_allows_complementary_checks_to_supply_the_witness()
         (
             "primary".to_owned(),
             vec![json!({
+                "event": "exhaustive-check",
                 "check_id": "primary",
                 "status": "pass",
+                "classification": null,
                 "unique_protocol_states": 10,
                 "unique_verifier_states": 10,
                 "observations": {"commit_floor_advances": 1},
@@ -319,8 +356,10 @@ fn composite_safety_evidence_allows_complementary_checks_to_supply_the_witness()
         (
             "variant".to_owned(),
             vec![json!({
+                "event": "exhaustive-check",
                 "check_id": "variant",
                 "status": "pass",
+                "classification": null,
                 "unique_protocol_states": 1,
                 "unique_verifier_states": 1,
                 "observations": {},
@@ -353,8 +392,10 @@ fn composite_safety_evidence_cannot_split_one_witness_minimum_across_checks() {
     };
     let event = |check: &str| {
         json!({
+            "event": "exhaustive-check",
             "check_id": check,
             "status": "pass",
+            "classification": null,
             "unique_protocol_states": 10,
             "unique_verifier_states": 10,
             "observations": {"commit_floor_advances": 1},
@@ -374,6 +415,157 @@ fn composite_safety_evidence_cannot_split_one_witness_minimum_across_checks() {
         &evidence.per_check_required_observations,
     ));
 }
+
+#[test]
+fn malformed_passing_event_cannot_contribute_semantic_observations() {
+    let identity = SimulatorIdentity {
+        checks: vec!["primary".to_owned()],
+        required_observation: "commit_floor_advances".to_owned(),
+        minimum_observation: 2,
+        minimum_protocol_states: Some(1),
+        minimum_verifier_states: Some(1),
+        minimum_runs_per_check: None,
+        minimum_steps: None,
+        liveness_report: None,
+        negative_test: None,
+    };
+    let events = BTreeMap::from([(
+        "primary".to_owned(),
+        vec![
+            json!({
+                "event": "exhaustive-check",
+                "check_id": "primary",
+                "status": "pass",
+                "classification": null,
+                "unique_protocol_states": 1,
+                "unique_verifier_states": 1,
+                "observations": {"commit_floor_advances": 1},
+            }),
+            json!({
+                "event": "unsupported-pass-event",
+                "check_id": "primary",
+                "status": "pass",
+                "classification": null,
+                "unique_protocol_states": 100,
+                "unique_verifier_states": 100,
+                "observations": {"commit_floor_advances": 100},
+            }),
+        ],
+    )]);
+
+    let evidence = model_observations(
+        "nightly",
+        "CM-02",
+        &identity,
+        &BTreeMap::new(),
+        &[],
+        &events,
+    );
+
+    assert_eq!(evidence.observations["commit_floor_advances"], 1);
+    assert!(matches!(
+        evidence.issue,
+        Some(SimulatorIssue::HarnessError(_))
+    ));
+    assert!(!coverage_reached(
+        &identity,
+        &evidence.observations,
+        &evidence.per_check_required_observations,
+    ));
+}
+
+#[test]
+fn detector_harness_failure_uses_metrics_for_its_attached_logs_only() {
+    let (catalog, _) = crate::tests::loaded();
+    let descriptor = safety_descriptor(&catalog.evidence);
+    let identity = descriptor.simulator.as_ref().expect("simulator identity");
+    let negative_test = identity
+        .negative_test
+        .as_ref()
+        .expect("direct safety descriptor has a negative test");
+    let check_id = &identity.checks[0];
+    let mut model = model_fixture(BTreeMap::from([(
+        check_id.clone(),
+        vec![json!({
+            "event": "exhaustive-check",
+            "check_id": check_id,
+            "status": "incomplete",
+            "classification": "coverage-not-reached",
+            "message": "model frontier was incomplete",
+        })],
+    )]));
+    let model_log = crate::ArtifactRef {
+        kind: "test-log".to_owned(),
+        path: "artifacts/model.log".to_owned(),
+        sha256: "0".repeat(64),
+        size_bytes: 1,
+    };
+    model.artifacts.push(model_log.clone());
+    model.duration_ms = 5;
+    model.runtime_peak_rss_kib = 13;
+    let detector_log = crate::ArtifactRef {
+        kind: "test-log".to_owned(),
+        path: "artifacts/detector.log".to_owned(),
+        sha256: "0".repeat(64),
+        size_bytes: 1,
+    };
+    let unrelated_detector_log = crate::ArtifactRef {
+        kind: "test-log".to_owned(),
+        path: "artifacts/unrelated-detector.log".to_owned(),
+        sha256: "1".repeat(64),
+        size_bytes: 1,
+    };
+    let detectors = DetectorRun {
+        outcomes: BTreeMap::from([
+            (
+                negative_test.check_id(),
+                super::test_exec::TestOutcome {
+                    completion: CheckCompletion::HarnessError,
+                    status: EvidenceStatus::Error,
+                    classification: Some(FailureClassification::HarnessError),
+                    message: Some("detector proof channel failed".to_owned()),
+                    observations: BTreeMap::new(),
+                    duration_ms: 7,
+                    peak_rss_kib: 11,
+                    artifacts: vec![detector_log.clone()],
+                },
+            ),
+            (
+                "unrelated::detector".to_owned(),
+                super::test_exec::TestOutcome {
+                    completion: CheckCompletion::Completed,
+                    status: EvidenceStatus::Pass,
+                    classification: None,
+                    message: None,
+                    observations: BTreeMap::new(),
+                    duration_ms: 101,
+                    peak_rss_kib: 211,
+                    artifacts: vec![unrelated_detector_log.clone()],
+                },
+            ),
+        ]),
+        artifacts: Vec::new(),
+        peak_rss_kib: 211,
+        duration_ms: 108,
+        harness_error: None,
+    };
+
+    let evaluated = evaluate(descriptor, "nightly", &[], &model, &detectors)
+        .expect("fold model and detector outcomes");
+
+    assert_eq!(evaluated.status, EvidenceStatus::Error);
+    assert_eq!(
+        evaluated.classification,
+        Some(FailureClassification::HarnessError)
+    );
+    assert_eq!(evaluated.observations["detector_qualified"], 0);
+    assert_eq!(evaluated.artifacts, vec![model_log, detector_log]);
+    assert!(!evaluated.artifacts.contains(&unrelated_detector_log));
+    assert_eq!(evaluated.duration_ms, 12);
+    assert_eq!(evaluated.peak_rss_kib, 13);
+}
+
+include!("simulator_tests/compile_failure_metrics.rs");
 
 #[test]
 fn per_check_profile_floor_cannot_be_borrowed_from_an_established_leg() {
@@ -642,8 +834,10 @@ fn passing_event_stream(identity: &SimulatorIdentity) -> String {
                 output,
                 "RAFTER_EVENT {}",
                 json!({
+                    "event": "exhaustive-check",
                     "check_id": check,
                     "status": "pass",
+                    "classification": null,
                     "unique_protocol_states": identity.minimum_protocol_states.unwrap_or_default(),
                     "unique_verifier_states": identity.minimum_verifier_states.unwrap_or_default(),
                     "observations": {

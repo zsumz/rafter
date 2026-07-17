@@ -5,7 +5,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use crate::{SourceReceipt, ToolReceipt};
+use crate::{SourceMaterializationReceipt, SourceReceipt, ToolReceipt};
 
 use super::{
     bind_adjacent_tool_inputs, find_tool, layer_contract, maelstrom_jar_path,
@@ -224,6 +224,12 @@ fn source(build_profile: &str, features: &[&str], tools: &[&str]) -> SourceRecei
     SourceReceipt {
         commit: "commit".to_owned(),
         tree: "tree".to_owned(),
+        materialization: SourceMaterializationReceipt {
+            contract: "git-head-worktree-raw-v1".to_owned(),
+            sha256: "0".repeat(64),
+            tracked_entries: 1,
+            submodules: 0,
+        },
         cargo_lock_sha256: "0".repeat(64),
         cargo: "cargo".to_owned(),
         cargo_sha256: "0".repeat(64),

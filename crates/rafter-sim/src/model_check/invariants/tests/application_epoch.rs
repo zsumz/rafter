@@ -160,7 +160,7 @@ fn ordinary_restart_preserves_application_epoch() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn applied_order_detects_duplicate_execution_within_one_epoch() {
     let mut cluster = one_node_cluster();
     let mut bootstrap = bootstrap_state(Term(1), &[(1, Term(1), b"applied-once")]);
@@ -168,7 +168,7 @@ fn applied_order_detects_duplicate_execution_within_one_epoch() {
     cluster
         .restart_node_from_bootstrap(NodeId(1), bootstrap)
         .expect("committed bootstrap is valid");
-    assert_eq!(cluster.execution_history().len(), 1);
+    let initial_history_len = cluster.execution_history().len();
     let mut state = ExplorationState::new(cluster);
 
     rewind_execution_cursor_for_fixture(&mut state, NodeId(1));
@@ -178,6 +178,7 @@ fn applied_order_detects_duplicate_execution_within_one_epoch() {
         check_applied_exactly_once(state.cluster(), &[]),
         "same-index execution in one epoch must fail AP-01",
     );
+    assert_eq!(initial_history_len, 1);
     oracle_assert_eq!(
         failure.invariant(),
         catalog::AP_01_ORDERED_EXACTLY_ONCE_COMMITTED_APPLICATION
@@ -212,7 +213,7 @@ fn applied_exactly_once_includes_configuration_entries() {
     assert!(failure.message.contains("epoch 0 executed logical index 1"));
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn applied_order_detects_apply_before_commit() {
     let mut cluster = one_node_cluster();
     cluster.applied.push(Applied {
@@ -455,12 +456,11 @@ fn read_grant_from_a_previous_application_epoch_fails_closed() {
     assert!(failure.message().contains("retained grant epoch 0"));
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn replayed_index_must_match_prior_command_across_epochs() {
     let mut state = state_with_committed_application_witness(b"original");
     crate::model_check::state::restart_node_losing_application_state(&mut state, NodeId(1), &[])
         .expect("application-loss transition must replay the committed witness");
-    assert_eq!(state.cluster().application_epoch(NodeId(1)), 1);
     crate::model_check::state::record_execution_corruption(
         &mut state,
         crate::model_check::state::ExecutionRecorderCorruption::EntryKind(
@@ -473,6 +473,7 @@ fn replayed_index_must_match_prior_command_across_epochs() {
         check_execution_history_agreement(&state, &[]),
         "different commands at the same log index must still fail",
     );
+    assert_eq!(state.cluster().application_epoch(NodeId(1)), 1);
     oracle_assert_eq!(failure.invariant(), catalog::AP_02_STATE_MACHINE_SAFETY);
     oracle_assert!(
         failure

@@ -1,4 +1,5 @@
 use std::{
+    collections::HashSet,
     env,
     error::Error,
     fs,
@@ -10,6 +11,22 @@ use sha2::{Digest, Sha256};
 use crate::{SourceReceipt, ToolReceipt};
 
 use super::process;
+
+mod cargo_graph;
+mod cargo_inputs;
+mod materialization;
+mod path_validation;
+mod rust_inputs;
+
+#[cfg(test)]
+#[path = "source/cargo_graph_tests.rs"]
+mod cargo_graph_tests;
+
+use cargo_graph::validate_registry_build_script_source_identity;
+use cargo_inputs::validate_trusted_cargo_package_metadata;
+use materialization::capture_materialization;
+use path_validation::validate_tracked_source_path;
+use rust_inputs::validate_resolved_tracked_rust_inputs;
 
 #[derive(Clone, Copy)]
 struct LayerSourceContract {
@@ -56,6 +73,16 @@ fn capture_at(
     root: &Path,
     budget: CaptureBudget,
 ) -> Result<SourceReceipt, Box<dyn Error>> {
+    let receipt = capture_identity_at(contract, root, budget)?;
+    validate_resolved_path_packages(root, budget)?;
+    Ok(receipt)
+}
+
+fn capture_identity_at(
+    contract: LayerSourceContract,
+    root: &Path,
+    budget: CaptureBudget,
+) -> Result<SourceReceipt, Box<dyn Error>> {
     let status = command_output_at(
         "git",
         &["status", "--porcelain=v1", "--untracked-files=all"],
@@ -66,8 +93,7 @@ fn capture_at(
     if !status.trim().is_empty() {
         return Err("evidence producers require a clean tracked and untracked worktree".into());
     }
-    let commit = command_output_at("git", &["rev-parse", "HEAD"], false, root, budget)?;
-    let tree = command_output_at("git", &["rev-parse", "HEAD^{tree}"], false, root, budget)?;
+    let materialized = capture_materialization(root, budget)?;
     let cargo = command_output_at("cargo", &["-vV"], false, root, budget)?;
     let rustc = command_output_at("rustc", &["-vV"], false, root, budget)?;
     let target = rustc
@@ -89,8 +115,9 @@ fn capture_at(
         .collect::<Vec<_>>()
         .join("\0");
     Ok(SourceReceipt {
-        commit,
-        tree,
+        commit: materialized.commit,
+        tree: materialized.tree,
+        materialization: materialized.receipt,
         cargo_lock_sha256: format!("{:x}", Sha256::digest(cargo_lock)),
         cargo,
         cargo_sha256: executable_sha256("cargo")?,
@@ -112,7 +139,7 @@ fn capture_at(
 
 pub(super) fn verify(expected: &SourceReceipt) -> Result<(), Box<dyn Error>> {
     let contract = contract_for_receipt(expected)?;
-    let observed = capture_at(contract, Path::new("."), CaptureBudget::Total)?;
+    let observed = capture_identity_at(contract, Path::new("."), CaptureBudget::Total)?;
     if &observed != expected {
         return Err("source or toolchain identity changed during evidence execution".into());
     }
@@ -134,6 +161,7 @@ pub(crate) fn verify_checkout_at(
     )?;
     if observed.commit != expected.commit
         || observed.tree != expected.tree
+        || observed.materialization != expected.materialization
         || observed.cargo_lock_sha256 != expected.cargo_lock_sha256
         || observed.cargo != expected.cargo
         || observed.cargo_sha256 != expected.cargo_sha256
@@ -243,17 +271,200 @@ fn command_output_at(
     root: &Path,
     budget: CaptureBudget,
 ) -> Result<String, Box<dyn Error>> {
+    let stdout = command_stdout_at(program, arguments, root, budget)?;
+    let value = stdout.trim().to_owned();
+    if value.is_empty() && !allow_empty {
+        return Err(format!("{program} produced empty identity output").into());
+    }
+    Ok(value)
+}
+
+fn command_output_raw_at(
+    program: &str,
+    arguments: &[&str],
+    allow_empty: bool,
+    root: &Path,
+    budget: CaptureBudget,
+) -> Result<String, Box<dyn Error>> {
+    let value = command_stdout_at(program, arguments, root, budget)?;
+    if value.is_empty() && !allow_empty {
+        return Err(format!("{program} produced empty identity output").into());
+    }
+    Ok(value)
+}
+
+fn command_stdout_at(
+    program: &str,
+    arguments: &[&str],
+    root: &Path,
+    budget: CaptureBudget,
+) -> Result<String, Box<dyn Error>> {
     let output = match budget {
         CaptureBudget::Execution => process::identity_command_in(program, arguments, root)?,
         CaptureBudget::Total => {
             process::identity_command_in_total_budget(program, arguments, root)?
         }
     };
-    let value = output.stdout.trim().to_owned();
-    if value.is_empty() && !allow_empty {
-        return Err(format!("{program} produced empty identity output").into());
+    Ok(output.stdout)
+}
+
+fn validate_resolved_path_packages(
+    root: &Path,
+    budget: CaptureBudget,
+) -> Result<(), Box<dyn Error>> {
+    let root = fs::canonicalize(root)?;
+    let tracked = command_output_raw_at("git", &["ls-files", "-z"], true, &root, budget)?;
+    let tracked = parse_tracked_source_paths(&tracked)?;
+    validate_manifest_path_overrides(&root, &tracked)?;
+    let metadata = command_output_at(
+        "cargo",
+        &["metadata", "--format-version", "1", "--locked", "--offline"],
+        false,
+        &root,
+        budget,
+    )?;
+    validate_resolved_path_package_metadata(&root, &metadata, &tracked)?;
+    validate_registry_build_script_source_identity(
+        &metadata,
+        &fs::read_to_string(root.join("Cargo.lock"))?,
+    )?;
+    validate_resolved_tracked_rust_inputs(&root, &tracked, &metadata)?;
+    validate_trusted_cargo_package_metadata(&root, &metadata)
+}
+
+fn validate_resolved_path_package_metadata(
+    root: &Path,
+    metadata: &str,
+    tracked: &HashSet<PathBuf>,
+) -> Result<(), Box<dyn Error>> {
+    let root = fs::canonicalize(root)?;
+    let metadata: serde_json::Value = serde_json::from_str(metadata)?;
+    let workspace_root = metadata
+        .get("workspace_root")
+        .and_then(serde_json::Value::as_str)
+        .ok_or("cargo metadata omitted its workspace_root")?;
+    if fs::canonicalize(workspace_root)? != root {
+        return Err("cargo metadata resolved a different workspace root".into());
     }
-    Ok(value)
+    let packages = metadata
+        .get("packages")
+        .and_then(serde_json::Value::as_array)
+        .ok_or("cargo metadata omitted its package inventory")?;
+    for package in packages {
+        match package.get("source") {
+            Some(source) if source.is_null() => {}
+            Some(_) => continue,
+            None => return Err("cargo metadata package omitted its source field".into()),
+        }
+        let manifest = package
+            .get("manifest_path")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("path package omitted its manifest_path")?;
+        validate_tracked_source_path(&root, Path::new(manifest), tracked, "package manifest")?;
+
+        let dependencies = package
+            .get("dependencies")
+            .and_then(serde_json::Value::as_array)
+            .ok_or("cargo metadata package omitted its dependency inventory")?;
+        for dependency in dependencies {
+            let Some(path) = dependency.get("path").and_then(serde_json::Value::as_str) else {
+                continue;
+            };
+            validate_tracked_source_path(
+                &root,
+                &Path::new(path).join("Cargo.toml"),
+                tracked,
+                "dependency manifest",
+            )?;
+        }
+
+        let targets = package
+            .get("targets")
+            .and_then(serde_json::Value::as_array)
+            .ok_or("cargo metadata package omitted its target inventory")?;
+        for target in targets {
+            if target
+                .get("kind")
+                .and_then(serde_json::Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(serde_json::Value::as_str)
+                .any(|kind| kind == "custom-build")
+            {
+                return Err(
+                    "Cargo custom build targets are outside the source binding contract".into(),
+                );
+            }
+            let source = target
+                .get("src_path")
+                .and_then(serde_json::Value::as_str)
+                .ok_or("cargo metadata target omitted its src_path")?;
+            validate_tracked_source_path(&root, Path::new(source), tracked, "target source")?;
+        }
+    }
+    Ok(())
+}
+
+fn parse_tracked_source_paths(output: &str) -> Result<HashSet<PathBuf>, Box<dyn Error>> {
+    output
+        .split('\0')
+        .filter(|value| !value.is_empty())
+        .map(|value| {
+            let path = PathBuf::from(value);
+            if path.is_absolute()
+                || path
+                    .components()
+                    .any(|component| matches!(component, std::path::Component::ParentDir))
+            {
+                return Err(format!("git reported a non-relative tracked path: {value:?}").into());
+            }
+            Ok(path)
+        })
+        .collect()
+}
+
+pub(crate) fn tracked_source_paths_at(root: &Path) -> Result<HashSet<PathBuf>, String> {
+    let root = fs::canonicalize(root)
+        .map_err(|error| format!("canonicalize source root {}: {error}", root.display()))?;
+    // This inventory only constrains the Rust source analyzer; source acceptance is independently
+    // proven from raw HEAD-tree bytes. Use the fixed system Git so catalog guards remain portable.
+    let output = std::process::Command::new("/usr/bin/git")
+        .args(["--no-replace-objects", "ls-files", "-z"])
+        .env_clear()
+        .envs(process::base_environment())
+        .current_dir(&root)
+        .output()
+        .map_err(|error| format!("enumerate tracked source paths: {error}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "enumerate tracked source paths: git exited with {:?}: {}",
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let output = String::from_utf8(output.stdout)
+        .map_err(|error| format!("enumerate tracked source paths: {error}"))?;
+    parse_tracked_source_paths(&output)
+        .map_err(|error| format!("parse tracked source paths: {error}"))
+}
+
+fn validate_manifest_path_overrides(
+    root: &Path,
+    tracked: &HashSet<PathBuf>,
+) -> Result<(), Box<dyn Error>> {
+    let root = fs::canonicalize(root)?;
+    let manifest_path = root.join("Cargo.toml");
+    validate_tracked_source_path(&root, &manifest_path, tracked, "workspace manifest")?;
+    let manifest: toml::Value = fs::read_to_string(&manifest_path)?.parse()?;
+    for section in ["patch", "replace"] {
+        if manifest.get(section).is_some() {
+            return Err(format!(
+                "Cargo manifest [{section}] overrides are outside the source binding contract"
+            )
+            .into());
+        }
+    }
+    Ok(())
 }
 
 fn executable_sha256(name: &str) -> Result<String, Box<dyn Error>> {
@@ -568,7 +779,15 @@ fn validate_bound_cargo_config(
             path.display()
         )
     })?;
-    for key in ["paths", "source", "env", "unstable"] {
+    for key in [
+        "paths",
+        "path-bases",
+        "patch",
+        "source",
+        "env",
+        "resolver",
+        "unstable",
+    ] {
         if table.contains_key(key) {
             return unbound_cargo_config_error(path, key);
         }

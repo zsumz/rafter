@@ -23,16 +23,16 @@
       "canonical_minimum_independent_layers": 2,
       "runners": {
         "tests": {
-          "producer": "rafter-invariants-tests-v13",
+          "producer": "rafter-invariants-tests-v14",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "pr", "--layer", "tests"],
           "configuration": {"build": "locked-no-default-features", "compile_timeout": "10m", "discovery": "libtest-executable", "discovery_timeout": "2m", "execution": "exact-single-threaded", "execution_timeout": "5m", "failure_contract": "typed-oracle-libtest-v4", "finalization_reserve": "3m", "kill_confirmation_timeout": "5s", "layer_timeout": "40m", "receipt_finalization_allowance": "5s", "scale": "pr", "termination_grace": "30s"},
           "minimum_observed_checks": 82,
           "require_peak_rss": true
         },
         "simulator": {
-          "producer": "rafter-invariants-simulator-v17",
+          "producer": "rafter-invariants-simulator-v18",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "pr", "--layer", "simulator"],
-          "configuration": {"build": "release-and-test-locked", "compile_timeout": "10m", "completion": "frontier-and-semantic-floor", "execution_contract": "rafter-soak-execution-v1", "finalization_reserve": "3m", "kill_confirmation_timeout": "5s", "layer_timeout": "25m", "liveness_report_binding": "typed-canonical-json-sha256-v3", "model_profile": "fast+raft-soak", "model_timeout_policy": "remaining-layer-budget", "receipt_finalization_allowance": "5s", "seed_policy": "curated-0x9103-through-0x9106", "snapshot_catchup_probe": "required", "soak_steps": "320", "state_floors": "per-evidence", "termination_grace": "30s"},
+          "configuration": {"build": "release-and-test-locked", "compile_timeout": "10m", "completion": "frontier-and-semantic-floor", "detector_proof": "post-invocation-parent-challenge-v1", "detector_source_preflight": "exact-module-call-graph-v1", "execution_contract": "rafter-soak-execution-v1", "finalization_reserve": "3m", "kill_confirmation_timeout": "5s", "layer_timeout": "25m", "liveness_report_binding": "typed-canonical-json-sha256-v3", "model_profile": "fast+raft-soak", "model_timeout_policy": "remaining-layer-budget", "receipt_finalization_allowance": "5s", "seed_policy": "curated-0x9103-through-0x9106", "snapshot_catchup_probe": "required", "soak_steps": "320", "state_floors": "per-evidence", "termination_grace": "30s"},
           "simulator_checks": {
             "raft-commit": {"minimum_protocol_states": 96000, "minimum_verifier_states": 101000, "required_observations": ["commit_floor_advances", "same_term_leader_log_growth"]},
             "raft-commit-production": {"minimum_protocol_states": 500, "minimum_verifier_states": 600, "required_observations": ["eligible_leader_certificates", "pre_vote_request_deliveries", "production_config_commit_observed"]},
@@ -70,16 +70,16 @@
       "canonical_minimum_independent_layers": 2,
       "runners": {
         "tests": {
-          "producer": "rafter-invariants-tests-v13",
+          "producer": "rafter-invariants-tests-v14",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "nightly", "--layer", "tests"],
           "configuration": {"build": "locked-no-default-features", "compile_timeout": "10m", "discovery": "libtest-executable", "discovery_timeout": "2m", "execution": "exact-single-threaded", "execution_timeout": "5m", "failure_contract": "typed-oracle-libtest-v4", "finalization_reserve": "3m", "kill_confirmation_timeout": "5s", "layer_timeout": "40m", "receipt_finalization_allowance": "5s", "scale": "nightly", "termination_grace": "30s"},
           "minimum_observed_checks": 82,
           "require_peak_rss": true
         },
         "simulator": {
-          "producer": "rafter-invariants-simulator-v16",
+          "producer": "rafter-invariants-simulator-v17",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "nightly", "--layer", "simulator"],
-          "configuration": {"build": "release-and-test-locked", "canonical_check_binding": "scheduled-suffix-v1", "compile_timeout": "10m", "completion": "frontier-and-aggregate-state-floor", "execution_contract": "rafter-soak-execution-v1", "finalization_reserve": "10m", "kill_confirmation_timeout": "5s", "layer_timeout": "170m", "liveness_report_binding": "typed-canonical-json-sha256-v3", "model_profile": "raft-nightly", "model_timeout_policy": "remaining-layer-budget", "receipt_finalization_allowance": "5s", "seed_count": "6", "seed_policy": "source-derived-sha256-v1", "soak_steps": "1024", "state_floors": "100000000-protocol-and-verifier", "termination_grace": "30s"},
+          "configuration": {"build": "release-and-test-locked", "canonical_check_binding": "scheduled-suffix-v1", "compile_timeout": "10m", "completion": "frontier-and-aggregate-state-floor", "detector_proof": "post-invocation-parent-challenge-v1", "detector_source_preflight": "exact-module-call-graph-v1", "execution_contract": "rafter-soak-execution-v1", "finalization_reserve": "10m", "kill_confirmation_timeout": "5s", "layer_timeout": "170m", "liveness_report_binding": "typed-canonical-json-sha256-v3", "model_profile": "raft-nightly", "model_timeout_policy": "remaining-layer-budget", "receipt_finalization_allowance": "5s", "seed_count": "6", "seed_policy": "source-derived-sha256-v1", "soak_steps": "1024", "state_floors": "100000000-protocol-and-verifier", "termination_grace": "30s"},
           "minimum_observed_checks": 79,
           "require_peak_rss": true
         },
@@ -109,16 +109,16 @@
       "canonical_minimum_independent_layers": 2,
       "runners": {
         "tests": {
-          "producer": "rafter-invariants-tests-v13",
+          "producer": "rafter-invariants-tests-v14",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "weekly", "--layer", "tests"],
           "configuration": {"build": "locked-no-default-features", "compile_timeout": "10m", "discovery": "libtest-executable", "discovery_timeout": "2m", "execution": "exact-single-threaded", "execution_timeout": "5m", "failure_contract": "typed-oracle-libtest-v4", "finalization_reserve": "3m", "kill_confirmation_timeout": "5s", "layer_timeout": "40m", "receipt_finalization_allowance": "5s", "scale": "weekly", "termination_grace": "30s"},
           "minimum_observed_checks": 82,
           "require_peak_rss": true
         },
         "simulator": {
-          "producer": "rafter-invariants-simulator-v16",
+          "producer": "rafter-invariants-simulator-v17",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "weekly", "--layer", "simulator"],
-          "configuration": {"build": "release-and-test-locked", "canonical_check_binding": "scheduled-suffix-v1", "compile_timeout": "10m", "completion": "frontier-and-aggregate-state-floor", "execution_contract": "rafter-soak-execution-v1", "finalization_reserve": "10m", "kill_confirmation_timeout": "5s", "layer_timeout": "340m", "liveness_report_binding": "typed-canonical-json-sha256-v3", "model_profile": "raft-weekly", "model_timeout_policy": "remaining-layer-budget", "receipt_finalization_allowance": "5s", "seed_count": "10", "seed_policy": "source-derived-sha256-v1", "soak_steps": "4096", "state_floors": "250000000-protocol-and-verifier", "termination_grace": "30s"},
+          "configuration": {"build": "release-and-test-locked", "canonical_check_binding": "scheduled-suffix-v1", "compile_timeout": "10m", "completion": "frontier-and-aggregate-state-floor", "detector_proof": "post-invocation-parent-challenge-v1", "detector_source_preflight": "exact-module-call-graph-v1", "execution_contract": "rafter-soak-execution-v1", "finalization_reserve": "10m", "kill_confirmation_timeout": "5s", "layer_timeout": "340m", "liveness_report_binding": "typed-canonical-json-sha256-v3", "model_profile": "raft-weekly", "model_timeout_policy": "remaining-layer-budget", "receipt_finalization_allowance": "5s", "seed_count": "10", "seed_policy": "source-derived-sha256-v1", "soak_steps": "4096", "state_floors": "250000000-protocol-and-verifier", "termination_grace": "30s"},
           "minimum_observed_checks": 79,
           "require_peak_rss": true
         },

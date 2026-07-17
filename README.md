@@ -116,6 +116,10 @@ separate aggregation-only command for existing result bundles. The
 deterministic PR aggregate emits exactly one verdict for each of the 44
 reviewed IDs. Branch protection on `main` requires the stable `invariants-pr`
 job; missing, malformed, incomplete, or stale evidence makes that job red.
+Evidence artifacts are isolated by workflow run attempt. After a partial
+GitHub Actions rerun, rerun every invariant evidence job together; a lone
+aggregate rerun intentionally reports missing evidence instead of reusing a
+prior attempt.
 Maelstrom supplies sampled end-to-end evidence in nightly and weekly profiles
 and is intentionally excluded from the deterministic PR verdict. Scheduled
 `invariants-nightly` and `invariants-weekly` jobs run every required layer,

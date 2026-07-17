@@ -9,6 +9,8 @@ use super::{
     test_compile::CompiledTarget,
 };
 
+mod detector_proof;
+
 pub(crate) const ORACLE_TOKEN_ENV: &str = "RAFTER_INVARIANT_ORACLE_TOKEN";
 const ORACLE_OBSERVED_PREFIX: &str = "RAFTER_INVARIANT_ORACLE_OBSERVED:";
 const ORACLE_MARKER_PREFIX: &str = "RAFTER_INVARIANT_ORACLE_VIOLATION:";
@@ -30,6 +32,23 @@ struct DiscoveryOutput {
     log: Vec<u8>,
 }
 
+#[derive(Clone, Copy)]
+struct EvaluationRequest<'a> {
+    identity: &'a TestIdentity,
+    compiled: &'a CompiledTarget,
+    profile: &'a str,
+    source_ref: &'a str,
+    execution_id: &'a str,
+    output_dir: &'a Path,
+    scratch_deadline: Instant,
+}
+
+#[derive(Clone, Copy)]
+enum EvaluationMode {
+    Ordinary,
+    Detector,
+}
+
 pub(super) fn evaluate(
     identity: &TestIdentity,
     compiled: &CompiledTarget,
@@ -39,6 +58,56 @@ pub(super) fn evaluate(
     output_dir: &Path,
     scratch_deadline: Instant,
 ) -> Result<TestOutcome, Box<dyn Error>> {
+    evaluate_request(
+        EvaluationRequest {
+            identity,
+            compiled,
+            profile,
+            source_ref,
+            execution_id,
+            output_dir,
+            scratch_deadline,
+        },
+        EvaluationMode::Ordinary,
+    )
+}
+
+pub(super) fn evaluate_detector(
+    identity: &TestIdentity,
+    compiled: &CompiledTarget,
+    profile: &str,
+    source_ref: &str,
+    execution_id: &str,
+    output_dir: &Path,
+    scratch_deadline: Instant,
+) -> Result<TestOutcome, Box<dyn Error>> {
+    evaluate_request(
+        EvaluationRequest {
+            identity,
+            compiled,
+            profile,
+            source_ref,
+            execution_id,
+            output_dir,
+            scratch_deadline,
+        },
+        EvaluationMode::Detector,
+    )
+}
+
+fn evaluate_request(
+    request: EvaluationRequest<'_>,
+    mode: EvaluationMode,
+) -> Result<TestOutcome, Box<dyn Error>> {
+    let EvaluationRequest {
+        identity,
+        compiled,
+        profile,
+        source_ref,
+        execution_id,
+        output_dir,
+        scratch_deadline,
+    } = request;
     let Some(executable) = compiled.executable.as_ref() else {
         return Ok(error_outcome(
             compiled
@@ -69,18 +138,10 @@ pub(super) fn evaluate(
         process::duration_ms(listed.duration) + process::duration_ms(ignored.duration);
     let matches = discovery_matches(&listed.stdout, &identity.test_name);
     let ignored_matches = discovery_matches(&ignored.stdout, &identity.test_name);
-    if listed.timed_out
-        || ignored.timed_out
-        || !listed.status.success()
-        || !ignored.status.success()
-    {
+    if let Some(message) = discovery_failure(&listed, &ignored) {
         let artifact = write_log(output_dir, profile, source_ref, execution_id, &log)?;
         return Ok(error_outcome(
-            if listed.timed_out || ignored.timed_out {
-                "libtest discovery process timed out".to_owned()
-            } else {
-                "libtest discovery process failed".to_owned()
-            },
+            message.to_owned(),
             artifact,
             discovery_rss,
             discovery_ms,
@@ -129,7 +190,21 @@ pub(super) fn evaluate(
         discovery_ms,
         discovery_rss,
         scratch_deadline,
+        matches!(mode, EvaluationMode::Detector),
     )
+}
+
+fn discovery_failure(
+    listed: &process::ProcessOutput,
+    ignored: &process::ProcessOutput,
+) -> Option<&'static str> {
+    if listed.timed_out || ignored.timed_out {
+        Some("libtest discovery process timed out")
+    } else if !listed.status.success() || !ignored.status.success() {
+        Some("libtest discovery process failed")
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -158,6 +233,32 @@ pub(crate) fn capture_fabricated_detector_witness_fixture_log(
         test_name: format!("tests::{fixture}"),
     };
     capture_detector_witness_identity_log(source_ref, &identity, true, false)
+}
+
+#[cfg(test)]
+pub(crate) fn capture_qualified_helper_forged_transcript_fixture_log(
+    source_ref: &str,
+) -> Result<(String, String), Box<dyn Error>> {
+    let identity = TestIdentity {
+        package: "rafter-invariant-test".to_owned(),
+        target_kind: "lib".to_owned(),
+        target: "rafter_invariant_test".to_owned(),
+        test_name: "tests::qualified_helper_forged_transcript_subprocess_fixture".to_owned(),
+    };
+    capture_detector_witness_identity_log(source_ref, &identity, true, true)
+}
+
+#[cfg(test)]
+pub(crate) fn capture_hidden_proof_socket_fixture_log(
+    source_ref: &str,
+) -> Result<(String, String), Box<dyn Error>> {
+    let identity = TestIdentity {
+        package: "rafter-invariant-test".to_owned(),
+        target_kind: "lib".to_owned(),
+        target: "rafter_invariant_test".to_owned(),
+        test_name: "tests::proof_socket_is_hidden_from_fixture_body_subprocess_fixture".to_owned(),
+    };
+    capture_detector_witness_identity_log(source_ref, &identity, true, true)
 }
 
 #[cfg(test)]
@@ -224,34 +325,28 @@ fn capture_detector_witness_identity_log(
             ORACLE_TOKEN_ENV.to_owned(),
             oracle_token(source_ref, &check_id),
         );
-        let invocation =
-            process::expected_invocation(program, &arguments, &environment, Path::new("."))?;
-        let started = Instant::now();
-        let captured = std::process::Command::new(program)
-            .args(&arguments)
-            .env_clear()
-            .envs(&environment)
-            .current_dir(".")
-            .output()?;
-        let captured = process::ProcessOutput {
-            invocation,
-            status: captured.status,
-            stdout: captured.stdout,
-            stderr: captured.stderr,
-            duration: started.elapsed(),
-            peak_rss_kib: 1,
-            timed_out: false,
-            termination: None,
-        };
+        let detector_proof::Execution {
+            output: captured,
+            challenge,
+            channel_error,
+        } = detector_proof::execute_for_test(program, &arguments, &mut environment)?;
+        if let Some(error) = channel_error {
+            return Err(format!("detector witness proof channel failed: {error}").into());
+        }
         if captured.status.success() != expect_success {
             return Err(format!(
-                "detector witness fixture exact libtest execution success={} expected={expect_success}",
-                captured.status.success()
+                "detector witness fixture exact libtest execution success={} expected={expect_success}; stdout={}; stderr={}",
+                captured.status.success(),
+                String::from_utf8_lossy(&captured.stdout),
+                String::from_utf8_lossy(&captured.stderr),
             )
             .into());
         }
-        let source =
-            String::from_utf8(process::combined_log("exact libtest execution", &captured)?)?;
+        let source = String::from_utf8(process::combined_detector_log(
+            "exact libtest execution",
+            &captured,
+            &challenge,
+        )?)?;
         Ok((check_id, source))
     })();
 
@@ -356,6 +451,7 @@ fn execute_exact(
     discovery_ms: u64,
     discovery_rss: u64,
     scratch_deadline: Instant,
+    require_detector_proof: bool,
 ) -> Result<TestOutcome, Box<dyn Error>> {
     let temporary = Path::new("target/rafter-invariants/tmp").join(execution_id);
     let temporary_guard = reset_test_scratch(&temporary, scratch_deadline)?;
@@ -393,22 +489,28 @@ fn execute_exact(
         arguments.push("--ignored".into());
     }
     temporary_guard.verify_path_binding()?;
-    let executed = process::timed_for(
-        process::ProcessKind::TestExecution,
+    let ExactProcessExecution {
+        output: executed,
+        detector_challenge,
+        classification: execution,
+        harness_error,
+    } = run_exact_process(
         program,
         &arguments,
-        &run_environment,
-        Path::new("."),
-    )?;
-    log.extend(process::combined_log("exact libtest execution", &executed)?);
-    let execution = classify_exact_execution(
-        &executed.stdout,
-        &executed.stderr,
+        &mut run_environment,
         &identity.test_name,
         &oracle_token,
-        executed.status.code(),
-        executed.timed_out,
-    );
+        require_detector_proof,
+    )?;
+    if let Some(challenge) = &detector_challenge {
+        log.extend(process::combined_detector_log(
+            "exact libtest execution",
+            &executed,
+            challenge,
+        )?);
+    } else {
+        log.extend(process::combined_log("exact libtest execution", &executed)?);
+    }
     let artifact = write_log(output_dir, profile, source_ref, execution_id, &log)?;
     let peak_rss_kib = discovery_rss.max(executed.peak_rss_kib);
     let duration_ms = discovery_ms + process::duration_ms(executed.duration);
@@ -422,12 +524,85 @@ fn execute_exact(
     Ok(outcome_from_execution(
         execution,
         &identity.test_name,
-        artifact,
-        duration_ms,
-        peak_rss_kib,
-        exact_was_run,
-        exact_passed,
+        ExactOutcomeEvidence {
+            artifact,
+            duration_ms,
+            peak_rss_kib,
+            exact_was_run,
+            exact_passed,
+            harness_error: harness_error.as_deref(),
+        },
     ))
+}
+
+struct ExactProcessExecution {
+    output: process::ProcessOutput,
+    detector_challenge: Option<String>,
+    classification: ExactTestExecution,
+    harness_error: Option<String>,
+}
+
+fn run_exact_process(
+    program: &str,
+    arguments: &[OsString],
+    environment: &mut BTreeMap<String, String>,
+    test_name: &str,
+    oracle_token: &str,
+    require_detector_proof: bool,
+) -> Result<ExactProcessExecution, Box<dyn Error>> {
+    let (output, detector_challenge, harness_error) = if require_detector_proof {
+        let detector_proof::Execution {
+            output,
+            challenge,
+            channel_error,
+        } = detector_proof::execute(program, arguments, environment)?;
+        (
+            output,
+            Some(challenge),
+            channel_error.map(|error| format!("detector proof channel failed: {error}")),
+        )
+    } else {
+        (
+            process::timed_for(
+                process::ProcessKind::TestExecution,
+                program,
+                arguments,
+                environment,
+                Path::new("."),
+            )?,
+            None,
+            None,
+        )
+    };
+    let mut classification = classify_exact_execution(
+        &output.stdout,
+        &output.stderr,
+        test_name,
+        oracle_token,
+        output.status.code(),
+        output.timed_out,
+    );
+    if harness_error.is_some() {
+        classification = ExactTestExecution::HarnessError;
+    } else if let Some(challenge) = &detector_challenge {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let proven =
+            crate::detector_proof::verify_transcript(&stdout, &stderr, oracle_token, challenge);
+        if !proven.is_ok_and(|witnesses| {
+            witnesses
+                .keys()
+                .any(|witness| witness.starts_with("expect-err:"))
+        }) {
+            classification = ExactTestExecution::HarnessError;
+        }
+    }
+    Ok(ExactProcessExecution {
+        output,
+        detector_challenge,
+        classification,
+        harness_error,
+    })
 }
 
 pub(super) fn reset_test_scratch(
@@ -441,15 +616,28 @@ pub(super) fn reset_test_scratch(
     )
 }
 
-fn outcome_from_execution(
-    execution: ExactTestExecution,
-    test_name: &str,
+struct ExactOutcomeEvidence<'a> {
     artifact: ArtifactRef,
     duration_ms: u64,
     peak_rss_kib: u64,
     exact_was_run: bool,
     exact_passed: bool,
+    harness_error: Option<&'a str>,
+}
+
+fn outcome_from_execution(
+    execution: ExactTestExecution,
+    test_name: &str,
+    evidence: ExactOutcomeEvidence<'_>,
 ) -> TestOutcome {
+    let ExactOutcomeEvidence {
+        artifact,
+        duration_ms,
+        peak_rss_kib,
+        exact_was_run,
+        exact_passed,
+        harness_error,
+    } = evidence;
     match execution {
         ExactTestExecution::Pass => TestOutcome {
             completion: CheckCompletion::Completed,
@@ -487,8 +675,13 @@ fn outcome_from_execution(
             completion: CheckCompletion::HarnessError,
             status: EvidenceStatus::Error,
             classification: Some(FailureClassification::HarnessError),
-            message: Some(format!(
-                "exact test process {test_name} failed without one canonical libtest verdict"
+            message: Some(harness_error.map_or_else(
+                || {
+                    format!(
+                        "exact test process {test_name} failed without one canonical libtest verdict"
+                    )
+                },
+                |error| format!("exact test process {test_name} failed: {error}"),
             )),
             observations: observations(1, usize::from(exact_was_run), 0),
             duration_ms,
@@ -676,3 +869,7 @@ fn error_outcome(
         artifacts: vec![artifact],
     }
 }
+
+#[cfg(all(test, unix))]
+#[path = "test_exec/process_tests.rs"]
+mod process_tests;

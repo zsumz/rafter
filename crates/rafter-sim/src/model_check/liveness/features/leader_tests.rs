@@ -33,7 +33,7 @@ fn quorum_only_leader_monitor_reports_starved_schedule_bound() {
         .contains("within 0 fair-schedule rounds"));
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn quorum_only_leader_usability_monitor_reports_exhausted_bound() {
     let config = SoakConfig::new(SimSeed(0xfa17), 0);
     let state = production_monitor_state(config, catalog::LV_01_POST_HEAL_LEADER_CONVERGENCE)

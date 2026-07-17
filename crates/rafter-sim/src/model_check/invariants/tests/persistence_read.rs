@@ -53,7 +53,7 @@ fn durable_restart_fixture() -> DurableStateDigest {
     }
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn exact_restart_term_vote_oracle_detects_vote_loss() {
     let cluster = one_node_cluster();
     let before = durable_restart_fixture();
@@ -68,7 +68,7 @@ fn exact_restart_term_vote_oracle_detects_vote_loss() {
     oracle_assert!(failure.message.contains("term or vote"));
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn exact_restart_log_oracle_detects_payload_change() {
     let cluster = one_node_cluster();
     let before = durable_restart_fixture();
@@ -83,7 +83,7 @@ fn exact_restart_log_oracle_detects_payload_change() {
     oracle_assert!(failure.message.contains("retained log"));
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn exact_restart_commit_configuration_oracle_detects_identity_change() {
     let cluster = one_node_cluster();
     let before = durable_restart_fixture();
@@ -101,17 +101,13 @@ fn exact_restart_commit_configuration_oracle_detects_identity_change() {
     oracle_assert!(failure.message.contains("commit or configuration"));
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn exact_restart_snapshot_oracle_detects_crc32_collision_payload_change() {
     let cluster = one_node_cluster();
     let first_payload = [0x29, 0x2c, 0x99, 0xbf, 0xb5, 0xb8, 0x20, 0xb7];
     let second_payload = [0x11, 0x98, 0x3d, 0x82, 0xcb, 0x0b, 0xeb, 0xd2];
     let (first_snapshot, _) = test_snapshot(1, 1, 1, 2, &first_payload);
     let (second_snapshot, _) = test_snapshot(1, 1, 1, 2, &second_payload);
-    assert_eq!(
-        first_snapshot, second_snapshot,
-        "fixture payloads must collide in the descriptor's CRC32 identity"
-    );
 
     let mut before = durable_restart_fixture();
     let before_snapshot = before.snapshot.as_mut().expect("fixture has snapshot");
@@ -132,6 +128,10 @@ fn exact_restart_snapshot_oracle_detects_crc32_collision_payload_change() {
     let failure = oracle_expect_err!(
         check_restart_snapshot(&cluster, NodeId(1), &before, &after, &[]),
         "CRC32-colliding snapshot bytes must fail PS-03.d",
+    );
+    assert_eq!(
+        first_snapshot, second_snapshot,
+        "fixture payloads must collide in the descriptor's CRC32 identity"
     );
     oracle_assert_eq!(failure.invariant(), catalog::PS_03_EXACT_DURABLE_RESTART);
     oracle_assert!(failure.message.contains("durable snapshot"));
@@ -190,7 +190,7 @@ fn exact_restart_acknowledged_entry_oracle_detects_reindexing() {
     assert!(failure.message.contains("lost or reindexed"));
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn exact_restart_acknowledged_entry_oracle_checks_acknowledged_uncommitted_entry() {
     let state = state_with_acknowledged_uncommitted_entry();
     let before = state
@@ -200,13 +200,13 @@ fn exact_restart_acknowledged_entry_oracle_checks_acknowledged_uncommitted_entry
     let acknowledged_floor = state.cluster().delivered_ack_floor(NodeId(2));
     let mut after = before.clone();
     after.log.retain(|entry| entry.index != acknowledged_floor);
-    assert!(acknowledged_floor > before.commit_index);
-    assert_eq!(after.log.len() + 1, before.log.len());
 
     let failure = oracle_expect_err!(
         check_restart_acknowledged_entries(state.cluster(), NodeId(2), &before, &after, &[]),
         "losing an acknowledged but uncommitted entry must fail PS-03.e",
     );
+    assert!(acknowledged_floor > before.commit_index);
+    assert_eq!(after.log.len() + 1, before.log.len());
     oracle_assert_eq!(failure.invariant(), catalog::PS_03_EXACT_DURABLE_RESTART);
     oracle_assert!(failure.message.contains("lost or reindexed"));
 }
@@ -274,7 +274,7 @@ fn exact_durable_restart_detects_application_recovery_metadata_change() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn applied_floor_recovery_rejects_replay_at_or_below_floor() {
     let (cluster, expected, recovered) = recorded_mixed_recovery();
 
@@ -304,7 +304,7 @@ fn applied_floor_recovery_rejects_replay_at_or_below_floor() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn applied_floor_recovery_rejects_missing_committed_suffix_entry() {
     let (cluster, expected, mut recovered) = recorded_mixed_recovery();
     recovered.remove(1);
@@ -372,7 +372,7 @@ fn pending_application_replay_restarts_through_the_instrumented_transition() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn applied_floor_recovery_rejects_floor_beyond_durable_bounds() {
     let (cluster, expected, recovered) = recorded_mixed_recovery();
     let base = AppliedFloorRecovery {
@@ -454,7 +454,7 @@ fn mixed_replay_bootstrap() -> BootstrapState {
     }
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn read_barrier_invariant_detects_grant_below_registration_floor() {
     let mut cluster = one_node_cluster();
     cluster.read_registrations.push(crate::ReadRegistered {
@@ -487,7 +487,7 @@ fn read_barrier_invariant_detects_grant_below_registration_floor() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn read_barrier_invariant_detects_unregistered_grant() {
     let mut cluster = one_node_cluster();
     cluster.read_grants.push(crate::ReadGranted {

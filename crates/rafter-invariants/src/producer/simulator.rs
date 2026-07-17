@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, error::Error, path::Path};
+use std::{collections::BTreeMap, error::Error, fs, path::Path};
 
 use serde_json::Value;
 
@@ -20,6 +20,7 @@ use super::{
 #[path = "simulator_events.rs"]
 mod events;
 
+pub(crate) use events::passing_simulator_event_contract;
 use events::{simulator_event_inventory_issue, simulator_event_issue};
 
 struct EvaluatedEvidence {
@@ -103,6 +104,7 @@ pub(super) fn run(
     source::verify(&source)?;
     let mut execution_artifacts = model.artifacts.clone();
     execution_artifacts.extend(detectors.artifacts.clone());
+    let resources = execution_resource_metrics(&model, &detectors);
     Ok(ResultBundle {
         schema_version: RESULT_SCHEMA_VERSION,
         runner: "simulator".to_owned(),
@@ -114,14 +116,8 @@ pub(super) fn run(
             producer: context.producer.clone(),
             source,
             checks,
-            duration_ms: model
-                .build_duration_ms
-                .saturating_add(model.duration_ms)
-                .saturating_add(detectors.duration_ms),
-            peak_rss_kib: model
-                .build_peak_rss_kib
-                .max(model.runtime_peak_rss_kib)
-                .max(detectors.peak_rss_kib),
+            duration_ms: resources.duration_ms,
+            peak_rss_kib: resources.peak_rss_kib,
             artifacts: execution_artifacts,
         },
         results,
@@ -215,6 +211,7 @@ fn run_detectors(
     source_ref: &str,
     output_dir: &Path,
 ) -> Result<DetectorRun, Box<dyn Error>> {
+    preflight_detector_sources(descriptors)?;
     let identities = unique_detector_identities(
         descriptors
             .iter()
@@ -256,6 +253,59 @@ fn run_detectors(
         output_dir,
         execution_deadline,
     )
+}
+
+fn preflight_detector_sources(descriptors: &[EvidenceDescriptor]) -> Result<(), Box<dyn Error>> {
+    preflight_detector_sources_at(Path::new("."), descriptors)
+}
+
+fn preflight_detector_sources_at(
+    root: &Path,
+    descriptors: &[EvidenceDescriptor],
+) -> Result<(), Box<dyn Error>> {
+    let source_root = fs::canonicalize(root)?;
+    let mut source_verifier = crate::artifact_verify::DetectorFixtureSourceBatchVerifier::default();
+    for descriptor in descriptors {
+        let Some(test_identity) = descriptor
+            .simulator
+            .as_ref()
+            .and_then(|identity| identity.negative_test.as_ref())
+        else {
+            continue;
+        };
+        let fixture = descriptor
+            .negative_fixture
+            .as_deref()
+            .ok_or("simulator detector omitted its negative fixture")?;
+        let fixture_path = descriptor
+            .negative_fixture_path
+            .as_deref()
+            .ok_or("simulator detector omitted its negative fixture path")?;
+        let detector = descriptor
+            .negative_fixture_detector
+            .as_deref()
+            .ok_or("simulator detector omitted its detector identity")?;
+        let fixture_path = fs::canonicalize(source_root.join(fixture_path))?;
+        let detector_path = fs::canonicalize(source_root.join(&descriptor.path))?;
+        if !fixture_path.starts_with(&source_root) || !detector_path.starts_with(&source_root) {
+            return Err("simulator detector source path escapes the checkout".into());
+        }
+        let fixture_source = fs::read_to_string(&fixture_path)?;
+        let detector_source = fs::read_to_string(&detector_path)?;
+        source_verifier
+            .validate(&crate::DetectorFixtureSourceBinding {
+                fixture_source: &fixture_source,
+                detector_source: &detector_source,
+                source_root: &source_root,
+                fixture_path: &fixture_path,
+                detector_path: &detector_path,
+                test_identity,
+                fixture,
+                detector,
+            })
+            .map_err(|error| format!("simulator detector source preflight failed: {error}"))?;
+    }
+    Ok(())
 }
 
 fn unique_detector_identities(
@@ -306,7 +356,7 @@ fn evaluate_detectors(
             .get(&target)
             .ok_or("compiled simulator detector target inventory changed")?;
         let execution_id = artifact::stable_id("detector", &identity.check_id());
-        let mut outcome = test_exec::evaluate(
+        let mut outcome = test_exec::evaluate_detector(
             &identity,
             compiled_target,
             profile,
@@ -389,6 +439,12 @@ fn evaluate_with_inventory_issue(
         .negative_test
         .as_ref()
         .and_then(|test| detectors.outcomes.get(&test.check_id()));
+    let detector_passed =
+        detector_outcome.is_none_or(|outcome| outcome.status == EvidenceStatus::Pass);
+    observations.insert("detector_qualified".to_owned(), u64::from(detector_passed));
+    if let Some(outcome) = detector_outcome {
+        artifacts.extend(outcome.artifacts.clone());
+    }
     let issue = combined_simulator_issue(
         issue,
         inventory_issue,
@@ -405,21 +461,10 @@ fn evaluate_with_inventory_issue(
             issue,
             observations,
             artifacts,
-            ResourceMetrics {
-                duration_ms: model.duration_ms.saturating_add(detectors.duration_ms),
-                peak_rss_kib: model.runtime_peak_rss_kib.max(detectors.peak_rss_kib),
-            },
+            resource_metrics(model, detector_outcome),
         ));
     }
-    let detector_passed = match detector_outcome {
-        Some(test) => {
-            artifacts.extend(test.artifacts.clone());
-            test.status == EvidenceStatus::Pass
-        }
-        None => true,
-    };
     let resources = resource_metrics(model, detector_outcome);
-    observations.insert("detector_qualified".to_owned(), u64::from(detector_passed));
     if !detector_passed {
         return Ok(EvaluatedEvidence {
             completion: CheckCompletion::HarnessError,
@@ -496,6 +541,14 @@ fn combined_simulator_issue(
             )),
         );
     }
+    if detector_outcome.is_some_and(|outcome| outcome.status != EvidenceStatus::Pass) {
+        merge_issue(
+            &mut issue,
+            Some(SimulatorIssue::HarnessError(
+                "detector qualification fixture did not pass".to_owned(),
+            )),
+        );
+    }
     issue
 }
 
@@ -503,6 +556,13 @@ fn resource_metrics(
     model: &simulator_model::SimulatorExecution,
     detector: Option<&TestOutcome>,
 ) -> ResourceMetrics {
+    // Detector compilation is paid by the aggregate run; compile-only outcomes have no check runtime.
+    let detector = detector.filter(|outcome| {
+        !outcome
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.kind == "compile-log")
+    });
     ResourceMetrics {
         duration_ms: model
             .duration_ms
@@ -510,6 +570,22 @@ fn resource_metrics(
         peak_rss_kib: model
             .runtime_peak_rss_kib
             .max(detector.map_or(0, |outcome| outcome.peak_rss_kib)),
+    }
+}
+
+fn execution_resource_metrics(
+    model: &simulator_model::SimulatorExecution,
+    detectors: &DetectorRun,
+) -> ResourceMetrics {
+    ResourceMetrics {
+        duration_ms: model
+            .build_duration_ms
+            .saturating_add(model.duration_ms)
+            .saturating_add(detectors.duration_ms),
+        peak_rss_kib: model
+            .build_peak_rss_kib
+            .max(model.runtime_peak_rss_kib)
+            .max(detectors.peak_rss_kib),
     }
 }
 
@@ -573,7 +649,7 @@ fn model_observations(
             check.clone(),
             matching
                 .iter()
-                .filter(|event| event.get("status").and_then(Value::as_str) == Some("pass"))
+                .filter(|event| passing_simulator_event_contract(check, event).is_ok())
                 .filter_map(|event| event["observations"][&identity.required_observation].as_u64())
                 .sum(),
         );
@@ -582,7 +658,7 @@ fn model_observations(
             format!("passes:{check}"),
             matching
                 .iter()
-                .filter(|event| event["status"] == "pass")
+                .filter(|event| passing_simulator_event_contract(check, event).is_ok())
                 .count() as u64,
         );
         let minimum_steps = matching
@@ -602,7 +678,9 @@ fn model_observations(
                 &mut issue,
                 simulator_event_issue(check, invariant_id, event),
             );
-            if identity.liveness_report.is_none() {
+            if identity.liveness_report.is_none()
+                && passing_simulator_event_contract(check, event).is_ok()
+            {
                 merge_event_observations(event, &mut observations);
             }
         }
@@ -725,18 +803,7 @@ fn simulator_check_contract_issue(
     if event.get("status").and_then(Value::as_str) != Some("pass") {
         return None;
     }
-    if event.get("event").and_then(Value::as_str) != Some("exhaustive-check")
-        || event.get("check_id").and_then(Value::as_str) != Some(check)
-        || event
-            .get("unique_protocol_states")
-            .and_then(Value::as_u64)
-            .is_none()
-        || event
-            .get("unique_verifier_states")
-            .and_then(Value::as_u64)
-            .is_none()
-        || !event.get("observations").is_some_and(Value::is_object)
-    {
+    if passing_simulator_event_contract(check, event).is_err() {
         return Some(SimulatorIssue::HarnessError(format!(
             "simulator check `{check}` has a malformed per-check profile receipt"
         )));

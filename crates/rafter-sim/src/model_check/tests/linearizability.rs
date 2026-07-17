@@ -14,7 +14,7 @@ use super::super::{
 use crate::Cluster;
 use rafter_invariant_test::{oracle_assert, oracle_expect_err};
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn linearizer_rejects_read_that_misses_completed_write() {
     let mut state = ExplorationState::new(Cluster::new(three_node_configs()));
     elect_node_one_in_state(&mut state);
@@ -27,10 +27,6 @@ fn linearizer_rejects_read_that_misses_completed_write() {
         },
     );
     deliver_all_in_state(&mut state);
-    assert!(matches!(
-        state.client_history().writes[&ProposalId(1)].status,
-        ClientWriteStatus::Completed { .. }
-    ));
 
     let read_index = state.cluster().local_applied_index(NodeId(1));
     state.record_client_read(&crate::ReadRegistered {
@@ -56,6 +52,10 @@ fn linearizer_rejects_read_that_misses_completed_write() {
         "read after completed write must observe the register value"
     );
 
+    assert!(matches!(
+        state.client_history().writes[&ProposalId(1)].status,
+        ClientWriteStatus::Completed { .. }
+    ));
     oracle_assert!(error.contains("not linearizable"));
     oracle_assert!(error.contains("write 1"));
     oracle_assert!(error.contains("read 0"));

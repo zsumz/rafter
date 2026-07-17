@@ -11,9 +11,13 @@ use std::{
     any::type_name,
     cell::RefCell,
     fmt::{Debug, Display},
+    io::{Read, Write},
     process::{ExitCode, Termination},
     sync::atomic::{AtomicBool, Ordering},
 };
+
+#[cfg(unix)]
+use std::os::unix::net::UnixStream;
 
 pub use rafter_invariant_test_macros::detector_test;
 
@@ -21,6 +25,10 @@ const TOKEN_ENV: &str = "RAFTER_INVARIANT_ORACLE_TOKEN";
 const OBSERVED_PREFIX: &str = "RAFTER_INVARIANT_ORACLE_OBSERVED:";
 const VIOLATION_PREFIX: &str = "RAFTER_INVARIANT_ORACLE_VIOLATION:";
 const DETECTOR_WITNESS_PREFIX: &str = "RAFTER_INVARIANT_DETECTOR_WITNESS:";
+const DETECTOR_PROOF_PREFIX: &str = "RAFTER_INVARIANT_DETECTOR_PROOF:";
+const DETECTOR_PROOF_SOCKET_ENV: &str = "RAFTER_INVARIANT_DETECTOR_PROOF_SOCKET";
+const DETECTOR_CHALLENGE_BYTES: usize = 32;
+const DETECTOR_PROOF_REQUEST: u8 = 0xa7;
 
 static OBSERVED: AtomicBool = AtomicBool::new(false);
 
@@ -41,8 +49,17 @@ struct DetectorTestState {
 enum DetectorGate {
     #[default]
     Ordinary,
-    Active(String),
+    Active {
+        token: String,
+        channel: DetectorProofChannel,
+    },
     InvalidToken,
+}
+
+#[derive(Debug)]
+struct DetectorProofChannel {
+    #[cfg(unix)]
+    stream: UnixStream,
 }
 
 std::thread_local! {
@@ -73,8 +90,8 @@ impl Termination for DetectorTestOutcome {
                 eprintln!("detector test started with an invalid gate token");
                 return ExitCode::FAILURE;
             }
-            DetectorGate::Active(token) => match std::env::var(TOKEN_ENV) {
-                Ok(current) if current == token => token,
+            DetectorGate::Active { token, channel } => match std::env::var(TOKEN_ENV) {
+                Ok(current) if current == token => (token, channel),
                 Ok(_) => {
                     eprintln!("detector test returned with a different gate token");
                     return ExitCode::FAILURE;
@@ -85,11 +102,18 @@ impl Termination for DetectorTestOutcome {
                 }
             },
         };
+        let (token, mut channel) = token;
+        let Some(challenge) = detector_proof_challenge(&mut channel) else {
+            eprintln!("detector test could not complete its post-invocation proof");
+            return ExitCode::FAILURE;
+        };
         for witness in self.witnesses {
+            let contract = format!("{}:{}", witness.kind, witness.identity);
             eprintln!(
                 "{DETECTOR_WITNESS_PREFIX}{token}:{}:{}()",
                 witness.kind, witness.identity
             );
+            eprintln!("{DETECTOR_PROOF_PREFIX}{token}:{contract}():{challenge}");
         }
         ExitCode::SUCCESS
     }
@@ -101,13 +125,64 @@ pub fn __begin_detector_test() {
         assert!(!state.active, "detector test session was started twice");
         state.active = true;
         state.gate = match std::env::var(TOKEN_ENV) {
-            Ok(token) => DetectorGate::Active(token),
+            Ok(token) => match detector_proof_channel() {
+                Ok(Some(channel)) => DetectorGate::Active { token, channel },
+                Ok(None) => DetectorGate::Ordinary,
+                Err(()) => DetectorGate::InvalidToken,
+            },
             Err(std::env::VarError::NotPresent) => DetectorGate::Ordinary,
             Err(std::env::VarError::NotUnicode(_)) => DetectorGate::InvalidToken,
         };
         state.witnesses.clear();
     });
     OBSERVED.store(false, Ordering::Relaxed);
+}
+
+#[cfg(unix)]
+fn detector_proof_channel() -> Result<Option<DetectorProofChannel>, ()> {
+    let socket = match std::env::var(DETECTOR_PROOF_SOCKET_ENV) {
+        Ok(socket) => socket,
+        Err(std::env::VarError::NotPresent) => return Ok(None),
+        Err(std::env::VarError::NotUnicode(_)) => return Err(()),
+    };
+    UnixStream::connect(&socket)
+        .map(|stream| {
+            std::env::remove_var(DETECTOR_PROOF_SOCKET_ENV);
+            Some(DetectorProofChannel { stream })
+        })
+        .map_err(|_| ())
+}
+
+#[cfg(not(unix))]
+fn detector_proof_channel() -> Result<Option<DetectorProofChannel>, ()> {
+    match std::env::var(DETECTOR_PROOF_SOCKET_ENV) {
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Ok(_) | Err(std::env::VarError::NotUnicode(_)) => Err(()),
+    }
+}
+
+#[cfg(unix)]
+fn detector_proof_challenge(channel: &mut DetectorProofChannel) -> Option<String> {
+    channel.stream.write_all(&[DETECTOR_PROOF_REQUEST]).ok()?;
+    channel.stream.flush().ok()?;
+    let mut challenge = [0_u8; DETECTOR_CHALLENGE_BYTES];
+    channel.stream.read_exact(&mut challenge).ok()?;
+    Some(encode_hex(&challenge))
+}
+
+#[cfg(not(unix))]
+fn detector_proof_challenge(_channel: &mut DetectorProofChannel) -> Option<String> {
+    None
+}
+
+fn encode_hex(bytes: &[u8]) -> String {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    let mut encoded = String::with_capacity(bytes.len() * 2);
+    for byte in bytes {
+        encoded.push(char::from(HEX[usize::from(byte >> 4)]));
+        encoded.push(char::from(HEX[usize::from(byte & 0x0f)]));
+    }
+    encoded
 }
 
 #[doc(hidden)]

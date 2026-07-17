@@ -33,7 +33,7 @@ fn proposal_termination_monitor_reports_unreached_authority_loss_antecedent() {
         .contains("did not establish authority loss within 0"));
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn lv_02_proposal_progress_detector_rejects_exhausted_bound() {
     let config = SoakConfig::new(SimSeed(0x7e12), 0);
     let failure = oracle_expect_err!(
@@ -127,7 +127,7 @@ fn proposal_termination_monitor_rejects_positive_unreached_antecedent() {
         .contains("did not establish authority loss within 1"));
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn lv_02_proposal_termination_detector_rejects_exhausted_bound() {
     let config = SoakConfig::new(SimSeed(0x7e12), 0);
     let state = production_monitor_state(config, catalog::LV_02_PROPOSAL_PROGRESS)

@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "runner", "profile", "source_ref", "execution", "results"],
   "properties": {
-    "schema_version": { "const": 12 },
+    "schema_version": { "const": 13 },
     "runner": { "enum": ["tests", "simulator", "tla", "maelstrom"] },
     "profile": { "enum": ["pr", "nightly", "weekly"] },
     "source_ref": { "type": "string", "minLength": 1 },
@@ -290,10 +290,11 @@
     "source": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["commit", "tree", "cargo_lock_sha256", "cargo", "cargo_sha256", "cargo_config_sha256", "rustc", "rustc_sha256", "target", "build_profile", "features", "tools", "environment_sha256", "clean"],
+      "required": ["commit", "tree", "materialization", "cargo_lock_sha256", "cargo", "cargo_sha256", "cargo_config_sha256", "rustc", "rustc_sha256", "target", "build_profile", "features", "tools", "environment_sha256", "clean"],
       "properties": {
         "commit": { "type": "string", "minLength": 1 },
         "tree": { "type": "string", "minLength": 1 },
+        "materialization": { "$ref": "#/$defs/source_materialization" },
         "cargo_lock_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "cargo": { "type": "string", "minLength": 1 },
         "cargo_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
@@ -309,6 +310,17 @@
         },
         "environment_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "clean": { "const": true }
+      }
+    },
+    "source_materialization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["contract", "sha256", "tracked_entries", "submodules"],
+      "properties": {
+        "contract": { "const": "git-head-worktree-raw-v1" },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "tracked_entries": { "type": "integer", "minimum": 1 },
+        "submodules": { "const": 0 }
       }
     },
     "tool": {

@@ -867,7 +867,7 @@ mod tests {
     use super::*;
     use rafter_invariant_test::{oracle_assert, oracle_expect_err};
 
-    #[rafter_invariant_test::detector_test]
+    #[::rafter_invariant_test::detector_test]
     fn bounded_fairness_detector_rejects_positive_bound_tick_starvation() {
         let mut monitor = BoundedFairnessMonitor::new(2, 3);
         observe_bounded_fairness_round(&mut monitor, &[NodeId(1), NodeId(2)], &[NodeId(1)], 0, 0)

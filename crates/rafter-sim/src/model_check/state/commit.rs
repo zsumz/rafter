@@ -276,9 +276,26 @@ impl CommitHistory {
         if self.committed_in_terms.len() < new_len {
             self.committed_in_terms.resize(new_len, Term::default());
         }
-        for committed_in_term in &mut self.committed_in_terms[old_len..new_len] {
-            if *committed_in_term == Term::default() {
+        let mut first_newly_authoritative = None;
+        for (offset, committed_in_term) in self.committed_in_terms[old_len..new_len]
+            .iter_mut()
+            .enumerate()
+        {
+            if term != Term::default()
+                && (*committed_in_term == Term::default() || term < *committed_in_term)
+            {
                 *committed_in_term = term;
+                first_newly_authoritative.get_or_insert(LogIndex((old_len + offset + 1) as u64));
+            }
+        }
+        if let Some(first_newly_authoritative) = first_newly_authoritative {
+            let recheck_after = LogIndex(first_newly_authoritative.0.saturating_sub(1));
+            for ((_, election_term, _), checked_through) in
+                &mut self.leader_completeness_checked_through
+            {
+                if term < *election_term && *checked_through >= first_newly_authoritative {
+                    *checked_through = recheck_after;
+                }
             }
         }
         self.refresh_commit_term_coverage();
