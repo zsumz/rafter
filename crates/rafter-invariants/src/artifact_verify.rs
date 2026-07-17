@@ -23,10 +23,39 @@ use test_logs::verify_test_logs;
 
 const EVENT_PREFIX: &str = "RAFTER_EVENT ";
 
+#[derive(Default)]
+pub(crate) struct DetectorFixtureSourceBatchVerifier {
+    cache: detector_source::DetectorSourceCache,
+}
+
+impl DetectorFixtureSourceBatchVerifier {
+    pub(crate) fn validate(
+        &mut self,
+        binding: &crate::DetectorFixtureSourceBinding<'_>,
+    ) -> Result<(), String> {
+        detector_source::verify_invocation_bound_detector_cached(binding, &mut self.cache)
+            .map(|_| ())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn target_analysis_count(&self) -> usize {
+        self.cache.target_analysis_count()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn source_parse_count(&self) -> usize {
+        self.cache.source_parse_count()
+    }
+}
+
+pub(crate) fn is_reserved_oracle_macro(name: &str) -> bool {
+    detector_source::is_reserved_oracle_macro(name)
+}
+
 pub(crate) fn validate_detector_fixture_sources(
     binding: &crate::DetectorFixtureSourceBinding<'_>,
 ) -> Result<(), String> {
-    detector_source::verify_invocation_bound_detector(binding).map(|_| ())
+    DetectorFixtureSourceBatchVerifier::default().validate(binding)
 }
 
 pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<Vec<String>, AggregateError> {
