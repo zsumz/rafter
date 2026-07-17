@@ -41,6 +41,12 @@ fn source_receipt(commit: &str) -> SourceReceipt {
     SourceReceipt {
         commit: commit.to_owned(),
         tree: "tree".to_owned(),
+        materialization: SourceMaterializationReceipt {
+            contract: "git-head-worktree-raw-v1".to_owned(),
+            sha256: "0".repeat(64),
+            tracked_entries: 1,
+            submodules: 0,
+        },
         cargo_lock_sha256: "0".repeat(64),
         cargo: "cargo test".to_owned(),
         cargo_sha256: "0".repeat(64),
