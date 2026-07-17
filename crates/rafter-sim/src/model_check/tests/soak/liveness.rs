@@ -193,7 +193,7 @@ fn liveness_retry_fails_red_when_candidate_churn_exhausts_the_bound() {
         .any(|action| matches!(action, SoakAction::Propose { .. })));
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn post_heal_leader_convergence_monitor_reports_exhausted_bound() {
     let config = SoakConfig::new(SimSeed(0x11_5e), 0);
     let mut state =
@@ -225,7 +225,7 @@ fn post_heal_leader_convergence_monitor_reports_exhausted_bound() {
         .any(|action| matches!(action, SoakAction::Propose { .. })));
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn post_heal_leader_usability_monitor_reports_exhausted_bound() {
     let config = SoakConfig::new(SimSeed(0x11_5e), 0);
     let mut state =
