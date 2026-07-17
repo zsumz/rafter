@@ -8,6 +8,7 @@ mod artifact_verify_maelstrom_support;
 mod artifact_verify_maelstrom_tests;
 mod artifact_verify_tla;
 mod catalog;
+mod detector_proof;
 mod plan;
 mod producer;
 mod producer_image;
@@ -72,8 +73,8 @@ pub(crate) use types::ResultBundle;
 pub use types::{
     ArtifactRef, CheckCompletion, CheckReceipt, ClauseVerdict, EvidenceResult, EvidenceStatus,
     ExecutionPlanReceipt, ExecutionReceipt, FailureClassification, InvariantVerdict,
-    InvocationReceipt, PlanInput, ProducerBindingReceipt, SourceReceipt, ToolReceipt,
-    VerdictReport, VerdictStatus, PLAN_SCHEMA_VERSION,
+    InvocationReceipt, PlanInput, ProducerBindingReceipt, SourceMaterializationReceipt,
+    SourceReceipt, ToolReceipt, VerdictReport, VerdictStatus, PLAN_SCHEMA_VERSION,
 };
 
 #[cfg(test)]
