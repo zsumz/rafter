@@ -197,9 +197,12 @@ pub(crate) fn parse_combined_processes(source: &str) -> Result<Vec<LabeledProces
             .split_once("\n\n")
             .ok_or_else(|| "combined process log omitted framed payload".to_owned())?;
         let mut lines = header.lines();
-        if lines.next() != Some("schema_version: 3") {
-            return Err("combined process log used an unsupported schema".to_owned());
-        }
+        let schema_version = lines
+            .next()
+            .and_then(|line| line.strip_prefix("schema_version: "))
+            .and_then(|version| version.parse::<u32>().ok())
+            .filter(|version| matches!(version, 3 | 4))
+            .ok_or_else(|| "combined process log used an unsupported schema".to_owned())?;
         let label = lines
             .next()
             .and_then(|line| line.strip_prefix("label: "))
@@ -211,6 +214,23 @@ pub(crate) fn parse_combined_processes(source: &str) -> Result<Vec<LabeledProces
             .ok_or_else(|| "combined process log omitted invocation".to_owned())?;
         let invocation = serde_json::from_str(invocation)
             .map_err(|error| format!("parse combined process invocation: {error}"))?;
+        let detector_challenge = if schema_version == 4 {
+            let challenge = lines
+                .next()
+                .and_then(|line| line.strip_prefix("detector_challenge: "))
+                .filter(|challenge| {
+                    challenge.len() == 64
+                        && challenge
+                            .bytes()
+                            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                })
+                .ok_or_else(|| {
+                    "combined process log has a malformed detector challenge".to_owned()
+                })?;
+            Some(challenge.to_owned())
+        } else {
+            None
+        };
         let exit_code = lines
             .next()
             .and_then(|line| line.strip_prefix("exit_code: "))
@@ -263,6 +283,7 @@ pub(crate) fn parse_combined_processes(source: &str) -> Result<Vec<LabeledProces
             },
             stdout: stdout.to_owned(),
             stderr: stderr.to_owned(),
+            detector_challenge,
         });
     }
     if processes.is_empty() {
@@ -508,6 +529,28 @@ pub(in crate::producer) fn combined_log(
     let stderr = String::from_utf8_lossy(&output.stderr);
     Ok(format!(
         "schema_version: 3\nlabel: {label}\ninvocation: {invocation}\nexit_code: {:?}\ntimed_out: {}\nduration_ms: {}\npeak_rss_kib: {}\nstdout_bytes: {}\nstderr_bytes: {}\n\n{}{}",
+        output.status.code(),
+        output.timed_out,
+        duration_ms(output.duration),
+        output.peak_rss_kib,
+        stdout.len(),
+        stderr.len(),
+        stdout,
+        stderr,
+    )
+    .into_bytes())
+}
+
+pub(in crate::producer) fn combined_detector_log(
+    label: &str,
+    output: &ProcessOutput,
+    detector_challenge: &str,
+) -> Result<Vec<u8>, serde_json::Error> {
+    let invocation = serde_json::to_string(&output.invocation)?;
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    Ok(format!(
+        "schema_version: 4\nlabel: {label}\ninvocation: {invocation}\ndetector_challenge: {detector_challenge}\nexit_code: {:?}\ntimed_out: {}\nduration_ms: {}\npeak_rss_kib: {}\nstdout_bytes: {}\nstderr_bytes: {}\n\n{}{}",
         output.status.code(),
         output.timed_out,
         duration_ms(output.duration),
