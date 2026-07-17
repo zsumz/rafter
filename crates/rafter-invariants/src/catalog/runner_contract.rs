@@ -4,7 +4,7 @@ use serde::Deserialize;
 
 use super::RunnerContract;
 
-const TLA_TOOL_SHA256: &str = "33de7da9ce1b7fffb9d1c184021178dbb051747be48504e65c584c423721a32e";
+const TLA_TOOL_SHA256: &str = "58d44845a37a8d776deaf8cf3a623213b59d311bc0ec287bcdfbe148dd11bb3d";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -200,7 +200,7 @@ fn validate_tla(profile: &str, configuration: &BTreeMap<String, String>) -> Resu
         || contract.kill_confirmation_timeout != "5s"
         || contract.receipt_finalization_allowance != "5s"
         || contract.termination_grace != "30s"
-        || contract.tool_asset_id != "471380474"
+        || contract.tool_asset_id != "477986195"
         || contract.tool_mode != "required"
         || contract.tool_sha256 != TLA_TOOL_SHA256
         || contract.trace_sample != "required"
@@ -422,9 +422,9 @@ mod tests {
                 "soft_timeout": "115m",
                 "symmetry": "nodes-values-read-requests-product",
                 "termination_grace": "30s",
-                "tool_asset_id": "471380474",
+                "tool_asset_id": "477986195",
                 "tool_mode": "required",
-                "tool_sha256": "33de7da9ce1b7fffb9d1c184021178dbb051747be48504e65c584c423721a32e",
+                "tool_sha256": "58d44845a37a8d776deaf8cf3a623213b59d311bc0ec287bcdfbe148dd11bb3d",
                 "total_timeout": "155m",
                 "trace_sample": "required",
                 "workers": "4"
