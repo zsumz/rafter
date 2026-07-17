@@ -12,7 +12,7 @@ use rafter_invariant_test::{
     oracle_assert, oracle_assert_eq, oracle_expect_err, oracle_invoke_recorder,
 };
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn commit_certificate_uses_pre_transition_joint_quorum_for_candidate_below_config() {
     let pending_configuration = ConfigurationEntry::stable(
         ConfigurationId(42),
@@ -81,7 +81,7 @@ fn commit_certificate_uses_pre_transition_joint_quorum_for_candidate_below_confi
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn commit_certificate_rejects_learner_storage_as_voter_quorum() {
     let mut state = state_with_bootstraps(
         voter_and_learner_configs(&[1, 2, 3], &[4]),
@@ -174,7 +174,7 @@ fn commit_certificate_records_self_removing_leader_after_stepdown() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn commit_certificate_detects_prior_term_candidate_commit() {
     let mut state = state_with_bootstraps(
         voter_configs(&[1]),
@@ -213,7 +213,7 @@ fn commit_certificate_detects_prior_term_candidate_commit() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn commit_certificate_uses_post_append_joint_quorum_for_same_operation_commit() {
     let config_id = ConfigurationId(43);
     let old = MembershipSet::new(vec![NodeId(1)], Vec::new()).expect("old membership is valid");
@@ -440,7 +440,7 @@ fn current_term_commit_covering_prior_term_prefix_marks_atomic_observation() {
         .contains(Observation::CurrentTermCommitCoveringPriorTermPrefix));
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn leader_completeness_rechecks_when_committed_ledger_grows_after_election() {
     let mut state = state_with_bootstraps(voter_configs(&[1, 2]), &[]);
     let certificate = election_certificate(4, 2, stable_membership(&[1, 2], &[]), &[1, 2]);
@@ -449,13 +449,11 @@ fn leader_completeness_rechecks_when_committed_ledger_grows_after_election() {
         .elected_by_term
         .insert(certificate.term, vec![certificate]);
     oracle_invoke_recorder!(record_leader_completeness_check(&mut state));
-    assert_eq!(
-        state
-            .commit_history()
-            .leader_completeness_checked_through
-            .get(&(NodeId(2), Term(4), 0)),
-        Some(&LogIndex::ZERO)
-    );
+    let initial_checked_through = state
+        .commit_history()
+        .leader_completeness_checked_through
+        .get(&(NodeId(2), Term(4), 0))
+        .copied();
 
     state
         .inject_bootstrap_state(
@@ -490,12 +488,134 @@ fn leader_completeness_rechecks_when_committed_ledger_grows_after_election() {
         check_commit_history(&state, &[]),
         "later lower-term commit must be checked against existing leader",
     );
+    assert_eq!(initial_checked_through, Some(LogIndex::ZERO));
     oracle_assert_eq!(failure.invariant(), catalog::LG_05_LEADER_COMPLETENESS);
     oracle_assert!(
         failure.message.contains("without committed prefix"),
         "unexpected failure message: {}",
         failure.message
     );
+}
+
+#[::rafter_invariant_test::detector_test]
+fn leader_completeness_rechecks_when_commit_authority_arrives_after_prefix_check() {
+    let mut state = state_with_bootstraps(
+        voter_configs(&[1, 2]),
+        &[{
+            (
+                1,
+                bootstrap_with_log(
+                    Term(3),
+                    LogIndex(2),
+                    vec![
+                        app_entry(1, Term(3), b"already-authoritative"),
+                        app_entry(2, Term(3), b"late-authority"),
+                    ],
+                    None,
+                ),
+            )
+        }],
+    );
+    state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(1), Term(3));
+    let mut certificate = election_certificate(4, 2, stable_membership(&[1, 2], &[]), &[1, 2]);
+    certificate.logical_prefix_at_election = state
+        .commit_history()
+        .committed_prefix
+        .as_ref()
+        .and_then(|prefix| prefix.slice_through(LogIndex(1)));
+    state
+        .election_history_mut()
+        .elected_by_term
+        .insert(certificate.term, vec![certificate]);
+
+    oracle_invoke_recorder!(record_leader_completeness_check(&mut state));
+    assert_eq!(
+        state
+            .commit_history()
+            .leader_completeness_checked_through
+            .get(&(NodeId(2), Term(4), 0)),
+        Some(&LogIndex(2))
+    );
+
+    state.witness_seeded_commit_authority(LogIndex(1), LogIndex(2), Term(3));
+    assert_eq!(
+        state
+            .commit_history()
+            .leader_completeness_checked_through
+            .get(&(NodeId(2), Term(4), 0)),
+        Some(&LogIndex(1))
+    );
+    oracle_invoke_recorder!(record_leader_completeness_check(&mut state));
+
+    let failure = oracle_expect_err!(
+        check_commit_history(&state, &[]),
+        "late commit authority must recheck the already observed prefix",
+    );
+    oracle_assert_eq!(failure.invariant(), catalog::LG_05_LEADER_COMPLETENESS);
+    oracle_assert!(failure
+        .message
+        .contains("without committed prefix through 2"));
+}
+
+#[::rafter_invariant_test::detector_test]
+fn leader_completeness_rechecks_when_earlier_commit_authority_arrives_late() {
+    let mut state = state_with_bootstraps(
+        voter_configs(&[1, 2]),
+        &[{
+            (
+                1,
+                bootstrap_with_log(
+                    Term(5),
+                    LogIndex(2),
+                    vec![
+                        app_entry(1, Term(3), b"committed"),
+                        app_entry(2, Term(3), b"earlier-authority"),
+                    ],
+                    None,
+                ),
+            )
+        }],
+    );
+    state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(1), Term(3));
+    state.witness_seeded_commit_authority(LogIndex(1), LogIndex(2), Term(5));
+    let mut certificate = election_certificate(4, 2, stable_membership(&[1, 2], &[]), &[1, 2]);
+    certificate.logical_prefix_at_election = state
+        .commit_history()
+        .committed_prefix
+        .as_ref()
+        .and_then(|prefix| prefix.slice_through(LogIndex(1)));
+    state
+        .election_history_mut()
+        .elected_by_term
+        .insert(certificate.term, vec![certificate]);
+
+    oracle_invoke_recorder!(record_leader_completeness_check(&mut state));
+    assert_eq!(
+        state
+            .commit_history()
+            .leader_completeness_checked_through
+            .get(&(NodeId(2), Term(4), 0)),
+        Some(&LogIndex(2))
+    );
+
+    state.witness_seeded_commit_authority(LogIndex(1), LogIndex(2), Term(3));
+    assert_eq!(
+        state
+            .commit_history()
+            .leader_completeness_checked_through
+            .get(&(NodeId(2), Term(4), 0)),
+        Some(&LogIndex(1))
+    );
+    oracle_invoke_recorder!(record_leader_completeness_check(&mut state));
+
+    let failure = oracle_expect_err!(
+        check_commit_history(&state, &[]),
+        "earlier late authority must recheck the already observed prefix",
+    );
+    oracle_assert_eq!(failure.invariant(), catalog::LG_05_LEADER_COMPLETENESS);
+    oracle_assert!(failure
+        .message
+        .contains("without committed prefix through 2"));
 }
 
 #[test]

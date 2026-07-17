@@ -8,7 +8,7 @@ use super::*;
 use crate::model_check::observations::Observation;
 use rafter_invariant_test::{oracle_assert, oracle_assert_eq, oracle_expect_err};
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn committed_prefix_checker_detects_divergent_committed_entries() {
     let mut cluster = two_node_cluster();
     for (node_id, payload) in [(NodeId(1), b"one-a".as_slice()), (NodeId(2), b"one-b")] {
@@ -34,7 +34,7 @@ fn committed_prefix_checker_detects_divergent_committed_entries() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn commit_index_bound_checker_rejects_commit_beyond_local_last_log() {
     let cluster = one_node_cluster();
 
@@ -55,7 +55,7 @@ fn commit_index_bound_checker_rejects_commit_beyond_local_last_log() {
     oracle_assert!(failure.message.contains("beyond local last log index 1"));
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn commit_index_monotonicity_detects_floor_regression() {
     let mut state = ExplorationState::new(one_node_cluster());
     state
@@ -77,7 +77,7 @@ fn commit_index_monotonicity_detects_floor_regression() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn committed_configuration_monotonicity_detects_regression() {
     let mut state = ExplorationState::new(one_node_cluster());
     state.committed_configuration_floor_by_node_mut().insert(
@@ -105,7 +105,7 @@ fn committed_configuration_monotonicity_detects_regression() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn committed_configuration_identity_detects_same_index_conflict() {
     let mut state = state_with_committed_configuration(ConfigurationId(41));
     state.committed_configuration_floor_by_node_mut().insert(
@@ -172,7 +172,7 @@ fn lossy_restart_preserves_temporal_commit_and_configuration_floors() {
     assert!(check_committed_configuration_monotonicity(&state, &[]).is_err());
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn serialized_configuration_checker_detects_two_uncommitted_configurations() {
     let cluster = one_node_cluster();
     let membership =

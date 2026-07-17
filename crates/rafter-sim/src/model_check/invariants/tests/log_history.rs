@@ -7,7 +7,7 @@ use rafter_invariant_test::{
     oracle_assert, oracle_assert_eq, oracle_expect_err, oracle_invoke_recorder,
 };
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn leader_append_only_detects_leader_term_truncation() {
     let mut cluster = Cluster::new(three_node_configs());
     let full_log = [
@@ -23,8 +23,7 @@ fn leader_append_only_detects_leader_term_truncation() {
     elect_node_one_with_node_three_in_state(&mut state);
     let leader_id = NodeId(1);
     let leader_term = state.cluster().current_term(leader_id);
-    oracle_assert_eq!(leader_term, Term(2));
-    oracle_assert_eq!(state.cluster().last_log_index(leader_id), LogIndex(3));
+    let initial_last_log_index = state.cluster().last_log_index(leader_id);
 
     for node_id in [NodeId(1), NodeId(2), NodeId(3)] {
         state
@@ -35,13 +34,15 @@ fn leader_append_only_detects_leader_term_truncation() {
             .expect("truncated node bootstrap is valid");
     }
     elect_node_one_with_node_three_in_state(&mut state);
-    oracle_assert_eq!(state.cluster().current_term(leader_id), leader_term);
     oracle_invoke_recorder!(record_log_history_observation(&mut state));
 
     let failure = oracle_expect_err!(
         check_log_history(&state, &[]),
         "leader append-only violation must be reported",
     );
+    oracle_assert_eq!(leader_term, Term(2));
+    oracle_assert_eq!(initial_last_log_index, LogIndex(3));
+    oracle_assert_eq!(state.cluster().current_term(leader_id), leader_term);
     oracle_assert_eq!(failure.invariant(), catalog::LG_01_LEADER_APPEND_ONLY);
     oracle_assert!(
         failure.message.contains("rewrote or deleted"),
@@ -50,7 +51,7 @@ fn leader_append_only_detects_leader_term_truncation() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn append_entries_oracle_rejects_success_without_matching_prev() {
     let entry = LogEntry::application(Term(2), b"two".to_vec());
     let request = append_request(Term(9), vec![entry.clone()]);
@@ -76,7 +77,7 @@ fn append_entries_oracle_rejects_success_without_matching_prev() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn append_entries_oracle_detects_success_without_storing_final_entry() {
     let entry = LogEntry::application(Term(2), b"two".to_vec());
     let request = append_request(Term(1), vec![entry]);
@@ -160,7 +161,7 @@ fn append_entries_oracle_marks_clause_specific_success_observations() {
         .contains(Observation::SuccessfulAppendStoredSuffixMatches));
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn log_matching_detects_equal_index_term_with_different_prefixes() {
     let mut cluster = two_node_cluster();
     cluster

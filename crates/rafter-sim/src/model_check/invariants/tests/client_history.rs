@@ -2,7 +2,7 @@ use super::super::client::check_client_history_read_write_invariants;
 use super::*;
 use rafter_invariant_test::{oracle_assert, oracle_assert_eq, oracle_expect_err};
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn client_history_detects_completed_read_before_local_apply_floor() {
     let cluster = one_node_cluster();
     let mut state = ExplorationState::new(cluster);

@@ -131,7 +131,7 @@ fn applied_order_detects_snapshot_rewinding_applied_entries() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn applied_order_detects_apply_at_or_below_snapshot_boundary() {
     let mut cluster = one_node_cluster();
     cluster.snapshot_installs.push(SnapshotInstalled {
@@ -169,7 +169,7 @@ fn applied_order_detects_apply_at_or_below_snapshot_boundary() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn snapshot_boundary_monotonicity_detects_regression() {
     let mut state = RestartSnapshotState::snapshot_transfer();
     let (older, payload) = test_snapshot(1, 1, 1, 2, b"older snapshot");
@@ -286,7 +286,7 @@ fn snapshot_payload_binding_detects_metadata_bound_to_different_bytes() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn snapshot_reference_binding_detects_self_consistent_application_identity_change() {
     let mut state = RestartSnapshotState::snapshot_transfer();
     let expected = state
@@ -412,7 +412,7 @@ fn install_mutated_source_snapshot(
     state.state.refresh_snapshot_history();
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn snapshot_transfer_identity_detects_install_different_from_delivery() {
     let mut state = RestartSnapshotState::snapshot_transfer();
     let expected = state
@@ -557,7 +557,7 @@ fn snapshot_transfer_integrity_rejects_complete_pending_transfer() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn restart_snapshot_safety_rejects_snapshot_bytes_as_log_apply() {
     let mut state = RestartSnapshotState::snapshot_transfer();
     let expected = state
@@ -768,7 +768,7 @@ fn snapshot_log_geometry_detects_retained_suffix_length_mismatch() {
     );
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn snapshot_covered_prefix_detector_rejects_visible_covered_entry() {
     let cluster = one_node_cluster();
     let failure = oracle_expect_err!(
@@ -778,7 +778,7 @@ fn snapshot_covered_prefix_detector_rejects_visible_covered_entry() {
     oracle_assert!(failure.message.contains("covered through snapshot index 2"));
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn snapshot_next_retained_index_detector_rejects_gap() {
     let cluster = one_node_cluster();
     let failure = oracle_expect_err!(
@@ -796,7 +796,7 @@ fn snapshot_next_retained_index_detector_rejects_gap() {
     oracle_assert!(failure.message.contains("does not equal snapshot_index+1"));
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn snapshot_persisted_boundary_detector_rejects_entry_behind_snapshot() {
     let cluster = one_node_cluster();
     let failure = oracle_expect_err!(
@@ -812,7 +812,7 @@ fn snapshot_persisted_boundary_detector_rejects_entry_behind_snapshot() {
     oracle_assert!(failure.message.contains("persisted entry 2"));
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn snapshot_chunk_identity_history_rejects_descriptor_change() {
     let transfer = partial_snapshot_transfer_state();
     let pending = transfer
@@ -834,7 +834,7 @@ fn snapshot_chunk_identity_history_rejects_descriptor_change() {
     oracle_assert!(failure.message.contains("descriptor identity"));
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn snapshot_chunk_offset_history_rejects_out_of_order_progress() {
     let transfer = partial_snapshot_transfer_state();
     let pending = transfer
@@ -856,7 +856,7 @@ fn snapshot_chunk_offset_history_rejects_out_of_order_progress() {
     oracle_assert!(failure.message.contains("staged prefix ended"));
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn snapshot_install_completeness_history_rejects_incomplete_install() {
     let transfer = partial_snapshot_transfer_state();
     let expected = transfer
@@ -870,7 +870,6 @@ fn snapshot_install_completeness_history_rejects_incomplete_install() {
         .pending_snapshot_transfer()
         .expect("fixture starts with partial transfer");
     let remaining = pending.total_payload_len - pending.received_bytes();
-    assert!(remaining > 1);
     let request = rafter::InstallSnapshotChunk {
         term: Term(2),
         leader_id: pending.leader_id,
@@ -905,10 +904,11 @@ fn snapshot_install_completeness_history_rejects_incomplete_install() {
         check_snapshot_install_completeness_history(&state, &[]),
         "SS-04.c must reject installation before all bytes arrive",
     );
+    assert!(remaining > 1);
     oracle_assert!(failure.message.contains("before the complete byte range"));
 }
 
-#[rafter_invariant_test::detector_test]
+#[::rafter_invariant_test::detector_test]
 fn pending_snapshot_lifecycle_detector_rejects_stale_transfer() {
     let transfer = RestartSnapshotState::snapshot_transfer();
     let expected = transfer
