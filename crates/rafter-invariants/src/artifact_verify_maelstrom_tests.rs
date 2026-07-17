@@ -8,7 +8,8 @@ use std::{
 use crate::{
     ArtifactRef, CheckCompletion, CheckReceipt, EvidenceResult, EvidenceStatus,
     ExecutionPlanReceipt, ExecutionReceipt, FailureClassification, InvocationReceipt, PlanInput,
-    ProfileContract, ResultBundle, RunnerContract, SourceReceipt, ToolReceipt, PLAN_SCHEMA_VERSION,
+    ProfileContract, ResultBundle, RunnerContract, SourceMaterializationReceipt, SourceReceipt,
+    ToolReceipt, PLAN_SCHEMA_VERSION,
 };
 use sha2::{Digest, Sha256};
 
@@ -26,15 +27,31 @@ fn aggregate_rederives_maelstrom_semantics_from_trial_artifacts(
     write(&root, "scripts/maelstrom-lin-kv", "runner")?;
     prepare_state(&root)?;
     write(&root, "target/debug/rafter-maelstrom", "binary")?;
-    write(&root, "evidence/trial-0/runner", "runner")?;
-    write(&root, "evidence/trial-0/binary", "binary")?;
-    write(&root, "evidence/trial-0/results.edn", VALID)?;
     write(
         &root,
-        "evidence/trial-0/process.json",
+        "artifacts/invariants/evidence/trial-0/runner",
+        "runner",
+    )?;
+    write(
+        &root,
+        "artifacts/invariants/evidence/trial-0/binary",
+        "binary",
+    )?;
+    write(
+        &root,
+        "artifacts/invariants/evidence/trial-0/results.edn",
+        VALID,
+    )?;
+    write(
+        &root,
+        "artifacts/invariants/evidence/trial-0/process.json",
         &process_log(&root, 0, "")?,
     )?;
-    write(&root, "evidence/trial-0/node.log", "role=leader")?;
+    write(
+        &root,
+        "artifacts/invariants/evidence/trial-0/node.log",
+        "role=leader",
+    )?;
     let bundle = bundle();
 
     crate::artifact_verify_maelstrom::verify(&bundle, &root)?;
@@ -44,7 +61,7 @@ fn aggregate_rederives_maelstrom_semantics_from_trial_artifacts(
     wrong_invocation["invocation"]["arguments"] = serde_json::json!(["--test-count", "2"]);
     write(
         &root,
-        "evidence/trial-0/process.json",
+        "artifacts/invariants/evidence/trial-0/process.json",
         &wrong_invocation.to_string(),
     )?;
     assert!(crate::artifact_verify_maelstrom::verify(&bundle, &root)
@@ -53,7 +70,7 @@ fn aggregate_rederives_maelstrom_semantics_from_trial_artifacts(
         .contains("arguments"));
     write(
         &root,
-        "evidence/trial-0/process.json",
+        "artifacts/invariants/evidence/trial-0/process.json",
         &process_log(&root, 0, "")?,
     )?;
 
@@ -68,7 +85,11 @@ fn aggregate_rederives_maelstrom_semantics_from_trial_artifacts(
 
     let mut stale: serde_json::Value = serde_json::from_str(&process_log(&root, 0, "")?)?;
     stale["schema_version"] = serde_json::json!(1);
-    write(&root, "evidence/trial-0/process.json", &stale.to_string())?;
+    write(
+        &root,
+        "artifacts/invariants/evidence/trial-0/process.json",
+        &stale.to_string(),
+    )?;
     assert!(crate::artifact_verify_maelstrom::verify(&bundle, &root)
         .expect_err("stale process schema is rejected")
         .to_string()
@@ -78,7 +99,7 @@ fn aggregate_rederives_maelstrom_semantics_from_trial_artifacts(
     incomplete["invocation"]["program"] = serde_json::json!("");
     write(
         &root,
-        "evidence/trial-0/process.json",
+        "artifacts/invariants/evidence/trial-0/process.json",
         &incomplete.to_string(),
     )?;
     assert!(crate::artifact_verify_maelstrom::verify(&bundle, &root)
@@ -87,7 +108,7 @@ fn aggregate_rederives_maelstrom_semantics_from_trial_artifacts(
         .contains("exact invocation"));
     write(
         &root,
-        "evidence/trial-0/process.json",
+        "artifacts/invariants/evidence/trial-0/process.json",
         &process_log(&root, 0, "")?,
     )?;
 
@@ -111,11 +132,19 @@ fn invalid_history_can_only_fail_client_linearizability() -> Result<(), Box<dyn 
     write(&root, "scripts/maelstrom-lin-kv", "runner")?;
     prepare_state(&root)?;
     write(&root, "target/debug/rafter-maelstrom", "binary")?;
-    write(&root, "evidence/trial-0/runner", "runner")?;
-    write(&root, "evidence/trial-0/binary", "binary")?;
     write(
         &root,
-        "evidence/trial-0/results.edn",
+        "artifacts/invariants/evidence/trial-0/runner",
+        "runner",
+    )?;
+    write(
+        &root,
+        "artifacts/invariants/evidence/trial-0/binary",
+        "binary",
+    )?;
+    write(
+        &root,
+        "artifacts/invariants/evidence/trial-0/results.edn",
         &VALID.replace(
             ":linearizable {:valid? true}",
             ":linearizable {:valid? false}",
@@ -123,10 +152,14 @@ fn invalid_history_can_only_fail_client_linearizability() -> Result<(), Box<dyn 
     )?;
     write(
         &root,
-        "evidence/trial-0/process.json",
+        "artifacts/invariants/evidence/trial-0/process.json",
         &process_log(&root, 0, "")?,
     )?;
-    write(&root, "evidence/trial-0/node.log", "role=leader")?;
+    write(
+        &root,
+        "artifacts/invariants/evidence/trial-0/node.log",
+        "role=leader",
+    )?;
     let mut bundle = bundle();
     bundle.execution.checks[0]
         .observations
@@ -142,7 +175,7 @@ fn invalid_history_can_only_fail_client_linearizability() -> Result<(), Box<dyn 
 
     write(
         &root,
-        "evidence/trial-0/process.json",
+        "artifacts/invariants/evidence/trial-0/process.json",
         &process_log(&root, 1, "checker exited after reporting a counterexample")?,
     )?;
     let diagnostics = crate::artifact_verify_maelstrom::verify(&bundle, &root)?;
@@ -161,15 +194,31 @@ fn nonzero_process_exit_is_always_a_harness_error() -> Result<(), Box<dyn std::e
     write(&root, "scripts/maelstrom-lin-kv", "runner")?;
     prepare_state(&root)?;
     write(&root, "target/debug/rafter-maelstrom", "binary")?;
-    write(&root, "evidence/trial-0/runner", "runner")?;
-    write(&root, "evidence/trial-0/binary", "binary")?;
-    write(&root, "evidence/trial-0/results.edn", VALID)?;
     write(
         &root,
-        "evidence/trial-0/process.json",
+        "artifacts/invariants/evidence/trial-0/runner",
+        "runner",
+    )?;
+    write(
+        &root,
+        "artifacts/invariants/evidence/trial-0/binary",
+        "binary",
+    )?;
+    write(
+        &root,
+        "artifacts/invariants/evidence/trial-0/results.edn",
+        VALID,
+    )?;
+    write(
+        &root,
+        "artifacts/invariants/evidence/trial-0/process.json",
         &process_log(&root, 1, "failed")?,
     )?;
-    write(&root, "evidence/trial-0/node.log", "role=leader")?;
+    write(
+        &root,
+        "artifacts/invariants/evidence/trial-0/node.log",
+        "role=leader",
+    )?;
     let mut bundle = bundle();
     bundle.execution.checks[0].completion = CheckCompletion::HarnessError;
     bundle.results[0].status = EvidenceStatus::Error;
@@ -192,12 +241,24 @@ fn serialized_counterexample_retains_secondary_harness_diagnostic(
     write(&root, "scripts/maelstrom-lin-kv", "runner")?;
     prepare_state(&root)?;
     write(&root, "target/debug/rafter-maelstrom", "binary")?;
-    write(&root, "evidence/trial-0/runner", "runner")?;
-    write(&root, "evidence/trial-0/binary", "binary")?;
-    write(&root, "evidence/trial-0/maelstrom.jar", "jar")?;
     write(
         &root,
-        "evidence/trial-0/results.edn",
+        "artifacts/invariants/evidence/trial-0/runner",
+        "runner",
+    )?;
+    write(
+        &root,
+        "artifacts/invariants/evidence/trial-0/binary",
+        "binary",
+    )?;
+    write(
+        &root,
+        "artifacts/invariants/evidence/trial-0/maelstrom.jar",
+        "jar",
+    )?;
+    write(
+        &root,
+        "artifacts/invariants/evidence/trial-0/results.edn",
         &VALID.replace(
             ":linearizable {:valid? true}",
             ":linearizable {:valid? false}",
@@ -205,11 +266,15 @@ fn serialized_counterexample_retains_secondary_harness_diagnostic(
     )?;
     write(
         &root,
-        "evidence/trial-0/process.json",
+        "artifacts/invariants/evidence/trial-0/process.json",
         &process_log(&root, 1, "checker exited after reporting a counterexample")?,
     )?;
-    write(&root, "evidence/trial-0/node.log", "role=leader")?;
-    write(&root, "evidence/producer", "producer")?;
+    write(
+        &root,
+        "artifacts/invariants/evidence/trial-0/node.log",
+        "role=leader",
+    )?;
+    write(&root, "artifacts/invariants/evidence/producer", "producer")?;
     initialize_fixture_repository(&root)?;
 
     let mut bundle = bundle();
@@ -253,18 +318,33 @@ fn serialized_counterexample_retains_secondary_harness_diagnostic(
 }
 
 fn materialize_checkout(root: &Path, workspace: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    fs::copy(workspace.join("Cargo.lock"), root.join("Cargo.lock"))?;
-    for path in [
-        "verification/raft-invariants.yaml",
-        "verification/raft-invariant-profiles.json",
-        "verification/invariant-result-schema.json",
-        "verification/invariant-verdict-schema.json",
-    ] {
+    let tracked = Command::new("git")
+        .args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ])
+        .current_dir(workspace)
+        .output()?;
+    if !tracked.status.success() {
+        return Err(format!(
+            "git source inventory failed while materializing Maelstrom fixture: {}",
+            String::from_utf8_lossy(&tracked.stderr)
+        )
+        .into());
+    }
+    for path in tracked.stdout.split(|byte| *byte == 0) {
+        if path.is_empty() {
+            continue;
+        }
+        let path = std::str::from_utf8(path)?;
         let destination = root.join(path);
         fs::create_dir_all(destination.parent().ok_or("plan input has no parent")?)?;
         fs::copy(workspace.join(path), destination)?;
     }
-    write(root, ".gitignore", "artifacts/\nevidence/\ntarget/\n")?;
+    write(root, ".gitignore", "/artifacts/invariants/\n/target/\n")?;
     Ok(())
 }
 
@@ -346,7 +426,11 @@ fn bind_serialized_bundle(
         .collect();
     bundle.execution.source = source;
 
-    let producer = bound_artifact(root, "evidence/producer", "producer-binary")?;
+    let producer = bound_artifact(
+        root,
+        "artifacts/invariants/evidence/producer",
+        "producer-binary",
+    )?;
     bundle.execution.artifacts = vec![producer.clone()];
     bundle.execution.producer.executable = producer.clone();
     let repository = fs::canonicalize(root)?;
@@ -412,13 +496,65 @@ fn bound_artifact(
 
 fn bundle() -> ResultBundle {
     let execution_id = "maelstrom-base".to_owned();
+    ResultBundle {
+        schema_version: crate::types::RESULT_SCHEMA_VERSION,
+        runner: "maelstrom".to_owned(),
+        profile: "nightly".to_owned(),
+        source_ref: "abc".to_owned(),
+        execution: ExecutionReceipt {
+            plan: ExecutionPlanReceipt {
+                schema_version: PLAN_SCHEMA_VERSION,
+                profile: "nightly".to_owned(),
+                registry: plan_input("verification/raft-invariants.yaml"),
+                manifest: plan_input("verification/raft-invariant-profiles.json"),
+                result_schema: plan_input("verification/invariant-result-schema.json"),
+                verdict_schema: plan_input("verification/invariant-verdict-schema.json"),
+                contract: maelstrom_contract(),
+            },
+            invocation: InvocationReceipt {
+                program: format!(
+                    "/workspace/rafter/target/rafter-invariants/producer-images/{}/rafter-invariants",
+                    "0".repeat(64)
+                ),
+                program_sha256: "0".repeat(64),
+                arguments: vec!["run".to_owned()],
+                current_dir: "/workspace/rafter".to_owned(),
+                environment: BTreeMap::new(),
+                environment_sha256: crate::producer::process::digest_environment(&BTreeMap::new()),
+            },
+            producer: crate::ProducerBindingReceipt {
+                binding: crate::producer_image::PRODUCER_BINDING.to_owned(),
+                executable: artifact(
+                    "artifacts/invariants/evidence/producer",
+                    "producer-binary",
+                ),
+            },
+            source: source(),
+            checks: vec![maelstrom_check(&execution_id)],
+            duration_ms: 1,
+            peak_rss_kib: 1,
+            artifacts: Vec::new(),
+        },
+        results: vec![EvidenceResult {
+            invariant_id: "RD-06".to_owned(),
+            evidence_id: "RD-06/test".to_owned(),
+            execution_id,
+            status: EvidenceStatus::Pass,
+            classification: None,
+            message: None,
+            artifacts: Vec::new(),
+        }],
+    }
+}
+
+fn maelstrom_contract() -> ProfileContract {
     let configuration = BTreeMap::from([
         ("trials".to_owned(), "1".to_owned()),
         ("maelstrom_jar_sha256".to_owned(), "0".repeat(64)),
         ("duration_seconds".to_owned(), "5".to_owned()),
         ("rate".to_owned(), "10".to_owned()),
     ]);
-    let contract = ProfileContract {
+    ProfileContract {
         description: "test".to_owned(),
         evidence_policy: "all_matching_registry_evidence".to_owned(),
         clause_policy: "all_required_clauses".to_owned(),
@@ -437,69 +573,35 @@ fn bundle() -> ResultBundle {
                 require_peak_rss: true,
             },
         )]),
-    };
-    ResultBundle {
-        schema_version: crate::types::RESULT_SCHEMA_VERSION,
-        runner: "maelstrom".to_owned(),
-        profile: "nightly".to_owned(),
-        source_ref: "abc".to_owned(),
-        execution: ExecutionReceipt {
-            plan: ExecutionPlanReceipt {
-                schema_version: PLAN_SCHEMA_VERSION,
-                profile: "nightly".to_owned(),
-                registry: plan_input("verification/raft-invariants.yaml"),
-                manifest: plan_input("verification/raft-invariant-profiles.json"),
-                result_schema: plan_input("verification/invariant-result-schema.json"),
-                verdict_schema: plan_input("verification/invariant-verdict-schema.json"),
-                contract,
-            },
-            invocation: InvocationReceipt {
-                program: format!(
-                    "/workspace/rafter/target/rafter-invariants/producer-images/{}/rafter-invariants",
-                    "0".repeat(64)
-                ),
-                program_sha256: "0".repeat(64),
-                arguments: vec!["run".to_owned()],
-                current_dir: "/workspace/rafter".to_owned(),
-                environment: BTreeMap::new(),
-                environment_sha256: crate::producer::process::digest_environment(&BTreeMap::new()),
-            },
-            producer: crate::ProducerBindingReceipt {
-                binding: crate::producer_image::PRODUCER_BINDING.to_owned(),
-                executable: artifact("evidence/producer", "producer-binary"),
-            },
-            source: source(),
-            checks: vec![CheckReceipt {
-                execution_id: execution_id.clone(),
-                check_id: "maelstrom/base".to_owned(),
-                evidence_ids: vec!["RD-06/test".to_owned()],
-                completion: CheckCompletion::Completed,
-                observations: observations(),
-                simulator_liveness: None,
-                duration_ms: 1,
-                peak_rss_kib: 1,
-                artifacts: vec![
-                    artifact("evidence/trial-0/runner", "maelstrom-runner"),
-                    artifact("evidence/trial-0/binary", "maelstrom-binary"),
-                    artifact("evidence/trial-0/maelstrom.jar", "maelstrom-tool-jar"),
-                    artifact("evidence/trial-0/results.edn", "maelstrom-results"),
-                    artifact("evidence/trial-0/process.json", "maelstrom-process-log"),
-                    artifact("evidence/trial-0/node.log", "maelstrom-node-log"),
-                ],
-            }],
-            duration_ms: 1,
-            peak_rss_kib: 1,
-            artifacts: Vec::new(),
-        },
-        results: vec![EvidenceResult {
-            invariant_id: "RD-06".to_owned(),
-            evidence_id: "RD-06/test".to_owned(),
-            execution_id,
-            status: EvidenceStatus::Pass,
-            classification: None,
-            message: None,
-            artifacts: Vec::new(),
-        }],
+    }
+}
+
+fn maelstrom_check(execution_id: &str) -> CheckReceipt {
+    CheckReceipt {
+        execution_id: execution_id.to_owned(),
+        check_id: "maelstrom/base".to_owned(),
+        evidence_ids: vec!["RD-06/test".to_owned()],
+        completion: CheckCompletion::Completed,
+        observations: observations(),
+        simulator_liveness: None,
+        duration_ms: 1,
+        peak_rss_kib: 1,
+        artifacts: [
+            ("runner", "maelstrom-runner"),
+            ("binary", "maelstrom-binary"),
+            ("maelstrom.jar", "maelstrom-tool-jar"),
+            ("results.edn", "maelstrom-results"),
+            ("process.json", "maelstrom-process-log"),
+            ("node.log", "maelstrom-node-log"),
+        ]
+        .into_iter()
+        .map(|(path, kind)| {
+            artifact(
+                &format!("artifacts/invariants/evidence/trial-0/{path}"),
+                kind,
+            )
+        })
+        .collect(),
     }
 }
 
@@ -620,6 +722,12 @@ fn source() -> SourceReceipt {
     SourceReceipt {
         commit: "abc".to_owned(),
         tree: "tree".to_owned(),
+        materialization: SourceMaterializationReceipt {
+            contract: "git-head-worktree-raw-v1".to_owned(),
+            sha256: "0".repeat(64),
+            tracked_entries: 1,
+            submodules: 0,
+        },
         cargo_lock_sha256: "0".repeat(64),
         cargo: "cargo".to_owned(),
         cargo_sha256: "0".repeat(64),
