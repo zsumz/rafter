@@ -153,6 +153,8 @@ fn compile_result(
 }
 
 fn executable_from_messages(bytes: &[u8], target: &Target) -> Result<PathBuf, String> {
+    let workspace = producer_workspace_root()?;
+    crate::rust_target::verify_protected_compiler_artifacts(bytes, &workspace)?;
     let mut executables = Vec::new();
     for line in String::from_utf8_lossy(bytes).lines() {
         let Ok(message) = serde_json::from_str::<CargoCompilerMessage>(line) else {
@@ -194,6 +196,23 @@ fn executable_from_messages(bytes: &[u8], target: &Target) -> Result<PathBuf, St
             executables.len()
         ))
     }
+}
+
+fn producer_workspace_root() -> Result<PathBuf, String> {
+    let current =
+        fs::canonicalize(".").map_err(|error| format!("canonicalize workspace: {error}"))?;
+    current
+        .ancestors()
+        .find(|ancestor| {
+            ancestor
+                .join("crates/rafter-invariant-test/Cargo.toml")
+                .is_file()
+                && ancestor
+                    .join("crates/rafter-invariant-test-macros/Cargo.toml")
+                    .is_file()
+        })
+        .map(Path::to_path_buf)
+        .ok_or_else(|| "canonical Rafter workspace is not present".to_owned())
 }
 
 fn verify_package_identity(
@@ -343,6 +362,40 @@ mod tests {
             kind: "lib".to_owned(),
             name: "rafter_invariants".to_owned(),
         };
+        let workspace = package_dir
+            .parent()
+            .and_then(std::path::Path::parent)
+            .expect("workspace root");
+        let protected = |package: &str, name: &str, kind: &str, fresh: bool| {
+            let package_path = workspace.join("crates").join(package);
+            serde_json::json!({
+                "reason": "compiler-artifact",
+                "package_id": format!("path+file://{}#0.0.1", package_path.display()),
+                "target": {
+                    "name": name,
+                    "kind": [kind],
+                    "src_path": package_path.join("src/lib.rs"),
+                },
+                "fresh": fresh,
+                "executable": null,
+            })
+            .to_string()
+        };
+        let protected_artifacts = format!(
+            "{}\n{}",
+            protected(
+                "rafter-invariant-test",
+                "rafter_invariant_test",
+                "lib",
+                false,
+            ),
+            protected(
+                "rafter-invariant-test-macros",
+                "rafter_invariant_test_macros",
+                "proc-macro",
+                true,
+            )
+        );
         let artifact = |package_path: &std::path::Path| {
             serde_json::json!({
                 "reason": "compiler-artifact",
@@ -357,7 +410,7 @@ mod tests {
             })
             .to_string()
         };
-        let exact = artifact(&package_dir);
+        let exact = format!("{protected_artifacts}\n{}", artifact(&package_dir));
         assert_eq!(
             executable_from_messages(exact.as_bytes(), &target)
                 .expect("exact Cargo package artifact"),
@@ -368,6 +421,8 @@ mod tests {
             .parent()
             .expect("workspace crates directory")
             .join("rafter");
-        assert!(executable_from_messages(artifact(&other_package).as_bytes(), &target).is_err());
+        let substituted = format!("{protected_artifacts}\n{}", artifact(&other_package));
+        assert!(executable_from_messages(substituted.as_bytes(), &target).is_err());
+        assert!(executable_from_messages(artifact(&package_dir).as_bytes(), &target).is_err());
     }
 }
