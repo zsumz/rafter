@@ -53,6 +53,8 @@ pub(crate) struct SimulatorRunnerConfiguration {
     pub build: String,
     pub compile_timeout: String,
     pub completion: String,
+    pub detector_proof: String,
+    pub detector_source_preflight: String,
     pub execution_contract: String,
     pub finalization_reserve: String,
     pub kill_confirmation_timeout: String,
@@ -79,6 +81,8 @@ impl SimulatorRunnerConfiguration {
     pub(crate) fn validate_profile(&self, profile: &str) -> Result<(), &'static str> {
         if self.build != "release-and-test-locked"
             || self.compile_timeout != "10m"
+            || self.detector_proof != "post-invocation-parent-challenge-v1"
+            || self.detector_source_preflight != "exact-module-call-graph-v1"
             || self.execution_contract != "rafter-soak-execution-v1"
             || self.kill_confirmation_timeout != "5s"
             || self.liveness_report_binding != "typed-canonical-json-sha256-v3"

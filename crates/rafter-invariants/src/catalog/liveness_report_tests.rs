@@ -254,6 +254,10 @@ pub(crate) fn fixture() -> (
         .iter()
         .map(|contract| valid_report(contract, &execution))
         .collect::<Vec<_>>();
+    let liveness_features = reports
+        .iter()
+        .filter_map(|report| report["feature_id"].as_str())
+        .collect::<Vec<_>>();
     let events = BTreeMap::from([(
         "raft-soak".to_owned(),
         vec![json!({
@@ -264,7 +268,10 @@ pub(crate) fn fixture() -> (
             "message": null,
             "seed": 1,
             "steps": 320,
+            "duration_ms": 1,
             "execution_contract": execution,
+            "observed_actions": ["tick", "deliver"],
+            "liveness_features": liveness_features,
             "observations": {"accepted_completed_liveness_proposals": 99},
             "liveness_reports": reports,
         })],

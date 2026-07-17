@@ -104,9 +104,9 @@ pub(super) fn validate_runner(
     runner: &RunnerContract,
 ) -> Result<(), String> {
     let (producer, minimum_observed_checks) = match layer {
-        "tests" => ("rafter-invariants-tests-v13", 82),
-        "simulator" if profile == "pr" => ("rafter-invariants-simulator-v17", 79),
-        "simulator" => ("rafter-invariants-simulator-v16", 79),
+        "tests" => ("rafter-invariants-tests-v14", 82),
+        "simulator" if profile == "pr" => ("rafter-invariants-simulator-v18", 79),
+        "simulator" => ("rafter-invariants-simulator-v17", 79),
         "tla" => ("rafter-invariants-tla-v15", 1),
         "maelstrom" => ("rafter-invariants-maelstrom-v10", 6),
         _ => return Err(format!("unsupported runner layer {layer}")),
@@ -138,10 +138,24 @@ pub(super) fn validate_runner(
 
     match layer {
         "tests" => validate_tests(profile, &runner.configuration),
-        "simulator" => Ok(()),
+        "simulator" => validate_simulator(&runner.configuration),
         "tla" => validate_tla(profile, &runner.configuration),
         "maelstrom" => validate_maelstrom(profile, &runner.configuration),
         _ => unreachable!("layer was matched above"),
+    }
+}
+
+fn validate_simulator(configuration: &BTreeMap<String, String>) -> Result<(), String> {
+    let detector_proof = configuration.get("detector_proof").map(String::as_str);
+    let detector_source_preflight = configuration
+        .get("detector_source_preflight")
+        .map(String::as_str);
+    if detector_proof == Some("post-invocation-parent-challenge-v1")
+        && detector_source_preflight == Some("exact-module-call-graph-v1")
+    {
+        Ok(())
+    } else {
+        Err("simulator detector proof or source-preflight contract is not canonical".to_owned())
     }
 }
 
@@ -308,7 +322,7 @@ mod tests {
 
     fn runner(layer: &str, configuration: serde_json::Value) -> RunnerContract {
         let producer = match layer {
-            "tests" => "rafter-invariants-tests-v13",
+            "tests" => "rafter-invariants-tests-v14",
             "tla" => "rafter-invariants-tla-v15",
             "maelstrom" => "rafter-invariants-maelstrom-v10",
             _ => unreachable!(),
@@ -371,18 +385,22 @@ mod tests {
     fn simulator_producer_contract_is_exact_and_profile_specific() {
         let (_, manifest) = crate::tests::loaded();
         let pr = &manifest.profiles["pr"].runners["simulator"];
-        validate_runner("pr", "simulator", pr).expect("PR simulator v17 contract");
+        validate_runner("pr", "simulator", pr).expect("PR simulator v18 contract");
 
         let mut stale_pr = pr.clone();
-        stale_pr.producer = "rafter-invariants-simulator-v16".to_owned();
+        stale_pr.producer = "rafter-invariants-simulator-v17".to_owned();
         assert!(validate_runner("pr", "simulator", &stale_pr).is_err());
 
         let nightly = &manifest.profiles["nightly"].runners["simulator"];
-        validate_runner("nightly", "simulator", nightly).expect("nightly simulator v16 contract");
+        validate_runner("nightly", "simulator", nightly).expect("nightly simulator v17 contract");
 
         let mut premature_nightly = nightly.clone();
-        premature_nightly.producer = "rafter-invariants-simulator-v17".to_owned();
+        premature_nightly.producer = "rafter-invariants-simulator-v18".to_owned();
         assert!(validate_runner("nightly", "simulator", &premature_nightly).is_err());
+
+        let mut stale_proof = pr.clone();
+        stale_proof.configuration.remove("detector_proof");
+        assert!(validate_runner("pr", "simulator", &stale_proof).is_err());
     }
 
     #[test]

@@ -13,6 +13,8 @@ fn simulator_contract_deserializes_numeric_and_floor_policy() {
         ("build", "release-and-test-locked"),
         ("compile_timeout", "10m"),
         ("completion", "frontier-and-aggregate-state-floor"),
+        ("detector_proof", "post-invocation-parent-challenge-v1"),
+        ("detector_source_preflight", "exact-module-call-graph-v1"),
         ("execution_contract", "rafter-soak-execution-v1"),
         ("finalization_reserve", "10m"),
         ("kill_confirmation_timeout", "5s"),
@@ -264,6 +266,10 @@ fn simulator_contract_rejects_weakened_pr_thresholds() {
         verifier: 1,
     };
     assert!(contract.validate_profile("pr").is_err());
+
+    let mut contract = reviewed_pr_contract();
+    contract.detector_proof = "textual-witness-v0".to_owned();
+    assert!(contract.validate_profile("pr").is_err());
 }
 
 #[test]
@@ -326,6 +332,8 @@ fn reviewed_pr_contract() -> SimulatorRunnerConfiguration {
         build: "release-and-test-locked".to_owned(),
         compile_timeout: "10m".to_owned(),
         completion: "frontier-and-semantic-floor".to_owned(),
+        detector_proof: "post-invocation-parent-challenge-v1".to_owned(),
+        detector_source_preflight: "exact-module-call-graph-v1".to_owned(),
         execution_contract: "rafter-soak-execution-v1".to_owned(),
         finalization_reserve: "3m".to_owned(),
         kill_confirmation_timeout: "5s".to_owned(),
@@ -354,6 +362,8 @@ fn reviewed_scheduled_contract(
         build: "release-and-test-locked".to_owned(),
         compile_timeout: "10m".to_owned(),
         completion: "frontier-and-aggregate-state-floor".to_owned(),
+        detector_proof: "post-invocation-parent-challenge-v1".to_owned(),
+        detector_source_preflight: "exact-module-call-graph-v1".to_owned(),
         execution_contract: "rafter-soak-execution-v1".to_owned(),
         finalization_reserve: "10m".to_owned(),
         kill_confirmation_timeout: "5s".to_owned(),
