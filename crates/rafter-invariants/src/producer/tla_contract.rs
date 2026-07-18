@@ -444,19 +444,27 @@ pub(super) fn source_artifacts(
 }
 
 pub(super) fn fetch_tool() -> Result<(), Box<dyn Error>> {
+    fetch_tool_at(Path::new("."))
+}
+
+pub(crate) fn fetch_tool_at(repo_root: &Path) -> Result<(), Box<dyn Error>> {
+    let runner = repo_root.join("scripts/tla-model-check");
+    let program = runner.as_os_str().to_string_lossy();
     fetch_tool_with(
-        "scripts/tla-model-check",
+        repo_root,
+        &program,
         &[OsString::from("--fetch-tool")],
         TOOL_FETCH_TIMEOUT,
     )
 }
 
 fn fetch_tool_with(
+    repo_root: &Path,
     program: &str,
     arguments: &[OsString],
     timeout: Duration,
 ) -> Result<(), Box<dyn Error>> {
-    let environment = tool_fetch_environment();
+    let environment = tool_fetch_environment(repo_root);
     let output = process::timed_with_optional_layer_budget(
         process::ProcessKind::TlaExecution,
         program,
@@ -478,9 +486,12 @@ fn fetch_tool_with(
     Ok(())
 }
 
-fn tool_fetch_environment() -> BTreeMap<String, String> {
+fn tool_fetch_environment(repo_root: &Path) -> BTreeMap<String, String> {
     let mut environment = process::base_environment();
-    environment.insert("RAFTER_TLA_REPO_ROOT".to_owned(), ".".to_owned());
+    environment.insert(
+        "RAFTER_TLA_REPO_ROOT".to_owned(),
+        repo_root.as_os_str().to_string_lossy().into_owned(),
+    );
     environment
 }
 
@@ -532,7 +543,7 @@ pub(super) fn parse_timeout(value: &str) -> Result<Duration, Box<dyn Error>> {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, ffi::OsString, time::Duration};
+    use std::{collections::BTreeMap, ffi::OsString, path::Path, time::Duration};
 
     use super::super::tla_output::{
         render_detector_config, DetectorProbe, DEFAULT_FIXTURE_MODE, DETECTOR_PROBES,
@@ -556,6 +567,7 @@ mod tests {
     #[cfg(unix)]
     fn tool_fetch_is_managed_and_times_out_with_retained_diagnostics() {
         let error = fetch_tool_with(
+            Path::new("."),
             "sh",
             &[
                 OsString::from("-c"),
@@ -571,9 +583,9 @@ mod tests {
 
     #[test]
     fn descriptor_bound_tool_fetch_receives_the_held_repository_root() {
-        let environment = tool_fetch_environment();
+        let environment = tool_fetch_environment(Path::new("/tmp/rafter-root"));
 
-        assert_eq!(environment["RAFTER_TLA_REPO_ROOT"], ".");
+        assert_eq!(environment["RAFTER_TLA_REPO_ROOT"], "/tmp/rafter-root");
     }
 
     #[test]

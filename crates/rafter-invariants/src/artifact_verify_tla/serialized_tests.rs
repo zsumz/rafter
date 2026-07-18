@@ -133,7 +133,8 @@ impl Fixture {
         &mut self,
         producer_root: &Path,
     ) -> (crate::aggregate::LoadedEvidence, crate::VerdictReport) {
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let workspace = fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+            .expect("canonicalize workspace root");
         self.materialize_serialized_bundle(&workspace, producer_root);
         let bundle_path = self.root.with_extension("result.json");
         fs::write(
@@ -195,6 +196,8 @@ impl Fixture {
             input.sha256 = format!("{:x}", Sha256::digest(&bytes));
             input.size_bytes = bytes.len() as u64;
         }
+        crate::producer::fetch_tla_tool_at(workspace)
+            .expect("fetch and verify pinned TLC tool fixture");
         let tool = fs::read(workspace.join("tools/cache/tla2tools.jar"))
             .expect("read pinned TLC tool fixture");
         self.write_kind("tla-tool", &tool);
