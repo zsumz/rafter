@@ -206,8 +206,8 @@ fn reviewed_generated_output(path: &Path) -> bool {
         .collect::<Vec<_>>();
     matches!(components.as_slice(), [first, ..] if first == "target" || first == "store")
         || matches!(components.as_slice(), [first, second, ..]
-            if (first == "artifacts" && second == "invariants")
-                || (first == "artifacts" && reviewed_tla_evidence_artifact(second))
+            if (first == "artifacts"
+                && (second == "invariants" || reviewed_tla_evidence_artifact(second)))
                 || (first == "bench-compare" && second == "target")
                 || (first == "fuzz" && second == "target")
                 || (first == "tools" && second == "cache"))
