@@ -1,6 +1,11 @@
-use std::{fs, path::Path, process::Command};
+use std::{fs, path::Path, process::Command, sync::OnceLock};
 
-use crate::producer::tla_output::{render_detector_config, DetectorProbe};
+use crate::producer::{
+    tla_contract,
+    tla_output::{render_detector_config, DetectorProbe},
+};
+
+static TLA_TOOL_FETCH: OnceLock<Result<(), String>> = OnceLock::new();
 
 pub(super) const ELECTION_PROBE: DetectorProbe = DetectorProbe {
     predicate: "ElectionSafety",
@@ -444,7 +449,8 @@ CHECK_DEADLOCK FALSE
 "#;
 
 pub(super) fn workspace_root() -> std::path::PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+        .expect("canonicalize workspace root")
 }
 
 pub(super) fn replace_operator(source: &str, operator: &str, next: &str, body: &str) -> String {
@@ -497,6 +503,7 @@ pub(super) fn run_tlc_with_config(
     detector: &str,
     config: &str,
 ) -> std::process::Output {
+    ensure_tla_tool(root);
     let directory = root
         .join("target/rafter-invariants/tla-mutations")
         .join(format!("{}-{name}", std::process::id()));
@@ -537,4 +544,13 @@ pub(super) fn run_tlc_with_config(
         .current_dir(&directory)
         .output()
         .expect("run TLC mutation")
+}
+
+fn ensure_tla_tool(root: &Path) {
+    if let Err(error) = TLA_TOOL_FETCH.get_or_init(|| {
+        tla_contract::fetch_tool_at(root)
+            .map_err(|error| format!("fetch and verify pinned TLC jar: {error}"))
+    }) {
+        panic!("{error}");
+    }
 }

@@ -35,6 +35,8 @@ pub(crate) use simulator_model::{
 pub(crate) use simulator_model::{
     later_launch_error_fixture_at, timed_out_zero_exit_fixture_at, SimulatorFixtureInvocation,
 };
+#[cfg(test)]
+pub(crate) use tla_contract::fetch_tool_at as fetch_tla_tool_at;
 pub(crate) use tla_contract::java_major;
 
 use std::collections::BTreeSet;
