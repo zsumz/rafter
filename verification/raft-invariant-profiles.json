@@ -54,7 +54,7 @@
         "tla": {
           "producer": "rafter-invariants-tla-v15",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "pr", "--layer", "tla"],
-          "configuration": {"config": "RaftCi.cfg", "detector_negative": "required", "finalization_reserve": "2m", "fp": "0", "java_major": "21", "kill_confirmation_timeout": "5s", "minimum_distinct_states": "16000000", "minimum_generated_states": "120000000", "module": "Raft.tla", "receipt_finalization_allowance": "5s", "seed": "2026071101", "soft_timeout": "115m", "symmetry": "nodes-values-read-requests-product", "termination_grace": "30s", "tool_asset_id": "477986195", "tool_mode": "required", "tool_sha256": "58d44845a37a8d776deaf8cf3a623213b59d311bc0ec287bcdfbe148dd11bb3d", "total_timeout": "155m", "trace_sample": "required", "workers": "4"},
+          "configuration": {"config": "RaftCi.cfg", "detector_negative": "required", "finalization_reserve": "2m", "fp": "0", "fp_mem": "0.45", "java_major": "21", "kill_confirmation_timeout": "5s", "max_heap": "8g", "minimum_distinct_states": "16000000", "minimum_generated_states": "120000000", "module": "Raft.tla", "receipt_finalization_allowance": "5s", "seed": "2026071101", "soft_timeout": "300m", "symmetry": "nodes-values-read-requests-product", "termination_grace": "30s", "tool_asset_id": "477986195", "tool_mode": "required", "tool_sha256": "58d44845a37a8d776deaf8cf3a623213b59d311bc0ec287bcdfbe148dd11bb3d", "total_timeout": "338m", "trace_sample": "required", "workers": "4"},
           "minimum_observed_checks": 1,
           "require_peak_rss": true
         }
@@ -86,7 +86,7 @@
         "tla": {
           "producer": "rafter-invariants-tla-v15",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "nightly", "--layer", "tla"],
-          "configuration": {"config": "RaftNightly.cfg", "detector_negative": "required", "finalization_reserve": "10m", "fp": "0", "java_major": "21", "kill_confirmation_timeout": "5s", "minimum_distinct_states": "16000000", "minimum_generated_states": "120000000", "module": "Raft.tla", "receipt_finalization_allowance": "5s", "seed": "2026071102", "soft_timeout": "115m", "symmetry": "nodes-values-read-requests-product", "termination_grace": "30s", "tool_asset_id": "477986195", "tool_mode": "required", "tool_sha256": "58d44845a37a8d776deaf8cf3a623213b59d311bc0ec287bcdfbe148dd11bb3d", "total_timeout": "165m", "trace_sample": "required", "workers": "4"},
+          "configuration": {"checkpoint_gzip": "required", "checkpoint_minutes": "30", "checkpoint_recovery": "strict-compatible-if-present", "config": "RaftNightly.cfg", "detector_negative": "required", "finalization_reserve": "10m", "fp": "0", "fp_mem": "0.45", "java_major": "21", "kill_confirmation_timeout": "5s", "max_heap": "8g", "minimum_distinct_states": "16000000", "minimum_generated_states": "120000000", "module": "Raft.tla", "receipt_finalization_allowance": "5s", "seed": "2026071102", "soft_timeout": "295m", "symmetry": "nodes-values-read-requests-product", "termination_grace": "30s", "tool_asset_id": "477986195", "tool_mode": "required", "tool_sha256": "58d44845a37a8d776deaf8cf3a623213b59d311bc0ec287bcdfbe148dd11bb3d", "total_timeout": "350m", "trace_sample": "required", "workers": "auto"},
           "minimum_observed_checks": 1,
           "require_peak_rss": true
         },
@@ -125,7 +125,7 @@
         "tla": {
           "producer": "rafter-invariants-tla-v15",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "weekly", "--layer", "tla"],
-          "configuration": {"checkpoint_gzip": "required", "checkpoint_minutes": "30", "checkpoint_recovery": "strict-compatible-if-present", "config": "Raft.cfg", "detector_negative": "required", "finalization_reserve": "10m", "fp": "0", "java_major": "21", "kill_confirmation_timeout": "5s", "max_heap": "4g", "minimum_distinct_states": "16000000", "minimum_generated_states": "120000000", "module": "Raft.tla", "receipt_finalization_allowance": "5s", "seed": "2026071103", "soft_timeout": "295m", "termination_grace": "30s", "tool_asset_id": "477986195", "tool_mode": "required", "tool_sha256": "58d44845a37a8d776deaf8cf3a623213b59d311bc0ec287bcdfbe148dd11bb3d", "total_timeout": "350m", "trace_sample": "required", "unsymmetrized_exploration": "required", "workers": "auto"},
+          "configuration": {"checkpoint_gzip": "required", "checkpoint_minutes": "30", "checkpoint_recovery": "strict-compatible-if-present", "config": "Raft.cfg", "detector_negative": "required", "finalization_reserve": "10m", "fp": "0", "fp_mem": "0.45", "java_major": "21", "kill_confirmation_timeout": "5s", "max_heap": "4g", "minimum_distinct_states": "16000000", "minimum_generated_states": "120000000", "module": "Raft.tla", "receipt_finalization_allowance": "5s", "seed": "2026071103", "soft_timeout": "295m", "termination_grace": "30s", "tool_asset_id": "477986195", "tool_mode": "required", "tool_sha256": "58d44845a37a8d776deaf8cf3a623213b59d311bc0ec287bcdfbe148dd11bb3d", "total_timeout": "350m", "trace_sample": "required", "unsymmetrized_exploration": "required", "workers": "auto"},
           "minimum_observed_checks": 1,
           "require_peak_rss": true
         },

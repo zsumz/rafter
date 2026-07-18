@@ -20,6 +20,8 @@ print_config=false
 fetch_tool=false
 workers=4
 seed=2026071101
+max_heap="8g"
+fp_mem="0.45"
 
 usage() {
     sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
@@ -29,19 +31,31 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --ci)
             config="RaftCi.cfg"
+            workers=4
+            seed=2026071101
+            max_heap="8g"
+            fp_mem="0.45"
             ;;
         --nightly)
             config="RaftNightly.cfg"
+            workers=auto
             seed=2026071102
+            max_heap="8g"
+            fp_mem="0.45"
             ;;
         --full)
             config="Raft.cfg"
+            workers=auto
             seed=2026071103
+            max_heap="4g"
+            fp_mem="0.45"
             ;;
         --trace-sample)
             config="RaftTraceSample.cfg"
             module="RaftTraceSample.tla"
             workers=1
+            max_heap=""
+            fp_mem=""
             ;;
         --fetch-tool)
             fetch_tool=true
@@ -61,6 +75,9 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
+
+max_heap="${RAFTER_TLA_MAX_HEAP:-$max_heap}"
+fp_mem="${RAFTER_TLA_FP_MEM:-$fp_mem}"
 
 if [[ "$print_config" == true ]]; then
     echo "$config"
@@ -113,5 +130,13 @@ fi
 
 cd "${repo_root}/specs/tla/raft"
 echo "running TLC with ${config}"
-exec java -XX:+UseParallelGC -cp "$jar" tlc2.TLC \
-    -workers "$workers" -seed "$seed" -fp 0 -config "$config" "$module"
+java_args=(-XX:+UseParallelGC)
+if [[ -n "$max_heap" ]]; then
+    java_args=("-Xmx${max_heap}" "${java_args[@]}")
+fi
+tlc_args=(-workers "$workers" -seed "$seed" -fp 0)
+if [[ -n "$fp_mem" ]]; then
+    tlc_args+=(-fpmem "$fp_mem")
+fi
+exec java "${java_args[@]}" -cp "$jar" tlc2.TLC \
+    "${tlc_args[@]}" -config "$config" "$module"

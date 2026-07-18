@@ -44,23 +44,28 @@ fn pr_invariant_aggregate_is_stable_and_fail_closed() {
 
     let tla = job_block(&workflow, "invariants-tla");
     for required in [
-        "timeout-minutes: 205",
-        "Check TLA state capacity",
+        "timeout-minutes: 360",
+        "Check TLA host capacity",
         "required_kib=\"$((8 * 1024 * 1024))\"",
-        "timeout-minutes: 170",
-        "cargo test --locked -p rafter-invariants --lib -- --ignored --test-threads=1",
+        "required_memory_kib=\"$((12 * 1024 * 1024))\"",
+        "timeout-minutes: 350",
     ] {
         assert!(
             tla.contains(required),
             "PR TLA job omitted completion-capacity contract: {required}"
         );
     }
+    let tla_validation = job_block(&workflow, "invariants-tla-validation");
+    assert!(tla_validation
+        .contains("cargo test --locked -p rafter-invariants --lib -- --ignored --test-threads=1"));
 
     let profile = read(&root.join("verification/raft-invariant-profiles.json"));
     for required in [
-        "\"soft_timeout\": \"115m\"",
-        "\"total_timeout\": \"155m\"",
+        "\"soft_timeout\": \"300m\"",
+        "\"total_timeout\": \"338m\"",
         "\"finalization_reserve\": \"2m\"",
+        "\"max_heap\": \"8g\"",
+        "\"fp_mem\": \"0.45\"",
         "\"minimum_generated_states\": \"120000000\"",
         "\"minimum_distinct_states\": \"16000000\"",
     ] {
@@ -75,6 +80,7 @@ fn pr_invariant_aggregate_is_stable_and_fail_closed() {
         "invariants-tests",
         "invariants-simulator",
         "invariants-tla",
+        "invariants-tla-validation",
         "invariants-maelstrom",
     ] {
         assert!(aggregate.contains(&format!("- {dependency}")));
@@ -89,6 +95,7 @@ fn pr_invariant_aggregate_is_stable_and_fail_closed() {
         "needs.invariants-tests.result",
         "needs.invariants-simulator.result",
         "needs.invariants-tla.result",
+        "needs.invariants-tla-validation.result",
         "needs.invariants-maelstrom.result",
         "timeout-minutes: 20",
         "verification/invariant-verdict-schema.json",
@@ -365,6 +372,7 @@ fn weekly_full_tlc_is_source_bound_checkpointed_and_fail_closed() {
         "\"checkpoint_minutes\": \"30\"",
         "\"checkpoint_gzip\": \"required\"",
         "\"max_heap\": \"4g\"",
+        "\"fp_mem\": \"0.45\"",
         "\"checkpoint_recovery\": \"strict-compatible-if-present\"",
         "\"unsymmetrized_exploration\": \"required\"",
     ] {

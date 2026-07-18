@@ -668,7 +668,15 @@ impl Fixture {
                 self.configuration("workers"),
             ),
         };
-        let mut arguments = vec![
+        let configuration = &self.bundle.execution.plan.contract.runners["tla"].configuration;
+        let main_model_check = probe.is_none() && label != "trace-sample";
+        let mut arguments = Vec::new();
+        if main_model_check {
+            if let Some(max_heap) = configuration.get("max_heap") {
+                arguments.push(format!("-Xmx{max_heap}"));
+            }
+        }
+        arguments.extend([
             "-XX:+UseParallelGC".to_owned(),
             "-cp".to_owned(),
             self.root
@@ -683,9 +691,13 @@ impl Fixture {
             self.configuration("seed").to_owned(),
             "-fp".to_owned(),
             "0".to_owned(),
-            "-metadir".to_owned(),
-            "/proc/self/fd/3".to_owned(),
-        ];
+        ]);
+        if main_model_check {
+            if let Some(fp_mem) = configuration.get("fp_mem") {
+                arguments.extend(["-fpmem".to_owned(), fp_mem.clone()]);
+            }
+        }
+        arguments.extend(["-metadir".to_owned(), "/proc/self/fd/3".to_owned()]);
         arguments.extend(["-config".to_owned(), config, module.to_owned()]);
         InvocationReceipt {
             program: "java".to_owned(),

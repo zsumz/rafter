@@ -51,19 +51,68 @@ pub(super) fn validate_runner_options(
     {
         return Err("bounded TLA runner requires the complete model-value symmetry".into());
     }
+    match (
+        configuration.get("config").map(String::as_str),
+        tla_checkpoint::enabled(configuration),
+    ) {
+        (Some("RaftCi.cfg"), false) => {
+            for (name, expected) in [
+                ("workers", "4"),
+                ("soft_timeout", "300m"),
+                ("max_heap", "8g"),
+                ("fp_mem", "0.45"),
+            ] {
+                if required_configuration(configuration, name)? != expected {
+                    return Err(format!("PR TLA runner requires {name}={expected}").into());
+                }
+            }
+        }
+        (Some("RaftNightly.cfg"), true) => {
+            for (name, expected) in [
+                ("workers", "auto"),
+                ("soft_timeout", "295m"),
+                ("checkpoint_minutes", "30"),
+                ("checkpoint_gzip", "required"),
+                ("max_heap", "8g"),
+                ("fp_mem", "0.45"),
+                ("checkpoint_recovery", "strict-compatible-if-present"),
+            ] {
+                if required_configuration(configuration, name)? != expected {
+                    return Err(format!(
+                        "checkpointed nightly TLA runner requires {name}={expected}"
+                    )
+                    .into());
+                }
+            }
+        }
+        _ => {}
+    }
     if tla_checkpoint::enabled(configuration) {
-        for (name, expected) in [
-            ("config", "Raft.cfg"),
-            ("workers", "auto"),
-            ("soft_timeout", "295m"),
-            ("checkpoint_minutes", "30"),
-            ("checkpoint_gzip", "required"),
-            ("max_heap", "4g"),
-            ("checkpoint_recovery", "strict-compatible-if-present"),
-            ("unsymmetrized_exploration", "required"),
-        ] {
-            if required_configuration(configuration, name)? != expected {
-                return Err(format!("checkpointed TLA runner requires {name}={expected}").into());
+        match required_configuration(configuration, "config")? {
+            "Raft.cfg" => {
+                for (name, expected) in [
+                    ("workers", "auto"),
+                    ("soft_timeout", "295m"),
+                    ("checkpoint_minutes", "30"),
+                    ("checkpoint_gzip", "required"),
+                    ("max_heap", "4g"),
+                    ("fp_mem", "0.45"),
+                    ("checkpoint_recovery", "strict-compatible-if-present"),
+                    ("unsymmetrized_exploration", "required"),
+                ] {
+                    if required_configuration(configuration, name)? != expected {
+                        return Err(format!(
+                            "checkpointed weekly TLA runner requires {name}={expected}"
+                        )
+                        .into());
+                    }
+                }
+            }
+            "RaftNightly.cfg" => {}
+            other => {
+                return Err(
+                    format!("checkpointed TLA runner does not support config={other}").into(),
+                )
             }
         }
     }
@@ -572,6 +621,10 @@ mod tests {
             ("trace_sample".to_owned(), "required".to_owned()),
             ("detector_negative".to_owned(), "required".to_owned()),
             ("config".to_owned(), "RaftCi.cfg".to_owned()),
+            ("workers".to_owned(), "4".to_owned()),
+            ("soft_timeout".to_owned(), "300m".to_owned()),
+            ("max_heap".to_owned(), "8g".to_owned()),
+            ("fp_mem".to_owned(), "0.45".to_owned()),
             (
                 "symmetry".to_owned(),
                 "nodes-values-read-requests-product".to_owned(),
@@ -596,6 +649,7 @@ mod tests {
             ("checkpoint_minutes".to_owned(), "30".to_owned()),
             ("checkpoint_gzip".to_owned(), "required".to_owned()),
             ("max_heap".to_owned(), "4g".to_owned()),
+            ("fp_mem".to_owned(), "0.45".to_owned()),
             (
                 "checkpoint_recovery".to_owned(),
                 "strict-compatible-if-present".to_owned(),
@@ -607,6 +661,35 @@ mod tests {
         ]);
         assert!(validate_runner_options(&options).is_ok());
         options.insert("max_heap".to_owned(), "8g".to_owned());
+        assert!(validate_runner_options(&options).is_err());
+    }
+
+    #[test]
+    fn nightly_checkpoint_contract_is_exact() {
+        let mut options = BTreeMap::from([
+            ("module".to_owned(), "Raft.tla".to_owned()),
+            ("fp".to_owned(), "0".to_owned()),
+            ("tool_mode".to_owned(), "required".to_owned()),
+            ("trace_sample".to_owned(), "required".to_owned()),
+            ("detector_negative".to_owned(), "required".to_owned()),
+            ("config".to_owned(), "RaftNightly.cfg".to_owned()),
+            (
+                "symmetry".to_owned(),
+                "nodes-values-read-requests-product".to_owned(),
+            ),
+            ("workers".to_owned(), "auto".to_owned()),
+            ("soft_timeout".to_owned(), "295m".to_owned()),
+            ("checkpoint_minutes".to_owned(), "30".to_owned()),
+            ("checkpoint_gzip".to_owned(), "required".to_owned()),
+            ("max_heap".to_owned(), "8g".to_owned()),
+            ("fp_mem".to_owned(), "0.45".to_owned()),
+            (
+                "checkpoint_recovery".to_owned(),
+                "strict-compatible-if-present".to_owned(),
+            ),
+        ]);
+        assert!(validate_runner_options(&options).is_ok());
+        options.insert("workers".to_owned(), "4".to_owned());
         assert!(validate_runner_options(&options).is_err());
     }
 

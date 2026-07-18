@@ -138,7 +138,6 @@ pub(super) fn execute(
                 .ok_or("compatible checkpoint preparation omitted state handle")?,
             recover_from: preparation.recover_handle.as_ref(),
             checkpoint_minutes: required_configuration(configuration, "checkpoint_minutes")?,
-            max_heap: required_configuration(configuration, "max_heap")?,
         }
     } else {
         TlcState::Ephemeral
@@ -154,6 +153,8 @@ pub(super) fn execute(
         output_dir,
         label: "model-check",
         artifact_kind: "tla-log",
+        max_heap: configuration.get("max_heap").map(String::as_str),
+        fp_mem: configuration.get("fp_mem").map(String::as_str),
         state,
     })?;
     complete_main_execution(
@@ -419,6 +420,8 @@ fn run_trace_probe(
         output_dir,
         label: "trace-sample",
         artifact_kind: "tla-trace-log",
+        max_heap: None,
+        fp_mem: None,
         state: TlcState::Ephemeral,
     })
 }
@@ -559,6 +562,8 @@ fn run_detector_probe(
         output_dir,
         label: &label,
         artifact_kind: &artifact_kind,
+        max_heap: None,
+        fp_mem: None,
         state: TlcState::Ephemeral,
     })?;
     Ok(DetectorRun {
@@ -720,7 +725,6 @@ enum TlcState<'a> {
         state_dir: &'a HeldDirectory,
         recover_from: Option<&'a HeldDirectory>,
         checkpoint_minutes: &'a str,
-        max_heap: &'a str,
     },
 }
 
@@ -736,6 +740,8 @@ struct TlcRequest<'a> {
     output_dir: &'a Path,
     label: &'a str,
     artifact_kind: &'a str,
+    max_heap: Option<&'a str>,
+    fp_mem: Option<&'a str>,
     state: TlcState<'a>,
 }
 
@@ -851,7 +857,7 @@ fn tlc_arguments(
 ) -> Result<Vec<OsString>, Box<dyn Error>> {
     let jar = fs::canonicalize(JAR)?;
     let mut arguments = Vec::new();
-    if let TlcState::Checkpoint { max_heap, .. } = request.state {
+    if let Some(max_heap) = request.max_heap {
         arguments.push(format!("-Xmx{max_heap}").into());
     }
     arguments.extend([
@@ -866,9 +872,11 @@ fn tlc_arguments(
         request.seed.into(),
         "-fp".into(),
         "0".into(),
-        "-metadir".into(),
-        state_dir.as_os_str().to_os_string(),
     ]);
+    if let Some(fp_mem) = request.fp_mem {
+        arguments.extend(["-fpmem".into(), fp_mem.into()]);
+    }
+    arguments.extend(["-metadir".into(), state_dir.as_os_str().to_os_string()]);
     if let TlcState::Checkpoint {
         checkpoint_minutes, ..
     } = request.state

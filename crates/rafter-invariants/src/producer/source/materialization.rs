@@ -207,6 +207,7 @@ fn reviewed_generated_output(path: &Path) -> bool {
     matches!(components.as_slice(), [first, ..] if first == "target" || first == "store")
         || matches!(components.as_slice(), [first, second, ..]
             if (first == "artifacts" && second == "invariants")
+                || (first == "artifacts" && reviewed_tla_evidence_artifact(second))
                 || (first == "bench-compare" && second == "target")
                 || (first == "fuzz" && second == "target")
                 || (first == "tools" && second == "cache"))
@@ -216,6 +217,43 @@ fn reviewed_generated_output(path: &Path) -> bool {
             if first == "specs" && second == "tla" && rest.iter().any(|value| value == "states"))
         || components.iter().any(|value| value == "__pycache__")
         || path.extension().is_some_and(|extension| extension == "pyc")
+}
+
+fn reviewed_tla_evidence_artifact(name: &str) -> bool {
+    matches!(
+        name,
+        "tla-log"
+            | "tla.log"
+            | "tla-trace-log"
+            | "tla-tool"
+            | "tla-spec"
+            | "tla-trace-spec"
+            | "tla-detector-spec"
+            | "tla-runner"
+            | "tla-tool-asset-id"
+            | "tla-tool-checksums"
+            | "tla-config"
+            | "tla-trace-config"
+            | "tla-detector-config"
+            | "tla-mutation-log"
+            | "tla-producer"
+            | "tla-checkpoint-contract"
+            | "tla-checkpoint-inventory"
+            | "tla-checkpoint-recovered-contract"
+            | "tla-checkpoint-recovered-inventory"
+            | "tla-checkpoint-recovery-report"
+    ) || crate::producer::tla_output::DETECTOR_PROBES
+        .into_iter()
+        .any(|probe| {
+            crate::producer::tla_output::detector_log_kind(probe)
+                .is_some_and(|kind| normalize_fixture_artifact_name(&kind) == name)
+                || crate::producer::tla_output::detector_config_kind(probe)
+                    .is_some_and(|kind| normalize_fixture_artifact_name(&kind) == name)
+        })
+}
+
+fn normalize_fixture_artifact_name(kind: &str) -> String {
+    kind.replace(':', "-")
 }
 
 fn parse_tree_inventory(inventory: &str) -> Result<Vec<TreeEntry>, Box<dyn Error>> {

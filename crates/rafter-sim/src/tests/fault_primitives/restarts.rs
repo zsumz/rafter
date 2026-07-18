@@ -2,6 +2,7 @@ use super::super::*;
 use super::fixtures::{
     applied_payloads, commit_payload, elect_node_one_with_pre_vote, production_cluster, LEADER,
 };
+use rafter::Message;
 
 #[test]
 fn a_lossy_restart_preserves_durable_hard_state_and_the_local_committed_prefix() {
@@ -103,6 +104,73 @@ fn a_lossy_restart_confined_to_the_unacknowledged_tail_recovers_cleanly() {
     assert_eq!(
         cluster.log_entries_from(NodeId(2), LogIndex(1)),
         cluster.log_entries_from(LEADER, LogIndex(1)),
+    );
+}
+
+#[test]
+fn a_lossy_restart_preserves_entries_with_in_flight_success_acknowledgements() {
+    let mut cluster = production_cluster();
+    elect_node_one_with_pre_vote(&mut cluster);
+    let follower = NodeId(2);
+
+    cluster.propose(LEADER, b"in-flight-ack".to_vec());
+    assert_eq!(
+        cluster.deliver_matching(|envelope| {
+            envelope.from == LEADER
+                && envelope.to == follower
+                && matches!(
+                    &envelope.message,
+                    Message::AppendEntries(request) if !request.entries.is_empty()
+                )
+        }),
+        1
+    );
+
+    let in_flight_floor = cluster.last_log_index(follower);
+    let follower_log = cluster.log_entries_from(follower, LogIndex(1));
+    assert!(
+        in_flight_floor > cluster.delivered_ack_floor(follower),
+        "the acknowledgement is still queued, not delivered"
+    );
+    assert!(
+        cluster.pending().any(|envelope| {
+            envelope.from == follower
+                && envelope.to == LEADER
+                && matches!(
+                    &envelope.message,
+                    Message::AppendEntriesResponse(response)
+                        if response.success && response.match_index == in_flight_floor
+                )
+        }),
+        "the accepted append has a queued success acknowledgement"
+    );
+
+    cluster.restart_node_lossy(follower);
+    assert_eq!(
+        cluster.last_log_index(follower),
+        in_flight_floor,
+        "lossy restart must preserve entries a queued success acknowledgement can still expose"
+    );
+    assert_eq!(
+        cluster.log_entries_from(follower, LogIndex(1)),
+        follower_log
+    );
+
+    assert_eq!(
+        cluster.deliver_matching(|envelope| {
+            envelope.from == follower
+                && envelope.to == LEADER
+                && matches!(
+                    &envelope.message,
+                    Message::AppendEntriesResponse(response)
+                        if response.success && response.match_index == in_flight_floor
+                )
+        }),
+        1
+    );
+    assert!(
+        cluster.commit_index(LEADER) >= in_flight_floor,
+        "leader may count the queued acknowledgement after the restart"
     );
 }
 

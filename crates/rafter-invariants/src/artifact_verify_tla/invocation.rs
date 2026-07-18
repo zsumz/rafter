@@ -264,8 +264,13 @@ fn expected_tla_arguments(
             .join(label)
     };
     let mut arguments = Vec::new();
-    if checkpointed {
-        arguments.push(format!("-Xmx{}", configuration(bundle, "max_heap")?));
+    if label == "model-check" {
+        if let Some(max_heap) = bundle.execution.plan.contract.runners["tla"]
+            .configuration
+            .get("max_heap")
+        {
+            arguments.push(format!("-Xmx{max_heap}"));
+        }
     }
     arguments.extend([
         "-XX:+UseParallelGC".to_owned(),
@@ -282,6 +287,16 @@ fn expected_tla_arguments(
         configuration(bundle, "seed")?.to_owned(),
         "-fp".to_owned(),
         "0".to_owned(),
+    ]);
+    if label == "model-check" {
+        if let Some(fp_mem) = bundle.execution.plan.contract.runners["tla"]
+            .configuration
+            .get("fp_mem")
+        {
+            arguments.extend(["-fpmem".to_owned(), fp_mem.clone()]);
+        }
+    }
+    arguments.extend([
         "-metadir".to_owned(),
         state_dir.to_string_lossy().into_owned(),
     ]);

@@ -16,7 +16,7 @@ use super::{
 
 fn pr_budget() -> BTreeMap<String, String> {
     BTreeMap::from([
-        (TOTAL_TIMEOUT_KEY.to_owned(), "155m".to_owned()),
+        (TOTAL_TIMEOUT_KEY.to_owned(), "338m".to_owned()),
         (FINALIZATION_RESERVE_KEY.to_owned(), "2m".to_owned()),
     ])
 }
@@ -33,14 +33,14 @@ fn shared_pr_budget_reduces_the_main_timeout_and_preserves_the_reserve() {
     assert_eq!(
         budget.phase_timeout_at(
             started + Duration::from_secs(20 * 60),
-            Duration::from_secs(115 * 60),
+            Duration::from_secs(300 * 60),
         ),
-        Some(Duration::from_secs(115 * 60))
+        Some(Duration::from_secs(300 * 60))
     );
     assert_eq!(
         budget.phase_timeout_at(
-            started + Duration::from_secs(153 * 60),
-            Duration::from_secs(115 * 60),
+            started + Duration::from_secs(336 * 60),
+            Duration::from_secs(300 * 60),
         ),
         None
     );
@@ -120,7 +120,7 @@ fn workflow_caps_cover_the_exact_tla_phase_inventory() {
             "pr",
             ".github/workflows/ci.yml",
             "Produce TLA+ evidence",
-            Some("Validate TLA+ mutation sensitivity and serialized evidence"),
+            None,
         ),
         (
             "nightly",
@@ -156,6 +156,31 @@ fn weekly_tla_job_uses_a_runner_that_can_exceed_the_hosted_six_hour_cap() {
     assert!(workflow_job_block(&workflow, "  invariants-tla:")
         .lines()
         .any(|line| line == "    runs-on: [self-hosted, linux, X64]"));
+}
+
+#[test]
+fn nightly_tla_job_uses_exact_compatible_checkpointing_on_self_hosted_linux() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let workflow = fs::read_to_string(root.join(".github/workflows/nightly.yml"))
+        .expect("read nightly workflow");
+    let job = workflow_job_block(&workflow, "  invariants-tla:");
+
+    assert!(job
+        .lines()
+        .any(|line| line == "    runs-on: [self-hosted, linux, X64]"));
+    for required in [
+        "Restore exact-compatible nightly TLC checkpoint",
+        "target/rafter-invariants/tla-checkpoint/nightly",
+        "tla-nightly-checkpoint-v1-",
+        "cargo run --locked -p rafter-invariants -- run --profile nightly --layer tla",
+        "Save exact-compatible nightly TLC checkpoint",
+        "specs/tla/raft/RaftNightly.cfg",
+    ] {
+        assert!(
+            job.contains(required),
+            "nightly source-bound TLA job omitted: {required}"
+        );
+    }
 }
 
 #[test]

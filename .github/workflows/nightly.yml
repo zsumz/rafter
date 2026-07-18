@@ -117,8 +117,10 @@ jobs:
 
   invariants-tla:
     name: invariants-tla-nightly
-    runs-on: ubuntu-latest
-    timeout-minutes: 210
+    # The source-bound nightly graph is larger than the PR graph; use the same
+    # checkpoint-capable runner class as weekly while keeping the step capped.
+    runs-on: [self-hosted, linux, X64]
+    timeout-minutes: 400
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.88
@@ -137,9 +139,23 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+      - name: Restore exact-compatible nightly TLC checkpoint
+        id: checkpoint-restore
+        uses: actions/cache/restore@v4
+        with:
+          path: target/rafter-invariants/tla-checkpoint/nightly
+          key: tla-nightly-checkpoint-v1-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/RaftNightly.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS', 'Cargo.lock', 'crates/rafter-invariants/src/producer/*.rs', 'crates/rafter-invariants/src/producer/filesystem/**/*.rs', 'crates/rafter-invariants/src/producer/process/**/*.rs', 'crates/rafter-invariants/src/producer/tla_checkpoint/**/*.rs', 'crates/rafter-invariants/src/receipt_tla.rs', 'crates/rafter-invariants/src/artifact_verify_tla.rs') }}-${{ github.run_id }}-${{ github.run_attempt }}
+          restore-keys: |
+            tla-nightly-checkpoint-v1-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/RaftNightly.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS', 'Cargo.lock', 'crates/rafter-invariants/src/producer/*.rs', 'crates/rafter-invariants/src/producer/filesystem/**/*.rs', 'crates/rafter-invariants/src/producer/process/**/*.rs', 'crates/rafter-invariants/src/producer/tla_checkpoint/**/*.rs', 'crates/rafter-invariants/src/receipt_tla.rs', 'crates/rafter-invariants/src/artifact_verify_tla.rs') }}-
       - name: Produce source-bound nightly TLA+ evidence
-        timeout-minutes: 180
+        timeout-minutes: 360
         run: cargo run --locked -p rafter-invariants -- run --profile nightly --layer tla
+      - name: Save exact-compatible nightly TLC checkpoint
+        if: ${{ always() && hashFiles('target/rafter-invariants/tla-checkpoint/nightly/CACHE_VALID') != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: target/rafter-invariants/tla-checkpoint/nightly
+          key: tla-nightly-checkpoint-v1-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/RaftNightly.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS', 'Cargo.lock', 'crates/rafter-invariants/src/producer/*.rs', 'crates/rafter-invariants/src/producer/filesystem/**/*.rs', 'crates/rafter-invariants/src/producer/process/**/*.rs', 'crates/rafter-invariants/src/producer/tla_checkpoint/**/*.rs', 'crates/rafter-invariants/src/receipt_tla.rs', 'crates/rafter-invariants/src/artifact_verify_tla.rs') }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Upload nightly TLA+ evidence and counterexamples
         if: always()
         uses: actions/upload-artifact@v4
