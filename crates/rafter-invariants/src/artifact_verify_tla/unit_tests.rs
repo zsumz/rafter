@@ -7,7 +7,7 @@ use crate::producer::{
 use crate::InvocationReceipt;
 use std::collections::BTreeMap;
 
-const SHA: &str = "58d44845a37a8d776deaf8cf3a623213b59d311bc0ec287bcdfbe148dd11bb3d";
+const SHA: &str = "cc4803dce2a8ffaf0f5920a9dc39df4b5ee34ab4cb53fb58ac557277a7e516b3";
 
 #[test]
 fn tool_checksum_binding_is_exact_and_unique() {

@@ -182,6 +182,10 @@ jobs:
         with:
           path: tools/cache
           key: tla2tools-${{ hashFiles('tools/tla/VERSION', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS') }}
+      # These tests invoke java directly, so a cold cache must be populated
+      # explicitly rather than relying on the long TLA producer job.
+      - name: Fetch and verify pinned tla2tools.jar
+        run: scripts/tla-model-check --fetch-tool
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
