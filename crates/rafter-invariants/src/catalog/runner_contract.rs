@@ -30,6 +30,8 @@ struct TlaConfiguration {
     config: String,
     detector_negative: String,
     fp: String,
+    #[serde(default)]
+    fp_mem: Option<String>,
     java_major: String,
     kill_confirmation_timeout: String,
     minimum_distinct_states: String,
@@ -212,22 +214,29 @@ fn validate_tla(profile: &str, configuration: &BTreeMap<String, String>) -> Resu
         "pr" => {
             contract.config == "RaftCi.cfg"
                 && contract.seed == "2026071101"
-                && contract.soft_timeout == "115m"
+                && contract.soft_timeout == "300m"
                 && contract.workers == "4"
                 && contract.finalization_reserve.as_deref() == Some("2m")
+                && contract.max_heap.as_deref() == Some("8g")
+                && contract.fp_mem.as_deref() == Some("0.45")
                 && contract.symmetry.as_deref() == Some("nodes-values-read-requests-product")
-                && contract.total_timeout.as_deref() == Some("155m")
+                && contract.total_timeout.as_deref() == Some("338m")
                 && no_checkpoint_configuration(&contract)
         }
         "nightly" => {
             contract.config == "RaftNightly.cfg"
                 && contract.seed == "2026071102"
-                && contract.soft_timeout == "115m"
-                && contract.workers == "4"
+                && contract.soft_timeout == "295m"
+                && contract.workers == "auto"
                 && contract.symmetry.as_deref() == Some("nodes-values-read-requests-product")
+                && contract.checkpoint_gzip.as_deref() == Some("required")
+                && contract.checkpoint_minutes.as_deref() == Some("30")
+                && contract.checkpoint_recovery.as_deref() == Some("strict-compatible-if-present")
+                && contract.max_heap.as_deref() == Some("8g")
+                && contract.fp_mem.as_deref() == Some("0.45")
                 && contract.finalization_reserve.as_deref() == Some("10m")
-                && contract.total_timeout.as_deref() == Some("165m")
-                && no_checkpoint_configuration(&contract)
+                && contract.total_timeout.as_deref() == Some("350m")
+                && contract.unsymmetrized_exploration.is_none()
         }
         "weekly" => {
             contract.config == "Raft.cfg"
@@ -238,6 +247,7 @@ fn validate_tla(profile: &str, configuration: &BTreeMap<String, String>) -> Resu
                 && contract.checkpoint_minutes.as_deref() == Some("30")
                 && contract.checkpoint_recovery.as_deref() == Some("strict-compatible-if-present")
                 && contract.max_heap.as_deref() == Some("4g")
+                && contract.fp_mem.as_deref() == Some("0.45")
                 && contract.unsymmetrized_exploration.as_deref() == Some("required")
                 && contract.finalization_reserve.as_deref() == Some("10m")
                 && contract.symmetry.is_none()
@@ -254,7 +264,6 @@ fn no_checkpoint_configuration(contract: &TlaConfiguration) -> bool {
     contract.checkpoint_gzip.is_none()
         && contract.checkpoint_minutes.is_none()
         && contract.checkpoint_recovery.is_none()
-        && contract.max_heap.is_none()
         && contract.unsymmetrized_exploration.is_none()
 }
 

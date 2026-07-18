@@ -167,8 +167,7 @@ impl Fixture {
     }
 
     fn materialize_serialized_bundle(&mut self, workspace: &Path, producer_root: &Path) {
-        fs::copy(workspace.join("Cargo.lock"), self.root.join("Cargo.lock"))
-            .expect("copy Cargo.lock");
+        copy_tracked_workspace(workspace, &self.root);
         for (path, input) in [
             (
                 "verification/raft-invariants.yaml",
@@ -358,6 +357,36 @@ fn is_tla_process_artifact(kind: &str) -> bool {
         kind,
         "tla-log" | "tla-trace-log" | MUTATION_SUITE_ARTIFACT_KIND
     ) || kind.starts_with("tla-detector-log")
+}
+
+fn copy_tracked_workspace(from: &Path, to: &Path) {
+    let output = Command::new("git")
+        .args(["ls-files", "-z"])
+        .current_dir(from)
+        .output()
+        .expect("list tracked fixture source files");
+    assert!(
+        output.status.success(),
+        "git ls-files failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    for entry in output.stdout.split(|byte| *byte == 0) {
+        if entry.is_empty() {
+            continue;
+        }
+        let path = std::str::from_utf8(entry).expect("tracked path is utf-8");
+        let source = from.join(path);
+        let destination = to.join(path);
+        fs::create_dir_all(destination.parent().expect("tracked file parent"))
+            .expect("create tracked file parent");
+        fs::copy(&source, &destination).unwrap_or_else(|error| {
+            panic!(
+                "copy tracked fixture source {} to {}: {error}",
+                source.display(),
+                destination.display()
+            )
+        });
+    }
 }
 
 fn git(root: &Path, arguments: &[&str]) {

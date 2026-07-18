@@ -1,5 +1,6 @@
 use rafter::{
-    BootstrapState, BootstrapValidationError, InMemorySnapshotChunkSource, LogIndex, Node, NodeId,
+    BootstrapState, BootstrapValidationError, InMemorySnapshotChunkSource, LogIndex, Message, Node,
+    NodeId,
 };
 
 use crate::Cluster;
@@ -197,15 +198,14 @@ impl Cluster {
             .expect("marked lossy restart composes a valid bootstrap state");
     }
 
-    /// Restarts `node_id` losing exactly the log tail no leader ever heard
-    /// acknowledged and that the node has not locally committed: the log
-    /// rewinds to the delivered-acknowledgement floor, the local commit floor,
-    /// or the snapshot boundary, whichever is highest. Hard state, the local
-    /// commit floor, the committed configuration identity, and the snapshot
-    /// survive. Legal by construction — every lost entry's acknowledgement
-    /// envelope was still in flight or dropped, and no local committed prefix
-    /// is erased — so schedules may apply it freely without weakening the
-    /// safety invariants.
+    /// Restarts `node_id` losing exactly the log tail no leader can legally
+    /// count and that the node has not locally committed: the log rewinds to
+    /// the delivered-acknowledgement floor, any in-flight acknowledgement floor,
+    /// the local commit floor, or the snapshot boundary, whichever is highest.
+    /// Hard state, the local commit floor, the committed configuration
+    /// identity, and the snapshot survive. Legal by construction: a queued
+    /// success acknowledgement may still be delivered after the restart, so its
+    /// reported match index is part of the durable retention floor.
     ///
     /// # Panics
     ///
@@ -218,6 +218,7 @@ impl Cluster {
             .get(&node_id)
             .copied()
             .unwrap_or(LogIndex::ZERO)
+            .max(self.in_flight_ack_floor(node_id))
             .max(live.commit_index)
             .max(live.snapshot.as_ref().map_or(LogIndex::ZERO, |snapshot| {
                 snapshot.metadata.last_included_index
@@ -245,6 +246,26 @@ impl Cluster {
         self.delivered_ack_floor
             .get(&node_id)
             .copied()
+            .unwrap_or(LogIndex::ZERO)
+    }
+
+    fn in_flight_ack_floor(&self, node_id: NodeId) -> LogIndex {
+        self.network
+            .iter()
+            .filter_map(|queued| match &queued.envelope.message {
+                Message::AppendEntriesResponse(response)
+                    if response.success && response.follower_id == node_id =>
+                {
+                    Some(response.match_index)
+                }
+                Message::InstallSnapshotResponse(response)
+                    if response.success && response.follower_id == node_id =>
+                {
+                    Some(response.last_included_index)
+                }
+                _ => None,
+            })
+            .max()
             .unwrap_or(LogIndex::ZERO)
     }
 

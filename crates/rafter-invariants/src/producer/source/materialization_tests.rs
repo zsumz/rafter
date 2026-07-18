@@ -385,6 +385,27 @@ fn nested_target_allowlist_is_exact() {
 }
 
 #[test]
+fn tla_evidence_artifacts_are_reviewed_generated_output() {
+    assert!(reviewed_generated_output(Path::new("artifacts/tla-config")));
+    assert!(reviewed_generated_output(Path::new("artifacts/tla.log")));
+    assert!(reviewed_generated_output(Path::new(
+        "artifacts/tla-producer"
+    )));
+    assert!(reviewed_generated_output(Path::new(
+        "artifacts/tla-detector-config-ElectionSafety"
+    )));
+    assert!(reviewed_generated_output(Path::new(
+        "artifacts/tla-detector-log-ElectionSafety"
+    )));
+    assert!(!reviewed_generated_output(Path::new(
+        "artifacts/tla-detector-config-UnknownPredicate"
+    )));
+    assert!(!reviewed_generated_output(Path::new(
+        "artifacts/unchecked-source.rs"
+    )));
+}
+
+#[test]
 fn arbitrary_nested_cargo_target_roots_fail_closed() {
     let repository = TestRepository::new();
     fs::write(
