@@ -1,8 +1,15 @@
+//! Profile-owned simulator execution bounds, floors, and observation keys.
+
 use std::collections::{BTreeMap, BTreeSet};
 
-use serde::{de, Deserialize, Deserializer};
+use serde::Deserialize;
 
-use super::{Catalog, SimulatorCheckContract};
+use super::{RunnerContract, SimulatorCheckContract};
+use crate::contract::catalog::Catalog;
+
+mod serde_support;
+
+use serde_support::{optional_string_u64, state_floors, string_u64};
 
 const PR_SOAK_STEPS: u64 = 320;
 const NIGHTLY_SOAK_STEPS: u64 = 1_024;
@@ -262,43 +269,14 @@ pub(crate) fn per_check_observation_key(check_id: &str, observation: &str) -> St
     format!("observed:{check_id}:{observation}")
 }
 
-fn string_u64<'de, D>(deserializer: D) -> Result<u64, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    String::deserialize(deserializer)?
-        .parse()
-        .map_err(de::Error::custom)
-}
-
-fn optional_string_u64<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Option::<String>::deserialize(deserializer)?
-        .map(|value| value.parse().map_err(de::Error::custom))
-        .transpose()
-}
-
-fn state_floors<'de, D>(deserializer: D) -> Result<SimulatorStateFloors, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    let value = String::deserialize(deserializer)?;
-    if value == "per-evidence" {
-        return Ok(SimulatorStateFloors::PerEvidence);
-    }
-    let count = value
-        .strip_suffix("-protocol-and-verifier")
-        .ok_or_else(|| de::Error::custom("unsupported simulator state-floor policy"))?
-        .parse::<u64>()
-        .map_err(de::Error::custom)?;
-    Ok(SimulatorStateFloors::Aggregate {
-        protocol: count,
-        verifier: count,
-    })
-}
-
 #[cfg(test)]
-#[path = "simulator_contract_tests.rs"]
+#[path = "simulator/tests.rs"]
 mod tests;
+
+impl RunnerContract {
+    pub(crate) fn simulator_configuration(
+        &self,
+    ) -> Result<SimulatorRunnerConfiguration, serde_json::Error> {
+        serde_json::from_value(serde_json::to_value(&self.configuration)?)
+    }
+}

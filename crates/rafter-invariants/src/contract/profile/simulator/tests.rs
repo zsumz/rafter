@@ -1,3 +1,5 @@
+//! Scenarios: simulator profiles decode strictly and retain reviewed bounds.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use syn::{visit::Visit, Expr, ExprCall, Item, Lit};
@@ -230,7 +232,7 @@ fn source_fast_check_ids() -> BTreeSet<String> {
     }
 
     let source =
-        include_str!("../../../rafter-sim/src/bin/rafter_model_check_fast/runner/checks.rs");
+        include_str!("../../../../../rafter-sim/src/bin/rafter_model_check_fast/runner/checks.rs");
     let file = syn::parse_file(source).expect("fast runner parses as Rust");
     let function = file
         .items
