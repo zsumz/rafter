@@ -30,7 +30,7 @@ fn tool_checksum_binding_is_exact_and_unique() {
 #[test]
 fn detector_counterexample_identity_must_match_its_predicate() {
     let log = ProcessLog {
-        schema_version: 2,
+        schema_version: 4,
         label: "detector-negative-ElectionSafety".to_owned(),
         invocation: InvocationReceipt {
             program: "java".to_owned(),
@@ -39,6 +39,7 @@ fn detector_counterexample_identity_must_match_its_predicate() {
             current_dir: ".".to_owned(),
             environment: BTreeMap::new(),
             environment_sha256: "0".repeat(64),
+            launchers: crate::receipt::fixture_launchers(false),
         },
         exit_code: Some(12),
         timed_out: false,
