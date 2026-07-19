@@ -4,7 +4,7 @@ use std::{
 };
 
 use crate::{
-    catalog::{ProfileContract, RunnerContract},
+    contract::profile::{ProfileContract, RunnerContract},
     ArtifactRef, CheckCompletion, CheckReceipt, EvidenceDescriptor, EvidenceResult, EvidenceStatus,
     FailureClassification, ResultBundle,
 };
@@ -24,7 +24,7 @@ pub(super) fn collect_results(
     let mut harness_errors = Vec::new();
     let mut artifacts = BTreeSet::new();
     for bundle in bundles {
-        if bundle.schema_version != crate::types::RESULT_SCHEMA_VERSION {
+        if bundle.schema_version != crate::evidence::RESULT_SCHEMA_VERSION {
             harness_errors.push(format!(
                 "runner {} used unsupported result schema {}",
                 bundle.runner, bundle.schema_version
