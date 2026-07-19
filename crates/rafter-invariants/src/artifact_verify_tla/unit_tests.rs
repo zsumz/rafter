@@ -1,10 +1,12 @@
 use super::{checkpoint::validate_inventory, checksum_matches, successful_detector};
-use crate::producer::{
-    tla_checkpoint::{CheckpointFile, CheckpointInventory},
-    tla_output::TlcSummary,
-    ProcessLog,
-};
 use crate::InvocationReceipt;
+use crate::{
+    evidence::format::process::ProcessLog,
+    producer::{
+        tla_checkpoint::{CheckpointFile, CheckpointInventory},
+        tla_output::TlcSummary,
+    },
+};
 use std::collections::BTreeMap;
 
 const SHA: &str = "cc4803dce2a8ffaf0f5920a9dc39df4b5ee34ab4cb53fb58ac557277a7e516b3";

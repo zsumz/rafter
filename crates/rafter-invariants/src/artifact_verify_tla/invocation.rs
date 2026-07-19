@@ -1,3 +1,5 @@
+//! Exact TLA+ process invocation and source-checkout binding.
+
 use std::{
     fs,
     path::{Component, Path, PathBuf},
@@ -18,7 +20,7 @@ pub(super) fn read_process_log(
     label: &str,
     root: &Path,
     producer_repository: &Path,
-) -> Result<crate::producer::ProcessLog, AggregateError> {
+) -> Result<crate::evidence::format::process::ProcessLog, AggregateError> {
     let log = read_bound_process_log(check, kind, label, root)?;
     verify_tla_invocation(
         bundle,
@@ -37,7 +39,7 @@ pub(super) fn read_initial_process_log(
     kind: &str,
     label: &str,
     root: &Path,
-) -> Result<(crate::producer::ProcessLog, PathBuf), AggregateError> {
+) -> Result<(crate::evidence::format::process::ProcessLog, PathBuf), AggregateError> {
     let log = read_bound_process_log(check, kind, label, root)?;
     let producer_repository = producer_repository(&log.invocation.current_dir)?;
     verify_tla_invocation(
@@ -56,9 +58,9 @@ pub(super) fn read_bound_process_log(
     kind: &str,
     label: &str,
     root: &Path,
-) -> Result<crate::producer::ProcessLog, AggregateError> {
+) -> Result<crate::evidence::format::process::ProcessLog, AggregateError> {
     let source = read_kind(check, kind, root)?;
-    let log: crate::producer::ProcessLog = serde_json::from_str(&source)
+    let log = crate::evidence::format::process::parse_tla_v3(&source)
         .map_err(|error| AggregateError::new(format!("parse TLA process log: {error}")))?;
     let valid_termination = log.termination.as_ref().is_some_and(|termination| {
         termination.process_group
@@ -66,9 +68,8 @@ pub(super) fn read_bound_process_log(
             && ((!log.timed_out && !termination.term_signal_sent && !termination.kill_signal_sent)
                 || (log.timed_out && termination.term_signal_sent))
     });
-    if log.schema_version != 3
-        || log.label != label
-        || !log.has_complete_invocation()
+    if log.label != label
+        || !crate::receipt::process_invocation_is_complete(&log.invocation)
         || !valid_termination
     {
         return Err(AggregateError::new(format!(
@@ -85,7 +86,7 @@ pub(super) fn optional_process_log(
     label: &str,
     root: &Path,
     producer_repository: &Path,
-) -> Result<Option<crate::producer::ProcessLog>, AggregateError> {
+) -> Result<Option<crate::evidence::format::process::ProcessLog>, AggregateError> {
     has_kind(check, kind)?
         .then(|| read_process_log(bundle, check, kind, label, root, producer_repository))
         .transpose()
