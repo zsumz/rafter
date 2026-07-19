@@ -593,11 +593,12 @@ fn serialized_verifier_rederives_each_check_floor_and_purpose_witness() {
 
     assert_eq!(issue, Some(RawEventIssue::CoverageNotReached));
     assert_eq!(
-        observations[&crate::catalog::per_check_protocol_states_key("variant")],
+        observations[&crate::contract::profile::per_check_protocol_states_key("variant")],
         100_000
     );
     assert_eq!(
-        observations[&crate::catalog::per_check_observation_key("variant", "variant_purpose")],
+        observations
+            [&crate::contract::profile::per_check_observation_key("variant", "variant_purpose")],
         0
     );
 }

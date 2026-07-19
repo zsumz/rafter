@@ -1,6 +1,6 @@
 use super::{
-    validate_simulator_schedule, verify_producer_invocation_paths, verify_resource_metrics,
-    verify_simulator_observations, EVENT_PREFIX,
+    validate_simulator_schedule, verify_liveness_observations, verify_producer_invocation_paths,
+    verify_resource_metrics, verify_simulator_observations, EVENT_PREFIX,
 };
 use crate::producer::expected_scheduled_seeds;
 use serde_json::json;
@@ -347,7 +347,7 @@ fn scheduled_simulator_log_proves_exact_source_derived_plan() {
     )
     .is_err());
     changed = configuration;
-    changed.state_floors = crate::catalog::SimulatorStateFloors::Aggregate {
+    changed.state_floors = crate::contract::profile::SimulatorStateFloors::Aggregate {
         protocol: 100_000_001,
         verifier: 100_000_001,
     };
@@ -479,10 +479,15 @@ fn raw_reports_reject_coordinated_receipt_binding_tampering() {
         .iter()
         .position(|check| check.evidence_ids == [descriptor.evidence_id()])
         .expect("proposal progress check");
-    let (fixture_identity, contracts, events) = crate::catalog::liveness_report_tests::fixture();
-    let binding =
-        crate::catalog::derive_liveness_binding("pr", &fixture_identity, &contracts, &events)
-            .expect("valid raw reports bind");
+    let (fixture_identity, contracts, events) =
+        crate::verification::simulator::liveness_report_tests::fixture();
+    let binding = crate::verification::simulator::derive_verified_liveness_binding(
+        "pr",
+        &fixture_identity,
+        &contracts,
+        &events,
+    )
+    .expect("valid raw reports bind");
     let check = &mut bundle.execution.checks[check_index];
     check.observations = BTreeMap::from([
         ("runs:raft-soak".to_owned(), 1),
@@ -509,7 +514,7 @@ fn raw_reports_reject_coordinated_receipt_binding_tampering() {
         .as_mut()
         .expect("liveness binding remains");
     binding.reports[0].report_sha256 = "f".repeat(64);
-    binding.reports_sha256 = crate::catalog::liveness_reports_digest(&binding.reports);
+    binding.reports_sha256 = crate::evidence::liveness_reports_digest(&binding.reports);
     let error =
         verify_simulator_observations(&bundle, &tampered, &fixture_identity, &contracts, &events)
             .expect_err("coordinated binding tamper must fail");
@@ -522,9 +527,12 @@ fn raw_reports_reject_coordinated_execution_contract_tampering() {
     let descriptor = proposal_progress_descriptor(&catalog);
     let mut bundle = simulator_bundle(&catalog, &manifest);
     let check_index = proposal_progress_check_index(&bundle, descriptor);
-    let (identity, contracts, mut events) = crate::catalog::liveness_report_tests::fixture();
-    let binding = crate::catalog::derive_liveness_binding("pr", &identity, &contracts, &events)
-        .expect("valid raw reports bind");
+    let (identity, contracts, mut events) =
+        crate::verification::simulator::liveness_report_tests::fixture();
+    let binding = crate::verification::simulator::derive_verified_liveness_binding(
+        "pr", &identity, &contracts, &events,
+    )
+    .expect("valid raw reports bind");
     prepare_fixture_check(
         &mut bundle.execution.checks[check_index],
         &identity,
@@ -540,9 +548,9 @@ fn raw_reports_reject_coordinated_execution_contract_tampering() {
     for report in &mut receipt.reports {
         report.execution_contract.max_proposals = 25;
         report.execution_contract_sha256 =
-            crate::catalog::execution_contract_digest(&report.execution_contract);
+            crate::evidence::execution_contract_digest(&report.execution_contract);
     }
-    receipt.reports_sha256 = crate::catalog::liveness_reports_digest(&receipt.reports);
+    receipt.reports_sha256 = crate::evidence::liveness_reports_digest(&receipt.reports);
 
     let error = verify_simulator_observations(
         &bundle,
@@ -561,9 +569,12 @@ fn raw_reports_reject_complete_report_set_substitution() {
     let descriptor = proposal_progress_descriptor(&catalog);
     let mut bundle = simulator_bundle(&catalog, &manifest);
     let check_index = proposal_progress_check_index(&bundle, descriptor);
-    let (identity, contracts, mut events) = crate::catalog::liveness_report_tests::fixture();
-    let binding = crate::catalog::derive_liveness_binding("pr", &identity, &contracts, &events)
-        .expect("valid raw reports bind");
+    let (identity, contracts, mut events) =
+        crate::verification::simulator::liveness_report_tests::fixture();
+    let binding = crate::verification::simulator::derive_verified_liveness_binding(
+        "pr", &identity, &contracts, &events,
+    )
+    .expect("valid raw reports bind");
     prepare_fixture_check(
         &mut bundle.execution.checks[check_index],
         &identity,
@@ -587,6 +598,44 @@ fn raw_reports_reject_complete_report_set_substitution() {
     )
     .expect_err("complete report-set substitution must fail");
     assert!(error.to_string().contains("unknown"));
+}
+
+#[test]
+fn nonpassing_receipt_cannot_mask_a_malformed_structured_liveness_report() {
+    let (catalog, manifest) = crate::tests::loaded();
+    let descriptor = proposal_progress_descriptor(&catalog);
+    let mut bundle = simulator_bundle(&catalog, &manifest);
+    let check_index = proposal_progress_check_index(&bundle, descriptor);
+    let (identity, contracts, mut events) =
+        crate::verification::simulator::liveness_report_tests::fixture();
+    let execution_id = bundle.execution.checks[check_index].execution_id.clone();
+    for result in bundle
+        .results
+        .iter_mut()
+        .filter(|result| result.execution_id == execution_id)
+    {
+        result.status = crate::EvidenceStatus::Incomplete;
+        result.classification = Some(crate::FailureClassification::CoverageNotReached);
+    }
+    let check = &mut bundle.execution.checks[check_index];
+    check.completion = crate::CheckCompletion::CoverageNotReached;
+    check.simulator_liveness = None;
+    events.get_mut("raft-soak").expect("soak events")[0]["status"] = json!("incomplete");
+    events.get_mut("raft-soak").expect("soak events")[0]["liveness_reports"][0]["preconditions"]
+        ["reachable_voters"] = json!(99);
+
+    let error = verify_liveness_observations(
+        &bundle,
+        &bundle.execution.checks[check_index],
+        &identity,
+        &contracts,
+        &events,
+        &mut BTreeMap::new(),
+    )
+    .expect_err("malformed nonpassing reports must remain a harness error");
+    assert!(error
+        .to_string()
+        .contains("raw liveness reports are invalid"));
 }
 
 fn proposal_progress_descriptor(catalog: &crate::Catalog) -> &crate::EvidenceDescriptor {
@@ -628,7 +677,7 @@ fn proposal_progress_check_index(
 fn prepare_fixture_check(
     check: &mut crate::CheckReceipt,
     identity: &crate::SimulatorIdentity,
-    binding: crate::types::SimulatorLivenessBinding,
+    binding: crate::evidence::SimulatorLivenessBinding,
 ) {
     check.observations = BTreeMap::from([
         ("runs:raft-soak".to_owned(), 1),
@@ -693,7 +742,9 @@ fn scheduled_log(source_ref: &str) -> String {
     format!("{}\n", lines.join("\n"))
 }
 
-fn simulator_configuration(profile: &str) -> crate::catalog::SimulatorRunnerConfiguration {
+fn simulator_configuration(
+    profile: &str,
+) -> crate::contract::profile::SimulatorRunnerConfiguration {
     let (_, manifest) = crate::tests::loaded();
     manifest.profiles[profile].runners["simulator"]
         .simulator_configuration()
