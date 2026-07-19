@@ -1,5 +1,7 @@
 //! Public detector-fixture source binding backed by independent verification.
 
+use crate::contract::TestIdentity;
+
 /// Exact fixture and detector sources bound to one detector test identity.
 #[doc(hidden)]
 #[derive(Debug)]
@@ -9,7 +11,7 @@ pub struct DetectorFixtureSourceBinding<'a> {
     pub source_root: &'a std::path::Path,
     pub fixture_path: &'a std::path::Path,
     pub detector_path: &'a std::path::Path,
-    pub test_identity: &'a crate::TestIdentity,
+    pub test_identity: &'a TestIdentity,
     pub fixture: &'a str,
     pub detector: &'a str,
 }
