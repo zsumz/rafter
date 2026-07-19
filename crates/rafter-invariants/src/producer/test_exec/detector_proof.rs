@@ -22,6 +22,7 @@ use std::{
 };
 
 use super::super::process;
+use crate::evidence::detector_proof as proof_wire;
 
 pub(super) struct Execution {
     pub output: process::ProcessOutput,
@@ -37,7 +38,7 @@ pub(super) fn execute(
 ) -> Result<Execution, Box<dyn Error>> {
     let (socket, responder, challenge) = challenge_listener()?;
     environment.insert(
-        crate::detector_proof::PROOF_SOCKET_ENV.to_owned(),
+        proof_wire::PROOF_SOCKET_ENV.to_owned(),
         socket.to_string_lossy().into_owned(),
     );
     let output = process::timed_for(
@@ -67,7 +68,7 @@ pub(super) fn execute_for_test(
 ) -> Result<Execution, Box<dyn Error>> {
     let (socket, responder, challenge) = challenge_listener()?;
     environment.insert(
-        crate::detector_proof::PROOF_SOCKET_ENV.to_owned(),
+        proof_wire::PROOF_SOCKET_ENV.to_owned(),
         socket.to_string_lossy().into_owned(),
     );
     let invocation = process::expected_invocation(program, arguments, environment, Path::new("."))?;
@@ -105,12 +106,12 @@ pub(super) fn execute_for_test(
 fn complete_execution(
     output: Result<process::ProcessOutput, Box<dyn Error>>,
     response: Result<bool, Box<dyn Error>>,
-    challenge: &[u8; crate::detector_proof::CHALLENGE_BYTES],
+    challenge: &[u8; proof_wire::CHALLENGE_BYTES],
 ) -> Result<Execution, Box<dyn Error>> {
     match output {
         Ok(output) => Ok(Execution {
             output,
-            challenge: crate::detector_proof::encode_challenge(challenge),
+            challenge: proof_wire::encode_challenge(challenge),
             channel_error: response.err().map(|error| error.to_string()),
         }),
         Err(process_error) => match response {
@@ -128,26 +129,26 @@ fn challenge_listener() -> Result<
     (
         PathBuf,
         ChallengeResponder,
-        [u8; crate::detector_proof::CHALLENGE_BYTES],
+        [u8; proof_wire::CHALLENGE_BYTES],
     ),
     Box<dyn Error>,
 > {
     static NEXT_SOCKET: AtomicU64 = AtomicU64::new(0);
-    let mut challenge = [0_u8; crate::detector_proof::CHALLENGE_BYTES];
-    let mut socket_nonce = [0_u8; crate::detector_proof::SOCKET_NONCE_BYTES];
+    let mut challenge = [0_u8; proof_wire::CHALLENGE_BYTES];
+    let mut socket_nonce = [0_u8; proof_wire::SOCKET_NONCE_BYTES];
     let mut random = File::open("/dev/urandom")?;
     random.read_exact(&mut challenge)?;
     random.read_exact(&mut socket_nonce)?;
-    let directory = Path::new(crate::detector_proof::PROOF_SOCKET_DIRECTORY);
+    let directory = Path::new(proof_wire::PROOF_SOCKET_DIRECTORY);
     prepare_socket_directory(directory)?;
-    let socket_nonce = crate::detector_proof::encode_socket_nonce(&socket_nonce);
+    let socket_nonce = proof_wire::encode_socket_nonce(&socket_nonce);
     let socket = directory.join(format!(
         "{}-{}-{}.sock",
         std::process::id(),
         NEXT_SOCKET.fetch_add(1, Ordering::Relaxed),
         socket_nonce,
     ));
-    if !crate::detector_proof::managed_socket_path(&socket) {
+    if !proof_wire::managed_socket_path(&socket) {
         return Err("constructed detector proof socket has an invalid path".into());
     }
     let listener = UnixListener::bind(&socket)?;
@@ -190,9 +191,7 @@ fn prune_stale_sockets(directory: &Path) -> Result<(), Box<dyn Error>> {
     const STALE_AFTER: Duration = Duration::from_secs(24 * 60 * 60);
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
-        if !entry.file_type()?.is_socket()
-            || !crate::detector_proof::managed_socket_path(&entry.path())
-        {
+        if !entry.file_type()?.is_socket() || !proof_wire::managed_socket_path(&entry.path()) {
             continue;
         }
         let Ok(modified) = entry.metadata()?.modified() else {
@@ -220,7 +219,7 @@ impl ChallengeResponder {
     fn start(
         listener: UnixListener,
         socket: PathBuf,
-        challenge: [u8; crate::detector_proof::CHALLENGE_BYTES],
+        challenge: [u8; proof_wire::CHALLENGE_BYTES],
     ) -> Result<Self, Box<dyn Error>> {
         listener.set_nonblocking(true)?;
         let cancel = Arc::new(AtomicBool::new(false));
@@ -289,7 +288,7 @@ impl Drop for ChallengeResponder {
 #[cfg(unix)]
 fn answer_challenge(
     mut stream: UnixStream,
-    challenge: &[u8; crate::detector_proof::CHALLENGE_BYTES],
+    challenge: &[u8; proof_wire::CHALLENGE_BYTES],
     cancel: &AtomicBool,
 ) -> Result<bool, String> {
     stream
@@ -301,7 +300,7 @@ fn answer_challenge(
         }
         let mut request = [0_u8; 1];
         match stream.read_exact(&mut request) {
-            Ok(()) if request[0] == crate::detector_proof::PROOF_REQUEST => {
+            Ok(()) if request[0] == proof_wire::PROOF_REQUEST => {
                 stream
                     .write_all(challenge)
                     .map_err(|error| format!("write detector challenge: {error}"))?;
