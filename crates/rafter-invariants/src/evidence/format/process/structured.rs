@@ -7,7 +7,7 @@ use super::{
     ProcessLog, ProcessObservation, MAELSTROM_PROCESS_SCHEMA_VERSION, TLA_PROCESS_SCHEMA_VERSION,
 };
 
-pub(crate) fn encode_maelstrom_v2(
+pub(crate) fn encode_maelstrom_v3(
     label: &str,
     observation: ProcessObservation<'_>,
 ) -> Result<Vec<u8>, ProcessFormatError> {
@@ -17,7 +17,7 @@ pub(crate) fn encode_maelstrom_v2(
     encode_structured(MAELSTROM_PROCESS_SCHEMA_VERSION, label, observation, None)
 }
 
-pub(crate) fn encode_tla_v3(
+pub(crate) fn encode_tla_v4(
     label: &str,
     observation: ProcessObservation<'_>,
 ) -> Result<Vec<u8>, ProcessFormatError> {
@@ -33,7 +33,7 @@ pub(crate) fn encode_tla_v3(
     )
 }
 
-pub(crate) fn parse_maelstrom_v2(source: &str) -> Result<ProcessLog, ProcessFormatError> {
+pub(crate) fn parse_maelstrom_v3(source: &str) -> Result<ProcessLog, ProcessFormatError> {
     let log = parse_version(source, MAELSTROM_PROCESS_SCHEMA_VERSION)?;
     if log.termination.is_some() {
         return Err(ProcessFormatError::UnexpectedTermination);
@@ -41,7 +41,7 @@ pub(crate) fn parse_maelstrom_v2(source: &str) -> Result<ProcessLog, ProcessForm
     Ok(log)
 }
 
-pub(crate) fn parse_tla_v3(source: &str) -> Result<ProcessLog, ProcessFormatError> {
+pub(crate) fn parse_tla_v4(source: &str) -> Result<ProcessLog, ProcessFormatError> {
     let log = parse_version(source, TLA_PROCESS_SCHEMA_VERSION)?;
     if log.termination.is_none() {
         return Err(ProcessFormatError::MissingTermination);

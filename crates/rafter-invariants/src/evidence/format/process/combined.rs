@@ -9,14 +9,14 @@ use super::{
     DETECTOR_PROCESS_SCHEMA_VERSION,
 };
 
-pub(crate) fn encode_combined_v3(
+pub(crate) fn encode_combined_v4(
     label: &str,
     observation: ProcessObservation<'_>,
 ) -> Result<Vec<u8>, ProcessFormatError> {
     encode_combined(COMBINED_PROCESS_SCHEMA_VERSION, label, observation, None)
 }
 
-pub(crate) fn encode_detector_v4(
+pub(crate) fn encode_detector_v5(
     label: &str,
     observation: ProcessObservation<'_>,
     detector_challenge: &str,
@@ -62,7 +62,7 @@ fn encode_combined(
     .into_bytes())
 }
 
-pub(crate) fn parse_combined_v3(source: &str) -> Result<Vec<LabeledProcess>, ProcessFormatError> {
+pub(crate) fn parse_combined_v4(source: &str) -> Result<Vec<LabeledProcess>, ProcessFormatError> {
     let processes = parse_combined_processes(source)?;
     if let Some(process) = processes
         .iter()
