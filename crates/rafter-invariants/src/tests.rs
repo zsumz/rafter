@@ -188,16 +188,16 @@ fn synthetic_observations(
             .get(check)
         {
             observations.insert(
-                crate::catalog::per_check_protocol_states_key(check),
+                crate::contract::profile::per_check_protocol_states_key(check),
                 contract.minimum_protocol_states,
             );
             observations.insert(
-                crate::catalog::per_check_verifier_states_key(check),
+                crate::contract::profile::per_check_verifier_states_key(check),
                 contract.minimum_verifier_states,
             );
             observations.extend(contract.required_observations.iter().map(|observation| {
                 (
-                    crate::catalog::per_check_observation_key(check, observation),
+                    crate::contract::profile::per_check_observation_key(check, observation),
                     1,
                 )
             }));
@@ -208,7 +208,7 @@ fn synthetic_observations(
 
 fn synthetic_liveness_binding(
     descriptor: &EvidenceDescriptor,
-) -> Option<crate::types::SimulatorLivenessBinding> {
+) -> Option<crate::evidence::SimulatorLivenessBinding> {
     let identity = descriptor.simulator.as_ref()?;
     let contract = identity.liveness_report.clone()?;
     let runs = identity.minimum_runs_per_check?;
@@ -216,26 +216,29 @@ fn synthetic_liveness_binding(
         .checks
         .iter()
         .flat_map(|check_id| {
-            let execution_contract = crate::catalog::expected_execution_contract("pr", check_id)
-                .expect("synthetic PR execution contract");
-            (0..runs).map(move |index| crate::types::SimulatorLivenessReportBinding {
-                check_id: check_id.clone(),
-                seed: index as u64 + 1,
-                execution_contract_sha256: crate::catalog::execution_contract_digest(
-                    &execution_contract,
-                ),
-                execution_contract: execution_contract.clone(),
-                report_sha256: format!("{:064x}", index + 1),
-                round_limit: 1,
-                rounds_used: 1,
-            })
+            let execution_contract =
+                crate::contract::profile::expected_execution_contract("pr", check_id)
+                    .expect("synthetic PR execution contract");
+            (0..runs).map(
+                move |index| crate::evidence::SimulatorLivenessReportBinding {
+                    check_id: check_id.clone(),
+                    seed: index as u64 + 1,
+                    execution_contract_sha256: crate::evidence::execution_contract_digest(
+                        &execution_contract,
+                    ),
+                    execution_contract: execution_contract.clone(),
+                    report_sha256: format!("{:064x}", index + 1),
+                    round_limit: 1,
+                    rounds_used: 1,
+                },
+            )
         })
         .collect::<Vec<_>>();
     reports.sort();
-    Some(crate::types::SimulatorLivenessBinding {
+    Some(crate::evidence::SimulatorLivenessBinding {
         schema_version: 1,
-        contract_sha256: crate::catalog::liveness_contract_digest(&contract),
-        reports_sha256: crate::catalog::liveness_reports_digest(&reports),
+        contract_sha256: crate::evidence::liveness_contract_digest(&contract),
+        reports_sha256: crate::evidence::liveness_reports_digest(&reports),
         contract,
         reports,
     })
@@ -371,7 +374,7 @@ pub(crate) fn passing_bundles(catalog: &Catalog, manifest: &ProfileManifest) -> 
             }
             let producer = producer_binding(&format!("artifacts/{runner}-producer"));
             ResultBundle {
-                schema_version: crate::types::RESULT_SCHEMA_VERSION,
+                schema_version: crate::evidence::RESULT_SCHEMA_VERSION,
                 runner: runner.clone(),
                 profile: "pr".to_owned(),
                 source_ref: "abc".to_owned(),
@@ -763,11 +766,11 @@ fn simulator_pass_requires_profile_owned_per_check_floors_and_observations() {
     let (catalog, manifest) = loaded();
     for (key, expected) in [
         (
-            crate::catalog::per_check_protocol_states_key("raft-commit-production"),
+            crate::contract::profile::per_check_protocol_states_key("raft-commit-production"),
             "profile-owned per-check state floor",
         ),
         (
-            crate::catalog::per_check_observation_key(
+            crate::contract::profile::per_check_observation_key(
                 "raft-commit-production",
                 "production_config_commit_observed",
             ),
@@ -805,7 +808,8 @@ fn profile_owned_check_floors_do_not_replace_descriptor_floors() {
         .iter_mut()
         .find(|bundle| bundle.runner == "simulator")
         .expect("simulator bundle exists");
-    let per_check_key = crate::catalog::per_check_protocol_states_key("raft-commit-production");
+    let per_check_key =
+        crate::contract::profile::per_check_protocol_states_key("raft-commit-production");
     let check = simulator
         .execution
         .checks
@@ -1000,7 +1004,7 @@ fn stale_bundle_is_red_never_green() {
     let (catalog, manifest) = loaded();
     let producer = producer_binding("artifacts/tests-producer");
     let bundle = ResultBundle {
-        schema_version: crate::types::RESULT_SCHEMA_VERSION,
+        schema_version: crate::evidence::RESULT_SCHEMA_VERSION,
         runner: "tests".to_owned(),
         profile: "pr".to_owned(),
         source_ref: "old".to_owned(),
