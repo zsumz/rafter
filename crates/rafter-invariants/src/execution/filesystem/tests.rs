@@ -1,6 +1,11 @@
 //! Scenarios for confinement, durability, traversal bounds, and consumer deadlines.
 
-use std::{fs, path::PathBuf};
+use std::{
+    fs,
+    io::Write,
+    path::PathBuf,
+    time::{Duration, Instant},
+};
 
 use super::{HeldDirectory, OperationDeadline, TreeLimits, TREE_LIMITS};
 
@@ -271,4 +276,59 @@ fn held_file_detects_leaf_replacement_before_external_launch() {
 
     fs::remove_dir_all(root).expect("remove held-file fixture");
     fs::remove_dir_all(external).expect("remove held-file external target");
+}
+
+#[cfg(unix)]
+#[test]
+fn held_file_reads_do_not_reopen_a_replacement_fifo() {
+    let root = test_path("held-file-fifo");
+    let file = root.join("receipt");
+    let moved = root.join("receipt.original");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create held-file FIFO fixture");
+
+    let held = HeldDirectory::workspace()
+        .expect("open workspace")
+        .create_new_held_file(&file)
+        .expect("create held receipt");
+    held.try_clone_std()
+        .expect("clone held receipt")
+        .write_all(b"immutable receipt")
+        .expect("write held receipt");
+    fs::rename(&file, &moved).expect("move held receipt");
+    let status = std::process::Command::new("/usr/bin/mkfifo")
+        .arg(&file)
+        .status()
+        .expect("create replacement FIFO");
+    assert!(status.success());
+
+    let started = Instant::now();
+    let bytes = held
+        .read_bounded(
+            OperationDeadline::at(Instant::now() + Duration::from_secs(1), "held receipt read"),
+            1024,
+        )
+        .expect("read through the original capability");
+    assert_eq!(bytes, b"immutable receipt");
+    assert!(started.elapsed() < Duration::from_millis(250));
+    assert!(held.verify_path_binding().is_err());
+
+    fs::remove_file(file).expect("remove replacement FIFO");
+    fs::remove_dir_all(root).expect("remove held-file FIFO fixture");
+}
+
+#[cfg(unix)]
+#[test]
+fn child_directory_capabilities_are_close_on_exec_until_explicitly_mapped() {
+    let root = test_path("child-directory-cloexec");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(&root).expect("create child-directory fixture");
+    let held = HeldDirectory::open(&root).expect("hold child-directory fixture");
+    let child = held.bind_for_child().expect("bind child-directory fixture");
+
+    let flags = rustix::io::fcntl_getfd(child.descriptor()).expect("inspect descriptor flags");
+    assert!(flags.contains(rustix::io::FdFlags::CLOEXEC));
+
+    drop(child);
+    fs::remove_dir_all(root).expect("remove child-directory fixture");
 }

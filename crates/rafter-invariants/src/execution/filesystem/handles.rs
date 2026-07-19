@@ -34,6 +34,11 @@ impl HeldFile {
         }
     }
 
+    #[cfg(unix)]
+    pub(crate) fn descriptor(&self) -> BorrowedFd<'_> {
+        self.file.as_fd()
+    }
+
     pub(crate) fn verify_path_binding(&self) -> Result<(), Box<dyn Error>> {
         let workspace = HeldDirectory {
             root: self.root.try_clone()?,
@@ -42,7 +47,9 @@ impl HeldFile {
             relative: PathBuf::new(),
             identity: FileIdentity::from_metadata(&self.root.dir_metadata()?),
         };
-        if workspace.file_identity(&self.relative)? != self.identity {
+        let (parent, name) = workspace.parent_and_name(&self.relative, false)?;
+        let metadata = parent.dir.symlink_metadata(&name)?;
+        if !metadata.is_file() || FileIdentity::from_metadata(&metadata) != self.identity {
             return Err(format!(
                 "producer file changed after it was opened: {}",
                 self.relative.display()
@@ -112,7 +119,7 @@ impl HeldDirectory {
         self.verify_path_binding()?;
         #[cfg(unix)]
         {
-            let descriptor = rustix::io::dup(&self.dir)?;
+            let descriptor = rustix::io::fcntl_dupfd_cloexec(&self.dir, 3)?;
             #[cfg(target_os = "linux")]
             let path = PathBuf::from(format!("/proc/self/fd/{}", descriptor.as_raw_fd()));
             #[cfg(not(target_os = "linux"))]
