@@ -210,7 +210,8 @@ fn is_rafter_core_test(relative_path: &str) -> bool {
     relative_path.starts_with("crates/rafter/src/")
         && (relative_path.contains("/tests/")
             || relative_path.ends_with("/tests.rs")
-            || relative_path.ends_with("_test.rs"))
+            || relative_path.ends_with("_test.rs")
+            || relative_path.ends_with("_tests.rs"))
 }
 
 fn is_auxiliary_file(relative_path: &str) -> bool {
@@ -221,6 +222,7 @@ fn is_auxiliary_file(relative_path: &str) -> bool {
         || relative_path.ends_with("/src/main.rs")
         || relative_path.ends_with("/tests.rs")
         || relative_path.ends_with("_test.rs")
+        || relative_path.ends_with("_tests.rs")
 }
 
 fn allowlist_entry(relative_path: &str) -> Option<&'static SizeAllow> {

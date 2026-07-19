@@ -16,7 +16,7 @@ use integrity::verify_producer_invocation_paths;
 use resource_metrics::verify_resource_metrics;
 use simulator::verify_simulator_logs;
 #[cfg(test)]
-use simulator::verify_simulator_observations;
+use simulator::{verify_liveness_observations, verify_simulator_observations};
 #[cfg(test)]
 use simulator_schedule::validate_simulator_schedule;
 use test_logs::verify_test_logs;

@@ -36,16 +36,17 @@ dependency and trust boundaries.
 7. Architecture tests prevent the flat layout and broad dependency edges from
    returning.
 
-## Current pressure
+## Original pressure baseline
 
 The protocol core demonstrates the desired presentation shape: 169 Rust source
 files, only eight over its 300-line implementation target, and none over 500
-lines. The new invariant tooling currently has 147 Rust files, 82 over 300
-lines, 42 over 500 lines, and 20 over 800 lines. Only a small fraction of its
-production modules begin with an ownership contract.
+lines. At the start of this cleanup, the new invariant tooling had 147 Rust
+files, 82 over 300 lines, 42 over 500 lines, and 20 over 800 lines. Only a small
+fraction of its production modules began with an ownership contract. These
+numbers are the ratchet baseline, not a claim about the current tree.
 
-The problem is not line count by itself. Several current files mix independent
-vocabularies or lifecycle phases:
+The problem was not line count by itself. Several baseline files mixed
+independent vocabularies or lifecycle phases:
 
 - `types.rs` owns plan, execution, evidence, and verdict models;
 - `catalog.rs` owns registry descriptors, profile models, simulator contracts,
@@ -92,32 +93,27 @@ Shared mechanics belong to the narrowest named domain that owns their contract.
 The internal dependency graph is intentionally one-way:
 
 ```text
-contract       evidence       provenance       execution
-    |              |               |               |
-    +--------------+---------------+---------------+
-                           |
-                          plan
-                           |
-              +------------+------------+
-              |                         |
-           producer                 verification
-              |                         |
-              +------------+------------+
-                           |
-                        verdict
-                           |
-                          gate
-                           |
-                           cli
+contract     -> evidence, plan, producer, verification, verdict, gate, cli
+evidence     -> plan, producer, verification, verdict, gate
+provenance   -> plan, producer, verification
+execution    -> producer
+plan         -> producer, gate
+producer     -> gate
+verification -> verdict, gate
+verdict      -> gate
+gate         -> cli
 ```
 
-The diagram is an ownership rule, not a requirement that every lower domain
-depend on every peer.
+Each arrow runs from dependency to consumer. The reviewed dependency manifest
+is the exact import rule; in particular, `execution` feeds `producer`, not
+`plan`, and `verification` consumes contract, evidence, and provenance without
+importing producer implementation.
 
 - `contract` owns reviewed declarations and profile policy. It does not execute
   processes or inspect produced artifacts.
-- `evidence` owns serialized vocabulary. It does not decide whether its own
-  values are trustworthy.
+- `evidence` owns serialized vocabulary. It may embed the exact reviewed
+  profile contract selected for a run, so it depends on `contract`; it does not
+  decide whether its own values are trustworthy.
 - `provenance` owns reusable identity derivation and byte-level checks.
 - `execution` owns confined filesystem and managed-process mechanics. It does
   not know invariant IDs or verdict policy.
@@ -216,34 +212,41 @@ src/
     document.rs          registry-document command adaptation
   contract/
     mod.rs               contract facade
+    identity.rs          test and simulator identities
     registry/
       mod.rs             registry authoring model
       parse/             strict YAML parser by syntax domain
       render.rs          canonical Markdown rendering
     catalog/
       mod.rs             normalized executable descriptors
-      identity.rs        test and simulator identities
       resolve.rs         registry-to-catalog conversion
     profile/
       mod.rs             profile and runner vocabulary
+      load.rs            strict profile-manifest loading
+      model.rs           profile, runner, and simulator-check wire models
       validate.rs        cross-profile policy validation
-      simulator.rs       simulator floors and check contracts
-      liveness/          liveness contracts, bindings, and validation
+      runner_contract/   typed per-layer configuration validation
+      simulator/         simulator floors and check contracts
+      liveness/          bounded-liveness obligations and execution policy
     schema/
       mod.rs             schema facade
-      result.rs          result-bundle schema and semantics
-      verdict.rs         verdict-report schema and semantics
+      json.rs            generic checked-in JSON-schema validator
   evidence/
     mod.rs               serialized evidence facade
     artifact.rs          immutable artifact references
     bundle.rs            one layer's complete result bundle
     execution.rs         execution, invocation, and check receipts
     result.rs            evidence status and failure classification
+    schema.rs            result-bundle shape validation
     receipt/
       mod.rs             receipt vocabulary facade
       source.rs          source and materialization receipts
       simulator.rs       simulator-specific bindings
       tool.rs            tool and producer-image receipts
+    liveness/
+      mod.rs             liveness evidence-binding facade
+      binding.rs         typed contract/report binding
+      digest.rs          canonical report and contract identities
     format/
       tlc.rs             neutral TLC frame decoding
       maelstrom.rs       neutral EDN and marker decoding
@@ -276,14 +279,17 @@ src/
     maelstrom/           tooling, scenarios, trials, EDN, and lease markers
   verification/
     mod.rs               `EvidenceIntake` and verification facade
+    detector.rs          public fixture-to-detector source binding
     bundle/              common receipt, provenance, and integrity checks
     tests/               libtest logs and detector-source reachability
     simulator/           event, schedule, provenance, and metrics checks
+      liveness/          independent bounded-report semantic validation
     tla/                 invocation, tool pin, checkpoint, and mutation checks
     maelstrom/           history, scenario, durability, and lease checks
   verdict/
     mod.rs               verdict vocabulary facade
     model.rs             report, summary, clause, issue, and status types
+    validate.rs          verdict shape and semantic validation
     aggregate.rs         clause and invariant reduction
     report/
       mod.rs             deterministic report facade
@@ -354,7 +360,8 @@ cycles without introducing adapter traits or callback frameworks.
 ## Facades and visibility
 
 - `lib.rs` preserves the existing flat `rafter_invariants::{...}` API through
-  re-exports. Internal folders are not public API.
+  declarations and re-exports only. Public implementation lives in its owning
+  domain; internal folders are not public API.
 - Domain `mod.rs` files contain module declarations, vocabulary declarations,
   and narrow re-exports only. They do not contain execution functions or broad
   `impl` blocks.
@@ -465,6 +472,10 @@ crates.
   facades use the tighter existing facade budget.
 - Size remains a graduated signal, not a reason to fracture one concept. New or
   moved files may not increase the count above a ratchet threshold.
+- Modeled `contract`, `evidence`, `verification`, `verdict`, and extracted
+  producer paths have no legacy documentation allowance: every Rust file in
+  those trees must carry a module or scenario contract even while older
+  domains retain aggregate debt.
 - No production module embeds a test body.
 - The allowed dependency graph above is executable.
 - `producer` and `verification` may not import one another.

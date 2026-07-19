@@ -1,0 +1,127 @@
+{
+  "schema_version": 13,
+  "runner": "tests",
+  "profile": "pr",
+  "source_ref": "golden-source",
+  "execution": {
+    "plan": {
+      "schema_version": 3,
+      "profile": "pr",
+      "registry": {
+        "path": "verification/raft-invariants.yaml",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "size_bytes": 1
+      },
+      "manifest": {
+        "path": "verification/raft-invariant-profiles.json",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "size_bytes": 1
+      },
+      "result_schema": {
+        "path": "verification/invariant-result-schema.json",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "size_bytes": 1
+      },
+      "verdict_schema": {
+        "path": "verification/invariant-verdict-schema.json",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "size_bytes": 1
+      },
+      "contract": {
+        "description": "Golden PR contract",
+        "evidence_policy": "all_matching_registry_evidence",
+        "clause_policy": "all_required_clauses",
+        "required_clause_strength": "direct",
+        "required_layers": ["tests"],
+        "required_strengths": ["direct"],
+        "canonical_minimum_independent_layers": 2,
+        "runners": {
+          "tests": {
+            "producer": "golden-tests-v1",
+            "command": ["rafter-invariants", "run"],
+            "configuration": {"mode": "golden"},
+            "minimum_observed_checks": 1,
+            "require_peak_rss": true
+          }
+        }
+      }
+    },
+    "invocation": {
+      "program": "/workspace/rafter-invariants",
+      "program_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "arguments": ["run"],
+      "current_dir": "/workspace/rafter",
+      "environment": {},
+      "environment_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+    },
+    "producer": {
+      "binding": "immutable-reexec-v1",
+      "executable": {
+        "kind": "producer-binary",
+        "path": "artifacts/producer",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "size_bytes": 1
+      }
+    },
+    "source": {
+      "commit": "golden-commit",
+      "tree": "golden-tree",
+      "materialization": {
+        "contract": "git-head-worktree-raw-v1",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "tracked_entries": 1,
+        "submodules": 0
+      },
+      "cargo_lock_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "cargo": "cargo 1.88.0",
+      "cargo_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "cargo_config_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "rustc": "rustc 1.88.0",
+      "rustc_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "target": "x86_64-unknown-linux-gnu",
+      "build_profile": "test",
+      "features": [],
+      "tools": {},
+      "environment_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "clean": true
+    },
+    "checks": [
+      {
+        "execution_id": "tests/golden",
+        "check_id": "tests/golden",
+        "evidence_ids": ["ST-01/direct/tests/golden"],
+        "completion": "completed",
+        "observations": {"passed": 1},
+        "simulator_liveness": null,
+        "duration_ms": 1,
+        "peak_rss_kib": 1,
+        "artifacts": [
+          {
+            "kind": "log",
+            "path": "artifacts/check.log",
+            "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "size_bytes": 1
+          }
+        ]
+      }
+    ],
+    "duration_ms": 1,
+    "peak_rss_kib": 1,
+    "artifacts": [
+      {
+        "kind": "log",
+        "path": "artifacts/execution.log",
+        "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+        "size_bytes": 1
+      }
+    ]
+  },
+  "results": [
+    {
+      "invariant_id": "ST-01",
+      "evidence_id": "ST-01/direct/tests/golden",
+      "execution_id": "tests/golden",
+      "status": "pass"
+    }
+  ]
+}

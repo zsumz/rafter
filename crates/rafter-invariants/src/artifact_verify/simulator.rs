@@ -16,6 +16,10 @@ use super::{
     },
 };
 
+mod liveness;
+
+pub(super) use liveness::verify_liveness_observations;
+
 pub(super) fn verify_simulator_logs(
     bundle: &ResultBundle,
     root: &Path,
@@ -691,7 +695,7 @@ pub(super) fn verify_simulator_observations(
     bundle: &ResultBundle,
     check: &crate::CheckReceipt,
     identity: &crate::SimulatorIdentity,
-    liveness_contracts: &[crate::types::SimulatorLivenessContract],
+    liveness_contracts: &[crate::contract::profile::SimulatorLivenessContract],
     events: &BTreeMap<String, Vec<Value>>,
 ) -> Result<(), AggregateError> {
     if identity.checks.is_empty() {
@@ -824,56 +828,6 @@ fn receipt_issue(
     }
 }
 
-fn verify_liveness_observations(
-    bundle: &ResultBundle,
-    check: &crate::CheckReceipt,
-    identity: &crate::SimulatorIdentity,
-    liveness_contracts: &[crate::types::SimulatorLivenessContract],
-    events: &BTreeMap<String, Vec<Value>>,
-    derived: &mut BTreeMap<String, u64>,
-) -> Result<(), AggregateError> {
-    if identity.liveness_report.is_some() {
-        if is_passing(bundle, &check.execution_id) {
-            let binding = crate::catalog::derive_liveness_binding(
-                &bundle.profile,
-                identity,
-                liveness_contracts,
-                events,
-            )
-            .map_err(|error| {
-                AggregateError::new(format!(
-                    "simulator raw liveness reports are invalid for {}: {}",
-                    check.check_id, error.message
-                ))
-            })?;
-            derived.insert(
-                identity.required_observation.clone(),
-                binding.reports.len() as u64,
-            );
-            if check.simulator_liveness.as_ref() != Some(&binding) {
-                return Err(AggregateError::new(format!(
-                    "simulator liveness binding disagrees with raw logs for {}",
-                    check.check_id
-                )));
-            }
-        } else {
-            derived.insert(identity.required_observation.clone(), 0);
-            if check.simulator_liveness.is_some() {
-                return Err(AggregateError::new(format!(
-                    "non-passing simulator check {} retains a liveness binding",
-                    check.check_id
-                )));
-            }
-        }
-    } else if check.simulator_liveness.is_some() {
-        return Err(AggregateError::new(format!(
-            "simulator safety check {} retains a liveness binding",
-            check.check_id
-        )));
-    }
-    Ok(())
-}
-
 fn verify_composite_observation(
     bundle: &ResultBundle,
     check: &crate::CheckReceipt,
@@ -909,11 +863,17 @@ fn derive_check_contract_issue(
     contract: &crate::SimulatorCheckContract,
     observations: &mut BTreeMap<String, u64>,
 ) -> Option<RawEventIssue> {
-    observations.insert(crate::catalog::per_check_protocol_states_key(check), 0);
-    observations.insert(crate::catalog::per_check_verifier_states_key(check), 0);
+    observations.insert(
+        crate::contract::profile::per_check_protocol_states_key(check),
+        0,
+    );
+    observations.insert(
+        crate::contract::profile::per_check_verifier_states_key(check),
+        0,
+    );
     for observation in &contract.required_observations {
         observations.insert(
-            crate::catalog::per_check_observation_key(check, observation),
+            crate::contract::profile::per_check_observation_key(check, observation),
             0,
         );
     }
@@ -933,16 +893,16 @@ fn derive_check_contract_issue(
         .and_then(Value::as_u64)
         .unwrap_or_default();
     observations.insert(
-        crate::catalog::per_check_protocol_states_key(check),
+        crate::contract::profile::per_check_protocol_states_key(check),
         protocol_states,
     );
     observations.insert(
-        crate::catalog::per_check_verifier_states_key(check),
+        crate::contract::profile::per_check_verifier_states_key(check),
         verifier_states,
     );
     for observation in &contract.required_observations {
         observations.insert(
-            crate::catalog::per_check_observation_key(check, observation),
+            crate::contract::profile::per_check_observation_key(check, observation),
             event["observations"][observation]
                 .as_u64()
                 .unwrap_or_default(),

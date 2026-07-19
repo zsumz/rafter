@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::catalog::RunnerContract;
+use crate::contract::profile::RunnerContract;
 use crate::{CheckCompletion, CheckReceipt, EvidenceDescriptor, EvidenceStatus, ResultBundle};
 
 const OBSERVATIONS: [&str; 33] = [

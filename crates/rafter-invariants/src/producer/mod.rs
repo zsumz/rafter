@@ -240,7 +240,7 @@ fn stage_bundle(
     bundle: &ResultBundle,
     output_dir: &std::path::Path,
 ) -> Result<StagedBundle, Box<dyn Error>> {
-    crate::schema::validate_result_bundle(bundle)?;
+    crate::evidence::validate_result_bundle(bundle)?;
     let workspace = filesystem::HeldDirectory::workspace()?;
     workspace.create_dir_all(output_dir)?;
     let path = output_dir.join(format!("{}-{}.json", bundle.profile, bundle.runner));

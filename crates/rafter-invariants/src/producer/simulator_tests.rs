@@ -639,7 +639,7 @@ fn per_check_profile_floor_cannot_be_borrowed_from_an_established_leg() {
             if message.contains("variant") && message.contains("variant_purpose")
     ));
     assert_eq!(
-        evidence.observations[&crate::catalog::per_check_protocol_states_key("variant")],
+        evidence.observations[&crate::contract::profile::per_check_protocol_states_key("variant")],
         1
     );
 }

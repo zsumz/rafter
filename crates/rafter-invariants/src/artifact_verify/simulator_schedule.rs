@@ -541,7 +541,7 @@ fn simulator_program_matches(
 pub(super) fn validate_simulator_schedule(
     profile: &str,
     source_ref: &str,
-    configuration: &crate::catalog::SimulatorRunnerConfiguration,
+    configuration: &crate::contract::profile::SimulatorRunnerConfiguration,
     logs: &[String],
 ) -> Result<(), AggregateError> {
     if profile == "pr" {
@@ -588,7 +588,7 @@ pub(super) fn validate_simulator_schedule(
 }
 
 fn validate_pr_soak_schedule(
-    configuration: &crate::catalog::SimulatorRunnerConfiguration,
+    configuration: &crate::contract::profile::SimulatorRunnerConfiguration,
     logs: &[String],
 ) -> Result<(), AggregateError> {
     const EXPECTED_SEEDS: &str = "0x9103,0x9104,0x9105,0x9106";
@@ -655,14 +655,14 @@ pub(super) fn scan_machine_events(log: &str, context: &str) -> (Vec<Value>, Vec<
 
 fn profile_total_is_rederived(
     model_profile: &str,
-    state_floors: &crate::catalog::SimulatorStateFloors,
+    state_floors: &crate::contract::profile::SimulatorStateFloors,
     events: &[Value],
 ) -> bool {
     let (protocol_floor, verifier_floor) = match state_floors {
-        crate::catalog::SimulatorStateFloors::Aggregate { protocol, verifier } => {
+        crate::contract::profile::SimulatorStateFloors::Aggregate { protocol, verifier } => {
             (*protocol, *verifier)
         }
-        crate::catalog::SimulatorStateFloors::PerEvidence => return false,
+        crate::contract::profile::SimulatorStateFloors::PerEvidence => return false,
     };
     let exhaustive = events
         .iter()

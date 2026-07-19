@@ -1,8 +1,8 @@
 use std::{collections::BTreeMap, error::Error, path::Path};
 
-use crate::types::RESULT_SCHEMA_VERSION;
+use crate::evidence::RESULT_SCHEMA_VERSION;
 use crate::{
-    catalog::{Catalog, ProfileContract},
+    contract::{catalog::Catalog, profile::ProfileContract},
     CheckCompletion, CheckReceipt, EvidenceDescriptor, EvidenceResult, EvidenceStatus,
     ExecutionReceipt, FailureClassification, ResultBundle, SourceReceipt,
 };

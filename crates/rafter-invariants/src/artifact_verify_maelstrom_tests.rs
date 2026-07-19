@@ -497,7 +497,7 @@ fn bound_artifact(
 fn bundle() -> ResultBundle {
     let execution_id = "maelstrom-base".to_owned();
     ResultBundle {
-        schema_version: crate::types::RESULT_SCHEMA_VERSION,
+        schema_version: crate::evidence::RESULT_SCHEMA_VERSION,
         runner: "maelstrom".to_owned(),
         profile: "nightly".to_owned(),
         source_ref: "abc".to_owned(),
