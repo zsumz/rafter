@@ -1,0 +1,41 @@
+error: detector_test requires a safe, synchronous, zero-argument function returning ()
+ --> tests/ui/fail/detector_signatures.rs:4:1
+  |
+4 | async fn async_fixture() {}
+  | ^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: detector_test requires a safe, synchronous, zero-argument function returning ()
+ --> tests/ui/fail/detector_signatures.rs:7:1
+  |
+7 | const fn const_fixture() {}
+  | ^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: detector_test requires a safe, synchronous, zero-argument function returning ()
+  --> tests/ui/fail/detector_signatures.rs:10:1
+   |
+10 | unsafe fn unsafe_fixture() {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: detector_test requires a safe, synchronous, zero-argument function returning ()
+  --> tests/ui/fail/detector_signatures.rs:13:1
+   |
+13 | extern "C" fn extern_fixture() {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: detector_test requires a safe, synchronous, zero-argument function returning ()
+  --> tests/ui/fail/detector_signatures.rs:16:1
+   |
+16 | fn generic_fixture<T>() {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^
+
+error: detector_test requires a safe, synchronous, zero-argument function returning ()
+  --> tests/ui/fail/detector_signatures.rs:19:1
+   |
+19 | fn parameter_fixture(_: usize) {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: detector_test requires a safe, synchronous, zero-argument function returning ()
+  --> tests/ui/fail/detector_signatures.rs:22:1
+   |
+22 | fn return_fixture() -> () {}
+   | ^^^^^^^^^^^^^^^^^^^^^^^^^

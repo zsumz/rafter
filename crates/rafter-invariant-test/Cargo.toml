@@ -11,5 +11,8 @@ rust-version.workspace = true
 [dependencies]
 rafter-invariant-test-macros = { path = "../rafter-invariant-test-macros" }
 
+[dev-dependencies]
+trybuild = "1"
+
 [lints]
 workspace = true

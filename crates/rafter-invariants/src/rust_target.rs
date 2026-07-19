@@ -8,6 +8,8 @@ use syn::{parse::Parser, punctuated::Punctuated, Attribute, ItemMod, Meta, Token
 
 mod cfg;
 mod protected_compiler;
+#[cfg(test)]
+mod tests;
 
 pub(crate) use cfg::module_active_for_test;
 pub(crate) use protected_compiler::verify_protected_compiler_artifacts;
@@ -16,6 +18,10 @@ type ModuleMap = BTreeMap<PathBuf, BTreeSet<Vec<String>>>;
 type DeclarationMap = BTreeMap<String, BTreeSet<String>>;
 type DeclarationSourceMap = BTreeMap<String, BTreeSet<PathBuf>>;
 type OracleShadowMap = BTreeMap<String, BTreeSet<PathBuf>>;
+
+const ORACLE_MACRO_SOURCE: &str = "crates/rafter-invariant-test/src/oracle/macros.rs";
+const ORACLE_CALL_SOURCE: &str = "crates/rafter-invariant-test/src/oracle/call.rs";
+const DETECTOR_SESSION_SOURCE: &str = "crates/rafter-invariant-test/src/detector/session.rs";
 
 struct OracleShadowImplMethod {
     module: Vec<String>,
@@ -554,7 +560,7 @@ impl<'a> ModuleGraphCollector<'a> {
             .filter(|name| crate::artifact_verify::is_reserved_oracle_macro(&name.to_string()))
         {
             let canonical_oracle_definition =
-                self.crate_name == "rafter_invariant_test" && module.is_empty();
+                self.canonical_oracle_macro_definition(module, source_file);
             if !canonical_oracle_definition {
                 visible_oracle_macros.insert(name.to_string());
             }
@@ -645,12 +651,12 @@ impl<'a> ModuleGraphCollector<'a> {
     }
 
     fn reviewed_support_item_macro(&self, item: &syn::ItemMacro, source_file: &Path) -> bool {
-        if self.crate_name != "rafter_invariant_test"
-            || source_file.strip_prefix(self.workspace).ok()
-                != Some(Path::new("crates/rafter-invariant-test/src/lib.rs"))
-        {
+        if self.crate_name != "rafter_invariant_test" {
             return false;
         }
+        let Ok(source) = source_file.strip_prefix(self.workspace) else {
+            return false;
+        };
         let path = item
             .mac
             .path
@@ -658,8 +664,19 @@ impl<'a> ModuleGraphCollector<'a> {
             .iter()
             .map(|segment| segment.ident.to_string())
             .collect::<Vec<_>>();
-        matches!(path.as_slice(), [name] if name == "impl_oracle_call")
-            || matches!(path.as_slice(), [krate, name] if krate == "std" && name == "thread_local")
+        match path.as_slice() {
+            [name] if name == "impl_oracle_call" => source == Path::new(ORACLE_CALL_SOURCE),
+            [krate, name] if krate == "std" && name == "thread_local" => {
+                source == Path::new(DETECTOR_SESSION_SOURCE)
+            }
+            _ => false,
+        }
+    }
+
+    fn canonical_oracle_macro_definition(&self, module: &[String], source_file: &Path) -> bool {
+        self.crate_name == "rafter_invariant_test"
+            && module.iter().map(String::as_str).eq(["oracle", "macros"])
+            && source_file.strip_prefix(self.workspace).ok() == Some(Path::new(ORACLE_MACRO_SOURCE))
     }
 
     fn bound_source_path(&self, path: &Path) -> Result<PathBuf, String> {

@@ -149,14 +149,15 @@ dependency direction should remain stable.
 src/
   lib.rs                 proc-macro entry point only
   detector_test.rs       parse, validate, and expand `#[detector_test]`
-tests/
-  ui/                    compile-pass and compile-fail signature contracts
+  detector_test/tests.rs parser and expansion contracts
 ```
 
 The attribute's accepted signature and generated hidden calls are its public
 contract. Keep the entry point tiny and preserve the exact expansion protocol.
-The current implementation is already cohesive; this split is about a
-declarative crate root and focused compile-time tests, not chasing file count.
+Compiler-facing cases live with `rafter-invariant-test`, where they exercise
+the proc macro against its real runtime ABI; parser validation also has a
+focused unit matrix in this crate. This split is about a declarative crate root
+and explicit compile-time contracts, not chasing file count.
 
 ### `rafter-invariant-test`
 
@@ -188,6 +189,13 @@ All existing exported macro names, hidden helper names, marker strings,
 environment names, and `DetectorTestOutcome` behavior remain compatible.
 Hidden does not mean unimportant: the producer and macro expansion consume
 these symbols as an internal ABI.
+
+The protected source analyzer binds the exported oracle definitions exactly to
+`oracle/macros.rs`, the invocation-adapter expansions exactly to
+`oracle/call.rs`, and the thread-local session declaration exactly to
+`detector/session.rs`. Copies in the crate root or another module are rejected;
+changing any of these homes requires changing the analyzer and its positive and
+negative source-location contracts in the same commit.
 
 Internally, model the lifecycle with named states rather than overlapping flags
 and strings: standalone execution, proof-bound execution, and setup failure;
@@ -419,12 +427,11 @@ acceptable; accepting a checkpoint built by omitted implementation code is not.
 Keep the protected library and macro target roots at `src/lib.rs`. Existing
 subprocess fixture functions must retain their exact `tests::...` identities in
 `src/tests.rs`; move only their helper machinery into child modules. The source
-verifier also currently admits the reviewed `impl_oracle_call!` and
-`thread_local!` support invocations only from
-`rafter-invariant-test/src/lib.rs`. Either keep those exact invocations there or
-move them only in a coordinated verifier change with source-graph and forged
-fixture tests. This avoids weakening the protected-target contract in pursuit
-of a declarative facade.
+verifier admits the reviewed `impl_oracle_call!` and `thread_local!` support
+invocations only from their exact domain sources named above. Move either only
+in a coordinated verifier change with source-graph and forged-fixture tests.
+This avoids weakening the protected-target contract in pursuit of a declarative
+facade.
 
 Proof-bound detector execution is a Unix transport contract and relies on an
 exact, single-threaded subprocess plus process-global environment. Linux and

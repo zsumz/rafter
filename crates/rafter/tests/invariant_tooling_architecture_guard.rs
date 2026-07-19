@@ -68,7 +68,15 @@ fn target_domain_dependencies_are_known_and_one_way() {
 fn mature_invariant_facades_remain_declarative() {
     let root = workspace_root();
     let facades = invariant_facades();
-    assert_eq!(facades, ["crates/rafter-invariants/src/registry_parse.rs"]);
+    assert_eq!(
+        facades,
+        [
+            "crates/rafter-invariant-test/src/lib.rs",
+            "crates/rafter-invariant-test/src/detector/mod.rs",
+            "crates/rafter-invariant-test/src/oracle/mod.rs",
+            "crates/rafter-invariants/src/registry_parse.rs",
+        ]
+    );
 
     for relative in facades {
         let source = read(&root.join(relative));
@@ -83,6 +91,46 @@ fn mature_invariant_facades_remain_declarative() {
                 line_index + 1
             );
         }
+    }
+}
+
+#[test]
+fn detector_test_macro_trust_is_bound_to_exact_domain_sources() {
+    let root = workspace_root();
+    let source = read(&root.join("crates/rafter-invariants/src/rust_target.rs"));
+
+    for expected in [
+        "crates/rafter-invariant-test/src/oracle/macros.rs",
+        "crates/rafter-invariant-test/src/oracle/call.rs",
+        "crates/rafter-invariant-test/src/detector/session.rs",
+    ] {
+        assert!(
+            source.contains(expected),
+            "missing exact trust path {expected}"
+        );
+    }
+    assert!(
+        !source.contains("Some(Path::new(\"crates/rafter-invariant-test/src/lib.rs\"))"),
+        "the detector facade must not retain the old broad item-macro exception"
+    );
+}
+
+#[test]
+fn detector_proc_macro_root_is_a_thin_entrypoint() {
+    let root = workspace_root();
+    let relative = "crates/rafter-invariant-test-macros/src/lib.rs";
+    let source = read(&root.join(relative));
+    assert!(starts_with_module_contract(&source));
+    assert!(
+        source.lines().count() <= 20,
+        "{relative} stopped being thin"
+    );
+    assert_eq!(source.matches("pub fn detector_test").count(), 1);
+    for implementation_detail in ["parse_quote", "quote!", "ItemFn", "ReturnType"] {
+        assert!(
+            !source.contains(implementation_detail),
+            "{relative} absorbed parser implementation `{implementation_detail}`"
+        );
     }
 }
 
