@@ -104,9 +104,12 @@ verdict      -> gate
 gate         -> cli
 ```
 
-Each arrow runs from dependency to consumer. The reviewed dependency manifest
-is the exact import rule; in particular, `execution` feeds `producer`, not
-`plan`, and `verification` consumes contract, evidence, and provenance without
+Each arrow runs from dependency to consumer. The reviewed target graph is the
+import rule for a source tree once that tree enters the migrated-source
+manifest. That manifest is executable and deliberately separate from the
+target graph: an unmigrated `plan`, `gate`, or `cli` path is not presented as
+already conforming. In particular, `execution` feeds `producer`, not `plan`,
+and `verification` consumes contract, evidence, and provenance without
 importing producer implementation.
 
 - `contract` owns reviewed declarations and profile policy. It does not execute
@@ -235,6 +238,7 @@ src/
     mod.rs               serialized evidence facade
     artifact.rs          immutable artifact references
     bundle.rs            one layer's complete result bundle
+    detector_proof.rs    neutral detector-proof framing and transcript decoding
     execution.rs         execution, invocation, and check receipts
     result.rs            evidence status and failure classification
     schema.rs            result-bundle shape validation
@@ -248,8 +252,9 @@ src/
       binding.rs         typed contract/report binding
       digest.rs          canonical report and contract identities
     format/
-      tlc.rs             neutral TLC frame decoding
-      maelstrom.rs       neutral EDN and marker decoding
+      mod.rs             neutral wire-format facade
+      libtest.rs         canonical libtest and oracle-marker decoding
+      process/           versioned process-log vocabulary and decoding
   provenance/
     mod.rs               provenance facade
     source/
@@ -265,7 +270,36 @@ src/
   execution/
     mod.rs               execution mechanics facade
     filesystem/          confined paths, traversal, cleanup, and publication
-    process/             launch, budget, output, metrics, and termination
+    process/             bounded process mechanics facade
+      anchor.rs          releasable direct-child target-group anchor
+      artifacts.rs       held process artifacts and replay retention
+      diagnostics.rs     retained lifecycle and telemetry failures
+      direct_child.rs    unreaped child and signal-identity capability
+      environment.rs     minimal deterministic inherited environment
+      finalization.rs    deadline- and size-bounded receipt finalization
+      launch.rs          descriptor mapping and wrapper launch facade
+      launch/
+        program.rs       launcher protocol, programs, and target environment
+      lease.rs           inherited process-lineage lifetime evidence
+      process_group.rs   two-phase publication and target-group ownership
+      internal_command.rs bounded observer execution and output draining
+      internal_command/
+        test_support.rs  deterministic observer fault and boundary controls
+      internal_process.rs trusted direct-child observer ownership
+      telemetry.rs       resource parsing and process-group observation
+      managed.rs         measured-process topology facade
+      managed/
+        target.rs        placement transitions and quiescence proofs
+        cleanup.rs       emergency cleanup and quarantine transfer
+      model.rs           requests, observations, completions, and policies
+      output.rs          bounded process collection orchestration
+      reaper.rs          observation-only quarantine facade
+      reaper/
+        request.rs       child, leased-child, and anchored-group ownership
+        worker.rs        no-signal polling and reaping
+      reaping.rs         bounded wrapper and process-group reaping
+      signal.rs          process-group probes and signal delivery
+      termination.rs     timeout escalation and signal policy
   plan/
     mod.rs               `ExecutionPlan` facade
     model.rs             plan receipt and bound input vocabulary
@@ -273,19 +307,35 @@ src/
     validate.rs          immutable plan validation
   producer/
     mod.rs               layer dispatch and atomic receipt publication
+    process/             profile budgets, invocation binding, and evidence adaptation
+      runtime.rs         descriptor-bound process-runtime inventory
+      runtime/           fail-closed script-interpreter binding
     tests/               compile, discover, execute, and proof handshake
     simulator/           model execution, event binding, and detectors
     tla/                 command, contract, output, mutation, and checkpoint
     maelstrom/           tooling, scenarios, trials, EDN, and lease markers
   verification/
     mod.rs               `EvidenceIntake` and verification facade
-    detector.rs          public fixture-to-detector source binding
+    detector.rs          public fixture-binding compatibility facade
+    error.rs             fail-closed verification error vocabulary
+    process_receipt.rs   process invocation and launcher-chain acceptance
     bundle/              common receipt, provenance, and integrity checks
-    tests/               libtest logs and detector-source reachability
+    tests/               detector-source reachability
     simulator/           event, schedule, provenance, and metrics checks
       liveness/          independent bounded-report semantic validation
     tla/                 invocation, tool pin, checkpoint, and mutation checks
     maelstrom/           history, scenario, durability, and lease checks
+  artifact_verify/
+    test_logs.rs         legacy physical facade, logically verification-owned
+    test_logs/
+      detector.rs        independent detector transcript acceptance
+      environment.rs     deterministic exact-test environment reconstruction
+      invocation.rs      discovery plan and executable provenance
+      outcome.rs         independent verifier outcome acceptance
+      policy.rs          fail-closed exact-execution policy
+      registry.rs        registry-to-libtest identity binding
+      runner.rs          receipt and transcript orchestration
+      tests.rs           detector and outcome-policy adversarial scenarios
   verdict/
     mod.rs               verdict vocabulary facade
     model.rs             report, summary, clause, issue, and status types
@@ -304,8 +354,118 @@ src/
 
 The most important structural change is extracting `provenance` and
 `execution` from `producer`. A verifier must not import `crate::producer::*` to
-validate producer output. Shared TLC or Maelstrom parsing belongs under
-`evidence::format`; producer and verifier policy remains separate.
+validate producer output. Shared wire decoding, including canonical libtest and
+process transcripts, belongs under `evidence::format`; producer and verifier
+policy remains separate.
+
+`artifact_verify/test_logs.rs` and its child directory retain their physical
+paths while test verification moves behind the reviewed domain vocabulary.
+They are logically part of `verification`, and the migrated-source manifest
+models both the facade file and child directory so neither can import producer
+implementation. This is a compatibility mount, not a second verification
+domain.
+
+Detector proof handling has the same neutral-format boundary. The evidence
+module decodes marker records without deciding whether a transcript is
+acceptable. Producer acceptance lives in
+`producer/test_exec/detector_policy.rs`; verifier acceptance lives in
+`artifact_verify/test_logs/detector.rs`. The two policies consume the same
+decoded vocabulary but must independently check execution tokens, challenges,
+witness inventories, and role-specific obligations. A shared
+`verify_transcript` reducer is forbidden.
+
+`verification/detector.rs` remains a public compatibility facade over the
+legacy detector-source analyzer mount. Its one reviewed dependency exception
+is recorded as `INV-ARCH-DETECTOR-SOURCE-MIGRATION`, with an exact source,
+import, and reason. The architecture guard fails if that edge changes,
+duplicates, or disappears without removing the exception.
+
+Process timing has an explicit policy/mechanics boundary. `producer/process`
+owns profile and layer budget allocation because it consumes `RunnerContract`
+and reserves evidence-finalization time. It emits one absolute lifecycle
+deadline plus explicit execution and receipt-finalization boundaries;
+publication, observation, target execution, escalation, reaping, and final
+receipt reads derive their phase deadlines from that clock. `execution/process` owns the descriptor-bound
+launch, elapsed-time observation, output collection, process-group cleanup,
+receipt retention, and termination mechanics; it does not interpret profiles
+or layers. Each stdout, stderr, resource, process-group, and reservation file
+is created as a held capability before launch. Child writes use inherited
+descriptors and reads use those same file identities. Target-group publication
+uses two distinct direct children. A dedicated helper anchors target group `A`;
+the `/usr/bin/time` wrapper anchors wrapper group `W` and remains outside `A` so
+SIGKILL of a timed-out target cannot destroy its authoritative resource
+telemetry. A one-way lifetime-pipe writer is inherited through `W`, the target
+launcher, and every target descendant; the dedicated anchor never holds it. A
+no-signal reaper is ready before either child is spawned. Lifetime-lease setup
+completes before anchor spawn, so a lease preflight failure cannot create
+process ownership that would require rollback.
+
+Target publication is a two-acknowledgement ownership handshake. The launcher
+first publishes its PID while it is still inside `W`. After the parent validates
+that membership, it records the uncertain `W`-to-`A` transition before sending
+`G`. The launcher joins `A`, publishes `ready`, and remains blocked before target
+`exec`. Only after the parent validates membership in `A`, records the anchored
+placement, and sends `R` may user code run. Cleanup therefore knows whether it
+must terminate `W`, `A`, or both even if publication fails between `G` and
+`ready`.
+
+Every signalable process-group ID is backed by an unreaped direct `Child`; a
+published launcher PID is validation metadata and is never a signal target.
+TERM and KILL attempts are monotonic per owned group. Process observation
+brackets one bounded PID/PGID/RSS/state inventory with lifetime-lease probes,
+excludes the helper from target RSS, and rejects a snapshot that omits an
+anchor still live according to non-reaping `waitid`. Lease EOF is authoritative
+target-lineage lifetime evidence. A stable EOF plus an empty target inventory
+after `W` exits mints the placement-bound quiescence proof consumed by anchor
+release or post-SIGKILL reap. A held lease plus an empty target inventory after
+`W` exits, or EOF plus a live target row, is a harness error. A held-to-EOF
+transition across the inventory is retried as an ordinary exit race.
+`GroupAbsent` while any direct child remains unreaped is an ownership error,
+not successful cleanup.
+
+`ManagedProcess` stores absolute cleanup and confirmation deadlines and retains
+fallback failures in an execution-scoped sink. At deadline expiry, every
+unreaped wrapper is transferred to the already-running observation-only reaper.
+The target anchor, its control channel, and the lifetime reader transfer as one
+aggregate; the worker retains the unreaped anchor until lease EOF, then closes
+the control channel and reaps it. Trusted internal observer commands inherit a
+separate process-lineage lease. Their direct child remains unreaped until both
+its exit and lease EOF are observed before the absolute cleanup deadline. If
+that proof is late, the child and lease transfer together instead of probing a
+numeric process-group identity after reap. Three typed adoption channels keep
+ordinary children, leased children, and anchored groups structurally distinct.
+The reaper has no signal capability and can only observe leases, close anchor
+release control, and reap owned child handles. Relative grace and confirmation
+intervals are capped by their precomputed absolute phase boundaries; deadline
+checks precede each new completion observation, and no interval can refresh an
+expired boundary or consume the reserved receipt-finalization phase.
+
+The raw capability set is retained as non-verdict diagnostic material. The
+versioned process log serialized into an `ArtifactRef` is the replayable,
+content-hashed evidence. CI therefore uploads telemetry in uniquely named
+diagnostic artifacts, never in a layer evidence artifact, and downloads each
+layer's machine-readable evidence into a distinct directory. The aggregate
+job does not merge telemetry trees or allow diagnostics to influence a verdict.
+
+The launcher control plane and target environment are separate contracts.
+Schema v14 source receipts bind a process-runtime inventory; every process log
+records an ordered launcher chain and verifiers require each digest to match
+that inventory. Perl, `/usr/bin/time`, and the platform-pinned `ps` observer
+execute through the descriptors whose bytes were hashed. Reviewed Bash scripts
+are launched through a separately bound Bash descriptor rather than a later
+kernel shebang lookup. `/usr/bin/env bash` selects the source receipt's
+PATH-bound Bash identity; an absolute Bash shebang is accepted only when it
+resolves to that same path and digest. Unknown or alternate interpreters and
+shebang options fail closed. The top-level producer invocation has no launcher
+chain; launcher receipts belong only to the subprocess logs they describe.
+The launchers receive only a minimal deterministic environment plus reserved
+descriptor controls. The exact receipt-bound target map is carried as data,
+installed only immediately before target `exec`, and rejected if it uses a
+reserved control key. Parent capabilities are `CLOEXEC` by default; the
+launcher closes every inherited descriptor outside the exact mapped inventory
+before starting `time`. Internal observer pipes are nonblocking and drained in
+the deadline loop, so a descendant retaining a writer cannot turn cleanup into
+an unbounded thread join.
 
 ## Reading path
 
@@ -341,7 +501,22 @@ rederives them.
 - Missing, malformed, partial, stale, or multiply bound evidence remains red.
 - Artifact paths are confined before reads, and preserved hashes are checked
   against bytes rather than trusted metadata.
+- Process receipts are read from the capabilities created before launch, not
+  by reopening mutable names. A path replacement invalidates final binding but
+  cannot substitute bytes or turn finalization into a FIFO/device wait.
+- Byte and elapsed-time limits bound user-space receipt work. The execution
+  contract assumes the repository and telemetry directory are on a responsive
+  local filesystem; a kernel metadata syscall stalled by a failed remote mount
+  requires an outer job or container deadline.
 - Reports render an existing verdict and cannot improve or reinterpret it.
+- Source-bound evidence programs and their descendants must not call `setsid`
+  or `setpgid` to escape the managed process group. They must preserve the
+  inherited lifetime writer across fork and exec: closing it, setting
+  `FD_CLOEXEC`, applying `closefrom` or `close_range` across it, passing it to
+  unrelated processes, or writing to it violates the execution contract. A
+  runner that executes adversarial child code requires a stronger container or
+  cgroup boundary; process-group and lease evidence alone are not that
+  boundary.
 
 `EvidenceIntake` contains verified bundles plus typed intake defects for
 missing, malformed, stale, or unverifiable inputs. A verified bundle may still
@@ -477,10 +652,21 @@ crates.
   file in those trees must carry a module or scenario contract even while older
   domains retain aggregate debt.
 - No production module embeds a test body.
-- The allowed dependency graph above is executable.
+- The target dependency graph and the exact migrated-source manifest are both
+  executable. Adding a source tree to the manifest is an explicit ratchet;
+  target domains not yet listed remain migration work, not implied coverage.
+- A migrated source may be a directory or one Rust facade file. Compatibility
+  facades outside their child directory must be modeled explicitly.
+- Dependency checks normalize `crate`, `self`, and `super` paths and inspect
+  both imports and expression paths. Exact raw-process callsites cannot be
+  widened through aliases, relative paths, globs, or test-like filenames.
 - `producer` and `verification` may not import one another.
+- Neutral detector transcript decoding and independent producer/verifier
+  acceptance policies are source-location ratchets; shared transcript verdict
+  reducers cannot return.
 - The flat root-level files retired by the migration may not reappear.
-- Exceptions require a narrow reason and tracking label; stale exceptions fail.
+- Exceptions require an exact owner, source, import, narrow reason, and tracking
+  label. Missing, duplicated, broadened, or stale exceptions fail.
 
 ## Migration plan
 

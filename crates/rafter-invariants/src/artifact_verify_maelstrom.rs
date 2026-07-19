@@ -57,7 +57,10 @@ fn verify_check(
         let summary = parse_results(unique(artifacts, "maelstrom-results")?, root).ok();
         let process = parse_process(unique(artifacts, "maelstrom-process-log")?, root)?;
         if process.label != scenario
-            || !crate::receipt::process_invocation_is_complete(&process.invocation)
+            || !crate::receipt::script_invocation_matches_source(
+                &process.invocation,
+                &bundle.execution.source,
+            )
         {
             return Err(error(
                 "Maelstrom process log has wrong schema, label, or exact invocation",

@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    fmt, fs,
+    fs,
     path::{Path, PathBuf},
 };
 
@@ -13,23 +13,7 @@ use crate::{
     },
 };
 
-#[derive(Debug)]
-/// Error loading or configuring deterministic evidence aggregation.
-pub(crate) struct AggregateError(String);
-
-impl AggregateError {
-    pub(super) const fn new(message: String) -> Self {
-        Self(message)
-    }
-}
-
-impl fmt::Display for AggregateError {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(&self.0)
-    }
-}
-
-impl std::error::Error for AggregateError {}
+pub(crate) use crate::verification::AggregateError;
 
 #[derive(Debug, Default)]
 /// Valid bundles plus fail-closed errors discovered while loading evidence.
@@ -72,20 +56,20 @@ pub(crate) fn load_evidence_at(paths: &[PathBuf], root: &Path) -> LoadedEvidence
 
 fn load_bundle(path: &PathBuf, root: &Path) -> Result<(ResultBundle, Vec<String>), AggregateError> {
     let source = fs::read_to_string(path)
-        .map_err(|error| AggregateError(format!("read {}: {error}", path.display())))?;
+        .map_err(|error| AggregateError::new(format!("read {}: {error}", path.display())))?;
     let value: serde_json::Value = serde_json::from_str(&source)
-        .map_err(|error| AggregateError(format!("parse {}: {error}", path.display())))?;
+        .map_err(|error| AggregateError::new(format!("parse {}: {error}", path.display())))?;
     crate::evidence::validate_result_value(&value).map_err(|error| {
-        AggregateError(format!(
+        AggregateError::new(format!(
             "validate result schema for {}: {error}",
             path.display()
         ))
     })?;
     let bundle: ResultBundle = serde_json::from_value(value)
-        .map_err(|error| AggregateError(format!("decode {}: {error}", path.display())))?;
+        .map_err(|error| AggregateError::new(format!("decode {}: {error}", path.display())))?;
     crate::producer::source::verify_checkout_at(&bundle.execution.source, root).map_err(
         |error| {
-            AggregateError(format!(
+            AggregateError::new(format!(
                 "verify source identity for {}: {error}",
                 path.display()
             ))
@@ -127,11 +111,11 @@ pub(crate) fn aggregate_with_harness_errors(
 ) -> Result<VerdictReport, AggregateError> {
     manifest
         .validate(catalog)
-        .map_err(|error| AggregateError(error.to_string()))?;
+        .map_err(|error| AggregateError::new(error.to_string()))?;
     let contract = manifest
         .profiles
         .get(profile)
-        .ok_or_else(|| AggregateError(format!("unknown profile {profile}")))?;
+        .ok_or_else(|| AggregateError::new(format!("unknown profile {profile}")))?;
     let required = catalog.required_evidence(contract);
     let expected = required
         .values()
@@ -193,13 +177,13 @@ pub(crate) fn verify_layer_bundle(
 ) -> Result<(), AggregateError> {
     manifest
         .validate(catalog)
-        .map_err(|error| AggregateError(error.to_string()))?;
+        .map_err(|error| AggregateError::new(error.to_string()))?;
     let contract = manifest
         .profiles
         .get(profile)
-        .ok_or_else(|| AggregateError(format!("unknown profile {profile}")))?;
+        .ok_or_else(|| AggregateError::new(format!("unknown profile {profile}")))?;
     if bundle.runner != layer {
-        return Err(AggregateError(format!(
+        return Err(AggregateError::new(format!(
             "runner {} does not match requested layer {layer}",
             bundle.runner
         )));
@@ -227,14 +211,14 @@ pub(crate) fn verify_layer_bundle(
         .map(String::as_str)
         .collect::<std::collections::BTreeSet<_>>();
     if !errors.is_empty() {
-        return Err(AggregateError(errors.join("; ")));
+        return Err(AggregateError::new(errors.join("; ")));
     }
     if accepted_ids != expected_layer
         || accepted
             .values()
             .any(|result| result.status != EvidenceStatus::Pass)
     {
-        return Err(AggregateError(format!(
+        return Err(AggregateError::new(format!(
             "{profile}/{layer} evidence is missing, incomplete, or red"
         )));
     }

@@ -8,7 +8,6 @@ mod artifact_verify_maelstrom_support;
 mod artifact_verify_maelstrom_tests;
 mod artifact_verify_tla;
 mod contract;
-mod detector_proof;
 mod evidence;
 mod execution;
 mod plan;
@@ -41,10 +40,10 @@ pub use contract::registry::{
 };
 pub(crate) use evidence::ResultBundle;
 pub use evidence::{
-    ArtifactRef, CheckCompletion, CheckReceipt, EvidenceResult, EvidenceStatus,
-    ExecutionPlanReceipt, ExecutionReceipt, FailureClassification, InvocationReceipt, PlanInput,
-    ProducerBindingReceipt, SourceMaterializationReceipt, SourceReceipt, ToolReceipt,
-    PLAN_SCHEMA_VERSION,
+    ArtifactRef, CheckCompletion, CheckReceipt, EvidenceResult, EvidenceStatus, ExecutableReceipt,
+    ExecutionPlanReceipt, ExecutionReceipt, FailureClassification, InvocationReceipt,
+    LauncherReceipt, PlanInput, ProducerBindingReceipt, SourceMaterializationReceipt,
+    SourceReceipt, ToolReceipt, PLAN_SCHEMA_VERSION,
 };
 pub(crate) use plan::{capture_invocation, verify_bundle_plan};
 pub use plan::{ExecutionPlan, PlanOptions};

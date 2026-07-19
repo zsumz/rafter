@@ -14,8 +14,47 @@ use cap_std::fs::OpenOptions;
 use super::{
     paths::{split_parent, workspace_relative},
     traversal::TraversalBudget,
-    EntryKind, FileIdentity, HeldDirectory, OperationDeadline, TreeLimits,
+    EntryKind, FileIdentity, HeldDirectory, HeldFile, OperationDeadline, TreeLimits,
 };
+
+impl HeldFile {
+    pub(crate) fn remove_if_bound(self) -> Result<(), Box<dyn Error>> {
+        let HeldFile {
+            root,
+            file,
+            root_path,
+            relative,
+            identity,
+        } = self;
+        if FileIdentity::from_metadata(&file.metadata()?) != identity {
+            return Err(format!(
+                "producer file handle changed before removal: {}",
+                relative.display()
+            )
+            .into());
+        }
+        let dir = root.try_clone()?;
+        let workspace = HeldDirectory {
+            identity: FileIdentity::from_metadata(&dir.dir_metadata()?),
+            root,
+            dir,
+            root_path,
+            relative: PathBuf::new(),
+        };
+        let (parent, name) = workspace.parent_and_name(&relative, false)?;
+        let metadata = parent.dir.symlink_metadata(&name)?;
+        if !metadata.is_file() || FileIdentity::from_metadata(&metadata) != identity {
+            return Err(format!(
+                "producer file changed before removal: {}",
+                relative.display()
+            )
+            .into());
+        }
+        drop(file);
+        parent.dir.remove_file(&name)?;
+        Ok(())
+    }
+}
 
 impl HeldDirectory {
     pub(crate) fn replace_tree(
@@ -193,12 +232,6 @@ impl HeldDirectory {
         self.dir.remove_open_dir()?;
         Ok(())
     }
-}
-
-pub(crate) fn remove_file(path: &Path) -> Result<(), Box<dyn Error>> {
-    let workspace = HeldDirectory::workspace()?;
-    let relative = workspace_relative(&workspace, path)?;
-    workspace.remove_file_if_exists(&relative)
 }
 
 #[derive(Debug)]

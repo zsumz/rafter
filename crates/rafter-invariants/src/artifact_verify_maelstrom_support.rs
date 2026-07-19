@@ -113,7 +113,7 @@ pub(super) fn parse_process(
     artifact: &ArtifactRef,
     root: &Path,
 ) -> Result<crate::evidence::format::process::ProcessLog, AggregateError> {
-    crate::evidence::format::process::parse_maelstrom_v2(&read(artifact, root)?)
+    crate::evidence::format::process::parse_maelstrom_v3(&read(artifact, root)?)
         .map_err(|parse_error| error(format!("parse Maelstrom process log: {parse_error}")))
 }
 

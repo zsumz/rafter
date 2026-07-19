@@ -268,6 +268,7 @@ fn guarded_rust_files(workspace: &Path) -> Vec<PathBuf> {
                 .is_some_and(|extension| extension.eq_ignore_ascii_case("rs"))
         })
         .map(|path| workspace.join(path))
+        .filter(|path| path.is_file())
         .collect::<Vec<_>>();
     files.sort();
     files

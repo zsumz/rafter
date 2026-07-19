@@ -2,6 +2,7 @@
 
 mod artifact;
 mod bundle;
+pub(crate) mod detector_proof;
 mod execution;
 pub(crate) mod format;
 mod liveness;
@@ -14,15 +15,15 @@ pub(crate) use bundle::ResultBundle;
 pub use bundle::RESULT_SCHEMA_VERSION;
 pub use execution::{
     CheckCompletion, CheckReceipt, ExecutionPlanReceipt, ExecutionReceipt, InvocationReceipt,
-    PlanInput, ProducerBindingReceipt, PLAN_SCHEMA_VERSION,
+    LauncherReceipt, PlanInput, ProducerBindingReceipt, PLAN_SCHEMA_VERSION,
 };
 pub(crate) use liveness::{
     bind_liveness_claims, execution_contract_digest, liveness_contract_digest,
     liveness_reports_digest, LivenessBindingClaim, LivenessReportClaim,
 };
 pub use receipt::{
-    SimulatorLivenessBinding, SimulatorLivenessReportBinding, SourceMaterializationReceipt,
-    SourceReceipt, ToolReceipt,
+    ExecutableReceipt, SimulatorLivenessBinding, SimulatorLivenessReportBinding,
+    SourceMaterializationReceipt, SourceReceipt, ToolReceipt,
 };
 pub use result::{EvidenceResult, EvidenceStatus, FailureClassification};
 pub(crate) use schema::{validate_result_bundle, validate_result_value};

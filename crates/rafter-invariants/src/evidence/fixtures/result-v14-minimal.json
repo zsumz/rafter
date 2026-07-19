@@ -1,5 +1,5 @@
 {
-  "schema_version": 13,
+  "schema_version": 14,
   "runner": "tests",
   "profile": "pr",
   "source_ref": "golden-source",
@@ -52,7 +52,8 @@
       "arguments": ["run"],
       "current_dir": "/workspace/rafter",
       "environment": {},
-      "environment_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+      "environment_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "launchers": []
     },
     "producer": {
       "binding": "immutable-reexec-v1",
@@ -82,6 +83,20 @@
       "build_profile": "test",
       "features": [],
       "tools": {},
+      "process_runtime": {
+        "perl": {
+          "program": "/usr/bin/perl",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "ps": {
+          "program": "/usr/bin/ps",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        },
+        "time": {
+          "program": "/usr/bin/time",
+          "sha256": "0000000000000000000000000000000000000000000000000000000000000000"
+        }
+      },
       "environment_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "clean": true
     },

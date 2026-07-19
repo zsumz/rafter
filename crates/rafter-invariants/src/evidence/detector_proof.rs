@@ -1,4 +1,6 @@
-use std::{collections::BTreeMap, path::Path};
+//! Neutral detector-proof wire decoding across the evidence trust boundary.
+
+use std::path::Path;
 
 pub(crate) const PROOF_SOCKET_ENV: &str = "RAFTER_INVARIANT_DETECTOR_PROOF_SOCKET";
 pub(crate) const PROOF_SOCKET_DIRECTORY: &str = "target/rafter-invariants/tmp/detector-proof";
@@ -46,49 +48,52 @@ pub(crate) fn managed_socket_path(path: &Path) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
-pub(crate) fn verify_transcript(
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum TranscriptRecord {
+    Witness {
+        token: String,
+        witness: String,
+    },
+    Proof {
+        token: String,
+        witness: String,
+        challenge: String,
+    },
+}
+
+pub(crate) fn decode_transcript(
     stdout: &str,
     stderr: &str,
-    token: &str,
-    expected_challenge: &str,
-) -> Result<BTreeMap<String, usize>, String> {
-    decode_challenge(expected_challenge)?;
-    let witness_prefix = format!("{WITNESS_PREFIX}{token}:");
-    let proof_prefix = format!("{PROOF_PREFIX}{token}:");
-    let mut witnesses = BTreeMap::<String, usize>::new();
-    let mut proofs = BTreeMap::<String, usize>::new();
-
+) -> Result<Vec<TranscriptRecord>, String> {
+    let mut records = Vec::new();
     for line in stdout.lines().chain(stderr.lines()).map(str::trim) {
-        if let Some(witness) = line.strip_prefix(&witness_prefix) {
-            let witness = parse_witness(witness)?;
-            *witnesses.entry(witness).or_default() += 1;
-        } else if line.starts_with(WITNESS_PREFIX) {
-            return Err("detector witness is bound to another execution token".to_owned());
-        }
-
-        if let Some(proof) = line.strip_prefix(&proof_prefix) {
-            let (witness, challenge) = proof
+        if let Some(encoded) = line.strip_prefix(WITNESS_PREFIX) {
+            let (token, witness) = parse_bound_witness(encoded)?;
+            records.push(TranscriptRecord::Witness { token, witness });
+        } else if let Some(encoded) = line.strip_prefix(PROOF_PREFIX) {
+            let (bound_witness, challenge) = encoded
                 .rsplit_once(':')
                 .ok_or_else(|| "detector proof omitted its challenge".to_owned())?;
-            let witness = parse_witness(witness)?;
-            if challenge != expected_challenge {
-                return Err("detector proof used the wrong post-invocation challenge".to_owned());
-            }
-            *proofs.entry(witness).or_default() += 1;
-        } else if line.starts_with(PROOF_PREFIX) {
-            return Err("detector proof is bound to another execution token".to_owned());
+            validate_challenge(challenge)?;
+            let (token, witness) = parse_bound_witness(bound_witness)?;
+            records.push(TranscriptRecord::Proof {
+                token,
+                witness,
+                challenge: challenge.to_owned(),
+            });
         }
     }
+    Ok(records)
+}
 
-    if witnesses.is_empty() {
-        return Err("detector transcript contains no runtime witnesses".to_owned());
+fn parse_bound_witness(encoded: &str) -> Result<(String, String), String> {
+    let (token, witness) = encoded
+        .split_once(':')
+        .ok_or_else(|| "detector marker omitted its execution token".to_owned())?;
+    if token.is_empty() {
+        return Err("detector marker uses an empty execution token".to_owned());
     }
-    if witnesses != proofs {
-        return Err(format!(
-            "detector witness and proof inventories differ: witnesses={witnesses:?}, proofs={proofs:?}"
-        ));
-    }
-    Ok(witnesses)
+    Ok((token.to_owned(), parse_witness(witness)?))
 }
 
 fn parse_witness(witness: &str) -> Result<String, String> {
@@ -155,37 +160,4 @@ fn encode_hex(bytes: &[u8]) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn transcript_requires_the_parent_issued_post_invocation_challenge() {
-        let challenge = encode_challenge(&[0x5a; CHALLENGE_BYTES]);
-        let token = "token";
-        let witness = "expect-err:crate_name::detector";
-        let stderr = format!(
-            "{WITNESS_PREFIX}{token}:{witness}()\n{PROOF_PREFIX}{token}:{witness}():{challenge}\n"
-        );
-        assert_eq!(
-            verify_transcript("", &stderr, token, &challenge).expect("valid transcript"),
-            BTreeMap::from([(witness.to_owned(), 1)])
-        );
-        assert!(verify_transcript("", &stderr, token, &"0".repeat(64)).is_err());
-    }
-
-    #[test]
-    fn proof_socket_path_has_one_exact_managed_shape() {
-        assert!(managed_socket_path(Path::new(
-            "target/rafter-invariants/tmp/detector-proof/12-3-5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a.sock"
-        )));
-        for path in [
-            "/target/rafter-invariants/tmp/detector-proof/12-3-5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a.sock",
-            "target/rafter-invariants/tmp/detector-proof/nested/12-3-5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a.sock",
-            "target/rafter-invariants/tmp/detector-proof/12-3.sock",
-            "target/rafter-invariants/tmp/detector-proof/12-3-5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A.sock",
-            "target/rafter-invariants/tmp/detector-proof/12-3-5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a.txt",
-        ] {
-            assert!(!managed_socket_path(Path::new(path)), "accepted {path}");
-        }
-    }
-}
+mod tests;

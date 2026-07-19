@@ -143,9 +143,9 @@ fn write_process_metric_fixture(
 ) -> crate::ArtifactRef {
     let source = format!(
         concat!(
-            "schema_version: 3\n",
+            "schema_version: 4\n",
             "label: fixture\n",
-            "invocation: {{\"program\":\"/bin/test\",\"program_sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"arguments\":[\"test\"],\"current_dir\":\"/workspace\",\"environment\":{{}},\"environment_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}}\n",
+            "invocation: {{\"program\":\"/bin/test\",\"program_sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"arguments\":[\"test\"],\"current_dir\":\"/workspace\",\"environment\":{{}},\"environment_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"launchers\":[]}}\n",
             "exit_code: Some({exit_code})\n",
             "timed_out: false\n",
             "duration_ms: {duration_ms}\n",

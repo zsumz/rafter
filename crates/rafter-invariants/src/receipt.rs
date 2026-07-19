@@ -8,20 +8,21 @@ use std::{
 use crate::{
     contract::profile::{ProfileContract, RunnerContract},
     ArtifactRef, CheckCompletion, CheckReceipt, EvidenceDescriptor, EvidenceResult, EvidenceStatus,
-    FailureClassification, InvocationReceipt, ResultBundle,
+    FailureClassification, ResultBundle,
 };
 
-pub(crate) fn process_invocation_is_complete(invocation: &InvocationReceipt) -> bool {
-    !invocation.program.trim().is_empty()
-        && is_sha256(&invocation.program_sha256)
-        && !invocation.arguments.is_empty()
-        && Path::new(&invocation.current_dir).is_absolute()
-        && crate::provenance::invocation::environment_matches_digest(
-            &invocation.environment,
-            &invocation.environment_sha256,
-        )
-        && is_sha256(&invocation.environment_sha256)
-}
+#[cfg(test)]
+mod fixtures;
+#[cfg(test)]
+pub(crate) use crate::verification::process_launchers_match_runtime;
+pub(crate) use crate::verification::{
+    process_invocation_is_complete, process_invocation_matches_source,
+    script_invocation_matches_source,
+};
+#[cfg(test)]
+pub(crate) use fixtures::{
+    launchers as fixture_launchers, process_runtime as fixture_process_runtime,
+};
 
 pub(super) fn collect_results(
     bundles: &[ResultBundle],
@@ -141,6 +142,7 @@ fn validate_provenance(
     if bundle.execution.invocation.program.trim().is_empty()
         || !is_sha256(&bundle.execution.invocation.program_sha256)
         || bundle.execution.invocation.arguments.is_empty()
+        || !bundle.execution.invocation.launchers.is_empty()
         || !Path::new(&bundle.execution.invocation.program).is_absolute()
         || !Path::new(&bundle.execution.invocation.current_dir).is_absolute()
         || Path::new(&bundle.execution.invocation.program)
@@ -174,6 +176,15 @@ fn validate_provenance(
             .tools
             .values()
             .any(|tool| tool.version.trim().is_empty() || !is_sha256(&tool.sha256))
+        || bundle.execution.source.process_runtime.is_empty()
+        || bundle
+            .execution
+            .source
+            .process_runtime
+            .values()
+            .any(|executable| {
+                !Path::new(&executable.program).is_absolute() || !is_sha256(&executable.sha256)
+            })
         || !is_sha256(&bundle.execution.source.environment_sha256)
     {
         return Err("source/toolchain provenance is incomplete or does not match source_ref");

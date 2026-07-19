@@ -6,4 +6,4 @@ mod tool;
 
 pub use simulator::{SimulatorLivenessBinding, SimulatorLivenessReportBinding};
 pub use source::{SourceMaterializationReceipt, SourceReceipt};
-pub use tool::ToolReceipt;
+pub use tool::{ExecutableReceipt, ToolReceipt};

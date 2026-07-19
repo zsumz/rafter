@@ -1160,6 +1160,7 @@ name = "rafter"
 version = "0.0.1"
 dependencies = [
  "criterion",
+ "proc-macro2",
  "proptest",
  "rafter-invariant-test",
  "syn",

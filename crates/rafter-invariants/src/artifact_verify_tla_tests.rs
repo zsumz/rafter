@@ -579,7 +579,7 @@ impl Fixture {
         exit_code: i32,
     ) {
         let log = ProcessLog {
-            schema_version: 3,
+            schema_version: 4,
             label: label.to_owned(),
             invocation: self.invocation(label, probe),
             exit_code: Some(exit_code),
@@ -615,7 +615,7 @@ impl Fixture {
         .expect("write mutation fixture summary");
         let environment = BTreeMap::new();
         let log = ProcessLog {
-            schema_version: 3,
+            schema_version: 4,
             label: MUTATION_SUITE_LABEL.to_owned(),
             invocation: InvocationReceipt {
                 program: "cargo".to_owned(),
@@ -636,6 +636,7 @@ impl Fixture {
                 environment_sha256: digest_environment(&environment)
                     .expect("valid fixture environment"),
                 environment,
+                launchers: crate::receipt::fixture_launchers(false),
             },
             exit_code: Some(0),
             timed_out: false,
@@ -714,6 +715,7 @@ impl Fixture {
             environment: BTreeMap::new(),
             environment_sha256: digest_environment(&BTreeMap::new())
                 .expect("valid fixture environment"),
+            launchers: crate::receipt::fixture_launchers(false),
         }
     }
 

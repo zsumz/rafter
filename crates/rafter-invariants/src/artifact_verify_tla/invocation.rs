@@ -60,7 +60,7 @@ pub(super) fn read_bound_process_log(
     root: &Path,
 ) -> Result<crate::evidence::format::process::ProcessLog, AggregateError> {
     let source = read_kind(check, kind, root)?;
-    let log = crate::evidence::format::process::parse_tla_v3(&source)
+    let log = crate::evidence::format::process::parse_tla_v4(&source)
         .map_err(|error| AggregateError::new(format!("parse TLA process log: {error}")))?;
     let valid_termination = log.termination.as_ref().is_some_and(|termination| {
         termination.process_group
@@ -106,6 +106,11 @@ fn verify_tla_invocation(
     root: &Path,
     producer_repository: &Path,
 ) -> Result<(), AggregateError> {
+    if !crate::receipt::process_invocation_matches_source(observed, &bundle.execution.source) {
+        return Err(AggregateError::new(format!(
+            "TLA process log {label} does not match the source-bound process runtime"
+        )));
+    }
     let repository = fs::canonicalize(root)
         .map_err(|error| AggregateError::new(format!("canonicalize TLA root: {error}")))?;
     let target = match label {

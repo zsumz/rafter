@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::{EvidenceResult, ExecutionReceipt};
 
 /// Current version of the machine-readable receipt and report contract.
-pub const RESULT_SCHEMA_VERSION: u32 = 13;
+pub const RESULT_SCHEMA_VERSION: u32 = 14;
 
 /// Source-bound evidence receipts emitted by one deterministic runner.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

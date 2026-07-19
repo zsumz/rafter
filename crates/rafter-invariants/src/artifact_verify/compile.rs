@@ -80,7 +80,7 @@ pub(super) fn verify_compile_invocations(
         let source = fs::read_to_string(root.join(&log.path)).map_err(|error| {
             AggregateError::new(format!("read compile log {}: {error}", log.path))
         })?;
-        let invocations = crate::evidence::format::process::parse_combined_v3(&source)
+        let invocations = crate::evidence::format::process::parse_combined_v4(&source)
             .map_err(|error| AggregateError::new(format!("parse compile invocation: {error}")))?;
         let [observed] = invocations.as_slice() else {
             return Err(AggregateError::new(
@@ -90,6 +90,10 @@ pub(super) fn verify_compile_invocations(
         if observed.invocation.program != "cargo"
             || observed.invocation.program_sha256 != bundle.execution.source.cargo_sha256
             || observed.invocation.current_dir != current_dir
+            || !crate::receipt::process_invocation_matches_source(
+                &observed.invocation,
+                &bundle.execution.source,
+            )
         {
             return Err(AggregateError::new(
                 "compile executable or working directory does not match source provenance"

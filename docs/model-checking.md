@@ -105,12 +105,12 @@ Invariant producers run on a trusted CI host. Before `run` or `run-all` executes
 evidence checks, the CLI publishes its bytes as a regular, non-symlink,
 read-only executable at
 `target/rafter-invariants/producer-images/<sha256>/rafter-invariants` and
-re-executes that image. Schema-v13 receipts bind the exact path, digest, and
+re-executes that image. Schema-v14 receipts bind the exact path, digest, and
 preserved executable artifact. This prevents nested Cargo builds, stale target
 paths, partial publication, symlinked artifact paths, and later deletion of the
 bootstrap executable from changing which producer image the aggregate accepts.
 
-Schema-v13 source receipts also carry a `git-head-worktree-raw-v1`
+Schema-v14 source receipts also carry a `git-head-worktree-raw-v1`
 materialization. The producer enumerates the immutable `HEAD` tree with Git
 replacement objects disabled, rejects tracked symlinks, and reads each tracked
 regular file as raw bytes. It checks every Git blob ID and the exact owner

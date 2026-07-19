@@ -3,8 +3,8 @@
 use std::collections::BTreeMap;
 
 use super::{
-    encode_combined_v3, encode_detector_v4, encode_maelstrom_v2, encode_tla_v3,
-    parse_combined_processes, parse_combined_v3, parse_maelstrom_v2, parse_tla_v3,
+    encode_combined_v4, encode_detector_v5, encode_maelstrom_v3, encode_tla_v4,
+    parse_combined_processes, parse_combined_v4, parse_maelstrom_v3, parse_tla_v4,
     ProcessFormatError, ProcessObservation, TerminationReceipt,
 };
 use crate::evidence::InvocationReceipt;
@@ -20,6 +20,7 @@ fn invocation() -> InvocationReceipt {
         current_dir: "/workspace/rafter".to_owned(),
         environment: BTreeMap::new(),
         environment_sha256: ENVIRONMENT_SHA256.to_owned(),
+        launchers: Vec::new(),
     }
 }
 
@@ -42,7 +43,7 @@ fn observation<'a>(
 }
 
 #[test]
-fn tla_v3_wire_is_byte_stable_and_strictly_versioned() {
+fn tla_v4_wire_is_byte_stable_and_strictly_versioned() {
     let invocation = invocation();
     let termination = TerminationReceipt {
         process_group: true,
@@ -51,7 +52,7 @@ fn tla_v3_wire_is_byte_stable_and_strictly_versioned() {
         kill_signal_sent: false,
     };
     let encoded = String::from_utf8(
-        encode_tla_v3(
+        encode_tla_v4(
             "model-check",
             observation(&invocation, Some(&termination), b"states=44\n", b""),
         )
@@ -61,7 +62,7 @@ fn tla_v3_wire_is_byte_stable_and_strictly_versioned() {
     let expected = format!(
         concat!(
             "{{\n",
-            "  \"schema_version\": 3,\n",
+            "  \"schema_version\": 4,\n",
             "  \"label\": \"model-check\",\n",
             "  \"invocation\": {{\n",
             "    \"program\": \"cargo\",\n",
@@ -71,7 +72,8 @@ fn tla_v3_wire_is_byte_stable_and_strictly_versioned() {
             "    ],\n",
             "    \"current_dir\": \"/workspace/rafter\",\n",
             "    \"environment\": {{}},\n",
-            "    \"environment_sha256\": \"{}\"\n",
+            "    \"environment_sha256\": \"{}\",\n",
+            "    \"launchers\": []\n",
             "  }},\n",
             "  \"exit_code\": 0,\n",
             "  \"timed_out\": false,\n",
@@ -90,27 +92,27 @@ fn tla_v3_wire_is_byte_stable_and_strictly_versioned() {
         PROGRAM_SHA256, ENVIRONMENT_SHA256
     );
     assert_eq!(encoded, expected);
-    let log = parse_tla_v3(&encoded).expect("parse stable TLA process receipt");
+    let log = parse_tla_v4(&encoded).expect("parse stable TLA process receipt");
     assert_eq!(log.termination, Some(termination));
-    assert!(parse_maelstrom_v2(&encoded).is_err());
+    assert!(parse_maelstrom_v3(&encoded).is_err());
 
     let mut value = serde_json::to_value(&log).expect("convert process receipt");
     value["trusted"] = serde_json::json!(true);
-    assert!(parse_tla_v3(&serde_json::to_string(&value).unwrap()).is_err());
+    assert!(parse_tla_v4(&serde_json::to_string(&value).unwrap()).is_err());
 }
 
 #[test]
-fn maelstrom_v2_wire_is_byte_stable_and_forbids_termination() {
+fn maelstrom_v3_wire_is_byte_stable_and_forbids_termination() {
     let invocation = invocation();
     let encoded = String::from_utf8(
-        encode_maelstrom_v2("base", observation(&invocation, None, b"nemesis=ok\n", b""))
+        encode_maelstrom_v3("base", observation(&invocation, None, b"nemesis=ok\n", b""))
             .expect("encode Maelstrom process receipt"),
     )
     .expect("Maelstrom process receipt is UTF-8");
     let expected = format!(
         concat!(
             "{{\n",
-            "  \"schema_version\": 2,\n",
+            "  \"schema_version\": 3,\n",
             "  \"label\": \"base\",\n",
             "  \"invocation\": {{\n",
             "    \"program\": \"cargo\",\n",
@@ -120,7 +122,8 @@ fn maelstrom_v2_wire_is_byte_stable_and_forbids_termination() {
             "    ],\n",
             "    \"current_dir\": \"/workspace/rafter\",\n",
             "    \"environment\": {{}},\n",
-            "    \"environment_sha256\": \"{}\"\n",
+            "    \"environment_sha256\": \"{}\",\n",
+            "    \"launchers\": []\n",
             "  }},\n",
             "  \"exit_code\": 0,\n",
             "  \"timed_out\": false,\n",
@@ -133,14 +136,14 @@ fn maelstrom_v2_wire_is_byte_stable_and_forbids_termination() {
         PROGRAM_SHA256, ENVIRONMENT_SHA256
     );
     assert_eq!(encoded, expected);
-    assert!(parse_maelstrom_v2(&encoded).is_ok());
-    assert!(parse_tla_v3(&encoded).is_err());
+    assert!(parse_maelstrom_v3(&encoded).is_ok());
+    assert!(parse_tla_v4(&encoded).is_err());
 
     let with_termination = encoded.replace(
         "  \"duration_ms\": 17,",
         "  \"termination\": {\"process_group\":true,\"term_signal_sent\":false,\"grace_ms\":1,\"kill_signal_sent\":false},\n  \"duration_ms\": 17,",
     );
-    assert!(parse_maelstrom_v2(&with_termination).is_err());
+    assert!(parse_maelstrom_v3(&with_termination).is_err());
 }
 
 #[test]
@@ -148,7 +151,7 @@ fn combined_framing_preserves_payload_boundaries_and_detector_challenge() {
     let invocation_receipt = invocation();
     let invocation = serde_json::to_string(&invocation_receipt).expect("serialize invocation");
     let plain = format!(
-        "schema_version: 3\nlabel: compile\ninvocation: {invocation}\nexit_code: Some(0)\ntimed_out: false\nduration_ms: 7\npeak_rss_kib: 9\nstdout_bytes: 3\nstderr_bytes: 3\n\nok\nerr"
+        "schema_version: 4\nlabel: compile\ninvocation: {invocation}\nexit_code: Some(0)\ntimed_out: false\nduration_ms: 7\npeak_rss_kib: 9\nstdout_bytes: 3\nstderr_bytes: 3\n\nok\nerr"
     );
     let plain_observation = ProcessObservation {
         invocation: &invocation_receipt,
@@ -161,19 +164,19 @@ fn combined_framing_preserves_payload_boundaries_and_detector_challenge() {
         stderr: b"err",
     };
     assert_eq!(
-        encode_combined_v3("compile", plain_observation).expect("encode combined receipt"),
+        encode_combined_v4("compile", plain_observation).expect("encode combined receipt"),
         plain.as_bytes()
     );
     let challenge = "5a".repeat(32);
     let detector = format!(
-        "schema_version: 4\nlabel: detector\ninvocation: {invocation}\ndetector_challenge: {challenge}\nexit_code: None\ntimed_out: true\nduration_ms: 11\npeak_rss_kib: 13\nstdout_bytes: 4\nstderr_bytes: 0\n\npass"
+        "schema_version: 5\nlabel: detector\ninvocation: {invocation}\ndetector_challenge: {challenge}\nexit_code: None\ntimed_out: true\nduration_ms: 11\npeak_rss_kib: 13\nstdout_bytes: 4\nstderr_bytes: 0\n\npass"
     );
 
     let adjacent = plain + &detector;
     let parsed = parse_combined_processes(&adjacent).expect("parse adjacent frames");
-    assert!(parse_combined_v3(&adjacent).is_err());
+    assert!(parse_combined_v4(&adjacent).is_err());
     assert_eq!(parsed.len(), 2);
-    assert_eq!(parsed[0].schema_version, 3);
+    assert_eq!(parsed[0].schema_version, 4);
     assert_eq!(parsed[0].stdout, "ok\n");
     assert_eq!(parsed[0].stderr, "err");
     assert_eq!(parsed[0].metrics.duration_ms, 7);
@@ -181,7 +184,7 @@ fn combined_framing_preserves_payload_boundaries_and_detector_challenge() {
     assert_eq!(parsed[1].stdout, "pass");
     assert_eq!(parsed[1].exit_code, None);
     assert!(parsed[1].timed_out);
-    assert_eq!(parsed[1].schema_version, 4);
+    assert_eq!(parsed[1].schema_version, 5);
     assert_eq!(
         parsed[1].detector_challenge.as_deref(),
         Some(challenge.as_str())
@@ -192,12 +195,12 @@ fn combined_framing_preserves_payload_boundaries_and_detector_challenge() {
 fn encoders_reject_ambiguous_labels_challenges_and_non_utf8_output() {
     let invocation = invocation();
     let invalid_utf8 = observation(&invocation, None, &[0xff], b"");
-    assert!(encode_combined_v3("compile", invalid_utf8).is_err());
-    assert!(encode_maelstrom_v2("base", invalid_utf8).is_err());
+    assert!(encode_combined_v4("compile", invalid_utf8).is_err());
+    assert!(encode_maelstrom_v3("base", invalid_utf8).is_err());
     assert!(
-        encode_combined_v3("compile\nforged", observation(&invocation, None, b"", b"")).is_err()
+        encode_combined_v4("compile\nforged", observation(&invocation, None, b"", b"")).is_err()
     );
-    assert!(encode_detector_v4(
+    assert!(encode_detector_v5(
         "detector",
         observation(&invocation, None, b"", b""),
         &"A".repeat(64),
@@ -215,24 +218,24 @@ fn formats_cannot_silently_discard_termination_evidence() {
         kill_signal_sent: false,
     };
     let observed = observation(&invocation, Some(&termination), b"ok", b"");
-    assert!(encode_combined_v3("compile", observed).is_err());
-    assert!(encode_maelstrom_v2("base", observed).is_err());
-    assert!(encode_tla_v3("model-check", observed).is_ok());
+    assert!(encode_combined_v4("compile", observed).is_err());
+    assert!(encode_maelstrom_v3("base", observed).is_err());
+    assert!(encode_tla_v4("model-check", observed).is_ok());
 }
 
 #[test]
 fn combined_parser_rejects_incomplete_and_malformed_frames() {
     let invocation = serde_json::to_string(&invocation()).expect("serialize invocation");
     let valid = format!(
-        "schema_version: 3\nlabel: compile\ninvocation: {invocation}\nexit_code: Some(0)\ntimed_out: false\nduration_ms: 7\npeak_rss_kib: 9\nstdout_bytes: 2\nstderr_bytes: 0\n\nok"
+        "schema_version: 4\nlabel: compile\ninvocation: {invocation}\nexit_code: Some(0)\ntimed_out: false\nduration_ms: 7\npeak_rss_kib: 9\nstdout_bytes: 2\nstderr_bytes: 0\n\nok"
     );
     assert!(matches!(
         parse_combined_processes(""),
         Err(ProcessFormatError::EmptyTranscript)
     ));
     assert!(matches!(
-        parse_combined_processes(&valid.replace("schema_version: 3", "schema_version: 2")),
-        Err(ProcessFormatError::UnsupportedCombinedSchema(2))
+        parse_combined_processes(&valid.replace("schema_version: 4", "schema_version: 3")),
+        Err(ProcessFormatError::UnsupportedCombinedSchema(3))
     ));
     assert!(
         parse_combined_processes(&valid.replace("peak_rss_kib: 9", "peak_rss_kib: 0")).is_err()
@@ -241,7 +244,7 @@ fn combined_parser_rejects_incomplete_and_malformed_frames() {
         parse_combined_processes(&valid.replace("stdout_bytes: 2", "stdout_bytes: 3")).is_err()
     );
     assert!(parse_combined_processes(&format!(
-        "schema_version: 4\nlabel: detector\ninvocation: {invocation}\ndetector_challenge: ABC\nexit_code: Some(0)\ntimed_out: false\nduration_ms: 1\npeak_rss_kib: 1\nstdout_bytes: 0\nstderr_bytes: 0\n\n"
+        "schema_version: 5\nlabel: detector\ninvocation: {invocation}\ndetector_challenge: ABC\nexit_code: Some(0)\ntimed_out: false\nduration_ms: 1\npeak_rss_kib: 1\nstdout_bytes: 0\nstderr_bytes: 0\n\n"
     ))
     .is_err());
 }

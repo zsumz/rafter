@@ -16,7 +16,7 @@ fn parent_releases_the_challenge_only_after_the_proof_request() {
     stream
         .set_read_timeout(Some(Duration::from_millis(100)))
         .expect("set pre-request timeout");
-    let mut observed = [0_u8; crate::detector_proof::CHALLENGE_BYTES];
+    let mut observed = [0_u8; crate::evidence::detector_proof::CHALLENGE_BYTES];
     let error = stream
         .read_exact(&mut observed)
         .expect_err("the parent must withhold its challenge before the request");
@@ -26,7 +26,7 @@ fn parent_releases_the_challenge_only_after_the_proof_request() {
     ));
 
     stream
-        .write_all(&[crate::detector_proof::PROOF_REQUEST])
+        .write_all(&[crate::evidence::detector_proof::PROOF_REQUEST])
         .expect("send proof request");
     stream
         .set_read_timeout(Some(Duration::from_secs(1)))
@@ -74,13 +74,13 @@ fn channel_failure_retains_completed_child_output() {
 
 #[test]
 fn malformed_proof_request_fixture() {
-    let Ok(socket) = std::env::var(crate::detector_proof::PROOF_SOCKET_ENV) else {
+    let Ok(socket) = std::env::var(crate::evidence::detector_proof::PROOF_SOCKET_ENV) else {
         return;
     };
     println!("retained malformed-proof fixture output");
     let mut stream = UnixStream::connect(socket).expect("connect detector proof channel");
     stream
-        .write_all(&[crate::detector_proof::PROOF_REQUEST.wrapping_add(1)])
+        .write_all(&[crate::evidence::detector_proof::PROOF_REQUEST.wrapping_add(1)])
         .expect("write malformed proof request");
     std::thread::sleep(Duration::from_millis(100));
 }

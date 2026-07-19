@@ -35,6 +35,7 @@ struct LayerSourceContract {
     build_profile: &'static str,
     features: &'static [&'static str],
     tools: &'static [&'static str],
+    script_runtime: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -106,6 +107,7 @@ fn capture_identity_at(
     let cargo_lock = fs::read(root.join("Cargo.lock"))?;
     let cargo_config_sha256 = cargo_config_sha256(root, &cargo)?;
     let environment = process::base_environment();
+    let process_runtime = process::capture_runtime_receipts(&environment, contract.script_runtime)?;
     let tools = contract
         .tools
         .iter()
@@ -130,6 +132,7 @@ fn capture_identity_at(
             .map(|value| (*value).to_owned())
             .collect(),
         tools,
+        process_runtime,
         environment_sha256,
         clean: true,
     })
@@ -193,9 +196,20 @@ pub(crate) fn verify_layer_contract(
         .keys()
         .map(String::as_str)
         .collect::<std::collections::BTreeSet<_>>();
+    let expected_runtime = if expected.script_runtime {
+        ["bash", "perl", "ps", "time"].as_slice()
+    } else {
+        ["perl", "ps", "time"].as_slice()
+    };
+    let observed_runtime = receipt
+        .process_runtime
+        .keys()
+        .map(String::as_str)
+        .collect::<std::collections::BTreeSet<_>>();
     if receipt.build_profile != expected.build_profile
         || receipt.features != expected_features
         || observed_tools != expected_tools
+        || observed_runtime != expected_runtime.iter().copied().collect()
     {
         return Err(format!(
             "{layer} source receipt does not match its exact build profile, features, and tools contract"
@@ -224,21 +238,25 @@ fn layer_contract(layer: &str) -> Result<LayerSourceContract, Box<dyn Error>> {
             build_profile: "test",
             features: &["no-default-features"],
             tools: &[],
+            script_runtime: false,
         }),
         "simulator" => Ok(LayerSourceContract {
             build_profile: "release-and-test",
             features: &["internal-test-hooks"],
             tools: &[],
+            script_runtime: false,
         }),
         "tla" => Ok(LayerSourceContract {
             build_profile: "tla",
             features: &[],
             tools: &["java"],
+            script_runtime: false,
         }),
         "maelstrom" => Ok(LayerSourceContract {
             build_profile: "maelstrom-debug",
             features: &[],
             tools: &["java", "maelstrom", "dot", "gnuplot"],
+            script_runtime: true,
         }),
         _ => Err(format!("unsupported source profile for layer {layer}").into()),
     }
