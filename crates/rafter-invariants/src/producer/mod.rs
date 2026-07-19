@@ -1,3 +1,5 @@
+//! Deterministic evidence producers and their runtime adapters.
+
 pub(crate) mod artifact;
 mod maelstrom;
 mod maelstrom_binding;
@@ -23,7 +25,6 @@ mod unit_tests;
 #[cfg(test)]
 mod filesystem_integration_tests;
 
-pub(crate) use process::ProcessLog;
 #[cfg(test)]
 pub(crate) use simulator::evaluate_model_fixture;
 pub(crate) use simulator_model::{

@@ -286,7 +286,8 @@ fn process_output(exit_code: i32, stdout: Vec<u8>) -> process::ProcessOutput {
             arguments: vec!["fixture".to_owned()],
             current_dir: "/".to_owned(),
             environment: BTreeMap::new(),
-            environment_sha256: process::digest_environment(&BTreeMap::new()),
+            environment_sha256: crate::provenance::invocation::digest_environment(&BTreeMap::new())
+                .expect("valid fixture environment"),
         },
         status,
         stdout,
