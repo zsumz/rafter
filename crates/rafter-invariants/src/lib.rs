@@ -7,8 +7,9 @@ mod artifact_verify_maelstrom_support;
 #[cfg(test)]
 mod artifact_verify_maelstrom_tests;
 mod artifact_verify_tla;
-mod catalog;
+mod contract;
 mod detector_proof;
+mod evidence;
 mod plan;
 mod producer;
 mod producer_image;
@@ -17,65 +18,44 @@ mod receipt_maelstrom;
 mod receipt_simulator;
 mod receipt_tests;
 mod receipt_tla;
-mod registry;
-mod registry_document;
-mod registry_parse;
 mod render;
 mod run_all;
 mod rust_target;
-mod schema;
-mod types;
+mod verdict;
+mod verification;
 
 #[cfg(test)]
 pub(crate) use aggregate::aggregate;
 pub(crate) use aggregate::{aggregate_with_harness_errors, load_evidence, verify_layer_bundle};
-pub use catalog::{
+pub use contract::catalog::{
     Catalog, CatalogError, ClauseDescriptor, EvidenceDescriptor, InvariantDescriptor,
     ProfileContract, ProfileManifest, RunnerContract, SimulatorCheckContract, SimulatorIdentity,
     TestIdentity,
+};
+pub use contract::registry::render_registry_markdown;
+pub use contract::registry::{
+    RegistryClause, RegistryCounts, RegistryDocument, RegistryEvidence, RegistryInvariant,
+    RegistryParseError, REGISTRY_SCHEMA_VERSION,
+};
+pub(crate) use evidence::ResultBundle;
+pub use evidence::{
+    ArtifactRef, CheckCompletion, CheckReceipt, EvidenceResult, EvidenceStatus,
+    ExecutionPlanReceipt, ExecutionReceipt, FailureClassification, InvocationReceipt, PlanInput,
+    ProducerBindingReceipt, SourceMaterializationReceipt, SourceReceipt, ToolReceipt,
+    PLAN_SCHEMA_VERSION,
 };
 pub(crate) use plan::{capture_invocation, verify_bundle_plan};
 pub use plan::{ExecutionPlan, PlanOptions};
 pub(crate) use producer::produce_with_plan;
 pub use producer::{produce, ProducerOptions, ProducerOutcome};
 pub use producer_image::ensure_immutable_producer;
-pub use registry::{
-    RegistryClause, RegistryCounts, RegistryDocument, RegistryEvidence, RegistryInvariant,
-    REGISTRY_SCHEMA_VERSION,
-};
-pub use registry_document::render_registry_markdown;
 pub(crate) use render::{render_junit, render_markdown};
 pub use run_all::{
     current_source_ref, run_all, verify_and_write_report, verify_layer_evidence,
     ReportWriteOutcome, RunAllOptions, RunAllOutcome,
 };
-
-#[doc(hidden)]
-#[derive(Debug)]
-pub struct DetectorFixtureSourceBinding<'a> {
-    pub fixture_source: &'a str,
-    pub detector_source: &'a str,
-    pub source_root: &'a std::path::Path,
-    pub fixture_path: &'a std::path::Path,
-    pub detector_path: &'a std::path::Path,
-    pub test_identity: &'a TestIdentity,
-    pub fixture: &'a str,
-    pub detector: &'a str,
-}
-
-#[doc(hidden)]
-pub fn validate_detector_fixture_sources(
-    binding: &DetectorFixtureSourceBinding<'_>,
-) -> Result<(), String> {
-    artifact_verify::validate_detector_fixture_sources(binding)
-}
-pub(crate) use types::ResultBundle;
-pub use types::{
-    ArtifactRef, CheckCompletion, CheckReceipt, ClauseVerdict, EvidenceResult, EvidenceStatus,
-    ExecutionPlanReceipt, ExecutionReceipt, FailureClassification, InvariantVerdict,
-    InvocationReceipt, PlanInput, ProducerBindingReceipt, SourceMaterializationReceipt,
-    SourceReceipt, ToolReceipt, VerdictReport, VerdictStatus, PLAN_SCHEMA_VERSION,
-};
+pub use verdict::{ClauseVerdict, InvariantVerdict, VerdictReport, VerdictStatus};
+pub use verification::{validate_detector_fixture_sources, DetectorFixtureSourceBinding};
 
 #[cfg(test)]
 mod tests;
