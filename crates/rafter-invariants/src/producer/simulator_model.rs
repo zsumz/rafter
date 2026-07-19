@@ -8,13 +8,14 @@ use std::{
 
 use serde_json::Value;
 
-use crate::ArtifactRef;
-
-use super::{
-    artifact,
-    filesystem::{self as producer_fs, HeldDirectory, HeldFile, OperationDeadline, TREE_LIMITS},
-    process,
+use crate::{
+    execution::filesystem::{
+        self as producer_fs, HeldDirectory, HeldFile, OperationDeadline, TREE_LIMITS,
+    },
+    ArtifactRef,
 };
+
+use super::{artifact, process};
 
 const EVENT_PREFIX: &str = "RAFTER_EVENT ";
 

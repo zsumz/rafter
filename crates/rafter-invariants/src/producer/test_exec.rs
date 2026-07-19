@@ -1,13 +1,11 @@
 use std::{collections::BTreeMap, error::Error, ffi::OsString, path::Path, time::Instant};
 
-use crate::{ArtifactRef, CheckCompletion, EvidenceStatus, FailureClassification, TestIdentity};
-
-use super::{
-    artifact,
-    filesystem::{HeldDirectory, OperationDeadline, TREE_LIMITS},
-    process,
-    test_compile::CompiledTarget,
+use crate::{
+    execution::filesystem::{HeldDirectory, OperationDeadline, TREE_LIMITS},
+    ArtifactRef, CheckCompletion, EvidenceStatus, FailureClassification, TestIdentity,
 };
+
+use super::{artifact, process, test_compile::CompiledTarget};
 
 mod detector_proof;
 

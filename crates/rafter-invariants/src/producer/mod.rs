@@ -1,5 +1,4 @@
 pub(crate) mod artifact;
-mod filesystem;
 mod maelstrom;
 mod maelstrom_binding;
 pub(crate) mod maelstrom_edn;
@@ -22,8 +21,7 @@ pub(crate) mod tla_output;
 mod unit_tests;
 
 #[cfg(test)]
-#[path = "filesystem_tests.rs"]
-mod filesystem_tests;
+mod filesystem_integration_tests;
 
 pub(crate) use process::ProcessLog;
 #[cfg(test)]
@@ -43,8 +41,8 @@ use std::collections::BTreeSet;
 use std::{error::Error, io::Write, path::PathBuf};
 
 use crate::{
-    capture_invocation, plan::CapturedInvocation, ExecutionPlan, ExecutionPlanReceipt,
-    InvocationReceipt, PlanOptions, ProducerBindingReceipt, ResultBundle,
+    capture_invocation, execution::filesystem, plan::CapturedInvocation, ExecutionPlan,
+    ExecutionPlanReceipt, InvocationReceipt, PlanOptions, ProducerBindingReceipt, ResultBundle,
 };
 
 #[derive(Clone, Debug)]

@@ -10,9 +10,9 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::ArtifactRef;
+use crate::{execution::filesystem::HeldDirectory, ArtifactRef};
 
-use super::{artifact, filesystem::HeldDirectory};
+use super::artifact;
 
 mod traversal;
 

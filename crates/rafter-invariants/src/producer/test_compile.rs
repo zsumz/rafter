@@ -8,13 +8,14 @@ use std::{
 
 use serde::Deserialize;
 
-use crate::{ArtifactRef, TestIdentity};
-
-use super::{
-    artifact,
-    filesystem::{self as producer_fs, HeldDirectory, HeldFile, OperationDeadline, TREE_LIMITS},
-    process,
+use crate::{
+    execution::filesystem::{
+        self as producer_fs, HeldDirectory, HeldFile, OperationDeadline, TREE_LIMITS,
+    },
+    ArtifactRef, TestIdentity,
 };
+
+use super::{artifact, process};
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) struct Target {

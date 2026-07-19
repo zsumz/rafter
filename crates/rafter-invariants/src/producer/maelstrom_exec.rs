@@ -6,15 +6,14 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::ArtifactRef;
-
-use super::{
-    artifact,
-    filesystem::{self as producer_fs, EntryKind, HeldDirectory, OperationDeadline, TREE_LIMITS},
-    maelstrom_edn,
-    maelstrom_scenario::required_configuration,
-    process,
+use crate::{
+    execution::filesystem::{
+        self as producer_fs, EntryKind, HeldDirectory, OperationDeadline, TREE_LIMITS,
+    },
+    ArtifactRef,
 };
+
+use super::{artifact, maelstrom_edn, maelstrom_scenario::required_configuration, process};
 
 pub(super) use super::maelstrom_scenario::Scenario;
 

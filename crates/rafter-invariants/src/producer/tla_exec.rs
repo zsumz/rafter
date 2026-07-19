@@ -10,13 +10,9 @@ use std::{
 #[cfg(target_os = "linux")]
 use std::os::fd::BorrowedFd;
 
-use super::{
-    artifact,
-    filesystem::{HeldDirectory, OperationDeadline, TREE_LIMITS},
-    process, tla_checkpoint,
-    tla_contract::required_configuration,
-    tla_output,
-};
+use crate::execution::filesystem::{HeldDirectory, OperationDeadline, TREE_LIMITS};
+
+use super::{artifact, process, tla_checkpoint, tla_contract::required_configuration, tla_output};
 use tla_output::{
     detector_config_kind, detector_invariant, detector_label, detector_log_kind,
     detector_observation, probe_slug, render_detector_config, DetectorProbe, DETECTOR_PROBES,
@@ -771,7 +767,7 @@ fn run_tlc(request: TlcRequest<'_>) -> Result<TlcRun, Box<dyn Error>> {
         state_binding.path(),
         recover_binding
             .as_ref()
-            .map(super::filesystem::ChildDirectory::path),
+            .map(crate::execution::filesystem::ChildDirectory::path),
     )?;
     verify_tlc_state_binding(state_handle, recover_handle)?;
     let environment = process::base_environment();
@@ -900,8 +896,8 @@ fn tlc_arguments(
 
 #[cfg(target_os = "linux")]
 fn tlc_directory_descriptors<'a>(
-    state: &'a super::filesystem::ChildDirectory,
-    recover: Option<&'a super::filesystem::ChildDirectory>,
+    state: &'a crate::execution::filesystem::ChildDirectory,
+    recover: Option<&'a crate::execution::filesystem::ChildDirectory>,
 ) -> Vec<BorrowedFd<'a>> {
     let mut descriptors = vec![state.descriptor()];
     if let Some(recover) = recover {

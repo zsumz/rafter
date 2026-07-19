@@ -6,9 +6,7 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use crate::ArtifactRef;
-
-use super::filesystem::HeldDirectory;
+use crate::{execution::filesystem::HeldDirectory, ArtifactRef};
 
 pub(super) fn validate_output_dir(path: &Path) -> Result<(), Box<dyn Error>> {
     if path.is_absolute()
@@ -100,7 +98,7 @@ fn reference(path: &Path, kind: &str, bytes: &[u8]) -> ArtifactRef {
 }
 
 fn read_confined(source: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
-    super::filesystem::read_file(source)
+    crate::execution::filesystem::read_file(source)
 }
 
 pub(super) fn stable_id(namespace: &str, value: &str) -> String {
