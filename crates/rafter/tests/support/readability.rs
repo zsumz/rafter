@@ -5,6 +5,7 @@ pub(super) const FACADE_PATHS: &[&str] = &[
     "crates/rafter-invariant-test/src/detector/mod.rs",
     "crates/rafter-invariant-test/src/oracle/mod.rs",
     "crates/rafter-invariants/src/lib.rs",
+    "crates/rafter-invariants/src/artifact_verify/test_logs.rs",
     "crates/rafter-invariants/src/contract/mod.rs",
     "crates/rafter-invariants/src/contract/catalog/mod.rs",
     "crates/rafter-invariants/src/contract/profile/liveness/mod.rs",
@@ -20,6 +21,9 @@ pub(super) const FACADE_PATHS: &[&str] = &[
     "crates/rafter-invariants/src/evidence/receipt/mod.rs",
     "crates/rafter-invariants/src/execution/filesystem/mod.rs",
     "crates/rafter-invariants/src/execution/mod.rs",
+    "crates/rafter-invariants/src/execution/process/mod.rs",
+    "crates/rafter-invariants/src/producer/process/mod.rs",
+    "crates/rafter-invariants/src/producer/process/budget/mod.rs",
     "crates/rafter-invariants/src/producer/simulator/liveness/mod.rs",
     "crates/rafter-invariants/src/provenance/invocation/mod.rs",
     "crates/rafter-invariants/src/provenance/mod.rs",
@@ -46,6 +50,8 @@ pub(super) const FACADE_PATHS: &[&str] = &[
 /// Test modules that only map a mature domain to focused scenario files.
 pub(super) const TEST_FACADE_PATHS: &[&str] = &[
     "crates/rafter-invariants/src/contract/registry/parse/tests/mod.rs",
+    "crates/rafter-invariants/src/producer/process/tests/mod.rs",
+    "crates/rafter-invariants/src/execution/process/tests/mod.rs",
     "crates/rafter-invariants/src/verification/simulator/liveness/tests/mod.rs",
     "crates/rafter/src/node/tests.rs",
     "crates/rafter/src/node/tests/bootstrap.rs",
