@@ -6,6 +6,7 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
+use syn::{visit::Visit, ItemUse, UseTree};
 
 #[path = "support/invariant_tooling.rs"]
 mod invariant_tooling;
@@ -74,7 +75,25 @@ fn mature_invariant_facades_remain_declarative() {
             "crates/rafter-invariant-test/src/lib.rs",
             "crates/rafter-invariant-test/src/detector/mod.rs",
             "crates/rafter-invariant-test/src/oracle/mod.rs",
-            "crates/rafter-invariants/src/registry_parse.rs",
+            "crates/rafter-invariants/src/lib.rs",
+            "crates/rafter-invariants/src/contract/mod.rs",
+            "crates/rafter-invariants/src/contract/catalog/mod.rs",
+            "crates/rafter-invariants/src/contract/profile/liveness/mod.rs",
+            "crates/rafter-invariants/src/contract/profile/mod.rs",
+            "crates/rafter-invariants/src/contract/profile/runner_contract/mod.rs",
+            "crates/rafter-invariants/src/contract/registry/mod.rs",
+            "crates/rafter-invariants/src/contract/registry/parse/mod.rs",
+            "crates/rafter-invariants/src/contract/schema/mod.rs",
+            "crates/rafter-invariants/src/evidence/liveness/mod.rs",
+            "crates/rafter-invariants/src/evidence/mod.rs",
+            "crates/rafter-invariants/src/evidence/receipt/mod.rs",
+            "crates/rafter-invariants/src/producer/simulator/liveness/mod.rs",
+            "crates/rafter-invariants/src/verification/mod.rs",
+            "crates/rafter-invariants/src/verification/simulator/mod.rs",
+            "crates/rafter-invariants/src/verification/simulator/liveness/mod.rs",
+            "crates/rafter-invariants/src/verdict/mod.rs",
+            "crates/rafter-invariants/src/contract/registry/parse/tests/mod.rs",
+            "crates/rafter-invariants/src/verification/simulator/liveness/tests/mod.rs",
         ]
     );
 
@@ -91,6 +110,98 @@ fn mature_invariant_facades_remain_declarative() {
                 line_index + 1
             );
         }
+    }
+}
+
+#[test]
+fn modeled_invariant_domains_require_module_contracts_without_legacy_allowance() {
+    let root = workspace_root();
+    for relative in [
+        "crates/rafter-invariants/src/contract",
+        "crates/rafter-invariants/src/evidence",
+        "crates/rafter-invariants/src/verdict",
+        "crates/rafter-invariants/src/verification",
+        "crates/rafter-invariants/src/producer/simulator/liveness",
+    ] {
+        for path in rust_files(&root.join(relative)) {
+            assert!(
+                starts_with_module_contract(&read(&path)),
+                "{} needs a `//!` module contract",
+                display_path(&root, &path)
+            );
+        }
+    }
+}
+
+#[test]
+fn implemented_domain_imports_follow_the_reviewed_dependency_graph() {
+    let root = workspace_root();
+    for name in ["contract", "evidence", "verification", "verdict"] {
+        assert_domain_imports_follow_manifest(&root, name);
+    }
+}
+
+#[test]
+fn retired_internal_catalog_alias_cannot_return() {
+    let root = workspace_root();
+    for path in invariant_rust_files(&root) {
+        let source = read(&path);
+        assert!(
+            !source.contains("crate::catalog"),
+            "{} imports the retired internal catalog alias",
+            display_path(&root, &path)
+        );
+    }
+    assert!(
+        !read(&root.join("crates/rafter-invariants/src/lib.rs"))
+            .contains("pub(crate) use contract::catalog"),
+        "the retired crate-root catalog alias returned"
+    );
+}
+
+#[test]
+fn liveness_wire_binding_cannot_absorb_raw_event_acceptance() {
+    let root = workspace_root();
+    let evidence = read(&root.join("crates/rafter-invariants/src/evidence/liveness/binding.rs"));
+    for raw_acceptance in [
+        "SimulatorIdentity",
+        "expected_execution_contract",
+        "LivenessReportError",
+        "BTreeMap<String, Vec<Value>>",
+        "validate_liveness_report",
+    ] {
+        assert!(
+            !evidence.contains(raw_acceptance),
+            "neutral evidence binding absorbed `{raw_acceptance}`"
+        );
+    }
+
+    for relative in [
+        "crates/rafter-invariants/src/producer/simulator/liveness/raw.rs",
+        "crates/rafter-invariants/src/verification/simulator/liveness/raw.rs",
+    ] {
+        assert!(
+            root.join(relative).is_file(),
+            "missing independent {relative}"
+        );
+    }
+}
+
+#[test]
+fn retired_flat_contract_files_cannot_return() {
+    let root = workspace_root();
+    for relative in [
+        "crates/rafter-invariants/src/catalog.rs",
+        "crates/rafter-invariants/src/registry.rs",
+        "crates/rafter-invariants/src/registry_document.rs",
+        "crates/rafter-invariants/src/registry_parse.rs",
+        "crates/rafter-invariants/src/schema.rs",
+        "crates/rafter-invariants/src/types.rs",
+    ] {
+        assert!(
+            !root.join(relative).exists(),
+            "retired flat contract file returned: {relative}"
+        );
     }
 }
 
@@ -254,6 +365,87 @@ fn assert_forbidden_import_absent(source_root: &Path, forbidden: &[&str]) {
                 "{} imports forbidden dependency {dependency}",
                 path.display()
             );
+        }
+    }
+}
+
+fn assert_domain_imports_follow_manifest(root: &Path, name: &str) {
+    let owner = domain(name);
+    let source_root = root.join("crates/rafter-invariants/src").join(name);
+    for path in rust_files(&source_root) {
+        let relative = display_path(root, &path);
+        if is_test_module(&relative) {
+            continue;
+        }
+        let source = read(&path);
+        let syntax = syn::parse_file(&source)
+            .unwrap_or_else(|error| panic!("parse {relative} for dependency validation: {error}"));
+        let mut imports = CrateImportCollector::default();
+        imports.visit_file(&syntax);
+        for import in imports.paths {
+            let Some(dependency) = import.get(1) else {
+                panic!("{relative} imports the crate root without a domain owner: {import:?}");
+            };
+            if dependency == name || owner.may_depend_on.contains(&dependency.as_str()) {
+                continue;
+            }
+            if INVARIANT_DOMAINS
+                .iter()
+                .any(|domain| domain.name == dependency)
+            {
+                panic!("{relative} imports forbidden domain {dependency} via {import:?}");
+            }
+            panic!(
+                "{relative} imports crate-root facade item {dependency} via {import:?}; import it from its owning domain"
+            );
+        }
+    }
+}
+
+#[derive(Default)]
+struct CrateImportCollector {
+    paths: Vec<Vec<String>>,
+}
+
+impl<'ast> Visit<'ast> for CrateImportCollector {
+    fn visit_item_use(&mut self, item: &'ast ItemUse) {
+        let mut paths = Vec::new();
+        flatten_use_tree(&item.tree, Vec::new(), &mut paths);
+        self.paths.extend(
+            paths
+                .into_iter()
+                .filter(|path| path.first().is_some_and(|segment| segment == "crate")),
+        );
+        syn::visit::visit_item_use(self, item);
+    }
+}
+
+fn flatten_use_tree(tree: &UseTree, prefix: Vec<String>, paths: &mut Vec<Vec<String>>) {
+    match tree {
+        UseTree::Path(path) => {
+            let mut prefix = prefix;
+            prefix.push(path.ident.to_string());
+            flatten_use_tree(&path.tree, prefix, paths);
+        }
+        UseTree::Name(name) => {
+            let mut path = prefix;
+            path.push(name.ident.to_string());
+            paths.push(path);
+        }
+        UseTree::Rename(rename) => {
+            let mut path = prefix;
+            path.push(rename.ident.to_string());
+            paths.push(path);
+        }
+        UseTree::Glob(_) => {
+            let mut path = prefix;
+            path.push("*".to_owned());
+            paths.push(path);
+        }
+        UseTree::Group(group) => {
+            for tree in &group.items {
+                flatten_use_tree(tree, prefix.clone(), paths);
+            }
         }
     }
 }
