@@ -5,11 +5,11 @@ use std::{
 };
 
 use crate::{
-    catalog::{Catalog, ProfileManifest},
+    contract::{catalog::Catalog, profile::ProfileManifest},
+    evidence::{EvidenceResult, EvidenceStatus, FailureClassification, ResultBundle},
     receipt::collect_results,
-    types::{
-        ClauseVerdict, EvidenceResult, EvidenceStatus, FailureClassification, InvariantVerdict,
-        ResultBundle, VerdictIssue, VerdictReport, VerdictStatus, VerdictSummary,
+    verdict::{
+        ClauseVerdict, InvariantVerdict, VerdictIssue, VerdictReport, VerdictStatus, VerdictSummary,
     },
 };
 
@@ -75,7 +75,7 @@ fn load_bundle(path: &PathBuf, root: &Path) -> Result<(ResultBundle, Vec<String>
         .map_err(|error| AggregateError(format!("read {}: {error}", path.display())))?;
     let value: serde_json::Value = serde_json::from_str(&source)
         .map_err(|error| AggregateError(format!("parse {}: {error}", path.display())))?;
-    crate::schema::validate_result_value(&value).map_err(|error| {
+    crate::evidence::validate_result_value(&value).map_err(|error| {
         AggregateError(format!(
             "validate result schema for {}: {error}",
             path.display()
@@ -165,7 +165,7 @@ pub(crate) fn aggregate_with_harness_errors(
         .filter(|verdict| verdict.status == VerdictStatus::Green)
         .count();
     Ok(VerdictReport {
-        schema_version: crate::types::VERDICT_SCHEMA_VERSION,
+        schema_version: crate::verdict::VERDICT_SCHEMA_VERSION,
         profile: profile.to_owned(),
         source_ref: source_ref.to_owned(),
         summary: VerdictSummary {
