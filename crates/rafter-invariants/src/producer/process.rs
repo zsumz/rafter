@@ -463,8 +463,8 @@ fn timed_with_timeout_and_policy_and_descriptors_after_bind(
     let stderr_path = output_prefix.with_extension("stderr");
     let resource_path = output_prefix.with_extension("time");
     let process_group_path = output_prefix.with_extension("pgid");
-    let stdout_file = super::filesystem::create_new_file(&stdout_path)?;
-    let stderr_file = super::filesystem::create_new_file(&stderr_path)?;
+    let stdout_file = crate::execution::filesystem::create_new_file(&stdout_path)?;
+    let stderr_file = crate::execution::filesystem::create_new_file(&stderr_path)?;
     let mut command = Command::new("/usr/bin/time");
     command.arg("-o").arg(&resource_path);
     if cfg!(target_os = "macos") {

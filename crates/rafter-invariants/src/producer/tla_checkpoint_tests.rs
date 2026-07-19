@@ -4,7 +4,7 @@ use super::{
     sanitize_cache_root_with_limits, validate_candidate, CheckpointContract, CheckpointInventory,
     RecoveryStatus, TraversalLimits, CACHE_VALID_FILE, HASH_BUFFER_BYTES, INPUT_KINDS,
     MAX_CHECKPOINT_METADATA_BYTES, RECOVERED_CONTRACT_KIND, RECOVERED_INVENTORY_KIND,
-    RECOVERY_REPORT_KIND,
+    RECOVERY_REPORT_KIND, TRAVERSAL_LIMITS,
 };
 use crate::ArtifactRef;
 use std::{
@@ -41,13 +41,12 @@ fn test_root(label: &str) -> PathBuf {
 }
 
 fn traversal_limits(directory_entries: usize, files: usize) -> TraversalLimits {
-    TraversalLimits {
-        directory_entries,
-        files,
-        directories: 64,
-        nodes: 128,
-        depth: 32,
-    }
+    TRAVERSAL_LIMITS
+        .with_directory_entries(directory_entries)
+        .with_files(files)
+        .with_directories(64)
+        .with_nodes(128)
+        .with_depth(32)
 }
 
 #[test]
@@ -523,8 +522,7 @@ fn checkpoint_depth_limit_rejects_a_deep_tree_iteratively() {
     }
     fs::create_dir_all(&directory).expect("create deep checkpoint tree");
     fs::write(directory.join("states_0.chkpt"), b"state").expect("write deep checkpoint state");
-    let mut limits = traversal_limits(4, 4);
-    limits.depth = 8;
+    let limits = traversal_limits(4, 4).with_depth(8);
 
     let error = inventory_with_limits(&root, &"1".repeat(64), deadline(), limits)
         .expect_err("deep checkpoint tree must be rejected");
@@ -542,8 +540,7 @@ fn checkpoint_many_empty_directories_exhaust_global_budgets() {
             .expect("create empty checkpoint directory");
     }
 
-    let mut directory_limits = traversal_limits(16, 4);
-    directory_limits.directories = 5;
+    let directory_limits = traversal_limits(16, 4).with_directories(5);
     let directory_error =
         inventory_with_limits(&root, &"1".repeat(64), deadline(), directory_limits)
             .expect_err("too many empty checkpoint directories must be rejected");
@@ -551,8 +548,7 @@ fn checkpoint_many_empty_directories_exhaust_global_budgets() {
         .to_string()
         .contains("global directory limit of 5"));
 
-    let mut node_limits = traversal_limits(16, 4);
-    node_limits.nodes = 5;
+    let node_limits = traversal_limits(16, 4).with_nodes(5);
     let node_error = inventory_with_limits(&root, &"1".repeat(64), deadline(), node_limits)
         .expect_err("too many empty checkpoint nodes must be rejected");
     assert!(node_error.to_string().contains("global node limit of 5"));

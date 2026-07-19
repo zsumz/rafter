@@ -87,6 +87,8 @@ fn mature_invariant_facades_remain_declarative() {
             "crates/rafter-invariants/src/evidence/liveness/mod.rs",
             "crates/rafter-invariants/src/evidence/mod.rs",
             "crates/rafter-invariants/src/evidence/receipt/mod.rs",
+            "crates/rafter-invariants/src/execution/filesystem/mod.rs",
+            "crates/rafter-invariants/src/execution/mod.rs",
             "crates/rafter-invariants/src/producer/simulator/liveness/mod.rs",
             "crates/rafter-invariants/src/verification/mod.rs",
             "crates/rafter-invariants/src/verification/simulator/mod.rs",
@@ -119,6 +121,7 @@ fn modeled_invariant_domains_require_module_contracts_without_legacy_allowance()
     for relative in [
         "crates/rafter-invariants/src/contract",
         "crates/rafter-invariants/src/evidence",
+        "crates/rafter-invariants/src/execution",
         "crates/rafter-invariants/src/verdict",
         "crates/rafter-invariants/src/verification",
         "crates/rafter-invariants/src/producer/simulator/liveness",
@@ -136,8 +139,39 @@ fn modeled_invariant_domains_require_module_contracts_without_legacy_allowance()
 #[test]
 fn implemented_domain_imports_follow_the_reviewed_dependency_graph() {
     let root = workspace_root();
-    for name in ["contract", "evidence", "verification", "verdict"] {
+    for name in [
+        "contract",
+        "evidence",
+        "execution",
+        "verification",
+        "verdict",
+    ] {
         assert_domain_imports_follow_manifest(&root, name);
+    }
+}
+
+#[test]
+fn retired_producer_filesystem_ownership_cannot_return() {
+    let root = workspace_root();
+    for relative in [
+        "crates/rafter-invariants/src/producer/filesystem.rs",
+        "crates/rafter-invariants/src/producer/filesystem",
+        "crates/rafter-invariants/src/producer/filesystem_tests.rs",
+    ] {
+        assert!(
+            !root.join(relative).exists(),
+            "retired producer filesystem path returned: {relative}"
+        );
+    }
+
+    for path in invariant_rust_files(&root) {
+        let source = read(&path);
+        assert!(
+            !source.contains("crate::producer::filesystem")
+                && !source.contains("producer::filesystem::"),
+            "{} imports retired producer filesystem ownership",
+            display_path(&root, &path)
+        );
     }
 }
 

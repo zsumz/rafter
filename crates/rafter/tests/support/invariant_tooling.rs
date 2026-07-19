@@ -2,9 +2,9 @@
 
 pub(super) const PRODUCTION_TARGET_LINES: usize = 300;
 pub(super) const TEST_TARGET_LINES: usize = 400;
-pub(super) const MAX_PRODUCTION_FILES_OVER_TARGET: usize = 48;
+pub(super) const MAX_PRODUCTION_FILES_OVER_TARGET: usize = 47;
 pub(super) const MAX_TEST_FILES_OVER_TARGET: usize = 18;
-pub(super) const MAX_FILES_WITHOUT_MODULE_CONTRACTS: usize = 117;
+pub(super) const MAX_FILES_WITHOUT_MODULE_CONTRACTS: usize = 114;
 pub(super) const MAX_LEGACY_VERIFIER_PRODUCER_REFERENCES: usize = 154;
 
 pub(super) const INVARIANT_SOURCE_ROOTS: &[&str] = &[

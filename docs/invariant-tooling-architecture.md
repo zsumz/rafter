@@ -472,9 +472,9 @@ crates.
   facades use the tighter existing facade budget.
 - Size remains a graduated signal, not a reason to fracture one concept. New or
   moved files may not increase the count above a ratchet threshold.
-- Modeled `contract`, `evidence`, `verification`, `verdict`, and extracted
-  producer paths have no legacy documentation allowance: every Rust file in
-  those trees must carry a module or scenario contract even while older
+- Modeled `contract`, `evidence`, `execution`, `verification`, `verdict`, and
+  extracted producer paths have no legacy documentation allowance: every Rust
+  file in those trees must carry a module or scenario contract even while older
   domains retain aggregate debt.
 - No production module embeds a test body.
 - The allowed dependency graph above is executable.
