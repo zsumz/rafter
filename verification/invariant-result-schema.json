@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "runner", "profile", "source_ref", "execution", "results"],
   "properties": {
-    "schema_version": { "const": 13 },
+    "schema_version": { "const": 14 },
     "runner": { "enum": ["tests", "simulator", "tla", "maelstrom"] },
     "profile": { "enum": ["pr", "nightly", "weekly"] },
     "source_ref": { "type": "string", "minLength": 1 },
@@ -59,7 +59,7 @@
     "invocation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["program", "program_sha256", "arguments", "current_dir", "environment", "environment_sha256"],
+      "required": ["program", "program_sha256", "arguments", "current_dir", "environment", "environment_sha256", "launchers"],
       "properties": {
         "program": { "type": "string", "minLength": 1 },
         "program_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
@@ -70,7 +70,22 @@
         },
         "current_dir": { "type": "string", "minLength": 1 },
         "environment": { "type": "object", "additionalProperties": { "type": "string" } },
-        "environment_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        "environment_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "launchers": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/launcher" }
+        }
+      }
+    },
+    "launcher": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["role", "runtime", "program", "sha256"],
+      "properties": {
+        "role": { "type": "string", "minLength": 1 },
+        "runtime": { "type": "string", "minLength": 1 },
+        "program": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
       }
     },
     "producer_binding": {
@@ -290,7 +305,7 @@
     "source": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["commit", "tree", "materialization", "cargo_lock_sha256", "cargo", "cargo_sha256", "cargo_config_sha256", "rustc", "rustc_sha256", "target", "build_profile", "features", "tools", "environment_sha256", "clean"],
+      "required": ["commit", "tree", "materialization", "cargo_lock_sha256", "cargo", "cargo_sha256", "cargo_config_sha256", "rustc", "rustc_sha256", "target", "build_profile", "features", "tools", "process_runtime", "environment_sha256", "clean"],
       "properties": {
         "commit": { "type": "string", "minLength": 1 },
         "tree": { "type": "string", "minLength": 1 },
@@ -307,6 +322,11 @@
         "tools": {
           "type": "object",
           "additionalProperties": { "$ref": "#/$defs/tool" }
+        },
+        "process_runtime": {
+          "type": "object",
+          "minProperties": 3,
+          "additionalProperties": { "$ref": "#/$defs/executable" }
         },
         "environment_sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
         "clean": { "const": true }
@@ -329,6 +349,15 @@
       "required": ["version", "sha256"],
       "properties": {
         "version": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+      }
+    },
+    "executable": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["program", "sha256"],
+      "properties": {
+        "program": { "type": "string", "minLength": 1 },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
       }
     },
