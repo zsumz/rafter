@@ -10,7 +10,7 @@ use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
-use crate::producer::filesystem::{self as producer_fs, ChildDirectory, HeldDirectory, HeldFile};
+use crate::execution::filesystem::{self as producer_fs, ChildDirectory, HeldDirectory, HeldFile};
 
 pub(super) struct BoundInvocation {
     receipt: InvocationReceipt,

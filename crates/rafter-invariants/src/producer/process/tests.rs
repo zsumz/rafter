@@ -635,8 +635,8 @@ fn inherited_directory_binding_survives_path_replacement_through_launcher_chain(
     std::fs::write(external.join("checkpoint"), b"replacement")
         .expect("write replacement checkpoint fixture");
 
-    let held =
-        super::super::filesystem::HeldDirectory::open(&root).expect("hold checkpoint directory");
+    let held = crate::execution::filesystem::HeldDirectory::open(&root)
+        .expect("hold checkpoint directory");
     let binding = held.bind_for_child().expect("bind directory for child");
     let mut environment = super::base_environment();
     environment.insert(
