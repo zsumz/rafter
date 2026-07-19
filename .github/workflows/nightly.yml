@@ -86,9 +86,19 @@ jobs:
           name: invariants-nightly-evidence-tests-${{ github.run_id }}-${{ github.run_attempt }}
           overwrite: true
           path: |
-            artifacts/invariants/
-            target/rafter-invariants/telemetry/
+            artifacts/invariants/nightly-tests.json
+            artifacts/invariants/nightly-tests/
           if-no-files-found: error
+          retention-days: 30
+      - name: Upload nightly test process diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-nightly-tests-process-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/rafter-invariants/telemetry/
+            crates/rafter-invariants/target/rafter-invariants/telemetry/
+          if-no-files-found: ignore
           retention-days: 30
 
   invariants-simulator:
@@ -110,9 +120,19 @@ jobs:
           name: invariants-nightly-evidence-simulator-${{ github.run_id }}-${{ github.run_attempt }}
           overwrite: true
           path: |
-            artifacts/invariants/
-            target/rafter-invariants/telemetry/
+            artifacts/invariants/nightly-simulator.json
+            artifacts/invariants/nightly-simulator/
           if-no-files-found: error
+          retention-days: 30
+      - name: Upload nightly simulator process diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-nightly-simulator-process-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/rafter-invariants/telemetry/
+            crates/rafter-invariants/target/rafter-invariants/telemetry/
+          if-no-files-found: ignore
           retention-days: 30
 
   invariants-tla:
@@ -163,9 +183,19 @@ jobs:
           name: invariants-nightly-evidence-tla-${{ github.run_id }}-${{ github.run_attempt }}
           overwrite: true
           path: |
-            artifacts/invariants/
-            target/rafter-invariants/telemetry/
+            artifacts/invariants/nightly-tla.json
+            artifacts/invariants/nightly-tla/
           if-no-files-found: error
+          retention-days: 30
+      - name: Upload nightly TLA+ process diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-nightly-tla-process-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/rafter-invariants/telemetry/
+            crates/rafter-invariants/target/rafter-invariants/telemetry/
+          if-no-files-found: ignore
           retention-days: 30
 
   burn-in:
@@ -240,9 +270,19 @@ jobs:
           name: invariants-nightly-evidence-maelstrom-${{ github.run_id }}-${{ github.run_attempt }}
           overwrite: true
           path: |
-            artifacts/invariants/
-            target/rafter-invariants/telemetry/
+            artifacts/invariants/nightly-maelstrom.json
+            artifacts/invariants/nightly-maelstrom/
           if-no-files-found: error
+          retention-days: 30
+      - name: Upload nightly Maelstrom process diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-nightly-maelstrom-process-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/rafter-invariants/telemetry/
+            crates/rafter-invariants/target/rafter-invariants/telemetry/
+          if-no-files-found: ignore
           retention-days: 30
 
   invariants-nightly:
@@ -256,6 +296,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
+      INVARIANT_EVIDENCE_DIR: rafter-invariants-nightly-evidence-${{ github.run_id }}-${{ github.run_attempt }}
       INVARIANT_REPORT_DIR: rafter-invariants-nightly-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
@@ -263,13 +304,49 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - name: Download available nightly evidence
+      - name: Download available nightly test evidence
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
-          pattern: invariants-nightly-evidence-*-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .
-          merge-multiple: true
+          name: invariants-nightly-evidence-tests-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/tests
+      - name: Download available nightly simulator evidence
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: invariants-nightly-evidence-simulator-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/simulator
+      - name: Download available nightly TLA+ evidence
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: invariants-nightly-evidence-tla-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/tla
+      - name: Download available nightly Maelstrom evidence
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: invariants-nightly-evidence-maelstrom-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/maelstrom
+      - name: Stage current-run nightly evidence artifacts
+        if: always()
+        run: |
+          transport_root="$RUNNER_TEMP/$INVARIANT_EVIDENCE_DIR"
+          evidence_root="artifacts/invariants"
+          mkdir -p "$evidence_root"
+          for layer in tests simulator tla maelstrom; do
+            source="$transport_root/$layer/nightly-$layer"
+            destination="$evidence_root/nightly-$layer"
+            test -s "$source.json"
+            test -d "$source"
+            if [[ -e "$destination" || -e "$destination.json" ]]; then
+              echo "refusing stale or colliding nightly evidence target: $destination" >&2
+              exit 1
+            fi
+          done
+          for layer in tests simulator tla maelstrom; do
+            cp -R "$transport_root/$layer/nightly-$layer" "$evidence_root/nightly-$layer"
+          done
       - name: Build source-bound Maelstrom verification binaries
         timeout-minutes: 2
         run: cargo build --locked -p rafter-maelstrom --bins
@@ -282,6 +359,10 @@ jobs:
           mkdir -p "$report_dir"
           set +e
           cargo run --locked -p rafter-invariants -- check --profile nightly --source-ref "$GITHUB_SHA" \
+            --result "$RUNNER_TEMP/$INVARIANT_EVIDENCE_DIR/tests/nightly-tests.json" \
+            --result "$RUNNER_TEMP/$INVARIANT_EVIDENCE_DIR/simulator/nightly-simulator.json" \
+            --result "$RUNNER_TEMP/$INVARIANT_EVIDENCE_DIR/tla/nightly-tla.json" \
+            --result "$RUNNER_TEMP/$INVARIANT_EVIDENCE_DIR/maelstrom/nightly-maelstrom.json" \
             --output-dir "$report_dir"
           status=$?
           set -e
@@ -341,7 +422,7 @@ jobs:
             echo "## Raft invariant gate" >> "$GITHUB_STEP_SUMMARY"
             echo "No complete current-run 44-row nightly report was produced; the aggregate is red." >> "$GITHUB_STEP_SUMMARY"
           fi
-      - name: Upload available nightly aggregate reports and evidence
+      - name: Upload available nightly aggregate reports
         if: always()
         timeout-minutes: 2
         uses: actions/upload-artifact@v4
@@ -352,8 +433,27 @@ jobs:
             ${{ runner.temp }}/${{ env.INVARIANT_REPORT_DIR }}/nightly.json
             ${{ runner.temp }}/${{ env.INVARIANT_REPORT_DIR }}/nightly.xml
             ${{ runner.temp }}/${{ env.INVARIANT_REPORT_DIR }}/nightly.md
-            artifacts/invariants/
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Upload available nightly aggregate evidence
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-nightly-aggregate-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          overwrite: true
+          path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Upload nightly aggregate process diagnostics
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-nightly-aggregate-process-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
             target/rafter-invariants/telemetry/
+            crates/rafter-invariants/target/rafter-invariants/telemetry/
           if-no-files-found: ignore
           retention-days: 30
       - name: Require 44 of 44 nightly invariants green
