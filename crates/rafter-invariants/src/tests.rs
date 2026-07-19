@@ -57,6 +57,7 @@ fn source_receipt(commit: &str) -> SourceReceipt {
         build_profile: "test".to_owned(),
         features: Vec::new(),
         tools: std::collections::BTreeMap::new(),
+        process_runtime: crate::receipt::fixture_process_runtime(false),
         environment_sha256: "0".repeat(64),
         clean: true,
     }
@@ -102,6 +103,7 @@ fn invocation_receipt(runner: &str) -> InvocationReceipt {
             &std::collections::BTreeMap::new(),
         )
         .expect("valid fixture environment"),
+        launchers: Vec::new(),
     }
 }
 
@@ -476,6 +478,20 @@ fn missing_actual_invocation_is_red() {
     let (catalog, manifest) = loaded();
     let mut bundles = passing_bundles(&catalog, &manifest);
     bundles[0].execution.invocation.arguments.clear();
+
+    let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
+    assert!(report.summary.red > 0);
+    assert!(report.invariants.iter().any(|verdict| verdict
+        .issues
+        .iter()
+        .any(|issue| issue.message.contains("actual producer invocation"))));
+}
+
+#[test]
+fn producer_invocation_cannot_claim_a_subprocess_launcher_chain() {
+    let (catalog, manifest) = loaded();
+    let mut bundles = passing_bundles(&catalog, &manifest);
+    bundles[0].execution.invocation.launchers = crate::receipt::fixture_launchers(false);
 
     let report = aggregate(&catalog, &manifest, "pr", "abc", &bundles).expect("report aggregates");
     assert!(report.summary.red > 0);
