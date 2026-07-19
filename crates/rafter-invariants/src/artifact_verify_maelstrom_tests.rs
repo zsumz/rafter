@@ -93,7 +93,7 @@ fn aggregate_rederives_maelstrom_semantics_from_trial_artifacts(
     assert!(crate::artifact_verify_maelstrom::verify(&bundle, &root)
         .expect_err("stale process schema is rejected")
         .to_string()
-        .contains("exact invocation"));
+        .contains("schema version 1 does not match required version 2"));
 
     let mut incomplete: serde_json::Value = serde_json::from_str(&process_log(&root, 0, "")?)?;
     incomplete["invocation"]["program"] = serde_json::json!("");
@@ -442,7 +442,8 @@ fn bind_serialized_bundle(
             .into_owned();
     bundle.execution.invocation.environment = crate::producer::process::base_environment();
     bundle.execution.invocation.environment_sha256 =
-        crate::producer::process::digest_environment(&bundle.execution.invocation.environment);
+        crate::provenance::invocation::digest_environment(&bundle.execution.invocation.environment)
+            .expect("valid fixture environment");
 
     let check = &mut bundle.execution.checks[0];
     check.completion = CheckCompletion::Counterexample;
@@ -520,7 +521,10 @@ fn bundle() -> ResultBundle {
                 arguments: vec!["run".to_owned()],
                 current_dir: "/workspace/rafter".to_owned(),
                 environment: BTreeMap::new(),
-                environment_sha256: crate::producer::process::digest_environment(&BTreeMap::new()),
+                environment_sha256: crate::provenance::invocation::digest_environment(
+                    &BTreeMap::new(),
+                )
+                .expect("valid fixture environment"),
             },
             producer: crate::ProducerBindingReceipt {
                 binding: crate::producer_image::PRODUCER_BINDING.to_owned(),
@@ -738,9 +742,10 @@ fn source() -> SourceReceipt {
         build_profile: "test".to_owned(),
         features: Vec::new(),
         tools: BTreeMap::new(),
-        environment_sha256: crate::producer::process::digest_environment(
+        environment_sha256: crate::provenance::invocation::digest_environment(
             &crate::producer::process::base_environment(),
-        ),
+        )
+        .expect("valid fixture environment"),
         clean: true,
     }
 }
