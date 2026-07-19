@@ -1,3 +1,5 @@
+//! Fail-closed validation and collection of runner execution receipts.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
@@ -6,8 +8,20 @@ use std::{
 use crate::{
     contract::profile::{ProfileContract, RunnerContract},
     ArtifactRef, CheckCompletion, CheckReceipt, EvidenceDescriptor, EvidenceResult, EvidenceStatus,
-    FailureClassification, ResultBundle,
+    FailureClassification, InvocationReceipt, ResultBundle,
 };
+
+pub(crate) fn process_invocation_is_complete(invocation: &InvocationReceipt) -> bool {
+    !invocation.program.trim().is_empty()
+        && is_sha256(&invocation.program_sha256)
+        && !invocation.arguments.is_empty()
+        && Path::new(&invocation.current_dir).is_absolute()
+        && crate::provenance::invocation::environment_matches_digest(
+            &invocation.environment,
+            &invocation.environment_sha256,
+        )
+        && is_sha256(&invocation.environment_sha256)
+}
 
 pub(super) fn collect_results(
     bundles: &[ResultBundle],
@@ -134,8 +148,10 @@ fn validate_provenance(
                 Path::new(&bundle.execution.invocation.current_dir),
                 &bundle.execution.invocation.program_sha256,
             )
-        || crate::producer::process::digest_environment(&bundle.execution.invocation.environment)
-            != bundle.execution.invocation.environment_sha256
+        || !crate::provenance::invocation::environment_matches_digest(
+            &bundle.execution.invocation.environment,
+            &bundle.execution.invocation.environment_sha256,
+        )
         || !is_sha256(&bundle.execution.invocation.environment_sha256)
     {
         return Err("actual producer invocation provenance is incomplete");
