@@ -1,0 +1,17 @@
+{
+  "invariant_id": "ST-01",
+  "status": "green",
+  "required_clauses": 1,
+  "passed_clauses": 1,
+  "required_evidence": 2,
+  "passed_evidence": 2,
+  "clauses": [
+    {
+      "clause_id": "ST-01.a",
+      "statement": "Committed state-machine history is immutable.",
+      "status": "green",
+      "required_evidence": 2,
+      "passed_evidence": 2
+    }
+  ]
+}
