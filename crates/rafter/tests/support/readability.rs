@@ -1,6 +1,7 @@
 //! Shared presentation contracts used by readability ratchets.
 
 pub(super) const FACADE_PATHS: &[&str] = &[
+    "crates/rafter-invariants/src/registry_parse.rs",
     "crates/rafter/src/lib.rs",
     "crates/rafter/src/message/mod.rs",
     "crates/rafter/src/node/mod.rs",
