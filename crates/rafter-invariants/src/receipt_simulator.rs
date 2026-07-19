@@ -131,11 +131,11 @@ fn validate_profile_check_contract(
         };
         if observed(
             check,
-            &crate::catalog::per_check_protocol_states_key(check_id),
+            &crate::contract::profile::per_check_protocol_states_key(check_id),
         ) < contract.minimum_protocol_states
             || observed(
                 check,
-                &crate::catalog::per_check_verifier_states_key(check_id),
+                &crate::contract::profile::per_check_verifier_states_key(check_id),
             ) < contract.minimum_verifier_states
         {
             return Err("passing simulator check is below its profile-owned per-check state floor");
@@ -143,7 +143,7 @@ fn validate_profile_check_contract(
         if contract.required_observations.iter().any(|observation| {
             observed(
                 check,
-                &crate::catalog::per_check_observation_key(check_id, observation),
+                &crate::contract::profile::per_check_observation_key(check_id, observation),
             ) < 1
         }) {
             return Err(
@@ -169,13 +169,15 @@ fn validate_liveness_binding(
     let binding = check.simulator_liveness.as_ref().ok_or(())?;
     if binding.schema_version != 1
         || binding.contract != *contract
-        || binding.contract_sha256 != crate::catalog::liveness_contract_digest(contract)
+        || binding.contract_sha256 != crate::evidence::liveness_contract_digest(contract)
         || binding.reports.is_empty()
-        || binding.reports_sha256 != crate::catalog::liveness_reports_digest(&binding.reports)
+        || binding.reports_sha256 != crate::evidence::liveness_reports_digest(&binding.reports)
         || binding.reports.windows(2).any(|pair| pair[0] >= pair[1])
         || binding.reports.iter().any(|report| {
-            let expected_execution =
-                crate::catalog::expected_execution_contract(&bundle.profile, &report.check_id);
+            let expected_execution = crate::contract::profile::expected_execution_contract(
+                &bundle.profile,
+                &report.check_id,
+            );
             !identity.checks.contains(&report.check_id)
                 || report.report_sha256.len() != 64
                 || !report
@@ -184,7 +186,7 @@ fn validate_liveness_binding(
                     .all(|byte| byte.is_ascii_hexdigit())
                 || expected_execution.as_ref() != Ok(&report.execution_contract)
                 || report.execution_contract_sha256
-                    != crate::catalog::execution_contract_digest(&report.execution_contract)
+                    != crate::evidence::execution_contract_digest(&report.execution_contract)
                 || report.rounds_used > report.round_limit
         })
     {
