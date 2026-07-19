@@ -1,7 +1,9 @@
+//! Typed simulator and bounded-liveness identity parsing.
+
 use std::collections::BTreeMap;
 
-use crate::catalog::{CatalogError, SimulatorIdentity, TestIdentity};
-use crate::types::SimulatorLivenessContract;
+use crate::contract::profile::SimulatorLivenessContract;
+use crate::contract::{registry::RegistryParseError, SimulatorIdentity, TestIdentity};
 
 use super::evidence::validate_test_identity;
 use super::syntax::{
@@ -11,8 +13,8 @@ use super::syntax::{
 pub(super) fn parse_simulator_identity(
     index: usize,
     record: &BTreeMap<String, String>,
-    required: &impl Fn(&str) -> Result<String, CatalogError>,
-) -> Result<SimulatorIdentity, CatalogError> {
+    required: &impl Fn(&str) -> Result<String, RegistryParseError>,
+) -> Result<SimulatorIdentity, RegistryParseError> {
     let checks = required("simulator_check")?
         .split(',')
         .map(str::trim)
@@ -71,7 +73,7 @@ pub(super) fn parse_simulator_identity(
     }) && identity.minimum_runs_per_check.is_some()
         && identity.minimum_steps.is_some();
     if identity.checks.is_empty() || identity.minimum_observation == 0 || !(safety || liveness) {
-        return Err(CatalogError(
+        return Err(RegistryParseError(
             "simulator evidence has an incomplete execution contract".to_owned(),
         ));
     }
@@ -80,8 +82,8 @@ pub(super) fn parse_simulator_identity(
 
 fn parse_liveness_contract(
     feature_id: String,
-    required: &impl Fn(&str) -> Result<String, CatalogError>,
-) -> Result<SimulatorLivenessContract, CatalogError> {
+    required: &impl Fn(&str) -> Result<String, RegistryParseError>,
+) -> Result<SimulatorLivenessContract, RegistryParseError> {
     Ok(SimulatorLivenessContract {
         invariant_id: required("required_liveness_invariant")?,
         clause_ids: split_list(&required("required_liveness_clauses")?),
@@ -124,7 +126,7 @@ fn parse_liveness_contract(
 fn optional_usize(
     record: &BTreeMap<String, String>,
     field: &str,
-) -> Result<Option<usize>, CatalogError> {
+) -> Result<Option<usize>, RegistryParseError> {
     record
         .get(field)
         .map(|value| parse_usize(value))

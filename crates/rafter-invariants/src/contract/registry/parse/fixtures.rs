@@ -1,3 +1,5 @@
+//! Minimal valid registry fragments for parser contract tests.
+
 pub(super) const VALID_INVARIANT: &str = r#"invariants:
   - id: "AA-01"
     kind: "safety"

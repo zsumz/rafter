@@ -1,16 +1,24 @@
+//! Strict evidence-row parsing and layer-specific shape validation.
+
 use std::collections::BTreeMap;
 
-use crate::catalog::{CatalogError, EvidenceDescriptor, TestIdentity};
+use crate::contract::{
+    registry::{RegistryEvidence, RegistryParseError},
+    TestIdentity,
+};
+
+mod atomic;
 
 use super::simulator::parse_simulator_identity;
+use atomic::validate_atomic_group;
 
 pub(super) fn parse_evidence_record(
     index: usize,
     record: &BTreeMap<String, String>,
-) -> Result<Vec<EvidenceDescriptor>, CatalogError> {
+) -> Result<RegistryEvidence, RegistryParseError> {
     let required = |field: &str| {
         record.get(field).cloned().ok_or_else(|| {
-            CatalogError(format!(
+            RegistryParseError(format!(
                 "evidence record {} is missing required field {field}",
                 index + 1
             ))
@@ -40,7 +48,7 @@ pub(super) fn parse_evidence_record(
         .map(str::to_owned)
         .collect::<Vec<_>>();
     if clause_ids.is_empty() {
-        return Err(CatalogError(format!(
+        return Err(RegistryParseError(format!(
             "evidence record {} has no clause bindings",
             index + 1
         )));
@@ -63,23 +71,21 @@ pub(super) fn parse_evidence_record(
     if let Some(identity) = &test {
         validate_test_identity(index, identity, &symbol, "tests")?;
     }
-    Ok(clause_ids
-        .into_iter()
-        .map(|clause_id| EvidenceDescriptor {
-            invariant_id: invariant_id.clone(),
-            clause_id,
-            layer: layer.clone(),
-            strength: strength.clone(),
-            path: path.clone(),
-            symbol: symbol.clone(),
-            atomic_group: atomic_group.clone(),
-            negative_fixture: record.get("negative_fixture").cloned(),
-            negative_fixture_path: record.get("negative_fixture_path").cloned(),
-            negative_fixture_detector: record.get("negative_fixture_detector").cloned(),
-            test: test.clone(),
-            simulator: simulator.clone(),
-        })
-        .collect())
+    Ok(RegistryEvidence {
+        id: invariant_id,
+        clauses: clause_ids,
+        layer,
+        strength,
+        path,
+        symbol,
+        atomic_group,
+        negative_fixture: record.get("negative_fixture").cloned(),
+        negative_fixture_path: record.get("negative_fixture_path").cloned(),
+        negative_fixture_detector: record.get("negative_fixture_detector").cloned(),
+        negative_fixture_exemption: record.get("negative_fixture_exemption").cloned(),
+        test,
+        simulator,
+    })
 }
 
 pub(super) fn validate_test_identity(
@@ -87,9 +93,9 @@ pub(super) fn validate_test_identity(
     identity: &TestIdentity,
     symbol: &str,
     context: &str,
-) -> Result<(), CatalogError> {
+) -> Result<(), RegistryParseError> {
     if !matches!(identity.target_kind.as_str(), "lib" | "test" | "bin") {
-        return Err(CatalogError(format!(
+        return Err(RegistryParseError(format!(
             "{context} evidence record {} has unsupported Cargo target kind {}",
             index + 1,
             identity.target_kind
@@ -99,13 +105,13 @@ pub(super) fn validate_test_identity(
         || identity.target.trim().is_empty()
         || identity.test_name.split("::").any(str::is_empty)
     {
-        return Err(CatalogError(format!(
+        return Err(RegistryParseError(format!(
             "{context} evidence record {} has a malformed test identity",
             index + 1
         )));
     }
     if identity.test_name.rsplit("::").next() != Some(symbol) {
-        return Err(CatalogError(format!(
+        return Err(RegistryParseError(format!(
             "{context} evidence record {} symbol must equal the exact test-name leaf",
             index + 1
         )));
@@ -118,9 +124,9 @@ fn validate_direct_test_binding(
     clause_ids: &[String],
     layer: &str,
     strength: &str,
-) -> Result<(), CatalogError> {
+) -> Result<(), RegistryParseError> {
     if layer == "tests" && strength == "direct" && clause_ids.len() != 1 {
-        return Err(CatalogError(format!(
+        return Err(RegistryParseError(format!(
             "direct tests evidence record {} must bind exactly one clause, found {}",
             index + 1,
             clause_ids.len()
@@ -134,15 +140,15 @@ fn validate_evidence_shape(
     record: &BTreeMap<String, String>,
     layer: &str,
     strength: &str,
-) -> Result<(), CatalogError> {
+) -> Result<(), RegistryParseError> {
     if !matches!(layer, "tests" | "simulator" | "tla" | "maelstrom") {
-        return Err(CatalogError(format!(
+        return Err(RegistryParseError(format!(
             "evidence record {} has unsupported layer {layer}",
             index + 1
         )));
     }
     if !matches!(strength, "direct" | "e2e") {
-        return Err(CatalogError(format!(
+        return Err(RegistryParseError(format!(
             "evidence record {} has unsupported strength {strength}",
             index + 1
         )));
@@ -195,13 +201,13 @@ fn validate_evidence_shape(
     let exemption = record.contains_key("negative_fixture_exemption");
     let direct_simulator = layer == "simulator" && strength == "direct";
     if fixture && exemption {
-        return Err(CatalogError(format!(
+        return Err(RegistryParseError(format!(
             "evidence record {} declares both negative_fixture and negative_fixture_exemption",
             index + 1
         )));
     }
     if record.contains_key("negative_fixture_path") && !fixture {
-        return Err(CatalogError(format!(
+        return Err(RegistryParseError(format!(
             "evidence record {} declares negative_fixture_path without negative_fixture",
             index + 1
         )));
@@ -209,25 +215,25 @@ fn validate_evidence_shape(
     if record.contains_key("negative_fixture_detector")
         && (!fixture || layer != "simulator" || strength != "direct")
     {
-        return Err(CatalogError(format!(
+        return Err(RegistryParseError(format!(
             "evidence record {} has a misplaced negative_fixture_detector",
             index + 1
         )));
     }
     if direct_simulator && exemption {
-        return Err(CatalogError(format!(
+        return Err(RegistryParseError(format!(
             "direct simulator evidence record {} may not use negative_fixture_exemption",
             index + 1
         )));
     }
     if direct_simulator && !fixture {
-        return Err(CatalogError(format!(
+        return Err(RegistryParseError(format!(
             "direct simulator evidence record {} lacks detector qualification",
             index + 1
         )));
     }
     if direct_simulator && !record.contains_key("negative_fixture_detector") {
-        return Err(CatalogError(format!(
+        return Err(RegistryParseError(format!(
             "direct simulator evidence record {} lacks negative_fixture_detector",
             index + 1
         )));
@@ -241,62 +247,13 @@ fn reject_fields_outside_layer(
     actual_layer: &str,
     owning_layer: &str,
     fields: &[&str],
-) -> Result<(), CatalogError> {
+) -> Result<(), RegistryParseError> {
     if actual_layer == owning_layer {
         return Ok(());
     }
     if let Some(field) = fields.iter().find(|field| record.contains_key(**field)) {
-        return Err(CatalogError(format!(
+        return Err(RegistryParseError(format!(
             "evidence record {} uses {owning_layer}-only field {field} in layer {actual_layer}",
-            index + 1
-        )));
-    }
-    Ok(())
-}
-
-fn validate_atomic_group(
-    index: usize,
-    record: &BTreeMap<String, String>,
-    invariant_id: &str,
-    clause_ids: &[String],
-    layer: &str,
-    strength: &str,
-    atomic_group: Option<&str>,
-) -> Result<(), CatalogError> {
-    let direct_simulator = layer == "simulator" && strength == "direct";
-    if direct_simulator && clause_ids.len() > 1 && atomic_group.is_none() {
-        return Err(CatalogError(format!(
-            "direct simulator evidence record {} spans multiple clauses without a reviewed atomic_group",
-            index + 1
-        )));
-    }
-    let Some(group) = atomic_group else {
-        return Ok(());
-    };
-    if !direct_simulator || clause_ids.len() < 2 {
-        return Err(CatalogError(format!(
-            "evidence record {} declares atomic_group outside multi-clause direct simulator evidence",
-            index + 1
-        )));
-    }
-    if group.trim().is_empty() || !group.starts_with(&format!("{invariant_id}/")) {
-        return Err(CatalogError(format!(
-            "evidence record {} atomic_group must be a nonempty stable ID prefixed with {invariant_id}/",
-            index + 1
-        )));
-    }
-    let reviewed =
-        group == "CM-03/current-term-commit-point" && clause_ids == ["CM-03.a", "CM-03.b"];
-    if !reviewed {
-        return Err(CatalogError(format!(
-            "evidence record {} atomic_group `{group}` is not a reviewed atomic clause set",
-            index + 1
-        )));
-    }
-    if !record.contains_key("negative_fixture") || !record.contains_key("negative_fixture_detector")
-    {
-        return Err(CatalogError(format!(
-            "evidence record {} atomic_group must bind a detector-level negative fixture",
             index + 1
         )));
     }

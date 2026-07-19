@@ -1,30 +1,33 @@
+//! Top-level assembly of one strictly parsed registry document.
+
 use std::collections::BTreeMap;
 
-use crate::catalog::CatalogError;
-use crate::registry::{
-    RegistryClause, RegistryCounts, RegistryDocument, RegistryEvidence, RegistryInvariant,
-    REGISTRY_SCHEMA_VERSION,
+use crate::contract::registry::RegistryParseError;
+use crate::contract::registry::{
+    RegistryClause, RegistryCounts, RegistryDocument, RegistryInvariant, REGISTRY_SCHEMA_VERSION,
 };
 
 use super::evidence::parse_evidence_record;
 use super::syntax::{ensure_unique_record_ids, parse_bool, parse_section_records, required_field};
 use super::top_level::{parse_top_level, parse_u32, required_count, required_top_level};
 
-pub(crate) fn parse_registry_document(source: &str) -> Result<RegistryDocument, CatalogError> {
+pub(crate) fn parse_registry_document(
+    source: &str,
+) -> Result<RegistryDocument, RegistryParseError> {
     let parsed_top_level = parse_top_level(source)?;
     let schema_version = parse_u32(required_top_level(
         &parsed_top_level.metadata,
         "schema_version",
     )?)?;
     if schema_version != REGISTRY_SCHEMA_VERSION {
-        return Err(CatalogError(format!(
+        return Err(RegistryParseError(format!(
             "unsupported registry schema {schema_version}"
         )));
     }
 
     let invariant_records = parse_section_records(source, "invariants:")?;
     if invariant_records.is_empty() {
-        return Err(CatalogError(
+        return Err(RegistryParseError(
             "registry contains no invariant IDs".to_owned(),
         ));
     }
@@ -46,7 +49,7 @@ pub(crate) fn parse_registry_document(source: &str) -> Result<RegistryDocument, 
     let evidence = parse_section_records(source, "evidence:")?
         .into_iter()
         .enumerate()
-        .map(|(index, record)| parse_registry_evidence(index, &record))
+        .map(|(index, record)| parse_evidence_record(index, &record))
         .collect::<Result<Vec<_>, _>>()?;
 
     Ok(RegistryDocument {
@@ -85,7 +88,7 @@ pub(crate) fn parse_registry_document(source: &str) -> Result<RegistryDocument, 
 fn parse_registry_invariant(
     index: usize,
     record: &BTreeMap<String, String>,
-) -> Result<RegistryInvariant, CatalogError> {
+) -> Result<RegistryInvariant, RegistryParseError> {
     let required = required_field("invariant", index, record);
     let current_coverage = ["tla", "simulator", "tests", "maelstrom"]
         .into_iter()
@@ -93,7 +96,7 @@ fn parse_registry_invariant(
             let field = format!("current_coverage.{layer}");
             Ok((layer.to_owned(), required(&field)?))
         })
-        .collect::<Result<_, CatalogError>>()?;
+        .collect::<Result<_, RegistryParseError>>()?;
     Ok(RegistryInvariant {
         id: required("id")?,
         kind: required("kind")?,
@@ -113,7 +116,7 @@ fn parse_registry_invariant(
 fn parse_registry_clause(
     index: usize,
     record: &BTreeMap<String, String>,
-) -> Result<RegistryClause, CatalogError> {
+) -> Result<RegistryClause, RegistryParseError> {
     let required = required_field("clause", index, record);
     Ok(RegistryClause {
         id: required("id")?,
@@ -122,36 +125,5 @@ fn parse_registry_clause(
         scope: required("scope")?,
         assumptions: required("assumptions")?,
         required: parse_bool(&required("required")?)?,
-    })
-}
-
-fn parse_registry_evidence(
-    index: usize,
-    record: &BTreeMap<String, String>,
-) -> Result<RegistryEvidence, CatalogError> {
-    let descriptors = parse_evidence_record(index, record)?;
-    let Some(descriptor) = descriptors.first() else {
-        return Err(CatalogError(format!(
-            "evidence record {} has no clause bindings",
-            index + 1
-        )));
-    };
-    Ok(RegistryEvidence {
-        id: descriptor.invariant_id.clone(),
-        clauses: descriptors
-            .iter()
-            .map(|descriptor| descriptor.clause_id.clone())
-            .collect(),
-        layer: descriptor.layer.clone(),
-        strength: descriptor.strength.clone(),
-        path: descriptor.path.clone(),
-        symbol: descriptor.symbol.clone(),
-        atomic_group: descriptor.atomic_group.clone(),
-        negative_fixture: descriptor.negative_fixture.clone(),
-        negative_fixture_path: record.get("negative_fixture_path").cloned(),
-        negative_fixture_detector: record.get("negative_fixture_detector").cloned(),
-        negative_fixture_exemption: record.get("negative_fixture_exemption").cloned(),
-        test: descriptor.test.clone(),
-        simulator: descriptor.simulator.clone(),
     })
 }

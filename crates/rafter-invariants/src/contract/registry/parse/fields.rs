@@ -1,3 +1,5 @@
+//! Field vocabulary and unknown-field rejection for registry records.
+
 pub(super) fn section_fields(section: &str) -> &'static [&'static str] {
     match section {
         "invariants:" => &[

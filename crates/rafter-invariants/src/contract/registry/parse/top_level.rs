@@ -1,6 +1,8 @@
+//! Strict top-level metadata and count-section parsing.
+
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::catalog::CatalogError;
+use crate::contract::registry::RegistryParseError;
 
 use super::syntax::{insert_field, parse_field, parse_scalar, parse_usize};
 
@@ -9,7 +11,7 @@ pub(super) struct ParsedTopLevel {
     pub(super) counts: BTreeMap<String, usize>,
 }
 
-pub(super) fn parse_top_level(source: &str) -> Result<ParsedTopLevel, CatalogError> {
+pub(super) fn parse_top_level(source: &str) -> Result<ParsedTopLevel, RegistryParseError> {
     let mut metadata = BTreeMap::new();
     let mut counts = BTreeMap::new();
     let mut sections = BTreeSet::new();
@@ -18,7 +20,7 @@ pub(super) fn parse_top_level(source: &str) -> Result<ParsedTopLevel, CatalogErr
     for (index, raw_line) in source.lines().enumerate() {
         let line_number = index + 1;
         if raw_line.contains('\t') {
-            return Err(CatalogError(format!(
+            return Err(RegistryParseError(format!(
                 "registry contains a tab at line {line_number}"
             )));
         }
@@ -30,12 +32,12 @@ pub(super) fn parse_top_level(source: &str) -> Result<ParsedTopLevel, CatalogErr
         if indent == 0 {
             if let Some(section) = line.strip_suffix(':') {
                 if !matches!(section, "counting" | "evidence" | "clauses" | "invariants") {
-                    return Err(CatalogError(format!(
+                    return Err(RegistryParseError(format!(
                         "unsupported top-level section {section} at line {line_number}"
                     )));
                 }
                 if !sections.insert(section.to_owned()) {
-                    return Err(CatalogError(format!(
+                    return Err(RegistryParseError(format!(
                         "registry has duplicate {section}: section at line {line_number}"
                     )));
                 }
@@ -54,7 +56,7 @@ pub(super) fn parse_top_level(source: &str) -> Result<ParsedTopLevel, CatalogErr
                     | "document"
                     | "scope"
             ) {
-                return Err(CatalogError(format!(
+                return Err(RegistryParseError(format!(
                     "unsupported top-level field {key} at line {line_number}"
                 )));
             }
@@ -80,26 +82,26 @@ pub(super) fn parse_top_level(source: &str) -> Result<ParsedTopLevel, CatalogErr
                         | "liveness_obligations"
                         | "total_entries"
                 ) {
-                    return Err(CatalogError(format!(
+                    return Err(RegistryParseError(format!(
                         "unsupported field {key} in counting: at line {line_number}"
                     )));
                 }
                 let value = parse_unquoted_integer(value, line_number, key)?;
                 let value = parse_usize(&value)?;
                 if counts.insert(key.to_owned(), value).is_some() {
-                    return Err(CatalogError(format!(
+                    return Err(RegistryParseError(format!(
                         "duplicate field {key} in counting: at line {line_number}"
                     )));
                 }
             }
             Some("evidence" | "clauses" | "invariants") if matches!(indent, 2 | 4 | 6) => {}
             Some(section) => {
-                return Err(CatalogError(format!(
+                return Err(RegistryParseError(format!(
                     "unsupported syntax in {section}: at line {line_number}: {line}"
                 )));
             }
             None => {
-                return Err(CatalogError(format!(
+                return Err(RegistryParseError(format!(
                     "indented field outside a top-level section at line {line_number}: {line}"
                 )));
             }
@@ -108,7 +110,7 @@ pub(super) fn parse_top_level(source: &str) -> Result<ParsedTopLevel, CatalogErr
 
     for section in ["counting", "evidence", "clauses", "invariants"] {
         if !sections.contains(section) {
-            return Err(CatalogError(format!(
+            return Err(RegistryParseError(format!(
                 "registry is missing {section}: section"
             )));
         }
@@ -119,9 +121,9 @@ pub(super) fn parse_top_level(source: &str) -> Result<ParsedTopLevel, CatalogErr
 pub(super) fn required_top_level<'a>(
     metadata: &'a BTreeMap<String, String>,
     field: &str,
-) -> Result<&'a str, CatalogError> {
+) -> Result<&'a str, RegistryParseError> {
     metadata.get(field).map(String::as_str).ok_or_else(|| {
-        CatalogError(format!(
+        RegistryParseError(format!(
             "registry is missing required top-level field {field}"
         ))
     })
@@ -130,27 +132,27 @@ pub(super) fn required_top_level<'a>(
 pub(super) fn required_count(
     counts: &BTreeMap<String, usize>,
     field: &str,
-) -> Result<usize, CatalogError> {
+) -> Result<usize, RegistryParseError> {
     counts
         .get(field)
         .copied()
-        .ok_or_else(|| CatalogError(format!("registry is missing count {field}")))
+        .ok_or_else(|| RegistryParseError(format!("registry is missing count {field}")))
 }
 
-pub(super) fn parse_u32(value: &str) -> Result<u32, CatalogError> {
+pub(super) fn parse_u32(value: &str) -> Result<u32, RegistryParseError> {
     value
         .parse()
-        .map_err(|error| CatalogError(format!("invalid schema version {value}: {error}")))
+        .map_err(|error| RegistryParseError(format!("invalid schema version {value}: {error}")))
 }
 
 fn parse_unquoted_integer(
     value: &str,
     line_number: usize,
     field: &str,
-) -> Result<String, CatalogError> {
+) -> Result<String, RegistryParseError> {
     let value = value.trim();
     if value.is_empty() || !value.chars().all(|character| character.is_ascii_digit()) {
-        return Err(CatalogError(format!(
+        return Err(RegistryParseError(format!(
             "field {field} must use an unquoted nonnegative integer at line {line_number}"
         )));
     }
