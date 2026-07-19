@@ -259,6 +259,7 @@ fn is_implementation_source(relative_path: &str) -> bool {
             && !relative_path.contains("/src/tests/")
             && !relative_path.ends_with("/src/tests.rs")
             && !relative_path.ends_with("_test.rs")
+            && !relative_path.ends_with("_tests.rs")
             && !relative_path.contains("/tests/")
             && !relative_path.contains("/examples/")
 }
