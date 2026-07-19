@@ -1,6 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::catalog::RunnerContract;
+use crate::contract::profile::RunnerContract;
 use crate::producer::tla_checkpoint::{
     CONTRACT_KIND, INVENTORY_KIND, RECOVERED_CONTRACT_KIND, RECOVERED_INVENTORY_KIND,
     RECOVERY_REPORT_KIND,
