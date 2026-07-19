@@ -2,9 +2,9 @@ use std::{collections::BTreeMap, error::Error, fs, path::Path};
 
 use serde_json::Value;
 
-use crate::types::{SimulatorLivenessBinding, RESULT_SCHEMA_VERSION};
 use crate::{
-    catalog::{Catalog, ProfileContract},
+    contract::{catalog::Catalog, profile::ProfileContract},
+    evidence::{SimulatorLivenessBinding, RESULT_SCHEMA_VERSION},
     CheckCompletion, CheckReceipt, EvidenceDescriptor, EvidenceResult, EvidenceStatus,
     ExecutionReceipt, FailureClassification, ResultBundle, SimulatorCheckContract,
     SimulatorIdentity, SourceReceipt,
@@ -19,6 +19,7 @@ use super::{
 
 #[path = "simulator_events.rs"]
 mod events;
+mod liveness;
 
 pub(crate) use events::passing_simulator_event_contract;
 use events::{simulator_event_inventory_issue, simulator_event_issue};
@@ -128,7 +129,7 @@ fn evaluate_descriptors(
     descriptors: &[EvidenceDescriptor],
     profile: &str,
     check_contracts: &BTreeMap<String, SimulatorCheckContract>,
-    liveness_contracts: &[crate::types::SimulatorLivenessContract],
+    liveness_contracts: &[crate::contract::profile::SimulatorLivenessContract],
     model: &simulator_model::SimulatorExecution,
     detectors: &DetectorRun,
 ) -> Result<(Vec<CheckReceipt>, Vec<EvidenceResult>), Box<dyn Error>> {
@@ -393,7 +394,7 @@ fn evaluate_detectors(
 fn evaluate(
     descriptor: &EvidenceDescriptor,
     profile: &str,
-    liveness_contracts: &[crate::types::SimulatorLivenessContract],
+    liveness_contracts: &[crate::contract::profile::SimulatorLivenessContract],
     model: &simulator_model::SimulatorExecution,
     detectors: &DetectorRun,
 ) -> Result<EvaluatedEvidence, Box<dyn Error>> {
@@ -412,7 +413,7 @@ fn evaluate_with_inventory_issue(
     descriptor: &EvidenceDescriptor,
     profile: &str,
     check_contracts: &BTreeMap<String, SimulatorCheckContract>,
-    liveness_contracts: &[crate::types::SimulatorLivenessContract],
+    liveness_contracts: &[crate::contract::profile::SimulatorLivenessContract],
     model: &simulator_model::SimulatorExecution,
     detectors: &DetectorRun,
     inventory_issue: Option<&SimulatorIssue>,
@@ -637,7 +638,7 @@ fn model_observations(
     invariant_id: &str,
     identity: &SimulatorIdentity,
     check_contracts: &BTreeMap<String, SimulatorCheckContract>,
-    liveness_contracts: &[crate::types::SimulatorLivenessContract],
+    liveness_contracts: &[crate::contract::profile::SimulatorLivenessContract],
     events: &BTreeMap<String, Vec<Value>>,
 ) -> ModelEvidence {
     let mut observations = BTreeMap::new();
@@ -695,8 +696,7 @@ fn model_observations(
     }
     observations.insert(identity.required_observation.clone(), 0);
     let simulator_liveness = if issue.is_none() {
-        match crate::catalog::derive_liveness_binding(profile, identity, liveness_contracts, events)
-        {
+        match liveness::derive_liveness_binding(profile, identity, liveness_contracts, events) {
             Ok(binding) => {
                 observations.insert(
                     identity.required_observation.clone(),
@@ -706,10 +706,10 @@ fn model_observations(
             }
             Err(error) => {
                 issue = Some(match error.kind {
-                    crate::catalog::LivenessReportErrorKind::Missing => {
+                    liveness::LivenessReportErrorKind::Missing => {
                         SimulatorIssue::CoverageNotReached(error.message)
                     }
-                    crate::catalog::LivenessReportErrorKind::Malformed => {
+                    liveness::LivenessReportErrorKind::Malformed => {
                         SimulatorIssue::HarnessError(error.message)
                     }
                 });
@@ -729,7 +729,7 @@ fn model_observations(
 
 fn liveness_contracts(
     descriptors: &[EvidenceDescriptor],
-) -> Result<Vec<crate::types::SimulatorLivenessContract>, Box<dyn Error>> {
+) -> Result<Vec<crate::contract::profile::SimulatorLivenessContract>, Box<dyn Error>> {
     let mut by_feature = BTreeMap::new();
     for contract in descriptors
         .iter()
@@ -754,13 +754,13 @@ fn simulator_check_contract_issue(
     contract: &SimulatorCheckContract,
     observations: &mut BTreeMap<String, u64>,
 ) -> Option<SimulatorIssue> {
-    let protocol_key = crate::catalog::per_check_protocol_states_key(check);
-    let verifier_key = crate::catalog::per_check_verifier_states_key(check);
+    let protocol_key = crate::contract::profile::per_check_protocol_states_key(check);
+    let verifier_key = crate::contract::profile::per_check_verifier_states_key(check);
     observations.insert(protocol_key, 0);
     observations.insert(verifier_key, 0);
     for observation in &contract.required_observations {
         observations.insert(
-            crate::catalog::per_check_observation_key(check, observation),
+            crate::contract::profile::per_check_observation_key(check, observation),
             0,
         );
     }
@@ -785,16 +785,16 @@ fn simulator_check_contract_issue(
         .and_then(Value::as_u64)
         .unwrap_or_default();
     observations.insert(
-        crate::catalog::per_check_protocol_states_key(check),
+        crate::contract::profile::per_check_protocol_states_key(check),
         protocol_states,
     );
     observations.insert(
-        crate::catalog::per_check_verifier_states_key(check),
+        crate::contract::profile::per_check_verifier_states_key(check),
         verifier_states,
     );
     for observation in &contract.required_observations {
         observations.insert(
-            crate::catalog::per_check_observation_key(check, observation),
+            crate::contract::profile::per_check_observation_key(check, observation),
             event["observations"][observation]
                 .as_u64()
                 .unwrap_or_default(),
