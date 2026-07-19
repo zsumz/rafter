@@ -74,6 +74,9 @@ fn aggregate_rederives_maelstrom_semantics_from_trial_artifacts(
         &process_log(&root, 0, "")?,
     )?;
 
+    assert_substituted_launcher_rejected(&root, &bundle)?;
+    assert_script_launcher_chain_rejected(&root, &bundle)?;
+
     let mut forged = bundle.clone();
     forged.execution.checks[0]
         .observations
@@ -93,7 +96,7 @@ fn aggregate_rederives_maelstrom_semantics_from_trial_artifacts(
     assert!(crate::artifact_verify_maelstrom::verify(&bundle, &root)
         .expect_err("stale process schema is rejected")
         .to_string()
-        .contains("schema version 1 does not match required version 2"));
+        .contains("schema version 1 does not match required version 3"));
 
     let mut incomplete: serde_json::Value = serde_json::from_str(&process_log(&root, 0, "")?)?;
     incomplete["invocation"]["program"] = serde_json::json!("");
@@ -122,6 +125,75 @@ fn aggregate_rederives_maelstrom_semantics_from_trial_artifacts(
         .contains("process-log is missing"));
 
     fs::remove_dir_all(root)?;
+    Ok(())
+}
+
+fn assert_substituted_launcher_rejected(
+    root: &Path,
+    bundle: &ResultBundle,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let mut substituted: serde_json::Value = serde_json::from_str(&process_log(root, 0, "")?)?;
+    substituted["invocation"]["launchers"][0]["sha256"] = serde_json::json!("f".repeat(64));
+    write(
+        root,
+        "artifacts/invariants/evidence/trial-0/process.json",
+        &substituted.to_string(),
+    )?;
+    assert!(crate::artifact_verify_maelstrom::verify(bundle, root)
+        .expect_err("source-mismatched launcher digest is rejected")
+        .to_string()
+        .contains("exact invocation"));
+    write(
+        root,
+        "artifacts/invariants/evidence/trial-0/process.json",
+        &process_log(root, 0, "")?,
+    )?;
+    Ok(())
+}
+
+fn assert_script_launcher_chain_rejected(
+    root: &Path,
+    bundle: &ResultBundle,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let canonical: serde_json::Value = serde_json::from_str(&process_log(root, 0, "")?)?;
+    let launchers = canonical["invocation"]["launchers"]
+        .as_array()
+        .ok_or("fixture launchers are not an array")?;
+
+    let mut omitted = canonical.clone();
+    omitted["invocation"]["launchers"] = serde_json::json!(launchers[..4]);
+
+    let mut reordered = canonical.clone();
+    let mut reordered_launchers = launchers.clone();
+    reordered_launchers.swap(3, 4);
+    reordered["invocation"]["launchers"] = serde_json::json!(reordered_launchers);
+
+    let mut wrong_bash = canonical.clone();
+    wrong_bash["invocation"]["launchers"][4]["sha256"] = serde_json::json!("f".repeat(64));
+
+    for (label, altered) in [
+        ("omitted Bash launcher", omitted),
+        ("reordered Bash launcher", reordered),
+        ("substituted Bash launcher", wrong_bash),
+    ] {
+        write(
+            root,
+            "artifacts/invariants/evidence/trial-0/process.json",
+            &altered.to_string(),
+        )?;
+        let error = crate::artifact_verify_maelstrom::verify(bundle, root)
+            .expect_err("an invalid script launcher chain is rejected");
+        assert!(
+            error.to_string().contains("exact invocation"),
+            "{label} produced the wrong verifier error: {error}"
+        );
+    }
+
+    write(
+        root,
+        "artifacts/invariants/evidence/trial-0/process.json",
+        &canonical.to_string(),
+    )?;
     Ok(())
 }
 
@@ -340,9 +412,13 @@ fn materialize_checkout(root: &Path, workspace: &Path) -> Result<(), Box<dyn std
             continue;
         }
         let path = std::str::from_utf8(path)?;
+        let source = workspace.join(path);
+        if !source.try_exists()? {
+            continue;
+        }
         let destination = root.join(path);
         fs::create_dir_all(destination.parent().ok_or("plan input has no parent")?)?;
-        fs::copy(workspace.join(path), destination)?;
+        fs::copy(source, destination)?;
     }
     write(root, ".gitignore", "/artifacts/invariants/\n/target/\n")?;
     Ok(())
@@ -424,6 +500,7 @@ fn bind_serialized_bundle(
             )
         })
         .collect();
+    source.process_runtime = crate::receipt::fixture_process_runtime(true);
     bundle.execution.source = source;
 
     let producer = bound_artifact(
@@ -525,6 +602,7 @@ fn bundle() -> ResultBundle {
                     &BTreeMap::new(),
                 )
                 .expect("valid fixture environment"),
+                launchers: Vec::new(),
             },
             producer: crate::ProducerBindingReceipt {
                 binding: crate::producer_image::PRODUCER_BINDING.to_owned(),
@@ -635,7 +713,7 @@ fn process_log(
             ("RAFTER_MAELSTROM_CONCURRENCY".to_owned(), "6".to_owned()),
         ]))
         .collect::<BTreeMap<_, _>>();
-    let invocation = crate::producer::process::expected_invocation(
+    let mut invocation = crate::producer::process::expected_invocation(
         fs::canonicalize(root.join("scripts/maelstrom-lin-kv"))?
             .to_str()
             .ok_or("script path is not UTF-8")?,
@@ -643,8 +721,9 @@ fn process_log(
         &environment,
         &state_dir,
     )?;
+    invocation.launchers = crate::receipt::fixture_launchers(true);
     Ok(serde_json::json!({
-        "schema_version": 2,
+        "schema_version": 3,
         "label": "base",
         "invocation": invocation,
         "exit_code": exit_code,
@@ -742,6 +821,7 @@ fn source() -> SourceReceipt {
         build_profile: "test".to_owned(),
         features: Vec::new(),
         tools: BTreeMap::new(),
+        process_runtime: crate::receipt::fixture_process_runtime(true),
         environment_sha256: crate::provenance::invocation::digest_environment(
             &crate::producer::process::base_environment(),
         )
