@@ -41,9 +41,19 @@ jobs:
           name: invariants-weekly-evidence-tests-${{ github.run_id }}-${{ github.run_attempt }}
           overwrite: true
           path: |
-            artifacts/invariants/
-            target/rafter-invariants/telemetry/
+            artifacts/invariants/weekly-tests.json
+            artifacts/invariants/weekly-tests/
           if-no-files-found: error
+          retention-days: 30
+      - name: Upload weekly test process diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-weekly-tests-process-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/rafter-invariants/telemetry/
+            crates/rafter-invariants/target/rafter-invariants/telemetry/
+          if-no-files-found: ignore
           retention-days: 30
 
   invariants-simulator:
@@ -65,9 +75,19 @@ jobs:
           name: invariants-weekly-evidence-simulator-${{ github.run_id }}-${{ github.run_attempt }}
           overwrite: true
           path: |
-            artifacts/invariants/
-            target/rafter-invariants/telemetry/
+            artifacts/invariants/weekly-simulator.json
+            artifacts/invariants/weekly-simulator/
           if-no-files-found: error
+          retention-days: 30
+      - name: Upload weekly simulator process diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-weekly-simulator-process-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/rafter-invariants/telemetry/
+            crates/rafter-invariants/target/rafter-invariants/telemetry/
+          if-no-files-found: ignore
           retention-days: 30
 
   invariants-tla:
@@ -114,9 +134,19 @@ jobs:
           name: invariants-weekly-evidence-tla-${{ github.run_id }}-${{ github.run_attempt }}
           overwrite: true
           path: |
-            artifacts/invariants/
-            target/rafter-invariants/telemetry/
+            artifacts/invariants/weekly-tla.json
+            artifacts/invariants/weekly-tla/
           if-no-files-found: error
+          retention-days: 30
+      - name: Upload weekly TLA+ process diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-weekly-tla-process-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/rafter-invariants/telemetry/
+            crates/rafter-invariants/target/rafter-invariants/telemetry/
+          if-no-files-found: ignore
           retention-days: 30
 
   invariants-maelstrom:
@@ -162,9 +192,19 @@ jobs:
           name: invariants-weekly-evidence-maelstrom-${{ github.run_id }}-${{ github.run_attempt }}
           overwrite: true
           path: |
-            artifacts/invariants/
-            target/rafter-invariants/telemetry/
+            artifacts/invariants/weekly-maelstrom.json
+            artifacts/invariants/weekly-maelstrom/
           if-no-files-found: error
+          retention-days: 30
+      - name: Upload weekly Maelstrom process diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-weekly-maelstrom-process-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/rafter-invariants/telemetry/
+            crates/rafter-invariants/target/rafter-invariants/telemetry/
+          if-no-files-found: ignore
           retention-days: 30
 
   invariants-weekly:
@@ -178,6 +218,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
+      INVARIANT_EVIDENCE_DIR: rafter-invariants-weekly-evidence-${{ github.run_id }}-${{ github.run_attempt }}
       INVARIANT_REPORT_DIR: rafter-invariants-weekly-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
@@ -185,13 +226,49 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - name: Download available weekly evidence
+      - name: Download available weekly test evidence
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
-          pattern: invariants-weekly-evidence-*-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .
-          merge-multiple: true
+          name: invariants-weekly-evidence-tests-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/tests
+      - name: Download available weekly simulator evidence
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: invariants-weekly-evidence-simulator-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/simulator
+      - name: Download available weekly TLA+ evidence
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: invariants-weekly-evidence-tla-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/tla
+      - name: Download available weekly Maelstrom evidence
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: invariants-weekly-evidence-maelstrom-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/maelstrom
+      - name: Stage current-run weekly evidence artifacts
+        if: always()
+        run: |
+          transport_root="$RUNNER_TEMP/$INVARIANT_EVIDENCE_DIR"
+          evidence_root="artifacts/invariants"
+          mkdir -p "$evidence_root"
+          for layer in tests simulator tla maelstrom; do
+            source="$transport_root/$layer/weekly-$layer"
+            destination="$evidence_root/weekly-$layer"
+            test -s "$source.json"
+            test -d "$source"
+            if [[ -e "$destination" || -e "$destination.json" ]]; then
+              echo "refusing stale or colliding weekly evidence target: $destination" >&2
+              exit 1
+            fi
+          done
+          for layer in tests simulator tla maelstrom; do
+            cp -R "$transport_root/$layer/weekly-$layer" "$evidence_root/weekly-$layer"
+          done
       - name: Build source-bound Maelstrom verification binaries
         timeout-minutes: 2
         run: cargo build --locked -p rafter-maelstrom --bins
@@ -204,6 +281,10 @@ jobs:
           mkdir -p "$report_dir"
           set +e
           cargo run --locked -p rafter-invariants -- check --profile weekly --source-ref "$GITHUB_SHA" \
+            --result "$RUNNER_TEMP/$INVARIANT_EVIDENCE_DIR/tests/weekly-tests.json" \
+            --result "$RUNNER_TEMP/$INVARIANT_EVIDENCE_DIR/simulator/weekly-simulator.json" \
+            --result "$RUNNER_TEMP/$INVARIANT_EVIDENCE_DIR/tla/weekly-tla.json" \
+            --result "$RUNNER_TEMP/$INVARIANT_EVIDENCE_DIR/maelstrom/weekly-maelstrom.json" \
             --output-dir "$report_dir"
           status=$?
           set -e
@@ -263,7 +344,7 @@ jobs:
             echo "## Raft invariant gate" >> "$GITHUB_STEP_SUMMARY"
             echo "No complete current-run 44-row weekly report was produced; the aggregate is red." >> "$GITHUB_STEP_SUMMARY"
           fi
-      - name: Upload available weekly aggregate reports and evidence
+      - name: Upload available weekly aggregate reports
         if: always()
         timeout-minutes: 2
         uses: actions/upload-artifact@v4
@@ -274,8 +355,27 @@ jobs:
             ${{ runner.temp }}/${{ env.INVARIANT_REPORT_DIR }}/weekly.json
             ${{ runner.temp }}/${{ env.INVARIANT_REPORT_DIR }}/weekly.xml
             ${{ runner.temp }}/${{ env.INVARIANT_REPORT_DIR }}/weekly.md
-            artifacts/invariants/
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Upload available weekly aggregate evidence
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-weekly-aggregate-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          overwrite: true
+          path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Upload weekly aggregate process diagnostics
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-weekly-aggregate-process-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
             target/rafter-invariants/telemetry/
+            crates/rafter-invariants/target/rafter-invariants/telemetry/
           if-no-files-found: ignore
           retention-days: 30
       - name: Require 44 of 44 weekly invariants green
