@@ -5,18 +5,18 @@ use sha2::{Digest, Sha256};
 
 use super::{EvidenceStatus, FailureClassification, ResultBundle};
 
-const RESULT_V13_GOLDEN: &str = include_str!("fixtures/result-v13-minimal.json");
+const RESULT_V14_GOLDEN: &str = include_str!("fixtures/result-v14-minimal.json");
 
 #[test]
-fn result_v13_golden_document_is_schema_valid_and_byte_stable() {
-    let expected: Value = serde_json::from_str(RESULT_V13_GOLDEN).expect("valid golden JSON");
+fn result_v14_golden_document_is_schema_valid_and_byte_stable() {
+    let expected: Value = serde_json::from_str(RESULT_V14_GOLDEN).expect("valid golden JSON");
     super::validate_result_value(&expected).expect("schema-valid golden bundle");
     let decoded: ResultBundle =
         serde_json::from_value(expected.clone()).expect("decode golden bundle");
     let bytes = serde_json::to_vec(&decoded).expect("encode golden bundle bytes");
     assert_eq!(
         format!("{:x}", Sha256::digest(&bytes)),
-        "0b955567a6e4052ee286518b8fd8dec51a7e78e7e34f062678512397ba46b658"
+        "409653d59b1ce27b4896070da21669db5b120f53f66350ac5fad390ba7bbeb2e"
     );
     let encoded = serde_json::to_value(decoded).expect("encode golden bundle value");
     assert_eq!(encoded, expected);
@@ -29,7 +29,7 @@ fn result_v13_golden_document_is_schema_valid_and_byte_stable() {
 }
 
 #[test]
-fn result_v13_wire_round_trip_is_stable() {
+fn result_v14_wire_round_trip_is_stable() {
     let (catalog, manifest) = crate::tests::loaded();
     for bundle in crate::tests::passing_bundles(&catalog, &manifest) {
         let encoded = serde_json::to_value(&bundle).expect("encode result bundle");

@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Deserializer, Serialize};
 
-use super::{ArtifactRef, SimulatorLivenessBinding, SourceReceipt};
+use super::{ArtifactRef, ExecutableReceipt, SimulatorLivenessBinding, SourceReceipt};
 use crate::contract::profile::ProfileContract;
 
 /// Current version of the hashed execution-plan contract.
@@ -56,6 +56,17 @@ pub struct InvocationReceipt {
     pub current_dir: String,
     pub environment: BTreeMap<String, String>,
     pub environment_sha256: String,
+    pub launchers: Vec<LauncherReceipt>,
+}
+
+/// Ordered executable role used to launch or observe one subprocess.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct LauncherReceipt {
+    pub role: String,
+    pub runtime: String,
+    #[serde(flatten)]
+    pub executable: ExecutableReceipt,
 }
 
 /// Immutable executable artifact bound to the producer invocation.
