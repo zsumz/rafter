@@ -1,0 +1,20 @@
+error: detector_test permits only the inert #[ignore] attribute
+ --> tests/ui/fail/detector_attributes.rs:4:1
+  |
+4 | / #[should_panic]
+5 | | fn panic_fixture() {}
+  | |_____________________^
+
+error: detector_test permits only the inert #[ignore] attribute
+ --> tests/ui/fail/detector_attributes.rs:8:1
+  |
+8 | / #[ignore(reason)]
+9 | | fn malformed_ignore_fixture() {}
+  | |________________________________^
+
+error: detector_test permits only the inert #[ignore] attribute
+  --> tests/ui/fail/detector_attributes.rs:12:1
+   |
+12 | / #[ignore = 7]
+13 | | fn non_string_ignore_fixture() {}
+   | |_________________________________^
