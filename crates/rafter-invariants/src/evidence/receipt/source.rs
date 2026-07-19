@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use super::ToolReceipt;
+use super::{ExecutableReceipt, ToolReceipt};
 
 /// Immutable source and toolchain identity used to produce a bundle.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -23,6 +23,7 @@ pub struct SourceReceipt {
     pub build_profile: String,
     pub features: Vec<String>,
     pub tools: BTreeMap<String, ToolReceipt>,
+    pub process_runtime: BTreeMap<String, ExecutableReceipt>,
     pub environment_sha256: String,
     pub clean: bool,
 }
