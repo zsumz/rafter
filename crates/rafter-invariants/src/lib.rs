@@ -10,6 +10,7 @@ mod artifact_verify_tla;
 mod contract;
 mod detector_proof;
 mod evidence;
+mod execution;
 mod plan;
 mod producer;
 mod producer_image;
