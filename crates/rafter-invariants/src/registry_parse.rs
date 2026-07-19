@@ -1,3 +1,5 @@
+//! Registry syntax parser facade.
+
 mod document;
 mod evidence;
 mod fields;

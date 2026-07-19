@@ -56,8 +56,15 @@ fn pr_invariant_aggregate_is_stable_and_fail_closed() {
         );
     }
     let tla_validation = job_block(&workflow, "invariants-tla-validation");
-    assert!(tla_validation
-        .contains("cargo test --locked -p rafter-invariants --lib -- --ignored --test-threads=1"));
+    for exact_inventory in [
+        "scripts/cargo-test-exact 34 producer::tla_exec::mutation_tests --locked -p rafter-invariants --lib -- --ignored --test-threads=1",
+        "scripts/cargo-test-exact 4 artifact_verify_tla::full_bundle_tests::serialized_tests --locked -p rafter-invariants --lib -- --ignored --test-threads=1",
+    ] {
+        assert!(
+            tla_validation.contains(exact_inventory),
+            "TLA validation omitted exact inventory: {exact_inventory}"
+        );
+    }
 
     let profile = read(&root.join("verification/raft-invariant-profiles.json"));
     for required in [
@@ -349,18 +356,7 @@ fn weekly_full_tlc_is_source_bound_checkpointed_and_fail_closed() {
             "weekly source-bound TLA job omitted: {required}"
         );
     }
-    for implementation_glob in [
-        "'crates/rafter-invariants/src/producer/*.rs'",
-        "'crates/rafter-invariants/src/producer/filesystem/**/*.rs'",
-        "'crates/rafter-invariants/src/producer/process/**/*.rs'",
-        "'crates/rafter-invariants/src/producer/tla_checkpoint/**/*.rs'",
-    ] {
-        assert_eq!(
-            tla.matches(implementation_glob).count(),
-            3,
-            "weekly checkpoint restore/save keys must all hash {implementation_glob}"
-        );
-    }
+    verify_checkpoint_source_inputs(tla, "weekly");
 
     let profile = read(&root.join("verification/raft-invariant-profiles.json"));
     for required in [
@@ -379,6 +375,55 @@ fn weekly_full_tlc_is_source_bound_checkpointed_and_fail_closed() {
         assert!(
             profile.contains(required),
             "weekly TLA profile omitted: {required}"
+        );
+    }
+}
+
+#[test]
+fn nightly_tlc_checkpoint_hashes_complete_invariant_sources() {
+    let root = workspace_root();
+    let workflow = read(&root.join(".github/workflows/nightly.yml"));
+    let tla = job_block(&workflow, "invariants-tla");
+    for required in [
+        "actions/cache/restore@v4",
+        "Restore exact-compatible nightly TLC checkpoint",
+        "target/rafter-invariants/tla-checkpoint/nightly",
+        "tla-nightly-checkpoint-v1-",
+        "actions/cache/save@v4",
+        "Save exact-compatible nightly TLC checkpoint",
+    ] {
+        assert!(
+            tla.contains(required),
+            "nightly source-bound TLA job omitted: {required}"
+        );
+    }
+    verify_checkpoint_source_inputs(tla, "nightly");
+}
+
+fn verify_checkpoint_source_inputs(tla_job: &str, profile: &str) {
+    for source_input in [
+        "'Cargo.toml'",
+        "'Cargo.lock'",
+        "'crates/rafter-invariants/Cargo.toml'",
+        "'crates/rafter-invariants/src/**/*.rs'",
+    ] {
+        assert_eq!(
+            tla_job.matches(source_input).count(),
+            3,
+            "{profile} checkpoint restore/save keys must all hash {source_input}"
+        );
+    }
+    for retired_glob in [
+        "'crates/rafter-invariants/src/producer/*.rs'",
+        "'crates/rafter-invariants/src/producer/filesystem/**/*.rs'",
+        "'crates/rafter-invariants/src/producer/process/**/*.rs'",
+        "'crates/rafter-invariants/src/producer/tla_checkpoint/**/*.rs'",
+        "'crates/rafter-invariants/src/receipt_tla.rs'",
+        "'crates/rafter-invariants/src/artifact_verify_tla.rs'",
+    ] {
+        assert!(
+            !tla_job.contains(retired_glob),
+            "{profile} checkpoint hash still uses brittle input {retired_glob}"
         );
     }
 }

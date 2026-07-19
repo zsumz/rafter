@@ -1,0 +1,74 @@
+#!/usr/bin/env bash
+# Run a Cargo test selection only when it contains the reviewed number of tests.
+#
+# Usage:
+#   scripts/cargo-test-exact EXPECTED FILTER [CARGO_ARGS...] [-- LIBTEST_ARGS...]
+#
+# Use `-` for FILTER when the selection is expressed entirely by Cargo or
+# libtest arguments. The inventory and execution commands are otherwise
+# identical, apart from the inventory command adding `--list`.
+set -euo pipefail
+
+usage() {
+    sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+if [[ $# -lt 2 ]]; then
+    usage >&2
+    exit 2
+fi
+
+expected="$1"
+filter="$2"
+shift 2
+
+case "$expected" in
+    '' | *[!0-9]*)
+        echo "error: EXPECTED must be a positive integer; got '$expected'" >&2
+        exit 2
+        ;;
+esac
+if (( expected == 0 )); then
+    echo "error: EXPECTED must be greater than zero" >&2
+    exit 2
+fi
+
+cargo_args=()
+libtest_args=()
+parsing_libtest=false
+for arg in "$@"; do
+    if [[ "$arg" == "--" && "$parsing_libtest" == false ]]; then
+        parsing_libtest=true
+    elif [[ "$parsing_libtest" == true ]]; then
+        libtest_args+=("$arg")
+    else
+        cargo_args+=("$arg")
+    fi
+done
+
+inventory_file="$(mktemp "${TMPDIR:-/tmp}/rafter-cargo-test-inventory.XXXXXX")"
+trap 'rm -f "$inventory_file"' EXIT
+
+inventory_command=(cargo test "${cargo_args[@]}")
+if [[ "$filter" != "-" ]]; then
+    inventory_command+=("$filter")
+fi
+inventory_command+=(-- --list "${libtest_args[@]}")
+
+echo "+ ${inventory_command[*]}"
+"${inventory_command[@]}" | tee "$inventory_file"
+
+actual="$(awk '/: test$/ { count += 1 } END { print count + 0 }' "$inventory_file")"
+if (( actual != expected )); then
+    echo "error: Cargo test selection matched $actual tests; expected exactly $expected" >&2
+    exit 1
+fi
+
+test_command=(cargo test "${cargo_args[@]}")
+if [[ "$filter" != "-" ]]; then
+    test_command+=("$filter")
+fi
+test_command+=(-- "${libtest_args[@]}")
+
+echo "+ ${test_command[*]}"
+"${test_command[@]}"

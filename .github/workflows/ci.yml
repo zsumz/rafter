@@ -66,21 +66,21 @@ jobs:
         with:
           cache-on-failure: true
       - name: dependency boundary tests
-        run: cargo test --workspace dependency_boundary
+        run: scripts/cargo-test-exact 6 dependency_boundary --workspace
       - name: source boundary tests
-        run: cargo test -p rafter source_boundary
+        run: scripts/cargo-test-exact 2 source_boundary -p rafter
       - name: file-size guard
-        run: cargo test -p rafter file_size_guard -- --nocapture
+        run: scripts/cargo-test-exact 1 file_size_guard -p rafter -- --nocapture
       - name: test-location guard
-        run: cargo test -p rafter --test test_location_guard -- --nocapture
+        run: scripts/cargo-test-exact 3 - -p rafter --test test_location_guard -- --nocapture
       - name: public API/docs guard
-        run: cargo test -p rafter --test public_api_docs_guard -- --nocapture
+        run: scripts/cargo-test-exact 8 - -p rafter --test public_api_docs_guard -- --nocapture
       - name: invariant docs guard
         run: python3 scripts/render-raft-invariants-doc --check
       - name: workspace tests
         run: cargo test --workspace
       - name: replicated KV process lifecycle
-        run: cargo test -p rafter-runtime --test replicated_kv_example -- --ignored --exact replicated_kv_process_per_node_tcp_survives_kill_restart --nocapture
+        run: scripts/cargo-test-exact 1 - -p rafter-runtime --test replicated_kv_example -- --ignored --exact replicated_kv_process_per_node_tcp_survives_kill_restart --nocapture
 
   invariants-tests:
     name: invariants-tests
@@ -118,16 +118,16 @@ jobs:
           cache-on-failure: true
       - name: Validate managed process launcher on macOS
         run: |
-          cargo test --locked -p rafter-invariants producer::process::tests -- --test-threads=1
-          cargo test --locked -p rafter-invariants producer::test_exec::detector_proof::tests -- --test-threads=1
-          cargo test --locked -p rafter-invariants producer::test_exec::process_tests -- --test-threads=1
-          cargo test --locked -p rafter-invariants detector_proof::tests -- --test-threads=1
-          cargo test --locked -p rafter-invariants artifact_verify::detector_source::tests -- --test-threads=1
-          cargo test --locked -p rafter-invariants artifact_verify::detector_source::adversarial_tests -- --test-threads=1
-          cargo test --locked -p rafter-invariants artifact_verify::simulator::event_semantics_tests -- --test-threads=1
-          cargo test --locked -p rafter-invariants artifact_verify::test_logs::detector_witness_tests -- --test-threads=1
-          cargo test --locked -p rafter-invariants producer_image::tests -- --test-threads=1
-          cargo test --locked -p rafter-invariants --test producer_reexec -- --test-threads=1
+          scripts/cargo-test-exact 25 producer::process::tests --locked -p rafter-invariants -- --test-threads=1
+          scripts/cargo-test-exact 4 producer::test_exec::detector_proof::tests --locked -p rafter-invariants -- --test-threads=1
+          scripts/cargo-test-exact 1 producer::test_exec::process_tests --locked -p rafter-invariants -- --test-threads=1
+          scripts/cargo-test-exact 6 detector_proof::tests --locked -p rafter-invariants -- --test-threads=1
+          scripts/cargo-test-exact 43 artifact_verify::detector_source::tests --locked -p rafter-invariants -- --test-threads=1
+          scripts/cargo-test-exact 21 artifact_verify::detector_source::adversarial_tests --locked -p rafter-invariants -- --test-threads=1
+          scripts/cargo-test-exact 14 artifact_verify::simulator::event_semantics_tests --locked -p rafter-invariants -- --test-threads=1
+          scripts/cargo-test-exact 7 artifact_verify::test_logs::detector_witness_tests --locked -p rafter-invariants -- --test-threads=1
+          scripts/cargo-test-exact 4 producer_image::tests --locked -p rafter-invariants -- --test-threads=1
+          scripts/cargo-test-exact 1 - --locked -p rafter-invariants --test producer_reexec -- --test-threads=1
       - name: Upload macOS launcher diagnostics
         if: always()
         uses: actions/upload-artifact@v4
@@ -240,7 +240,9 @@ jobs:
           cache-on-failure: true
       - name: Validate TLA+ mutation sensitivity and serialized evidence
         timeout-minutes: 20
-        run: cargo test --locked -p rafter-invariants --lib -- --ignored --test-threads=1
+        run: |
+          scripts/cargo-test-exact 34 producer::tla_exec::mutation_tests --locked -p rafter-invariants --lib -- --ignored --test-threads=1
+          scripts/cargo-test-exact 4 artifact_verify_tla::full_bundle_tests::serialized_tests --locked -p rafter-invariants --lib -- --ignored --test-threads=1
 
   invariants-maelstrom:
     name: invariants-maelstrom
@@ -255,7 +257,7 @@ jobs:
       - name: Prefetch locked registry for offline source identity
         run: cargo fetch --locked
       - name: Validate scheduled Maelstrom evidence contract
-        run: cargo test --locked -p rafter-invariants maelstrom
+        run: scripts/cargo-test-exact 43 maelstrom --locked -p rafter-invariants
       - name: Validate Maelstrom runner scripts
         run: |
           for script in \
