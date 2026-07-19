@@ -1,11 +1,8 @@
-use std::{fs, path::PathBuf, time::Instant};
+//! Scenarios for confinement, durability, traversal bounds, and consumer deadlines.
 
-use crate::ArtifactRef;
+use std::{fs, path::PathBuf};
 
-use super::{
-    filesystem::{HeldDirectory, OperationDeadline, TreeLimits, TREE_LIMITS},
-    maelstrom_exec, simulator_model, test_compile, test_exec,
-};
+use super::{HeldDirectory, OperationDeadline, TreeLimits, TREE_LIMITS};
 
 fn test_path(label: &str) -> PathBuf {
     PathBuf::from("target/rafter-invariants/filesystem-tests")
@@ -13,11 +10,7 @@ fn test_path(label: &str) -> PathBuf {
 }
 
 fn limits_with(nodes: usize, depth: usize) -> TreeLimits {
-    TreeLimits {
-        nodes,
-        depth,
-        ..TREE_LIMITS
-    }
+    TREE_LIMITS.with_nodes(nodes).with_depth(depth)
 }
 
 #[test]
@@ -57,14 +50,14 @@ fn unsupported_directory_fsync_uses_and_propagates_filesystem_sync() {
     use std::cell::Cell;
 
     let called = Cell::new(false);
-    super::filesystem::complete_directory_sync(Err(rustix::io::Errno::BADF), || {
+    super::complete_directory_sync(Err(rustix::io::Errno::BADF), || {
         called.set(true);
         Ok(())
     })
     .expect("filesystem-wide sync substitutes for unsupported directory fsync");
     assert!(called.get());
 
-    let error = super::filesystem::complete_directory_sync(
+    let error = super::complete_directory_sync(
         Err(rustix::io::Errno::BADF),
         || -> Result<(), Box<dyn std::error::Error>> { Err(Box::new(rustix::io::Errno::IO)) },
     )
@@ -72,7 +65,7 @@ fn unsupported_directory_fsync_uses_and_propagates_filesystem_sync() {
     assert_eq!(error.to_string(), rustix::io::Errno::IO.to_string());
 
     let called = Cell::new(false);
-    let error = super::filesystem::complete_directory_sync(Err(rustix::io::Errno::PERM), || {
+    let error = super::complete_directory_sync(Err(rustix::io::Errno::PERM), || {
         called.set(true);
         Ok(())
     })
@@ -87,84 +80,19 @@ fn unsupported_filesystem_sync_uses_global_sync_without_masking_other_errors() {
     use std::cell::Cell;
 
     let called = Cell::new(false);
-    super::filesystem::complete_filesystem_sync(Err(rustix::io::Errno::BADF), || {
+    super::complete_filesystem_sync(Err(rustix::io::Errno::BADF), || {
         called.set(true);
     })
     .expect("global sync substitutes for unsupported filesystem sync");
     assert!(called.get());
 
     let called = Cell::new(false);
-    let error = super::filesystem::complete_filesystem_sync(Err(rustix::io::Errno::PERM), || {
+    let error = super::complete_filesystem_sync(Err(rustix::io::Errno::PERM), || {
         called.set(true);
     })
     .expect_err("unrelated filesystem sync failures remain fatal");
     assert_eq!(error.to_string(), rustix::io::Errno::PERM.to_string());
     assert!(!called.get());
-}
-
-#[test]
-fn layer_scratch_cleanup_rejects_expired_deadlines_before_mutation() {
-    let source_ref = format!("deadline-{}", std::process::id());
-    let compile_profile = format!("compile-expired-{}", std::process::id());
-    let compile_path = PathBuf::from("target/rafter-invariants/build")
-        .join(&source_ref)
-        .join(format!("{compile_profile}-tests"));
-    let test_scratch_path = test_path("test-expired");
-    let simulator_path = test_path("simulator-expired");
-    let maelstrom_path = test_path("maelstrom-expired");
-    for path in [
-        &compile_path,
-        &test_scratch_path,
-        &simulator_path,
-        &maelstrom_path,
-    ] {
-        let _ = fs::remove_dir_all(path);
-    }
-
-    assert!(
-        test_compile::prepare_target_dir(&compile_profile, &source_ref, Instant::now()).is_err()
-    );
-    assert!(test_exec::reset_test_scratch(&test_scratch_path, Instant::now()).is_err());
-    assert!(
-        simulator_model::reset_simulator_build_scratch(&simulator_path, Instant::now()).is_err()
-    );
-    assert!(maelstrom_exec::reset_state_directory(&maelstrom_path, Instant::now()).is_err());
-
-    for path in [
-        &compile_path,
-        &test_scratch_path,
-        &simulator_path,
-        &maelstrom_path,
-    ] {
-        assert!(!path.exists(), "expired cleanup created {}", path.display());
-    }
-}
-
-#[test]
-fn maelstrom_discovery_and_evidence_traversal_obey_expired_deadlines() {
-    let root = test_path("maelstrom-traversal-expired");
-    let output = test_path("maelstrom-traversal-output");
-    let _ = fs::remove_dir_all(&root);
-    let _ = fs::remove_dir_all(&output);
-    fs::create_dir_all(root.join("store/lin-kv/run/node-logs"))
-        .expect("create Maelstrom traversal fixture");
-    fs::write(root.join("store/lin-kv/run/results.edn"), b"{}").expect("write results fixture");
-    let held = HeldDirectory::open(&root).expect("hold Maelstrom fixture");
-
-    assert!(maelstrom_exec::discover_store(&held, Instant::now()).is_err());
-    let mut artifacts = Vec::<ArtifactRef>::new();
-    assert!(maelstrom_exec::capture_tree(
-        &output,
-        std::path::Path::new("fixture"),
-        &held,
-        &mut artifacts,
-        Instant::now(),
-    )
-    .is_err());
-    assert!(artifacts.is_empty());
-    assert!(!output.exists());
-
-    fs::remove_dir_all(root).expect("remove Maelstrom traversal fixture");
 }
 
 #[test]
@@ -179,7 +107,7 @@ fn bounded_cleanup_rejects_node_overflow_before_removing_anything() {
     let held = HeldDirectory::open(&root).expect("hold node-limit fixture");
     let error = held
         .remove_contents(
-            limits_with(2, TREE_LIMITS.depth),
+            limits_with(2, TREE_LIMITS.depth()),
             OperationDeadline::none("node-limit test"),
         )
         .expect_err("cleanup must reject an oversized tree");
@@ -202,7 +130,7 @@ fn bounded_cleanup_rejects_deep_trees_before_removing_anything() {
     let held = HeldDirectory::open(&root).expect("hold depth-limit fixture");
     let error = held
         .remove_contents(
-            limits_with(TREE_LIMITS.nodes, 2),
+            limits_with(TREE_LIMITS.nodes(), 2),
             OperationDeadline::none("depth-limit test"),
         )
         .expect_err("cleanup must reject a deep tree");

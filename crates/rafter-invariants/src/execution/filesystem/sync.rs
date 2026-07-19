@@ -1,3 +1,5 @@
+//! Durable directory and filesystem synchronization policy.
+
 use std::{error::Error, ffi::OsStr, path::Path};
 
 use cap_std::fs::Dir;
@@ -36,7 +38,7 @@ pub(super) fn sync_directory(
 }
 
 #[cfg(any(target_os = "android", target_os = "linux"))]
-pub(in crate::producer) fn complete_filesystem_sync<F>(
+pub(super) fn complete_filesystem_sync<F>(
     result: rustix::io::Result<()>,
     global_sync: F,
 ) -> Result<(), Box<dyn Error>>
@@ -56,7 +58,7 @@ where
 }
 
 #[cfg(any(target_os = "android", target_os = "linux"))]
-pub(in crate::producer) fn complete_directory_sync<F>(
+pub(super) fn complete_directory_sync<F>(
     result: rustix::io::Result<()>,
     filesystem_sync: F,
 ) -> Result<(), Box<dyn Error>>
