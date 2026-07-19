@@ -203,7 +203,7 @@ fn write_report(
     manifest: &crate::ProfileManifest,
     output_dir: &std::path::Path,
 ) -> Result<(), Box<dyn Error>> {
-    crate::schema::validate_verdict_report(report, catalog, manifest)?;
+    crate::verdict::validate_verdict_report(report, catalog, manifest)?;
     fs::create_dir_all(output_dir)?;
     let outputs = [
         (
