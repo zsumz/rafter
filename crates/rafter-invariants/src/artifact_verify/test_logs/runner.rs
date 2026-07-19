@@ -1,6 +1,12 @@
+//! Runner-level reconciliation of test receipts and runtime transcripts.
+
 use std::{fs, path::Path};
 
-use crate::{aggregate::AggregateError, EvidenceStatus, FailureClassification, ResultBundle};
+use crate::{
+    contract::catalog::Catalog,
+    evidence::{EvidenceStatus, FailureClassification, ResultBundle},
+    verification::AggregateError,
+};
 
 use super::{
     registered_test_name, require_exact_test_failure, require_exact_test_pass,
@@ -12,9 +18,8 @@ pub(in crate::artifact_verify) fn verify_test_logs(
     bundle: &ResultBundle,
     root: &Path,
 ) -> Result<(), AggregateError> {
-    let catalog =
-        crate::Catalog::load(root.join(&bundle.execution.plan.registry.path).as_path())
-            .map_err(|error| AggregateError::new(format!("reload tests registry: {error}")))?;
+    let catalog = Catalog::load(root.join(&bundle.execution.plan.registry.path).as_path())
+        .map_err(|error| AggregateError::new(format!("reload tests registry: {error}")))?;
     for check in &bundle.execution.checks {
         let outcomes = bundle
             .results
@@ -60,7 +65,7 @@ pub(in crate::artifact_verify) fn verify_test_logs(
         let source = fs::read_to_string(root.join(&test_log.path)).map_err(|error| {
             AggregateError::new(format!("read test-log {}: {error}", test_log.path))
         })?;
-        crate::evidence::format::process::parse_combined_v3(&source).map_err(|error| {
+        crate::evidence::format::process::parse_combined_v4(&source).map_err(|error| {
             AggregateError::new(format!(
                 "parse canonical tests-runner log {}: {error}",
                 test_log.path
