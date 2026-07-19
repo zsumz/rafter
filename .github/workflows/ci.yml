@@ -81,6 +81,16 @@ jobs:
         run: cargo test --workspace
       - name: replicated KV process lifecycle
         run: scripts/cargo-test-exact 1 - -p rafter-runtime --test replicated_kv_example -- --ignored --exact replicated_kv_process_per_node_tcp_survives_kill_restart --nocapture
+      - name: Upload test process diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-process-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/rafter-invariants/telemetry/
+            crates/rafter-invariants/target/rafter-invariants/telemetry/
+          if-no-files-found: ignore
+          retention-days: 30
 
   invariants-tests:
     name: invariants-tests
@@ -101,9 +111,19 @@ jobs:
           name: invariants-pr-evidence-tests-${{ github.run_id }}-${{ github.run_attempt }}
           overwrite: true
           path: |
-            artifacts/invariants/
-            target/rafter-invariants/telemetry/
+            artifacts/invariants/pr-tests.json
+            artifacts/invariants/pr-tests/
           if-no-files-found: error
+          retention-days: 30
+      - name: Upload test evidence process diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-tests-process-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/rafter-invariants/telemetry/
+            crates/rafter-invariants/target/rafter-invariants/telemetry/
+          if-no-files-found: ignore
           retention-days: 30
 
   invariants-launcher-macos:
@@ -118,7 +138,8 @@ jobs:
           cache-on-failure: true
       - name: Validate managed process launcher on macOS
         run: |
-          scripts/cargo-test-exact 25 producer::process::tests --locked -p rafter-invariants -- --test-threads=1
+          scripts/cargo-test-exact 53 execution::process::tests --locked -p rafter-invariants -- --test-threads=1
+          scripts/cargo-test-exact 18 producer::process::tests --locked -p rafter-invariants -- --test-threads=1
           scripts/cargo-test-exact 4 producer::test_exec::detector_proof::tests --locked -p rafter-invariants -- --test-threads=1
           scripts/cargo-test-exact 1 producer::test_exec::process_tests --locked -p rafter-invariants -- --test-threads=1
           scripts/cargo-test-exact 6 detector_proof::tests --locked -p rafter-invariants -- --test-threads=1
@@ -158,9 +179,19 @@ jobs:
           name: invariants-pr-evidence-simulator-${{ github.run_id }}-${{ github.run_attempt }}
           overwrite: true
           path: |
-            artifacts/invariants/
-            target/rafter-invariants/telemetry/
+            artifacts/invariants/pr-simulator.json
+            artifacts/invariants/pr-simulator/
           if-no-files-found: error
+          retention-days: 30
+      - name: Upload simulator evidence process diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-simulator-process-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/rafter-invariants/telemetry/
+            crates/rafter-invariants/target/rafter-invariants/telemetry/
+          if-no-files-found: ignore
           retention-days: 30
 
   invariants-tla:
@@ -214,9 +245,19 @@ jobs:
           name: invariants-pr-evidence-tla-${{ github.run_id }}-${{ github.run_attempt }}
           overwrite: true
           path: |
-            artifacts/invariants/
-            target/rafter-invariants/telemetry/
+            artifacts/invariants/pr-tla.json
+            artifacts/invariants/pr-tla/
           if-no-files-found: error
+          retention-days: 30
+      - name: Upload TLA+ evidence process diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-tla-process-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/rafter-invariants/telemetry/
+            crates/rafter-invariants/target/rafter-invariants/telemetry/
+          if-no-files-found: ignore
           retention-days: 30
 
   invariants-tla-validation:
@@ -243,6 +284,16 @@ jobs:
         run: |
           scripts/cargo-test-exact 34 producer::tla_exec::mutation_tests --locked -p rafter-invariants --lib -- --ignored --test-threads=1
           scripts/cargo-test-exact 4 artifact_verify_tla::full_bundle_tests::serialized_tests --locked -p rafter-invariants --lib -- --ignored --test-threads=1
+      - name: Upload TLA+ validation process diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tla-validation-process-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/rafter-invariants/telemetry/
+            crates/rafter-invariants/target/rafter-invariants/telemetry/
+          if-no-files-found: ignore
+          retention-days: 30
 
   invariants-maelstrom:
     name: invariants-maelstrom
@@ -272,6 +323,16 @@ jobs:
           do
             bash -n "$script"
           done
+      - name: Upload Maelstrom validation process diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: maelstrom-validation-process-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            target/rafter-invariants/telemetry/
+            crates/rafter-invariants/target/rafter-invariants/telemetry/
+          if-no-files-found: ignore
+          retention-days: 30
 
   invariants-pr:
     name: invariants-pr
@@ -286,6 +347,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
+      INVARIANT_EVIDENCE_DIR: rafter-invariants-pr-evidence-${{ github.run_id }}-${{ github.run_attempt }}
       INVARIANT_REPORT_DIR: rafter-invariants-pr-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
       - uses: actions/checkout@v4
@@ -293,13 +355,43 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
-      - name: Download available evidence
+      - name: Download available test evidence
         continue-on-error: true
         uses: actions/download-artifact@v4
         with:
-          pattern: invariants-pr-evidence-*-${{ github.run_id }}-${{ github.run_attempt }}
-          path: .
-          merge-multiple: true
+          name: invariants-pr-evidence-tests-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/tests
+      - name: Download available simulator evidence
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: invariants-pr-evidence-simulator-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/simulator
+      - name: Download available TLA+ evidence
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: invariants-pr-evidence-tla-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/tla
+      - name: Stage current-run PR evidence artifacts
+        if: always()
+        run: |
+          transport_root="$RUNNER_TEMP/$INVARIANT_EVIDENCE_DIR"
+          evidence_root="artifacts/invariants"
+          mkdir -p "$evidence_root"
+          for layer in tests simulator tla; do
+            source="$transport_root/$layer/pr-$layer"
+            destination="$evidence_root/pr-$layer"
+            test -s "$source.json"
+            test -d "$source"
+            if [[ -e "$destination" || -e "$destination.json" ]]; then
+              echo "refusing stale or colliding PR evidence target: $destination" >&2
+              exit 1
+            fi
+          done
+          for layer in tests simulator tla; do
+            cp -R "$transport_root/$layer/pr-$layer" "$evidence_root/pr-$layer"
+          done
       - name: Aggregate exactly 44 invariant verdicts
         if: always()
         id: aggregate
@@ -309,6 +401,9 @@ jobs:
           mkdir -p "$report_dir"
           set +e
           cargo run --locked -p rafter-invariants -- check --profile pr --source-ref "$GITHUB_SHA" \
+            --result "$RUNNER_TEMP/$INVARIANT_EVIDENCE_DIR/tests/pr-tests.json" \
+            --result "$RUNNER_TEMP/$INVARIANT_EVIDENCE_DIR/simulator/pr-simulator.json" \
+            --result "$RUNNER_TEMP/$INVARIANT_EVIDENCE_DIR/tla/pr-tla.json" \
             --output-dir "$report_dir"
           status=$?
           set -e
@@ -368,7 +463,7 @@ jobs:
             echo "## Raft invariant gate" >> "$GITHUB_STEP_SUMMARY"
             echo "No complete current-run 44-row report was produced; the aggregate is red." >> "$GITHUB_STEP_SUMMARY"
           fi
-      - name: Upload available aggregate reports and evidence
+      - name: Upload available aggregate reports
         if: always()
         timeout-minutes: 2
         uses: actions/upload-artifact@v4
@@ -379,8 +474,27 @@ jobs:
             ${{ runner.temp }}/${{ env.INVARIANT_REPORT_DIR }}/pr.json
             ${{ runner.temp }}/${{ env.INVARIANT_REPORT_DIR }}/pr.xml
             ${{ runner.temp }}/${{ env.INVARIANT_REPORT_DIR }}/pr.md
-            artifacts/invariants/
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Upload available aggregate evidence
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-pr-aggregate-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          overwrite: true
+          path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/
+          if-no-files-found: ignore
+          retention-days: 30
+      - name: Upload aggregate process diagnostics
+        if: always()
+        timeout-minutes: 2
+        uses: actions/upload-artifact@v4
+        with:
+          name: invariants-pr-aggregate-process-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
             target/rafter-invariants/telemetry/
+            crates/rafter-invariants/target/rafter-invariants/telemetry/
           if-no-files-found: ignore
           retention-days: 30
       - name: Require 44 of 44 green
