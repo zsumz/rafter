@@ -1,3 +1,5 @@
+//! End-to-end acceptance of Maelstrom trial evidence.
+
 use std::{collections::BTreeSet, path::Path};
 
 use crate::{
@@ -54,9 +56,8 @@ fn verify_check(
         verify_trial_inputs(bundle, scenario, artifacts, root)?;
         let summary = parse_results(unique(artifacts, "maelstrom-results")?, root).ok();
         let process = parse_process(unique(artifacts, "maelstrom-process-log")?, root)?;
-        if process.schema_version != 2
-            || process.label != scenario
-            || !process.has_complete_invocation()
+        if process.label != scenario
+            || !crate::receipt::process_invocation_is_complete(&process.invocation)
         {
             return Err(error(
                 "Maelstrom process log has wrong schema, label, or exact invocation",
@@ -193,9 +194,10 @@ fn verify_exact_invocation(
             "Maelstrom process environment does not match the exact invocation plan",
         ));
     }
-    if crate::producer::process::digest_environment(&base_environment)
-        != bundle.execution.source.environment_sha256
-    {
+    if !crate::provenance::invocation::environment_matches_digest(
+        &base_environment,
+        &bundle.execution.source.environment_sha256,
+    ) {
         return Err(error(
             "Maelstrom base environment does not match source provenance",
         ));
