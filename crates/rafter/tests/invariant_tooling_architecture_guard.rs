@@ -84,12 +84,16 @@ fn mature_invariant_facades_remain_declarative() {
             "crates/rafter-invariants/src/contract/registry/mod.rs",
             "crates/rafter-invariants/src/contract/registry/parse/mod.rs",
             "crates/rafter-invariants/src/contract/schema/mod.rs",
+            "crates/rafter-invariants/src/evidence/format/mod.rs",
+            "crates/rafter-invariants/src/evidence/format/process/mod.rs",
             "crates/rafter-invariants/src/evidence/liveness/mod.rs",
             "crates/rafter-invariants/src/evidence/mod.rs",
             "crates/rafter-invariants/src/evidence/receipt/mod.rs",
             "crates/rafter-invariants/src/execution/filesystem/mod.rs",
             "crates/rafter-invariants/src/execution/mod.rs",
             "crates/rafter-invariants/src/producer/simulator/liveness/mod.rs",
+            "crates/rafter-invariants/src/provenance/invocation/mod.rs",
+            "crates/rafter-invariants/src/provenance/mod.rs",
             "crates/rafter-invariants/src/verification/mod.rs",
             "crates/rafter-invariants/src/verification/simulator/mod.rs",
             "crates/rafter-invariants/src/verification/simulator/liveness/mod.rs",
@@ -122,6 +126,7 @@ fn modeled_invariant_domains_require_module_contracts_without_legacy_allowance()
         "crates/rafter-invariants/src/contract",
         "crates/rafter-invariants/src/evidence",
         "crates/rafter-invariants/src/execution",
+        "crates/rafter-invariants/src/provenance",
         "crates/rafter-invariants/src/verdict",
         "crates/rafter-invariants/src/verification",
         "crates/rafter-invariants/src/producer/simulator/liveness",
@@ -143,6 +148,7 @@ fn implemented_domain_imports_follow_the_reviewed_dependency_graph() {
         "contract",
         "evidence",
         "execution",
+        "provenance",
         "verification",
         "verdict",
     ] {
@@ -172,6 +178,49 @@ fn retired_producer_filesystem_ownership_cannot_return() {
             "{} imports retired producer filesystem ownership",
             display_path(&root, &path)
         );
+    }
+}
+
+#[test]
+fn retired_producer_process_format_ownership_cannot_return() {
+    let root = workspace_root();
+    for path in rust_files(&root.join("crates/rafter-invariants/src/producer")) {
+        let relative = display_path(&root, &path);
+        let source = read(&path);
+        for retired in [
+            "struct ProcessLog",
+            "struct ProcessMetrics",
+            "struct LabeledProcess",
+            "struct TerminationReceipt",
+            "fn parse_combined_processes",
+            "fn digest_environment",
+        ] {
+            assert!(
+                !source.contains(retired),
+                "{relative} reclaimed evidence or provenance ownership through `{retired}`"
+            );
+        }
+    }
+
+    for relative in [
+        "crates/rafter-invariants/src/artifact_verify/compile.rs",
+        "crates/rafter-invariants/src/artifact_verify/simulator_schedule.rs",
+        "crates/rafter-invariants/src/artifact_verify/test_logs/runner.rs",
+    ] {
+        assert!(
+            read(&root.join(relative)).contains("parse_combined_v3"),
+            "{relative} does not enforce the canonical non-detector process schema"
+        );
+    }
+
+    for path in invariant_rust_files(&root) {
+        let relative = display_path(&root, &path);
+        if is_legacy_verifier(&relative) && !is_test_module(&relative) {
+            assert!(
+                !read(&path).contains("producer::process"),
+                "{relative} imports process evidence from its producer"
+            );
+        }
     }
 }
 
