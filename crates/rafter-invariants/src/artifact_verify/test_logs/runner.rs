@@ -60,6 +60,12 @@ pub(in crate::artifact_verify) fn verify_test_logs(
         let source = fs::read_to_string(root.join(&test_log.path)).map_err(|error| {
             AggregateError::new(format!("read test-log {}: {error}", test_log.path))
         })?;
+        crate::evidence::format::process::parse_combined_v3(&source).map_err(|error| {
+            AggregateError::new(format!(
+                "parse canonical tests-runner log {}: {error}",
+                test_log.path
+            ))
+        })?;
         match outcome {
             (EvidenceStatus::Pass, None) => {
                 verify_test_invocations(bundle, check, &source, &test_name, &check.check_id, root)?;
