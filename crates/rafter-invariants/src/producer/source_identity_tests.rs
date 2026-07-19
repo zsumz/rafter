@@ -251,6 +251,9 @@ fn source(build_profile: &str, features: &[&str], tools: &[&str]) -> SourceRecei
                 )
             })
             .collect(),
+        process_runtime: crate::receipt::fixture_process_runtime(
+            build_profile == "maelstrom-debug",
+        ),
         environment_sha256: "0".repeat(64),
         clean: true,
     }
@@ -285,4 +288,16 @@ fn layer_contract_rejects_cross_layer_receipts_and_tool_drift() {
         },
     );
     assert!(verify_layer_contract("tla", &tla).is_err());
+
+    let mut tests = source("test", &["no-default-features"], &[]);
+    tests.process_runtime.remove("ps");
+    assert!(verify_layer_contract("tests", &tests).is_err());
+
+    let maelstrom = source(
+        "maelstrom-debug",
+        &[],
+        &["java", "maelstrom", "dot", "gnuplot"],
+    );
+    verify_layer_contract("maelstrom", &maelstrom).expect("exact Maelstrom runtime contract");
+    assert!(verify_layer_contract("tests", &maelstrom).is_err());
 }

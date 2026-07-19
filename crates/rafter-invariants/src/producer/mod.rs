@@ -13,7 +13,7 @@ mod simulator_model;
 pub(crate) mod source;
 mod test_compile;
 pub(crate) mod test_exec;
-mod tests;
+mod test_runner;
 mod tla;
 pub(crate) mod tla_checkpoint;
 mod tla_contract;
@@ -136,7 +136,7 @@ pub(crate) fn produce_with_plan(
         producer: &producer,
     };
     let mut bundle = match layer {
-        "tests" => tests::run(
+        "tests" => test_runner::run(
             &plan.catalog,
             contract,
             &plan.receipt.profile,

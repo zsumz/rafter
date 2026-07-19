@@ -11,7 +11,7 @@ use std::{
 use serde_json::Value;
 
 #[cfg(all(test, unix))]
-use crate::evidence::format::process::{parse_combined_v3, LabeledProcess};
+use crate::evidence::format::process::{parse_combined_v4, LabeledProcess};
 use crate::{
     execution::filesystem::{
         self as producer_fs, HeldDirectory, HeldFile, OperationDeadline, TREE_LIMITS,
@@ -248,7 +248,7 @@ pub(crate) fn timed_out_zero_exit_fixture_at(
         );
     }
     let receipt = process::combined_log(invocation.label, &output)?;
-    let mut parsed = parse_combined_v3(&String::from_utf8(receipt)?)?;
+    let mut parsed = parse_combined_v4(&String::from_utf8(receipt)?)?;
     let [observed] = parsed.as_mut_slice() else {
         return Err("simulator timeout fixture emitted an invalid process receipt".into());
     };
@@ -398,7 +398,7 @@ fn model_run(profile: &str, seeds: Option<String>) -> ModelRun {
 fn source_derived_seeds(profile: &str, source_ref: &str, count: usize) -> String {
     (0..count)
         .map(|index| {
-            let value = artifact::deterministic_u64(
+            let value = crate::provenance::invocation::deterministic_u64(
                 "scheduled-simulator-seed-v1",
                 &format!("{profile}\0{source_ref}\0{index}"),
             );

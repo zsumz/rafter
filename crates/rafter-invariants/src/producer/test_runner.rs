@@ -1,3 +1,5 @@
+//! Test-layer inventory, execution, and evidence binding.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     error::Error,

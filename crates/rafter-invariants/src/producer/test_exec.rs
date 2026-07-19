@@ -1,17 +1,19 @@
 use std::{collections::BTreeMap, error::Error, ffi::OsString, path::Path, time::Instant};
 
 use crate::{
+    evidence::format::libtest::{exact_zero_execution, oracle_markers},
     execution::filesystem::{HeldDirectory, OperationDeadline, TREE_LIMITS},
     ArtifactRef, CheckCompletion, EvidenceStatus, FailureClassification, TestIdentity,
 };
 
 use super::{artifact, process, test_compile::CompiledTarget};
 
-mod detector_proof;
+pub(crate) use crate::evidence::format::libtest::{
+    exact_failure, exact_pass, listed_tests, oracle_token, ORACLE_TOKEN_ENV,
+};
 
-pub(crate) const ORACLE_TOKEN_ENV: &str = "RAFTER_INVARIANT_ORACLE_TOKEN";
-const ORACLE_OBSERVED_PREFIX: &str = "RAFTER_INVARIANT_ORACLE_OBSERVED:";
-const ORACLE_MARKER_PREFIX: &str = "RAFTER_INVARIANT_ORACLE_VIOLATION:";
+mod detector_policy;
+mod detector_proof;
 
 pub(super) struct TestOutcome {
     pub completion: CheckCompletion,
@@ -453,7 +455,7 @@ fn execute_exact(
 ) -> Result<TestOutcome, Box<dyn Error>> {
     let temporary = Path::new("target/rafter-invariants/tmp").join(execution_id);
     let temporary_guard = reset_test_scratch(&temporary, scratch_deadline)?;
-    let seed = artifact::deterministic_u64(
+    let seed = crate::provenance::invocation::deterministic_u64(
         "rafter-tests/v1",
         &format!("{profile}\0{source_ref}\0{}", identity.test_name),
     );
@@ -586,7 +588,7 @@ fn run_exact_process(
         let stdout = String::from_utf8_lossy(&output.stdout);
         let stderr = String::from_utf8_lossy(&output.stderr);
         let proven =
-            crate::detector_proof::verify_transcript(&stdout, &stderr, oracle_token, challenge);
+            detector_policy::classify_transcript(&stdout, &stderr, oracle_token, challenge);
         if !proven.is_ok_and(|witnesses| {
             witnesses
                 .keys()
@@ -689,88 +691,10 @@ fn outcome_from_execution(
     }
 }
 
-pub(crate) fn listed_tests(output: &[u8]) -> Vec<String> {
-    String::from_utf8_lossy(output)
-        .lines()
-        .filter_map(|line| line.strip_suffix(": test"))
-        .map(str::to_owned)
-        .collect()
-}
-
 fn discovery_matches(output: &[u8], test_name: &str) -> usize {
     listed_tests(output)
         .iter()
         .filter(|test| test.as_str() == test_name)
-        .count()
-}
-
-pub(crate) fn exact_pass(output: &[u8], test_name: &str) -> bool {
-    let output = String::from_utf8_lossy(output);
-    count_exact_line(&output, "running 1 test") == 1
-        && count_exact_line(&output, &format!("test {test_name} ... ok")) == 1
-        && count_summary(&output, "test result: ok. 1 passed; 0 failed; 0 ignored") == 1
-}
-
-pub(crate) fn exact_failure(output: &[u8], test_name: &str) -> bool {
-    let output = String::from_utf8_lossy(output);
-    count_exact_line(&output, "running 1 test") == 1
-        && count_exact_line(&output, &format!("test {test_name} ... FAILED")) == 1
-        && count_summary(
-            &output,
-            "test result: FAILED. 0 passed; 1 failed; 0 ignored",
-        ) == 1
-}
-
-pub(crate) fn oracle_token(source_ref: &str, check_id: &str) -> String {
-    artifact::stable_id("oracle", &format!("{source_ref}\0{check_id}"))
-}
-
-fn oracle_markers(stdout: &[u8], stderr: &[u8], token: &str) -> Option<(usize, usize)> {
-    let observed = format!("{ORACLE_OBSERVED_PREFIX}{token}");
-    let violation = format!("{ORACLE_MARKER_PREFIX}{token}");
-    let stdout = String::from_utf8_lossy(stdout);
-    let stderr = String::from_utf8_lossy(stderr);
-    let streams = [stdout.as_ref(), stderr.as_ref()];
-    let observed_count = streams
-        .iter()
-        .map(|stream| stream.matches(&observed).count())
-        .sum::<usize>();
-    let violation_count = streams
-        .iter()
-        .map(|stream| stream.matches(&violation).count())
-        .sum::<usize>();
-    let all_observed = streams
-        .iter()
-        .map(|stream| stream.matches(ORACLE_OBSERVED_PREFIX).count())
-        .sum::<usize>();
-    let all_violations = streams
-        .iter()
-        .map(|stream| stream.matches(ORACLE_MARKER_PREFIX).count())
-        .sum::<usize>();
-    (observed_count == all_observed && violation_count == all_violations)
-        .then_some((observed_count, violation_count))
-}
-
-fn exact_zero_execution(output: &[u8]) -> bool {
-    let output = String::from_utf8_lossy(output);
-    count_exact_line(&output, "running 0 tests") == 1
-        && count_summary(&output, "test result: ok. 0 passed; 0 failed; 0 ignored") == 1
-        && !output
-            .lines()
-            .any(|line| line.trim_start().starts_with("test ") && line.contains(" ... "))
-}
-
-fn count_exact_line(output: &str, expected: &str) -> usize {
-    output
-        .lines()
-        .filter(|line| line.trim() == expected)
-        .count()
-}
-
-fn count_summary(output: &str, expected_prefix: &str) -> usize {
-    output
-        .lines()
-        .filter(|line| line.trim().starts_with(expected_prefix))
         .count()
 }
 
@@ -793,20 +717,34 @@ pub(crate) fn classify_exact_execution(
     if timed_out {
         return ExactTestExecution::HarnessError;
     }
-    let Some((observed, violations)) = oracle_markers(stdout, stderr, oracle_token) else {
+    let Some(markers) = oracle_markers(stdout, stderr, oracle_token) else {
         return ExactTestExecution::HarnessError;
     };
     match exit_code {
-        Some(0) if exact_pass(stdout, test_name) && observed == 1 && violations == 0 => {
+        Some(0)
+            if exact_pass(stdout, test_name)
+                && markers.observed == 1
+                && markers.violations == 0 =>
+        {
             ExactTestExecution::Pass
         }
-        Some(0) if exact_pass(stdout, test_name) && observed == 0 && violations == 0 => {
+        Some(0)
+            if exact_pass(stdout, test_name)
+                && markers.observed == 0
+                && markers.violations == 0 =>
+        {
             ExactTestExecution::CoverageNotReached
         }
-        Some(0) if exact_zero_execution(stdout) && observed == 0 && violations == 0 => {
+        Some(0)
+            if exact_zero_execution(stdout) && markers.observed == 0 && markers.violations == 0 =>
+        {
             ExactTestExecution::CoverageNotReached
         }
-        Some(101) if exact_failure(stdout, test_name) && observed <= 1 && violations == 1 => {
+        Some(101)
+            if exact_failure(stdout, test_name)
+                && markers.observed <= 1
+                && markers.violations == 1 =>
+        {
             ExactTestExecution::InvariantViolation
         }
         _ => ExactTestExecution::HarnessError,
