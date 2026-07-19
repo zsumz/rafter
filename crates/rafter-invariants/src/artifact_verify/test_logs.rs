@@ -1,3 +1,5 @@
+//! Exact libtest discovery, execution, and environment verification.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -131,7 +133,7 @@ pub(super) fn require_detector_witness_contract(
             "source invocation contract omits registered detector {registered_identity}"
         )));
     }
-    let processes = crate::producer::process::parse_combined_processes(source)
+    let processes = crate::evidence::format::process::parse_combined_processes(source)
         .map_err(|error| AggregateError::new(format!("parse detector invocation: {error}")))?;
     let exact = processes
         .iter()
@@ -139,6 +141,11 @@ pub(super) fn require_detector_witness_contract(
         .ok_or_else(|| {
             AggregateError::new("detector log omitted its exact invocation".to_owned())
         })?;
+    if exact.schema_version != crate::evidence::format::process::DETECTOR_PROCESS_SCHEMA_VERSION {
+        return Err(AggregateError::new(
+            "detector exact invocation does not use the detector process schema".to_owned(),
+        ));
+    }
     let token = crate::producer::test_exec::oracle_token(&bundle.source_ref, oracle_check_id);
     let challenge = exact.detector_challenge.as_deref().ok_or_else(|| {
         AggregateError::new("detector log omitted its parent-issued challenge".to_owned())
@@ -376,12 +383,18 @@ pub(super) fn verify_detector_harness_error_invocations(
     root: &Path,
 ) -> Result<(), AggregateError> {
     verify_harness_error_test_invocations(bundle, check, source, test_name, oracle_check_id, root)?;
-    let processes = crate::producer::process::parse_combined_processes(source)
+    let processes = crate::evidence::format::process::parse_combined_processes(source)
         .map_err(|error| AggregateError::new(format!("parse detector invocation: {error}")))?;
     if let Some(exact) = processes
         .iter()
         .find(|process| process.label == "exact libtest execution")
     {
+        if exact.schema_version != crate::evidence::format::process::DETECTOR_PROCESS_SCHEMA_VERSION
+        {
+            return Err(AggregateError::new(
+                "detector harness-error exact invocation uses the wrong process schema".to_owned(),
+            ));
+        }
         verify_detector_harness_challenge(exact.detector_challenge.as_deref())?;
     }
     Ok(())
@@ -399,7 +412,7 @@ fn verify_detector_harness_challenge(challenge: Option<&str>) -> Result<(), Aggr
 }
 
 pub(super) fn require_unique_discovery(
-    processes: &[crate::producer::process::LabeledProcess],
+    processes: &[crate::evidence::format::process::LabeledProcess],
     test_name: &str,
 ) -> Result<(), AggregateError> {
     let listed_matches = crate::producer::test_exec::listed_tests(processes[0].stdout.as_bytes())
@@ -425,9 +438,16 @@ fn verify_test_process_plan(
     test_name: &str,
     oracle_check_id: &str,
     root: &Path,
-) -> Result<Vec<crate::producer::process::LabeledProcess>, AggregateError> {
-    let invocations = crate::producer::process::parse_combined_processes(source)
+) -> Result<Vec<crate::evidence::format::process::LabeledProcess>, AggregateError> {
+    let invocations = crate::evidence::format::process::parse_combined_processes(source)
         .map_err(|error| AggregateError::new(format!("parse test invocation: {error}")))?;
+    if invocations.iter().take(2).any(|process| {
+        process.schema_version != crate::evidence::format::process::COMBINED_PROCESS_SCHEMA_VERSION
+    }) {
+        return Err(AggregateError::new(
+            "test discovery invocation uses a noncanonical process schema".to_owned(),
+        ));
+    }
     let binary = check
         .artifacts
         .iter()
@@ -446,7 +466,8 @@ fn verify_test_process_plan(
         oracle_check_id,
         Path::new(&current_dir),
     )?;
-    let exact_digest = crate::producer::process::digest_environment(&exact_environment);
+    let exact_digest = crate::provenance::invocation::digest_environment(&exact_environment)
+        .map_err(|error| AggregateError::new(error.to_string()))?;
     let expected = [
         (
             "libtest discovery",
@@ -467,9 +488,10 @@ fn verify_test_process_plan(
                 observed.label != expected.0
                     || observed.invocation.arguments != expected.1
                     || observed.invocation.environment_sha256 != expected.2
-                    || crate::producer::process::digest_environment(
+                    || !crate::provenance::invocation::environment_matches_digest(
                         &observed.invocation.environment,
-                    ) != expected.2
+                        expected.2,
+                    )
             })
     {
         return Err(AggregateError::new(
@@ -514,7 +536,7 @@ fn verify_test_process_plan(
 }
 
 fn verify_exact_test_arguments(
-    exact: &crate::producer::process::LabeledProcess,
+    exact: &crate::evidence::format::process::LabeledProcess,
     test_name: &str,
     ignored_matches: usize,
 ) -> Result<(), AggregateError> {
@@ -546,14 +568,16 @@ fn verify_exact_test_arguments(
 }
 
 pub(super) fn verify_exact_environment(
-    exact: &crate::producer::process::LabeledProcess,
+    exact: &crate::evidence::format::process::LabeledProcess,
     expected: &BTreeMap<String, String>,
     expected_digest: &str,
 ) -> Result<(), AggregateError> {
     if exact.invocation.environment != *expected
         || exact.invocation.environment_sha256 != expected_digest
-        || crate::producer::process::digest_environment(&exact.invocation.environment)
-            != exact.invocation.environment_sha256
+        || !crate::provenance::invocation::environment_matches_digest(
+            &exact.invocation.environment,
+            &exact.invocation.environment_sha256,
+        )
     {
         return Err(AggregateError::new(
             "test log does not contain the exact execution environment".to_owned(),
@@ -564,7 +588,7 @@ pub(super) fn verify_exact_environment(
 
 pub(super) fn verify_reconstructed_test_observations(
     check: &crate::CheckReceipt,
-    invocations: &[crate::producer::process::LabeledProcess],
+    invocations: &[crate::evidence::format::process::LabeledProcess],
     test_name: &str,
 ) -> Result<(), AggregateError> {
     let listed_matches = crate::producer::test_exec::listed_tests(invocations[0].stdout.as_bytes())
@@ -602,7 +626,7 @@ pub(super) fn verify_reconstructed_test_observations(
 pub(super) fn verify_runner_test_observations(
     bundle: &ResultBundle,
     check: &crate::CheckReceipt,
-    invocations: &[crate::producer::process::LabeledProcess],
+    invocations: &[crate::evidence::format::process::LabeledProcess],
     test_name: &str,
 ) -> Result<(), AggregateError> {
     match bundle.runner.as_str() {
@@ -617,7 +641,7 @@ pub(super) fn verify_runner_test_observations(
 fn exact_test_environment(
     bundle: &ResultBundle,
     check: &crate::CheckReceipt,
-    invocations: &[crate::producer::process::LabeledProcess],
+    invocations: &[crate::evidence::format::process::LabeledProcess],
     test_name: &str,
     oracle_check_id: &str,
     root: &Path,

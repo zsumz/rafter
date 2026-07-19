@@ -1,3 +1,5 @@
+//! Source-bound Cargo compilation and executable evidence verification.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -78,7 +80,7 @@ pub(super) fn verify_compile_invocations(
         let source = fs::read_to_string(root.join(&log.path)).map_err(|error| {
             AggregateError::new(format!("read compile log {}: {error}", log.path))
         })?;
-        let invocations = crate::producer::process::parse_combined_processes(&source)
+        let invocations = crate::evidence::format::process::parse_combined_v3(&source)
             .map_err(|error| AggregateError::new(format!("parse compile invocation: {error}")))?;
         let [observed] = invocations.as_slice() else {
             return Err(AggregateError::new(
@@ -129,7 +131,7 @@ pub(super) fn verify_compile_invocations(
 
 fn verify_test_compile(
     bundle: &ResultBundle,
-    observed: &crate::producer::process::LabeledProcess,
+    observed: &crate::evidence::format::process::LabeledProcess,
     root: &Path,
     preserved: &BTreeMap<CargoTargetKey, PreservedTestBinary>,
 ) -> Result<Option<EmittedTestExecutable>, AggregateError> {
@@ -177,10 +179,14 @@ fn verify_test_compile(
     let target_dir = base_environment.remove("CARGO_TARGET_DIR");
     if observed.invocation.arguments != expected
         || !target_directory_matches(target_dir.as_deref(), &expected_target_dir)
-        || crate::producer::process::digest_environment(&observed.invocation.environment)
-            != observed.invocation.environment_sha256
-        || crate::producer::process::digest_environment(&base_environment)
-            != bundle.execution.source.environment_sha256
+        || !crate::provenance::invocation::environment_matches_digest(
+            &observed.invocation.environment,
+            &observed.invocation.environment_sha256,
+        )
+        || !crate::provenance::invocation::environment_matches_digest(
+            &base_environment,
+            &bundle.execution.source.environment_sha256,
+        )
     {
         return Err(AggregateError::new(
             "test compile log does not match the exact Cargo invocation plan".to_owned(),
@@ -513,8 +519,8 @@ fn verify_test_programs_were_emitted(
                     log.path
                 ))
             })?;
-            let processes =
-                crate::producer::process::parse_combined_processes(&source).map_err(|error| {
+            let processes = crate::evidence::format::process::parse_combined_processes(&source)
+                .map_err(|error| {
                     AggregateError::new(format!("parse test log {}: {error}", log.path))
                 })?;
             verify_target_process_binding(&processes, executable, &log.path)?;
@@ -524,7 +530,7 @@ fn verify_test_programs_were_emitted(
 }
 
 pub(super) fn verify_target_process_binding(
-    processes: &[crate::producer::process::LabeledProcess],
+    processes: &[crate::evidence::format::process::LabeledProcess],
     emitted: &EmittedTestExecutable,
     log_path: &str,
 ) -> Result<(), AggregateError> {
@@ -544,7 +550,7 @@ pub(super) fn verify_target_process_binding(
 
 fn verify_simulator_compile(
     bundle: &ResultBundle,
-    observed: &crate::producer::process::LabeledProcess,
+    observed: &crate::evidence::format::process::LabeledProcess,
     root: &Path,
 ) -> Result<(), AggregateError> {
     let expected_arguments = [
@@ -582,9 +588,10 @@ fn verify_simulator_compile(
             "simulator compile log has the wrong Cargo target directory".to_owned(),
         ));
     }
-    if crate::producer::process::digest_environment(&base_environment)
-        != bundle.execution.source.environment_sha256
-    {
+    if !crate::provenance::invocation::environment_matches_digest(
+        &base_environment,
+        &bundle.execution.source.environment_sha256,
+    ) {
         return Err(AggregateError::new(
             "simulator compile log has the wrong base environment".to_owned(),
         ));
@@ -598,7 +605,7 @@ pub(super) fn target_directory_matches(recorded: Option<&str>, expected: &Path) 
 
 fn verify_compile_process_outcome(
     bundle: &ResultBundle,
-    observed: &crate::producer::process::LabeledProcess,
+    observed: &crate::evidence::format::process::LabeledProcess,
 ) -> Result<(), AggregateError> {
     if observed.exit_code == Some(0) && !observed.timed_out {
         return Ok(());

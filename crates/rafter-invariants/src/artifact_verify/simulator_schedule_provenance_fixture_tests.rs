@@ -149,7 +149,7 @@ impl SimulatorFixture {
             .clone();
         let source =
             fs::read_to_string(self.root.join(&compile_path)).expect("read serialized compile log");
-        let processes = crate::producer::process::parse_combined_processes(&source)
+        let processes = crate::evidence::format::process::parse_combined_processes(&source)
             .expect("parse serialized compile log");
         let [process] = processes.as_slice() else {
             panic!("serialized compile log must contain exactly one process")
@@ -418,7 +418,8 @@ fn materialize_compile_fixture(
         program_sha256: cargo_sha256,
         arguments: arguments.map(str::to_owned).to_vec(),
         current_dir: current_dir.to_string_lossy().into_owned(),
-        environment_sha256: crate::producer::process::digest_environment(&compile_environment),
+        environment_sha256: crate::provenance::invocation::digest_environment(&compile_environment)
+            .expect("valid fixture environment"),
         environment: compile_environment,
     };
     let absolute_target_dir = PathBuf::from(&target_dir);
@@ -512,7 +513,8 @@ fn materialize_runtime_fixture(
         "simulator-log",
         &real_log,
     );
-    let environment_sha256 = crate::producer::process::digest_environment(environment);
+    let environment_sha256 = crate::provenance::invocation::digest_environment(environment)
+        .expect("valid fixture environment");
     let (catalog, _) = crate::tests::loaded();
     let (checks, results) = crate::producer::evaluate_model_fixture(&catalog, "pr", &model)
         .expect("evaluate real timeout events through simulator receipt production");
@@ -544,7 +546,8 @@ fn materialize_provenance_runtime(
         arguments: vec!["--profile".to_owned(), "fast".to_owned()],
         current_dir: current_dir.to_string_lossy().into_owned(),
         environment: environment.clone(),
-        environment_sha256: crate::producer::process::digest_environment(environment),
+        environment_sha256: crate::provenance::invocation::digest_environment(environment)
+            .expect("valid fixture environment"),
     };
     let event = serde_json::json!({
         "event": "check-failure",
@@ -572,7 +575,8 @@ fn materialize_provenance_runtime(
         ),
         duration_ms: 1,
         peak_rss_kib: 1,
-        environment_sha256: crate::producer::process::digest_environment(environment),
+        environment_sha256: crate::provenance::invocation::digest_environment(environment)
+            .expect("valid fixture environment"),
         checks: Vec::new(),
         results: Vec::new(),
     }

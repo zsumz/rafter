@@ -1,3 +1,5 @@
+//! Simulator schedule, invocation, and compiler provenance verification.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -147,7 +149,7 @@ fn verify_simulator_invocations(
             continue;
         };
         matched += 1;
-        let processes = crate::producer::process::parse_combined_processes(source)
+        let processes = crate::evidence::format::process::parse_combined_v3(source)
             .map_err(|error| AggregateError::new(format!("parse simulator invocation: {error}")))?;
         let [observed] = processes.as_slice() else {
             return Err(AggregateError::new(format!(
@@ -164,8 +166,10 @@ fn verify_simulator_invocations(
             || !simulator_program_matches(&observed.invocation, &emitted, &binary.sha256)
             || Path::new(&observed.invocation.current_dir) != roots.producer
             || observed.invocation.environment_sha256 != environment_sha256
-            || crate::producer::process::digest_environment(&observed.invocation.environment)
-                != environment_sha256
+            || !crate::provenance::invocation::environment_matches_digest(
+                &observed.invocation.environment,
+                environment_sha256,
+            )
         {
             return Err(AggregateError::new(format!(
                 "simulator log {label} does not match the exact invocation plan"
@@ -232,7 +236,7 @@ fn emitted_simulator_executable(
             ))
         })?;
         let processes =
-            crate::producer::process::parse_combined_processes(&source).map_err(|error| {
+            crate::evidence::format::process::parse_combined_v3(&source).map_err(|error| {
                 AggregateError::new(format!(
                     "parse simulator compile log {}: {error}",
                     artifact.path
@@ -280,7 +284,7 @@ fn emitted_simulator_executable(
 
 fn simulator_compile_target_dir(
     bundle: &ResultBundle,
-    process: &crate::producer::process::LabeledProcess,
+    process: &crate::evidence::format::process::LabeledProcess,
     roots: &SimulatorRoots,
 ) -> Result<PathBuf, AggregateError> {
     let expected_arguments = [
@@ -309,10 +313,14 @@ fn simulator_compile_target_dir(
         || process.invocation.program_sha256 != bundle.execution.source.cargo_sha256
         || process.invocation.arguments != expected_arguments
         || Path::new(&process.invocation.current_dir) != roots.producer
-        || crate::producer::process::digest_environment(&process.invocation.environment)
-            != process.invocation.environment_sha256
-        || crate::producer::process::digest_environment(&base_environment)
-            != bundle.execution.source.environment_sha256
+        || !crate::provenance::invocation::environment_matches_digest(
+            &process.invocation.environment,
+            &process.invocation.environment_sha256,
+        )
+        || !crate::provenance::invocation::environment_matches_digest(
+            &base_environment,
+            &bundle.execution.source.environment_sha256,
+        )
         || target_dir != expected_target_dir
     {
         return Err(AggregateError::new(

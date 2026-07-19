@@ -1,3 +1,5 @@
+//! Cross-checks aggregate resource claims against hashed process receipts.
+
 use std::{collections::BTreeSet, fs, path::Path};
 
 use crate::{aggregate::AggregateError, ResultBundle};
@@ -72,7 +74,7 @@ impl ResultBundle {
 fn derive_process_metrics<'a>(
     artifacts: impl Iterator<Item = &'a crate::ArtifactRef>,
     root: &Path,
-) -> Result<crate::producer::process::ProcessMetrics, AggregateError> {
+) -> Result<crate::evidence::format::process::ProcessMetrics, AggregateError> {
     let mut duration_ms = 0_u64;
     let mut peak_rss_kib = 0_u64;
     let mut paths = BTreeSet::new();
@@ -98,7 +100,7 @@ fn derive_process_metrics<'a>(
             "receipt has no measurable hashed process logs".to_owned(),
         ));
     }
-    Ok(crate::producer::process::ProcessMetrics {
+    Ok(crate::evidence::format::process::ProcessMetrics {
         duration_ms,
         peak_rss_kib,
     })
@@ -107,23 +109,33 @@ fn derive_process_metrics<'a>(
 fn process_log_metrics(
     kind: &str,
     bytes: &[u8],
-) -> Result<Vec<crate::producer::process::ProcessMetrics>, String> {
+) -> Result<Vec<crate::evidence::format::process::ProcessMetrics>, String> {
     if matches!(kind, "compile-log" | "test-log" | "simulator-log") {
         let source = std::str::from_utf8(bytes)
             .map_err(|error| format!("combined process log is not UTF-8: {error}"))?;
-        return crate::producer::process::parse_combined_processes(source).map(|processes| {
-            processes
-                .into_iter()
-                .map(|process| process.metrics)
-                .collect()
-        });
+        return crate::evidence::format::process::parse_combined_processes(source)
+            .map(|processes| {
+                processes
+                    .into_iter()
+                    .map(|process| process.metrics)
+                    .collect()
+            })
+            .map_err(|error| error.to_string());
     }
-    let process: crate::producer::ProcessLog =
-        serde_json::from_slice(bytes).map_err(|error| error.to_string())?;
+    let source = std::str::from_utf8(bytes)
+        .map_err(|error| format!("structured process log is not UTF-8: {error}"))?;
+    let process = if kind == "maelstrom-process-log" {
+        crate::evidence::format::process::parse_maelstrom_v2(source)
+    } else if is_tla_process_log(kind) {
+        crate::evidence::format::process::parse_tla_v3(source)
+    } else {
+        return Err(format!("unsupported structured process log kind {kind}"));
+    }
+    .map_err(|error| error.to_string())?;
     if process.peak_rss_kib == 0 {
         return Err("structured process log omitted peak RSS".to_owned());
     }
-    Ok(vec![crate::producer::process::ProcessMetrics {
+    Ok(vec![crate::evidence::format::process::ProcessMetrics {
         duration_ms: process.duration_ms,
         peak_rss_kib: process.peak_rss_kib,
     }])

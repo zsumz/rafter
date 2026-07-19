@@ -63,7 +63,8 @@ fn simulator_runtime_path_and_digest_must_both_match_cargo_output() {
         arguments: vec!["--profile".to_owned(), "fast".to_owned()],
         current_dir: "/workspace".to_owned(),
         environment: BTreeMap::new(),
-        environment_sha256: crate::producer::process::digest_environment(&BTreeMap::new()),
+        environment_sha256: crate::provenance::invocation::digest_environment(&BTreeMap::new())
+            .expect("valid fixture environment"),
     };
     assert!(simulator_program_matches(
         &invocation,
