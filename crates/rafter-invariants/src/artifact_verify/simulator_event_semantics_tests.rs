@@ -112,7 +112,7 @@ fn fabricated_named_witness_without_detector_call_is_rejected_end_to_end() {
         )
         .expect("capture the rejected fabricated marker through exact libtest framing");
 
-    let processes = crate::producer::process::parse_combined_processes(&process_log)
+    let processes = crate::evidence::format::process::parse_combined_processes(&process_log)
         .expect("parse fabricated witness process log");
     assert_eq!(processes.len(), 1);
     assert_ne!(processes[0].exit_code, Some(0));
@@ -176,7 +176,7 @@ fn qualified_helper_cannot_qualify_without_reaching_the_detector() {
         )
         .expect("compile and execute the qualified-helper regression fixture");
 
-    let processes = crate::producer::process::parse_combined_processes(&process_log)
+    let processes = crate::evidence::format::process::parse_combined_processes(&process_log)
         .expect("parse qualified-helper process log");
     let [exact] = processes.as_slice() else {
         panic!("expected one exact process receipt");
@@ -273,7 +273,7 @@ fn removing_the_gate_token_cannot_suppress_trusted_runtime_witnesses() {
     let (_, process_log) =
         crate::producer::test_exec::capture_removed_token_detector_fixture_log(&source_ref)
             .expect("execute the token-removal fixture through exact libtest framing");
-    let processes = crate::producer::process::parse_combined_processes(&process_log)
+    let processes = crate::evidence::format::process::parse_combined_processes(&process_log)
         .expect("parse token-removal process log");
     assert_eq!(processes.len(), 1);
     assert_ne!(processes[0].exit_code, Some(0));

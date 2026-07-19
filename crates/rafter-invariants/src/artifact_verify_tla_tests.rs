@@ -9,15 +9,16 @@ use std::{
 use sha2::{Digest, Sha256};
 
 use super::verify;
-use crate::producer::{
-    process::{digest_environment, ProcessLog, TerminationReceipt},
-    tla_output::{
+use crate::{
+    evidence::format::process::{ProcessLog, TerminationReceipt},
+    producer::tla_output::{
         detector_config_kind, detector_label, detector_log_kind, render_detector_config,
         DetectorProbe, DEFAULT_FIXTURE_MODE, DETECTOR_PROBES, MUTATION_SUITE_ARTIFACT_KIND,
         MUTATION_SUITE_LABEL, REQUIRED_MUTATION_TESTS,
     },
+    provenance::invocation::digest_environment,
+    ArtifactRef, InvocationReceipt, ResultBundle,
 };
-use crate::{ArtifactRef, InvocationReceipt, ResultBundle};
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
@@ -327,7 +328,8 @@ impl Fixture {
             .into_iter()
             .find(|bundle| bundle.runner == "tla")
             .expect("synthetic TLA bundle exists");
-        bundle.execution.source.environment_sha256 = digest_environment(&BTreeMap::new());
+        bundle.execution.source.environment_sha256 =
+            digest_environment(&BTreeMap::new()).expect("valid fixture environment");
         for artifact in &mut bundle.execution.checks[0].artifacts {
             artifact.path = format!("artifacts/{}", safe_name(&artifact.kind));
         }
@@ -631,7 +633,8 @@ impl Fixture {
                 .map(str::to_owned)
                 .to_vec(),
                 current_dir: self.root.to_string_lossy().into_owned(),
-                environment_sha256: digest_environment(&environment),
+                environment_sha256: digest_environment(&environment)
+                    .expect("valid fixture environment"),
                 environment,
             },
             exit_code: Some(0),
@@ -709,7 +712,8 @@ impl Fixture {
                 .to_string_lossy()
                 .into_owned(),
             environment: BTreeMap::new(),
-            environment_sha256: digest_environment(&BTreeMap::new()),
+            environment_sha256: digest_environment(&BTreeMap::new())
+                .expect("valid fixture environment"),
         }
     }
 

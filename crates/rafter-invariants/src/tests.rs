@@ -98,9 +98,10 @@ fn invocation_receipt(runner: &str) -> InvocationReceipt {
         ],
         current_dir: "/workspace/rafter".to_owned(),
         environment: std::collections::BTreeMap::new(),
-        environment_sha256: crate::producer::process::digest_environment(
+        environment_sha256: crate::provenance::invocation::digest_environment(
             &std::collections::BTreeMap::new(),
-        ),
+        )
+        .expect("valid fixture environment"),
     }
 }
 

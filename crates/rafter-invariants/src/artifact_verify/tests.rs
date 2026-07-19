@@ -272,7 +272,7 @@ fn write_tla_process_log(
     peak_rss_kib: u64,
 ) -> crate::ArtifactRef {
     let source = serde_json::to_vec(&json!({
-        "schema_version": 1,
+        "schema_version": 3,
         "label": "model-check",
         "invocation": {
             "program": "/bin/java",
@@ -284,6 +284,12 @@ fn write_tla_process_log(
         },
         "exit_code": 0,
         "timed_out": false,
+        "termination": {
+            "process_group": true,
+            "term_signal_sent": false,
+            "grace_ms": 30000,
+            "kill_signal_sent": false
+        },
         "duration_ms": duration_ms,
         "peak_rss_kib": peak_rss_kib,
         "stdout": "ok",

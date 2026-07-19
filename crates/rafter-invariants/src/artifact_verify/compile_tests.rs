@@ -11,7 +11,7 @@ use super::{
     },
 };
 use crate::{
-    producer::process::{LabeledProcess, ProcessMetrics},
+    evidence::format::process::{LabeledProcess, ProcessMetrics},
     InvocationReceipt,
 };
 
@@ -95,7 +95,8 @@ fn simulator_detector_observations_remain_model_specific() {
 #[test]
 fn exact_environment_map_is_rehashed_not_just_compared_by_claimed_digest() {
     let expected = std::collections::BTreeMap::from([("A".to_owned(), "one".to_owned())]);
-    let digest = crate::producer::process::digest_environment(&expected);
+    let digest = crate::provenance::invocation::digest_environment(&expected)
+        .expect("valid fixture environment");
     let mut exact = process("exact libtest execution", "");
     exact.invocation.environment.clone_from(&expected);
     exact.invocation.environment_sha256.clone_from(&digest);
@@ -258,6 +259,7 @@ fn simulator_compiler_artifact_requires_the_exact_absolute_bin_target() {
 
 fn process(label: &str, stdout: &str) -> LabeledProcess {
     LabeledProcess {
+        schema_version: crate::evidence::format::process::COMBINED_PROCESS_SCHEMA_VERSION,
         label: label.to_owned(),
         invocation: InvocationReceipt {
             program: "/workspace/test".to_owned(),
@@ -265,9 +267,10 @@ fn process(label: &str, stdout: &str) -> LabeledProcess {
             arguments: vec!["test".to_owned()],
             current_dir: "/workspace".to_owned(),
             environment: std::collections::BTreeMap::new(),
-            environment_sha256: crate::producer::process::digest_environment(
+            environment_sha256: crate::provenance::invocation::digest_environment(
                 &std::collections::BTreeMap::new(),
-            ),
+            )
+            .expect("valid fixture environment"),
         },
         exit_code: Some(0),
         timed_out: false,

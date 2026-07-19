@@ -1,3 +1,5 @@
+//! Maelstrom artifact parsing and scenario-specific observation extraction.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -110,8 +112,8 @@ pub(super) fn parse_results(
 pub(super) fn parse_process(
     artifact: &ArtifactRef,
     root: &Path,
-) -> Result<crate::producer::ProcessLog, AggregateError> {
-    serde_json::from_str(&read(artifact, root)?)
+) -> Result<crate::evidence::format::process::ProcessLog, AggregateError> {
+    crate::evidence::format::process::parse_maelstrom_v2(&read(artifact, root)?)
         .map_err(|parse_error| error(format!("parse Maelstrom process log: {parse_error}")))
 }
 

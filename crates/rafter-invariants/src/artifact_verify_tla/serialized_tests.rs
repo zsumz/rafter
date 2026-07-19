@@ -3,9 +3,9 @@ use std::{fs, path::Path, process::Command};
 use sha2::{Digest, Sha256};
 
 use super::Fixture;
-use crate::producer::{
-    process::{digest_environment, ProcessLog},
-    tla_output::MUTATION_SUITE_ARTIFACT_KIND,
+use crate::{
+    evidence::format::process::ProcessLog, producer::tla_output::MUTATION_SUITE_ARTIFACT_KIND,
+    provenance::invocation::digest_environment,
 };
 
 #[test]
@@ -275,7 +275,8 @@ impl Fixture {
             .map(|artifact| artifact.kind.clone())
             .collect::<Vec<_>>();
         let environment = crate::producer::process::base_environment();
-        let environment_sha256 = digest_environment(&environment);
+        let environment_sha256 =
+            digest_environment(&environment).expect("valid fixture environment");
         let java_sha256 = self.bundle.execution.source.tools["java"].sha256.clone();
         let cargo_sha256 = self.bundle.execution.source.cargo_sha256.clone();
         for kind in kinds {

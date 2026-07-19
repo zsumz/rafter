@@ -1,3 +1,5 @@
+//! Simulator compilation, execution, and event collection.
+
 use std::{
     collections::BTreeMap,
     error::Error,
@@ -8,6 +10,8 @@ use std::{
 
 use serde_json::Value;
 
+#[cfg(all(test, unix))]
+use crate::evidence::format::process::{parse_combined_v3, LabeledProcess};
 use crate::{
     execution::filesystem::{
         self as producer_fs, HeldDirectory, HeldFile, OperationDeadline, TREE_LIMITS,
@@ -190,7 +194,7 @@ pub(super) fn timed_out_zero_exit_fixture(
     source_ref: &str,
     stdout: &str,
     output_dir: &Path,
-) -> Result<(SimulatorExecution, process::LabeledProcess), Box<dyn Error>> {
+) -> Result<(SimulatorExecution, LabeledProcess), Box<dyn Error>> {
     const SCRIPT: &str = r#"trap 'exit 0' TERM
 printf '%s\n' 'RAFTER_FIXTURE_READY'
 printf '%s' "$1"
@@ -222,7 +226,7 @@ pub(crate) fn timed_out_zero_exit_fixture_at(
     profile: &str,
     source_ref: &str,
     invocation: &SimulatorFixtureInvocation<'_>,
-) -> Result<(SimulatorExecution, process::LabeledProcess), Box<dyn Error>> {
+) -> Result<(SimulatorExecution, LabeledProcess), Box<dyn Error>> {
     let output = process::timed_with_timeout(
         invocation.program,
         invocation.arguments,
@@ -244,7 +248,7 @@ pub(crate) fn timed_out_zero_exit_fixture_at(
         );
     }
     let receipt = process::combined_log(invocation.label, &output)?;
-    let mut parsed = process::parse_combined_processes(&String::from_utf8(receipt)?)?;
+    let mut parsed = parse_combined_v3(&String::from_utf8(receipt)?)?;
     let [observed] = parsed.as_mut_slice() else {
         return Err("simulator timeout fixture emitted an invalid process receipt".into());
     };

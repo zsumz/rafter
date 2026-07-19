@@ -14,6 +14,7 @@ mod execution;
 mod plan;
 mod producer;
 mod producer_image;
+mod provenance;
 mod receipt;
 mod receipt_maelstrom;
 mod receipt_simulator;

@@ -1,8 +1,10 @@
+//! Invocation binding, resource observation, and process format adapters.
+
 use super::{
     env, fs, AtomicU64, BTreeMap, Command, CommandExt, Digest, Duration, Error, Instant,
-    InvocationReceipt, LabeledProcess, Ordering, OsString, Path, PathBuf, ProcessGroupObservation,
-    ProcessGroupState, ProcessLog, ProcessMetrics, ProcessOutput, Read, Sha256, Stdio,
-    PS_TELEMETRY_TIMEOUT, TELEMETRY_SEQUENCE,
+    InvocationReceipt, Ordering, OsString, Path, PathBuf, ProcessGroupObservation,
+    ProcessGroupState, ProcessOutput, Read, Sha256, Stdio, PS_TELEMETRY_TIMEOUT,
+    TELEMETRY_SEQUENCE,
 };
 
 #[cfg(target_os = "linux")]
@@ -10,6 +12,10 @@ use std::os::fd::AsRawFd;
 #[cfg(unix)]
 use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 
+use crate::evidence::format::process::{
+    encode_combined_v3, encode_detector_v4, encode_maelstrom_v2, encode_tla_v3, ProcessFormatError,
+    ProcessObservation,
+};
 use crate::execution::filesystem::{self as producer_fs, ChildDirectory, HeldDirectory, HeldFile};
 
 pub(super) struct BoundInvocation {
@@ -97,7 +103,7 @@ pub(super) fn bind_invocation(
         arguments,
         current_dir: current_dir_receipt,
         environment: environment.clone(),
-        environment_sha256: digest_environment(environment),
+        environment_sha256: crate::provenance::invocation::digest_environment(environment)?,
     };
     let child_current_dir = current_dir.bind_for_child()?;
     Ok(BoundInvocation {
@@ -178,140 +184,6 @@ fn sha256_file(file: &fs::File) -> Result<String, Box<dyn Error>> {
         digest.update(&buffer[..read]);
     }
     Ok(format!("{:x}", digest.finalize()))
-}
-
-pub(crate) fn digest_environment(environment: &BTreeMap<String, String>) -> String {
-    let encoded = environment
-        .iter()
-        .map(|(name, value)| format!("{name}={value}"))
-        .collect::<Vec<_>>()
-        .join("\0");
-    format!("{:x}", Sha256::digest(encoded))
-}
-
-pub(crate) fn parse_combined_processes(source: &str) -> Result<Vec<LabeledProcess>, String> {
-    let mut remaining = source;
-    let mut processes = Vec::new();
-    while !remaining.is_empty() {
-        let (header, payload) = remaining
-            .split_once("\n\n")
-            .ok_or_else(|| "combined process log omitted framed payload".to_owned())?;
-        let mut lines = header.lines();
-        let schema_version = lines
-            .next()
-            .and_then(|line| line.strip_prefix("schema_version: "))
-            .and_then(|version| version.parse::<u32>().ok())
-            .filter(|version| matches!(version, 3 | 4))
-            .ok_or_else(|| "combined process log used an unsupported schema".to_owned())?;
-        let label = lines
-            .next()
-            .and_then(|line| line.strip_prefix("label: "))
-            .ok_or_else(|| "combined process log omitted label".to_owned())?
-            .to_owned();
-        let invocation = lines
-            .next()
-            .and_then(|line| line.strip_prefix("invocation: "))
-            .ok_or_else(|| "combined process log omitted invocation".to_owned())?;
-        let invocation = serde_json::from_str(invocation)
-            .map_err(|error| format!("parse combined process invocation: {error}"))?;
-        let detector_challenge = if schema_version == 4 {
-            let challenge = lines
-                .next()
-                .and_then(|line| line.strip_prefix("detector_challenge: "))
-                .filter(|challenge| {
-                    challenge.len() == 64
-                        && challenge
-                            .bytes()
-                            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-                })
-                .ok_or_else(|| {
-                    "combined process log has a malformed detector challenge".to_owned()
-                })?;
-            Some(challenge.to_owned())
-        } else {
-            None
-        };
-        let exit_code = lines
-            .next()
-            .and_then(|line| line.strip_prefix("exit_code: "))
-            .ok_or_else(|| "combined process log omitted exit code".to_owned())?;
-        let exit_code = parse_exit_code(exit_code)?;
-        let timed_out = lines
-            .next()
-            .and_then(|line| line.strip_prefix("timed_out: "))
-            .ok_or_else(|| "combined process log omitted timeout status".to_owned())?;
-        let timed_out = timed_out
-            .parse::<bool>()
-            .map_err(|error| format!("parse combined process timeout status: {error}"))?;
-        let duration_ms = metric_line(&mut lines, "duration_ms: ")?;
-        let peak_rss_kib = metric_line(&mut lines, "peak_rss_kib: ")?;
-        let stdout_bytes = metric_line(&mut lines, "stdout_bytes: ")?;
-        let stderr_bytes = metric_line(&mut lines, "stderr_bytes: ")?;
-        if lines.next().is_some() {
-            return Err("combined process log contained unknown header fields".to_owned());
-        }
-        if peak_rss_kib == 0 {
-            return Err("combined process log omitted peak RSS".to_owned());
-        }
-        let stdout_bytes = usize::try_from(stdout_bytes)
-            .map_err(|_| "combined process stdout length exceeds usize".to_owned())?;
-        let stderr_bytes = usize::try_from(stderr_bytes)
-            .map_err(|_| "combined process stderr length exceeds usize".to_owned())?;
-        let payload_bytes = stdout_bytes
-            .checked_add(stderr_bytes)
-            .ok_or_else(|| "combined process payload length overflowed".to_owned())?;
-        let framed = payload.get(..payload_bytes).ok_or_else(|| {
-            "combined process payload was truncated or not UTF-8 framed".to_owned()
-        })?;
-        let stdout = framed
-            .get(..stdout_bytes)
-            .ok_or_else(|| "combined process stdout boundary was not UTF-8".to_owned())?;
-        let stderr = framed
-            .get(stdout_bytes..)
-            .ok_or_else(|| "combined process stderr boundary was not UTF-8".to_owned())?;
-        remaining = payload
-            .get(payload_bytes..)
-            .ok_or_else(|| "combined process payload boundary was invalid".to_owned())?;
-        processes.push(LabeledProcess {
-            label,
-            invocation,
-            exit_code,
-            timed_out,
-            metrics: ProcessMetrics {
-                duration_ms,
-                peak_rss_kib,
-            },
-            stdout: stdout.to_owned(),
-            stderr: stderr.to_owned(),
-            detector_challenge,
-        });
-    }
-    if processes.is_empty() {
-        return Err("combined process log contained no process receipt".to_owned());
-    }
-    Ok(processes)
-}
-
-fn parse_exit_code(source: &str) -> Result<Option<i32>, String> {
-    if source == "None" {
-        return Ok(None);
-    }
-    source
-        .strip_prefix("Some(")
-        .and_then(|value| value.strip_suffix(')'))
-        .ok_or_else(|| "combined process log has malformed exit code".to_owned())?
-        .parse::<i32>()
-        .map(Some)
-        .map_err(|error| format!("parse combined process exit code: {error}"))
-}
-
-fn metric_line<'a>(lines: &mut impl Iterator<Item = &'a str>, prefix: &str) -> Result<u64, String> {
-    lines
-        .next()
-        .and_then(|line| line.strip_prefix(prefix))
-        .ok_or_else(|| format!("combined process log omitted {prefix}"))?
-        .parse()
-        .map_err(|error| format!("parse combined process metric {prefix}: {error}"))
 }
 
 pub(crate) fn base_environment() -> BTreeMap<String, String> {
@@ -523,80 +395,54 @@ pub(super) fn parse_process_group_observation(
 pub(in crate::producer) fn combined_log(
     label: &str,
     output: &ProcessOutput,
-) -> Result<Vec<u8>, serde_json::Error> {
-    let invocation = serde_json::to_string(&output.invocation)?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    Ok(format!(
-        "schema_version: 3\nlabel: {label}\ninvocation: {invocation}\nexit_code: {:?}\ntimed_out: {}\nduration_ms: {}\npeak_rss_kib: {}\nstdout_bytes: {}\nstderr_bytes: {}\n\n{}{}",
-        output.status.code(),
-        output.timed_out,
-        duration_ms(output.duration),
-        output.peak_rss_kib,
-        stdout.len(),
-        stderr.len(),
-        stdout,
-        stderr,
-    )
-    .into_bytes())
+) -> Result<Vec<u8>, ProcessFormatError> {
+    encode_combined_v3(label, observation_without_termination(output))
 }
 
 pub(in crate::producer) fn combined_detector_log(
     label: &str,
     output: &ProcessOutput,
     detector_challenge: &str,
-) -> Result<Vec<u8>, serde_json::Error> {
-    let invocation = serde_json::to_string(&output.invocation)?;
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    Ok(format!(
-        "schema_version: 4\nlabel: {label}\ninvocation: {invocation}\ndetector_challenge: {detector_challenge}\nexit_code: {:?}\ntimed_out: {}\nduration_ms: {}\npeak_rss_kib: {}\nstdout_bytes: {}\nstderr_bytes: {}\n\n{}{}",
-        output.status.code(),
-        output.timed_out,
-        duration_ms(output.duration),
-        output.peak_rss_kib,
-        stdout.len(),
-        stderr.len(),
-        stdout,
-        stderr,
+) -> Result<Vec<u8>, ProcessFormatError> {
+    encode_detector_v4(
+        label,
+        observation_without_termination(output),
+        detector_challenge,
     )
-    .into_bytes())
 }
 
 pub(in crate::producer) fn json_log(
     label: &str,
     output: &ProcessOutput,
-) -> Result<Vec<u8>, Box<dyn Error>> {
-    Ok(serde_json::to_vec_pretty(&ProcessLog {
-        schema_version: 2,
-        label: label.to_owned(),
-        invocation: output.invocation.clone(),
-        exit_code: output.status.code(),
-        timed_out: output.timed_out,
-        termination: None,
-        duration_ms: duration_ms(output.duration),
-        peak_rss_kib: output.peak_rss_kib,
-        stdout: String::from_utf8(output.stdout.clone())?,
-        stderr: String::from_utf8(output.stderr.clone())?,
-    })?)
+) -> Result<Vec<u8>, ProcessFormatError> {
+    encode_maelstrom_v2(label, observation_without_termination(output))
 }
 
 pub(in crate::producer) fn tla_json_log(
     label: &str,
     output: &ProcessOutput,
-) -> Result<Vec<u8>, Box<dyn Error>> {
-    Ok(serde_json::to_vec_pretty(&ProcessLog {
-        schema_version: 3,
-        label: label.to_owned(),
-        invocation: output.invocation.clone(),
+) -> Result<Vec<u8>, ProcessFormatError> {
+    encode_tla_v3(label, observation(output))
+}
+
+fn observation(output: &ProcessOutput) -> ProcessObservation<'_> {
+    ProcessObservation {
+        invocation: &output.invocation,
         exit_code: output.status.code(),
         timed_out: output.timed_out,
-        termination: output.termination.clone(),
+        termination: output.termination.as_ref(),
         duration_ms: duration_ms(output.duration),
         peak_rss_kib: output.peak_rss_kib,
-        stdout: String::from_utf8(output.stdout.clone())?,
-        stderr: String::from_utf8(output.stderr.clone())?,
-    })?)
+        stdout: &output.stdout,
+        stderr: &output.stderr,
+    }
+}
+
+fn observation_without_termination(output: &ProcessOutput) -> ProcessObservation<'_> {
+    ProcessObservation {
+        termination: None,
+        ..observation(output)
+    }
 }
 
 pub(in crate::producer) fn duration_ms(duration: Duration) -> u64 {

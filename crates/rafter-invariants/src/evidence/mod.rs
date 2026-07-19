@@ -3,6 +3,7 @@
 mod artifact;
 mod bundle;
 mod execution;
+pub(crate) mod format;
 mod liveness;
 mod receipt;
 mod result;

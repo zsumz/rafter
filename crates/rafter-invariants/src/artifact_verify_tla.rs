@@ -1,3 +1,5 @@
+//! Acceptance of TLA+ model-check, trace, and detector evidence.
+
 use std::{collections::BTreeMap, fs, path::Path};
 
 use crate::producer::tla_checkpoint::{RecoveryReport, RecoveryStatus};
@@ -125,7 +127,7 @@ fn derive_observations(
     detector_observations: BTreeMap<String, u64>,
     checkpoint: Option<&RecoveryReport>,
     main_progress: Option<crate::producer::tla_output::TlcProgress>,
-    main: Option<&crate::producer::ProcessLog>,
+    main: Option<&crate::evidence::format::process::ProcessLog>,
     main_summary: Option<&crate::producer::tla_output::TlcSummary>,
 ) -> BTreeMap<String, u64> {
     let mut derived = BTreeMap::from([
@@ -190,7 +192,7 @@ fn derive_observations(
 }
 
 fn timeout_progress(
-    main: Option<&crate::producer::ProcessLog>,
+    main: Option<&crate::evidence::format::process::ProcessLog>,
     main_has_violation: bool,
 ) -> Result<
     (
@@ -298,7 +300,7 @@ fn verify_detectors(
 
 fn verify_mutation_invocation(
     bundle: &ResultBundle,
-    log: &crate::producer::ProcessLog,
+    log: &crate::evidence::format::process::ProcessLog,
     producer_repository: &Path,
 ) -> Result<(), AggregateError> {
     let expected_arguments = [
@@ -537,7 +539,7 @@ fn verify_completion(
     trace_passed: bool,
     detectors_passed: bool,
     checkpoint: Option<&RecoveryReport>,
-    main: Option<&crate::producer::ProcessLog>,
+    main: Option<&crate::evidence::format::process::ProcessLog>,
     summary: Option<&crate::producer::tla_output::TlcSummary>,
 ) -> Result<(), AggregateError> {
     let expected = if !trace_passed
@@ -608,7 +610,7 @@ fn configured_invariants(source: &str) -> Vec<String> {
     invariants
 }
 
-fn successful_log(log: &crate::producer::ProcessLog) -> bool {
+fn successful_log(log: &crate::evidence::format::process::ProcessLog) -> bool {
     log.exit_code == Some(0) && !log.timed_out
 }
 
@@ -620,7 +622,7 @@ fn successful_summary(summary: &crate::producer::tla_output::TlcSummary) -> bool
 }
 
 fn successful_detector(
-    log: &crate::producer::ProcessLog,
+    log: &crate::evidence::format::process::ProcessLog,
     summary: &crate::producer::tla_output::TlcSummary,
     expected_invariant: &str,
 ) -> bool {

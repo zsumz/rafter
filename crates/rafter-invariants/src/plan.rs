@@ -1,3 +1,5 @@
+//! Deterministic execution-plan construction and source-bound input hashing.
+
 use std::{
     collections::BTreeMap,
     env,
@@ -137,7 +139,7 @@ fn capture_invocation_from_program(
         .into_string()
         .map_err(|_| "invariant working directory is not UTF-8")?;
     let environment = safe_environment();
-    let environment_sha256 = digest_environment(&environment);
+    let environment_sha256 = crate::provenance::invocation::digest_environment(&environment)?;
     let program = fs::canonicalize(program)?
         .into_os_string()
         .into_string()
@@ -222,15 +224,6 @@ fn safe_environment() -> BTreeMap<String, String> {
         .iter()
         .filter_map(|name| env::var(name).ok().map(|value| ((*name).to_owned(), value)))
         .collect()
-}
-
-fn digest_environment(environment: &BTreeMap<String, String>) -> String {
-    let encoded = environment
-        .iter()
-        .map(|(name, value)| format!("{name}={value}"))
-        .collect::<Vec<_>>()
-        .join("\0");
-    format!("{:x}", Sha256::digest(encoded))
 }
 
 #[cfg(test)]

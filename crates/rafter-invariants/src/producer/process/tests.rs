@@ -14,11 +14,13 @@ use rustix::io::Errno;
 
 use super::{
     allocate_telemetry_path, cleanup_error, combined_detector_log, combined_log,
-    confirm_process_group_absent_with, digest_environment, identity_command_with_timeout, json_log,
-    layer_budget, parse_combined_processes, parse_peak_rss, timed_for, timed_with_timeout,
-    timed_with_timeout_after_bind, timed_with_timeout_and_grace, ProcessGroupState, ProcessKind,
-    ProcessLog, DEFAULT_KILL_CONFIRMATION_TIMEOUT,
+    confirm_process_group_absent_with, identity_command_with_timeout, json_log, layer_budget,
+    parse_peak_rss, timed_for, timed_with_timeout, timed_with_timeout_after_bind,
+    timed_with_timeout_and_grace, ProcessGroupState, ProcessKind,
+    DEFAULT_KILL_CONFIRMATION_TIMEOUT,
 };
+use crate::evidence::format::process::{parse_combined_processes, ProcessLog};
+use crate::provenance::invocation::digest_environment;
 
 #[cfg(target_os = "linux")]
 use super::{
@@ -49,7 +51,7 @@ fn environment_digest_binds_the_exact_sorted_map() {
         ("A".to_owned(), "first".to_owned()),
     ]);
     assert_eq!(
-        digest_environment(&environment),
+        digest_environment(&environment).expect("valid environment"),
         "45f7a365bc34bcfbb88705678cd819fd3c0a5ccb9b6a72dc65e6506f4211c6fc"
     );
 }
@@ -384,7 +386,7 @@ fn timed_child_is_killed_at_its_soft_timeout() {
     );
     assert_eq!(
         output.invocation.environment_sha256,
-        digest_environment(&environment)
+        digest_environment(&environment).expect("valid environment")
     );
 
     let plain = String::from_utf8(combined_log("timeout", &output).expect("log serializes"))

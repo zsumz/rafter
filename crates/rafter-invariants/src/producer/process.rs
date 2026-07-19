@@ -1,3 +1,5 @@
+//! Bounded subprocess execution, telemetry, and evidence adaptation.
+
 use std::{
     collections::BTreeMap,
     env,
@@ -26,10 +28,9 @@ use std::os::fd::{AsRawFd, BorrowedFd};
 #[cfg(unix)]
 use std::os::unix::process::CommandExt;
 
-use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::InvocationReceipt;
+use crate::{evidence::format::process::TerminationReceipt, InvocationReceipt};
 
 mod budget;
 mod evidence;
@@ -46,12 +47,12 @@ use budget::{
 };
 #[cfg(test)]
 use budget::{layer_budget, DEFAULT_KILL_CONFIRMATION_TIMEOUT};
+pub(crate) use evidence::base_environment;
 use evidence::bind_invocation;
 #[cfg(test)]
 pub(crate) use evidence::expected_invocation;
 #[cfg(test)]
 use evidence::{allocate_telemetry_path, parse_process_group_observation};
-pub(crate) use evidence::{base_environment, digest_environment, parse_combined_processes};
 pub(super) use evidence::{
     combined_detector_log, combined_log, duration_ms, json_log, tla_json_log,
 };
@@ -111,69 +112,6 @@ pub(super) struct ProcessOutput {
 pub(crate) struct IdentityOutput {
     pub stdout: String,
     pub stderr: String,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct TerminationReceipt {
-    pub process_group: bool,
-    pub term_signal_sent: bool,
-    pub grace_ms: u64,
-    pub kill_signal_sent: bool,
-}
-
-#[derive(Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
-pub(crate) struct ProcessLog {
-    pub schema_version: u32,
-    pub label: String,
-    pub invocation: InvocationReceipt,
-    pub exit_code: Option<i32>,
-    pub timed_out: bool,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub termination: Option<TerminationReceipt>,
-    pub duration_ms: u64,
-    pub peak_rss_kib: u64,
-    pub stdout: String,
-    pub stderr: String,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct ProcessMetrics {
-    pub duration_ms: u64,
-    pub peak_rss_kib: u64,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct LabeledProcess {
-    pub label: String,
-    pub invocation: InvocationReceipt,
-    pub exit_code: Option<i32>,
-    pub timed_out: bool,
-    pub metrics: ProcessMetrics,
-    pub stdout: String,
-    pub stderr: String,
-    pub detector_challenge: Option<String>,
-}
-
-impl ProcessLog {
-    pub(crate) fn has_complete_invocation(&self) -> bool {
-        let invocation = &self.invocation;
-        !invocation.program.trim().is_empty()
-            && invocation.program_sha256.len() == 64
-            && invocation
-                .program_sha256
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-            && !invocation.arguments.is_empty()
-            && Path::new(&invocation.current_dir).is_absolute()
-            && digest_environment(&invocation.environment) == invocation.environment_sha256
-            && invocation.environment_sha256.len() == 64
-            && invocation
-                .environment_sha256
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-    }
 }
 
 pub(super) fn timed_for(

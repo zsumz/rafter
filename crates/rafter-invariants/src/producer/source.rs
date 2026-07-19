@@ -1,3 +1,5 @@
+//! Source, toolchain, and clean-checkout provenance capture.
+
 use std::{
     collections::HashSet,
     env,
@@ -109,11 +111,7 @@ fn capture_identity_at(
         .iter()
         .map(|name| Ok(((*name).to_owned(), capture_tool(name, root, budget)?)))
         .collect::<Result<_, Box<dyn Error>>>()?;
-    let encoded_environment = environment
-        .iter()
-        .map(|(key, value)| format!("{key}={value}"))
-        .collect::<Vec<_>>()
-        .join("\0");
+    let environment_sha256 = crate::provenance::invocation::digest_environment(&environment)?;
     Ok(SourceReceipt {
         commit: materialized.commit,
         tree: materialized.tree,
@@ -132,7 +130,7 @@ fn capture_identity_at(
             .map(|value| (*value).to_owned())
             .collect(),
         tools,
-        environment_sha256: format!("{:x}", Sha256::digest(encoded_environment)),
+        environment_sha256,
         clean: true,
     })
 }
