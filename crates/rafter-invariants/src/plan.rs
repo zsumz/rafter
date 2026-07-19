@@ -154,6 +154,7 @@ fn capture_invocation_from_program(
             current_dir,
             environment,
             environment_sha256,
+            launchers: Vec::new(),
         },
         program_bytes,
     })
