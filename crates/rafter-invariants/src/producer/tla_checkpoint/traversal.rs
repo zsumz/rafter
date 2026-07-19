@@ -7,7 +7,7 @@ use std::{
     time::Instant,
 };
 
-use crate::producer::filesystem::{
+use crate::execution::filesystem::{
     EntryKind, FileIdentity, HeldDirectory, OperationDeadline, TreeLimits, TREE_LIMITS,
 };
 
@@ -57,10 +57,10 @@ impl TraversalBudget {
 
     fn enter_directory(&mut self, path: &Path, depth: usize) -> Result<(), Box<dyn Error>> {
         self.check_depth(path, depth)?;
-        if self.directories >= self.limits.directories {
+        if self.directories >= self.limits.directories() {
             return Err(format!(
                 "checkpoint traversal exceeds the global directory limit of {}",
-                self.limits.directories
+                self.limits.directories()
             )
             .into());
         }
@@ -75,19 +75,19 @@ impl TraversalBudget {
         kind: CheckpointNodeKind,
     ) -> Result<(), Box<dyn Error>> {
         self.check_depth(path, depth)?;
-        if self.nodes >= self.limits.nodes {
+        if self.nodes >= self.limits.nodes() {
             return Err(format!(
                 "checkpoint traversal exceeds the global node limit of {}",
-                self.limits.nodes
+                self.limits.nodes()
             )
             .into());
         }
         self.nodes += 1;
         if kind == CheckpointNodeKind::File {
-            if self.files >= self.limits.files {
+            if self.files >= self.limits.files() {
                 return Err(format!(
                     "checkpoint inventory exceeds the total file limit of {}",
-                    self.limits.files
+                    self.limits.files()
                 )
                 .into());
             }
@@ -97,11 +97,11 @@ impl TraversalBudget {
     }
 
     fn check_depth(&self, path: &Path, depth: usize) -> Result<(), Box<dyn Error>> {
-        if depth > self.limits.depth {
+        if depth > self.limits.depth() {
             return Err(format!(
                 "checkpoint path {} exceeds the traversal depth limit of {}",
                 path.display(),
-                self.limits.depth
+                self.limits.depth()
             )
             .into());
         }
@@ -214,11 +214,11 @@ fn read_sorted_entries_with_budget(
     budget.enter_directory(&display_path, depth)?;
     let deadline_guard = OperationDeadline::at(deadline, "checkpoint directory traversal");
     let raw_entries = directory.entries(deadline_guard)?;
-    if raw_entries.len() > budget.limits.directory_entries {
+    if raw_entries.len() > budget.limits.directory_entries() {
         return Err(format!(
             "checkpoint directory {} exceeds the entry limit of {}",
             display_path.display(),
-            budget.limits.directory_entries
+            budget.limits.directory_entries()
         )
         .into());
     }
