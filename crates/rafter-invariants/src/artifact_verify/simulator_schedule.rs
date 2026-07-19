@@ -149,7 +149,7 @@ fn verify_simulator_invocations(
             continue;
         };
         matched += 1;
-        let processes = crate::evidence::format::process::parse_combined_v3(source)
+        let processes = crate::evidence::format::process::parse_combined_v4(source)
             .map_err(|error| AggregateError::new(format!("parse simulator invocation: {error}")))?;
         let [observed] = processes.as_slice() else {
             return Err(AggregateError::new(format!(
@@ -164,6 +164,10 @@ fn verify_simulator_invocations(
         if observed.label != label
             || observed.invocation.arguments != arguments
             || !simulator_program_matches(&observed.invocation, &emitted, &binary.sha256)
+            || !crate::receipt::process_invocation_matches_source(
+                &observed.invocation,
+                &bundle.execution.source,
+            )
             || Path::new(&observed.invocation.current_dir) != roots.producer
             || observed.invocation.environment_sha256 != environment_sha256
             || !crate::provenance::invocation::environment_matches_digest(
@@ -236,7 +240,7 @@ fn emitted_simulator_executable(
             ))
         })?;
         let processes =
-            crate::evidence::format::process::parse_combined_v3(&source).map_err(|error| {
+            crate::evidence::format::process::parse_combined_v4(&source).map_err(|error| {
                 AggregateError::new(format!(
                     "parse simulator compile log {}: {error}",
                     artifact.path
@@ -311,6 +315,10 @@ fn simulator_compile_target_dir(
     if process.label != "simulator compile"
         || process.invocation.program != "cargo"
         || process.invocation.program_sha256 != bundle.execution.source.cargo_sha256
+        || !crate::receipt::process_invocation_matches_source(
+            &process.invocation,
+            &bundle.execution.source,
+        )
         || process.invocation.arguments != expected_arguments
         || Path::new(&process.invocation.current_dir) != roots.producer
         || !crate::provenance::invocation::environment_matches_digest(

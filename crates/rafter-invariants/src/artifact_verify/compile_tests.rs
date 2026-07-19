@@ -271,6 +271,7 @@ fn process(label: &str, stdout: &str) -> LabeledProcess {
                 &std::collections::BTreeMap::new(),
             )
             .expect("valid fixture environment"),
+            launchers: crate::receipt::fixture_launchers(false),
         },
         exit_code: Some(0),
         timed_out: false,

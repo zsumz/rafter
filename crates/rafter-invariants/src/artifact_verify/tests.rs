@@ -112,9 +112,9 @@ fn process_logs_bind_check_and_execution_resource_metrics() {
     std::fs::create_dir_all(&root).expect("create scratch root");
     let relative = "process.log";
     let source = concat!(
-        "schema_version: 3\n",
+        "schema_version: 4\n",
         "label: exact\n",
-        "invocation: {\"program\":\"/bin/test\",\"program_sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"arguments\":[\"test\"],\"current_dir\":\"/workspace\",\"environment\":{},\"environment_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}\n",
+        "invocation: {\"program\":\"/bin/test\",\"program_sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"arguments\":[\"test\"],\"current_dir\":\"/workspace\",\"environment\":{},\"environment_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"launchers\":[]}\n",
         "exit_code: Some(0)\n",
         "timed_out: false\n",
         "duration_ms: 7\n",
@@ -160,9 +160,9 @@ fn simulator_check_metrics_exclude_compile_resources() {
     let process_log = |label: &str, duration_ms: u64, peak_rss_kib: u64| {
         format!(
             concat!(
-                "schema_version: 3\n",
+                "schema_version: 4\n",
                 "label: {label}\n",
-                "invocation: {{\"program\":\"/bin/test\",\"program_sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"arguments\":[\"test\"],\"current_dir\":\"/workspace\",\"environment\":{{}},\"environment_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\"}}\n",
+                "invocation: {{\"program\":\"/bin/test\",\"program_sha256\":\"0000000000000000000000000000000000000000000000000000000000000000\",\"arguments\":[\"test\"],\"current_dir\":\"/workspace\",\"environment\":{{}},\"environment_sha256\":\"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\",\"launchers\":[]}}\n",
                 "exit_code: Some(0)\n",
                 "timed_out: false\n",
                 "duration_ms: {duration_ms}\n",
@@ -272,7 +272,7 @@ fn write_tla_process_log(
     peak_rss_kib: u64,
 ) -> crate::ArtifactRef {
     let source = serde_json::to_vec(&json!({
-        "schema_version": 3,
+        "schema_version": 4,
         "label": "model-check",
         "invocation": {
             "program": "/bin/java",
@@ -280,7 +280,8 @@ fn write_tla_process_log(
             "arguments": ["java", "tlc2.TLC"],
             "current_dir": "/workspace",
             "environment": {},
-            "environment_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+            "environment_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+            "launchers": []
         },
         "exit_code": 0,
         "timed_out": false,

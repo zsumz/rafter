@@ -125,9 +125,9 @@ fn process_log_metrics(
     let source = std::str::from_utf8(bytes)
         .map_err(|error| format!("structured process log is not UTF-8: {error}"))?;
     let process = if kind == "maelstrom-process-log" {
-        crate::evidence::format::process::parse_maelstrom_v2(source)
+        crate::evidence::format::process::parse_maelstrom_v3(source)
     } else if is_tla_process_log(kind) {
-        crate::evidence::format::process::parse_tla_v3(source)
+        crate::evidence::format::process::parse_tla_v4(source)
     } else {
         return Err(format!("unsupported structured process log kind {kind}"));
     }

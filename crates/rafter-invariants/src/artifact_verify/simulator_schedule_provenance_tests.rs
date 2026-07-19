@@ -65,6 +65,7 @@ fn simulator_runtime_path_and_digest_must_both_match_cargo_output() {
         environment: BTreeMap::new(),
         environment_sha256: crate::provenance::invocation::digest_environment(&BTreeMap::new())
             .expect("valid fixture environment"),
+        launchers: crate::receipt::fixture_launchers(false),
     };
     assert!(simulator_program_matches(
         &invocation,

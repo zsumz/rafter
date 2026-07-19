@@ -266,6 +266,16 @@ struct RuntimeFixture {
     results: Vec<crate::EvidenceResult>,
 }
 
+struct RuntimeFixtureInput<'a> {
+    root: &'a Path,
+    output_dir: &'a Path,
+    source_ref: &'a str,
+    current_dir: &'a Path,
+    environment: &'a BTreeMap<String, String>,
+    process_runtime: &'a BTreeMap<String, crate::ExecutableReceipt>,
+    compile: &'a CompileFixture,
+}
+
 pub(super) fn materialize_fixture(defect: RuntimeDefect) -> SimulatorFixture {
     materialize_fixture_with_roots(defect, false)
 }
@@ -319,15 +329,23 @@ fn materialize_fixture_with_roots(defect: RuntimeDefect, cross_root: bool) -> Si
     bundle.execution.source = source;
     let environment = crate::producer::process::base_environment();
     let source_ref = bundle.source_ref.clone();
-    let compile =
-        materialize_compile_fixture(&producer_root, &current_dir, &source_ref, &environment);
-    let runtime = materialize_runtime_fixture(
+    let compile = materialize_compile_fixture(
         &producer_root,
-        &timeout_output_dir,
-        &source_ref,
         &current_dir,
+        &source_ref,
         &environment,
-        &compile,
+        &bundle.execution.source.process_runtime,
+    );
+    let runtime = materialize_runtime_fixture(
+        &RuntimeFixtureInput {
+            root: &producer_root,
+            output_dir: &timeout_output_dir,
+            source_ref: &source_ref,
+            current_dir: &current_dir,
+            environment: &environment,
+            process_runtime: &bundle.execution.source.process_runtime,
+            compile: &compile,
+        },
         defect,
     );
     bind_fixture_evidence(&mut bundle, &current_dir, &compile, &runtime);
@@ -378,6 +396,7 @@ fn materialize_compile_fixture(
     current_dir: &Path,
     source_ref: &str,
     environment: &BTreeMap<String, String>,
+    process_runtime: &BTreeMap<String, crate::ExecutableReceipt>,
 ) -> CompileFixture {
     let cargo_sha256 = executable_sha256("cargo");
     let source_prefix = source_ref.get(..12).unwrap_or(source_ref);
@@ -421,6 +440,7 @@ fn materialize_compile_fixture(
         environment_sha256: crate::provenance::invocation::digest_environment(&compile_environment)
             .expect("valid fixture environment"),
         environment: compile_environment,
+        launchers: source_bound_launchers(process_runtime),
     };
     let absolute_target_dir = PathBuf::from(&target_dir);
     let binary_path = simulator_compiler_artifact_executable(
@@ -450,42 +470,47 @@ fn materialize_compile_fixture(
 }
 
 fn materialize_runtime_fixture(
-    root: &Path,
-    timeout_output_dir: &Path,
-    source_ref: &str,
-    current_dir: &Path,
-    environment: &BTreeMap<String, String>,
-    compile: &CompileFixture,
+    input: &RuntimeFixtureInput<'_>,
     defect: RuntimeDefect,
 ) -> RuntimeFixture {
     if matches!(defect, RuntimeDefect::ProvenanceOnly) {
-        return materialize_provenance_runtime(root, current_dir, environment, compile);
+        return materialize_provenance_runtime(
+            input.root,
+            input.current_dir,
+            input.environment,
+            input.process_runtime,
+            input.compile,
+        );
     }
     let arguments = ["--profile".into(), "fast".into()];
     let invocation = crate::producer::SimulatorFixtureInvocation {
         label: "fast",
-        program: compile
+        program: input
+            .compile
             .binary_path
             .to_str()
             .expect("UTF-8 simulator fixture path"),
         arguments: &arguments,
-        environment,
-        current_dir,
-        output_dir: timeout_output_dir,
+        environment: input.environment,
+        current_dir: input.current_dir,
+        output_dir: input.output_dir,
     };
     let model = match defect {
         RuntimeDefect::ProvenanceOnly => unreachable!("handled before runtime execution"),
         RuntimeDefect::Timeout | RuntimeDefect::MalformedEvent => {
-            let (model, receipt) =
-                crate::producer::timed_out_zero_exit_fixture_at("pr", source_ref, &invocation)
-                    .expect("run real TERM-trap fixture through production reduction");
+            let (model, receipt) = crate::producer::timed_out_zero_exit_fixture_at(
+                "pr",
+                input.source_ref,
+                &invocation,
+            )
+            .expect("run real TERM-trap fixture through production reduction");
             assert_eq!(receipt.exit_code, Some(0));
             assert!(receipt.timed_out);
             model
         }
         RuntimeDefect::LaunchFailure => {
             let model =
-                crate::producer::later_launch_error_fixture_at("pr", source_ref, &invocation);
+                crate::producer::later_launch_error_fixture_at("pr", input.source_ref, &invocation);
             assert!(model
                 .harness_errors
                 .iter()
@@ -494,7 +519,7 @@ fn materialize_runtime_fixture(
         }
         RuntimeDefect::PassExitOne | RuntimeDefect::CounterexampleExitOne => {
             let model =
-                crate::producer::later_launch_error_fixture_at("pr", source_ref, &invocation);
+                crate::producer::later_launch_error_fixture_at("pr", input.source_ref, &invocation);
             assert!(!model.processes_succeeded);
             assert!(model
                 .harness_errors
@@ -508,12 +533,12 @@ fn materialize_runtime_fixture(
     };
     let real_log = fs::read(&real_artifact.path).expect("read timeout process artifact");
     let fast_artifact = write_fixture_artifact(
-        root,
+        input.root,
         "artifacts/invariants/fast.log",
         "simulator-log",
         &real_log,
     );
-    let environment_sha256 = crate::provenance::invocation::digest_environment(environment)
+    let environment_sha256 = crate::provenance::invocation::digest_environment(input.environment)
         .expect("valid fixture environment");
     let (catalog, _) = crate::tests::loaded();
     let (checks, results) = crate::producer::evaluate_model_fixture(&catalog, "pr", &model)
@@ -521,7 +546,7 @@ fn materialize_runtime_fixture(
     RuntimeFixture {
         fast_artifact,
         producer_artifact: write_fixture_artifact(
-            root,
+            input.root,
             "artifacts/invariants/rafter-invariants",
             "producer-binary",
             b"fixture producer binary",
@@ -538,6 +563,7 @@ fn materialize_provenance_runtime(
     root: &Path,
     current_dir: &Path,
     environment: &BTreeMap<String, String>,
+    process_runtime: &BTreeMap<String, crate::ExecutableReceipt>,
     compile: &CompileFixture,
 ) -> RuntimeFixture {
     let invocation = crate::InvocationReceipt {
@@ -548,6 +574,7 @@ fn materialize_provenance_runtime(
         environment: environment.clone(),
         environment_sha256: crate::provenance::invocation::digest_environment(environment)
             .expect("valid fixture environment"),
+        launchers: source_bound_launchers(process_runtime),
     };
     let event = serde_json::json!({
         "event": "check-failure",
@@ -580,6 +607,21 @@ fn materialize_provenance_runtime(
         checks: Vec::new(),
         results: Vec::new(),
     }
+}
+
+fn source_bound_launchers(
+    process_runtime: &BTreeMap<String, crate::ExecutableReceipt>,
+) -> Vec<crate::LauncherReceipt> {
+    crate::receipt::fixture_launchers(false)
+        .into_iter()
+        .map(|mut launcher| {
+            launcher.executable = process_runtime
+                .get(&launcher.runtime)
+                .unwrap_or_else(|| panic!("missing fixture runtime {}", launcher.runtime))
+                .clone();
+            launcher
+        })
+        .collect()
 }
 
 fn bind_fixture_evidence(
@@ -853,7 +895,7 @@ fn framed_process_log(
 ) -> String {
     format!(
         concat!(
-            "schema_version: 3\n",
+            "schema_version: 4\n",
             "label: {label}\n",
             "invocation: {invocation}\n",
             "exit_code: Some(0)\n",
