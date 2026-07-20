@@ -11,8 +11,10 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
+#[cfg(test)]
+use crate::ResultBundle;
 use crate::{
-    Catalog, ExecutionPlanReceipt, InvocationReceipt, PlanInput, ProfileManifest, ResultBundle,
+    Catalog, ExecutionPlanReceipt, InvocationReceipt, PlanInput, ProfileManifest,
     PLAN_SCHEMA_VERSION,
 };
 
@@ -35,6 +37,10 @@ pub struct ExecutionPlan {
 pub(crate) struct CapturedInvocation {
     pub receipt: InvocationReceipt,
     pub program_bytes: Vec<u8>,
+}
+
+pub(crate) fn current_source_ref() -> Result<String, Box<dyn Error>> {
+    crate::provenance::source::head_commit_at(Path::new("."))
 }
 
 impl ExecutionPlan {
@@ -82,6 +88,7 @@ impl ExecutionPlan {
 ///
 /// Returns an error when any plan path, digest, size, profile, or selected
 /// contract differs from the plan loaded by the current invocation.
+#[cfg(test)]
 pub(crate) fn verify_bundle_plan(
     bundle: &ResultBundle,
     expected: &ExecutionPlanReceipt,
