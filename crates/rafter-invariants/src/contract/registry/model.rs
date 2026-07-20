@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use crate::contract::{SimulatorIdentity, TestIdentity};
 
 /// Registry schema understood by this version of the deterministic verifier.
-pub const REGISTRY_SCHEMA_VERSION: u32 = 4;
+pub const REGISTRY_SCHEMA_VERSION: u32 = 5;
 
 /// Runtime or storage behavior exercised by persistence evidence.
 ///
@@ -99,6 +99,7 @@ pub struct RegistryEvidence {
     pub negative_fixture: Option<String>,
     pub negative_fixture_path: Option<String>,
     pub negative_fixture_detector: Option<String>,
+    pub negative_fixture_detector_path: Option<String>,
     pub negative_fixture_exemption: Option<String>,
     pub test: Option<TestIdentity>,
     pub simulator: Option<SimulatorIdentity>,
