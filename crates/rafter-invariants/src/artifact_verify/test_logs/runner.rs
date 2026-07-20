@@ -1,6 +1,6 @@
 //! Runner-level reconciliation of test receipts and runtime transcripts.
 
-use std::{fs, path::Path};
+use std::path::Path;
 
 use crate::{
     contract::catalog::Catalog,
@@ -13,13 +13,14 @@ use super::{
     verify_harness_error_test_invocations, verify_incomplete_test_invocations,
     verify_oracle_failure_invocations, verify_test_invocations,
 };
+use crate::verification::AuthenticatedArtifacts;
 
 pub(in crate::artifact_verify) fn verify_test_logs(
     bundle: &ResultBundle,
     root: &Path,
+    catalog: &Catalog,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<(), AggregateError> {
-    let catalog = Catalog::load(root.join(&bundle.execution.plan.registry.path).as_path())
-        .map_err(|error| AggregateError::new(format!("reload tests registry: {error}")))?;
     for check in &bundle.execution.checks {
         let outcomes = bundle
             .results
@@ -39,7 +40,7 @@ pub(in crate::artifact_verify) fn verify_test_logs(
                 check.check_id
             )));
         }
-        let test_name = registered_test_name(&catalog, check)?;
+        let test_name = registered_test_name(catalog, check)?;
         let Some(test_log) = check
             .artifacts
             .iter()
@@ -62,10 +63,8 @@ pub(in crate::artifact_verify) fn verify_test_logs(
                 check.check_id
             )));
         };
-        let source = fs::read_to_string(root.join(&test_log.path)).map_err(|error| {
-            AggregateError::new(format!("read test-log {}: {error}", test_log.path))
-        })?;
-        crate::evidence::format::process::parse_combined_v4(&source).map_err(|error| {
+        let source = authenticated.text(test_log)?;
+        crate::evidence::format::process::parse_combined_v4(source).map_err(|error| {
             AggregateError::new(format!(
                 "parse canonical tests-runner log {}: {error}",
                 test_log.path
@@ -73,21 +72,21 @@ pub(in crate::artifact_verify) fn verify_test_logs(
         })?;
         match outcome {
             (EvidenceStatus::Pass, None) => {
-                verify_test_invocations(bundle, check, &source, &test_name, &check.check_id, root)?;
-                require_exact_test_pass(&source, &test_name, &check.check_id)?;
+                verify_test_invocations(bundle, check, source, &test_name, &check.check_id, root)?;
+                require_exact_test_pass(source, &test_name, &check.check_id)?;
             }
             (EvidenceStatus::Fail, Some(FailureClassification::InvariantViolation)) => {
-                verify_oracle_failure_invocations(bundle, check, &source, &test_name, root)?;
-                require_exact_test_failure(&source, &test_name, &check.check_id)?;
+                verify_oracle_failure_invocations(bundle, check, source, &test_name, root)?;
+                require_exact_test_failure(source, &test_name, &check.check_id)?;
             }
             (EvidenceStatus::Incomplete, Some(FailureClassification::CoverageNotReached)) => {
-                verify_incomplete_test_invocations(bundle, check, &source, &test_name, root)?;
+                verify_incomplete_test_invocations(bundle, check, source, &test_name, root)?;
             }
             (EvidenceStatus::Error, Some(FailureClassification::HarnessError)) => {
                 verify_harness_error_test_invocations(
                     bundle,
                     check,
-                    &source,
+                    source,
                     &test_name,
                     &check.check_id,
                     root,
