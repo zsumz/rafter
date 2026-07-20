@@ -8,7 +8,7 @@ mod render;
 
 pub use error::RegistryParseError;
 pub use model::{
-    RegistryClause, RegistryCounts, RegistryDocument, RegistryEvidence, RegistryInvariant,
-    REGISTRY_SCHEMA_VERSION,
+    PersistenceEvidenceKind, RegistryClause, RegistryCounts, RegistryDocument, RegistryEvidence,
+    RegistryInvariant, REGISTRY_SCHEMA_VERSION,
 };
 pub use render::render_registry_markdown;

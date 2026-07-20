@@ -35,8 +35,8 @@ pub use contract::catalog::{
 };
 pub use contract::registry::render_registry_markdown;
 pub use contract::registry::{
-    RegistryClause, RegistryCounts, RegistryDocument, RegistryEvidence, RegistryInvariant,
-    RegistryParseError, REGISTRY_SCHEMA_VERSION,
+    PersistenceEvidenceKind, RegistryClause, RegistryCounts, RegistryDocument, RegistryEvidence,
+    RegistryInvariant, RegistryParseError, REGISTRY_SCHEMA_VERSION,
 };
 pub(crate) use evidence::ResultBundle;
 pub use evidence::{

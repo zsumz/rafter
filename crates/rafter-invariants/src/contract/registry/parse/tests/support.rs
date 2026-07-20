@@ -2,7 +2,7 @@
 
 pub(super) fn valid_registry(evidence: &str, clauses: &str, invariants: &str) -> String {
     format!(
-        r#"schema_version: 3
+        r#"schema_version: 4
 repository: "zsumz/rafter"
 catalog_origin_ref: "test-origin"
 catalog_working_ref: "test-work"

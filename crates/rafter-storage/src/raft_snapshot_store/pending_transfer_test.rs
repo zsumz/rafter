@@ -1,5 +1,7 @@
 use std::fs;
 
+use rafter_invariant_test::oracle_assert_eq;
+
 use super::*;
 
 use super::test_support::{
@@ -224,7 +226,7 @@ fn file_snapshot_store_promotes_staged_transfer_resumed_after_reopen() {
     }
 
     let mut resumed = FileRaftSnapshotStore::open(&directory).expect("store reopens");
-    assert_eq!(
+    oracle_assert_eq!(
         resumed.current_pending_snapshot_transfer(),
         Some(&pending_transfer_for_payload(4, payload))
     );
@@ -235,7 +237,7 @@ fn file_snapshot_store_promotes_staged_transfer_resumed_after_reopen() {
     // A second reopen proves the appended manifest checksum covers the whole
     // staged body even though it was maintained incrementally.
     let mut store = FileRaftSnapshotStore::open(&directory).expect("store reopens again");
-    assert_eq!(
+    oracle_assert_eq!(
         store.current_pending_snapshot_transfer(),
         Some(&pending_transfer_for_payload(total, payload))
     );
@@ -253,7 +255,7 @@ fn file_snapshot_store_promotes_staged_transfer_resumed_after_reopen() {
             application_payload: payload.to_vec(),
         },
     );
-    assert_eq!(store.current_pending_snapshot_transfer(), None);
+    oracle_assert_eq!(store.current_pending_snapshot_transfer(), None);
     remove_test_dir(directory);
 }
 

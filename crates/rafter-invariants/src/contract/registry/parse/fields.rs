@@ -27,6 +27,7 @@ pub(super) fn section_fields(section: &str) -> &'static [&'static str] {
             "strength",
             "path",
             "symbol",
+            "persistence_evidence",
             "atomic_group",
             "package",
             "target_kind",

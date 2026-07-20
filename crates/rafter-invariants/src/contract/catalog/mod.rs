@@ -1,6 +1,7 @@
 //! Normalized executable view of the reviewed registry.
 
 mod model;
+mod policy;
 mod resolve;
 
 pub use crate::contract::error::CatalogError;

@@ -11,6 +11,8 @@ mod assertions;
 mod doc_checks;
 #[path = "invariant_catalog_guard/evidence.rs"]
 mod evidence_checks;
+#[path = "invariant_catalog_guard/reviewed_policy.rs"]
+mod reviewed_policy;
 use assertions::{
     assert_clauses_are_well_formed, assert_declared_counts_match, assert_entries_are_well_formed,
 };
@@ -19,6 +21,7 @@ use doc_checks::{
     assert_rendered_doc_is_current,
 };
 use evidence_checks::assert_evidence_is_machine_checkable;
+use reviewed_policy::assert_reviewed_evidence_policy;
 
 const EXPECTED_TOTAL: usize = 44;
 const EXPECTED_CANONICAL: usize = 5;
@@ -79,6 +82,7 @@ fn invariant_catalog_is_complete_and_documented() {
     assert_entries_are_well_formed(entries);
     assert_clauses_are_well_formed(entries, clauses);
     assert_evidence_is_machine_checkable(&workspace, entries, clauses, evidence);
+    assert_reviewed_evidence_policy(entries, evidence);
     assert_rendered_doc_is_current(&registry, &doc);
     assert_generated_doc_mentions_every_entry(&doc, entries);
     assert_model_check_catalog_labels_are_registered(&workspace, entries);

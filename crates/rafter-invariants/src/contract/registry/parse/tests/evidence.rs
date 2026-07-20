@@ -100,3 +100,25 @@ fn direct_test_identity_is_exact_and_uses_a_supported_cargo_target() {
         );
     }
 }
+
+#[test]
+fn persistence_evidence_uses_a_closed_typed_vocabulary() {
+    for kind in ["crash_reopen", "failure_injection"] {
+        let evidence = VALID_EVIDENCE.replace(
+            "    symbol: \"test_symbol\"",
+            &format!("    symbol: \"test_symbol\"\n    persistence_evidence: \"{kind}\""),
+        );
+        parse_registry_document(&valid_registry(&evidence, VALID_CLAUSE, VALID_INVARIANT))
+            .expect("supported persistence evidence kind parses");
+    }
+
+    let evidence = VALID_EVIDENCE.replace(
+        "    symbol: \"test_symbol\"",
+        "    symbol: \"test_symbol\"\n    persistence_evidence: \"restartish\"",
+    );
+    let error = parse_registry_document(&valid_registry(&evidence, VALID_CLAUSE, VALID_INVARIANT))
+        .expect_err("unknown persistence evidence kind must fail closed");
+    assert!(error
+        .to_string()
+        .contains("unsupported persistence_evidence restartish"));
+}

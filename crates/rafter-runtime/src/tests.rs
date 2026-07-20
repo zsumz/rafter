@@ -9,6 +9,7 @@ use std::path::PathBuf;
 
 mod conflict_repair;
 mod crash_window;
+mod file_backed_fixture;
 mod group_commit;
 mod hard_state;
 mod local_ids;

@@ -5,6 +5,8 @@ use std::path::PathBuf;
 use super::Catalog;
 use crate::RegistryDocument;
 
+mod policy;
+
 #[test]
 fn registry_to_catalog_conversion_is_explicit_and_deterministic() {
     let registry = load_registry();
@@ -23,7 +25,7 @@ fn relational_catalog_defects_are_not_parser_errors() {
     assert_eq!(error.to_string(), "registry invariant IDs must be unique");
 }
 
-fn load_registry() -> RegistryDocument {
+pub(super) fn load_registry() -> RegistryDocument {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     RegistryDocument::load(&root.join("verification/raft-invariants.yaml"))
         .expect("strictly parse registry")

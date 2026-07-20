@@ -13,7 +13,7 @@ Repository: `zsumz/rafter`
 
 Catalog origin ref: `ca400ace5744dd03be05508eb61e6ac6f70440e0`
 
-Catalog working ref (non-authoritative): `invariants-work`
+Catalog working ref (non-authoritative): `invariants-work-cleanup`
 
 Audit date: `2026-07-10`
 
@@ -42,8 +42,8 @@ scheduling properties that are not per-group Raft consensus properties.
 - Every safety invariant should have at least one direct executable oracle.
 - Every canonical safety invariant should have two independent evidence layers.
 - Every simulator checker should have a negative fixture proving it can fail.
-- Every client-visible invariant should have an end-to-end workload.
-- Every persistence invariant should have failure-injection or crash/reopen coverage.
+- Every client-visible invariant must retain registered end-to-end evidence.
+- Every persistence invariant must retain typed failure-injection or crash/reopen evidence.
 - Every liveness obligation should state its fairness and timing assumptions.
 - TLA+ `CompactSnapshot` retains a ghost logical log for safety witnesses; it is not physical compaction evidence. Simulator and storage tests own retained-prefix, offset, and crash/reopen compaction behavior.
 - Registered direct tests are total deterministic oracles: one exact exit-0 pass is green, zero execution is incomplete, and one canonical exact-test exit-101 failure is an invariant violation. Malformed, duplicate, timed-out, signaled, wrong-name, or other process failures are harness errors.
@@ -282,11 +282,11 @@ named temporal or witness-based verdicts.
 | `RD-06` | `RD-06.b` | tests | direct | `crates/rafter-sim/src/model_check/tests/linearizability.rs#linearizer_can_include_unknown_write_to_explain_later_read` |
 | `PS-01` | `PS-01.a` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#election_persists_term_and_vote_before_vote_requests_escape` |
 | `PS-01` | `PS-01.b` | tests | direct | `crates/rafter-runtime/src/tests/persistence_ordering.rs#leader_proposal_log_entry_is_persisted_before_apply_output_escapes` |
-| `PS-01` | `PS-01.c` | tests | direct | `crates/rafter-runtime/src/tests/persistence_ordering.rs#committed_configuration_write_failure_suppresses_dependent_membership_output` |
+| `PS-01` | `PS-01.c` | tests | direct | `crates/rafter-runtime/src/tests/persistence_ordering.rs#committed_configuration_write_failure_suppresses_dependent_membership_output`; persistence evidence `failure_injection` |
 | `PS-01` | `PS-01.d` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_persists_installed_snapshot_and_compacts_log_past_local_tail` |
 | `PS-02` | `PS-02.a` | tests | direct | `crates/rafter-runtime/src/tests/group_commit/failure.rs#group_commit_failure_is_surfaced_without_releasing_outputs` |
 | `PS-02` | `PS-02.b` | tests | direct | `crates/rafter-runtime/src/tests/group_commit/failure.rs#group_commit_failure_poisons_runtime_and_rejects_further_writes` |
-| `PS-02` | `PS-02.c` | tests | direct | `crates/rafter-runtime/src/tests/group_commit/failure.rs#group_commit_failure_preserves_last_successful_state_across_crash_and_reopen` |
+| `PS-02` | `PS-02.c` | tests | direct | `crates/rafter-runtime/src/tests/group_commit/failure.rs#group_commit_failure_preserves_last_successful_state_across_crash_and_reopen`; persistence evidence `crash_reopen` |
 | `PS-02` | `PS-02.a` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/commit_failure.rs#final_hard_state_write_failure_suppresses_apply_and_success_response` |
 | `PS-02` | `PS-02.b` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/commit_failure.rs#final_hard_state_write_failure_suppresses_apply_and_success_response` |
 | `PS-02` | `PS-02.c` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/commit_failure.rs#final_hard_state_write_failure_suppresses_apply_and_success_response` |
@@ -307,7 +307,7 @@ named temporal or witness-based verdicts.
 | `PS-03` | `PS-03.d` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_restart_snapshot`; negative fixture `exact_restart_snapshot_oracle_detects_crc32_collision_payload_change` |
 | `PS-03` | `PS-03.e` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_restart_acknowledged_entries`; negative fixture `exact_restart_acknowledged_entry_oracle_checks_acknowledged_uncommitted_entry` |
 | `PS-03` | `PS-03.e` | tests | direct | `crates/rafter-runtime/src/tests/crash_window/boundary.rs#reopen_completes_compaction_when_snapshot_boundary_is_past_the_log_tail` |
-| `PS-03` | `PS-03.e` | tests | direct | `crates/rafter-runtime/src/tests/local_ids/recovery.rs#restart_replays_committed_tracked_entry_without_local_id` |
+| `PS-03` | `PS-03.e` | tests | direct | `crates/rafter-runtime/src/tests/local_ids/recovery.rs#restart_replays_committed_tracked_entry_without_local_id`; persistence evidence `crash_reopen` |
 | `PS-03` | `PS-03.c` | tests | direct | `crates/rafter-runtime/src/tests/recovery.rs#restarted_node_recovers_committed_dynamic_membership_suffix_after_snapshot` |
 | `PS-03` | `PS-03.a` | tests | direct | `crates/rafter-storage/src/raft_hard_state_store.rs#file_store_reopens_latest_written_hard_state` |
 | `PS-03` | `PS-03.b` | tests | direct | `crates/rafter-storage/src/raft_log_segment_test.rs#file_raft_log_segment_replays_entries_after_reopen` |
@@ -316,7 +316,7 @@ named temporal or witness-based verdicts.
 | `PS-04` | `PS-04.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_recovery_applied_floor_exclusion`; negative fixture `applied_floor_recovery_rejects_replay_at_or_below_floor` |
 | `PS-04` | `PS-04.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_recovery_exact_committed_suffix`; negative fixture `applied_floor_recovery_rejects_missing_committed_suffix_entry` |
 | `PS-04` | `PS-04.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/persistence.rs#check_recovery_applied_floor_bounds`; negative fixture `applied_floor_recovery_rejects_floor_beyond_durable_bounds` |
-| `PS-04` | `PS-04.a` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests.rs#ps04_app_persist_interrupt_reopens_at_durable_floor_and_replays_suffix_once` |
+| `PS-04` | `PS-04.a` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests.rs#ps04_app_persist_interrupt_reopens_at_durable_floor_and_replays_suffix_once`; persistence evidence `crash_reopen` |
 | `PS-04` | `PS-04.b` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests.rs#ps04_app_persist_interrupt_reopens_at_durable_floor_and_replays_suffix_once` |
 | `PS-04` | `PS-04.a` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests/durability.rs#ps04_atomic_app_persist_syncs_file_and_directory_before_success` |
 | `PS-04` | `PS-04.b` | tests | direct | `crates/rafter-maelstrom/src/app/ps04_tests/durability.rs#ps04_atomic_app_persist_syncs_file_and_directory_before_success` |
@@ -337,23 +337,26 @@ named temporal or witness-based verdicts.
 | `SS-01` | `SS-01.c` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_persists_installed_snapshot_and_compacts_log_past_local_tail` |
 | `SS-01` | `SS-01.c` | tests | direct | `crates/rafter-storage/src/raft_snapshot_codec_test.rs#decode_rejects_corrupt_snapshot_payload_checksum` |
 | `SS-01` | `SS-01.b` | tests | direct | `crates/rafter-storage/src/raft_snapshot_store_test.rs#file_snapshot_store_ignores_unmanifested_complete_snapshot_on_open` |
-| `SS-01` | `SS-01.b` | tests | direct | `crates/rafter-storage/src/raft_snapshot_store_test.rs#file_snapshot_store_reopens_manifest_selected_snapshot` |
+| `SS-01` | `SS-01.b` | tests | direct | `crates/rafter-storage/src/raft_snapshot_store_test.rs#file_snapshot_store_reopens_manifest_selected_snapshot`; persistence evidence `crash_reopen` |
 | `SS-02` | `SS-02.b` | tests | direct | `crates/rafter-runtime/src/tests/crash_window/reopen.rs#reopen_rejects_log_compacted_past_the_snapshot` |
 | `SS-02` | `SS-02.a` | tests | direct | `crates/rafter-runtime/src/tests/crash_window/repair.rs#reopen_completes_compaction_after_crash_between_snapshot_and_compaction` |
-| `SS-02` | `SS-02.a` | tests | direct | `crates/rafter-runtime/src/tests/crash_window/repair.rs#file_backed_reopen_persists_repaired_compaction_after_snapshot_crash_window` |
+| `SS-02` | `SS-02.a` | tests | direct | `crates/rafter-runtime/src/tests/crash_window/repair.rs#file_backed_reopen_persists_repaired_compaction_after_snapshot_crash_window`; persistence evidence `crash_reopen` |
 | `SS-03` | `SS-03.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_covered_prefix_hidden`; negative fixture `snapshot_covered_prefix_detector_rejects_visible_covered_entry` |
 | `SS-03` | `SS-03.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_next_retained_index`; negative fixture `snapshot_next_retained_index_detector_rejects_gap` |
 | `SS-03` | `SS-03.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_persisted_boundary`; negative fixture `snapshot_persisted_boundary_detector_rejects_entry_behind_snapshot` |
 | `SS-03` | `SS-03.c` | tests | direct | `crates/rafter-runtime/src/tests/crash_window/boundary.rs#append_behind_the_snapshot_boundary_is_refused_not_mislabelled` |
+| `SS-03` | `SS-03.b` | tests | direct | `crates/rafter-runtime/src/tests/crash_window/repair.rs#file_backed_reopen_persists_repaired_compaction_after_snapshot_crash_window`; persistence evidence `crash_reopen` |
 | `SS-04` | `SS-04.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_chunk_identity_history`; negative fixture `snapshot_chunk_identity_history_rejects_descriptor_change` |
 | `SS-04` | `SS-04.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_chunk_offsets_history`; negative fixture `snapshot_chunk_offset_history_rejects_out_of_order_progress` |
 | `SS-04` | `SS-04.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_snapshot_install_completeness_history`; negative fixture `snapshot_install_completeness_history_rejects_incomplete_install` |
 | `SS-04` | `SS-04.d` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_pending_snapshot_lifecycle`; negative fixture `pending_snapshot_lifecycle_detector_rejects_stale_transfer` |
+| `SS-04` | `SS-04.b` | tests | direct | `crates/rafter-storage/src/raft_snapshot_store/pending_transfer_test.rs#file_snapshot_store_promotes_staged_transfer_resumed_after_reopen`; persistence evidence `crash_reopen` |
 | `SS-04` | `SS-04.b` | tests | direct | `crates/rafter/src/node/tests/snapshot/chunks/receive.rs#out_of_order_snapshot_chunk_requests_expected_offset` |
 | `SS-04` | `SS-04.c` | tests | direct | `crates/rafter/src/node/tests/snapshot/chunks/receive.rs#out_of_order_snapshot_chunk_requests_expected_offset` |
 | `SS-05` | `SS-05.a,SS-05.b,SS-05.c` | maelstrom | e2e | `scripts/maelstrom-lin-kv-forced-snapshot#RAFTER_MAELSTROM_SNAPSHOT_EVERY` |
 | `SS-05` | `SS-05.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/applied.rs#check_applied_payload_agreement`; negative fixture `applied_agreement_detects_snapshot_membership_mismatch_at_same_boundary` |
 | `SS-05` | `SS-05.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/snapshot.rs#check_restart_snapshot_safety`; negative fixture `restart_snapshot_safety_rejects_snapshot_bytes_as_log_apply` |
+| `SS-05` | `SS-05.b` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/chunk_transfer/promotion.rs#file_backed_snapshot_install_discards_covered_divergent_suffix_across_reopen`; persistence evidence `crash_reopen` |
 | `SS-05` | `SS-05.a` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/snapshot_application.rs#restart_snapshot_safety_rejects_snapshot_bytes_as_log_apply` |
 | `SS-05` | `SS-05.b` | tests | direct | `crates/rafter-sim/src/tests/snapshot_installation/catchup.rs#simulator_discards_divergent_suffix_when_installing_snapshot` |
 | `LV-01` | `LV-01.a` | simulator | direct | `crates/rafter-sim/src/model_check/liveness.rs#run_soak_liveness_check_with_budget_overrides`; negative fixture `post_heal_leader_convergence_monitor_reports_exhausted_bound` |
