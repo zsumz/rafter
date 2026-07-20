@@ -1,48 +1,22 @@
+//! Producer adaptation tests for neutral detector challenge transport.
+
+use std::{io::Write, os::unix::net::UnixStream, time::Duration};
+
 use super::*;
 
 #[test]
-fn parent_releases_the_challenge_only_after_the_proof_request() {
-    let (socket, responder, challenge) =
-        challenge_listener().expect("create detector proof listener");
-    assert_eq!(
-        fs::metadata(&socket)
-            .expect("proof socket metadata")
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600
-    );
-    let mut stream = UnixStream::connect(socket).expect("connect detector proof channel");
-    stream
-        .set_read_timeout(Some(Duration::from_millis(100)))
-        .expect("set pre-request timeout");
-    let mut observed = [0_u8; crate::evidence::detector_proof::CHALLENGE_BYTES];
-    let error = stream
-        .read_exact(&mut observed)
-        .expect_err("the parent must withhold its challenge before the request");
-    assert!(matches!(
-        error.kind(),
-        std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut
-    ));
-
-    stream
-        .write_all(&[crate::evidence::detector_proof::PROOF_REQUEST])
-        .expect("send proof request");
-    stream
-        .set_read_timeout(Some(Duration::from_secs(1)))
-        .expect("set challenge timeout");
-    stream
-        .read_exact(&mut observed)
-        .expect("read parent challenge");
-    assert_eq!(observed, challenge);
-    assert!(responder.finish().expect("join challenge responder"));
+fn execution_and_evidence_protocol_contracts_match() {
+    validate_protocol_contract().expect("execution and evidence use the same proof wire");
 }
 
 #[test]
-fn disconnected_fixture_never_receives_a_challenge() {
-    let (socket, responder, _) = challenge_listener().expect("create detector proof listener");
-    drop(UnixStream::connect(socket).expect("connect detector proof channel"));
-    assert!(!responder.finish().expect("join challenge responder"));
+fn typed_exchange_preserves_producer_error_classification() {
+    assert_eq!(exchange_error(ChallengeExchange::Completed), None);
+    assert_eq!(exchange_error(ChallengeExchange::Disconnected), None);
+    assert_eq!(
+        exchange_error(ChallengeExchange::MalformedRequest).as_deref(),
+        Some("detector proof request is malformed")
+    );
 }
 
 #[test]

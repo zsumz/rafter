@@ -4,14 +4,14 @@ use std::{collections::BTreeMap, error::Error, path::Path};
 
 use super::{BoundExecutable, BASH_RUNTIME};
 
-pub(in crate::producer::process) struct BoundInterpreter {
+pub(in crate::execution::process) struct BoundInterpreter {
     runtime: String,
     executable: BoundExecutable,
     arguments: Vec<String>,
 }
 
 impl BoundInterpreter {
-    pub(in crate::producer::process) fn bind_for_script(
+    pub(in crate::execution::process) fn bind_for_script(
         script: &mut BoundExecutable,
         environment: &BTreeMap<String, String>,
     ) -> Result<Option<Self>, Box<dyn Error>> {
@@ -42,7 +42,7 @@ impl BoundInterpreter {
         let executable = BoundExecutable::bind_program(program, environment)?;
         if Path::new(program).is_absolute() {
             let source_bound = BoundExecutable::bind_program(BASH_RUNTIME, environment)?;
-            if executable.receipt() != source_bound.receipt() {
+            if executable.identity() != source_bound.identity() {
                 return Err(format!(
                     "absolute Bash interpreter {program:?} is not the source-bound PATH runtime"
                 )
@@ -56,15 +56,15 @@ impl BoundInterpreter {
         }))
     }
 
-    pub(in crate::producer::process) fn runtime(&self) -> &str {
+    pub(in crate::execution::process) fn runtime(&self) -> &str {
         &self.runtime
     }
 
-    pub(in crate::producer::process) fn executable(&self) -> &BoundExecutable {
+    pub(in crate::execution::process) fn executable(&self) -> &BoundExecutable {
         &self.executable
     }
 
-    pub(in crate::producer::process) fn arguments(&self) -> &[String] {
+    pub(in crate::execution::process) fn arguments(&self) -> &[String] {
         &self.arguments
     }
 }

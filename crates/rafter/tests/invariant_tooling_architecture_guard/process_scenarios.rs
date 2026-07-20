@@ -228,33 +228,49 @@ fn expected_raw_process_accesses() -> BTreeMap<(&'static str, PathContext, &'sta
         ),
         (
             (
-                "crates/rafter-invariants/src/producer/process/adapter.rs",
+                "crates/rafter-invariants/src/producer/process/evidence.rs",
                 PathContext::Import,
-                "crate::execution::process::ProcessRequest",
+                "crate::execution::process::BoundCommand",
             ),
             1,
         ),
         (
             (
-                "crates/rafter-invariants/src/producer/process/adapter.rs",
+                "crates/rafter-invariants/src/producer/process/evidence.rs",
                 PathContext::Import,
-                "crate::execution::process::ProcessRuntime",
+                "crate::execution::process::FinalizationPolicy",
             ),
             1,
         ),
         (
             (
-                "crates/rafter-invariants/src/producer/process/adapter.rs",
+                "crates/rafter-invariants/src/producer/process/evidence.rs",
                 PathContext::Import,
-                "crate::execution::process::RuntimeExecutable",
+                "crate::execution::process::PendingProcessOutput",
             ),
             1,
         ),
         (
             (
-                "crates/rafter-invariants/src/producer/process/adapter.rs",
-                PathContext::Expression,
-                "crate::execution::process::run",
+                "crates/rafter-invariants/src/producer/process/evidence.rs",
+                PathContext::Import,
+                "crate::execution::process::ProcessDeadlines",
+            ),
+            1,
+        ),
+        (
+            (
+                "crates/rafter-invariants/src/producer/process/evidence.rs",
+                PathContext::Import,
+                "crate::execution::process::TerminationPolicy",
+            ),
+            1,
+        ),
+        (
+            (
+                "crates/rafter-invariants/src/producer/process/runtime.rs",
+                PathContext::Import,
+                "crate::execution::process::capture_runtime_identities",
             ),
             1,
         ),

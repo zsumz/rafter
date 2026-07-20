@@ -6,6 +6,8 @@
 
 mod anchor;
 mod artifacts;
+mod binding;
+mod command;
 mod diagnostics;
 mod direct_child;
 mod environment;
@@ -38,6 +40,8 @@ use anchor::{
 use artifacts::ProcessArtifacts;
 #[cfg(test)]
 use artifacts::{allocate_process_artifacts_at, ProcessArtifactPaths};
+pub(crate) use binding::{capture_runtime_identities, ExecutableIdentity, LauncherIdentity};
+pub(crate) use command::BoundCommand;
 #[cfg(test)]
 use diagnostics::{cleanup_error, retained_stderr_path};
 use diagnostics::{measurement_error, retained_error, retained_result};
