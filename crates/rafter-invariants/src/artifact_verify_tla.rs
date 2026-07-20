@@ -10,28 +10,40 @@ use crate::producer::tla_output::{
     MEMBERSHIP_TRACE_MIN_DISTINCT_STATES, MUTATION_SUITE_ARTIFACT_KIND, MUTATION_SUITE_LABEL,
     REQUIRED_MODEL_TRANSITIONS,
 };
-use crate::{aggregate::AggregateError, CheckCompletion, EvidenceStatus, ResultBundle};
+use crate::{verification::AggregateError, CheckCompletion, EvidenceStatus, ResultBundle};
 
 mod checkpoint;
 mod invocation;
 
-use checkpoint::verify_checkpoint;
+use crate::verification::AuthenticatedArtifacts;
+use checkpoint::verify_checkpoint_authenticated;
 use invocation::{
     optional_process_log, read_bound_process_log, read_initial_process_log, read_process_log,
 };
 
-pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<Vec<String>, AggregateError> {
+pub(super) fn verify_authenticated(
+    bundle: &ResultBundle,
+    root: &Path,
+    source_root: &Path,
+    authenticated: &AuthenticatedArtifacts,
+) -> Result<Vec<String>, AggregateError> {
     let check = bundle
         .execution
         .checks
         .first()
         .ok_or_else(|| AggregateError::new("TLA receipt has no check".to_owned()))?;
-    let (trace, producer_repository) =
-        read_initial_process_log(bundle, check, "tla-trace-log", "trace-sample", root)?;
-    let config = read_kind(check, "tla-config", root)?;
-    let detector_template = read_kind(check, "tla-detector-config", root)?;
-    verify_source_binding(bundle, check, root)?;
-    verify_tool_pin(bundle, check, root)?;
+    let (trace, producer_repository) = read_initial_process_log(
+        bundle,
+        check,
+        "tla-trace-log",
+        "trace-sample",
+        root,
+        authenticated,
+    )?;
+    let config = read_kind(check, "tla-config", authenticated)?;
+    let detector_template = read_kind(check, "tla-detector-config", authenticated)?;
+    verify_source_binding(bundle, check, source_root, authenticated)?;
+    verify_tool_pin(bundle, check, authenticated)?;
     let trace_summary = crate::producer::tla_output::parse(trace.stdout.as_bytes()).ok();
     let trace_passed = trace_summary.as_ref().is_some_and(|summary| {
         successful_log(&trace)
@@ -45,6 +57,7 @@ pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<Vec<String>, 
         root,
         &producer_repository,
         &detector_template,
+        authenticated,
     )?;
     if !trace_passed && has_kind(check, "tla-log")? {
         return Err(AggregateError::new(
@@ -58,29 +71,16 @@ pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<Vec<String>, 
         "model-check",
         root,
         &producer_repository,
+        authenticated,
     )?;
-    let (main_summary, main_parse_diagnostic) = match main.as_ref() {
-        Some(log) => match crate::producer::tla_output::parse(log.stdout.as_bytes()) {
-            Ok(summary) => (Some(summary), None),
-            Err(error) => {
-                match crate::producer::tla_output::parse_complete_prefix(log.stdout.as_bytes()) {
-                    Ok(summary) if summary.violated_invariant.is_some() => (
-                        Some(summary),
-                        Some(format!("parse TLA main output: {error}")),
-                    ),
-                    _ => (None, None),
-                }
-            }
-        },
-        None => (None, None),
-    };
-    let checkpoint = verify_checkpoint(
+    let (main_summary, main_parse_diagnostic) = parse_main_summary(main.as_ref());
+    let checkpoint = verify_checkpoint_authenticated(
         bundle,
         check,
-        root,
         main_summary
             .as_ref()
             .is_some_and(|summary| summary.violated_invariant.is_some()),
+        authenticated,
     )?;
     let (main_progress, progress_diagnostic) = timeout_progress(
         main.as_ref(),
@@ -119,6 +119,35 @@ pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<Vec<String>, 
         .into_iter()
         .chain(progress_diagnostic)
         .collect())
+}
+
+fn parse_main_summary(
+    main: Option<&crate::evidence::format::process::ProcessLog>,
+) -> (
+    Option<crate::producer::tla_output::TlcSummary>,
+    Option<String>,
+) {
+    let Some(log) = main else {
+        return (None, None);
+    };
+    match crate::producer::tla_output::parse(log.stdout.as_bytes()) {
+        Ok(summary) => (Some(summary), None),
+        Err(error) => {
+            match crate::producer::tla_output::parse_complete_prefix(log.stdout.as_bytes()) {
+                Ok(summary) if summary.violated_invariant.is_some() => (
+                    Some(summary),
+                    Some(format!("parse TLA main output: {error}")),
+                ),
+                _ => (None, None),
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+fn verify(bundle: &ResultBundle, root: &Path) -> Result<Vec<String>, AggregateError> {
+    let authenticated = crate::verification::snapshot_available_artifacts(bundle, root)?;
+    verify_authenticated(bundle, root, root, &authenticated)
 }
 
 fn derive_observations(
@@ -229,6 +258,7 @@ fn verify_detectors(
     root: &Path,
     producer_repository: &Path,
     template: &str,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<(BTreeMap<String, u64>, bool), AggregateError> {
     let mut observations = BTreeMap::new();
     let mut all_passed = true;
@@ -258,7 +288,7 @@ fn verify_detectors(
             observations.insert(observation, 0);
             continue;
         }
-        let realized_config = read_kind(check, &config_kind, root)?;
+        let realized_config = read_kind(check, &config_kind, authenticated)?;
         let expected_config =
             render_detector_config(template, probe).map_err(AggregateError::new)?;
         if realized_config != expected_config {
@@ -269,8 +299,15 @@ fn verify_detectors(
         let label = detector_label(probe).ok_or_else(|| {
             AggregateError::new(format!("unregistered TLA detector probe {identity}"))
         })?;
-        let detector =
-            read_process_log(bundle, check, &log_kind, &label, root, producer_repository)?;
+        let detector = read_process_log(
+            bundle,
+            check,
+            &log_kind,
+            &label,
+            root,
+            producer_repository,
+            authenticated,
+        )?;
         let summary = crate::producer::tla_output::parse(detector.stdout.as_bytes()).ok();
         let expected = detector_invariant(probe).ok_or_else(|| {
             AggregateError::new(format!("unregistered TLA detector probe {identity}"))
@@ -287,7 +324,7 @@ fn verify_detectors(
             check,
             MUTATION_SUITE_ARTIFACT_KIND,
             MUTATION_SUITE_LABEL,
-            root,
+            authenticated,
         )?;
         verify_mutation_invocation(bundle, &mutation, producer_repository)?;
         all_passed &=
@@ -332,6 +369,7 @@ fn verify_source_binding(
     bundle: &ResultBundle,
     check: &crate::CheckReceipt,
     root: &Path,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<(), AggregateError> {
     let config = configuration(bundle, "config")?;
     for (kind, source) in [
@@ -357,7 +395,7 @@ fn verify_source_binding(
             "specs/tla/raft/RaftMembershipTraceSample.cfg".to_owned(),
         ),
     ] {
-        let artifact = read_kind(check, kind, root)?;
+        let artifact = read_kind(check, kind, authenticated)?;
         let source = fs::read_to_string(root.join(&source)).map_err(|error| {
             AggregateError::new(format!("read TLA source binding {source}: {error}"))
         })?;
@@ -373,7 +411,7 @@ fn verify_source_binding(
 fn verify_tool_pin(
     bundle: &ResultBundle,
     check: &crate::CheckReceipt,
-    root: &Path,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<(), AggregateError> {
     let expected_sha = configuration(bundle, "tool_sha256")?;
     let tool = unique_artifact(check, "tla-tool")?;
@@ -382,13 +420,13 @@ fn verify_tool_pin(
             "TLA tool artifact does not match the profile digest".to_owned(),
         ));
     }
-    let asset_id = read_kind(check, "tla-tool-asset-id", root)?;
+    let asset_id = read_kind(check, "tla-tool-asset-id", authenticated)?;
     if asset_id.trim() != configuration(bundle, "tool_asset_id")? {
         return Err(AggregateError::new(
             "TLA tool asset ID does not match the profile contract".to_owned(),
         ));
     }
-    let checksums = read_kind(check, "tla-tool-checksums", root)?;
+    let checksums = read_kind(check, "tla-tool-checksums", authenticated)?;
     if !checksum_matches(&checksums, expected_sha) {
         return Err(AggregateError::new(
             "TLA checksum manifest does not contain the exact profile digest".to_owned(),
@@ -481,20 +519,18 @@ fn evidence_symbol(evidence_id: &str) -> Option<&str> {
 fn read_kind(
     check: &crate::CheckReceipt,
     kind: &str,
-    root: &Path,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<String, AggregateError> {
     let artifact = unique_artifact(check, kind)?;
-    fs::read_to_string(root.join(&artifact.path)).map_err(|error| {
-        AggregateError::new(format!("read TLA artifact {}: {error}", artifact.path))
-    })
+    authenticated.text(artifact).map(str::to_owned)
 }
 
 fn read_json_kind<T: for<'de> serde::Deserialize<'de>>(
     check: &crate::CheckReceipt,
     kind: &str,
-    root: &Path,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<T, AggregateError> {
-    let source = read_kind(check, kind, root)?;
+    let source = read_kind(check, kind, authenticated)?;
     serde_json::from_str(&source)
         .map_err(|error| AggregateError::new(format!("parse TLA artifact {kind}: {error}")))
 }

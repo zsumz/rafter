@@ -6,6 +6,7 @@ mod test_support;
 use std::{
     error::Error,
     io::Read,
+    path::Path,
     process::{ChildStderr, ChildStdout, Command, Stdio},
     time::{Duration, Instant},
 };
@@ -43,9 +44,30 @@ pub(super) fn bounded_internal_output_with_runtime(
         &program.path.to_string_lossy(),
         Some(program),
         arguments,
+        None,
         execution_deadline,
         lifecycle_deadline,
         reaper,
+    )
+}
+
+pub(super) fn bounded_identity_output(
+    program: &str,
+    arguments: &[&str],
+    current_dir: &Path,
+    timeout: Duration,
+) -> Result<std::process::Output, Box<dyn Error>> {
+    let started = Instant::now();
+    let execution_deadline = started + timeout;
+    let lifecycle_deadline = execution_deadline + Duration::from_secs(5);
+    bounded_internal_output_from(
+        program,
+        None,
+        arguments,
+        Some(current_dir),
+        execution_deadline,
+        lifecycle_deadline,
+        NoSignalReaper::start()?,
     )
 }
 
@@ -53,20 +75,21 @@ fn bounded_internal_output_from(
     program: &str,
     runtime: Option<RuntimeExecutable<'_>>,
     arguments: &[&str],
+    current_dir: Option<&Path>,
     execution_deadline: Instant,
     lifecycle_deadline: Instant,
     reaper: NoSignalReaper,
 ) -> Result<std::process::Output, Box<dyn Error>> {
-    let cleanup_failures = CleanupFailures::default();
-    let result = bounded_internal_output_owned(
+    let request = InternalCommandRequest {
         program,
         runtime,
         arguments,
+        current_dir,
         execution_deadline,
         lifecycle_deadline,
-        cleanup_failures.clone(),
-        reaper,
-    );
+    };
+    let cleanup_failures = CleanupFailures::default();
+    let result = bounded_internal_output_owned(request, cleanup_failures.clone(), reaper);
     let failures = cleanup_failures.take();
     if failures.is_empty() {
         return result;
@@ -81,20 +104,27 @@ fn bounded_internal_output_from(
     }
 }
 
-fn bounded_internal_output_owned(
-    program: &str,
-    runtime: Option<RuntimeExecutable<'_>>,
-    arguments: &[&str],
+#[derive(Clone, Copy)]
+struct InternalCommandRequest<'a> {
+    program: &'a str,
+    runtime: Option<RuntimeExecutable<'a>>,
+    arguments: &'a [&'a str],
+    current_dir: Option<&'a Path>,
     execution_deadline: Instant,
     lifecycle_deadline: Instant,
+}
+
+fn bounded_internal_output_owned(
+    request: InternalCommandRequest<'_>,
     cleanup_failures: CleanupFailures,
     reaper: NoSignalReaper,
 ) -> Result<std::process::Output, Box<dyn Error>> {
     let (mut process, mut stdout, mut stderr) = spawn_internal_process(
-        program,
-        runtime,
-        arguments,
-        lifecycle_deadline,
+        request.program,
+        request.runtime,
+        request.arguments,
+        request.current_dir,
+        request.lifecycle_deadline,
         cleanup_failures,
         reaper,
     )?;
@@ -102,6 +132,26 @@ fn bounded_internal_output_owned(
         .map_err(|error| format!("make internal stdout nonblocking: {error}"))?;
     set_nonblocking(&stderr)
         .map_err(|error| format!("make internal stderr nonblocking: {error}"))?;
+    let collected = collect_internal_output(&mut process, &mut stdout, &mut stderr, request)?;
+    process.disarm()?;
+    finalize_internal_output(request.program, collected)
+}
+
+struct CollectedInternalOutput {
+    status: std::process::ExitStatus,
+    stdout: Vec<u8>,
+    stderr: Vec<u8>,
+    timed_out: bool,
+    overflowed: bool,
+    started: Instant,
+}
+
+fn collect_internal_output(
+    process: &mut ManagedInternalProcess,
+    stdout: &mut ChildStdout,
+    stderr: &mut ChildStderr,
+    request: InternalCommandRequest<'_>,
+) -> Result<CollectedInternalOutput, Box<dyn Error>> {
     let started = Instant::now();
     let mut cleanup_deadline = None;
     let mut stdout_bytes = Vec::new();
@@ -111,15 +161,15 @@ fn bounded_internal_output_owned(
     let mut timed_out = false;
     let mut overflowed = false;
     let status = loop {
-        let active_deadline = cleanup_deadline.unwrap_or(execution_deadline);
+        let active_deadline = cleanup_deadline.unwrap_or(request.execution_deadline);
         let mut drain_reached_deadline = false;
         if !stdout_eof {
-            let drained = drain_nonblocking(&mut stdout, &mut stdout_bytes, active_deadline)?;
+            let drained = drain_nonblocking(stdout, &mut stdout_bytes, active_deadline)?;
             stdout_eof = drained.eof;
             drain_reached_deadline |= drained.deadline_reached;
         }
         if !stderr_eof && !drain_reached_deadline {
-            let drained = drain_nonblocking(&mut stderr, &mut stderr_bytes, active_deadline)?;
+            let drained = drain_nonblocking(stderr, &mut stderr_bytes, active_deadline)?;
             stderr_eof = drained.eof;
             drain_reached_deadline |= drained.deadline_reached;
         }
@@ -132,17 +182,19 @@ fn bounded_internal_output_owned(
         let mut complete = exited && lineage_released && stdout_eof && stderr_eof;
         let now = Instant::now();
         if cleanup_deadline.is_none()
-            && (now >= execution_deadline || drain_reached_deadline || overflowed)
+            && (now >= request.execution_deadline || drain_reached_deadline || overflowed)
         {
-            timed_out = now >= execution_deadline;
+            timed_out = now >= request.execution_deadline;
             if exited && !complete {
                 if !stdout_eof {
                     stdout_eof =
-                        drain_nonblocking(&mut stdout, &mut stdout_bytes, lifecycle_deadline)?.eof;
+                        drain_nonblocking(stdout, &mut stdout_bytes, request.lifecycle_deadline)?
+                            .eof;
                 }
                 if !stderr_eof {
                     stderr_eof =
-                        drain_nonblocking(&mut stderr, &mut stderr_bytes, lifecycle_deadline)?.eof;
+                        drain_nonblocking(stderr, &mut stderr_bytes, request.lifecycle_deadline)?
+                            .eof;
                 }
                 overflowed |= stdout_bytes.len() > INTERNAL_OUTPUT_MAX_BYTES
                     || stderr_bytes.len() > INTERNAL_OUTPUT_MAX_BYTES;
@@ -151,44 +203,58 @@ fn bounded_internal_output_owned(
             if !complete {
                 let _delivery = process.signal_kill()?;
             }
-            cleanup_deadline = Some(lifecycle_deadline);
+            cleanup_deadline = Some(request.lifecycle_deadline);
         }
         if complete {
-            let acceptance_deadline = cleanup_deadline.unwrap_or(execution_deadline);
+            let acceptance_deadline = cleanup_deadline.unwrap_or(request.execution_deadline);
             let status =
-                accept_internal_completion(&mut process, program, now, acceptance_deadline)?;
+                accept_internal_completion(process, request.program, now, acceptance_deadline)?;
             break status;
         }
         if cleanup_deadline.is_some_and(|deadline| now >= deadline) {
             return Err(format!(
-                "internal command {program} did not close its process group and output within {} ms after kill",
+                "internal command {} did not close its process group and output within {} ms after kill",
+                request.program,
                 duration_ms(started.elapsed())
             )
             .into());
         }
-        let deadline = cleanup_deadline.unwrap_or(execution_deadline);
+        let deadline = cleanup_deadline.unwrap_or(request.execution_deadline);
         std::thread::sleep(INTERNAL_POLL_INTERVAL.min(deadline.saturating_duration_since(now)));
     };
-    process.disarm()?;
-    if overflowed {
+    Ok(CollectedInternalOutput {
+        status,
+        stdout: stdout_bytes,
+        stderr: stderr_bytes,
+        timed_out,
+        overflowed,
+        started,
+    })
+}
+
+fn finalize_internal_output(
+    program: &str,
+    collected: CollectedInternalOutput,
+) -> Result<std::process::Output, Box<dyn Error>> {
+    if collected.overflowed {
         return Err(format!(
             "internal command {program} exceeded the {INTERNAL_OUTPUT_MAX_BYTES}-byte output limit"
         )
         .into());
     }
-    if timed_out {
+    if collected.timed_out {
         return Err(format!(
             "internal command {program} timed out after {} ms; stdout: {}; stderr: {}",
-            duration_ms(started.elapsed()),
-            String::from_utf8_lossy(&stdout_bytes).trim(),
-            String::from_utf8_lossy(&stderr_bytes).trim()
+            duration_ms(collected.started.elapsed()),
+            String::from_utf8_lossy(&collected.stdout).trim(),
+            String::from_utf8_lossy(&collected.stderr).trim()
         )
         .into());
     }
     Ok(std::process::Output {
-        status,
-        stdout: stdout_bytes,
-        stderr: stderr_bytes,
+        status: collected.status,
+        stdout: collected.stdout,
+        stderr: collected.stderr,
     })
 }
 
@@ -212,6 +278,7 @@ fn spawn_internal_process(
     program: &str,
     runtime: Option<RuntimeExecutable<'_>>,
     arguments: &[&str],
+    current_dir: Option<&Path>,
     lifecycle_deadline: Instant,
     cleanup_failures: CleanupFailures,
     reaper: NoSignalReaper,
@@ -223,6 +290,9 @@ fn spawn_internal_process(
         .envs(base_environment())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    if let Some(current_dir) = current_dir {
+        command.current_dir(current_dir);
+    }
     let (lifetime, lifetime_writer) = ProcessLifetimeLease::create()?;
     #[cfg(unix)]
     {

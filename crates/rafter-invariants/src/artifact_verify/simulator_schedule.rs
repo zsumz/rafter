@@ -8,9 +8,14 @@ use std::{
 
 use serde_json::Value;
 
-use crate::{aggregate::AggregateError, ResultBundle};
+use crate::{
+    verification::{AggregateError, AuthenticatedArtifacts},
+    ResultBundle,
+};
 
-use super::EVENT_PREFIX;
+mod events;
+
+pub(super) use events::{scan_machine_events, ScannedSimulatorLog};
 
 const SIMULATOR_PACKAGE: &str = "rafter-sim";
 const SIMULATOR_PACKAGE_VERSION: &str = "0.0.1";
@@ -26,10 +31,16 @@ struct SimulatorRoots {
     active: PathBuf,
 }
 
-pub(super) fn verify_simulator_schedule(
+pub(super) struct VerifiedSimulatorSchedule<'a> {
+    pub(super) diagnostics: Vec<String>,
+    pub(super) logs: Vec<ScannedSimulatorLog<'a>>,
+}
+
+pub(super) fn verify_simulator_schedule_authenticated<'a>(
     bundle: &ResultBundle,
     root: &Path,
-) -> Result<Vec<String>, AggregateError> {
+    authenticated: &'a AuthenticatedArtifacts,
+) -> Result<VerifiedSimulatorSchedule<'a>, AggregateError> {
     let configuration = bundle
         .execution
         .plan
@@ -52,42 +63,51 @@ pub(super) fn verify_simulator_schedule(
         .collect::<Vec<_>>();
     let sources = logs
         .iter()
-        .map(|log| {
-            fs::read_to_string(root.join(&log.path)).map_err(|error| {
-                AggregateError::new(format!(
-                    "read scheduled simulator log {}: {error}",
-                    log.path
-                ))
-            })
-        })
+        .map(|log| authenticated.text(log))
         .collect::<Result<Vec<_>, _>>()?;
-    let invocation = verify_simulator_invocations(bundle, root, &sources)?;
+    let invocation = verify_simulator_invocations(bundle, root, &sources, authenticated)?;
     let mut diagnostics = invocation.diagnostics;
-    let event_diagnostics = sources
+    let mut event_diagnostics = Vec::new();
+    let scanned_logs = sources
         .iter()
         .enumerate()
-        .flat_map(|(index, source)| {
-            scan_machine_events(source, &format!("simulator log {index}"))
-                .1
-                .into_iter()
+        .map(|(index, source)| {
+            let (events, diagnostics) =
+                scan_machine_events(source, &format!("simulator log {index}"));
+            event_diagnostics.extend(diagnostics);
+            ScannedSimulatorLog { source, events }
         })
         .collect::<Vec<_>>();
     if invocation.complete && event_diagnostics.is_empty() {
-        validate_simulator_schedule(
+        validate_scanned_simulator_schedule(
             &bundle.profile,
             &bundle.source_ref,
             &configuration,
-            &sources,
+            &scanned_logs,
         )?;
     }
     diagnostics.extend(event_diagnostics);
-    Ok(diagnostics)
+    Ok(VerifiedSimulatorSchedule {
+        diagnostics,
+        logs: scanned_logs,
+    })
+}
+
+#[cfg(test)]
+pub(super) fn verify_simulator_schedule(
+    bundle: &ResultBundle,
+    root: &Path,
+) -> Result<Vec<String>, AggregateError> {
+    let authenticated = crate::verification::snapshot_available_artifacts(bundle, root)?;
+    verify_simulator_schedule_authenticated(bundle, root, &authenticated)
+        .map(|verified| verified.diagnostics)
 }
 
 fn verify_simulator_invocations(
     bundle: &ResultBundle,
     root: &Path,
-    sources: &[String],
+    sources: &[&str],
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<InvocationVerification, AggregateError> {
     let roots = simulator_roots(bundle, root)?;
     let binaries = bundle
@@ -102,7 +122,7 @@ fn verify_simulator_invocations(
             binaries.len()
         )));
     };
-    let emitted = emitted_simulator_executable(bundle, root, &roots)?;
+    let emitted = emitted_simulator_executable(bundle, &roots, authenticated)?;
     let environment_sha256 = bundle.execution.source.environment_sha256.as_str();
     let expected: Vec<(String, Vec<String>)> = match bundle.profile.as_str() {
         "pr" => vec![
@@ -223,8 +243,8 @@ fn verify_simulator_invocation_outcome(
 
 fn emitted_simulator_executable(
     bundle: &ResultBundle,
-    root: &Path,
     roots: &SimulatorRoots,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<PathBuf, AggregateError> {
     let mut executables = Vec::new();
     for artifact in bundle
@@ -233,14 +253,9 @@ fn emitted_simulator_executable(
         .iter()
         .filter(|artifact| artifact.kind == "compile-log")
     {
-        let source = fs::read_to_string(root.join(&artifact.path)).map_err(|error| {
-            AggregateError::new(format!(
-                "read simulator compile log {}: {error}",
-                artifact.path
-            ))
-        })?;
+        let source = authenticated.text(artifact)?;
         let processes =
-            crate::evidence::format::process::parse_combined_v4(&source).map_err(|error| {
+            crate::evidence::format::process::parse_combined_v4(source).map_err(|error| {
                 AggregateError::new(format!(
                     "parse simulator compile log {}: {error}",
                     artifact.path
@@ -554,11 +569,11 @@ fn simulator_program_matches(
         && invocation.program_sha256 == captured_sha256
 }
 
-pub(super) fn validate_simulator_schedule(
+fn validate_scanned_simulator_schedule(
     profile: &str,
     source_ref: &str,
     configuration: &crate::contract::profile::SimulatorRunnerConfiguration,
-    logs: &[String],
+    logs: &[ScannedSimulatorLog<'_>],
 ) -> Result<(), AggregateError> {
     if profile == "pr" {
         return validate_pr_soak_schedule(configuration, logs);
@@ -582,18 +597,24 @@ pub(super) fn validate_simulator_schedule(
     let expected_profile = format!("model-check profile={model_profile} ");
     let expected_seed_line =
         format!("model-check {model_profile}-soak seeds source=replay seeds={expected_seeds}");
-    let events = parse_machine_events(&logs[0])?;
-    if !logs[0].lines().any(|line| line == "exit_code: Some(0)")
+    if !logs[0]
+        .source
+        .lines()
+        .any(|line| line == "exit_code: Some(0)")
         || !logs[0]
+            .source
             .lines()
             .any(|line| line.starts_with(&expected_profile))
-        || !logs[0].lines().any(|line| line == expected_seed_line)
-        || !profile_total_is_rederived(&model_profile, &configuration.state_floors, &events)
+        || !logs[0]
+            .source
+            .lines()
+            .any(|line| line == expected_seed_line)
+        || !profile_total_is_rederived(&model_profile, &configuration.state_floors, &logs[0].events)
         || !soak_seeds_are_rederived(
             &model_profile,
             &expected_seeds,
             configuration.soak_steps,
-            &events,
+            logs[0].events.iter(),
         )
     {
         return Err(AggregateError::new(format!(
@@ -603,9 +624,31 @@ pub(super) fn validate_simulator_schedule(
     Ok(())
 }
 
-fn validate_pr_soak_schedule(
+#[cfg(test)]
+pub(super) fn validate_simulator_schedule(
+    profile: &str,
+    source_ref: &str,
     configuration: &crate::contract::profile::SimulatorRunnerConfiguration,
     logs: &[String],
+) -> Result<(), AggregateError> {
+    let scanned = logs
+        .iter()
+        .enumerate()
+        .map(|(index, source)| {
+            let (events, diagnostics) =
+                scan_machine_events(source, &format!("simulator test log {index}"));
+            if let Some(diagnostic) = diagnostics.into_iter().next() {
+                return Err(AggregateError::new(diagnostic));
+            }
+            Ok(ScannedSimulatorLog { source, events })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    validate_scanned_simulator_schedule(profile, source_ref, configuration, &scanned)
+}
+
+fn validate_pr_soak_schedule(
+    configuration: &crate::contract::profile::SimulatorRunnerConfiguration,
+    logs: &[ScannedSimulatorLog<'_>],
 ) -> Result<(), AggregateError> {
     const EXPECTED_SEEDS: &str = "0x9103,0x9104,0x9105,0x9106";
     if logs.len() != 2 {
@@ -618,55 +661,22 @@ fn validate_pr_soak_schedule(
         format!("model-check raft-soak seeds source=curated seeds={EXPECTED_SEEDS}");
     let seed_line_count = logs
         .iter()
-        .flat_map(|log| log.lines())
+        .flat_map(|log| log.source.lines())
         .filter(|line| *line == expected_seed_line)
         .count();
-    let events = logs
-        .iter()
-        .map(|log| parse_machine_events(log))
-        .collect::<Result<Vec<_>, _>>()?
-        .into_iter()
-        .flatten()
-        .collect::<Vec<_>>();
     if seed_line_count != 1
-        || !soak_seeds_are_rederived("raft", EXPECTED_SEEDS, configuration.soak_steps, &events)
+        || !soak_seeds_are_rederived(
+            "raft",
+            EXPECTED_SEEDS,
+            configuration.soak_steps,
+            logs.iter().flat_map(|log| log.events.iter()),
+        )
     {
         return Err(AggregateError::new(
             "PR simulator log does not prove the exact reviewed soak seed inventory".to_owned(),
         ));
     }
     Ok(())
-}
-
-fn parse_machine_events(log: &str) -> Result<Vec<Value>, AggregateError> {
-    let (events, diagnostics) = scan_machine_events(log, "scheduled simulator event");
-    if let Some(error) = diagnostics.into_iter().next() {
-        return Err(AggregateError::new(error));
-    }
-    Ok(events)
-}
-
-pub(super) fn scan_machine_events(log: &str, context: &str) -> (Vec<Value>, Vec<String>) {
-    let mut events = Vec::new();
-    let mut diagnostics = Vec::new();
-    for source in log
-        .lines()
-        .filter_map(|line| line.strip_prefix(EVENT_PREFIX))
-    {
-        let event = match serde_json::from_str::<Value>(source) {
-            Ok(event) => event,
-            Err(error) => {
-                diagnostics.push(format!("parse {context}: {error}"));
-                break;
-            }
-        };
-        if event["check_id"].as_str().is_none() {
-            diagnostics.push(format!("parse {context}: event omitted check_id"));
-            break;
-        }
-        events.push(event);
-    }
-    (events, diagnostics)
 }
 
 fn profile_total_is_rederived(
@@ -710,11 +720,11 @@ fn profile_total_is_rederived(
         && verifier_total >= verifier_floor
 }
 
-fn soak_seeds_are_rederived(
+fn soak_seeds_are_rederived<'a>(
     model_profile: &str,
     expected_seeds: &str,
     expected_steps: u64,
-    events: &[Value],
+    events: impl IntoIterator<Item = &'a Value>,
 ) -> bool {
     let expected_values = expected_seeds
         .split(',')
@@ -737,7 +747,10 @@ fn soak_seeds_are_rederived(
         })
         .collect::<BTreeSet<_>>();
     let mut observed = BTreeMap::<(String, u64), usize>::new();
-    for event in events.iter().filter(|event| event["event"] == "soak-check") {
+    for event in events
+        .into_iter()
+        .filter(|event| event["event"] == "soak-check")
+    {
         let (Some(check), Some(seed), Some(steps)) = (
             event["check_id"].as_str(),
             event["seed"].as_u64(),

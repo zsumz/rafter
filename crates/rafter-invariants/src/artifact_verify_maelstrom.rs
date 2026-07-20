@@ -3,8 +3,8 @@
 use std::{collections::BTreeSet, path::Path};
 
 use crate::{
-    aggregate::AggregateError,
     producer::maelstrom_edn::{MaelstromSummary, Validity},
+    verification::{AggregateError, AuthenticatedArtifacts},
     CheckCompletion, CheckReceipt, EvidenceStatus, ResultBundle,
 };
 
@@ -14,13 +14,18 @@ use crate::artifact_verify_maelstrom_support::{
     verify_matches_file, LeaseArtifactStatus,
 };
 
-pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<Vec<String>, AggregateError> {
+pub(super) fn verify_authenticated(
+    bundle: &ResultBundle,
+    root: &Path,
+    source_root: &Path,
+    authenticated: &AuthenticatedArtifacts,
+) -> Result<Vec<String>, AggregateError> {
     let trials = configuration(bundle, "trials")?
         .parse::<u64>()
         .map_err(|parse_error| error(format!("parse Maelstrom trial count: {parse_error}")))?;
     let mut diagnostics = Vec::new();
     for check in &bundle.execution.checks {
-        if verify_check(bundle, check, trials, root)? {
+        if verify_check(bundle, check, trials, root, source_root, authenticated)? {
             diagnostics.push(format!(
                 "{} preserved a Maelstrom counterexample alongside a harness error",
                 check.check_id
@@ -30,11 +35,19 @@ pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<Vec<String>, 
     Ok(diagnostics)
 }
 
+#[cfg(test)]
+pub(super) fn verify(bundle: &ResultBundle, root: &Path) -> Result<Vec<String>, AggregateError> {
+    let authenticated = crate::verification::snapshot_available_artifacts(bundle, root)?;
+    verify_authenticated(bundle, root, root, &authenticated)
+}
+
 fn verify_check(
     bundle: &ResultBundle,
     check: &CheckReceipt,
     trials: u64,
     root: &Path,
+    source_root: &Path,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<bool, AggregateError> {
     let scenario = check
         .check_id
@@ -53,9 +66,16 @@ fn verify_check(
     let mut coverage = Vec::new();
     let mut lease_statuses = Vec::new();
     for (trial, artifacts) in &grouped {
-        verify_trial_inputs(bundle, scenario, artifacts, root)?;
-        let summary = parse_results(unique(artifacts, "maelstrom-results")?, root).ok();
-        let process = parse_process(unique(artifacts, "maelstrom-process-log")?, root)?;
+        verify_trial_inputs(
+            bundle,
+            scenario,
+            artifacts,
+            root,
+            source_root,
+            authenticated,
+        )?;
+        let summary = parse_results(unique(artifacts, "maelstrom-results")?, authenticated).ok();
+        let process = parse_process(unique(artifacts, "maelstrom-process-log")?, authenticated)?;
         if process.label != scenario
             || !crate::receipt::script_invocation_matches_source(
                 &process.invocation,
@@ -78,9 +98,9 @@ fn verify_check(
         if let Some(summary) = &summary {
             add_summary(&mut observations, summary);
         }
-        let mut marker_scan = scan_node_logs(artifacts, root)?;
+        let mut marker_scan = scan_node_logs(artifacts, authenticated)?;
         if scenario == "lease-isolation" {
-            bind_lease_history(&mut marker_scan, artifacts, root)?;
+            bind_lease_history(&mut marker_scan, artifacts, authenticated)?;
         }
         for (&name, &value) in &marker_scan.values {
             add(&mut observations, name, value);
@@ -239,11 +259,21 @@ fn verify_trial_inputs(
     scenario: &str,
     artifacts: &[&crate::ArtifactRef],
     root: &Path,
+    source_root: &Path,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<(), AggregateError> {
     let runner = unique(artifacts, "maelstrom-runner")?;
-    verify_matches_file(runner, root.join(scenario_script(scenario)?), root)?;
+    verify_matches_file(
+        runner,
+        source_root.join(scenario_script(scenario)?),
+        authenticated,
+    )?;
     let binary = unique(artifacts, "maelstrom-binary")?;
-    verify_matches_file(binary, root.join("target/debug/rafter-maelstrom"), root)?;
+    verify_matches_file(
+        binary,
+        root.join("target/debug/rafter-maelstrom"),
+        authenticated,
+    )?;
     let jar = unique(artifacts, "maelstrom-tool-jar")?;
     if jar.sha256 != configuration(bundle, "maelstrom_jar_sha256")? {
         return Err(error("Maelstrom tool jar does not match the profile pin"));
@@ -253,7 +283,7 @@ fn verify_trial_inputs(
         verify_matches_file(
             proxy,
             root.join("target/debug/rafter-maelstrom-leader-restart-proxy"),
-            root,
+            authenticated,
         )?;
     }
     Ok(())

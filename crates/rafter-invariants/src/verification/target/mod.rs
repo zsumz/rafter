@@ -168,8 +168,11 @@ pub(crate) fn target_source_graph(
 ) -> Result<TargetSourceGraph, String> {
     let workspace =
         fs::canonicalize(workspace).map_err(|error| format!("canonicalize workspace: {error}"))?;
+    let tracked = match crate::verification::source::authenticated_snapshot_paths(&workspace)? {
+        Some(paths) => paths,
+        None => crate::provenance::source::tracked_source_paths_at(&workspace)?,
+    };
     let package = package_manifest(&workspace, package_name)?;
-    let tracked = crate::provenance::source::tracked_source_paths_at(&workspace)?;
     let manifest_source = fs::read_to_string(&package.manifest)
         .map_err(|error| format!("read {}: {error}", package.manifest.display()))?;
     let manifest = manifest_source
@@ -196,14 +199,16 @@ pub(crate) fn target_source_graph(
         oracle_shadow_sources,
         oracle_shadow_impl_methods,
     ) = collector.finish();
-    Ok(TargetSourceGraph {
+    let graph = TargetSourceGraph {
         crate_name: target.crate_name,
         modules,
         declarations,
         declaration_sources,
         oracle_shadow_sources,
         oracle_shadow_impl_methods,
-    })
+    };
+    crate::verification::source::revalidate_authenticated_snapshot(&workspace)?;
+    Ok(graph)
 }
 
 struct PackageManifest {

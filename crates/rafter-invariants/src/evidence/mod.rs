@@ -5,6 +5,7 @@ mod bundle;
 pub(crate) mod detector_proof;
 mod execution;
 pub(crate) mod format;
+pub(crate) mod limits;
 mod liveness;
 mod receipt;
 mod result;

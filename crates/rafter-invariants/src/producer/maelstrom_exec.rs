@@ -370,11 +370,16 @@ pub(super) fn capture_tree(
         } else {
             "maelstrom-store-file"
         };
+        let bytes = root.read_bounded(
+            &relative,
+            read_deadline,
+            crate::evidence::limits::MAX_ARTIFACT_BYTES,
+        )?;
         artifacts.push(artifact::write(
             output_dir,
             &namespace.join(&relative),
             kind,
-            &root.read_with_deadline(&relative, read_deadline)?,
+            &bytes,
         )?);
         read_deadline.check()?;
     }

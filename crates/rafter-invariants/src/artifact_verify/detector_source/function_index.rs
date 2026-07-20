@@ -54,15 +54,6 @@ impl FunctionIndex {
         self.functions.contains_key(id)
     }
 
-    pub(super) fn ids_named(&self, name: &str) -> Vec<FunctionId> {
-        self.functions
-            .iter()
-            .filter(|(id, _)| id.name == name)
-            .flat_map(|(id, functions)| std::iter::repeat_n(id, functions.len()))
-            .cloned()
-            .collect()
-    }
-
     pub(super) fn unique_exact(&self, id: &FunctionId) -> Result<Option<&FunctionFacts>, String> {
         match self.functions.get(id).map(Vec::as_slice) {
             None => Ok(None),

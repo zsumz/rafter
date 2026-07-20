@@ -1,19 +1,18 @@
-use std::path::Path;
-
 use crate::producer::tla_checkpoint::{
     expected_contract, CheckpointContract, CheckpointInventory, RecoveryReport, RecoveryStatus,
     CONTRACT_KIND, INVENTORY_KIND, RECOVERED_CONTRACT_KIND, RECOVERED_INVENTORY_KIND,
     RECOVERY_REPORT_KIND,
 };
-use crate::{aggregate::AggregateError, CheckCompletion, ResultBundle};
+use crate::{verification::AggregateError, CheckCompletion, ResultBundle};
 
 use super::{has_kind, read_json_kind};
+use crate::verification::AuthenticatedArtifacts;
 
-pub(super) fn verify_checkpoint(
+pub(super) fn verify_checkpoint_authenticated(
     bundle: &ResultBundle,
     check: &crate::CheckReceipt,
-    root: &Path,
     main_has_violation: bool,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<Option<RecoveryReport>, AggregateError> {
     let checkpoint_enabled = bundle.execution.plan.contract.runners["tla"]
         .configuration
@@ -35,7 +34,7 @@ pub(super) fn verify_checkpoint(
         return Ok(None);
     }
 
-    let report: RecoveryReport = read_json_kind(check, RECOVERY_REPORT_KIND, root)?;
+    let report: RecoveryReport = read_json_kind(check, RECOVERY_REPORT_KIND, authenticated)?;
     let contract = expected_contract(
         &bundle.profile,
         &bundle.execution.plan.contract.runners["tla"].configuration,
@@ -77,18 +76,18 @@ pub(super) fn verify_checkpoint(
 
     verify_final_metadata(
         check,
-        root,
         report.status,
         &contract,
         &contract_sha256,
         main_has_violation,
+        authenticated,
     )?;
 
     if report.candidate_present && report.status != RecoveryStatus::Incompatible {
         let recovered_contract: CheckpointContract =
-            read_json_kind(check, RECOVERED_CONTRACT_KIND, root)?;
+            read_json_kind(check, RECOVERED_CONTRACT_KIND, authenticated)?;
         let recovered_inventory: CheckpointInventory =
-            read_json_kind(check, RECOVERED_INVENTORY_KIND, root)?;
+            read_json_kind(check, RECOVERED_INVENTORY_KIND, authenticated)?;
         if recovered_contract != contract {
             return Err(AggregateError::new(
                 "restored TLA checkpoint metadata does not match the execution contract".to_owned(),
@@ -107,13 +106,24 @@ pub(super) fn verify_checkpoint(
     Ok(Some(report))
 }
 
-fn verify_final_metadata(
+#[cfg(test)]
+pub(super) fn verify_checkpoint(
+    bundle: &ResultBundle,
     check: &crate::CheckReceipt,
     root: &Path,
+    main_has_violation: bool,
+) -> Result<Option<RecoveryReport>, AggregateError> {
+    let authenticated = crate::verification::snapshot_available_artifacts(bundle, root)?;
+    verify_checkpoint_authenticated(bundle, check, main_has_violation, &authenticated)
+}
+
+fn verify_final_metadata(
+    check: &crate::CheckReceipt,
     recovery_status: RecoveryStatus,
     contract: &CheckpointContract,
     contract_sha256: &str,
     main_has_violation: bool,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<(), AggregateError> {
     let final_contract_present = has_kind(check, CONTRACT_KIND)?;
     let final_inventory_present = has_kind(check, INVENTORY_KIND)?;
@@ -143,8 +153,9 @@ fn verify_final_metadata(
         }
         return Ok(());
     }
-    let final_contract: CheckpointContract = read_json_kind(check, CONTRACT_KIND, root)?;
-    let final_inventory: CheckpointInventory = read_json_kind(check, INVENTORY_KIND, root)?;
+    let final_contract: CheckpointContract = read_json_kind(check, CONTRACT_KIND, authenticated)?;
+    let final_inventory: CheckpointInventory =
+        read_json_kind(check, INVENTORY_KIND, authenticated)?;
     if final_contract != *contract {
         return Err(AggregateError::new(
             "TLA final checkpoint metadata does not match the execution contract".to_owned(),
@@ -224,3 +235,4 @@ fn has_tlc_extension(name: &str, expected: &str) -> bool {
             .and_then(|stem| Path::new(stem).extension())
             .is_some_and(|extension| extension.eq_ignore_ascii_case(expected))
 }
+use std::path::Path;

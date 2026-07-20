@@ -1,12 +1,15 @@
 use std::{
     error::Error,
     fs,
+    io::Read,
     path::{Component, Path},
 };
 
 use sha2::{Digest, Sha256};
 
-use crate::{execution::filesystem::HeldDirectory, ArtifactRef};
+use crate::{
+    evidence::limits::MAX_ARTIFACT_BYTES, execution::filesystem::HeldDirectory, ArtifactRef,
+};
 
 pub(super) fn validate_output_dir(path: &Path) -> Result<(), Box<dyn Error>> {
     if path.is_absolute()
@@ -25,6 +28,7 @@ pub(super) fn write(
     kind: &str,
     bytes: &[u8],
 ) -> Result<ArtifactRef, Box<dyn Error>> {
+    require_bounded(bytes, kind)?;
     let path = output_dir.join(relative_name);
     let workspace = HeldDirectory::workspace()?;
     workspace.write_atomic(&path, bytes)?;
@@ -51,6 +55,7 @@ pub(super) fn capture_bytes(
     bytes: &[u8],
     kind: &str,
 ) -> Result<ArtifactRef, Box<dyn Error>> {
+    require_bounded(bytes, kind)?;
     let digest = format!("{:x}", Sha256::digest(bytes));
     let relative_name = namespace.join(format!("{kind}-{digest}"));
     let path = output_dir.join(relative_name);
@@ -84,7 +89,22 @@ pub(super) fn capture_external(
     source: &Path,
     kind: &str,
 ) -> Result<ArtifactRef, Box<dyn Error>> {
-    let bytes = fs::read(fs::canonicalize(source)?)?;
+    let path = fs::canonicalize(source)?;
+    let mut file = fs::File::open(&path)?;
+    let length = file.metadata()?.len();
+    if length > MAX_ARTIFACT_BYTES {
+        return Err(format!(
+            "external artifact {} is {length} bytes, exceeding the {MAX_ARTIFACT_BYTES}-byte limit",
+            path.display()
+        )
+        .into());
+    }
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(usize::try_from(length)?)?;
+    file.by_ref()
+        .take(MAX_ARTIFACT_BYTES + 1)
+        .read_to_end(&mut bytes)?;
+    require_bounded(&bytes, kind)?;
     capture_bytes(output_dir, namespace, &bytes, kind)
 }
 
@@ -98,7 +118,18 @@ fn reference(path: &Path, kind: &str, bytes: &[u8]) -> ArtifactRef {
 }
 
 fn read_confined(source: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
-    crate::execution::filesystem::read_file(source)
+    crate::execution::filesystem::read_file_bounded(source, MAX_ARTIFACT_BYTES)
+}
+
+fn require_bounded(bytes: &[u8], kind: &str) -> Result<(), Box<dyn Error>> {
+    if bytes.len() as u64 > MAX_ARTIFACT_BYTES {
+        return Err(format!(
+            "{kind} artifact is {} bytes, exceeding the {MAX_ARTIFACT_BYTES}-byte limit",
+            bytes.len()
+        )
+        .into());
+    }
+    Ok(())
 }
 
 pub(super) fn stable_id(namespace: &str, value: &str) -> String {

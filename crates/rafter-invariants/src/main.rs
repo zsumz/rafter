@@ -285,7 +285,6 @@ fn profile_result_files(
     let mut paths = required_layers
         .iter()
         .map(|layer| directory.join(format!("{profile}-{layer}.json")))
-        .filter(|path| path.exists())
         .collect::<Vec<_>>();
     paths.sort();
     paths
@@ -303,7 +302,7 @@ mod tests {
     static DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
     #[test]
-    fn implicit_discovery_ignores_other_profiles_and_unexpected_json() {
+    fn implicit_discovery_includes_missing_required_layers() {
         let id = DIRECTORY_ID.fetch_add(1, Ordering::Relaxed);
         let root = std::env::temp_dir().join(format!(
             "rafter-invariants-discovery-{}-{id}",
@@ -327,7 +326,11 @@ mod tests {
         );
         assert_eq!(
             paths,
-            vec![root.join("pr-simulator.json"), root.join("pr-tests.json")]
+            vec![
+                root.join("pr-simulator.json"),
+                root.join("pr-tests.json"),
+                root.join("pr-tla.json"),
+            ]
         );
         let _ = std::fs::remove_dir_all(root);
     }

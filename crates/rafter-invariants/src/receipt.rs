@@ -7,6 +7,7 @@ use std::{
 
 use crate::{
     contract::profile::{ProfileContract, RunnerContract},
+    verification::IntakeDefect,
     ArtifactRef, CheckCompletion, CheckReceipt, EvidenceDescriptor, EvidenceResult, EvidenceStatus,
     FailureClassification, ResultBundle,
 };
@@ -24,7 +25,7 @@ pub(crate) use fixtures::{
     launchers as fixture_launchers, process_runtime as fixture_process_runtime,
 };
 
-pub(super) fn collect_results(
+pub(crate) fn collect_results(
     bundles: &[ResultBundle],
     expected: &BTreeMap<String, &EvidenceDescriptor>,
     contract: &ProfileContract,
@@ -32,84 +33,102 @@ pub(super) fn collect_results(
     source_ref: &str,
 ) -> (
     BTreeMap<String, EvidenceResult>,
-    Vec<String>,
+    Vec<IntakeDefect>,
     Vec<ArtifactRef>,
 ) {
     let mut accepted = BTreeMap::<String, EvidenceResult>::new();
-    let mut harness_errors = Vec::new();
+    let mut ambiguous = BTreeSet::new();
+    let mut defects = Vec::new();
     let mut artifacts = BTreeSet::new();
     for bundle in bundles {
         if bundle.schema_version != crate::evidence::RESULT_SCHEMA_VERSION {
-            harness_errors.push(format!(
+            defects.push(IntakeDefect::malformed(format!(
                 "runner {} used unsupported result schema {}",
                 bundle.runner, bundle.schema_version
-            ));
+            )));
             continue;
         }
         if bundle.profile != profile {
-            harness_errors.push(format!(
+            defects.push(IntakeDefect::stale(format!(
                 "runner {} reported profile {} instead of {profile}",
                 bundle.runner, bundle.profile
-            ));
+            )));
             continue;
         }
         if bundle.source_ref != source_ref {
-            harness_errors.push(format!(
+            defects.push(IntakeDefect::stale(format!(
                 "runner {} evidence is stale: source {} != {source_ref}",
                 bundle.runner, bundle.source_ref
-            ));
+            )));
             continue;
         }
         let Some(runner_contract) = contract.runners.get(&bundle.runner) else {
-            harness_errors.push(format!(
+            defects.push(IntakeDefect::unverifiable(format!(
                 "unknown runner {} for profile {profile}",
                 bundle.runner
-            ));
+            )));
             continue;
         };
         if let Err(message) = validate_execution(bundle, contract, runner_contract, expected) {
-            harness_errors.push(format!("runner {}: {message}", bundle.runner));
+            defects.push(IntakeDefect::unverifiable(format!(
+                "runner {}: {message}",
+                bundle.runner
+            )));
             continue;
         }
         artifacts.extend(bundle.execution.artifacts.iter().cloned());
-        collect_bundle_results(bundle, expected, &mut accepted, &mut harness_errors);
+        collect_bundle_results(
+            bundle,
+            expected,
+            &mut accepted,
+            &mut ambiguous,
+            &mut defects,
+        );
     }
-    (accepted, harness_errors, artifacts.into_iter().collect())
+    (accepted, defects, artifacts.into_iter().collect())
 }
 
 fn collect_bundle_results(
     bundle: &ResultBundle,
     expected: &BTreeMap<String, &EvidenceDescriptor>,
     accepted: &mut BTreeMap<String, EvidenceResult>,
-    harness_errors: &mut Vec<String>,
+    ambiguous: &mut BTreeSet<String>,
+    defects: &mut Vec<IntakeDefect>,
 ) {
     for result in &bundle.results {
         let Some(descriptor) = expected.get(&result.evidence_id) else {
-            harness_errors.push(format!(
+            defects.push(IntakeDefect::malformed(format!(
                 "runner {} reported unknown evidence {}",
                 bundle.runner, result.evidence_id
-            ));
+            )));
             continue;
         };
         if result.invariant_id != descriptor.invariant_id || bundle.runner != descriptor.layer {
-            harness_errors.push(format!(
+            defects.push(IntakeDefect::malformed(format!(
                 "evidence {} identity does not match registry invariant/layer",
                 result.evidence_id
-            ));
+            )));
             continue;
         }
         if let Err(message) = validate_result(result) {
-            harness_errors.push(format!("evidence {}: {message}", result.evidence_id));
+            defects.push(IntakeDefect::malformed(format!(
+                "evidence {}: {message}",
+                result.evidence_id
+            )));
             continue;
         }
-        if accepted
-            .insert(result.evidence_id.clone(), result.clone())
-            .is_some()
-        {
-            harness_errors.push(format!(
+        if ambiguous.contains(&result.evidence_id) {
+            continue;
+        }
+        if accepted.contains_key(&result.evidence_id) {
+            accepted.remove(&result.evidence_id);
+            ambiguous.insert(result.evidence_id.clone());
+            defects.push(IntakeDefect::unverifiable(format!(
                 "duplicate result for evidence {}",
                 result.evidence_id
-            ));
+            )));
+        } else {
+            accepted.insert(result.evidence_id.clone(), result.clone());
         }
     }
 }

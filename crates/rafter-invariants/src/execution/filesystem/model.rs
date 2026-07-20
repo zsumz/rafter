@@ -83,7 +83,6 @@ pub(crate) struct OperationDeadline {
 }
 
 impl OperationDeadline {
-    #[cfg(test)]
     pub(crate) const fn none(operation: &'static str) -> Self {
         Self {
             deadline: None,

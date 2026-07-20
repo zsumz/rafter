@@ -9,7 +9,9 @@ use std::{
 use edn_format::{parse_str, Keyword, Value};
 
 use crate::{
-    aggregate::AggregateError, producer::maelstrom_edn::MaelstromSummary, ArtifactRef, CheckReceipt,
+    producer::maelstrom_edn::{parse as parse_edn_summary, MaelstromSummary, Validity},
+    verification::{AggregateError, AuthenticatedArtifacts},
+    ArtifactRef, CheckReceipt,
 };
 
 #[rustfmt::skip]
@@ -17,13 +19,22 @@ const MARKERS: [&str; 25] = ["membership_enter", "membership_leave", "membership
 #[rustfmt::skip]
 const SIMPLE_MARKERS: [(&str, &str); 5] = [("membership_enter", "action=enter-joint"), ("membership_leave", "action=leave-joint"), ("membership_complete", "complete target="), ("snapshots_compacted", "compacted snapshot"), ("snapshots_applied", "applied snapshot")];
 
+const MARKER_LIMITS: MarkerLimits = MarkerLimits {
+    events: 16_384,
+    line_bytes: 16 * 1024,
+};
+const HISTORY_LIMITS: HistoryLimits = HistoryLimits {
+    operations: 131_072,
+    pending: 4_096,
+    line_bytes: 64 * 1024,
+};
+
 pub(super) fn verify_matches_file(
     artifact: &ArtifactRef,
     source: impl AsRef<Path>,
-    root: &Path,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<(), AggregateError> {
-    let captured = fs::read(root.join(&artifact.path))
-        .map_err(|read_error| error(format!("read captured {}: {read_error}", artifact.kind)))?;
+    let captured = authenticated.bytes(artifact)?;
     let current = fs::read(source.as_ref()).map_err(|read_error| {
         error(format!(
             "read source-bound {} input {}: {read_error}",
@@ -102,18 +113,18 @@ pub(super) fn unique<'a>(
 
 pub(super) fn parse_results(
     artifact: &ArtifactRef,
-    root: &Path,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<MaelstromSummary, AggregateError> {
-    let source = read(artifact, root)?;
-    crate::producer::maelstrom_edn::parse(&source)
+    let source = read(artifact, authenticated)?;
+    parse_edn_summary(source)
         .map_err(|parse_error| error(format!("parse Maelstrom results: {parse_error}")))
 }
 
 pub(super) fn parse_process(
     artifact: &ArtifactRef,
-    root: &Path,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<crate::evidence::format::process::ProcessLog, AggregateError> {
-    crate::evidence::format::process::parse_maelstrom_v3(&read(artifact, root)?)
+    crate::evidence::format::process::parse_maelstrom_v3(read(artifact, authenticated)?)
         .map_err(|parse_error| error(format!("parse Maelstrom process log: {parse_error}")))
 }
 
@@ -142,7 +153,7 @@ pub(super) struct LeaseProbe {
 
 pub(super) fn scan_node_logs(
     artifacts: &[&ArtifactRef],
-    root: &Path,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<MarkerScan, AggregateError> {
     let mut values = MARKERS.into_iter().map(|name| (name, 0)).collect();
     let mut lease_events = Vec::new();
@@ -160,12 +171,12 @@ pub(super) fn scan_node_logs(
             .and_then(|name| name.to_str())
             .ok_or_else(|| error("Maelstrom node log artifact has no UTF-8 file stem"))?;
         scan_markers(
-            &read(artifact, root)?,
+            read(artifact, authenticated)?,
             source_node,
             &mut values,
             &mut lease_events,
             &mut lease_parse_errors,
-        );
+        )?;
     }
     let lease_status = finalize_lease_scan(&mut values, &lease_events, lease_parse_errors);
     let lease_probe = lease_events
@@ -185,7 +196,7 @@ pub(super) fn scan_node_logs(
 pub(super) fn bind_lease_history(
     scan: &mut MarkerScan,
     artifacts: &[&ArtifactRef],
-    root: &Path,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<(), AggregateError> {
     if scan.lease_status != LeaseArtifactStatus::Complete {
         return Ok(());
@@ -199,7 +210,7 @@ pub(super) fn bind_lease_history(
         .collect::<Vec<_>>();
     let matches = match (histories.as_slice(), scan.lease_probe.as_ref()) {
         ([history], Some(probe)) => {
-            history_completion_count(&read(history, root)?, &probe.client, probe.message)?
+            history_completion_count(read(history, authenticated)?, &probe.client, probe.message)?
         }
         _ => 0,
     };
@@ -219,11 +230,36 @@ fn history_completion_count(
     client: &str,
     message: u64,
 ) -> Result<u64, AggregateError> {
+    history_completion_count_with_limits(source, client, message, HISTORY_LIMITS)
+}
+
+fn history_completion_count_with_limits(
+    source: &str,
+    client: &str,
+    message: u64,
+    limits: HistoryLimits,
+) -> Result<u64, AggregateError> {
     let expected = format!("[rafter-lease-probe client={client} msg_id={message} code=11]");
     let mut pending = BTreeMap::<Value, (Value, Value)>::new();
     let mut completions = 0;
     let mut last_index = None;
-    for line in source.lines().filter(|line| !line.trim().is_empty()) {
+    for (operation_index, line) in source
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .enumerate()
+    {
+        if operation_index == limits.operations {
+            return Err(error(format!(
+                "Maelstrom history exceeds {} operations",
+                limits.operations
+            )));
+        }
+        if line.len() > limits.line_bytes {
+            return Err(error(format!(
+                "Maelstrom history operation exceeds {} bytes",
+                limits.line_bytes
+            )));
+        }
         let parsed = parse_str(line)
             .map_err(|parse_error| error(format!("parse Maelstrom history: {parse_error}")))?;
         let Value::Map(operation) = parsed else {
@@ -244,6 +280,12 @@ fn history_completion_count(
                 .is_some()
             {
                 return Err(error("Maelstrom process invoked twice without a terminal"));
+            }
+            if pending.len() > limits.pending {
+                return Err(error(format!(
+                    "Maelstrom history exceeds {} pending operations",
+                    limits.pending
+                )));
             }
             continue;
         }
@@ -336,7 +378,25 @@ fn scan_markers(
     values: &mut BTreeMap<&'static str, u64>,
     lease_events: &mut Vec<ArtifactLeaseMarker>,
     lease_parse_errors: &mut u64,
-) {
+) -> Result<(), AggregateError> {
+    scan_markers_with_limits(
+        source,
+        source_node,
+        values,
+        lease_events,
+        lease_parse_errors,
+        MARKER_LIMITS,
+    )
+}
+
+fn scan_markers_with_limits(
+    source: &str,
+    source_node: &str,
+    values: &mut BTreeMap<&'static str, u64>,
+    lease_events: &mut Vec<ArtifactLeaseMarker>,
+    lease_parse_errors: &mut u64,
+    limits: MarkerLimits,
+) -> Result<(), AggregateError> {
     let mut saw_restart = false;
     let mut saw_crash = false;
     for line in source.lines() {
@@ -360,6 +420,18 @@ fn scan_markers(
             saw_restart && line.contains("applied snapshot"),
         );
         if line.starts_with("rafter-maelstrom lease-isolation ") {
+            if line.len() > limits.line_bytes {
+                return Err(error(format!(
+                    "Maelstrom lease marker exceeds {} bytes",
+                    limits.line_bytes
+                )));
+            }
+            if lease_events.len() == limits.events {
+                return Err(error(format!(
+                    "Maelstrom lease marker count exceeds {}",
+                    limits.events
+                )));
+            }
             match ArtifactLeaseMarker::parse(line, source_node) {
                 Ok(event) => {
                     bump_lease_value(values, &event.phase);
@@ -369,6 +441,20 @@ fn scan_markers(
             }
         }
     }
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct MarkerLimits {
+    events: usize,
+    line_bytes: usize,
+}
+
+#[derive(Clone, Copy)]
+struct HistoryLimits {
+    operations: usize,
+    pending: usize,
+    line_bytes: usize,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -694,12 +780,12 @@ pub(super) fn add_summary(values: &mut BTreeMap<String, u64>, summary: &Maelstro
     add(
         values,
         "valid_trials",
-        u64::from(summary.validity == crate::producer::maelstrom_edn::Validity::Valid),
+        u64::from(summary.validity == Validity::Valid),
     );
     add(
         values,
         "invalid_trials",
-        u64::from(summary.linearizability == crate::producer::maelstrom_edn::Validity::Invalid),
+        u64::from(summary.linearizability == Validity::Invalid),
     );
     add(values, "operation_count", summary.operation_count);
     add(values, "ok_count", summary.ok_count);
@@ -716,13 +802,11 @@ fn bump(values: &mut BTreeMap<&'static str, u64>, name: &'static str, matched: b
     *values.entry(name).or_default() += u64::from(matched);
 }
 
-fn read(artifact: &ArtifactRef, root: &Path) -> Result<String, AggregateError> {
-    fs::read_to_string(root.join(&artifact.path)).map_err(|read_error| {
-        error(format!(
-            "read Maelstrom artifact {}: {read_error}",
-            artifact.path
-        ))
-    })
+fn read<'a>(
+    artifact: &ArtifactRef,
+    authenticated: &'a AuthenticatedArtifacts,
+) -> Result<&'a str, AggregateError> {
+    authenticated.text(artifact)
 }
 
 fn error(message: impl Into<String>) -> AggregateError {
@@ -732,8 +816,9 @@ fn error(message: impl Into<String>) -> AggregateError {
 #[cfg(test)]
 mod tests {
     use super::{
-        finalize_lease_scan, history_completion_count, scan_markers, trial_floors_met,
-        ArtifactLeaseMarker, LeaseArtifactStatus, MARKERS,
+        finalize_lease_scan, history_completion_count, history_completion_count_with_limits,
+        scan_markers, scan_markers_with_limits, trial_floors_met, ArtifactLeaseMarker,
+        HistoryLimits, LeaseArtifactStatus, MarkerLimits, MARKERS,
     };
     use crate::producer::maelstrom_edn::{MaelstromSummary, Validity};
 
@@ -773,7 +858,8 @@ mod tests {
         let mut markers = MARKERS.into_iter().map(|name| (name, 0)).collect();
         let mut events = Vec::<ArtifactLeaseMarker>::new();
         let mut errors = 0;
-        scan_markers(source, "n1", &mut markers, &mut events, &mut errors);
+        scan_markers(source, "n1", &mut markers, &mut events, &mut errors)
+            .expect("fixture markers stay within production limits");
         let status = finalize_lease_scan(&mut markers, &events, errors);
         (status, markers)
     }
@@ -943,5 +1029,78 @@ mod tests {
             completion.replace(" :value nil", "")
         );
         assert!(history_completion_count(&missing_value, "c1", 11).is_err());
+    }
+
+    #[test]
+    fn lease_marker_parser_enforces_event_and_line_limits() {
+        let mut markers = MARKERS.into_iter().map(|name| (name, 0)).collect();
+        let mut events = Vec::new();
+        let mut errors = 0;
+        let count_error = scan_markers_with_limits(
+            &good(),
+            "n1",
+            &mut markers,
+            &mut events,
+            &mut errors,
+            MarkerLimits {
+                events: 1,
+                line_bytes: usize::MAX,
+            },
+        )
+        .expect_err("marker inventory must be bounded");
+        assert!(count_error.to_string().contains("marker count"));
+
+        let mut markers = MARKERS.into_iter().map(|name| (name, 0)).collect();
+        let line_error = scan_markers_with_limits(
+            &good(),
+            "n1",
+            &mut markers,
+            &mut Vec::new(),
+            &mut 0,
+            MarkerLimits {
+                events: usize::MAX,
+                line_bytes: 16,
+            },
+        )
+        .expect_err("marker line must be bounded");
+        assert!(line_error.to_string().contains("marker exceeds"));
+    }
+
+    #[test]
+    fn history_parser_enforces_operation_pending_and_line_limits() {
+        let invoke = "{:index 1 :type :invoke :process 0 :f :read :value nil}";
+        let second = "{:index 2 :type :invoke :process 1 :f :read :value nil}";
+        let limits = |operations, pending, line_bytes| HistoryLimits {
+            operations,
+            pending,
+            line_bytes,
+        };
+        assert!(history_completion_count_with_limits(
+            &format!("{invoke}\n{second}"),
+            "c1",
+            11,
+            limits(1, usize::MAX, usize::MAX),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("history exceeds 1 operations"));
+        assert!(history_completion_count_with_limits(
+            &format!("{invoke}\n{second}"),
+            "c1",
+            11,
+            limits(usize::MAX, 1, usize::MAX),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("pending operations"));
+        assert!(history_completion_count_with_limits(
+            invoke,
+            "c1",
+            11,
+            limits(usize::MAX, usize::MAX, 16),
+        )
+        .unwrap_err()
+        .to_string()
+        .contains("operation exceeds"));
     }
 }

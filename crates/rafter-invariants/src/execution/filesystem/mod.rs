@@ -12,7 +12,7 @@ mod traversal;
 #[cfg(test)]
 mod tests;
 
-pub(crate) use file_io::{hold_file, read_file};
+pub(crate) use file_io::{hold_file, read_file_bounded};
 pub(crate) use model::{
     ChildDirectory, EntryKind, FileIdentity, HeldDirectory, HeldFile, OperationDeadline,
     TreeLimits, TREE_LIMITS,

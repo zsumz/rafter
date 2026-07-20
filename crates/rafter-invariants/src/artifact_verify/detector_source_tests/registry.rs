@@ -4,7 +4,7 @@ fn reviewed_registry_fixtures_have_source_bound_invocation_contracts() {
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let root = fs::canonicalize(root).expect("canonical workspace root");
     let mut failures = Vec::new();
-    let mut batch = DetectorFixtureSourceBatchVerifier::default();
+    let mut batch = DetectorFixtureSourceBatch::default();
     let mut verified = 0;
     let mut unique_sources = BTreeSet::new();
     let mut fixtures_per_target = BTreeMap::new();
@@ -25,7 +25,7 @@ fn reviewed_registry_fixtures_have_source_bound_invocation_contracts() {
         };
         let fixture_path =
             fs::canonicalize(root.join(fixture_path)).expect("canonical registered fixture source");
-        let detector_path = fs::canonicalize(root.join(&descriptor.path))
+        let detector_path = fs::canonicalize(root.join(descriptor.negative_detector_path()))
             .expect("canonical registered detector source");
         let fixture_source =
             fs::read_to_string(&fixture_path).expect("read registered fixture source");

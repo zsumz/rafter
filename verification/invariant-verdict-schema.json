@@ -10,7 +10,7 @@
     "profile": { "enum": ["pr", "nightly", "weekly"] },
     "source_ref": { "type": "string", "minLength": 1 },
     "summary": { "$ref": "#/$defs/summary" },
-    "artifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" } },
+    "artifacts": { "type": "array", "maxItems": 4096, "items": { "$ref": "#/$defs/artifact" } },
     "invariants": {
       "type": "array",
       "minItems": 44,
@@ -35,10 +35,10 @@
       "additionalProperties": false,
       "required": ["kind", "path", "sha256", "size_bytes"],
       "properties": {
-        "kind": { "type": "string", "minLength": 1 },
-        "path": { "type": "string", "minLength": 1 },
+        "kind": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
         "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
-        "size_bytes": { "type": "integer", "minimum": 1 }
+        "size_bytes": { "type": "integer", "minimum": 1, "maximum": 268435456 }
       }
     },
     "issue": {
@@ -50,7 +50,7 @@
         "status": { "enum": ["fail", "incomplete", "error"] },
         "classification": { "enum": ["invariant_violation", "coverage_not_reached", "harness_error"] },
         "message": { "type": "string", "minLength": 1 },
-        "artifacts": { "type": "array", "items": { "$ref": "#/$defs/artifact" } }
+        "artifacts": { "type": "array", "maxItems": 4096, "items": { "$ref": "#/$defs/artifact" } }
       },
       "oneOf": [
         {

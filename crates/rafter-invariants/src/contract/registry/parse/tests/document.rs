@@ -5,6 +5,7 @@ use std::{collections::BTreeSet, fs, path::PathBuf};
 use super::super::fixtures::{VALID_CLAUSE, VALID_EVIDENCE, VALID_INVARIANT};
 use super::super::parse_registry_document;
 use super::support::valid_registry;
+use crate::contract::catalog::Catalog;
 
 #[test]
 fn current_registry_parses_as_exactly_44_unique_invariants() {
@@ -14,7 +15,7 @@ fn current_registry_parses_as_exactly_44_unique_invariants() {
     let source = fs::read_to_string(path).expect("read current registry");
 
     let registry = parse_registry_document(&source).expect("parse current registry");
-    assert_eq!(registry.schema_version, 4);
+    assert_eq!(registry.schema_version, 5);
     assert_eq!(registry.invariants.len(), 44);
     assert_eq!(
         registry
@@ -27,6 +28,32 @@ fn current_registry_parses_as_exactly_44_unique_invariants() {
     );
     assert!(!registry.clauses.is_empty());
     assert!(!registry.evidence.is_empty());
+}
+
+#[test]
+fn schema_v5_accepts_and_propagates_detector_paths_but_v4_rejects_them() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("verification/raft-invariants.yaml");
+    let source = fs::read_to_string(path).expect("read current registry");
+    assert!(source.contains("negative_fixture_detector_path:"));
+
+    let registry = parse_registry_document(&source).expect("schema v5 registry parses");
+    let expected = registry
+        .evidence
+        .iter()
+        .find_map(|evidence| evidence.negative_fixture_detector_path.as_deref())
+        .expect("reviewed registry declares a detector path")
+        .to_owned();
+    let catalog = Catalog::try_from(registry).expect("schema v5 registry normalizes");
+    assert!(catalog
+        .evidence
+        .iter()
+        .any(|evidence| evidence.negative_detector_path() == expected.as_str()));
+
+    let v4 = source.replacen("schema_version: 5", "schema_version: 4", 1);
+    let error = parse_registry_document(&v4).expect_err("schema v4 must reject the new grammar");
+    assert_eq!(error.to_string(), "unsupported registry schema 4");
 }
 
 #[test]
@@ -172,10 +199,10 @@ fn duplicate_invariant_and_clause_ids_are_rejected() {
 fn duplicate_or_malformed_schema_version_is_rejected() {
     let valid = valid_registry(VALID_EVIDENCE, VALID_CLAUSE, VALID_INVARIANT);
     for source in [
-        valid.replace("schema_version: 4", "schema_version: 3"),
-        valid.replace("schema_version: 4", "schema_version:4"),
-        valid.replace("schema_version: 4", "schema_version: \"4\""),
-        valid.replace("schema_version: 4", "schema_version: 4\nschema_version: 4"),
+        valid.replace("schema_version: 5", "schema_version: 4"),
+        valid.replace("schema_version: 5", "schema_version:5"),
+        valid.replace("schema_version: 5", "schema_version: \"5\""),
+        valid.replace("schema_version: 5", "schema_version: 5\nschema_version: 5"),
     ] {
         assert!(parse_registry_document(&source).is_err());
     }

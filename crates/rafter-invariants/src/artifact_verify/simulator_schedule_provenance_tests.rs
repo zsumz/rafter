@@ -12,6 +12,8 @@ use super::{
 
 #[path = "simulator_schedule_provenance_fixture_tests.rs"]
 mod fixtures;
+#[path = "simulator_schedule_provenance_intake_tests.rs"]
+mod intake_tests;
 
 use fixtures::{
     materialize_cross_root_fixture, materialize_fixture, ProvenanceSubstitution, RuntimeDefect,
@@ -248,7 +250,7 @@ fn serialized_producer_root_a_provenance_verifies_at_aggregate_root_b() {
         Path::new(&bundle.execution.invocation.current_dir),
         fixture.producer_root
     );
-    super::super::integrity::verify(&bundle, &fixture.root)
+    crate::verification::verify_bundle_integrity(&bundle, &fixture.root)
         .expect("serialized cross-root artifacts retain integrity");
 
     let diagnostics = verify_simulator_schedule(&bundle, &fixture.root)
@@ -271,7 +273,7 @@ fn serialized_cross_root_provenance_rejects_adversarial_substitutions() {
         let fixture = materialize_cross_root_fixture(RuntimeDefect::ProvenanceOnly);
         fixture.substitute_provenance(substitution);
         let bundle = fixture.serialized_bundle();
-        super::super::integrity::verify(&bundle, &fixture.root)
+        crate::verification::verify_bundle_integrity(&bundle, &fixture.root)
             .expect("substituted serialized artifact remains digest-bound");
 
         let error = match verify_simulator_schedule(&bundle, &fixture.root) {
@@ -299,17 +301,8 @@ fn timed_out_zero_exit_simulator_invocation_is_rejected() {
 #[test]
 fn real_timed_out_zero_exit_receipt_fails_closed_through_loading_and_aggregation() {
     let fixture = materialize_fixture(RuntimeDefect::Timeout);
-    let loaded = crate::aggregate::load_evidence_at(
-        std::slice::from_ref(&fixture.bundle_path),
-        &fixture.root,
-    );
-    assert_eq!(
-        loaded.bundles.len(),
-        1,
-        "unexpected load failures: {:?}",
-        loaded.harness_errors
-    );
-    let counterexample = loaded.bundles[0]
+    let (bundle, intake) = verify_fixture(&fixture);
+    let counterexample = bundle
         .results
         .iter()
         .find(|result| {
@@ -318,27 +311,19 @@ fn real_timed_out_zero_exit_receipt_fails_closed_through_loading_and_aggregation
         })
         .expect("serialized counterexample result")
         .clone();
-    assert_eq!(loaded.harness_errors.len(), 2);
-    let error = loaded
-        .harness_errors
+    assert_eq!(intake.defects().len(), 2);
+    let error = intake
+        .defects()
         .iter()
+        .map(crate::verification::IntakeDefect::message)
         .find(|error| error.contains("did not time out"))
-        .expect("timeout diagnostic");
-    assert!(loaded
-        .harness_errors
-        .iter()
-        .any(|error| error.contains("did not run required profile raft-soak")));
-    let source_ref = loaded.bundles[0].source_ref.clone();
-    let bundles = loaded.bundles;
-    let report = crate::aggregate_with_harness_errors(
-        &fixture.catalog,
-        &fixture.manifest,
-        "pr",
-        &source_ref,
-        &bundles,
-        &loaded.harness_errors,
-    )
-    .expect("verified timeout error aggregates fail-closed");
+        .expect("timeout diagnostic")
+        .to_owned();
+    assert!(intake.defects().iter().any(|error| error
+        .message()
+        .contains("did not run required profile raft-soak")));
+    let report = crate::verdict::reduce(&fixture.catalog, &fixture.manifest, &intake)
+        .expect("verified timeout error aggregates fail-closed");
     assert_eq!(report.summary.total, 44);
     assert_eq!(report.summary.green, 0);
     assert_eq!(report.summary.red, 44);
@@ -348,7 +333,7 @@ fn real_timed_out_zero_exit_receipt_fails_closed_through_loading_and_aggregation
                 issue.evidence_id == "aggregate/harness"
                     && issue.status == crate::EvidenceStatus::Error
                     && issue.classification == crate::FailureClassification::HarnessError
-                    && issue.message == *error
+                    && issue.message == error
             })
     }));
     let verdict = report
@@ -374,17 +359,8 @@ fn real_timed_out_zero_exit_receipt_fails_closed_through_loading_and_aggregation
 #[test]
 fn malformed_event_after_a_counterexample_is_retained_as_a_separate_harness_error() {
     let fixture = materialize_fixture(RuntimeDefect::MalformedEvent);
-    let loaded = crate::aggregate::load_evidence_at(
-        std::slice::from_ref(&fixture.bundle_path),
-        &fixture.root,
-    );
-    assert_eq!(
-        loaded.bundles.len(),
-        1,
-        "counterexample bundle was discarded: {:?}",
-        loaded.harness_errors
-    );
-    let counterexample = loaded.bundles[0]
+    let (bundle, intake) = verify_fixture(&fixture);
+    let counterexample = bundle
         .results
         .iter()
         .find(|result| {
@@ -393,16 +369,16 @@ fn malformed_event_after_a_counterexample_is_retained_as_a_separate_harness_erro
         })
         .expect("serialized counterexample result")
         .clone();
-    assert!(loaded.bundles[0].results.iter().any(|result| {
+    assert!(bundle.results.iter().any(|result| {
         result.status == crate::EvidenceStatus::Fail
             && result.classification == Some(crate::FailureClassification::InvariantViolation)
             && result.message.as_deref() == Some("real timeout fixture found a counterexample")
     }));
-    assert!(loaded
-        .harness_errors
+    assert!(intake
+        .defects()
         .iter()
-        .any(|error| error.contains("parse simulator log")));
-    let report = aggregate_fixture(&fixture, &loaded);
+        .any(|error| error.message().contains("parse simulator log")));
+    let report = aggregate_fixture(&fixture, &intake);
     assert_counterexample_survives(&report, &counterexample);
     assert!(report.invariants.iter().all(|verdict| {
         verdict.issues.iter().any(|issue| {
@@ -415,23 +391,14 @@ fn malformed_event_after_a_counterexample_is_retained_as_a_separate_harness_erro
 #[test]
 fn later_launch_failure_survives_loading_and_final_aggregation() {
     let fixture = materialize_fixture(RuntimeDefect::LaunchFailure);
-    let loaded = crate::aggregate::load_evidence_at(
-        std::slice::from_ref(&fixture.bundle_path),
-        &fixture.root,
-    );
-    assert_eq!(
-        loaded.bundles.len(),
-        1,
-        "launch-failure bundle was discarded: {:?}",
-        loaded.harness_errors
-    );
-    let counterexample = loaded.bundles[0]
+    let (bundle, intake) = verify_fixture(&fixture);
+    let counterexample = bundle
         .results
         .iter()
         .find(|result| result.status == crate::EvidenceStatus::Fail)
         .expect("first-run counterexample result")
         .clone();
-    let launch_error = loaded.bundles[0]
+    let launch_error = bundle
         .results
         .iter()
         .find(|result| {
@@ -443,11 +410,10 @@ fn later_launch_failure_survives_loading_and_final_aggregation() {
         })
         .expect("later launch failure result")
         .clone();
-    assert!(loaded
-        .harness_errors
-        .iter()
-        .any(|error| error.contains("did not run required profile raft-soak")));
-    let report = aggregate_fixture(&fixture, &loaded);
+    assert!(intake.defects().iter().any(|error| error
+        .message()
+        .contains("did not run required profile raft-soak")));
+    let report = aggregate_fixture(&fixture, &intake);
     assert_counterexample_survives(&report, &counterexample);
     let launch_verdict = report
         .invariants
@@ -470,30 +436,20 @@ fn later_launch_failure_survives_loading_and_final_aggregation() {
 #[test]
 fn real_valid_looking_pass_then_exit_one_is_rejected_through_final_aggregation() {
     let fixture = materialize_fixture(RuntimeDefect::PassExitOne);
-    let loaded = crate::aggregate::load_evidence_at(
-        std::slice::from_ref(&fixture.bundle_path),
-        &fixture.root,
-    );
-    assert_eq!(
-        loaded.bundles.len(),
-        1,
-        "exit-one bundle was discarded: {:?}",
-        loaded.harness_errors
-    );
+    let (bundle, intake) = verify_fixture(&fixture);
     let raw_log = fs::read_to_string(fixture.root.join("artifacts/invariants/fast.log"))
         .expect("read serialized exit-one simulator log");
     assert!(raw_log.lines().any(|line| line == "exit_code: Some(1)"));
     assert!(raw_log.contains("\"status\":\"pass\""));
-    assert!(loaded
-        .harness_errors
-        .iter()
-        .any(|error| { error.contains("simulator log fast requires a zero-exit invocation") }));
-    assert!(loaded.bundles[0].results.iter().all(|result| {
+    assert!(intake.defects().iter().any(|error| error
+        .message()
+        .contains("simulator log fast requires a zero-exit invocation")));
+    assert!(bundle.results.iter().all(|result| {
         result.status == crate::EvidenceStatus::Error
             && result.classification == Some(crate::FailureClassification::HarnessError)
     }));
 
-    let report = aggregate_fixture(&fixture, &loaded);
+    let report = aggregate_fixture(&fixture, &intake);
     assert_eq!(report.summary.green, 0);
     assert_eq!(report.summary.red, report.summary.total);
     assert!(report.invariants.iter().all(|verdict| {
@@ -509,25 +465,15 @@ fn real_valid_looking_pass_then_exit_one_is_rejected_through_final_aggregation()
 #[test]
 fn real_counterexample_then_exit_one_preserves_semantics_through_final_aggregation() {
     let fixture = materialize_fixture(RuntimeDefect::CounterexampleExitOne);
-    let loaded = crate::aggregate::load_evidence_at(
-        std::slice::from_ref(&fixture.bundle_path),
-        &fixture.root,
-    );
-    assert_eq!(
-        loaded.bundles.len(),
-        1,
-        "counterexample exit-one bundle was discarded: {:?}",
-        loaded.harness_errors
-    );
+    let (bundle, intake) = verify_fixture(&fixture);
     let raw_log = fs::read_to_string(fixture.root.join("artifacts/invariants/fast.log"))
         .expect("read serialized counterexample exit-one simulator log");
     assert!(raw_log.lines().any(|line| line == "exit_code: Some(1)"));
     assert!(raw_log.contains("real exit-one fixture found a counterexample"));
-    assert!(loaded
-        .harness_errors
-        .iter()
-        .any(|error| { error.contains("simulator log fast requires a zero-exit invocation") }));
-    let counterexample = loaded.bundles[0]
+    assert!(intake.defects().iter().any(|error| error
+        .message()
+        .contains("simulator log fast requires a zero-exit invocation")));
+    let counterexample = bundle
         .results
         .iter()
         .find(|result| {
@@ -538,7 +484,7 @@ fn real_counterexample_then_exit_one_preserves_semantics_through_final_aggregati
         .expect("serialized semantic counterexample")
         .clone();
 
-    let report = aggregate_fixture(&fixture, &loaded);
+    let report = aggregate_fixture(&fixture, &intake);
     assert_counterexample_survives(&report, &counterexample);
     assert_eq!(report.summary.green, 0);
     assert_eq!(report.summary.red, report.summary.total);
@@ -546,17 +492,33 @@ fn real_counterexample_then_exit_one_preserves_semantics_through_final_aggregati
 
 fn aggregate_fixture(
     fixture: &SimulatorFixture,
-    loaded: &crate::aggregate::LoadedEvidence,
+    intake: &crate::verification::EvidenceIntake,
 ) -> crate::VerdictReport {
-    crate::aggregate_with_harness_errors(
+    crate::verdict::reduce(&fixture.catalog, &fixture.manifest, intake)
+        .expect("aggregate verified simulator fixture")
+}
+
+fn verify_fixture(
+    fixture: &SimulatorFixture,
+) -> (crate::ResultBundle, crate::verification::EvidenceIntake) {
+    let bundle: crate::ResultBundle = serde_json::from_slice(
+        &fs::read(&fixture.bundle_path).expect("read serialized simulator bundle"),
+    )
+    .expect("decode serialized simulator bundle");
+    let request = crate::verification::VerificationRequest::new(
         &fixture.catalog,
         &fixture.manifest,
-        "pr",
-        &loaded.bundles[0].source_ref,
-        &loaded.bundles,
-        &loaded.harness_errors,
+        &bundle.execution.plan,
+        &bundle.source_ref,
+        &fixture.root,
+    );
+    let intake = crate::verification::verify_paths(
+        request,
+        std::slice::from_ref(&fixture.bundle_path),
+        Vec::new(),
     )
-    .expect("aggregate verified simulator fixture")
+    .expect("verify serialized simulator fixture");
+    (bundle, intake)
 }
 
 fn assert_counterexample_survives(

@@ -12,7 +12,7 @@ fn rust_receipts_and_reports_conform_to_distinct_checked_in_schemas() {
     for bundle in &bundles {
         validate_result_bundle(bundle).expect("synthetic bundle conforms");
     }
-    let report = crate::aggregate(&catalog, &manifest, "pr", "abc", &bundles)
+    let report = crate::tests::aggregate_unverified(&catalog, &manifest, "pr", "abc", &bundles)
         .expect("synthetic report aggregates");
     validate_verdict_report(&report, &catalog, &manifest).expect("aggregate report conforms");
     assert_ne!(
@@ -57,6 +57,36 @@ fn schema_validation_rejects_version_and_shape_tampering() {
 }
 
 #[test]
+fn result_schema_rejects_receipt_resource_limit_violations() {
+    let (catalog, manifest) = crate::tests::loaded();
+    let value = passing_bundle_value(&catalog, &manifest);
+
+    let mut oversized_artifact = value.clone();
+    oversized_artifact["execution"]["artifacts"][0]["size_bytes"] =
+        serde_json::json!(268_435_457_u64);
+    assert!(validate_result_value(&oversized_artifact).is_err());
+
+    let mut oversized_plan_input = value.clone();
+    oversized_plan_input["execution"]["plan"]["registry"]["size_bytes"] =
+        serde_json::json!(8_388_609_u64);
+    assert!(validate_result_value(&oversized_plan_input).is_err());
+
+    let mut oversized_kind = value;
+    oversized_kind["execution"]["artifacts"][0]["kind"] = serde_json::json!("x".repeat(129));
+    assert!(validate_result_value(&oversized_kind).is_err());
+}
+
+#[test]
+fn schema_validation_diagnostic_is_bounded_under_many_independent_errors() {
+    let (catalog, manifest) = crate::tests::loaded();
+    let mut value = passing_bundle_value(&catalog, &manifest);
+    value["results"] =
+        serde_json::Value::Array((0..4096).map(|_| serde_json::json!({})).collect::<Vec<_>>());
+    let error = validate_result_value(&value).expect_err("invalid results are rejected");
+    assert!(error.len() <= 4_300, "diagnostic was {} bytes", error.len());
+}
+
+#[test]
 fn result_schema_rejects_invalid_profile_owned_simulator_check_contracts() {
     let (catalog, manifest) = crate::tests::loaded();
     let bundle = crate::tests::passing_bundles(&catalog, &manifest)
@@ -95,7 +125,7 @@ fn result_schema_rejects_invalid_profile_owned_simulator_check_contracts() {
 fn verdict_validation_rejects_duplicate_ids_and_forged_counts() {
     let (catalog, manifest) = crate::tests::loaded();
     let bundles = crate::tests::passing_bundles(&catalog, &manifest);
-    let report = crate::aggregate(&catalog, &manifest, "pr", "abc", &bundles)
+    let report = crate::tests::aggregate_unverified(&catalog, &manifest, "pr", "abc", &bundles)
         .expect("synthetic report aggregates");
 
     let mut duplicate = report.clone();
@@ -126,8 +156,9 @@ fn verdict_validation_rejects_duplicate_ids_and_forged_counts() {
     }
     assert!(validate_verdict_report(&fabricated_contract, &catalog, &manifest).is_err());
 
-    let mut mismatched_issue = crate::aggregate(&catalog, &manifest, "pr", "abc", &[])
-        .expect("missing evidence aggregates red");
+    let mut mismatched_issue =
+        crate::tests::aggregate_unverified(&catalog, &manifest, "pr", "abc", &[])
+            .expect("missing evidence aggregates red");
     mismatched_issue.invariants[0].issues[0].classification =
         crate::FailureClassification::InvariantViolation;
     assert!(validate_verdict_report(&mismatched_issue, &catalog, &manifest).is_err());
@@ -136,7 +167,7 @@ fn verdict_validation_rejects_duplicate_ids_and_forged_counts() {
 #[test]
 fn verdict_schema_can_represent_an_internally_red_zero_evidence_row() {
     let (catalog, manifest) = crate::tests::loaded();
-    let mut report = crate::aggregate(&catalog, &manifest, "pr", "abc", &[])
+    let mut report = crate::tests::aggregate_unverified(&catalog, &manifest, "pr", "abc", &[])
         .expect("missing evidence aggregates red");
     let row = &mut report.invariants[0];
     row.required_evidence = 0;

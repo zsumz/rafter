@@ -1,16 +1,22 @@
 //! Cross-checks aggregate resource claims against hashed process receipts.
 
-use std::{collections::BTreeSet, fs, path::Path};
+use std::collections::BTreeSet;
 
-use crate::{aggregate::AggregateError, ResultBundle};
+#[cfg(test)]
+use std::path::Path;
 
-pub(super) fn verify_resource_metrics(
+use crate::{
+    verification::{AggregateError, AuthenticatedArtifacts},
+    ResultBundle,
+};
+
+pub(super) fn verify_resource_metrics_authenticated(
     bundle: &ResultBundle,
-    root: &Path,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<(), AggregateError> {
     for check in &bundle.execution.checks {
         let artifacts = check_metric_artifacts(&bundle.runner, &check.artifacts);
-        let derived = derive_process_metrics(artifacts.into_iter(), root)?;
+        let derived = derive_process_metrics(artifacts.into_iter(), authenticated)?;
         if check.duration_ms != derived.duration_ms || check.peak_rss_kib != derived.peak_rss_kib {
             return Err(AggregateError::new(format!(
                 "check resource metrics disagree with hashed process logs for {}",
@@ -31,7 +37,7 @@ pub(super) fn verify_resource_metrics(
                 .flat_map(|check| check.artifacts.iter()),
         )
         .filter(|artifact| is_process_log_kind(&artifact.kind));
-    let derived = derive_process_metrics(artifacts, root)?;
+    let derived = derive_process_metrics(artifacts, authenticated)?;
     if bundle.execution.duration_ms != derived.duration_ms
         || bundle.execution.peak_rss_kib != derived.peak_rss_kib
     {
@@ -71,9 +77,18 @@ impl ResultBundle {
     }
 }
 
+#[cfg(test)]
+pub(super) fn verify_resource_metrics(
+    bundle: &ResultBundle,
+    root: &Path,
+) -> Result<(), AggregateError> {
+    let authenticated = crate::verification::snapshot_available_artifacts(bundle, root)?;
+    verify_resource_metrics_authenticated(bundle, &authenticated)
+}
+
 fn derive_process_metrics<'a>(
     artifacts: impl Iterator<Item = &'a crate::ArtifactRef>,
-    root: &Path,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<crate::evidence::format::process::ProcessMetrics, AggregateError> {
     let mut duration_ms = 0_u64;
     let mut peak_rss_kib = 0_u64;
@@ -82,10 +97,8 @@ fn derive_process_metrics<'a>(
         if !paths.insert(artifact.path.as_str()) {
             continue;
         }
-        let bytes = fs::read(root.join(&artifact.path)).map_err(|error| {
-            AggregateError::new(format!("read process log {}: {error}", artifact.path))
-        })?;
-        let metrics = process_log_metrics(&artifact.kind, &bytes).map_err(|error| {
+        let bytes = authenticated.bytes(artifact)?;
+        let metrics = process_log_metrics(&artifact.kind, bytes).map_err(|error| {
             AggregateError::new(format!("parse process log {}: {error}", artifact.path))
         })?;
         for metric in metrics {

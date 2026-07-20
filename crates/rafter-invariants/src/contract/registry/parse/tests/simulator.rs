@@ -128,3 +128,73 @@ fn simulator_negative_fixture_identity_is_validated_when_the_registry_loads() {
         assert!(error.contains(expected), "unexpected error: {error}");
     }
 }
+
+#[test]
+fn detector_path_is_a_canonical_repository_relative_path() {
+    let valid = with_detector_path("src/model/checks.rs");
+    let registry = parse_registry_document(&valid_registry(&valid, VALID_CLAUSE, VALID_INVARIANT))
+        .expect("canonical detector path parses");
+    assert_eq!(
+        registry.evidence[0]
+            .negative_fixture_detector_path
+            .as_deref(),
+        Some("src/model/checks.rs")
+    );
+
+    for path in [
+        "",
+        "   ",
+        "/src/checks.rs",
+        "C:/src/checks.rs",
+        ".",
+        "./src/checks.rs",
+        "src/./checks.rs",
+        "../src/checks.rs",
+        "src/../checks.rs",
+        "src//checks.rs",
+        "src/checks.rs/",
+        "src\\\\checks.rs",
+    ] {
+        let source = with_detector_path(path);
+        let error =
+            parse_registry_document(&valid_registry(&source, VALID_CLAUSE, VALID_INVARIANT))
+                .expect_err("non-canonical detector path must fail closed");
+        assert!(
+            error
+                .to_string()
+                .contains("non-canonical repository-relative"),
+            "unexpected error for {path:?}: {error}"
+        );
+    }
+}
+
+#[test]
+fn detector_path_is_rejected_outside_its_direct_simulator_fixture_binding() {
+    let detector_path = "    negative_fixture_detector_path: \"src/model/checks.rs\"\n";
+    let without_detector = VALID_ATOMIC_SIMULATOR_EVIDENCE.replace(
+        "    negative_fixture_detector: \"check_atomic_rule\"\n",
+        detector_path,
+    );
+    let test_evidence = super::super::fixtures::VALID_EVIDENCE.replace(
+        "    symbol: \"test_symbol\"",
+        &format!("    symbol: \"test_symbol\"\n{detector_path}"),
+    );
+
+    for evidence in [without_detector, test_evidence] {
+        let error =
+            parse_registry_document(&valid_registry(&evidence, VALID_CLAUSE, VALID_INVARIANT))
+                .expect_err("misplaced detector path must fail closed");
+        assert!(error
+            .to_string()
+            .contains("misplaced negative_fixture_detector_path"));
+    }
+}
+
+fn with_detector_path(path: &str) -> String {
+    VALID_ATOMIC_SIMULATOR_EVIDENCE.replace(
+        "    negative_fixture_detector: \"check_atomic_rule\"",
+        &format!(
+            "    negative_fixture_detector: \"check_atomic_rule\"\n    negative_fixture_detector_path: \"{path}\""
+        ),
+    )
+}

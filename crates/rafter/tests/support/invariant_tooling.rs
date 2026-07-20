@@ -2,10 +2,10 @@
 
 pub(super) const PRODUCTION_TARGET_LINES: usize = 300;
 pub(super) const TEST_TARGET_LINES: usize = 400;
-pub(super) const MAX_PRODUCTION_FILES_OVER_TARGET: usize = 44;
+pub(super) const MAX_PRODUCTION_FILES_OVER_TARGET: usize = 43;
 pub(super) const MAX_TEST_FILES_OVER_TARGET: usize = 17;
-pub(super) const MAX_FILES_WITHOUT_MODULE_CONTRACTS: usize = 94;
-pub(super) const MAX_LEGACY_VERIFIER_PRODUCER_REFERENCES: usize = 91;
+pub(super) const MAX_FILES_WITHOUT_MODULE_CONTRACTS: usize = 69;
+pub(super) const MAX_LEGACY_VERIFIER_PRODUCER_REFERENCES: usize = 64;
 pub(super) const MAX_LEGACY_VERIFIER_PRODUCER_IMAGE_REFERENCES: usize = 0;
 pub(super) const MAX_LEGACY_VERIFIER_RUST_TARGET_REFERENCES: usize = 0;
 
@@ -47,12 +47,12 @@ pub(super) const INVARIANT_DOMAINS: &[InvariantDomain] = &[
         may_depend_on: &["contract"],
     },
     InvariantDomain {
-        name: "provenance",
+        name: "execution",
         may_depend_on: &[],
     },
     InvariantDomain {
-        name: "execution",
-        may_depend_on: &[],
+        name: "provenance",
+        may_depend_on: &["execution"],
     },
     InvariantDomain {
         name: "plan",
@@ -110,6 +110,10 @@ pub(super) const ENFORCED_DOMAIN_SOURCES: &[EnforcedDomainSource] = &[
         path: "crates/rafter-invariants/src/producer/process",
     },
     EnforcedDomainSource {
+        domain: "producer",
+        path: "crates/rafter-invariants/src/producer/source.rs",
+    },
+    EnforcedDomainSource {
         domain: "verification",
         path: "crates/rafter-invariants/src/verification",
     },
@@ -125,11 +129,22 @@ pub(super) const ENFORCED_DOMAIN_SOURCES: &[EnforcedDomainSource] = &[
         domain: "verdict",
         path: "crates/rafter-invariants/src/verdict",
     },
+    EnforcedDomainSource {
+        domain: "gate",
+        path: "crates/rafter-invariants/src/gate",
+    },
 ];
 
 /// Exact compatibility edges retained while physical modules move to their owning domains.
-pub(super) const REVIEWED_DOMAIN_IMPORT_EXCEPTIONS: &[ReviewedDomainImportException] =
-    &[ReviewedDomainImportException {
+pub(super) const REVIEWED_DOMAIN_IMPORT_EXCEPTIONS: &[ReviewedDomainImportException] = &[
+    ReviewedDomainImportException {
+        owner_domain: "verification",
+        source: "crates/rafter-invariants/src/verification/artifact.rs",
+        import: &["crate", "artifact_verify", "verify"],
+        reason: "the verification facade still delegates to the legacy artifact-verifier mount",
+        tracking_label: "INV-ARCH-ARTIFACT-VERIFIER-MIGRATION",
+    },
+    ReviewedDomainImportException {
         owner_domain: "verification",
         source: "crates/rafter-invariants/src/verification/detector.rs",
         import: &[
@@ -139,4 +154,12 @@ pub(super) const REVIEWED_DOMAIN_IMPORT_EXCEPTIONS: &[ReviewedDomainImportExcept
         ],
         reason: "the public verification facade still delegates to the legacy detector-source analyzer mount",
         tracking_label: "INV-ARCH-DETECTOR-SOURCE-MIGRATION",
-    }];
+    },
+    ReviewedDomainImportException {
+        owner_domain: "verification",
+        source: "crates/rafter-invariants/src/verification/intake/verify.rs",
+        import: &["crate", "receipt", "collect_results"],
+        reason: "typed intake delegates to the legacy root receipt validator until runner-family validators move together",
+        tracking_label: "INV-ARCH-RECEIPT-VALIDATION-MIGRATION",
+    },
+];

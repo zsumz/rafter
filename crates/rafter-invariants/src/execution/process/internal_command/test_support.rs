@@ -44,6 +44,7 @@ pub(crate) fn bounded_internal_output_with_cleanup(
         program,
         None,
         arguments,
+        None,
         execution_deadline,
         lifecycle_deadline,
         reaper,

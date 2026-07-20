@@ -16,12 +16,12 @@ fn producer_root_a_invocations_verify_in_aggregate_checkout_root_b() {
     assert_ne!(producer_root, fixture.root);
     assert!(!producer_root.exists());
 
-    let (loaded, _) = fixture.load_and_aggregate_from(&producer_root);
+    let (intake, _) = fixture.load_and_aggregate_from(&producer_root);
     assert_eq!(
-        loaded.bundles[0].execution.invocation.current_dir,
+        fixture.bundle.execution.invocation.current_dir,
         producer_root.to_string_lossy()
     );
-    for artifact in &loaded.bundles[0].execution.checks[0].artifacts {
+    for artifact in &fixture.bundle.execution.checks[0].artifacts {
         if is_tla_process_artifact(&artifact.kind) {
             let log = fixture.read_log(&artifact.kind);
             assert!(
@@ -33,9 +33,9 @@ fn producer_root_a_invocations_verify_in_aggregate_checkout_root_b() {
         }
     }
     assert!(
-        loaded.harness_errors.is_empty(),
+        intake.defects().is_empty(),
         "root-rebased serialized TLA evidence failed verification: {:?}",
-        loaded.harness_errors
+        intake.defects()
     );
 }
 
@@ -44,12 +44,12 @@ fn producer_root_a_invocations_verify_in_aggregate_checkout_root_b() {
 fn typeok_violation_verifies_as_a_harness_class_violation() {
     let mut fixture = Fixture::new();
     fixture.set_harness_violation("TypeOK");
-    let (loaded, report) = fixture.load_and_aggregate();
-    assert!(loaded.harness_errors.is_empty());
+    let (intake, report) = fixture.load_and_aggregate();
+    assert!(intake.defects().is_empty());
     assert_eq!(report.summary.total, 44);
     assert_eq!(report.summary.green, 0);
     assert_eq!(report.summary.red, 44);
-    assert!(loaded.bundles[0].results.iter().all(|result| {
+    assert!(fixture.bundle.results.iter().all(|result| {
         result.status == crate::EvidenceStatus::Error
             && result.classification == Some(crate::FailureClassification::HarnessError)
             && result.message.as_deref() == Some("TLA fixture harness error")
@@ -62,10 +62,13 @@ fn typeok_violation_verifies_as_a_harness_class_violation() {
 fn malformed_progress_cannot_erase_a_complete_counterexample() {
     let mut fixture = Fixture::new();
     fixture.set_timed_out_counterexample("ElectionSafety");
-    let (loaded, report) = fixture.load_and_aggregate();
-    assert_eq!(loaded.harness_errors.len(), 1);
-    assert!(loaded.harness_errors[0].contains("malformed progress statistics"));
-    let failed = loaded.bundles[0]
+    let (intake, report) = fixture.load_and_aggregate();
+    assert_eq!(intake.defects().len(), 1);
+    assert!(intake.defects()[0]
+        .message()
+        .contains("malformed progress statistics"));
+    let failed = fixture
+        .bundle
         .results
         .iter()
         .find(|result| result.status == crate::EvidenceStatus::Fail)
@@ -98,11 +101,14 @@ fn malformed_progress_cannot_erase_a_complete_counterexample() {
 fn malformed_terminal_statistics_are_secondary_to_a_complete_counterexample() {
     let mut fixture = Fixture::new();
     fixture.set_malformed_terminal_counterexample("ElectionSafety");
-    let (loaded, report) = fixture.load_and_aggregate();
-    assert_eq!(loaded.harness_errors.len(), 1);
-    assert!(loaded.harness_errors[0].contains("malformed state statistics"));
+    let (intake, report) = fixture.load_and_aggregate();
+    assert_eq!(intake.defects().len(), 1);
+    assert!(intake.defects()[0]
+        .message()
+        .contains("malformed state statistics"));
 
-    let failed = loaded.bundles[0]
+    let failed = fixture
+        .bundle
         .results
         .iter()
         .find(|result| result.status == crate::EvidenceStatus::Fail)
@@ -124,7 +130,9 @@ fn malformed_terminal_statistics_are_secondary_to_a_complete_counterexample() {
 }
 
 impl Fixture {
-    fn load_and_aggregate(&mut self) -> (crate::aggregate::LoadedEvidence, crate::VerdictReport) {
+    fn load_and_aggregate(
+        &mut self,
+    ) -> (crate::verification::EvidenceIntake, crate::VerdictReport) {
         let producer_root = self.root.clone();
         self.load_and_aggregate_from(&producer_root)
     }
@@ -132,7 +140,7 @@ impl Fixture {
     fn load_and_aggregate_from(
         &mut self,
         producer_root: &Path,
-    ) -> (crate::aggregate::LoadedEvidence, crate::VerdictReport) {
+    ) -> (crate::verification::EvidenceIntake, crate::VerdictReport) {
         let workspace = fs::canonicalize(Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
             .expect("canonicalize workspace root");
         self.materialize_serialized_bundle(&workspace, producer_root);
@@ -145,30 +153,28 @@ impl Fixture {
             ),
         )
         .expect("write TLA fixture bundle");
-        let loaded =
-            crate::aggregate::load_evidence_at(std::slice::from_ref(&bundle_path), &self.root);
-        let _ = fs::remove_file(bundle_path);
-        assert_eq!(
-            loaded.bundles.len(),
-            1,
-            "serialized TLA bundle was discarded: {:?}",
-            loaded.harness_errors
-        );
         let (catalog, manifest) = crate::tests::loaded();
-        let report = crate::aggregate_with_harness_errors(
+        let request = crate::verification::VerificationRequest::new(
             &catalog,
             &manifest,
-            "pr",
-            &loaded.bundles[0].source_ref,
-            &loaded.bundles,
-            &loaded.harness_errors,
+            &self.bundle.execution.plan,
+            &self.bundle.source_ref,
+            &self.root,
+        );
+        let intake = crate::verification::verify_paths(
+            request,
+            std::slice::from_ref(&bundle_path),
+            Vec::new(),
         )
-        .expect("aggregate serialized TLA fixture");
-        (loaded, report)
+        .expect("verify serialized TLA fixture");
+        let _ = fs::remove_file(bundle_path);
+        let report = crate::verdict::reduce(&catalog, &manifest, &intake)
+            .expect("aggregate serialized TLA fixture");
+        (intake, report)
     }
 
     fn materialize_serialized_bundle(&mut self, workspace: &Path, producer_root: &Path) {
-        copy_tracked_workspace(workspace, &self.root);
+        let source_paths = copy_tracked_workspace(workspace, &self.root);
         for (path, input) in [
             (
                 "verification/raft-invariants.yaml",
@@ -196,16 +202,12 @@ impl Fixture {
             input.sha256 = format!("{:x}", Sha256::digest(&bytes));
             input.size_bytes = bytes.len() as u64;
         }
-        crate::producer::fetch_tla_tool_at(workspace)
-            .expect("fetch and verify pinned TLC tool fixture");
-        let tool = fs::read(workspace.join("tools/cache/tla2tools.jar"))
-            .expect("read pinned TLC tool fixture");
-        self.write_kind("tla-tool", &tool);
-        self.write_execution_artifacts();
         fs::write(self.root.join(".gitignore"), "artifacts/\ntarget/\n")
             .expect("ignore generated fixture evidence");
         git(&self.root, &["init", "-q"]);
-        git(&self.root, &["add", "."]);
+        let mut add_arguments = vec!["add", "-f", "--"];
+        add_arguments.extend(source_paths.iter().map(String::as_str));
+        git(&self.root, &add_arguments);
         git(
             &self.root,
             &[
@@ -221,6 +223,12 @@ impl Fixture {
                 "test: materialize TLA evidence fixture",
             ],
         );
+        crate::producer::fetch_tla_tool_at(workspace)
+            .expect("fetch and verify pinned TLC tool fixture");
+        let tool = fs::read(workspace.join("tools/cache/tla2tools.jar"))
+            .expect("read pinned TLC tool fixture");
+        self.write_kind("tla-tool", &tool);
+        self.write_execution_artifacts();
         let old_source_ref = self.bundle.source_ref.clone();
         let source = crate::producer::source::capture_for_layer_at("tla", &self.root)
             .expect("capture fixture source identity");
@@ -288,6 +296,10 @@ impl Fixture {
             } else {
                 java_sha256.clone()
             };
+            for launcher in &mut log.invocation.launchers {
+                launcher.executable =
+                    self.bundle.execution.source.process_runtime[&launcher.runtime].clone();
+            }
             for argument in &mut log.invocation.arguments {
                 *argument = argument.replace(
                     &format!("/tla/{old_prefix}/pr/"),
@@ -363,34 +375,49 @@ fn is_tla_process_artifact(kind: &str) -> bool {
     ) || kind.starts_with("tla-detector-log")
 }
 
-fn copy_tracked_workspace(from: &Path, to: &Path) {
+fn copy_tracked_workspace(from: &Path, to: &Path) -> Vec<String> {
     let output = Command::new("git")
-        .args(["ls-files", "-z"])
+        .args([
+            "ls-files",
+            "-z",
+            "--cached",
+            "--others",
+            "--exclude-standard",
+        ])
         .current_dir(from)
         .output()
-        .expect("list tracked fixture source files");
+        .expect("inventory fixture source files");
     assert!(
         output.status.success(),
-        "git ls-files failed: {}",
+        "git source inventory failed: {}",
         String::from_utf8_lossy(&output.stderr)
     );
+    let mut copied = Vec::new();
     for entry in output.stdout.split(|byte| *byte == 0) {
         if entry.is_empty() {
             continue;
         }
-        let path = std::str::from_utf8(entry).expect("tracked path is utf-8");
+        let path = std::str::from_utf8(entry).expect("fixture path is utf-8");
         let source = from.join(path);
+        if !source
+            .try_exists()
+            .expect("inspect current fixture source path")
+        {
+            continue;
+        }
         let destination = to.join(path);
-        fs::create_dir_all(destination.parent().expect("tracked file parent"))
-            .expect("create tracked file parent");
+        fs::create_dir_all(destination.parent().expect("fixture file parent"))
+            .expect("create fixture file parent");
         fs::copy(&source, &destination).unwrap_or_else(|error| {
             panic!(
-                "copy tracked fixture source {} to {}: {error}",
+                "copy fixture source {} to {}: {error}",
                 source.display(),
                 destination.display()
             )
         });
+        copied.push(path.to_owned());
     }
+    copied
 }
 
 fn git(root: &Path, arguments: &[&str]) {

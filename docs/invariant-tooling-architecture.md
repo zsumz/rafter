@@ -95,8 +95,8 @@ The internal dependency graph is intentionally one-way:
 ```text
 contract     -> evidence, plan, producer, verification, verdict, gate, cli
 evidence     -> plan, producer, verification, verdict, gate
+execution    -> provenance, producer
 provenance   -> plan, producer, verification
-execution    -> producer
 plan         -> producer, gate
 producer     -> gate
 verification -> verdict, gate
@@ -108,16 +108,17 @@ Each arrow runs from dependency to consumer. The reviewed target graph is the
 import rule for a source tree once that tree enters the migrated-source
 manifest. That manifest is executable and deliberately separate from the
 target graph: an unmigrated `plan`, `gate`, or `cli` path is not presented as
-already conforming. In particular, `execution` feeds `producer`, not `plan`,
-and `verification` consumes contract, evidence, and provenance without
-importing producer implementation.
+already conforming. In particular, `execution` feeds the neutral provenance
+observer and producer, not `plan`; verification consumes contract, evidence,
+and provenance without importing execution or producer implementation.
 
 - `contract` owns reviewed declarations and profile policy. It does not execute
   processes or inspect produced artifacts.
 - `evidence` owns serialized vocabulary. It may embed the exact reviewed
   profile contract selected for a run, so it depends on `contract`; it does not
   decide whether its own values are trustworthy.
-- `provenance` owns reusable identity derivation and byte-level checks.
+- `provenance` owns reusable identity derivation and byte-level checks. It may
+  use neutral execution mechanics to bound source and toolchain observation.
 - `execution` owns confined filesystem and managed-process mechanics. It does
   not know invariant IDs or verdict policy.
 - `plan` resolves a contract and binds invocation inputs.
@@ -518,12 +519,18 @@ rederives them.
   cgroup boundary; process-group and lease evidence alone are not that
   boundary.
 
-`EvidenceIntake` contains verified bundles plus typed intake defects for
-missing, malformed, stale, or unverifiable inputs. A verified bundle may still
-carry an invariant violation, coverage miss, or harness error; verification
-means the result is authentically and coherently represented, not that it
-passed. Verdict reduction therefore retains enough information to emit all 44
-rows even when no bundle is acceptable.
+`EvidenceIntake` contains normalized results accepted from verified bundles,
+their profile and source binding, and typed intake defects for missing,
+malformed, stale, or unverifiable inputs. Raw `ResultBundle` values are
+consumed and discarded at that boundary. An accepted result may still carry an
+invariant violation, coverage miss, or harness error; verification means the
+result is authentically and coherently represented, not that it passed.
+Verdict reduction therefore retains enough information to emit all 44 rows
+even when no bundle is acceptable.
+
+Defect kinds remain verifier-internal vocabulary. Version-2 verdicts preserve
+the reviewed `aggregate/harness` issue ID and public structural-error messages;
+changing that projection requires an explicit verdict-schema migration.
 
 Registry parsing owns authoring syntax and registry-specific parse errors. It
 does not construct catalog types. Catalog normalization owns the explicit
@@ -647,8 +654,8 @@ crates.
   facades use the tighter existing facade budget.
 - Size remains a graduated signal, not a reason to fracture one concept. New or
   moved files may not increase the count above a ratchet threshold.
-- Modeled `contract`, `evidence`, `execution`, `verification`, `verdict`, and
-  extracted producer paths have no legacy documentation allowance: every Rust
+- Modeled `contract`, `evidence`, `execution`, `verification`, `verdict`,
+  `gate`, and extracted producer paths have no legacy documentation allowance: every Rust
   file in those trees must carry a module or scenario contract even while older
   domains retain aggregate debt.
 - No production module embeds a test body.

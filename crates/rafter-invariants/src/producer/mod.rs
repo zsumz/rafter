@@ -42,8 +42,9 @@ use std::collections::BTreeSet;
 use std::{error::Error, io::Write, path::PathBuf};
 
 use crate::{
-    capture_invocation, execution::filesystem, plan::CapturedInvocation, ExecutionPlan,
-    ExecutionPlanReceipt, InvocationReceipt, PlanOptions, ProducerBindingReceipt, ResultBundle,
+    evidence::{ExecutionPlanReceipt, InvocationReceipt, ProducerBindingReceipt, ResultBundle},
+    execution::filesystem,
+    plan::{capture_invocation, CapturedInvocation, ExecutionPlan, PlanOptions},
 };
 
 #[derive(Clone, Debug)]

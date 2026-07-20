@@ -9,9 +9,10 @@ use crate::producer::tla_checkpoint::{RecoveryReport, RECOVERY_REPORT_KIND};
 use crate::producer::tla_output::{
     detector_config_kind, detector_label, probe_slug, DETECTOR_PROBES,
 };
-use crate::{aggregate::AggregateError, ResultBundle};
+use crate::{verification::AggregateError, ResultBundle};
 
 use super::{configuration, has_kind, read_json_kind, read_kind, unique_artifact};
+use crate::verification::AuthenticatedArtifacts;
 
 pub(super) fn read_process_log(
     bundle: &ResultBundle,
@@ -20,8 +21,9 @@ pub(super) fn read_process_log(
     label: &str,
     root: &Path,
     producer_repository: &Path,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<crate::evidence::format::process::ProcessLog, AggregateError> {
-    let log = read_bound_process_log(check, kind, label, root)?;
+    let log = read_bound_process_log(check, kind, label, authenticated)?;
     verify_tla_invocation(
         bundle,
         check,
@@ -29,6 +31,7 @@ pub(super) fn read_process_log(
         &log.invocation,
         root,
         producer_repository,
+        authenticated,
     )?;
     Ok(log)
 }
@@ -39,8 +42,9 @@ pub(super) fn read_initial_process_log(
     kind: &str,
     label: &str,
     root: &Path,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<(crate::evidence::format::process::ProcessLog, PathBuf), AggregateError> {
-    let log = read_bound_process_log(check, kind, label, root)?;
+    let log = read_bound_process_log(check, kind, label, authenticated)?;
     let producer_repository = producer_repository(&log.invocation.current_dir)?;
     verify_tla_invocation(
         bundle,
@@ -49,6 +53,7 @@ pub(super) fn read_initial_process_log(
         &log.invocation,
         root,
         &producer_repository,
+        authenticated,
     )?;
     Ok((log, producer_repository))
 }
@@ -57,9 +62,9 @@ pub(super) fn read_bound_process_log(
     check: &crate::CheckReceipt,
     kind: &str,
     label: &str,
-    root: &Path,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<crate::evidence::format::process::ProcessLog, AggregateError> {
-    let source = read_kind(check, kind, root)?;
+    let source = read_kind(check, kind, authenticated)?;
     let log = crate::evidence::format::process::parse_tla_v4(&source)
         .map_err(|error| AggregateError::new(format!("parse TLA process log: {error}")))?;
     let valid_termination = log.termination.as_ref().is_some_and(|termination| {
@@ -86,9 +91,20 @@ pub(super) fn optional_process_log(
     label: &str,
     root: &Path,
     producer_repository: &Path,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<Option<crate::evidence::format::process::ProcessLog>, AggregateError> {
     has_kind(check, kind)?
-        .then(|| read_process_log(bundle, check, kind, label, root, producer_repository))
+        .then(|| {
+            read_process_log(
+                bundle,
+                check,
+                kind,
+                label,
+                root,
+                producer_repository,
+                authenticated,
+            )
+        })
         .transpose()
 }
 
@@ -105,6 +121,7 @@ fn verify_tla_invocation(
     observed: &crate::InvocationReceipt,
     root: &Path,
     producer_repository: &Path,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<(), AggregateError> {
     if !crate::receipt::process_invocation_matches_source(observed, &bundle.execution.source) {
         return Err(AggregateError::new(format!(
@@ -159,8 +176,14 @@ fn verify_tla_invocation(
         }
     };
     let current_dir = producer_repository.join("specs/tla/raft");
-    let arguments =
-        expected_tla_arguments(bundle, check, label, root, producer_repository, target)?;
+    let arguments = expected_tla_arguments(
+        bundle,
+        check,
+        label,
+        producer_repository,
+        target,
+        authenticated,
+    )?;
     let java_sha = bundle
         .execution
         .source
@@ -248,9 +271,9 @@ fn expected_tla_arguments(
     bundle: &ResultBundle,
     check: &crate::CheckReceipt,
     label: &str,
-    root: &Path,
     producer_repository: &Path,
     target: InvocationTarget<'_>,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<Vec<String>, AggregateError> {
     let source_prefix = bundle.source_ref.get(..12).unwrap_or(&bundle.source_ref);
     let checkpointed = label == "model-check"
@@ -312,7 +335,7 @@ fn expected_tla_arguments(
             configuration(bundle, "checkpoint_minutes")?.to_owned(),
             "-gzip".to_owned(),
         ]);
-        let report: RecoveryReport = read_json_kind(check, RECOVERY_REPORT_KIND, root)?;
+        let report: RecoveryReport = read_json_kind(check, RECOVERY_REPORT_KIND, authenticated)?;
         if let Some(checkpoint) = report.recovered_checkpoint {
             arguments.extend([
                 "-recover".to_owned(),

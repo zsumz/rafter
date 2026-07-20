@@ -9,6 +9,7 @@ use crate::contract::{
 
 mod atomic;
 
+use super::path::parse_repository_path;
 use super::simulator::parse_simulator_identity;
 use atomic::validate_atomic_group;
 
@@ -82,6 +83,10 @@ pub(super) fn parse_evidence_record(
     if let Some(identity) = &test {
         validate_test_identity(index, identity, &symbol, "tests")?;
     }
+    let negative_fixture_detector_path = record
+        .get("negative_fixture_detector_path")
+        .map(|path| parse_repository_path(index, "negative_fixture_detector_path", path))
+        .transpose()?;
     Ok(RegistryEvidence {
         id: invariant_id,
         clauses: clause_ids,
@@ -94,6 +99,7 @@ pub(super) fn parse_evidence_record(
         negative_fixture: record.get("negative_fixture").cloned(),
         negative_fixture_path: record.get("negative_fixture_path").cloned(),
         negative_fixture_detector: record.get("negative_fixture_detector").cloned(),
+        negative_fixture_detector_path,
         negative_fixture_exemption: record.get("negative_fixture_exemption").cloned(),
         test,
         simulator,
@@ -209,6 +215,15 @@ fn validate_evidence_shape(
     reject_fields_outside_layer(index, record, layer, "tests", &test_fields)?;
     reject_fields_outside_layer(index, record, layer, "simulator", &simulator_fields)?;
 
+    validate_negative_fixture_shape(index, record, layer, strength)
+}
+
+fn validate_negative_fixture_shape(
+    index: usize,
+    record: &BTreeMap<String, String>,
+    layer: &str,
+    strength: &str,
+) -> Result<(), RegistryParseError> {
     let fixture = record.contains_key("negative_fixture");
     let exemption = record.contains_key("negative_fixture_exemption");
     let direct_simulator = layer == "simulator" && strength == "direct";
@@ -229,6 +244,17 @@ fn validate_evidence_shape(
     {
         return Err(RegistryParseError(format!(
             "evidence record {} has a misplaced negative_fixture_detector",
+            index + 1
+        )));
+    }
+    if record.contains_key("negative_fixture_detector_path")
+        && (!fixture
+            || !record.contains_key("negative_fixture_detector")
+            || layer != "simulator"
+            || strength != "direct")
+    {
+        return Err(RegistryParseError(format!(
+            "evidence record {} has a misplaced negative_fixture_detector_path",
             index + 1
         )));
     }

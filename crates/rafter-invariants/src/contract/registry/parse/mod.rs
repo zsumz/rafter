@@ -3,6 +3,7 @@
 mod document;
 mod evidence;
 mod fields;
+mod path;
 mod scalar;
 mod simulator;
 mod syntax;

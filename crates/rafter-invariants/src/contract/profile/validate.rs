@@ -33,6 +33,17 @@ impl ProfileManifest {
                 "reviewed_ids must contain exactly the registry's 44 unique IDs".to_owned(),
             ));
         }
+        if self
+            .profiles
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>()
+            != BTreeSet::from(["pr", "nightly", "weekly"])
+        {
+            return Err(CatalogError(
+                "profile manifest must contain exactly pr, nightly, and weekly".to_owned(),
+            ));
+        }
         for profile in ["pr", "nightly", "weekly"] {
             self.validate_profile(profile, catalog)?;
         }
@@ -57,11 +68,11 @@ impl ProfileManifest {
             )));
         }
         if contract.description.trim().is_empty()
-            || contract.required_layers.is_empty()
-            || contract.required_strengths.is_empty()
             || has_duplicates(&contract.required_layers)
             || has_duplicates(&contract.required_strengths)
-            || contract.canonical_minimum_independent_layers < 2
+            || !exact_policy_set(&contract.required_layers, required_layers(profile))
+            || !exact_policy_set(&contract.required_strengths, &["direct", "e2e"])
+            || contract.canonical_minimum_independent_layers != 2
             || contract.runners.keys().collect::<BTreeSet<_>>()
                 != contract.required_layers.iter().collect::<BTreeSet<_>>()
         {
@@ -74,6 +85,20 @@ impl ProfileManifest {
         }
         Ok(())
     }
+}
+
+fn required_layers(profile: &str) -> &'static [&'static str] {
+    match profile {
+        "pr" => &["tests", "simulator", "tla"],
+        "nightly" | "weekly" => &["tests", "simulator", "tla", "maelstrom"],
+        _ => &[],
+    }
+}
+
+fn exact_policy_set(observed: &[String], expected: &[&str]) -> bool {
+    observed.len() == expected.len()
+        && observed.iter().map(String::as_str).collect::<BTreeSet<_>>()
+            == expected.iter().copied().collect::<BTreeSet<_>>()
 }
 
 fn has_duplicates(values: &[String]) -> bool {
