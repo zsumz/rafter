@@ -4,6 +4,7 @@ use std::{
     rc::Rc,
 };
 
+use sha2::{Digest, Sha256};
 use syn::File;
 
 use super::{
@@ -32,7 +33,11 @@ pub(super) struct CachedTargetAnalysis {
     pub(super) graph: crate::verification::target::TargetSourceGraph,
     pub(super) resolver: LocalCallResolver,
     pub(super) functions: FunctionIndex,
+    source_fingerprint: TargetSourceFingerprint,
 }
+
+#[derive(Eq, PartialEq)]
+struct TargetSourceFingerprint(Vec<(PathBuf, String)>);
 
 struct CachedSource {
     source: String,
@@ -91,6 +96,18 @@ impl DetectorSourceCache {
             target_kind: binding.test_identity.target_kind.clone(),
             target: binding.test_identity.target.clone(),
         };
+        let stale = self
+            .targets
+            .get(&key)
+            .map(|cached| {
+                target_source_fingerprint(&cached.graph)
+                    .map(|fingerprint| fingerprint != cached.source_fingerprint)
+            })
+            .transpose()?
+            .unwrap_or(false);
+        if stale {
+            self.targets.remove(&key);
+        }
         if !self.targets.contains_key(&key) {
             let mut graph = crate::verification::target::target_source_graph(
                 &key.source_root,
@@ -109,6 +126,7 @@ impl DetectorSourceCache {
             graph.resolve_oracle_shadowed_impl_methods(|ty, module| {
                 resolver.declared_type_module(ty, module)
             });
+            let source_fingerprint = target_source_fingerprint(&graph)?;
             self.target_analysis_count += 1;
             self.targets.insert(
                 key.clone(),
@@ -116,6 +134,7 @@ impl DetectorSourceCache {
                     graph,
                     resolver,
                     functions,
+                    source_fingerprint,
                 },
             );
         }
@@ -133,6 +152,24 @@ impl DetectorSourceCache {
     pub(crate) fn source_parse_count(&self) -> usize {
         self.source_parse_count
     }
+}
+
+fn target_source_fingerprint(
+    graph: &crate::verification::target::TargetSourceGraph,
+) -> Result<TargetSourceFingerprint, String> {
+    graph
+        .source_modules()
+        .into_iter()
+        .map(|(path, _)| path)
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(|path| {
+            let bytes = std::fs::read(&path)
+                .map_err(|error| format!("read target source {}: {error}", path.display()))?;
+            Ok((path, format!("{:x}", Sha256::digest(bytes))))
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map(TargetSourceFingerprint)
 }
 
 fn collect_target_analysis(
