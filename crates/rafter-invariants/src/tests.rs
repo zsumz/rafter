@@ -32,7 +32,7 @@ fn artifact_kind(path: &str, kind: &str) -> ArtifactRef {
 
 fn producer_binding(path: &str) -> ProducerBindingReceipt {
     ProducerBindingReceipt {
-        binding: crate::producer_image::PRODUCER_BINDING.to_owned(),
+        binding: crate::provenance::image::PRODUCER_BINDING.to_owned(),
         executable: artifact_kind(path, "producer-binary"),
     }
 }

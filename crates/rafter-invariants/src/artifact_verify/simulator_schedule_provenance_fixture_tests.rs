@@ -631,12 +631,12 @@ fn bind_fixture_evidence(
     runtime: &RuntimeFixture,
 ) {
     bundle.execution.producer = crate::ProducerBindingReceipt {
-        binding: crate::producer_image::PRODUCER_BINDING.to_owned(),
+        binding: crate::provenance::image::PRODUCER_BINDING.to_owned(),
         executable: runtime.producer_artifact.clone(),
     };
     bundle.execution.invocation.program_sha256 = runtime.producer_artifact.sha256.clone();
     bundle.execution.invocation.program =
-        crate::producer_image::image_path(current_dir, &runtime.producer_artifact.sha256)
+        crate::provenance::image::image_path(current_dir, &runtime.producer_artifact.sha256)
             .to_string_lossy()
             .into_owned();
     bundle.execution.invocation.current_dir = current_dir.to_string_lossy().into_owned();

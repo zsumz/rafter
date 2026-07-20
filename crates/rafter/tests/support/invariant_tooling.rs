@@ -6,7 +6,7 @@ pub(super) const MAX_PRODUCTION_FILES_OVER_TARGET: usize = 44;
 pub(super) const MAX_TEST_FILES_OVER_TARGET: usize = 17;
 pub(super) const MAX_FILES_WITHOUT_MODULE_CONTRACTS: usize = 94;
 pub(super) const MAX_LEGACY_VERIFIER_PRODUCER_REFERENCES: usize = 91;
-pub(super) const MAX_LEGACY_VERIFIER_PRODUCER_IMAGE_REFERENCES: usize = 14;
+pub(super) const MAX_LEGACY_VERIFIER_PRODUCER_IMAGE_REFERENCES: usize = 0;
 pub(super) const MAX_LEGACY_VERIFIER_RUST_TARGET_REFERENCES: usize = 35;
 
 pub(super) const INVARIANT_SOURCE_ROOTS: &[&str] = &[

@@ -1,3 +1,5 @@
+//! Scenarios for image publication races, poisoning, and invocation binding.
+
 use std::{
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},

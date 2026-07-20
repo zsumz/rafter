@@ -126,7 +126,7 @@ pub(crate) fn produce_with_plan(
         "producer-binary",
     )?;
     let producer = ProducerBindingReceipt {
-        binding: crate::producer_image::PRODUCER_BINDING.to_owned(),
+        binding: crate::provenance::image::PRODUCER_BINDING.to_owned(),
         executable,
     };
     let source = source::capture_for_layer(layer)?;

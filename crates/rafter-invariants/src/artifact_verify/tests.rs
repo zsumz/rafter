@@ -22,7 +22,7 @@ fn producer_paths_bind_to_the_recorded_checkout_and_preserved_binary() {
         .find(|bundle| bundle.runner == "tests")
         .expect("tests bundle");
     bundle.execution.invocation.program =
-        crate::producer_image::image_path(&producer_root, &digest)
+        crate::provenance::image::image_path(&producer_root, &digest)
             .to_string_lossy()
             .into_owned();
     bundle.execution.invocation.current_dir = producer_root.to_string_lossy().into_owned();
@@ -38,7 +38,7 @@ fn producer_paths_bind_to_the_recorded_checkout_and_preserved_binary() {
         size_bytes: bytes.len() as u64,
     };
     bundle.execution.producer = crate::ProducerBindingReceipt {
-        binding: crate::producer_image::PRODUCER_BINDING.to_owned(),
+        binding: crate::provenance::image::PRODUCER_BINDING.to_owned(),
         executable: producer.clone(),
     };
     bundle.execution.artifacts = vec![producer];
@@ -58,22 +58,24 @@ fn producer_paths_bind_to_the_recorded_checkout_and_preserved_binary() {
     forged = bundle.clone();
     let current_root = producer_root.join(".");
     forged.execution.invocation.current_dir = current_root.to_string_lossy().into_owned();
-    forged.execution.invocation.program = crate::producer_image::image_path(&current_root, &digest)
-        .to_string_lossy()
-        .into_owned();
+    forged.execution.invocation.program =
+        crate::provenance::image::image_path(&current_root, &digest)
+            .to_string_lossy()
+            .into_owned();
     assert!(verify_producer_invocation_paths(&forged, &root).is_err());
     forged = bundle.clone();
     let parent_root = producer_root.join("nested/..");
     forged.execution.invocation.current_dir = parent_root.to_string_lossy().into_owned();
-    forged.execution.invocation.program = crate::producer_image::image_path(&parent_root, &digest)
-        .to_string_lossy()
-        .into_owned();
+    forged.execution.invocation.program =
+        crate::provenance::image::image_path(&parent_root, &digest)
+            .to_string_lossy()
+            .into_owned();
     assert!(verify_producer_invocation_paths(&forged, &root).is_err());
     forged = bundle.clone();
     forged.execution.invocation.current_dir = root.to_string_lossy().into_owned();
     assert!(verify_producer_invocation_paths(&forged, &root).is_err());
     forged = bundle.clone();
-    forged.execution.invocation.program = crate::producer_image::image_path(&root, &digest)
+    forged.execution.invocation.program = crate::provenance::image::image_path(&root, &digest)
         .to_string_lossy()
         .into_owned();
     assert!(verify_producer_invocation_paths(&forged, &root).is_err());

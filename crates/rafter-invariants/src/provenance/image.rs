@@ -1,3 +1,5 @@
+//! Immutable, content-addressed producer image publication and re-execution.
+
 use std::{
     env,
     error::Error,

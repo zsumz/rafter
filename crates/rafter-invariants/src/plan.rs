@@ -104,7 +104,7 @@ pub(crate) fn verify_bundle_plan(
 /// Returns an error when argv or the working directory is not valid UTF-8.
 pub(crate) fn capture_invocation() -> Result<CapturedInvocation, Box<dyn Error>> {
     let captured = capture_invocation_from(env::args_os().collect())?;
-    crate::producer_image::verify_capture(
+    crate::provenance::image::verify_capture(
         Path::new(&captured.receipt.program),
         &captured.program_bytes,
     )?;

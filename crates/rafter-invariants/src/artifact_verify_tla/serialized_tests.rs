@@ -302,7 +302,7 @@ impl Fixture {
         let executable = self.bundle.execution.producer.executable.clone();
         self.bundle.execution.invocation.program_sha256 = executable.sha256.clone();
         self.bundle.execution.invocation.program =
-            crate::producer_image::image_path(producer_root, &executable.sha256)
+            crate::provenance::image::image_path(producer_root, &executable.sha256)
                 .to_string_lossy()
                 .into_owned();
         self.bundle.execution.invocation.current_dir = producer_root.to_string_lossy().into_owned();
