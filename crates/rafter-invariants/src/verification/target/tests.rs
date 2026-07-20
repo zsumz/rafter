@@ -1,4 +1,4 @@
-//! Exact source-location contracts for trusted detector support macros.
+//! Scenarios: verifier-owned source locations for trusted detector support macros.
 
 use std::{collections::HashSet, path::Path};
 
@@ -9,8 +9,12 @@ use super::ModuleGraphCollector;
 #[test]
 fn support_item_macros_are_accepted_only_at_their_reviewed_sources() {
     let tracked = HashSet::new();
-    let collector =
-        ModuleGraphCollector::new("rafter_invariant_test", Path::new("/workspace"), &tracked);
+    let collector = ModuleGraphCollector::new(
+        "rafter_invariant_test",
+        Path::new("/workspace"),
+        &tracked,
+        &[],
+    );
     let oracle_adapter = parse_quote!(impl_oracle_call!(() => ()););
     let detector_state = parse_quote!(std::thread_local! { static STATE: usize = 0; });
 
@@ -35,8 +39,12 @@ fn support_item_macros_are_accepted_only_at_their_reviewed_sources() {
 #[test]
 fn exported_oracle_macros_are_canonical_only_in_the_wire_reviewed_module() {
     let tracked = HashSet::new();
-    let collector =
-        ModuleGraphCollector::new("rafter_invariant_test", Path::new("/workspace"), &tracked);
+    let collector = ModuleGraphCollector::new(
+        "rafter_invariant_test",
+        Path::new("/workspace"),
+        &tracked,
+        &[],
+    );
     let canonical = Path::new("/workspace/crates/rafter-invariant-test/src/oracle/macros.rs");
     let module = vec!["oracle".to_owned(), "macros".to_owned()];
 

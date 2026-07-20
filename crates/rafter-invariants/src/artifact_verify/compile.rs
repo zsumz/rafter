@@ -232,7 +232,7 @@ fn compiler_artifact_for_test(
     expected_target_dir: &Path,
     target_label: &str,
 ) -> Result<ParsedCompilerArtifact, AggregateError> {
-    crate::rust_target::verify_protected_compiler_artifacts(bytes, root)
+    crate::verification::target::verify_protected_compiler_artifacts(bytes, root)
         .map_err(AggregateError::new)?;
     let mut artifacts = Vec::new();
     for line in String::from_utf8_lossy(bytes).lines() {

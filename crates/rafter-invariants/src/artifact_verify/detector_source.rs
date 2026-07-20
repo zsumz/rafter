@@ -42,10 +42,6 @@ use syntax::{
     statement_unconditionally_exits, unqualified_called_function, unqualified_expression_name,
 };
 
-pub(super) fn is_reserved_oracle_macro(name: &str) -> bool {
-    policy::is_reserved_oracle_macro(name)
-}
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct DetectorInvocationContract {
     witnesses: BTreeMap<String, usize>,
@@ -250,7 +246,8 @@ impl<'ast> Visit<'ast> for FunctionCollector<'_> {
 
     fn visit_item_fn(&mut self, function: &'ast ItemFn) {
         if self.active_only
-            && !crate::rust_target::module_active_for_test(&function.attrs).unwrap_or(false)
+            && !crate::verification::target::module_active_for_test(&function.attrs)
+                .unwrap_or(false)
         {
             return;
         }
@@ -266,7 +263,7 @@ impl<'ast> Visit<'ast> for FunctionCollector<'_> {
 
     fn visit_item_impl(&mut self, item: &'ast ItemImpl) {
         if self.active_only
-            && !crate::rust_target::module_active_for_test(&item.attrs).unwrap_or(false)
+            && !crate::verification::target::module_active_for_test(&item.attrs).unwrap_or(false)
         {
             return;
         }
@@ -280,7 +277,8 @@ impl<'ast> Visit<'ast> for FunctionCollector<'_> {
             match item {
                 ImplItem::Const(item) => {
                     if self.active_only
-                        && !crate::rust_target::module_active_for_test(&item.attrs).unwrap_or(false)
+                        && !crate::verification::target::module_active_for_test(&item.attrs)
+                            .unwrap_or(false)
                     {
                         continue;
                     }
@@ -291,7 +289,7 @@ impl<'ast> Visit<'ast> for FunctionCollector<'_> {
                 }
                 ImplItem::Fn(method) => {
                     if self.active_only
-                        && !crate::rust_target::module_active_for_test(&method.attrs)
+                        && !crate::verification::target::module_active_for_test(&method.attrs)
                             .unwrap_or(false)
                     {
                         continue;
@@ -311,7 +309,7 @@ impl<'ast> Visit<'ast> for FunctionCollector<'_> {
 
     fn visit_item_mod(&mut self, item: &'ast ItemMod) {
         if self.active_only
-            && !crate::rust_target::module_active_for_test(&item.attrs).unwrap_or(false)
+            && !crate::verification::target::module_active_for_test(&item.attrs).unwrap_or(false)
         {
             return;
         }
@@ -627,7 +625,7 @@ impl<'ast> Visit<'ast> for FunctionBodyVisitor<'_> {
             if let Stmt::Item(item) = statement {
                 match item {
                     syn::Item::Use(item_use) => {
-                        match crate::rust_target::module_active_for_test(&item_use.attrs) {
+                        match crate::verification::target::module_active_for_test(&item_use.attrs) {
                             Ok(true) => self.scoped_resolver.add_use(item_use, self.module),
                             Ok(false) => continue,
                             Err(_) => {

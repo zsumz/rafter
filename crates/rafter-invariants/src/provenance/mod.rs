@@ -2,3 +2,4 @@
 
 pub(crate) mod image;
 pub(crate) mod invocation;
+pub(crate) mod source;

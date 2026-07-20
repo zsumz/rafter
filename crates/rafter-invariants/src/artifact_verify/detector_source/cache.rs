@@ -29,7 +29,7 @@ struct TargetCacheKey {
 }
 
 pub(super) struct CachedTargetAnalysis {
-    pub(super) graph: crate::rust_target::TargetSourceGraph,
+    pub(super) graph: crate::verification::target::TargetSourceGraph,
     pub(super) resolver: LocalCallResolver,
     pub(super) functions: FunctionIndex,
 }
@@ -92,11 +92,12 @@ impl DetectorSourceCache {
             target: binding.test_identity.target.clone(),
         };
         if !self.targets.contains_key(&key) {
-            let mut graph = crate::rust_target::target_source_graph(
+            let mut graph = crate::verification::target::target_source_graph(
                 &key.source_root,
                 &key.package,
                 &key.target_kind,
                 &key.target,
+                super::ORACLE_MACROS,
             )?;
             let target_modules = graph.module_paths();
             let target_functions = graph
@@ -135,7 +136,7 @@ impl DetectorSourceCache {
 }
 
 fn collect_target_analysis(
-    graph: &crate::rust_target::TargetSourceGraph,
+    graph: &crate::verification::target::TargetSourceGraph,
     target_modules: &BTreeSet<Vec<String>>,
     target_function_names: &BTreeSet<String>,
 ) -> Result<(LocalCallResolver, FunctionIndex), String> {

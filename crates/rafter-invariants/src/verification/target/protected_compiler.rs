@@ -1,3 +1,5 @@
+//! Verifier-owned Cargo compiler-artifact policy for protected oracle targets.
+
 use std::{collections::BTreeMap, fs, path::Path};
 
 #[derive(Clone, Copy)]

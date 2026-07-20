@@ -1,4 +1,5 @@
-pub(super) const INVOCATION_MACROS: &[&str] = &["oracle_expect_err", "oracle_invoke_recorder"];
+//! Detector-oracle trust vocabulary and source-policy predicates.
+
 pub(super) const ORACLE_MACROS: &[&str] = &[
     "oracle_assert",
     "oracle_assert_eq",
@@ -9,6 +10,8 @@ pub(super) const ORACLE_MACROS: &[&str] = &[
     "oracle_prop_assert_eq",
     "oracle_violation",
 ];
+
+pub(super) const INVOCATION_MACROS: &[&str] = &["oracle_expect_err", "oracle_invoke_recorder"];
 pub(super) const SAFE_BUILTIN_MACROS: &[&str] = &[
     "assert",
     "assert_eq",
@@ -45,10 +48,6 @@ pub(super) const FORBIDDEN_CALLS: &[&str] = &[
     "write_all",
     "write_fmt",
 ];
-
-pub(super) fn is_reserved_oracle_macro(name: &str) -> bool {
-    ORACLE_MACROS.contains(&name)
-}
 
 pub(super) fn is_detector_test_attribute(attribute: &syn::Attribute) -> bool {
     attribute

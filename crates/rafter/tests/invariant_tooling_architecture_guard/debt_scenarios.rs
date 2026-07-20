@@ -71,9 +71,9 @@ fn producer_verifier_dependency_debt_only_shrinks() {
         "legacy verifier-to-producer-image references returned at {producer_image_references}"
     );
     let rust_target_references = legacy_verifier_references(&root, &files, "rust_target::");
-    assert!(
-        rust_target_references <= MAX_LEGACY_VERIFIER_RUST_TARGET_REFERENCES,
-        "legacy verifier-to-rust-target references increased from {MAX_LEGACY_VERIFIER_RUST_TARGET_REFERENCES} to {rust_target_references}"
+    assert_eq!(
+        rust_target_references, MAX_LEGACY_VERIFIER_RUST_TARGET_REFERENCES,
+        "legacy verifier-to-rust-target references returned at {rust_target_references}"
     );
 
     assert_forbidden_domain_imports_absent(

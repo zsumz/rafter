@@ -4,6 +4,7 @@ mod detector;
 mod error;
 mod process_receipt;
 pub(crate) mod simulator;
+pub(crate) mod target;
 
 pub use detector::{validate_detector_fixture_sources, DetectorFixtureSourceBinding};
 pub(crate) use error::AggregateError;

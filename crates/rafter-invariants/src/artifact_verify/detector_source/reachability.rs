@@ -9,7 +9,7 @@ use super::{
 
 pub(super) fn expand_reachable_fixture(
     functions: &FunctionIndex,
-    target_graph: &crate::rust_target::TargetSourceGraph,
+    target_graph: &crate::verification::target::TargetSourceGraph,
     fixture_function: &FunctionId,
     registered_function: &FunctionId,
     crate_name: &str,
@@ -30,7 +30,7 @@ pub(super) fn expand_reachable_fixture(
 
 struct Reachability<'a> {
     functions: &'a FunctionIndex,
-    target_graph: &'a crate::rust_target::TargetSourceGraph,
+    target_graph: &'a crate::verification::target::TargetSourceGraph,
     registered_function: &'a FunctionId,
     crate_name: &'a str,
     declarations: &'a BTreeMap<String, Vec<String>>,

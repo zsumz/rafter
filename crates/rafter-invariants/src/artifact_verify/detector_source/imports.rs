@@ -32,7 +32,7 @@ pub(super) fn collect_item_imports(items: &[Item]) -> ImportedPaths {
 
     impl<'ast> Visit<'ast> for ImportVisitor {
         fn visit_item_use(&mut self, item: &'ast ItemUse) {
-            if !crate::rust_target::module_active_for_test(&item.attrs).unwrap_or(false) {
+            if !crate::verification::target::module_active_for_test(&item.attrs).unwrap_or(false) {
                 return;
             }
             collect_use_tree(&item.tree, &mut Vec::new(), &mut self.imports);
@@ -45,7 +45,7 @@ pub(super) fn collect_item_imports(items: &[Item]) -> ImportedPaths {
         }
 
         fn visit_item_const(&mut self, item: &'ast ItemConst) {
-            if !crate::rust_target::module_active_for_test(&item.attrs).unwrap_or(false) {
+            if !crate::verification::target::module_active_for_test(&item.attrs).unwrap_or(false) {
                 return;
             }
             self.imports
@@ -55,7 +55,7 @@ pub(super) fn collect_item_imports(items: &[Item]) -> ImportedPaths {
         }
 
         fn visit_item_static(&mut self, item: &'ast ItemStatic) {
-            if !crate::rust_target::module_active_for_test(&item.attrs).unwrap_or(false) {
+            if !crate::verification::target::module_active_for_test(&item.attrs).unwrap_or(false) {
                 return;
             }
             self.imports
@@ -65,7 +65,7 @@ pub(super) fn collect_item_imports(items: &[Item]) -> ImportedPaths {
         }
 
         fn visit_item_mod(&mut self, item: &'ast ItemMod) {
-            if !crate::rust_target::module_active_for_test(&item.attrs).unwrap_or(false) {
+            if !crate::verification::target::module_active_for_test(&item.attrs).unwrap_or(false) {
                 return;
             }
             if item.ident == "rafter_invariant_test" {
@@ -74,7 +74,7 @@ pub(super) fn collect_item_imports(items: &[Item]) -> ImportedPaths {
         }
 
         fn visit_item_extern_crate(&mut self, item: &'ast ItemExternCrate) {
-            if !crate::rust_target::module_active_for_test(&item.attrs).unwrap_or(false) {
+            if !crate::verification::target::module_active_for_test(&item.attrs).unwrap_or(false) {
                 return;
             }
             let effective = item
@@ -97,7 +97,7 @@ pub(super) fn collect_item_imports(items: &[Item]) -> ImportedPaths {
 
 impl ImportedPaths {
     pub(super) fn add_macro_declaration(&mut self, item: &ItemMacro) {
-        if !crate::rust_target::module_active_for_test(&item.attrs).unwrap_or(false) {
+        if !crate::verification::target::module_active_for_test(&item.attrs).unwrap_or(false) {
             return;
         }
         let Some(name) = &item.ident else {

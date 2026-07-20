@@ -199,28 +199,35 @@ fn protected_compiler_targets_require_exact_canonical_artifacts() {
         false,
     );
     let exact = format!("{oracle}\n{macros}\n");
-    crate::rust_target::verify_protected_compiler_artifacts(exact.as_bytes(), &workspace)
+    crate::verification::target::verify_protected_compiler_artifacts(exact.as_bytes(), &workspace)
         .expect("canonical fresh and rebuilt artifacts both verify");
 
     let substituted = format!(
         "{}\n{macros}\n",
         artifact("rafter", "rafter_invariant_test", "lib", false)
     );
-    assert!(crate::rust_target::verify_protected_compiler_artifacts(
-        substituted.as_bytes(),
-        &workspace,
-    )
-    .is_err());
     assert!(
-        crate::rust_target::verify_protected_compiler_artifacts(oracle.as_bytes(), &workspace)
-            .is_err()
+        crate::verification::target::verify_protected_compiler_artifacts(
+            substituted.as_bytes(),
+            &workspace,
+        )
+        .is_err()
+    );
+    assert!(
+        crate::verification::target::verify_protected_compiler_artifacts(
+            oracle.as_bytes(),
+            &workspace
+        )
+        .is_err()
     );
     let duplicate = format!("{oracle}\n{oracle}\n{macros}\n");
-    assert!(crate::rust_target::verify_protected_compiler_artifacts(
-        duplicate.as_bytes(),
-        &workspace,
-    )
-    .is_err());
+    assert!(
+        crate::verification::target::verify_protected_compiler_artifacts(
+            duplicate.as_bytes(),
+            &workspace,
+        )
+        .is_err()
+    );
 }
 
 #[test]

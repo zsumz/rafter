@@ -48,10 +48,6 @@ impl DetectorFixtureSourceBatchVerifier {
     }
 }
 
-pub(crate) fn is_reserved_oracle_macro(name: &str) -> bool {
-    detector_source::is_reserved_oracle_macro(name)
-}
-
 pub(crate) fn validate_detector_fixture_sources(
     binding: &crate::DetectorFixtureSourceBinding<'_>,
 ) -> Result<(), String> {

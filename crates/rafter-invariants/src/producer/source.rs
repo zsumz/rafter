@@ -10,6 +10,7 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
+use crate::provenance::source::parse_tracked_source_paths;
 use crate::{SourceReceipt, ToolReceipt};
 
 use super::process;
@@ -419,49 +420,6 @@ fn validate_resolved_path_package_metadata(
         }
     }
     Ok(())
-}
-
-fn parse_tracked_source_paths(output: &str) -> Result<HashSet<PathBuf>, Box<dyn Error>> {
-    output
-        .split('\0')
-        .filter(|value| !value.is_empty())
-        .map(|value| {
-            let path = PathBuf::from(value);
-            if path.is_absolute()
-                || path
-                    .components()
-                    .any(|component| matches!(component, std::path::Component::ParentDir))
-            {
-                return Err(format!("git reported a non-relative tracked path: {value:?}").into());
-            }
-            Ok(path)
-        })
-        .collect()
-}
-
-pub(crate) fn tracked_source_paths_at(root: &Path) -> Result<HashSet<PathBuf>, String> {
-    let root = fs::canonicalize(root)
-        .map_err(|error| format!("canonicalize source root {}: {error}", root.display()))?;
-    // This inventory only constrains the Rust source analyzer; source acceptance is independently
-    // proven from raw HEAD-tree bytes. Use the fixed system Git so catalog guards remain portable.
-    let output = std::process::Command::new("/usr/bin/git")
-        .args(["--no-replace-objects", "ls-files", "-z"])
-        .env_clear()
-        .envs(process::base_environment())
-        .current_dir(&root)
-        .output()
-        .map_err(|error| format!("enumerate tracked source paths: {error}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "enumerate tracked source paths: git exited with {:?}: {}",
-            output.status.code(),
-            String::from_utf8_lossy(&output.stderr).trim()
-        ));
-    }
-    let output = String::from_utf8(output.stdout)
-        .map_err(|error| format!("enumerate tracked source paths: {error}"))?;
-    parse_tracked_source_paths(&output)
-        .map_err(|error| format!("parse tracked source paths: {error}"))
 }
 
 fn validate_manifest_path_overrides(

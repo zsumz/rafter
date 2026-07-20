@@ -782,7 +782,7 @@ struct LocalImportCollector {
 
 impl<'ast> Visit<'ast> for LocalImportCollector {
     fn visit_item_extern_crate(&mut self, item: &'ast ItemExternCrate) {
-        if !crate::rust_target::module_active_for_test(&item.attrs).unwrap_or(false)
+        if !crate::verification::target::module_active_for_test(&item.attrs).unwrap_or(false)
             || !self.module.is_empty()
             || item.ident != "self"
         {
@@ -794,7 +794,7 @@ impl<'ast> Visit<'ast> for LocalImportCollector {
     }
 
     fn visit_item_use(&mut self, item: &'ast ItemUse) {
-        if !crate::rust_target::module_active_for_test(&item.attrs).unwrap_or(false) {
+        if !crate::verification::target::module_active_for_test(&item.attrs).unwrap_or(false) {
             return;
         }
         collect_use_tree(
@@ -806,7 +806,7 @@ impl<'ast> Visit<'ast> for LocalImportCollector {
     }
 
     fn visit_item_mod(&mut self, item: &'ast ItemMod) {
-        if !crate::rust_target::module_active_for_test(&item.attrs).unwrap_or(false) {
+        if !crate::verification::target::module_active_for_test(&item.attrs).unwrap_or(false) {
             return;
         }
         self.module.push(item.ident.to_string());
@@ -824,7 +824,7 @@ impl<'ast> Visit<'ast> for LocalImportCollector {
     }
 
     fn visit_item_fn(&mut self, item: &'ast ItemFn) {
-        if !crate::rust_target::module_active_for_test(&item.attrs).unwrap_or(false) {
+        if !crate::verification::target::module_active_for_test(&item.attrs).unwrap_or(false) {
             return;
         }
         self.resolver.local_functions.insert(FunctionId {
@@ -834,7 +834,7 @@ impl<'ast> Visit<'ast> for LocalImportCollector {
     }
 
     fn visit_item_struct(&mut self, item: &'ast ItemStruct) {
-        if !crate::rust_target::module_active_for_test(&item.attrs).unwrap_or(false) {
+        if !crate::verification::target::module_active_for_test(&item.attrs).unwrap_or(false) {
             return;
         }
         let mut type_module = self.module.clone();
@@ -856,7 +856,7 @@ impl<'ast> Visit<'ast> for LocalImportCollector {
     }
 
     fn visit_item_impl(&mut self, item: &'ast ItemImpl) {
-        if !crate::rust_target::module_active_for_test(&item.attrs).unwrap_or(false) {
+        if !crate::verification::target::module_active_for_test(&item.attrs).unwrap_or(false) {
             return;
         }
         let Some(type_module) = self
@@ -870,7 +870,7 @@ impl<'ast> Visit<'ast> for LocalImportCollector {
             .extend(item.items.iter().filter_map(|item| {
                 match item {
                     ImplItem::Fn(method)
-                        if crate::rust_target::module_active_for_test(&method.attrs)
+                        if crate::verification::target::module_active_for_test(&method.attrs)
                             .unwrap_or(false) =>
                     {
                         Some(FunctionId {
@@ -888,7 +888,7 @@ impl<'ast> Visit<'ast> for LocalImportCollector {
                 .filter_map(|item| match item {
                     ImplItem::Type(item)
                         if item.ident == "Target"
-                            && crate::rust_target::module_active_for_test(&item.attrs)
+                            && crate::verification::target::module_active_for_test(&item.attrs)
                                 .unwrap_or(false) =>
                     {
                         self.resolver.declared_type_module(&item.ty, &self.module)
@@ -905,7 +905,7 @@ impl<'ast> Visit<'ast> for LocalImportCollector {
     }
 
     fn visit_item_trait(&mut self, item: &'ast ItemTrait) {
-        if !crate::rust_target::module_active_for_test(&item.attrs).unwrap_or(false) {
+        if !crate::verification::target::module_active_for_test(&item.attrs).unwrap_or(false) {
             return;
         }
         self.resolver
@@ -913,7 +913,7 @@ impl<'ast> Visit<'ast> for LocalImportCollector {
             .extend(item.items.iter().filter_map(|item| {
                 match item {
                     TraitItem::Fn(method)
-                        if crate::rust_target::module_active_for_test(&method.attrs)
+                        if crate::verification::target::module_active_for_test(&method.attrs)
                             .unwrap_or(false) =>
                     {
                         Some(FunctionId {
