@@ -32,6 +32,7 @@ pub(super) fn assert_evidence_is_machine_checkable(
         .iter()
         .map(|clause| (clause.id.as_str(), clause))
         .collect::<std::collections::BTreeMap<_, _>>();
+    let mut detector_sources = rafter_invariants::DetectorFixtureSourceBatch::default();
 
     for record in evidence {
         assert!(
@@ -81,6 +82,7 @@ pub(super) fn assert_evidence_is_machine_checkable(
                 record.negative_fixture.as_deref(),
                 record.negative_fixture_path.as_deref(),
                 record.negative_fixture_detector.as_deref(),
+                record.negative_fixture_detector_path.as_deref(),
                 record.negative_fixture_exemption.as_deref(),
             )),
             "{} {} {} evidence record for {}#{} is duplicated",
@@ -111,7 +113,7 @@ pub(super) fn assert_evidence_is_machine_checkable(
         );
         assert_cargo_test_target_matches_path(record);
         assert_registered_test_contract(workspace, record, &path, &source);
-        assert_negative_fixture_policy(workspace, record, &source);
+        assert_negative_fixture_policy(workspace, record, &source, &mut detector_sources);
         assert_atomic_group_policy(record);
     }
 
@@ -596,8 +598,13 @@ fn assert_coverage_bindings(entries: &[Entry], clauses: &[Clause], evidence: &[E
     }
 }
 
-fn assert_negative_fixture_policy(workspace: &Path, record: &Evidence, source: &str) {
-    assert_declared_negative_fixture(workspace, record, source);
+fn assert_negative_fixture_policy(
+    workspace: &Path,
+    record: &Evidence,
+    source: &str,
+    detector_sources: &mut rafter_invariants::DetectorFixtureSourceBatch,
+) {
+    assert_declared_negative_fixture(workspace, record, source, detector_sources);
 
     if let Some(exemption) = &record.negative_fixture_exemption {
         assert!(
@@ -646,7 +653,12 @@ fn assert_negative_fixture_policy(workspace: &Path, record: &Evidence, source: &
     }
 }
 
-fn assert_declared_negative_fixture(workspace: &Path, record: &Evidence, source: &str) {
+fn assert_declared_negative_fixture(
+    workspace: &Path,
+    record: &Evidence,
+    source: &str,
+    detector_sources: &mut rafter_invariants::DetectorFixtureSourceBatch,
+) {
     let Some(negative_fixture) = &record.negative_fixture else {
         return;
     };
@@ -685,6 +697,7 @@ fn assert_declared_negative_fixture(workspace: &Path, record: &Evidence, source:
             negative_fixture,
             &fixture_path,
             &fixture_source,
+            detector_sources,
         );
     }
 }
@@ -695,6 +708,7 @@ fn assert_simulator_detector_fixture(
     negative_fixture: &str,
     fixture_path: &Path,
     fixture_source: &str,
+    detector_sources: &mut rafter_invariants::DetectorFixtureSourceBatch,
 ) {
     let detector = record
         .negative_fixture_detector
@@ -709,7 +723,11 @@ fn assert_simulator_detector_fixture(
         .negative_fixture_path
         .as_deref()
         .unwrap_or(record.path.as_str());
-    let detector_path = workspace.join(&record.path);
+    let detector_path_text = record
+        .negative_fixture_detector_path
+        .as_deref()
+        .unwrap_or(record.path.as_str());
+    let detector_path = workspace.join(detector_path_text);
     let detector_source = fs::read_to_string(&detector_path).unwrap_or_else(|error| {
         panic!(
             "read simulator detector source {}: {error}",
@@ -721,8 +739,8 @@ fn assert_simulator_detector_fixture(
         .as_ref()
         .and_then(|identity| identity.negative_test.as_ref())
         .expect("direct simulator fixture has executable identity");
-    let source_contract = rafter_invariants::validate_detector_fixture_sources(
-        &rafter_invariants::DetectorFixtureSourceBinding {
+    let source_contract =
+        detector_sources.validate(&rafter_invariants::DetectorFixtureSourceBinding {
             fixture_source,
             detector_source: &detector_source,
             source_root: workspace,
@@ -731,8 +749,7 @@ fn assert_simulator_detector_fixture(
             test_identity: identity,
             fixture: negative_fixture,
             detector,
-        },
-    );
+        });
     assert!(
         source_contract.is_ok(),
         "{} simulator fixture `{negative_fixture}` has no invocation-bound detector contract: {}",
