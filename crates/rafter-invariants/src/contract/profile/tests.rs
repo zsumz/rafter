@@ -73,13 +73,42 @@ fn validation_rejects_profile_inventory_and_policy_drift() {
         .push("tests".to_owned());
     assert!(duplicate_layer.validate(&catalog).is_err());
 
-    let mut weak_canonical = manifest;
+    let mut missing_scheduled_layer = manifest.clone();
+    let nightly = missing_scheduled_layer.profiles.get_mut("nightly").unwrap();
+    nightly.required_layers.retain(|layer| layer != "maelstrom");
+    nightly.runners.remove("maelstrom");
+    assert!(missing_scheduled_layer.validate(&catalog).is_err());
+
+    let mut missing_strength = manifest.clone();
+    missing_strength
+        .profiles
+        .get_mut("weekly")
+        .unwrap()
+        .required_strengths
+        .retain(|strength| strength != "e2e");
+    assert!(missing_strength.validate(&catalog).is_err());
+
+    let mut extra_profile = manifest.clone();
+    extra_profile
+        .profiles
+        .insert("ad-hoc".to_owned(), extra_profile.profiles["pr"].clone());
+    assert!(extra_profile.validate(&catalog).is_err());
+
+    let mut weak_canonical = manifest.clone();
     weak_canonical
         .profiles
         .get_mut("pr")
         .unwrap()
         .canonical_minimum_independent_layers = 1;
     assert!(weak_canonical.validate(&catalog).is_err());
+
+    let mut unreviewed_canonical = manifest;
+    unreviewed_canonical
+        .profiles
+        .get_mut("pr")
+        .unwrap()
+        .canonical_minimum_independent_layers = 3;
+    assert!(unreviewed_canonical.validate(&catalog).is_err());
 }
 
 fn load_manifest() -> ProfileManifest {
