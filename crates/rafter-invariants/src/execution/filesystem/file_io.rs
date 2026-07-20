@@ -8,6 +8,8 @@ use std::io::{Seek, SeekFrom};
 use std::os::unix::fs::FileExt;
 
 use cap_fs_ext::{FollowSymlinks, OpenOptionsFollowExt};
+#[cfg(unix)]
+use cap_std::fs::OpenOptionsExt;
 use cap_std::fs::{File, OpenOptions};
 
 use super::{
@@ -20,6 +22,8 @@ impl HeldDirectory {
         let (parent, name) = self.parent_and_name(path, false)?;
         let mut options = OpenOptions::new();
         options.read(true).follow(FollowSymlinks::No);
+        #[cfg(unix)]
+        options.custom_flags(rustix::fs::OFlags::NONBLOCK.bits().cast_signed());
         let file = parent.dir.open_with(&name, &options)?;
         if !file.metadata()?.is_file() {
             return Err(format!("producer path is not a regular file: {}", path.display()).into());
@@ -211,8 +215,15 @@ pub(crate) fn hold_file(path: &Path) -> Result<HeldFile, Box<dyn Error>> {
     workspace.hold_file(&relative)
 }
 
-pub(crate) fn read_file(path: &Path) -> Result<Vec<u8>, Box<dyn Error>> {
+pub(crate) fn read_file_bounded(
+    path: &Path,
+    maximum_bytes: u64,
+) -> Result<Vec<u8>, Box<dyn Error>> {
     let workspace = HeldDirectory::workspace()?;
     let relative = workspace_relative(&workspace, path)?;
-    workspace.read(&relative)
+    workspace.read_bounded(
+        &relative,
+        OperationDeadline::none("bounded workspace file read"),
+        maximum_bytes,
+    )
 }
