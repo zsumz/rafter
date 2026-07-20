@@ -85,6 +85,7 @@ impl TryFrom<RegistryDocument> for Catalog {
                     negative_fixture: evidence.negative_fixture.clone(),
                     negative_fixture_path: evidence.negative_fixture_path.clone(),
                     negative_fixture_detector: evidence.negative_fixture_detector.clone(),
+                    negative_fixture_detector_path: evidence.negative_fixture_detector_path.clone(),
                     test: evidence.test.clone(),
                     simulator: evidence.simulator.clone(),
                 })

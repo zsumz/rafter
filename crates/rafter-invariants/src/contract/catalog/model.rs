@@ -50,11 +50,20 @@ pub struct EvidenceDescriptor {
     pub negative_fixture: Option<String>,
     pub negative_fixture_path: Option<String>,
     pub negative_fixture_detector: Option<String>,
+    pub negative_fixture_detector_path: Option<String>,
     pub test: Option<TestIdentity>,
     pub simulator: Option<SimulatorIdentity>,
 }
 
 impl EvidenceDescriptor {
+    /// Returns the reviewed source file that declares the negative detector.
+    #[must_use]
+    pub fn negative_detector_path(&self) -> &str {
+        self.negative_fixture_detector_path
+            .as_deref()
+            .unwrap_or(&self.path)
+    }
+
     /// Returns the stable aggregate key for this evidence declaration.
     #[must_use]
     pub fn evidence_id(&self) -> String {
