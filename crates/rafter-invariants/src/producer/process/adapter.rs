@@ -5,9 +5,7 @@ use std::{collections::BTreeMap, error::Error, ffi::OsString, path::Path, time::
 #[cfg(unix)]
 use std::os::fd::BorrowedFd;
 
-use crate::execution::process::{
-    ProcessDeadlines, ProcessRequest, ProcessRuntime as ExecutionRuntime, RuntimeExecutable,
-};
+use crate::execution::process::ProcessDeadlines;
 
 use super::{bind_invocation, bind_process_output, ProcessOutput, ProcessPolicy, ProcessSchedule};
 
@@ -144,8 +142,6 @@ fn timed_with_timeout_and_policy_and_descriptors_after_bind(
     let invocation = invocation_binding.receipt().clone();
     after_bind();
     invocation_binding.verify_path_bindings()?;
-    let launch_program = invocation_binding.logical_program();
-    let runtime = invocation_binding.runtime();
     let deadlines = ProcessDeadlines::new(
         schedule.execution_timeout,
         schedule.execution_window_deadline,
@@ -153,40 +149,13 @@ fn timed_with_timeout_and_policy_and_descriptors_after_bind(
         schedule.finalization_start_deadline,
         schedule.lifecycle_deadline,
     )?;
-    let output = crate::execution::process::run(&ProcessRequest {
-        program: launch_program,
-        executable_path: invocation_binding.executable_path(),
-        arguments: invocation_binding.launch_arguments(),
+    let output = invocation_binding.run(
         environment,
         deadlines,
-        termination: schedule.policy.termination(),
-        finalization: schedule.policy.finalization(),
-        runtime: ExecutionRuntime {
-            perl: RuntimeExecutable {
-                path: runtime.perl().execution_path(),
-                #[cfg(unix)]
-                descriptor: runtime.perl().descriptor(),
-            },
-            time: RuntimeExecutable {
-                path: runtime.time().execution_path(),
-                #[cfg(unix)]
-                descriptor: runtime.time().descriptor(),
-            },
-            observer: RuntimeExecutable {
-                path: runtime.ps().execution_path(),
-                #[cfg(unix)]
-                descriptor: runtime.ps().descriptor(),
-            },
-        },
-        #[cfg(unix)]
-        executable_descriptor: invocation_binding.executable_descriptor(),
-        #[cfg(unix)]
-        target_descriptor: invocation_binding.target_descriptor(),
-        #[cfg(unix)]
-        working_directory_descriptor: invocation_binding.current_dir_descriptor(),
-        #[cfg(unix)]
+        schedule.policy.termination(),
+        schedule.policy.finalization(),
         inherited_descriptors,
-    })?;
+    )?;
     after_run();
     if let Err(error) = invocation_binding.verify_path_bindings() {
         return Err(output.retained_error(error));
