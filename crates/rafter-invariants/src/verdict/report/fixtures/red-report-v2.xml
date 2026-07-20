@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuite name="rafter-invariants-pr" tests="1" failures="1">
+  <testcase classname="rafter.invariants" name="ST-01">
+    <failure message="invariant evidence is red">ST-01/tests&lt;&amp;: lost | quorum
+line &lt;2&gt; &amp; &quot;quoted&quot;</failure>
+  </testcase>
+</testsuite>

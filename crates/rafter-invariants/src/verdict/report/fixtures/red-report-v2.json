@@ -1,0 +1,46 @@
+{
+  "schema_version": 2,
+  "profile": "pr",
+  "source_ref": "abc123",
+  "summary": {
+    "total": 1,
+    "green": 0,
+    "red": 1
+  },
+  "artifacts": [],
+  "invariants": [
+    {
+      "invariant_id": "ST-01",
+      "status": "red",
+      "required_clauses": 1,
+      "passed_clauses": 0,
+      "required_evidence": 1,
+      "passed_evidence": 0,
+      "clauses": [
+        {
+          "clause_id": "ST-01.a",
+          "statement": "Committed state is immutable.",
+          "status": "red",
+          "required_evidence": 1,
+          "passed_evidence": 0,
+          "issues": [
+            {
+              "evidence_id": "ST-01/tests<&",
+              "status": "error",
+              "classification": "harness_error",
+              "message": "lost | quorum\nline <2> & \"quoted\""
+            }
+          ]
+        }
+      ],
+      "issues": [
+        {
+          "evidence_id": "ST-01/tests<&",
+          "status": "error",
+          "classification": "harness_error",
+          "message": "lost | quorum\nline <2> & \"quoted\""
+        }
+      ]
+    }
+  ]
+}
