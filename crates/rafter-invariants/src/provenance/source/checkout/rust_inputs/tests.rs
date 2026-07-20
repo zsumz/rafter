@@ -1,3 +1,5 @@
+//! Adversarial scenarios for resolved Rust source inputs.
+
 use std::{
     collections::HashSet,
     fs,

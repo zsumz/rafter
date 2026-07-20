@@ -1,3 +1,5 @@
+//! Conservative scanning of macro-generated Rust source inputs.
+
 use std::collections::HashMap;
 
 use syn::Macro;

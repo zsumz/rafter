@@ -1,3 +1,5 @@
+//! Lexical alias tracking for Rust source-input macros.
+
 use std::collections::{HashMap, HashSet};
 
 use syn::UseTree;

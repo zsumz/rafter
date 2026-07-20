@@ -1,3 +1,5 @@
+//! Complete Cargo package inputs required for a sound checkout identity.
+
 use std::{error::Error, fs, path::Path};
 
 #[derive(Clone, Copy)]

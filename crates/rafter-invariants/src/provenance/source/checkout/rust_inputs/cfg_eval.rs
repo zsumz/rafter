@@ -1,3 +1,5 @@
+//! Fail-closed evaluation of conditional Rust source inputs.
+
 use syn::{punctuated::Punctuated, Attribute, Meta, Token};
 
 use super::path_is_ident;

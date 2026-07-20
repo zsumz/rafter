@@ -1,3 +1,5 @@
+//! Scenarios for Cargo configuration and package-input observation.
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -19,6 +21,17 @@ fn cargo_config_sha256_with_home(
     cargo_home: Option<&Path>,
 ) -> Result<String, Box<dyn std::error::Error>> {
     digest_for_release(root, cargo_home, INCLUDE_CAPABLE_CARGO)
+}
+
+#[test]
+fn cargo_release_parsing_has_the_config_include_boundary() {
+    let before = CargoRelease::from_verbose_identity("cargo 1.93.1\nrelease: 1.93.1\n")
+        .expect("parse Cargo release before config includes");
+    let boundary = CargoRelease::from_verbose_identity("cargo 1.94.0\nrelease: 1.94.0\n")
+        .expect("parse Cargo release with config includes");
+
+    assert!(!before.follows_config_includes());
+    assert!(boundary.follows_config_includes());
 }
 
 static SCRATCH_SEQUENCE: AtomicU64 = AtomicU64::new(0);

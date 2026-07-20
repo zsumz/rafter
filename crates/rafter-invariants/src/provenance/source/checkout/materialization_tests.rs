@@ -1,3 +1,5 @@
+//! Scenarios for races, aliases, modes, and ignored checkout materialization.
+
 use std::{
     fs,
     path::{Path, PathBuf},
@@ -9,9 +11,39 @@ use std::{
 use std::os::unix::fs::PermissionsExt;
 
 use super::{
-    capture_materialization, reviewed_generated_output, validate_ignored_inventory,
-    validate_ignored_path_types, CaptureBudget,
+    capture_materialization, validate_ignored_inventory, validate_ignored_path_types,
+    CheckoutCommandRunner, CommandOutput, GeneratedOutputPolicy,
 };
+
+struct TestCommandRunner;
+
+impl CheckoutCommandRunner for TestCommandRunner {
+    fn run(
+        &self,
+        program: &str,
+        arguments: &[&str],
+        current_dir: &Path,
+    ) -> Result<CommandOutput, Box<dyn std::error::Error>> {
+        let output = Command::new(program)
+            .args(arguments)
+            .current_dir(current_dir)
+            .output()?;
+        let stdout = String::from_utf8(output.stdout)?;
+        let stderr = String::from_utf8(output.stderr)?;
+        if !output.status.success() {
+            return Err(format!("fixture command {program} failed: {}", stderr.trim()).into());
+        }
+        Ok(CommandOutput { stdout, stderr })
+    }
+}
+
+struct TestGeneratedOutputs;
+
+impl GeneratedOutputPolicy for TestGeneratedOutputs {
+    fn permits(&self, path: &Path) -> bool {
+        reviewed_generated_output(path)
+    }
+}
 
 struct TestRepository {
     root: PathBuf,
@@ -51,7 +83,7 @@ impl TestRepository {
     }
 
     fn capture(&self) -> Result<super::MaterializedSource, Box<dyn std::error::Error>> {
-        capture_materialization(&self.root, CaptureBudget::Execution)
+        capture_materialization(&self.root, &TestCommandRunner, &TestGeneratedOutputs)
     }
 
     fn status(&self) -> String {
@@ -83,6 +115,73 @@ fn git(root: &Path, arguments: &[&str]) -> String {
         .expect("Git test output is UTF-8")
         .trim()
         .to_owned()
+}
+
+fn reviewed_generated_output(path: &Path) -> bool {
+    let components = path
+        .components()
+        .filter_map(|component| match component {
+            std::path::Component::Normal(value) => Some(value.to_string_lossy()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    matches!(components.as_slice(), [first, ..] if first == "target" || first == "store")
+        || matches!(components.as_slice(), [first, second, ..]
+            if (first == "artifacts"
+                && (second == "invariants" || reviewed_tla_evidence_artifact(second)))
+                || (first == "bench-compare" && second == "target")
+                || (first == "fuzz" && second == "target")
+                || (first == "tools" && second == "cache"))
+        || matches!(components.as_slice(), [first, second, third, ..]
+            if first == "crates" && second == "rafter-invariants" && third == "target")
+        || matches!(components.as_slice(), [first, second, rest @ ..]
+            if first == "specs" && second == "tla" && rest.iter().any(|value| value == "states"))
+        || components.iter().any(|value| value == "__pycache__")
+        || path.extension().is_some_and(|extension| extension == "pyc")
+}
+
+fn reviewed_tla_evidence_artifact(name: &str) -> bool {
+    const FIXTURE_SUFFIXES: &[&str] = &[
+        "ElectionSafety",
+        "LogMatching-LogMatchingRecorderOnly",
+        "LogMatching-SnapshotPrefixRecorderOnly",
+        "LeaderCompleteness-LeaderCompletenessRecorderOnly",
+        "CommittedPrefixStability-CommittedPrefixRecorderOnly",
+        "StateMachineSafety",
+        "StateMachineSafety-ApplicationEpochRecorderOnly",
+        "StaleLeaderFencing-HigherTermRecorderOnly",
+        "StaleLeaderFencing-StaleAuthorityRecorderOnly",
+        "CommittedEntriesHaveQuorum-CommitQuorumRecorderOnly",
+        "ReadBarrierLinearizability-ReadBarrierRecorderOnly",
+    ];
+    matches!(
+        name,
+        "tla-log"
+            | "tla.log"
+            | "tla-trace-log"
+            | "tla-tool"
+            | "tla-spec"
+            | "tla-trace-spec"
+            | "tla-detector-spec"
+            | "tla-runner"
+            | "tla-tool-asset-id"
+            | "tla-tool-checksums"
+            | "tla-config"
+            | "tla-trace-config"
+            | "tla-detector-config"
+            | "tla-mutation-log"
+            | "tla-producer"
+            | "tla-checkpoint-contract"
+            | "tla-checkpoint-inventory"
+            | "tla-checkpoint-recovered-contract"
+            | "tla-checkpoint-recovered-inventory"
+            | "tla-checkpoint-recovery-report"
+    ) || ["tla-detector-log-", "tla-detector-config-"]
+        .into_iter()
+        .any(|prefix| {
+            name.strip_prefix(prefix)
+                .is_some_and(|suffix| FIXTURE_SUFFIXES.contains(&suffix))
+        })
 }
 
 #[test]
@@ -278,7 +377,7 @@ fn ignored_paths_outside_reviewed_generated_roots_fail_closed() {
 
 #[test]
 fn nul_inventory_preserves_leading_spaces_in_ignored_paths() {
-    let error = validate_ignored_inventory(" target/generated.rs\0")
+    let error = validate_ignored_inventory(" target/generated.rs\0", &TestGeneratedOutputs)
         .expect_err("leading spaces in NUL inventories must not be trimmed")
         .to_string();
     assert!(

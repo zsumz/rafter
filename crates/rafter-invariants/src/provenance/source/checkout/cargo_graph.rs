@@ -1,3 +1,5 @@
+//! Locked registry build-script identities used by checkout observation.
+
 use std::error::Error;
 
 pub(super) fn validate_registry_build_script_source_identity(

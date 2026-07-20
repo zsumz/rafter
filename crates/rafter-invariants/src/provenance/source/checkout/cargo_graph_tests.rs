@@ -1,3 +1,5 @@
+//! Scenarios for locked registry build-script source identity.
+
 use std::{fs, path::Path, process::Command};
 
 use super::cargo_graph::validate_registry_build_script_source_identity;

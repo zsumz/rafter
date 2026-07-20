@@ -1,3 +1,5 @@
+//! Complete resolution of tracked Rust compiler inputs.
+
 use std::{
     collections::{HashMap, HashSet},
     error::Error,

@@ -1,3 +1,5 @@
+//! Canonical tracked-path validation for source inputs.
+
 use std::{
     collections::HashSet,
     error::Error,

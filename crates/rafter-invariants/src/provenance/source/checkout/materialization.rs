@@ -1,3 +1,5 @@
+//! Raw tracked-worktree materialization observed against the recorded Git tree.
+
 use std::{
     collections::BTreeSet,
     error::Error,
@@ -11,11 +13,14 @@ use std::os::unix::fs::PermissionsExt;
 use sha1::Sha1;
 use sha2::{Digest, Sha256};
 
-use crate::SourceMaterializationReceipt;
-
-use super::{command_output_at, command_output_raw_at, CaptureBudget};
+#[cfg(test)]
+use super::CommandOutput;
+use super::{
+    command_output_at, command_output_raw_at, CheckoutCommandRunner, GeneratedOutputPolicy,
+};
 
 const MATERIALIZATION_CONTRACT: &str = "git-head-worktree-raw-v1";
+const MAX_CAPTURED_SOURCE_BYTES: u64 = 512 * 1024 * 1024;
 
 #[cfg(test)]
 #[path = "materialization_tests.rs"]
@@ -25,7 +30,23 @@ mod tests;
 pub(super) struct MaterializedSource {
     pub(super) commit: String,
     pub(super) tree: String,
-    pub(super) receipt: SourceMaterializationReceipt,
+    pub(super) receipt: MaterializationObservation,
+    pub(super) files: Vec<CapturedSourceFile>,
+}
+
+#[derive(Debug)]
+pub(crate) struct CapturedSourceFile {
+    pub(crate) path: PathBuf,
+    pub(crate) executable: bool,
+    pub(crate) bytes: Vec<u8>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct MaterializationObservation {
+    pub(crate) contract: String,
+    pub(crate) sha256: String,
+    pub(crate) tracked_entries: u64,
+    pub(crate) submodules: u64,
 }
 
 struct TreeEntry {
@@ -43,21 +64,22 @@ enum GitObjectFormat {
 
 pub(super) fn capture_materialization(
     root: &Path,
-    budget: CaptureBudget,
+    runner: &impl CheckoutCommandRunner,
+    generated_outputs: &impl GeneratedOutputPolicy,
 ) -> Result<MaterializedSource, Box<dyn Error>> {
     let root = fs::canonicalize(root)?;
-    let commit = git(&root, budget, &["rev-parse", "--verify", "HEAD^{commit}"])?;
-    let object_format = match git(&root, budget, &["rev-parse", "--show-object-format"])?.as_str() {
+    let commit = git(runner, &root, &["rev-parse", "--verify", "HEAD^{commit}"])?;
+    let object_format = match git(runner, &root, &["rev-parse", "--show-object-format"])?.as_str() {
         "sha1" => GitObjectFormat::Sha1,
         "sha256" => GitObjectFormat::Sha256,
         format => return Err(format!("unsupported Git object format: {format:?}").into()),
     };
-    validate_ignored_paths(&root, budget)?;
+    validate_ignored_paths(&root, runner, generated_outputs)?;
     let tree_expression = format!("{commit}^{{tree}}");
-    let tree = git(&root, budget, &["rev-parse", "--verify", &tree_expression])?;
+    let tree = git(runner, &root, &["rev-parse", "--verify", &tree_expression])?;
     let inventory = git_raw(
+        runner,
         &root,
-        budget,
         &["ls-tree", "-r", "-z", "--full-tree", &tree],
     )?;
     let entries = parse_tree_inventory(&inventory)?;
@@ -66,9 +88,20 @@ pub(super) fn capture_materialization(
     }
 
     let mut digest = Sha256::new();
+    let mut captured_bytes = 0_u64;
+    let mut files = Vec::with_capacity(entries.len());
     digest_frame(&mut digest, MATERIALIZATION_CONTRACT.as_bytes());
     for entry in &entries {
         let content = read_bound_entry(&root, entry)?;
+        captured_bytes = captured_bytes
+            .checked_add(u64::try_from(content.len())?)
+            .ok_or("captured source size overflowed u64")?;
+        if captured_bytes > MAX_CAPTURED_SOURCE_BYTES {
+            return Err(format!(
+                "tracked source exceeds the {MAX_CAPTURED_SOURCE_BYTES}-byte snapshot limit"
+            )
+            .into());
+        }
         let observed_oid = git_blob_oid(object_format, &content);
         if observed_oid != entry.oid {
             return Err(format!(
@@ -80,9 +113,14 @@ pub(super) fn capture_materialization(
         digest_frame(&mut digest, entry.mode.as_bytes());
         digest_frame(&mut digest, entry.path_text.as_bytes());
         digest_frame(&mut digest, &content);
+        files.push(CapturedSourceFile {
+            path: entry.path.clone(),
+            executable: entry.mode == "100755",
+            bytes: content,
+        });
     }
 
-    let final_commit = git(&root, budget, &["rev-parse", "--verify", "HEAD^{commit}"])?;
+    let final_commit = git(runner, &root, &["rev-parse", "--verify", "HEAD^{commit}"])?;
     if final_commit != commit {
         return Err("HEAD changed while source materialization was captured".into());
     }
@@ -90,43 +128,52 @@ pub(super) fn capture_materialization(
     Ok(MaterializedSource {
         commit,
         tree,
-        receipt: SourceMaterializationReceipt {
+        receipt: MaterializationObservation {
             contract: MATERIALIZATION_CONTRACT.to_owned(),
             sha256: format!("{:x}", digest.finalize()),
             tracked_entries: entries.len().try_into()?,
             submodules: 0,
         },
+        files,
     })
 }
 
-fn git(root: &Path, budget: CaptureBudget, arguments: &[&str]) -> Result<String, Box<dyn Error>> {
-    git_output(root, budget, arguments, false)
+fn git(
+    runner: &impl CheckoutCommandRunner,
+    root: &Path,
+    arguments: &[&str],
+) -> Result<String, Box<dyn Error>> {
+    git_output(runner, root, arguments, false)
 }
 
 fn git_raw(
+    runner: &impl CheckoutCommandRunner,
     root: &Path,
-    budget: CaptureBudget,
     arguments: &[&str],
 ) -> Result<String, Box<dyn Error>> {
     let mut bound = Vec::with_capacity(arguments.len() + 1);
     bound.push("--no-replace-objects");
     bound.extend_from_slice(arguments);
-    command_output_raw_at("git", &bound, false, root, budget)
+    command_output_raw_at(runner, "git", &bound, false, root)
 }
 
 fn git_output(
+    runner: &impl CheckoutCommandRunner,
     root: &Path,
-    budget: CaptureBudget,
     arguments: &[&str],
     allow_empty: bool,
 ) -> Result<String, Box<dyn Error>> {
     let mut bound = Vec::with_capacity(arguments.len() + 1);
     bound.push("--no-replace-objects");
     bound.extend_from_slice(arguments);
-    command_output_at("git", &bound, allow_empty, root, budget)
+    command_output_at(runner, "git", &bound, allow_empty, root)
 }
 
-fn validate_ignored_paths(root: &Path, budget: CaptureBudget) -> Result<(), Box<dyn Error>> {
+fn validate_ignored_paths(
+    root: &Path,
+    runner: &impl CheckoutCommandRunner,
+    generated_outputs: &impl GeneratedOutputPolicy,
+) -> Result<(), Box<dyn Error>> {
     let inventory = {
         let arguments = [
             "--no-replace-objects",
@@ -136,13 +183,16 @@ fn validate_ignored_paths(root: &Path, budget: CaptureBudget) -> Result<(), Box<
             "--ignored",
             "--exclude-standard",
         ];
-        command_output_raw_at("git", &arguments, true, root, budget)?
+        command_output_raw_at(runner, "git", &arguments, true, root)?
     };
-    validate_ignored_inventory(&inventory)?;
+    validate_ignored_inventory(&inventory, generated_outputs)?;
     validate_ignored_path_types(root, &inventory)
 }
 
-fn validate_ignored_inventory(inventory: &str) -> Result<(), Box<dyn Error>> {
+fn validate_ignored_inventory(
+    inventory: &str,
+    generated_outputs: &impl GeneratedOutputPolicy,
+) -> Result<(), Box<dyn Error>> {
     for value in inventory.split('\0').filter(|value| !value.is_empty()) {
         let path = Path::new(value);
         if !path
@@ -151,7 +201,7 @@ fn validate_ignored_inventory(inventory: &str) -> Result<(), Box<dyn Error>> {
         {
             return Err(format!("Git reported a noncanonical ignored path: {value:?}").into());
         }
-        if !reviewed_generated_output(path) {
+        if !generated_outputs.permits(path) {
             return Err(format!(
                 "ignored path is outside reviewed generated-output roots: {value}"
             )
@@ -194,66 +244,6 @@ fn validate_ignored_path_types(root: &Path, inventory: &str) -> Result<(), Box<d
         }
     }
     Ok(())
-}
-
-fn reviewed_generated_output(path: &Path) -> bool {
-    let components = path
-        .components()
-        .filter_map(|component| match component {
-            Component::Normal(value) => Some(value.to_string_lossy()),
-            _ => None,
-        })
-        .collect::<Vec<_>>();
-    matches!(components.as_slice(), [first, ..] if first == "target" || first == "store")
-        || matches!(components.as_slice(), [first, second, ..]
-            if (first == "artifacts"
-                && (second == "invariants" || reviewed_tla_evidence_artifact(second)))
-                || (first == "bench-compare" && second == "target")
-                || (first == "fuzz" && second == "target")
-                || (first == "tools" && second == "cache"))
-        || matches!(components.as_slice(), [first, second, third, ..]
-            if first == "crates" && second == "rafter-invariants" && third == "target")
-        || matches!(components.as_slice(), [first, second, rest @ ..]
-            if first == "specs" && second == "tla" && rest.iter().any(|value| value == "states"))
-        || components.iter().any(|value| value == "__pycache__")
-        || path.extension().is_some_and(|extension| extension == "pyc")
-}
-
-fn reviewed_tla_evidence_artifact(name: &str) -> bool {
-    matches!(
-        name,
-        "tla-log"
-            | "tla.log"
-            | "tla-trace-log"
-            | "tla-tool"
-            | "tla-spec"
-            | "tla-trace-spec"
-            | "tla-detector-spec"
-            | "tla-runner"
-            | "tla-tool-asset-id"
-            | "tla-tool-checksums"
-            | "tla-config"
-            | "tla-trace-config"
-            | "tla-detector-config"
-            | "tla-mutation-log"
-            | "tla-producer"
-            | "tla-checkpoint-contract"
-            | "tla-checkpoint-inventory"
-            | "tla-checkpoint-recovered-contract"
-            | "tla-checkpoint-recovered-inventory"
-            | "tla-checkpoint-recovery-report"
-    ) || crate::producer::tla_output::DETECTOR_PROBES
-        .into_iter()
-        .any(|probe| {
-            crate::producer::tla_output::detector_log_kind(probe)
-                .is_some_and(|kind| normalize_fixture_artifact_name(&kind) == name)
-                || crate::producer::tla_output::detector_config_kind(probe)
-                    .is_some_and(|kind| normalize_fixture_artifact_name(&kind) == name)
-        })
-}
-
-fn normalize_fixture_artifact_name(kind: &str) -> String {
-    kind.replace(':', "-")
 }
 
 fn parse_tree_inventory(inventory: &str) -> Result<Vec<TreeEntry>, Box<dyn Error>> {
