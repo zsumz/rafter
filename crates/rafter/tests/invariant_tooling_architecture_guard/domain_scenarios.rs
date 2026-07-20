@@ -94,6 +94,7 @@ fn mature_invariant_facades_remain_declarative() {
             "crates/rafter-invariants/src/producer/process/budget/mod.rs",
             "crates/rafter-invariants/src/producer/simulator/liveness/mod.rs",
             "crates/rafter-invariants/src/provenance/invocation/mod.rs",
+            "crates/rafter-invariants/src/provenance/source/mod.rs",
             "crates/rafter-invariants/src/provenance/mod.rs",
             "crates/rafter-invariants/src/verification/mod.rs",
             "crates/rafter-invariants/src/verification/simulator/mod.rs",
@@ -267,6 +268,69 @@ fn detector_transcript_acceptance_has_independent_policies() {
 }
 
 #[test]
+fn protected_compiler_artifacts_have_independent_acceptance_policies() {
+    let root = workspace_root();
+    let producer = "crates/rafter-invariants/src/producer/test_compile/protected.rs";
+    let verifier = "crates/rafter-invariants/src/verification/target/protected_compiler.rs";
+
+    for (owner, relative) in [("producer", producer), ("verifier", verifier)] {
+        let source = read(&root.join(relative));
+        assert!(starts_with_module_contract(&source));
+        assert!(
+            source.contains("fn verify_protected_compiler_artifacts("),
+            "{owner} does not own protected compiler-artifact acceptance"
+        );
+        assert!(
+            source.contains("serde_json") && source.contains("canonicalize"),
+            "{owner} policy does not independently decode and bind protected artifacts"
+        );
+    }
+
+    let declarations = invariant_rust_files(&root)
+        .iter()
+        .map(|path| {
+            read(path)
+                .matches("fn verify_protected_compiler_artifacts(")
+                .count()
+        })
+        .sum::<usize>();
+    assert_eq!(
+        declarations, 2,
+        "protected compiler-artifact acceptance must have exactly two independent owners"
+    );
+    for path in invariant_rust_files(&root) {
+        let relative = display_path(&root, &path);
+        if relative.starts_with("crates/rafter-invariants/src/provenance/") {
+            assert!(
+                !read(&path).contains("verify_protected_compiler_artifacts"),
+                "neutral provenance absorbed protected compiler-artifact policy in {relative}"
+            );
+        }
+    }
+}
+
+#[test]
+fn detector_oracle_macro_vocabulary_is_verifier_owned() {
+    let root = workspace_root();
+    let policy =
+        read(&root.join("crates/rafter-invariants/src/artifact_verify/detector_source/policy.rs"));
+    let target = read(&root.join("crates/rafter-invariants/src/verification/target/mod.rs"));
+    assert!(policy.contains("pub(super) const ORACLE_MACROS"));
+    assert!(target.contains("reserved_macros: &[&str]"));
+    assert!(!target.contains("const ORACLE_MACROS"));
+
+    for path in invariant_rust_files(&root) {
+        let relative = display_path(&root, &path);
+        if relative.starts_with("crates/rafter-invariants/src/provenance/") {
+            assert!(
+                !read(&path).contains("ORACLE_MACROS"),
+                "neutral provenance owns verifier oracle vocabulary in {relative}"
+            );
+        }
+    }
+}
+
+#[test]
 fn retired_producer_filesystem_ownership_cannot_return() {
     let root = workspace_root();
     for relative in [
@@ -309,6 +373,29 @@ fn retired_root_producer_image_ownership_cannot_return() {
         assert!(
             !source.contains("crate::producer_image") && !source.contains("producer_image::"),
             "{} imports retired root producer-image ownership",
+            display_path(&root, &path)
+        );
+    }
+}
+
+#[test]
+fn retired_root_rust_target_ownership_cannot_return() {
+    let root = workspace_root();
+    for relative in [
+        "crates/rafter-invariants/src/rust_target.rs",
+        "crates/rafter-invariants/src/rust_target",
+    ] {
+        assert!(
+            !root.join(relative).exists(),
+            "retired root Rust-target path returned: {relative}"
+        );
+    }
+
+    for path in invariant_rust_files(&root) {
+        let source = read(&path);
+        assert!(
+            !source.contains("crate::rust_target") && !source.contains("rust_target::"),
+            "{} imports retired root Rust-target ownership",
             display_path(&root, &path)
         );
     }
@@ -381,7 +468,7 @@ fn retired_flat_contract_files_cannot_return() {
 #[test]
 fn detector_test_macro_trust_is_bound_to_exact_domain_sources() {
     let root = workspace_root();
-    let source = read(&root.join("crates/rafter-invariants/src/rust_target.rs"));
+    let source = read(&root.join("crates/rafter-invariants/src/verification/target/mod.rs"));
 
     for expected in [
         "crates/rafter-invariant-test/src/oracle/macros.rs",

@@ -26,6 +26,7 @@ pub(super) const FACADE_PATHS: &[&str] = &[
     "crates/rafter-invariants/src/producer/process/budget/mod.rs",
     "crates/rafter-invariants/src/producer/simulator/liveness/mod.rs",
     "crates/rafter-invariants/src/provenance/invocation/mod.rs",
+    "crates/rafter-invariants/src/provenance/source/mod.rs",
     "crates/rafter-invariants/src/provenance/mod.rs",
     "crates/rafter-invariants/src/verification/mod.rs",
     "crates/rafter-invariants/src/verification/simulator/mod.rs",

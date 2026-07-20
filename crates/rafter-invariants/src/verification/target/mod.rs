@@ -1,3 +1,5 @@
+//! Independent Cargo target source identity and protected compiler-artifact policy.
+
 use std::{
     collections::{BTreeMap, BTreeSet, HashSet},
     fs,
@@ -162,18 +164,20 @@ pub(crate) fn target_source_graph(
     package_name: &str,
     target_kind: &str,
     target_name: &str,
+    reserved_macros: &[&str],
 ) -> Result<TargetSourceGraph, String> {
     let workspace =
         fs::canonicalize(workspace).map_err(|error| format!("canonicalize workspace: {error}"))?;
     let package = package_manifest(&workspace, package_name)?;
-    let tracked = crate::producer::source::tracked_source_paths_at(&workspace)?;
+    let tracked = crate::provenance::source::tracked_source_paths_at(&workspace)?;
     let manifest_source = fs::read_to_string(&package.manifest)
         .map_err(|error| format!("read {}: {error}", package.manifest.display()))?;
     let manifest = manifest_source
         .parse::<toml::Value>()
         .map_err(|error| format!("parse {}: {error}", package.manifest.display()))?;
     let target = target_root(&package.root, &manifest, target_kind, target_name)?;
-    let mut collector = ModuleGraphCollector::new(&target.crate_name, &workspace, &tracked);
+    let mut collector =
+        ModuleGraphCollector::new(&target.crate_name, &workspace, &tracked, reserved_macros);
     let target_path = collector.bound_source_path(&target.path)?;
     let target_parent = target_path
         .parent()
@@ -339,6 +343,7 @@ struct ModuleGraphCollector<'a> {
     crate_name: &'a str,
     workspace: &'a Path,
     tracked: &'a HashSet<PathBuf>,
+    reserved_macros: BTreeSet<String>,
     visited: BTreeSet<(PathBuf, Vec<String>)>,
     modules: ModuleMap,
     declarations: DeclarationMap,
@@ -348,11 +353,20 @@ struct ModuleGraphCollector<'a> {
 }
 
 impl<'a> ModuleGraphCollector<'a> {
-    fn new(crate_name: &'a str, workspace: &'a Path, tracked: &'a HashSet<PathBuf>) -> Self {
+    fn new(
+        crate_name: &'a str,
+        workspace: &'a Path,
+        tracked: &'a HashSet<PathBuf>,
+        reserved_macros: &[&str],
+    ) -> Self {
         Self {
             crate_name,
             workspace,
             tracked,
+            reserved_macros: reserved_macros
+                .iter()
+                .map(|name| (*name).to_owned())
+                .collect(),
             visited: BTreeSet::new(),
             modules: BTreeMap::new(),
             declarations: BTreeMap::new(),
@@ -557,7 +571,7 @@ impl<'a> ModuleGraphCollector<'a> {
         if let Some(name) = item
             .ident
             .as_ref()
-            .filter(|name| crate::artifact_verify::is_reserved_oracle_macro(&name.to_string()))
+            .filter(|name| self.reserved_macros.contains(&name.to_string()))
         {
             let canonical_oracle_definition =
                 self.canonical_oracle_macro_definition(module, source_file);

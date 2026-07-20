@@ -20,8 +20,8 @@ pub(super) fn bind_target_detector(
     fixture_resolver: &LocalCallResolver,
     fixture_id: &FunctionId,
     detector_file: &File,
-    target_graph: &crate::rust_target::TargetSourceGraph,
-    fixture_module: &crate::rust_target::SourceModule,
+    target_graph: &crate::verification::target::TargetSourceGraph,
+    fixture_module: &crate::verification::target::SourceModule,
 ) -> Result<TargetDetectorContract, String> {
     require_fixture_declaration(binding, target_graph)?;
     let same_source = binding.fixture_path == binding.detector_path;
@@ -124,7 +124,7 @@ pub(super) fn bind_target_detector(
 
 fn require_fixture_declaration(
     binding: &crate::DetectorFixtureSourceBinding<'_>,
-    target_graph: &crate::rust_target::TargetSourceGraph,
+    target_graph: &crate::verification::target::TargetSourceGraph,
 ) -> Result<(), String> {
     if binding.test_identity.test_name.rsplit("::").next() != Some(binding.fixture) {
         return Err(format!(

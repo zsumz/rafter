@@ -1,16 +1,6 @@
 use std::{fs, path::Path, process::Command};
 
-use super::{
-    cargo_graph::validate_registry_build_script_source_identity, parse_tracked_source_paths,
-};
-
-#[test]
-fn raw_tracked_inventory_preserves_path_whitespace() {
-    let paths = parse_tracked_source_paths(" leading.rs\0trailing.rs \0")
-        .expect("parse raw NUL-delimited Git inventory");
-    assert!(paths.contains(Path::new(" leading.rs")));
-    assert!(paths.contains(Path::new("trailing.rs ")));
-}
+use super::cargo_graph::validate_registry_build_script_source_identity;
 
 #[test]
 fn registry_build_scripts_require_a_locked_archive_checksum() {

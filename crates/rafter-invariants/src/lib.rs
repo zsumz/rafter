@@ -20,7 +20,6 @@ mod receipt_tests;
 mod receipt_tla;
 mod render;
 mod run_all;
-mod rust_target;
 mod verdict;
 mod verification;
 

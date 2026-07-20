@@ -17,6 +17,8 @@ use crate::{
 
 use super::{artifact, process};
 
+mod protected;
+
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) struct Target {
     package: String,
@@ -155,7 +157,7 @@ fn compile_result(
 
 fn executable_from_messages(bytes: &[u8], target: &Target) -> Result<PathBuf, String> {
     let workspace = producer_workspace_root()?;
-    crate::rust_target::verify_protected_compiler_artifacts(bytes, &workspace)?;
+    protected::verify_protected_compiler_artifacts(bytes, &workspace)?;
     let mut executables = Vec::new();
     for line in String::from_utf8_lossy(bytes).lines() {
         let Ok(message) = serde_json::from_str::<CargoCompilerMessage>(line) else {

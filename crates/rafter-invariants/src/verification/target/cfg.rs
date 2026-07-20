@@ -1,3 +1,5 @@
+//! Reviewed Cargo test cfg evaluation for independently verified target graphs.
+
 use syn::{parse::Parser, punctuated::Punctuated, Attribute, Meta, Token};
 
 pub(crate) fn module_active_for_test(attributes: &[Attribute]) -> Result<bool, String> {
