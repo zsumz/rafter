@@ -172,6 +172,22 @@ fn expected_raw_process_accesses() -> BTreeMap<(&'static str, PathContext, &'sta
     BTreeMap::from([
         (
             (
+                "crates/rafter-invariants/src/provenance/source/checkout.rs",
+                PathContext::Expression,
+                "crate::execution::process::base_environment",
+            ),
+            1,
+        ),
+        (
+            (
+                "crates/rafter-invariants/src/provenance/source/checkout.rs",
+                PathContext::Expression,
+                "crate::execution::process::run_identity_command_in",
+            ),
+            1,
+        ),
+        (
+            (
                 "crates/rafter-invariants/src/producer/process/mod.rs",
                 PathContext::Import,
                 "crate::execution::process::FinalizationPolicy",

@@ -22,8 +22,8 @@ fn target_domain_dependencies_are_known_and_one_way() {
     let expected = [
         "contract",
         "evidence",
-        "provenance",
         "execution",
+        "provenance",
         "plan",
         "producer",
         "verification",
@@ -90,6 +90,7 @@ fn mature_invariant_facades_remain_declarative() {
             "crates/rafter-invariants/src/execution/filesystem/mod.rs",
             "crates/rafter-invariants/src/execution/mod.rs",
             "crates/rafter-invariants/src/execution/process/mod.rs",
+            "crates/rafter-invariants/src/gate/mod.rs",
             "crates/rafter-invariants/src/producer/process/mod.rs",
             "crates/rafter-invariants/src/producer/process/budget/mod.rs",
             "crates/rafter-invariants/src/producer/simulator/liveness/mod.rs",
@@ -97,9 +98,11 @@ fn mature_invariant_facades_remain_declarative() {
             "crates/rafter-invariants/src/provenance/source/mod.rs",
             "crates/rafter-invariants/src/provenance/mod.rs",
             "crates/rafter-invariants/src/verification/mod.rs",
+            "crates/rafter-invariants/src/verification/intake/mod.rs",
             "crates/rafter-invariants/src/verification/simulator/mod.rs",
             "crates/rafter-invariants/src/verification/simulator/liveness/mod.rs",
             "crates/rafter-invariants/src/verdict/mod.rs",
+            "crates/rafter-invariants/src/verdict/report/mod.rs",
             "crates/rafter-invariants/src/contract/registry/parse/tests/mod.rs",
             "crates/rafter-invariants/src/producer/process/tests/mod.rs",
             "crates/rafter-invariants/src/execution/process/tests/mod.rs",
@@ -157,6 +160,10 @@ fn migrated_domain_sources_follow_the_reviewed_dependency_graph() {
             ("execution", "crates/rafter-invariants/src/execution"),
             ("provenance", "crates/rafter-invariants/src/provenance"),
             ("producer", "crates/rafter-invariants/src/producer/process"),
+            (
+                "producer",
+                "crates/rafter-invariants/src/producer/source.rs"
+            ),
             ("verification", "crates/rafter-invariants/src/verification"),
             (
                 "verification",
@@ -167,6 +174,7 @@ fn migrated_domain_sources_follow_the_reviewed_dependency_graph() {
                 "crates/rafter-invariants/src/artifact_verify/test_logs.rs",
             ),
             ("verdict", "crates/rafter-invariants/src/verdict"),
+            ("gate", "crates/rafter-invariants/src/gate"),
         ]
     );
     for source in ENFORCED_DOMAIN_SOURCES {
@@ -265,6 +273,39 @@ fn detector_transcript_acceptance_has_independent_policies() {
             display_path(&root, &path)
         );
     }
+}
+
+#[test]
+fn source_receipt_acceptance_has_independent_producer_and_verifier_policies() {
+    let root = workspace_root();
+    let producer_path = "crates/rafter-invariants/src/producer/source.rs";
+    let verifier_path = "crates/rafter-invariants/src/verification/source/policy.rs";
+    let generated_path = "crates/rafter-invariants/src/verification/source/generated_outputs.rs";
+    let producer = read(&root.join(producer_path));
+    let verifier = read(&root.join(verifier_path));
+    let generated = read(&root.join(generated_path));
+
+    for (owner, source) in [("producer", &producer), ("verifier", &verifier)] {
+        for layer in ["tests", "simulator", "tla", "maelstrom"] {
+            assert!(
+                source.contains(&format!("\"{layer}\" =>")),
+                "{owner} source policy omitted {layer}"
+            );
+        }
+        assert!(
+            source.contains("fn layer_contract("),
+            "{owner} source policy has no independent layer reducer"
+        );
+    }
+    assert!(producer.contains("fn reviewed_generated_output("));
+    assert!(generated.contains("impl GeneratedOutputPolicy for VerifierGeneratedOutputs"));
+    assert!(!producer.contains("crate::verification"));
+    assert!(!verifier.contains("crate::producer"));
+    assert!(!generated.contains("crate::producer"));
+
+    let neutral = read(&root.join("crates/rafter-invariants/src/provenance/source/checkout.rs"));
+    assert!(!neutral.contains("fn layer_contract("));
+    assert!(!neutral.contains("tla-detector"));
 }
 
 #[test]
@@ -420,6 +461,60 @@ fn retired_internal_catalog_alias_cannot_return() {
 }
 
 #[test]
+fn verdict_reduction_consumes_only_typed_evidence_intake() {
+    let root = workspace_root();
+    let reducer_path = "crates/rafter-invariants/src/verdict/aggregate.rs";
+    let reducer = read(&root.join(reducer_path));
+
+    assert!(reducer.contains("pub(crate) fn reduce("));
+    assert!(reducer.contains("intake: &EvidenceIntake"));
+    for forbidden in [
+        "ResultBundle",
+        "LoadedEvidence",
+        "collect_results",
+        "load_evidence",
+        "aggregate_with_harness_errors",
+        "Vec<String>",
+        "std::fs",
+        "PathBuf",
+    ] {
+        assert!(
+            !reducer.contains(forbidden),
+            "{reducer_path} regained raw intake dependency `{forbidden}`"
+        );
+    }
+    assert!(
+        !root
+            .join("crates/rafter-invariants/src/aggregate.rs")
+            .exists(),
+        "the retired root aggregate module returned"
+    );
+    for path in rust_files(&root.join("crates/rafter-invariants/src/verdict")) {
+        assert!(
+            !read(&path).contains("ResultBundle"),
+            "{} accepts unverified result bundles",
+            display_path(&root, &path)
+        );
+    }
+
+    let intake = read(&root.join("crates/rafter-invariants/src/verification/intake/model.rs"));
+    for kind in ["Missing", "Malformed", "Stale", "Unverifiable"] {
+        assert!(intake.contains(kind), "typed intake is missing `{kind}`");
+    }
+    assert!(intake.contains("profile: String"));
+    assert!(intake.contains("source_ref: String"));
+
+    let gate = read(&root.join("crates/rafter-invariants/src/gate/check.rs"));
+    let verify = gate
+        .find("verification::verify_paths")
+        .expect("gate must verify evidence intake");
+    let reduce = gate
+        .find("verdict::reduce")
+        .expect("gate must reduce verified intake");
+    assert!(verify < reduce, "gate reduced evidence before verification");
+}
+
+#[test]
 fn liveness_wire_binding_cannot_absorb_raw_event_acceptance() {
     let root = workspace_root();
     let evidence = read(&root.join("crates/rafter-invariants/src/evidence/liveness/binding.rs"));
@@ -461,6 +556,72 @@ fn retired_flat_contract_files_cannot_return() {
         assert!(
             !root.join(relative).exists(),
             "retired flat contract file returned: {relative}"
+        );
+    }
+}
+
+#[test]
+fn retired_root_report_mounts_cannot_return() {
+    let root = workspace_root();
+    for path in [
+        "crates/rafter-invariants/src/aggregate.rs",
+        "crates/rafter-invariants/src/render.rs",
+        "crates/rafter-invariants/src/run_all.rs",
+    ] {
+        assert!(
+            !root.join(path).exists(),
+            "retired root mount returned: {path}"
+        );
+    }
+    let library = read(&root.join("crates/rafter-invariants/src/lib.rs"));
+    assert!(!library.contains("mod render;"));
+}
+
+#[test]
+fn report_rendering_is_verdict_owned() {
+    let root = workspace_root();
+    let expected = [
+        "crates/rafter-invariants/src/verdict/report/mod.rs",
+        "crates/rafter-invariants/src/verdict/report/junit.rs",
+        "crates/rafter-invariants/src/verdict/report/markdown.rs",
+    ];
+    for path in expected {
+        assert!(
+            root.join(path).is_file(),
+            "missing verdict report module {path}"
+        );
+    }
+    let definitions = invariant_rust_files(&root)
+        .into_iter()
+        .filter_map(|path| {
+            let source = read(&path);
+            (source.contains("fn render_junit(") || source.contains("fn render_markdown("))
+                .then(|| display_path(&root, &path))
+        })
+        .collect::<BTreeSet<_>>();
+    assert_eq!(
+        definitions,
+        BTreeSet::from([
+            "crates/rafter-invariants/src/verdict/report/junit.rs".to_owned(),
+            "crates/rafter-invariants/src/verdict/report/markdown.rs".to_owned(),
+        ])
+    );
+}
+
+#[test]
+fn migrated_gate_and_verdict_keep_test_bodies_in_separate_files() {
+    let root = workspace_root();
+    for path in [
+        "crates/rafter-invariants/src/gate/check.rs",
+        "crates/rafter-invariants/src/gate/report.rs",
+        "crates/rafter-invariants/src/gate/run.rs",
+        "crates/rafter-invariants/src/gate/run_all.rs",
+        "crates/rafter-invariants/src/verdict/report/mod.rs",
+    ] {
+        let source = read(&root.join(path));
+        assert!(
+            !source.contains("mod tests {"),
+            "{path} embeds test bodies instead of declaring a sibling test module"
         );
     }
 }
