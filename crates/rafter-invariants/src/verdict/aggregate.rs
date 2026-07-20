@@ -1,82 +1,26 @@
-use std::{
-    collections::BTreeMap,
-    fs,
-    path::{Path, PathBuf},
-};
+//! Pure fail-closed reduction of typed evidence intake into invariant verdicts.
+
+use std::collections::BTreeMap;
 
 use crate::{
-    contract::{catalog::Catalog, profile::ProfileManifest},
-    evidence::{EvidenceResult, EvidenceStatus, FailureClassification, ResultBundle},
-    receipt::collect_results,
+    contract::{
+        catalog::{Catalog, ClauseDescriptor, EvidenceDescriptor},
+        profile::ProfileManifest,
+    },
+    evidence::{EvidenceResult, EvidenceStatus, FailureClassification},
     verdict::{
         ClauseVerdict, InvariantVerdict, VerdictIssue, VerdictReport, VerdictStatus, VerdictSummary,
     },
+    verification::{EvidenceIntake, IntakeDefect},
 };
 
-pub(crate) use crate::verification::AggregateError;
-
-#[derive(Debug, Default)]
-/// Valid bundles plus fail-closed errors discovered while loading evidence.
-pub(crate) struct LoadedEvidence {
-    pub(crate) bundles: Vec<ResultBundle>,
-    pub(crate) harness_errors: Vec<String>,
-}
+use crate::verification::AggregateError;
 
 struct InvariantEvidence<'a> {
-    clauses: &'a [crate::ClauseDescriptor],
-    required: &'a [crate::EvidenceDescriptor],
+    clauses: &'a [ClauseDescriptor],
+    required: &'a [EvidenceDescriptor],
     accepted: &'a BTreeMap<String, EvidenceResult>,
-    harness_errors: &'a [String],
-}
-
-/// Loads every usable bundle while retaining each load failure as a harness error.
-#[must_use]
-pub(crate) fn load_evidence(paths: &[PathBuf]) -> LoadedEvidence {
-    load_evidence_at(paths, Path::new("."))
-}
-
-#[must_use]
-pub(crate) fn load_evidence_at(paths: &[PathBuf], root: &Path) -> LoadedEvidence {
-    let mut loaded = LoadedEvidence::default();
-    for path in paths {
-        match load_bundle(path, root) {
-            Ok((bundle, diagnostics)) => {
-                loaded.bundles.push(bundle);
-                loaded.harness_errors.extend(
-                    diagnostics
-                        .into_iter()
-                        .map(|error| format!("verify {}: {error}", path.display())),
-                );
-            }
-            Err(error) => loaded.harness_errors.push(error.to_string()),
-        }
-    }
-    loaded
-}
-
-fn load_bundle(path: &PathBuf, root: &Path) -> Result<(ResultBundle, Vec<String>), AggregateError> {
-    let source = fs::read_to_string(path)
-        .map_err(|error| AggregateError::new(format!("read {}: {error}", path.display())))?;
-    let value: serde_json::Value = serde_json::from_str(&source)
-        .map_err(|error| AggregateError::new(format!("parse {}: {error}", path.display())))?;
-    crate::evidence::validate_result_value(&value).map_err(|error| {
-        AggregateError::new(format!(
-            "validate result schema for {}: {error}",
-            path.display()
-        ))
-    })?;
-    let bundle: ResultBundle = serde_json::from_value(value)
-        .map_err(|error| AggregateError::new(format!("decode {}: {error}", path.display())))?;
-    crate::producer::source::verify_checkout_at(&bundle.execution.source, root).map_err(
-        |error| {
-            AggregateError::new(format!(
-                "verify source identity for {}: {error}",
-                path.display()
-            ))
-        },
-    )?;
-    let diagnostics = crate::artifact_verify::verify(&bundle, root)?;
-    Ok((bundle, diagnostics))
+    defects: &'a [IntakeDefect],
 }
 
 /// Produces one fail-closed verdict for every reviewed invariant.
@@ -85,30 +29,13 @@ fn load_bundle(path: &PathBuf, root: &Path) -> Result<(ResultBundle, Vec<String>
 ///
 /// Returns an error when the profile manifest is invalid or the selected
 /// profile does not exist. Evidence defects are represented as red verdicts.
-#[cfg(test)]
-pub(crate) fn aggregate(
+pub(crate) fn reduce(
     catalog: &Catalog,
     manifest: &ProfileManifest,
-    profile: &str,
-    source_ref: &str,
-    bundles: &[ResultBundle],
+    intake: &EvidenceIntake,
 ) -> Result<VerdictReport, AggregateError> {
-    aggregate_with_harness_errors(catalog, manifest, profile, source_ref, bundles, &[])
-}
-
-/// Produces all 44 verdicts while incorporating evidence-load failures as red.
-///
-/// # Errors
-///
-/// Returns an error when the registry or selected profile contract is invalid.
-pub(crate) fn aggregate_with_harness_errors(
-    catalog: &Catalog,
-    manifest: &ProfileManifest,
-    profile: &str,
-    source_ref: &str,
-    bundles: &[ResultBundle],
-    load_errors: &[String],
-) -> Result<VerdictReport, AggregateError> {
+    let profile = intake.profile();
+    let source_ref = intake.source_ref();
     manifest
         .validate(catalog)
         .map_err(|error| AggregateError::new(error.to_string()))?;
@@ -117,15 +44,6 @@ pub(crate) fn aggregate_with_harness_errors(
         .get(profile)
         .ok_or_else(|| AggregateError::new(format!("unknown profile {profile}")))?;
     let required = catalog.required_evidence(contract);
-    let expected = required
-        .values()
-        .flatten()
-        .map(|evidence| (evidence.evidence_id(), evidence))
-        .collect::<BTreeMap<_, _>>();
-
-    let (accepted, mut harness_errors, artifacts) =
-        collect_results(bundles, &expected, contract, profile, source_ref);
-    harness_errors.extend(load_errors.iter().cloned());
     let invariants = catalog
         .ids
         .iter()
@@ -135,8 +53,8 @@ pub(crate) fn aggregate_with_harness_errors(
                 &InvariantEvidence {
                     clauses: &catalog.clauses_for(invariant_id),
                     required: &required[invariant_id],
-                    accepted: &accepted,
-                    harness_errors: &harness_errors,
+                    accepted: intake.accepted(),
+                    defects: intake.defects(),
                 },
                 catalog.canonical_ids.contains(invariant_id),
                 contract.canonical_minimum_independent_layers,
@@ -157,72 +75,9 @@ pub(crate) fn aggregate_with_harness_errors(
             green,
             red: invariants.len() - green,
         },
-        artifacts,
+        artifacts: intake.artifacts().to_vec(),
         invariants,
     })
-}
-
-/// Independently validates one complete runner layer against its profile contract.
-///
-/// # Errors
-///
-/// Returns an error when the bundle is stale, malformed, incomplete, or contains
-/// any non-passing evidence result.
-pub(crate) fn verify_layer_bundle(
-    catalog: &Catalog,
-    manifest: &ProfileManifest,
-    profile: &str,
-    layer: &str,
-    bundle: &ResultBundle,
-) -> Result<(), AggregateError> {
-    manifest
-        .validate(catalog)
-        .map_err(|error| AggregateError::new(error.to_string()))?;
-    let contract = manifest
-        .profiles
-        .get(profile)
-        .ok_or_else(|| AggregateError::new(format!("unknown profile {profile}")))?;
-    if bundle.runner != layer {
-        return Err(AggregateError::new(format!(
-            "runner {} does not match requested layer {layer}",
-            bundle.runner
-        )));
-    }
-    let required = catalog.required_evidence(contract);
-    let expected = required
-        .values()
-        .flatten()
-        .map(|evidence| (evidence.evidence_id(), evidence))
-        .collect::<BTreeMap<_, _>>();
-    let expected_layer = expected
-        .iter()
-        .filter(|(_, descriptor)| descriptor.layer == layer)
-        .map(|(evidence_id, _)| evidence_id.as_str())
-        .collect::<std::collections::BTreeSet<_>>();
-    let (accepted, errors, _) = collect_results(
-        std::slice::from_ref(bundle),
-        &expected,
-        contract,
-        profile,
-        &bundle.source_ref,
-    );
-    let accepted_ids = accepted
-        .keys()
-        .map(String::as_str)
-        .collect::<std::collections::BTreeSet<_>>();
-    if !errors.is_empty() {
-        return Err(AggregateError::new(errors.join("; ")));
-    }
-    if accepted_ids != expected_layer
-        || accepted
-            .values()
-            .any(|result| result.status != EvidenceStatus::Pass)
-    {
-        return Err(AggregateError::new(format!(
-            "{profile}/{layer} evidence is missing, incomplete, or red"
-        )));
-    }
-    Ok(())
 }
 
 fn invariant_verdict(
@@ -296,11 +151,11 @@ fn invariant_verdict(
                 .is_some_and(|result| result.status == EvidenceStatus::Pass)
         })
         .count();
-    issues.extend(evidence.harness_errors.iter().map(|message| VerdictIssue {
+    issues.extend(evidence.defects.iter().map(|defect| VerdictIssue {
         evidence_id: "aggregate/harness".to_owned(),
         status: EvidenceStatus::Error,
         classification: FailureClassification::HarnessError,
-        message: message.clone(),
+        message: defect.message().to_owned(),
         artifacts: Vec::new(),
     }));
     InvariantVerdict {
@@ -320,8 +175,8 @@ fn invariant_verdict(
 }
 
 fn clause_verdict(
-    clause: &crate::ClauseDescriptor,
-    required: &[&crate::EvidenceDescriptor],
+    clause: &ClauseDescriptor,
+    required: &[&EvidenceDescriptor],
     accepted: &BTreeMap<String, EvidenceResult>,
     required_strength: &str,
 ) -> ClauseVerdict {

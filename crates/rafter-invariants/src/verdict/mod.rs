@@ -1,8 +1,11 @@
 //! Fail-closed aggregate verdict vocabulary and validation.
 
+mod aggregate;
 mod model;
+pub(crate) mod report;
 mod validate;
 
+pub(crate) use aggregate::reduce;
 pub use model::{
     ClauseVerdict, InvariantVerdict, VerdictIssue, VerdictReport, VerdictStatus, VerdictSummary,
     VERDICT_SCHEMA_VERSION,
