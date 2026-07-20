@@ -94,8 +94,10 @@ pub(super) fn verify_producer_invocation_paths(
         ));
     }
     let program = Path::new(&bundle.execution.invocation.program);
-    let expected_program =
-        crate::producer_image::image_path(current_dir, &bundle.execution.invocation.program_sha256);
+    let expected_program = crate::provenance::image::image_path(
+        current_dir,
+        &bundle.execution.invocation.program_sha256,
+    );
     if !is_clean_absolute_path(program) || program.as_os_str() != expected_program.as_os_str() {
         return Err(AggregateError::new(
             "producer program does not have the exact managed content-addressed path".to_owned(),
@@ -112,7 +114,7 @@ pub(super) fn verify_producer_invocation_paths(
             "producer invocation requires exactly one preserved binary".to_owned(),
         ));
     };
-    if bundle.execution.producer.binding != crate::producer_image::PRODUCER_BINDING
+    if bundle.execution.producer.binding != crate::provenance::image::PRODUCER_BINDING
         || bundle.execution.producer.executable.kind != "producer-binary"
         || &bundle.execution.producer.executable != *binary
         || binary.sha256 != bundle.execution.invocation.program_sha256

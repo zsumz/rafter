@@ -292,6 +292,29 @@ fn retired_producer_filesystem_ownership_cannot_return() {
 }
 
 #[test]
+fn retired_root_producer_image_ownership_cannot_return() {
+    let root = workspace_root();
+    for relative in [
+        "crates/rafter-invariants/src/producer_image.rs",
+        "crates/rafter-invariants/src/producer_image",
+    ] {
+        assert!(
+            !root.join(relative).exists(),
+            "retired root producer-image path returned: {relative}"
+        );
+    }
+
+    for path in invariant_rust_files(&root) {
+        let source = read(&path);
+        assert!(
+            !source.contains("crate::producer_image") && !source.contains("producer_image::"),
+            "{} imports retired root producer-image ownership",
+            display_path(&root, &path)
+        );
+    }
+}
+
+#[test]
 fn retired_internal_catalog_alias_cannot_return() {
     let root = workspace_root();
     for path in invariant_rust_files(&root) {

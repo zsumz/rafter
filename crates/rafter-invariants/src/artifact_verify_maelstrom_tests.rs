@@ -514,7 +514,7 @@ fn bind_serialized_bundle(
     bundle.execution.invocation.current_dir = repository.to_string_lossy().into_owned();
     bundle.execution.invocation.program_sha256 = producer.sha256.clone();
     bundle.execution.invocation.program =
-        crate::producer_image::image_path(&repository, &producer.sha256)
+        crate::provenance::image::image_path(&repository, &producer.sha256)
             .to_string_lossy()
             .into_owned();
     bundle.execution.invocation.environment = crate::producer::process::base_environment();
@@ -605,7 +605,7 @@ fn bundle() -> ResultBundle {
                 launchers: Vec::new(),
             },
             producer: crate::ProducerBindingReceipt {
-                binding: crate::producer_image::PRODUCER_BINDING.to_owned(),
+                binding: crate::provenance::image::PRODUCER_BINDING.to_owned(),
                 executable: artifact(
                     "artifacts/invariants/evidence/producer",
                     "producer-binary",

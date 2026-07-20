@@ -12,7 +12,6 @@ mod evidence;
 mod execution;
 mod plan;
 mod producer;
-mod producer_image;
 mod provenance;
 mod receipt;
 mod receipt_maelstrom;
@@ -49,7 +48,7 @@ pub(crate) use plan::{capture_invocation, verify_bundle_plan};
 pub use plan::{ExecutionPlan, PlanOptions};
 pub(crate) use producer::produce_with_plan;
 pub use producer::{produce, ProducerOptions, ProducerOutcome};
-pub use producer_image::ensure_immutable_producer;
+pub use provenance::image::ensure_immutable_producer;
 pub(crate) use render::{render_junit, render_markdown};
 pub use run_all::{
     current_source_ref, run_all, verify_and_write_report, verify_layer_evidence,
