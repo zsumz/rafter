@@ -3,38 +3,13 @@
 //! crash between the two must be repaired at open so the reopened node is
 //! indistinguishable from one that never crashed.
 
+use super::file_backed_fixture::TestDirectory;
 use super::snapshot::{persisted_entry, raft_snapshot};
 use super::*;
-use std::{
-    fs,
-    path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
-};
 
 mod boundary;
 mod reopen;
 mod repair;
-
-static TEST_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
-
-struct TestDirectory(PathBuf);
-
-impl TestDirectory {
-    fn new(name: &str) -> Self {
-        let id = TEST_DIRECTORY_ID.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("rafter-runtime-{name}-{}-{id}", std::process::id()));
-        let _ = fs::remove_dir_all(&path);
-        fs::create_dir_all(&path).expect("test store directory is created");
-        Self(path)
-    }
-}
-
-impl Drop for TestDirectory {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.0);
-    }
-}
 
 /// Builds the half-installed on-disk shape a crash in the window leaves
 /// behind: a durable snapshot through `snapshot_index`, but a log whose

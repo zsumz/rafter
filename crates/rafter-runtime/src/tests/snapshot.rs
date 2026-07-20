@@ -18,7 +18,8 @@ pub(super) use builders::{
 };
 pub(super) use chunk_helpers::{
     applied_snapshot_from, assert_partial_snapshot_transfer, install_snapshot_chunk,
-    restart_snapshot_follower, snapshot_transfer_id, stale_snapshot_follower,
+    install_snapshot_chunk_at_term, restart_snapshot_follower, snapshot_transfer_id,
+    stale_snapshot_follower,
 };
 use failing_stores::{
     FailingCompactRaftLogSegment, FailingPromoteSnapshotStore, FailingSnapshotStore,

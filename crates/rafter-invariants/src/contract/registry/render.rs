@@ -75,8 +75,8 @@ scheduling properties that are not per-group Raft consensus properties.\n\n",
 - Every safety invariant should have at least one direct executable oracle.\n\
 - Every canonical safety invariant should have two independent evidence layers.\n\
 - Every simulator checker should have a negative fixture proving it can fail.\n\
-- Every client-visible invariant should have an end-to-end workload.\n\
-- Every persistence invariant should have failure-injection or crash/reopen coverage.\n\
+- Every client-visible invariant must retain registered end-to-end evidence.\n\
+- Every persistence invariant must retain typed failure-injection or crash/reopen evidence.\n\
 - Every liveness obligation should state its fairness and timing assumptions.\n\
 - TLA+ `CompactSnapshot` retains a ghost logical log for safety witnesses; it is not physical compaction evidence. Simulator and storage tests own retained-prefix, offset, and crash/reopen compaction behavior.\n\
 - Registered direct tests are total deterministic oracles: one exact exit-0 pass is green, zero execution is incomplete, and one canonical exact-test exit-101 failure is an invariant violation. Malformed, duplicate, timed-out, signaled, wrong-name, or other process failures are harness errors.\n\n\

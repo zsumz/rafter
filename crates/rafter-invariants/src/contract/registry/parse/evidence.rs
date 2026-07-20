@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use crate::contract::{
-    registry::{RegistryEvidence, RegistryParseError},
+    registry::{PersistenceEvidenceKind, RegistryEvidence, RegistryParseError},
     TestIdentity,
 };
 
@@ -68,6 +68,17 @@ pub(super) fn parse_evidence_record(
     )?;
     let path = required("path")?;
     let symbol = required("symbol")?;
+    let persistence_evidence = record
+        .get("persistence_evidence")
+        .map(|value| match value.as_str() {
+            "crash_reopen" => Ok(PersistenceEvidenceKind::CrashReopen),
+            "failure_injection" => Ok(PersistenceEvidenceKind::FailureInjection),
+            _ => Err(RegistryParseError(format!(
+                "evidence record {} has unsupported persistence_evidence {value}",
+                index + 1
+            ))),
+        })
+        .transpose()?;
     if let Some(identity) = &test {
         validate_test_identity(index, identity, &symbol, "tests")?;
     }
@@ -78,6 +89,7 @@ pub(super) fn parse_evidence_record(
         strength,
         path,
         symbol,
+        persistence_evidence,
         atomic_group,
         negative_fixture: record.get("negative_fixture").cloned(),
         negative_fixture_path: record.get("negative_fixture_path").cloned(),

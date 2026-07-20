@@ -2,7 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::contract::{profile::ProfileContract, SimulatorIdentity, TestIdentity};
+use crate::contract::{
+    profile::ProfileContract, registry::PersistenceEvidenceKind, SimulatorIdentity, TestIdentity,
+};
 
 /// Reviewed invariant IDs and their declared executable evidence.
 #[derive(Clone, Debug)]
@@ -43,6 +45,7 @@ pub struct EvidenceDescriptor {
     pub strength: String,
     pub path: String,
     pub symbol: String,
+    pub persistence_evidence: Option<PersistenceEvidenceKind>,
     pub atomic_group: Option<String>,
     pub negative_fixture: Option<String>,
     pub negative_fixture_path: Option<String>,
@@ -63,9 +66,14 @@ impl EvidenceDescriptor {
             .atomic_group
             .as_ref()
             .map_or(base.clone(), |group| format!("{base}@atomic={group}"));
+        let persistence = self.persistence_evidence.map_or(grouped.clone(), |kind| {
+            format!("{grouped}@persistence={}", kind.wire_name())
+        });
         self.negative_fixture
             .as_ref()
-            .map_or(grouped.clone(), |fixture| format!("{grouped}@{fixture}"))
+            .map_or(persistence.clone(), |fixture| {
+                format!("{persistence}@{fixture}")
+            })
     }
 }
 

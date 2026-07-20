@@ -31,11 +31,27 @@ pub(crate) fn install_snapshot_chunk(
     offset: usize,
     end: usize,
 ) -> Vec<RaftOutput> {
+    install_snapshot_chunk_at_term(follower, snapshot, transfer_id, Term(1), offset, end)
+}
+
+pub(crate) fn install_snapshot_chunk_at_term<H, L, S>(
+    follower: &mut DurableRaftNode<H, L, S>,
+    snapshot: &PersistedRaftSnapshot,
+    transfer_id: rafter::SnapshotTransferId,
+    term: Term,
+    offset: usize,
+    end: usize,
+) -> Vec<RaftOutput>
+where
+    H: RaftHardStateStore,
+    L: RaftLogSegment,
+    S: RaftSnapshotStore + SnapshotChunkSource,
+{
     follower
         .step(RaftInput::Message {
             from: RaftNodeId(2),
             message: Message::InstallSnapshotChunk(rafter::InstallSnapshotChunk {
-                term: Term(1),
+                term,
                 leader_id: RaftNodeId(2),
                 transfer_id,
                 metadata: snapshot.metadata.clone(),

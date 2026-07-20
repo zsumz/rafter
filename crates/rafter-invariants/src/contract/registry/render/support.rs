@@ -110,6 +110,9 @@ pub(super) fn render_evidence_references(output: &mut String, evidence: &[Regist
         if let Some(group) = &record.atomic_group {
             let _ = write!(reference, "; reviewed atomic group `{group}`");
         }
+        if let Some(kind) = record.persistence_evidence {
+            let _ = write!(reference, "; persistence evidence `{}`", kind.wire_name());
+        }
         if let Some(exemption) = &record.negative_fixture_exemption {
             let _ = write!(reference, "; negative fixture exemption `{exemption}`");
         }

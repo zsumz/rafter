@@ -14,7 +14,7 @@ fn current_registry_parses_as_exactly_44_unique_invariants() {
     let source = fs::read_to_string(path).expect("read current registry");
 
     let registry = parse_registry_document(&source).expect("parse current registry");
-    assert_eq!(registry.schema_version, 3);
+    assert_eq!(registry.schema_version, 4);
     assert_eq!(registry.invariants.len(), 44);
     assert_eq!(
         registry
@@ -172,10 +172,10 @@ fn duplicate_invariant_and_clause_ids_are_rejected() {
 fn duplicate_or_malformed_schema_version_is_rejected() {
     let valid = valid_registry(VALID_EVIDENCE, VALID_CLAUSE, VALID_INVARIANT);
     for source in [
-        valid.replace("schema_version: 3", "schema_version: 2"),
-        valid.replace("schema_version: 3", "schema_version:3"),
-        valid.replace("schema_version: 3", "schema_version: \"3\""),
-        valid.replace("schema_version: 3", "schema_version: 3\nschema_version: 3"),
+        valid.replace("schema_version: 4", "schema_version: 3"),
+        valid.replace("schema_version: 4", "schema_version:4"),
+        valid.replace("schema_version: 4", "schema_version: \"4\""),
+        valid.replace("schema_version: 4", "schema_version: 4\nschema_version: 4"),
     ] {
         assert!(parse_registry_document(&source).is_err());
     }

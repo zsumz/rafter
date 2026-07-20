@@ -5,7 +5,30 @@ use std::collections::BTreeMap;
 use crate::contract::{SimulatorIdentity, TestIdentity};
 
 /// Registry schema understood by this version of the deterministic verifier.
-pub const REGISTRY_SCHEMA_VERSION: u32 = 3;
+pub const REGISTRY_SCHEMA_VERSION: u32 = 4;
+
+/// Runtime or storage behavior exercised by persistence evidence.
+///
+/// This enum is exhaustive so registry consumers must handle every reviewed
+/// persistence-evidence category explicitly.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum PersistenceEvidenceKind {
+    /// Reconstructs state after an explicit crash or reopen boundary.
+    CrashReopen,
+    /// Injects a durable-operation failure and checks fail-closed behavior.
+    FailureInjection,
+}
+
+impl PersistenceEvidenceKind {
+    /// Returns the stable registry wire name.
+    #[must_use]
+    pub const fn wire_name(self) -> &'static str {
+        match self {
+            Self::CrashReopen => "crash_reopen",
+            Self::FailureInjection => "failure_injection",
+        }
+    }
+}
 
 /// The complete, strictly parsed Raft invariant registry.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -71,6 +94,7 @@ pub struct RegistryEvidence {
     pub strength: String,
     pub path: String,
     pub symbol: String,
+    pub persistence_evidence: Option<PersistenceEvidenceKind>,
     pub atomic_group: Option<String>,
     pub negative_fixture: Option<String>,
     pub negative_fixture_path: Option<String>,

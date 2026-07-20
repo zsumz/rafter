@@ -1,5 +1,55 @@
 use super::*;
+use std::path::Path;
+
+use crate::tests::file_backed_fixture::TestDirectory;
 use rafter::StagedSnapshotChunk;
+use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
+use rafter_storage::{
+    FileRaftHardStateStore, FileRaftLogSegment, FileRaftNodeStores, FileRaftSnapshotStore,
+};
+
+type FileBackedNode =
+    DurableRaftNode<FileRaftHardStateStore, FileRaftLogSegment, FileRaftSnapshotStore>;
+
+fn file_backed_follower_with_log(
+    path: &Path,
+    divergent_log: &[PersistedRaftLogEntry],
+) -> FileBackedNode {
+    let (mut hard_state_store, mut log_segment, snapshot_store) = FileRaftNodeStores::open(path)
+        .expect("file-backed stores open")
+        .into_parts();
+    hard_state_store
+        .write_hard_state(RaftHardState {
+            current_term: Term(5),
+            voted_for: None,
+            commit_index: LogIndex::ZERO,
+            committed_configuration: None,
+        })
+        .expect("follower hard state persists");
+    log_segment
+        .append_entries(divergent_log)
+        .expect("covered divergent suffix persists");
+    DurableRaftNode::with_storage_and_snapshot_store(
+        raft_config(3, &[2]),
+        hard_state_store,
+        log_segment,
+        snapshot_store,
+    )
+    .expect("file-backed follower hydrates")
+}
+
+fn reopen_file_backed_follower(path: &Path) -> FileBackedNode {
+    let (hard_state_store, log_segment, snapshot_store) = FileRaftNodeStores::open(path)
+        .expect("file-backed stores reopen")
+        .into_parts();
+    DurableRaftNode::with_storage_and_snapshot_store(
+        raft_config(3, &[2]),
+        hard_state_store,
+        log_segment,
+        snapshot_store,
+    )
+    .expect("file-backed follower hydrates after reopen")
+}
 
 /// Stages the whole `payload` for `metadata`'s transfer in two chunks and
 /// stops there — the durable shape a crash leaves when the process dies
@@ -153,4 +203,85 @@ fn runtime_restarted_follower_catches_up_from_compacted_leader_snapshot() {
             .as_slice(),
         b"opaque application snapshot".as_slice()
     );
+}
+
+#[test]
+fn file_backed_snapshot_install_discards_covered_divergent_suffix_across_reopen() {
+    let directory = TestDirectory::new("ss05-snapshot-install");
+    let payload = b"authoritative snapshot state".to_vec();
+    let snapshot = raft_snapshot(3, 3, 5, &payload);
+    let descriptor = RaftSnapshot::from_payload(snapshot.metadata.clone(), &payload);
+    let transfer_id = descriptor.transfer_id();
+    let split_at = 7;
+    let divergent_log = vec![
+        persisted_entry(1, 1, b"common-prefix"),
+        persisted_entry(2, 4, b"divergent-two"),
+        persisted_entry(3, 4, b"divergent-three"),
+    ];
+
+    let mut follower = file_backed_follower_with_log(directory.path(), &divergent_log);
+    oracle_assert_eq!(follower.log_segment.replay_entries(), divergent_log);
+
+    let first_outputs =
+        install_snapshot_chunk_at_term(&mut follower, &snapshot, transfer_id, Term(5), 0, split_at);
+    oracle_assert!(first_outputs
+        .iter()
+        .all(|output| !matches!(output, RaftOutput::ApplySnapshot { .. })));
+    oracle_assert_eq!(
+        follower
+            .snapshot_transfer_status()
+            .follower
+            .expect("partial transfer is visible")
+            .received_bytes,
+        split_at as u64
+    );
+    drop(follower);
+
+    let mut resumed = reopen_file_backed_follower(directory.path());
+    oracle_assert_eq!(resumed.log_segment.replay_entries(), divergent_log);
+    oracle_assert_eq!(
+        resumed
+            .snapshot_transfer_status()
+            .follower
+            .expect("reopened transfer is visible")
+            .received_bytes,
+        split_at as u64
+    );
+
+    let final_outputs = install_snapshot_chunk_at_term(
+        &mut resumed,
+        &snapshot,
+        transfer_id,
+        Term(5),
+        split_at,
+        payload.len(),
+    );
+    oracle_assert!(final_outputs.iter().any(
+        |output| matches!(output, RaftOutput::ApplySnapshot { snapshot } if snapshot == &descriptor)
+    ));
+    oracle_assert_eq!(resumed.snapshot_index(), LogIndex(3));
+    oracle_assert_eq!(resumed.commit_index(), LogIndex(3));
+    oracle_assert_eq!(resumed.log_segment.compacted_through(), LogIndex(3));
+    oracle_assert_eq!(resumed.log_segment.replay_entries(), Vec::new());
+    drop(resumed);
+
+    let (hard_state_store, log_segment, snapshot_store) =
+        FileRaftNodeStores::open(directory.path())
+            .expect("installed file-backed snapshot reopens")
+            .into_parts();
+    oracle_assert_eq!(log_segment.compacted_through(), LogIndex(3));
+    oracle_assert_eq!(log_segment.replay_entries(), Vec::new());
+    oracle_assert_eq!(snapshot_store.current_snapshot(), Some(descriptor));
+    oracle_assert_eq!(snapshot_store.current_pending_snapshot_transfer(), None);
+
+    let reopened = DurableRaftNode::with_storage_and_snapshot_store(
+        raft_config(3, &[2]),
+        hard_state_store,
+        log_segment,
+        snapshot_store,
+    )
+    .expect("installed file-backed follower hydrates again");
+    oracle_assert_eq!(reopened.snapshot_index(), LogIndex(3));
+    oracle_assert_eq!(reopened.last_log_index(), LogIndex(3));
+    oracle_assert_eq!(reopened.log_entries_from(LogIndex(1)), Vec::new());
 }

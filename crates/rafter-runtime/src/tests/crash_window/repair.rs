@@ -37,7 +37,7 @@ fn reopen_completes_compaction_after_crash_between_snapshot_and_compaction() {
 fn file_backed_reopen_persists_repaired_compaction_after_snapshot_crash_window() {
     let directory = TestDirectory::new("snapshot-crash-window");
     let (mut hard_state_store, mut log_segment, mut snapshot_store) =
-        FileRaftNodeStores::open(&directory.0)
+        FileRaftNodeStores::open(directory.path())
             .expect("file-backed stores open")
             .into_parts();
 
@@ -63,9 +63,10 @@ fn file_backed_reopen_persists_repaired_compaction_after_snapshot_crash_window()
     assert_eq!(log_segment.next_index(), LogIndex(3));
     drop((hard_state_store, log_segment, snapshot_store));
 
-    let (hard_state_store, log_segment, snapshot_store) = FileRaftNodeStores::open(&directory.0)
-        .expect("half-installed file-backed stores reopen")
-        .into_parts();
+    let (hard_state_store, log_segment, snapshot_store) =
+        FileRaftNodeStores::open(directory.path())
+            .expect("half-installed file-backed stores reopen")
+            .into_parts();
     assert_eq!(log_segment.compacted_through(), LogIndex::ZERO);
     assert_eq!(log_segment.next_index(), LogIndex(3));
 
@@ -84,7 +85,7 @@ fn file_backed_reopen_persists_repaired_compaction_after_snapshot_crash_window()
     oracle_assert_eq!(runtime.log_segment.replay_entries(), Vec::new());
     drop(runtime);
 
-    let (_, reopened_log, _) = FileRaftNodeStores::open(&directory.0)
+    let (_, reopened_log, _) = FileRaftNodeStores::open(directory.path())
         .expect("repaired file-backed stores reopen")
         .into_parts();
     oracle_assert_eq!(reopened_log.compacted_through(), LogIndex(3));

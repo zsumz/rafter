@@ -53,6 +53,7 @@ impl TryFrom<RegistryDocument> for Catalog {
                 "registry invariant IDs must be unique".to_owned(),
             ));
         }
+        super::policy::validate(&registry.invariants, &registry.evidence)?;
 
         let clauses = registry
             .clauses
@@ -79,6 +80,7 @@ impl TryFrom<RegistryDocument> for Catalog {
                     strength: evidence.strength.clone(),
                     path: evidence.path.clone(),
                     symbol: evidence.symbol.clone(),
+                    persistence_evidence: evidence.persistence_evidence,
                     atomic_group: evidence.atomic_group.clone(),
                     negative_fixture: evidence.negative_fixture.clone(),
                     negative_fixture_path: evidence.negative_fixture_path.clone(),
