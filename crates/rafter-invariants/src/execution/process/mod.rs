@@ -10,6 +10,7 @@ mod diagnostics;
 mod direct_child;
 mod environment;
 mod finalization;
+mod identity;
 mod internal_command;
 mod internal_process;
 mod launch;
@@ -44,6 +45,7 @@ use direct_child::DirectChild;
 pub(crate) use environment::base_environment;
 use finalization::finalize_process_output;
 pub(crate) use finalization::PendingProcessOutput;
+pub(crate) use identity::run_identity_command_in;
 #[cfg(test)]
 use internal_command::{
     bounded_internal_output, bounded_internal_output_with_cleanup,
