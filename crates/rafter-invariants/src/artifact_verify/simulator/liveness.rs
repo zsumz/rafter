@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use serde_json::Value;
 
 use super::super::test_logs::is_passing;
-use crate::{aggregate::AggregateError, ResultBundle};
+use crate::{verification::AggregateError, ResultBundle};
 
 pub(in crate::artifact_verify) fn verify_liveness_observations(
     bundle: &ResultBundle,
