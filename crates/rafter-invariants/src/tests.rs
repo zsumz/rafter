@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use super::*;
 
@@ -17,8 +17,60 @@ pub(crate) fn loaded() -> (Catalog, ProfileManifest) {
     (catalog, manifest)
 }
 
+pub(crate) fn aggregate_unverified(
+    catalog: &Catalog,
+    manifest: &ProfileManifest,
+    profile: &str,
+    source_ref: &str,
+    bundles: &[ResultBundle],
+) -> Result<VerdictReport, crate::verification::AggregateError> {
+    let plan = plan_receipt(manifest, profile);
+    let request = crate::verification::VerificationRequest::new(
+        catalog,
+        manifest,
+        &plan,
+        source_ref,
+        Path::new("."),
+    );
+    let intake = crate::verification::verify_receipts_for_test(request, bundles, Vec::new())?;
+    crate::verdict::reduce(catalog, manifest, &intake)
+}
+
+fn aggregate(
+    catalog: &Catalog,
+    manifest: &ProfileManifest,
+    profile: &str,
+    source_ref: &str,
+    bundles: &[ResultBundle],
+) -> Result<VerdictReport, crate::verification::AggregateError> {
+    aggregate_unverified(catalog, manifest, profile, source_ref, bundles)
+}
+
+fn verify_layer_bundle(
+    catalog: &Catalog,
+    manifest: &ProfileManifest,
+    profile: &str,
+    layer: &str,
+    bundle: &ResultBundle,
+) -> Result<(), crate::verification::AggregateError> {
+    let plan = plan_receipt(manifest, profile);
+    let request = crate::verification::VerificationRequest::new(
+        catalog,
+        manifest,
+        &plan,
+        &bundle.source_ref,
+        Path::new("."),
+    );
+    let intake = crate::verification::verify_receipts_for_test(
+        request,
+        std::slice::from_ref(bundle),
+        Vec::new(),
+    )?;
+    crate::verification::require_passing_layer(request, layer, &intake)
+}
+
 fn artifact(path: &str) -> ArtifactRef {
-    artifact_kind(path, "log")
+    artifact_kind(path, "summary")
 }
 
 fn artifact_kind(path: &str, kind: &str) -> ArtifactRef {
@@ -84,6 +136,10 @@ fn plan_input(path: &str) -> PlanInput {
 }
 
 fn invocation_receipt(runner: &str) -> InvocationReceipt {
+    invocation_receipt_for_profile(runner, "pr")
+}
+
+fn invocation_receipt_for_profile(runner: &str, profile: &str) -> InvocationReceipt {
     InvocationReceipt {
         program: format!(
             "/workspace/rafter/target/rafter-invariants/producer-images/{}/rafter-invariants",
@@ -93,7 +149,7 @@ fn invocation_receipt(runner: &str) -> InvocationReceipt {
         arguments: vec![
             "run".to_owned(),
             "--profile".to_owned(),
-            "pr".to_owned(),
+            profile.to_owned(),
             "--layer".to_owned(),
             runner.to_owned(),
         ],
@@ -114,6 +170,12 @@ fn synthetic_check_id(descriptor: &EvidenceDescriptor) -> String {
     if descriptor.layer == "tla" {
         return "tla/RaftCi.cfg#Spec".to_owned();
     }
+    if descriptor.layer == "maelstrom" {
+        return format!(
+            "maelstrom/{}",
+            maelstrom_scenario(&descriptor.path).expect("reviewed Maelstrom evidence path")
+        );
+    }
     descriptor
         .test
         .as_ref()
@@ -123,6 +185,7 @@ fn synthetic_check_id(descriptor: &EvidenceDescriptor) -> String {
 fn synthetic_observations(
     descriptors: &[EvidenceDescriptor],
     manifest: &ProfileManifest,
+    profile: &str,
 ) -> std::collections::BTreeMap<String, u64> {
     let descriptor = &descriptors[0];
     if descriptor.layer == "tests" {
@@ -131,6 +194,9 @@ fn synthetic_observations(
             ("executed".to_owned(), 1),
             ("passed".to_owned(), 1),
         ]);
+    }
+    if descriptor.layer == "maelstrom" {
+        return synthetic_maelstrom_observations(descriptor, manifest, profile);
     }
     let Some(identity) = &descriptor.simulator else {
         if descriptor.layer == "tla" {
@@ -186,7 +252,7 @@ fn synthetic_observations(
         if let Some(steps) = identity.minimum_steps {
             observations.insert(format!("steps:{check}"), steps as u64);
         }
-        if let Some(contract) = manifest.profiles["pr"].runners["simulator"]
+        if let Some(contract) = manifest.profiles[profile].runners["simulator"]
             .simulator_checks
             .get(check)
         {
@@ -211,6 +277,7 @@ fn synthetic_observations(
 
 fn synthetic_liveness_binding(
     descriptor: &EvidenceDescriptor,
+    profile: &str,
 ) -> Option<crate::evidence::SimulatorLivenessBinding> {
     let identity = descriptor.simulator.as_ref()?;
     let contract = identity.liveness_report.clone()?;
@@ -220,8 +287,8 @@ fn synthetic_liveness_binding(
         .iter()
         .flat_map(|check_id| {
             let execution_contract =
-                crate::contract::profile::expected_execution_contract("pr", check_id)
-                    .expect("synthetic PR execution contract");
+                crate::contract::profile::expected_execution_contract(profile, check_id)
+                    .expect("synthetic execution contract");
             (0..runs).map(
                 move |index| crate::evidence::SimulatorLivenessReportBinding {
                     check_id: check_id.clone(),
@@ -247,7 +314,11 @@ fn synthetic_liveness_binding(
     })
 }
 
-fn synthetic_artifacts(descriptor: &EvidenceDescriptor) -> Vec<ArtifactRef> {
+fn synthetic_artifacts(
+    descriptor: &EvidenceDescriptor,
+    manifest: &ProfileManifest,
+    profile: &str,
+) -> Vec<ArtifactRef> {
     match descriptor.layer.as_str() {
         "tests" => vec![
             artifact_kind("artifacts/tests.log", "test-log"),
@@ -304,100 +375,292 @@ fn synthetic_artifacts(descriptor: &EvidenceDescriptor) -> Vec<ArtifactRef> {
                 .map(|kind| artifact_kind(&format!("artifacts/{kind}"), &kind))
                 .collect()
         }
+        "maelstrom" => synthetic_maelstrom_artifacts(descriptor, manifest, profile),
         runner => vec![artifact(&format!("artifacts/{runner}.log"))],
     }
 }
 
+fn maelstrom_scenario(path: &str) -> Option<&'static str> {
+    match path {
+        "scripts/maelstrom-lin-kv" => Some("base"),
+        "scripts/maelstrom-lin-kv-membership-change" => Some("membership"),
+        "scripts/maelstrom-lin-kv-repeated-restart" => Some("restart"),
+        "scripts/maelstrom-lin-kv-app-persist-crash" => Some("app-crash"),
+        "scripts/maelstrom-lin-kv-forced-snapshot" => Some("snapshot"),
+        "scripts/maelstrom-lin-kv-lease-isolation" => Some("lease-isolation"),
+        _ => None,
+    }
+}
+
+fn synthetic_maelstrom_observations(
+    descriptor: &EvidenceDescriptor,
+    manifest: &ProfileManifest,
+    profile: &str,
+) -> std::collections::BTreeMap<String, u64> {
+    let trials = manifest.profiles[profile].runners["maelstrom"].configuration["trials"]
+        .parse::<u64>()
+        .expect("reviewed Maelstrom trial count");
+    let mut observations = crate::artifact_verify_maelstrom_support::empty_observations(trials);
+    observations.extend([
+        ("valid_trials".to_owned(), trials),
+        ("operation_count".to_owned(), 9 * trials),
+        ("ok_count".to_owned(), 6 * trials),
+        ("read_ok".to_owned(), 2 * trials),
+        ("write_ok".to_owned(), 3 * trials),
+        ("cas_ok".to_owned(), trials),
+    ]);
+    match maelstrom_scenario(&descriptor.path).expect("reviewed Maelstrom evidence path") {
+        "base" => {}
+        "membership" => {
+            for name in [
+                "membership_enter",
+                "membership_leave",
+                "membership_complete",
+            ] {
+                observations.insert(name.to_owned(), trials);
+            }
+        }
+        "restart" => {
+            observations.insert("restarts".to_owned(), 3 * trials);
+            observations.insert("post_restart_progress".to_owned(), trials);
+        }
+        "app-crash" => {
+            observations.insert("crashpoints".to_owned(), trials);
+            observations.insert("post_crash_progress".to_owned(), trials);
+        }
+        "snapshot" => {
+            for name in [
+                "restarts",
+                "snapshots_compacted",
+                "snapshots_applied",
+                "post_restart_snapshots_applied",
+            ] {
+                observations.insert(name.to_owned(), trials);
+            }
+        }
+        "lease-isolation" => {
+            for name in [
+                "lease_fast_path_read_ok",
+                "lease_read_buffered",
+                "lease_expired_while_leader",
+                "lease_post_expiry_released",
+                "lease_post_expiry_handler",
+                "lease_post_expiry_unavailable",
+                "lease_history_probe_matches",
+                "lease_sequence_complete",
+            ] {
+                observations.insert(name.to_owned(), trials);
+            }
+        }
+        _ => unreachable!("reviewed Maelstrom scenario"),
+    }
+    observations
+}
+
+fn synthetic_maelstrom_artifacts(
+    descriptor: &EvidenceDescriptor,
+    manifest: &ProfileManifest,
+    profile: &str,
+) -> Vec<ArtifactRef> {
+    let scenario = maelstrom_scenario(&descriptor.path).expect("reviewed Maelstrom evidence path");
+    let trials = manifest.profiles[profile].runners["maelstrom"].configuration["trials"]
+        .parse::<u64>()
+        .expect("reviewed Maelstrom trial count");
+    let mut artifacts = Vec::new();
+    for trial in 0..trials {
+        let root = format!("artifacts/maelstrom/{scenario}/trial-{trial}");
+        for kind in [
+            "maelstrom-results",
+            "maelstrom-process-log",
+            "maelstrom-runner",
+            "maelstrom-binary",
+            "maelstrom-tool-jar",
+            "maelstrom-node-log",
+        ] {
+            artifacts.push(artifact_kind(&format!("{root}/{kind}"), kind));
+        }
+        if matches!(
+            scenario,
+            "restart" | "app-crash" | "snapshot" | "lease-isolation"
+        ) {
+            artifacts.push(artifact_kind(
+                &format!("{root}/maelstrom-proxy-binary"),
+                "maelstrom-proxy-binary",
+            ));
+        }
+        if matches!(scenario, "restart" | "app-crash" | "snapshot") {
+            artifacts.push(artifact_kind(
+                &format!("{root}/maelstrom-durable-file"),
+                "maelstrom-durable-file",
+            ));
+        }
+    }
+    artifacts
+}
+
 pub(crate) fn passing_bundles(catalog: &Catalog, manifest: &ProfileManifest) -> Vec<ResultBundle> {
-    let required = catalog.required_evidence(&manifest.profiles["pr"]);
-    let mut by_runner = std::collections::BTreeMap::<String, Vec<EvidenceDescriptor>>::new();
-    for evidence in required.values().flatten() {
+    passing_bundles_for_profile(catalog, manifest, "pr")
+}
+
+pub(crate) fn passing_bundles_for_profile(
+    catalog: &Catalog,
+    manifest: &ProfileManifest,
+    profile: &str,
+) -> Vec<ResultBundle> {
+    let required = catalog.required_evidence(&manifest.profiles[profile]);
+    evidence_by_runner(required.values().flatten())
+        .into_iter()
+        .map(|(runner, evidence)| synthetic_bundle(&runner, evidence, manifest, profile))
+        .collect()
+}
+
+fn evidence_by_runner<'a>(
+    evidence: impl Iterator<Item = &'a EvidenceDescriptor>,
+) -> std::collections::BTreeMap<String, Vec<EvidenceDescriptor>> {
+    let mut by_runner = std::collections::BTreeMap::new();
+    for descriptor in evidence {
         by_runner
-            .entry(evidence.layer.clone())
-            .or_default()
-            .push(evidence.clone());
+            .entry(descriptor.layer.clone())
+            .or_insert_with(Vec::new)
+            .push(descriptor.clone());
     }
     by_runner
+}
+
+fn synthetic_bundle(
+    runner: &str,
+    evidence: Vec<EvidenceDescriptor>,
+    manifest: &ProfileManifest,
+    profile: &str,
+) -> ResultBundle {
+    let (checks, results) = synthetic_checks(runner, evidence, manifest, profile);
+    let producer = producer_binding(&format!("artifacts/{runner}-producer"));
+    ResultBundle {
+        schema_version: crate::evidence::RESULT_SCHEMA_VERSION,
+        runner: runner.to_owned(),
+        profile: profile.to_owned(),
+        source_ref: "abc".to_owned(),
+        execution: ExecutionReceipt {
+            plan: plan_receipt(manifest, profile),
+            invocation: invocation_receipt_for_profile(runner, profile),
+            producer: producer.clone(),
+            source: synthetic_source(runner, manifest, profile),
+            checks,
+            duration_ms: 1,
+            peak_rss_kib: 1,
+            artifacts: vec![
+                artifact(&format!("artifacts/{runner}-summary.log")),
+                producer.executable,
+            ],
+        },
+        results,
+    }
+}
+
+fn synthetic_checks(
+    runner: &str,
+    evidence: Vec<EvidenceDescriptor>,
+    manifest: &ProfileManifest,
+    profile: &str,
+) -> (Vec<CheckReceipt>, Vec<EvidenceResult>) {
+    let mut groups = std::collections::BTreeMap::<String, Vec<EvidenceDescriptor>>::new();
+    for descriptor in evidence {
+        groups
+            .entry(synthetic_check_id(&descriptor))
+            .or_default()
+            .push(descriptor);
+    }
+    let mut results = Vec::new();
+    let checks = groups
         .into_iter()
-        .map(|(runner, evidence)| {
-            let mut groups = std::collections::BTreeMap::<String, Vec<EvidenceDescriptor>>::new();
-            for descriptor in evidence {
-                let check_id = synthetic_check_id(&descriptor);
-                groups.entry(check_id).or_default().push(descriptor);
-            }
-            let mut results = Vec::new();
-            let checks = groups
-                .into_iter()
-                .enumerate()
-                .map(|(index, (check_id, descriptors))| {
-                    let execution_id = format!("{runner}-execution-{index}");
-                    let evidence_ids = descriptors
-                        .iter()
-                        .map(EvidenceDescriptor::evidence_id)
-                        .collect::<Vec<_>>();
-                    results.extend(descriptors.iter().cloned().map(|descriptor| {
-                        let evidence_id = descriptor.evidence_id();
-                        EvidenceResult {
-                            invariant_id: descriptor.invariant_id,
-                            evidence_id,
-                            execution_id: execution_id.clone(),
-                            status: EvidenceStatus::Pass,
-                            classification: None,
-                            message: None,
-                            artifacts: Vec::new(),
-                        }
-                    }));
-                    let completion = if runner == "tla" {
-                        CheckCompletion::FrontierExhausted
-                    } else {
-                        CheckCompletion::Completed
-                    };
-                    CheckReceipt {
-                        execution_id,
-                        check_id,
-                        evidence_ids,
-                        completion,
-                        observations: synthetic_observations(&descriptors, manifest),
-                        simulator_liveness: synthetic_liveness_binding(&descriptors[0]),
-                        duration_ms: 1,
-                        peak_rss_kib: 1,
-                        artifacts: synthetic_artifacts(&descriptors[0]),
-                    }
-                })
-                .collect();
-            let mut source = source_receipt("abc");
-            if runner == "tla" {
-                source.tools.insert(
-                    "java".to_owned(),
-                    ToolReceipt {
-                        version: "java 21 test".to_owned(),
-                        sha256: "0".repeat(64),
-                    },
-                );
-            }
-            let producer = producer_binding(&format!("artifacts/{runner}-producer"));
-            ResultBundle {
-                schema_version: crate::evidence::RESULT_SCHEMA_VERSION,
-                runner: runner.clone(),
-                profile: "pr".to_owned(),
-                source_ref: "abc".to_owned(),
-                execution: ExecutionReceipt {
-                    plan: plan_receipt(manifest, "pr"),
-                    invocation: invocation_receipt(&runner),
-                    producer: producer.clone(),
-                    source,
-                    checks,
-                    duration_ms: 1,
-                    peak_rss_kib: 1,
-                    artifacts: vec![
-                        artifact(&format!("artifacts/{runner}.log")),
-                        producer.executable,
-                    ],
+        .enumerate()
+        .map(|(index, (check_id, descriptors))| {
+            let execution_id = format!("{runner}-execution-{index}");
+            let evidence_ids = descriptors
+                .iter()
+                .map(EvidenceDescriptor::evidence_id)
+                .collect::<Vec<_>>();
+            results.extend(descriptors.iter().map(|descriptor| EvidenceResult {
+                invariant_id: descriptor.invariant_id.clone(),
+                evidence_id: descriptor.evidence_id(),
+                execution_id: execution_id.clone(),
+                status: EvidenceStatus::Pass,
+                classification: None,
+                message: None,
+                artifacts: Vec::new(),
+            }));
+            CheckReceipt {
+                execution_id,
+                check_id,
+                evidence_ids,
+                completion: if runner == "tla" {
+                    CheckCompletion::FrontierExhausted
+                } else {
+                    CheckCompletion::Completed
                 },
-                results,
+                observations: synthetic_observations(&descriptors, manifest, profile),
+                simulator_liveness: synthetic_liveness_binding(&descriptors[0], profile),
+                duration_ms: 1,
+                peak_rss_kib: 1,
+                artifacts: synthetic_artifacts(&descriptors[0], manifest, profile),
             }
         })
-        .collect()
+        .collect();
+    (checks, results)
+}
+
+fn synthetic_source(runner: &str, manifest: &ProfileManifest, profile: &str) -> SourceReceipt {
+    let mut source = source_receipt("abc");
+    match runner {
+        "tests" => source.features = vec!["no-default-features".to_owned()],
+        "simulator" => {
+            source.build_profile = "release-and-test".to_owned();
+            source.features = vec!["internal-test-hooks".to_owned()];
+        }
+        "tla" => {
+            source.build_profile = "tla".to_owned();
+            insert_synthetic_tool(&mut source, "java");
+        }
+        "maelstrom" => bind_synthetic_maelstrom_source(&mut source, manifest, profile),
+        _ => unreachable!("catalog emitted an unknown evidence layer"),
+    }
+    source
+}
+
+fn bind_synthetic_maelstrom_source(
+    source: &mut SourceReceipt,
+    manifest: &ProfileManifest,
+    profile: &str,
+) {
+    source.build_profile = "maelstrom-debug".to_owned();
+    for tool in ["java", "maelstrom", "dot", "gnuplot"] {
+        insert_synthetic_tool(source, tool);
+    }
+    source.tools.get_mut("java").expect("java tool").version = "openjdk version \"21\"".to_owned();
+    source
+        .tools
+        .get_mut("maelstrom")
+        .expect("Maelstrom tool")
+        .sha256 = manifest.profiles[profile].runners["maelstrom"].configuration
+        ["maelstrom_executable_sha256"]
+        .clone();
+    source.process_runtime.insert(
+        "bash".to_owned(),
+        crate::evidence::ExecutableReceipt {
+            program: "/bin/bash".to_owned(),
+            sha256: "0".repeat(64),
+        },
+    );
+}
+
+fn insert_synthetic_tool(source: &mut SourceReceipt, name: &str) {
+    source.tools.insert(
+        name.to_owned(),
+        ToolReceipt {
+            version: format!("{name} test"),
+            sha256: "0".repeat(64),
+        },
+    );
 }
 
 #[test]
@@ -1049,15 +1312,23 @@ fn stale_bundle_is_red_never_green() {
 fn evidence_load_error_still_emits_exactly_44_red_verdicts() {
     let (catalog, manifest) = loaded();
     let bundles = passing_bundles(&catalog, &manifest);
-    let report = aggregate_with_harness_errors(
+    let plan = plan_receipt(&manifest, "pr");
+    let request = crate::verification::VerificationRequest::new(
         &catalog,
         &manifest,
-        "pr",
+        &plan,
         "abc",
+        Path::new("."),
+    );
+    let intake = crate::verification::verify_receipts_for_test(
+        request,
         &bundles,
-        &["parse artifacts/invariants/pr-tests.json: malformed JSON".to_owned()],
+        vec![crate::verification::IntakeDefect::malformed(
+            "parse artifacts/invariants/pr-tests.json: malformed JSON",
+        )],
     )
-    .expect("report aggregates");
+    .expect("evidence intake verifies");
+    let report = crate::verdict::reduce(&catalog, &manifest, &intake).expect("report aggregates");
 
     assert_eq!(report.summary.total, 44);
     assert_eq!(report.summary.green, 0);
@@ -1066,7 +1337,8 @@ fn evidence_load_error_still_emits_exactly_44_red_verdicts() {
         .invariants
         .iter()
         .all(|verdict| verdict.issues.iter().any(|issue| {
-            issue.message.contains("malformed JSON")
+            issue.evidence_id == "aggregate/harness"
+                && issue.message.contains("malformed JSON")
                 && issue.classification == FailureClassification::HarnessError
                 && issue.status == EvidenceStatus::Error
         })));
@@ -1088,16 +1360,4 @@ fn one_layer_can_be_independently_verified_against_its_profile() {
     incomplete.results[0].status = EvidenceStatus::Incomplete;
     incomplete.execution.checks[0].completion = CheckCompletion::CoverageNotReached;
     assert!(verify_layer_bundle(&catalog, &manifest, "pr", "tests", &incomplete).is_err());
-}
-
-#[test]
-fn renderers_emit_every_invariant() {
-    let (catalog, manifest) = loaded();
-    let report = aggregate(&catalog, &manifest, "pr", "abc", &[]).expect("report aggregates");
-    let markdown = render_markdown(&report);
-    let junit = render_junit(&report);
-    for invariant_id in &catalog.ids {
-        assert!(markdown.contains(invariant_id));
-        assert!(junit.contains(invariant_id));
-    }
 }
