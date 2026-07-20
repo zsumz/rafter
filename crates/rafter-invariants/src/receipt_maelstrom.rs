@@ -50,8 +50,10 @@ pub(super) fn validate(
         .filter(|(_, descriptor)| descriptor.layer == "maelstrom")
         .map(|(evidence_id, descriptor)| (evidence_id.clone(), scenario(descriptor.path.as_str())))
         .collect::<BTreeMap<_, _>>();
-    if required.len() != 11 || bundle.execution.checks.len() != 6 {
-        return Err("Maelstrom receipt must contain six scenarios covering eleven E2E records");
+    if required.len() != 19 || bundle.execution.checks.len() != 6 {
+        return Err(
+            "Maelstrom receipt must contain six scenarios covering nineteen clause-bound E2E records",
+        );
     }
     let rd06 = expected
         .iter()
