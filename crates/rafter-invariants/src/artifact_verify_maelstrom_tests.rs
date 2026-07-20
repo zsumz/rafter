@@ -307,6 +307,53 @@ fn nonzero_process_exit_is_always_a_harness_error() -> Result<(), Box<dyn std::e
 #[test]
 fn serialized_counterexample_retains_secondary_harness_diagnostic(
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = serialized_counterexample_fixture()?;
+    let (catalog, manifest) = crate::tests::loaded();
+    let intake = canonical_counterexample_intake(&catalog, &manifest, &fixture)?;
+    assert_eq!(intake.defects().len(), 1, "{:?}", intake.defects());
+    assert!(intake.defects()[0]
+        .message()
+        .contains("counterexample alongside a harness error"));
+    let report = crate::verdict::reduce(&catalog, &manifest, &intake)?;
+    assert_eq!(report.summary.total, 44);
+    assert_eq!(report.summary.green, 0);
+    assert!(report
+        .invariants
+        .iter()
+        .all(|verdict| verdict.issues.iter().any(|issue| {
+            issue.classification == FailureClassification::HarnessError
+                && issue
+                    .message
+                    .contains("counterexample alongside a harness error")
+        })));
+    let rd06 = report
+        .invariants
+        .iter()
+        .find(|verdict| verdict.invariant_id == "RD-06")
+        .expect("RD-06 verdict");
+    assert!(rd06.issues.iter().any(|issue| {
+        issue.classification == FailureClassification::InvariantViolation
+            && issue.message == "Maelstrom reported a non-linearizable client history"
+    }));
+    Ok(())
+}
+
+struct SerializedCounterexampleFixture {
+    root: PathBuf,
+    result_path: PathBuf,
+    bundle: ResultBundle,
+    diagnostic: String,
+}
+
+impl Drop for SerializedCounterexampleFixture {
+    fn drop(&mut self) {
+        let _ = fs::remove_file(&self.result_path);
+        let _ = fs::remove_dir_all(&self.root);
+    }
+}
+
+fn serialized_counterexample_fixture(
+) -> Result<SerializedCounterexampleFixture, Box<dyn std::error::Error>> {
     let root = temporary_root()?;
     let workspace = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     materialize_checkout(&root, &workspace)?;
@@ -353,40 +400,96 @@ fn serialized_counterexample_retains_secondary_harness_diagnostic(
     bind_serialized_bundle(&mut bundle, &root, &workspace)?;
     let result_path = root.with_extension("result.json");
     fs::write(&result_path, serde_json::to_vec_pretty(&bundle)?)?;
-
-    let loaded = crate::aggregate::load_evidence_at(std::slice::from_ref(&result_path), &root);
-    assert_eq!(loaded.bundles.len(), 1, "{:?}", loaded.harness_errors);
-    assert_eq!(loaded.harness_errors.len(), 1);
-    assert!(loaded.harness_errors[0].contains("counterexample alongside a harness error"));
-    assert_eq!(
-        loaded.bundles[0].results[0].classification,
-        Some(FailureClassification::InvariantViolation)
-    );
-
-    let (catalog, manifest) = crate::tests::loaded();
-    let report = crate::aggregate_with_harness_errors(
+    let value: serde_json::Value = serde_json::from_slice(&fs::read(&result_path)?)?;
+    crate::evidence::validate_result_value(&value)?;
+    let serialized: ResultBundle = serde_json::from_value(value)?;
+    let catalog = crate::Catalog::load(&root.join(&serialized.execution.plan.registry.path))?;
+    let diagnostics = crate::verification::verify_bundle_artifacts(
+        &serialized,
+        &root,
+        &root,
         &catalog,
-        &manifest,
-        "nightly",
-        &bundle.source_ref,
-        &loaded.bundles,
-        &loaded.harness_errors,
+        &serialized.profile,
+        &serialized.runner,
     )?;
-    assert_eq!(report.summary.total, 44);
-    assert_eq!(report.summary.green, 0);
-    assert!(report
-        .invariants
-        .iter()
-        .all(|verdict| verdict.issues.iter().any(|issue| {
-            issue.classification == FailureClassification::HarnessError
-                && issue
-                    .message
-                    .contains("counterexample alongside a harness error")
-        })));
+    assert_eq!(diagnostics.len(), 1);
+    assert!(diagnostics[0].contains("counterexample alongside a harness error"));
+    Ok(SerializedCounterexampleFixture {
+        root,
+        result_path,
+        bundle: serialized,
+        diagnostic: diagnostics.into_iter().next().expect("one diagnostic"),
+    })
+}
 
-    let _ = fs::remove_file(result_path);
-    fs::remove_dir_all(root)?;
-    Ok(())
+fn canonical_counterexample_intake(
+    catalog: &crate::Catalog,
+    manifest: &crate::ProfileManifest,
+    fixture: &SerializedCounterexampleFixture,
+) -> Result<crate::verification::EvidenceIntake, crate::verification::AggregateError> {
+    let mut bundles = crate::tests::passing_bundles_for_profile(catalog, manifest, "nightly");
+    let maelstrom = bundles
+        .iter_mut()
+        .find(|candidate| candidate.runner == "maelstrom")
+        .expect("canonical nightly Maelstrom receipt");
+    assert_eq!(
+        maelstrom.execution.checks.len(),
+        6,
+        "{:?}",
+        maelstrom
+            .execution
+            .checks
+            .iter()
+            .map(|check| &check.check_id)
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(maelstrom.results.len(), 19);
+    let execution_id = maelstrom
+        .results
+        .iter()
+        .find(|result| result.invariant_id == "RD-06")
+        .expect("nightly receipt contains RD-06")
+        .execution_id
+        .clone();
+    for result in maelstrom
+        .results
+        .iter_mut()
+        .filter(|result| result.execution_id == execution_id)
+    {
+        result.artifacts = fixture.bundle.results[0].artifacts.clone();
+        if result.invariant_id == "RD-06" {
+            result.status = EvidenceStatus::Fail;
+            result.classification = Some(FailureClassification::InvariantViolation);
+            result.message = fixture.bundle.results[0].message.clone();
+        } else {
+            result.status = EvidenceStatus::Incomplete;
+            result.classification = Some(FailureClassification::CoverageNotReached);
+            result.message = Some("counterexample stopped the shared scenario".to_owned());
+        }
+    }
+    maelstrom
+        .execution
+        .checks
+        .iter_mut()
+        .find(|check| check.execution_id == execution_id)
+        .expect("RD-06 check receipt")
+        .completion = CheckCompletion::Counterexample;
+    let maelstrom = maelstrom.clone();
+    let plan = crate::tests::plan_receipt(manifest, "nightly");
+    let request = crate::verification::VerificationRequest::new(
+        catalog,
+        manifest,
+        &plan,
+        "abc",
+        &fixture.root,
+    );
+    crate::verification::verify_receipts_for_test(
+        request,
+        std::slice::from_ref(&maelstrom),
+        vec![crate::verification::IntakeDefect::unverifiable(
+            fixture.diagnostic.clone(),
+        )],
+    )
 }
 
 fn materialize_checkout(root: &Path, workspace: &Path) -> Result<(), Box<dyn std::error::Error>> {
