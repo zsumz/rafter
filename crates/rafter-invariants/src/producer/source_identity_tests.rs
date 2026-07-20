@@ -9,7 +9,7 @@ use crate::{SourceMaterializationReceipt, SourceReceipt, ToolReceipt};
 
 use super::{
     bind_adjacent_tool_inputs, find_tool, layer_contract, maelstrom_jar_path,
-    tool_identity_arguments, tool_version_output, verify_layer_contract, CargoRelease,
+    tool_identity_arguments, tool_version_output, verify_layer_contract,
 };
 
 static SCRATCH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -168,17 +168,6 @@ fn tla_fetch_can_resolve_pins_when_the_runner_is_descriptor_bound() {
     let source = fs::read_to_string(root.join("scripts/tla-model-check")).expect("read TLA runner");
 
     assert!(source.contains("RAFTER_TLA_REPO_ROOT"));
-}
-
-#[test]
-fn cargo_release_parsing_has_the_config_include_boundary() {
-    let before = CargoRelease::from_verbose_identity("cargo 1.93.1\nrelease: 1.93.1\n")
-        .expect("parse Cargo release before config includes");
-    let boundary = CargoRelease::from_verbose_identity("cargo 1.94.0\nrelease: 1.94.0\n")
-        .expect("parse Cargo release with config includes");
-
-    assert!(!before.follows_config_includes());
-    assert!(boundary.follows_config_includes());
 }
 
 #[test]

@@ -265,7 +265,7 @@ fn preflight_detector_sources_at(
     descriptors: &[EvidenceDescriptor],
 ) -> Result<(), Box<dyn Error>> {
     let source_root = fs::canonicalize(root)?;
-    let mut source_verifier = crate::artifact_verify::DetectorFixtureSourceBatchVerifier::default();
+    let mut source_verifier = crate::artifact_verify::DetectorFixtureSourceBatch::default();
     for descriptor in descriptors {
         let Some(test_identity) = descriptor
             .simulator
@@ -287,7 +287,8 @@ fn preflight_detector_sources_at(
             .as_deref()
             .ok_or("simulator detector omitted its detector identity")?;
         let fixture_path = fs::canonicalize(source_root.join(fixture_path))?;
-        let detector_path = fs::canonicalize(source_root.join(&descriptor.path))?;
+        let detector_path =
+            fs::canonicalize(source_root.join(descriptor.negative_detector_path()))?;
         if !fixture_path.starts_with(&source_root) || !detector_path.starts_with(&source_root) {
             return Err("simulator detector source path escapes the checkout".into());
         }
