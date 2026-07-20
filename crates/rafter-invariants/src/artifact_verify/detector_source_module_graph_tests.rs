@@ -7,7 +7,7 @@ use super::{
     },
     verify_invocation_bound_detector,
 };
-use crate::artifact_verify::DetectorFixtureSourceBatchVerifier;
+use crate::artifact_verify::DetectorFixtureSourceBatch;
 
 fn verify_module_graph(source: &str, root: &std::path::Path) -> Result<(), String> {
     verify_invocation_bound_detector(&crate::DetectorFixtureSourceBinding {
@@ -547,7 +547,7 @@ mod shadowed_tests;
     ];
 
     for order in [[0, 1], [1, 0]] {
-        let mut batch = DetectorFixtureSourceBatchVerifier::default();
+        let mut batch = DetectorFixtureSourceBatch::default();
         for index in order {
             let (source, fixture_path, identity, fixture, should_reject) = cases[index];
             let result = batch.validate(&crate::DetectorFixtureSourceBinding {

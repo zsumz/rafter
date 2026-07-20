@@ -75,7 +75,7 @@ pub(super) fn verify_invocation_bound_detector_cached(
     let fixture = binding.fixture;
     let detector = binding.detector;
     let fixture_file = cache.source(fixture_path, fixture_source, "fixture")?;
-    let detector_file = cache.source(detector_path, binding.detector_source, "detector")?;
+    cache.source(detector_path, binding.detector_source, "detector")?;
     let target_analysis = cache.target(binding)?;
     let target_graph = &target_analysis.graph;
     let fixture_module = target_graph.source_module(binding.fixture_path)?;
@@ -98,10 +98,8 @@ pub(super) fn verify_invocation_bound_detector_cached(
     require_registered_fixture(&fixture_functions, &fixture_id, fixture)?;
     let target = bind_target_detector(
         binding,
-        &fixture_functions,
+        &target_analysis.functions,
         target_resolver,
-        &fixture_id,
-        &detector_file,
         target_graph,
         &fixture_module,
     )?;
@@ -122,23 +120,11 @@ pub(super) fn verify_invocation_bound_detector_cached(
         &declarations,
         &mut contract,
     )?;
-    if !contract.witnesses.keys().any(|witness| {
-        witness
-            .split_once(':')
-            .is_some_and(|(_, identity)| identity == contract.registered_identity)
-    }) {
+    let rejecting_witness = format!("expect-err:{}", contract.registered_identity);
+    if !contract.witnesses.contains_key(&rejecting_witness) {
         return Err(format!(
-            "negative fixture `{fixture}` does not invoke registered detector `{detector}` through an invocation-bound oracle macro; observed witnesses: {:?}",
+            "negative fixture `{fixture}` does not invoke registered detector `{detector}` through an invocation-bound rejecting oracle; observed witnesses: {:?}",
             contract.witnesses
-        ));
-    }
-    if !contract
-        .witnesses
-        .keys()
-        .any(|witness| witness.starts_with("expect-err:"))
-    {
-        return Err(format!(
-            "negative fixture `{fixture}` does not execute an invocation-bound rejecting detector"
         ));
     }
     Ok(contract)

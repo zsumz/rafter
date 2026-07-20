@@ -6,10 +6,13 @@ use std::{
 
 use serde_json::Value;
 
-use crate::{aggregate::AggregateError, ResultBundle};
+use crate::{
+    verification::{AggregateError, AuthenticatedArtifacts},
+    ResultBundle,
+};
 
 use super::{
-    simulator_schedule::verify_simulator_schedule,
+    simulator_schedule::verify_simulator_schedule_authenticated,
     test_logs::{
         is_passing, require_detector_witness_contract, require_exact_test_pass,
         verify_detector_harness_error_invocations, verify_test_invocations,
@@ -20,17 +23,25 @@ mod liveness;
 
 pub(super) use liveness::verify_liveness_observations;
 
+struct NegativeDetectorContext<'a> {
+    bundle: &'a ResultBundle,
+    root: &'a Path,
+    source_root: &'a Path,
+    authenticated: &'a AuthenticatedArtifacts,
+    detector_sources: &'a mut super::detector_source::DetectorSourceCache,
+    test_logs: &'a mut BTreeMap<String, String>,
+}
+
 pub(super) fn verify_simulator_logs(
     bundle: &ResultBundle,
     root: &Path,
+    source_root: &Path,
+    catalog: &crate::Catalog,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<Vec<String>, AggregateError> {
-    let mut diagnostics = verify_simulator_schedule(bundle, root)?;
-    let scanned = simulator_events(bundle, root)?;
-    diagnostics.extend(scanned.diagnostics);
-    let events = scanned.events;
-    let catalog =
-        crate::Catalog::load(root.join(&bundle.execution.plan.registry.path).as_path())
-            .map_err(|error| AggregateError::new(format!("reload simulator registry: {error}")))?;
+    let schedule = verify_simulator_schedule_authenticated(bundle, root, authenticated)?;
+    let mut diagnostics = schedule.diagnostics;
+    let events = simulator_events(&bundle.profile, schedule.logs)?;
     let profile_descriptors = catalog
         .required_evidence(&bundle.execution.plan.contract)
         .into_values()
@@ -58,6 +69,14 @@ pub(super) fn verify_simulator_logs(
         .collect::<Vec<_>>();
     let mut test_logs = BTreeMap::<String, String>::new();
     let mut detector_sources = super::detector_source::DetectorSourceCache::default();
+    let mut negative_detector = NegativeDetectorContext {
+        bundle,
+        root,
+        source_root,
+        authenticated,
+        detector_sources: &mut detector_sources,
+        test_logs: &mut test_logs,
+    };
     for check in &bundle.execution.checks {
         let [evidence_id] = check.evidence_ids.as_slice() else {
             return Err(AggregateError::new(format!(
@@ -86,14 +105,11 @@ pub(super) fn verify_simulator_logs(
             inspection.global_issue,
         )?;
         verify_simulator_observations(bundle, check, identity, &liveness_contracts, &events)?;
-        verify_negative_detector_evidence(
-            bundle,
-            root,
+        verify_negative_detector_evidence_authenticated(
+            &mut negative_detector,
             check,
             descriptor,
             identity,
-            &mut detector_sources,
-            &mut test_logs,
         )?;
     }
     diagnostics.sort();
@@ -101,14 +117,11 @@ pub(super) fn verify_simulator_logs(
     Ok(diagnostics)
 }
 
-fn verify_negative_detector_evidence(
-    bundle: &ResultBundle,
-    root: &Path,
+fn verify_negative_detector_evidence_authenticated(
+    context: &mut NegativeDetectorContext<'_>,
     check: &crate::CheckReceipt,
     descriptor: &crate::EvidenceDescriptor,
     identity: &crate::SimulatorIdentity,
-    detector_sources: &mut super::detector_source::DetectorSourceCache,
-    test_logs: &mut BTreeMap<String, String>,
 ) -> Result<(), AggregateError> {
     let Some(negative_test) = identity.negative_test.as_ref() else {
         return Ok(());
@@ -126,11 +139,11 @@ fn verify_negative_detector_evidence(
         )));
     }
     let invocation_contract = verify_negative_fixture_binding_cached(
-        root,
+        context.source_root,
         descriptor,
         fixture,
         &check.check_id,
-        detector_sources,
+        context.detector_sources,
     )?;
     let qualified = check
         .observations
@@ -148,7 +161,7 @@ fn verify_negative_detector_evidence(
             check.check_id
         )));
     }
-    if qualified == 0 && is_passing(bundle, &check.execution_id) {
+    if qualified == 0 && is_passing(context.bundle, &check.execution_id) {
         return Err(AggregateError::new(format!(
             "passing simulator check {} did not qualify its detector",
             check.check_id
@@ -173,41 +186,63 @@ fn verify_negative_detector_evidence(
             check.check_id
         )));
     };
-    let source = if let Some(source) = test_logs.get(&artifact.path) {
+    let source = if let Some(source) = context.test_logs.get(&artifact.path) {
         source.clone()
     } else {
-        let source = fs::read_to_string(root.join(&artifact.path)).map_err(|error| {
-            AggregateError::new(format!("read detector log {}: {error}", artifact.path))
-        })?;
-        test_logs.insert(artifact.path.clone(), source.clone());
+        let source = context.authenticated.text(&artifact)?.to_owned();
+        context
+            .test_logs
+            .insert(artifact.path.clone(), source.clone());
         source
     };
     if qualified == 0 {
         return verify_detector_harness_error_invocations(
-            bundle,
+            context.bundle,
             check,
             &source,
             &negative_test.test_name,
             &negative_test.check_id(),
-            root,
+            context.root,
         );
     }
     verify_test_invocations(
-        bundle,
+        context.bundle,
         check,
         &source,
         &negative_test.test_name,
         &negative_test.check_id(),
-        root,
+        context.root,
     )?;
     require_detector_witness_contract(
-        bundle,
+        context.bundle,
         &source,
         &negative_test.check_id(),
         invocation_contract.registered_identity(),
         invocation_contract.witnesses(),
     )?;
     require_exact_test_pass(&source, &negative_test.test_name, &check.check_id)
+}
+
+#[cfg(test)]
+fn verify_negative_detector_evidence(
+    bundle: &ResultBundle,
+    root: &Path,
+    check: &crate::CheckReceipt,
+    descriptor: &crate::EvidenceDescriptor,
+    identity: &crate::SimulatorIdentity,
+    detector_sources: &mut super::detector_source::DetectorSourceCache,
+    test_logs: &mut BTreeMap<String, String>,
+) -> Result<(), AggregateError> {
+    let authenticated = crate::verification::snapshot_available_artifacts(bundle, root)?;
+    let mut context = NegativeDetectorContext {
+        bundle,
+        root,
+        source_root: root,
+        authenticated: &authenticated,
+        detector_sources,
+        test_logs,
+    };
+    verify_negative_detector_evidence_authenticated(&mut context, check, descriptor, identity)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -587,16 +622,15 @@ fn verify_negative_fixture_binding_cached(
             "simulator fixture path escapes the source root: {fixture_path}"
         )));
     }
-    let canonical_detector = fs::canonicalize(root.join(&descriptor.path)).map_err(|error| {
+    let detector_path = descriptor.negative_detector_path();
+    let canonical_detector = fs::canonicalize(root.join(detector_path)).map_err(|error| {
         AggregateError::new(format!(
-            "read simulator detector source {}: {error}",
-            descriptor.path
+            "read simulator detector source {detector_path}: {error}"
         ))
     })?;
     if !canonical_detector.starts_with(&canonical_root) {
         return Err(AggregateError::new(format!(
-            "simulator detector path escapes the source root: {}",
-            descriptor.path
+            "simulator detector path escapes the source root: {detector_path}"
         )));
     }
     let fixture_source = fs::read_to_string(&canonical_fixture).map_err(|error| {
@@ -606,8 +640,7 @@ fn verify_negative_fixture_binding_cached(
     })?;
     let detector_source = fs::read_to_string(&canonical_detector).map_err(|error| {
         AggregateError::new(format!(
-            "read simulator detector source {}: {error}",
-            descriptor.path
+            "read simulator detector source {detector_path}: {error}"
         ))
     })?;
     super::detector_source::verify_invocation_bound_detector_cached(
@@ -630,46 +663,23 @@ fn verify_negative_fixture_binding_cached(
     })
 }
 
-struct ScannedSimulatorEvents {
-    events: BTreeMap<String, Vec<Value>>,
-    diagnostics: Vec<String>,
-}
-
 fn simulator_events(
-    bundle: &ResultBundle,
-    root: &Path,
-) -> Result<ScannedSimulatorEvents, AggregateError> {
-    let logs = bundle
-        .execution
-        .artifacts
-        .iter()
-        .filter(|artifact| artifact.kind == "simulator-log")
-        .collect::<Vec<_>>();
+    profile: &str,
+    logs: Vec<super::simulator_schedule::ScannedSimulatorLog<'_>>,
+) -> Result<BTreeMap<String, Vec<Value>>, AggregateError> {
     if logs.is_empty() {
         return Err(AggregateError::new(
             "simulator execution has no machine-readable logs".to_owned(),
         ));
     }
     let mut events = BTreeMap::<String, Vec<Value>>::new();
-    let mut diagnostics = Vec::new();
     for log in logs {
-        let source = fs::read_to_string(root.join(&log.path)).map_err(|error| {
-            AggregateError::new(format!("read simulator log {}: {error}", log.path))
-        })?;
-        let (parsed, parse_diagnostics) = super::simulator_schedule::scan_machine_events(
-            &source,
-            &format!("simulator event in {}", log.path),
-        );
-        diagnostics.extend(parse_diagnostics);
-        for event in parsed {
-            index_simulator_event(&bundle.profile, event, &mut events)
-                .map_err(|error| AggregateError::new(format!("{} in {}", error, log.path)))?;
+        for event in log.events {
+            index_simulator_event(profile, event, &mut events)
+                .map_err(|error| AggregateError::new(error.to_owned()))?;
         }
     }
-    Ok(ScannedSimulatorEvents {
-        events,
-        diagnostics,
-    })
+    Ok(events)
 }
 
 fn index_simulator_event(
@@ -680,12 +690,11 @@ fn index_simulator_event(
     let check_id = event
         .get("check_id")
         .and_then(Value::as_str)
-        .ok_or("simulator event scanner returned an event without check_id")?;
-    events
-        .entry(check_id.to_owned())
-        .or_default()
-        .push(event.clone());
-    if let Some(canonical) = crate::producer::canonical_check_id(profile, check_id) {
+        .ok_or("simulator event scanner returned an event without check_id")?
+        .to_owned();
+    let canonical = crate::producer::canonical_check_id(profile, &check_id);
+    events.entry(check_id).or_default().push(event.clone());
+    if let Some(canonical) = canonical {
         events.entry(canonical).or_default().push(event);
     }
     Ok(())

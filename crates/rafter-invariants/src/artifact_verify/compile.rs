@@ -8,7 +8,10 @@ use std::{
 
 use serde::Deserialize;
 
-use crate::{aggregate::AggregateError, EvidenceStatus, FailureClassification, ResultBundle};
+use crate::{
+    verification::{AggregateError, AuthenticatedArtifacts},
+    EvidenceStatus, FailureClassification, ResultBundle,
+};
 
 use super::test_logs::test_execution_profile;
 
@@ -51,6 +54,8 @@ struct CargoMessageTarget {
 pub(super) fn verify_compile_invocations(
     bundle: &ResultBundle,
     root: &Path,
+    catalog: &crate::Catalog,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<(), AggregateError> {
     let logs = bundle
         .execution
@@ -71,16 +76,11 @@ pub(super) fn verify_compile_invocations(
         .map_err(|error| AggregateError::new(format!("canonicalize compile root: {error}")))?
         .to_string_lossy()
         .into_owned();
-    let catalog =
-        crate::Catalog::load(root.join(&bundle.execution.plan.registry.path).as_path())
-            .map_err(|error| AggregateError::new(format!("reload compiler registry: {error}")))?;
-    let preserved_test_binaries = preserved_test_binaries(bundle, &catalog)?;
+    let preserved_test_binaries = preserved_test_binaries(bundle, catalog)?;
     let mut emitted_test_executables = BTreeMap::new();
     for log in logs {
-        let source = fs::read_to_string(root.join(&log.path)).map_err(|error| {
-            AggregateError::new(format!("read compile log {}: {error}", log.path))
-        })?;
-        let invocations = crate::evidence::format::process::parse_combined_v4(&source)
+        let source = authenticated.text(log)?;
+        let invocations = crate::evidence::format::process::parse_combined_v4(source)
             .map_err(|error| AggregateError::new(format!("parse compile invocation: {error}")))?;
         let [observed] = invocations.as_slice() else {
             return Err(AggregateError::new(
@@ -129,7 +129,7 @@ pub(super) fn verify_compile_invocations(
                 .to_owned(),
         ));
     }
-    verify_test_programs_were_emitted(bundle, root, &catalog, &emitted_test_executables)?;
+    verify_test_programs_were_emitted(bundle, catalog, &emitted_test_executables, authenticated)?;
     Ok(())
 }
 
@@ -491,9 +491,9 @@ fn registered_test_target(
 
 fn verify_test_programs_were_emitted(
     bundle: &ResultBundle,
-    root: &Path,
     catalog: &crate::Catalog,
     emitted: &BTreeMap<CargoTargetKey, EmittedTestExecutable>,
+    authenticated: &AuthenticatedArtifacts,
 ) -> Result<(), AggregateError> {
     let descriptors = catalog
         .evidence
@@ -517,13 +517,8 @@ fn verify_test_programs_were_emitted(
             ))
         })?;
         for log in logs {
-            let source = fs::read_to_string(root.join(&log.path)).map_err(|error| {
-                AggregateError::new(format!(
-                    "read test log {} for compiler binding: {error}",
-                    log.path
-                ))
-            })?;
-            let processes = crate::evidence::format::process::parse_combined_processes(&source)
+            let source = authenticated.text(log)?;
+            let processes = crate::evidence::format::process::parse_combined_processes(source)
                 .map_err(|error| {
                     AggregateError::new(format!("parse test log {}: {error}", log.path))
                 })?;
