@@ -60,6 +60,7 @@ fn leased_quarantine_reaps_by_handle_without_observing_replacement_identity() {
     let mut original_command = std::process::Command::new("sh");
     original_command.args(["-c", "exit 0"]).process_group(0);
     let original = original_command.spawn().expect("spawn leased identity");
+    let original_id = original.id();
     let mut owned = DirectChild::new(original, reaper.clone());
     let exit_deadline = Instant::now() + Duration::from_secs(2);
     while !owned.exit_observed().expect("observe leased child exit")
@@ -79,6 +80,7 @@ fn leased_quarantine_reaps_by_handle_without_observing_replacement_identity() {
     assert!(owned
         .quarantine_leased(lifetime)
         .expect("transfer child and lease to reaper"));
+    assert!(reaper.snapshot().adopted_children.contains(&original_id));
     std::thread::sleep(Duration::from_millis(20));
     assert_eq!(reaper.snapshot().reaped, 0);
     drop(lifetime_writer);
@@ -87,6 +89,7 @@ fn leased_quarantine_reaps_by_handle_without_observing_replacement_identity() {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(reaper.snapshot().reaped, 1);
+    assert!(reaper.snapshot().reaped_children.contains(&original_id));
     assert!(take_signal_attempts().is_empty());
     assert!(replacement.try_wait().expect("probe replacement").is_none());
 

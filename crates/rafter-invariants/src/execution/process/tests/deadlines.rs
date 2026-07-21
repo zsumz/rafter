@@ -19,9 +19,9 @@ use super::{
 
 #[test]
 fn natural_exit_after_the_deadline_cannot_be_reported_as_success() {
-    delay_next_process_group_observation(Duration::from_millis(50));
+    delay_next_process_group_observation(Duration::from_millis(500));
     let output = run_shell(
-        "sleep 0.01; exit 0",
+        "sleep 0.05; exit 0",
         &base_environment(),
         Path::new("."),
         Duration::from_millis(10),

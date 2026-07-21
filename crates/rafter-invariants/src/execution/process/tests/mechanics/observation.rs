@@ -18,10 +18,10 @@ use super::super::super::{
 };
 use super::super::super::{
     bounded_internal_output, bounded_internal_output_with_cleanup,
-    confirm_process_group_absent_with, delay_next_internal_completion_check,
-    inject_next_internal_drain_error, parse_peak_rss, parse_process_group_observation,
-    process_observer_path, ProcessAnchorState, ProcessGroupObservation, ProcessGroupState,
-    TargetLeaseState, TargetMemberState,
+    bounded_internal_output_with_reaper, confirm_process_group_absent_with,
+    delay_next_internal_completion_check, inject_next_internal_drain_error, parse_peak_rss,
+    parse_process_group_observation, process_observer_path, NoSignalReaper, ProcessAnchorState,
+    ProcessGroupObservation, ProcessGroupState, TargetLeaseState, TargetMemberState,
 };
 use super::super::support::unique_test_path;
 #[cfg(unix)]
@@ -119,7 +119,7 @@ fn internal_observer_rejects_a_clean_exit_classified_after_its_deadline() {
 
 #[cfg(unix)]
 #[test]
-fn internal_observer_read_failure_cleans_its_process_group() {
+fn internal_observer_read_failure_retains_process_group_cleanup_ownership() {
     clear_signal_attempts();
     let process_group_path = unique_test_path("observer-process-group");
     let script = format!(
@@ -127,12 +127,18 @@ fn internal_observer_read_failure_cleans_its_process_group() {
         process_group_path.display()
     );
     inject_next_internal_drain_error();
+    let reaper = NoSignalReaper::start().expect("start observer cleanup reaper");
 
-    let error = bounded_internal_output("/bin/sh", &["-c", &script], Duration::from_secs(1))
-        .expect_err("injected read failure must escape after cleanup");
-    assert!(error
-        .to_string()
-        .contains("injected internal drain failure"));
+    let error = bounded_internal_output_with_reaper(
+        "/bin/sh",
+        &["-c", &script],
+        Duration::from_secs(1),
+        Duration::from_secs(1),
+        reaper.clone(),
+    )
+    .expect_err("injected read failure must escape after cleanup");
+    let message = error.to_string();
+    assert!(message.contains("injected internal drain failure"));
     let process_group = std::fs::read_to_string(&process_group_path)
         .expect("launcher published its process group")
         .parse::<u32>()
@@ -140,17 +146,19 @@ fn internal_observer_read_failure_cleans_its_process_group() {
     assert!(
         take_signal_attempts().contains(&(process_group, super::super::super::ProcessSignal::Kill))
     );
-    let absence_deadline = Instant::now() + Duration::from_secs(2);
-    while process_group_state(process_group).expect("probe observer process group")
-        != ProcessGroupState::Absent
-        && Instant::now() < absence_deadline
-    {
-        std::thread::sleep(Duration::from_millis(10));
+    if message.contains("transferred to no-signal reaper") {
+        let snapshot = reaper.snapshot();
+        assert!(
+            snapshot.adopted_children.contains(&process_group),
+            "fallback cleanup transferred a different child: {snapshot:?}"
+        );
+        assert!(snapshot.failures.is_empty());
+    } else {
+        assert_eq!(
+            process_group_state(process_group).expect("probe observer process group"),
+            ProcessGroupState::Absent
+        );
     }
-    assert_eq!(
-        process_group_state(process_group).expect("probe observer process group"),
-        ProcessGroupState::Absent
-    );
     std::fs::remove_file(process_group_path).expect("remove observer receipt");
 }
 
