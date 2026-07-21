@@ -342,12 +342,16 @@ fn successful_leader_exit_does_not_hide_a_live_descendant() {
 
 #[test]
 fn target_lifetime_lease_release_with_a_live_descendant_is_a_harness_error() {
+    let _descriptor_pressure = (0..32)
+        .map(|_| std::fs::File::open("/dev/null"))
+        .collect::<Result<Vec<_>, _>>()
+        .expect("create high descriptor pressure");
     let marker = unique_test_path("released-target-lifetime-lease");
     std::fs::create_dir_all(marker.parent().expect("marker parent")).expect("create marker parent");
     let _ = std::fs::remove_file(&marker);
     expose_next_target_lifetime_lease();
     let script = format!(
-        r#"(eval "exec ${{RAFTER_TEST_TARGET_LIFETIME_LEASE_FD}}>&-"; printf ready > '{}'; sleep 5) & while [ ! -f '{}' ]; do :; done; exit 0"#,
+        r#"/usr/bin/perl -e 'my $fd = delete $ENV{{"RAFTER_TEST_TARGET_LIFETIME_LEASE_FD"}}; open(my $lease, ">&=", $fd) or die "adopt target lifetime lease: $!"; close($lease) or die "close target lifetime lease: $!"; open(my $marker, ">", $ARGV[0]) or die "open marker: $!"; print {{$marker}} "ready" or die "write marker: $!"; close($marker) or die "close marker: $!"; sleep 5' '{}' & while [ ! -f '{}' ]; do :; done; exit 0"#,
         marker.display(),
         marker.display(),
     );
