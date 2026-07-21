@@ -2,10 +2,10 @@
 
 pub(super) const PRODUCTION_TARGET_LINES: usize = 300;
 pub(super) const TEST_TARGET_LINES: usize = 400;
-pub(super) const MAX_PRODUCTION_FILES_OVER_TARGET: usize = 27;
-pub(super) const MAX_TEST_FILES_OVER_TARGET: usize = 11;
-pub(super) const MAX_FILES_WITHOUT_MODULE_CONTRACTS: usize = 28;
-pub(super) const MAX_LEGACY_VERIFIER_PRODUCER_REFERENCES: usize = 5;
+pub(super) const MAX_PRODUCTION_FILES_OVER_TARGET: usize = 24;
+pub(super) const MAX_TEST_FILES_OVER_TARGET: usize = 10;
+pub(super) const MAX_FILES_WITHOUT_MODULE_CONTRACTS: usize = 26;
+pub(super) const MAX_LEGACY_VERIFIER_PRODUCER_REFERENCES: usize = 1;
 pub(super) const MAX_LEGACY_VERIFIER_PRODUCER_IMAGE_REFERENCES: usize = 0;
 pub(super) const MAX_LEGACY_VERIFIER_RUST_TARGET_REFERENCES: usize = 0;
 
@@ -172,6 +172,18 @@ pub(super) const ENFORCED_DOMAIN_SOURCES: &[EnforcedDomainSource] = &[
     EnforcedDomainSource {
         domain: "verification",
         path: "crates/rafter-invariants/src/artifact_verify_tla.rs",
+    },
+    EnforcedDomainSource {
+        domain: "verification",
+        path: "crates/rafter-invariants/src/artifact_verify_maelstrom.rs",
+    },
+    EnforcedDomainSource {
+        domain: "verification",
+        path: "crates/rafter-invariants/src/artifact_verify_maelstrom_support.rs",
+    },
+    EnforcedDomainSource {
+        domain: "verification",
+        path: "crates/rafter-invariants/src/receipt_maelstrom.rs",
     },
     EnforcedDomainSource {
         domain: "verification",
