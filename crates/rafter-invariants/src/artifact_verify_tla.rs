@@ -2,14 +2,14 @@
 
 use std::{collections::BTreeMap, fs, path::Path};
 
-use crate::producer::tla_checkpoint::{RecoveryReport, RecoveryStatus};
-use crate::producer::tla_output::{
+use crate::evidence::format::tla::{
     detector_config_kind, detector_invariant, detector_label, detector_log_kind,
     detector_observation, mutation_suite_passed, parse_latest_progress, probe_slug,
     render_detector_config, DETECTOR_PROBES, MEMBERSHIP_TRACE_MIN_DEPTH,
     MEMBERSHIP_TRACE_MIN_DISTINCT_STATES, MUTATION_SUITE_ARTIFACT_KIND, MUTATION_SUITE_LABEL,
     REQUIRED_MODEL_TRANSITIONS,
 };
+use crate::producer::tla_checkpoint::{RecoveryReport, RecoveryStatus};
 use crate::{verification::AggregateError, CheckCompletion, EvidenceStatus, ResultBundle};
 
 mod checkpoint;
@@ -44,7 +44,7 @@ pub(super) fn verify_authenticated(
     let detector_template = read_kind(check, "tla-detector-config", authenticated)?;
     verify_source_binding(bundle, check, source_root, authenticated)?;
     verify_tool_pin(bundle, check, authenticated)?;
-    let trace_summary = crate::producer::tla_output::parse(trace.stdout.as_bytes()).ok();
+    let trace_summary = crate::evidence::format::tla::parse(trace.stdout.as_bytes()).ok();
     let trace_passed = trace_summary.as_ref().is_some_and(|summary| {
         successful_log(&trace)
             && successful_summary(summary)
@@ -124,16 +124,16 @@ pub(super) fn verify_authenticated(
 fn parse_main_summary(
     main: Option<&crate::evidence::format::process::ProcessLog>,
 ) -> (
-    Option<crate::producer::tla_output::TlcSummary>,
+    Option<crate::evidence::format::tla::TlcSummary>,
     Option<String>,
 ) {
     let Some(log) = main else {
         return (None, None);
     };
-    match crate::producer::tla_output::parse(log.stdout.as_bytes()) {
+    match crate::evidence::format::tla::parse(log.stdout.as_bytes()) {
         Ok(summary) => (Some(summary), None),
         Err(error) => {
-            match crate::producer::tla_output::parse_complete_prefix(log.stdout.as_bytes()) {
+            match crate::evidence::format::tla::parse_complete_prefix(log.stdout.as_bytes()) {
                 Ok(summary) if summary.violated_invariant.is_some() => (
                     Some(summary),
                     Some(format!("parse TLA main output: {error}")),
@@ -155,9 +155,9 @@ fn derive_observations(
     trace_passed: bool,
     detector_observations: BTreeMap<String, u64>,
     checkpoint: Option<&RecoveryReport>,
-    main_progress: Option<crate::producer::tla_output::TlcProgress>,
+    main_progress: Option<crate::evidence::format::tla::TlcProgress>,
     main: Option<&crate::evidence::format::process::ProcessLog>,
-    main_summary: Option<&crate::producer::tla_output::TlcSummary>,
+    main_summary: Option<&crate::evidence::format::tla::TlcSummary>,
 ) -> BTreeMap<String, u64> {
     let mut derived = BTreeMap::from([
         ("configured_invariants".to_owned(), symbols.len() as u64),
@@ -225,7 +225,7 @@ fn timeout_progress(
     main_has_violation: bool,
 ) -> Result<
     (
-        Option<crate::producer::tla_output::TlcProgress>,
+        Option<crate::evidence::format::tla::TlcProgress>,
         Option<String>,
     ),
     AggregateError,
@@ -308,7 +308,7 @@ fn verify_detectors(
             producer_repository,
             authenticated,
         )?;
-        let summary = crate::producer::tla_output::parse(detector.stdout.as_bytes()).ok();
+        let summary = crate::evidence::format::tla::parse(detector.stdout.as_bytes()).ok();
         let expected = detector_invariant(probe).ok_or_else(|| {
             AggregateError::new(format!("unregistered TLA detector probe {identity}"))
         })?;
@@ -355,7 +355,12 @@ fn verify_mutation_invocation(
         || log.invocation.program_sha256 != bundle.execution.source.cargo_sha256
         || log.invocation.arguments != expected_arguments
         || log.invocation.current_dir != current_dir
-        || log.invocation.environment_sha256 != bundle.execution.source.environment_sha256
+        || log.invocation.environment != bundle.execution.invocation.environment
+        || log.invocation.environment_sha256 != bundle.execution.invocation.environment_sha256
+        || !crate::provenance::invocation::environment_matches_digest(
+            &log.invocation.environment,
+            &log.invocation.environment_sha256,
+        )
     {
         return Err(AggregateError::new(
             "TLA mutation suite invocation is not source-bound to the exact Cargo test command"
@@ -576,7 +581,7 @@ fn verify_completion(
     detectors_passed: bool,
     checkpoint: Option<&RecoveryReport>,
     main: Option<&crate::evidence::format::process::ProcessLog>,
-    summary: Option<&crate::producer::tla_output::TlcSummary>,
+    summary: Option<&crate::evidence::format::tla::TlcSummary>,
 ) -> Result<(), AggregateError> {
     let expected = if !trace_passed
         || !detectors_passed
@@ -650,7 +655,7 @@ fn successful_log(log: &crate::evidence::format::process::ProcessLog) -> bool {
     log.exit_code == Some(0) && !log.timed_out
 }
 
-fn successful_summary(summary: &crate::producer::tla_output::TlcSummary) -> bool {
+fn successful_summary(summary: &crate::evidence::format::tla::TlcSummary) -> bool {
     summary.completed_without_error
         && summary.process_finished
         && summary.states_left == 0
@@ -659,7 +664,7 @@ fn successful_summary(summary: &crate::producer::tla_output::TlcSummary) -> bool
 
 fn successful_detector(
     log: &crate::evidence::format::process::ProcessLog,
-    summary: &crate::producer::tla_output::TlcSummary,
+    summary: &crate::evidence::format::tla::TlcSummary,
     expected_invariant: &str,
 ) -> bool {
     log.exit_code == Some(12)
