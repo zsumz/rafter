@@ -4,16 +4,16 @@
 //! Callers arrange bounded process execution around the gate, then consume it
 //! to obtain the typed exchange outcome. This module never launches processes.
 
+#[cfg(unix)]
+mod channel;
 mod model;
 #[cfg(unix)]
 mod responder;
-#[cfg(unix)]
-mod socket;
 mod wire;
 
-pub(crate) use model::{ChallengeExchange, ChallengeProtocol, DetectorChallenge, TransportError};
 #[cfg(unix)]
-pub(crate) use socket::ChallengeGate;
+pub(crate) use channel::ChallengeGate;
+pub(crate) use model::{ChallengeExchange, ChallengeProtocol, DetectorChallenge, TransportError};
 
 #[cfg(all(test, unix))]
 mod tests;
