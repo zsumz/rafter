@@ -40,7 +40,7 @@ fn pr_invariant_aggregate_is_stable_and_fail_closed() {
         simulator
             .lines()
             .any(|line| line == "    timeout-minutes: 75"),
-        "cold simulator verification plus its 25-minute layer budget needs a 75-minute job cap"
+        "cold simulator verification plus its 40-minute layer budget needs a 75-minute job cap"
     );
     assert!(simulator.contains("scripts/ci-run-diagnosed simulator-verifier"));
 

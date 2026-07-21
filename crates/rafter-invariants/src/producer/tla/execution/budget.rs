@@ -8,7 +8,7 @@ use std::{
 
 use super::{
     super::process,
-    probes::{PROBE_TIMEOUT, QUALIFICATION_PHASE_COUNT},
+    probes::{MUTATION_SUITE_TIMEOUT, PROBE_TIMEOUT, QUALIFICATION_PHASE_COUNT},
 };
 
 pub(super) const TOTAL_TIMEOUT_KEY: &str = "total_timeout";
@@ -48,6 +48,7 @@ impl ExecutionBudget {
                     .ok_or("TLA total_timeout must exceed finalization_reserve")?;
                 let maximum_probe_time = PROBE_TIMEOUT
                     .checked_mul(u32::try_from(QUALIFICATION_PHASE_COUNT)?)
+                    .and_then(|duration| duration.checked_add(MUTATION_SUITE_TIMEOUT))
                     .ok_or("TLA probe budget overflow")?;
                 if execution_window <= maximum_probe_time {
                     return Err(

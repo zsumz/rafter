@@ -105,7 +105,7 @@ impl SimulatorRunnerConfiguration {
                 && self.model_profile == "fast+raft-soak"
                 && self.seed_policy == "curated-0x9103-through-0x9106"
                 && self.seed_count.is_none()
-                && self.layer_timeout == "25m"
+                && self.layer_timeout == "40m"
                 && self.finalization_reserve == "3m"
                 && self.soak_steps == PR_SOAK_STEPS
                 && self.snapshot_catchup_probe.as_deref() == Some("required")

@@ -342,15 +342,25 @@ fn successful_leader_exit_does_not_hide_a_live_descendant() {
 
 #[test]
 fn target_lifetime_lease_release_with_a_live_descendant_is_a_harness_error() {
+    let marker = unique_test_path("released-target-lifetime-lease");
+    std::fs::create_dir_all(marker.parent().expect("marker parent")).expect("create marker parent");
+    let _ = std::fs::remove_file(&marker);
     expose_next_target_lifetime_lease();
-    let error = run_shell(
-        r#"(eval "exec ${RAFTER_TEST_TARGET_LIFETIME_LEASE_FD}>&-"; sleep 5) & exit 0"#,
+    let script = format!(
+        r#"(eval "exec ${{RAFTER_TEST_TARGET_LIFETIME_LEASE_FD}}>&-"; printf ready > '{}'; sleep 5) & while [ ! -f '{}' ]; do :; done; exit 0"#,
+        marker.display(),
+        marker.display(),
+    );
+    let outcome = run_shell(
+        &script,
         &base_environment(),
         Path::new("."),
         Duration::from_secs(1),
         Duration::from_millis(20),
-    )
-    .expect_err("a descendant that discards the lifetime lease must fail closed");
+    );
+    std::fs::remove_file(marker).expect("remove live-descendant marker");
+    let error =
+        outcome.expect_err("a descendant that discards the lifetime lease must fail closed");
     assert!(error
         .to_string()
         .contains("target lifetime lease was released while the process observer reported live target members"));

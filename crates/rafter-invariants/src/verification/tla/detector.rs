@@ -155,6 +155,7 @@ fn verify_mutation_invocation(
         "-p",
         "rafter-invariants",
         "producer::tla_exec::mutation_tests",
+        "--lib",
         "--",
         "--ignored",
         "--test-threads=1",

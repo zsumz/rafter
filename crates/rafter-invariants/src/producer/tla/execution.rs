@@ -28,7 +28,8 @@ use model::{DetectorProbes, TlcRun};
 use outcome::{complete_main_execution, MainCompletion};
 #[cfg(test)]
 use probes::{
-    mutation_suite_qualified, PROBE_TIMEOUT, QUALIFICATION_PHASE_COUNT, REQUIRED_MUTATION_TESTS,
+    mutation_suite_qualified, MUTATION_SUITE_TIMEOUT, PROBE_TIMEOUT, QUALIFICATION_PHASE_COUNT,
+    REQUIRED_MUTATION_TESTS,
 };
 
 #[cfg(test)]

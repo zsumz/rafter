@@ -432,6 +432,7 @@ fn sealed_registry_vendor_rejects_same_byte_file_replacement() {
 
     let scratch = Scratch::new();
     let (integrity, source) = sealed_sample(&scratch);
+    let _retained_identity = std::fs::File::open(&source).expect("retain sealed source identity");
     let parent = source.parent().expect("source parent");
     std::fs::set_permissions(parent, std::fs::Permissions::from_mode(0o700))
         .expect("make source directory writable");
