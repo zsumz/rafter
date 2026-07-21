@@ -27,9 +27,6 @@ mod filesystem_integration_tests;
 
 #[cfg(test)]
 pub(crate) use simulator::evaluate_model_fixture;
-pub(crate) use simulator_model::{
-    canonical_check_id, expected_scheduled_seeds, expected_scheduled_seeds_with_count,
-};
 #[cfg(all(test, unix))]
 pub(crate) use simulator_model::{
     later_launch_error_fixture_at, timed_out_zero_exit_fixture_at, SimulatorFixtureInvocation,
