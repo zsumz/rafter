@@ -1,3 +1,5 @@
+//! Exact-process deadline and child-cleanup integration tests.
+
 use super::*;
 
 #[test]

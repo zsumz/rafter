@@ -1,3 +1,5 @@
+//! Producer-side detector challenge transport and process adaptation.
+
 use std::{collections::BTreeMap, error::Error, ffi::OsString, path::Path};
 
 #[cfg(all(test, unix))]
