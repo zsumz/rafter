@@ -12,6 +12,8 @@
 //! explicit migration or compatibility plan.
 //! `FileRaftNodeStores` opens the standard file-backed node layout with
 //! batched creation syncs for the empty log file and snapshot directory.
+//! The exact version-1 bytes are specified in `STORAGE_FORMAT_V1.md`; durable
+//! publication and recovery ordering are specified in `DURABILITY_PROTOCOL.md`.
 //!
 //! # Format Compatibility
 //!
@@ -29,10 +31,26 @@
 //! adversary who can rewrite bytes and checksums. Deployments with that threat
 //! model should authenticate storage below this crate or have the application
 //! snapshot format carry and verify a stronger digest.
+//!
+//! # Operational Errors
+//!
+//! Filesystem failures retain their original [`std::io::Error`] and expose it
+//! through [`std::error::Error::source`]. [`StorageIoError`] keeps that source
+//! cloneable for runtime poison state while preserving its kind and OS code.
+//!
+//! # File-backed Ownership
+//!
+//! [`FileRaftNodeStores`] acquires exclusive cooperating-process ownership of a
+//! replica directory before opening or repairing its stores. Direct file-store
+//! constructors support custom layouts but require caller-enforced exclusivity.
 
 mod checksum;
 mod durable_fs;
 mod file_node_stores;
+mod file_store_health;
+mod file_store_ownership;
+mod format;
+mod io_error;
 mod raft_hard_state_codec;
 mod raft_hard_state_store;
 mod raft_log_compaction;
@@ -43,9 +61,12 @@ mod raft_snapshot_store;
 
 #[cfg(test)]
 mod raft_hard_state_codec_test;
+#[cfg(test)]
+mod storage_failpoint_test;
 
 pub use checksum::crc32;
 pub use file_node_stores::{FileRaftNodeStores, OpenFileRaftNodeStoresError};
+pub use io_error::StorageIoError;
 pub use raft_hard_state_codec::{
     decode_raft_hard_state, encode_raft_hard_state, DecodeRaftHardStateError, RaftHardState,
     RAFT_HARD_STATE_MAGIC, RAFT_HARD_STATE_VERSION,
@@ -69,8 +90,11 @@ pub use raft_snapshot_codec::{
     PersistedRaftSnapshot, RAFT_SNAPSHOT_MAGIC, RAFT_SNAPSHOT_VERSION,
 };
 pub use raft_snapshot_store::{
-    DecodePendingSnapshotTransferError, FileRaftSnapshotStore, InMemoryRaftSnapshotStore,
-    OpenRaftSnapshotStoreError, PendingSnapshotTransferStagingStatus,
+    DecodePendingSnapshotTransferError, FileRaftSnapshotStore, FileRaftSnapshotStoreOpenReport,
+    InMemoryRaftSnapshotStore, OpenRaftSnapshotStoreError, OpenedFileRaftSnapshotStore,
+    PendingSnapshotTransferRecovery, PendingSnapshotTransferStagingStatus,
     RaftSnapshotManifestDecodeError, RaftSnapshotManifestEncodeError, RaftSnapshotStore,
-    RaftSnapshotStoreWriteError,
+    RaftSnapshotStoreWriteError, SnapshotFileIdentity, SnapshotFileInfo, SnapshotInventory,
+    SnapshotInventoryError, SnapshotPruneError, SnapshotPruneReport, SnapshotRetention,
+    SnapshotTemporaryFileInfo, SnapshotTemporaryFileKind,
 };
