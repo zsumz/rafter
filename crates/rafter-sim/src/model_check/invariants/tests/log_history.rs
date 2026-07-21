@@ -189,7 +189,25 @@ fn log_matching_detects_equal_index_term_with_different_prefixes() {
         check_log_history(&state, &[]),
         "log matching must detect equal index/term with different prefixes",
     );
+    let canonical = state
+        .logical_log_history()
+        .prefixes_by_index_term
+        .get(&(LogIndex(2), Term(2)))
+        .expect("the first observed prefix remains canonical");
+    let divergent_view = state
+        .logical_log_history()
+        .last_view(NodeId(2))
+        .expect("the divergent node view remains retained");
+    let divergent = state
+        .logical_log_history()
+        .prefix_from_view(divergent_view, LogIndex(2))
+        .expect("the divergent physical log remains reconstructable");
+
     oracle_assert_eq!(failure.invariant(), catalog::LG_03_LOG_MATCHING);
+    oracle_assert!(
+        canonical != &divergent,
+        "conflicting ancestry must not be replaced by the first canonical prefix"
+    );
     oracle_assert!(
         failure.message.contains("different prefix"),
         "unexpected failure message: {}",
@@ -254,10 +272,11 @@ fn log_matching_rejects_snapshot_witness_shorter_than_boundary() {
         .snapshot_prefixes_by_owner_transfer
         .insert(
             (NodeId(1), transfer_id),
-            LogPrefixWitness {
-                through: LogIndex(1),
-                entries: vec![LogEntry::application(Term(1), b"one".to_vec())],
-            },
+            LogPrefixWitness::from_entries(
+                LogIndex(1),
+                vec![LogEntry::application(Term(1), b"one".to_vec())],
+            )
+            .expect("short prefix fixture is internally valid"),
         );
     state.refresh_log_history();
 
@@ -282,13 +301,14 @@ fn log_matching_rejects_snapshot_witness_with_wrong_boundary_term() {
         .snapshot_prefixes_by_owner_transfer
         .insert(
             (NodeId(1), transfer_id),
-            LogPrefixWitness {
-                through: LogIndex(2),
-                entries: vec![
+            LogPrefixWitness::from_entries(
+                LogIndex(2),
+                vec![
                     LogEntry::application(Term(1), b"one".to_vec()),
                     LogEntry::application(Term(1), b"wrong-term".to_vec()),
                 ],
-            },
+            )
+            .expect("wrong-term prefix fixture is internally valid"),
         );
     state.refresh_log_history();
 
@@ -454,7 +474,10 @@ fn snapshot_only_view(transfer_sequence: u64, entries: &[(u64, u64, &[u8])]) -> 
         SnapshotTransferId(transfer_sequence),
         through,
         term,
-        Some(LogPrefixWitness { through, entries }),
+        Some(
+            LogPrefixWitness::from_entries(through, entries)
+                .expect("snapshot-only fixture length matches its boundary"),
+        ),
     )
 }
 
