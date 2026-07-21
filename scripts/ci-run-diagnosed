@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Run one CI command while retaining bounded, publicly visible failure context.
+#
+# Usage: scripts/ci-run-diagnosed LABEL LOG_PATH COMMAND [ARG...]
+set -euo pipefail
+
+if [[ $# -lt 3 ]]; then
+    echo "usage: $0 LABEL LOG_PATH COMMAND [ARG...]" >&2
+    exit 2
+fi
+
+label="$1"
+log="$2"
+shift 2
+
+if [[ -z "$label" || -z "$log" ]]; then
+    echo "error: diagnostic label and log path must be nonempty" >&2
+    exit 2
+fi
+
+log_directory="${log%/*}"
+if [[ "$log_directory" == "$log" ]]; then
+    log_directory="."
+fi
+mkdir -p "$log_directory"
+export CARGO_TERM_COLOR="${CARGO_TERM_COLOR:-never}"
+
+set +e
+"$@" 2>&1 | tee "$log"
+pipeline_status=("${PIPESTATUS[@]}")
+set -e
+
+command_status="${pipeline_status[0]}"
+tee_status="${pipeline_status[1]}"
+if (( tee_status != 0 )); then
+    echo "error: diagnostic log capture failed with status $tee_status" >&2
+    exit "$tee_status"
+fi
+if (( command_status == 0 )); then
+    exit 0
+fi
+
+summary="${log%.log}-summary.log"
+awk '
+    /^[Ee]rror(\[[^]]+\])?:/ { context = 8; print; next }
+    context > 0 { print; context -= 1; next }
+    /panicked at|^failures:|FAILED$|^test result:|^error: test failed/ { print }
+' "$log" > "$summary"
+
+emit_annotation() {
+    local title="$1"
+    local source="$2"
+    local diagnostic
+    diagnostic="$(tail -c 3500 "$source" | tr '\r\n' '  ')"
+    diagnostic="${diagnostic//'%'/'%25'}"
+    echo "::error title=${label} ${title}::$diagnostic"
+}
+
+emit_annotation "failure summary" "$summary"
+emit_annotation "terminal output" "$log"
+exit "$command_status"

@@ -9,6 +9,7 @@ fn pr_invariant_aggregate_is_stable_and_fail_closed() {
     let root = workspace_root();
     let workflow = read(&root.join(".github/workflows/ci.yml"));
     assert!(job_block(&workflow, "test").contains("cargo fetch --locked"));
+    assert!(job_block(&workflow, "test").contains("scripts/ci-run-diagnosed workspace-tests"));
 
     for (job, layer) in [
         ("invariants-tests", "tests"),
@@ -23,12 +24,25 @@ fn pr_invariant_aggregate_is_stable_and_fail_closed() {
             "{job} must invoke its source-bound producer"
         );
         assert!(
+            block.contains(&format!("scripts/ci-run-diagnosed {layer}-producer")),
+            "{job} must retain bounded public producer diagnostics"
+        );
+        assert!(
             block.contains("if: always()")
                 && block
                     .contains("actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"),
             "{job} must preserve evidence even when the producer fails"
         );
     }
+
+    let simulator = job_block(&workflow, "invariants-simulator");
+    assert!(
+        simulator
+            .lines()
+            .any(|line| line == "    timeout-minutes: 75"),
+        "cold simulator verification plus its 25-minute layer budget needs a 75-minute job cap"
+    );
+    assert!(simulator.contains("scripts/ci-run-diagnosed simulator-verifier"));
 
     let maelstrom = job_block(&workflow, "invariants-maelstrom");
     assert!(maelstrom.contains("Validate scheduled Maelstrom evidence contract"));
@@ -160,6 +174,7 @@ fn pr_invariant_evidence_is_isolated_by_run_attempt() {
             "if: always()",
             "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
             "target/rafter-invariants/telemetry/",
+            "target/rafter-invariants/ci-diagnostics/",
             "crates/rafter-invariants/target/rafter-invariants/telemetry/",
             "if-no-files-found: ignore",
             "retention-days: 30",

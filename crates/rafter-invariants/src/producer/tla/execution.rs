@@ -20,6 +20,8 @@ pub(super) use super::process;
 use budget::{
     configured_budget_duration, ExecutionBudget, FINALIZATION_RESERVE_KEY, TOTAL_TIMEOUT_KEY,
 };
+#[cfg(all(test, not(target_os = "linux")))]
+use command::require_sound_tlc_state_binding;
 #[cfg(test)]
 use model::{DetectorProbes, TlcRun};
 #[cfg(test)]
