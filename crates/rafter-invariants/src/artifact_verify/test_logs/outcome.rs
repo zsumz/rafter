@@ -3,7 +3,7 @@
 use std::path::Path;
 
 use crate::{
-    evidence::{CheckReceipt, EvidenceStatus, ResultBundle},
+    evidence::{CheckReceipt, ResultBundle},
     verification::AggregateError,
 };
 
@@ -259,11 +259,4 @@ pub(in crate::artifact_verify) fn require_exact_test_failure(
         )));
     }
     Ok(())
-}
-
-pub(in crate::artifact_verify) fn is_passing(bundle: &ResultBundle, execution_id: &str) -> bool {
-    bundle
-        .results
-        .iter()
-        .any(|result| result.execution_id == execution_id && result.status == EvidenceStatus::Pass)
 }
