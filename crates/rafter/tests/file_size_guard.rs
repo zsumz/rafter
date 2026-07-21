@@ -323,6 +323,16 @@ mod tests {
     }
 
     #[test]
+    fn storage_facades_use_tight_size_limits() {
+        let limits = limits_for("crates/rafter-storage/src/raft_snapshot_store.rs");
+
+        assert_eq!(limits.target, FACADE_TARGET_LINES);
+        assert_eq!(limits.soft, FACADE_SOFT_LINES);
+        assert_eq!(limits.hard, FACADE_HARD_LINES);
+        assert_eq!(limits.label, "facade");
+    }
+
+    #[test]
     fn library_files_use_three_hundred_line_ratchet_target() {
         let limits = limits_for("crates/rafter/src/node/replication/send.rs");
 
