@@ -3,7 +3,7 @@
 use super::{
     finalize_lease_scan, history_completion_count, history_completion_count_with_limits,
     scan_markers, scan_markers_with_limits, trial_floors_met, ArtifactLeaseMarker, HistoryLimits,
-    LeaseArtifactStatus, MarkerLimits, MARKERS,
+    LeaseArtifactStatus, MarkerLimits, Scenario, MARKERS,
 };
 use crate::evidence::format::maelstrom::{MaelstromSummary, Validity};
 
@@ -55,7 +55,7 @@ fn lease_isolation_artifacts_require_the_complete_safe_sequence() {
     markers.insert("lease_history_probe_matches", 1);
     assert_eq!(status, LeaseArtifactStatus::Complete);
     assert!(trial_floors_met(
-        "lease-isolation",
+        Scenario::LeaseIsolation,
         &summary(),
         &markers,
         false
@@ -101,7 +101,7 @@ fn detector_classifies_read_ok_and_renewal_as_rd05_violations() {
     let (status, markers) = scan(&served);
     assert_eq!(status, LeaseArtifactStatus::Violation);
     assert!(!trial_floors_met(
-        "lease-isolation",
+        Scenario::LeaseIsolation,
         &summary(),
         &markers,
         false
