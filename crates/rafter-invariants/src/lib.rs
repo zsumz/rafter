@@ -4,6 +4,7 @@ mod artifact_verify;
 mod artifact_verify_maelstrom;
 mod artifact_verify_maelstrom_support;
 #[cfg(test)]
+#[path = "verification/maelstrom/tests/full_bundle.rs"]
 mod artifact_verify_maelstrom_tests;
 mod artifact_verify_tla;
 mod contract;
