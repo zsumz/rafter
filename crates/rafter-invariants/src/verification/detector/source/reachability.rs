@@ -1,10 +1,18 @@
+//! Recursive call-graph expansion and witness reachability.
+
 use std::collections::{BTreeMap, BTreeSet};
 
+mod fallthrough;
+mod policy;
+
 use super::{
-    binding::compiler_identity,
-    function_index::{CallTarget, FunctionId, FunctionIndex},
-    CallableArgument, DetectorInvocationContract, FunctionCall, FunctionEvent, FunctionFacts,
-    FunctionFallthrough, InvocationCall, SourceDefect,
+    function_index::{FunctionId, FunctionIndex},
+    CallableArgument, DetectorInvocationContract, FunctionCall, FunctionEvent,
+};
+use fallthrough::Fallthrough;
+use policy::{
+    conditional_invocation_error, record_invocation_witness, reject_unresolved_control_flow_call,
+    require_clean_function, resolve_callable_arguments,
 };
 
 pub(super) fn expand_reachable_fixture(
@@ -35,59 +43,6 @@ struct Reachability<'a> {
     crate_name: &'a str,
     declarations: &'a BTreeMap<String, Vec<String>>,
     contract: &'a mut DetectorInvocationContract,
-}
-
-#[derive(Clone, Copy)]
-struct Fallthrough {
-    may: bool,
-    guaranteed: bool,
-}
-
-impl Fallthrough {
-    const fn guaranteed() -> Self {
-        Self {
-            may: true,
-            guaranteed: true,
-        }
-    }
-
-    const fn none() -> Self {
-        Self {
-            may: false,
-            guaranteed: false,
-        }
-    }
-
-    const fn conditional() -> Self {
-        Self {
-            may: true,
-            guaranteed: false,
-        }
-    }
-
-    const fn and(self, other: Self) -> Self {
-        Self {
-            may: self.may && other.may,
-            guaranteed: self.guaranteed && other.guaranteed,
-        }
-    }
-
-    const fn from_facts(facts: &FunctionFacts) -> Self {
-        match facts.fallthrough {
-            FunctionFallthrough::Never => Self {
-                may: false,
-                guaranteed: false,
-            },
-            FunctionFallthrough::Conditional => Self {
-                may: true,
-                guaranteed: false,
-            },
-            FunctionFallthrough::Guaranteed => Self {
-                may: true,
-                guaranteed: true,
-            },
-        }
-    }
 }
 
 impl Reachability<'_> {
@@ -330,171 +285,4 @@ impl Reachability<'_> {
         }
         Ok(fallthrough)
     }
-}
-
-fn resolve_callable_arguments(
-    arguments: &[super::CallableArgument],
-    bound_arguments: Option<&[super::CallableArgument]>,
-) -> Vec<super::CallableArgument> {
-    arguments
-        .iter()
-        .map(|argument| match argument {
-            super::CallableArgument::Parameter(index) => bound_arguments
-                .and_then(|arguments| arguments.get(*index))
-                .cloned()
-                .unwrap_or(super::CallableArgument::Opaque),
-            argument => argument.clone(),
-        })
-        .collect()
-}
-
-fn reject_unresolved_control_flow_call(
-    target: &CallTarget,
-    function: &FunctionId,
-    call_guaranteed: bool,
-) -> Result<(), String> {
-    if target.opaque_local_module {
-        let qualifier = if call_guaranteed {
-            ""
-        } else {
-            "conditionally "
-        };
-        return Err(format!(
-            "negative fixture {qualifier}reaches unresolved local call `{}` through `{function}`",
-            target.name
-        ));
-    }
-    if target.matches_any_name(&["exec"]) {
-        return Err(format!(
-            "negative fixture reaches unresolved process-replacement call `{}` through `{function}`",
-            target.name
-        ));
-    }
-    Ok(())
-}
-
-fn record_invocation_witness(
-    functions: &FunctionIndex,
-    invocation: &InvocationCall,
-    registered_function: &FunctionId,
-    crate_name: &str,
-    declarations: &BTreeMap<String, Vec<String>>,
-    contract: &mut DetectorInvocationContract,
-) -> Result<(), String> {
-    let called = resolve_invocation(functions, &invocation.target, crate_name, declarations)?;
-    let identity = compiler_identity(crate_name, &called);
-    if &called == registered_function && identity != contract.registered_identity {
-        return Err(format!(
-            "registered detector `{called}` has inconsistent compiler identity `{identity}`"
-        ));
-    }
-    *contract
-        .witnesses
-        .entry(format!("{}:{identity}", invocation.kind.label()))
-        .or_default() += 1;
-    Ok(())
-}
-
-fn resolve_invocation(
-    functions: &FunctionIndex,
-    target: &CallTarget,
-    crate_name: &str,
-    declarations: &BTreeMap<String, Vec<String>>,
-) -> Result<FunctionId, String> {
-    if let Some(called) = functions.resolve_call(target)? {
-        return Ok(called);
-    }
-    let matches = target
-        .candidates()
-        .iter()
-        .filter(|candidate| {
-            declarations.get(&candidate.name).is_some_and(|identities| {
-                identities.contains(&compiler_identity(crate_name, candidate))
-            })
-        })
-        .cloned()
-        .collect::<BTreeSet<_>>();
-    let count = matches.len();
-    let mut matches = matches.into_iter();
-    match (matches.next(), matches.next()) {
-        (Some(called), None) => Ok(called),
-        _ => Err(format!(
-            "invocation-bound call `{}` resolves to {count} bound source declarations",
-            target.name
-        )),
-    }
-}
-
-fn require_clean_function(
-    facts: &FunctionFacts,
-    function: &FunctionId,
-    detector: &str,
-    guaranteed_path: bool,
-) -> Result<(), String> {
-    if facts.untrusted_attributes {
-        return Err(format!(
-            "negative fixture reaches untrusted semantic attributes through `{function}`"
-        ));
-    }
-    if facts.defects.contains(&SourceDefect::ForbiddenWitness) {
-        return Err(format!(
-            "negative fixture can emit an arbitrary detector witness through `{function}`"
-        ));
-    }
-    if facts.defects.contains(&SourceDefect::UntrustedOracleMacro) {
-        return Err(format!(
-            "negative fixture invokes an untrusted oracle macro through `{function}`"
-        ));
-    }
-    if facts.shadowed_values.contains(detector) {
-        return Err(format!(
-            "negative fixture shadows registered detector `{detector}` through `{function}`"
-        ));
-    }
-    if facts
-        .defects
-        .contains(&SourceDefect::MalformedInvocationMacro)
-    {
-        return Err(format!(
-            "negative fixture has a malformed invocation-bound oracle macro through `{function}`"
-        ));
-    }
-    if facts.defects.contains(&SourceDefect::OpaqueMacro) {
-        return Err(format!(
-            "negative fixture reaches an opaque macro through `{function}`"
-        ));
-    }
-    if facts.defects.contains(&SourceDefect::OpaqueCallable) {
-        return Err(format!(
-            "negative fixture reaches an unresolved local callable through `{function}`"
-        ));
-    }
-    let guaranteed_invocation = facts.events.iter().any(|event| {
-        matches!(
-            event,
-            FunctionEvent::Invocation {
-                guaranteed: true,
-                ..
-            }
-        )
-    });
-    let conditional_invocation = facts.events.iter().any(|event| {
-        matches!(
-            event,
-            FunctionEvent::Invocation {
-                guaranteed: false,
-                ..
-            }
-        )
-    });
-    if conditional_invocation || !guaranteed_path && guaranteed_invocation {
-        return Err(conditional_invocation_error(function));
-    }
-    Ok(())
-}
-
-fn conditional_invocation_error(function: &FunctionId) -> String {
-    format!(
-        "negative fixture reaches an invocation-bound oracle macro only through conditional control flow in `{function}`"
-    )
 }

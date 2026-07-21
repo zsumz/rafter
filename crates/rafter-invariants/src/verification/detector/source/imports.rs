@@ -1,3 +1,5 @@
+//! Lexical import collection and oracle-provenance validation.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use syn::{

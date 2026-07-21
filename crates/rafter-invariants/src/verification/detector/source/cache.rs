@@ -1,3 +1,5 @@
+//! Content-sensitive source and target-analysis cache.
+
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
@@ -37,7 +39,16 @@ pub(super) struct CachedTargetAnalysis {
 }
 
 #[derive(Eq, PartialEq)]
-struct TargetSourceFingerprint(Vec<(PathBuf, String)>);
+struct TargetSourceFingerprint {
+    files: Vec<(PathBuf, String)>,
+    sha256: String,
+}
+
+impl CachedTargetAnalysis {
+    pub(super) fn source_graph_sha256(&self) -> &str {
+        &self.source_fingerprint.sha256
+    }
+}
 
 struct CachedSource {
     source: String,
@@ -88,10 +99,16 @@ impl DetectorSourceCache {
 
     pub(super) fn target(
         &mut self,
-        binding: &crate::DetectorFixtureSourceBinding<'_>,
+        binding: &crate::verification::detector::DetectorFixtureSourceBinding<'_>,
     ) -> Result<&CachedTargetAnalysis, String> {
+        let source_root = std::fs::canonicalize(binding.source_root).map_err(|error| {
+            format!(
+                "canonicalize detector source root {}: {error}",
+                binding.source_root.display()
+            )
+        })?;
         let key = TargetCacheKey {
-            source_root: binding.source_root.to_owned(),
+            source_root,
             package: binding.test_identity.package.clone(),
             target_kind: binding.test_identity.target_kind.clone(),
             target: binding.test_identity.target.clone(),
@@ -100,7 +117,7 @@ impl DetectorSourceCache {
             .targets
             .get(&key)
             .map(|cached| {
-                target_source_fingerprint(&cached.graph)
+                target_source_fingerprint(&cached.graph, &key.source_root)
                     .map(|fingerprint| fingerprint != cached.source_fingerprint)
             })
             .transpose()?
@@ -126,7 +143,7 @@ impl DetectorSourceCache {
             graph.resolve_oracle_shadowed_impl_methods(|ty, module| {
                 resolver.declared_type_module(ty, module)
             });
-            let source_fingerprint = target_source_fingerprint(&graph)?;
+            let source_fingerprint = target_source_fingerprint(&graph, &key.source_root)?;
             self.target_analysis_count += 1;
             self.targets.insert(
                 key.clone(),
@@ -156,8 +173,9 @@ impl DetectorSourceCache {
 
 fn target_source_fingerprint(
     graph: &crate::verification::target::TargetSourceGraph,
+    source_root: &Path,
 ) -> Result<TargetSourceFingerprint, String> {
-    graph
+    let files = graph
         .source_modules()
         .into_iter()
         .map(|(path, _)| path)
@@ -166,10 +184,37 @@ fn target_source_fingerprint(
         .map(|path| {
             let bytes = std::fs::read(&path)
                 .map_err(|error| format!("read target source {}: {error}", path.display()))?;
-            Ok((path, format!("{:x}", Sha256::digest(bytes))))
+            let relative = path.strip_prefix(source_root).map_err(|_| {
+                format!(
+                    "target source {} escapes authenticated source root {}",
+                    path.display(),
+                    source_root.display()
+                )
+            })?;
+            Ok((relative.to_owned(), format!("{:x}", Sha256::digest(bytes))))
         })
-        .collect::<Result<Vec<_>, _>>()
-        .map(TargetSourceFingerprint)
+        .collect::<Result<Vec<_>, String>>()?;
+    let mut digest = Sha256::new();
+    for (path, sha256) in &files {
+        fingerprint_frame(
+            &mut digest,
+            path.to_str()
+                .ok_or_else(|| format!("target source path is not UTF-8: {}", path.display()))?,
+        )?;
+        fingerprint_frame(&mut digest, sha256)?;
+    }
+    Ok(TargetSourceFingerprint {
+        files,
+        sha256: format!("{:x}", digest.finalize()),
+    })
+}
+
+fn fingerprint_frame(digest: &mut Sha256, value: &str) -> Result<(), String> {
+    let length = u64::try_from(value.len())
+        .map_err(|_| "target source fingerprint value exceeds u64".to_owned())?;
+    digest.update(length.to_be_bytes());
+    digest.update(value.as_bytes());
+    Ok(())
 }
 
 fn collect_target_analysis(

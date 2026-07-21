@@ -49,6 +49,43 @@ fn source_root_stripping_ignores_ancestor_src_components() {
 }
 
 #[test]
+fn transitive_helper_change_invalidates_the_target_source_receipt() {
+    let source = detector_fixture(
+        r#"use crate::detector::detector; use rafter_invariant_test::oracle_expect_err; fn fixture() { oracle_expect_err!(detector(), "reject"); }"#,
+    );
+    let root = synthetic_workspace(&source, DETECTOR_SOURCE);
+    let binding = crate::DetectorFixtureSourceBinding {
+        fixture_source: &source,
+        detector_source: DETECTOR_SOURCE,
+        source_root: &root,
+        fixture_path: &root.join(FIXTURE_PATH),
+        detector_path: &root.join(DETECTOR_PATH),
+        test_identity: &synthetic_identity(),
+        fixture: "fixture",
+        detector: "detector",
+    };
+    let mut analysis = DetectorFixtureAnalysis::default();
+    let before = analysis
+        .analyze(&binding)
+        .expect("analyze initial target graph")
+        .source_graph_sha256()
+        .to_owned();
+
+    fs::write(
+        root.join("crates/fixture/src/other.rs"),
+        "pub(crate) fn unrelated_helper() {}\n",
+    )
+    .expect("change only a transitive helper module");
+    let after = analysis
+        .analyze(&binding)
+        .expect("reanalyze changed target graph")
+        .source_graph_sha256()
+        .to_owned();
+
+    assert_ne!(before, after, "transitive source must be provenance-bound");
+}
+
+#[test]
 fn cargo_test_cfg_and_cfg_attr_path_select_the_actual_fixture_module() {
     let source = detector_fixture(
         r#"use crate::detector::detector; use rafter_invariant_test::oracle_expect_err; fn fixture() { oracle_expect_err!(detector(), "reject"); }"#,

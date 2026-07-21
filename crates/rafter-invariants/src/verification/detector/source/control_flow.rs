@@ -1,3 +1,5 @@
+//! Reachability state used while traversing fixture control flow.
+
 #[derive(Clone, Copy)]
 pub(super) enum PathReachability {
     Reachable,

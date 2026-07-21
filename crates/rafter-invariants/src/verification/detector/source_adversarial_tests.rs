@@ -1,3 +1,5 @@
+//! Adversarial source fixtures that must fail closed.
+
 use std::fs;
 
 use super::{
@@ -8,105 +10,8 @@ use super::{
     verify_invocation_bound_detector,
 };
 
-#[test]
-fn glob_import_cannot_substitute_detector_test_attribute() {
-    let source = r#"
-mod forged { pub mod rafter_invariant_test {} }
-use forged::*;
-use crate::detector::detector;
-#[rafter_invariant_test::detector_test]
-fn fixture() {
-    ::rafter_invariant_test::oracle_expect_err!(detector(), "reject");
-}
-"#;
-    let error = verify_decorated(source).expect_err("glob-substituted attribute must fail closed");
-    assert!(error.contains("untrusted semantic attribute"), "{error}");
-}
-
-#[test]
-fn glob_import_cannot_substitute_qualified_oracle_macro() {
-    let source = r#"
-mod forged { pub mod rafter_invariant_test {} }
-use forged::*;
-use crate::detector::detector;
-#[::rafter_invariant_test::detector_test]
-fn fixture() {
-    rafter_invariant_test::oracle_expect_err!(detector(), "reject");
-}
-"#;
-    let error = verify_decorated(source).expect_err("glob-substituted oracle must fail closed");
-    assert!(error.contains("untrusted oracle macro"), "{error}");
-}
-
-#[test]
-fn absolute_trust_paths_remain_bound_under_globs() {
-    let source = r#"
-mod unrelated { pub fn value() {} }
-use unrelated::*;
-use crate::detector::detector;
-#[::rafter_invariant_test::detector_test]
-fn fixture() {
-    ::rafter_invariant_test::oracle_expect_err!(detector(), "reject");
-}
-"#;
-    verify_decorated(source).expect("absolute trust paths bypass relative glob ambiguity");
-}
-
-#[test]
-fn explicit_unqualified_oracle_import_remains_trusted_under_globs() {
-    let source = r#"
-mod unrelated { pub fn value() {} }
-use unrelated::*;
-use crate::detector::detector;
-use ::rafter_invariant_test::oracle_expect_err;
-#[::rafter_invariant_test::detector_test]
-fn fixture() { oracle_expect_err!(detector(), "reject"); }
-"#;
-    verify_decorated(source).expect("an exact explicit macro import is not replaced by a glob");
-}
-
-#[test]
-fn detector_arguments_must_fall_through_before_the_invocation_is_credited() {
-    for source in [
-        r#"
-use crate::detector::detector;
-use rafter_invariant_test::oracle_expect_err;
-fn fixture() { oracle_expect_err!(detector({ return; }), "reject"); }
-"#,
-        r#"
-use crate::detector::detector;
-use rafter_invariant_test::oracle_expect_err;
-fn stop() -> i32 { panic!("stop") }
-fn sink(_: i32) {}
-fn fixture() { sink(stop()); oracle_expect_err!(detector(), "reject"); }
-"#,
-    ] {
-        assert!(
-            verify(source).is_err(),
-            "accepted diverging source: {source}"
-        );
-    }
-}
-
-#[test]
-fn conditional_non_returning_helpers_make_later_invocations_conditional() {
-    for stop in [r#"fn stop() { panic!("stop"); }"#, "fn stop() { loop {} }"] {
-        let source = format!(
-            r#"
-use crate::detector::detector;
-use rafter_invariant_test::oracle_expect_err;
-{stop}
-fn fixture() {{
-    if std::hint::black_box(false) {{ stop(); }}
-    oracle_expect_err!(detector(), "reject");
-}}
-"#,
-        );
-        let error = verify(&source)
-            .expect_err("conditional divergence must downgrade later invocation credit");
-        assert!(error.contains("conditional control flow"), "{error}");
-    }
-}
+#[path = "source_adversarial_tests/trust_and_flow.rs"]
+mod trust_and_flow;
 
 #[test]
 fn invocation_macros_bind_the_exact_function_not_a_same_leaf_decoy() {
@@ -343,6 +248,22 @@ fn fixture() { helper(); oracle_expect_err!(detector(), "reject"); }
         let error = verify(source).expect_err("process replacement before the oracle must fail");
         assert!(error.contains("process-replacement"), "{error}");
     }
+}
+
+#[test]
+fn foreign_code_cannot_intercept_the_proof_descriptor_before_the_detector() {
+    let source = r#"
+use crate::detector::detector;
+use rafter_invariant_test::oracle_expect_err;
+unsafe extern "C" { fn forge_detector_proof() -> !; }
+fn fixture() {
+    unsafe { forge_detector_proof() }
+    oracle_expect_err!(detector(), "reject");
+}
+"#;
+
+    let error = verify(source).expect_err("foreign proof helper must fail closed");
+    assert!(error.contains("unsafe or foreign code"), "{error}");
 }
 
 #[test]

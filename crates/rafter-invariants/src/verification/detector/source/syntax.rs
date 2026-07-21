@@ -1,3 +1,5 @@
+//! Conservative Rust expression and statement completion predicates.
+
 use syn::{Block, Expr, ExprCall, ExprLoop, Macro, Stmt};
 
 pub(super) fn statement_unconditionally_exits(statement: &Stmt) -> bool {

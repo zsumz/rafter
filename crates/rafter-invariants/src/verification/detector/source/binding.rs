@@ -1,3 +1,5 @@
+//! Exact fixture and detector declaration binding.
+
 use std::collections::BTreeMap;
 
 use super::function_index::{FunctionId, FunctionIndex, LocalCallResolver};
@@ -9,7 +11,7 @@ pub(super) struct TargetDetectorContract {
 }
 
 pub(super) fn bind_target_detector(
-    binding: &crate::DetectorFixtureSourceBinding<'_>,
+    binding: &crate::verification::detector::DetectorFixtureSourceBinding<'_>,
     target_functions: &FunctionIndex,
     target_resolver: &LocalCallResolver,
     target_graph: &crate::verification::target::TargetSourceGraph,
@@ -58,7 +60,7 @@ pub(super) fn bind_target_detector(
 }
 
 fn require_fixture_declaration(
-    binding: &crate::DetectorFixtureSourceBinding<'_>,
+    binding: &crate::verification::detector::DetectorFixtureSourceBinding<'_>,
     target_graph: &crate::verification::target::TargetSourceGraph,
 ) -> Result<(), String> {
     if binding.test_identity.test_name.rsplit("::").next() != Some(binding.fixture) {
@@ -79,7 +81,7 @@ pub(super) fn compiler_identity(crate_name: &str, function: &FunctionId) -> Stri
 }
 
 pub(super) fn registered_fixture_id(
-    identity: &crate::TestIdentity,
+    identity: &crate::contract::TestIdentity,
     fixture: &str,
 ) -> Result<FunctionId, String> {
     let mut segments = identity

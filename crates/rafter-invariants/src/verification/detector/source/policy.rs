@@ -1,15 +1,6 @@
 //! Detector-oracle trust vocabulary and source-policy predicates.
 
-pub(super) const ORACLE_MACROS: &[&str] = &[
-    "oracle_assert",
-    "oracle_assert_eq",
-    "oracle_assert_ne",
-    "oracle_expect_err",
-    "oracle_invoke_recorder",
-    "oracle_prop_assert",
-    "oracle_prop_assert_eq",
-    "oracle_violation",
-];
+pub(super) use crate::verification::target::ORACLE_MACROS;
 
 pub(super) const INVOCATION_MACROS: &[&str] = &["oracle_expect_err", "oracle_invoke_recorder"];
 pub(super) const SAFE_BUILTIN_MACROS: &[&str] = &[

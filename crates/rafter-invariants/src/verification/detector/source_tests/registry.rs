@@ -1,10 +1,14 @@
+//! Reviewed registry fixture coverage for source-bound detector contracts.
+
+use super::*;
+
 #[test]
 fn reviewed_registry_fixtures_have_source_bound_invocation_contracts() {
     let (catalog, _) = crate::tests::loaded();
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
     let root = fs::canonicalize(root).expect("canonical workspace root");
     let mut failures = Vec::new();
-    let mut batch = DetectorFixtureSourceBatch::default();
+    let mut batch = DetectorFixtureAnalysis::default();
     let mut verified = 0;
     let mut unique_sources = BTreeSet::new();
     let mut fixtures_per_target = BTreeMap::new();

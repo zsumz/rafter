@@ -6,13 +6,15 @@ use std::collections::BTreeMap;
 pub(crate) struct DetectorInvocationContract {
     pub(super) witnesses: BTreeMap<String, usize>,
     pub(super) registered_identity: String,
+    source_graph_sha256: String,
 }
 
 impl DetectorInvocationContract {
-    pub(super) fn new(registered_identity: String) -> Self {
+    pub(super) fn new(registered_identity: String, source_graph_sha256: String) -> Self {
         Self {
             witnesses: BTreeMap::new(),
             registered_identity,
+            source_graph_sha256,
         }
     }
 
@@ -22,5 +24,9 @@ impl DetectorInvocationContract {
 
     pub(crate) fn registered_identity(&self) -> &str {
         &self.registered_identity
+    }
+
+    pub(crate) fn source_graph_sha256(&self) -> &str {
+        &self.source_graph_sha256
     }
 }

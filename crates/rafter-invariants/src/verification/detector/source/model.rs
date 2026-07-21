@@ -1,3 +1,5 @@
+//! Source-analysis facts, calls, invocations, and defects.
+
 use std::collections::BTreeSet;
 
 use super::CallTarget;
@@ -66,6 +68,7 @@ pub(super) enum SourceDefect {
     MalformedInvocationMacro,
     OpaqueCallable,
     OpaqueMacro,
+    UnsafeCapability,
     UntrustedOracleMacro,
 }
 
