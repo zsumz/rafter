@@ -1,16 +1,72 @@
-use crate::producer::tla_checkpoint::{
-    expected_contract, CheckpointContract, CheckpointInventory, RecoveryReport, RecoveryStatus,
-    CONTRACT_KIND, INVENTORY_KIND, RECOVERED_CONTRACT_KIND, RECOVERED_INVENTORY_KIND,
-    RECOVERY_REPORT_KIND,
-};
-use crate::{verification::AggregateError, CheckCompletion, ResultBundle};
+//! Independent acceptance of TLA+ checkpoint recovery metadata.
 
-use super::{has_kind, read_json_kind};
+use std::{collections::BTreeMap, path::Path};
+
+use sha2::{Digest, Sha256};
+
+use crate::evidence::format::tla::checkpoint::{
+    CheckpointContract, CheckpointInventory, RecoveryReport, RecoveryStatus, CONTRACT_KIND,
+    INVENTORY_KIND, RECOVERED_CONTRACT_KIND, RECOVERED_INVENTORY_KIND, RECOVERY_REPORT_KIND,
+};
+use crate::{
+    evidence::{ArtifactRef, CheckCompletion, CheckReceipt, ResultBundle},
+    verification::AggregateError,
+};
+
+use super::artifact::{has_kind, read_json_kind};
 use crate::verification::AuthenticatedArtifacts;
+
+const INPUT_KINDS: [&str; 10] = [
+    "tla-tool",
+    "tla-spec",
+    "tla-trace-spec",
+    "tla-detector-spec",
+    "tla-runner",
+    "tla-tool-asset-id",
+    "tla-tool-checksums",
+    "tla-config",
+    "tla-trace-config",
+    "tla-detector-config",
+];
+
+fn expected_contract(
+    profile: &str,
+    configuration: &BTreeMap<String, String>,
+    artifacts: &[ArtifactRef],
+) -> Result<CheckpointContract, AggregateError> {
+    let mut input_sha256 = BTreeMap::new();
+    for kind in INPUT_KINDS {
+        let mut matching = artifacts.iter().filter(|artifact| artifact.kind == kind);
+        let artifact = matching.next().ok_or_else(|| {
+            AggregateError::new(format!(
+                "checkpoint contract requires exactly one {kind} artifact"
+            ))
+        })?;
+        if matching.next().is_some() {
+            return Err(AggregateError::new(format!(
+                "checkpoint contract requires exactly one {kind} artifact"
+            )));
+        }
+        input_sha256.insert(kind.to_owned(), artifact.sha256.clone());
+    }
+    let config = configuration
+        .get("config")
+        .ok_or_else(|| AggregateError::new("checkpoint contract omitted config".to_owned()))?;
+    let runner_contract = serde_json::to_vec(configuration).map_err(|error| {
+        AggregateError::new(format!("serialize TLA checkpoint runner contract: {error}"))
+    })?;
+    Ok(CheckpointContract {
+        schema_version: 1,
+        profile: profile.to_owned(),
+        config: config.clone(),
+        runner_contract_sha256: format!("{:x}", Sha256::digest(runner_contract)),
+        input_sha256,
+    })
+}
 
 pub(super) fn verify_checkpoint_authenticated(
     bundle: &ResultBundle,
-    check: &crate::CheckReceipt,
+    check: &CheckReceipt,
     main_has_violation: bool,
     authenticated: &AuthenticatedArtifacts,
 ) -> Result<Option<RecoveryReport>, AggregateError> {
@@ -109,7 +165,7 @@ pub(super) fn verify_checkpoint_authenticated(
 #[cfg(test)]
 pub(super) fn verify_checkpoint(
     bundle: &ResultBundle,
-    check: &crate::CheckReceipt,
+    check: &CheckReceipt,
     root: &Path,
     main_has_violation: bool,
 ) -> Result<Option<RecoveryReport>, AggregateError> {
@@ -118,7 +174,7 @@ pub(super) fn verify_checkpoint(
 }
 
 fn verify_final_metadata(
-    check: &crate::CheckReceipt,
+    check: &CheckReceipt,
     recovery_status: RecoveryStatus,
     contract: &CheckpointContract,
     contract_sha256: &str,
@@ -165,10 +221,10 @@ fn verify_final_metadata(
 }
 
 #[cfg(test)]
-#[path = "checkpoint_tests.rs"]
+#[path = "tests/checkpoint.rs"]
 mod tests;
 
-pub(super) fn validate_inventory(
+pub(crate) fn validate_inventory(
     inventory: &CheckpointInventory,
     contract_sha256: &str,
 ) -> Result<(), AggregateError> {
@@ -235,4 +291,3 @@ fn has_tlc_extension(name: &str, expected: &str) -> bool {
             .and_then(|stem| Path::new(stem).extension())
             .is_some_and(|extension| extension.eq_ignore_ascii_case(expected))
 }
-use std::path::Path;

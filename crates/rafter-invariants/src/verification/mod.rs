@@ -12,6 +12,7 @@ mod publication;
 pub(crate) mod simulator;
 pub(crate) mod source;
 pub(crate) mod target;
+pub(crate) mod tla;
 mod workspace;
 
 pub(crate) use artifact::verify_bundle as verify_bundle_artifacts;

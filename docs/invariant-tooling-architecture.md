@@ -128,7 +128,8 @@ importing producer implementation.
 - `verification` may depend on contract, evidence, provenance, and neutral
   execution mechanics, but never on producer implementation. Neutral format
   parsers may be shared through the evidence domain; semantic acceptance logic
-  may not.
+  may not. TLA+ mutation qualification and checkpoint-contract derivation each
+  have independent producer and verifier policies over shared wire types.
 - `verification` returns a typed `EvidenceIntake`; raw bundles cannot cross that
   boundary by convention alone.
 - `verdict` consumes `EvidenceIntake`. It does not spawn tools, discover tests,
@@ -265,6 +266,9 @@ src/
       mod.rs             neutral wire-format facade
       libtest.rs         canonical libtest and oracle-marker decoding
       process/           versioned process-log vocabulary and decoding
+      tla.rs             neutral TLC progress, terminal, and detector decoding
+      tla/checkpoint.rs  serialized checkpoint contract, inventory, and recovery report
+      tla/mutation.rs    mutation-suite transcript decoding without acceptance policy
   provenance/
     mod.rs               provenance facade
     source/
@@ -403,7 +407,19 @@ src/
       observation/       receipt observation rederivation and reconciliation
       schedule/          invocation, compiler, path, event, and profile provenance
       liveness/          independent bounded-report semantic validation
-    tla/                 invocation, tool pin, checkpoint, and mutation checks
+    tla/
+      mod.rs             TLA+ verifier and receipt-acceptance facade
+      verify.rs          authenticated proof-artifact orchestration
+      artifact.rs        unique authenticated artifact access
+      checkpoint.rs      checkpoint recovery and final-metadata acceptance
+      completion.rs      counterexample and completion classification
+      detector.rs        independent detector and mutation-suite qualification
+      invocation.rs      process-log and exact source-runtime acceptance
+      invocation/        exact TLC arguments, descriptors, and checkout identity
+      observation.rs     progress and terminal observation rederivation
+      source.rs          source, tool-pin, and runner-contract binding
+      receipt.rs         structural TLA+ runner receipt validation
+      tests/             focused and serialized adversarial scenarios
     maelstrom/           history, scenario, durability, and lease checks
   artifact_verify/
     simulator.rs         declarative simulator-verifier compatibility facade
@@ -419,6 +435,8 @@ src/
       registry.rs        registry-to-libtest identity binding
       runner.rs          receipt and transcript orchestration
       tests.rs           detector and outcome-policy adversarial scenarios
+  artifact_verify_tla.rs declarative TLA+ verifier compatibility facade
+  receipt_tla.rs         declarative TLA+ receipt compatibility facade
   verdict/
     mod.rs               verdict vocabulary facade
     model.rs             report, summary, clause, issue, and status types
@@ -447,11 +465,18 @@ validate producer output. Shared wire decoding, including canonical libtest and
 process transcripts, belongs under `evidence::format`; producer and verifier
 policy remains separate.
 
-The simulator and test-log files retained under `artifact_verify/` are
-declarative compatibility mounts for stable internal test identities. Their
+The simulator and test-log files retained under `artifact_verify/`, plus the
+root `artifact_verify_tla.rs` and `receipt_tla.rs` mounts, are declarative
+compatibility surfaces for stable internal test and dispatch identities. Their
 implementation lives under `verification/`, and the migrated-source manifest
 models every retained facade so none can import producer implementation. These
 mounts are not a second verification domain.
+
+TLA+ checkpoint metadata is neutral serialized evidence, so both producer and
+verifier consume `evidence/format/tla/checkpoint.rs`. Mutation evidence follows
+the stricter policy split: `evidence/format/tla/mutation.rs` only decodes Cargo
+transcript records, while the producer and verifier independently decide
+whether all 34 reviewed mutation tests qualified.
 
 Detector proof handling has the same neutral-format boundary. The evidence
 module decodes marker records without deciding whether a transcript is

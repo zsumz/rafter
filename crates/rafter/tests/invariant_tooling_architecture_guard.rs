@@ -14,3 +14,5 @@ mod invariant_tooling;
 mod process_scenarios;
 #[path = "support/readability.rs"]
 mod readability_support;
+#[path = "invariant_tooling_architecture_guard/tla_scenarios.rs"]
+mod tla_scenarios;

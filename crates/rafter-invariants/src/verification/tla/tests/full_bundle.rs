@@ -1,3 +1,5 @@
+//! End-to-end TLA+ artifact acceptance scenarios and fixture model.
+
 use std::{
     collections::BTreeMap,
     fmt::Write as _,
@@ -14,15 +16,16 @@ use crate::{
     evidence::format::tla::{
         detector_config_kind, detector_label, detector_log_kind, render_detector_config,
         DetectorProbe, DEFAULT_FIXTURE_MODE, DETECTOR_PROBES, MUTATION_SUITE_ARTIFACT_KIND,
-        MUTATION_SUITE_LABEL, REQUIRED_MUTATION_TESTS,
+        MUTATION_SUITE_LABEL,
     },
     provenance::invocation::digest_environment,
+    verification::tla::REQUIRED_MUTATION_TESTS,
     ArtifactRef, InvocationReceipt, ResultBundle,
 };
 
 static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
-#[path = "artifact_verify_tla/serialized_tests.rs"]
+#[path = "full_bundle/serialized_tests.rs"]
 mod serialized_tests;
 
 #[test]

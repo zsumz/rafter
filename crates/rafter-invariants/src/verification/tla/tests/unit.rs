@@ -1,8 +1,10 @@
-use super::{checkpoint::validate_inventory, checksum_matches, successful_detector};
+//! Focused TLA+ artifact-policy unit scenarios.
+
+use crate::verification::tla::{checksum_matches, successful_detector, validate_inventory};
 use crate::InvocationReceipt;
 use crate::{
+    evidence::format::tla::checkpoint::{CheckpointFile, CheckpointInventory},
     evidence::format::{process::ProcessLog, tla::TlcSummary},
-    producer::tla_checkpoint::{CheckpointFile, CheckpointInventory},
 };
 use std::collections::BTreeMap;
 

@@ -27,6 +27,42 @@ const PROBE_TIMEOUT: Duration = Duration::from_secs(120);
 const QUALIFICATION_PHASE_COUNT: usize = DETECTOR_PROBES.len() + 2;
 const TOTAL_TIMEOUT_KEY: &str = "total_timeout";
 const FINALIZATION_RESERVE_KEY: &str = "finalization_reserve";
+const REQUIRED_MUTATION_TESTS: [&str; 34] = [
+    "application_epoch_loss_replays_identically_without_erasing_history",
+    "applied_membership_quorum_mutation_breaks_joint_regression",
+    "closed_term_election_history_is_retired_after_every_node_advances",
+    "closed_term_prefix_history_retires_without_erasing_conflicts",
+    "corrupted_snapshot_install_breaks_lifecycle_identity",
+    "corrupted_snapshot_restored_state_breaks_empty_epoch_lifecycle",
+    "delayed_append_uses_frozen_sender_authority_after_self_removal",
+    "every_required_detector_probe_reaches_its_named_counterexample",
+    "follower_recomputation_breaks_delayed_heartbeat_regression",
+    "leader_completeness_uses_commit_authority_term",
+    "missing_application_epoch_recorder_cannot_qualify_state_machine_safety",
+    "missing_application_recorder_cannot_qualify_state_machine_safety",
+    "missing_commit_ledger_recorder_cannot_qualify_history_predicates",
+    "missing_commit_witness_recorder_cannot_qualify_quorum_predicate",
+    "missing_effective_recomputation_breaks_overwrite_regression",
+    "missing_election_recorder_cannot_qualify_election_safety",
+    "missing_higher_term_recorder_cannot_qualify_fencing",
+    "missing_log_prefix_recorder_cannot_qualify_log_or_snapshot_paths",
+    "missing_read_grant_recorder_cannot_qualify_read_barrier_predicate",
+    "missing_self_removal_step_down_breaks_commit_regression",
+    "missing_stale_authority_recorder_cannot_qualify_fencing",
+    "non_violating_fixture_cannot_qualify",
+    "recorder_only_fixtures_qualify_before_mutation",
+    "removed_candidate_vote_requires_membership_and_freshness_guards",
+    "sanitized_application_result_cannot_qualify_detector_fixture",
+    "self_removing_leader_commits_final_configuration_and_steps_down",
+    "shorter_authoritative_log_repairs_an_uncommitted_suffix",
+    "snapshot_compaction_pending_tracks_create_and_compact_transitions",
+    "snapshot_lifecycle_preserves_logical_identity_through_restart",
+    "stale_messages_are_retired_when_the_target_term_advances",
+    "true_mutation_of_real_predicate_cannot_qualify",
+    "unfrozen_effective_membership_breaks_commit_witness_regression",
+    "unvalidated_commit_certificate_cannot_qualify_quorum_predicate",
+    "unvalidated_read_grant_cannot_qualify_read_barrier_predicate",
+];
 
 pub(super) struct TlaExecution {
     pub(super) main: Option<tla_output::TlcSummary>,
@@ -474,7 +510,7 @@ fn run_detector_probes(
         aggregate.duration_ms = aggregate
             .duration_ms
             .saturating_add(process::duration_ms(mutation.output.duration));
-        aggregate.succeeded &= tla_output::mutation_suite_passed(
+        aggregate.succeeded &= mutation_suite_qualified(
             mutation.output.status.code(),
             mutation.output.timed_out,
             &String::from_utf8_lossy(&mutation.output.stdout),
@@ -620,6 +656,33 @@ fn detector_qualified(
                 && summary.distinct_states >= 2
                 && summary.states_left == 0
                 && summary.search_depth >= 2
+        })
+}
+
+fn mutation_suite_qualified(exit_code: Option<i32>, timed_out: bool, stdout: &str) -> bool {
+    if exit_code != Some(0) || timed_out {
+        return false;
+    }
+    let transcript = tla_output::parse_mutation_transcript(stdout);
+    let expected_count = REQUIRED_MUTATION_TESTS.len() as u64;
+    transcript.running_counts.contains(&expected_count)
+        && transcript.summaries.iter().any(|summary| {
+            summary
+                == &tla_output::MutationSummary {
+                    passed: expected_count,
+                    failed: 0,
+                    ignored: 0,
+                    measured: 0,
+                }
+        })
+        && REQUIRED_MUTATION_TESTS.iter().all(|name| {
+            let expected = format!("producer::tla_exec::mutation_tests::{name}");
+            transcript
+                .passed_tests
+                .iter()
+                .filter(|test| *test == &expected)
+                .count()
+                == 1
         })
 }
 
@@ -920,6 +983,10 @@ fn verify_tlc_state_binding(
 #[cfg(test)]
 #[path = "tla_exec_budget_tests.rs"]
 mod budget_tests;
+
+#[cfg(test)]
+#[path = "tla_exec_policy_tests.rs"]
+mod policy_tests;
 
 #[cfg(test)]
 #[path = "tla_mutation_tests.rs"]
