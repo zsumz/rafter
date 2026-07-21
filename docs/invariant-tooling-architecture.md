@@ -340,7 +340,21 @@ src/
       detector_proof.rs   challenge-channel process adaptation
       discovery/tests.rs  exact inventory scenarios
       execution/tests.rs  exact transcript classification scenarios
-    simulator/           model execution, event binding, and detectors
+    simulator.rs         simulator evidence-production facade
+    simulator/
+      runner.rs          aggregate execution and bundle assembly
+      evaluation.rs      descriptor evaluation and receipt assembly
+      verdict.rs         evidence verdict and failure reduction
+      issue.rs           typed issue precedence
+      observation.rs     semantic observation and coverage policy
+      check_contract.rs  per-check profile and liveness contracts
+      detector.rs        detector inventory, compilation, and execution
+      resources.rs       model and detector resource accounting
+      liveness/          bounded-progress evidence production
+    simulator_tests.rs   simulator producer scenario facade
+    simulator_tests/     classification, coverage, failure, and resource scenarios
+    simulator_events.rs  transitional event-shape and classification module
+    simulator_model.rs   transitional model build and execution module
     tla/                 command, contract, output, mutation, and checkpoint
     maelstrom/           tooling, scenarios, trials, EDN, and lease markers
   verification/
@@ -412,6 +426,12 @@ src/
     run.rs               execute one source-bound producer
     run_all.rs           execute all required producers then aggregate
 ```
+
+`simulator_events.rs` and `simulator_model.rs` are explicit migration debt. They
+already belong to the enforced `producer` domain, but remain flat until event
+semantics and model execution can move with their focused regression suites.
+They may only shrink or move into the `simulator/` tree; they are not alternate
+ownership roots.
 
 The most important structural change is extracting `provenance` and
 `execution` from `producer`. A verifier must not import `crate::producer::*` to

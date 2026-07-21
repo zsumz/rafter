@@ -101,6 +101,7 @@ pub(crate) fn assert_pr_launcher_inventories(workflow: &str) {
     for exact_inventory in [
         "scripts/cargo-test-exact 55 execution::process:: --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 18 producer::process::tests --locked -p rafter-invariants -- --test-threads=1",
+        "scripts/cargo-test-exact 8 artifact_verify::test_logs::tests --locked -p rafter-invariants -- --test-threads=1",
     ] {
         assert!(
             launcher.contains(exact_inventory),

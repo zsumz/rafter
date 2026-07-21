@@ -31,12 +31,12 @@ fn filtered_ci_test_lanes_declare_exact_nonzero_inventories() {
         "scripts/cargo-test-exact 45 verification::detector::source::tests --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 23 verification::detector::source::adversarial_tests --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 15 artifact_verify::simulator::event_semantics_tests --locked -p rafter-invariants -- --test-threads=1",
-        "scripts/cargo-test-exact 7 artifact_verify::test_logs::detector_witness_tests --locked -p rafter-invariants -- --test-threads=1",
+        "scripts/cargo-test-exact 8 artifact_verify::test_logs::tests --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 4 provenance::image::tests --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 1 - --locked -p rafter-invariants --test producer_reexec -- --test-threads=1",
         "scripts/cargo-test-exact 34 producer::tla_exec::mutation_tests --locked -p rafter-invariants --lib -- --ignored --test-threads=1",
         "scripts/cargo-test-exact 4 artifact_verify_tla::full_bundle_tests::serialized_tests --locked -p rafter-invariants --lib -- --ignored --test-threads=1",
-        "scripts/cargo-test-exact 43 maelstrom --locked -p rafter-invariants",
+        "scripts/cargo-test-exact 47 maelstrom --locked -p rafter-invariants",
     ] {
         assert!(ci.contains(selection), "CI omitted exact inventory: {selection}");
     }
@@ -205,6 +205,18 @@ printf '%s\n' 'test execution reached'
     );
 
     fs::write(&log, "").unwrap();
+    let without_libtest_args = run_fixture_without_libtest_args(&root, &fixture.path, &log, "2");
+    assert!(
+        without_libtest_args.status.success(),
+        "{}",
+        stderr(&without_libtest_args)
+    );
+    assert_eq!(
+        read(&log).lines().collect::<Vec<_>>(),
+        ["test -p demo family -- --list", "test -p demo family --"]
+    );
+
+    fs::write(&log, "").unwrap();
     let mismatch = run_fixture(&root, &fixture.path, &log, "3");
     assert!(!mismatch.status.success());
     assert!(stderr(&mismatch).contains("matched 2 tests; expected exactly 3"));
@@ -240,6 +252,25 @@ fn run_fixture(root: &Path, bin: &Path, log: &Path, expected: &str) -> std::proc
     Command::new("bash")
         .arg(root.join("scripts/cargo-test-exact"))
         .args([expected, "family", "-p", "demo", "--", "--ignored"])
+        .env("PATH", std::env::join_paths(paths).unwrap())
+        .env("CARGO_TEST_EXACT_LOG", log)
+        .output()
+        .unwrap()
+}
+
+#[cfg(unix)]
+fn run_fixture_without_libtest_args(
+    root: &Path,
+    bin: &Path,
+    log: &Path,
+    expected: &str,
+) -> std::process::Output {
+    let system_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![bin.to_path_buf()];
+    paths.extend(std::env::split_paths(&system_path));
+    Command::new("bash")
+        .arg(root.join("scripts/cargo-test-exact"))
+        .args([expected, "family", "-p", "demo"])
         .env("PATH", std::env::join_paths(paths).unwrap())
         .env("CARGO_TEST_EXACT_LOG", log)
         .output()

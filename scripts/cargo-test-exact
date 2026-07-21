@@ -53,7 +53,10 @@ inventory_command=(cargo test "${cargo_args[@]}")
 if [[ "$filter" != "-" ]]; then
     inventory_command+=("$filter")
 fi
-inventory_command+=(-- --list "${libtest_args[@]}")
+inventory_command+=(-- --list)
+if (( ${#libtest_args[@]} > 0 )); then
+    inventory_command+=("${libtest_args[@]}")
+fi
 
 echo "+ ${inventory_command[*]}"
 "${inventory_command[@]}" | tee "$inventory_file"
@@ -68,7 +71,10 @@ test_command=(cargo test "${cargo_args[@]}")
 if [[ "$filter" != "-" ]]; then
     test_command+=("$filter")
 fi
-test_command+=(-- "${libtest_args[@]}")
+test_command+=(--)
+if (( ${#libtest_args[@]} > 0 )); then
+    test_command+=("${libtest_args[@]}")
+fi
 
 echo "+ ${test_command[*]}"
 "${test_command[@]}"

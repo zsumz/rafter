@@ -543,9 +543,10 @@ fn materialize_runtime_fixture(
         "simulator-log",
         &real_log,
     );
-    let (catalog, _) = crate::tests::loaded();
-    let (checks, results) = crate::producer::evaluate_model_fixture(&catalog, "pr", &model)
-        .expect("evaluate real timeout events through simulator receipt production");
+    let (catalog, manifest) = crate::tests::loaded();
+    let (checks, results) =
+        crate::producer::evaluate_model_fixture(&catalog, &manifest, "pr", &model)
+            .expect("evaluate real timeout events through simulator receipt production");
     RuntimeFixture {
         fast_artifact,
         producer_artifact: write_fixture_artifact(

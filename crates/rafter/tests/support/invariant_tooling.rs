@@ -2,9 +2,9 @@
 
 pub(super) const PRODUCTION_TARGET_LINES: usize = 300;
 pub(super) const TEST_TARGET_LINES: usize = 400;
-pub(super) const MAX_PRODUCTION_FILES_OVER_TARGET: usize = 35;
-pub(super) const MAX_TEST_FILES_OVER_TARGET: usize = 15;
-pub(super) const MAX_FILES_WITHOUT_MODULE_CONTRACTS: usize = 47;
+pub(super) const MAX_PRODUCTION_FILES_OVER_TARGET: usize = 31;
+pub(super) const MAX_TEST_FILES_OVER_TARGET: usize = 14;
+pub(super) const MAX_FILES_WITHOUT_MODULE_CONTRACTS: usize = 38;
 pub(super) const MAX_LEGACY_VERIFIER_PRODUCER_REFERENCES: usize = 41;
 pub(super) const MAX_LEGACY_VERIFIER_PRODUCER_IMAGE_REFERENCES: usize = 0;
 pub(super) const MAX_LEGACY_VERIFIER_RUST_TARGET_REFERENCES: usize = 0;
@@ -108,6 +108,22 @@ pub(super) const ENFORCED_DOMAIN_SOURCES: &[EnforcedDomainSource] = &[
     EnforcedDomainSource {
         domain: "producer",
         path: "crates/rafter-invariants/src/producer/process",
+    },
+    EnforcedDomainSource {
+        domain: "producer",
+        path: "crates/rafter-invariants/src/producer/simulator.rs",
+    },
+    EnforcedDomainSource {
+        domain: "producer",
+        path: "crates/rafter-invariants/src/producer/simulator",
+    },
+    EnforcedDomainSource {
+        domain: "producer",
+        path: "crates/rafter-invariants/src/producer/simulator_events.rs",
+    },
+    EnforcedDomainSource {
+        domain: "producer",
+        path: "crates/rafter-invariants/src/producer/simulator_model.rs",
     },
     EnforcedDomainSource {
         domain: "producer",
