@@ -1,5 +1,11 @@
+//! Scenarios for version-1 persisted-snapshot envelope behavior.
+
 use super::*;
-use rafter_invariant_test::oracle_assert;
+use rafter::{
+    ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion,
+    CommittedConfiguration, ConfigurationId, LogIndex, MembershipConfig, MembershipSet,
+    SnapshotCommittedConfiguration, SnapshotGroupId, Term,
+};
 
 fn snapshot(payload: &[u8]) -> PersistedRaftSnapshot {
     PersistedRaftSnapshot {
