@@ -1,11 +1,40 @@
+//! TLA+ checkpoint metadata acceptance scenarios.
+
 use std::fs;
 
 use sha2::{Digest, Sha256};
 
-use super::verify_checkpoint;
-use crate::producer::tla_checkpoint::{
-    expected_contract, RecoveryReport, RecoveryStatus, RECOVERY_REPORT_KIND,
+use super::{expected_contract, verify_checkpoint};
+use crate::evidence::format::tla::checkpoint::{
+    RecoveryReport, RecoveryStatus, RECOVERY_REPORT_KIND,
 };
+
+#[test]
+fn verifier_derivation_rejects_missing_and_duplicate_checkpoint_inputs() {
+    let (catalog, manifest) = crate::tests::loaded();
+    let bundle = crate::tests::passing_bundles(&catalog, &manifest)
+        .into_iter()
+        .find(|bundle| bundle.runner == "tla")
+        .expect("TLA bundle");
+    let configuration = &bundle.execution.plan.contract.runners["tla"].configuration;
+    let artifacts = &bundle.execution.checks[0].artifacts;
+
+    let missing = artifacts
+        .iter()
+        .filter(|artifact| artifact.kind != "tla-tool")
+        .cloned()
+        .collect::<Vec<_>>();
+    assert!(expected_contract(&bundle.profile, configuration, &missing).is_err());
+
+    let mut duplicate = artifacts.clone();
+    let repeated = artifacts
+        .iter()
+        .find(|artifact| artifact.kind == "tla-tool")
+        .expect("checkpoint input")
+        .clone();
+    duplicate.push(repeated);
+    assert!(expected_contract(&bundle.profile, configuration, &duplicate).is_err());
+}
 
 #[test]
 fn checkpointed_counterexample_verifies_without_abandoned_final_metadata() {

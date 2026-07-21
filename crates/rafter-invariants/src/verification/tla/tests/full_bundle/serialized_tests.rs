@@ -1,8 +1,10 @@
+//! Serialized cross-checkout and real-TLC TLA+ verifier scenarios.
+
 use std::{fs, path::Path, process::Command};
 
 use sha2::{Digest, Sha256};
 
-use super::Fixture;
+use super::{safe_name, Fixture};
 use crate::{
     evidence::format::{process::ProcessLog, tla::MUTATION_SUITE_ARTIFACT_KIND},
     provenance::invocation::digest_environment,
@@ -161,12 +163,8 @@ impl Fixture {
             &self.bundle.source_ref,
             &self.root,
         );
-        let intake = crate::verification::verify_paths(
-            request,
-            std::slice::from_ref(&bundle_path),
-            Vec::new(),
-        )
-        .expect("verify serialized TLA fixture");
+        let intake = crate::verification::verify_layer_paths(request, "tla", bundle_path.clone())
+            .expect("verify serialized TLA fixture");
         let _ = fs::remove_file(bundle_path);
         let report = crate::verdict::reduce(&catalog, &manifest, &intake)
             .expect("aggregate serialized TLA fixture");
@@ -242,6 +240,11 @@ impl Fixture {
     }
 
     fn write_execution_artifacts(&mut self) {
+        for artifact in &mut self.bundle.execution.artifacts {
+            if artifact.kind != "producer-binary" {
+                artifact.path = format!("artifacts/invariants/{}", safe_name(&artifact.kind));
+            }
+        }
         let artifacts = self.bundle.execution.artifacts.clone();
         for artifact in artifacts {
             let bytes: &[u8] = if artifact.kind == "producer-binary" {
@@ -285,6 +288,8 @@ impl Fixture {
         let environment = crate::producer::process::base_environment();
         let environment_sha256 =
             digest_environment(&environment).expect("valid fixture environment");
+        self.bundle.execution.invocation.environment = environment.clone();
+        self.bundle.execution.invocation.environment_sha256 = environment_sha256.clone();
         let java_sha256 = self.bundle.execution.source.tools["java"].sha256.clone();
         let cargo_sha256 = self.bundle.execution.source.cargo_sha256.clone();
         for kind in kinds {
