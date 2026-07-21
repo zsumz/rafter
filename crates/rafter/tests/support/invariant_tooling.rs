@@ -2,10 +2,10 @@
 
 pub(super) const PRODUCTION_TARGET_LINES: usize = 300;
 pub(super) const TEST_TARGET_LINES: usize = 400;
-pub(super) const MAX_PRODUCTION_FILES_OVER_TARGET: usize = 43;
-pub(super) const MAX_TEST_FILES_OVER_TARGET: usize = 17;
-pub(super) const MAX_FILES_WITHOUT_MODULE_CONTRACTS: usize = 69;
-pub(super) const MAX_LEGACY_VERIFIER_PRODUCER_REFERENCES: usize = 64;
+pub(super) const MAX_PRODUCTION_FILES_OVER_TARGET: usize = 35;
+pub(super) const MAX_TEST_FILES_OVER_TARGET: usize = 15;
+pub(super) const MAX_FILES_WITHOUT_MODULE_CONTRACTS: usize = 47;
+pub(super) const MAX_LEGACY_VERIFIER_PRODUCER_REFERENCES: usize = 41;
 pub(super) const MAX_LEGACY_VERIFIER_PRODUCER_IMAGE_REFERENCES: usize = 0;
 pub(super) const MAX_LEGACY_VERIFIER_RUST_TARGET_REFERENCES: usize = 0;
 
@@ -64,7 +64,7 @@ pub(super) const INVARIANT_DOMAINS: &[InvariantDomain] = &[
     },
     InvariantDomain {
         name: "verification",
-        may_depend_on: &["contract", "evidence", "provenance"],
+        may_depend_on: &["contract", "evidence", "execution", "provenance"],
     },
     InvariantDomain {
         name: "verdict",
@@ -133,6 +133,10 @@ pub(super) const ENFORCED_DOMAIN_SOURCES: &[EnforcedDomainSource] = &[
         domain: "gate",
         path: "crates/rafter-invariants/src/gate",
     },
+    EnforcedDomainSource {
+        domain: "cli",
+        path: "crates/rafter-invariants/src/cli",
+    },
 ];
 
 /// Exact compatibility edges retained while physical modules move to their owning domains.
@@ -143,17 +147,6 @@ pub(super) const REVIEWED_DOMAIN_IMPORT_EXCEPTIONS: &[ReviewedDomainImportExcept
         import: &["crate", "artifact_verify", "verify"],
         reason: "the verification facade still delegates to the legacy artifact-verifier mount",
         tracking_label: "INV-ARCH-ARTIFACT-VERIFIER-MIGRATION",
-    },
-    ReviewedDomainImportException {
-        owner_domain: "verification",
-        source: "crates/rafter-invariants/src/verification/detector.rs",
-        import: &[
-            "crate",
-            "artifact_verify",
-            "validate_detector_fixture_sources",
-        ],
-        reason: "the public verification facade still delegates to the legacy detector-source analyzer mount",
-        tracking_label: "INV-ARCH-DETECTOR-SOURCE-MIGRATION",
     },
     ReviewedDomainImportException {
         owner_domain: "verification",
