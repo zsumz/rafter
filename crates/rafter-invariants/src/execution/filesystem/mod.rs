@@ -18,4 +18,4 @@ pub(crate) use model::{
     TreeLimits, TREE_LIMITS,
 };
 #[cfg(all(test, any(target_os = "android", target_os = "linux")))]
-pub(super) use sync::{complete_directory_sync, complete_filesystem_sync};
+use sync::{complete_directory_sync, complete_filesystem_sync};
