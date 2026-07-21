@@ -23,7 +23,7 @@ pub(crate) fn verify_simulator_logs(
     source_root: &Path,
     catalog: &Catalog,
     authenticated: &AuthenticatedArtifacts,
-    log_verifier: DetectorLogVerifier,
+    log_verifier: &dyn DetectorLogVerifier,
 ) -> Result<Vec<String>, AggregateError> {
     let schedule =
         super::schedule::verify_simulator_schedule_authenticated(bundle, root, authenticated)?;

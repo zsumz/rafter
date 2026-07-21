@@ -42,14 +42,7 @@ pub(super) fn emitted_simulator_executable(
         .iter()
         .filter(|artifact| artifact.kind == "compile-log")
     {
-        let source = authenticated.text(artifact)?;
-        let processes =
-            crate::evidence::format::process::parse_combined_v4(source).map_err(|error| {
-                AggregateError::new(format!(
-                    "parse simulator compile log {}: {error}",
-                    artifact.path
-                ))
-            })?;
+        let processes = authenticated.combined_v4(artifact)?;
         for process in processes
             .iter()
             .filter(|process| process.label == "simulator compile")
