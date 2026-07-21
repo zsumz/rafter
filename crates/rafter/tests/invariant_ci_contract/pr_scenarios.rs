@@ -8,6 +8,7 @@ use super::support::*;
 fn pr_invariant_aggregate_is_stable_and_fail_closed() {
     let root = workspace_root();
     let workflow = read(&root.join(".github/workflows/ci.yml"));
+    assert!(job_block(&workflow, "test").contains("cargo fetch --locked"));
 
     for (job, layer) in [
         ("invariants-tests", "tests"),

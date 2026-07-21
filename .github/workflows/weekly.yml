@@ -37,6 +37,8 @@ jobs:
           cache-on-failure: true
           cache-targets: false
           cache-bin: false
+      - name: Prefetch locked registry for offline source identity
+        run: cargo fetch --locked
       - name: Produce source-bound weekly test evidence
         run: cargo run --locked -p rafter-invariants -- run --profile weekly --layer tests
       - name: Upload weekly test evidence
@@ -75,6 +77,8 @@ jobs:
           cache-on-failure: true
           cache-targets: false
           cache-bin: false
+      - name: Prefetch locked registry for offline source identity
+        run: cargo fetch --locked
       - name: Produce source-bound weekly simulator evidence
         run: cargo run --locked -p rafter-invariants -- run --profile weekly --layer simulator
       - name: Upload weekly simulator evidence and replay logs
@@ -120,6 +124,8 @@ jobs:
           cache-on-failure: true
           cache-targets: false
           cache-bin: false
+      - name: Prefetch locked registry for offline source identity
+        run: cargo fetch --locked
       - name: Restore exact-compatible weekly TLC checkpoint
         id: checkpoint-restore
         uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
@@ -176,6 +182,8 @@ jobs:
           cache-on-failure: true
           cache-targets: false
           cache-bin: false
+      - name: Prefetch locked registry for offline source identity
+        run: cargo fetch --locked
       - name: Produce three trials of all six Maelstrom scenarios
         run: cargo run --locked -p rafter-invariants -- run --profile weekly --layer maelstrom
       - name: Independently verify weekly Maelstrom evidence
