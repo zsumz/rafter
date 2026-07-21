@@ -78,13 +78,6 @@ pub(in crate::producer) fn timed_with_optional_layer_budget(
     super::timed_with_timeout(program, arguments, environment, current_dir, requested_cap)
 }
 
-pub(crate) fn identity_command(
-    program: &str,
-    arguments: &[&str],
-) -> Result<IdentityOutput, Box<dyn Error>> {
-    identity_command_in(program, arguments, Path::new("."))
-}
-
 pub(crate) fn identity_command_in(
     program: &str,
     arguments: &[&str],
