@@ -95,6 +95,8 @@ fn mature_invariant_facades_remain_declarative() {
             "crates/rafter-invariants/src/producer/process/mod.rs",
             "crates/rafter-invariants/src/producer/process/budget/mod.rs",
             "crates/rafter-invariants/src/producer/simulator/liveness/mod.rs",
+            "crates/rafter-invariants/src/producer/test_compile.rs",
+            "crates/rafter-invariants/src/producer/test_exec.rs",
             "crates/rafter-invariants/src/provenance/invocation/mod.rs",
             "crates/rafter-invariants/src/provenance/source/mod.rs",
             "crates/rafter-invariants/src/provenance/mod.rs",
@@ -166,6 +168,22 @@ fn migrated_domain_sources_follow_the_reviewed_dependency_graph() {
             (
                 "producer",
                 "crates/rafter-invariants/src/producer/source.rs"
+            ),
+            (
+                "producer",
+                "crates/rafter-invariants/src/producer/test_compile.rs"
+            ),
+            (
+                "producer",
+                "crates/rafter-invariants/src/producer/test_compile"
+            ),
+            (
+                "producer",
+                "crates/rafter-invariants/src/producer/test_exec.rs"
+            ),
+            (
+                "producer",
+                "crates/rafter-invariants/src/producer/test_exec"
             ),
             ("verification", "crates/rafter-invariants/src/verification"),
             (
