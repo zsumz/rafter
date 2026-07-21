@@ -168,24 +168,29 @@ fn raw_process_execution_has_exact_non_aliasable_callsites() {
     assert_eq!(observed, expected, "raw process callsite inventory changed");
 }
 
+type RawProcessAccess = ((&'static str, PathContext, &'static str), usize);
+
 fn expected_raw_process_accesses() -> BTreeMap<(&'static str, PathContext, &'static str), usize> {
-    BTreeMap::from([
+    expected_checkout_process_accesses()
+        .into_iter()
+        .chain(expected_producer_process_accesses())
+        .chain(expected_replay_process_accesses())
+        .collect()
+}
+
+fn expected_checkout_process_accesses() -> [RawProcessAccess; 1] {
+    [(
         (
-            (
-                "crates/rafter-invariants/src/provenance/source/checkout.rs",
-                PathContext::Expression,
-                "crate::execution::process::base_environment",
-            ),
-            1,
+            "crates/rafter-invariants/src/provenance/source/checkout.rs",
+            PathContext::Expression,
+            "crate::execution::process::run_identity_command_in",
         ),
-        (
-            (
-                "crates/rafter-invariants/src/provenance/source/checkout.rs",
-                PathContext::Expression,
-                "crate::execution::process::run_identity_command_in",
-            ),
-            1,
-        ),
+        1,
+    )]
+}
+
+fn expected_producer_process_accesses() -> [RawProcessAccess; 12] {
+    [
         (
             (
                 "crates/rafter-invariants/src/producer/process/mod.rs",
@@ -282,7 +287,44 @@ fn expected_raw_process_accesses() -> BTreeMap<(&'static str, PathContext, &'sta
             ),
             1,
         ),
-    ])
+    ]
+}
+
+fn expected_replay_process_accesses() -> [RawProcessAccess; 4] {
+    [
+        (
+            (
+                "crates/rafter-invariants/src/verification/detector_replay/process.rs",
+                PathContext::Import,
+                "crate::execution::process::base_environment",
+            ),
+            1,
+        ),
+        (
+            (
+                "crates/rafter-invariants/src/verification/detector_replay/process.rs",
+                PathContext::Import,
+                "crate::execution::process::run_bounded",
+            ),
+            1,
+        ),
+        (
+            (
+                "crates/rafter-invariants/src/verification/detector_replay/process.rs",
+                PathContext::Import,
+                "crate::execution::process::BoundCommand",
+            ),
+            1,
+        ),
+        (
+            (
+                "crates/rafter-invariants/src/verification/detector_replay/process.rs",
+                PathContext::Expression,
+                "crate::execution::process::retained_diagnostics",
+            ),
+            1,
+        ),
+    ]
 }
 
 #[test]
