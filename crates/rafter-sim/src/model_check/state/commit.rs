@@ -185,7 +185,7 @@ impl CommitHistory {
                 continue;
             }
             let view = logical_logs.observed_view(cluster, *node_id);
-            let Some(prefix) = LogicalLogHistory::prefix_from_view(&view, committed_through) else {
+            let Some(prefix) = logical_logs.prefix_from_view(&view, committed_through) else {
                 self.unwitnessed_committed_prefixes
                     .insert((*node_id, committed_through));
                 continue;
@@ -216,7 +216,9 @@ impl CommitHistory {
                 continue;
             };
             let view = logical_logs.observed_view(cluster, *node_id);
-            if LogicalLogHistory::prefix_from_view(&view, node.commit_index()).is_some()
+            if logical_logs
+                .prefix_from_view(&view, node.commit_index())
+                .is_some()
                 && self.committed_in_terms.len() < len
             {
                 self.committed_in_terms.resize(len, Term::default());
@@ -238,7 +240,7 @@ impl CommitHistory {
             return observations;
         };
 
-        let comparison_through = committed.through.min(prefix.through);
+        let comparison_through = committed.through().min(prefix.through());
         let committed_slice = committed.slice_through(comparison_through);
         let observed_slice = prefix.slice_through(comparison_through);
         if committed_slice != observed_slice {
@@ -259,7 +261,7 @@ impl CommitHistory {
             observations.mark(Observation::CrossNodeCommittedPrefixAgreementChecks);
         }
 
-        if prefix.through > committed.through {
+        if prefix.through() > committed.through() {
             self.committed_prefix = Some(prefix);
             self.committed_prefix_owner = Some(node_id);
         }
@@ -305,7 +307,7 @@ impl CommitHistory {
         let Some(committed) = self.committed_prefix.as_ref() else {
             return;
         };
-        for offset in 0..committed.entries.len() {
+        for offset in 0..committed.len() {
             let index = LogIndex(offset as u64 + 1);
             if self
                 .committed_in_terms
@@ -337,22 +339,19 @@ impl CommitHistory {
                         .insert(key, checked_through);
                     continue;
                 };
-                if committed.through <= checked_through {
+                if committed.through() <= checked_through {
                     continue;
                 }
-                let checked_entries =
-                    usize::try_from(checked_through.0).unwrap_or(committed.entries.len());
-                let relevant_through = committed
-                    .entries
-                    .iter()
-                    .enumerate()
-                    .skip(checked_entries)
-                    .filter(|(offset, _)| {
+                let checked_entries = usize::try_from(checked_through.0)
+                    .unwrap_or(committed.len())
+                    .min(committed.len());
+                let relevant_through = (checked_entries..committed.len())
+                    .filter(|offset| {
                         self.committed_in_terms
                             .get(*offset)
                             .is_some_and(|term| *term < certificate.term)
                     })
-                    .map(|(offset, _)| LogIndex(offset as u64 + 1))
+                    .map(|offset| LogIndex(offset as u64 + 1))
                     .next_back();
                 if let Some(relevant_through) = relevant_through {
                     observations.mark(Observation::LaterTermLeaderPriorPrefixChecks);
@@ -372,7 +371,7 @@ impl CommitHistory {
                     }
                 }
                 self.leader_completeness_checked_through
-                    .insert(key, committed.through);
+                    .insert(key, committed.through());
             }
         }
         observations

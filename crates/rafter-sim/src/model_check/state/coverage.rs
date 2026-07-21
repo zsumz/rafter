@@ -2,9 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rafter::LogIndex;
 
-use super::{
-    logical_log::LogicalLogHistory, ClientReadOutcome, ClientWriteStatus, ExplorationState,
-};
+use super::{ClientReadOutcome, ClientWriteStatus, ExplorationState};
 use crate::model_check::observations::Observation;
 
 impl ExplorationState {
@@ -185,9 +183,12 @@ impl ExplorationState {
                     if right.term_at(*index) != Some(entry.term) {
                         continue;
                     }
-                    compared_prefix |= LogicalLogHistory::prefix_from_view(&left, *index)
-                        == LogicalLogHistory::prefix_from_view(&right, *index)
-                        && LogicalLogHistory::prefix_from_view(&left, *index).is_some();
+                    compared_prefix |= self.logical_log_history.prefix_from_view(&left, *index)
+                        == self.logical_log_history.prefix_from_view(&right, *index)
+                        && self
+                            .logical_log_history
+                            .prefix_from_view(&left, *index)
+                            .is_some();
                     compared_committed |= *index <= self.cluster.commit_index(*left_id)
                         && *index <= self.cluster.commit_index(*right_id);
                 }
