@@ -106,7 +106,7 @@ pub(super) fn run_tlc(request: TlcRequest<'_>) -> Result<TlcRun, Box<dyn Error>>
 }
 
 #[cfg(not(target_os = "linux"))]
-fn require_sound_tlc_state_binding() -> Result<(), Box<dyn Error>> {
+pub(super) fn require_sound_tlc_state_binding() -> Result<(), Box<dyn Error>> {
     Err("TLC execution requires Linux descriptor-relative state directories; this host cannot soundly expose a held directory tree to Java".into())
 }
 

@@ -48,11 +48,32 @@ fn filtered_ci_test_lanes_declare_exact_nonzero_inventories() {
 
     assert_eq!(
         direct_cargo_test_commands(&root),
-        vec![(
-            ".github/workflows/ci.yml".to_owned(),
-            "cargo test --workspace".to_owned(),
-        )],
-        "targeted workflow tests must use scripts/cargo-test-exact"
+        Vec::<(String, String)>::new(),
+        "workflow tests must use an exact inventory or the diagnosed full-workspace runner"
+    );
+    assert!(ci.contains(
+        "scripts/ci-run-diagnosed workspace-tests target/rafter-invariants/ci-diagnostics/workspace-tests.log cargo test --workspace"
+    ));
+
+    let diagnosed = root.join("scripts/ci-run-diagnosed");
+    let diagnosed_source = read(&diagnosed);
+    for required in [
+        "pipeline_status=(\"${PIPESTATUS[@]}\")",
+        "tail -c 3500",
+        "tr '\\r\\n' '  '",
+        "::error title=${label}",
+        "exit \"$command_status\"",
+    ] {
+        assert!(
+            diagnosed_source.contains(required),
+            "diagnostic runner omitted fail-closed fragment: {required}"
+        );
+    }
+    #[cfg(unix)]
+    assert_ne!(
+        fs::metadata(diagnosed).unwrap().permissions().mode() & 0o111,
+        0,
+        "diagnostic runner must be executable"
     );
 }
 
