@@ -166,6 +166,11 @@ fn process_log(
 fn prepare_state(root: &std::path::Path) -> Result<(), std::io::Error> {
     fs::create_dir_all(
         root.join("target/rafter-invariants/maelstrom/abc/nightly/base/trial-0/durable"),
+    )?;
+    write(
+        root,
+        "artifacts/invariants/evidence/trial-0/maelstrom.jar",
+        "jar",
     )
 }
 
