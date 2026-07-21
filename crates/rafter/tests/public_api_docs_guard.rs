@@ -254,14 +254,6 @@ const WARNING_ALLOWLIST: &[WarningAllow] = &[
     },
     WarningAllow {
         kind: WarningKind::LibraryExpect,
-        path: "crates/rafter-sim/src/model_check/state/logical_log.rs",
-        symbol: None,
-        text: Some(r#".expect("observed node must exist")"#),
-        classification_label: SIM_INVARIANT_LABEL,
-        reason: SIM_CLUSTER_INVARIANT,
-    },
-    WarningAllow {
-        kind: WarningKind::LibraryExpect,
         path: "crates/rafter-sim/src/model_check/state/seeds.rs",
         symbol: None,
         text: Some(r#".expect("pre-committed follower seed is valid")"#),
