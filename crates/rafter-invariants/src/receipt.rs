@@ -14,11 +14,9 @@ use crate::{
 
 #[cfg(test)]
 mod fixtures;
+pub(crate) use crate::verification::process_invocation_matches_source;
 #[cfg(test)]
 pub(crate) use crate::verification::process_launchers_match_runtime;
-pub(crate) use crate::verification::{
-    process_invocation_matches_source, script_invocation_matches_source,
-};
 #[cfg(test)]
 pub(crate) use fixtures::{
     launchers as fixture_launchers, process_runtime as fixture_process_runtime,
