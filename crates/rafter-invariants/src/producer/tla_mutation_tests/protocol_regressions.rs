@@ -1,3 +1,5 @@
+//! TLA+ protocol transition and membership mutation regression scenarios.
+
 use std::fs;
 
 use super::support::*;
