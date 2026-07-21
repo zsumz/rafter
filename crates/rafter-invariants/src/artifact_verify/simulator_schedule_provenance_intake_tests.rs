@@ -42,9 +42,14 @@ fn deleted_and_mutated_referenced_artifacts_are_unverifiable() {
 
         let intake = verify_paths(&fixture, std::slice::from_ref(&fixture.bundle_path));
         assert!(intake.accepted().is_empty());
-        assert!(intake.defects().iter().any(|defect| {
-            defect.kind() == IntakeDefectKind::Unverifiable && defect.message().contains("artifact")
-        }));
+        assert!(
+            intake.defects().iter().any(|defect| {
+                defect.kind() == IntakeDefectKind::Unverifiable
+                    && defect.message().contains("artifact")
+            }),
+            "{:?}",
+            intake.defects()
+        );
         assert_all_red(&fixture, &intake);
     }
 }
@@ -55,12 +60,16 @@ fn dirty_checkout_is_unverifiable_and_new_clean_commit_is_stale() {
     fs::write(dirty.root.join("uncommitted-source-change"), b"dirty\n")
         .expect("write dirty checkout marker");
     let dirty_intake = verify_paths(&dirty, std::slice::from_ref(&dirty.bundle_path));
-    assert!(dirty_intake.defects().iter().any(|defect| {
-        defect.kind() == IntakeDefectKind::Unverifiable
-            && defect
-                .message()
-                .contains("clean tracked and untracked worktree")
-    }));
+    assert!(
+        dirty_intake.defects().iter().any(|defect| {
+            defect.kind() == IntakeDefectKind::Unverifiable
+                && defect
+                    .message()
+                    .contains("clean tracked and untracked worktree")
+        }),
+        "{:?}",
+        dirty_intake.defects()
+    );
     assert_all_red(&dirty, &dirty_intake);
     drop(dirty);
 

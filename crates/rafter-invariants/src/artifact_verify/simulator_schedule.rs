@@ -123,33 +123,9 @@ fn verify_simulator_invocations(
         )));
     };
     let emitted = emitted_simulator_executable(bundle, &roots, authenticated)?;
-    let environment_sha256 = bundle.execution.source.environment_sha256.as_str();
-    let expected: Vec<(String, Vec<String>)> = match bundle.profile.as_str() {
-        "pr" => vec![
-            (
-                "fast".to_owned(),
-                vec!["--profile".to_owned(), "fast".to_owned()],
-            ),
-            (
-                "raft-soak".to_owned(),
-                vec!["--profile".to_owned(), "raft-soak".to_owned()],
-            ),
-        ],
-        profile @ ("nightly" | "weekly") => {
-            let label = format!("raft-{profile}");
-            let seeds = crate::producer::expected_scheduled_seeds(profile, &bundle.source_ref)
-                .ok_or_else(|| AggregateError::new("scheduled seeds are missing".to_owned()))?;
-            vec![(
-                label.clone(),
-                vec!["--profile".to_owned(), label, "--seed".to_owned(), seeds],
-            )]
-        }
-        profile => {
-            return Err(AggregateError::new(format!(
-                "unknown simulator profile {profile}"
-            )))
-        }
-    };
+    let environment = &bundle.execution.invocation.environment;
+    let environment_sha256 = bundle.execution.invocation.environment_sha256.as_str();
+    let expected = expected_simulator_invocations(bundle)?;
     if sources.len() > expected.len() {
         return Err(AggregateError::new(
             "simulator log count exceeds the execution plan".to_owned(),
@@ -189,9 +165,9 @@ fn verify_simulator_invocations(
                 &bundle.execution.source,
             )
             || Path::new(&observed.invocation.current_dir) != roots.producer
-            || observed.invocation.environment_sha256 != environment_sha256
-            || !crate::provenance::invocation::environment_matches_digest(
-                &observed.invocation.environment,
+            || !invocation_environment_matches(
+                &observed.invocation,
+                environment,
                 environment_sha256,
             )
         {
@@ -209,6 +185,48 @@ fn verify_simulator_invocations(
         diagnostics,
         complete: matched == expected_count,
     })
+}
+
+fn expected_simulator_invocations(
+    bundle: &ResultBundle,
+) -> Result<Vec<(String, Vec<String>)>, AggregateError> {
+    match bundle.profile.as_str() {
+        "pr" => Ok(vec![
+            (
+                "fast".to_owned(),
+                vec!["--profile".to_owned(), "fast".to_owned()],
+            ),
+            (
+                "raft-soak".to_owned(),
+                vec!["--profile".to_owned(), "raft-soak".to_owned()],
+            ),
+        ]),
+        profile @ ("nightly" | "weekly") => {
+            let label = format!("raft-{profile}");
+            let seeds = crate::producer::expected_scheduled_seeds(profile, &bundle.source_ref)
+                .ok_or_else(|| AggregateError::new("scheduled seeds are missing".to_owned()))?;
+            Ok(vec![(
+                label.clone(),
+                vec!["--profile".to_owned(), label, "--seed".to_owned(), seeds],
+            )])
+        }
+        profile => Err(AggregateError::new(format!(
+            "unknown simulator profile {profile}"
+        ))),
+    }
+}
+
+fn invocation_environment_matches(
+    invocation: &crate::InvocationReceipt,
+    expected: &std::collections::BTreeMap<String, String>,
+    expected_digest: &str,
+) -> bool {
+    invocation.environment == *expected
+        && invocation.environment_sha256 == expected_digest
+        && crate::provenance::invocation::environment_matches_digest(
+            &invocation.environment,
+            expected_digest,
+        )
 }
 
 fn simulator_roots(bundle: &ResultBundle, root: &Path) -> Result<SimulatorRoots, AggregateError> {
@@ -340,10 +358,7 @@ fn simulator_compile_target_dir(
             &process.invocation.environment,
             &process.invocation.environment_sha256,
         )
-        || !crate::provenance::invocation::environment_matches_digest(
-            &base_environment,
-            &bundle.execution.source.environment_sha256,
-        )
+        || base_environment != bundle.execution.invocation.environment
         || target_dir != expected_target_dir
     {
         return Err(AggregateError::new(

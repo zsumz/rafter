@@ -28,7 +28,7 @@ struct NegativeDetectorContext<'a> {
     root: &'a Path,
     source_root: &'a Path,
     authenticated: &'a AuthenticatedArtifacts,
-    detector_sources: &'a mut super::detector_source::DetectorSourceCache,
+    detector_sources: &'a mut crate::verification::DetectorFixtureAnalysis,
     test_logs: &'a mut BTreeMap<String, String>,
 }
 
@@ -68,7 +68,7 @@ pub(super) fn verify_simulator_logs(
         .into_values()
         .collect::<Vec<_>>();
     let mut test_logs = BTreeMap::<String, String>::new();
-    let mut detector_sources = super::detector_source::DetectorSourceCache::default();
+    let mut detector_sources = crate::verification::DetectorFixtureAnalysis::default();
     let mut negative_detector = NegativeDetectorContext {
         bundle,
         root,
@@ -230,7 +230,7 @@ fn verify_negative_detector_evidence(
     check: &crate::CheckReceipt,
     descriptor: &crate::EvidenceDescriptor,
     identity: &crate::SimulatorIdentity,
-    detector_sources: &mut super::detector_source::DetectorSourceCache,
+    detector_sources: &mut crate::verification::DetectorFixtureAnalysis,
     test_logs: &mut BTreeMap<String, String>,
 ) -> Result<(), AggregateError> {
     let authenticated = crate::verification::snapshot_available_artifacts(bundle, root)?;
@@ -571,13 +571,13 @@ fn verify_negative_fixture_binding(
     descriptor: &crate::EvidenceDescriptor,
     fixture: &str,
     check_id: &str,
-) -> Result<super::detector_source::DetectorInvocationContract, AggregateError> {
+) -> Result<crate::verification::DetectorFixtureContract, AggregateError> {
     verify_negative_fixture_binding_cached(
         root,
         descriptor,
         fixture,
         check_id,
-        &mut super::detector_source::DetectorSourceCache::default(),
+        &mut crate::verification::DetectorFixtureAnalysis::default(),
     )
 }
 
@@ -586,8 +586,8 @@ fn verify_negative_fixture_binding_cached(
     descriptor: &crate::EvidenceDescriptor,
     fixture: &str,
     check_id: &str,
-    cache: &mut super::detector_source::DetectorSourceCache,
-) -> Result<super::detector_source::DetectorInvocationContract, AggregateError> {
+    analysis: &mut crate::verification::DetectorFixtureAnalysis,
+) -> Result<crate::verification::DetectorFixtureContract, AggregateError> {
     let fixture_path = descriptor.negative_fixture_path.as_deref().ok_or_else(|| {
         AggregateError::new(format!(
             "simulator check {check_id} has no registered negative fixture path"
@@ -643,8 +643,8 @@ fn verify_negative_fixture_binding_cached(
             "read simulator detector source {detector_path}: {error}"
         ))
     })?;
-    super::detector_source::verify_invocation_bound_detector_cached(
-        &crate::DetectorFixtureSourceBinding {
+    analysis
+        .analyze(&crate::DetectorFixtureSourceBinding {
             fixture_source: &fixture_source,
             detector_source: &detector_source,
             source_root: &canonical_root,
@@ -653,9 +653,7 @@ fn verify_negative_fixture_binding_cached(
             test_identity,
             fixture,
             detector,
-        },
-        cache,
-    )
+        })
     .map_err(|error| {
         AggregateError::new(format!(
             "simulator check {check_id} does not bind fixture {fixture} to detector {detector}: {error}"

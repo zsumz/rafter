@@ -199,8 +199,12 @@ fn protected_compiler_targets_require_exact_canonical_artifacts() {
         false,
     );
     let exact = format!("{oracle}\n{macros}\n");
-    crate::verification::target::verify_protected_compiler_artifacts(exact.as_bytes(), &workspace)
-        .expect("canonical fresh and rebuilt artifacts both verify");
+    crate::verification::target::verify_protected_compiler_artifacts(
+        exact.as_bytes(),
+        &workspace,
+        &workspace,
+    )
+    .expect("canonical fresh and rebuilt artifacts both verify");
 
     let substituted = format!(
         "{}\n{macros}\n",
@@ -210,13 +214,15 @@ fn protected_compiler_targets_require_exact_canonical_artifacts() {
         crate::verification::target::verify_protected_compiler_artifacts(
             substituted.as_bytes(),
             &workspace,
+            &workspace,
         )
         .is_err()
     );
     assert!(
         crate::verification::target::verify_protected_compiler_artifacts(
             oracle.as_bytes(),
-            &workspace
+            &workspace,
+            &workspace,
         )
         .is_err()
     );
@@ -225,6 +231,59 @@ fn protected_compiler_targets_require_exact_canonical_artifacts() {
         crate::verification::target::verify_protected_compiler_artifacts(
             duplicate.as_bytes(),
             &workspace,
+            &workspace,
+        )
+        .is_err()
+    );
+}
+
+#[test]
+fn protected_compiler_targets_rebase_recorded_paths_into_the_active_checkout() {
+    let active =
+        std::fs::canonicalize(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../.."))
+            .expect("canonical workspace");
+    let producer = std::path::Path::new("/producer/rafter");
+    let artifact = |package: &str, name: &str, kind: &str| {
+        let package_path = producer.join("crates").join(package);
+        serde_json::json!({
+            "reason": "compiler-artifact",
+            "package_id": format!("path+file://{}#0.0.1", package_path.display()),
+            "target": {
+                "name": name,
+                "kind": [kind],
+                "src_path": package_path.join("src/lib.rs"),
+            },
+            "fresh": false,
+            "executable": null,
+        })
+        .to_string()
+    };
+    let output = format!(
+        "{}\n{}\n",
+        artifact("rafter-invariant-test", "rafter_invariant_test", "lib"),
+        artifact(
+            "rafter-invariant-test-macros",
+            "rafter_invariant_test_macros",
+            "proc-macro"
+        )
+    );
+
+    crate::verification::target::verify_protected_compiler_artifacts(
+        output.as_bytes(),
+        producer,
+        &active,
+    )
+    .expect("recorded producer paths map to exact active protected sources");
+
+    let substituted = output.replace(
+        "/producer/rafter/crates/rafter-invariant-test/src/lib.rs",
+        "/producer/rafter/crates/rafter-invariant-test/src/../src/lib.rs",
+    );
+    assert!(
+        crate::verification::target::verify_protected_compiler_artifacts(
+            substituted.as_bytes(),
+            producer,
+            &active,
         )
         .is_err()
     );

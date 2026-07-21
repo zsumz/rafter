@@ -2,7 +2,6 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    fs,
     path::{Component, Path, PathBuf},
 };
 
@@ -14,6 +13,7 @@ use crate::{
 };
 
 use super::test_logs::test_execution_profile;
+use crate::verification::RecordedWorkspace;
 
 #[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub(super) struct CargoTargetKey {
@@ -72,10 +72,8 @@ pub(super) fn verify_compile_invocations(
             bundle.runner
         )));
     }
-    let current_dir = fs::canonicalize(root)
-        .map_err(|error| AggregateError::new(format!("canonicalize compile root: {error}")))?
-        .to_string_lossy()
-        .into_owned();
+    let workspace = RecordedWorkspace::new(bundle, root)?;
+    let current_dir = workspace.producer().to_string_lossy().into_owned();
     let preserved_test_binaries = preserved_test_binaries(bundle, catalog)?;
     let mut emitted_test_executables = BTreeMap::new();
     for log in logs {
@@ -102,7 +100,7 @@ pub(super) fn verify_compile_invocations(
         }
         if bundle.runner == "tests" || observed.label != "simulator compile" {
             if let Some(executable) =
-                verify_test_compile(bundle, observed, root, &preserved_test_binaries)?
+                verify_test_compile(bundle, observed, &workspace, &preserved_test_binaries)?
             {
                 let target = executable.target.clone();
                 if emitted_test_executables
@@ -115,7 +113,7 @@ pub(super) fn verify_compile_invocations(
                 }
             }
         } else {
-            verify_simulator_compile(bundle, observed, root)?;
+            verify_simulator_compile(bundle, observed, &workspace)?;
         }
         verify_compile_process_outcome(bundle, observed)?;
     }
@@ -136,7 +134,7 @@ pub(super) fn verify_compile_invocations(
 fn verify_test_compile(
     bundle: &ResultBundle,
     observed: &crate::evidence::format::process::LabeledProcess,
-    root: &Path,
+    workspace: &RecordedWorkspace,
     preserved: &BTreeMap<CargoTargetKey, PreservedTestBinary>,
 ) -> Result<Option<EmittedTestExecutable>, AggregateError> {
     let parts = observed.label.split('/').collect::<Vec<_>>();
@@ -176,9 +174,7 @@ fn verify_test_compile(
     let execution_profile = test_execution_profile(bundle);
     let expected_target =
         format!("target/rafter-invariants/build/{source_prefix}/{execution_profile}-tests");
-    let expected_target_dir = fs::canonicalize(root)
-        .map_err(|error| AggregateError::new(format!("canonicalize compile root: {error}")))?
-        .join(&expected_target);
+    let expected_target_dir = workspace.producer_path(Path::new(&expected_target))?;
     let mut base_environment = observed.invocation.environment.clone();
     let target_dir = base_environment.remove("CARGO_TARGET_DIR");
     if observed.invocation.arguments != expected
@@ -187,10 +183,7 @@ fn verify_test_compile(
             &observed.invocation.environment,
             &observed.invocation.environment_sha256,
         )
-        || !crate::provenance::invocation::environment_matches_digest(
-            &base_environment,
-            &bundle.execution.source.environment_sha256,
-        )
+        || base_environment != bundle.execution.invocation.environment
     {
         return Err(AggregateError::new(
             "test compile log does not match the exact Cargo invocation plan".to_owned(),
@@ -208,7 +201,7 @@ fn verify_test_compile(
     let artifact = compiler_artifact_for_test(
         observed.stdout.as_bytes(),
         &target_key,
-        root,
+        workspace,
         &expected_target_dir,
         &observed.label,
     )?;
@@ -228,12 +221,16 @@ struct ParsedCompilerArtifact {
 fn compiler_artifact_for_test(
     bytes: &[u8],
     expected: &CargoTargetKey,
-    root: &Path,
+    workspace: &RecordedWorkspace,
     expected_target_dir: &Path,
     target_label: &str,
 ) -> Result<ParsedCompilerArtifact, AggregateError> {
-    crate::verification::target::verify_protected_compiler_artifacts(bytes, root)
-        .map_err(AggregateError::new)?;
+    crate::verification::target::verify_protected_compiler_artifacts(
+        bytes,
+        workspace.producer(),
+        workspace.active(),
+    )
+    .map_err(AggregateError::new)?;
     let mut artifacts = Vec::new();
     for line in String::from_utf8_lossy(bytes).lines() {
         let Ok(message) = serde_json::from_str::<CargoCompilerMessage>(line) else {
@@ -258,7 +255,7 @@ fn compiler_artifact_for_test(
                 "compiler-artifact for {target_label} omitted Cargo package_id"
             ))
         })?;
-        verify_cargo_package_identity(&package_id, &target.src_path, &expected.package, root)?;
+        verify_cargo_package_identity(&package_id, &target.src_path, &expected.package, workspace)?;
         let executable = message.executable.ok_or_else(|| {
             AggregateError::new(format!(
                 "compiler-artifact for {target_label} omitted its executable"
@@ -291,14 +288,10 @@ fn verify_cargo_package_identity(
     package_id: &str,
     src_path: &Path,
     expected_package: &str,
-    root: &Path,
+    workspace: &RecordedWorkspace,
 ) -> Result<(), AggregateError> {
-    let expected_package_dir = fs::canonicalize(root.join("crates").join(expected_package))
-        .map_err(|error| {
-            AggregateError::new(format!(
-                "canonicalize workspace package {expected_package}: {error}"
-            ))
-        })?;
+    let expected_package_dir =
+        workspace.producer_path(Path::new("crates").join(expected_package).as_path())?;
     let encoded = package_id.strip_prefix("path+file://").ok_or_else(|| {
         AggregateError::new(format!(
             "compiler-artifact package_id for {expected_package} is not a workspace path package"
@@ -314,16 +307,8 @@ fn verify_cargo_package_identity(
             "compiler-artifact package_id for {expected_package} has an empty version"
         )));
     }
-    let observed_package_dir = fs::canonicalize(package_path).map_err(|error| {
-        AggregateError::new(format!(
-            "canonicalize compiler-artifact package_id for {expected_package}: {error}"
-        ))
-    })?;
-    let observed_source = fs::canonicalize(src_path).map_err(|error| {
-        AggregateError::new(format!(
-            "canonicalize compiler-artifact source for {expected_package}: {error}"
-        ))
-    })?;
+    let observed_package_dir = Path::new(package_path);
+    let observed_source = src_path;
     if observed_package_dir != expected_package_dir
         || !observed_source.starts_with(&expected_package_dir)
     {
@@ -331,6 +316,14 @@ fn verify_cargo_package_identity(
             "compiler-artifact package_id or source path does not match workspace package {expected_package}"
         )));
     }
+    workspace.verify_active_directory(
+        observed_package_dir,
+        &format!("compiler-artifact package {expected_package}"),
+    )?;
+    workspace.verify_active_file(
+        observed_source,
+        &format!("compiler-artifact source for {expected_package}"),
+    )?;
     Ok(())
 }
 
@@ -550,7 +543,7 @@ pub(super) fn verify_target_process_binding(
 fn verify_simulator_compile(
     bundle: &ResultBundle,
     observed: &crate::evidence::format::process::LabeledProcess,
-    root: &Path,
+    workspace: &RecordedWorkspace,
 ) -> Result<(), AggregateError> {
     let expected_arguments = [
         "build",
@@ -567,9 +560,7 @@ fn verify_simulator_compile(
         "target/rafter-invariants/simulator-build/{source_prefix}/{}",
         bundle.profile
     );
-    let expected_target_dir = fs::canonicalize(root)
-        .map_err(|error| AggregateError::new(format!("canonicalize compile root: {error}")))?
-        .join(expected_target);
+    let expected_target_dir = workspace.producer_path(Path::new(&expected_target))?;
     let mut base_environment = observed.invocation.environment.clone();
     let target = base_environment.remove("CARGO_TARGET_DIR");
     if observed.label != "simulator compile" {
@@ -587,10 +578,7 @@ fn verify_simulator_compile(
             "simulator compile log has the wrong Cargo target directory".to_owned(),
         ));
     }
-    if !crate::provenance::invocation::environment_matches_digest(
-        &base_environment,
-        &bundle.execution.source.environment_sha256,
-    ) {
+    if base_environment != bundle.execution.invocation.environment {
         return Err(AggregateError::new(
             "simulator compile log has the wrong base environment".to_owned(),
         ));
