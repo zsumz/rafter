@@ -4,6 +4,7 @@ mod detector;
 mod event;
 mod liveness;
 mod observation;
+mod receipt;
 pub(crate) mod schedule;
 mod verify;
 
@@ -12,6 +13,7 @@ pub(crate) mod event_semantics_test_support;
 
 pub(crate) use detector::DetectorLogVerifier;
 pub(crate) use liveness::{derive_verified_liveness_binding, verify_present_liveness_reports};
+pub(crate) use receipt::validate as validate_receipt;
 pub(crate) use verify::verify_simulator_logs;
 
 #[cfg(test)]

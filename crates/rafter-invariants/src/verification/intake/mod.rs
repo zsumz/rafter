@@ -5,6 +5,7 @@ mod json;
 mod model;
 mod paths;
 mod preflight;
+mod receipt;
 mod receipt_file;
 mod replay;
 mod verify;

@@ -2,9 +2,9 @@
 
 pub(super) const PRODUCTION_TARGET_LINES: usize = 300;
 pub(super) const TEST_TARGET_LINES: usize = 400;
-pub(super) const MAX_PRODUCTION_FILES_OVER_TARGET: usize = 24;
+pub(super) const MAX_PRODUCTION_FILES_OVER_TARGET: usize = 23;
 pub(super) const MAX_TEST_FILES_OVER_TARGET: usize = 10;
-pub(super) const MAX_FILES_WITHOUT_MODULE_CONTRACTS: usize = 26;
+pub(super) const MAX_FILES_WITHOUT_MODULE_CONTRACTS: usize = 24;
 pub(super) const MAX_LEGACY_VERIFIER_PRODUCER_REFERENCES: usize = 1;
 pub(super) const MAX_LEGACY_VERIFIER_PRODUCER_IMAGE_REFERENCES: usize = 0;
 pub(super) const MAX_LEGACY_VERIFIER_RUST_TARGET_REFERENCES: usize = 0;
@@ -182,14 +182,6 @@ pub(super) const ENFORCED_DOMAIN_SOURCES: &[EnforcedDomainSource] = &[
         path: "crates/rafter-invariants/src/artifact_verify_maelstrom_support.rs",
     },
     EnforcedDomainSource {
-        domain: "verification",
-        path: "crates/rafter-invariants/src/receipt_maelstrom.rs",
-    },
-    EnforcedDomainSource {
-        domain: "verification",
-        path: "crates/rafter-invariants/src/receipt_tla.rs",
-    },
-    EnforcedDomainSource {
         domain: "verdict",
         path: "crates/rafter-invariants/src/verdict",
     },
@@ -204,19 +196,11 @@ pub(super) const ENFORCED_DOMAIN_SOURCES: &[EnforcedDomainSource] = &[
 ];
 
 /// Exact compatibility edges retained while physical modules move to their owning domains.
-pub(super) const REVIEWED_DOMAIN_IMPORT_EXCEPTIONS: &[ReviewedDomainImportException] = &[
-    ReviewedDomainImportException {
+pub(super) const REVIEWED_DOMAIN_IMPORT_EXCEPTIONS: &[ReviewedDomainImportException] =
+    &[ReviewedDomainImportException {
         owner_domain: "verification",
         source: "crates/rafter-invariants/src/verification/artifact.rs",
         import: &["crate", "artifact_verify", "verify"],
         reason: "the verification facade still delegates to the legacy artifact-verifier mount",
         tracking_label: "INV-ARCH-ARTIFACT-VERIFIER-MIGRATION",
-    },
-    ReviewedDomainImportException {
-        owner_domain: "verification",
-        source: "crates/rafter-invariants/src/verification/intake/verify.rs",
-        import: &["crate", "receipt", "collect_results"],
-        reason: "typed intake delegates to the legacy root receipt validator until runner-family validators move together",
-        tracking_label: "INV-ARCH-RECEIPT-VALIDATION-MIGRATION",
-    },
-];
+    }];

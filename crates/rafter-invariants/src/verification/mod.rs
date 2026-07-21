@@ -13,6 +13,7 @@ mod publication;
 pub(crate) mod simulator;
 pub(crate) mod source;
 pub(crate) mod target;
+pub(crate) mod test_runner;
 pub(crate) mod tla;
 mod workspace;
 

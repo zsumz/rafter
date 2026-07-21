@@ -14,11 +14,12 @@ mod gate;
 mod plan;
 mod producer;
 mod provenance;
+#[cfg(test)]
 mod receipt;
+#[cfg(test)]
 mod receipt_maelstrom;
-mod receipt_simulator;
+#[cfg(test)]
 mod receipt_tests;
-mod receipt_tla;
 mod verdict;
 mod verification;
 
