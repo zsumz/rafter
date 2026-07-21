@@ -1,3 +1,5 @@
+//! Current-snapshot publication, reopening, and payload-source scenarios.
+
 use std::fs;
 
 use rafter::{RaftSnapshot, SnapshotChunkRequest, SnapshotChunkSource};
