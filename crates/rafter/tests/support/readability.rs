@@ -17,11 +17,24 @@ pub(super) const FACADE_PATHS: &[&str] = &[
     "crates/rafter/src/node/state/membership/mod.rs",
     "crates/rafter/src/types/mod.rs",
     "crates/rafter/src/types/snapshot/mod.rs",
-    "crates/rafter-sim/src/model_check/state/logical_log.rs",
-    "crates/rafter-sim/src/model_check/state/logical_log/types.rs",
+    "crates/rafter-storage/src/lib.rs",
+    "crates/rafter-storage/src/format/mod.rs",
+    "crates/rafter-storage/src/format/v1/mod.rs",
+    "crates/rafter-storage/src/raft_hard_state_codec.rs",
+    "crates/rafter-storage/src/raft_hard_state_store.rs",
+    "crates/rafter-storage/src/raft_log_compaction.rs",
+    "crates/rafter-storage/src/raft_log_entry_codec.rs",
+    "crates/rafter-storage/src/raft_log_segment.rs",
+    "crates/rafter-storage/src/raft_snapshot_codec.rs",
+    "crates/rafter-storage/src/raft_snapshot_store.rs",
+    "crates/rafter-storage/src/raft_snapshot_store/inventory.rs",
+    "crates/rafter-storage/src/raft_snapshot_store/pending_transfer/codec.rs",
+    "crates/rafter-storage/src/raft_snapshot_store/pending_transfer/error.rs",
+    "crates/rafter-storage/src/raft_snapshot_store/pending_transfer/manifest.rs",
 ];
 
 /// Test modules that only map a mature domain to focused scenario files.
+#[allow(dead_code)]
 pub(super) const TEST_FACADE_PATHS: &[&str] = &[
     "crates/rafter-codec/src/tests/mod.rs",
     "crates/rafter/src/node/tests.rs",
