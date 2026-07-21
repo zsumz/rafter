@@ -3,7 +3,7 @@
 use std::{collections::BTreeMap, path::Path};
 
 use crate::{
-    evidence::{detector_proof::TranscriptRecord, CheckReceipt, ResultBundle},
+    evidence::{CheckReceipt, ResultBundle},
     verification::AggregateError,
 };
 
@@ -99,67 +99,14 @@ pub(super) fn require_detector_witness_contract_in_streams(
     challenge: &str,
     expected_witnesses: &BTreeMap<String, usize>,
 ) -> Result<(), AggregateError> {
-    let witnesses = verify_transcript_policy(stdout, stderr, token, challenge)?;
-    if &witnesses != expected_witnesses {
-        return Err(AggregateError::new(format!(
-            "detector log witness contract mismatch: expected {expected_witnesses:?}, observed {witnesses:?}"
-        )));
-    }
-    Ok(())
-}
-
-fn verify_transcript_policy(
-    stdout: &str,
-    stderr: &str,
-    expected_token: &str,
-    expected_challenge: &str,
-) -> Result<BTreeMap<String, usize>, AggregateError> {
-    crate::evidence::detector_proof::validate_challenge(expected_challenge)
-        .map_err(|error| AggregateError::new(format!("detector proof failed: {error}")))?;
-    let records = crate::evidence::detector_proof::decode_transcript(stdout, stderr)
-        .map_err(|error| AggregateError::new(format!("detector proof failed: {error}")))?;
-    let mut witnesses = BTreeMap::<String, usize>::new();
-    let mut proofs = BTreeMap::<String, usize>::new();
-    for record in records {
-        match record {
-            TranscriptRecord::Witness { token, witness } => {
-                if token != expected_token {
-                    return Err(AggregateError::new(
-                        "detector witness is bound to another execution token".to_owned(),
-                    ));
-                }
-                *witnesses.entry(witness).or_default() += 1;
-            }
-            TranscriptRecord::Proof {
-                token,
-                witness,
-                challenge,
-            } => {
-                if token != expected_token {
-                    return Err(AggregateError::new(
-                        "detector proof is bound to another execution token".to_owned(),
-                    ));
-                }
-                if challenge != expected_challenge {
-                    return Err(AggregateError::new(
-                        "detector proof used the wrong post-invocation challenge".to_owned(),
-                    ));
-                }
-                *proofs.entry(witness).or_default() += 1;
-            }
-        }
-    }
-    if witnesses.is_empty() {
-        return Err(AggregateError::new(
-            "detector transcript contains no runtime witnesses".to_owned(),
-        ));
-    }
-    if witnesses != proofs {
-        return Err(AggregateError::new(format!(
-            "detector witness and proof inventories differ: witnesses={witnesses:?}, proofs={proofs:?}"
-        )));
-    }
-    Ok(witnesses)
+    crate::verification::verify_detector_transcript(
+        stdout,
+        stderr,
+        token,
+        challenge,
+        expected_witnesses,
+    )
+    .map_err(AggregateError::new)
 }
 
 #[cfg(test)]

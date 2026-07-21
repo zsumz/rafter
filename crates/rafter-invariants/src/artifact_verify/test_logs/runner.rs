@@ -18,9 +18,19 @@ use crate::verification::AuthenticatedArtifacts;
 pub(in crate::artifact_verify) fn verify_test_logs(
     bundle: &ResultBundle,
     root: &Path,
+    source_root: &Path,
     catalog: &Catalog,
     authenticated: &AuthenticatedArtifacts,
 ) -> Result<(), AggregateError> {
+    let bindings = bundle
+        .execution
+        .checks
+        .iter()
+        .map(|check| super::registered_test_binding(catalog, check))
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+    crate::verification::target::verify_registered_oracle_sources(source_root, &bindings)
+        .map_err(AggregateError::new)?;
+
     for check in &bundle.execution.checks {
         let outcomes = bundle
             .results

@@ -1,10 +1,10 @@
 //! Libtest invocation plans, provenance, environments, and observations.
 
-use std::{collections::BTreeMap, fs, path::Path};
+use std::{collections::BTreeMap, path::Path};
 
 use crate::{
     evidence::{CheckReceipt, ResultBundle},
-    verification::AggregateError,
+    verification::{AggregateError, RecordedWorkspace},
 };
 
 use super::environment::{exact_test_environment, verify_exact_environment};
@@ -53,11 +53,10 @@ pub(super) fn verify_test_process_plan(
         .iter()
         .find(|artifact| artifact.kind == "test-binary")
         .ok_or_else(|| AggregateError::new("test binary artifact is missing".to_owned()))?;
-    let current_dir = fs::canonicalize(root)
-        .map_err(|error| AggregateError::new(format!("canonicalize test root: {error}")))?
-        .to_string_lossy()
-        .into_owned();
-    let base_digest = bundle.execution.source.environment_sha256.as_str();
+    let workspace = RecordedWorkspace::new(bundle, root)?;
+    let current_dir = workspace.producer().to_string_lossy().into_owned();
+    let base_environment = &bundle.execution.invocation.environment;
+    let base_digest = bundle.execution.invocation.environment_sha256.as_str();
     let exact_environment = exact_test_environment(
         bundle,
         check,
@@ -87,6 +86,7 @@ pub(super) fn verify_test_process_plan(
             .any(|(expected, observed)| {
                 observed.label != expected.0
                     || observed.invocation.arguments != expected.1
+                    || observed.invocation.environment != *base_environment
                     || observed.invocation.environment_sha256 != expected.2
                     || !crate::provenance::invocation::environment_matches_digest(
                         &observed.invocation.environment,

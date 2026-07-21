@@ -7,7 +7,6 @@ use super::{
         require_detector_witness_contract_in_streams, require_detector_witness_in_streams,
         verify_detector_harness_challenge,
     },
-    environment::managed_detector_proof_socket,
     policy::{classify_exact_execution, ExactTestExecution},
     require_detector_witness,
 };
@@ -30,17 +29,13 @@ fn proven_transcript(token: &str, witnesses: &[&str]) -> (String, String) {
 }
 
 #[test]
-fn detector_proof_socket_must_be_a_normal_managed_relative_path() {
-    assert!(managed_detector_proof_socket(std::path::Path::new(
-        "target/rafter-invariants/tmp/detector-proof/12-3-5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a.sock",
-    )));
-    for path in [
-        "/target/rafter-invariants/tmp/detector-proof/12-3-5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a.sock",
-        "target/rafter-invariants/tmp/detector-proof/../12-3-5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a.sock",
-        "target/rafter-invariants/tmp/detector-proof/nested/12-3-5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a.sock",
-        "target/rafter-invariants/tmp/detector-proof/12-3.txt",
-    ] {
-        assert!(!managed_detector_proof_socket(std::path::Path::new(path)));
+fn detector_proof_descriptor_must_be_canonical_and_non_standard() {
+    assert!(crate::evidence::detector_proof::canonical_descriptor("3"));
+    assert!(crate::evidence::detector_proof::canonical_descriptor("19"));
+    for descriptor in ["", "0", "1", "2", "03", "+3", " 3", "3 ", "three"] {
+        assert!(!crate::evidence::detector_proof::canonical_descriptor(
+            descriptor
+        ));
     }
 }
 
