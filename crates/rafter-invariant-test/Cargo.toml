@@ -11,6 +11,9 @@ rust-version.workspace = true
 [dependencies]
 rafter-invariant-test-macros = { path = "../rafter-invariant-test-macros" }
 
+[target.'cfg(unix)'.dependencies]
+nix = { version = "0.31.3", default-features = false, features = ["socket"] }
+
 [dev-dependencies]
 trybuild = "1"
 
