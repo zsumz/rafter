@@ -73,12 +73,16 @@ defaults:
 jobs:
   smoke:
     name: benchmark-smoke
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.96.1
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: 1.96.1
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
       - name: Rafter-only smoke benchmark
@@ -119,7 +123,7 @@ jobs:
           fi
       - name: Upload smoke artifact
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: bench-compare-smoke
           path: target/bench-compare/rafter-only-smoke.json
@@ -128,18 +132,22 @@ jobs:
   evidence:
     name: benchmark-evidence
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 75
     env:
       BENCH_RUNS: ${{ github.event_name == 'workflow_dispatch' && inputs.runs || '5' }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.96.1
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: 1.96.1
       - name: Install protoc for full comparison
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends protobuf-compiler
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
       - name: Rafter-only benchmark evidence
@@ -188,7 +196,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Upload benchmark evidence artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: bench-compare-evidence
           path: |
@@ -199,14 +207,15 @@ jobs:
   model-check-evidence:
     name: model-check-overhead-evidence
     if: github.event_name != 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
           fetch-depth: 0
-      - uses: dtolnay/rust-toolchain@1.88
-      - uses: Swatinem/rust-cache@v2
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
       - name: Select baseline
@@ -249,7 +258,7 @@ jobs:
           fi
       - name: Upload model-check overhead evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: model-check-overhead-${{ github.run_id }}-${{ github.run_attempt }}-${{ github.sha }}
           path: target/model-check-profile/
