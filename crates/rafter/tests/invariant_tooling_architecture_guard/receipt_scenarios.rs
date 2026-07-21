@@ -65,7 +65,7 @@ fn semantic_receipt_validation_is_verification_owned_and_bounded() {
     assert!(!dispatch.contains("bundle.runner.as_str()"));
     assert!(!dispatch.contains("_ =>"));
     assert_eq!(
-        REVIEWED_DOMAIN_IMPORT_EXCEPTIONS.len(),
+        std::hint::black_box(REVIEWED_DOMAIN_IMPORT_EXCEPTIONS).len(),
         0,
         "completed verifier migrations must not retain architecture exceptions"
     );

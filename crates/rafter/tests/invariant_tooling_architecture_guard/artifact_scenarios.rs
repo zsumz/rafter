@@ -50,7 +50,7 @@ fn artifact_acceptance_is_verification_owned_bounded_and_typed() {
             "{relative} depends on the retired artifact-verifier owner"
         );
     }
-    assert!(REVIEWED_DOMAIN_IMPORT_EXCEPTIONS.is_empty());
+    assert!(std::hint::black_box(REVIEWED_DOMAIN_IMPORT_EXCEPTIONS).is_empty());
 
     let compiler =
         read(&root.join("crates/rafter-invariants/src/verification/artifact/compiler/model.rs"));
