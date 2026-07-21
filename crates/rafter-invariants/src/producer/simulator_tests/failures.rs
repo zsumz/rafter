@@ -31,7 +31,7 @@ fn timed_out_zero_exit_model_run_is_a_typed_harness_error_despite_passing_covera
     let identity = descriptor.simulator.as_ref().expect("simulator identity");
     let stdout = passing_event_stream(identity);
     let output_dir = timeout_fixture_output_dir("passing");
-    let (model, receipt) = crate::producer::simulator_model::timed_out_zero_exit_fixture(
+    let (model, receipt) = crate::producer::simulator::model::timed_out_zero_exit_fixture(
         "pr",
         "abc123",
         &stdout,
@@ -100,7 +100,7 @@ fn recorded_counterexample_outranks_a_later_process_timeout() {
     )
     .expect("append counterexample event");
     let output_dir = timeout_fixture_output_dir("counterexample");
-    let (model, receipt) = crate::producer::simulator_model::timed_out_zero_exit_fixture(
+    let (model, receipt) = crate::producer::simulator::model::timed_out_zero_exit_fixture(
         "pr",
         "abc123",
         &stdout,
@@ -169,7 +169,7 @@ fn counterexample_survives_a_later_event_error_and_run_launch_failure() {
     )
     .expect("append unclaimed event");
     let output_dir = timeout_fixture_output_dir("later-launch-error");
-    let model = crate::producer::simulator_model::later_launch_error_fixture(
+    let model = crate::producer::simulator::model::later_launch_error_fixture(
         "pr",
         "abc123",
         &stdout,

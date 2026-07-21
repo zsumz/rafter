@@ -2,7 +2,9 @@
 
 use crate::{contract::SimulatorIdentity, evidence::EvidenceStatus};
 
-use crate::producer::{simulator_model::SimulatorExecution, test_exec::TestOutcome};
+use crate::producer::test_exec::TestOutcome;
+
+use super::model::SimulatorExecution;
 
 use super::detector::DetectorRun;
 

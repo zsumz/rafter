@@ -59,6 +59,17 @@ pub(crate) fn tracked_source_paths_at(root: &Path) -> Result<HashSet<PathBuf>, S
         .map_err(|error| format!("parse tracked source paths: {error}"))
 }
 
+pub(crate) fn require_tracked_source_path_at(root: &Path, path: &Path) -> Result<(), String> {
+    if tracked_source_paths_at(root)?.contains(path) {
+        Ok(())
+    } else {
+        Err(format!(
+            "source input is not tracked by Git: {}",
+            path.display()
+        ))
+    }
+}
+
 fn source_control_environment() -> BTreeMap<String, String> {
     const ALLOWED: &[&str] = &[
         "CARGO_HOME",

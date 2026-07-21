@@ -1,3 +1,5 @@
+//! TLA+ recorder-removal and certificate-validation regression scenarios.
+
 use std::fs;
 
 use super::super::detector_qualified;

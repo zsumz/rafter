@@ -31,7 +31,7 @@ use adapter::{timed_with_schedule_and_descriptors, timed_with_timeout_and_policy
 use api::identity_command_with_timeout;
 #[cfg(unix)]
 pub(super) use api::timed_for_with_cap_and_descriptors;
-pub(crate) use api::{identity_command, identity_command_in, identity_command_in_total_budget};
+pub(crate) use api::{identity_command_in, identity_command_in_total_budget};
 pub(super) use api::{timed_for, timed_for_with_cap, timed_with_optional_layer_budget};
 
 #[cfg(test)]

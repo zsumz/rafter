@@ -346,6 +346,7 @@ src/
       execution/tests.rs  exact transcript classification scenarios
     simulator.rs         simulator evidence-production facade
     simulator/
+      events.rs          event-shape and invariant-specific classification
       runner.rs          aggregate execution and bundle assembly
       evaluation.rs      descriptor evaluation and receipt assembly
       verdict.rs         evidence verdict and failure reduction
@@ -355,10 +356,14 @@ src/
       detector.rs        detector inventory, compilation, and execution
       resources.rs       model and detector resource accounting
       liveness/          bounded-progress evidence production
+      model.rs           model execution facade
+      model/
+        build.rs         fresh release compilation and executable admission
+        runner.rs        run plans, event collection, and scheduled identities
+        types.rs         build, run-plan, and aggregate execution state
+        fixtures.rs      Unix timeout and later-launch-error fixtures
     simulator_tests.rs   simulator producer scenario facade
     simulator_tests/     classification, coverage, failure, and resource scenarios
-    simulator_events.rs  transitional event-shape and classification module
-    simulator_model.rs   transitional model build and execution module
     tla/                 command, contract, output, mutation, and checkpoint
     maelstrom/           tooling, scenarios, trials, EDN, and lease markers
   verification/
@@ -478,11 +483,9 @@ src/
     run_all.rs           execute all required producers then aggregate
 ```
 
-`simulator_events.rs` and `simulator_model.rs` are explicit migration debt. They
-already belong to the enforced `producer` domain, but remain flat until event
-semantics and model execution can move with their focused regression suites.
-They may only shrink or move into the `simulator/` tree; they are not alternate
-ownership roots.
+Simulator event semantics and model execution now live exclusively under the
+`simulator/` tree. The retired flat paths cannot return as alternate ownership
+roots.
 
 The most important structural change is extracting `provenance` and
 `execution` from `producer`. A verifier must not import `crate::producer::*` to

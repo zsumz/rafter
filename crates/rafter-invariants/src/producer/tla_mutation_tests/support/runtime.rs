@@ -3,7 +3,7 @@
 use std::{fs, path::Path, process::Command, sync::OnceLock};
 
 use crate::producer::{
-    tla_contract,
+    tla::contract,
     tla_output::{render_detector_config, DetectorProbe},
 };
 
@@ -174,7 +174,7 @@ pub(in crate::producer::tla_exec::mutation_tests) fn run_tlc_with_config(
 
 fn ensure_tla_tool(root: &Path) {
     if let Err(error) = TLA_TOOL_FETCH.get_or_init(|| {
-        tla_contract::fetch_tool_at(root)
+        contract::fetch_tool_at(root)
             .map_err(|error| format!("fetch and verify pinned TLC jar: {error}"))
     }) {
         panic!("{error}");

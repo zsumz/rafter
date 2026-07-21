@@ -1,3 +1,5 @@
+//! End-to-end registry, profile, producer, and aggregate invariant scenarios.
+
 use std::path::{Path, PathBuf};
 
 use super::*;

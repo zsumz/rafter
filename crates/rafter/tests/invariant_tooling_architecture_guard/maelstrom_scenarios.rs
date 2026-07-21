@@ -40,10 +40,11 @@ fn maelstrom_acceptance_is_verifier_owned_without_producer_policy_edges() {
 #[test]
 fn maelstrom_lease_and_history_semantics_have_independent_policy_owners() {
     let root = workspace_root();
-    let producer_transcript =
-        read(&root.join("crates/rafter-invariants/src/producer/maelstrom_exec.rs"));
+    let producer_transcript = read(
+        &root.join("crates/rafter-invariants/src/producer/maelstrom/trial/lease/transcript.rs"),
+    );
     let producer_history =
-        read(&root.join("crates/rafter-invariants/src/producer/maelstrom_exec/lease_history.rs"));
+        read(&root.join("crates/rafter-invariants/src/producer/maelstrom/trial/lease/history.rs"));
     let verifier_transcript =
         read(&root.join("crates/rafter-invariants/src/verification/maelstrom/lease/sequence.rs"));
     let verifier_history =
@@ -55,6 +56,14 @@ fn maelstrom_lease_and_history_semantics_have_independent_policy_owners() {
     assert!(verifier_history.contains("fn completion_count_with_limits"));
     assert!(!producer_transcript.contains("verification::maelstrom"));
     assert!(!verifier_transcript.contains("producer::maelstrom"));
+
+    let compatibility = read(&root.join("crates/rafter-invariants/src/producer/maelstrom_exec.rs"));
+    let history_compatibility =
+        read(&root.join("crates/rafter-invariants/src/producer/maelstrom_exec/lease_history.rs"));
+    assert!(compatibility.contains("maelstrom/lease_transcript_tests.rs"));
+    assert!(history_compatibility.contains("lease_history_tests.rs"));
+    assert!(!compatibility.contains("fn validate_lease_transcript"));
+    assert!(!history_compatibility.contains("fn probe_completion_count"));
 }
 
 #[test]

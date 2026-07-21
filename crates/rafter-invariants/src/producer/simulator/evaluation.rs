@@ -12,7 +12,9 @@ use crate::{
     evidence::{CheckReceipt, EvidenceResult, EvidenceStatus},
 };
 
-use crate::producer::{artifact, simulator_model::SimulatorExecution};
+use crate::producer::artifact;
+
+use super::model::SimulatorExecution;
 
 #[cfg(test)]
 use super::{

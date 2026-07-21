@@ -1,3 +1,5 @@
+//! TLA+ detector recorder and predicate-mutation contract scenarios.
+
 use std::fs;
 
 use super::super::detector_qualified;

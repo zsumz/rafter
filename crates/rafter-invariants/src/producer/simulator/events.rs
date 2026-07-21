@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-use super::{merge_issue, simulator_model, SimulatorIssue};
+use super::{merge_issue, model, SimulatorIssue};
 use crate::contract::catalog::EvidenceDescriptor;
 
 pub(super) fn simulator_event_issue(
@@ -139,7 +139,7 @@ pub(super) fn simulator_event_inventory_issue(
             event.get("check_id").and_then(Value::as_str) == Some(indexed_check_id.as_str())
         }) {
             let check_id = indexed_check_id.as_str();
-            let canonical = simulator_model::canonical_check_id(profile, check_id);
+            let canonical = model::canonical_check_id(profile, check_id);
             let route = routes.get(check_id).or_else(|| {
                 canonical
                     .as_ref()
@@ -275,5 +275,5 @@ fn invalid_event_pair_message(check: &str, event: &Value) -> String {
 }
 
 #[cfg(test)]
-#[path = "simulator_events_tests.rs"]
+#[path = "../simulator_events_tests.rs"]
 mod tests;

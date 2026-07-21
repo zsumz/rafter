@@ -40,8 +40,8 @@ pub(super) fn standalone_safety_descriptor(
 
 pub(super) fn model_fixture(
     events: BTreeMap<String, Vec<serde_json::Value>>,
-) -> crate::producer::simulator_model::SimulatorExecution {
-    crate::producer::simulator_model::SimulatorExecution {
+) -> crate::producer::simulator::model::SimulatorExecution {
+    crate::producer::simulator::model::SimulatorExecution {
         events,
         artifacts: Vec::new(),
         runtime_peak_rss_kib: 0,

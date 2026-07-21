@@ -1,3 +1,5 @@
+//! Compiler artifact verification and failure-attribution scenarios.
+
 use std::collections::BTreeMap;
 
 use super::{

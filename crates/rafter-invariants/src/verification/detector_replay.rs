@@ -54,32 +54,26 @@ pub(in crate::verification) fn execute(
     source_ref: &str,
     deadlines: ReplayDeadlines,
 ) -> Result<DetectorReplayAssessment, Box<dyn Error>> {
-    #[cfg(unix)]
-    let attempt = if cfg!(target_os = "linux") {
-        match execution::compile(
-            replay,
-            source,
-            contract,
-            profile,
-            source_ref,
-            deadlines.work(),
-        ) {
-            Ok(compilation) => {
-                let fixtures =
-                    fixture::execute(replay, &compilation, source, contract, deadlines.work());
-                result::DetectorReplayAttempt::Completed(Box::new(result::DetectorReplayRun {
-                    compilation,
-                    fixtures,
-                }))
-            }
-            Err(failure) => result::DetectorReplayAttempt::CompilationFailed(failure),
+    #[cfg(target_os = "linux")]
+    let attempt = match execution::compile(
+        replay,
+        source,
+        contract,
+        profile,
+        source_ref,
+        deadlines.work(),
+    ) {
+        Ok(compilation) => {
+            let fixtures =
+                fixture::execute(replay, &compilation, source, contract, deadlines.work());
+            result::DetectorReplayAttempt::Completed(Box::new(result::DetectorReplayRun {
+                compilation,
+                fixtures,
+            }))
         }
-    } else {
-        result::DetectorReplayAttempt::CompilationFailed(Box::new(
-            execution::CompilationFailure::unsupported_platform(),
-        ))
+        Err(failure) => result::DetectorReplayAttempt::CompilationFailed(failure),
     };
-    #[cfg(not(unix))]
+    #[cfg(not(target_os = "linux"))]
     let attempt = result::DetectorReplayAttempt::CompilationFailed(Box::new(
         execution::CompilationFailure::unsupported_platform(),
     ));

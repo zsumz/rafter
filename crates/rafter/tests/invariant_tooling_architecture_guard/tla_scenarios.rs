@@ -15,7 +15,7 @@ use super::architecture_support::{
 fn tla_mutation_acceptance_has_independent_policies() {
     let root = workspace_root();
     let neutral_path = "crates/rafter-invariants/src/evidence/format/tla/mutation.rs";
-    let producer_path = "crates/rafter-invariants/src/producer/tla_exec.rs";
+    let producer_path = "crates/rafter-invariants/src/producer/tla/execution/probes.rs";
     let verifier_path = "crates/rafter-invariants/src/verification/tla/detector.rs";
     assert_neutral_tla_mutation_api(&root, neutral_path);
     assert_tla_mutation_inventory(&root, producer_path, verifier_path);
@@ -168,7 +168,7 @@ fn assert_tla_mutation_guard_fixtures() {
 fn tla_checkpoint_contract_has_independent_derivation_policies() {
     let root = workspace_root();
     let neutral_path = "crates/rafter-invariants/src/evidence/format/tla/checkpoint.rs";
-    let producer_path = "crates/rafter-invariants/src/producer/tla_checkpoint.rs";
+    let producer_path = "crates/rafter-invariants/src/producer/tla/checkpoint/model.rs";
     let verifier_path = "crates/rafter-invariants/src/verification/tla/checkpoint.rs";
     let neutral = read(&root.join(neutral_path));
 

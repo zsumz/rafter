@@ -1,3 +1,5 @@
+//! Stable ignored TLA+ mutation-suite scenario inventory.
+
 #[path = "tla_mutation_tests/detector_contracts.rs"]
 mod detector_contracts;
 #[path = "tla_mutation_tests/lifecycle.rs"]

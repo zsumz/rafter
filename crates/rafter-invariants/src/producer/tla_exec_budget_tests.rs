@@ -1,3 +1,5 @@
+//! Shared TLA+ execution-budget and finalization-reserve scenarios.
+
 use std::{
     collections::BTreeMap,
     fs,

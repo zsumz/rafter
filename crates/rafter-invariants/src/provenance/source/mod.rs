@@ -12,4 +12,6 @@ pub(crate) use checkout::{
     observe_checkout_at, observe_checkout_with, source_environment_sha256, CapturedSourceFile,
     CheckoutCommandRunner, CheckoutObservation, CommandOutput, GeneratedOutputPolicy,
 };
-pub(crate) use tracked::{parse_tracked_source_paths, tracked_source_paths_at};
+pub(crate) use tracked::{
+    parse_tracked_source_paths, require_tracked_source_path_at, tracked_source_paths_at,
+};

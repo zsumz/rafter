@@ -3,16 +3,15 @@
 mod check_contract;
 mod detector;
 mod evaluation;
-#[path = "simulator_events.rs"]
 mod events;
 mod issue;
 mod liveness;
+pub(in crate::producer) mod model;
 mod observation;
 mod resources;
 mod runner;
 mod verdict;
 
-use crate::producer::simulator_model;
 #[cfg(test)]
 use crate::producer::test_exec;
 use issue::{merge_issue, SimulatorIssue};
