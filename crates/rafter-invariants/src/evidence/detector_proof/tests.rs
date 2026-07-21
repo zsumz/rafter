@@ -1,7 +1,5 @@
 //! Detector proof wire-decoding scenarios.
 
-use std::path::Path;
-
 use super::*;
 
 #[test]
@@ -34,17 +32,10 @@ fn transcript_decoding_preserves_markers_without_deciding_acceptance() {
 }
 
 #[test]
-fn proof_socket_path_has_one_exact_managed_shape() {
-    assert!(managed_socket_path(Path::new(
-        "target/rafter-invariants/tmp/detector-proof/12-3-5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a.sock"
-    )));
-    for path in [
-        "/target/rafter-invariants/tmp/detector-proof/12-3-5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a.sock",
-        "target/rafter-invariants/tmp/detector-proof/nested/12-3-5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a.sock",
-        "target/rafter-invariants/tmp/detector-proof/12-3.sock",
-        "target/rafter-invariants/tmp/detector-proof/12-3-5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A5A.sock",
-        "target/rafter-invariants/tmp/detector-proof/12-3-5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a.txt",
-    ] {
-        assert!(!managed_socket_path(Path::new(path)), "accepted {path}");
+fn proof_descriptor_has_one_canonical_shape() {
+    assert!(canonical_descriptor("3"));
+    assert!(canonical_descriptor("2147483647"));
+    for descriptor in ["", "0", "2", "03", "+3", "-1", "3 ", "2147483648"] {
+        assert!(!canonical_descriptor(descriptor), "accepted {descriptor}");
     }
 }
