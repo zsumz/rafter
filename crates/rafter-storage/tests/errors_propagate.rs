@@ -1,3 +1,5 @@
+//! Public storage errors preserve context and source chaining through `?`.
+
 use std::{fs, path::Path};
 
 use rafter_storage::FileRaftHardStateStore;
