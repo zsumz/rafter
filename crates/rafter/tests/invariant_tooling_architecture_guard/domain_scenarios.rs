@@ -77,6 +77,7 @@ fn mature_invariant_facades_remain_declarative() {
             "crates/rafter-invariants/src/artifact_verify/simulator_schedule.rs",
             "crates/rafter-invariants/src/artifact_verify/simulator_schedule/events.rs",
             "crates/rafter-invariants/src/artifact_verify/test_logs.rs",
+            "crates/rafter-invariants/src/artifact_verify_tla.rs",
             "crates/rafter-invariants/src/cli/mod.rs",
             "crates/rafter-invariants/src/contract/mod.rs",
             "crates/rafter-invariants/src/contract/catalog/mod.rs",
@@ -104,6 +105,7 @@ fn mature_invariant_facades_remain_declarative() {
             "crates/rafter-invariants/src/provenance/invocation/mod.rs",
             "crates/rafter-invariants/src/provenance/source/mod.rs",
             "crates/rafter-invariants/src/provenance/mod.rs",
+            "crates/rafter-invariants/src/receipt_tla.rs",
             "crates/rafter-invariants/src/verification/mod.rs",
             "crates/rafter-invariants/src/verification/intake/mod.rs",
             "crates/rafter-invariants/src/verification/detector_replay/artifact/mod.rs",
@@ -112,6 +114,7 @@ fn mature_invariant_facades_remain_declarative() {
             "crates/rafter-invariants/src/verification/simulator/liveness/mod.rs",
             "crates/rafter-invariants/src/verification/simulator/observation/mod.rs",
             "crates/rafter-invariants/src/verification/simulator/schedule/mod.rs",
+            "crates/rafter-invariants/src/verification/tla/mod.rs",
             "crates/rafter-invariants/src/verification/target/mod.rs",
             "crates/rafter-invariants/src/verdict/mod.rs",
             "crates/rafter-invariants/src/verdict/report/mod.rs",
@@ -229,6 +232,14 @@ fn migrated_domain_sources_follow_the_reviewed_dependency_graph() {
             (
                 "verification",
                 "crates/rafter-invariants/src/artifact_verify/test_logs.rs",
+            ),
+            (
+                "verification",
+                "crates/rafter-invariants/src/artifact_verify_tla.rs",
+            ),
+            (
+                "verification",
+                "crates/rafter-invariants/src/receipt_tla.rs",
             ),
             ("verdict", "crates/rafter-invariants/src/verdict"),
             ("gate", "crates/rafter-invariants/src/gate"),
