@@ -80,10 +80,7 @@ pub(crate) fn authenticate(
         files.push(authenticated.file);
     }
     verify_producer_invocation_paths(bundle, &repository)?;
-    Ok(AuthenticatedArtifacts {
-        bytes_by_artifact,
-        files,
-    })
+    Ok(AuthenticatedArtifacts::new(bytes_by_artifact, files))
 }
 
 #[cfg(test)]
@@ -122,10 +119,7 @@ pub(crate) fn snapshot_available_artifacts(
             bytes_by_artifact.insert(artifact.clone(), bytes);
         }
     }
-    Ok(AuthenticatedArtifacts {
-        bytes_by_artifact,
-        files: Vec::new(),
-    })
+    Ok(AuthenticatedArtifacts::new(bytes_by_artifact, Vec::new()))
 }
 
 #[cfg(test)]

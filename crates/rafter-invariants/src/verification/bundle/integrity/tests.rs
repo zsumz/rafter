@@ -74,13 +74,13 @@ fn authenticated_snapshot_is_immutable_after_path_replacement() {
     let directory = VerificationRoot::open(&repository).expect("open artifact root");
     let read = authenticate_artifact_at(&artifact, &directory, true)
         .expect("authenticate original artifact");
-    let authenticated = AuthenticatedArtifacts {
-        bytes_by_artifact: BTreeMap::from([(
+    let authenticated = AuthenticatedArtifacts::new(
+        BTreeMap::from([(
             artifact.clone(),
             read.bytes.expect("retained artifact bytes"),
         )]),
-        files: vec![read.file],
-    };
+        vec![read.file],
+    );
 
     std::fs::write(&path, b"substituted bytes\n").expect("replace artifact path");
 
