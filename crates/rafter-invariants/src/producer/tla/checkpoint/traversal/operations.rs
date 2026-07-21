@@ -1,119 +1,31 @@
+//! Descriptor-relative checkpoint tree scanning and selected subtree removal.
+
 use std::{
     cmp::Reverse,
     collections::BTreeMap,
     error::Error,
-    ffi::OsString,
     path::{Path, PathBuf},
     time::Instant,
 };
 
-use crate::execution::filesystem::{
-    EntryKind, FileIdentity, HeldDirectory, OperationDeadline, TreeLimits, TREE_LIMITS,
+use crate::execution::filesystem::{EntryKind, HeldDirectory, OperationDeadline};
+
+use super::{
+    super::finalization::ensure_deadline,
+    model::{
+        CheckpointNode, CheckpointNodeKind, CheckpointTree, RootIndex, TraversalBudget,
+        TraversalLimits, TRAVERSAL_LIMITS,
+    },
 };
 
-use super::ensure_deadline;
-
-pub(super) type TraversalLimits = TreeLimits;
-pub(super) const TRAVERSAL_LIMITS: TraversalLimits = TREE_LIMITS;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum CheckpointNodeKind {
-    Directory,
-    File,
-    Symlink,
-}
-
-#[derive(Debug)]
-pub(super) struct CheckpointNode {
-    pub(super) path: PathBuf,
-    pub(super) kind: CheckpointNodeKind,
-    identity: Option<FileIdentity>,
-    depth: usize,
-}
-
-#[derive(Debug)]
-pub(super) struct CheckpointTree {
-    pub(super) nodes: Vec<CheckpointNode>,
-    root: HeldDirectory,
-    root_path: PathBuf,
-}
-
-pub(super) struct TraversalBudget {
-    limits: TraversalLimits,
-    directories: usize,
-    nodes: usize,
-    files: usize,
-}
-
-impl TraversalBudget {
-    pub(super) const fn new(limits: TraversalLimits) -> Self {
-        Self {
-            limits,
-            directories: 0,
-            nodes: 0,
-            files: 0,
-        }
-    }
-
-    fn enter_directory(&mut self, path: &Path, depth: usize) -> Result<(), Box<dyn Error>> {
-        self.check_depth(path, depth)?;
-        if self.directories >= self.limits.directories() {
-            return Err(format!(
-                "checkpoint traversal exceeds the global directory limit of {}",
-                self.limits.directories()
-            )
-            .into());
-        }
-        self.directories += 1;
-        Ok(())
-    }
-
-    fn visit_node(
-        &mut self,
-        path: &Path,
-        depth: usize,
-        kind: CheckpointNodeKind,
-    ) -> Result<(), Box<dyn Error>> {
-        self.check_depth(path, depth)?;
-        if self.nodes >= self.limits.nodes() {
-            return Err(format!(
-                "checkpoint traversal exceeds the global node limit of {}",
-                self.limits.nodes()
-            )
-            .into());
-        }
-        self.nodes += 1;
-        if kind == CheckpointNodeKind::File {
-            if self.files >= self.limits.files() {
-                return Err(format!(
-                    "checkpoint inventory exceeds the total file limit of {}",
-                    self.limits.files()
-                )
-                .into());
-            }
-            self.files += 1;
-        }
-        Ok(())
-    }
-
-    fn check_depth(&self, path: &Path, depth: usize) -> Result<(), Box<dyn Error>> {
-        if depth > self.limits.depth() {
-            return Err(format!(
-                "checkpoint path {} exceeds the traversal depth limit of {}",
-                path.display(),
-                self.limits.depth()
-            )
-            .into());
-        }
-        Ok(())
-    }
-}
-
-pub(super) fn sanitize_cache_root(root: &Path, deadline: Instant) -> Result<(), Box<dyn Error>> {
+pub(in crate::producer::tla::checkpoint) fn sanitize_cache_root(
+    root: &Path,
+    deadline: Instant,
+) -> Result<(), Box<dyn Error>> {
     sanitize_cache_root_with_limits(root, deadline, TRAVERSAL_LIMITS)
 }
 
-pub(super) fn sanitize_cache_root_with_limits(
+pub(in crate::producer::tla::checkpoint) fn sanitize_cache_root_with_limits(
     root: &Path,
     deadline: Instant,
     limits: TraversalLimits,
@@ -141,7 +53,7 @@ pub(super) fn sanitize_cache_root_with_limits(
 }
 
 #[cfg(test)]
-pub(super) fn read_sorted_entries(
+pub(in crate::producer::tla::checkpoint) fn read_sorted_entries(
     directory: &Path,
     deadline: Instant,
     operation: &str,
@@ -160,7 +72,7 @@ pub(super) fn read_sorted_entries(
     )
 }
 
-pub(super) fn scan_checkpoint_tree(
+pub(in crate::producer::tla::checkpoint) fn scan_checkpoint_tree(
     root_path: &Path,
     deadline: Instant,
     operation: &str,
@@ -249,7 +161,7 @@ fn read_sorted_entries_with_budget(
     Ok(entries)
 }
 
-pub(super) fn remove_scanned_subtrees(
+pub(in crate::producer::tla::checkpoint) fn remove_scanned_subtrees(
     tree: &CheckpointTree,
     roots: &[PathBuf],
     deadline: Instant,
@@ -302,7 +214,7 @@ fn remove_scanned_node(
     Ok(())
 }
 
-pub(super) fn directory_has_entries(
+pub(in crate::producer::tla::checkpoint) fn directory_has_entries(
     path: &Path,
     deadline: Instant,
 ) -> Result<bool, Box<dyn Error>> {
@@ -326,11 +238,15 @@ pub(super) fn directory_has_entries(
     }
 }
 
-pub(super) fn path_entry_exists(path: &Path) -> Result<bool, Box<dyn Error>> {
+pub(in crate::producer::tla::checkpoint) fn path_entry_exists(
+    path: &Path,
+) -> Result<bool, Box<dyn Error>> {
     Ok(entry_kind(path)?.is_some())
 }
 
-pub(super) fn entry_kind(path: &Path) -> Result<Option<CheckpointNodeKind>, Box<dyn Error>> {
+pub(in crate::producer::tla::checkpoint) fn entry_kind(
+    path: &Path,
+) -> Result<Option<CheckpointNodeKind>, Box<dyn Error>> {
     let workspace = HeldDirectory::workspace()?;
     let parent = path.parent().unwrap_or_else(|| Path::new(""));
     let Some(name) = path.file_name() else {
@@ -355,49 +271,5 @@ fn checkpoint_kind(kind: EntryKind) -> CheckpointNodeKind {
         EntryKind::Directory => CheckpointNodeKind::Directory,
         EntryKind::File => CheckpointNodeKind::File,
         EntryKind::Symlink => CheckpointNodeKind::Symlink,
-    }
-}
-
-#[derive(Default)]
-struct RootIndex {
-    terminal: bool,
-    children: BTreeMap<OsString, RootIndex>,
-}
-
-impl RootIndex {
-    fn new(root: &Path, selected: &[PathBuf], deadline: Instant) -> Result<Self, Box<dyn Error>> {
-        let mut index = Self::default();
-        for path in selected {
-            ensure_deadline(deadline, "checkpoint cleanup root indexing")?;
-            let relative = path.strip_prefix(root)?;
-            let mut cursor = &mut index;
-            for component in relative.components() {
-                ensure_deadline(deadline, "checkpoint cleanup root indexing")?;
-                cursor = cursor
-                    .children
-                    .entry(component.as_os_str().to_os_string())
-                    .or_default();
-            }
-            cursor.terminal = true;
-        }
-        Ok(index)
-    }
-
-    fn matches(&self, path: &Path, deadline: Instant) -> Result<bool, Box<dyn Error>> {
-        let mut cursor = self;
-        if cursor.terminal {
-            return Ok(true);
-        }
-        for component in path.components() {
-            ensure_deadline(deadline, "checkpoint cleanup selection")?;
-            let Some(next) = cursor.children.get(component.as_os_str()) else {
-                return Ok(false);
-            };
-            cursor = next;
-            if cursor.terminal {
-                return Ok(true);
-            }
-        }
-        Ok(false)
     }
 }
