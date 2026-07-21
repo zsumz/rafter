@@ -27,10 +27,21 @@ const PROTECTED_COMPILER_TARGETS: &[ProtectedCompilerTarget] = &[
 
 pub(crate) fn verify_protected_compiler_artifacts(
     bytes: &[u8],
-    workspace: &Path,
+    recorded_workspace: &Path,
+    active_workspace: &Path,
 ) -> Result<(), String> {
-    let workspace = fs::canonicalize(workspace)
+    let active_workspace = fs::canonicalize(active_workspace)
         .map_err(|error| format!("canonicalize compiler workspace: {error}"))?;
+    if !recorded_workspace.is_absolute()
+        || recorded_workspace.components().any(|component| {
+            matches!(
+                component,
+                std::path::Component::CurDir | std::path::Component::ParentDir
+            )
+        })
+    {
+        return Err("recorded compiler workspace is not a clean absolute path".to_owned());
+    }
     let mut counts = PROTECTED_COMPILER_TARGETS
         .iter()
         .map(|target| (target.name, 0_usize))
@@ -54,7 +65,13 @@ pub(crate) fn verify_protected_compiler_artifacts(
         else {
             continue;
         };
-        verify_protected_compiler_artifact(&workspace, &message, target, *expected)?;
+        verify_protected_compiler_artifact(
+            recorded_workspace,
+            &active_workspace,
+            &message,
+            target,
+            *expected,
+        )?;
         *counts
             .get_mut(expected.name)
             .ok_or("protected compiler target counter is missing")? += 1;
@@ -72,7 +89,8 @@ pub(crate) fn verify_protected_compiler_artifacts(
 }
 
 fn verify_protected_compiler_artifact(
-    workspace: &Path,
+    recorded_workspace: &Path,
+    active_workspace: &Path,
     message: &serde_json::Value,
     target: &serde_json::Value,
     expected: ProtectedCompilerTarget,
@@ -122,25 +140,26 @@ fn verify_protected_compiler_artifact(
             expected.name
         ));
     }
-    let expected_root = workspace.join(expected.relative_root);
+    let expected_recorded_root = recorded_workspace.join(expected.relative_root);
+    let expected_active_root = active_workspace.join(expected.relative_root);
     let source = target
         .get("src_path")
         .and_then(serde_json::Value::as_str)
         .ok_or("protected compiler artifact omitted its source path")?;
-    if Path::new(package_path) != expected_root
-        || fs::canonicalize(package_path).map_err(|error| {
+    if Path::new(package_path) != expected_recorded_root
+        || Path::new(source) != expected_recorded_root.join("src/lib.rs")
+        || fs::canonicalize(&expected_active_root).map_err(|error| {
             format!(
                 "canonicalize protected package {}: {error}",
                 expected.package
             )
-        })? != expected_root
-        || Path::new(source) != expected_root.join("src/lib.rs")
-        || fs::canonicalize(source).map_err(|error| {
+        })? != expected_active_root
+        || fs::canonicalize(expected_active_root.join("src/lib.rs")).map_err(|error| {
             format!(
                 "canonicalize protected target source {}: {error}",
                 expected.name
             )
-        })? != expected_root.join("src/lib.rs")
+        })? != expected_active_root.join("src/lib.rs")
     {
         return Err(format!(
             "protected compiler target {} does not use canonical package {}",
