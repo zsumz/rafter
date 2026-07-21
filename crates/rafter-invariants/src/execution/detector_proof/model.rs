@@ -31,13 +31,10 @@ impl fmt::Debug for DetectorChallenge {
 /// Public shape of the private byte-level protocol for adapter validation.
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) struct ChallengeProtocol {
-    pub(crate) socket_environment: &'static str,
-    pub(crate) socket_directory: &'static str,
+    pub(crate) descriptor_environment: &'static str,
     pub(crate) challenge_bytes: usize,
-    pub(crate) socket_nonce_bytes: usize,
     pub(crate) proof_request: u8,
     pub(crate) zero_challenge_encoding: String,
-    pub(crate) zero_socket_nonce_encoding: String,
 }
 
 /// Terminal state of one detector challenge exchange.
