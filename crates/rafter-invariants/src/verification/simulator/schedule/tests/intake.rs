@@ -2,7 +2,7 @@
 
 use std::{fs, path::PathBuf, process::Command};
 
-use super::{materialize_cross_root_fixture, RuntimeDefect, SimulatorFixture};
+use super::fixtures::{materialize_cross_root_fixture, RuntimeDefect, SimulatorFixture};
 use crate::verification::{EvidenceIntake, IntakeDefectKind, VerificationRequest};
 
 #[test]

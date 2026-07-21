@@ -1,17 +1,22 @@
-//! Artifact-level reconciliation of raw liveness events and receipt bindings.
+//! Reconciliation of raw liveness reports and receipt bindings.
 
 use std::collections::BTreeMap;
 
 use serde_json::Value;
 
-use super::super::test_logs::is_passing;
-use crate::{verification::AggregateError, ResultBundle};
+use crate::{
+    contract::{profile::SimulatorLivenessContract, SimulatorIdentity},
+    evidence::{CheckReceipt, ResultBundle},
+    verification::AggregateError,
+};
 
-pub(in crate::artifact_verify) fn verify_liveness_observations(
+use super::super::event::execution_is_passing;
+
+pub(crate) fn verify_liveness_observations(
     bundle: &ResultBundle,
-    check: &crate::CheckReceipt,
-    identity: &crate::SimulatorIdentity,
-    liveness_contracts: &[crate::contract::profile::SimulatorLivenessContract],
+    check: &CheckReceipt,
+    identity: &SimulatorIdentity,
+    liveness_contracts: &[SimulatorLivenessContract],
     events: &BTreeMap<String, Vec<Value>>,
     derived: &mut BTreeMap<String, u64>,
 ) -> Result<(), AggregateError> {
@@ -25,8 +30,8 @@ pub(in crate::artifact_verify) fn verify_liveness_observations(
         return Ok(());
     }
 
-    if is_passing(bundle, &check.execution_id) {
-        let binding = crate::verification::simulator::derive_verified_liveness_binding(
+    if execution_is_passing(bundle, &check.execution_id) {
+        let binding = super::super::derive_verified_liveness_binding(
             &bundle.profile,
             identity,
             liveness_contracts,
@@ -51,7 +56,7 @@ pub(in crate::artifact_verify) fn verify_liveness_observations(
         return Ok(());
     }
 
-    crate::verification::simulator::verify_present_liveness_reports(
+    super::super::verify_present_liveness_reports(
         &bundle.profile,
         identity,
         liveness_contracts,
