@@ -1,3 +1,5 @@
+//! Version-1 hard-state envelope round-trip and malformed-input scenarios.
+
 use rafter::{CommittedConfiguration, ConfigurationId, LogIndex, NodeId, Term};
 
 use crate::{
