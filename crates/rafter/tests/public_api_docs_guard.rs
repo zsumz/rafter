@@ -599,6 +599,9 @@ fn public_api_docs_guard_excludes_test_support_files_from_library_risk_scan() {
     assert!(!is_library_rust_file(Path::new(
         "crates/demo/src/component_tests/fixture.rs"
     )));
+    assert!(!is_library_rust_file(Path::new(
+        "crates/demo/target/generated/src/lib.rs"
+    )));
     assert!(is_library_rust_file(Path::new("crates/demo/src/lib.rs")));
 }
 
@@ -1071,7 +1074,7 @@ fn collect_library_rust_files(root: &Path, files: &mut Vec<PathBuf>) {
         let path = entry
             .unwrap_or_else(|error| panic!("read entry under {}: {error}", root.display()))
             .path();
-        if path.is_dir() {
+        if path.is_dir() && path.file_name().is_none_or(|name| name != "target") {
             collect_library_rust_files(&path, files);
         } else if is_library_rust_file(&path) {
             files.push(path);
@@ -1088,6 +1091,7 @@ fn is_library_rust_file(path: &Path) -> bool {
     !path_text.contains("/examples/")
         && !path_text.contains("/benches/")
         && !path_text.contains("/tests/")
+        && !path_text.contains("/target/")
         && !path_text.contains("/src/bin/")
         && !path_text.ends_with("/src/main.rs")
         && !path_text.ends_with("/tests.rs")
