@@ -1,11 +1,11 @@
-//! Scenarios: profile-v5 wire shape and cross-profile policy remain strict.
+//! Scenarios: profile-v7 wire shape and cross-profile policy remain strict.
 
 use std::path::PathBuf;
 
 use super::ProfileManifest;
 
 #[test]
-fn profile_v5_wire_round_trip_is_stable() {
+fn profile_v9_wire_round_trip_is_stable() {
     let manifest = load_manifest();
     let encoded = serde_json::to_value(&manifest).expect("encode profile manifest");
     let decoded: ProfileManifest = serde_json::from_value(encoded.clone()).expect("decode profile");
@@ -46,6 +46,28 @@ fn profile_models_reject_unknown_fields_and_preserve_the_reviewed_default() {
 }
 
 #[test]
+fn profile_policy_vocabulary_rejects_every_unknown_wire_identity() {
+    let manifest = load_manifest();
+    for (field, value) in [
+        ("evidence_policy", "some_registry_evidence"),
+        ("clause_policy", "some_required_clauses"),
+        ("required_clause_strength", "indirect"),
+    ] {
+        let mut changed = serde_json::to_value(&manifest).expect("encode manifest");
+        changed["profiles"]["pr"][field] = serde_json::Value::String(value.to_owned());
+        assert!(serde_json::from_value::<ProfileManifest>(changed).is_err());
+    }
+    for (field, value) in [
+        ("required_layers", "ceremonial"),
+        ("required_strengths", "partial"),
+    ] {
+        let mut changed = serde_json::to_value(&manifest).expect("encode manifest");
+        changed["profiles"]["pr"][field][0] = serde_json::Value::String(value.to_owned());
+        assert!(serde_json::from_value::<ProfileManifest>(changed).is_err());
+    }
+}
+
+#[test]
 fn validation_rejects_profile_inventory_and_policy_drift() {
     let (catalog, manifest) = crate::tests::loaded();
     manifest
@@ -70,12 +92,14 @@ fn validation_rejects_profile_inventory_and_policy_drift() {
         .get_mut("pr")
         .unwrap()
         .required_layers
-        .push("tests".to_owned());
+        .push(super::EvidenceLayer::Tests);
     assert!(duplicate_layer.validate(&catalog).is_err());
 
     let mut missing_scheduled_layer = manifest.clone();
     let nightly = missing_scheduled_layer.profiles.get_mut("nightly").unwrap();
-    nightly.required_layers.retain(|layer| layer != "maelstrom");
+    nightly
+        .required_layers
+        .retain(|layer| *layer != super::EvidenceLayer::Maelstrom);
     nightly.runners.remove("maelstrom");
     assert!(missing_scheduled_layer.validate(&catalog).is_err());
 
@@ -85,7 +109,7 @@ fn validation_rejects_profile_inventory_and_policy_drift() {
         .get_mut("weekly")
         .unwrap()
         .required_strengths
-        .retain(|strength| strength != "e2e");
+        .retain(|strength| *strength != super::EvidenceStrength::E2e);
     assert!(missing_strength.validate(&catalog).is_err());
 
     let mut extra_profile = manifest.clone();
@@ -93,6 +117,10 @@ fn validation_rejects_profile_inventory_and_policy_drift() {
         .profiles
         .insert("ad-hoc".to_owned(), extra_profile.profiles["pr"].clone());
     assert!(extra_profile.validate(&catalog).is_err());
+
+    let mut missing_verifier = manifest.clone();
+    missing_verifier.verifiers.remove("pr");
+    assert!(missing_verifier.validate(&catalog).is_err());
 
     let mut weak_canonical = manifest.clone();
     weak_canonical
@@ -109,6 +137,27 @@ fn validation_rejects_profile_inventory_and_policy_drift() {
         .unwrap()
         .canonical_minimum_independent_layers = 3;
     assert!(unreviewed_canonical.validate(&catalog).is_err());
+}
+
+#[test]
+fn validation_rejects_replay_identity_and_resource_drift() {
+    let (catalog, manifest) = crate::tests::loaded();
+    for mutate in [
+        |contract: &mut super::DetectorReplayContract| contract.required_unique_fixtures = 76,
+        |contract: &mut super::DetectorReplayContract| contract.required_evidence_bindings = 78,
+        |contract: &mut super::DetectorReplayContract| contract.required_registry_packages = 246,
+        |contract: &mut super::DetectorReplayContract| contract.required_targets = 1,
+        |contract: &mut super::DetectorReplayContract| {
+            contract.maximum_registry_expanded_bytes = u64::MAX;
+        },
+        |contract: &mut super::DetectorReplayContract| {
+            contract.required_inventory_sha256 = "0".repeat(64);
+        },
+    ] {
+        let mut changed = manifest.clone();
+        mutate(&mut changed.verifiers.get_mut("pr").unwrap().detector_replay);
+        assert!(changed.validate(&catalog).is_err());
+    }
 }
 
 fn load_manifest() -> ProfileManifest {
