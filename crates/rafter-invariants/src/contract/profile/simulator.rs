@@ -7,8 +7,10 @@ use serde::Deserialize;
 use super::{RunnerContract, SimulatorCheckContract};
 use crate::contract::catalog::Catalog;
 
+mod identity;
 mod serde_support;
 
+pub(crate) use identity::{canonical_simulator_check_id, scheduled_simulator_seeds};
 use serde_support::{optional_string_u64, state_floors, string_u64};
 
 const PR_SOAK_STEPS: u64 = 320;

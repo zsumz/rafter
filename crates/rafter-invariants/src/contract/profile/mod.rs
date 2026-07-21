@@ -23,8 +23,9 @@ pub use replay::{
     DetectorReplaySource, DetectorReplayTargetDirectory,
 };
 pub(crate) use simulator::{
-    per_check_observation_key, per_check_protocol_states_key, per_check_verifier_states_key,
-    SimulatorRunnerConfiguration, SimulatorStateFloors,
+    canonical_simulator_check_id, per_check_observation_key, per_check_protocol_states_key,
+    per_check_verifier_states_key, scheduled_simulator_seeds, SimulatorRunnerConfiguration,
+    SimulatorStateFloors,
 };
 
 #[cfg(test)]
