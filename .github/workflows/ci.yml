@@ -159,7 +159,7 @@ jobs:
           scripts/cargo-test-exact 45 verification::detector::source::tests --locked -p rafter-invariants -- --test-threads=1
           scripts/cargo-test-exact 23 verification::detector::source::adversarial_tests --locked -p rafter-invariants -- --test-threads=1
           scripts/cargo-test-exact 15 artifact_verify::simulator::event_semantics_tests --locked -p rafter-invariants -- --test-threads=1
-          scripts/cargo-test-exact 7 artifact_verify::test_logs::detector_witness_tests --locked -p rafter-invariants -- --test-threads=1
+          scripts/cargo-test-exact 8 artifact_verify::test_logs::tests --locked -p rafter-invariants -- --test-threads=1
           scripts/cargo-test-exact 4 provenance::image::tests --locked -p rafter-invariants -- --test-threads=1
           scripts/cargo-test-exact 1 - --locked -p rafter-invariants --test producer_reexec -- --test-threads=1
       - name: Upload macOS launcher diagnostics
@@ -339,7 +339,7 @@ jobs:
       - name: Prefetch locked registry for offline source identity
         run: cargo fetch --locked
       - name: Validate scheduled Maelstrom evidence contract
-        run: scripts/cargo-test-exact 43 maelstrom --locked -p rafter-invariants
+        run: scripts/cargo-test-exact 47 maelstrom --locked -p rafter-invariants
       - name: Validate Maelstrom runner scripts
         run: |
           for script in \

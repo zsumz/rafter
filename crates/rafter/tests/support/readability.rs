@@ -26,6 +26,7 @@ pub(super) const FACADE_PATHS: &[&str] = &[
     "crates/rafter-invariants/src/gate/mod.rs",
     "crates/rafter-invariants/src/producer/process/mod.rs",
     "crates/rafter-invariants/src/producer/process/budget/mod.rs",
+    "crates/rafter-invariants/src/producer/simulator.rs",
     "crates/rafter-invariants/src/producer/simulator/liveness/mod.rs",
     "crates/rafter-invariants/src/producer/test_compile.rs",
     "crates/rafter-invariants/src/producer/test_exec.rs",
@@ -62,6 +63,7 @@ pub(super) const FACADE_PATHS: &[&str] = &[
 pub(super) const TEST_FACADE_PATHS: &[&str] = &[
     "crates/rafter-invariants/src/contract/registry/parse/tests/mod.rs",
     "crates/rafter-invariants/src/producer/process/tests/mod.rs",
+    "crates/rafter-invariants/src/producer/simulator_tests.rs",
     "crates/rafter-invariants/src/execution/process/tests/mod.rs",
     "crates/rafter-invariants/src/verification/simulator/liveness/tests/mod.rs",
     "crates/rafter/src/node/tests.rs",

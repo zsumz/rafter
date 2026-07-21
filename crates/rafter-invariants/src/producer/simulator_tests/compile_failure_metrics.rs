@@ -1,3 +1,15 @@
+//! Detector compilation resource attribution and receipt round-trip scenarios.
+
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
+
+use super::super::{
+    evaluate_descriptors, execution_resource_metrics, test_exec::TestOutcome, DetectorRun,
+};
+use super::support::{model_fixture, safety_descriptor};
+use crate::{CheckCompletion, EvidenceDescriptor, EvidenceStatus, FailureClassification};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 
 #[test]
@@ -57,7 +69,7 @@ fn detector_compile_failure_round_trips_without_charging_the_scoped_check() {
     let detectors = DetectorRun {
         outcomes: BTreeMap::from([(
             negative_test.check_id(),
-            super::test_exec::TestOutcome {
+            TestOutcome {
                 completion: CheckCompletion::HarnessError,
                 status: EvidenceStatus::Error,
                 classification: Some(FailureClassification::HarnessError),

@@ -32,6 +32,9 @@ fn pr_invariant_aggregate_is_stable_and_fail_closed() {
     let maelstrom = job_block(&workflow, "invariants-maelstrom");
     assert!(maelstrom.contains("Validate scheduled Maelstrom evidence contract"));
     assert!(maelstrom.contains("cargo fetch --locked"));
+    assert!(
+        maelstrom.contains("scripts/cargo-test-exact 47 maelstrom --locked -p rafter-invariants")
+    );
     assert!(!maelstrom.contains("--profile pr --layer maelstrom"));
 
     assert_pr_launcher_inventories(&workflow);

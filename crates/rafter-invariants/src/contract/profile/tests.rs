@@ -1,4 +1,4 @@
-//! Scenarios: profile-v7 wire shape and cross-profile policy remain strict.
+//! Scenarios: profile-v9 wire shape and cross-profile policy remain strict.
 
 use std::path::PathBuf;
 
