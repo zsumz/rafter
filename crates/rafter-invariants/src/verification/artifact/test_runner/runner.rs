@@ -15,12 +15,13 @@ use super::{
 };
 use crate::verification::AuthenticatedArtifacts;
 
-pub(in crate::artifact_verify) fn verify_test_logs(
+pub(crate) fn verify_test_logs(
     bundle: &ResultBundle,
     root: &Path,
     source_root: &Path,
     catalog: &Catalog,
     authenticated: &AuthenticatedArtifacts,
+    compilation: &super::super::compiler::CompilationEvidence,
 ) -> Result<(), AggregateError> {
     let bindings = bundle
         .execution
@@ -56,16 +57,11 @@ pub(in crate::artifact_verify) fn verify_test_logs(
             .iter()
             .find(|artifact| artifact.kind == "test-log")
         else {
-            if outcome
-                == (
-                    EvidenceStatus::Error,
-                    Some(FailureClassification::HarnessError),
-                )
-                && check
-                    .artifacts
-                    .iter()
-                    .any(|artifact| artifact.kind == "compile-log")
-            {
+            if compile_failure_explains_missing_transcript(
+                outcome,
+                compilation,
+                &check.execution_id,
+            ) {
                 continue;
             }
             return Err(AggregateError::new(format!(
@@ -112,3 +108,20 @@ pub(in crate::artifact_verify) fn verify_test_logs(
     }
     Ok(())
 }
+
+fn compile_failure_explains_missing_transcript(
+    outcome: (EvidenceStatus, Option<FailureClassification>),
+    compilation: &super::super::compiler::CompilationEvidence,
+    execution_id: &str,
+) -> bool {
+    outcome
+        == (
+            EvidenceStatus::Error,
+            Some(FailureClassification::HarnessError),
+        )
+        && compilation.failed_for(execution_id)
+}
+
+#[cfg(test)]
+#[path = "runner_tests.rs"]
+mod tests;

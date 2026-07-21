@@ -7,14 +7,14 @@ use crate::{
     verification::target::RegisteredTestBinding, verification::AggregateError,
 };
 
-pub(in crate::artifact_verify) fn registered_test_name(
+pub(crate) fn registered_test_name(
     catalog: &Catalog,
     check: &CheckReceipt,
 ) -> Result<String, AggregateError> {
     registered_test_binding(catalog, check).map(|binding| binding.identity.test_name)
 }
 
-pub(in crate::artifact_verify) fn registered_test_binding(
+pub(crate) fn registered_test_binding(
     catalog: &Catalog,
     check: &CheckReceipt,
 ) -> Result<RegisteredTestBinding, AggregateError> {
