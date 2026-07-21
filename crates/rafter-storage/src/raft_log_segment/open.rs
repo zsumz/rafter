@@ -1,22 +1,31 @@
+//! File-backed log opening, streaming replay, and commit-floor-bounded tail repair.
+//!
+//! Replay keeps only decoded entries resident: raw segment bytes are consumed
+//! incrementally, and malformed-tail offsets remain exact for safe repair.
+
 use std::{
     fs::{File, OpenOptions},
-    io::Read,
+    io::{BufReader, Read},
     path::Path,
 };
 
 use rafter::LogIndex;
 
 use super::{
-    compaction_marker_path, frames::RaftLogFrameScan, scan_raft_log_frames, ContiguousLogEntries,
+    compaction_marker_path, frames::RaftLogFrameScan, read_raft_log_frames, ContiguousLogEntries,
     FileRaftLogSegment, NonContiguousRaftEntry, OpenRaftLogSegmentError,
 };
 use crate::{
     durable_fs::{sync_parent_directory, ParentDirectorySyncBatch},
+    file_store_health::FileStoreHealth,
     raft_log_compaction::decode_raft_log_compaction_marker,
 };
 
 impl FileRaftLogSegment {
     /// Opens a Raft log segment at `path` and replays existing entries.
+    ///
+    /// The raw file is consumed incrementally; startup memory is the decoded
+    /// physical entries plus at most one encoded frame and a bounded read buffer.
     ///
     /// # Errors
     ///
@@ -93,7 +102,7 @@ impl FileRaftLogSegment {
             .map_err(|error| OpenRaftLogSegmentError::Io {
                 operation: "open raft log segment",
                 path: path.to_path_buf(),
-                message: error.to_string(),
+                source: error.into(),
             })?;
         if !existed {
             match creation_sync {
@@ -101,31 +110,40 @@ impl FileRaftLogSegment {
                     sync_parent_directory(path).map_err(|error| OpenRaftLogSegmentError::Io {
                         operation: "sync raft log segment directory",
                         path: path.to_path_buf(),
-                        message: error.to_string(),
+                        source: error.into(),
                     })?;
                 }
                 CreationSync::Batched(batch) => batch.record_parent_of(path),
             }
         }
 
-        let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes)
+        let file_len = file
+            .metadata()
             .map_err(|error| OpenRaftLogSegmentError::Io {
+                operation: "stat raft log segment",
+                path: path.to_path_buf(),
+                source: error.into(),
+            })?
+            .len();
+        let scan = {
+            let reader = BufReader::new(&mut file);
+            read_raft_log_frames(reader, file_len).map_err(|error| OpenRaftLogSegmentError::Io {
                 operation: "read raft log segment",
                 path: path.to_path_buf(),
-                message: error.to_string(),
-            })?;
+                source: error.into(),
+            })?
+        };
 
         let compacted_through = read_compaction_marker(path)?;
         let (entries, repair_truncate_offset) =
-            replay_entries_for_open(scan_raft_log_frames(&bytes), compacted_through, mode)?;
+            replay_entries_for_open(scan, compacted_through, mode)?;
         if let Some(offset) = repair_truncate_offset {
-            file.set_len(offset as u64)
+            file.set_len(offset)
                 .and_then(|()| file.sync_all())
                 .map_err(|error| OpenRaftLogSegmentError::Io {
                     operation: "truncate corrupt uncommitted raft log tail",
                     path: path.to_path_buf(),
-                    message: error.to_string(),
+                    source: error.into(),
                 })?;
         }
         Ok(Self {
@@ -133,6 +151,8 @@ impl FileRaftLogSegment {
             path: path.to_path_buf(),
             compacted_through,
             entries,
+            health: FileStoreHealth::Healthy,
+            ownership: None,
         })
     }
 }
@@ -152,7 +172,7 @@ fn replay_entries_for_open(
     scan: RaftLogFrameScan,
     compacted_through: LogIndex,
     mode: OpenMode,
-) -> Result<(ContiguousLogEntries, Option<usize>), OpenRaftLogSegmentError> {
+) -> Result<(ContiguousLogEntries, Option<u64>), OpenRaftLogSegmentError> {
     match mode {
         OpenMode::Strict => {
             replay_entries_strict(scan, compacted_through).map(|entries| (entries, None))
@@ -169,11 +189,14 @@ fn replay_entries_strict(
     scan: RaftLogFrameScan,
     compacted_through: LogIndex,
 ) -> Result<ContiguousLogEntries, OpenRaftLogSegmentError> {
-    if let Some(error) = scan.error {
+    let RaftLogFrameScan {
+        frames,
+        replay_error,
+    } = scan;
+    if let Some((_, error)) = replay_error {
         return Err(OpenRaftLogSegmentError::Replay(error));
     }
-    let entries = scan
-        .frames
+    let entries = frames
         .into_iter()
         .map(|frame| frame.entry)
         .filter(|entry| entry.index > compacted_through)
@@ -190,12 +213,16 @@ fn replay_entries_repairing_uncommitted_tail(
     scan: RaftLogFrameScan,
     compacted_through: LogIndex,
     durable_commit_index: LogIndex,
-) -> Result<(ContiguousLogEntries, Option<usize>), OpenRaftLogSegmentError> {
+) -> Result<(ContiguousLogEntries, Option<u64>), OpenRaftLogSegmentError> {
+    let RaftLogFrameScan {
+        frames,
+        replay_error,
+    } = scan;
     let mut expected = compacted_through.next();
     let mut entries = Vec::new();
     let mut truncate_at = None;
 
-    for frame in scan.frames {
+    for frame in frames {
         if frame.entry.index <= compacted_through {
             continue;
         }
@@ -214,11 +241,11 @@ fn replay_entries_repairing_uncommitted_tail(
     }
 
     if truncate_at.is_none() {
-        if let Some(error) = scan.error {
+        if let Some((error_offset, error)) = replay_error {
             if expected <= durable_commit_index {
                 return Err(OpenRaftLogSegmentError::Replay(error));
             }
-            truncate_at = Some(error.offset());
+            truncate_at = Some(error_offset);
         }
     }
 
@@ -239,14 +266,14 @@ fn read_compaction_marker(path: &Path) -> Result<LogIndex, OpenRaftLogSegmentErr
     let mut file = File::open(&marker_path).map_err(|error| OpenRaftLogSegmentError::Io {
         operation: "open raft log compaction marker",
         path: marker_path.clone(),
-        message: error.to_string(),
+        source: error.into(),
     })?;
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
         .map_err(|error| OpenRaftLogSegmentError::Io {
             operation: "read raft log compaction marker",
             path: marker_path,
-            message: error.to_string(),
+            source: error.into(),
         })?;
     decode_raft_log_compaction_marker(&bytes).map_err(OpenRaftLogSegmentError::CompactionMarker)
 }

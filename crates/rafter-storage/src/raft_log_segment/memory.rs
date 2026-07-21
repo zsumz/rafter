@@ -1,3 +1,8 @@
+//! In-memory retained-log reference behavior.
+//!
+//! This implementation shares continuity and bounds validation with the file
+//! store without owning framing, filesystem publication, or repair.
+
 use rafter::LogIndex;
 
 use crate::{BorrowedPersistedRaftLogEntry, PersistedRaftLogEntry};

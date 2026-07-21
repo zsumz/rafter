@@ -1,3 +1,5 @@
+//! Shared fixtures and filesystem cleanup for retained-log scenarios.
+
 use std::{
     fs,
     path::{Path, PathBuf},

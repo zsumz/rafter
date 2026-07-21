@@ -1,3 +1,5 @@
+//! File-backed compacted-prefix publication and crash-residue scenarios.
+
 use std::fs;
 
 use super::test_support::{

@@ -1,16 +1,19 @@
+//! Public error vocabulary for log mutation, open, replay, and repair.
+
 use std::{error::Error, fmt, path::PathBuf};
 
 use rafter::LogIndex;
 
 use crate::{
     raft_log_compaction::DecodeRaftLogCompactionMarkerError, DecodeRaftLogEntryError,
-    EncodeRaftLogEntryError,
+    EncodeRaftLogEntryError, StorageIoError,
 };
 
 /// Errors returned while appending entries to a Raft log segment.
 ///
 /// This enum is exhaustive so callers can distinguish caller ordering bugs,
-/// entry encoding failures, and filesystem errors.
+/// entry encoding failures, filesystem errors, and a file handle that must be
+/// reopened after an earlier ambiguous I/O failure.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RaftLogSegmentAppendError {
     NonContiguous {
@@ -18,10 +21,13 @@ pub enum RaftLogSegmentAppendError {
         actual: LogIndex,
     },
     Encode(EncodeRaftLogEntryError),
+    /// The append may have changed the file. Reopen before another mutation.
     Io {
         operation: &'static str,
-        message: String,
+        source: StorageIoError,
     },
+    /// An earlier mutating I/O error made this file-backed handle unsafe to use.
+    StoreRequiresReopen,
 }
 
 impl fmt::Display for RaftLogSegmentAppendError {
@@ -34,9 +40,12 @@ impl fmt::Display for RaftLogSegmentAppendError {
             Self::Encode(error) => {
                 write!(formatter, "Raft log entry could not be encoded: {error}")
             }
-            Self::Io { operation, message } => {
-                write!(formatter, "could not {operation}: {message}")
+            Self::Io { operation, source } => {
+                write!(formatter, "could not {operation}: {source}")
             }
+            Self::StoreRequiresReopen => formatter.write_str(
+                "Raft log segment requires reopen after an earlier I/O failure",
+            ),
         }
     }
 }
@@ -45,7 +54,8 @@ impl Error for RaftLogSegmentAppendError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Encode(error) => Some(error),
-            Self::NonContiguous { .. } | Self::Io { .. } => None,
+            Self::Io { source, .. } => Some(source.as_io_error()),
+            Self::NonContiguous { .. } | Self::StoreRequiresReopen => None,
         }
     }
 }
@@ -53,7 +63,7 @@ impl Error for RaftLogSegmentAppendError {
 /// Errors returned while truncating a Raft log suffix.
 ///
 /// This enum is exhaustive so callers can distinguish invalid bounds from
-/// rewrite and filesystem failures.
+/// encoding, filesystem, and post-error handle-state failures.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RaftLogSegmentTruncateError {
     OutOfBounds {
@@ -65,10 +75,14 @@ pub enum RaftLogSegmentTruncateError {
         actual: LogIndex,
     },
     Encode(EncodeRaftLogEntryError),
+    /// The replacement may have changed the stable path. Reopen before another
+    /// mutation.
     Io {
         operation: &'static str,
-        message: String,
+        source: StorageIoError,
     },
+    /// An earlier mutating I/O error made this file-backed handle unsafe to use.
+    StoreRequiresReopen,
 }
 
 impl fmt::Display for RaftLogSegmentTruncateError {
@@ -88,9 +102,12 @@ impl fmt::Display for RaftLogSegmentTruncateError {
             Self::Encode(error) => {
                 write!(formatter, "Raft log entry could not be encoded: {error}")
             }
-            Self::Io { operation, message } => {
-                write!(formatter, "could not {operation}: {message}")
+            Self::Io { operation, source } => {
+                write!(formatter, "could not {operation}: {source}")
             }
+            Self::StoreRequiresReopen => formatter.write_str(
+                "Raft log segment requires reopen after an earlier I/O failure",
+            ),
         }
     }
 }
@@ -99,15 +116,19 @@ impl Error for RaftLogSegmentTruncateError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Encode(error) => Some(error),
-            Self::OutOfBounds { .. } | Self::BeforeCompactedPrefix { .. } | Self::Io { .. } => None,
+            Self::Io { source, .. } => Some(source.as_io_error()),
+            Self::OutOfBounds { .. }
+            | Self::BeforeCompactedPrefix { .. }
+            | Self::StoreRequiresReopen => None,
         }
     }
 }
 
 /// Errors returned while compacting a Raft log prefix.
 ///
-/// This enum is exhaustive so callers can distinguish invalid compaction
-/// bounds from rewrite and filesystem failures.
+/// This enum distinguishes a failure before the marker is confirmed durable
+/// from a physical-rewrite failure after logical compaction has committed.
+/// It is exhaustive so callers can handle those commit states explicitly.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum RaftLogSegmentCompactError {
     OutOfBounds {
@@ -115,10 +136,21 @@ pub enum RaftLogSegmentCompactError {
         next_index: LogIndex,
     },
     Encode(EncodeRaftLogEntryError),
+    /// The compaction commit point was not confirmed. Reopen to determine which
+    /// durable state won before another mutation.
     Io {
         operation: &'static str,
-        message: String,
+        source: StorageIoError,
     },
+    /// The compaction marker is durable, but rewriting the log to reclaim old
+    /// frame bytes failed. Reopen reconstructs the committed compacted suffix.
+    CompactedButReclamationFailed {
+        compacted_through: LogIndex,
+        operation: &'static str,
+        source: StorageIoError,
+    },
+    /// An earlier mutating I/O error made this file-backed handle unsafe to use.
+    StoreRequiresReopen,
 }
 
 impl fmt::Display for RaftLogSegmentCompactError {
@@ -134,9 +166,20 @@ impl fmt::Display for RaftLogSegmentCompactError {
             Self::Encode(error) => {
                 write!(formatter, "Raft log entry could not be encoded: {error}")
             }
-            Self::Io { operation, message } => {
-                write!(formatter, "could not {operation}: {message}")
+            Self::Io { operation, source } => {
+                write!(formatter, "could not {operation}: {source}")
             }
+            Self::CompactedButReclamationFailed {
+                compacted_through,
+                operation,
+                source,
+            } => write!(
+                formatter,
+                "Raft log is durably compacted through index {compacted_through}, but obsolete frame bytes could not be reclaimed while trying to {operation}: {source}; the store requires reopen"
+            ),
+            Self::StoreRequiresReopen => formatter.write_str(
+                "Raft log segment requires reopen after an earlier I/O failure",
+            ),
         }
     }
 }
@@ -145,7 +188,10 @@ impl Error for RaftLogSegmentCompactError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Encode(error) => Some(error),
-            Self::OutOfBounds { .. } | Self::Io { .. } => None,
+            Self::Io { source, .. } | Self::CompactedButReclamationFailed { source, .. } => {
+                Some(source.as_io_error())
+            }
+            Self::OutOfBounds { .. } | Self::StoreRequiresReopen => None,
         }
     }
 }
@@ -159,7 +205,7 @@ pub enum OpenRaftLogSegmentError {
     Io {
         operation: &'static str,
         path: PathBuf,
-        message: String,
+        source: StorageIoError,
     },
     Replay(RaftLogReplayError),
     CompactionMarker(DecodeRaftLogCompactionMarkerError),
@@ -175,10 +221,10 @@ impl fmt::Display for OpenRaftLogSegmentError {
             Self::Io {
                 operation,
                 path,
-                message,
+                source,
             } => write!(
                 formatter,
-                "could not {operation} at {}: {message}",
+                "could not {operation} at {}: {source}",
                 path.display()
             ),
             Self::Replay(error) => {
@@ -201,7 +247,8 @@ impl Error for OpenRaftLogSegmentError {
         match self {
             Self::Replay(error) => Some(error),
             Self::CompactionMarker(error) => Some(error),
-            Self::Io { .. } | Self::NonContiguous { .. } => None,
+            Self::Io { source, .. } => Some(source.as_io_error()),
+            Self::NonContiguous { .. } => None,
         }
     }
 }

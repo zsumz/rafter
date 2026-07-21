@@ -1,3 +1,5 @@
+//! In-memory retained-log append, truncation, and compaction scenarios.
+
 use super::test_support::entry;
 use super::*;
 
