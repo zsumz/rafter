@@ -189,7 +189,7 @@ jobs:
           cache-targets: false
           cache-bin: false
       - name: Validate artifact verifier compatibility inventory
-        run: scripts/cargo-test-exact 61 artifact_verify:: --inventory verification/artifact-verifier-test-inventory.txt --locked -p rafter-invariants --lib -- --test-threads=1
+        run: 'scripts/cargo-test-exact 61 artifact_verify:: --inventory verification/artifact-verifier-test-inventory.txt --locked -p rafter-invariants --lib -- --test-threads=1'
       - name: Produce simulator evidence
         run: cargo run --locked -p rafter-invariants -- run --profile pr --layer simulator
       - name: Upload simulator evidence
