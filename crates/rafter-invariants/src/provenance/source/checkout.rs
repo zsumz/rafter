@@ -14,6 +14,7 @@ use crate::provenance::source::parse_tracked_source_paths;
 
 mod cargo_graph;
 mod cargo_inputs;
+mod environment;
 mod materialization;
 mod path_validation;
 mod rust_inputs;
@@ -27,6 +28,9 @@ mod observation_tests;
 
 use cargo_graph::validate_registry_build_script_source_identity;
 use cargo_inputs::validate_trusted_cargo_package_metadata;
+#[cfg(test)]
+pub(crate) use environment::source_environment_matches_digest;
+pub(crate) use environment::source_environment_sha256;
 use materialization::capture_materialization;
 pub(crate) use materialization::CapturedSourceFile;
 pub(crate) use materialization::MaterializationObservation;
@@ -120,12 +124,6 @@ pub(crate) fn identity_probe_at(
     root: &Path,
 ) -> Result<CommandOutput, Box<dyn Error>> {
     StandaloneCommandRunner.run(program, arguments, root)
-}
-
-pub(crate) fn source_environment_sha256() -> Result<String, Box<dyn Error>> {
-    Ok(crate::provenance::invocation::digest_environment(
-        &crate::execution::process::base_environment(),
-    )?)
 }
 
 pub(crate) fn observe_checkout_with(
