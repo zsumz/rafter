@@ -112,4 +112,6 @@ pub(crate) fn assert_pr_launcher_inventories(workflow: &str) {
     assert!(launcher.contains("target/rafter-invariants/ci-diagnostics/macos-launcher.log"));
     assert!(launcher.contains("Annotate macOS launcher failure"));
     assert!(launcher.contains("steps.launcher-validation.outcome == 'failure'"));
+    assert!(launcher.contains("CARGO_TERM_COLOR: never"));
+    assert!(launcher.contains("tail -c 3500"));
 }

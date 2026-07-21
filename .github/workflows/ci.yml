@@ -157,6 +157,8 @@ jobs:
         run: cargo fetch --locked
       - name: Validate managed process launcher on macOS
         id: launcher-validation
+        env:
+          CARGO_TERM_COLOR: never
         run: |
           set -o pipefail
           mkdir -p target/rafter-invariants/ci-diagnostics
@@ -177,9 +179,19 @@ jobs:
         if: failure() && steps.launcher-validation.outcome == 'failure'
         shell: bash
         run: |
-          diagnostic="$(tail -n 160 target/rafter-invariants/ci-diagnostics/macos-launcher.log | tr '\n' ' ')"
+          log=target/rafter-invariants/ci-diagnostics/macos-launcher.log
+          summary=target/rafter-invariants/ci-diagnostics/macos-launcher-summary.log
+          awk '
+            /^error(\[[^]]+\])?:/ { context = 8; print; next }
+            context > 0 { print; context -= 1; next }
+            /panicked at|^failures:|FAILED$|^test result:|^error: test failed/ { print }
+          ' "$log" > "$summary"
+          diagnostic="$(tail -c 3500 "$summary" | tr '\n' ' ')"
           diagnostic="${diagnostic//'%'/'%25'}"
-          echo "::error title=macOS launcher validation failed::$diagnostic"
+          echo "::error title=macOS launcher failure summary::$diagnostic"
+          diagnostic="$(tail -c 3500 "$log" | tr '\n' ' ')"
+          diagnostic="${diagnostic//'%'/'%25'}"
+          echo "::error title=macOS launcher terminal output::$diagnostic"
       - name: Upload macOS launcher diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
