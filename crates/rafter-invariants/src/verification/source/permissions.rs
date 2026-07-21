@@ -1,6 +1,8 @@
-//! Best-effort filesystem hardening backed by mandatory integrity checks.
+//! Best-effort read-only hardening backed by mandatory sealed-tree checks.
 
-use std::{fs, path::Path};
+use std::{error::Error, fs, path::Path};
+
+use crate::execution::filesystem::OperationDeadline;
 
 pub(super) fn harden_file(path: &Path, executable: bool) -> Result<(), std::io::Error> {
     #[cfg(unix)]
@@ -18,20 +20,34 @@ pub(super) fn harden_file(path: &Path, executable: bool) -> Result<(), std::io::
     Ok(())
 }
 
-pub(super) fn harden_directories(root: &Path) -> Result<(), std::io::Error> {
+pub(super) fn harden_directories(root: &Path) -> Result<(), Box<dyn Error>> {
+    harden_directories_bounded(
+        root,
+        OperationDeadline::none("harden verifier-owned directories"),
+        u64::MAX,
+    )
+}
+
+pub(super) fn harden_directories_bounded(
+    root: &Path,
+    deadline: OperationDeadline,
+    maximum_nodes: u64,
+) -> Result<(), Box<dyn Error>> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
 
-        let mut directories = directories(root)?;
+        let mut directories = directories_bounded(root, deadline, maximum_nodes)?;
         directories.sort_by_key(|path| std::cmp::Reverse(path.components().count()));
         for directory in directories {
+            deadline.check()?;
             fs::set_permissions(directory, fs::Permissions::from_mode(0o500))?;
         }
+        deadline.check()?;
     }
     #[cfg(not(unix))]
     {
-        let _ = root;
+        let _ = (root, deadline, maximum_nodes);
     }
     Ok(())
 }
@@ -79,5 +95,38 @@ fn directories(root: &Path) -> Result<Vec<std::path::PathBuf>, std::io::Error> {
             }
         }
     }
+    Ok(found)
+}
+
+#[cfg(unix)]
+fn directories_bounded(
+    root: &Path,
+    deadline: OperationDeadline,
+    maximum_nodes: u64,
+) -> Result<Vec<std::path::PathBuf>, Box<dyn Error>> {
+    let mut found = vec![root.to_owned()];
+    let mut pending = vec![root.to_owned()];
+    let mut nodes = 0_u64;
+    while let Some(directory) = pending.pop() {
+        deadline.check()?;
+        for entry in fs::read_dir(directory)? {
+            deadline.check()?;
+            let entry = entry?;
+            nodes = nodes
+                .checked_add(1)
+                .ok_or("verifier-owned directory node count overflow")?;
+            if nodes > maximum_nodes {
+                return Err(format!(
+                    "verifier-owned directory tree exceeds its node limit of {maximum_nodes}"
+                )
+                .into());
+            }
+            if entry.file_type()?.is_dir() {
+                found.push(entry.path());
+                pending.push(entry.path());
+            }
+        }
+    }
+    deadline.check()?;
     Ok(found)
 }

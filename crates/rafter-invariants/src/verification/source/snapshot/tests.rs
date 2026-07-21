@@ -6,6 +6,15 @@ use super::SourceSnapshot;
 use crate::provenance::source::CapturedSourceFile;
 
 #[test]
+fn snapshot_is_materialized_inside_the_bound_workspace() {
+    let snapshot = snapshot(vec![file("src/lib.rs", b"pub fn value() {}\n")]);
+    let workspace = fs::canonicalize(".").expect("canonical workspace");
+    let parent = workspace.join("target/rafter-invariants/verified-source");
+
+    assert!(snapshot.root().starts_with(parent));
+}
+
+#[test]
 fn semantic_source_is_detached_from_later_ambient_path_replacement() {
     let ambient = tempfile::tempdir().expect("create ambient source root");
     let relative = PathBuf::from("src/lib.rs");

@@ -11,42 +11,48 @@ use std::{
 
 use sha2::{Digest, Sha256};
 
-use crate::provenance::source::CapturedSourceFile;
+use crate::{execution::filesystem::HeldDirectory, provenance::source::CapturedSourceFile};
 
-mod identity;
 mod integrity;
-mod permissions;
-
+use super::permissions;
 use integrity::{SnapshotFilePlan, SnapshotIntegrity};
 
+const SNAPSHOT_PARENT: &str = "target/rafter-invariants/verified-source";
+
 pub(super) struct SourceSnapshot {
+    _parent: HeldDirectory,
     _directory: tempfile::TempDir,
     integrity: Arc<SnapshotIntegrity>,
 }
 
 impl SourceSnapshot {
     pub(super) fn materialize(files: Vec<CapturedSourceFile>) -> Result<Self, Box<dyn Error>> {
+        let parent = HeldDirectory::create_all(Path::new(SNAPSHOT_PARENT))?;
+        parent.verify_path_binding()?;
         let directory = tempfile::Builder::new()
             .prefix("rafter-verified-source-")
-            .tempdir()?;
+            .tempdir_in(parent.external_path())?;
+        parent.verify_path_binding()?;
         let root = fs::canonicalize(directory.path())?;
         let plans = materialize_files(&root, files)?;
         if let Err(error) = permissions::harden_directories(&root) {
             permissions::restore_tree(&root);
-            return Err(error.into());
+            return Err(error);
         }
-        let integrity = match SnapshotIntegrity::capture(&root, plans) {
-            Ok(integrity) => Arc::new(integrity),
-            Err(error) => {
-                permissions::restore_tree(&root);
-                return Err(error.into());
-            }
-        };
+        let integrity =
+            match SnapshotIntegrity::capture("authenticated source snapshot", &root, plans) {
+                Ok(integrity) => Arc::new(integrity),
+                Err(error) => {
+                    permissions::restore_tree(&root);
+                    return Err(error.into());
+                }
+            };
         if let Err(error) = integrity::register(&integrity) {
             permissions::restore_tree(&root);
             return Err(error.into());
         }
         Ok(Self {
+            _parent: parent,
             _directory: directory,
             integrity,
         })
@@ -73,7 +79,7 @@ pub(super) fn tracked_paths_at(root: &Path) -> Result<Option<HashSet<PathBuf>>, 
         .map(|snapshot| {
             snapshot.map(|snapshot| {
                 snapshot.revalidate()?;
-                Ok(snapshot.tracked_paths())
+                Ok(snapshot.paths())
             })
         })?
         .transpose()
