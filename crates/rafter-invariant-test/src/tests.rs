@@ -38,10 +38,24 @@ fn qualified_helper_forged_transcript_subprocess_fixture() {
 
 #[rafter_invariant_test::detector_test]
 #[ignore = "subprocess fixture for rafter-invariants"]
-fn proof_socket_is_hidden_from_fixture_body_subprocess_fixture() {
+fn proof_descriptor_is_hidden_from_fixture_body_subprocess_fixture() {
     assert!(
-        std::env::var("RAFTER_INVARIANT_DETECTOR_PROOF_SOCKET").is_err(),
-        "detector proof socket must not be visible to fixture body code"
+        std::env::var("RAFTER_INVARIANT_DETECTOR_PROOF_FD").is_err(),
+        "detector proof descriptor must not be visible to fixture body code"
+    );
+    let error = rafter_invariant_test::oracle_expect_err!(
+        token_bound_regression_detector(),
+        "fixture detector must reject"
+    );
+    assert_eq!(error, "expected detector rejection");
+}
+
+#[rafter_invariant_test::detector_test]
+#[ignore = "adversarial subprocess fixture for rafter-invariants"]
+fn disclosed_proof_descriptor_is_closed_before_fixture_body_subprocess_fixture() {
+    assert!(
+        !crate::tests::support::can_request_challenge_on_disclosed_descriptor(),
+        "fixture helper must not retain a live proof capability"
     );
     let error = rafter_invariant_test::oracle_expect_err!(
         token_bound_regression_detector(),
