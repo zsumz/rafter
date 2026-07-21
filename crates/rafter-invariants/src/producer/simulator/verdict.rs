@@ -13,7 +13,7 @@ use crate::{
     },
 };
 
-use crate::producer::simulator_model::SimulatorExecution;
+use super::model::SimulatorExecution;
 
 use super::{
     detector::DetectorRun,

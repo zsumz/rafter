@@ -11,9 +11,10 @@ use super::{
     check_contract::liveness_contracts,
     detector::{run_detectors, DetectorRun},
     evaluation::evaluate_descriptors,
+    model,
     resources::execution_resource_metrics,
 };
-use crate::producer::{simulator_model, source, ProducerContext};
+use crate::producer::{source, ProducerContext};
 
 pub(in crate::producer) fn run(
     catalog: &Catalog,
@@ -33,7 +34,7 @@ pub(in crate::producer) fn run(
         .flatten()
         .filter(|descriptor| descriptor.layer == "simulator")
         .collect::<Vec<_>>();
-    let model = simulator_model::execute(profile, &source.commit, output_dir)?;
+    let model = model::execute(profile, &source.commit, output_dir)?;
     let detectors = match run_detectors(&descriptors, profile, &source.commit, output_dir) {
         Ok(detectors) => detectors,
         Err(error) => DetectorRun {
