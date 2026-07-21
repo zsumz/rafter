@@ -117,6 +117,8 @@ jobs:
       - name: Prefetch locked registry for offline source identity
         run: cargo fetch --locked
       - name: Produce test evidence
+        env:
+          CI_DIAGNOSTIC_RECEIPT: artifacts/invariants/pr-tests.json
         run: scripts/ci-run-diagnosed tests-producer target/rafter-invariants/ci-diagnostics/tests-producer.log cargo run --locked -p rafter-invariants -- run --profile pr --layer tests
       - name: Upload test evidence
         if: always()
@@ -226,6 +228,8 @@ jobs:
       - name: Validate artifact verifier compatibility inventory
         run: 'scripts/ci-run-diagnosed simulator-verifier target/rafter-invariants/ci-diagnostics/simulator-verifier.log scripts/cargo-test-exact 61 artifact_verify:: --inventory verification/artifact-verifier-test-inventory.txt --locked -p rafter-invariants --lib -- --test-threads=1'
       - name: Produce simulator evidence
+        env:
+          CI_DIAGNOSTIC_RECEIPT: artifacts/invariants/pr-simulator.json
         run: scripts/ci-run-diagnosed simulator-producer target/rafter-invariants/ci-diagnostics/simulator-producer.log cargo run --locked -p rafter-invariants -- run --profile pr --layer simulator
       - name: Upload simulator evidence
         if: always()
@@ -296,6 +300,8 @@ jobs:
           fi
       - name: Produce TLA+ evidence
         timeout-minutes: 350
+        env:
+          CI_DIAGNOSTIC_RECEIPT: artifacts/invariants/pr-tla.json
         run: scripts/ci-run-diagnosed tla-producer target/rafter-invariants/ci-diagnostics/tla-producer.log cargo run --locked -p rafter-invariants -- run --profile pr --layer tla
       - name: Upload TLA+ evidence
         if: always()

@@ -47,6 +47,26 @@ awk '
     /panicked at|^failures:|FAILED$|^test result:|^error: test failed/ { print }
 ' "$log" > "$summary"
 
+receipt="${CI_DIAGNOSTIC_RECEIPT:-}"
+receipt_summary="${log%.log}-receipt-summary.log"
+if [[ -n "$receipt" && -f "$receipt" ]] && command -v jq >/dev/null 2>&1; then
+    if ! jq -c '
+        {
+            failures: ([
+                .results[]
+                | select(.status != "pass")
+                | {status, classification, message}
+            ] | unique),
+            checks: [
+                .execution.checks[]
+                | {check_id, completion, observations}
+            ]
+        }
+    ' "$receipt" > "$receipt_summary"; then
+        printf 'failed to summarize diagnostic receipt %s\n' "$receipt" > "$receipt_summary"
+    fi
+fi
+
 emit_annotation() {
     local title="$1"
     local source="$2"
@@ -57,5 +77,8 @@ emit_annotation() {
 }
 
 emit_annotation "failure summary" "$summary"
+if [[ -s "$receipt_summary" ]]; then
+    emit_annotation "failure receipt" "$receipt_summary"
+fi
 emit_annotation "terminal output" "$log"
 exit "$command_status"

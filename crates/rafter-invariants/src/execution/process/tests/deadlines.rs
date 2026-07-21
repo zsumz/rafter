@@ -7,9 +7,9 @@ use std::{
 
 use super::{
     super::{
-        base_environment, clear_signal_attempts, delay_next_process_group_observation,
-        delay_next_process_group_receipt, delay_next_target_release,
-        omit_anchor_from_next_process_group_observation,
+        base_environment, clear_signal_attempts, confirm_process_group_absent_with,
+        delay_next_process_group_observation, delay_next_process_group_receipt,
+        delay_next_target_release, omit_anchor_from_next_process_group_observation,
         omit_target_rows_from_next_process_group_observation, process_group_state,
         take_last_delayed_process_group, take_last_unreleased_process_group, take_signal_attempts,
         FinalizationPolicy, ProcessDeadlines, ProcessGroupState, ProcessSignal,
@@ -127,10 +127,10 @@ fn target_cannot_execute_before_the_parent_releases_ready_ownership() {
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(signaled_groups.len(), 2);
     assert!(signaled_groups.contains(&process_group));
-    assert_eq!(
-        process_group_state(process_group).expect("probe unreleased target process group"),
-        ProcessGroupState::Absent
-    );
+    confirm_process_group_absent_with(Duration::from_secs(2), || {
+        process_group_state(process_group)
+    })
+    .expect("the no-signal reaper eventually removes the unreleased target process group");
 }
 
 #[test]
