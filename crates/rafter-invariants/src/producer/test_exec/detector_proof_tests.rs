@@ -1,6 +1,8 @@
 //! Producer adaptation tests for neutral detector challenge transport.
 
-use std::{io::Write, os::unix::net::UnixStream, time::Duration};
+use std::time::Duration;
+
+use nix::sys::socket::{send, MsgFlags};
 
 use super::*;
 
@@ -48,13 +50,20 @@ fn channel_failure_retains_completed_child_output() {
 
 #[test]
 fn malformed_proof_request_fixture() {
-    let Ok(socket) = std::env::var(crate::evidence::detector_proof::PROOF_SOCKET_ENV) else {
+    let Ok(descriptor) = std::env::var(crate::evidence::detector_proof::PROOF_DESCRIPTOR_ENV)
+    else {
         return;
     };
+    std::env::remove_var(crate::evidence::detector_proof::PROOF_DESCRIPTOR_ENV);
+    let descriptor = descriptor
+        .parse::<i32>()
+        .expect("parse inherited detector proof descriptor");
     println!("retained malformed-proof fixture output");
-    let mut stream = UnixStream::connect(socket).expect("connect detector proof channel");
-    stream
-        .write_all(&[crate::evidence::detector_proof::PROOF_REQUEST.wrapping_add(1)])
-        .expect("write malformed proof request");
+    send(
+        descriptor,
+        &[crate::evidence::detector_proof::PROOF_REQUEST.wrapping_add(1)],
+        MsgFlags::empty(),
+    )
+    .expect("write malformed proof request");
     std::thread::sleep(Duration::from_millis(100));
 }

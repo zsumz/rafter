@@ -31,9 +31,7 @@ pub(super) fn classify_transcript(
                     return Err("detector proof is bound to another execution token".to_owned());
                 }
                 if challenge != expected_challenge {
-                    return Err(
-                        "detector proof used the wrong post-invocation challenge".to_owned()
-                    );
+                    return Err("detector proof used the wrong pre-body challenge".to_owned());
                 }
                 *proofs.entry(witness).or_default() += 1;
             }

@@ -1,6 +1,10 @@
 use std::{collections::BTreeMap, error::Error, ffi::OsString, path::Path};
 
 #[cfg(all(test, unix))]
+use command_fds::{CommandFdExt, FdMapping};
+#[cfg(unix)]
+use std::os::fd::AsRawFd;
+#[cfg(all(test, unix))]
 use std::time::Instant;
 
 use super::super::process;
@@ -24,17 +28,20 @@ pub(super) fn execute(
 ) -> Result<Execution, Box<dyn Error>> {
     validate_protocol_contract()?;
     let gate = ChallengeGate::open()?;
+    let descriptor = gate.child_descriptor();
     environment.insert(
-        proof_wire::PROOF_SOCKET_ENV.to_owned(),
-        gate.socket_path().to_string_lossy().into_owned(),
+        proof_wire::PROOF_DESCRIPTOR_ENV.to_owned(),
+        descriptor.as_raw_fd().to_string(),
     );
     let challenge = gate.challenge().encoded();
-    let output = process::timed_for(
+    let output = process::timed_for_with_cap_and_descriptors(
         process::ProcessKind::TestExecution,
         program,
         arguments,
         environment,
         Path::new("."),
+        None,
+        &[descriptor],
     );
     complete_execution(output, gate.finish(), challenge)
 }
@@ -56,9 +63,14 @@ pub(super) fn execute_for_test(
 ) -> Result<Execution, Box<dyn Error>> {
     validate_protocol_contract()?;
     let gate = ChallengeGate::open()?;
+    let descriptor = gate.child_descriptor();
     environment.insert(
-        proof_wire::PROOF_SOCKET_ENV.to_owned(),
-        gate.socket_path().to_string_lossy().into_owned(),
+        proof_wire::PROOF_DESCRIPTOR_ENV.to_owned(),
+        descriptor.as_raw_fd().to_string(),
+    );
+    environment.insert(
+        "RAFTER_INVARIANT_TEST_DISCLOSED_PROOF_FD".to_owned(),
+        descriptor.as_raw_fd().to_string(),
     );
     let challenge = gate.challenge().encoded();
     let invocation = process::expected_invocation(program, arguments, environment, Path::new("."))?;
@@ -69,6 +81,10 @@ pub(super) fn execute_for_test(
         .env_clear()
         .envs(&*environment)
         .current_dir(".");
+    command.fd_mappings(vec![FdMapping {
+        parent_fd: descriptor.try_clone_to_owned()?,
+        child_fd: descriptor.as_raw_fd(),
+    }])?;
     let captured = command.output()?;
     let output = process::ProcessOutput {
         invocation,
@@ -130,15 +146,10 @@ fn exchange_error(exchange: ChallengeExchange) -> Option<String> {
 fn validate_protocol_contract() -> Result<(), Box<dyn Error>> {
     let protocol = ChallengeGate::protocol();
     let evidence_challenge = [0; proof_wire::CHALLENGE_BYTES];
-    let evidence_socket_nonce = [0; proof_wire::SOCKET_NONCE_BYTES];
-    let compatible = protocol.socket_environment == proof_wire::PROOF_SOCKET_ENV
-        && protocol.socket_directory == proof_wire::PROOF_SOCKET_DIRECTORY
+    let compatible = protocol.descriptor_environment == proof_wire::PROOF_DESCRIPTOR_ENV
         && protocol.challenge_bytes == proof_wire::CHALLENGE_BYTES
-        && protocol.socket_nonce_bytes == proof_wire::SOCKET_NONCE_BYTES
         && protocol.proof_request == proof_wire::PROOF_REQUEST
-        && protocol.zero_challenge_encoding == proof_wire::encode_challenge(&evidence_challenge)
-        && protocol.zero_socket_nonce_encoding
-            == proof_wire::encode_socket_nonce(&evidence_socket_nonce);
+        && protocol.zero_challenge_encoding == proof_wire::encode_challenge(&evidence_challenge);
     if compatible {
         Ok(())
     } else {
