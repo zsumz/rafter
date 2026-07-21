@@ -22,9 +22,30 @@ pub(crate) fn listed_tests(output: &[u8]) -> Vec<String> {
 
 pub(crate) fn exact_pass(output: &[u8], test_name: &str) -> bool {
     let output = String::from_utf8_lossy(output);
+    let lines = output.lines().map(str::trim).collect::<Vec<_>>();
     count_exact_line(&output, "running 1 test") == 1
         && count_exact_line(&output, &format!("test {test_name} ... ok")) == 1
         && count_summary(&output, "test result: ok. 1 passed; 0 failed; 0 ignored") == 1
+        && lines
+            .iter()
+            .filter(|line| line.starts_with("running ") && line.ends_with(" test"))
+            .count()
+            == 1
+        && lines
+            .iter()
+            .filter(|line| line.starts_with("running ") && line.ends_with(" tests"))
+            .count()
+            == 0
+        && lines
+            .iter()
+            .filter(|line| line.starts_with("test ") && line.contains(" ... "))
+            .count()
+            == 1
+        && lines
+            .iter()
+            .filter(|line| line.starts_with("test result:"))
+            .count()
+            == 1
 }
 
 pub(crate) fn exact_failure(output: &[u8], test_name: &str) -> bool {
