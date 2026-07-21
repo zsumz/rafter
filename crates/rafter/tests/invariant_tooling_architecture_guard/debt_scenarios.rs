@@ -16,6 +16,7 @@ use super::{
 };
 
 const DECOMPOSED_FACADE_PATHS: &[&str] = &[
+    "crates/rafter-invariants/src/verification/artifact/mod.rs",
     "crates/rafter-invariants/src/verification/detector_replay/artifact/mod.rs",
     "crates/rafter-invariants/src/verification/target/mod.rs",
 ];
@@ -100,9 +101,9 @@ fn producer_verifier_dependency_debt_only_shrinks() {
     let modules = declared_module_graph(&root);
     let files = invariant_rust_files(&root);
     let references = legacy_verifier_references(&root, &files, "producer::");
-    assert!(
-        references <= MAX_LEGACY_VERIFIER_PRODUCER_REFERENCES,
-        "legacy verifier-to-producer references increased from {MAX_LEGACY_VERIFIER_PRODUCER_REFERENCES} to {references}"
+    assert_eq!(
+        references, MAX_LEGACY_VERIFIER_PRODUCER_REFERENCES,
+        "legacy verifier-to-producer references returned at {references}"
     );
     let producer_image_references = legacy_verifier_references(&root, &files, "producer_image::");
     assert_eq!(

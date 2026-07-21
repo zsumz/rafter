@@ -66,8 +66,8 @@ fn semantic_receipt_validation_is_verification_owned_and_bounded() {
     assert!(!dispatch.contains("_ =>"));
     assert_eq!(
         REVIEWED_DOMAIN_IMPORT_EXCEPTIONS.len(),
-        1,
-        "receipt migration must leave only the artifact-verifier exception"
+        0,
+        "completed verifier migrations must not retain architecture exceptions"
     );
 }
 

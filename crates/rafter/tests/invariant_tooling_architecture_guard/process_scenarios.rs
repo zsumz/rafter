@@ -33,13 +33,14 @@ fn retired_producer_process_format_ownership_cannot_return() {
     }
 
     for relative in [
-        "crates/rafter-invariants/src/artifact_verify/compile.rs",
-        "crates/rafter-invariants/src/artifact_verify/test_logs/runner.rs",
+        "crates/rafter-invariants/src/verification/artifact/compiler/receipt.rs",
+        "crates/rafter-invariants/src/verification/artifact/test_runner/runner.rs",
         "crates/rafter-invariants/src/verification/simulator/schedule/compiler.rs",
         "crates/rafter-invariants/src/verification/simulator/schedule/invocation.rs",
     ] {
+        let source = read(&root.join(relative));
         assert!(
-            read(&root.join(relative)).contains("parse_combined_v4"),
+            source.contains("parse_combined_v4") || source.contains(".combined_v4("),
             "{relative} does not enforce the canonical non-detector process schema"
         );
     }
