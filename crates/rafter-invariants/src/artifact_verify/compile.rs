@@ -364,6 +364,7 @@ fn verify_emitted_test_path(
     Ok(())
 }
 
+#[cfg(test)]
 pub(super) fn compiler_artifact_executable(
     bytes: &[u8],
     target_name: &str,

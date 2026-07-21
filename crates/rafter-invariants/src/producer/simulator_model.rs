@@ -395,26 +395,12 @@ fn model_run(profile: &str, seeds: Option<String>) -> ModelRun {
     }
 }
 
-fn source_derived_seeds(profile: &str, source_ref: &str, count: usize) -> String {
-    (0..count)
-        .map(|index| {
-            let value = crate::provenance::invocation::deterministic_u64(
-                "scheduled-simulator-seed-v1",
-                &format!("{profile}\0{source_ref}\0{index}"),
-            );
-            format!("0x{value:x}")
-        })
-        .collect::<Vec<_>>()
-        .join(",")
-}
-
 pub(crate) fn expected_scheduled_seeds_with_count(
     profile: &str,
     source_ref: &str,
     count: usize,
 ) -> Option<String> {
-    matches!(profile, "nightly" | "weekly")
-        .then(|| source_derived_seeds(profile, source_ref, count))
+    crate::contract::profile::scheduled_simulator_seeds(profile, source_ref, count)
 }
 
 pub(crate) fn expected_scheduled_seeds(profile: &str, source_ref: &str) -> Option<String> {
@@ -553,18 +539,7 @@ fn collect_events(
 }
 
 pub(crate) fn canonical_check_id(profile: &str, check_id: &str) -> Option<String> {
-    let suffix = match profile {
-        "nightly" => "nightly",
-        "weekly" => "weekly",
-        _ => return None,
-    };
-    let scheduled_soak = format!("raft-{suffix}-soak");
-    if let Some(rest) = check_id.strip_prefix(&scheduled_soak) {
-        return Some(format!("raft-soak{rest}"));
-    }
-    check_id
-        .strip_suffix(&format!("-{suffix}"))
-        .map(str::to_owned)
+    crate::contract::profile::canonical_simulator_check_id(profile, check_id)
 }
 
 #[cfg(test)]

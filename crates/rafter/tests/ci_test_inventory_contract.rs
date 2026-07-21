@@ -30,7 +30,7 @@ fn filtered_ci_test_lanes_declare_exact_nonzero_inventories() {
         "scripts/cargo-test-exact 11 detector_proof::tests --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 45 verification::detector::source::tests --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 23 verification::detector::source::adversarial_tests --locked -p rafter-invariants -- --test-threads=1",
-        "scripts/cargo-test-exact 15 artifact_verify::simulator::event_semantics_tests --locked -p rafter-invariants -- --test-threads=1",
+        "scripts/cargo-test-exact 16 artifact_verify::simulator::event_semantics_tests --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 8 artifact_verify::test_logs::tests --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 4 provenance::image::tests --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 1 - --locked -p rafter-invariants --test producer_reexec -- --test-threads=1",

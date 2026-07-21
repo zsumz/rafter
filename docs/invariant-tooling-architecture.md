@@ -239,7 +239,7 @@ src/
       replay.rs          typed aggregate replay policy and resource bounds
       validate.rs        cross-profile policy validation
       runner_contract/   typed per-layer configuration validation
-      simulator/         simulator floors and check contracts
+      simulator/         simulator floors, check contracts, and stable schedule identities
       liveness/          bounded-liveness obligations and execution policy
     schema/
       mod.rs             schema facade
@@ -396,11 +396,19 @@ src/
     error.rs             fail-closed verification error vocabulary
     process_receipt.rs   process invocation and launcher-chain acceptance
     bundle/              common receipt, provenance, and integrity checks
-    simulator/           event, schedule, provenance, and metrics checks
+    simulator/
+      verify.rs          authenticated simulator evidence orchestration
+      detector.rs        source-bound negative-detector qualification
+      event/             event shape, indexing, issue precedence, and invariant routing
+      observation/       receipt observation rederivation and reconciliation
+      schedule/          invocation, compiler, path, event, and profile provenance
       liveness/          independent bounded-report semantic validation
     tla/                 invocation, tool pin, checkpoint, and mutation checks
     maelstrom/           history, scenario, durability, and lease checks
   artifact_verify/
+    simulator.rs         declarative simulator-verifier compatibility facade
+    simulator_schedule.rs declarative schedule-verifier compatibility facade
+    simulator_schedule/events.rs declarative event-scanner compatibility facade
     test_logs.rs         legacy physical facade, logically verification-owned
     test_logs/
       detector.rs        detector-log adaptation into verifier transcript policy
@@ -439,12 +447,11 @@ validate producer output. Shared wire decoding, including canonical libtest and
 process transcripts, belongs under `evidence::format`; producer and verifier
 policy remains separate.
 
-`artifact_verify/test_logs.rs` and its child directory retain their physical
-paths while test verification moves behind the reviewed domain vocabulary.
-They are logically part of `verification`, and the migrated-source manifest
-models both the facade file and child directory so neither can import producer
-implementation. This is a compatibility mount, not a second verification
-domain.
+The simulator and test-log files retained under `artifact_verify/` are
+declarative compatibility mounts for stable internal test identities. Their
+implementation lives under `verification/`, and the migrated-source manifest
+models every retained facade so none can import producer implementation. These
+mounts are not a second verification domain.
 
 Detector proof handling has the same neutral-format boundary. The evidence
 module decodes marker records without deciding whether a transcript is
@@ -773,7 +780,8 @@ Fixture builders stay beside the domain they model:
 - source and Cargo fixtures under `provenance/source/tests/`;
 - process lifecycle fixtures under `execution/process/tests/`;
 - detector call-graph fixtures under `verification/detector/source_tests/`;
-- simulator schedule fixtures under `verification/simulator/tests/`;
+- simulator event fixtures under `verification/simulator/tests/` and schedule
+  fixtures under `verification/simulator/schedule/tests/`;
 - TLA mutation and checkpoint fixtures under their TLA producer or verifier;
 - Maelstrom history and lease fixtures under their Maelstrom producer or
   verifier.

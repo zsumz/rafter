@@ -5,6 +5,7 @@ use crate::{verification::AggregateError, ResultBundle};
 mod compile;
 mod resource_metrics;
 mod simulator;
+#[cfg(test)]
 mod simulator_schedule;
 mod test_logs;
 
@@ -21,7 +22,17 @@ use simulator::{verify_liveness_observations, verify_simulator_observations};
 use simulator_schedule::validate_simulator_schedule;
 use test_logs::verify_test_logs;
 
+#[cfg(test)]
 const EVENT_PREFIX: &str = "RAFTER_EVENT ";
+
+fn detector_log_verifier() -> crate::verification::simulator::DetectorLogVerifier {
+    crate::verification::simulator::DetectorLogVerifier::new(
+        test_logs::verify_detector_harness_error_invocations,
+        test_logs::verify_test_invocations,
+        test_logs::require_detector_witness_contract,
+        test_logs::require_exact_test_pass,
+    )
+}
 
 pub(super) fn verify(
     bundle: &ResultBundle,
@@ -38,7 +49,14 @@ pub(super) fn verify(
         "tests" => {
             verify_test_logs(bundle, root, source_root, catalog, &artifacts).map(|()| Vec::new())
         }
-        "simulator" => verify_simulator_logs(bundle, root, source_root, catalog, &artifacts),
+        "simulator" => verify_simulator_logs(
+            bundle,
+            root,
+            source_root,
+            catalog,
+            &artifacts,
+            detector_log_verifier(),
+        ),
         "tla" => {
             crate::artifact_verify_tla::verify_authenticated(bundle, root, source_root, &artifacts)
         }

@@ -32,10 +32,13 @@ pub(crate) fn declared_module_graph_from_roots(
     root: &Path,
     roots: &[PathBuf],
 ) -> DeclaredModuleGraph {
+    let root = std::fs::canonicalize(root).unwrap_or_else(|error| {
+        panic!("canonicalize module graph root {}: {error}", root.display())
+    });
     let mut graph = BTreeMap::new();
     let mut visited = BTreeSet::new();
     for source in roots {
-        collect_module_file(root, source, &[], false, &mut graph, &mut visited);
+        collect_module_file(&root, source, &[], false, &mut graph, &mut visited);
     }
     graph
 }
@@ -48,7 +51,9 @@ fn collect_module_file(
     graph: &mut DeclaredModuleGraph,
     visited: &mut BTreeSet<PathBuf>,
 ) {
-    let relative = display_path(root, source);
+    let source = std::fs::canonicalize(source)
+        .unwrap_or_else(|error| panic!("canonicalize module source {}: {error}", source.display()));
+    let relative = display_path(root, &source);
     let declaration = DeclaredModule {
         path: module_path.to_owned(),
         test_only,
@@ -61,10 +66,10 @@ fn collect_module_file(
         return;
     }
     assert!(
-        visited.insert(source.to_path_buf()),
+        visited.insert(source.clone()),
         "module graph contains a cycle through {relative}"
     );
-    let syntax = syn::parse_file(&read(source))
+    let syntax = syn::parse_file(&read(&source))
         .unwrap_or_else(|error| panic!("parse module source {relative}: {error}"));
     let module_directory = if source.file_name().and_then(|name| name.to_str()) == Some("mod.rs")
         || matches!(
@@ -77,7 +82,7 @@ fn collect_module_file(
     };
     collect_module_items(
         root,
-        source,
+        &source,
         &module_directory,
         &syntax.items,
         module_path,
@@ -85,7 +90,7 @@ fn collect_module_file(
         graph,
         visited,
     );
-    visited.remove(source);
+    visited.remove(&source);
 }
 
 #[allow(clippy::too_many_arguments)]

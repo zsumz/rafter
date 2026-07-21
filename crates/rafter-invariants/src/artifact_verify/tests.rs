@@ -2,7 +2,7 @@ use super::{
     validate_simulator_schedule, verify_liveness_observations, verify_producer_invocation_paths,
     verify_resource_metrics, verify_simulator_observations, EVENT_PREFIX,
 };
-use crate::producer::expected_scheduled_seeds;
+use crate::contract::profile::scheduled_simulator_seeds;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fmt::Write as _};
@@ -393,7 +393,7 @@ fn scheduled_simulator_rejects_fabricated_totals_and_executed_seeds() {
 
 #[test]
 fn scheduled_seed_banner_uses_simulator_canonical_hex() {
-    let seeds = expected_scheduled_seeds("weekly", "abc123").expect("weekly seeds");
+    let seeds = scheduled_simulator_seeds("weekly", "abc123", 10).expect("weekly seeds");
     assert!(seeds.contains("0xe00e6256b8bdd15"));
     assert!(!seeds.contains("0x0e00e6256b8bdd15"));
 }
@@ -701,7 +701,7 @@ fn prepare_fixture_check(
 }
 
 fn scheduled_log(source_ref: &str) -> String {
-    let seeds = expected_scheduled_seeds("nightly", source_ref).expect("nightly seeds");
+    let seeds = scheduled_simulator_seeds("nightly", source_ref, 6).expect("nightly seeds");
     let mut lines = vec![
         "label: raft-nightly".to_owned(),
         "exit_code: Some(0)".to_owned(),

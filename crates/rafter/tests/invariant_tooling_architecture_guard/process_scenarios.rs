@@ -34,8 +34,9 @@ fn retired_producer_process_format_ownership_cannot_return() {
 
     for relative in [
         "crates/rafter-invariants/src/artifact_verify/compile.rs",
-        "crates/rafter-invariants/src/artifact_verify/simulator_schedule.rs",
         "crates/rafter-invariants/src/artifact_verify/test_logs/runner.rs",
+        "crates/rafter-invariants/src/verification/simulator/schedule/compiler.rs",
+        "crates/rafter-invariants/src/verification/simulator/schedule/invocation.rs",
     ] {
         assert!(
             read(&root.join(relative)).contains("parse_combined_v4"),
