@@ -3,6 +3,12 @@
 /// Largest single artifact accepted or emitted by the invariant contract.
 pub(crate) const MAX_ARTIFACT_BYTES: u64 = 256 * 1024 * 1024;
 
+/// Largest exact verifier archive, including its manifest.
+pub(crate) const MAX_VERIFIER_ARCHIVE_BYTES: usize = 256 * 1024 * 1024;
+
+/// Largest exact verifier archive inventory, including its manifest.
+pub(crate) const MAX_VERIFIER_ARCHIVE_FILES: usize = 512;
+
 /// Largest number of artifact references accepted in one result bundle.
 pub(crate) const MAX_ARTIFACT_REFS_PER_BUNDLE: usize = 384;
 

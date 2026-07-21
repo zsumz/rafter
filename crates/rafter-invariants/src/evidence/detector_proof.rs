@@ -1,13 +1,9 @@
 //! Neutral detector-proof wire decoding across the evidence trust boundary.
 
-use std::path::Path;
-
-pub(crate) const PROOF_SOCKET_ENV: &str = "RAFTER_INVARIANT_DETECTOR_PROOF_SOCKET";
-pub(crate) const PROOF_SOCKET_DIRECTORY: &str = "target/rafter-invariants/tmp/detector-proof";
+pub(crate) const PROOF_DESCRIPTOR_ENV: &str = "RAFTER_INVARIANT_DETECTOR_PROOF_FD";
 pub(crate) const PROOF_PREFIX: &str = "RAFTER_INVARIANT_DETECTOR_PROOF:";
 pub(crate) const WITNESS_PREFIX: &str = "RAFTER_INVARIANT_DETECTOR_WITNESS:";
 pub(crate) const CHALLENGE_BYTES: usize = 32;
-pub(crate) const SOCKET_NONCE_BYTES: usize = 16;
 pub(crate) const PROOF_REQUEST: u8 = 0xa7;
 
 pub(crate) fn encode_challenge(challenge: &[u8; CHALLENGE_BYTES]) -> String {
@@ -18,34 +14,10 @@ pub(crate) fn validate_challenge(challenge: &str) -> Result<(), String> {
     decode_challenge(challenge).map(|_| ())
 }
 
-pub(crate) fn encode_socket_nonce(nonce: &[u8; SOCKET_NONCE_BYTES]) -> String {
-    encode_hex(nonce)
-}
-
-pub(crate) fn managed_socket_path(path: &Path) -> bool {
-    if path.is_absolute() || path.parent() != Some(Path::new(PROOF_SOCKET_DIRECTORY)) {
-        return false;
-    }
-    let Some(file_name) = path.file_name().and_then(|value| value.to_str()) else {
-        return false;
-    };
-    let Some(stem) = file_name.strip_suffix(".sock") else {
-        return false;
-    };
-    let mut fields = stem.split('-');
-    let (Some(pid), Some(sequence), Some(nonce), None) =
-        (fields.next(), fields.next(), fields.next(), fields.next())
-    else {
-        return false;
-    };
-    !pid.is_empty()
-        && pid.bytes().all(|byte| byte.is_ascii_digit())
-        && !sequence.is_empty()
-        && sequence.bytes().all(|byte| byte.is_ascii_digit())
-        && nonce.len() == SOCKET_NONCE_BYTES * 2
-        && nonce
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+pub(crate) fn canonical_descriptor(value: &str) -> bool {
+    value
+        .parse::<i32>()
+        .is_ok_and(|descriptor| descriptor >= 3 && descriptor.to_string() == value)
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -65,8 +37,26 @@ pub(crate) fn decode_transcript(
     stdout: &str,
     stderr: &str,
 ) -> Result<Vec<TranscriptRecord>, String> {
+    decode_transcript_bytes(stdout.as_bytes(), stderr.as_bytes())
+}
+
+pub(crate) fn decode_transcript_bytes(
+    stdout: &[u8],
+    stderr: &[u8],
+) -> Result<Vec<TranscriptRecord>, String> {
     let mut records = Vec::new();
-    for line in stdout.lines().chain(stderr.lines()).map(str::trim) {
+    for bytes in stdout
+        .split(|byte| *byte == b'\n')
+        .chain(stderr.split(|byte| *byte == b'\n'))
+        .map(trim_ascii)
+    {
+        if !bytes.starts_with(WITNESS_PREFIX.as_bytes())
+            && !bytes.starts_with(PROOF_PREFIX.as_bytes())
+        {
+            continue;
+        }
+        let line = std::str::from_utf8(bytes)
+            .map_err(|_| "detector protocol marker is not UTF-8".to_owned())?;
         if let Some(encoded) = line.strip_prefix(WITNESS_PREFIX) {
             let (token, witness) = parse_bound_witness(encoded)?;
             records.push(TranscriptRecord::Witness { token, witness });
@@ -84,6 +74,16 @@ pub(crate) fn decode_transcript(
         }
     }
     Ok(records)
+}
+
+fn trim_ascii(mut bytes: &[u8]) -> &[u8] {
+    while bytes.first().is_some_and(u8::is_ascii_whitespace) {
+        bytes = &bytes[1..];
+    }
+    while bytes.last().is_some_and(u8::is_ascii_whitespace) {
+        bytes = &bytes[..bytes.len() - 1];
+    }
+    bytes
 }
 
 fn parse_bound_witness(encoded: &str) -> Result<(String, String), String> {
