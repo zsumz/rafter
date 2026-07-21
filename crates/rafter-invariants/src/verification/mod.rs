@@ -7,6 +7,7 @@ mod detector_replay;
 mod error;
 mod filesystem;
 mod intake;
+pub(crate) mod maelstrom;
 mod process_receipt;
 mod publication;
 pub(crate) mod simulator;

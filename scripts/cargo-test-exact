@@ -2,7 +2,7 @@
 # Run a Cargo test selection only when it contains the reviewed number of tests.
 #
 # Usage:
-#   scripts/cargo-test-exact EXPECTED FILTER [CARGO_ARGS...] [-- LIBTEST_ARGS...]
+#   scripts/cargo-test-exact EXPECTED FILTER [--inventory PATH] [CARGO_ARGS...] [-- LIBTEST_ARGS...]
 #
 # Use `-` for FILTER when the selection is expressed entirely by Cargo or
 # libtest arguments. The inventory and execution commands are otherwise
@@ -21,6 +21,16 @@ fi
 expected="$1"
 filter="$2"
 shift 2
+
+reviewed_inventory=""
+if [[ "${1:-}" == "--inventory" ]]; then
+    if [[ $# -lt 2 ]]; then
+        echo "error: --inventory requires a path" >&2
+        exit 2
+    fi
+    reviewed_inventory="$2"
+    shift 2
+fi
 
 case "$expected" in
     '' | *[!0-9]*)
@@ -47,7 +57,9 @@ for arg in "$@"; do
 done
 
 inventory_file="$(mktemp "${TMPDIR:-/tmp}/rafter-cargo-test-inventory.XXXXXX")"
-trap 'rm -f "$inventory_file"' EXIT
+observed_names="$(mktemp "${TMPDIR:-/tmp}/rafter-cargo-test-names.XXXXXX")"
+canonical_names="$(mktemp "${TMPDIR:-/tmp}/rafter-cargo-test-reviewed.XXXXXX")"
+trap 'rm -f "$inventory_file" "$observed_names" "$canonical_names"' EXIT
 
 inventory_command=(cargo test "${cargo_args[@]}")
 if [[ "$filter" != "-" ]]; then
@@ -65,6 +77,24 @@ actual="$(awk '/: test$/ { count += 1 } END { print count + 0 }' "$inventory_fil
 if (( actual != expected )); then
     echo "error: Cargo test selection matched $actual tests; expected exactly $expected" >&2
     exit 1
+fi
+
+if [[ -n "$reviewed_inventory" ]]; then
+    if [[ ! -f "$reviewed_inventory" ]]; then
+        echo "error: reviewed test inventory is not a regular file: $reviewed_inventory" >&2
+        exit 1
+    fi
+    awk '/: test$/ { sub(/: test$/, ""); print }' "$inventory_file" | LC_ALL=C sort > "$observed_names"
+    LC_ALL=C sort -u "$reviewed_inventory" > "$canonical_names"
+    if ! cmp -s "$reviewed_inventory" "$canonical_names"; then
+        echo "error: reviewed test inventory must be sorted, unique, and newline-terminated: $reviewed_inventory" >&2
+        exit 1
+    fi
+    if ! cmp -s "$observed_names" "$reviewed_inventory"; then
+        echo "error: Cargo test selection differs from reviewed inventory: $reviewed_inventory" >&2
+        diff -u "$reviewed_inventory" "$observed_names" >&2 || true
+        exit 1
+    fi
 fi
 
 test_command=(cargo test "${cargo_args[@]}")

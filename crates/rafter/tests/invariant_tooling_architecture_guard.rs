@@ -10,6 +10,8 @@ mod debt_scenarios;
 mod domain_scenarios;
 #[path = "support/invariant_tooling.rs"]
 mod invariant_tooling;
+#[path = "invariant_tooling_architecture_guard/maelstrom_scenarios.rs"]
+mod maelstrom_scenarios;
 #[path = "invariant_tooling_architecture_guard/process_scenarios.rs"]
 mod process_scenarios;
 #[path = "support/readability.rs"]

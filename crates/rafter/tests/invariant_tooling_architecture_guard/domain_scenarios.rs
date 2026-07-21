@@ -77,6 +77,8 @@ fn mature_invariant_facades_remain_declarative() {
             "crates/rafter-invariants/src/artifact_verify/simulator_schedule.rs",
             "crates/rafter-invariants/src/artifact_verify/simulator_schedule/events.rs",
             "crates/rafter-invariants/src/artifact_verify/test_logs.rs",
+            "crates/rafter-invariants/src/artifact_verify_maelstrom.rs",
+            "crates/rafter-invariants/src/artifact_verify_maelstrom_support.rs",
             "crates/rafter-invariants/src/artifact_verify_tla.rs",
             "crates/rafter-invariants/src/cli/mod.rs",
             "crates/rafter-invariants/src/contract/mod.rs",
@@ -105,9 +107,11 @@ fn mature_invariant_facades_remain_declarative() {
             "crates/rafter-invariants/src/provenance/invocation/mod.rs",
             "crates/rafter-invariants/src/provenance/source/mod.rs",
             "crates/rafter-invariants/src/provenance/mod.rs",
+            "crates/rafter-invariants/src/receipt_maelstrom.rs",
             "crates/rafter-invariants/src/receipt_tla.rs",
             "crates/rafter-invariants/src/verification/mod.rs",
             "crates/rafter-invariants/src/verification/intake/mod.rs",
+            "crates/rafter-invariants/src/verification/maelstrom/mod.rs",
             "crates/rafter-invariants/src/verification/detector_replay/artifact/mod.rs",
             "crates/rafter-invariants/src/verification/simulator/mod.rs",
             "crates/rafter-invariants/src/verification/simulator/event/mod.rs",
@@ -236,6 +240,18 @@ fn migrated_domain_sources_follow_the_reviewed_dependency_graph() {
             (
                 "verification",
                 "crates/rafter-invariants/src/artifact_verify_tla.rs",
+            ),
+            (
+                "verification",
+                "crates/rafter-invariants/src/artifact_verify_maelstrom.rs",
+            ),
+            (
+                "verification",
+                "crates/rafter-invariants/src/artifact_verify_maelstrom_support.rs",
+            ),
+            (
+                "verification",
+                "crates/rafter-invariants/src/receipt_maelstrom.rs",
             ),
             (
                 "verification",

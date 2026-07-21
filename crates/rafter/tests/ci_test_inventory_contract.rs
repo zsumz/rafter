@@ -36,7 +36,7 @@ fn filtered_ci_test_lanes_declare_exact_nonzero_inventories() {
         "scripts/cargo-test-exact 1 - --locked -p rafter-invariants --test producer_reexec -- --test-threads=1",
         "scripts/cargo-test-exact 34 producer::tla_exec::mutation_tests --locked -p rafter-invariants --lib -- --ignored --test-threads=1",
         "scripts/cargo-test-exact 4 artifact_verify_tla::full_bundle_tests::serialized_tests --locked -p rafter-invariants --lib -- --ignored --test-threads=1",
-        "scripts/cargo-test-exact 47 maelstrom --locked -p rafter-invariants",
+        "scripts/cargo-test-exact 47 maelstrom --inventory verification/maelstrom-test-inventory.txt --locked -p rafter-invariants",
     ] {
         assert!(ci.contains(selection), "CI omitted exact inventory: {selection}");
     }
@@ -224,6 +224,26 @@ printf '%s\n' 'test execution reached'
         read(&log).lines().collect::<Vec<_>>(),
         ["test -p demo family -- --list --ignored"]
     );
+
+    let inventory = fixture.path.join("reviewed.txt");
+    fs::write(&inventory, "family::alpha\nfamily::beta\n").unwrap();
+    fs::write(&log, "").unwrap();
+    let pinned = run_fixture_with_inventory(&root, &fixture.path, &log, &inventory);
+    assert!(pinned.status.success(), "{}", stderr(&pinned));
+    assert_eq!(
+        read(&log).lines().collect::<Vec<_>>(),
+        ["test -p demo family -- --list", "test -p demo family --"]
+    );
+
+    fs::write(&inventory, "family::alpha\nfamily::gamma\n").unwrap();
+    fs::write(&log, "").unwrap();
+    let drifted = run_fixture_with_inventory(&root, &fixture.path, &log, &inventory);
+    assert!(!drifted.status.success());
+    assert!(stderr(&drifted).contains("differs from reviewed inventory"));
+    assert_eq!(
+        read(&log).lines().collect::<Vec<_>>(),
+        ["test -p demo family -- --list"]
+    );
 }
 
 fn direct_cargo_test_commands(root: &Path) -> Vec<(String, String)> {
@@ -271,6 +291,27 @@ fn run_fixture_without_libtest_args(
     Command::new("bash")
         .arg(root.join("scripts/cargo-test-exact"))
         .args([expected, "family", "-p", "demo"])
+        .env("PATH", std::env::join_paths(paths).unwrap())
+        .env("CARGO_TEST_EXACT_LOG", log)
+        .output()
+        .unwrap()
+}
+
+#[cfg(unix)]
+fn run_fixture_with_inventory(
+    root: &Path,
+    bin: &Path,
+    log: &Path,
+    inventory: &Path,
+) -> std::process::Output {
+    let system_path = std::env::var_os("PATH").unwrap_or_default();
+    let mut paths = vec![bin.to_path_buf()];
+    paths.extend(std::env::split_paths(&system_path));
+    Command::new("bash")
+        .arg(root.join("scripts/cargo-test-exact"))
+        .args(["2", "family", "--inventory"])
+        .arg(inventory)
+        .args(["-p", "demo"])
         .env("PATH", std::env::join_paths(paths).unwrap())
         .env("CARGO_TEST_EXACT_LOG", log)
         .output()

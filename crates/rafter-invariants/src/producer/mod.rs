@@ -33,7 +33,6 @@ pub(crate) use simulator_model::{
 };
 #[cfg(test)]
 pub(crate) use tla_contract::fetch_tool_at as fetch_tla_tool_at;
-pub(crate) use tla_contract::java_major;
 
 use std::collections::BTreeSet;
 use std::{error::Error, io::Write, path::PathBuf};
