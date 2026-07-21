@@ -73,6 +73,9 @@ fn mature_invariant_facades_remain_declarative() {
             "crates/rafter-invariant-test/src/detector/mod.rs",
             "crates/rafter-invariant-test/src/oracle/mod.rs",
             "crates/rafter-invariants/src/lib.rs",
+            "crates/rafter-invariants/src/artifact_verify/simulator.rs",
+            "crates/rafter-invariants/src/artifact_verify/simulator_schedule.rs",
+            "crates/rafter-invariants/src/artifact_verify/simulator_schedule/events.rs",
             "crates/rafter-invariants/src/artifact_verify/test_logs.rs",
             "crates/rafter-invariants/src/cli/mod.rs",
             "crates/rafter-invariants/src/contract/mod.rs",
@@ -105,7 +108,10 @@ fn mature_invariant_facades_remain_declarative() {
             "crates/rafter-invariants/src/verification/intake/mod.rs",
             "crates/rafter-invariants/src/verification/detector_replay/artifact/mod.rs",
             "crates/rafter-invariants/src/verification/simulator/mod.rs",
+            "crates/rafter-invariants/src/verification/simulator/event/mod.rs",
             "crates/rafter-invariants/src/verification/simulator/liveness/mod.rs",
+            "crates/rafter-invariants/src/verification/simulator/observation/mod.rs",
+            "crates/rafter-invariants/src/verification/simulator/schedule/mod.rs",
             "crates/rafter-invariants/src/verification/target/mod.rs",
             "crates/rafter-invariants/src/verdict/mod.rs",
             "crates/rafter-invariants/src/verdict/report/mod.rs",
@@ -204,6 +210,18 @@ fn migrated_domain_sources_follow_the_reviewed_dependency_graph() {
                 "crates/rafter-invariants/src/producer/test_exec"
             ),
             ("verification", "crates/rafter-invariants/src/verification"),
+            (
+                "verification",
+                "crates/rafter-invariants/src/artifact_verify/simulator.rs",
+            ),
+            (
+                "verification",
+                "crates/rafter-invariants/src/artifact_verify/simulator_schedule.rs",
+            ),
+            (
+                "verification",
+                "crates/rafter-invariants/src/artifact_verify/simulator_schedule",
+            ),
             (
                 "verification",
                 "crates/rafter-invariants/src/artifact_verify/test_logs",
