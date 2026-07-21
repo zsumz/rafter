@@ -45,14 +45,14 @@ impl Termination for DetectorTestOutcome {
             eprintln!("detector test returned without an invocation-bound rejection");
             return ExitCode::FAILURE;
         }
-        let (token, mut channel) = match gate {
+        let (token, challenge) = match gate {
             DetectorGate::Standalone => return ExitCode::SUCCESS,
             DetectorGate::SetupFailed => {
                 eprintln!("detector test started with an invalid gate token");
                 return ExitCode::FAILURE;
             }
-            DetectorGate::ProofBound { token, channel } => match std::env::var(TOKEN_ENV) {
-                Ok(current) if current == token => (token, channel),
+            DetectorGate::ProofBound { token, challenge } => match std::env::var(TOKEN_ENV) {
+                Ok(current) if current == token => (token, challenge),
                 Ok(_) => {
                     eprintln!("detector test returned with a different gate token");
                     return ExitCode::FAILURE;
@@ -62,10 +62,6 @@ impl Termination for DetectorTestOutcome {
                     return ExitCode::FAILURE;
                 }
             },
-        };
-        let Some(challenge) = channel.challenge() else {
-            eprintln!("detector test could not complete its post-invocation proof");
-            return ExitCode::FAILURE;
         };
         for witness in witnesses {
             wire::emit_witness(&token, witness);
