@@ -1,13 +1,13 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::contract::profile::RunnerContract;
+use crate::evidence::format::tla::{
+    detector_config_kind, detector_log_kind, detector_observation, DETECTOR_PROBES,
+    MUTATION_SUITE_ARTIFACT_KIND, REGISTERED_PREDICATES, REQUIRED_MODEL_TRANSITIONS,
+};
 use crate::producer::tla_checkpoint::{
     CONTRACT_KIND, INVENTORY_KIND, RECOVERED_CONTRACT_KIND, RECOVERED_INVENTORY_KIND,
     RECOVERY_REPORT_KIND,
-};
-use crate::producer::tla_output::{
-    detector_config_kind, detector_log_kind, detector_observation, DETECTOR_PROBES,
-    MUTATION_SUITE_ARTIFACT_KIND, REGISTERED_PREDICATES, REQUIRED_MODEL_TRANSITIONS,
 };
 use crate::{CheckCompletion, EvidenceDescriptor, EvidenceStatus, ResultBundle};
 
@@ -265,7 +265,7 @@ fn observed(check: &crate::CheckReceipt, name: &str) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::required_proof_artifact_kinds;
-    use crate::producer::tla_output::{detector_config_kind, detector_log_kind, DETECTOR_PROBES};
+    use crate::evidence::format::tla::{detector_config_kind, detector_log_kind, DETECTOR_PROBES};
 
     #[test]
     fn passing_receipt_requires_two_artifacts_per_detector_probe() {
