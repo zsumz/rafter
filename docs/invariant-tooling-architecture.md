@@ -320,7 +320,26 @@ src/
     process/             profile budgets, invocation binding, and evidence adaptation
       runtime.rs         descriptor-bound process-runtime inventory
       runtime/           fail-closed script-interpreter binding
-    tests/               compile, discover, execute, and proof handshake
+    test_compile.rs       test-target compilation compatibility facade
+    test_compile/
+      target.rs           Cargo target identity and selector vocabulary
+      scratch.rs          held compilation scratch directory
+      compilation.rs      bounded Cargo invocation and artifact capture
+      cargo_output.rs     strict compiler-message qualification
+      executable.rs       workspace, package, and executable identity
+      protected.rs        protected oracle compiler-artifact policy
+      tests.rs            compiler-artifact identity scenarios
+    test_exec.rs          exact libtest execution compatibility facade
+    test_exec/
+      discovery.rs        ordinary and ignored exact-test inventory
+      execution.rs        bounded process and proof qualification
+      evaluation.rs       compile-to-outcome orchestration
+      outcome.rs          typed evidence reduction
+      artifact_log.rs     incremental durable transcript publication
+      detector_policy.rs  producer-owned detector transcript policy
+      detector_proof.rs   challenge-channel process adaptation
+      discovery/tests.rs  exact inventory scenarios
+      execution/tests.rs  exact transcript classification scenarios
     simulator/           model execution, event binding, and detectors
     tla/                 command, contract, output, mutation, and checkpoint
     maelstrom/           tooling, scenarios, trials, EDN, and lease markers

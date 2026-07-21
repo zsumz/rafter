@@ -5,7 +5,7 @@ use super::super::super::liveness::{self, run_soak_liveness_check_with_budget_ov
 use super::super::super::{
     run_raft_random_soak,
     soak::SoakAction,
-    state::{ClientWriteStatus, ExplorationState},
+    state::{ClientWriteStatus, ExplorationState, LogPrefixWitness},
     SoakActionKind, SoakConfig,
 };
 use crate::{Cluster, SimSeed};
@@ -28,7 +28,7 @@ impl HistoryCounts {
                 .commit_history()
                 .committed_prefix
                 .as_ref()
-                .map_or(0, |prefix| prefix.entries.len()),
+                .map_or(0, LogPrefixWitness::len),
             commit_certificates: state.commit_history().certificates.len(),
         }
     }

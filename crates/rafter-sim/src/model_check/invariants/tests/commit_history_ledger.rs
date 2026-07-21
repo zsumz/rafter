@@ -51,7 +51,7 @@ fn shorter_matching_commit_observation_preserves_canonical_ledger_identity() {
             .commit_history()
             .committed_prefix
             .as_ref()
-            .map(|prefix| prefix.through),
+            .map(LogPrefixWitness::through),
         Some(LogIndex(2))
     );
     check_commit_history(&state, &[]).expect("matching shorter prefix must remain valid");

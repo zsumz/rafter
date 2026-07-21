@@ -10,7 +10,7 @@ use rafter::{
 use crate::{Cluster, Envelope};
 
 use super::super::observations::{Observation, ObservationSet};
-use super::logical_log::{LogPrefixWitness, LogicalLogHistory};
+use super::logical_log::LogPrefixWitness;
 use super::ExplorationState;
 
 #[derive(Clone, Debug, Default, Hash)]
@@ -526,7 +526,7 @@ impl ExplorationState {
                 granted_by,
                 last_log_index: before_node.last_log_index(),
                 last_log_term: last_log_term_from_bootstrap(&before.bootstrap_state(*node_id)),
-                logical_prefix_at_election: LogicalLogHistory::prefix_from_view(
+                logical_prefix_at_election: self.logical_log_history.prefix_from_view(
                     &self.logical_log_history.observed_view(before, *node_id),
                     before_node.last_log_index(),
                 ),

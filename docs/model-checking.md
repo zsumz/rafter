@@ -25,6 +25,40 @@ not a globally deduplicated union. The scheduled `raft-nightly` and
 `raft-weekly` gates enforce unchanged lower bounds on both totals: 100 million
 and 250 million states respectively.
 
+## Retained Logical Prefixes
+
+The verifier retains logical-prefix witnesses across transitions so log
+matching, leader append-only, committed-prefix stability, and leader
+completeness remain temporal properties. A valid observed logical log is
+resolved into an immutable persistent spine. Each unique extension adds one
+node; shorter witnesses reuse ancestors, and each retained witness clone copies
+only a constant-size handle. Cloning the full verifier state still copies its
+maps and logical views. Snapshot creation, transfer,
+installation, compaction, and restart preserve the visible logical-prefix
+identity.
+
+The implementation keeps those responsibilities explicit under
+`state/logical_log`: `observation.rs` owns canonical reconciliation,
+`snapshot.rs` owns transfer provenance, and `types/{prefix,view,violation}.rs`
+separate persistent storage from protocol views and detector output.
+
+Sharing is an allocation detail, never an identity shortcut. Equality,
+ordering decisions, debug output, and the verifier-state `Hash` stream use the
+exact visible entries through the witness boundary, not pointer identity,
+backing suffixes, an insertion-order handle, or a probabilistic digest. A
+malformed boundary remains distinguishable from valid evidence and cannot
+qualify a snapshot witness. Focused tests assert shared backing across every
+prefix of an observed log and across state clones, equal exact hashes for
+equal visible prefixes on different allocations, and unchanged negative
+detector behavior for divergent and malformed prefixes.
+
+This changes retained prefix storage under sequential log growth from a
+triangular number of copied entries to one node per unique extension. Exact
+canonical state hashing still scans the complete visible witness structure;
+the source-bound cost comparison below measures its runtime and peak-RSS effect
+rather than treating structural sharing as proof of an end-to-end performance
+result.
+
 ## Cost Evidence
 
 Run a source-bound comparison with:

@@ -1,7 +1,9 @@
-use rafter::{LogIndex, NodeId, RaftSnapshot, Term};
+use rafter::{LogIndex, Message, NodeId, RaftSnapshot, Term};
 
 use super::super::super::{
-    helpers::elect_node_one_in_state, scheduling::Operation, state::apply_to_state,
+    helpers::elect_node_one_in_state,
+    scheduling::{Operation, SoakOperation},
+    state::{apply_soak_action, apply_to_state},
 };
 use super::commit_history::{app_entry, bootstrap_with_log, voter_configs};
 use super::*;
@@ -30,7 +32,7 @@ fn leader_completeness_accepts_committed_prefix_hidden_by_witnessed_snapshot() {
             .commit_history()
             .committed_prefix
             .as_ref()
-            .is_some_and(|prefix| prefix.through >= LogIndex(1)),
+            .is_some_and(|prefix| prefix.through() >= LogIndex(1)),
         "test setup must record the committed prefix before compaction"
     );
 
@@ -165,6 +167,97 @@ fn snapshot_transfer_propagates_logical_prefix_witness_to_installed_follower() {
 }
 
 #[test]
+fn snapshot_installation_keeps_the_enqueued_transfer_prefix_when_source_changes() {
+    let mut cluster = Cluster::new(voter_configs(&[1, 2, 3]));
+    let visible_log = vec![
+        app_entry(1, Term(1), b"prefix"),
+        app_entry(2, Term(1), b"boundary"),
+        app_entry(3, Term(2), b"suffix"),
+    ];
+    for node_id in [NodeId(1), NodeId(3)] {
+        cluster
+            .restart_node_from_bootstrap(
+                node_id,
+                bootstrap_with_log(Term(2), LogIndex(2), visible_log.clone(), None),
+            )
+            .expect("up-to-date voter bootstrap is valid");
+    }
+    cluster
+        .restart_node_from_bootstrap(
+            NodeId(2),
+            bootstrap_with_log(
+                Term(2),
+                LogIndex::ZERO,
+                vec![app_entry(1, Term(1), b"prefix")],
+                None,
+            ),
+        )
+        .expect("behind follower bootstrap is valid");
+    let mut state = ExplorationState::new(cluster);
+    state.witness_seeded_commit_authority(LogIndex::ZERO, LogIndex(2), Term(2));
+
+    let (snapshot, payload) = test_snapshot(1, 2, 1, 2, b"snapshot through two");
+    let transfer_id = snapshot.transfer_id();
+    for node_id in [NodeId(1), NodeId(3)] {
+        state.inject_snapshot_payload(node_id, &snapshot, payload.clone());
+        state
+            .inject_bootstrap_state(
+                node_id,
+                bootstrap_with_snapshot(
+                    Term(2),
+                    snapshot.clone(),
+                    &[(3, Term(2), b"suffix".as_slice())],
+                ),
+            )
+            .expect("compacted voter bootstrap is valid");
+    }
+    state.refresh_log_history();
+    let transferred_prefix = state
+        .logical_log_history()
+        .snapshot_prefixes_by_owner_transfer
+        .get(&(NodeId(1), transfer_id))
+        .expect("sender transfer prefix is recorded")
+        .clone();
+
+    apply_soak_action(
+        &mut state,
+        SoakOperation::Partition {
+            a: NodeId(1),
+            b: NodeId(2),
+        },
+    );
+    elect_node_one_in_state(&mut state);
+    apply_soak_action(&mut state, SoakOperation::Heal);
+    let delivery = drive_until_final_snapshot_delivery_ready(&mut state);
+
+    state
+        .inject_bootstrap_state(
+            NodeId(1),
+            bootstrap_with_log(
+                Term(3),
+                LogIndex(4),
+                vec![
+                    app_entry(1, Term(1), b"different-prefix"),
+                    app_entry(2, Term(1), b"boundary"),
+                    app_entry(3, Term(2), b"suffix"),
+                    app_entry(4, Term(3), b"election-noop"),
+                ],
+                None,
+            ),
+        )
+        .expect("changed sender bootstrap is valid");
+    state.refresh_log_history();
+    apply_to_state(&mut state, Operation::DeliverReadyAt(delivery));
+
+    let installed_prefix = state
+        .logical_log_history()
+        .snapshot_prefixes_by_owner_transfer
+        .get(&(NodeId(2), transfer_id))
+        .expect("receiver installation is bound to the completed transfer");
+    assert_eq!(installed_prefix, &transferred_prefix);
+}
+
+#[test]
 fn leader_completeness_snapshot_only_committed_state_is_not_vacuous_success() {
     let (snapshot, payload) = test_snapshot(1, 2, 2, 3, b"unwitnessed committed snapshot");
     let mut bootstrap = bootstrap_with_snapshot(Term(3), snapshot.clone(), &[]);
@@ -214,6 +307,37 @@ fn drive_until_node_two_installs_snapshot(state: &mut ExplorationState, snapshot
     panic!("node 2 did not install the witnessed snapshot transfer");
 }
 
+fn drive_until_final_snapshot_delivery_ready(state: &mut ExplorationState) -> usize {
+    for _ in 0..128 {
+        if let Some(position) = state.cluster().network.iter().position(|queued| {
+            queued.ready_at <= state.cluster().clock.now()
+                && queued.envelope.from == NodeId(1)
+                && queued.envelope.to == NodeId(2)
+                && match &queued.envelope.message {
+                    Message::InstallSnapshot(_) => true,
+                    Message::InstallSnapshotChunk(request) => request.done,
+                    _ => false,
+                }
+        }) {
+            return position;
+        }
+        if let Some(position) = state
+            .cluster()
+            .network
+            .iter()
+            .position(|queued| queued.ready_at <= state.cluster().clock.now())
+        {
+            apply_to_state(state, Operation::DeliverReadyAt(position));
+        } else {
+            apply_to_state(state, Operation::Tick(NodeId(1)));
+        }
+    }
+    panic!(
+        "final snapshot chunk was not ready for delivery; queued={:?}",
+        state.cluster().network
+    );
+}
+
 fn election_certificate_with_observed_prefix(
     state: &ExplorationState,
     term: u64,
@@ -226,8 +350,9 @@ fn election_certificate_with_observed_prefix(
     let view = state
         .logical_log_history()
         .observed_view(state.cluster(), leader_id);
-    certificate.logical_prefix_at_election =
-        LogicalLogHistory::prefix_from_view(&view, state.cluster().last_log_index(leader_id));
+    certificate.logical_prefix_at_election = state
+        .logical_log_history()
+        .prefix_from_view(&view, state.cluster().last_log_index(leader_id));
     assert!(
         certificate.logical_prefix_at_election.is_some(),
         "fixture election must have a complete logical-prefix witness"

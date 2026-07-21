@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, fs, path::Path};
 
-use super::CargoCompilerMessage;
+use super::cargo_output::CargoCompilerMessage;
 
 #[derive(Clone, Copy)]
 struct ProtectedTarget {

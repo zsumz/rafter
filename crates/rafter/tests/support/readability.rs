@@ -27,6 +27,8 @@ pub(super) const FACADE_PATHS: &[&str] = &[
     "crates/rafter-invariants/src/producer/process/mod.rs",
     "crates/rafter-invariants/src/producer/process/budget/mod.rs",
     "crates/rafter-invariants/src/producer/simulator/liveness/mod.rs",
+    "crates/rafter-invariants/src/producer/test_compile.rs",
+    "crates/rafter-invariants/src/producer/test_exec.rs",
     "crates/rafter-invariants/src/provenance/invocation/mod.rs",
     "crates/rafter-invariants/src/provenance/source/mod.rs",
     "crates/rafter-invariants/src/provenance/mod.rs",
@@ -52,6 +54,8 @@ pub(super) const FACADE_PATHS: &[&str] = &[
     "crates/rafter/src/node/state/membership/mod.rs",
     "crates/rafter/src/types/mod.rs",
     "crates/rafter/src/types/snapshot/mod.rs",
+    "crates/rafter-sim/src/model_check/state/logical_log.rs",
+    "crates/rafter-sim/src/model_check/state/logical_log/types.rs",
 ];
 
 /// Test modules that only map a mature domain to focused scenario files.
