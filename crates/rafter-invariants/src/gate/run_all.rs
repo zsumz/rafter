@@ -52,7 +52,7 @@ pub fn run_all(options: &RunAllOptions) -> Result<RunAllOutcome, Box<dyn Error>>
     let mut all_layers_passed = true;
 
     for layer in &plan.contract().required_layers {
-        match produce_layer(&plan, layer, &options.results_dir, &invocation) {
+        match produce_layer(&plan, layer.as_str(), &options.results_dir, &invocation) {
             Ok(outcome) => {
                 all_layers_passed &= outcome.all_passed;
                 paths.push(outcome.path);
