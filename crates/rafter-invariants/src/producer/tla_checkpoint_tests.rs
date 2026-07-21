@@ -1,3 +1,5 @@
+//! TLA+ checkpoint compatibility, traversal, and finalization scenarios.
+
 use super::{
     expected_contract, hash_reader, inventory, inventory_with_limits, prepare, prune_to_latest,
     read_candidate_json, read_file_with_deadline, read_sorted_entries,

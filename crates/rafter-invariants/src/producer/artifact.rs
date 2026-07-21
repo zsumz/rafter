@@ -1,3 +1,5 @@
+//! Producer artifact capture, naming, integrity, and output confinement.
+
 use std::{
     error::Error,
     fs,

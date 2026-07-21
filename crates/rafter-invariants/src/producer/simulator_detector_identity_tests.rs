@@ -1,3 +1,5 @@
+//! Simulator detector identity uniqueness scenarios.
+
 use super::unique_detector_identities;
 use crate::TestIdentity;
 

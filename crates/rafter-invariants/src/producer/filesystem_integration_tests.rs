@@ -4,7 +4,7 @@ use std::{fs, path::PathBuf, time::Instant};
 
 use crate::{execution::filesystem::HeldDirectory, ArtifactRef};
 
-use super::{maelstrom_exec, simulator_model, test_compile, test_exec};
+use super::{maelstrom_exec, simulator, test_compile, test_exec};
 
 fn test_path(label: &str) -> PathBuf {
     PathBuf::from("target/rafter-invariants/filesystem-tests")
@@ -35,7 +35,7 @@ fn layer_scratch_cleanup_rejects_expired_deadlines_before_mutation() {
     );
     assert!(test_exec::reset_test_scratch(&test_scratch_path, Instant::now()).is_err());
     assert!(
-        simulator_model::reset_simulator_build_scratch(&simulator_path, Instant::now()).is_err()
+        simulator::model::reset_simulator_build_scratch(&simulator_path, Instant::now()).is_err()
     );
     assert!(maelstrom_exec::reset_state_directory(&maelstrom_path, Instant::now()).is_err());
 

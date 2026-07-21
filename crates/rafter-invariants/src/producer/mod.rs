@@ -2,21 +2,21 @@
 
 pub(crate) mod artifact;
 mod maelstrom;
+#[cfg(test)]
 mod maelstrom_binding;
 pub(crate) use crate::evidence::format::maelstrom as maelstrom_edn;
+#[cfg(test)]
 mod maelstrom_exec;
-mod maelstrom_scenario;
-mod maelstrom_tool;
 pub(crate) mod process;
 mod simulator;
-mod simulator_model;
 pub(crate) mod source;
 mod test_compile;
 pub(crate) mod test_exec;
 mod test_runner;
 mod tla;
+#[cfg(test)]
 pub(crate) mod tla_checkpoint;
-mod tla_contract;
+#[cfg(test)]
 mod tla_exec;
 pub(crate) use crate::evidence::format::tla as tla_output;
 #[cfg(test)]
@@ -28,11 +28,11 @@ mod filesystem_integration_tests;
 #[cfg(test)]
 pub(crate) use simulator::evaluate_model_fixture;
 #[cfg(all(test, unix))]
-pub(crate) use simulator_model::{
+pub(crate) use simulator::model::{
     later_launch_error_fixture_at, timed_out_zero_exit_fixture_at, SimulatorFixtureInvocation,
 };
 #[cfg(test)]
-pub(crate) use tla_contract::fetch_tool_at as fetch_tla_tool_at;
+pub(crate) use tla::contract::fetch_tool_at as fetch_tla_tool_at;
 
 use std::collections::BTreeSet;
 use std::{error::Error, io::Write, path::PathBuf};

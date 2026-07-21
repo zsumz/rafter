@@ -1,3 +1,5 @@
+//! Producer source and external-tool identity binding scenarios.
+
 use std::{
     collections::BTreeSet,
     fs,

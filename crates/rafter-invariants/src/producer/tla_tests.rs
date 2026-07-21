@@ -1,3 +1,5 @@
+//! TLA+ producer completion, attribution, and progress scenarios.
+
 use std::{collections::BTreeMap, path::PathBuf};
 
 use super::{
