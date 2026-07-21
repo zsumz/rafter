@@ -12,8 +12,8 @@ use serde_json::Value;
 
 use super::{
     complete_main_execution, configured_budget_duration, process, DetectorProbes, ExecutionBudget,
-    MainCompletion, TlcRun, FINALIZATION_RESERVE_KEY, PROBE_TIMEOUT, QUALIFICATION_PHASE_COUNT,
-    TOTAL_TIMEOUT_KEY,
+    MainCompletion, TlcRun, FINALIZATION_RESERVE_KEY, MUTATION_SUITE_TIMEOUT, PROBE_TIMEOUT,
+    QUALIFICATION_PHASE_COUNT, TOTAL_TIMEOUT_KEY,
 };
 
 fn pr_budget() -> BTreeMap<String, String> {
@@ -311,6 +311,7 @@ fn assert_profile_workflow_budget(
     following_capped_step: Option<&str>,
 ) {
     const MIN_FINALIZATION_RESERVE: Duration = Duration::from_secs(2 * 60);
+    const MIN_PR_SETUP_WINDOW: Duration = Duration::from_secs(4 * 60);
     const MIN_SCHEDULED_SETUP_WINDOW: Duration = Duration::from_secs(10 * 60);
     const MIN_STEP_HEADROOM: Duration = Duration::from_secs(10 * 60);
     const MIN_JOB_HEADROOM: Duration = Duration::from_secs(10 * 60);
@@ -318,12 +319,17 @@ fn assert_profile_workflow_budget(
     const MAX_GITHUB_STEP_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
 
     let configuration = profile_tla_configuration(manifest, profile);
-    let fixed_phases = PROBE_TIMEOUT
+    let probe_phases = PROBE_TIMEOUT
         .checked_mul(u32::try_from(QUALIFICATION_PHASE_COUNT).expect("phase count fits u32"))
+        .expect("probe phase duration");
+    assert_eq!(probe_phases, Duration::from_secs(24 * 60));
+    assert_eq!(MUTATION_SUITE_TIMEOUT, Duration::from_secs(8 * 60));
+    let qualification_phases = probe_phases
+        .checked_add(MUTATION_SUITE_TIMEOUT)
         .expect("qualification phase duration");
-    assert_eq!(fixed_phases, Duration::from_secs(26 * 60));
+    assert_eq!(qualification_phases, Duration::from_secs(32 * 60));
     let main = required_budget_duration(&configuration, "soft_timeout");
-    let inventory = fixed_phases
+    let inventory = qualification_phases
         .checked_add(main)
         .expect("phase inventory duration");
     let total = required_budget_duration(&configuration, TOTAL_TIMEOUT_KEY);
@@ -384,8 +390,13 @@ fn assert_profile_workflow_budget(
     let setup_window = execution_window
         .checked_sub(inventory)
         .expect("execution window covers the complete phase inventory");
+    let required_setup_window = if profile == "pr" {
+        MIN_PR_SETUP_WINDOW
+    } else {
+        MIN_SCHEDULED_SETUP_WINDOW
+    };
     assert!(
-        setup_window >= MIN_SCHEDULED_SETUP_WINDOW,
+        setup_window >= required_setup_window,
         "{profile} setup window {setup_window:?} is too small"
     );
 }

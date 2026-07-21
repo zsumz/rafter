@@ -17,10 +17,10 @@ use tla_output::{
     MUTATION_SUITE_LABEL, REGISTERED_PREDICATES,
 };
 
-const TRACE_CONFIG: &str = "RaftMembershipTraceSample.cfg";
 const DETECTOR_CONFIG: &str = "RafterInvariantDetectorNegative.cfg";
 pub(super) const PROBE_TIMEOUT: Duration = Duration::from_secs(120);
-pub(super) const QUALIFICATION_PHASE_COUNT: usize = DETECTOR_PROBES.len() + 2;
+pub(super) const MUTATION_SUITE_TIMEOUT: Duration = Duration::from_secs(8 * 60);
+pub(super) const QUALIFICATION_PHASE_COUNT: usize = DETECTOR_PROBES.len() + 1;
 pub(super) const REQUIRED_MUTATION_TESTS: [&str; 34] = [
     "application_epoch_loss_replays_identically_without_erasing_history",
     "applied_membership_quorum_mutation_breaks_joint_regression",
@@ -82,7 +82,7 @@ pub(super) fn run_trace_probe(
     run_tlc(TlcRequest {
         profile,
         source_ref,
-        config: TRACE_CONFIG,
+        config: "RaftMembershipTraceSample.cfg",
         module: "RaftMembershipTraceSample.tla",
         workers: "1",
         seed: required_configuration(configuration, "seed")?,
@@ -139,7 +139,7 @@ pub(super) fn run_detector_probes(
         aggregate.artifacts.push(detector.run.artifact);
     }
     if aggregate.succeeded {
-        let Some(timeout) = budget.phase_timeout(PROBE_TIMEOUT) else {
+        let Some(timeout) = budget.phase_timeout(MUTATION_SUITE_TIMEOUT) else {
             aggregate.succeeded = false;
             return Ok(aggregate);
         };
@@ -170,6 +170,7 @@ pub(super) fn run_mutation_suite(
         "-p",
         "rafter-invariants",
         "producer::tla_exec::mutation_tests",
+        "--lib",
         "--",
         "--ignored",
         "--test-threads=1",

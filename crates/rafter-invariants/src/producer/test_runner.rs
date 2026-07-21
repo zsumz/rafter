@@ -19,7 +19,12 @@ use super::{
     ProducerContext,
 };
 
-type TestEvidence = BTreeMap<TestIdentity, Vec<EvidenceDescriptor>>;
+struct TestEvidence {
+    descriptors: Vec<EvidenceDescriptor>,
+    requires_detector_proof: bool,
+}
+
+type TestEvidenceInventory = BTreeMap<TestIdentity, TestEvidence>;
 
 struct CheckResults {
     checks: Vec<CheckReceipt>,
@@ -126,8 +131,13 @@ pub(super) fn run(
     })
 }
 
-fn test_evidence(catalog: &Catalog, contract: &ProfileContract) -> TestEvidence {
+fn test_evidence(catalog: &Catalog, contract: &ProfileContract) -> TestEvidenceInventory {
     let required = catalog.required_evidence(contract);
+    let detector_tests = catalog
+        .evidence
+        .iter()
+        .filter_map(|descriptor| descriptor.simulator.as_ref()?.negative_test.clone())
+        .collect::<BTreeSet<_>>();
     let mut identities = BTreeMap::<TestIdentity, Vec<_>>::new();
     for descriptor in required.values().flatten() {
         if let Some(identity) = &descriptor.test {
@@ -138,10 +148,22 @@ fn test_evidence(catalog: &Catalog, contract: &ProfileContract) -> TestEvidence 
         }
     }
     identities
+        .into_iter()
+        .map(|(identity, descriptors)| {
+            let requires_detector_proof = detector_tests.contains(&identity);
+            (
+                identity,
+                TestEvidence {
+                    descriptors,
+                    requires_detector_proof,
+                },
+            )
+        })
+        .collect()
 }
 
 fn run_checks(
-    identities: TestEvidence,
+    identities: TestEvidenceInventory,
     compiled: &BTreeMap<Target, CompiledTarget>,
     profile: &str,
     source_ref: &str,
@@ -151,7 +173,14 @@ fn run_checks(
     let mut checks = Vec::with_capacity(identities.len());
     let mut results = Vec::new();
     let mut peak_rss_kib = 0;
-    for (identity, evidence) in identities {
+    for (
+        identity,
+        TestEvidence {
+            descriptors: evidence,
+            requires_detector_proof,
+        },
+    ) in identities
+    {
         let evidence_ids = evidence
             .iter()
             .map(EvidenceDescriptor::evidence_id)
@@ -162,15 +191,27 @@ fn run_checks(
         let compiled_target = compiled
             .get(&target)
             .ok_or("compiled target inventory changed during execution")?;
-        let mut outcome = super::test_exec::evaluate(
-            &identity,
-            compiled_target,
-            profile,
-            source_ref,
-            &execution_id,
-            output_dir,
-            scratch_deadline,
-        )?;
+        let mut outcome = if requires_detector_proof {
+            super::test_exec::evaluate_detector(
+                &identity,
+                compiled_target,
+                profile,
+                source_ref,
+                &execution_id,
+                output_dir,
+                scratch_deadline,
+            )?
+        } else {
+            super::test_exec::evaluate(
+                &identity,
+                compiled_target,
+                profile,
+                source_ref,
+                &execution_id,
+                output_dir,
+                scratch_deadline,
+            )?
+        };
         if let Some(binary) = &compiled_target.binary_artifact {
             outcome.artifacts.push(binary.clone());
         }
@@ -206,3 +247,7 @@ fn run_checks(
         peak_rss_kib,
     })
 }
+
+#[cfg(test)]
+#[path = "test_runner_tests.rs"]
+mod tests;
