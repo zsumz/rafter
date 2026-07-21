@@ -35,14 +35,21 @@ pub(super) fn accept(
         .flatten()
         .map(|evidence| (evidence.evidence_id(), evidence))
         .collect::<BTreeMap<_, _>>();
-    let (accepted, receipt_defects, artifacts) =
-        crate::receipt::collect_results(bundles, &expected, contract, profile, request.source_ref);
-    defects.extend(receipt_defects);
+    let collection = super::receipt::collect_results(
+        bundles,
+        super::receipt::ReceiptExpectation {
+            evidence: &expected,
+            contract,
+            profile,
+            source_ref: request.source_ref,
+        },
+    );
+    defects.extend(collection.defects);
     Ok(EvidenceIntake::new(
         profile,
         request.source_ref,
-        accepted,
-        artifacts,
+        collection.accepted,
+        collection.artifacts,
         defects,
     ))
 }

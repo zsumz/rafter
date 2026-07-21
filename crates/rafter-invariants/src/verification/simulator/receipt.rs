@@ -1,11 +1,23 @@
+//! Structural acceptance of simulator runner receipts.
+
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::{
-    CheckReceipt, EvidenceDescriptor, EvidenceStatus, ResultBundle, RunnerContract,
-    SimulatorIdentity,
+    contract::{
+        catalog::{EvidenceDescriptor, SimulatorIdentity},
+        profile::RunnerContract,
+    },
+    evidence::{CheckReceipt, EvidenceStatus, ResultBundle},
 };
 
-pub(super) fn validate(
+#[path = "receipt/liveness.rs"]
+mod liveness;
+
+#[cfg(test)]
+#[path = "receipt/tests.rs"]
+mod tests;
+
+pub(crate) fn validate(
     bundle: &ResultBundle,
     expected: &BTreeMap<String, &EvidenceDescriptor>,
     runner_contract: &RunnerContract,
@@ -61,18 +73,8 @@ fn validate_check(
     if !statuses.contains(&EvidenceStatus::Pass) {
         return Ok(());
     }
-    if check
-        .observations
-        .get("detector_qualified")
-        .copied()
-        .unwrap_or_default()
-        < 1
-        || check
-            .observations
-            .get(&identity.required_observation)
-            .copied()
-            .unwrap_or_default()
-            < identity.minimum_observation as u64
+    if observed(check, "detector_qualified") < 1
+        || observed(check, &identity.required_observation) < identity.minimum_observation as u64
         || !has_artifact(check, "simulator-log")
         || !has_artifact(check, "simulator-binary")
     {
@@ -101,7 +103,7 @@ fn validate_check(
     }
     if let (Some(runs), Some(steps)) = (identity.minimum_runs_per_check, identity.minimum_steps) {
         if identity.liveness_report.is_some()
-            && validate_liveness_binding(bundle, check, descriptor, identity).is_err()
+            && liveness::validate(bundle, check, descriptor, identity).is_err()
         {
             return Err("passing simulator liveness check lacks its exact typed report binding");
         }
@@ -116,8 +118,7 @@ fn validate_check(
     } else if check.simulator_liveness.is_some() {
         return Err("simulator safety check has an unexpected liveness report binding");
     }
-    validate_profile_check_contract(check, identity, runner_contract)?;
-    Ok(())
+    validate_profile_check_contract(check, identity, runner_contract)
 }
 
 fn validate_profile_check_contract(
@@ -150,80 +151,6 @@ fn validate_profile_check_contract(
                 "passing simulator check lacks a profile-owned per-check semantic observation",
             );
         }
-    }
-    Ok(())
-}
-
-fn validate_liveness_binding(
-    bundle: &ResultBundle,
-    check: &CheckReceipt,
-    descriptor: &EvidenceDescriptor,
-    identity: &SimulatorIdentity,
-) -> Result<(), ()> {
-    let contract = identity.liveness_report.as_ref().ok_or(())?;
-    if contract.invariant_id != descriptor.invariant_id
-        || !contract.clause_ids.contains(&descriptor.clause_id)
-    {
-        return Err(());
-    }
-    let binding = check.simulator_liveness.as_ref().ok_or(())?;
-    if binding.schema_version != 1
-        || binding.contract != *contract
-        || binding.contract_sha256 != crate::evidence::liveness_contract_digest(contract)
-        || binding.reports.is_empty()
-        || binding.reports_sha256 != crate::evidence::liveness_reports_digest(&binding.reports)
-        || binding.reports.windows(2).any(|pair| pair[0] >= pair[1])
-        || binding.reports.iter().any(|report| {
-            let expected_execution = crate::contract::profile::expected_execution_contract(
-                &bundle.profile,
-                &report.check_id,
-            );
-            !identity.checks.contains(&report.check_id)
-                || report.report_sha256.len() != 64
-                || !report
-                    .report_sha256
-                    .bytes()
-                    .all(|byte| byte.is_ascii_hexdigit())
-                || expected_execution.as_ref() != Ok(&report.execution_contract)
-                || report.execution_contract_sha256
-                    != crate::evidence::execution_contract_digest(&report.execution_contract)
-                || report.rounds_used > report.round_limit
-        })
-    {
-        return Err(());
-    }
-    let report_count = binding.reports.len() as u64;
-    let observed_runs = identity
-        .checks
-        .iter()
-        .map(|name| observed(check, &format!("runs:{name}")))
-        .sum::<u64>();
-    if report_count != observed_runs
-        || observed(check, &identity.required_observation) != report_count
-        || identity.checks.iter().any(|name| {
-            binding
-                .reports
-                .iter()
-                .filter(|report| report.check_id == *name)
-                .count() as u64
-                != observed(check, &format!("runs:{name}"))
-        })
-    {
-        return Err(());
-    }
-    let mut expected_observations = BTreeSet::from([
-        "detector_qualified".to_owned(),
-        identity.required_observation.clone(),
-    ]);
-    for name in &identity.checks {
-        expected_observations.extend([
-            format!("runs:{name}"),
-            format!("passes:{name}"),
-            format!("steps:{name}"),
-        ]);
-    }
-    if check.observations.keys().cloned().collect::<BTreeSet<_>>() != expected_observations {
-        return Err(());
     }
     Ok(())
 }

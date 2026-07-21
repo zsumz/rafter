@@ -16,5 +16,7 @@ mod maelstrom_scenarios;
 mod process_scenarios;
 #[path = "support/readability.rs"]
 mod readability_support;
+#[path = "invariant_tooling_architecture_guard/receipt_scenarios.rs"]
+mod receipt_scenarios;
 #[path = "invariant_tooling_architecture_guard/tla_scenarios.rs"]
 mod tla_scenarios;

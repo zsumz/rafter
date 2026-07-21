@@ -88,7 +88,7 @@ pub(super) fn verify_compile_invocations(
         if observed.invocation.program != "cargo"
             || observed.invocation.program_sha256 != bundle.execution.source.cargo_sha256
             || observed.invocation.current_dir != current_dir
-            || !crate::receipt::process_invocation_matches_source(
+            || !crate::verification::process_invocation_matches_source(
                 &observed.invocation,
                 &bundle.execution.source,
             )

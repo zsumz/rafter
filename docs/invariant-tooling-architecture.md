@@ -396,17 +396,29 @@ src/
       paths.rs           aggregate and layer path verification
       replay.rs          aggregate-only replay orchestration and overlay
       model.rs           accepted evidence, defects, and retained artifact guard
+      receipt/
+        mod.rs           semantic runner-receipt acceptance facade
+        collection.rs    cross-bundle collection and ambiguity handling
+        execution.rs     plan, producer invocation, and source binding
+        checks.rs        check/result completion consistency
+        structure.rs     primitive receipt shape validation
+        runner.rs        dispatch to independent runner-family policies
     publication/         exact directory intake, deterministic tar sealing, and no-extract readback
     error.rs             fail-closed verification error vocabulary
     process_receipt.rs   process invocation and launcher-chain acceptance
-    bundle/              common receipt, provenance, and integrity checks
+    bundle/              artifact budgets, confinement, authentication, and integrity
     simulator/
       verify.rs          authenticated simulator evidence orchestration
       detector.rs        source-bound negative-detector qualification
       event/             event shape, indexing, issue precedence, and invariant routing
       observation/       receipt observation rederivation and reconciliation
+      receipt.rs         simulator coverage and artifact receipt policy
+      receipt/liveness.rs exact typed-report and observation binding
       schedule/          invocation, compiler, path, event, and profile provenance
       liveness/          independent bounded-report semantic validation
+    test_runner/
+      mod.rs             exact Rust-test receipt policy facade
+      receipt.rs         status, observation, and artifact matrix
     tla/
       mod.rs             TLA+ verifier and receipt-acceptance facade
       verify.rs          authenticated proof-artifact orchestration
@@ -436,7 +448,9 @@ src/
       runner.rs          receipt and transcript orchestration
       tests.rs           detector and outcome-policy adversarial scenarios
   artifact_verify_tla.rs declarative TLA+ verifier compatibility facade
-  receipt_tla.rs         declarative TLA+ receipt compatibility facade
+  receipt.rs             test-only canonical receipt-fixture facade
+  receipt_maelstrom.rs   test-only stable Maelstrom receipt scenario mount
+  receipt_tests.rs       test-only stable receipt-policy scenario mount
   verdict/
     mod.rs               verdict vocabulary facade
     model.rs             report, summary, clause, issue, and status types
@@ -466,11 +480,12 @@ process transcripts, belongs under `evidence::format`; producer and verifier
 policy remains separate.
 
 The simulator and test-log files retained under `artifact_verify/`, plus the
-root `artifact_verify_tla.rs` and `receipt_tla.rs` mounts, are declarative
-compatibility surfaces for stable internal test and dispatch identities. Their
-implementation lives under `verification/`, and the migrated-source manifest
-models every retained facade so none can import producer implementation. These
-mounts are not a second verification domain.
+root `artifact_verify_tla.rs`, `receipt.rs`, `receipt_maelstrom.rs`, and
+`receipt_tests.rs` mounts, are declarative compatibility surfaces for stable
+internal test identities. Their implementation lives under `verification/`.
+The production-source manifest enforces production facades; the separate test
+facade manifest keeps test-only mounts declarative. These mounts are not a
+second verification domain.
 
 TLA+ checkpoint metadata is neutral serialized evidence, so both producer and
 verifier consume `evidence/format/tla/checkpoint.rs`. Mutation evidence follows

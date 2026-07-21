@@ -123,6 +123,38 @@ fn stale_receipt_is_not_accepted() {
 }
 
 #[test]
+fn unselected_and_unknown_runner_receipts_fail_closed_before_semantic_dispatch() {
+    let (catalog, manifest) = crate::tests::loaded();
+    let plan = crate::tests::plan_receipt(&manifest, "pr");
+    let request = request(&catalog, &manifest, &plan, "abc", Path::new("."));
+
+    let mut unselected = crate::tests::passing_bundles_for_profile(&catalog, &manifest, "nightly")
+        .into_iter()
+        .find(|bundle| bundle.runner == "maelstrom")
+        .expect("nightly Maelstrom bundle");
+    unselected.profile = "pr".to_owned();
+
+    let mut unknown = crate::tests::passing_bundles(&catalog, &manifest)
+        .into_iter()
+        .find(|bundle| bundle.runner == "tests")
+        .expect("PR tests bundle");
+    unknown.runner = "ceremonial".to_owned();
+
+    for bundle in [unselected, unknown] {
+        let runner = bundle.runner.clone();
+        let intake = verify_receipts_for_test(request, &[bundle], Vec::new())
+            .expect("untrusted runner produces a typed intake defect");
+        assert!(intake.accepted().is_empty());
+        assert!(intake.defects().iter().any(|defect| {
+            defect.kind() == IntakeDefectKind::Unverifiable
+                && defect
+                    .message()
+                    .contains(&format!("runner {runner} is not selected by profile pr"))
+        }));
+    }
+}
+
+#[test]
 fn duplicate_results_are_removed_as_unverifiable_ambiguity() {
     let (catalog, manifest) = crate::tests::loaded();
     let plan = crate::tests::plan_receipt(&manifest, "pr");
