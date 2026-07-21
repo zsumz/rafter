@@ -42,16 +42,18 @@ defaults:
 jobs:
   model-check:
     name: model-check (${{ matrix.profile }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90
     strategy:
       fail-fast: false
       matrix:
         profile: [raft-deep, raft-soak]
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
       - name: model check (${{ matrix.profile }})
@@ -60,7 +62,7 @@ jobs:
             --profile ${{ matrix.profile }} 2>&1 | tee "model-check-${{ matrix.profile }}.log"
       - name: Upload log
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: model-check-${{ matrix.profile }}-log
           path: model-check-${{ matrix.profile }}.log
@@ -69,22 +71,26 @@ jobs:
 
   invariants-tests:
     name: invariants-tests-nightly
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, X64]
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/configure-invariant-cargo
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
+          cache-targets: false
+          cache-bin: false
       - name: Produce source-bound nightly test evidence
         run: cargo run --locked -p rafter-invariants -- run --profile nightly --layer tests
       - name: Upload nightly test evidence
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: invariants-nightly-evidence-tests-${{ github.run_id }}-${{ github.run_attempt }}
-          overwrite: true
           path: |
             artifacts/invariants/nightly-tests.json
             artifacts/invariants/nightly-tests/
@@ -92,7 +98,7 @@ jobs:
           retention-days: 30
       - name: Upload nightly test process diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: invariants-nightly-tests-process-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -103,22 +109,26 @@ jobs:
 
   invariants-simulator:
     name: invariants-simulator-nightly
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, linux, X64]
     timeout-minutes: 180
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/configure-invariant-cargo
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
+          cache-targets: false
+          cache-bin: false
       - name: Produce source-bound nightly simulator evidence
         run: cargo run --locked -p rafter-invariants -- run --profile nightly --layer simulator
       - name: Upload nightly simulator evidence and replay logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: invariants-nightly-evidence-simulator-${{ github.run_id }}-${{ github.run_attempt }}
-          overwrite: true
           path: |
             artifacts/invariants/nightly-simulator.json
             artifacts/invariants/nightly-simulator/
@@ -126,7 +136,7 @@ jobs:
           retention-days: 30
       - name: Upload nightly simulator process diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: invariants-nightly-simulator-process-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -142,26 +152,28 @@ jobs:
     runs-on: [self-hosted, linux, X64]
     timeout-minutes: 400
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
-          distribution: temurin
-          java-version: "21"
+          persist-credentials: false
+      - uses: ./.github/actions/configure-invariant-cargo
+      - uses: ./.github/actions/setup-rust
+      - uses: ./.github/actions/setup-invariant-verifier
       # scripts/tla-model-check downloads tla2tools.jar pinned by
       # the immutable asset ID and SHA-256 before every run, so a cache hit is
       # an optimization, never a trust decision.
       - name: Cache tla2tools.jar
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: tools/cache
           key: tla2tools-${{ hashFiles('tools/tla/VERSION', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS') }}
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
+          cache-targets: false
+          cache-bin: false
       - name: Restore exact-compatible nightly TLC checkpoint
         id: checkpoint-restore
-        uses: actions/cache/restore@v4
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: target/rafter-invariants/tla-checkpoint/nightly
           key: tla-nightly-checkpoint-v1-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/RaftNightly.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS', 'Cargo.toml', 'Cargo.lock', 'crates/rafter-invariants/Cargo.toml', 'crates/rafter-invariants/src/**/*.rs') }}-${{ github.run_id }}-${{ github.run_attempt }}
@@ -172,16 +184,15 @@ jobs:
         run: cargo run --locked -p rafter-invariants -- run --profile nightly --layer tla
       - name: Save exact-compatible nightly TLC checkpoint
         if: ${{ always() && hashFiles('target/rafter-invariants/tla-checkpoint/nightly/CACHE_VALID') != '' }}
-        uses: actions/cache/save@v4
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: target/rafter-invariants/tla-checkpoint/nightly
           key: tla-nightly-checkpoint-v1-${{ hashFiles('verification/raft-invariant-profiles.json', 'specs/tla/raft/Raft.tla', 'specs/tla/raft/RaftNightly.cfg', 'specs/tla/raft/RaftMembershipTraceSample.tla', 'specs/tla/raft/RaftMembershipTraceSample.cfg', 'specs/tla/raft/RafterInvariantDetectorNegative.tla', 'specs/tla/raft/RafterInvariantDetectorNegative.cfg', 'scripts/tla-model-check', 'tools/tla/ASSET_ID', 'tools/tla/SHA256SUMS', 'Cargo.toml', 'Cargo.lock', 'crates/rafter-invariants/Cargo.toml', 'crates/rafter-invariants/src/**/*.rs') }}-${{ github.run_id }}-${{ github.run_attempt }}
       - name: Upload nightly TLA+ evidence and counterexamples
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: invariants-nightly-evidence-tla-${{ github.run_id }}-${{ github.run_attempt }}
-          overwrite: true
           path: |
             artifacts/invariants/nightly-tla.json
             artifacts/invariants/nightly-tla/
@@ -189,7 +200,7 @@ jobs:
           retention-days: 30
       - name: Upload nightly TLA+ process diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: invariants-nightly-tla-process-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -200,15 +211,17 @@ jobs:
 
   burn-in:
     name: burn-in
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The nightly burn-in mode runs the raft-nightly model-check profile in a
     # release build plus the rafter-storage test suite. GitHub-hosted jobs
     # hard-cap at 360 minutes.
     timeout-minutes: 350
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
       - name: Raft burn-in (nightly mode)
@@ -217,7 +230,7 @@ jobs:
       # target/raft-burn-in/<run-id>/.
       - name: Upload burn-in logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: burn-in-logs
           path: target/raft-burn-in/
@@ -226,36 +239,27 @@ jobs:
 
   invariants-maelstrom:
     name: invariants-maelstrom-nightly
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    runs-on: [self-hosted, linux, X64]
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88
-      - uses: actions/setup-java@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        timeout-minutes: 3
         with:
-          distribution: temurin
-          java-version: "21"
-      - name: Install Maelstrom analysis tools
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends graphviz gnuplot-nox
-      - uses: Swatinem/rust-cache@v2
+          persist-credentials: false
+      - uses: ./.github/actions/configure-invariant-cargo
+        timeout-minutes: 1
+      - uses: ./.github/actions/setup-rust
+        timeout-minutes: 8
+      - uses: ./.github/actions/setup-invariant-verifier
+        timeout-minutes: 8
+        with:
+          maelstrom: "true"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        timeout-minutes: 8
         with:
           cache-on-failure: true
-      - name: Install Maelstrom
-        run: |
-          version=v0.2.4
-          archive=/tmp/maelstrom.tar.bz2
-          expected=301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799
-          curl -fsSL -o "$archive" \
-            "https://github.com/jepsen-io/maelstrom/releases/download/${version}/maelstrom.tar.bz2"
-          actual="$(sha256sum "$archive" | awk '{ print $1 }')"
-          if [[ "$actual" != "$expected" ]]; then
-            echo "maelstrom sha256 mismatch: expected $expected got $actual" >&2
-            exit 1
-          fi
-          tar -xjf "$archive" -C /tmp
-          echo "/tmp/maelstrom" >> "$GITHUB_PATH"
+          cache-targets: false
+          cache-bin: false
       - name: Produce all six nightly Maelstrom evidence scenarios
         run: cargo run --locked -p rafter-invariants -- run --profile nightly --layer maelstrom
       - name: Independently verify nightly Maelstrom evidence
@@ -265,10 +269,9 @@ jobs:
           --result artifacts/invariants/nightly-maelstrom.json
       - name: Upload source-bound Maelstrom receipts and replay artifacts
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: invariants-nightly-evidence-maelstrom-${{ github.run_id }}-${{ github.run_attempt }}
-          overwrite: true
           path: |
             artifacts/invariants/nightly-maelstrom.json
             artifacts/invariants/nightly-maelstrom/
@@ -276,7 +279,7 @@ jobs:
           retention-days: 30
       - name: Upload nightly Maelstrom process diagnostics
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: invariants-nightly-maelstrom-process-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -293,42 +296,62 @@ jobs:
       - invariants-tla
       - invariants-maelstrom
     if: always()
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: [self-hosted, linux, X64]
+    timeout-minutes: 95
     env:
       INVARIANT_EVIDENCE_DIR: rafter-invariants-nightly-evidence-${{ github.run_id }}-${{ github.run_attempt }}
       INVARIANT_REPORT_DIR: rafter-invariants-nightly-${{ github.run_id }}-${{ github.run_attempt }}
+      INVARIANT_VERIFIER_DIR: target/rafter-invariants/verifier-evidence/nightly-${{ github.run_id }}-${{ github.run_attempt }}
+      RAFTER_INVARIANT_VERIFIER_EVIDENCE_DIR: target/rafter-invariants/verifier-evidence/nightly-${{ github.run_id }}-${{ github.run_attempt }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        timeout-minutes: 3
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/configure-invariant-cargo
+        timeout-minutes: 1
+      - uses: ./.github/actions/setup-rust
+        timeout-minutes: 8
+      - uses: ./.github/actions/setup-invariant-verifier
+        timeout-minutes: 8
+        with:
+          maelstrom: "true"
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        timeout-minutes: 8
         with:
           cache-on-failure: true
+          cache-targets: false
+          cache-bin: false
       - name: Download available nightly test evidence
+        timeout-minutes: 2
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: invariants-nightly-evidence-tests-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/tests
       - name: Download available nightly simulator evidence
+        timeout-minutes: 2
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: invariants-nightly-evidence-simulator-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/simulator
       - name: Download available nightly TLA+ evidence
+        timeout-minutes: 2
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: invariants-nightly-evidence-tla-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/tla
       - name: Download available nightly Maelstrom evidence
+        timeout-minutes: 2
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: invariants-nightly-evidence-maelstrom-${{ github.run_id }}-${{ github.run_attempt }}
           path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/maelstrom
       - name: Stage current-run nightly evidence artifacts
+        timeout-minutes: 2
         if: always()
         run: |
           transport_root="$RUNNER_TEMP/$INVARIANT_EVIDENCE_DIR"
@@ -345,69 +368,56 @@ jobs:
             fi
           done
           for layer in tests simulator tla maelstrom; do
-            cp -R "$transport_root/$layer/nightly-$layer" "$evidence_root/nightly-$layer"
+            source="$transport_root/$layer/nightly-$layer"
+            destination="$evidence_root/nightly-$layer"
+            cp "$source.json" "$destination.json"
+            cp -R "$source" "$destination"
           done
       - name: Build source-bound Maelstrom verification binaries
         timeout-minutes: 2
         run: cargo build --locked -p rafter-maelstrom --bins
+      - name: Prime authenticated Cargo archive cache
+        if: always()
+        timeout-minutes: 3
+        run: cargo fetch --locked
       - name: Aggregate exactly 44 nightly invariant verdicts
         if: always()
         id: aggregate
-        timeout-minutes: 8
+        timeout-minutes: 20
         run: |
           report_dir="$RUNNER_TEMP/$INVARIANT_REPORT_DIR"
+          evidence_root="$GITHUB_WORKSPACE/artifacts/invariants"
           mkdir -p "$report_dir"
           set +e
-          cargo run --locked -p rafter-invariants -- check --profile nightly --source-ref "$GITHUB_SHA" \
-            --result "$RUNNER_TEMP/$INVARIANT_EVIDENCE_DIR/tests/nightly-tests.json" \
-            --result "$RUNNER_TEMP/$INVARIANT_EVIDENCE_DIR/simulator/nightly-simulator.json" \
-            --result "$RUNNER_TEMP/$INVARIANT_EVIDENCE_DIR/tla/nightly-tla.json" \
-            --result "$RUNNER_TEMP/$INVARIANT_EVIDENCE_DIR/maelstrom/nightly-maelstrom.json" \
+          cargo run --offline --locked -p rafter-invariants -- check --profile nightly --source-ref "$GITHUB_SHA" \
+            --result "$evidence_root/nightly-tests.json" \
+            --result "$evidence_root/nightly-simulator.json" \
+            --result "$evidence_root/nightly-tla.json" \
+            --result "$evidence_root/nightly-maelstrom.json" \
             --output-dir "$report_dir"
           status=$?
           set -e
           echo "status=$status" >> "$GITHUB_OUTPUT"
+          manifest_count="$(find "$INVARIANT_VERIFIER_DIR" -mindepth 2 -maxdepth 2 \
+            -type f -name 'verifier-artifact-manifest-*' 2>/dev/null | wc -l | tr -d ' ')"
+          if [[ "$manifest_count" = "1" ]]; then
+            manifest_path="$(find "$INVARIANT_VERIFIER_DIR" -mindepth 2 -maxdepth 2 \
+              -type f -name 'verifier-artifact-manifest-*')"
+            echo "verifier_manifest=$manifest_path" >> "$GITHUB_OUTPUT"
+            echo "verifier_manifest_sha256=$(sha256sum "$manifest_path" | awk '{ print $1 }')" \
+              >> "$GITHUB_OUTPUT"
+          fi
       - name: Validate current-run nightly reports
         if: always()
         id: report
-        timeout-minutes: 1
+        timeout-minutes: 2
         run: |
           report_dir="$RUNNER_TEMP/$INVARIANT_REPORT_DIR"
-          complete=true
-          for extension in json xml md; do
-            if [[ ! -s "$report_dir/nightly.$extension" ]]; then
-              complete=false
-            fi
-          done
-          if [[ "$complete" = "true" ]] && ! jq -e \
-            '.profile == "nightly" and .summary.total == 44 and (.invariants | length) == 44' \
-            "$report_dir/nightly.json" >/dev/null; then
+          if cargo run --offline --locked -p rafter-invariants -- verify-report-set \
+            --profile nightly --report-dir "$report_dir"; then
+            complete=true
+          else
             complete=false
-          fi
-          if [[ "$complete" = "true" ]]; then
-            expected_ids="$report_dir/expected.ids"
-            json_ids="$report_dir/json.ids"
-            markdown_ids="$report_dir/markdown.ids"
-            junit_ids="$report_dir/junit.ids"
-            jq -r ".[\"\$defs\"].invariant.properties.invariant_id.enum[]" \
-              verification/invariant-verdict-schema.json | LC_ALL=C sort > "$expected_ids"
-            jq -r '.invariants[].invariant_id' "$report_dir/nightly.json" | \
-              LC_ALL=C sort > "$json_ids"
-            # Dollar signs below are regex anchors.
-            # shellcheck disable=SC2016
-            sed -nE 's/^\| `([^`]+)` \| (GREEN|RED) \|.*$/\1/p' \
-              "$report_dir/nightly.md" | LC_ALL=C sort > "$markdown_ids"
-            # Dollar signs below are regex anchors.
-            # shellcheck disable=SC2016
-            sed -nE 's/^[[:space:]]*<testcase classname="rafter\.invariants" name="([^"]+)">$/\1/p' \
-              "$report_dir/nightly.xml" | LC_ALL=C sort > "$junit_ids"
-            if [[ "$(wc -l < "$expected_ids")" -ne 44 || \
-                  "$(LC_ALL=C uniq "$expected_ids" | wc -l)" -ne 44 ]] || \
-               ! cmp -s "$expected_ids" "$json_ids" || \
-               ! cmp -s "$expected_ids" "$markdown_ids" || \
-               ! cmp -s "$expected_ids" "$junit_ids"; then
-              complete=false
-            fi
           fi
           echo "complete=$complete" >> "$GITHUB_OUTPUT"
       - name: Render the 44-row nightly report
@@ -425,30 +435,82 @@ jobs:
       - name: Upload available nightly aggregate reports
         if: always()
         timeout-minutes: 2
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: invariants-nightly-report-${{ github.run_id }}-${{ github.run_attempt }}
-          overwrite: true
           path: |
             ${{ runner.temp }}/${{ env.INVARIANT_REPORT_DIR }}/nightly.json
             ${{ runner.temp }}/${{ env.INVARIANT_REPORT_DIR }}/nightly.xml
             ${{ runner.temp }}/${{ env.INVARIANT_REPORT_DIR }}/nightly.md
-          if-no-files-found: ignore
+          if-no-files-found: error
           retention-days: 30
       - name: Upload available nightly aggregate evidence
         if: always()
         timeout-minutes: 2
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: invariants-nightly-aggregate-evidence-${{ github.run_id }}-${{ github.run_attempt }}
-          overwrite: true
           path: ${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/
           if-no-files-found: ignore
           retention-days: 30
+      - name: Seal nightly aggregate verifier evidence
+        if: always()
+        id: verifier_archive
+        timeout-minutes: 5
+        env:
+          EXPECTED_MANIFEST: ${{ steps.aggregate.outputs.verifier_manifest }}
+          EXPECTED_MANIFEST_SHA256: ${{ steps.aggregate.outputs.verifier_manifest_sha256 }}
+        run: |
+          test -n "$EXPECTED_MANIFEST"
+          test -n "$EXPECTED_MANIFEST_SHA256"
+          run_root="$(dirname "$EXPECTED_MANIFEST")"
+          archive="$RUNNER_TEMP/invariants-nightly-aggregate-verifier-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}.tar"
+          output="$(cargo run --offline --locked -p rafter-invariants -- seal-verifier-artifacts \
+            --profile nightly \
+            --root "$run_root" \
+            --manifest "$EXPECTED_MANIFEST" \
+            --manifest-sha256 "$EXPECTED_MANIFEST_SHA256" \
+            --archive "$archive")"
+          echo "archive=$archive" >> "$GITHUB_OUTPUT"
+          echo "$output" >> "$GITHUB_OUTPUT"
+      - name: Upload nightly aggregate verifier evidence
+        if: always()
+        id: upload_verifier_archive
+        timeout-minutes: 2
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: invariants-nightly-aggregate-verifier-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ steps.verifier_archive.outputs.archive }}
+          if-no-files-found: error
+          retention-days: 30
+      - name: Download nightly aggregate verifier evidence for readback
+        if: always() && steps.upload_verifier_archive.outcome == 'success'
+        id: download_verifier_archive
+        timeout-minutes: 2
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: invariants-nightly-aggregate-verifier-evidence-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/invariants-nightly-aggregate-verifier-download-${{ github.run_id }}-${{ github.run_attempt }}
+      - name: Verify downloaded nightly aggregate verifier evidence
+        if: always() && steps.download_verifier_archive.outcome == 'success'
+        id: verify_verifier_archive
+        timeout-minutes: 5
+        env:
+          ARCHIVE_SOURCE: ${{ steps.verifier_archive.outputs.archive }}
+          ARCHIVE_SHA256: ${{ steps.verifier_archive.outputs.archive_sha256 }}
+          MANIFEST_SHA256: ${{ steps.aggregate.outputs.verifier_manifest_sha256 }}
+          DOWNLOAD_DIR: ${{ runner.temp }}/invariants-nightly-aggregate-verifier-download-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          archive="$DOWNLOAD_DIR/$(basename "$ARCHIVE_SOURCE")"
+          cargo run --offline --locked -p rafter-invariants -- verify-verifier-archive \
+            --profile nightly \
+            --archive "$archive" \
+            --archive-sha256 "$ARCHIVE_SHA256" \
+            --manifest-sha256 "$MANIFEST_SHA256"
       - name: Upload nightly aggregate process diagnostics
         if: always()
         timeout-minutes: 2
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: invariants-nightly-aggregate-process-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
@@ -462,6 +524,9 @@ jobs:
         env:
           AGGREGATE_STATUS: ${{ steps.aggregate.outputs.status }}
           REPORT_READY: ${{ steps.report.outputs.complete }}
+          VERIFIER_SEAL_RESULT: ${{ steps.verifier_archive.outcome }}
+          VERIFIER_UPLOAD_RESULT: ${{ steps.upload_verifier_archive.outcome }}
+          VERIFIER_READBACK_RESULT: ${{ steps.verify_verifier_archive.outcome }}
           TESTS_RESULT: ${{ needs.invariants-tests.result }}
           SIMULATOR_RESULT: ${{ needs.invariants-simulator.result }}
           TLA_RESULT: ${{ needs.invariants-tla.result }}
@@ -473,12 +538,15 @@ jobs:
           test "$MAELSTROM_RESULT" = "success"
           test "$AGGREGATE_STATUS" = "0"
           test "$REPORT_READY" = "true"
+          test "$VERIFIER_SEAL_RESULT" = "success"
+          test "$VERIFIER_UPLOAD_RESULT" = "success"
+          test "$VERIFIER_READBACK_RESULT" = "success"
           jq -e '.summary.total == 44 and .summary.green == 44 and .summary.red == 0 and (.invariants | length) == 44' \
             "$RUNNER_TEMP/$INVARIANT_REPORT_DIR/nightly.json" >/dev/null
 
   fuzz-long:
     name: fuzz-long (${{ matrix.target }})
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 90 # 30 min of fuzzing + toolchain, cargo-fuzz install, and sanitizer build
     strategy:
       fail-fast: false
@@ -489,7 +557,9 @@ jobs:
           - node_message_sequences
           - cluster_schedules
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
       # Keep this directory guard so the workflow remains usable on older
       # release branches that predate the fuzz workspace.
       - name: Check for fuzz targets
@@ -501,9 +571,11 @@ jobs:
             echo "exists=false" >> "$GITHUB_OUTPUT"
             echo "fuzz/ not present on this ref; skipping long fuzz"
           fi
-      - uses: dtolnay/rust-toolchain@nightly
+      - uses: ./.github/actions/setup-rust
         if: steps.fuzz-dir.outputs.exists == 'true'
-      - uses: Swatinem/rust-cache@v2
+        with:
+          toolchain: nightly
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         if: steps.fuzz-dir.outputs.exists == 'true'
         with:
           cache-on-failure: true
@@ -515,7 +587,7 @@ jobs:
         run: cargo +nightly fuzz run ${{ matrix.target }} -- -max_total_time=1800
       - name: Upload crash artifacts
         if: failure() && steps.fuzz-dir.outputs.exists == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: fuzz-long-${{ matrix.target }}-artifacts
           path: fuzz/artifacts/
@@ -523,12 +595,14 @@ jobs:
 
   multi-gigabyte-test:
     name: multi-gigabyte-test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@1.88
-      - uses: Swatinem/rust-cache@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
       - name: Ignored nightly-scale test
@@ -540,7 +614,7 @@ jobs:
           scripts/cargo-test-exact 1 multi_gigabyte -p rafter --release -- --ignored 2>&1 | tee multi-gigabyte.log
       - name: Upload log
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: multi-gigabyte-test-log
           path: multi-gigabyte.log
