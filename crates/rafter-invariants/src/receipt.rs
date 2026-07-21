@@ -17,8 +17,7 @@ mod fixtures;
 #[cfg(test)]
 pub(crate) use crate::verification::process_launchers_match_runtime;
 pub(crate) use crate::verification::{
-    process_invocation_is_complete, process_invocation_matches_source,
-    script_invocation_matches_source,
+    process_invocation_matches_source, script_invocation_matches_source,
 };
 #[cfg(test)]
 pub(crate) use fixtures::{
