@@ -1,3 +1,5 @@
+//! File-backed retained-log append, replay, repair, and truncation scenarios.
+
 use std::{
     fs::{self, OpenOptions},
     io::Write,
