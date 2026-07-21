@@ -256,7 +256,8 @@ pub(crate) fn capture_hidden_proof_socket_fixture_log(
         package: "rafter-invariant-test".to_owned(),
         target_kind: "lib".to_owned(),
         target: "rafter_invariant_test".to_owned(),
-        test_name: "tests::proof_socket_is_hidden_from_fixture_body_subprocess_fixture".to_owned(),
+        test_name: "tests::proof_descriptor_is_hidden_from_fixture_body_subprocess_fixture"
+            .to_owned(),
     };
     capture_detector_witness_identity_log(source_ref, &identity, true, true)
 }

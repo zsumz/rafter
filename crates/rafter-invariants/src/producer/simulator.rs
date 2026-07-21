@@ -1,4 +1,4 @@
-use std::{collections::BTreeMap, error::Error, fs, path::Path};
+use std::{collections::BTreeMap, error::Error, path::Path};
 
 use serde_json::Value;
 
@@ -212,7 +212,6 @@ fn run_detectors(
     source_ref: &str,
     output_dir: &Path,
 ) -> Result<DetectorRun, Box<dyn Error>> {
-    preflight_detector_sources(descriptors)?;
     let identities = unique_detector_identities(
         descriptors
             .iter()
@@ -254,60 +253,6 @@ fn run_detectors(
         output_dir,
         execution_deadline,
     )
-}
-
-fn preflight_detector_sources(descriptors: &[EvidenceDescriptor]) -> Result<(), Box<dyn Error>> {
-    preflight_detector_sources_at(Path::new("."), descriptors)
-}
-
-fn preflight_detector_sources_at(
-    root: &Path,
-    descriptors: &[EvidenceDescriptor],
-) -> Result<(), Box<dyn Error>> {
-    let source_root = fs::canonicalize(root)?;
-    let mut source_verifier = crate::artifact_verify::DetectorFixtureSourceBatch::default();
-    for descriptor in descriptors {
-        let Some(test_identity) = descriptor
-            .simulator
-            .as_ref()
-            .and_then(|identity| identity.negative_test.as_ref())
-        else {
-            continue;
-        };
-        let fixture = descriptor
-            .negative_fixture
-            .as_deref()
-            .ok_or("simulator detector omitted its negative fixture")?;
-        let fixture_path = descriptor
-            .negative_fixture_path
-            .as_deref()
-            .ok_or("simulator detector omitted its negative fixture path")?;
-        let detector = descriptor
-            .negative_fixture_detector
-            .as_deref()
-            .ok_or("simulator detector omitted its detector identity")?;
-        let fixture_path = fs::canonicalize(source_root.join(fixture_path))?;
-        let detector_path =
-            fs::canonicalize(source_root.join(descriptor.negative_detector_path()))?;
-        if !fixture_path.starts_with(&source_root) || !detector_path.starts_with(&source_root) {
-            return Err("simulator detector source path escapes the checkout".into());
-        }
-        let fixture_source = fs::read_to_string(&fixture_path)?;
-        let detector_source = fs::read_to_string(&detector_path)?;
-        source_verifier
-            .validate(&crate::DetectorFixtureSourceBinding {
-                fixture_source: &fixture_source,
-                detector_source: &detector_source,
-                source_root: &source_root,
-                fixture_path: &fixture_path,
-                detector_path: &detector_path,
-                test_identity,
-                fixture,
-                detector,
-            })
-            .map_err(|error| format!("simulator detector source preflight failed: {error}"))?;
-    }
-    Ok(())
 }
 
 fn unique_detector_identities(

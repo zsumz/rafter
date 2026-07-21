@@ -15,6 +15,8 @@ use crate::{
 
 use super::{artifact, maelstrom_edn, maelstrom_scenario::required_configuration, process};
 
+mod lease_history;
+
 pub(super) use super::maelstrom_scenario::Scenario;
 
 pub(super) struct TrialOutcome {
@@ -612,7 +614,7 @@ fn bind_lease_history(
     let matches = probe
         .zip(history)
         .and_then(|(probe, history)| {
-            maelstrom_edn::lease_probe_completion_count(history, &probe.client, probe.msg_id).ok()
+            lease_history::probe_completion_count(history, &probe.client, probe.msg_id).ok()
         })
         .unwrap_or_default();
     if matches == 1 {

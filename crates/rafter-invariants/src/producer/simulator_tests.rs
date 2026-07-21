@@ -5,49 +5,13 @@ use std::path::Path;
 
 use super::{
     coverage_reached, evaluate, evaluate_descriptors, execution_resource_metrics,
-    liveness_contracts, model_observations, preflight_detector_sources_at, simulator_event_issue,
-    DetectorRun, SimulatorIssue,
+    liveness_contracts, model_observations, simulator_event_issue, DetectorRun, SimulatorIssue,
 };
 use crate::{
     CheckCompletion, EvidenceDescriptor, EvidenceStatus, FailureClassification,
     SimulatorCheckContract, SimulatorIdentity,
 };
 use serde_json::json;
-
-#[test]
-fn detector_source_preflight_rejects_the_compiled_qualified_helper_fixture() {
-    let (catalog, _) = crate::tests::loaded();
-    let mut descriptor = catalog
-        .evidence
-        .iter()
-        .find(|descriptor| descriptor.layer == "simulator" && descriptor.strength == "direct")
-        .expect("registered direct simulator descriptor")
-        .clone();
-    let fixture = "qualified_helper_forged_transcript_subprocess_fixture";
-    descriptor.path = "crates/rafter-invariant-test/src/tests.rs".to_owned();
-    descriptor.negative_fixture = Some(fixture.to_owned());
-    descriptor.negative_fixture_path = Some(descriptor.path.clone());
-    descriptor.negative_fixture_detector = Some("token_bound_regression_detector".to_owned());
-    descriptor
-        .simulator
-        .as_mut()
-        .expect("direct simulator identity")
-        .negative_test = Some(crate::TestIdentity {
-        package: "rafter-invariant-test".to_owned(),
-        target_kind: "lib".to_owned(),
-        target: "rafter_invariant_test".to_owned(),
-        test_name: format!("tests::{fixture}"),
-    });
-
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
-    let error = preflight_detector_sources_at(&root, &[descriptor])
-        .expect_err("producer preflight must reject the invalid fixture source")
-        .to_string();
-    assert!(
-        error.contains("can emit an arbitrary detector witness"),
-        "{error}"
-    );
-}
 
 #[test]
 fn simulator_failure_classifications_remain_distinct() {

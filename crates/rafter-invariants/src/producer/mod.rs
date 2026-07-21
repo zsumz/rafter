@@ -3,7 +3,7 @@
 pub(crate) mod artifact;
 mod maelstrom;
 mod maelstrom_binding;
-pub(crate) mod maelstrom_edn;
+pub(crate) use crate::evidence::format::maelstrom as maelstrom_edn;
 mod maelstrom_exec;
 mod maelstrom_scenario;
 mod maelstrom_tool;
@@ -18,7 +18,7 @@ mod tla;
 pub(crate) mod tla_checkpoint;
 mod tla_contract;
 mod tla_exec;
-pub(crate) mod tla_output;
+pub(crate) use crate::evidence::format::tla as tla_output;
 #[cfg(test)]
 mod unit_tests;
 
@@ -105,7 +105,7 @@ pub(crate) fn produce_with_plan(
     if !contract
         .required_layers
         .iter()
-        .any(|required| required == layer)
+        .any(|required| required.as_str() == layer)
     {
         return Err(format!(
             "layer {} is not required by profile {}",
