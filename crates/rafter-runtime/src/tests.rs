@@ -133,7 +133,7 @@ impl RaftHardStateStore for FailingHardStateStore {
         Err(RaftHardStateStoreWriteError::Io {
             operation: "write test raft hard state",
             path: PathBuf::from("test-hard-state"),
-            message: "injected failure".to_string(),
+            source: std::io::Error::other("injected failure").into(),
         })
     }
 
@@ -171,7 +171,7 @@ impl RaftLogSegment for FailingAfterElectionNoopLogSegment {
         }
         Err(RaftLogSegmentAppendError::Io {
             operation: "append test raft log entries",
-            message: "injected failure".to_string(),
+            source: std::io::Error::other("injected failure").into(),
         })
     }
 
