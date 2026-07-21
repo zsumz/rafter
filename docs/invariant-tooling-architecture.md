@@ -95,7 +95,7 @@ The internal dependency graph is intentionally one-way:
 ```text
 contract     -> evidence, plan, producer, verification, verdict, gate, cli
 evidence     -> plan, producer, verification, verdict, gate
-execution    -> provenance, producer
+execution    -> provenance, producer, verification
 provenance   -> plan, producer, verification
 plan         -> producer, gate
 producer     -> gate
@@ -109,8 +109,9 @@ import rule for a source tree once that tree enters the migrated-source
 manifest. That manifest is executable and deliberately separate from the
 target graph: an unmigrated `plan`, `gate`, or `cli` path is not presented as
 already conforming. In particular, `execution` feeds the neutral provenance
-observer and producer, not `plan`; verification consumes contract, evidence,
-and provenance without importing execution or producer implementation.
+observer, producer, and verifier-owned replay, not `plan`; verification
+consumes contract, evidence, neutral execution, and provenance without
+importing producer implementation.
 
 - `contract` owns reviewed declarations and profile policy. It does not execute
   processes or inspect produced artifacts.
@@ -124,9 +125,10 @@ and provenance without importing execution or producer implementation.
 - `plan` resolves a contract and binds invocation inputs.
 - `producer` may depend on the lower domains, but never on `verification` or
   `verdict`.
-- `verification` may depend on contract, evidence, and provenance, but never on
-  producer implementation. Neutral format parsers may be shared through the
-  evidence domain; semantic acceptance logic may not.
+- `verification` may depend on contract, evidence, provenance, and neutral
+  execution mechanics, but never on producer implementation. Neutral format
+  parsers may be shared through the evidence domain; semantic acceptance logic
+  may not.
 - `verification` returns a typed `EvidenceIntake`; raw bundles cannot cross that
   boundary by convention alone.
 - `verdict` consumes `EvidenceIntake`. It does not spawn tools, discover tests,
@@ -136,6 +138,12 @@ and provenance without importing execution or producer implementation.
 - `cli` parses user intent and delegates to the gate.
 
 Architecture tests should reject forbidden imports across these boundaries.
+
+Profile policy is domain vocabulary, not open text. Evidence selection, clause
+selection, required clause strength, evidence layers, and evidence strengths
+are exhaustive Rust enums whose serde names preserve the reviewed JSON wire
+contract. Unknown values therefore fail while the profile is decoded; later
+validation checks only cross-field and profile-specific relationships.
 
 ## Target crate layouts
 
@@ -228,6 +236,7 @@ src/
       mod.rs             profile and runner vocabulary
       load.rs            strict profile-manifest loading
       model.rs           profile, runner, and simulator-check wire models
+      replay.rs          typed aggregate replay policy and resource bounds
       validate.rs        cross-profile policy validation
       runner_contract/   typed per-layer configuration validation
       simulator/         simulator floors and check contracts
@@ -317,11 +326,43 @@ src/
     maelstrom/           tooling, scenarios, trials, EDN, and lease markers
   verification/
     mod.rs               `EvidenceIntake` and verification facade
-    detector.rs          public fixture-binding compatibility facade
+    detector.rs          fixture-analysis lifecycle and public source binding
+    detector/
+      source.rs          declarative invocation-bound analysis facade
+      source/analysis.rs exact fixture-to-detector orchestration
+      source/contract.rs derived detector invocation contract
+      source/function_collection.rs authenticated target function discovery
+      source/function_body/ call, scope, flow, macro, and visitor analysis
+      source/function_index/ function catalog and local resolver model
+      source/reachability/ call-graph expansion and witness policy
+      transcript.rs      independent detector transcript acceptance
+      source_tests.rs    detector-source reachability scenarios
+    detector_replay/
+      plan.rs            reviewed fixture, target, and evidence inventory
+      workspace.rs       isolated private Cargo home and build workspace
+      metadata/          authenticated Cargo graph reconstruction
+      compiler/          strict compiler-message and executable admission
+      execution/         deadline-bound replay compilation orchestration
+      fixture.rs         challenge-bound fixture execution and qualification
+      process.rs         reviewed raw-process capability adapter
+      artifact/          report coordination, strict semantics, exact logs, and integrity guard
+      assessment.rs      evidence-local replay qualifications
+      result.rs          compilation and fixture attempt vocabulary
+    source/
+      receipt.rs         authenticated checkout and actual toolchain receipts
+      snapshot/          clean tracked-tree capture and integrity validation
+      registry_snapshot/ locked archive admission and directory-source materialization
+      sealed.rs          immutable file identity and permission ledger
+      permissions.rs     portable reviewed mode policy
+    intake/
+      mod.rs             verified evidence intake facade
+      paths.rs           aggregate and layer path verification
+      replay.rs          aggregate-only replay orchestration and overlay
+      model.rs           accepted evidence, defects, and retained artifact guard
+    publication/         exact directory intake, deterministic tar sealing, and no-extract readback
     error.rs             fail-closed verification error vocabulary
     process_receipt.rs   process invocation and launcher-chain acceptance
     bundle/              common receipt, provenance, and integrity checks
-    tests/               detector-source reachability
     simulator/           event, schedule, provenance, and metrics checks
       liveness/          independent bounded-report semantic validation
     tla/                 invocation, tool pin, checkpoint, and mutation checks
@@ -329,7 +370,7 @@ src/
   artifact_verify/
     test_logs.rs         legacy physical facade, logically verification-owned
     test_logs/
-      detector.rs        independent detector transcript acceptance
+      detector.rs        detector-log adaptation into verifier transcript policy
       environment.rs     deterministic exact-test environment reconstruction
       invocation.rs      discovery plan and executable provenance
       outcome.rs         independent verifier outcome acceptance
@@ -370,24 +411,134 @@ Detector proof handling has the same neutral-format boundary. The evidence
 module decodes marker records without deciding whether a transcript is
 acceptable. Producer acceptance lives in
 `producer/test_exec/detector_policy.rs`; verifier acceptance lives in
-`artifact_verify/test_logs/detector.rs`. The two policies consume the same
+`verification/detector/transcript.rs`. The two policies consume the same
 decoded vocabulary but must independently check execution tokens, challenges,
 witness inventories, and role-specific obligations. A shared
 `verify_transcript` reducer is forbidden.
 
-`verification/detector.rs` remains a public compatibility facade over the
-legacy detector-source analyzer mount. Its one reviewed dependency exception
-is recorded as `INV-ARCH-DETECTOR-SOURCE-MIGRATION`, with an exact source,
-import, and reason. The architecture guard fails if that edge changes,
-duplicates, or disappears without removing the exception.
+Verifier-owned detector replay is an aggregate-only second execution layer. It
+does not trust a producer's claim that a negative fixture ran. The current
+profile schema is v9. The top-level `verifiers` map deliberately separates
+aggregate-owned execution policy from producer `runners`; every profile must
+have exactly one contract in each map. This additive public model change is an
+intentional schema migration, not an internal module-move side effect. The
+reviewed replay boundary binds 247 locked registry packages, 77
+unique detector fixtures, 79
+invariant/evidence bindings, and two Cargo test targets to one canonical
+inventory digest. The digest commits every target, fixture, detector, complete
+repository-relative target source graph, expected witness, and evidence
+association, so direct-file or count-preserving substitution is red.
+Planning rejects any drift before execution. The verifier captures a
+clean tracked source snapshot, authenticates every registry archive against
+`Cargo.lock`, materializes a read-only directory source, and reconstructs the
+Cargo graph under a private Cargo home. Aggregate archive, expanded-byte, and
+entry limits are profile-owned, and the total replay deadline begins before
+inventory analysis or registry materialization. Compilation is `--locked`,
+`--offline`, and `--no-default-features`; strict Cargo JSON parsing matches
+target name, kind, and source to authenticated metadata and admits only fresh
+executables whose compiler-time bytes remain unchanged.
+
+Each fixture then executes through the descriptor-only detector challenge
+protocol. A passing subprocess is insufficient: source, executable, transcript,
+challenge, and evidence identities must all qualify. Failures affect only the
+bound evidence records unless the verifier itself loses structural integrity;
+an existing invariant violation is never overwritten by a harness error.
+Coverage mismatch fails every required replay binding and retains the report
+and logs that explain the mismatch. Schema v9 binds the pre-body secret protocol:
+the child consumes and closes its inherited proof descriptor before fixture
+code runs, then emits a proof only after an invocation-bound rejection.
+Reachable unsafe blocks, unsafe functions,
+foreign functions, and foreign ABI functions are rejected because they could
+inspect or divert the inherited proof capability outside the reviewed Rust
+call graph.
+
+Replay artifacts are verifier-owned, not producer receipts. Exact stdout and
+stderr byte streams use a length-framed v2 envelope that binds the process
+role, unique execution identity, stream, and arbitrary payload bytes. The
+strict schema-v4 JSON report records the authenticated commit, tree,
+materialization and environment,
+the canonical paths and hashes of the actual Cargo and rustc executables, the
+registry receipt, reviewed inventory digest, complete fixture source bindings,
+compilation, typed completed or lifecycle-error process observations, and every
+evidence result. Receipt digests make each source and toolchain field
+load-bearing. Archive sealing and downloaded-archive readback independently
+load the canonical profile manifest, capture the active checkout and actual
+Cargo and rustc executables, and rematerialize the authenticated registry
+receipt; a self-consistent stale or substituted report therefore remains red.
+Readback reconstructs the logical replay plan from its fixture rows, recomputes
+the canonical inventory digest, requires the
+exact compilation roles, and cross-checks every referenced length-framed log
+against one content-addressed archive member. It reruns detector transcript
+qualification over the archived bytes and recorded token, challenge, and
+witness contract. Reportless archives, omitted logs, reused logs, malformed
+transcripts, and orphaned payloads are rejected. Capture and readback share a
+512-file, 256 MiB exact archive budget, including the manifest, so a green
+replay cannot cross a stricter sealing boundary. Publication is
+content-addressed beneath a never-reused, invocation-specific
+`target/rafter-invariants/verifier-evidence/<workflow-run>/run-<source>-<invocation>`
+directory in CI, with a stable local default when no publication root is
+selected. A content-addressed manifest covers every replay report and process
+log. CI carries that manifest's digest through the aggregate step, verifies the
+exact read-only inventory and every listed digest, seals the set into a
+deterministic read-only tar with canonical headers, and uploads only that tar.
+The aggregate then downloads the same artifact into a fresh path and validates
+the captured archive digest, captured manifest digest, exact inventory, entry
+metadata, trusted context, reconstructed inventory, report semantics,
+process-log envelopes, and canonical report bytes without extracting the
+archive.
+The aggregate holds identity-bound file capabilities, hashes every artifact at
+publication and sealing, requires the complete directory inventory to equal
+the published inventory, removes write permission from files and directory,
+and revalidates them before verdict reduction and again after report
+publication. Replay work has a fixed publication reserve inside the profile's
+absolute deadline. Concurrent runs for the same profile and source use advisory
+ownership locks and cannot replace one another's workspace or artifact tree.
+Replay execution is admitted only on
+Linux, where the executable is launched through its held descriptor. PR,
+nightly, and weekly aggregate jobs use fresh run-specific Cargo homes and target
+directories, never restore compiled targets or Cargo binaries, prefetch the
+locked archives, execute the aggregate offline, require exactly one replay
+report tree, and upload verifier evidence with missing files treated as errors,
+independently from optional process telemetry. Before publication, the
+repository-owned report-set verifier strictly decodes the JSON verdict report,
+revalidates all profile and 44-row semantics, deterministically rerenders JUnit
+and Markdown, and byte-compares both representations. Missing, malformed, or
+status-divergent report files are red.
+
+Every external GitHub Action reference is a full reviewed commit recorded in
+`verification/github-actions.lock`; the repository contract scans every
+workflow and composite-action YAML file, rejects inventory drift, and the
+networked `scripts/verify-action-pins` audit proves each locked revision exists.
+Every aggregate step has an explicit timeout, and the aggregate job budget must
+exceed the sum of all step budgets by at least five minutes.
+
+These controls assume the aggregate process owns an isolated runner account.
+Read-only modes and before/after hashes detect accidental or in-process drift;
+they are not claimed as an immutable boundary against a hostile concurrent
+process with the same Unix identity. PR evidence producers and the aggregate
+run on explicit GitHub-hosted Ubuntu releases, with a separate explicit macOS
+launcher producer; their provider-managed ephemeral accounts and workspaces are
+the trust boundary. Nightly and weekly invariant evidence producers and their
+aggregate run in the same reviewed self-hosted Linux runtime class under an
+isolated runner account and do not share their verifier workspace with
+unrelated workloads.
+
+`verification/detector.rs` owns the public fixture binding and reusable analysis
+session. Its `source/` subtree owns parsing, target-graph binding, call
+resolution, reachability, and oracle policy. Artifact verification consumes
+that domain API; producers remain independent and their claims qualify only
+after verifier-owned source analysis. No detector-source compatibility edge
+back into `artifact_verify` remains. The architecture guard rejects the retired
+physical mount and any producer/verifier dependency in either direction.
 
 Process timing has an explicit policy/mechanics boundary. `producer/process`
 owns profile and layer budget allocation because it consumes `RunnerContract`
 and reserves evidence-finalization time. It emits one absolute lifecycle
 deadline plus explicit execution and receipt-finalization boundaries;
 publication, observation, target execution, escalation, reaping, and final
-receipt reads derive their phase deadlines from that clock. `execution/process` owns the descriptor-bound
-launch, elapsed-time observation, output collection, process-group cleanup,
+receipt reads derive their phase deadlines from that clock. `execution/process`
+owns the descriptor-bound launch, elapsed-time observation, output collection,
+process-group cleanup,
 receipt retention, and termination mechanics; it does not interpret profiles
 or layers. Each stdout, stderr, resource, process-group, and reservation file
 is created as a held capability before launch. Child writes use inherited
@@ -451,7 +602,14 @@ job does not merge telemetry trees or allow diagnostics to influence a verdict.
 The launcher control plane and target environment are separate contracts.
 Schema v14 source receipts bind a process-runtime inventory; every process log
 records an ordered launcher chain and verifiers require each digest to match
-that inventory. Perl, `/usr/bin/time`, and the platform-pinned `ps` observer
+that inventory. Their source-environment digest covers only compiler-selection
+inputs (`DEVELOPER_DIR`, `SDKROOT`, and `SYSTEMROOT` when present). Cache,
+workspace, home, and executable-search paths belong to execution instead: the
+top-level invocation receipt binds the complete deterministic base environment,
+and each child log must match that base plus only its reviewed command-specific
+additions. This lets aggregate jobs use isolated Cargo homes without weakening
+compiler-source identity or accepting environment drift. Perl, `/usr/bin/time`,
+and the platform-pinned `ps` observer
 execute through the descriptors whose bytes were hashed. Reviewed Bash scripts
 are launched through a separately bound Bash descriptor rather than a later
 kernel shebang lookup. `/usr/bin/env bash` selects the source receipt's
@@ -575,7 +733,7 @@ Fixture builders stay beside the domain they model:
 
 - source and Cargo fixtures under `provenance/source/tests/`;
 - process lifecycle fixtures under `execution/process/tests/`;
-- detector call-graph fixtures under `verification/tests/source/tests/`;
+- detector call-graph fixtures under `verification/detector/source_tests/`;
 - simulator schedule fixtures under `verification/simulator/tests/`;
 - TLA mutation and checkpoint fixtures under their TLA producer or verifier;
 - Maelstrom history and lease fixtures under their Maelstrom producer or
@@ -598,8 +756,8 @@ The following contracts remain stable during architecture-only milestones:
 - JSON, JUnit, and Markdown report semantics;
 - failure classification as invariant violation, coverage not reached, or
   harness error;
-- detector macro expansion protocol, marker prefixes, environment names, and
-  parent challenge handshake;
+- detector macro expansion protocol, marker prefixes, and parent challenge
+  handshake, except in an explicit reviewed protocol-version milestone;
 - Cargo target roots such as `rafter-invariant-test/src/lib.rs`;
 - evidence paths, symbols, test names, and derived module identities declared in
   `verification/raft-invariants.yaml`;
@@ -607,6 +765,15 @@ The following contracts remain stable during architecture-only milestones:
 
 A module move alone does not justify a schema-version bump. Schema versions
 change only when serialized readers need an explicit compatibility boundary.
+Profile schema v8 is such a boundary: it adds a canonical replay-inventory
+digest and aggregate registry resource limits to the exact package, fixture,
+binding, and target counts plus the authenticated offline directory-source
+build policy. A v7 reader cannot enforce those obligations and must not accept
+the manifest as equivalent. Profile schema v9 is a second boundary: it adds the
+separately selected aggregate `verifiers` contract and requires the pre-body
+detector secret protocol, under which the inherited descriptor is closed before
+fixture code can run. A v8 reader cannot select that aggregate policy or treat
+the changed execution capability contract as equivalent.
 
 Before moving producer files, replace workflow checkpoint hashes that enumerate
 specific producer subdirectories with a reviewed recursive source input. Update
@@ -629,6 +796,15 @@ ordinary tests may remain portable, but must never imply that a non-Unix host
 produced a challenge-bound detector proof. The invocation adapter's supported
 arity and the canonical `rafter_invariant_test` crate-name requirement are also
 part of the compile-time contract and need explicit tests.
+
+The v3 detector transport is descriptor-only. The parent owns an anonymous
+connected Unix socket pair, passes one endpoint through the managed process
+launcher, and retains the other endpoint behind a one-shot challenge gate. The
+child validates the inherited descriptor as a connected Unix socket, removes
+its environment capability, obtains the secret, and closes the descriptor
+before fixture code runs. It uses safe syscall wrappers under the workspace-wide
+`unsafe_code = "forbid"` policy. Pathname
+listeners, reconnectable sockets, and shared challenge files are forbidden.
 
 Some internal module paths are serialized or invoked as protocol identities.
 For example, TLA mutation validation currently binds

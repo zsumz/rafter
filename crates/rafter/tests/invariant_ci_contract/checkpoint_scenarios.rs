@@ -14,12 +14,12 @@ fn weekly_full_tlc_is_source_bound_checkpointed_and_fail_closed() {
         "timeout-minutes: 400",
         "timeout-minutes: 360",
         "runs-on: [self-hosted, linux, X64]",
-        "actions/cache/restore@v4",
+        "actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830",
         "Restore exact-compatible weekly TLC checkpoint",
         "target/rafter-invariants/tla-checkpoint/weekly",
         "tla-weekly-checkpoint-v1-",
         "cargo run --locked -p rafter-invariants -- run --profile weekly --layer tla",
-        "actions/cache/save@v4",
+        "actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830",
         "Save exact-compatible weekly TLC checkpoint",
         "if: always()",
     ] {
@@ -57,11 +57,11 @@ fn nightly_tlc_checkpoint_hashes_complete_invariant_sources() {
     let workflow = read(&root.join(".github/workflows/nightly.yml"));
     let tla = job_block(&workflow, "invariants-tla");
     for required in [
-        "actions/cache/restore@v4",
+        "actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830",
         "Restore exact-compatible nightly TLC checkpoint",
         "target/rafter-invariants/tla-checkpoint/nightly",
         "tla-nightly-checkpoint-v1-",
-        "actions/cache/save@v4",
+        "actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830",
         "Save exact-compatible nightly TLC checkpoint",
     ] {
         assert!(

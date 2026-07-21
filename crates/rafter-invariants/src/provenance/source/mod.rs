@@ -4,6 +4,8 @@ mod checkout;
 mod tracked;
 
 #[cfg(test)]
+pub(crate) use checkout::source_environment_matches_digest;
+#[cfg(test)]
 pub(crate) use checkout::MaterializationObservation;
 pub(crate) use checkout::{
     capture_checkout_at, file_sha256, find_executable, head_commit_at, identity_probe_at,

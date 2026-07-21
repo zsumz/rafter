@@ -78,8 +78,10 @@ pub(crate) fn legacy_verifier_references(root: &Path, files: &[PathBuf], namespa
 }
 
 pub(crate) fn is_test_module(path: &str) -> bool {
-    path.contains("/tests/")
-        || path.ends_with("/tests.rs")
+    Path::new(path).components().any(|component| {
+        let value = component.as_os_str().to_string_lossy();
+        value == "tests" || value.ends_with("_test") || value.ends_with("_tests")
+    }) || path.ends_with("/tests.rs")
         || path.ends_with("_test.rs")
         || path.ends_with("_tests.rs")
 }

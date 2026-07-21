@@ -14,6 +14,13 @@ struct ProcessCleanupError {
     telemetry_path: Option<PathBuf>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct RetainedProcessDiagnostics {
+    pub(crate) stdout: PathBuf,
+    pub(crate) stderr: PathBuf,
+    pub(crate) telemetry: Option<PathBuf>,
+}
+
 impl fmt::Display for ProcessCleanupError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
@@ -32,11 +39,21 @@ impl fmt::Display for ProcessCleanupError {
 
 impl Error for ProcessCleanupError {}
 
-#[cfg(test)]
-pub(crate) fn retained_stderr_path(error: &(dyn Error + 'static)) -> Option<PathBuf> {
+pub(crate) fn retained_diagnostics(
+    error: &(dyn Error + 'static),
+) -> Option<RetainedProcessDiagnostics> {
     error
         .downcast_ref::<ProcessCleanupError>()
-        .map(|error| error.stderr_path.clone())
+        .map(|error| RetainedProcessDiagnostics {
+            stdout: error.stdout_path.clone(),
+            stderr: error.stderr_path.clone(),
+            telemetry: error.telemetry_path.clone(),
+        })
+}
+
+#[cfg(test)]
+pub(crate) fn retained_stderr_path(error: &(dyn Error + 'static)) -> Option<PathBuf> {
+    retained_diagnostics(error).map(|diagnostics| diagnostics.stderr)
 }
 
 #[cfg(test)]

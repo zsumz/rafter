@@ -18,7 +18,7 @@ fn model_check_overhead_evidence_is_repeated_and_durable() {
         "scripts/model-check-profile-compare",
         "if: always()",
         "GITHUB_STEP_SUMMARY",
-        "actions/upload-artifact@v4",
+        "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
         "if-no-files-found: error",
         "retention-days: 30",
     ] {

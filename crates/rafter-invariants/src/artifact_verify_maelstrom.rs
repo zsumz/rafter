@@ -3,7 +3,7 @@
 use std::{collections::BTreeSet, path::Path};
 
 use crate::{
-    producer::maelstrom_edn::{MaelstromSummary, Validity},
+    evidence::format::maelstrom::{MaelstromSummary, Validity},
     verification::{AggregateError, AuthenticatedArtifacts},
     CheckCompletion, CheckReceipt, EvidenceStatus, ResultBundle,
 };
@@ -217,12 +217,9 @@ fn verify_exact_invocation(
             "Maelstrom process environment does not match the exact invocation plan",
         ));
     }
-    if !crate::provenance::invocation::environment_matches_digest(
-        &base_environment,
-        &bundle.execution.source.environment_sha256,
-    ) {
+    if base_environment != bundle.execution.invocation.environment {
         return Err(error(
-            "Maelstrom base environment does not match source provenance",
+            "Maelstrom base environment does not match producer invocation provenance",
         ));
     }
     Ok(())

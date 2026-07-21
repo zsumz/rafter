@@ -113,7 +113,7 @@ fn build_receipt(
         .iter()
         .map(|name| Ok(((*name).to_owned(), capture_tool(name, root, runner)?)))
         .collect::<Result<_, Box<dyn Error>>>()?;
-    let environment_sha256 = crate::provenance::invocation::digest_environment(&environment)?;
+    let environment_sha256 = crate::provenance::source::source_environment_sha256()?;
     Ok(SourceReceipt {
         commit: checkout.commit,
         tree: checkout.tree,

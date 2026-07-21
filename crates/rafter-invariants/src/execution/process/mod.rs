@@ -7,6 +7,7 @@
 mod anchor;
 mod artifacts;
 mod binding;
+mod bounded;
 mod command;
 mod diagnostics;
 mod direct_child;
@@ -41,7 +42,9 @@ use artifacts::ProcessArtifacts;
 #[cfg(test)]
 use artifacts::{allocate_process_artifacts_at, ProcessArtifactPaths};
 pub(crate) use binding::{capture_runtime_identities, ExecutableIdentity, LauncherIdentity};
+pub(crate) use bounded::run_bounded;
 pub(crate) use command::BoundCommand;
+pub(crate) use diagnostics::retained_diagnostics;
 #[cfg(test)]
 use diagnostics::{cleanup_error, retained_stderr_path};
 use diagnostics::{measurement_error, retained_error, retained_result};
@@ -53,7 +56,8 @@ pub(crate) use identity::run_identity_command_in;
 #[cfg(test)]
 use internal_command::{
     bounded_internal_output, bounded_internal_output_with_cleanup,
-    delay_next_internal_completion_check, inject_next_internal_drain_error,
+    bounded_internal_output_with_reaper, delay_next_internal_completion_check,
+    inject_next_internal_drain_error,
 };
 use internal_process::ManagedInternalProcess;
 #[cfg(test)]

@@ -10,6 +10,9 @@ use std::{
     thread,
 };
 
+#[cfg(test)]
+use std::collections::BTreeSet;
+
 use super::{ProcessLifetimeLease, TargetLifetimeLease};
 use request::{AnchoredGroupReapRequest, ChildReapRequest, LeasedChildReapRequest};
 
@@ -25,6 +28,10 @@ pub(super) struct ReaperState {
     adopted: usize,
     reaped: usize,
     failures: Vec<String>,
+    #[cfg(test)]
+    adopted_children: BTreeSet<u32>,
+    #[cfg(test)]
+    reaped_children: BTreeSet<u32>,
     #[cfg(test)]
     injected_wait_errors: usize,
 }
@@ -80,7 +87,7 @@ impl NoSignalReaper {
                 "transfer {role} to no-signal reaper: reaper channel closed for child {child_id}"
             )));
         }
-        lock_state(&self.state).adopted += 1;
+        record_adoption(&self.state, child_id);
         Ok(())
     }
 
@@ -101,7 +108,7 @@ impl NoSignalReaper {
                 "transfer {role} to no-signal reaper: reaper channel closed for child {child_id}"
             )));
         }
-        lock_state(&self.state).adopted += 1;
+        record_adoption(&self.state, child_id);
         Ok(())
     }
 
@@ -121,7 +128,7 @@ impl NoSignalReaper {
                 "transfer {role} to no-signal reaper: reaper channel closed for child {child_id}"
             )));
         }
-        lock_state(&self.state).adopted += 1;
+        record_adoption(&self.state, child_id);
         Ok(())
     }
 
@@ -137,6 +144,8 @@ impl NoSignalReaper {
             adopted: state.adopted,
             reaped: state.reaped,
             failures: state.failures.clone(),
+            adopted_children: state.adopted_children.clone(),
+            reaped_children: state.reaped_children.clone(),
         }
     }
 }
@@ -166,6 +175,17 @@ pub(crate) struct ReaperSnapshot {
     pub(crate) adopted: usize,
     pub(crate) reaped: usize,
     pub(crate) failures: Vec<String>,
+    pub(crate) adopted_children: BTreeSet<u32>,
+    pub(crate) reaped_children: BTreeSet<u32>,
+}
+
+fn record_adoption(state: &Arc<Mutex<ReaperState>>, child_id: u32) {
+    let mut state = lock_state(state);
+    state.adopted += 1;
+    #[cfg(test)]
+    state.adopted_children.insert(child_id);
+    #[cfg(not(test))]
+    let _ = child_id;
 }
 
 pub(super) fn lock_state(

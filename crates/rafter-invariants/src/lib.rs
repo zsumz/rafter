@@ -21,12 +21,14 @@ mod receipt_tla;
 mod verdict;
 mod verification;
 
-#[doc(hidden)]
-pub use artifact_verify::DetectorFixtureSourceBatch;
 pub use contract::catalog::{
-    Catalog, CatalogError, ClauseDescriptor, EvidenceDescriptor, InvariantDescriptor,
-    ProfileContract, ProfileManifest, RunnerContract, SimulatorCheckContract, SimulatorIdentity,
-    TestIdentity,
+    Catalog, CatalogError, ClauseDescriptor, ClausePolicy, DetectorReplayArtifactPolicy,
+    DetectorReplayBuild, DetectorReplayChallenge, DetectorReplayContract,
+    DetectorReplayFixtureInventory, DetectorReplayPolicy, DetectorReplaySource,
+    DetectorReplayTargetDirectory, EvidenceDescriptor, EvidenceLayer, EvidencePolicy,
+    EvidenceStrength, InvariantDescriptor, ProfileContract, ProfileManifest,
+    RequiredClauseStrength, RunnerContract, SimulatorCheckContract, SimulatorIdentity,
+    TestIdentity, VerifierContract,
 };
 pub use contract::registry::render_registry_markdown;
 pub use contract::registry::{
@@ -41,14 +43,18 @@ pub use evidence::{
     SourceReceipt, ToolReceipt, PLAN_SCHEMA_VERSION,
 };
 pub use gate::{
-    current_source_ref, run_all, verify_and_write_report, verify_layer_evidence,
+    current_source_ref, run_all, verify_and_write_report, verify_layer_evidence, verify_report_set,
     ReportWriteOutcome, RunAllOptions, RunAllOutcome,
 };
 pub use plan::{ExecutionPlan, PlanOptions};
 pub use producer::{produce, ProducerOptions, ProducerOutcome};
 pub use provenance::image::ensure_immutable_producer;
 pub use verdict::{ClauseVerdict, InvariantVerdict, VerdictReport, VerdictStatus};
-pub use verification::{validate_detector_fixture_sources, DetectorFixtureSourceBinding};
+pub use verification::{
+    publish_verifier_archive, validate_detector_fixture_sources, verify_verifier_archive,
+    DetectorFixtureAnalysis, DetectorFixtureSourceBatch, DetectorFixtureSourceBinding,
+    VerifierArchiveExpectation,
+};
 
 #[cfg(test)]
 mod tests;

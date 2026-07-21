@@ -28,7 +28,7 @@ pub(super) enum DetectorGate {
     Standalone,
     ProofBound {
         token: String,
-        channel: DetectorProofChannel,
+        challenge: String,
     },
     SetupFailed,
 }
@@ -76,14 +76,18 @@ pub(crate) fn mark_first_observation() -> bool {
 }
 
 fn detector_gate() -> DetectorGate {
-    match std::env::var(TOKEN_ENV) {
-        Ok(token) => match DetectorProofChannel::connect() {
-            Ok(Some(channel)) => DetectorGate::ProofBound { token, channel },
-            Ok(None) => DetectorGate::Standalone,
-            Err(()) => DetectorGate::SetupFailed,
-        },
-        Err(std::env::VarError::NotPresent) => DetectorGate::Standalone,
-        Err(std::env::VarError::NotUnicode(_)) => DetectorGate::SetupFailed,
+    let token = std::env::var(TOKEN_ENV);
+    let channel = DetectorProofChannel::connect();
+    match (token, channel) {
+        (Ok(token), Ok(mut channel)) => channel
+            .challenge()
+            .map_or(DetectorGate::SetupFailed, |challenge| {
+                DetectorGate::ProofBound { token, challenge }
+            }),
+        (Err(std::env::VarError::NotPresent), Err(())) => DetectorGate::Standalone,
+        (Ok(_), Err(()))
+        | (Err(std::env::VarError::NotPresent), Ok(_))
+        | (Err(std::env::VarError::NotUnicode(_)), _) => DetectorGate::SetupFailed,
     }
 }
 

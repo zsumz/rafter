@@ -103,8 +103,16 @@ impl Catalog {
         &self,
         contract: &ProfileContract,
     ) -> BTreeMap<String, Vec<EvidenceDescriptor>> {
-        let layers = contract.required_layers.iter().collect::<BTreeSet<_>>();
-        let strengths = contract.required_strengths.iter().collect::<BTreeSet<_>>();
+        let layers = contract
+            .required_layers
+            .iter()
+            .map(|layer| layer.as_str())
+            .collect::<BTreeSet<_>>();
+        let strengths = contract
+            .required_strengths
+            .iter()
+            .map(|strength| strength.as_str())
+            .collect::<BTreeSet<_>>();
         let mut required = self
             .ids
             .iter()
@@ -113,7 +121,9 @@ impl Catalog {
             .collect::<BTreeMap<_, _>>();
         let mut deduplicated = BTreeSet::new();
         for evidence in &self.evidence {
-            if !layers.contains(&evidence.layer) || !strengths.contains(&evidence.strength) {
+            if !layers.contains(evidence.layer.as_str())
+                || !strengths.contains(evidence.strength.as_str())
+            {
                 continue;
             }
             if deduplicated.insert(evidence.clone()) {

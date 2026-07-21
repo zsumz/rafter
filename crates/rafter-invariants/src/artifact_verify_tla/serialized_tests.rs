@@ -4,7 +4,7 @@ use sha2::{Digest, Sha256};
 
 use super::Fixture;
 use crate::{
-    evidence::format::process::ProcessLog, producer::tla_output::MUTATION_SUITE_ARTIFACT_KIND,
+    evidence::format::{process::ProcessLog, tla::MUTATION_SUITE_ARTIFACT_KIND},
     provenance::invocation::digest_environment,
 };
 

@@ -83,29 +83,25 @@ pub(super) fn exact_test_environment(
             .ok_or_else(|| {
                 AggregateError::new("detector log omitted its exact invocation".to_owned())
             })?;
-        let socket = detector_environment
-            .get(crate::evidence::detector_proof::PROOF_SOCKET_ENV)
+        let descriptor = detector_environment
+            .get(crate::evidence::detector_proof::PROOF_DESCRIPTOR_ENV)
             .ok_or_else(|| {
                 AggregateError::new(
-                    "detector execution environment omitted its proof socket".to_owned(),
+                    "detector execution environment omitted its inherited proof descriptor"
+                        .to_owned(),
                 )
             })?;
-        let socket_path = Path::new(socket);
-        if !managed_detector_proof_socket(socket_path) {
+        if !crate::evidence::detector_proof::canonical_descriptor(descriptor) {
             return Err(AggregateError::new(
-                "detector proof socket is outside its managed scratch directory".to_owned(),
+                "detector proof descriptor is not canonical".to_owned(),
             ));
         }
         environment.insert(
-            crate::evidence::detector_proof::PROOF_SOCKET_ENV.to_owned(),
-            socket.clone(),
+            crate::evidence::detector_proof::PROOF_DESCRIPTOR_ENV.to_owned(),
+            descriptor.clone(),
         );
     }
     Ok(environment)
-}
-
-pub(super) fn managed_detector_proof_socket(path: &Path) -> bool {
-    crate::evidence::detector_proof::managed_socket_path(path)
 }
 
 pub(in crate::artifact_verify) fn test_execution_profile(bundle: &ResultBundle) -> String {

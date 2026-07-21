@@ -1,9 +1,8 @@
-//! Managed-socket integration tests for detector challenge gates.
+//! Inherited-descriptor integration tests for detector challenge gates.
 
 use std::{
-    fs,
     io::{Read, Write},
-    os::unix::{fs::PermissionsExt, net::UnixStream},
+    os::{fd::AsRawFd, unix::net::UnixStream},
     time::{Duration, Instant},
 };
 
@@ -12,16 +11,8 @@ use super::{wire, ChallengeExchange, ChallengeGate};
 #[test]
 fn completed_request_receives_the_gates_challenge() {
     let gate = ChallengeGate::open().expect("open detector challenge gate");
-    assert_eq!(
-        fs::metadata(gate.socket_path())
-            .expect("proof socket metadata")
-            .permissions()
-            .mode()
-            & 0o777,
-        0o600
-    );
     let expected = gate.challenge().encoded();
-    let mut stream = UnixStream::connect(gate.socket_path()).expect("connect proof channel");
+    let mut stream = child_stream(&gate);
     stream
         .set_read_timeout(Some(Duration::from_millis(100)))
         .expect("set pre-request timeout");
@@ -49,21 +40,18 @@ fn completed_request_receives_the_gates_challenge() {
 }
 
 #[test]
-fn connect_without_request_is_disconnected_and_bounded() {
+fn inherited_peer_without_request_is_disconnected_and_bounded() {
     let gate = ChallengeGate::open().expect("open detector challenge gate");
-    let socket = gate.socket_path().to_owned();
-    let _stream = UnixStream::connect(&socket).expect("connect proof channel");
     let started = Instant::now();
 
     assert_eq!(gate.finish(), ChallengeExchange::Disconnected);
     assert!(started.elapsed() < Duration::from_secs(1));
-    assert!(!socket.exists());
 }
 
 #[test]
 fn malformed_request_is_classified_without_releasing_challenge() {
     let gate = ChallengeGate::open().expect("open detector challenge gate");
-    let mut stream = UnixStream::connect(gate.socket_path()).expect("connect proof channel");
+    let mut stream = child_stream(&gate);
     stream
         .set_read_timeout(Some(Duration::from_secs(1)))
         .expect("set close timeout");
@@ -77,25 +65,32 @@ fn malformed_request_is_classified_without_releasing_challenge() {
 }
 
 #[test]
-fn dropping_gate_removes_socket_without_waiting_for_a_client() {
+fn dropping_gate_closes_descriptors_without_waiting_for_a_request() {
     let gate = ChallengeGate::open().expect("open detector challenge gate");
-    let socket = gate.socket_path().to_owned();
-    assert!(socket.exists());
     let started = Instant::now();
 
     drop(gate);
 
     assert!(started.elapsed() < Duration::from_secs(1));
-    assert!(!socket.exists());
 }
 
 #[test]
-fn opening_another_gate_does_not_prune_a_fresh_managed_socket() {
+fn concurrent_gates_own_distinct_child_descriptors() {
     let first = ChallengeGate::open().expect("open first challenge gate");
-    let first_socket = first.socket_path().to_owned();
     let second = ChallengeGate::open().expect("open second challenge gate");
 
-    assert!(first_socket.exists());
+    assert_ne!(
+        first.child_descriptor().as_raw_fd(),
+        second.child_descriptor().as_raw_fd()
+    );
     assert_eq!(first.finish(), ChallengeExchange::Disconnected);
     assert_eq!(second.finish(), ChallengeExchange::Disconnected);
+}
+
+fn child_stream(gate: &ChallengeGate) -> UnixStream {
+    UnixStream::from(
+        gate.child_descriptor()
+            .try_clone_to_owned()
+            .expect("clone inherited child descriptor"),
+    )
 }

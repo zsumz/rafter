@@ -1,0 +1,27 @@
+name: Configure isolated invariant Cargo state
+description: Create fresh run-, job-, and attempt-specific Cargo roots for invariant evidence.
+
+runs:
+  using: composite
+  steps:
+    - name: Create isolated invariant Cargo roots
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        identity="${GITHUB_RUN_ID}-${GITHUB_JOB}-${GITHUB_RUN_ATTEMPT}"
+        cargo_home="$RUNNER_TEMP/rafter-invariants-cargo-$identity"
+        cargo_target="$RUNNER_TEMP/rafter-invariants-target-$identity"
+
+        for root in "$cargo_home" "$cargo_target"; do
+          if [[ -e "$root" || -L "$root" ]]; then
+            echo "refusing preexisting invariant Cargo root: $root" >&2
+            exit 1
+          fi
+          mkdir -m 0700 "$root"
+        done
+
+        {
+          echo "CARGO_HOME=$cargo_home"
+          echo "CARGO_TARGET_DIR=$cargo_target"
+        } >> "$GITHUB_ENV"

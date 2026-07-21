@@ -95,10 +95,17 @@ pub(super) fn verify_and_write_report_with_errors(
         .into_iter()
         .map(crate::verification::IntakeDefect::unverifiable)
         .collect();
-    let intake = crate::verification::verify_paths(request, evidence_paths, defects)?;
-    let report = crate::verdict::reduce(&plan.catalog, &plan.manifest, &intake)?;
-    let structural_errors = intake.defect_messages();
+    let mut intake = crate::verification::verify_aggregate_paths(request, evidence_paths, defects)?;
+    intake.revalidate_artifacts();
+    let mut report = crate::verdict::reduce(&plan.catalog, &plan.manifest, &intake)?;
     write(&report, &plan.catalog, &plan.manifest, output_dir)?;
+    let defects_before_publication = intake.defects().len();
+    intake.revalidate_artifacts();
+    if intake.defects().len() != defects_before_publication {
+        report = crate::verdict::reduce(&plan.catalog, &plan.manifest, &intake)?;
+        write(&report, &plan.catalog, &plan.manifest, output_dir)?;
+    }
+    let structural_errors = intake.defect_messages();
     Ok(ReportWriteOutcome {
         report,
         structural_errors,

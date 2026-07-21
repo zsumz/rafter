@@ -1,6 +1,6 @@
 //! Authenticated file bindings and retained semantic bytes.
 
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, fmt, sync::Arc};
 
 use crate::{
     evidence::ArtifactRef,
@@ -28,6 +28,16 @@ pub(super) struct DeclaredFile {
 pub(crate) struct AuthenticatedArtifacts {
     pub(super) bytes_by_artifact: BTreeMap<ArtifactRef, Arc<[u8]>>,
     pub(super) files: Vec<AuthenticatedFile>,
+}
+
+impl fmt::Debug for AuthenticatedArtifacts {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AuthenticatedArtifacts")
+            .field("retained_artifacts", &self.bytes_by_artifact.len())
+            .field("held_files", &self.files.len())
+            .finish()
+    }
 }
 
 impl AuthenticatedArtifacts {

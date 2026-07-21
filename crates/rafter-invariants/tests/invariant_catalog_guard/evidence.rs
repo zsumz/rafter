@@ -32,7 +32,7 @@ pub(super) fn assert_evidence_is_machine_checkable(
         .iter()
         .map(|clause| (clause.id.as_str(), clause))
         .collect::<std::collections::BTreeMap<_, _>>();
-    let mut detector_sources = rafter_invariants::DetectorFixtureSourceBatch::default();
+    let mut detector_sources = rafter_invariants::DetectorFixtureAnalysis::default();
 
     for record in evidence {
         assert!(
@@ -602,7 +602,7 @@ fn assert_negative_fixture_policy(
     workspace: &Path,
     record: &Evidence,
     source: &str,
-    detector_sources: &mut rafter_invariants::DetectorFixtureSourceBatch,
+    detector_sources: &mut rafter_invariants::DetectorFixtureAnalysis,
 ) {
     assert_declared_negative_fixture(workspace, record, source, detector_sources);
 
@@ -657,7 +657,7 @@ fn assert_declared_negative_fixture(
     workspace: &Path,
     record: &Evidence,
     source: &str,
-    detector_sources: &mut rafter_invariants::DetectorFixtureSourceBatch,
+    detector_sources: &mut rafter_invariants::DetectorFixtureAnalysis,
 ) {
     let Some(negative_fixture) = &record.negative_fixture else {
         return;
@@ -708,7 +708,7 @@ fn assert_simulator_detector_fixture(
     negative_fixture: &str,
     fixture_path: &Path,
     fixture_source: &str,
-    detector_sources: &mut rafter_invariants::DetectorFixtureSourceBatch,
+    detector_sources: &mut rafter_invariants::DetectorFixtureAnalysis,
 ) {
     let detector = record
         .negative_fixture_detector

@@ -2,7 +2,10 @@
 
 use std::collections::BTreeSet;
 
-use super::{model::PROFILE_SCHEMA_VERSION, ProfileManifest, RunnerContract};
+use super::{
+    model::PROFILE_SCHEMA_VERSION, ClausePolicy, EvidenceLayer, EvidencePolicy, EvidenceStrength,
+    ProfileManifest, RequiredClauseStrength, RunnerContract,
+};
 use crate::contract::{catalog::Catalog, error::CatalogError};
 
 impl ProfileManifest {
@@ -44,6 +47,17 @@ impl ProfileManifest {
                 "profile manifest must contain exactly pr, nightly, and weekly".to_owned(),
             ));
         }
+        if self
+            .verifiers
+            .keys()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>()
+            != BTreeSet::from(["pr", "nightly", "weekly"])
+        {
+            return Err(CatalogError(
+                "verifier contracts must contain exactly pr, nightly, and weekly".to_owned(),
+            ));
+        }
         for profile in ["pr", "nightly", "weekly"] {
             self.validate_profile(profile, catalog)?;
         }
@@ -54,14 +68,14 @@ impl ProfileManifest {
         let Some(contract) = self.profiles.get(profile) else {
             return Err(CatalogError(format!("missing required profile {profile}")));
         };
-        if contract.evidence_policy != "all_matching_registry_evidence" {
+        if contract.evidence_policy != EvidencePolicy::AllMatchingRegistryEvidence {
             return Err(CatalogError(format!(
                 "profile {profile} has unsupported evidence policy {}",
                 contract.evidence_policy
             )));
         }
-        if contract.clause_policy != "all_required_clauses"
-            || contract.required_clause_strength != "direct"
+        if contract.clause_policy != ClausePolicy::AllRequiredClauses
+            || contract.required_clause_strength != RequiredClauseStrength::Direct
         {
             return Err(CatalogError(format!(
                 "profile {profile} must require direct evidence for all normative clauses"
@@ -71,10 +85,21 @@ impl ProfileManifest {
             || has_duplicates(&contract.required_layers)
             || has_duplicates(&contract.required_strengths)
             || !exact_policy_set(&contract.required_layers, required_layers(profile))
-            || !exact_policy_set(&contract.required_strengths, &["direct", "e2e"])
+            || !exact_policy_set(
+                &contract.required_strengths,
+                &[EvidenceStrength::Direct, EvidenceStrength::E2e],
+            )
             || contract.canonical_minimum_independent_layers != 2
-            || contract.runners.keys().collect::<BTreeSet<_>>()
-                != contract.required_layers.iter().collect::<BTreeSet<_>>()
+            || contract
+                .runners
+                .keys()
+                .map(String::as_str)
+                .collect::<BTreeSet<_>>()
+                != contract
+                    .required_layers
+                    .iter()
+                    .map(|layer| layer.as_str())
+                    .collect::<BTreeSet<_>>()
         {
             return Err(CatalogError(format!(
                 "profile {profile} must document nonempty evidence requirements"
@@ -83,25 +108,64 @@ impl ProfileManifest {
         for (layer, runner) in &contract.runners {
             validate_runner(profile, layer, runner, catalog)?;
         }
+        validate_verifier(
+            profile,
+            self.verifiers.get(profile).ok_or_else(|| {
+                CatalogError(format!("missing verifier contract for profile {profile}"))
+            })?,
+        )?;
         Ok(())
     }
 }
 
-fn required_layers(profile: &str) -> &'static [&'static str] {
+fn validate_verifier(
+    profile: &str,
+    verifier: &super::VerifierContract,
+) -> Result<(), CatalogError> {
+    let replay = &verifier.detector_replay;
+    let valid = replay.required_inventory_sha256
+        == super::replay::REVIEWED_DETECTOR_REPLAY_INVENTORY_SHA256
+        && replay.required_registry_packages == 247
+        && replay.maximum_registry_archive_bytes == 268_435_456
+        && replay.maximum_registry_expanded_bytes == 2_147_483_648
+        && replay.maximum_registry_entries == 250_000
+        && replay.required_unique_fixtures == 77
+        && replay.required_evidence_bindings == 79
+        && replay.required_targets == 2
+        && replay.compile_timeout_seconds == 600
+        && replay.fixture_timeout_seconds == 30
+        && replay.total_timeout_seconds == 900;
+    if !valid {
+        return Err(CatalogError(format!(
+            "profile {profile} has an unsupported detector replay contract"
+        )));
+    }
+    Ok(())
+}
+
+fn required_layers(profile: &str) -> &'static [EvidenceLayer] {
     match profile {
-        "pr" => &["tests", "simulator", "tla"],
-        "nightly" | "weekly" => &["tests", "simulator", "tla", "maelstrom"],
+        "pr" => &[
+            EvidenceLayer::Tests,
+            EvidenceLayer::Simulator,
+            EvidenceLayer::Tla,
+        ],
+        "nightly" | "weekly" => &[
+            EvidenceLayer::Tests,
+            EvidenceLayer::Simulator,
+            EvidenceLayer::Tla,
+            EvidenceLayer::Maelstrom,
+        ],
         _ => &[],
     }
 }
 
-fn exact_policy_set(observed: &[String], expected: &[&str]) -> bool {
+fn exact_policy_set<T: Ord>(observed: &[T], expected: &[T]) -> bool {
     observed.len() == expected.len()
-        && observed.iter().map(String::as_str).collect::<BTreeSet<_>>()
-            == expected.iter().copied().collect::<BTreeSet<_>>()
+        && observed.iter().collect::<BTreeSet<_>>() == expected.iter().collect::<BTreeSet<_>>()
 }
 
-fn has_duplicates(values: &[String]) -> bool {
+fn has_duplicates<T: Ord>(values: &[T]) -> bool {
     values.iter().collect::<BTreeSet<_>>().len() != values.len()
 }
 

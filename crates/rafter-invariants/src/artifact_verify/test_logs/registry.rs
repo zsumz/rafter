@@ -2,18 +2,28 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::{contract::catalog::Catalog, evidence::CheckReceipt, verification::AggregateError};
+use crate::{
+    contract::catalog::Catalog, evidence::CheckReceipt,
+    verification::target::RegisteredTestBinding, verification::AggregateError,
+};
 
 pub(in crate::artifact_verify) fn registered_test_name(
     catalog: &Catalog,
     check: &CheckReceipt,
 ) -> Result<String, AggregateError> {
+    registered_test_binding(catalog, check).map(|binding| binding.identity.test_name)
+}
+
+pub(in crate::artifact_verify) fn registered_test_binding(
+    catalog: &Catalog,
+    check: &CheckReceipt,
+) -> Result<RegisteredTestBinding, AggregateError> {
     let descriptors = catalog
         .evidence
         .iter()
         .map(|descriptor| (descriptor.evidence_id(), descriptor))
         .collect::<BTreeMap<_, _>>();
-    let mut identities = BTreeSet::new();
+    let mut bindings = BTreeSet::new();
     for evidence_id in &check.evidence_ids {
         let descriptor = descriptors.get(evidence_id).ok_or_else(|| {
             AggregateError::new(format!(
@@ -34,14 +44,18 @@ pub(in crate::artifact_verify) fn registered_test_name(
                 identity.check_id()
             )));
         }
-        identities.insert(identity.test_name.clone());
+        bindings.insert(RegisteredTestBinding {
+            identity: identity.clone(),
+            path: descriptor.path.clone(),
+            symbol: descriptor.symbol.clone(),
+        });
     }
-    let identities = identities.into_iter().collect::<Vec<_>>();
-    let [test_name] = identities.as_slice() else {
+    let bindings = bindings.into_iter().collect::<Vec<_>>();
+    let [binding] = bindings.as_slice() else {
         return Err(AggregateError::new(format!(
-            "tests check {} does not bind exactly one registered test identity",
+            "tests check {} does not bind exactly one registered test source",
             check.check_id
         )));
     };
-    Ok(test_name.clone())
+    Ok(binding.clone())
 }

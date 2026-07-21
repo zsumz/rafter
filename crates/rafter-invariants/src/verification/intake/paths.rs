@@ -2,7 +2,7 @@
 
 use std::{
     collections::{BTreeMap, BTreeSet},
-    path::{Path, PathBuf},
+    path::PathBuf,
 };
 
 use super::{
@@ -12,21 +12,38 @@ use super::{
 };
 use crate::{
     evidence::ResultBundle,
-    verification::{bundle::ProfileBudget, source::SourceAuthenticationError, AggregateError},
+    verification::{bundle::ProfileBudget, AggregateError},
 };
 
-enum SourceVerifierState {
+mod authentication;
+
+pub(super) enum SourceVerifierState {
     Pending,
     Ready(Box<crate::verification::source::SourceVerifier>),
     Failed,
 }
 
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum VerificationMode {
+    Receipt,
+    Aggregate,
+}
+
+#[cfg(test)]
 pub(crate) fn verify_paths(
     request: VerificationRequest<'_>,
     paths: &[PathBuf],
     defects: Vec<IntakeDefect>,
 ) -> Result<EvidenceIntake, AggregateError> {
-    verify_paths_for_layer(request, paths, defects, None)
+    verify_paths_for_layer(request, paths, defects, None, VerificationMode::Receipt)
+}
+
+pub(crate) fn verify_aggregate_paths(
+    request: VerificationRequest<'_>,
+    paths: &[PathBuf],
+    defects: Vec<IntakeDefect>,
+) -> Result<EvidenceIntake, AggregateError> {
+    verify_paths_for_layer(request, paths, defects, None, VerificationMode::Aggregate)
 }
 
 pub(crate) fn verify_layer_paths(
@@ -34,7 +51,13 @@ pub(crate) fn verify_layer_paths(
     layer: &str,
     path: PathBuf,
 ) -> Result<EvidenceIntake, AggregateError> {
-    verify_paths_for_layer(request, &[path], Vec::new(), Some(layer))
+    verify_paths_for_layer(
+        request,
+        &[path],
+        Vec::new(),
+        Some(layer),
+        VerificationMode::Receipt,
+    )
 }
 
 fn verify_paths_for_layer(
@@ -42,6 +65,7 @@ fn verify_paths_for_layer(
     paths: &[PathBuf],
     mut defects: Vec<IntakeDefect>,
     required_layer: Option<&str>,
+    mode: VerificationMode,
 ) -> Result<EvidenceIntake, AggregateError> {
     identity::validate_request(request)?;
     let expected_runners = identity::expected_runners(request, required_layer)?;
@@ -88,37 +112,44 @@ fn verify_paths_for_layer(
 
     let trusted = identity::select_bundles(request, &expected_runners, decoded, &mut defects);
     let mut bundles = Vec::new();
+    let mut artifact_guards = Vec::new();
     let mut source_verifier = SourceVerifierState::Pending;
     match preflight::profile_artifacts(&request, &trusted, profile_budget) {
         Ok(()) => {
+            let mut authenticator = authentication::ReceiptAuthenticator {
+                request,
+                source_verifier: &mut source_verifier,
+                accepted: &mut bundles,
+                artifact_guards: &mut artifact_guards,
+                defects: &mut defects,
+            };
             for (trusted_runner, path, bundle) in trusted {
-                authenticate(
-                    request,
-                    &path,
-                    bundle,
-                    &trusted_runner,
-                    &mut source_verifier,
-                    &mut bundles,
-                    &mut defects,
-                );
+                authenticator.authenticate(&path, bundle, &trusted_runner);
             }
         }
         Err(error) => defects.push(IntakeDefect::unverifiable(error.to_string())),
     }
 
-    revalidate_source(&source_verifier, request.root, &mut defects);
+    let mut intake = verify::accept(request, &bundles, defects)?;
+    intake.attach_artifact_guards(artifact_guards);
+    if mode == VerificationMode::Aggregate {
+        super::replay::apply(request, &mut source_verifier, &mut intake);
+    }
+    let mut trailing_defects = Vec::new();
+    authentication::revalidate_source(&source_verifier, request.root, &mut trailing_defects);
     for receipt in &receipts {
         if let Err(defect) = receipt.revalidate() {
-            defects.push(defect);
+            trailing_defects.push(defect);
         }
     }
     if required_layer.is_some() && bundles.len() != 1 {
-        defects.push(IntakeDefect::unverifiable(format!(
+        trailing_defects.push(IntakeDefect::unverifiable(format!(
             "layer verification requires exactly one authenticated result bundle, found {}",
             bundles.len()
         )));
     }
-    verify::accept(request, &bundles, defects)
+    intake.extend_defects(trailing_defects);
+    Ok(intake)
 }
 
 fn open_receipts(
@@ -149,24 +180,6 @@ fn open_receipts(
     receipts
 }
 
-fn revalidate_source(state: &SourceVerifierState, root: &Path, defects: &mut Vec<IntakeDefect>) {
-    let SourceVerifierState::Ready(verifier) = state else {
-        return;
-    };
-    match verifier.revalidate(root) {
-        Ok(()) => {}
-        Err(SourceAuthenticationError::Stale(error)) => defects.push(IntakeDefect::stale(format!(
-            "revalidate active source after evidence verification: {error}"
-        ))),
-        Err(error @ SourceAuthenticationError::Unverifiable(_)) => {
-            defects.push(IntakeDefect::unverifiable(format!(
-                "revalidate active source after evidence verification: {}",
-                error.message()
-            )));
-        }
-    }
-}
-
 fn duplicate_paths(paths: &[PathBuf], defects: &mut Vec<IntakeDefect>) -> BTreeSet<PathBuf> {
     let mut counts = BTreeMap::new();
     for path in paths {
@@ -186,100 +199,10 @@ fn duplicate_paths(paths: &[PathBuf], defects: &mut Vec<IntakeDefect>) -> BTreeS
         .collect()
 }
 
-fn authenticate(
-    request: VerificationRequest<'_>,
-    path: &Path,
-    bundle: ResultBundle,
-    trusted_runner: &str,
-    source_verifier: &mut SourceVerifierState,
-    accepted: &mut Vec<ResultBundle>,
-    defects: &mut Vec<IntakeDefect>,
-) {
-    if !authenticate_source(
-        source_verifier,
-        trusted_runner,
-        &bundle.execution.source,
-        request.root,
-        path,
-        defects,
-    ) {
-        return;
-    }
-    let SourceVerifierState::Ready(source_verifier) = source_verifier else {
-        defects.push(IntakeDefect::unverifiable(
-            "source verifier became unavailable after authentication".to_owned(),
-        ));
-        return;
-    };
-    match crate::verification::verify_bundle_artifacts(
-        &bundle,
-        request.root,
-        source_verifier.source_root(),
-        request.catalog,
-        &request.active_plan.profile,
-        trusted_runner,
-    ) {
-        Ok(diagnostics) => {
-            defects.extend(diagnostics.into_iter().map(|message| {
-                IntakeDefect::unverifiable(format!("verify {}: {message}", path.display()))
-            }));
-            accepted.push(bundle);
-        }
-        Err(error) => defects.push(IntakeDefect::unverifiable(format!(
-            "verify {}: {error}",
-            path.display()
-        ))),
-    }
-}
-
-fn authenticate_source(
-    state: &mut SourceVerifierState,
-    layer: &str,
-    source: &crate::evidence::SourceReceipt,
-    root: &std::path::Path,
-    path: &Path,
-    defects: &mut Vec<IntakeDefect>,
-) -> bool {
-    if matches!(state, SourceVerifierState::Pending) {
-        match crate::verification::source::SourceVerifier::capture(root) {
-            Ok(verifier) => *state = SourceVerifierState::Ready(Box::new(verifier)),
-            Err(error) => {
-                defects.push(IntakeDefect::unverifiable(format!(
-                    "observe active source for {}: {error}",
-                    path.display()
-                )));
-                *state = SourceVerifierState::Failed;
-                return false;
-            }
-        }
-    }
-    let SourceVerifierState::Ready(verifier) = state else {
-        return false;
-    };
-    match verifier.authenticate(layer, source, root) {
-        Ok(()) => true,
-        Err(SourceAuthenticationError::Stale(error)) => {
-            defects.push(IntakeDefect::stale(format!(
-                "verify source identity for {}: {error}",
-                path.display()
-            )));
-            false
-        }
-        Err(error @ SourceAuthenticationError::Unverifiable(_)) => {
-            defects.push(IntakeDefect::unverifiable(format!(
-                "verify source identity for {}: {}",
-                path.display(),
-                error.message()
-            )));
-            false
-        }
-    }
-}
-
 fn decode(receipt: &mut ReceiptFile) -> Result<ResultBundle, IntakeDefect> {
     let path = receipt.path().to_path_buf();
     let source = receipt.read()?;
-    let value: serde_json::Value = serde_json::from_slice(&source)
+    let value = super::json::decode_unique_value(&source)
         .map_err(|error| IntakeDefect::malformed(format!("parse {}: {error}", path.display())))?;
     drop(source);
     crate::evidence::validate_result_value(&value).map_err(|error| {

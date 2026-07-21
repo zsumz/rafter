@@ -53,6 +53,10 @@ pub(crate) struct AggregateWorkflowContract {
     pub(crate) summary_step: &'static str,
     pub(crate) report_upload_step: &'static str,
     pub(crate) evidence_upload_step: &'static str,
+    pub(crate) verifier_seal_step: &'static str,
+    pub(crate) verifier_upload_step: &'static str,
+    pub(crate) verifier_download_step: &'static str,
+    pub(crate) verifier_verify_step: &'static str,
     pub(crate) diagnostics_upload_step: &'static str,
     pub(crate) gate_step: &'static str,
 }

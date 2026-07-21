@@ -252,6 +252,22 @@ fn serialized_producer_root_a_provenance_verifies_at_aggregate_root_b() {
     );
     crate::verification::verify_bundle_integrity(&bundle, &fixture.root)
         .expect("serialized cross-root artifacts retain integrity");
+    let authenticated = crate::verification::authenticate_bundle(
+        &bundle,
+        &fixture.root,
+        crate::verification::BundleBudget::for_trusted("pr", "simulator")
+            .expect("simulator bundle budget"),
+        "simulator",
+    )
+    .expect("cross-root simulator artifacts authenticate");
+    let (catalog, _) = crate::tests::loaded();
+    crate::artifact_verify::compile::verify_compile_invocations(
+        &bundle,
+        &fixture.root,
+        &catalog,
+        &authenticated,
+    )
+    .expect("producer-root-A compilation verifies from aggregate root B");
 
     let diagnostics = verify_simulator_schedule(&bundle, &fixture.root)
         .expect("producer-root-A simulator provenance verifies from aggregate root B");
@@ -512,12 +528,9 @@ fn verify_fixture(
         &bundle.source_ref,
         &fixture.root,
     );
-    let intake = crate::verification::verify_paths(
-        request,
-        std::slice::from_ref(&fixture.bundle_path),
-        Vec::new(),
-    )
-    .expect("verify serialized simulator fixture");
+    let intake =
+        crate::verification::verify_layer_paths(request, "simulator", fixture.bundle_path.clone())
+            .expect("verify serialized simulator fixture");
     (bundle, intake)
 }
 

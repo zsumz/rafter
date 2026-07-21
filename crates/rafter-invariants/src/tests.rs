@@ -1219,7 +1219,7 @@ fn canonical_invariant_with_one_layer_stays_red() {
 #[test]
 fn result_bundle_rejects_unknown_fields() {
     let source = r#"{
-        "schema_version": 7,
+        "schema_version": 9,
         "runner": "tests",
         "profile": "pr",
         "source_ref": "abc",

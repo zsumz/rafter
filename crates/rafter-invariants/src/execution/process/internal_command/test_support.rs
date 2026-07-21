@@ -33,13 +33,29 @@ pub(crate) fn bounded_internal_output_with_cleanup(
     execution_timeout: Duration,
     cleanup_timeout: Duration,
 ) -> Result<std::process::Output, Box<dyn Error>> {
+    let reaper = super::super::NoSignalReaper::start()?;
+    bounded_internal_output_with_reaper(
+        program,
+        arguments,
+        execution_timeout,
+        cleanup_timeout,
+        reaper,
+    )
+}
+
+pub(crate) fn bounded_internal_output_with_reaper(
+    program: &str,
+    arguments: &[&str],
+    execution_timeout: Duration,
+    cleanup_timeout: Duration,
+    reaper: super::super::NoSignalReaper,
+) -> Result<std::process::Output, Box<dyn Error>> {
     let execution_deadline = std::time::Instant::now()
         .checked_add(execution_timeout)
         .ok_or("internal command deadline overflow")?;
     let lifecycle_deadline = execution_deadline
         .checked_add(cleanup_timeout)
         .ok_or("internal command cleanup deadline overflow")?;
-    let reaper = super::super::NoSignalReaper::start()?;
     super::bounded_internal_output_from(
         program,
         None,

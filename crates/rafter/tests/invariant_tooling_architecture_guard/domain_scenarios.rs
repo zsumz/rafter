@@ -8,8 +8,8 @@ use std::{
 use super::{
     architecture_support::{
         assert_domain_source_imports_follow_manifest, declared_module_graph,
-        declares_implementation, display_path, domain, invariant_rust_files, read, rust_files,
-        starts_with_module_contract, workspace_root,
+        declares_implementation, display_path, domain, invariant_rust_files, is_test_module, read,
+        rust_files, starts_with_module_contract, workspace_root,
     },
     invariant_tooling::{
         ENFORCED_DOMAIN_SOURCES, INVARIANT_DOMAINS, REVIEWED_DOMAIN_IMPORT_EXCEPTIONS,
@@ -74,6 +74,7 @@ fn mature_invariant_facades_remain_declarative() {
             "crates/rafter-invariant-test/src/oracle/mod.rs",
             "crates/rafter-invariants/src/lib.rs",
             "crates/rafter-invariants/src/artifact_verify/test_logs.rs",
+            "crates/rafter-invariants/src/cli/mod.rs",
             "crates/rafter-invariants/src/contract/mod.rs",
             "crates/rafter-invariants/src/contract/catalog/mod.rs",
             "crates/rafter-invariants/src/contract/profile/liveness/mod.rs",
@@ -99,8 +100,10 @@ fn mature_invariant_facades_remain_declarative() {
             "crates/rafter-invariants/src/provenance/mod.rs",
             "crates/rafter-invariants/src/verification/mod.rs",
             "crates/rafter-invariants/src/verification/intake/mod.rs",
+            "crates/rafter-invariants/src/verification/detector_replay/artifact/mod.rs",
             "crates/rafter-invariants/src/verification/simulator/mod.rs",
             "crates/rafter-invariants/src/verification/simulator/liveness/mod.rs",
+            "crates/rafter-invariants/src/verification/target/mod.rs",
             "crates/rafter-invariants/src/verdict/mod.rs",
             "crates/rafter-invariants/src/verdict/report/mod.rs",
             "crates/rafter-invariants/src/contract/registry/parse/tests/mod.rs",
@@ -175,6 +178,7 @@ fn migrated_domain_sources_follow_the_reviewed_dependency_graph() {
             ),
             ("verdict", "crates/rafter-invariants/src/verdict"),
             ("gate", "crates/rafter-invariants/src/gate"),
+            ("cli", "crates/rafter-invariants/src/cli"),
         ]
     );
     for source in ENFORCED_DOMAIN_SOURCES {
@@ -231,7 +235,7 @@ fn detector_transcript_acceptance_has_independent_policies() {
     let root = workspace_root();
     let neutral_path = "crates/rafter-invariants/src/evidence/detector_proof.rs";
     let producer_path = "crates/rafter-invariants/src/producer/test_exec/detector_policy.rs";
-    let verifier_path = "crates/rafter-invariants/src/artifact_verify/test_logs/detector.rs";
+    let verifier_path = "crates/rafter-invariants/src/verification/detector/transcript.rs";
     let neutral = read(&root.join(neutral_path));
 
     assert!(starts_with_module_contract(&neutral));
@@ -354,11 +358,17 @@ fn protected_compiler_artifacts_have_independent_acceptance_policies() {
 fn detector_oracle_macro_vocabulary_is_verifier_owned() {
     let root = workspace_root();
     let policy =
-        read(&root.join("crates/rafter-invariants/src/artifact_verify/detector_source/policy.rs"));
+        read(&root.join("crates/rafter-invariants/src/verification/detector/source/policy.rs"));
     let target = read(&root.join("crates/rafter-invariants/src/verification/target/mod.rs"));
-    assert!(policy.contains("pub(super) const ORACLE_MACROS"));
+    assert!(policy.contains("pub(super) use crate::verification::target::ORACLE_MACROS"));
     assert!(target.contains("reserved_macros: &[&str]"));
-    assert!(!target.contains("const ORACLE_MACROS"));
+    assert!(target.contains("pub(crate) const ORACLE_MACROS"));
+    assert!(!root
+        .join("crates/rafter-invariants/src/artifact_verify/detector_source.rs")
+        .exists());
+    assert!(!root
+        .join("crates/rafter-invariants/src/artifact_verify/detector_source")
+        .exists());
 
     for path in invariant_rust_files(&root) {
         let relative = display_path(&root, &path);
@@ -506,7 +516,7 @@ fn verdict_reduction_consumes_only_typed_evidence_intake() {
 
     let gate = read(&root.join("crates/rafter-invariants/src/gate/check.rs"));
     let verify = gate
-        .find("verification::verify_paths")
+        .find("verification::verify_aggregate_paths")
         .expect("gate must verify evidence intake");
     let reduce = gate
         .find("verdict::reduce")
@@ -609,20 +619,87 @@ fn report_rendering_is_verdict_owned() {
 }
 
 #[test]
-fn migrated_gate_and_verdict_keep_test_bodies_in_separate_files() {
+fn migrated_domains_keep_test_bodies_in_separate_files() {
     let root = workspace_root();
-    for path in [
-        "crates/rafter-invariants/src/gate/check.rs",
-        "crates/rafter-invariants/src/gate/report.rs",
-        "crates/rafter-invariants/src/gate/run.rs",
-        "crates/rafter-invariants/src/gate/run_all.rs",
-        "crates/rafter-invariants/src/verdict/report/mod.rs",
-    ] {
-        let source = read(&root.join(path));
+    let production_files = ENFORCED_DOMAIN_SOURCES
+        .iter()
+        .flat_map(|source| rust_files(&root.join(source.path)))
+        .collect::<BTreeSet<_>>();
+
+    for path in production_files {
+        let relative = display_path(&root, &path);
+        if is_test_module(&relative) {
+            continue;
+        }
+        let source = read(&path);
+        let syntax = syn::parse_file(&source)
+            .unwrap_or_else(|error| panic!("could not parse {relative}: {error}"));
+        let inline_tests = inline_test_bodies(&syntax.items);
         assert!(
-            !source.contains("mod tests {"),
-            "{path} embeds test bodies instead of declaring a sibling test module"
+            inline_tests.is_empty(),
+            "{relative} embeds test bodies instead of declaring sibling test modules: {}",
+            inline_tests.join(", ")
         );
+    }
+}
+
+fn inline_test_bodies(items: &[syn::Item]) -> Vec<String> {
+    let mut bodies = Vec::new();
+    for item in items {
+        match item {
+            syn::Item::Fn(function) if function.attrs.iter().any(is_test_attribute) => {
+                bodies.push(format!("function {}", function.sig.ident));
+            }
+            syn::Item::Mod(module) => {
+                if module.content.is_some() && attributes_enable_tests(&module.attrs) {
+                    bodies.push(format!("module {}", module.ident));
+                }
+                if let Some((_, nested)) = &module.content {
+                    bodies.extend(inline_test_bodies(nested));
+                }
+            }
+            _ => {}
+        }
+    }
+    bodies
+}
+
+fn is_test_attribute(attribute: &syn::Attribute) -> bool {
+    attribute
+        .path()
+        .segments
+        .last()
+        .is_some_and(|segment| segment.ident == "test")
+}
+
+fn attributes_enable_tests(attributes: &[syn::Attribute]) -> bool {
+    attributes.iter().any(|attribute| {
+        if !attribute.path().is_ident("cfg") {
+            return false;
+        }
+        let syn::Meta::List(arguments) = &attribute.meta else {
+            return false;
+        };
+        arguments
+            .parse_args::<syn::Meta>()
+            .is_ok_and(|condition| cfg_enables_tests(&condition))
+    })
+}
+
+fn cfg_enables_tests(condition: &syn::Meta) -> bool {
+    match condition {
+        syn::Meta::Path(path) => path.is_ident("test"),
+        syn::Meta::List(arguments) if arguments.path.is_ident("not") => false,
+        syn::Meta::List(arguments)
+            if arguments.path.is_ident("all") || arguments.path.is_ident("any") =>
+        {
+            arguments
+                .parse_args_with(
+                    syn::punctuated::Punctuated::<syn::Meta, syn::Token![,]>::parse_terminated,
+                )
+                .is_ok_and(|conditions| conditions.iter().any(cfg_enables_tests))
+        }
+        syn::Meta::List(_) | syn::Meta::NameValue(_) => false,
     }
 }
 
@@ -645,6 +722,39 @@ fn detector_test_macro_trust_is_bound_to_exact_domain_sources() {
         !source.contains("Some(Path::new(\"crates/rafter-invariant-test/src/lib.rs\"))"),
         "the detector facade must not retain the old broad item-macro exception"
     );
+}
+
+#[test]
+fn detector_proof_transport_is_descriptor_only() {
+    let root = workspace_root();
+    let transport_sources = [
+        "crates/rafter-invariant-test/src/detector/proof.rs",
+        "crates/rafter-invariant-test/src/detector/wire.rs",
+        "crates/rafter-invariants/src/execution/detector_proof.rs",
+        "crates/rafter-invariants/src/execution/detector_proof/channel.rs",
+        "crates/rafter-invariants/src/execution/detector_proof/responder.rs",
+        "crates/rafter-invariants/src/execution/detector_proof/wire.rs",
+        "crates/rafter-invariants/src/producer/test_exec/detector_proof.rs",
+    ];
+    let source = transport_sources
+        .iter()
+        .map(|path| read(&root.join(path)))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    assert!(source.contains("RAFTER_INVARIANT_DETECTOR_PROOF_FD"));
+    assert!(source.contains("UnixStream::pair"));
+    for retired in [
+        "RAFTER_INVARIANT_DETECTOR_PROOF_SOCKET",
+        "UnixListener",
+        "managed_socket",
+        "PROOF_SOCKET",
+    ] {
+        assert!(
+            !source.contains(retired),
+            "detector proof transport reintroduced pathname capability `{retired}`"
+        );
+    }
 }
 
 #[test]

@@ -11,7 +11,7 @@ pub(in crate::contract::profile) fn validate_runner(
     layer: &str,
     runner: &RunnerContract,
 ) -> Result<(), String> {
-    let (producer, minimum_observed_checks) = expected_identity(profile, layer)?;
+    let (producer, minimum_observed_checks) = expected_identity(layer)?;
     let expected_command = [
         "cargo",
         "run",
@@ -46,11 +46,10 @@ pub(in crate::contract::profile) fn validate_runner(
     }
 }
 
-fn expected_identity(profile: &str, layer: &str) -> Result<(&'static str, usize), String> {
+fn expected_identity(layer: &str) -> Result<(&'static str, usize), String> {
     match layer {
         "tests" => Ok(("rafter-invariants-tests-v14", 82)),
-        "simulator" if profile == "pr" => Ok(("rafter-invariants-simulator-v18", 79)),
-        "simulator" => Ok(("rafter-invariants-simulator-v17", 79)),
+        "simulator" => Ok(("rafter-invariants-simulator-v19", 79)),
         "tla" => Ok(("rafter-invariants-tla-v15", 1)),
         "maelstrom" => Ok(("rafter-invariants-maelstrom-v10", 6)),
         _ => Err(format!("unsupported runner layer {layer}")),

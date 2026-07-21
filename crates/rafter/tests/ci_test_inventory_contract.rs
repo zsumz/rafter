@@ -23,14 +23,14 @@ fn filtered_ci_test_lanes_declare_exact_nonzero_inventories() {
         "scripts/cargo-test-exact 3 - -p rafter --test test_location_guard -- --nocapture",
         "scripts/cargo-test-exact 8 - -p rafter --test public_api_docs_guard -- --nocapture",
         "scripts/cargo-test-exact 1 - -p rafter-runtime --test replicated_kv_example -- --ignored --exact replicated_kv_process_per_node_tcp_survives_kill_restart --nocapture",
-        "scripts/cargo-test-exact 53 execution::process::tests --locked -p rafter-invariants -- --test-threads=1",
+        "scripts/cargo-test-exact 55 execution::process:: --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 18 producer::process::tests --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 4 producer::test_exec::detector_proof::tests --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 1 producer::test_exec::process_tests --locked -p rafter-invariants -- --test-threads=1",
-        "scripts/cargo-test-exact 6 detector_proof::tests --locked -p rafter-invariants -- --test-threads=1",
-        "scripts/cargo-test-exact 43 artifact_verify::detector_source::tests --locked -p rafter-invariants -- --test-threads=1",
-        "scripts/cargo-test-exact 21 artifact_verify::detector_source::adversarial_tests --locked -p rafter-invariants -- --test-threads=1",
-        "scripts/cargo-test-exact 14 artifact_verify::simulator::event_semantics_tests --locked -p rafter-invariants -- --test-threads=1",
+        "scripts/cargo-test-exact 11 detector_proof::tests --locked -p rafter-invariants -- --test-threads=1",
+        "scripts/cargo-test-exact 45 verification::detector::source::tests --locked -p rafter-invariants -- --test-threads=1",
+        "scripts/cargo-test-exact 23 verification::detector::source::adversarial_tests --locked -p rafter-invariants -- --test-threads=1",
+        "scripts/cargo-test-exact 15 artifact_verify::simulator::event_semantics_tests --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 7 artifact_verify::test_logs::detector_witness_tests --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 4 provenance::image::tests --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 1 - --locked -p rafter-invariants --test producer_reexec -- --test-threads=1",
@@ -53,6 +53,119 @@ fn filtered_ci_test_lanes_declare_exact_nonzero_inventories() {
         )],
         "targeted workflow tests must use scripts/cargo-test-exact"
     );
+}
+
+#[test]
+fn every_invariant_aggregate_primes_and_replays_authenticated_sources_offline() {
+    let root = workspace_root();
+    for (workflow, profile) in [
+        ("ci.yml", "pr"),
+        ("nightly.yml", "nightly"),
+        ("weekly.yml", "weekly"),
+    ] {
+        let contents = read(&root.join(".github/workflows").join(workflow));
+        let aggregate = aggregate_job(&contents, profile);
+        assert!(
+            aggregate.contains("run: cargo fetch --locked"),
+            "{workflow} must prime the authenticated Cargo archive cache"
+        );
+        assert!(
+            aggregate.contains(&format!(
+                "cargo run --offline --locked -p rafter-invariants -- check --profile {profile}"
+            )),
+            "{workflow} must aggregate {profile} evidence offline"
+        );
+        assert!(
+            aggregate.contains("target/rafter-invariants/verifier-evidence/"),
+            "{workflow} must retain verifier-owned replay evidence"
+        );
+        assert!(
+            aggregate.contains("./.github/actions/configure-invariant-cargo"),
+            "{workflow} must create fresh aggregate Cargo roots"
+        );
+    }
+}
+
+#[test]
+fn verifier_jobs_share_runtime_class_and_provision_profile_tools() {
+    let root = workspace_root();
+    let setup = read(&root.join(".github/actions/setup-invariant-verifier/action.yml"));
+    for required in [
+        "uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9",
+        "distribution: temurin",
+        "java-version: \"21.0.11+10\"",
+        "architecture: x64",
+        "check-latest: false",
+        "command -v dot",
+        "command -v gnuplot",
+        "dot -V",
+        "gnuplot --version",
+        "version=v0.2.4",
+        "301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799",
+    ] {
+        assert!(
+            setup.contains(required),
+            "verifier setup omitted required identity fragment: {required}"
+        );
+    }
+
+    let ci = read(&root.join(".github/workflows/ci.yml"));
+    for job in ["invariants-tla", "invariants-pr"] {
+        assert!(
+            workflow_job(&ci, job).contains("./.github/actions/setup-invariant-verifier"),
+            "PR job {job} must independently provision Java"
+        );
+    }
+
+    for (workflow, profile) in [("nightly.yml", "nightly"), ("weekly.yml", "weekly")] {
+        let contents = read(&root.join(".github/workflows").join(workflow));
+        for job in [
+            "invariants-tests",
+            "invariants-simulator",
+            "invariants-tla",
+            "invariants-maelstrom",
+            &format!("invariants-{profile}"),
+        ] {
+            assert!(
+                workflow_job(&contents, job).contains("runs-on: [self-hosted, linux, X64]"),
+                "{workflow} job {job} crosses the reviewed runtime identity class"
+            );
+        }
+        for job in [
+            "invariants-tla",
+            "invariants-maelstrom",
+            &format!("invariants-{profile}"),
+        ] {
+            assert!(
+                workflow_job(&contents, job).contains("./.github/actions/setup-invariant-verifier"),
+                "{workflow} job {job} omitted verifier tool provisioning"
+            );
+        }
+        for job in ["invariants-maelstrom", &format!("invariants-{profile}")] {
+            assert!(
+                workflow_job(&contents, job).contains("maelstrom: \"true\""),
+                "{workflow} job {job} must provision Maelstrom, Graphviz, and gnuplot"
+            );
+        }
+    }
+}
+
+fn aggregate_job<'a>(workflow: &'a str, profile: &str) -> &'a str {
+    workflow_job(workflow, &format!("invariants-{profile}"))
+}
+
+fn workflow_job<'a>(workflow: &'a str, name: &str) -> &'a str {
+    let marker = format!("\n  {name}:\n");
+    let (_, job) = workflow
+        .split_once(&marker)
+        .unwrap_or_else(|| panic!("workflow omitted job {name}"));
+    let end = job.match_indices("\n  ").find_map(|(index, _)| {
+        job.as_bytes()
+            .get(index + 3)
+            .is_some_and(|byte| *byte != b' ')
+            .then_some(index)
+    });
+    end.map_or(job, |end| &job[..end])
 }
 
 #[cfg(unix)]

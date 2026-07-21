@@ -1,0 +1,60 @@
+name: Set up invariant verifier
+description: Install the exact external tools independently re-probed by invariant aggregation.
+
+inputs:
+  maelstrom:
+    description: Install the pinned Maelstrom distribution and analysis tools.
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Set up Java 21
+      uses: actions/setup-java@c1e323688fd81a25caa38c78aa6df2d33d3e20d9
+      with:
+        distribution: temurin
+        java-version: "21.0.11+10"
+        architecture: x64
+        check-latest: false
+    - name: Preflight Maelstrom analysis tools
+      if: inputs.maelstrom == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        dot_path="$(command -v dot)"
+        gnuplot_path="$(command -v gnuplot)"
+        test -x "$dot_path"
+        test -x "$gnuplot_path"
+        dot -V
+        gnuplot --version
+    - name: Install pinned Maelstrom
+      if: inputs.maelstrom == 'true'
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        version=v0.2.4
+        identity="${GITHUB_RUN_ID}-${GITHUB_JOB}-${GITHUB_RUN_ATTEMPT}"
+        install_root="$RUNNER_TEMP/rafter-maelstrom-$identity"
+        archive="$RUNNER_TEMP/rafter-maelstrom-$identity-${version}.tar.bz2"
+        expected=301ec71d6b12af0d765edb413f5cf5aa1046b5609bd4e31376a0b549548e5799
+        for path in "$install_root" "$archive"; do
+          if [[ -e "$path" || -L "$path" ]]; then
+            echo "refusing preexisting Maelstrom path: $path" >&2
+            exit 1
+          fi
+        done
+        mkdir -m 0700 "$install_root"
+        curl -fsSL -o "$archive" \
+          "https://github.com/jepsen-io/maelstrom/releases/download/${version}/maelstrom.tar.bz2"
+        actual="$(sha256sum "$archive" | awk '{ print $1 }')"
+        if [[ "$actual" != "$expected" ]]; then
+          echo "maelstrom sha256 mismatch: expected $expected got $actual" >&2
+          exit 1
+        fi
+        tar -xjf "$archive" -C "$install_root"
+        maelstrom_root="$install_root/maelstrom"
+        test -x "$maelstrom_root/maelstrom"
+        echo "$maelstrom_root" >> "$GITHUB_PATH"

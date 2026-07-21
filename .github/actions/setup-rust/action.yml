@@ -1,0 +1,20 @@
+name: Set up the reviewed Rust toolchain
+description: Install one explicitly requested Rust toolchain through immutable action code.
+
+inputs:
+  toolchain:
+    description: Rustup toolchain name.
+    required: false
+    default: "1.88"
+  components:
+    description: Comma-separated rustup components.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c # master, reviewed 2026-07-20
+      with:
+        toolchain: ${{ inputs.toolchain }}
+        components: ${{ inputs.components }}

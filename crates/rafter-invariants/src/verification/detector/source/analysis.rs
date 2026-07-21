@@ -58,7 +58,10 @@ pub(in crate::verification::detector) fn verify_invocation_bound_detector_cached
     let registered_function = target.registered_function;
     let target_functions = &target_analysis.functions;
 
-    let mut contract = DetectorInvocationContract::new(target.registered_identity);
+    let mut contract = DetectorInvocationContract::new(
+        target.registered_identity,
+        target_analysis.source_graph_sha256().to_owned(),
+    );
     expand_reachable_fixture(
         target_functions,
         target_graph,

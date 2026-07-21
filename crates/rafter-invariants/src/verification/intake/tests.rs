@@ -7,7 +7,9 @@ use super::{
     VerificationRequest,
 };
 
+mod json;
 mod profile_budget;
+mod replay;
 mod resource_limits;
 
 #[test]

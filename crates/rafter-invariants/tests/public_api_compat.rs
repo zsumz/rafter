@@ -3,16 +3,29 @@
 use std::path::Path;
 
 use rafter_invariants::{
-    render_registry_markdown, validate_detector_fixture_sources, ArtifactRef, Catalog,
-    CatalogError, CheckCompletion, CheckReceipt, ClauseDescriptor, ClauseVerdict,
-    DetectorFixtureSourceBinding, EvidenceDescriptor, EvidenceResult, EvidenceStatus,
+    publish_verifier_archive, render_registry_markdown, validate_detector_fixture_sources,
+    verify_report_set, verify_verifier_archive, ArtifactRef, Catalog, CatalogError,
+    CheckCompletion, CheckReceipt, ClauseDescriptor, ClausePolicy, ClauseVerdict,
+    DetectorFixtureAnalysis, DetectorFixtureSourceBatch, DetectorFixtureSourceBinding,
+    DetectorReplayArtifactPolicy, DetectorReplayBuild, DetectorReplayChallenge,
+    DetectorReplayContract, DetectorReplayFixtureInventory, DetectorReplayPolicy,
+    DetectorReplaySource, DetectorReplayTargetDirectory, EvidenceDescriptor, EvidenceLayer,
+    EvidencePolicy, EvidenceResult, EvidenceStatus, EvidenceStrength, ExecutableReceipt,
     ExecutionPlanReceipt, ExecutionReceipt, FailureClassification, InvariantDescriptor,
     InvariantVerdict, InvocationReceipt, PlanInput, ProducerBindingReceipt, ProfileContract,
     ProfileManifest, RegistryClause, RegistryCounts, RegistryDocument, RegistryEvidence,
-    RegistryInvariant, RegistryParseError, RunnerContract, SimulatorCheckContract,
-    SimulatorIdentity, SourceMaterializationReceipt, SourceReceipt, TestIdentity, ToolReceipt,
-    VerdictReport, VerdictStatus, PLAN_SCHEMA_VERSION, REGISTRY_SCHEMA_VERSION,
+    RegistryInvariant, RegistryParseError, RequiredClauseStrength, RunnerContract,
+    SimulatorCheckContract, SimulatorIdentity, SourceMaterializationReceipt, SourceReceipt,
+    TestIdentity, ToolReceipt, VerdictReport, VerdictStatus, VerifierArchiveExpectation,
+    VerifierContract, PLAN_SCHEMA_VERSION, REGISTRY_SCHEMA_VERSION,
 };
+
+type PublicationError = Box<dyn std::error::Error>;
+type PublishVerifierArchive =
+    fn(&Path, &Path, &str, &Path, &VerifierArchiveExpectation) -> Result<String, PublicationError>;
+type VerifyVerifierArchive =
+    fn(&Path, &str, &str, &VerifierArchiveExpectation) -> Result<(), PublicationError>;
+type VerifyReportSet = fn(&Path, &str, &Catalog, &ProfileManifest) -> Result<(), PublicationError>;
 
 #[test]
 fn current_contract_types_remain_available_from_the_crate_root() {
@@ -42,13 +55,43 @@ fn current_contract_types_remain_available_from_the_crate_root() {
     let _ = profile_load as fn(&Path) -> Result<ProfileManifest, CatalogError>;
     let _ = catalog_load as fn(&Path) -> Result<Catalog, CatalogError>;
     let _ = render_registry_markdown as fn(&RegistryDocument) -> String;
+    let _: PublishVerifierArchive = publish_verifier_archive;
+    let _: VerifyVerifierArchive = verify_verifier_archive;
+    let _: fn(
+        &Path,
+        &str,
+        &ProfileManifest,
+    ) -> Result<VerifierArchiveExpectation, PublicationError> = VerifierArchiveExpectation::capture;
+    let _: VerifyReportSet = verify_report_set;
     let _: for<'a> fn(&DetectorFixtureSourceBinding<'a>) -> Result<(), String> =
         validate_detector_fixture_sources;
+    let _: for<'a> fn(
+        &mut DetectorFixtureAnalysis,
+        &DetectorFixtureSourceBinding<'a>,
+    ) -> Result<(), String> = DetectorFixtureAnalysis::validate;
+    let _: for<'a> fn(
+        &mut DetectorFixtureSourceBatch,
+        &DetectorFixtureSourceBinding<'a>,
+    ) -> Result<(), String> = DetectorFixtureSourceBatch::validate;
     let _: Option<ClauseDescriptor> = None;
+    let _: Option<ClausePolicy> = None;
+    let _: Option<DetectorReplayArtifactPolicy> = None;
+    let _: Option<DetectorReplayBuild> = None;
+    let _: Option<DetectorReplayChallenge> = None;
+    let _: Option<DetectorReplayContract> = None;
+    let _: Option<DetectorReplayFixtureInventory> = None;
+    let _: Option<DetectorReplayPolicy> = None;
+    let _: Option<DetectorReplaySource> = None;
+    let _: Option<DetectorReplayTargetDirectory> = None;
     let _: Option<EvidenceDescriptor> = None;
+    let _: Option<EvidenceLayer> = None;
+    let _: Option<EvidencePolicy> = None;
+    let _: Option<EvidenceStrength> = None;
     let _: Option<ProfileContract> = None;
     let _: Option<RunnerContract> = None;
+    let _: Option<RequiredClauseStrength> = None;
     let _: Option<SimulatorCheckContract> = None;
+    let _: Option<VerifierContract> = None;
     let _: Option<SimulatorIdentity> = None;
     let _: Option<TestIdentity> = None;
     let _: Option<InvariantDescriptor> = None;
@@ -61,6 +104,7 @@ fn current_contract_types_remain_available_from_the_crate_root() {
     let _: Option<CheckReceipt> = None;
     let _: Option<EvidenceResult> = None;
     let _: Option<EvidenceStatus> = None;
+    let _: Option<ExecutableReceipt> = None;
     let _: Option<ExecutionPlanReceipt> = None;
     let _: Option<ExecutionReceipt> = None;
     let _: Option<FailureClassification> = None;

@@ -99,8 +99,9 @@ fn poll_request(requests: &mut Vec<ReapRequest>, index: usize, state: &Arc<Mutex
         take_injected_wait_error(state).map_or_else(|| requests[index].child_mut().try_wait(), Err);
     match result {
         Ok(Some(_)) => {
+            let child_id = requests[index].child_id();
             requests.swap_remove(index);
-            lock_state(state).reaped += 1;
+            record_reap(state, child_id);
         }
         Ok(None) => {}
         Err(error)
@@ -134,6 +135,15 @@ fn poll_request(requests: &mut Vec<ReapRequest>, index: usize, state: &Arc<Mutex
             );
         }
     }
+}
+
+fn record_reap(state: &Arc<Mutex<ReaperState>>, child_id: u32) {
+    let mut state = lock_state(state);
+    state.reaped += 1;
+    #[cfg(test)]
+    state.reaped_children.insert(child_id);
+    #[cfg(not(test))]
+    let _ = child_id;
 }
 
 fn record_failure(state: &Arc<Mutex<ReaperState>>, failure: String) {

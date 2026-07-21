@@ -35,6 +35,7 @@ fn scheduled_invariant_evidence_is_isolated_by_run_attempt() {
                 );
             }
             assert!(upload.contains("if-no-files-found: error"));
+            assert!(!upload.contains("overwrite: true"));
             assert!(!upload.contains("telemetry"));
 
             let diagnostics = workflow_step(block, &scheduled_diagnostics_step(profile, layer));
@@ -71,8 +72,11 @@ fn scheduled_invariant_evidence_is_isolated_by_run_attempt() {
                 aggregate,
                 &format!("Aggregate exactly 44 {profile} invariant verdicts"),
             );
+            assert!(
+                aggregate_step.contains("evidence_root=\"$GITHUB_WORKSPACE/artifacts/invariants\"")
+            );
             assert!(aggregate_step.contains(&format!(
-                "--result \"$RUNNER_TEMP/$INVARIANT_EVIDENCE_DIR/{layer}/{profile}-{layer}.json\""
+                "--result \"$evidence_root/{profile}-{layer}.json\""
             )));
         }
         assert_unique_paths(&download_paths)
@@ -102,7 +106,7 @@ fn scheduled_profiles_run_real_maelstrom_evidence() {
         )));
         assert!(block.contains("cargo run --locked -p rafter-invariants -- verify-layer"));
         assert!(block.contains("if: always()"));
-        assert!(block.contains("actions/upload-artifact@v4"));
+        assert!(block.contains("actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02"));
         assert!(block.contains("if-no-files-found: error"));
         assert!(block.contains("retention-days: 30"));
     }
@@ -122,7 +126,9 @@ fn scheduled_profiles_run_all_evidence_and_exact_aggregates() {
                 "cargo run --locked -p rafter-invariants -- run --profile {profile} --layer {layer}"
             )));
             assert!(block.contains("if: always()"));
-            assert!(block.contains("actions/upload-artifact@v4"));
+            assert!(
+                block.contains("actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02")
+            );
             assert!(block.contains("retention-days: 30"));
         }
 
@@ -143,14 +149,10 @@ fn scheduled_profiles_run_all_evidence_and_exact_aggregates() {
         for required in [
             "if: always()",
             "continue-on-error: true",
-            "actions/download-artifact@v4",
-            "actions/upload-artifact@v4",
+            "actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093",
+            "actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02",
             "GITHUB_STEP_SUMMARY",
-            "timeout-minutes: 20",
-            "verification/invariant-verdict-schema.json",
-            "cmp -s \"$expected_ids\" \"$json_ids\"",
-            "cmp -s \"$expected_ids\" \"$markdown_ids\"",
-            "cmp -s \"$expected_ids\" \"$junit_ids\"",
+            "cargo run --offline --locked -p rafter-invariants -- verify-report-set",
             ".summary.total == 44",
             ".summary.green == 44",
             "(.invariants | length) == 44",
@@ -160,6 +162,11 @@ fn scheduled_profiles_run_all_evidence_and_exact_aggregates() {
                 "{profile} aggregate omitted required contract fragment: {required}"
             );
         }
+        assert!(workflow_step(
+            aggregate,
+            &format!("Aggregate exactly 44 {profile} invariant verdicts")
+        )
+        .contains("timeout-minutes: 20"));
         assert!(aggregate.contains(&format!(
             "check --profile {profile} --source-ref \"$GITHUB_SHA\""
         )));

@@ -261,7 +261,6 @@ struct RuntimeFixture {
     producer_artifact: crate::ArtifactRef,
     duration_ms: u64,
     peak_rss_kib: u64,
-    environment_sha256: String,
     checks: Vec<crate::CheckReceipt>,
     results: Vec<crate::EvidenceResult>,
 }
@@ -328,6 +327,10 @@ fn materialize_fixture_with_roots(defect: RuntimeDefect, cross_root: bool) -> Si
     bundle.source_ref = source.commit.clone();
     bundle.execution.source = source;
     let environment = crate::producer::process::base_environment();
+    bundle.execution.invocation.environment = environment.clone();
+    bundle.execution.invocation.environment_sha256 =
+        crate::provenance::invocation::digest_environment(&environment)
+            .expect("digest fixture producer environment");
     let source_ref = bundle.source_ref.clone();
     let compile = materialize_compile_fixture(
         &producer_root,
@@ -349,9 +352,11 @@ fn materialize_fixture_with_roots(defect: RuntimeDefect, cross_root: bool) -> Si
         defect,
     );
     bind_fixture_evidence(&mut bundle, &current_dir, &compile, &runtime);
-    assert_eq!(
-        bundle.execution.source.environment_sha256,
-        runtime.environment_sha256
+    assert!(
+        crate::provenance::source::source_environment_matches_digest(
+            &environment,
+            &bundle.execution.source.environment_sha256
+        )
     );
     fs::write(
         &bundle_path,
@@ -538,8 +543,6 @@ fn materialize_runtime_fixture(
         "simulator-log",
         &real_log,
     );
-    let environment_sha256 = crate::provenance::invocation::digest_environment(input.environment)
-        .expect("valid fixture environment");
     let (catalog, _) = crate::tests::loaded();
     let (checks, results) = crate::producer::evaluate_model_fixture(&catalog, "pr", &model)
         .expect("evaluate real timeout events through simulator receipt production");
@@ -553,7 +556,6 @@ fn materialize_runtime_fixture(
         ),
         duration_ms: model.duration_ms,
         peak_rss_kib: model.runtime_peak_rss_kib.max(1),
-        environment_sha256,
         checks,
         results,
     }
@@ -602,8 +604,6 @@ fn materialize_provenance_runtime(
         ),
         duration_ms: 1,
         peak_rss_kib: 1,
-        environment_sha256: crate::provenance::invocation::digest_environment(environment)
-            .expect("valid fixture environment"),
         checks: Vec::new(),
         results: Vec::new(),
     }

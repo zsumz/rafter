@@ -68,18 +68,18 @@ fn tests_contract_rejects_unknown_configuration() {
 fn simulator_producer_contract_is_exact_and_profile_specific() {
     let (_, manifest) = crate::tests::loaded();
     let pr = &manifest.profiles["pr"].runners["simulator"];
-    validate_runner("pr", "simulator", pr).expect("PR simulator v18 contract");
+    validate_runner("pr", "simulator", pr).expect("PR simulator v19 contract");
 
     let mut stale_pr = pr.clone();
-    stale_pr.producer = "rafter-invariants-simulator-v17".to_owned();
+    stale_pr.producer = "rafter-invariants-simulator-v18".to_owned();
     assert!(validate_runner("pr", "simulator", &stale_pr).is_err());
 
     let nightly = &manifest.profiles["nightly"].runners["simulator"];
-    validate_runner("nightly", "simulator", nightly).expect("nightly simulator v17 contract");
+    validate_runner("nightly", "simulator", nightly).expect("nightly simulator v19 contract");
 
-    let mut premature_nightly = nightly.clone();
-    premature_nightly.producer = "rafter-invariants-simulator-v18".to_owned();
-    assert!(validate_runner("nightly", "simulator", &premature_nightly).is_err());
+    let mut stale_nightly = nightly.clone();
+    stale_nightly.producer = "rafter-invariants-simulator-v18".to_owned();
+    assert!(validate_runner("nightly", "simulator", &stale_nightly).is_err());
 
     let mut stale_proof = pr.clone();
     stale_proof.configuration.remove("detector_proof");

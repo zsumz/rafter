@@ -4,7 +4,14 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-pub(super) const PROFILE_SCHEMA_VERSION: u32 = 5;
+use super::{
+    policy::{
+        ClausePolicy, EvidenceLayer, EvidencePolicy, EvidenceStrength, RequiredClauseStrength,
+    },
+    replay::DetectorReplayContract,
+};
+
+pub(super) const PROFILE_SCHEMA_VERSION: u32 = 9;
 
 /// Explicit invariant IDs and evidence policies for every scheduled profile.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -13,6 +20,14 @@ pub struct ProfileManifest {
     pub schema_version: u32,
     pub reviewed_ids: Vec<String>,
     pub profiles: BTreeMap<String, ProfileContract>,
+    pub verifiers: BTreeMap<String, VerifierContract>,
+}
+
+/// Aggregate-verifier policy selected independently from runner contracts.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct VerifierContract {
+    pub detector_replay: DetectorReplayContract,
 }
 
 /// Evidence-selection and independent-layer policy for one profile.
@@ -20,11 +35,11 @@ pub struct ProfileManifest {
 #[serde(deny_unknown_fields)]
 pub struct ProfileContract {
     pub description: String,
-    pub evidence_policy: String,
-    pub clause_policy: String,
-    pub required_clause_strength: String,
-    pub required_layers: Vec<String>,
-    pub required_strengths: Vec<String>,
+    pub evidence_policy: EvidencePolicy,
+    pub clause_policy: ClausePolicy,
+    pub required_clause_strength: RequiredClauseStrength,
+    pub required_layers: Vec<EvidenceLayer>,
+    pub required_strengths: Vec<EvidenceStrength>,
     pub canonical_minimum_independent_layers: usize,
     pub runners: BTreeMap<String, RunnerContract>,
 }

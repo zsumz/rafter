@@ -16,9 +16,8 @@ pub(crate) fn assert_transport_stage_contract(stage: &str, profile: &str, layers
         "test -s \"$source.json\"",
         "test -d \"$source\"",
         "[[ -e \"$destination\" || -e \"$destination.json\" ]]",
-        &format!(
-            "cp -R \"$transport_root/$layer/{profile}-$layer\" \"$evidence_root/{profile}-$layer\""
-        ),
+        "cp \"$source.json\" \"$destination.json\"",
+        "cp -R \"$source\" \"$destination\"",
     ] {
         assert!(
             stage.contains(required),
@@ -34,6 +33,11 @@ pub(crate) fn assert_separate_aggregate_uploads(aggregate: &str, profile: &str) 
         _ => panic!("unknown scheduled profile {profile}"),
     };
     let evidence_name = format!("Upload available {profile} aggregate evidence");
+    let verifier_seal_name = format!("Seal {profile} aggregate verifier evidence");
+    let verifier_upload_name = format!("Upload {profile} aggregate verifier evidence");
+    let verifier_download_name =
+        format!("Download {profile} aggregate verifier evidence for readback");
+    let verifier_verify_name = format!("Verify downloaded {profile} aggregate verifier evidence");
     let diagnostics_name = format!("Upload {profile} aggregate process diagnostics");
 
     let report = workflow_step(aggregate, report_name);
@@ -48,7 +52,31 @@ pub(crate) fn assert_separate_aggregate_uploads(aggregate: &str, profile: &str) 
         "name: invariants-{profile}-aggregate-evidence-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}"
     )));
     assert!(evidence.contains("${{ runner.temp }}/${{ env.INVARIANT_EVIDENCE_DIR }}/"));
+    assert!(!evidence.contains("overwrite: true"));
     assert!(!evidence.contains("telemetry"));
+
+    let verifier_seal = workflow_step(aggregate, &verifier_seal_name);
+    assert!(verifier_seal.contains("seal-verifier-artifacts"));
+    assert!(verifier_seal.contains("--manifest-sha256 \"$EXPECTED_MANIFEST_SHA256\""));
+    assert!(verifier_seal.contains("--archive \"$archive\""));
+
+    let verifier_upload = workflow_step(aggregate, &verifier_upload_name);
+    assert!(verifier_upload.contains(&format!(
+        "name: invariants-{profile}-aggregate-verifier-evidence-${{{{ github.run_id }}}}-${{{{ github.run_attempt }}}}"
+    )));
+    assert!(verifier_upload.contains("${{ steps.verifier_archive.outputs.archive }}"));
+    assert!(verifier_upload.contains("if-no-files-found: error"));
+    assert!(!verifier_upload.contains("telemetry"));
+
+    let verifier_download = workflow_step(aggregate, &verifier_download_name);
+    assert!(verifier_download
+        .contains("actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093"));
+    assert!(verifier_download.contains("steps.upload_verifier_archive.outcome == 'success'"));
+
+    let verifier_verify = workflow_step(aggregate, &verifier_verify_name);
+    assert!(verifier_verify.contains("verify-verifier-archive"));
+    assert!(verifier_verify.contains("--archive-sha256 \"$ARCHIVE_SHA256\""));
+    assert!(verifier_verify.contains("--manifest-sha256 \"$MANIFEST_SHA256\""));
 
     let diagnostics = workflow_step(aggregate, &diagnostics_name);
     assert!(diagnostics.contains(&format!(
@@ -56,6 +84,7 @@ pub(crate) fn assert_separate_aggregate_uploads(aggregate: &str, profile: &str) 
     )));
     assert!(diagnostics.contains("target/rafter-invariants/telemetry/"));
     assert!(!diagnostics.contains("INVARIANT_EVIDENCE_DIR"));
+    assert!(!diagnostics.contains("verifier-evidence"));
 }
 
 pub(crate) fn assert_unique_paths(paths: &[String]) -> Result<(), String> {
@@ -70,7 +99,7 @@ pub(crate) fn assert_unique_paths(paths: &[String]) -> Result<(), String> {
 pub(crate) fn assert_pr_launcher_inventories(workflow: &str) {
     let launcher = job_block(workflow, "invariants-launcher-macos");
     for exact_inventory in [
-        "scripts/cargo-test-exact 53 execution::process::tests --locked -p rafter-invariants -- --test-threads=1",
+        "scripts/cargo-test-exact 55 execution::process:: --locked -p rafter-invariants -- --test-threads=1",
         "scripts/cargo-test-exact 18 producer::process::tests --locked -p rafter-invariants -- --test-threads=1",
     ] {
         assert!(

@@ -41,7 +41,7 @@ pub(super) fn expected_runners(
             .contract
             .required_layers
             .iter()
-            .any(|candidate| candidate == layer)
+            .any(|candidate| candidate.as_str() == layer)
         {
             return Err(AggregateError::new(format!(
                 "layer {layer} is not required by profile {}",
@@ -55,7 +55,7 @@ pub(super) fn expected_runners(
         .contract
         .required_layers
         .iter()
-        .cloned()
+        .map(|layer| layer.as_str().to_owned())
         .collect())
 }
 
@@ -80,7 +80,7 @@ pub(super) fn select_bundles(
         by_runner
             .get(runner)
             .is_some_and(|bundles| bundles.len() == 1)
-    }) && by_runner.len() == expected_runners.len();
+    });
     if !complete {
         let observed = by_runner
             .iter()
@@ -90,17 +90,13 @@ pub(super) fn select_bundles(
         defects.push(IntakeDefect::unverifiable(format!(
             "result receipts require exactly one bundle for each trusted runner; observed [{observed}]"
         )));
-        return Vec::new();
     }
     expected_runners
         .iter()
-        .map(|runner| {
-            let (path, bundle) = by_runner
-                .remove(runner)
-                .expect("complete runner set")
-                .pop()
-                .expect("exactly one runner bundle");
-            (runner.clone(), path, bundle)
+        .filter_map(|runner| {
+            let bundles = by_runner.remove(runner)?;
+            let [(path, bundle)] = <[_; 1]>::try_from(bundles).ok()?;
+            Some((runner.clone(), path, bundle))
         })
         .collect()
 }

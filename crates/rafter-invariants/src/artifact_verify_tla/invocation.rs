@@ -5,10 +5,10 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-use crate::producer::tla_checkpoint::{RecoveryReport, RECOVERY_REPORT_KIND};
-use crate::producer::tla_output::{
+use crate::evidence::format::tla::{
     detector_config_kind, detector_label, probe_slug, DETECTOR_PROBES,
 };
+use crate::producer::tla_checkpoint::{RecoveryReport, RECOVERY_REPORT_KIND};
 use crate::{verification::AggregateError, ResultBundle};
 
 use super::{configuration, has_kind, read_json_kind, read_kind, unique_artifact};
@@ -194,7 +194,12 @@ fn verify_tla_invocation(
         || java_sha != Some(observed.program_sha256.as_str())
         || !tla_arguments_match(&arguments, &observed.arguments)
         || observed.current_dir != current_dir.to_string_lossy()
-        || observed.environment_sha256 != bundle.execution.source.environment_sha256
+        || observed.environment != bundle.execution.invocation.environment
+        || observed.environment_sha256 != bundle.execution.invocation.environment_sha256
+        || !crate::provenance::invocation::environment_matches_digest(
+            &observed.environment,
+            &observed.environment_sha256,
+        )
     {
         return Err(AggregateError::new(format!(
             "TLA process log {label} does not match the exact invocation plan"

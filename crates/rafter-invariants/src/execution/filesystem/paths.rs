@@ -79,6 +79,12 @@ impl HeldDirectory {
         })
     }
 
+    pub(crate) fn create_new_dir(&self, name: &OsStr) -> Result<Self, Box<dyn Error>> {
+        validate_name(name)?;
+        self.dir.create_dir(name)?;
+        self.open_child(name)
+    }
+
     pub(super) fn open_child(&self, name: &OsStr) -> Result<Self, Box<dyn Error>> {
         validate_name(name)?;
         let dir = self.dir.open_dir_nofollow(name)?;

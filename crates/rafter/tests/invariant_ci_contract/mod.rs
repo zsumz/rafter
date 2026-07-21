@@ -2,6 +2,7 @@
 
 mod benchmark_scenarios;
 mod checkpoint_scenarios;
+mod portability_scenarios;
 mod pr_scenarios;
 mod reporting_scenarios;
 mod scheduled_scenarios;

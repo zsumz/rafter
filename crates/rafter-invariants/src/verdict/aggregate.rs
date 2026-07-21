@@ -58,7 +58,7 @@ pub(crate) fn reduce(
                 },
                 catalog.canonical_ids.contains(invariant_id),
                 contract.canonical_minimum_independent_layers,
-                &contract.required_clause_strength,
+                contract.required_clause_strength.as_str(),
             )
         })
         .collect::<Vec<_>>();

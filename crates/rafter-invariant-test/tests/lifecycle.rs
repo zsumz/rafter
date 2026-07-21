@@ -12,7 +12,15 @@ fn detector_sessions_fail_closed_when_lifecycle_proof_is_incomplete() {
     #[cfg(unix)]
     unix_failures::assert_changed_token_is_rejected();
     #[cfg(unix)]
-    unix_failures::assert_unreachable_proof_socket_is_rejected();
+    unix_failures::assert_proof_descriptor_is_closed_before_fixture_body();
+    #[cfg(unix)]
+    unix_failures::assert_missing_proof_descriptor_is_rejected();
+    #[cfg(unix)]
+    unix_failures::assert_invalid_proof_descriptor_is_rejected();
+    #[cfg(unix)]
+    unix_failures::assert_noncanonical_proof_descriptor_is_closed();
+    #[cfg(unix)]
+    unix_failures::assert_proof_descriptor_without_token_is_closed();
     #[cfg(unix)]
     unix_failures::assert_truncated_challenge_is_rejected();
     #[cfg(unix)]
@@ -24,22 +32,24 @@ mod unix_failures {
     use std::{
         ffi::{OsStr, OsString},
         io::{Read, Write},
-        os::{unix::ffi::OsStringExt, unix::net::UnixListener},
-        path::{Path, PathBuf},
+        os::{fd::IntoRawFd, unix::ffi::OsStringExt, unix::net::UnixStream},
         process::{ExitCode, Termination},
-        sync::atomic::{AtomicU64, Ordering},
+        thread::JoinHandle,
     };
 
+    use nix::{errno::Errno, unistd::close};
+
     const TOKEN_ENV: &str = "RAFTER_INVARIANT_ORACLE_TOKEN";
-    const SOCKET_ENV: &str = "RAFTER_INVARIANT_DETECTOR_PROOF_SOCKET";
-    static NEXT_SOCKET: AtomicU64 = AtomicU64::new(0);
+    const DESCRIPTOR_ENV: &str = "RAFTER_INVARIANT_DETECTOR_PROOF_FD";
 
     pub(super) fn assert_changed_token_is_rejected() {
         let _environment = EnvironmentGuard::new();
-        let socket = SocketFixture::bind();
-        EnvironmentGuard::bind("original", socket.path());
+        let (parent, child) = UnixStream::pair().unwrap();
+        EnvironmentGuard::bind("original", Some(child.into_raw_fd()));
+        let responder = challenge_responder(parent, 32);
 
         rafter_invariant_test::__begin_detector_test();
+        responder.join().unwrap();
         reject_once();
         std::env::set_var(TOKEN_ENV, "replacement");
         assert_eq!(
@@ -48,12 +58,72 @@ mod unix_failures {
         );
     }
 
-    pub(super) fn assert_unreachable_proof_socket_is_rejected() {
+    pub(super) fn assert_proof_descriptor_is_closed_before_fixture_body() {
         let _environment = EnvironmentGuard::new();
-        let missing = socket_path();
-        EnvironmentGuard::bind("token", &missing);
+        let (parent, child) = UnixStream::pair().unwrap();
+        let descriptor = child.into_raw_fd();
+        EnvironmentGuard::bind("token", Some(descriptor));
+        let responder = challenge_responder(parent, 32);
 
         rafter_invariant_test::__begin_detector_test();
+        responder.join().unwrap();
+        assert_eq!(close(descriptor), Err(Errno::EBADF));
+        reject_once();
+        assert_eq!(
+            rafter_invariant_test::__detector_test_outcome().report(),
+            ExitCode::SUCCESS
+        );
+    }
+
+    pub(super) fn assert_missing_proof_descriptor_is_rejected() {
+        let _environment = EnvironmentGuard::new();
+        EnvironmentGuard::bind("token", None);
+
+        rafter_invariant_test::__begin_detector_test();
+        reject_once();
+        assert_eq!(
+            rafter_invariant_test::__detector_test_outcome().report(),
+            ExitCode::FAILURE
+        );
+    }
+
+    pub(super) fn assert_invalid_proof_descriptor_is_rejected() {
+        let _environment = EnvironmentGuard::new();
+        EnvironmentGuard::bind("token", Some(i32::MAX));
+
+        rafter_invariant_test::__begin_detector_test();
+        reject_once();
+        assert_eq!(
+            rafter_invariant_test::__detector_test_outcome().report(),
+            ExitCode::FAILURE
+        );
+    }
+
+    pub(super) fn assert_noncanonical_proof_descriptor_is_closed() {
+        let _environment = EnvironmentGuard::new();
+        let (_parent, child) = UnixStream::pair().unwrap();
+        let descriptor = child.into_raw_fd();
+        std::env::set_var(TOKEN_ENV, "token");
+        std::env::set_var(DESCRIPTOR_ENV, format!("0{descriptor}"));
+
+        rafter_invariant_test::__begin_detector_test();
+        assert_eq!(close(descriptor), Err(Errno::EBADF));
+        reject_once();
+        assert_eq!(
+            rafter_invariant_test::__detector_test_outcome().report(),
+            ExitCode::FAILURE
+        );
+    }
+
+    pub(super) fn assert_proof_descriptor_without_token_is_closed() {
+        let _environment = EnvironmentGuard::new();
+        let (_parent, child) = UnixStream::pair().unwrap();
+        let descriptor = child.into_raw_fd();
+        std::env::remove_var(TOKEN_ENV);
+        std::env::set_var(DESCRIPTOR_ENV, descriptor.to_string());
+
+        rafter_invariant_test::__begin_detector_test();
+        assert_eq!(close(descriptor), Err(Errno::EBADF));
         reject_once();
         assert_eq!(
             rafter_invariant_test::__detector_test_outcome().report(),
@@ -63,23 +133,22 @@ mod unix_failures {
 
     pub(super) fn assert_truncated_challenge_is_rejected() {
         let _environment = EnvironmentGuard::new();
-        let socket = SocketFixture::bind();
-        EnvironmentGuard::bind("token", socket.path());
+        let (mut parent, child) = UnixStream::pair().unwrap();
+        EnvironmentGuard::bind("token", Some(child.into_raw_fd()));
 
-        rafter_invariant_test::__begin_detector_test();
         let responder = std::thread::spawn(move || {
-            let (mut stream, _) = socket.listener.accept().unwrap();
             let mut request = [0_u8; 1];
-            stream.read_exact(&mut request).unwrap();
+            parent.read_exact(&mut request).unwrap();
             assert_eq!(request, [0xa7]);
-            stream.write_all(&[0_u8; 4]).unwrap();
+            parent.write_all(&[0_u8; 4]).unwrap();
         });
+        rafter_invariant_test::__begin_detector_test();
+        responder.join().unwrap();
         reject_once();
         assert_eq!(
             rafter_invariant_test::__detector_test_outcome().report(),
             ExitCode::FAILURE
         );
-        responder.join().unwrap();
     }
 
     pub(super) fn assert_non_unicode_token_is_rejected() {
@@ -101,29 +170,41 @@ mod unix_failures {
         rafter_invariant_test::oracle_expect_err!(reject(), "must reject");
     }
 
+    fn challenge_responder(mut parent: UnixStream, challenge_bytes: usize) -> JoinHandle<()> {
+        std::thread::spawn(move || {
+            let mut request = [0_u8; 1];
+            parent.read_exact(&mut request).unwrap();
+            assert_eq!(request, [0xa7]);
+            parent.write_all(&vec![0x5a; challenge_bytes]).unwrap();
+        })
+    }
+
     struct EnvironmentGuard {
         token: Option<OsString>,
-        socket: Option<OsString>,
+        descriptor: Option<OsString>,
     }
 
     impl EnvironmentGuard {
         fn new() -> Self {
             Self {
                 token: std::env::var_os(TOKEN_ENV),
-                socket: std::env::var_os(SOCKET_ENV),
+                descriptor: std::env::var_os(DESCRIPTOR_ENV),
             }
         }
 
-        fn bind(token: &str, socket: &Path) {
+        fn bind(token: &str, descriptor: Option<i32>) {
             std::env::set_var(TOKEN_ENV, token);
-            std::env::set_var(SOCKET_ENV, socket);
+            match descriptor {
+                Some(descriptor) => std::env::set_var(DESCRIPTOR_ENV, descriptor.to_string()),
+                None => std::env::remove_var(DESCRIPTOR_ENV),
+            }
         }
     }
 
     impl Drop for EnvironmentGuard {
         fn drop(&mut self) {
             restore_environment(TOKEN_ENV, self.token.as_deref());
-            restore_environment(SOCKET_ENV, self.socket.as_deref());
+            restore_environment(DESCRIPTOR_ENV, self.descriptor.as_deref());
         }
     }
 
@@ -133,34 +214,5 @@ mod unix_failures {
         } else {
             std::env::remove_var(name);
         }
-    }
-
-    struct SocketFixture {
-        listener: UnixListener,
-        path: PathBuf,
-    }
-
-    impl SocketFixture {
-        fn bind() -> Self {
-            let path = socket_path();
-            let _ = std::fs::remove_file(&path);
-            let listener = UnixListener::bind(&path).unwrap();
-            Self { listener, path }
-        }
-
-        fn path(&self) -> &Path {
-            &self.path
-        }
-    }
-
-    impl Drop for SocketFixture {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_file(&self.path);
-        }
-    }
-
-    fn socket_path() -> PathBuf {
-        let sequence = NEXT_SOCKET.fetch_add(1, Ordering::Relaxed);
-        Path::new("/tmp").join(format!("rit-{}-{sequence}.s", std::process::id()))
     }
 }

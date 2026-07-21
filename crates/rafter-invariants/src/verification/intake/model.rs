@@ -1,10 +1,15 @@
 //! Intake candidates, accepted evidence, and exhaustive structural defect classes.
 
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::Path,
+};
 
 use crate::{
     contract::{catalog::Catalog, profile::ProfileManifest},
-    evidence::{ArtifactRef, EvidenceResult, ExecutionPlanReceipt},
+    evidence::{
+        ArtifactRef, EvidenceResult, EvidenceStatus, ExecutionPlanReceipt, FailureClassification,
+    },
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -101,6 +106,8 @@ pub(crate) struct EvidenceIntake {
     accepted: BTreeMap<String, EvidenceResult>,
     artifacts: Vec<ArtifactRef>,
     defects: Vec<IntakeDefect>,
+    artifact_guards: Vec<crate::verification::AuthenticatedArtifacts>,
+    detector_replay_guard: Option<crate::verification::detector_replay::ReplayArtifactGuard>,
 }
 
 impl EvidenceIntake {
@@ -117,6 +124,8 @@ impl EvidenceIntake {
             accepted,
             artifacts,
             defects,
+            artifact_guards: Vec::new(),
+            detector_replay_guard: None,
         }
     }
 
@@ -145,5 +154,97 @@ impl EvidenceIntake {
             .iter()
             .map(|defect| defect.message.clone())
             .collect()
+    }
+
+    pub(super) fn extend_defects(&mut self, defects: impl IntoIterator<Item = IntakeDefect>) {
+        self.defects.extend(defects);
+    }
+
+    pub(super) fn attach_artifact_guards(
+        &mut self,
+        guards: Vec<crate::verification::AuthenticatedArtifacts>,
+    ) {
+        self.artifact_guards = guards;
+    }
+
+    pub(crate) fn revalidate_artifacts(&mut self) {
+        let producer_error = self
+            .artifact_guards
+            .iter()
+            .find_map(|guard| guard.revalidate_paths().err());
+        if let Some(error) = producer_error {
+            self.defects.push(IntakeDefect::unverifiable(format!(
+                "producer artifact integrity changed before verdict publication: {error}"
+            )));
+            self.artifact_guards.clear();
+        }
+        let replay_error = self
+            .detector_replay_guard
+            .as_ref()
+            .and_then(|guard| guard.revalidate().err());
+        if let Some(error) = replay_error {
+            self.defects.push(IntakeDefect::unverifiable(format!(
+                "detector replay artifact integrity changed before verdict publication: {error}"
+            )));
+            self.detector_replay_guard = None;
+        }
+    }
+
+    pub(in crate::verification) fn apply_detector_replay(
+        &mut self,
+        assessment: crate::verification::detector_replay::DetectorReplayAssessment,
+    ) -> Result<(), String> {
+        let crate::verification::detector_replay::DetectorReplayAssessment {
+            qualifications,
+            artifacts,
+            artifact_guard,
+        } = assessment;
+        if artifact_guard.is_none()
+            && qualifications
+                .values()
+                .any(crate::verification::detector_replay::EvidenceReplayQualification::is_passed)
+        {
+            return Err(
+                "passing detector replay qualifications require a complete artifact guard"
+                    .to_owned(),
+            );
+        }
+        let mut published = self.artifacts.iter().cloned().collect::<BTreeSet<_>>();
+        published.extend(artifacts.iter().cloned());
+        let fallback = published.iter().next().cloned();
+        for (evidence_id, qualification) in &qualifications {
+            let Some(result) = self.accepted.get(evidence_id) else {
+                continue;
+            };
+            if result.invariant_id != qualification.invariant_id() {
+                return Err(format!(
+                    "detector replay identity mismatch for evidence {evidence_id}"
+                ));
+            }
+        }
+        for (evidence_id, qualification) in qualifications {
+            let Some(result) = self.accepted.get_mut(&evidence_id) else {
+                continue;
+            };
+            let mut artifacts = result.artifacts.iter().cloned().collect::<BTreeSet<_>>();
+            artifacts.extend(qualification.artifacts().iter().cloned());
+            if !qualification.is_passed() && result.status != EvidenceStatus::Fail {
+                result.status = EvidenceStatus::Error;
+                result.classification = Some(FailureClassification::HarnessError);
+                result.message = Some(format!(
+                    "aggregate detector replay: {}",
+                    qualification
+                        .message()
+                        .unwrap_or("fixture did not produce a passing qualification")
+                ));
+                if artifacts.is_empty() {
+                    artifacts.extend(fallback.iter().cloned());
+                }
+            }
+            result.artifacts = artifacts.into_iter().collect();
+        }
+        self.artifacts = published.into_iter().collect();
+        self.detector_replay_guard = artifact_guard;
+        Ok(())
     }
 }

@@ -404,7 +404,7 @@ fn serialized_counterexample_fixture(
     crate::evidence::validate_result_value(&value)?;
     let serialized: ResultBundle = serde_json::from_value(value)?;
     let catalog = crate::Catalog::load(&root.join(&serialized.execution.plan.registry.path))?;
-    let diagnostics = crate::verification::verify_bundle_artifacts(
+    let (diagnostics, _artifact_guard) = crate::verification::verify_bundle_artifacts(
         &serialized,
         &root,
         &root,
@@ -620,7 +620,7 @@ fn bind_serialized_bundle(
         crate::provenance::image::image_path(&repository, &producer.sha256)
             .to_string_lossy()
             .into_owned();
-    bundle.execution.invocation.environment = crate::producer::process::base_environment();
+    bundle.execution.invocation.environment = process_environment();
     bundle.execution.invocation.environment_sha256 =
         crate::provenance::invocation::digest_environment(&bundle.execution.invocation.environment)
             .expect("valid fixture environment");
@@ -677,6 +677,7 @@ fn bound_artifact(
 
 fn bundle() -> ResultBundle {
     let execution_id = "maelstrom-base".to_owned();
+    let process_environment = process_environment();
     ResultBundle {
         schema_version: crate::evidence::RESULT_SCHEMA_VERSION,
         runner: "maelstrom".to_owned(),
@@ -700,9 +701,9 @@ fn bundle() -> ResultBundle {
                 program_sha256: "0".repeat(64),
                 arguments: vec!["run".to_owned()],
                 current_dir: "/workspace/rafter".to_owned(),
-                environment: BTreeMap::new(),
+                environment: process_environment.clone(),
                 environment_sha256: crate::provenance::invocation::digest_environment(
-                    &BTreeMap::new(),
+                    &process_environment,
                 )
                 .expect("valid fixture environment"),
                 launchers: Vec::new(),
@@ -741,11 +742,11 @@ fn maelstrom_contract() -> ProfileContract {
     ]);
     ProfileContract {
         description: "test".to_owned(),
-        evidence_policy: "all_matching_registry_evidence".to_owned(),
-        clause_policy: "all_required_clauses".to_owned(),
-        required_clause_strength: "direct".to_owned(),
-        required_layers: vec!["maelstrom".to_owned()],
-        required_strengths: vec!["e2e".to_owned()],
+        evidence_policy: crate::EvidencePolicy::AllMatchingRegistryEvidence,
+        clause_policy: crate::ClausePolicy::AllRequiredClauses,
+        required_clause_strength: crate::RequiredClauseStrength::Direct,
+        required_layers: vec![crate::EvidenceLayer::Maelstrom],
+        required_strengths: vec![crate::EvidenceStrength::E2e],
         canonical_minimum_independent_layers: 2,
         runners: BTreeMap::from([(
             "maelstrom".to_owned(),
@@ -798,7 +799,7 @@ fn process_log(
     let state_dir =
         fs::canonicalize(root.join("target/rafter-invariants/maelstrom/abc/nightly/base/trial-0"))?;
     let durable = state_dir.join("durable");
-    let environment = crate::producer::process::base_environment()
+    let environment = process_environment()
         .into_iter()
         .chain(BTreeMap::from([
             (
@@ -926,7 +927,7 @@ fn source() -> SourceReceipt {
         tools: BTreeMap::new(),
         process_runtime: crate::receipt::fixture_process_runtime(true),
         environment_sha256: crate::provenance::invocation::digest_environment(
-            &crate::producer::process::base_environment(),
+            &process_environment(),
         )
         .expect("valid fixture environment"),
         clean: true,
@@ -944,6 +945,10 @@ fn temporary_root() -> Result<PathBuf, std::io::Error> {
     }
     fs::create_dir_all(&root)?;
     Ok(root)
+}
+
+fn process_environment() -> BTreeMap<String, String> {
+    crate::producer::process::base_environment()
 }
 
 fn write(root: &std::path::Path, path: &str, source: &str) -> Result<(), std::io::Error> {

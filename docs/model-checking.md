@@ -136,6 +136,14 @@ filesystem aliases, and platform materializations that cannot preserve the
 reviewed raw-byte and mode semantics fail closed; symlinks and submodules are
 not part of the contract.
 
+Source and process environments are deliberately distinct. The source receipt
+binds only platform compiler-selection inputs (`DEVELOPER_DIR`, `SDKROOT`, and
+`SYSTEMROOT` when present). The execution invocation binds the complete safe
+base environment, including isolated cache and workspace paths, and every child
+process log must match that base plus its reviewed command-specific additions.
+Changing a compiler-selection input invalidates source identity; moving the same
+authenticated source into a fresh aggregate Cargo home does not.
+
 The registry checksum is a source-identity proof, not a hermetic-build proof.
 A registry build script can observe host files, clocks, kernel behavior, or
 other runner state that Cargo.lock does not describe. Effects that reach the
@@ -171,20 +179,72 @@ hashing, or report rendering. Model-check performance comparisons use the
 simulator process group's wall time and peak RSS together with separately
 reported protocol-state and verifier-state counts.
 
-Simulator detector fixtures have two independent execution checks. Source
-preflight resolves local calls by exact crate-module identity across the tracked
-Cargo target graph and recursively inspects every plausible reachable helper.
-Untracked, symlinked, out-of-tree, or item-macro-generated source outside the
-bound test context fails closed. The analyzer binds `test`, the host target,
+Simulator detector fixtures have two independent execution checks. During the
+producer run, the parent creates a fresh challenge on a connected anonymous Unix
+socket pair and passes only the child endpoint through an inherited descriptor.
+The trusted detector wrapper requests and retains that challenge, then shuts
+down and closes the descriptor before fixture code runs; no pathname, listener,
+reconnectable endpoint, or proof capability remains available to fixture
+helpers. The wrapper emits challenge-bound proofs only after an invocation-bound
+rejecting witness exists. The final verifier requires the ordinary witness
+inventory and the challenge-bound proof inventory to match exactly, so an early
+return still cannot qualify. The proof channel is covered by the same
+trusted-host boundary described above.
+
+The aggregate independently qualifies every direct simulator detector fixture.
+Its source analyzer resolves local calls by exact crate-module identity across
+the tracked Cargo target graph and recursively inspects every plausible reachable
+helper. Untracked, symlinked, out-of-tree, or item-macro-generated source outside
+the bound test context fails closed. The analyzer binds `test`, the host target,
 and disabled package features to the exact host-targeted
 `--no-default-features` detector compile contract; custom and profile-sensitive
-`cfg` predicates without an execution binding remain red. At runtime, the parent
-producer creates a fresh challenge but withholds it until the trusted detector
-wrapper has recorded at least one real rejecting invocation. The final verifier
-requires the ordinary witness inventory and the challenge-bound proof inventory
-to match exactly. An early return cannot qualify without that post-invocation
-challenge. The proof socket uses a separate random pathname, rejects symlinked
-managed-directory components, and prunes stale managed sockets; the challenge
-itself never appears in the pathname. The proof channel is covered by the same
-trusted-host boundary described above; hostile same-UID processes are not part
-of this repository-local provenance contract.
+`cfg` predicates without an execution binding remain red. Profile schema v9
+requires exactly 247 locked registry packages, 77 unique fixtures, 79
+invariant/evidence bindings, and two test targets, and binds their complete
+identities, transitive target source graphs, and associations to one reviewed
+digest. The verifier snapshots the
+clean checkout, authenticates registry archives against `Cargo.lock`,
+reconstructs a read-only Cargo directory source, and compiles only the reviewed
+targets under a private Cargo home with
+`--locked --offline --no-default-features`. Strict Cargo JSON admission rejects
+ambient workspace roots, source escapes, unknown sources, cached executable
+claims, duplicate completion records, metadata target substitution, executable
+byte drift, and inventory drift. Profile-owned aggregate byte and entry limits
+bound registry extraction, and the replay deadline starts before preparation.
+
+Every replay emits a strict schema-v4 machine-readable report plus exact
+length-framed v2 stdout and stderr artifacts. The report retains the
+authenticated commit, tree, materialization, environment, actual Cargo and rustc executable
+paths and digests, reviewed inventory digest, every fixture source binding,
+unique execution identities, and the detector token and pre-body challenge.
+Those content-addressed files are published into a
+never-reused invocation directory, remain under held filesystem identities,
+lose write permission at sealing, and are rehashed against an exact complete
+tree inventory before verdict reduction and after report publication. Replay
+work stops before the outer deadline to retain a verifier-owned publication
+reserve. CI seals the exact set into a deterministic read-only tar, downloads it
+to a fresh path, and repeats digest, canonical metadata, schema, and semantic
+validation without extracting it. Sealing and readback compare the report with
+a separately loaded canonical profile manifest, captured checkout, actual Rust
+toolchain, and independently materialized registry receipt; reconstruct the
+fixture plan and inventory digest; require an exact bijection between
+execution-bound process logs and content-addressed archive members; and rerun
+detector transcript qualification over the archived bytes.
+
+Hosted CI jobs name explicit Ubuntu and macOS releases, and TLA+ jobs select the
+exact reviewed Temurin build. Scheduled invariant jobs use fresh run-, job-, and
+attempt-specific Cargo homes and target directories, restore neither compiled
+targets nor Cargo binaries, and reject stale Maelstrom extraction roots. Every
+external Action is locked to one reviewed full commit, and every aggregate step
+has a timeout inside a mechanically checked job budget. Graphviz and gnuplot must
+already be present in the runner image and are preflighted instead of installed
+into a persistent host. Repository code cannot attest the self-hosted image or
+runner-group policy: operators must bind `[self-hosted, linux, X64]` to a
+dedicated immutable invariant-runner pool and restrict that pool to protected
+default-branch workflows.
+A fixture failure or incomplete qualification turns only its bound evidence
+into a harness error; an existing invariant violation remains an invariant
+violation. Missing or mismatched replay coverage fails closed for every required
+binding. PR, nightly, and weekly aggregate jobs prefetch into isolated
+run-specific Cargo homes, then perform this compilation and replay fully
+offline on descriptor-bound Linux executables.

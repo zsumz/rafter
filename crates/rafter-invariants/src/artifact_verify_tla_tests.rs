@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use super::verify;
 use crate::{
     evidence::format::process::{ProcessLog, TerminationReceipt},
-    producer::tla_output::{
+    evidence::format::tla::{
         detector_config_kind, detector_label, detector_log_kind, render_detector_config,
         DetectorProbe, DEFAULT_FIXTURE_MODE, DETECTOR_PROBES, MUTATION_SUITE_ARTIFACT_KIND,
         MUTATION_SUITE_LABEL, REQUIRED_MUTATION_TESTS,

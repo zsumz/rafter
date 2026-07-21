@@ -123,7 +123,7 @@ fn fabricated_named_witness_without_detector_call_is_rejected_end_to_end() {
         &oracle_check_id,
         "rafter_invariant_test::tests::token_bound_regression_detector",
     )
-    .expect_err("a textual marker without a post-invocation proof must be rejected");
+    .expect_err("a textual marker without a challenge-bound proof must be rejected");
     assert!(error.to_string().contains("proof"));
 
     let mut descriptor = catalog
@@ -136,6 +136,7 @@ fn fabricated_named_witness_without_detector_call_is_rejected_end_to_end() {
     descriptor.negative_fixture = Some(fixture.to_owned());
     descriptor.negative_fixture_path = Some(descriptor.path.clone());
     descriptor.negative_fixture_detector = Some(detector.to_owned());
+    descriptor.negative_fixture_detector_path = Some(descriptor.path.clone());
     descriptor
         .simulator
         .as_mut()
@@ -210,7 +211,7 @@ fn qualified_helper_cannot_qualify_without_reaching_the_detector() {
         &oracle_check_id,
         "rafter_invariant_test::tests::token_bound_regression_detector",
     )
-    .expect_err("the final verifier must require the post-invocation proof");
+    .expect_err("the final verifier must require the challenge-bound proof");
     assert!(error.to_string().contains("proof"));
 
     let mut descriptor = catalog
@@ -223,6 +224,7 @@ fn qualified_helper_cannot_qualify_without_reaching_the_detector() {
     descriptor.negative_fixture = Some(fixture.to_owned());
     descriptor.negative_fixture_path = Some(descriptor.path.clone());
     descriptor.negative_fixture_detector = Some(detector.to_owned());
+    descriptor.negative_fixture_detector_path = Some(descriptor.path.clone());
     descriptor
         .simulator
         .as_mut()
@@ -265,6 +267,28 @@ fn proof_socket_is_not_visible_to_fixture_body_code() {
         "rafter_invariant_test::tests::token_bound_regression_detector",
     )
     .expect("the macro-held proof channel still validates after hiding the socket path");
+}
+
+#[test]
+fn safe_external_helper_cannot_intercept_the_pre_body_proof_capability() {
+    let (catalog, manifest) = crate::tests::loaded();
+    let mut bundle = simulator_bundle(&catalog, &manifest);
+    bundle.source_ref = format!("e2e{:09}-closed-proof-capability", std::process::id());
+    let fixture = "disclosed_proof_descriptor_is_closed_before_fixture_body_subprocess_fixture";
+    let (oracle_check_id, process_log) =
+        crate::producer::test_exec::capture_detector_witness_fixture_log(
+            &bundle.source_ref,
+            fixture,
+        )
+        .expect("a safe external helper cannot use the disclosed closed descriptor");
+
+    crate::artifact_verify::test_logs::require_detector_witness(
+        &bundle,
+        &process_log,
+        &oracle_check_id,
+        "rafter_invariant_test::tests::token_bound_regression_detector",
+    )
+    .expect("the real invocation remains bound to the privately retained challenge");
 }
 
 #[test]
@@ -373,7 +397,7 @@ fn compile_failure_is_valid_red_detector_evidence_without_a_runtime_transcript()
         &check,
         descriptor,
         identity,
-        &mut super::super::detector_source::DetectorSourceCache::default(),
+        &mut crate::verification::DetectorFixtureAnalysis::default(),
         &mut BTreeMap::new(),
     )
     .expect("compile failure is self-contained red detector evidence");
@@ -387,7 +411,7 @@ fn compile_failure_is_valid_red_detector_evidence_without_a_runtime_transcript()
         &check,
         descriptor,
         identity,
-        &mut super::super::detector_source::DetectorSourceCache::default(),
+        &mut crate::verification::DetectorFixtureAnalysis::default(),
         &mut BTreeMap::new(),
     )
     .expect_err("a runtime detector failure cannot omit its runtime transcript");

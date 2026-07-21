@@ -28,5 +28,5 @@ use outcome::{
     require_exact_test_failure, verify_harness_error_test_invocations,
     verify_incomplete_test_invocations, verify_oracle_failure_invocations,
 };
-use registry::registered_test_name;
+use registry::{registered_test_binding, registered_test_name};
 pub(super) use runner::verify_test_logs;
