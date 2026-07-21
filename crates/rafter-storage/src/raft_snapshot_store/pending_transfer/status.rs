@@ -1,3 +1,8 @@
+//! Operator-facing pending-transfer staging status.
+//!
+//! This diagnostic vocabulary reports physical artifacts independently of
+//! whether they form a resumable logical transfer.
+
 /// File-level status of pending snapshot-transfer staging data.
 ///
 /// This is diagnostic state; it may report abandoned files that are not a

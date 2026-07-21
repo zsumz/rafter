@@ -1,3 +1,8 @@
+//! Atomic replacement and conditional removal helpers for staging artifacts.
+//!
+//! This module owns filesystem mechanics used by pending-transfer publication;
+//! the caller supplies the artifact-specific operation vocabulary.
+
 use std::{
     fs::{self, OpenOptions},
     io::Write,
@@ -26,26 +31,26 @@ pub(super) fn write_temp_and_rename(
             .map_err(|error| RaftSnapshotStoreWriteError::Io {
                 operation: open_operation,
                 path: temp_path.to_path_buf(),
-                message: error.to_string(),
+                source: error.into(),
             })?;
         file.write_all(bytes)
             .and_then(|()| file.sync_data())
             .map_err(|error| RaftSnapshotStoreWriteError::Io {
                 operation: write_operation,
                 path: temp_path.to_path_buf(),
-                message: error.to_string(),
+                source: error.into(),
             })?;
     }
 
     fs::rename(temp_path, final_path).map_err(|error| RaftSnapshotStoreWriteError::Io {
         operation: rename_operation,
         path: final_path.to_path_buf(),
-        message: error.to_string(),
+        source: error.into(),
     })?;
     sync_parent_directory(final_path).map_err(|error| RaftSnapshotStoreWriteError::Io {
         operation: sync_operation,
         path: final_path.to_path_buf(),
-        message: error.to_string(),
+        source: error.into(),
     })
 }
 
@@ -59,7 +64,7 @@ pub(super) fn remove_file_if_exists(
         Err(error) => Err(RaftSnapshotStoreWriteError::Io {
             operation,
             path: path.to_path_buf(),
-            message: error.to_string(),
+            source: error.into(),
         }),
     }
 }

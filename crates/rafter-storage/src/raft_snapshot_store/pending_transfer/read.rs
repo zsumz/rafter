@@ -1,3 +1,9 @@
+//! Open-time recovery of optional inbound snapshot-transfer progress.
+//!
+//! Manifest corruption fails loudly. Missing, short, or checksum-inconsistent
+//! bodies are discarded as interrupted optional progress. Valid staged bodies
+//! are verified in bounded reads and are never materialized whole at restart.
+
 use std::{fs::File, io::Read, path::Path};
 
 use rafter::PendingSnapshotTransfer;
@@ -5,85 +11,138 @@ use rafter::PendingSnapshotTransfer;
 use crate::checksum::RunningCrc32;
 
 use super::{
-    super::{OpenRaftSnapshotStoreError, RaftSnapshotStoreWriteError},
+    super::{
+        OpenRaftSnapshotStoreError, PendingSnapshotTransferRecovery, RaftSnapshotStoreWriteError,
+    },
     cleanup::clear_pending_snapshot_transfer,
     codec::decode_pending_snapshot_transfer_manifest,
-    error::DecodePendingSnapshotTransferError,
     manifest::PendingTransferManifest,
     paths::{pending_snapshot_transfer_body_path, pending_snapshot_transfer_path},
 };
 
+const VERIFY_STAGED_BODY_CHUNK_BYTES: usize = 256 * 1024;
+
+pub(in crate::raft_snapshot_store) type OpenedPendingSnapshotTransfer = (
+    Option<(PendingSnapshotTransfer, RunningCrc32)>,
+    Option<PendingSnapshotTransferRecovery>,
+);
+
 /// Reads and validates the staged transfer left by an earlier process.
 ///
-/// The body bytes are read once to validate the manifest's checksum and
-/// rebuild the running checksum state, then dropped: the store keeps only the
-/// staged length and checksum in memory and re-reads the body file at
-/// promotion time.
+/// The manifest has already pinned the transfer descriptor, received length,
+/// and body checksum. Recovery verifies exactly that body prefix in bounded
+/// reads and rebuilds the incremental checksum state without keeping the bytes
+/// resident. A longer suffix is harmless crash residue and remains ignored.
 ///
-/// A body that does not hold what the manifest describes — too short, or
-/// failing the manifest's body checksum — is the leftover of a crash between
-/// the body replace and the manifest replace of a transfer restarted at
-/// offset zero. Staged transfer progress is resumable-but-optional state, so
-/// the staging is discarded and the store opens with no pending transfer;
-/// the leader restarts the transfer from offset zero through the normal
-/// rejection path. Corruption of the manifest itself stays a hard error: it
-/// signals damaged storage, not an interrupted two-file swap.
+/// Missing, short, or checksum-mismatched body bytes are the recoverable shape
+/// of an interrupted two-file staging update. Because staged progress is
+/// optional, recovery durably discards both files and opens with no pending
+/// transfer. Manifest corruption remains a hard open error.
 pub(in crate::raft_snapshot_store) fn read_pending_snapshot_transfer(
     directory: &Path,
-) -> Result<Option<(PendingSnapshotTransfer, RunningCrc32)>, OpenRaftSnapshotStoreError> {
+) -> Result<OpenedPendingSnapshotTransfer, OpenRaftSnapshotStoreError> {
     let manifest_path = pending_snapshot_transfer_path(directory);
     let Some(manifest) = read_pending_snapshot_transfer_manifest(&manifest_path)? else {
-        return Ok(None);
+        return Ok((None, None));
     };
     let body_path = pending_snapshot_transfer_body_path(directory);
-    let mut file = File::open(&body_path).map_err(|error| OpenRaftSnapshotStoreError::Io {
-        operation: "open pending snapshot transfer body",
-        path: body_path.clone(),
-        message: error.to_string(),
-    })?;
-    let mut body = Vec::new();
-    file.read_to_end(&mut body)
+    let mut file = match File::open(&body_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            discard_inconsistent_staging(directory)?;
+            return Ok((
+                None,
+                Some(PendingSnapshotTransferRecovery::DiscardedMissingBody),
+            ));
+        }
+        Err(error) => {
+            return Err(OpenRaftSnapshotStoreError::Io {
+                operation: "open pending snapshot transfer body",
+                path: body_path,
+                source: error.into(),
+            });
+        }
+    };
+    let body_len = file
+        .metadata()
         .map_err(|error| OpenRaftSnapshotStoreError::Io {
-            operation: "read pending snapshot transfer body",
-            path: body_path,
-            message: error.to_string(),
-        })?;
-    let received_len = usize::try_from(manifest.received_payload_len).map_err(|_| {
-        OpenRaftSnapshotStoreError::PendingTransfer(
-            DecodePendingSnapshotTransferError::SnapshotEnvelopeTooLarge {
-                len: manifest.received_payload_len,
-            },
-        )
-    })?;
-    if body.len() < received_len {
+            operation: "stat pending snapshot transfer body",
+            path: body_path.clone(),
+            source: error.into(),
+        })?
+        .len();
+    if body_len < manifest.received_payload_len {
         discard_inconsistent_staging(directory)?;
-        return Ok(None);
-    }
-    let mut body_crc = RunningCrc32::new();
-    body_crc.update(&body[..received_len]);
-    if body_crc.value() != manifest.body_checksum {
-        discard_inconsistent_staging(directory)?;
-        return Ok(None);
-    }
-    if manifest.received_payload_len > manifest.total_payload_len {
-        return Err(OpenRaftSnapshotStoreError::PendingTransfer(
-            DecodePendingSnapshotTransferError::ReceivedPayloadTooLong {
-                received_bytes: manifest.received_payload_len,
-                total_payload_len: manifest.total_payload_len,
-            },
+        return Ok((
+            None,
+            Some(PendingSnapshotTransferRecovery::DiscardedShortBody {
+                expected_bytes: manifest.received_payload_len,
+                actual_bytes: body_len,
+            }),
         ));
     }
-    Ok(Some((
-        PendingSnapshotTransfer {
-            leader_id: manifest.leader_id,
-            transfer_id: manifest.transfer_id,
-            metadata: manifest.metadata,
-            total_payload_len: manifest.total_payload_len,
-            application_payload_crc32: manifest.application_payload_crc32,
-            received_len: manifest.received_payload_len,
+
+    let body_crc =
+        checksum_staged_body_prefix(&mut file, manifest.received_payload_len, &body_path)?;
+    if body_crc.value() != manifest.body_checksum {
+        let actual = body_crc.value();
+        discard_inconsistent_staging(directory)?;
+        return Ok((
+            None,
+            Some(PendingSnapshotTransferRecovery::DiscardedChecksumMismatch {
+                expected: manifest.body_checksum,
+                actual,
+            }),
+        ));
+    }
+
+    let recovery = (body_len > manifest.received_payload_len).then_some(
+        PendingSnapshotTransferRecovery::IgnoredUnpublishedSuffix {
+            published_bytes: manifest.received_payload_len,
+            actual_bytes: body_len,
         },
-        body_crc,
-    )))
+    );
+    Ok((
+        Some((
+            PendingSnapshotTransfer {
+                leader_id: manifest.leader_id,
+                transfer_id: manifest.transfer_id,
+                metadata: manifest.metadata,
+                total_payload_len: manifest.total_payload_len,
+                application_payload_crc32: manifest.application_payload_crc32,
+                received_len: manifest.received_payload_len,
+            },
+            body_crc,
+        )),
+        recovery,
+    ))
+}
+
+fn checksum_staged_body_prefix(
+    file: &mut File,
+    mut remaining: u64,
+    body_path: &Path,
+) -> Result<RunningCrc32, OpenRaftSnapshotStoreError> {
+    let mut checksum = RunningCrc32::new();
+    let mut buffer = vec![0_u8; bounded_usize_len(remaining, VERIFY_STAGED_BODY_CHUNK_BYTES)];
+    while remaining > 0 {
+        let len = bounded_usize_len(remaining, buffer.len());
+        file.read_exact(&mut buffer[..len])
+            .map_err(|error| OpenRaftSnapshotStoreError::Io {
+                operation: "read pending snapshot transfer body",
+                path: body_path.to_path_buf(),
+                source: error.into(),
+            })?;
+        checksum.update(&buffer[..len]);
+        remaining -= u64::try_from(len).unwrap_or(remaining);
+    }
+    Ok(checksum)
+}
+
+fn bounded_usize_len(remaining: u64, max_len: usize) -> usize {
+    let max_len_u64 = u64::try_from(max_len).unwrap_or(u64::MAX);
+    let bounded = remaining.min(max_len_u64);
+    usize::try_from(bounded).unwrap_or(max_len)
 }
 
 /// Removes both staging files (manifest and body, syncing the parent) so the
@@ -94,16 +153,16 @@ fn discard_inconsistent_staging(directory: &Path) -> Result<(), OpenRaftSnapshot
         RaftSnapshotStoreWriteError::Io {
             operation,
             path,
-            message,
+            source,
         } => OpenRaftSnapshotStoreError::Io {
             operation,
             path,
-            message,
+            source,
         },
         other => OpenRaftSnapshotStoreError::Io {
             operation: "discard inconsistent pending snapshot transfer staging",
             path: directory.to_path_buf(),
-            message: other.to_string(),
+            source: std::io::Error::other(other).into(),
         },
     })
 }
@@ -118,7 +177,7 @@ fn read_pending_snapshot_transfer_manifest(
             return Err(OpenRaftSnapshotStoreError::Io {
                 operation: "open pending snapshot transfer manifest",
                 path: path.to_path_buf(),
-                message: error.to_string(),
+                source: error.into(),
             });
         }
     };
@@ -127,7 +186,7 @@ fn read_pending_snapshot_transfer_manifest(
         .map_err(|error| OpenRaftSnapshotStoreError::Io {
             operation: "read pending snapshot transfer manifest",
             path: path.to_path_buf(),
-            message: error.to_string(),
+            source: error.into(),
         })?;
     decode_pending_snapshot_transfer_manifest(&bytes)
         .map(Some)

@@ -1,3 +1,8 @@
+//! Pending-transfer body replacement, append, truncation, and promotion reads.
+//!
+//! The manifest remains the authoritative staged length; this module owns only
+//! the raw payload-prefix file and its crash-residue reconciliation.
+
 use std::{
     fs::{File, OpenOptions},
     io::{Seek, SeekFrom, Write},
@@ -44,23 +49,25 @@ pub(in crate::raft_snapshot_store) fn open_staged_body(
     let file = File::open(&body_path).map_err(|error| RaftSnapshotStoreWriteError::Io {
         operation: "open pending snapshot transfer body for promotion",
         path: body_path.clone(),
-        message: error.to_string(),
+        source: error.into(),
     })?;
     let body_len = file
         .metadata()
         .map_err(|error| RaftSnapshotStoreWriteError::Io {
             operation: "stat pending snapshot transfer body for promotion",
             path: body_path.clone(),
-            message: error.to_string(),
+            source: error.into(),
         })?
         .len();
     if body_len < received_len {
         return Err(RaftSnapshotStoreWriteError::Io {
             operation: "open pending snapshot transfer body for promotion",
             path: body_path,
-            message: format!(
-                "body file holds {body_len} bytes but {received_len} bytes are staged"
-            ),
+            source: std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!("body file holds {body_len} bytes but {received_len} bytes are staged"),
+            )
+            .into(),
         });
     }
     Ok(file)
@@ -80,21 +87,25 @@ fn append_pending_snapshot_body(
         .map_err(|error| RaftSnapshotStoreWriteError::Io {
             operation: "open pending snapshot transfer body",
             path: body_path.clone(),
-            message: error.to_string(),
+            source: error.into(),
         })?;
     let body_len = file
         .metadata()
         .map_err(|error| RaftSnapshotStoreWriteError::Io {
             operation: "stat pending snapshot transfer body",
             path: body_path.clone(),
-            message: error.to_string(),
+            source: error.into(),
         })?
         .len();
     if body_len < staged_len {
         return Err(RaftSnapshotStoreWriteError::Io {
             operation: "append pending snapshot transfer body",
             path: body_path,
-            message: format!("body file holds {body_len} bytes but {staged_len} bytes are staged"),
+            source: std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                format!("body file holds {body_len} bytes but {staged_len} bytes are staged"),
+            )
+            .into(),
         });
     }
     if body_len > staged_len {
@@ -103,7 +114,7 @@ fn append_pending_snapshot_body(
             .map_err(|error| RaftSnapshotStoreWriteError::Io {
                 operation: "truncate pending snapshot transfer body to staged length",
                 path: body_path.clone(),
-                message: error.to_string(),
+                source: error.into(),
             })?;
     }
     file.write_all(&chunk.bytes)
@@ -111,7 +122,7 @@ fn append_pending_snapshot_body(
         .map_err(|error| RaftSnapshotStoreWriteError::Io {
             operation: "append pending snapshot transfer body",
             path: body_path,
-            message: error.to_string(),
+            source: error.into(),
         })
 }
 

@@ -1,3 +1,7 @@
+//! Pending-transfer artifact paths and operator-facing staging inspection.
+//!
+//! This module maps the fixed staging filenames to one snapshot-store directory.
+
 use std::path::{Path, PathBuf};
 
 use super::{

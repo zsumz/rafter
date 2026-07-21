@@ -1,3 +1,8 @@
+//! Durable inbound snapshot-transfer staging and restart recovery.
+//!
+//! This facade separates body publication, manifest encoding, recovery,
+//! cleanup, and operator-facing status while exposing one store-internal API.
+
 mod body;
 mod cleanup;
 mod codec;
@@ -9,6 +14,9 @@ mod paths;
 mod read;
 mod status;
 mod write;
+
+#[cfg(test)]
+mod recovery_test;
 
 pub use error::DecodePendingSnapshotTransferError;
 pub use status::PendingSnapshotTransferStagingStatus;
