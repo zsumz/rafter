@@ -1,9 +1,11 @@
+//! Reviewed Maelstrom scenario identities, scripts, and runner configuration.
+
 use std::collections::BTreeMap;
 
-use crate::EvidenceDescriptor;
+use crate::contract::catalog::EvidenceDescriptor;
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(super) enum Scenario {
+pub(in crate::producer) enum Scenario {
     Base,
     Membership,
     Restart,

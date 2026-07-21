@@ -1,6 +1,8 @@
+//! Source-bound capture of the exact Maelstrom tool archive.
+
 use std::{error::Error, path::Path};
 
-use crate::ArtifactRef;
+use crate::evidence::ArtifactRef;
 
 use super::{artifact, source};
 
