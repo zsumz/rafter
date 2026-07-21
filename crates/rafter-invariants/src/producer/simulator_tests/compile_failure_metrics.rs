@@ -109,8 +109,7 @@ fn detector_compile_failure_round_trips_without_charging_the_scoped_check() {
     bundle.execution.artifacts = vec![model_log, compile_log];
     bundle.execution.duration_ms = aggregate.duration_ms;
     bundle.execution.peak_rss_kib = aggregate.peak_rss_kib;
-    bundle
-        .verify_resource_metrics_for_test(&root)
+    crate::artifact_verify::verify_resource_metrics(&bundle, &root)
         .expect("producer metrics verify with compile cost exactly once");
     fs::remove_dir_all(root).expect("remove resource fixture");
 }
