@@ -156,18 +156,30 @@ jobs:
       - name: Prefetch locked registry for offline source identity
         run: cargo fetch --locked
       - name: Validate managed process launcher on macOS
+        id: launcher-validation
         run: |
-          scripts/cargo-test-exact 55 execution::process:: --locked -p rafter-invariants -- --test-threads=1
-          scripts/cargo-test-exact 18 producer::process::tests --locked -p rafter-invariants -- --test-threads=1
-          scripts/cargo-test-exact 4 producer::test_exec::detector_proof::tests --locked -p rafter-invariants -- --test-threads=1
-          scripts/cargo-test-exact 1 producer::test_exec::process_tests --locked -p rafter-invariants -- --test-threads=1
-          scripts/cargo-test-exact 11 detector_proof::tests --locked -p rafter-invariants -- --test-threads=1
-          scripts/cargo-test-exact 45 verification::detector::source::tests --locked -p rafter-invariants -- --test-threads=1
-          scripts/cargo-test-exact 23 verification::detector::source::adversarial_tests --locked -p rafter-invariants -- --test-threads=1
-          scripts/cargo-test-exact 16 artifact_verify::simulator::event_semantics_tests --locked -p rafter-invariants -- --test-threads=1
-          scripts/cargo-test-exact 8 artifact_verify::test_logs::tests --locked -p rafter-invariants -- --test-threads=1
-          scripts/cargo-test-exact 4 provenance::image::tests --locked -p rafter-invariants -- --test-threads=1
-          scripts/cargo-test-exact 1 - --locked -p rafter-invariants --test producer_reexec -- --test-threads=1
+          set -o pipefail
+          mkdir -p target/rafter-invariants/ci-diagnostics
+          {
+            scripts/cargo-test-exact 55 execution::process:: --locked -p rafter-invariants -- --test-threads=1
+            scripts/cargo-test-exact 18 producer::process::tests --locked -p rafter-invariants -- --test-threads=1
+            scripts/cargo-test-exact 4 producer::test_exec::detector_proof::tests --locked -p rafter-invariants -- --test-threads=1
+            scripts/cargo-test-exact 1 producer::test_exec::process_tests --locked -p rafter-invariants -- --test-threads=1
+            scripts/cargo-test-exact 11 detector_proof::tests --locked -p rafter-invariants -- --test-threads=1
+            scripts/cargo-test-exact 45 verification::detector::source::tests --locked -p rafter-invariants -- --test-threads=1
+            scripts/cargo-test-exact 23 verification::detector::source::adversarial_tests --locked -p rafter-invariants -- --test-threads=1
+            scripts/cargo-test-exact 16 artifact_verify::simulator::event_semantics_tests --locked -p rafter-invariants -- --test-threads=1
+            scripts/cargo-test-exact 8 artifact_verify::test_logs::tests --locked -p rafter-invariants -- --test-threads=1
+            scripts/cargo-test-exact 4 provenance::image::tests --locked -p rafter-invariants -- --test-threads=1
+            scripts/cargo-test-exact 1 - --locked -p rafter-invariants --test producer_reexec -- --test-threads=1
+          } 2>&1 | tee target/rafter-invariants/ci-diagnostics/macos-launcher.log
+      - name: Annotate macOS launcher failure
+        if: failure() && steps.launcher-validation.outcome == 'failure'
+        shell: bash
+        run: |
+          diagnostic="$(tail -n 160 target/rafter-invariants/ci-diagnostics/macos-launcher.log | tr '\n' ' ')"
+          diagnostic="${diagnostic//'%'/'%25'}"
+          echo "::error title=macOS launcher validation failed::$diagnostic"
       - name: Upload macOS launcher diagnostics
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -175,6 +187,7 @@ jobs:
           name: invariants-launcher-macos-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             target/rafter-invariants/telemetry/
+            target/rafter-invariants/ci-diagnostics/
             crates/rafter-invariants/target/rafter-invariants/telemetry/
           if-no-files-found: ignore
           retention-days: 30

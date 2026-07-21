@@ -108,4 +108,8 @@ pub(crate) fn assert_pr_launcher_inventories(workflow: &str) {
             "macOS launcher validation omitted exact inventory: {exact_inventory}"
         );
     }
+    assert!(launcher.contains("id: launcher-validation"));
+    assert!(launcher.contains("target/rafter-invariants/ci-diagnostics/macos-launcher.log"));
+    assert!(launcher.contains("Annotate macOS launcher failure"));
+    assert!(launcher.contains("steps.launcher-validation.outcome == 'failure'"));
 }
