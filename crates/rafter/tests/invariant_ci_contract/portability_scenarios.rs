@@ -120,9 +120,15 @@ fn every_invariant_producer_and_aggregate_uses_fresh_cargo_roots() {
                 .find("./.github/actions/setup-rust")
                 .expect("Rust setup");
             let cache = block.find("Swatinem/rust-cache@").expect("Rust cache");
+            let prefetch = block
+                .find("cargo fetch --locked")
+                .unwrap_or_else(|| panic!("{workflow} job {job} omitted locked registry prefetch"));
             assert!(
-                checkout < isolation && isolation < setup && setup < cache,
-                "{workflow} job {job} must isolate Cargo before setup and cache restore"
+                checkout < isolation
+                    && isolation < setup
+                    && setup < cache
+                    && cache < prefetch,
+                "{workflow} job {job} must isolate Cargo before setup, cache restore, and locked registry prefetch"
             );
         }
     }

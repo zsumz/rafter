@@ -69,6 +69,8 @@ jobs:
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
         with:
           cache-on-failure: true
+      - name: Prefetch locked registry for offline source identity
+        run: cargo fetch --locked
       - name: dependency boundary tests
         run: scripts/cargo-test-exact 6 dependency_boundary --workspace
       - name: source boundary tests
@@ -111,6 +113,8 @@ jobs:
           cache-on-failure: true
           cache-targets: false
           cache-bin: false
+      - name: Prefetch locked registry for offline source identity
+        run: cargo fetch --locked
       - name: Produce test evidence
         run: cargo run --locked -p rafter-invariants -- run --profile pr --layer tests
       - name: Upload test evidence
@@ -149,6 +153,8 @@ jobs:
           cache-on-failure: true
           cache-targets: false
           cache-bin: false
+      - name: Prefetch locked registry for offline source identity
+        run: cargo fetch --locked
       - name: Validate managed process launcher on macOS
         run: |
           scripts/cargo-test-exact 55 execution::process:: --locked -p rafter-invariants -- --test-threads=1
@@ -188,6 +194,8 @@ jobs:
           cache-on-failure: true
           cache-targets: false
           cache-bin: false
+      - name: Prefetch locked registry for offline source identity
+        run: cargo fetch --locked
       - name: Validate artifact verifier compatibility inventory
         run: 'scripts/cargo-test-exact 61 artifact_verify:: --inventory verification/artifact-verifier-test-inventory.txt --locked -p rafter-invariants --lib -- --test-threads=1'
       - name: Produce simulator evidence
@@ -241,6 +249,8 @@ jobs:
           cache-on-failure: true
           cache-targets: false
           cache-bin: false
+      - name: Prefetch locked registry for offline source identity
+        run: cargo fetch --locked
       - name: Check TLA host capacity
         shell: bash
         run: |
@@ -306,6 +316,8 @@ jobs:
           cache-on-failure: true
           cache-targets: false
           cache-bin: false
+      - name: Prefetch locked registry for offline source identity
+        run: cargo fetch --locked
       - name: Validate TLA+ mutation sensitivity and serialized evidence
         timeout-minutes: 20
         run: |
