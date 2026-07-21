@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, error::Error, ffi::OsString, path::Path, time::Duration};
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 use std::os::fd::BorrowedFd;
 
 use super::timed_with_schedule_and_descriptors;
@@ -36,7 +36,7 @@ pub(in crate::producer) fn timed_for_with_cap(
     timed_with_schedule_and_descriptors(program, arguments, environment, current_dir, schedule, &[])
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(unix)]
 pub(in crate::producer) fn timed_for_with_cap_and_descriptors(
     kind: ProcessKind,
     program: &str,
