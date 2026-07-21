@@ -13,7 +13,7 @@ pub(crate) fn verify_bundle(
     catalog: &Catalog,
     trusted_profile: &str,
     trusted_runner: &str,
-) -> Result<Vec<String>, AggregateError> {
+) -> Result<(Vec<String>, super::AuthenticatedArtifacts), AggregateError> {
     if bundle.profile != trusted_profile || bundle.runner != trusted_runner {
         return Err(AggregateError::new(format!(
             "artifact verification identity mismatch: receipt profile/runner {}/{} != trusted {trusted_profile}/{trusted_runner}",
