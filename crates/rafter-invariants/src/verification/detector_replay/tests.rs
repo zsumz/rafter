@@ -92,7 +92,7 @@ fn current_source_compiles_and_replays_every_reviewed_detector() {
     assert!(assessment
         .qualifications
         .values()
-        .all(|qualification| qualification.is_passed()));
+        .all(super::assessment::EvidenceReplayQualification::is_passed));
     assert!(assessment
         .artifacts
         .iter()
