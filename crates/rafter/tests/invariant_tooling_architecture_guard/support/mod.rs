@@ -3,6 +3,7 @@
 mod domain;
 mod module_graph;
 mod rust_paths;
+mod source_inventory;
 mod workspace;
 
 pub(crate) use domain::{
@@ -14,6 +15,10 @@ pub(crate) use module_graph::{
 };
 pub(crate) use rust_paths::{
     normalize_rust_path, BlockingProcessCollector, PathContext, RustPathCollector,
+};
+pub(crate) use source_inventory::{
+    declared_macros, function_call_counts, macro_second_identifiers, public_associated_methods,
+    public_free_functions, string_array_constant,
 };
 pub(crate) use workspace::{
     declares_implementation, display_path, invariant_rust_files, is_legacy_verifier,
