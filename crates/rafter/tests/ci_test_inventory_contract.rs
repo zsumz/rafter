@@ -54,6 +54,11 @@ fn filtered_ci_test_lanes_declare_exact_nonzero_inventories() {
     assert!(ci.contains(
         "scripts/ci-run-diagnosed workspace-tests target/rafter-invariants/ci-diagnostics/workspace-tests.log cargo test --workspace"
     ));
+    for layer in ["tests", "simulator", "tla"] {
+        assert!(ci.contains(&format!(
+            "CI_DIAGNOSTIC_RECEIPT: artifacts/invariants/pr-{layer}.json"
+        )));
+    }
 
     let diagnosed = root.join("scripts/ci-run-diagnosed");
     let diagnosed_source = read(&diagnosed);
@@ -61,6 +66,10 @@ fn filtered_ci_test_lanes_declare_exact_nonzero_inventories() {
         "pipeline_status=(\"${PIPESTATUS[@]}\")",
         "tail -c 3500",
         "tr '\\r\\n' '  '",
+        "CI_DIAGNOSTIC_RECEIPT",
+        "select(.status != \"pass\")",
+        "{check_id, completion, observations}",
+        "emit_annotation \"failure receipt\"",
         "::error title=${label}",
         "exit \"$command_status\"",
     ] {

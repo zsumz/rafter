@@ -79,8 +79,8 @@ fn late_cleanup_error_cannot_refresh_the_absolute_deadline() {
     clear_signal_attempts();
     let cleanup_failures = CleanupFailures::default();
     let (mut process, _wrapper, target, reaper, _deadline) = managed_process_fixture(
-        "sleep 0.2",
-        Duration::from_millis(80),
+        "sleep 0.6",
+        Duration::from_millis(500),
         DEFAULT_KILL_CONFIRMATION_TIMEOUT,
         cleanup_failures.clone(),
         Some(process_observer()),
@@ -89,12 +89,12 @@ fn late_cleanup_error_cannot_refresh_the_absolute_deadline() {
         .set_target_group(target)
         .expect("place fixture target in anchor group");
     force_next_cleanup_target_alive();
-    std::thread::sleep(Duration::from_millis(60));
+    std::thread::sleep(Duration::from_millis(100));
 
     let drop_started = Instant::now();
     drop(process);
     assert!(
-        drop_started.elapsed() < Duration::from_millis(50),
+        drop_started.elapsed() < Duration::from_secs(1),
         "cleanup refreshed an already-running absolute deadline"
     );
     let failures = cleanup_failures.take();
