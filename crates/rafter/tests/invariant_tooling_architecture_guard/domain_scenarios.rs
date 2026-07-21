@@ -91,12 +91,21 @@ fn mature_invariant_facades_remain_declarative() {
             "crates/rafter-invariants/src/execution/mod.rs",
             "crates/rafter-invariants/src/execution/process/mod.rs",
             "crates/rafter-invariants/src/gate/mod.rs",
+            "crates/rafter-invariants/src/plan/mod.rs",
+            "crates/rafter-invariants/src/producer/maelstrom.rs",
+            "crates/rafter-invariants/src/producer/maelstrom/trial.rs",
             "crates/rafter-invariants/src/producer/process/mod.rs",
             "crates/rafter-invariants/src/producer/process/budget/mod.rs",
             "crates/rafter-invariants/src/producer/simulator.rs",
             "crates/rafter-invariants/src/producer/simulator/liveness/mod.rs",
+            "crates/rafter-invariants/src/producer/simulator/model.rs",
             "crates/rafter-invariants/src/producer/test_compile.rs",
             "crates/rafter-invariants/src/producer/test_exec.rs",
+            "crates/rafter-invariants/src/producer/tla.rs",
+            "crates/rafter-invariants/src/producer/tla/checkpoint.rs",
+            "crates/rafter-invariants/src/producer/tla/checkpoint/traversal.rs",
+            "crates/rafter-invariants/src/producer/tla/contract.rs",
+            "crates/rafter-invariants/src/producer/tla/execution.rs",
             "crates/rafter-invariants/src/provenance/invocation/mod.rs",
             "crates/rafter-invariants/src/provenance/source/mod.rs",
             "crates/rafter-invariants/src/provenance/mod.rs",
@@ -126,8 +135,13 @@ fn mature_invariant_facades_remain_declarative() {
             "crates/rafter-invariants/src/artifact_verify_maelstrom_support.rs",
             "crates/rafter-invariants/src/artifact_verify_tla.rs",
             "crates/rafter-invariants/src/contract/registry/parse/tests/mod.rs",
+            "crates/rafter-invariants/src/producer/maelstrom_binding.rs",
+            "crates/rafter-invariants/src/producer/maelstrom_exec.rs",
+            "crates/rafter-invariants/src/producer/maelstrom_exec/lease_history.rs",
             "crates/rafter-invariants/src/producer/process/tests/mod.rs",
             "crates/rafter-invariants/src/producer/simulator_tests.rs",
+            "crates/rafter-invariants/src/producer/tla_checkpoint.rs",
+            "crates/rafter-invariants/src/producer/tla_exec.rs",
             "crates/rafter-invariants/src/receipt.rs",
             "crates/rafter-invariants/src/receipt_maelstrom.rs",
             "crates/rafter-invariants/src/receipt_tests.rs",
@@ -185,6 +199,15 @@ fn migrated_domain_sources_follow_the_reviewed_dependency_graph() {
             ("evidence", "crates/rafter-invariants/src/evidence"),
             ("execution", "crates/rafter-invariants/src/execution"),
             ("provenance", "crates/rafter-invariants/src/provenance"),
+            ("plan", "crates/rafter-invariants/src/plan"),
+            (
+                "producer",
+                "crates/rafter-invariants/src/producer/maelstrom.rs"
+            ),
+            (
+                "producer",
+                "crates/rafter-invariants/src/producer/maelstrom"
+            ),
             ("producer", "crates/rafter-invariants/src/producer/process"),
             (
                 "producer",
@@ -193,14 +216,6 @@ fn migrated_domain_sources_follow_the_reviewed_dependency_graph() {
             (
                 "producer",
                 "crates/rafter-invariants/src/producer/simulator"
-            ),
-            (
-                "producer",
-                "crates/rafter-invariants/src/producer/simulator_events.rs"
-            ),
-            (
-                "producer",
-                "crates/rafter-invariants/src/producer/simulator_model.rs"
             ),
             (
                 "producer",
@@ -222,6 +237,8 @@ fn migrated_domain_sources_follow_the_reviewed_dependency_graph() {
                 "producer",
                 "crates/rafter-invariants/src/producer/test_exec"
             ),
+            ("producer", "crates/rafter-invariants/src/producer/tla.rs"),
+            ("producer", "crates/rafter-invariants/src/producer/tla"),
             ("verification", "crates/rafter-invariants/src/verification"),
             ("verdict", "crates/rafter-invariants/src/verdict"),
             ("gate", "crates/rafter-invariants/src/gate"),
@@ -613,6 +630,24 @@ fn retired_flat_contract_files_cannot_return() {
         assert!(
             !root.join(relative).exists(),
             "retired flat contract file returned: {relative}"
+        );
+    }
+}
+
+#[test]
+fn retired_flat_producer_domain_files_cannot_return() {
+    let root = workspace_root();
+    for relative in [
+        "crates/rafter-invariants/src/plan.rs",
+        "crates/rafter-invariants/src/producer/maelstrom_scenario.rs",
+        "crates/rafter-invariants/src/producer/maelstrom_tool.rs",
+        "crates/rafter-invariants/src/producer/simulator_events.rs",
+        "crates/rafter-invariants/src/producer/simulator_model.rs",
+        "crates/rafter-invariants/src/producer/tla_contract.rs",
+    ] {
+        assert!(
+            !root.join(relative).exists(),
+            "retired flat producer file returned: {relative}"
         );
     }
 }

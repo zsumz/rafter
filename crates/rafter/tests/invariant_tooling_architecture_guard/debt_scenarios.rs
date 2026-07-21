@@ -78,9 +78,9 @@ fn invariant_tooling_presentation_debt_only_shrinks() {
         tests_over_target <= MAX_TEST_FILES_OVER_TARGET,
         "invariant test files over {TEST_TARGET_LINES} lines increased from {MAX_TEST_FILES_OVER_TARGET} to {tests_over_target}"
     );
-    assert!(
-        missing_contracts <= MAX_FILES_WITHOUT_MODULE_CONTRACTS,
-        "invariant modules without `//!` contracts increased from {MAX_FILES_WITHOUT_MODULE_CONTRACTS} to {missing_contracts}"
+    assert_eq!(
+        missing_contracts, MAX_FILES_WITHOUT_MODULE_CONTRACTS,
+        "invariant modules without `//!` contracts must remain at {MAX_FILES_WITHOUT_MODULE_CONTRACTS}"
     );
 }
 
