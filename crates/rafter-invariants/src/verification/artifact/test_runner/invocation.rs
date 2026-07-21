@@ -9,7 +9,7 @@ use crate::{
 
 use super::environment::{exact_test_environment, verify_exact_environment};
 
-pub(in crate::artifact_verify) fn require_unique_discovery(
+pub(crate) fn require_unique_discovery(
     processes: &[crate::evidence::format::process::LabeledProcess],
     test_name: &str,
 ) -> Result<(), AggregateError> {
@@ -187,7 +187,7 @@ fn verify_exact_test_arguments(
     Ok(())
 }
 
-pub(in crate::artifact_verify) fn verify_reconstructed_test_observations(
+pub(crate) fn verify_reconstructed_test_observations(
     check: &CheckReceipt,
     invocations: &[crate::evidence::format::process::LabeledProcess],
     test_name: &str,
@@ -225,7 +225,7 @@ pub(in crate::artifact_verify) fn verify_reconstructed_test_observations(
     Ok(())
 }
 
-pub(in crate::artifact_verify) fn verify_runner_test_observations(
+pub(crate) fn verify_runner_test_observations(
     bundle: &ResultBundle,
     check: &CheckReceipt,
     invocations: &[crate::evidence::format::process::LabeledProcess],

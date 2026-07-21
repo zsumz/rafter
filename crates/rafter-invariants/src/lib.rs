@@ -1,11 +1,15 @@
 //! Deterministic aggregation for Rafter's invariant evidence contract.
 
+#[cfg(test)]
 mod artifact_verify;
+#[cfg(test)]
 mod artifact_verify_maelstrom;
+#[cfg(test)]
 mod artifact_verify_maelstrom_support;
 #[cfg(test)]
 #[path = "verification/maelstrom/tests/full_bundle.rs"]
 mod artifact_verify_maelstrom_tests;
+#[cfg(test)]
 mod artifact_verify_tla;
 mod contract;
 mod evidence;

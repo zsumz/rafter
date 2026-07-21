@@ -28,14 +28,14 @@ pub(crate) use super::{
 pub(crate) struct DetectorTestHarness<'a> {
     detector_sources: &'a mut DetectorFixtureAnalysis,
     test_logs: &'a mut BTreeMap<String, String>,
-    log_verifier: DetectorLogVerifier,
+    log_verifier: &'a dyn DetectorLogVerifier,
 }
 
 impl<'a> DetectorTestHarness<'a> {
     pub(crate) fn new(
         detector_sources: &'a mut DetectorFixtureAnalysis,
         test_logs: &'a mut BTreeMap<String, String>,
-        log_verifier: DetectorLogVerifier,
+        log_verifier: &'a dyn DetectorLogVerifier,
     ) -> Self {
         Self {
             detector_sources,

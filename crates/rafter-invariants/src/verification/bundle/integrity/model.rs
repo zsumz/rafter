@@ -1,11 +1,19 @@
 //! Authenticated file bindings and retained semantic bytes.
 
-use std::{collections::BTreeMap, fmt, sync::Arc};
+use std::{
+    collections::BTreeMap,
+    fmt,
+    sync::{Arc, Mutex},
+};
 
 use crate::{
     evidence::ArtifactRef,
     verification::{filesystem::VerificationFile, AggregateError},
 };
+
+type ProcessLog = Arc<[crate::evidence::format::process::LabeledProcess]>;
+type CachedProcessLog = Result<ProcessLog, String>;
+type ProcessLogCache = BTreeMap<ArtifactRef, CachedProcessLog>;
 
 pub(super) struct AuthenticatedFile {
     pub(super) declaration: DeclaredFile,
@@ -28,6 +36,7 @@ pub(super) struct DeclaredFile {
 pub(crate) struct AuthenticatedArtifacts {
     pub(super) bytes_by_artifact: BTreeMap<ArtifactRef, Arc<[u8]>>,
     pub(super) files: Vec<AuthenticatedFile>,
+    combined_processes: Mutex<ProcessLogCache>,
 }
 
 impl fmt::Debug for AuthenticatedArtifacts {
@@ -36,11 +45,23 @@ impl fmt::Debug for AuthenticatedArtifacts {
             .debug_struct("AuthenticatedArtifacts")
             .field("retained_artifacts", &self.bytes_by_artifact.len())
             .field("held_files", &self.files.len())
+            .field("combined_processes", &"cached on demand")
             .finish()
     }
 }
 
 impl AuthenticatedArtifacts {
+    pub(super) fn new(
+        bytes_by_artifact: BTreeMap<ArtifactRef, Arc<[u8]>>,
+        files: Vec<AuthenticatedFile>,
+    ) -> Self {
+        Self {
+            bytes_by_artifact,
+            files,
+            combined_processes: Mutex::new(BTreeMap::new()),
+        }
+    }
+
     pub(crate) fn bytes(&self, artifact: &ArtifactRef) -> Result<&[u8], AggregateError> {
         self.bytes_by_artifact
             .get(artifact)
@@ -62,6 +83,44 @@ impl AuthenticatedArtifacts {
         })
     }
 
+    pub(crate) fn combined_processes(
+        &self,
+        artifact: &ArtifactRef,
+    ) -> Result<ProcessLog, AggregateError> {
+        let mut cached = self.combined_processes.lock().map_err(|_| {
+            AggregateError::new("authenticated process-log cache is poisoned".to_owned())
+        })?;
+        if let Some(processes) = cached.get(artifact) {
+            return clone_cached_processes(processes, artifact);
+        }
+        let parsed = self
+            .text(artifact)
+            .and_then(|source| {
+                crate::evidence::format::process::parse_combined_processes(source)
+                    .map_err(|error| AggregateError::new(error.to_string()))
+            })
+            .map(Arc::from)
+            .map_err(|error| error.to_string());
+        cached.insert(artifact.clone(), parsed.clone());
+        clone_cached_processes(&parsed, artifact)
+    }
+
+    pub(crate) fn combined_v4(&self, artifact: &ArtifactRef) -> Result<ProcessLog, AggregateError> {
+        let processes = self.combined_processes(artifact)?;
+        if let Some(process) = processes.iter().find(|process| {
+            process.schema_version
+                != crate::evidence::format::process::COMBINED_PROCESS_SCHEMA_VERSION
+        }) {
+            return Err(AggregateError::new(format!(
+                "process log {} uses schema {}, expected {}",
+                artifact.path,
+                process.schema_version,
+                crate::evidence::format::process::COMBINED_PROCESS_SCHEMA_VERSION
+            )));
+        }
+        Ok(processes)
+    }
+
     pub(crate) fn revalidate_paths(&self) -> Result<(), AggregateError> {
         for authenticated in &self.files {
             super::file::read_declared(&authenticated.file, &authenticated.declaration, false)?;
@@ -74,4 +133,13 @@ impl AuthenticatedArtifacts {
         }
         Ok(())
     }
+}
+
+fn clone_cached_processes(
+    processes: &CachedProcessLog,
+    artifact: &ArtifactRef,
+) -> Result<ProcessLog, AggregateError> {
+    processes.clone().map_err(|error| {
+        AggregateError::new(format!("parse process log {}: {error}", artifact.path))
+    })
 }

@@ -1,7 +1,5 @@
 //! Compatibility facade for verification-owned TLA+ artifact acceptance.
 
-pub(super) use crate::verification::tla::verify_authenticated;
-
 #[cfg(test)]
 pub(super) use crate::verification::tla::verify;
 

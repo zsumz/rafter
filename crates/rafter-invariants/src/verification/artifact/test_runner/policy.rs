@@ -5,14 +5,14 @@ use crate::evidence::format::libtest::{
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum ExactTestExecution {
+pub(crate) enum ExactTestExecution {
     Pass,
     InvariantViolation,
     CoverageNotReached,
     HarnessError,
 }
 
-pub(super) fn classify_exact_execution(
+pub(crate) fn classify_exact_execution(
     stdout: &[u8],
     stderr: &[u8],
     test_name: &str,

@@ -1,32 +1,23 @@
-//! Exact libtest evidence verification.
+//! Test-only exact-test-verifier compatibility facade.
 
-mod detector;
-mod environment;
-mod invocation;
-mod outcome;
-mod policy;
-mod registry;
-mod runner;
-#[cfg(test)]
-mod tests;
-
-#[cfg(test)]
-pub(super) use detector::require_detector_witness;
-pub(super) use detector::{
-    require_detector_witness_contract, verify_detector_harness_error_invocations,
-};
-pub(super) use environment::test_execution_profile;
-#[cfg(test)]
-pub(super) use environment::verify_exact_environment;
-#[cfg(test)]
-pub(super) use invocation::{
-    require_unique_discovery, verify_reconstructed_test_observations,
+pub(crate) use crate::verification::artifact::test_support::test_runner::{
+    require_detector_witness, require_detector_witness_contract, require_unique_discovery,
+    verify_exact_environment, verify_reconstructed_test_observations,
     verify_runner_test_observations,
 };
-use outcome::{
-    require_exact_test_failure, verify_harness_error_test_invocations,
-    verify_incomplete_test_invocations, verify_oracle_failure_invocations,
-};
-pub(super) use outcome::{require_exact_test_pass, verify_test_invocations};
-use registry::{registered_test_binding, registered_test_name};
-pub(super) use runner::verify_test_logs;
+
+pub(crate) mod detector {
+    pub(crate) use crate::verification::artifact::test_support::test_runner::{
+        require_detector_witness_contract_in_streams, require_detector_witness_in_streams,
+        verify_detector_harness_challenge,
+    };
+}
+
+pub(crate) mod policy {
+    pub(crate) use crate::verification::artifact::test_support::test_runner::{
+        classify_exact_execution, ExactTestExecution,
+    };
+}
+
+#[path = "../verification/artifact/test_runner/tests.rs"]
+mod tests;

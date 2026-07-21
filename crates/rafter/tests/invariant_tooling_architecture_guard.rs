@@ -4,6 +4,8 @@
 mod analysis_scenarios;
 #[path = "invariant_tooling_architecture_guard/support/mod.rs"]
 mod architecture_support;
+#[path = "invariant_tooling_architecture_guard/artifact_scenarios.rs"]
+mod artifact_scenarios;
 #[path = "invariant_tooling_architecture_guard/debt_scenarios.rs"]
 mod debt_scenarios;
 #[path = "invariant_tooling_architecture_guard/domain_scenarios.rs"]

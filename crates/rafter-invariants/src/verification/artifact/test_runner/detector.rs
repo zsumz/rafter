@@ -8,7 +8,7 @@ use crate::{
 };
 
 #[cfg(test)]
-pub(in crate::artifact_verify) fn require_detector_witness(
+pub(crate) fn require_detector_witness(
     bundle: &ResultBundle,
     source: &str,
     oracle_check_id: &str,
@@ -28,7 +28,7 @@ pub(in crate::artifact_verify) fn require_detector_witness(
     )
 }
 
-pub(in crate::artifact_verify) fn require_detector_witness_contract(
+pub(crate) fn require_detector_witness_contract(
     bundle: &ResultBundle,
     source: &str,
     oracle_check_id: &str,
@@ -71,7 +71,7 @@ pub(in crate::artifact_verify) fn require_detector_witness_contract(
 }
 
 #[cfg(test)]
-pub(super) fn require_detector_witness_in_streams(
+pub(crate) fn require_detector_witness_in_streams(
     stdout: &str,
     stderr: &str,
     token: &str,
@@ -92,7 +92,7 @@ pub(super) fn require_detector_witness_in_streams(
     )
 }
 
-pub(super) fn require_detector_witness_contract_in_streams(
+pub(crate) fn require_detector_witness_contract_in_streams(
     stdout: &str,
     stderr: &str,
     token: &str,
@@ -129,7 +129,7 @@ fn valid_identifier(identifier: &str) -> Option<()> {
     .then_some(())
 }
 
-pub(in crate::artifact_verify) fn verify_detector_harness_error_invocations(
+pub(crate) fn verify_detector_harness_error_invocations(
     bundle: &ResultBundle,
     check: &CheckReceipt,
     source: &str,
@@ -162,7 +162,7 @@ pub(in crate::artifact_verify) fn verify_detector_harness_error_invocations(
     Ok(())
 }
 
-pub(super) fn verify_detector_harness_challenge(
+pub(crate) fn verify_detector_harness_challenge(
     challenge: Option<&str>,
 ) -> Result<(), AggregateError> {
     let challenge = challenge.ok_or_else(|| {

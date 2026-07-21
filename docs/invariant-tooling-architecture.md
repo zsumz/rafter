@@ -416,6 +416,29 @@ src/
       receipt/liveness.rs exact typed-report and observation binding
       schedule/          invocation, compiler, path, event, and profile provenance
       liveness/          independent bounded-report semantic validation
+    artifact/
+      mod.rs             declarative artifact-verification facade
+      verify.rs          trusted authentication and exhaustive runner dispatch
+      metrics.rs         typed layer, process-kind, and metric-scope reconciliation
+      test_execution.rs  shared exact-test execution-profile identity
+      compiler/
+        mod.rs           source-bound compiler verification facade
+        model.rs         trusted target, executable, and compilation evidence
+        invocation.rs    shared canonical Cargo path predicates
+        cargo_output.rs  Cargo wire decoding and exact artifact reconstruction
+        receipt.rs       compile-log collection and emitted-target reconciliation
+        outcome.rs       compile failure to harness-error binding
+        simulator.rs     exact simulator compiler-plan acceptance
+        test_target.rs   registry, preserved binary, and runtime binding
+      test_runner/
+        mod.rs           exact-test verifier implementation
+        detector.rs      detector transcript and witness-contract acceptance
+        environment.rs   deterministic exact-test environment reconstruction
+        invocation.rs    discovery plan and executable provenance
+        outcome.rs       fail-closed exact execution outcomes
+        policy.rs        independent exact-execution classification
+        registry.rs      registry-to-libtest identity binding
+        runner.rs        receipt, compilation, and transcript reconciliation
     test_runner/
       mod.rs             exact Rust-test receipt policy facade
       receipt.rs         status, observation, and artifact matrix
@@ -433,21 +456,9 @@ src/
       receipt.rs         structural TLA+ runner receipt validation
       tests/             focused and serialized adversarial scenarios
     maelstrom/           history, scenario, durability, and lease checks
-  artifact_verify/
-    simulator.rs         declarative simulator-verifier compatibility facade
-    simulator_schedule.rs declarative schedule-verifier compatibility facade
-    simulator_schedule/events.rs declarative event-scanner compatibility facade
-    test_logs.rs         legacy physical facade, logically verification-owned
-    test_logs/
-      detector.rs        detector-log adaptation into verifier transcript policy
-      environment.rs     deterministic exact-test environment reconstruction
-      invocation.rs      discovery plan and executable provenance
-      outcome.rs         independent verifier outcome acceptance
-      policy.rs          fail-closed exact-execution policy
-      registry.rs        registry-to-libtest identity binding
-      runner.rs          receipt and transcript orchestration
-      tests.rs           detector and outcome-policy adversarial scenarios
-  artifact_verify_tla.rs declarative TLA+ verifier compatibility facade
+  artifact_verify.rs     test-only stable artifact-verifier scenario mount
+  artifact_verify/       test-only declarative compatibility facades and scenarios
+  artifact_verify_tla.rs test-only stable TLA+ scenario mount
   receipt.rs             test-only canonical receipt-fixture facade
   receipt_maelstrom.rs   test-only stable Maelstrom receipt scenario mount
   receipt_tests.rs       test-only stable receipt-policy scenario mount
@@ -479,13 +490,27 @@ validate producer output. Shared wire decoding, including canonical libtest and
 process transcripts, belongs under `evidence::format`; producer and verifier
 policy remains separate.
 
-The simulator and test-log files retained under `artifact_verify/`, plus the
-root `artifact_verify_tla.rs`, `receipt.rs`, `receipt_maelstrom.rs`, and
-`receipt_tests.rs` mounts, are declarative compatibility surfaces for stable
-internal test identities. Their implementation lives under `verification/`.
-The production-source manifest enforces production facades; the separate test
-facade manifest keeps test-only mounts declarative. These mounts are not a
-second verification domain.
+The files retained under `artifact_verify/`, plus the root
+`artifact_verify.rs`, `artifact_verify_tla.rs`, `artifact_verify_maelstrom.rs`,
+`artifact_verify_maelstrom_support.rs`, `receipt.rs`, `receipt_maelstrom.rs`,
+and `receipt_tests.rs` mounts, are test-only declarative compatibility surfaces
+for stable reviewed identities. Production artifact authentication, compiler
+reconstruction, resource accounting, exact-test acceptance, and runner dispatch
+live exclusively under `verification/artifact/`. The reviewed 61-test artifact
+compatibility inventory is pinned in
+`verification/artifact-verifier-test-inventory.txt`; missing, renamed, or extra
+identities fail before execution. These mounts are not a second verification
+domain.
+
+Compiler verification returns typed `CompilationEvidence` keyed by affected
+execution IDs. A missing runtime transcript is accepted as a compile-only
+harness error only when a failed or timed-out compile names that same execution;
+the presence of an unrelated compile log is insufficient. Simulator detector
+qualification consumes one named exact-test verifier implementation rather than
+an interchangeable callback tuple. Resource reconciliation first converts the
+trusted runner and artifact kinds into exhaustive `EvidenceLayer`, process-kind,
+and metric-scope values before deciding which costs belong to a check or the
+whole execution.
 
 TLA+ checkpoint metadata is neutral serialized evidence, so both producer and
 verifier consume `evidence/format/tla/checkpoint.rs`. Mutation evidence follows

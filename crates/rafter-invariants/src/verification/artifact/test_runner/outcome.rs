@@ -12,7 +12,7 @@ use super::{
     policy::{classify_exact_execution, ExactTestExecution},
 };
 
-pub(in crate::artifact_verify) fn verify_test_invocations(
+pub(crate) fn verify_test_invocations(
     bundle: &ResultBundle,
     check: &CheckReceipt,
     source: &str,
@@ -54,7 +54,7 @@ pub(in crate::artifact_verify) fn verify_test_invocations(
     Ok(())
 }
 
-pub(in crate::artifact_verify) fn verify_oracle_failure_invocations(
+pub(crate) fn verify_oracle_failure_invocations(
     bundle: &ResultBundle,
     check: &CheckReceipt,
     source: &str,
@@ -63,9 +63,7 @@ pub(in crate::artifact_verify) fn verify_oracle_failure_invocations(
 ) -> Result<(), AggregateError> {
     let processes =
         verify_test_process_plan(bundle, check, source, test_name, &check.check_id, root)?;
-    let [listed, ignored, exact] = processes.as_slice() else {
-        unreachable!("test process plan verifies exact cardinality");
-    };
+    let (listed, ignored, exact) = oracle_failure_processes(&processes)?;
     if listed.exit_code != Some(0)
         || listed.timed_out
         || ignored.exit_code != Some(0)
@@ -96,7 +94,25 @@ pub(in crate::artifact_verify) fn verify_oracle_failure_invocations(
     Ok(())
 }
 
-pub(in crate::artifact_verify) fn verify_incomplete_test_invocations(
+fn oracle_failure_processes(
+    processes: &[crate::evidence::format::process::LabeledProcess],
+) -> Result<
+    (
+        &crate::evidence::format::process::LabeledProcess,
+        &crate::evidence::format::process::LabeledProcess,
+        &crate::evidence::format::process::LabeledProcess,
+    ),
+    AggregateError,
+> {
+    let [listed, ignored, exact] = processes else {
+        return Err(AggregateError::new(
+            "oracle failure receipt is missing its exact failing invocation".to_owned(),
+        ));
+    };
+    Ok((listed, ignored, exact))
+}
+
+pub(crate) fn verify_incomplete_test_invocations(
     bundle: &ResultBundle,
     check: &CheckReceipt,
     source: &str,
@@ -156,7 +172,7 @@ pub(in crate::artifact_verify) fn verify_incomplete_test_invocations(
     Ok(())
 }
 
-pub(in crate::artifact_verify) fn verify_harness_error_test_invocations(
+pub(crate) fn verify_harness_error_test_invocations(
     bundle: &ResultBundle,
     check: &CheckReceipt,
     source: &str,
@@ -212,12 +228,16 @@ pub(in crate::artifact_verify) fn verify_harness_error_test_invocations(
                 ));
             }
         }
-        _ => unreachable!("test process plan has two or three invocations"),
+        _ => {
+            return Err(AggregateError::new(
+                "harness-error transcript has an invalid process count".to_owned(),
+            ));
+        }
     }
     Ok(())
 }
 
-pub(in crate::artifact_verify) fn require_exact_test_pass(
+pub(crate) fn require_exact_test_pass(
     source: &str,
     test_name: &str,
     check_id: &str,
@@ -239,7 +259,7 @@ pub(in crate::artifact_verify) fn require_exact_test_pass(
     Ok(())
 }
 
-pub(in crate::artifact_verify) fn require_exact_test_failure(
+pub(crate) fn require_exact_test_failure(
     source: &str,
     test_name: &str,
     check_id: &str,
@@ -260,3 +280,7 @@ pub(in crate::artifact_verify) fn require_exact_test_failure(
     }
     Ok(())
 }
+
+#[cfg(test)]
+#[path = "outcome_tests.rs"]
+mod tests;

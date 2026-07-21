@@ -1,6 +1,6 @@
 //! Independent acceptance of untrusted invariant evidence.
 
-mod artifact;
+pub(crate) mod artifact;
 mod bundle;
 mod detector;
 mod detector_replay;

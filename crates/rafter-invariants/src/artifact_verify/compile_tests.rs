@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 
 use super::{
     compile::{
-        compiler_artifact_executable, target_directory_matches, verify_target_process_binding,
-        CargoTargetKey, EmittedTestExecutable,
+        target_directory_matches, verify_target_process_binding, CargoTargetKey,
+        EmittedTestExecutable,
     },
     test_logs::{
         require_unique_discovery, verify_exact_environment, verify_reconstructed_test_observations,
@@ -291,36 +291,78 @@ fn protected_compiler_targets_rebase_recorded_paths_into_the_active_checkout() {
 
 #[test]
 fn simulator_compiler_artifact_requires_the_exact_absolute_bin_target() {
-    let cargo = |kind: &str, executable: &str| {
-        serde_json::json!({
+    let source_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(std::path::Path::parent)
+        .expect("workspace root")
+        .canonicalize()
+        .expect("canonical workspace root");
+    let target_dir = source_root.join("target/simulator-compiler-identity");
+    let cargo = |kind: &str, executable: serde_json::Value, fresh: Option<bool>| {
+        let mut message = serde_json::json!({
             "reason": "compiler-artifact",
-            "target": {"name": "rafter-model-check-fast", "kind": [kind]},
-            "fresh": false,
+            "package_id": format!(
+                "path+file://{}#0.0.1",
+                source_root.join("crates/rafter-sim").display()
+            ),
+            "target": {
+                "name": "rafter-model-check-fast",
+                "kind": [kind],
+                "crate_types": ["bin"],
+                "src_path": source_root.join(
+                    "crates/rafter-sim/src/bin/rafter-model-check-fast.rs"
+                ),
+            },
             "executable": executable,
-        })
-        .to_string()
+        });
+        if let Some(fresh) = fresh {
+            message["fresh"] = serde_json::json!(fresh);
+        }
+        message.to_string()
     };
-    compiler_artifact_executable(
-        cargo("bin", "/workspace/target/rafter-model-check-fast").as_bytes(),
-        "rafter-model-check-fast",
-        "bin",
-        "simulator compile",
+    let executable = target_dir.join("release").join(format!(
+        "rafter-model-check-fast{}",
+        std::env::consts::EXE_SUFFIX
+    ));
+    crate::verification::simulator::schedule::simulator_compiler_artifact_executable(
+        cargo("bin", serde_json::json!(executable), Some(false)).as_bytes(),
+        &source_root,
+        &source_root,
+        &target_dir,
     )
     .expect("exact simulator compiler-artifact verifies");
-    assert!(compiler_artifact_executable(
-        cargo("lib", "/workspace/target/rafter-model-check-fast").as_bytes(),
-        "rafter-model-check-fast",
-        "bin",
-        "simulator compile",
-    )
-    .is_err());
-    assert!(compiler_artifact_executable(
-        cargo("bin", "target/rafter-model-check-fast").as_bytes(),
-        "rafter-model-check-fast",
-        "bin",
-        "simulator compile",
-    )
-    .is_err());
+    assert!(
+        crate::verification::simulator::schedule::simulator_compiler_artifact_executable(
+            cargo("lib", serde_json::json!(executable), Some(false)).as_bytes(),
+            &source_root,
+            &source_root,
+            &target_dir,
+        )
+        .is_err()
+    );
+    assert!(
+        crate::verification::simulator::schedule::simulator_compiler_artifact_executable(
+            cargo(
+                "bin",
+                serde_json::json!("target/rafter-model-check-fast"),
+                Some(false),
+            )
+            .as_bytes(),
+            &source_root,
+            &source_root,
+            &target_dir,
+        )
+        .is_err()
+    );
+    assert!(
+        crate::verification::simulator::schedule::simulator_compiler_artifact_executable(
+            cargo("bin", serde_json::json!(executable), None).as_bytes(),
+            &source_root,
+            &source_root,
+            &target_dir,
+        )
+        .is_err()
+    );
 }
 
 fn process(label: &str, stdout: &str) -> LabeledProcess {

@@ -7,7 +7,7 @@ use crate::{
     verification::AggregateError,
 };
 
-pub(in crate::artifact_verify) fn verify_exact_environment(
+pub(crate) fn verify_exact_environment(
     exact: &crate::evidence::format::process::LabeledProcess,
     expected: &BTreeMap<String, String>,
     expected_digest: &str,
@@ -41,7 +41,7 @@ pub(super) fn exact_test_environment(
         .and_then(|artifact| Path::new(&artifact.path).file_stem())
         .and_then(|value| value.to_str())
         .ok_or_else(|| AggregateError::new("test log path has no execution ID".to_owned()))?;
-    let execution_profile = test_execution_profile(bundle);
+    let execution_profile = super::super::test_execution::profile(bundle);
     let executed_test_name = invocations
         .get(2)
         .and_then(|invocation| invocation.invocation.arguments.first())
@@ -102,12 +102,4 @@ pub(super) fn exact_test_environment(
         );
     }
     Ok(environment)
-}
-
-pub(in crate::artifact_verify) fn test_execution_profile(bundle: &ResultBundle) -> String {
-    if bundle.runner == "simulator" {
-        format!("{}-simulator-detectors", bundle.profile)
-    } else {
-        bundle.profile.clone()
-    }
 }

@@ -7,33 +7,42 @@ use crate::{
     evidence::{ArtifactRef, CheckReceipt, ResultBundle},
     verification::{AggregateError, AuthenticatedArtifacts, DetectorFixtureSourceBinding},
 };
-type InvocationVerifier =
-    fn(&ResultBundle, &CheckReceipt, &str, &str, &str, &Path) -> Result<(), AggregateError>;
-type WitnessVerifier =
-    fn(&ResultBundle, &str, &str, &str, &BTreeMap<String, usize>) -> Result<(), AggregateError>;
-type ExactPassVerifier = fn(&str, &str, &str) -> Result<(), AggregateError>;
-#[derive(Clone, Copy)]
-pub(crate) struct DetectorLogVerifier {
-    harness_error: InvocationVerifier,
-    passing_invocations: InvocationVerifier,
-    witness_contract: WitnessVerifier,
-    exact_pass: ExactPassVerifier,
-}
+pub(crate) trait DetectorLogVerifier: Sync {
+    fn verify_harness_error(
+        &self,
+        bundle: &ResultBundle,
+        check: &CheckReceipt,
+        source: &str,
+        test_name: &str,
+        oracle_check_id: &str,
+        root: &Path,
+    ) -> Result<(), AggregateError>;
 
-impl DetectorLogVerifier {
-    pub(crate) const fn new(
-        harness_error: InvocationVerifier,
-        passing_invocations: InvocationVerifier,
-        witness_contract: WitnessVerifier,
-        exact_pass: ExactPassVerifier,
-    ) -> Self {
-        Self {
-            harness_error,
-            passing_invocations,
-            witness_contract,
-            exact_pass,
-        }
-    }
+    fn verify_passing_invocations(
+        &self,
+        bundle: &ResultBundle,
+        check: &CheckReceipt,
+        source: &str,
+        test_name: &str,
+        oracle_check_id: &str,
+        root: &Path,
+    ) -> Result<(), AggregateError>;
+
+    fn verify_witness_contract(
+        &self,
+        bundle: &ResultBundle,
+        source: &str,
+        check_id: &str,
+        detector: &str,
+        witnesses: &BTreeMap<String, usize>,
+    ) -> Result<(), AggregateError>;
+
+    fn require_exact_pass(
+        &self,
+        source: &str,
+        test_name: &str,
+        check_id: &str,
+    ) -> Result<(), AggregateError>;
 }
 
 pub(crate) struct NegativeDetectorContext<'a> {
@@ -43,7 +52,7 @@ pub(crate) struct NegativeDetectorContext<'a> {
     pub(crate) authenticated: &'a AuthenticatedArtifacts,
     pub(crate) detector_sources: &'a mut crate::verification::DetectorFixtureAnalysis,
     pub(crate) test_logs: &'a mut BTreeMap<String, String>,
-    pub(crate) log_verifier: DetectorLogVerifier,
+    pub(crate) log_verifier: &'a dyn DetectorLogVerifier,
 }
 
 pub(crate) fn verify_negative_detector_evidence_authenticated(
@@ -109,7 +118,7 @@ pub(crate) fn verify_negative_detector_evidence_authenticated(
         source
     };
     if qualified == 0 {
-        return (context.log_verifier.harness_error)(
+        return context.log_verifier.verify_harness_error(
             context.bundle,
             check,
             &source,
@@ -118,7 +127,7 @@ pub(crate) fn verify_negative_detector_evidence_authenticated(
             context.root,
         );
     }
-    (context.log_verifier.passing_invocations)(
+    context.log_verifier.verify_passing_invocations(
         context.bundle,
         check,
         &source,
@@ -126,14 +135,16 @@ pub(crate) fn verify_negative_detector_evidence_authenticated(
         &negative_test.check_id(),
         context.root,
     )?;
-    (context.log_verifier.witness_contract)(
+    context.log_verifier.verify_witness_contract(
         context.bundle,
         &source,
         &negative_test.check_id(),
         invocation_contract.registered_identity(),
         invocation_contract.witnesses(),
     )?;
-    (context.log_verifier.exact_pass)(&source, &negative_test.test_name, &check.check_id)
+    context
+        .log_verifier
+        .require_exact_pass(&source, &negative_test.test_name, &check.check_id)
 }
 
 fn detector_test_log(
