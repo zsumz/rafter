@@ -1,3 +1,5 @@
+//! Shared snapshot fixtures, chunk helpers, and test-directory cleanup.
+
 use std::{
     fs,
     path::PathBuf,

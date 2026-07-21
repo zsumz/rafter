@@ -1,3 +1,5 @@
+//! Pending-transfer staging, restart, promotion, and cleanup scenarios.
+
 use std::fs;
 
 use rafter_invariant_test::oracle_assert_eq;

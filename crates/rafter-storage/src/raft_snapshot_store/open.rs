@@ -1,3 +1,5 @@
+//! File-backed snapshot opening and streaming envelope verification.
+
 use std::{
     fs::{self, File},
     io::Read,
@@ -8,11 +10,13 @@ use rafter::RaftSnapshot;
 
 use super::{
     manifest_path, read_manifest, read_pending_snapshot_transfer, snapshot_path, CurrentSnapshot,
-    FileRaftSnapshotStore, OpenRaftSnapshotStoreError, StagedTransfer,
+    FileRaftSnapshotStore, FileRaftSnapshotStoreOpenReport, OpenRaftSnapshotStoreError,
+    OpenedFileRaftSnapshotStore, PendingSnapshotTransferRecovery, StagedTransfer,
 };
 use crate::{
     checksum::RunningCrc32,
     durable_fs::{sync_parent_directory, ParentDirectorySyncBatch},
+    file_store_health::FileStoreHealth,
     raft_snapshot_codec::{decode_raft_snapshot_header, SnapshotEnvelopeHeader},
     DecodeRaftSnapshotError,
 };
@@ -28,9 +32,18 @@ const VERIFY_CHUNK_BYTES: usize = 256 * 1024;
 
 fn read_staged_transfer(
     directory: &std::path::Path,
-) -> Result<Option<StagedTransfer>, OpenRaftSnapshotStoreError> {
-    Ok(read_pending_snapshot_transfer(directory)?
-        .map(|(transfer, body_crc)| StagedTransfer { transfer, body_crc }))
+) -> Result<
+    (
+        Option<StagedTransfer>,
+        Option<PendingSnapshotTransferRecovery>,
+    ),
+    OpenRaftSnapshotStoreError,
+> {
+    let (pending, recovery) = read_pending_snapshot_transfer(directory)?;
+    Ok((
+        pending.map(|(transfer, body_crc)| StagedTransfer { transfer, body_crc }),
+        recovery,
+    ))
 }
 
 impl FileRaftSnapshotStore {
@@ -47,6 +60,18 @@ impl FileRaftSnapshotStore {
     /// corrupt, references a missing snapshot, or selects snapshot bytes that
     /// fail envelope validation.
     pub fn open(directory: impl AsRef<Path>) -> Result<Self, OpenRaftSnapshotStoreError> {
+        Self::open_with_report(directory).map(OpenedFileRaftSnapshotStore::into_store)
+    }
+
+    /// Opens a durable snapshot store and reports nonfatal recovery actions.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`OpenRaftSnapshotStoreError`] for corrupt authoritative state or
+    /// filesystem failures that prevent a complete open.
+    pub fn open_with_report(
+        directory: impl AsRef<Path>,
+    ) -> Result<OpenedFileRaftSnapshotStore, OpenRaftSnapshotStoreError> {
         Self::open_with_creation_sync(directory.as_ref(), CreationSync::Immediate)
     }
 
@@ -55,24 +80,33 @@ impl FileRaftSnapshotStore {
         batch: &mut ParentDirectorySyncBatch,
     ) -> Result<Self, OpenRaftSnapshotStoreError> {
         Self::open_with_creation_sync(directory.as_ref(), CreationSync::Batched(batch))
+            .map(OpenedFileRaftSnapshotStore::into_store)
     }
 
     fn open_with_creation_sync(
         directory: &Path,
         creation_sync: CreationSync<'_>,
-    ) -> Result<Self, OpenRaftSnapshotStoreError> {
+    ) -> Result<OpenedFileRaftSnapshotStore, OpenRaftSnapshotStoreError> {
         let directory = directory.to_path_buf();
-        ensure_directory(&directory, creation_sync)?;
+        let created_directory = ensure_directory(&directory, creation_sync)?;
 
         let manifest_path = manifest_path(&directory);
         let Some(manifest) = read_manifest(&manifest_path)? else {
-            let pending = read_staged_transfer(&directory)?;
-            return Ok(Self {
-                directory,
-                current: None,
-                pending,
-                next_sequence: 1,
-            });
+            let (pending, pending_transfer_recovery) = read_staged_transfer(&directory)?;
+            return Ok(OpenedFileRaftSnapshotStore::new(
+                Self {
+                    directory,
+                    current: None,
+                    pending,
+                    next_sequence: Some(1),
+                    health: FileStoreHealth::Healthy,
+                    ownership: None,
+                },
+                FileRaftSnapshotStoreOpenReport {
+                    created_directory,
+                    pending_transfer_recovery,
+                },
+            ));
         };
 
         let snapshot_path = snapshot_path(&directory, &manifest.file_name);
@@ -85,18 +119,26 @@ impl FileRaftSnapshotStore {
         let header = verify_snapshot_envelope(&snapshot_path)?;
         let descriptor =
             RaftSnapshot::new(header.metadata, header.payload_len, header.payload_crc32);
-        let next_sequence = manifest.sequence.saturating_add(1);
-        let pending = read_staged_transfer(&directory)?;
-        Ok(Self {
-            directory,
-            current: Some(CurrentSnapshot {
-                file_name: manifest.file_name,
-                descriptor,
-                payload_offset: header.header_len,
-            }),
-            pending,
-            next_sequence,
-        })
+        let next_sequence = manifest.sequence.checked_add(1);
+        let (pending, pending_transfer_recovery) = read_staged_transfer(&directory)?;
+        Ok(OpenedFileRaftSnapshotStore::new(
+            Self {
+                directory,
+                current: Some(CurrentSnapshot {
+                    file_name: manifest.file_name,
+                    descriptor,
+                    payload_offset: header.header_len,
+                }),
+                pending,
+                next_sequence,
+                health: FileStoreHealth::Healthy,
+                ownership: None,
+            },
+            FileRaftSnapshotStoreOpenReport {
+                created_directory,
+                pending_transfer_recovery,
+            },
+        ))
     }
 }
 
@@ -116,7 +158,7 @@ fn verify_snapshot_envelope(
         move |error: std::io::Error| OpenRaftSnapshotStoreError::Io {
             operation,
             path: path.clone(),
-            message: error.to_string(),
+            source: error.into(),
         }
     };
     let corrupt = OpenRaftSnapshotStoreError::Snapshot;
@@ -228,26 +270,24 @@ fn bounded_usize_len(remaining: u64, max_len: usize) -> usize {
 fn ensure_directory(
     directory: &Path,
     creation_sync: CreationSync<'_>,
-) -> Result<(), OpenRaftSnapshotStoreError> {
+) -> Result<bool, OpenRaftSnapshotStoreError> {
     if directory.exists() {
-        return Ok(());
+        return Ok(false);
     }
     fs::create_dir_all(directory).map_err(|error| OpenRaftSnapshotStoreError::Io {
         operation: "create raft snapshot directory",
         path: directory.to_path_buf(),
-        message: error.to_string(),
+        source: error.into(),
     })?;
     match creation_sync {
         CreationSync::Immediate => {
             sync_parent_directory(directory).map_err(|error| OpenRaftSnapshotStoreError::Io {
                 operation: "sync raft snapshot parent directory",
                 path: directory.to_path_buf(),
-                message: error.to_string(),
-            })
+                source: error.into(),
+            })?;
         }
-        CreationSync::Batched(batch) => {
-            batch.record_parent_of(directory);
-            Ok(())
-        }
+        CreationSync::Batched(batch) => batch.record_parent_of(directory),
     }
+    Ok(true)
 }

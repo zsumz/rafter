@@ -1,3 +1,8 @@
+//! In-memory snapshot-store reference behavior.
+//!
+//! This implementation shares validation with the durable store so tests and
+//! volatile runtimes observe the same staging and promotion contract.
+
 use rafter::{
     PendingSnapshotTransfer, RaftSnapshot, SnapshotChunkRequest, SnapshotChunkSource,
     StagedSnapshotChunk,
@@ -6,8 +11,9 @@ use rafter::{
 use crate::{crc32, PersistedRaftSnapshot};
 
 use super::{
-    pending_transfer_after_chunk, source_chunk, stream_chunk_len, validate_staged_chunk,
-    validate_staged_promotion, RaftSnapshotStore, RaftSnapshotStoreWriteError,
+    source_chunk, stream_chunk_len,
+    validation::{pending_transfer_after_chunk, validate_staged_chunk, validate_staged_promotion},
+    RaftSnapshotStore, RaftSnapshotStoreWriteError,
 };
 
 /// In-memory [`RaftSnapshotStore`] implementation for tests and volatile
@@ -99,8 +105,8 @@ impl RaftSnapshotStore for InMemoryRaftSnapshotStore {
         &mut self,
         chunk: &StagedSnapshotChunk,
     ) -> Result<(), RaftSnapshotStoreWriteError> {
-        validate_staged_chunk(chunk, self.current_pending_snapshot_transfer())?;
-        let transfer = pending_transfer_after_chunk(chunk);
+        let validated = validate_staged_chunk(chunk, self.current_pending_snapshot_transfer())?;
+        let transfer = pending_transfer_after_chunk(chunk, validated);
         if chunk.offset == 0 {
             self.pending = Some(InMemoryStagedTransfer {
                 transfer,
@@ -160,6 +166,9 @@ impl SnapshotChunkSource for InMemoryRaftSnapshotStore {
     fn snapshot_chunk(&self, request: SnapshotChunkRequest<'_>) -> Option<Vec<u8>> {
         let current = self.current.as_ref()?;
         let payload_len = current.application_payload.len() as u64;
+        if &current.metadata != request.metadata {
+            return None;
+        }
         if payload_len != request.total_payload_len {
             return None;
         }
