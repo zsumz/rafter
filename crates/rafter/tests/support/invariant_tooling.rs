@@ -114,6 +114,22 @@ pub(super) const ENFORCED_DOMAIN_SOURCES: &[EnforcedDomainSource] = &[
         path: "crates/rafter-invariants/src/producer/source.rs",
     },
     EnforcedDomainSource {
+        domain: "producer",
+        path: "crates/rafter-invariants/src/producer/test_compile.rs",
+    },
+    EnforcedDomainSource {
+        domain: "producer",
+        path: "crates/rafter-invariants/src/producer/test_compile",
+    },
+    EnforcedDomainSource {
+        domain: "producer",
+        path: "crates/rafter-invariants/src/producer/test_exec.rs",
+    },
+    EnforcedDomainSource {
+        domain: "producer",
+        path: "crates/rafter-invariants/src/producer/test_exec",
+    },
+    EnforcedDomainSource {
         domain: "verification",
         path: "crates/rafter-invariants/src/verification",
     },
