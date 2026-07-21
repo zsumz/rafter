@@ -10,8 +10,7 @@ pub(super) use events::scan_machine_events;
 pub(super) use crate::verification::{
     simulator::schedule::{
         simulator_compiler_artifact_executable, simulator_program_matches,
-        validate_simulator_schedule, verify_simulator_invocation_outcome,
-        verify_simulator_schedule,
+        verify_simulator_invocation_outcome, verify_simulator_schedule,
     },
     AggregateError,
 };
