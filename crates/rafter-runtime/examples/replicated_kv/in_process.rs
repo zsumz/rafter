@@ -213,9 +213,8 @@ impl KvCluster {
     }
 
     fn restart(&mut self, node_id: NodeId) {
-        let old = self.replicas.remove(&node_id).expect("node exists");
-        let applied = old.applied;
-        let kv = old.kv;
+        let Replica { node, kv, applied } = self.replicas.remove(&node_id).expect("node exists");
+        drop(node);
         let (node, recovery_outputs) = open_node(&self.root, node_id, applied);
         self.replicas.insert(node_id, Replica { node, kv, applied });
         self.handle_outputs(node_id, recovery_outputs);
