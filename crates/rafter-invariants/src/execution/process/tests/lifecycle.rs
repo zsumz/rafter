@@ -358,7 +358,7 @@ fn target_lifetime_lease_release_with_a_live_descendant_is_a_harness_error() {
         Duration::from_secs(1),
         Duration::from_millis(20),
     );
-    std::fs::remove_file(marker).expect("remove live-descendant marker");
+    let _ = std::fs::remove_file(marker);
     let error =
         outcome.expect_err("a descendant that discards the lifetime lease must fail closed");
     assert!(error
