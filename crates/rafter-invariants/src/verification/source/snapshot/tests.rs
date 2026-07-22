@@ -78,8 +78,7 @@ edition = "2021"
 fn same_byte_snapshot_file_replacement_is_rejected() {
     let snapshot = snapshot(vec![file("src/lib.rs", b"authenticated source\n")]);
     let source = snapshot.root().join("src/lib.rs");
-    let displaced_root = tempfile::tempdir().expect("create displaced-file root");
-    let displaced = displaced_root.path().join("original.rs");
+    let displaced = snapshot.root().with_extension("displaced-source");
     make_directory_writable(source.parent().expect("source parent"));
     fs::rename(&source, &displaced).expect("displace authenticated file");
     fs::write(&source, b"authenticated source\n").expect("replace with identical bytes");
@@ -89,6 +88,7 @@ fn same_byte_snapshot_file_replacement_is_rejected() {
         .revalidate()
         .expect_err("replacement must change retained file identity");
     assert!(error.contains("identity changed"), "{error}");
+    fs::remove_file(displaced).expect("remove displaced authenticated file");
 }
 
 #[cfg(unix)]
