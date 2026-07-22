@@ -35,6 +35,15 @@ pub(super) fn execute(
     contract: &DetectorReplayContract,
     total_deadline: Instant,
 ) -> Vec<FixtureReplayResult> {
+    // The compiled replay executes only descriptor-bound binaries and fixture scratch paths.
+    // Authenticate the immutable source/archive inventory at both phase boundaries instead of
+    // re-hashing the complete Cargo registry before and after every fixture.
+    if let Err(error) = source.revalidate() {
+        return harness_errors(
+            replay,
+            &format!("detector replay source authentication failed before execution: {error}"),
+        );
+    }
     let mut results = Vec::with_capacity(replay.fixture_count());
     for (target, fixtures) in replay.targets() {
         for fixture in fixtures {
@@ -50,7 +59,25 @@ pub(super) fn execute(
             results.push(result);
         }
     }
-    results
+    match source.revalidate() {
+        Ok(()) => results,
+        Err(error) => harness_errors(
+            replay,
+            &format!("detector replay source authentication failed after execution: {error}"),
+        ),
+    }
+}
+
+fn harness_errors(replay: &DetectorReplayPlan, message: &str) -> Vec<FixtureReplayResult> {
+    replay
+        .targets()
+        .iter()
+        .flat_map(|(target, fixtures)| {
+            fixtures
+                .iter()
+                .map(move |fixture| harness_error(target, fixture, message))
+        })
+        .collect()
 }
 
 fn execute_one(
@@ -65,7 +92,6 @@ fn execute_one(
         return harness_error(target, fixture, "compiled replay target is missing");
     };
     let attempt = (|| -> Result<FixtureAttempt, Box<dyn Error>> {
-        source.revalidate()?;
         compiled.workspace.verify()?;
         binary.revalidate()?;
         let temporary = compiled.workspace.create_fixture_temporary()?;
@@ -110,7 +136,6 @@ fn execute_one(
         let exchange = gate.finish();
         let output = process?;
         let qualification = (|| -> Result<(), Box<dyn Error>> {
-            source.revalidate()?;
             compiled.workspace.verify()?;
             temporary.verify()?;
             binary.revalidate()?;

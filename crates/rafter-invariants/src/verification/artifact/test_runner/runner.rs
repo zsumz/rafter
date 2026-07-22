@@ -70,12 +70,7 @@ pub(crate) fn verify_test_logs(
             )));
         };
         let source = authenticated.text(test_log)?;
-        crate::evidence::format::process::parse_combined_v4(source).map_err(|error| {
-            AggregateError::new(format!(
-                "parse canonical tests-runner log {}: {error}",
-                test_log.path
-            ))
-        })?;
+        validate_canonical_test_transcript(source, &test_log.path)?;
         match outcome {
             (EvidenceStatus::Pass, None) => {
                 verify_test_invocations(bundle, check, source, &test_name, &check.check_id, root)?;
@@ -107,6 +102,14 @@ pub(crate) fn verify_test_logs(
         }
     }
     Ok(())
+}
+
+fn validate_canonical_test_transcript(source: &str, path: &str) -> Result<(), AggregateError> {
+    crate::evidence::format::process::parse_combined_processes(source)
+        .map(|_| ())
+        .map_err(|error| {
+            AggregateError::new(format!("parse canonical tests-runner log {path}: {error}"))
+        })
 }
 
 fn compile_failure_explains_missing_transcript(
