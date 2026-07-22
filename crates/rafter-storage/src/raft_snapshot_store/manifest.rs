@@ -20,14 +20,17 @@ use super::OpenRaftSnapshotStoreError;
 pub(super) fn read_manifest(
     manifest_path: &Path,
 ) -> Result<Option<SnapshotManifest>, OpenRaftSnapshotStoreError> {
-    if !manifest_path.exists() {
-        return Ok(None);
-    }
-    let mut file = File::open(manifest_path).map_err(|error| OpenRaftSnapshotStoreError::Io {
-        operation: "open raft snapshot manifest",
-        path: manifest_path.to_path_buf(),
-        source: error.into(),
-    })?;
+    let mut file = match File::open(manifest_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            return Err(OpenRaftSnapshotStoreError::Io {
+                operation: "open raft snapshot manifest",
+                path: manifest_path.to_path_buf(),
+                source: error.into(),
+            });
+        }
+    };
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
         .map_err(|error| OpenRaftSnapshotStoreError::Io {

@@ -5,7 +5,9 @@ use std::{
     io::Write,
 };
 
-use super::test_support::{entry, remove_test_file, test_segment_path};
+use super::test_support::{
+    compact_marker_path_for_test, entry, remove_test_file, test_segment_path,
+};
 use super::*;
 use rafter_invariant_test::oracle_assert_eq;
 
@@ -22,6 +24,29 @@ fn file_raft_log_segment_replays_entries_after_reopen() {
 
     oracle_assert_eq!(reopened.next_index(), LogIndex(3));
     oracle_assert_eq!(reopened.replay_entries(), entries);
+    remove_test_file(path);
+}
+
+#[cfg(unix)]
+#[test]
+fn log_open_does_not_treat_compaction_marker_metadata_failure_as_absence() {
+    use std::os::unix::fs::symlink;
+
+    let path = test_segment_path("compaction-marker-metadata-failure");
+    drop(FileRaftLogSegment::open(&path).expect("segment opens"));
+    let marker_path = compact_marker_path_for_test(&path);
+    symlink(&marker_path, &marker_path).expect("self-referential marker symlink creates");
+
+    let result = FileRaftLogSegment::open(&path);
+    fs::remove_file(&marker_path).expect("test symlink removes");
+
+    assert!(matches!(
+        result,
+        Err(OpenRaftLogSegmentError::Io {
+            operation: "open raft log compaction marker",
+            ..
+        })
+    ));
     remove_test_file(path);
 }
 

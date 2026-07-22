@@ -51,6 +51,9 @@ mod health_test;
 #[path = "raft_snapshot_store/inventory_test.rs"]
 mod inventory_test;
 #[cfg(test)]
+#[path = "raft_snapshot_store/pending_transfer_cleanup_test.rs"]
+mod pending_transfer_cleanup_test;
+#[cfg(test)]
 #[path = "raft_snapshot_store/pending_transfer_test.rs"]
 mod pending_transfer_test;
 #[cfg(test)]

@@ -69,7 +69,7 @@ impl FileRaftSnapshotStore {
     }
 
     pub(super) fn snapshot_path_for_write(
-        &self,
+        &mut self,
         snapshot: &RaftSnapshot,
     ) -> Result<(PathBuf, String, u64), super::RaftSnapshotStoreWriteError> {
         let mut sequence = self
@@ -78,8 +78,12 @@ impl FileRaftSnapshotStore {
         loop {
             let file_name = snapshot_file_name(sequence, snapshot);
             let path = snapshot_path(&self.directory, &file_name);
-            if !path.exists() {
-                return Ok((path, file_name, sequence));
+            match path.try_exists() {
+                Ok(false) => return Ok((path, file_name, sequence)),
+                Ok(true) => {}
+                Err(error) => {
+                    return Err(self.io_failure("stat candidate raft snapshot path", &path, error));
+                }
             }
             sequence = sequence
                 .checked_add(1)

@@ -31,10 +31,12 @@ The file-backed implementation assumes:
 3. syncing the parent directory makes the rename, creation, or removal durable;
 4. only one live writer owns a store path or replica directory at a time.
 
-The current implementation does not acquire an operating-system lock. Callers
-must enforce exclusive ownership. Opening multiple mutable handles over the
-same paths is unsupported because handles cache logical state and writers use
-predictable sibling temporary paths.
+The standard `FileRaftNodeStores` bundle acquires an operating-system lock for
+the replica directory before it opens or repairs any store. Direct single-store
+constructors do not acquire that bundle lock, so callers using custom layouts
+must enforce equivalent exclusive ownership. Opening multiple mutable handles
+over the same paths is unsupported because handles cache logical state and
+writers use predictable sibling temporary paths.
 
 These guarantees are filesystem and platform dependent. Deployments should
 validate them for their selected storage stack.

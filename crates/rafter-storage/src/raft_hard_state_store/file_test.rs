@@ -22,6 +22,26 @@ fn empty_file_store_opens_as_default_hard_state() {
     remove_test_file(path);
 }
 
+#[cfg(unix)]
+#[test]
+fn hard_state_open_does_not_treat_metadata_failure_as_absence() {
+    use std::os::unix::fs::symlink;
+
+    let path = test_store_path("metadata-failure");
+    symlink(&path, &path).expect("self-referential test symlink creates");
+
+    let result = FileRaftHardStateStore::open(&path);
+    fs::remove_file(&path).expect("test symlink removes");
+
+    assert!(matches!(
+        result,
+        Err(OpenRaftHardStateStoreError::Io {
+            operation: "open raft hard state",
+            ..
+        })
+    ));
+}
+
 #[test]
 fn file_store_reopens_latest_written_hard_state() {
     let path = test_store_path("latest");

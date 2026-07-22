@@ -139,6 +139,63 @@ fn file_snapshot_store_rejects_missing_manifest_selected_snapshot() {
     remove_test_dir(directory);
 }
 
+#[cfg(unix)]
+#[test]
+fn snapshot_open_does_not_treat_manifest_metadata_failure_as_absence() {
+    use std::os::unix::fs::symlink;
+
+    let directory = test_store_dir("manifest-metadata-failure");
+    fs::create_dir_all(&directory).expect("test directory creates");
+    let manifest_path = directory.join("current.snapshot");
+    symlink(&manifest_path, &manifest_path).expect("self-referential manifest symlink creates");
+
+    let result = FileRaftSnapshotStore::open(&directory);
+    fs::remove_file(&manifest_path).expect("test symlink removes");
+
+    assert!(matches!(
+        result,
+        Err(OpenRaftSnapshotStoreError::Io {
+            operation: "open raft snapshot manifest",
+            ..
+        })
+    ));
+    remove_test_dir(directory);
+}
+
+#[cfg(unix)]
+#[test]
+fn snapshot_open_distinguishes_selected_file_metadata_failure_from_missing() {
+    use std::os::unix::fs::symlink;
+
+    let directory = test_store_dir("selected-metadata-failure");
+    let selected_path = {
+        let mut store = FileRaftSnapshotStore::open(&directory).expect("store opens");
+        store
+            .write_snapshot(snapshot(3, 2, b"present"))
+            .expect("snapshot writes");
+        directory.join(
+            store
+                .current_snapshot_file_name()
+                .expect("snapshot file is selected"),
+        )
+    };
+    fs::remove_file(&selected_path).expect("selected snapshot removes");
+    symlink(&selected_path, &selected_path)
+        .expect("self-referential selected snapshot symlink creates");
+
+    let result = FileRaftSnapshotStore::open(&directory);
+    fs::remove_file(&selected_path).expect("test symlink removes");
+
+    assert!(matches!(
+        result,
+        Err(OpenRaftSnapshotStoreError::Io {
+            operation: "stat raft snapshot",
+            ..
+        })
+    ));
+    remove_test_dir(directory);
+}
+
 #[test]
 fn file_snapshot_store_rejects_corrupt_manifest_selected_snapshot() {
     let directory = test_store_dir("corrupt-selected");

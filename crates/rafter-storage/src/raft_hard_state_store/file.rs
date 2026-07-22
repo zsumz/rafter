@@ -40,15 +40,19 @@ impl FileRaftHardStateStore {
     /// opened or read.
     pub fn open(path: impl AsRef<Path>) -> Result<Self, OpenRaftHardStateStoreError> {
         let path = path.as_ref().to_path_buf();
-        if !path.exists() {
-            return Ok(Self::empty(path));
-        }
-
-        let mut file = File::open(&path).map_err(|error| OpenRaftHardStateStoreError::Io {
-            operation: "open raft hard state",
-            path: path.clone(),
-            source: error.into(),
-        })?;
+        let mut file = match File::open(&path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::empty(path));
+            }
+            Err(error) => {
+                return Err(OpenRaftHardStateStoreError::Io {
+                    operation: "open raft hard state",
+                    path,
+                    source: error.into(),
+                });
+            }
+        };
         let mut bytes = Vec::new();
         file.read_to_end(&mut bytes)
             .map_err(|error| OpenRaftHardStateStoreError::Io {

@@ -93,7 +93,13 @@ impl FileRaftLogSegment {
         creation_sync: CreationSync<'_>,
         mode: OpenMode,
     ) -> Result<Self, OpenRaftLogSegmentError> {
-        let existed = path.exists();
+        let existed = path
+            .try_exists()
+            .map_err(|error| OpenRaftLogSegmentError::Io {
+                operation: "stat raft log segment",
+                path: path.to_path_buf(),
+                source: error.into(),
+            })?;
         let mut file = OpenOptions::new()
             .create(true)
             .read(true)
@@ -260,14 +266,19 @@ fn replay_entries_repairing_uncommitted_tail(
 
 fn read_compaction_marker(path: &Path) -> Result<LogIndex, OpenRaftLogSegmentError> {
     let marker_path = compaction_marker_path(path);
-    if !marker_path.exists() {
-        return Ok(LogIndex::ZERO);
-    }
-    let mut file = File::open(&marker_path).map_err(|error| OpenRaftLogSegmentError::Io {
-        operation: "open raft log compaction marker",
-        path: marker_path.clone(),
-        source: error.into(),
-    })?;
+    let mut file = match File::open(&marker_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(LogIndex::ZERO);
+        }
+        Err(error) => {
+            return Err(OpenRaftLogSegmentError::Io {
+                operation: "open raft log compaction marker",
+                path: marker_path,
+                source: error.into(),
+            });
+        }
+    };
     let mut bytes = Vec::new();
     file.read_to_end(&mut bytes)
         .map_err(|error| OpenRaftLogSegmentError::Io {

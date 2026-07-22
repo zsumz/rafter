@@ -61,6 +61,36 @@ fn snapshot_write_io_failure_requires_reopen() {
     remove_test_dir(directory);
 }
 
+#[cfg(unix)]
+#[test]
+fn snapshot_candidate_metadata_failure_requires_reopen() {
+    use std::os::unix::fs::symlink;
+
+    let directory = test_store_dir("health-candidate-metadata");
+    let mut store = FileRaftSnapshotStore::open(&directory).expect("store opens");
+    let candidate_path = directory.join("snapshot-1-3-2-1.rfsn");
+    symlink(&candidate_path, &candidate_path)
+        .expect("self-referential candidate snapshot symlink creates");
+    let expected = snapshot(3, 2, b"durable after reopen");
+
+    let result = store.write_snapshot(expected.clone());
+    fs::remove_file(&candidate_path).expect("test symlink removes");
+
+    assert!(matches!(
+        result,
+        Err(RaftSnapshotStoreWriteError::Io {
+            operation: "stat candidate raft snapshot path",
+            ..
+        })
+    ));
+    assert!(store.requires_reopen());
+    assert_eq!(
+        store.write_snapshot(expected),
+        Err(RaftSnapshotStoreWriteError::StoreRequiresReopen)
+    );
+    remove_test_dir(directory);
+}
+
 #[test]
 fn pending_stage_io_failure_requires_reopen() {
     let directory = test_store_dir("health-stage-io");

@@ -2,7 +2,7 @@
 
 use std::{
     fs::{self, File},
-    io::Read,
+    io::{self, Read},
     path::Path,
 };
 
@@ -110,12 +110,6 @@ impl FileRaftSnapshotStore {
         };
 
         let snapshot_path = snapshot_path(&directory, &manifest.file_name);
-        if !snapshot_path.exists() {
-            return Err(OpenRaftSnapshotStoreError::MissingSnapshot {
-                path: snapshot_path,
-            });
-        }
-
         let header = verify_snapshot_envelope(&snapshot_path)?;
         let descriptor =
             RaftSnapshot::new(header.metadata, header.payload_len, header.payload_crc32);
@@ -163,9 +157,7 @@ fn verify_snapshot_envelope(
     };
     let corrupt = OpenRaftSnapshotStoreError::Snapshot;
 
-    let file_len = fs::metadata(path)
-        .map_err(io_error("stat raft snapshot"))?
-        .len();
+    let file_len = snapshot_file_len(path)?;
     let mut file = File::open(path).map_err(io_error("open raft snapshot"))?;
 
     let mut prefix = Vec::new();
@@ -261,6 +253,22 @@ fn verify_snapshot_envelope(
     Ok(header)
 }
 
+fn snapshot_file_len(path: &Path) -> Result<u64, OpenRaftSnapshotStoreError> {
+    match fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.len()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {
+            Err(OpenRaftSnapshotStoreError::MissingSnapshot {
+                path: path.to_path_buf(),
+            })
+        }
+        Err(error) => Err(OpenRaftSnapshotStoreError::Io {
+            operation: "stat raft snapshot",
+            path: path.to_path_buf(),
+            source: error.into(),
+        }),
+    }
+}
+
 fn bounded_usize_len(remaining: u64, max_len: usize) -> usize {
     let max_len_u64 = u64::try_from(max_len).unwrap_or(u64::MAX);
     let bounded = remaining.min(max_len_u64);
@@ -271,8 +279,23 @@ fn ensure_directory(
     directory: &Path,
     creation_sync: CreationSync<'_>,
 ) -> Result<bool, OpenRaftSnapshotStoreError> {
-    if directory.exists() {
-        return Ok(false);
+    match fs::metadata(directory) {
+        Ok(metadata) if metadata.is_dir() => return Ok(false),
+        Ok(_) => {
+            return Err(OpenRaftSnapshotStoreError::Io {
+                operation: "open raft snapshot directory",
+                path: directory.to_path_buf(),
+                source: io::Error::new(io::ErrorKind::InvalidInput, "not a directory").into(),
+            });
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(OpenRaftSnapshotStoreError::Io {
+                operation: "stat raft snapshot directory",
+                path: directory.to_path_buf(),
+                source: error.into(),
+            });
+        }
     }
     fs::create_dir_all(directory).map_err(|error| OpenRaftSnapshotStoreError::Io {
         operation: "create raft snapshot directory",
