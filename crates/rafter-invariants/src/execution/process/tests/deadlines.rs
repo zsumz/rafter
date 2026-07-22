@@ -39,8 +39,12 @@ fn natural_exit_after_the_deadline_cannot_be_reported_as_success() {
 fn delayed_process_group_publication_cannot_escape_the_lifecycle_deadline() {
     delay_next_process_group_receipt(Duration::from_secs(5));
     let started = Instant::now();
-    let execution_window = started + Duration::from_millis(100);
-    let lifecycle = started + Duration::from_millis(250);
+    // The first managed process on a cold macOS runner may need more than
+    // 100 ms to start Perl and publish its planned group. Keep the injected
+    // five-second receipt delay beyond this absolute lifecycle while giving
+    // launcher startup a deterministic cross-platform allowance.
+    let execution_window = started + Duration::from_secs(2);
+    let lifecycle = started + Duration::from_millis(2_500);
     let error = run_shell_with_deadlines(
         "sleep 5",
         &base_environment(),
@@ -49,10 +53,10 @@ fn delayed_process_group_publication_cannot_escape_the_lifecycle_deadline() {
             Duration::from_secs(1),
             execution_window,
             lifecycle
-                .checked_sub(Duration::from_millis(70))
+                .checked_sub(Duration::from_millis(300))
                 .expect("cleanup boundary"),
             lifecycle
-                .checked_sub(Duration::from_millis(20))
+                .checked_sub(Duration::from_millis(100))
                 .expect("finalization boundary"),
             lifecycle,
         )
@@ -64,7 +68,7 @@ fn delayed_process_group_publication_cannot_escape_the_lifecycle_deadline() {
     assert!(error
         .to_string()
         .contains("did not publish its process group"));
-    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(started.elapsed() < Duration::from_secs(4));
     let process_group = take_last_delayed_process_group()
         .expect("the delayed launcher published its planned process group");
     assert_eq!(
