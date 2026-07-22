@@ -17,6 +17,8 @@ use super::{
     support::{run_shell, run_shell_with_deadlines, unique_test_path},
 };
 
+const COLD_MANAGED_PROCESS_STARTUP: Duration = Duration::from_secs(2);
+
 #[test]
 fn natural_exit_after_the_deadline_cannot_be_reported_as_success() {
     delay_next_process_group_observation(Duration::from_millis(500));
@@ -43,7 +45,7 @@ fn delayed_process_group_publication_cannot_escape_the_lifecycle_deadline() {
     // 100 ms to start Perl and publish its planned group. Keep the injected
     // five-second receipt delay beyond this absolute lifecycle while giving
     // launcher startup a deterministic cross-platform allowance.
-    let execution_window = started + Duration::from_secs(2);
+    let execution_window = started + COLD_MANAGED_PROCESS_STARTUP;
     let lifecycle = started + Duration::from_millis(2_500);
     let error = run_shell_with_deadlines(
         "sleep 5",
@@ -87,8 +89,8 @@ fn target_cannot_execute_before_the_parent_releases_ready_ownership() {
     let _ = std::fs::remove_file(&sentinel);
     delay_next_target_release(Duration::from_secs(5));
     let started = Instant::now();
-    let execution_window = started + Duration::from_millis(100);
-    let lifecycle = started + Duration::from_millis(400);
+    let execution_window = started + COLD_MANAGED_PROCESS_STARTUP;
+    let lifecycle = started + Duration::from_secs(4);
     let script = format!("printf executed > '{}'", sentinel.display());
     let error = run_shell_with_deadlines(
         &script,
@@ -98,10 +100,10 @@ fn target_cannot_execute_before_the_parent_releases_ready_ownership() {
             Duration::from_secs(1),
             execution_window,
             lifecycle
-                .checked_sub(Duration::from_millis(70))
+                .checked_sub(Duration::from_secs(1))
                 .expect("cleanup boundary"),
             lifecycle
-                .checked_sub(Duration::from_millis(20))
+                .checked_sub(Duration::from_millis(200))
                 .expect("finalization boundary"),
             lifecycle,
         )
