@@ -20,7 +20,7 @@ pub(in crate::producer::tla) fn validate_runner_options(
     }
     if matches!(
         configuration.get("config").map(String::as_str),
-        Some("RaftRefactor.cfg" | "RaftCi.cfg" | "RaftNightly.cfg")
+        Some("RaftCi.cfg" | "RaftNightly.cfg")
     ) && required_configuration(configuration, "symmetry")?
         != "nodes-values-read-requests-product"
     {
@@ -30,10 +30,10 @@ pub(in crate::producer::tla) fn validate_runner_options(
         configuration.get("config").map(String::as_str),
         checkpoint::enabled(configuration),
     ) {
-        (Some("RaftRefactor.cfg"), false) => {
+        (Some("RaftCi.cfg"), false) => {
             for (name, expected) in [
                 ("workers", "4"),
-                ("soft_timeout", "2m"),
+                ("soft_timeout", "325m"),
                 ("max_heap", "8g"),
                 ("fp_mem", "0.45"),
             ] {

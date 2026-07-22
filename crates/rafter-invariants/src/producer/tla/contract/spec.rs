@@ -218,12 +218,12 @@ pub(super) fn validate_symmetry_contract(
         .filter(|line| line.starts_with("SYMMETRY "))
         .collect::<Vec<_>>();
     match config_name {
-        "RaftRefactor.cfg" | "RaftCi.cfg" | "RaftNightly.cfg"
+        "RaftCi.cfg" | "RaftNightly.cfg"
             if declarations.as_slice() == ["SYMMETRY ModelPermutations"] =>
         {
             Ok(())
         }
-        "RaftRefactor.cfg" | "RaftCi.cfg" | "RaftNightly.cfg" => {
+        "RaftCi.cfg" | "RaftNightly.cfg" => {
             Err("bounded TLA config must use the complete model-value product symmetry".into())
         }
         "Raft.cfg" if declarations.is_empty() => Ok(()),

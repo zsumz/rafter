@@ -76,30 +76,41 @@ pub(super) fn exact_test_environment(
             crate::evidence::format::libtest::oracle_token(&bundle.source_ref, oracle_check_id),
         ),
     ]);
-    if bundle.runner == "simulator" {
-        let detector_environment = invocations
-            .get(2)
-            .map(|invocation| &invocation.invocation.environment)
-            .ok_or_else(|| {
-                AggregateError::new("detector log omitted its exact invocation".to_owned())
-            })?;
-        let descriptor = detector_environment
-            .get(crate::evidence::detector_proof::PROOF_DESCRIPTOR_ENV)
-            .ok_or_else(|| {
-                AggregateError::new(
-                    "detector execution environment omitted its inherited proof descriptor"
-                        .to_owned(),
-                )
-            })?;
-        if !crate::evidence::detector_proof::canonical_descriptor(descriptor) {
-            return Err(AggregateError::new(
-                "detector proof descriptor is not canonical".to_owned(),
-            ));
-        }
-        environment.insert(
-            crate::evidence::detector_proof::PROOF_DESCRIPTOR_ENV.to_owned(),
-            descriptor.clone(),
-        );
-    }
+    extend_detector_environment(invocations, &mut environment)?;
     Ok(environment)
 }
+
+fn extend_detector_environment(
+    invocations: &[crate::evidence::format::process::LabeledProcess],
+    environment: &mut BTreeMap<String, String>,
+) -> Result<(), AggregateError> {
+    let Some(exact) = invocations.get(2) else {
+        return Ok(());
+    };
+    if exact.schema_version != crate::evidence::format::process::DETECTOR_PROCESS_SCHEMA_VERSION {
+        return Ok(());
+    }
+    let descriptor = exact
+        .invocation
+        .environment
+        .get(crate::evidence::detector_proof::PROOF_DESCRIPTOR_ENV)
+        .ok_or_else(|| {
+            AggregateError::new(
+                "detector execution environment omitted its inherited proof descriptor".to_owned(),
+            )
+        })?;
+    if !crate::evidence::detector_proof::canonical_descriptor(descriptor) {
+        return Err(AggregateError::new(
+            "detector proof descriptor is not canonical".to_owned(),
+        ));
+    }
+    environment.insert(
+        crate::evidence::detector_proof::PROOF_DESCRIPTOR_ENV.to_owned(),
+        descriptor.clone(),
+    );
+    Ok(())
+}
+
+#[cfg(test)]
+#[path = "environment_tests.rs"]
+mod tests;

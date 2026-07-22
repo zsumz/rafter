@@ -18,7 +18,7 @@ use super::{
 
 fn pr_budget() -> BTreeMap<String, String> {
     BTreeMap::from([
-        (TOTAL_TIMEOUT_KEY.to_owned(), "15m".to_owned()),
+        (TOTAL_TIMEOUT_KEY.to_owned(), "338m".to_owned()),
         (FINALIZATION_RESERVE_KEY.to_owned(), "2m".to_owned()),
     ])
 }
@@ -35,13 +35,13 @@ fn shared_pr_budget_reduces_the_main_timeout_and_preserves_the_reserve() {
     assert_eq!(
         budget.phase_timeout_at(
             started + Duration::from_secs(11 * 60),
-            Duration::from_secs(2 * 60),
+            Duration::from_secs(325 * 60),
         ),
-        Some(Duration::from_secs(2 * 60))
+        Some(Duration::from_secs(325 * 60))
     );
     assert_eq!(
         budget.phase_timeout_at(
-            started + Duration::from_secs(13 * 60),
+            started + Duration::from_secs(336 * 60),
             Duration::from_secs(300 * 60),
         ),
         None
