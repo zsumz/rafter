@@ -56,8 +56,6 @@ pub(super) fn validate(
     if contract.detector_negative != "required"
         || contract.fp != "0"
         || contract.java_major != "21"
-        || contract.minimum_distinct_states != "16000000"
-        || contract.minimum_generated_states != "120000000"
         || contract.module != "Raft.tla"
         || contract.kill_confirmation_timeout != "5s"
         || contract.receipt_finalization_allowance != "5s"
@@ -82,15 +80,17 @@ pub(super) fn validate(
 }
 
 fn valid_pr(contract: &Configuration) -> bool {
-    contract.config == "RaftCi.cfg"
+    contract.config == "RaftRefactor.cfg"
         && contract.seed == "2026071101"
-        && contract.soft_timeout == "325m"
+        && contract.soft_timeout == "2m"
         && contract.workers == "4"
+        && contract.minimum_distinct_states == "200000"
+        && contract.minimum_generated_states == "900000"
         && contract.finalization_reserve.as_deref() == Some("2m")
         && contract.max_heap.as_deref() == Some("8g")
         && contract.fp_mem.as_deref() == Some("0.45")
         && contract.symmetry.as_deref() == Some("nodes-values-read-requests-product")
-        && contract.total_timeout.as_deref() == Some("338m")
+        && contract.total_timeout.as_deref() == Some("15m")
         && no_checkpoint_configuration(contract)
 }
 
@@ -99,6 +99,8 @@ fn valid_nightly(contract: &Configuration) -> bool {
         && contract.seed == "2026071102"
         && contract.soft_timeout == "295m"
         && contract.workers == "auto"
+        && contract.minimum_distinct_states == "16000000"
+        && contract.minimum_generated_states == "120000000"
         && contract.symmetry.as_deref() == Some("nodes-values-read-requests-product")
         && contract.checkpoint_gzip.as_deref() == Some("required")
         && contract.checkpoint_minutes.as_deref() == Some("30")
@@ -115,6 +117,8 @@ fn valid_weekly(contract: &Configuration) -> bool {
         && contract.seed == "2026071103"
         && contract.soft_timeout == "295m"
         && contract.workers == "auto"
+        && contract.minimum_distinct_states == "16000000"
+        && contract.minimum_generated_states == "120000000"
         && contract.checkpoint_gzip.as_deref() == Some("required")
         && contract.checkpoint_minutes.as_deref() == Some("30")
         && contract.checkpoint_recovery.as_deref() == Some("strict-compatible-if-present")

@@ -165,12 +165,17 @@ fn invocation_receipt_for_profile(runner: &str, profile: &str) -> InvocationRece
     }
 }
 
-fn synthetic_check_id(descriptor: &EvidenceDescriptor) -> String {
+fn synthetic_check_id(
+    descriptor: &EvidenceDescriptor,
+    manifest: &ProfileManifest,
+    profile: &str,
+) -> String {
     if descriptor.layer == "simulator" {
         return format!("simulator/{}", descriptor.evidence_id());
     }
     if descriptor.layer == "tla" {
-        return "tla/RaftCi.cfg#Spec".to_owned();
+        let config = &manifest.profiles[profile].runners["tla"].configuration["config"];
+        return format!("tla/{config}#Spec");
     }
     if descriptor.layer == "maelstrom" {
         return format!(
@@ -568,7 +573,7 @@ fn synthetic_checks(
     let mut groups = std::collections::BTreeMap::<String, Vec<EvidenceDescriptor>>::new();
     for descriptor in evidence {
         groups
-            .entry(synthetic_check_id(&descriptor))
+            .entry(synthetic_check_id(&descriptor, manifest, profile))
             .or_default()
             .push(descriptor);
     }

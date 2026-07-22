@@ -10,8 +10,9 @@ use super::super::{process, tla_output::DETECTOR_PROBES};
 
 pub(super) const TOTAL_TIMEOUT_KEY: &str = "total_timeout";
 pub(super) const FINALIZATION_RESERVE_KEY: &str = "finalization_reserve";
-// The hosted PR inventory is 7m qualification + 325m main + 4m setup + 2m
-// finalization = 338m. Scheduled runners retain the wider qualification caps.
+// During the refactor, the hosted PR inventory is 7m qualification + 2m main
+// + 4m setup + 2m finalization = 15m. Scheduled runners retain the wider
+// qualification caps and stronger model bounds.
 const PR_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
 const PR_MUTATION_SUITE_TIMEOUT: Duration = Duration::from_secs(4 * 60);
 const SCHEDULED_PROBE_TIMEOUT: Duration = Duration::from_secs(120);
