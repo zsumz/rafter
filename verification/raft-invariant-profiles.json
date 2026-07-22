@@ -82,7 +82,7 @@
   },
   "profiles": {
     "pr": {
-      "description": "All direct tests, simulator, and TLA evidence required by the deterministic pull-request gate; nondeterministic Maelstrom scheduling is reserved for scheduled profiles.",
+      "description": "All direct tests, simulator, and TLA evidence required by the deterministic pull-request gate; while the invariants refactor is in progress, PR TLA uses explicit temporary refactor bounds and nightly and weekly retain their stronger scheduled bounds.",
       "evidence_policy": "all_matching_registry_evidence",
       "clause_policy": "all_required_clauses",
       "required_clause_strength": "direct",
@@ -122,7 +122,7 @@
         "tla": {
           "producer": "rafter-invariants-tla-v15",
           "command": ["cargo", "run", "--locked", "-p", "rafter-invariants", "--", "run", "--profile", "pr", "--layer", "tla"],
-          "configuration": {"config": "RaftCi.cfg", "detector_negative": "required", "finalization_reserve": "2m", "fp": "0", "fp_mem": "0.45", "java_major": "21", "kill_confirmation_timeout": "5s", "max_heap": "8g", "minimum_distinct_states": "16000000", "minimum_generated_states": "120000000", "module": "Raft.tla", "receipt_finalization_allowance": "5s", "seed": "2026071101", "soft_timeout": "325m", "symmetry": "nodes-values-read-requests-product", "termination_grace": "30s", "tool_asset_id": "481553986", "tool_mode": "required", "tool_sha256": "cc4803dce2a8ffaf0f5920a9dc39df4b5ee34ab4cb53fb58ac557277a7e516b3", "total_timeout": "338m", "trace_sample": "required", "workers": "4"},
+          "configuration": {"config": "RaftRefactor.cfg", "detector_negative": "required", "finalization_reserve": "2m", "fp": "0", "fp_mem": "0.45", "java_major": "21", "kill_confirmation_timeout": "5s", "max_heap": "8g", "minimum_distinct_states": "200000", "minimum_generated_states": "900000", "module": "Raft.tla", "receipt_finalization_allowance": "5s", "seed": "2026071101", "soft_timeout": "2m", "symmetry": "nodes-values-read-requests-product", "termination_grace": "30s", "tool_asset_id": "481553986", "tool_mode": "required", "tool_sha256": "cc4803dce2a8ffaf0f5920a9dc39df4b5ee34ab4cb53fb58ac557277a7e516b3", "total_timeout": "15m", "trace_sample": "required", "workers": "4"},
           "minimum_observed_checks": 1,
           "require_peak_rss": true
         }

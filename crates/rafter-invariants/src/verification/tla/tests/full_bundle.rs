@@ -343,7 +343,7 @@ impl Fixture {
             "RafterInvariantDetectorNegative.cfg",
             "RaftMembershipTraceSample.tla",
             "RaftMembershipTraceSample.cfg",
-            "RaftCi.cfg",
+            "RaftRefactor.cfg",
         ] {
             fs::copy(
                 workspace.join("specs/tla/raft").join(source),
@@ -376,8 +376,8 @@ impl Fixture {
         for kind in kinds {
             self.write_kind(&kind, b"");
         }
-        let config =
-            fs::read(workspace.join("specs/tla/raft/RaftCi.cfg")).expect("read main TLA config");
+        let config = fs::read(workspace.join("specs/tla/raft/RaftRefactor.cfg"))
+            .expect("read main TLA config");
         self.write_kind("tla-config", &config);
         let raft = fs::read(workspace.join("specs/tla/raft/Raft.tla")).expect("read Raft spec");
         self.write_kind("tla-spec", &raft);

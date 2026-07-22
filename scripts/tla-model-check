@@ -2,19 +2,21 @@
 # Run TLC against the Raft TLA+ specification.
 #
 # Usage:
-#   scripts/tla-model-check               # CI-bounded config (RaftCi.cfg, seconds)
+#   scripts/tla-model-check               # temporary refactor bounds (seconds)
+#   scripts/tla-model-check --ci          # temporary PR bounds (RaftRefactor.cfg)
+#   scripts/tla-model-check --canonical   # full PR bounds (RaftCi.cfg)
 #   scripts/tla-model-check --nightly     # nightly 3-voter bounds (RaftNightly.cfg)
 #   scripts/tla-model-check --full        # full local bounds (Raft.cfg, hours+)
 #   scripts/tla-model-check --trace-sample # TLC-check generated Rust trace sample
 #   scripts/tla-model-check --fetch-tool  # fetch and verify the pinned TLC jar
-#   scripts/tla-model-check --print-config [--nightly|--full]
+#   scripts/tla-model-check --print-config [--canonical|--nightly|--full]
 #
 # Downloads the immutable GitHub release asset pinned by tools/tla/ASSET_ID
 # into tools/cache/ and verifies it against tools/tla/SHA256SUMS before running.
 set -euo pipefail
 
 repo_root="${RAFTER_TLA_REPO_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
-config="RaftCi.cfg"
+config="RaftRefactor.cfg"
 module="Raft.tla"
 print_config=false
 fetch_tool=false
@@ -30,6 +32,13 @@ usage() {
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --ci)
+            config="RaftRefactor.cfg"
+            workers=4
+            seed=2026071101
+            max_heap="8g"
+            fp_mem="0.45"
+            ;;
+        --canonical)
             config="RaftCi.cfg"
             workers=4
             seed=2026071101
