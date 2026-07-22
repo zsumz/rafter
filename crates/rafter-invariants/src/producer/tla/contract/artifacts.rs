@@ -1,6 +1,11 @@
 //! Source-bound capture of the exact TLA+ tool and specification inputs.
 
-use std::{collections::BTreeMap, error::Error, fs, path::Path};
+use std::{
+    collections::BTreeMap,
+    error::Error,
+    fs,
+    path::{Path, PathBuf},
+};
 
 use crate::evidence::ArtifactRef;
 
@@ -16,11 +21,7 @@ pub(in crate::producer::tla) fn source_artifacts(
     profile: &str,
     source_ref: &str,
 ) -> Result<Vec<ArtifactRef>, Box<dyn Error>> {
-    let source_prefix = source_ref.get(..12).unwrap_or(source_ref);
-    let namespace = Path::new(profile)
-        .join("tla")
-        .join(source_prefix)
-        .join("inputs");
+    let namespace = input_namespace(profile, source_ref);
     let jar = artifact::capture(output_dir, &namespace, Path::new(JAR), "tla-tool")?;
     if jar.sha256 != required_configuration(configuration, "tool_sha256")? {
         return Err("pinned TLC jar digest does not match the profile contract".into());
@@ -83,3 +84,14 @@ pub(in crate::producer::tla) fn source_artifacts(
         )?,
     ])
 }
+
+fn input_namespace(profile: &str, source_ref: &str) -> PathBuf {
+    let source_prefix = source_ref.get(..12).unwrap_or(source_ref);
+    PathBuf::from(format!("{profile}-tla"))
+        .join(source_prefix)
+        .join("inputs")
+}
+
+#[cfg(test)]
+#[path = "artifacts_tests.rs"]
+mod tests;

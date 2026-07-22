@@ -52,6 +52,18 @@ fn aggregate_transport_staging_requires_a_fresh_complete_noncolliding_shape() {
         );
         assert_failure(&output, &format!("stage missing {profile} result"));
 
+        let missing_detector_artifacts = EvidenceTransportFixture::new(&root, profile, layers);
+        missing_detector_artifacts.remove_simulator_detector_artifacts();
+        let output = run_workflow_script(
+            stage,
+            &missing_detector_artifacts.workspace,
+            &missing_detector_artifacts.environment(),
+        );
+        assert_failure(
+            &output,
+            &format!("stage missing {profile} simulator detector artifacts"),
+        );
+
         let missing_reference = EvidenceTransportFixture::new(&root, profile, layers);
         missing_reference.remove_referenced_artifact(layers[0]);
         let output = run_workflow_script(

@@ -105,6 +105,7 @@ impl EvidenceTransportFixture {
         for layer in layers {
             fixture.write_layer(layer);
         }
+        fixture.write_simulator_detector_artifacts();
         fixture
     }
 
@@ -125,6 +126,11 @@ impl EvidenceTransportFixture {
 
     pub(crate) fn remove_result(&self, layer: &str) {
         fs::remove_file(self.transported_result(layer)).expect("remove transported result");
+    }
+
+    pub(crate) fn remove_simulator_detector_artifacts(&self) {
+        fs::remove_dir_all(self.transported_simulator_detector_directory())
+            .expect("remove transported simulator detector artifacts");
     }
 
     pub(crate) fn remove_referenced_artifact(&self, layer: &str) {
@@ -174,7 +180,25 @@ impl EvidenceTransportFixture {
                 ));
             }
         }
+        let detector_marker = self
+            .canonical_simulator_detector_directory()
+            .join("compile/fixture.log");
+        if !detector_marker.is_file() {
+            return Err(format!(
+                "{} staged simulator detector artifacts are missing",
+                self.profile
+            ));
+        }
         Ok(())
+    }
+
+    fn write_simulator_detector_artifacts(&self) {
+        let marker = self
+            .transported_simulator_detector_directory()
+            .join("compile/fixture.log");
+        fs::create_dir_all(marker.parent().expect("simulator detector marker parent"))
+            .expect("create transported simulator detector directory");
+        fs::write(marker, ARTIFACT_BYTES).expect("write simulator detector artifact");
     }
 
     fn write_layer(&self, layer: &str) {
@@ -244,6 +268,19 @@ impl EvidenceTransportFixture {
         self.workspace
             .join("artifacts/invariants")
             .join(format!("{}-{layer}", self.profile))
+    }
+
+    fn transported_simulator_detector_directory(&self) -> PathBuf {
+        self.runner_temp
+            .join(&self.evidence_dir)
+            .join("simulator")
+            .join(format!("{}-simulator-detectors-tests", self.profile))
+    }
+
+    fn canonical_simulator_detector_directory(&self) -> PathBuf {
+        self.workspace
+            .join("artifacts/invariants")
+            .join(format!("{}-simulator-detectors-tests", self.profile))
     }
 }
 

@@ -376,12 +376,20 @@ jobs:
               exit 1
             fi
           done
+          simulator_detector_source="$transport_root/simulator/nightly-simulator-detectors-tests"
+          simulator_detector_destination="$evidence_root/nightly-simulator-detectors-tests"
+          test -d "$simulator_detector_source"
+          if [[ -e "$simulator_detector_destination" ]]; then
+            echo "refusing stale or colliding nightly evidence target: $simulator_detector_destination" >&2
+            exit 1
+          fi
           for layer in tests simulator tla maelstrom; do
             source="$transport_root/$layer/nightly-$layer"
             destination="$evidence_root/nightly-$layer"
             cp "$source.json" "$destination.json"
             cp -R "$source" "$destination"
           done
+          cp -R "$simulator_detector_source" "$simulator_detector_destination"
       - name: Build source-bound Maelstrom verification binaries
         timeout-minutes: 2
         run: cargo build --locked -p rafter-maelstrom --bins

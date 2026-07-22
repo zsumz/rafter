@@ -18,6 +18,15 @@ pub(crate) fn assert_transport_stage_contract(stage: &str, profile: &str, layers
         "[[ -e \"$destination\" || -e \"$destination.json\" ]]",
         "cp \"$source.json\" \"$destination.json\"",
         "cp -R \"$source\" \"$destination\"",
+        &format!(
+            "simulator_detector_source=\"$transport_root/simulator/{profile}-simulator-detectors-tests\""
+        ),
+        &format!(
+            "simulator_detector_destination=\"$evidence_root/{profile}-simulator-detectors-tests\""
+        ),
+        "test -d \"$simulator_detector_source\"",
+        "[[ -e \"$simulator_detector_destination\" ]]",
+        "cp -R \"$simulator_detector_source\" \"$simulator_detector_destination\"",
     ] {
         assert!(
             stage.contains(required),

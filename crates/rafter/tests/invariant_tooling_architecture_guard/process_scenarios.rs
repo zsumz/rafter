@@ -34,7 +34,6 @@ fn retired_producer_process_format_ownership_cannot_return() {
 
     for relative in [
         "crates/rafter-invariants/src/verification/artifact/compiler/receipt.rs",
-        "crates/rafter-invariants/src/verification/artifact/test_runner/runner.rs",
         "crates/rafter-invariants/src/verification/simulator/schedule/compiler.rs",
         "crates/rafter-invariants/src/verification/simulator/schedule/invocation.rs",
     ] {
@@ -44,6 +43,13 @@ fn retired_producer_process_format_ownership_cannot_return() {
             "{relative} does not enforce the canonical non-detector process schema"
         );
     }
+    let test_runner = read(
+        &root.join("crates/rafter-invariants/src/verification/artifact/test_runner/runner.rs"),
+    );
+    assert!(
+        test_runner.contains("parse_combined_processes"),
+        "test-runner verification does not accept its canonical mixed v4 discovery and v5 detector transcript"
+    );
 
     for path in invariant_rust_files(&root) {
         let relative = display_path(&root, &path);
