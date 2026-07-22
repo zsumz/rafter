@@ -84,7 +84,7 @@ pub(super) fn validate(
 fn valid_pr(contract: &Configuration) -> bool {
     contract.config == "RaftCi.cfg"
         && contract.seed == "2026071101"
-        && contract.soft_timeout == "300m"
+        && contract.soft_timeout == "325m"
         && contract.workers == "4"
         && contract.finalization_reserve.as_deref() == Some("2m")
         && contract.max_heap.as_deref() == Some("8g")

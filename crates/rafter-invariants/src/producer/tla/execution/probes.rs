@@ -6,7 +6,7 @@ use crate::execution::filesystem::HeldDirectory;
 
 use super::{
     super::{artifact, contract::required_configuration, process, tla_output},
-    budget::ExecutionBudget,
+    budget::{mutation_suite_timeout, probe_timeout, ExecutionBudget},
     command::{run_tlc, TlcRequest, TlcState},
     model::{DetectorProbes, DetectorRun, TlcRun},
 };
@@ -18,9 +18,6 @@ use tla_output::{
 };
 
 const DETECTOR_CONFIG: &str = "RafterInvariantDetectorNegative.cfg";
-pub(super) const PROBE_TIMEOUT: Duration = Duration::from_secs(120);
-pub(super) const MUTATION_SUITE_TIMEOUT: Duration = Duration::from_secs(8 * 60);
-pub(super) const QUALIFICATION_PHASE_COUNT: usize = DETECTOR_PROBES.len() + 1;
 pub(super) const REQUIRED_MUTATION_TESTS: [&str; 34] = [
     "application_epoch_loss_replays_identically_without_erasing_history",
     "applied_membership_quorum_mutation_breaks_joint_regression",
@@ -105,7 +102,7 @@ pub(super) fn run_detector_probes(
 ) -> Result<DetectorProbes, Box<dyn Error>> {
     let mut aggregate = DetectorProbes::default();
     for probe in DETECTOR_PROBES {
-        let Some(timeout) = budget.phase_timeout(PROBE_TIMEOUT) else {
+        let Some(timeout) = budget.phase_timeout(probe_timeout(profile)) else {
             aggregate.succeeded = false;
             aggregate.qualifications = empty_detector_qualifications();
             break;
@@ -139,7 +136,7 @@ pub(super) fn run_detector_probes(
         aggregate.artifacts.push(detector.run.artifact);
     }
     if aggregate.succeeded {
-        let Some(timeout) = budget.phase_timeout(MUTATION_SUITE_TIMEOUT) else {
+        let Some(timeout) = budget.phase_timeout(mutation_suite_timeout(profile)) else {
             aggregate.succeeded = false;
             return Ok(aggregate);
         };

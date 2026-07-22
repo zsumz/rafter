@@ -6,13 +6,39 @@ use std::{
     time::{Duration, Instant},
 };
 
-use super::{
-    super::process,
-    probes::{MUTATION_SUITE_TIMEOUT, PROBE_TIMEOUT, QUALIFICATION_PHASE_COUNT},
-};
+use super::super::{process, tla_output::DETECTOR_PROBES};
 
 pub(super) const TOTAL_TIMEOUT_KEY: &str = "total_timeout";
 pub(super) const FINALIZATION_RESERVE_KEY: &str = "finalization_reserve";
+// The hosted PR inventory is 7m qualification + 325m main + 4m setup + 2m
+// finalization = 338m. Scheduled runners retain the wider qualification caps.
+const PR_PROBE_TIMEOUT: Duration = Duration::from_secs(15);
+const PR_MUTATION_SUITE_TIMEOUT: Duration = Duration::from_secs(4 * 60);
+const SCHEDULED_PROBE_TIMEOUT: Duration = Duration::from_secs(120);
+const SCHEDULED_MUTATION_SUITE_TIMEOUT: Duration = Duration::from_secs(8 * 60);
+pub(super) const QUALIFICATION_PHASE_COUNT: usize = DETECTOR_PROBES.len() + 1;
+
+pub(super) fn probe_timeout(profile: &str) -> Duration {
+    if profile == "pr" {
+        PR_PROBE_TIMEOUT
+    } else {
+        SCHEDULED_PROBE_TIMEOUT
+    }
+}
+
+pub(super) fn mutation_suite_timeout(profile: &str) -> Duration {
+    if profile == "pr" {
+        PR_MUTATION_SUITE_TIMEOUT
+    } else {
+        SCHEDULED_MUTATION_SUITE_TIMEOUT
+    }
+}
+
+pub(super) fn maximum_qualification_time(profile: &str) -> Option<Duration> {
+    probe_timeout(profile)
+        .checked_mul(u32::try_from(QUALIFICATION_PHASE_COUNT).ok()?)
+        .and_then(|duration| duration.checked_add(mutation_suite_timeout(profile)))
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(super) struct ExecutionBudget {
@@ -46,10 +72,8 @@ impl ExecutionBudget {
                     .checked_sub(reserve)
                     .filter(|window| !window.is_zero())
                     .ok_or("TLA total_timeout must exceed finalization_reserve")?;
-                let maximum_probe_time = PROBE_TIMEOUT
-                    .checked_mul(u32::try_from(QUALIFICATION_PHASE_COUNT)?)
-                    .and_then(|duration| duration.checked_add(MUTATION_SUITE_TIMEOUT))
-                    .ok_or("TLA probe budget overflow")?;
+                let maximum_probe_time = maximum_qualification_time(profile)
+                    .ok_or("TLA qualification budget overflow")?;
                 if execution_window <= maximum_probe_time {
                     return Err(
                         "TLA shared execution budget must leave time for the main model check"

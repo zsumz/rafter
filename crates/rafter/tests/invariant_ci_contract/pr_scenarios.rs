@@ -91,7 +91,7 @@ fn assert_pr_tla_contract(root: &Path, workflow: &str) {
 
     let profile = read(&root.join("verification/raft-invariant-profiles.json"));
     for required in [
-        "\"soft_timeout\": \"300m\"",
+        "\"soft_timeout\": \"325m\"",
         "\"total_timeout\": \"338m\"",
         "\"finalization_reserve\": \"2m\"",
         "\"max_heap\": \"8g\"",

@@ -11,9 +11,9 @@ use std::{
 use serde_json::Value;
 
 use super::{
-    complete_main_execution, configured_budget_duration, process, DetectorProbes, ExecutionBudget,
-    MainCompletion, TlcRun, FINALIZATION_RESERVE_KEY, MUTATION_SUITE_TIMEOUT, PROBE_TIMEOUT,
-    QUALIFICATION_PHASE_COUNT, TOTAL_TIMEOUT_KEY,
+    complete_main_execution, configured_budget_duration, maximum_qualification_time,
+    mutation_suite_timeout, probe_timeout, process, DetectorProbes, ExecutionBudget,
+    MainCompletion, TlcRun, FINALIZATION_RESERVE_KEY, QUALIFICATION_PHASE_COUNT, TOTAL_TIMEOUT_KEY,
 };
 
 fn pr_budget() -> BTreeMap<String, String> {
@@ -29,15 +29,15 @@ fn shared_pr_budget_reduces_the_main_timeout_and_preserves_the_reserve() {
     let budget = ExecutionBudget::at("pr", &pr_budget(), started).expect("valid PR budget");
 
     assert_eq!(
-        budget.phase_timeout_at(started, PROBE_TIMEOUT),
-        Some(PROBE_TIMEOUT)
+        budget.phase_timeout_at(started, probe_timeout("pr")),
+        Some(probe_timeout("pr"))
     );
     assert_eq!(
         budget.phase_timeout_at(
-            started + Duration::from_secs(20 * 60),
-            Duration::from_secs(300 * 60),
+            started + Duration::from_secs(11 * 60),
+            Duration::from_secs(325 * 60),
         ),
-        Some(Duration::from_secs(300 * 60))
+        Some(Duration::from_secs(325 * 60))
     );
     assert_eq!(
         budget.phase_timeout_at(
@@ -77,7 +77,7 @@ fn every_budget_requires_a_paired_reserve_and_time_for_the_main_run() {
     assert!(ExecutionBudget::at(
         "pr",
         &BTreeMap::from([
-            (TOTAL_TIMEOUT_KEY.to_owned(), "20m".to_owned()),
+            (TOTAL_TIMEOUT_KEY.to_owned(), "9m".to_owned()),
             (FINALIZATION_RESERVE_KEY.to_owned(), "2m".to_owned()),
         ]),
         started,
@@ -99,12 +99,38 @@ fn scheduled_profiles_share_a_bounded_execution_deadline() {
     )
     .expect("weekly profile has a bounded shared deadline");
     assert_eq!(
-        budget.phase_timeout_at(started + Duration::from_secs(339 * 60), PROBE_TIMEOUT),
+        budget.phase_timeout_at(
+            started + Duration::from_secs(339 * 60),
+            probe_timeout("weekly"),
+        ),
         Some(Duration::from_secs(60))
     );
     assert_eq!(
-        budget.phase_timeout_at(started + Duration::from_secs(340 * 60), PROBE_TIMEOUT),
+        budget.phase_timeout_at(
+            started + Duration::from_secs(340 * 60),
+            probe_timeout("weekly"),
+        ),
         None
+    );
+}
+
+#[test]
+fn pr_qualification_caps_make_room_for_frontier_exhaustion_without_changing_scheduled_caps() {
+    assert_eq!(QUALIFICATION_PHASE_COUNT, 12);
+    assert_eq!(probe_timeout("pr"), Duration::from_secs(15));
+    assert_eq!(mutation_suite_timeout("pr"), Duration::from_secs(4 * 60));
+    assert_eq!(
+        maximum_qualification_time("pr"),
+        Some(Duration::from_secs(7 * 60))
+    );
+    assert_eq!(probe_timeout("nightly"), Duration::from_secs(2 * 60));
+    assert_eq!(
+        mutation_suite_timeout("nightly"),
+        Duration::from_secs(8 * 60)
+    );
+    assert_eq!(
+        maximum_qualification_time("weekly"),
+        Some(Duration::from_secs(32 * 60))
     );
 }
 
@@ -319,15 +345,8 @@ fn assert_profile_workflow_budget(
     const MAX_GITHUB_STEP_TIMEOUT: Duration = Duration::from_secs(6 * 60 * 60);
 
     let configuration = profile_tla_configuration(manifest, profile);
-    let probe_phases = PROBE_TIMEOUT
-        .checked_mul(u32::try_from(QUALIFICATION_PHASE_COUNT).expect("phase count fits u32"))
-        .expect("probe phase duration");
-    assert_eq!(probe_phases, Duration::from_secs(24 * 60));
-    assert_eq!(MUTATION_SUITE_TIMEOUT, Duration::from_secs(8 * 60));
-    let qualification_phases = probe_phases
-        .checked_add(MUTATION_SUITE_TIMEOUT)
-        .expect("qualification phase duration");
-    assert_eq!(qualification_phases, Duration::from_secs(32 * 60));
+    let qualification_phases =
+        maximum_qualification_time(profile).expect("profile qualification phase duration");
     let main = required_budget_duration(&configuration, "soft_timeout");
     let inventory = qualification_phases
         .checked_add(main)

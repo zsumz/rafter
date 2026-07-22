@@ -33,7 +33,7 @@ pub(in crate::producer::tla) fn validate_runner_options(
         (Some("RaftCi.cfg"), false) => {
             for (name, expected) in [
                 ("workers", "4"),
-                ("soft_timeout", "300m"),
+                ("soft_timeout", "325m"),
                 ("max_heap", "8g"),
                 ("fp_mem", "0.45"),
             ] {
