@@ -67,11 +67,11 @@ fn pr_invariant_aggregate_is_stable_and_fail_closed() {
 fn assert_pr_tla_contract(root: &Path, workflow: &str) {
     let tla = job_block(workflow, "invariants-tla");
     for required in [
-        "timeout-minutes: 35",
+        "timeout-minutes: 360",
         "Check TLA host capacity",
         "required_kib=\"$((8 * 1024 * 1024))\"",
         "required_memory_kib=\"$((12 * 1024 * 1024))\"",
-        "timeout-minutes: 25",
+        "timeout-minutes: 350",
     ] {
         assert!(
             tla.contains(required),
@@ -91,14 +91,13 @@ fn assert_pr_tla_contract(root: &Path, workflow: &str) {
 
     let profile = read(&root.join("verification/raft-invariant-profiles.json"));
     for required in [
-        "\"config\": \"RaftRefactor.cfg\"",
-        "\"soft_timeout\": \"2m\"",
-        "\"total_timeout\": \"15m\"",
+        "\"soft_timeout\": \"325m\"",
+        "\"total_timeout\": \"338m\"",
         "\"finalization_reserve\": \"2m\"",
         "\"max_heap\": \"8g\"",
         "\"fp_mem\": \"0.45\"",
-        "\"minimum_generated_states\": \"900000\"",
-        "\"minimum_distinct_states\": \"200000\"",
+        "\"minimum_generated_states\": \"120000000\"",
+        "\"minimum_distinct_states\": \"16000000\"",
     ] {
         assert!(
             profile.contains(required),

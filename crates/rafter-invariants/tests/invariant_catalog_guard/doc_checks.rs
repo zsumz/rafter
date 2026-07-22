@@ -63,7 +63,6 @@ pub(super) fn assert_model_check_catalog_labels_are_registered(
 pub(super) fn assert_tla_invariant_counts_match(workspace: &Path, expected: usize) {
     for relative_path in [
         "specs/tla/raft/RaftCi.cfg",
-        "specs/tla/raft/RaftRefactor.cfg",
         "specs/tla/raft/RaftNightly.cfg",
         "specs/tla/raft/Raft.cfg",
         "specs/tla/raft/RaftTraceSample.cfg",
