@@ -34,6 +34,14 @@ fn scheduled_invariant_evidence_is_isolated_by_run_attempt() {
                     "{profile} {layer} evidence upload omitted {required}"
                 );
             }
+            if layer == "simulator" {
+                let detector_artifacts =
+                    format!("artifacts/invariants/{profile}-simulator-detectors-tests/");
+                assert!(
+                    upload.contains(&detector_artifacts),
+                    "{profile} simulator evidence upload omitted {detector_artifacts}"
+                );
+            }
             assert!(upload.contains("if-no-files-found: error"));
             assert!(!upload.contains("overwrite: true"));
             assert!(!upload.contains("telemetry"));
