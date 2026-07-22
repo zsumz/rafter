@@ -18,9 +18,10 @@ use crate::{
 #[test]
 fn timed_child_is_killed_at_its_soft_timeout() {
     let environment = super::super::base_environment();
+    let arguments = [OsString::from("-e"), OsString::from("sleep 5")];
     let output = timed_with_timeout(
-        "sleep",
-        &[OsString::from("5")],
+        "/usr/bin/perl",
+        &arguments,
         &environment,
         Path::new("."),
         Duration::from_millis(10),
@@ -31,8 +32,8 @@ fn timed_child_is_killed_at_its_soft_timeout() {
     assert!(!output.status.success());
     assert!(output.duration < Duration::from_secs(2));
     assert!(output.peak_rss_kib > 0);
-    assert_eq!(output.invocation.program, "sleep");
-    assert_eq!(output.invocation.arguments, ["5"]);
+    assert_eq!(output.invocation.program, "/usr/bin/perl");
+    assert_eq!(output.invocation.arguments, ["-e", "sleep 5"]);
     assert_eq!(
         output.invocation.current_dir,
         std::fs::canonicalize(".")
@@ -48,7 +49,7 @@ fn timed_child_is_killed_at_its_soft_timeout() {
     let plain = String::from_utf8(combined_log("timeout", &output).expect("log serializes"))
         .expect("plain process log is UTF-8");
     assert!(plain.starts_with("schema_version: 4\nlabel: timeout\ninvocation: {"));
-    assert!(plain.contains("\"program\":\"sleep\""));
+    assert!(plain.contains("\"program\":\"/usr/bin/perl\""));
     let parsed = parse_combined_processes(&plain).expect("combined metrics parse");
     assert_eq!(parsed.len(), 1);
     assert!(parsed[0].timed_out);
@@ -165,8 +166,12 @@ fn combined_processes_preserve_failed_and_timed_out_semantic_statuses() {
 fn length_framing_preserves_process_log_tokens_inside_stdout() {
     let payload = "schema_version: 3\n\nstdout_bytes: 999\n--- stderr ---";
     let output = timed_with_timeout(
-        "printf",
-        &[OsString::from("%s"), OsString::from(payload)],
+        "/usr/bin/perl",
+        &[
+            OsString::from("-e"),
+            OsString::from("print $ARGV[0]"),
+            OsString::from(payload),
+        ],
         &super::super::base_environment(),
         Path::new("."),
         Duration::from_secs(2),

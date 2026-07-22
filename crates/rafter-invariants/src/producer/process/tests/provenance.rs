@@ -20,8 +20,8 @@ fn adapter_records_the_canonical_working_directory() {
     std::fs::create_dir_all(&working_directory).expect("create working directory");
 
     let output = timed_with_timeout_after_bind(
-        "/bin/pwd",
-        &[],
+        "/usr/bin/perl",
+        &[OsString::from("-e"), OsString::from("exit 0")],
         &super::super::base_environment(),
         &working_directory,
         Duration::from_secs(2),
@@ -41,8 +41,8 @@ fn adapter_records_the_canonical_working_directory() {
 #[test]
 fn launcher_digest_substitution_is_rejected_by_runtime_verification() {
     let invocation = super::super::expected_invocation(
-        "/bin/echo",
-        &[OsString::from("runtime-binding")],
+        "/usr/bin/perl",
+        &[OsString::from("-e"), OsString::from("exit 0")],
         &super::super::base_environment(),
         Path::new("."),
     )
@@ -165,8 +165,11 @@ fn working_directory_replacement_is_rejected_after_descriptor_bound_execution() 
     std::fs::create_dir_all(&root).expect("create original working directory");
 
     let error = timed_with_timeout_after_run(
-        "/bin/pwd",
-        &[],
+        "/usr/bin/perl",
+        &[
+            OsString::from("-e"),
+            OsString::from("print qq(retained-output\\n)"),
+        ],
         &super::super::base_environment(),
         &root,
         Duration::from_secs(2),
@@ -199,11 +202,15 @@ fn executable_receipt_and_launch_share_the_same_open_file_after_path_replacement
     let moved = root.with_extension("original");
     let _ = std::fs::remove_file(&root);
     let _ = std::fs::remove_file(&moved);
-    std::fs::copy("/bin/echo", &root).expect("copy original executable");
+    std::fs::copy("/usr/bin/perl", &root).expect("copy original executable");
+    let arguments = [
+        OsString::from("-e"),
+        OsString::from("print qq(bound-executable\\n)"),
+    ];
 
     let output = timed_with_timeout_after_bind(
         root.to_str().expect("UTF-8 executable path"),
-        &[OsString::from("bound-executable")],
+        &arguments,
         &super::super::base_environment(),
         Path::new("."),
         Duration::from_secs(2),
@@ -223,7 +230,7 @@ fn executable_receipt_and_launch_share_the_same_open_file_after_path_replacement
     assert_eq!(output.stdout, b"bound-executable\n");
     let original = super::super::expected_invocation(
         moved.to_str().expect("UTF-8 moved executable path"),
-        &[OsString::from("bound-executable")],
+        &arguments,
         &super::super::base_environment(),
         Path::new("."),
     )
