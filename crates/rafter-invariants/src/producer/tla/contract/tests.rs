@@ -89,7 +89,7 @@ fn bounded_runner_symmetry_label_cannot_drift_from_execution() {
         ("detector_negative".to_owned(), "required".to_owned()),
         ("config".to_owned(), "RaftCi.cfg".to_owned()),
         ("workers".to_owned(), "4".to_owned()),
-        ("soft_timeout".to_owned(), "300m".to_owned()),
+        ("soft_timeout".to_owned(), "325m".to_owned()),
         ("max_heap".to_owned(), "8g".to_owned()),
         ("fp_mem".to_owned(), "0.45".to_owned()),
         (

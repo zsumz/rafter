@@ -6,14 +6,14 @@ use crate::evidence::ArtifactRef;
 
 use super::{
     super::contract::required_configuration,
-    budget::ExecutionBudget,
+    budget::{probe_timeout, ExecutionBudget},
     command::{run_tlc, TlcRequest, TlcState},
     model::TlaExecution,
     outcome::{
         checkpoint_failure, complete_main_execution, detector_failure, main_budget_failure,
         prepare_checkpoint, trace_budget_failure, trace_failure, MainCompletion,
     },
-    probes::{run_detector_probes, run_trace_probe, trace_succeeded, PROBE_TIMEOUT},
+    probes::{run_detector_probes, run_trace_probe, trace_succeeded},
 };
 
 pub(in crate::producer::tla) fn execute(
@@ -26,7 +26,7 @@ pub(in crate::producer::tla) fn execute(
     mut artifacts: Vec<ArtifactRef>,
 ) -> Result<TlaExecution, Box<dyn Error>> {
     let budget = ExecutionBudget::from_configuration(profile, configuration)?;
-    let Some(trace_timeout) = budget.phase_timeout(PROBE_TIMEOUT) else {
+    let Some(trace_timeout) = budget.phase_timeout(probe_timeout(profile)) else {
         return Ok(trace_budget_failure(artifacts));
     };
     let trace = run_trace_probe(
