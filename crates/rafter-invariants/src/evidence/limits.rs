@@ -10,7 +10,12 @@ pub(crate) const MAX_VERIFIER_ARCHIVE_BYTES: usize = 256 * 1024 * 1024;
 pub(crate) const MAX_VERIFIER_ARCHIVE_FILES: usize = 512;
 
 /// Largest number of artifact references accepted in one result bundle.
-pub(crate) const MAX_ARTIFACT_REFS_PER_BUNDLE: usize = 384;
+///
+/// Simulator checks bind their shared model artifacts and their individual
+/// detector transcript into every check receipt. The reviewed PR inventory
+/// currently needs 484 references, so retain one bounded power-of-two ceiling
+/// above that producer shape.
+pub(crate) const MAX_ARTIFACT_REFS_PER_BUNDLE: usize = 512;
 
 /// Largest number of distinct artifacts representable in one verdict report.
 pub(crate) const MAX_VERDICT_ARTIFACT_REFS: usize = 4_096;

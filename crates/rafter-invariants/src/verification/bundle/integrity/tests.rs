@@ -165,6 +165,39 @@ fn artifact_preflight_rejects_oversize_and_conflicting_paths_before_open() {
 }
 
 #[test]
+fn artifact_reference_budget_accepts_its_boundary_and_rejects_the_next_reference() {
+    let (catalog, manifest) = crate::tests::loaded();
+    let mut bundle = crate::tests::passing_bundles(&catalog, &manifest)
+        .into_iter()
+        .find(|bundle| bundle.runner == "simulator")
+        .expect("simulator bundle");
+    bundle.execution.checks.clear();
+    bundle.results.clear();
+    bundle.execution.artifacts = (0..crate::evidence::limits::MAX_ARTIFACT_REFS_PER_BUNDLE - 1)
+        .map(|index| ArtifactRef {
+            kind: "summary".to_owned(),
+            path: format!("artifacts/reference-{index}"),
+            sha256: format!("{index:064x}"),
+            size_bytes: 1,
+        })
+        .collect();
+    let budget = BundleBudget::for_trusted("pr", "simulator").expect("simulator budget");
+
+    preflight_artifacts(&bundle, budget, "simulator")
+        .expect("producer executable plus the bounded artifact inventory is accepted");
+    bundle.execution.artifacts.push(ArtifactRef {
+        kind: "summary".to_owned(),
+        path: "artifacts/reference-over-limit".to_owned(),
+        sha256: "f".repeat(64),
+        size_bytes: 1,
+    });
+
+    let error = preflight_artifacts(&bundle, budget, "simulator")
+        .expect_err("one reference beyond the bounded inventory is rejected");
+    assert!(error.to_string().contains("artifact references"), "{error}");
+}
+
+#[test]
 fn noncanonical_and_hard_link_alias_paths_are_rejected() {
     let (catalog, manifest) = crate::tests::loaded();
     let mut bundle = crate::tests::passing_bundles(&catalog, &manifest)

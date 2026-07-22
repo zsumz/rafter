@@ -136,6 +136,7 @@ jobs:
           path: |
             artifacts/invariants/nightly-simulator.json
             artifacts/invariants/nightly-simulator/
+            artifacts/invariants/nightly-simulator-detectors-tests/
           if-no-files-found: error
           retention-days: 30
       - name: Upload nightly simulator process diagnostics
