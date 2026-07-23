@@ -43,6 +43,7 @@ pub(crate) fn assert_forbidden_domain_imports_absent(
             "{relative} aliases the crate root through {:?}",
             paths.crate_root_aliases
         );
+        assert_invocation_stable_macro_definitions(&relative, &paths);
         for occurrence in &paths.occurrences {
             if occurrence.normalized.first().map(String::as_str) == Some("crate")
                 && occurrence
@@ -99,6 +100,7 @@ pub(crate) fn assert_domain_source_imports_follow_manifest(
             "{relative} aliases the crate root through {:?}",
             paths.crate_root_aliases
         );
+        assert_invocation_stable_macro_definitions(&relative, &paths);
         let forbidden_domains = INVARIANT_DOMAINS
             .iter()
             .map(|domain| domain.name)
@@ -150,6 +152,14 @@ pub(crate) fn assert_domain_source_imports_follow_manifest(
             exception.tracking_label,
             exception.source,
             exception.import
+        );
+    }
+}
+
+fn assert_invocation_stable_macro_definitions(relative: &str, paths: &RustPathCollector) {
+    if let Some(path) = paths.relative_macro_definition_paths.first() {
+        panic!(
+            "{relative} defines reusable macro relative path {path:?}; use an explicit $crate::<owning-domain>::... path"
         );
     }
 }

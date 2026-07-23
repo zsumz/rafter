@@ -22,6 +22,7 @@ pub(crate) struct RustPathCollector {
     pub crate_root_aliases: Vec<String>,
     pub process_macro_tokens: Vec<String>,
     pub macro_identifier_groups: Vec<Vec<String>>,
+    pub relative_macro_definition_paths: Vec<Vec<String>>,
 }
 
 impl RustPathCollector {
@@ -32,6 +33,7 @@ impl RustPathCollector {
             crate_root_aliases: Vec::new(),
             process_macro_tokens: Vec::new(),
             macro_identifier_groups: Vec::new(),
+            relative_macro_definition_paths: Vec::new(),
         }
     }
 
@@ -80,6 +82,12 @@ impl<'ast> Visit<'ast> for RustPathCollector {
     fn visit_macro(&mut self, macro_: &'ast syn::Macro) {
         let source = macro_.tokens.to_string();
         for path in rooted_paths_in_tokens(macro_.tokens.clone()) {
+            if macro_.path.is_ident("macro_rules")
+                && path.len() > 1
+                && matches!(path.first().map(String::as_str), Some("self" | "super"))
+            {
+                self.relative_macro_definition_paths.push(path.clone());
+            }
             self.record(PathContext::Expression, path);
         }
         let identifiers = token_identifiers(macro_.tokens.clone());
