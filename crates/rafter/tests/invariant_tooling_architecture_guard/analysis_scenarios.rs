@@ -167,6 +167,39 @@ fn cli_companion_library_imports_cannot_bypass_the_dependency_graph() {
 }
 
 #[test]
+fn cli_crate_root_macro_paths_cannot_bypass_the_dependency_graph() {
+    for source in [
+        "macro_rules! bypass { () => { rafter_invariants::produce() }; }",
+        "macro_rules! bypass { () => { crate::produce() }; }",
+    ] {
+        let scratch = ScratchTree::new();
+        scratch.write("crates/rafter-invariants/src/lib.rs", "");
+        scratch.write("crates/rafter-invariants/src/main.rs", "mod cli;");
+        scratch.write("crates/rafter-invariants/src/cli/mod.rs", source);
+        let modules = declared_module_graph_from_roots(
+            scratch.path(),
+            &[
+                scratch.path().join("crates/rafter-invariants/src/lib.rs"),
+                scratch.path().join("crates/rafter-invariants/src/main.rs"),
+            ],
+        );
+
+        let rejection = std::panic::catch_unwind(|| {
+            assert_domain_source_imports_follow_manifest(
+                scratch.path(),
+                &modules,
+                "cli",
+                "crates/rafter-invariants/src/cli",
+            );
+        });
+        assert!(
+            rejection.is_err(),
+            "CLI crate-root macro path escaped dependency analysis: {source}"
+        );
+    }
+}
+
+#[test]
 fn module_graph_follows_both_roots_cfg_attr_paths_and_attributed_includes() {
     let scratch = ScratchTree::new();
     scratch.write(
