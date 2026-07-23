@@ -79,6 +79,9 @@ impl<'ast> Visit<'ast> for RustPathCollector {
 
     fn visit_macro(&mut self, macro_: &'ast syn::Macro) {
         let source = macro_.tokens.to_string();
+        for path in rooted_paths_in_tokens(macro_.tokens.clone()) {
+            self.record(PathContext::Expression, path);
+        }
         let identifiers = token_identifiers(macro_.tokens.clone());
         if identifiers
             .windows(2)
@@ -229,6 +232,50 @@ fn collect_token_identifiers(tokens: TokenStream, identifiers: &mut Vec<String>)
             TokenTree::Literal(_) | TokenTree::Punct(_) => {}
         }
     }
+}
+
+fn rooted_paths_in_tokens(tokens: TokenStream) -> Vec<Vec<String>> {
+    let tokens = tokens.into_iter().collect::<Vec<_>>();
+    let mut paths = Vec::new();
+    for token in &tokens {
+        if let TokenTree::Group(group) = token {
+            paths.extend(rooted_paths_in_tokens(group.stream()));
+        }
+    }
+    for (index, token) in tokens.iter().enumerate() {
+        let TokenTree::Ident(identifier) = token else {
+            continue;
+        };
+        let root = normalized_identifier(identifier);
+        if root != "crate" && root != "rafter_invariants" {
+            continue;
+        }
+        let mut path = vec![root];
+        let mut cursor = index + 1;
+        while token_is_colon(tokens.get(cursor)) && token_is_colon(tokens.get(cursor + 1)) {
+            let Some(TokenTree::Ident(segment)) = tokens.get(cursor + 2) else {
+                break;
+            };
+            path.push(normalized_identifier(segment));
+            cursor += 3;
+        }
+        if path.len() > 1 {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
+fn normalized_identifier(identifier: &proc_macro2::Ident) -> String {
+    let identifier = identifier.to_string();
+    identifier
+        .strip_prefix("r#")
+        .unwrap_or(&identifier)
+        .to_owned()
+}
+
+fn token_is_colon(token: Option<&TokenTree>) -> bool {
+    matches!(token, Some(TokenTree::Punct(punctuation)) if punctuation.as_char() == ':')
 }
 
 fn blocking_process_calls_in_tokens(tokens: TokenStream) -> Vec<String> {
