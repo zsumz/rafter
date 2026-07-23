@@ -3,7 +3,7 @@
 schema_version: 5
 repository: "zsumz/rafter"
 catalog_origin_ref: "ca400ace5744dd03be05508eb61e6ac6f70440e0"
-catalog_working_ref: "invariants-work-cleanup"
+catalog_working_ref: "main"
 audit_date: "2026-07-10"
 document: "docs/raft-invariants.md"
 scope: "One Raft group across the deterministic protocol core, durable runtime, restart, snapshots, dynamic membership, ReadIndex, lease reads, and the client-visible linearizable history boundary."

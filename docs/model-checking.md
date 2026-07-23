@@ -5,9 +5,6 @@ profiles differ in bounds and scheduling breadth; all exhaustive checks must
 end with `frontier_exhausted`. A state, time, or memory budget ending the run
 is incomplete coverage, not a pass.
 
-The crate ownership, trust boundaries, and migration rules for the invariant
-gate live in [Invariant tooling architecture](invariant-tooling-architecture.md).
-
 ## State Counts
 
 Each exhaustive check reports two distinct cardinalities:
