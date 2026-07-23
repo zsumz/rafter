@@ -29,7 +29,7 @@ impl RaftLogSegment for FailingCompactRaftLogSegment {
     ) -> Result<(), RaftLogSegmentCompactError> {
         Err(RaftLogSegmentCompactError::Io {
             operation: "compact test raft log entries",
-            message: "injected failure".to_string(),
+            source: std::io::Error::other("injected failure").into(),
         })
     }
 
@@ -62,7 +62,7 @@ impl RaftSnapshotStore for FailingSnapshotStore {
         Err(RaftSnapshotStoreWriteError::Io {
             operation: "write test raft snapshot",
             path: std::path::PathBuf::from("test-snapshot"),
-            message: "injected failure".to_string(),
+            source: std::io::Error::other("injected failure").into(),
         })
     }
 
@@ -74,7 +74,7 @@ impl RaftSnapshotStore for FailingSnapshotStore {
         Err(RaftSnapshotStoreWriteError::Io {
             operation: "write test raft snapshot",
             path: std::path::PathBuf::from("test-snapshot"),
-            message: "injected failure".to_string(),
+            source: std::io::Error::other("injected failure").into(),
         })
     }
 
@@ -89,7 +89,7 @@ impl RaftSnapshotStore for FailingSnapshotStore {
         Err(RaftSnapshotStoreWriteError::Io {
             operation: "stage test snapshot chunk",
             path: std::path::PathBuf::from("test-pending-snapshot-transfer"),
-            message: "injected failure".to_string(),
+            source: std::io::Error::other("injected failure").into(),
         })
     }
 
@@ -100,7 +100,7 @@ impl RaftSnapshotStore for FailingSnapshotStore {
         Err(RaftSnapshotStoreWriteError::Io {
             operation: "promote test staged snapshot",
             path: std::path::PathBuf::from("test-pending-snapshot-transfer"),
-            message: "injected failure".to_string(),
+            source: std::io::Error::other("injected failure").into(),
         })
     }
 
@@ -153,7 +153,7 @@ impl RaftSnapshotStore for FailingPromoteSnapshotStore {
         Err(RaftSnapshotStoreWriteError::Io {
             operation: "promote test staged snapshot",
             path: std::path::PathBuf::from("test-pending-snapshot-transfer"),
-            message: "injected failure".to_string(),
+            source: std::io::Error::other("injected failure").into(),
         })
     }
 

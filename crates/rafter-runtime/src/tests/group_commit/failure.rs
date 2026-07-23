@@ -15,7 +15,7 @@ fn group_commit_failure_is_surfaced_without_releasing_outputs() {
         error,
         RaftRuntimeError::LogAppend(RaftLogSegmentAppendError::Io {
             operation: INJECTED_APPEND_OPERATION,
-            message: INJECTED_APPEND_MESSAGE.to_owned(),
+            source: std::io::Error::other(INJECTED_APPEND_MESSAGE).into(),
         })
     );
     oracle_assert_eq!(
@@ -44,9 +44,9 @@ fn group_commit_failure_poisons_runtime_and_rejects_further_writes() {
         RaftRuntimeError::Poisoned {
             cause: RaftRuntimeFatalError::LogAppend(RaftLogSegmentAppendError::Io {
                 operation: INJECTED_APPEND_OPERATION,
-                ref message,
+                ref source,
             }),
-        } if message == INJECTED_APPEND_MESSAGE
+        } if source.to_string() == INJECTED_APPEND_MESSAGE
     ));
 }
 

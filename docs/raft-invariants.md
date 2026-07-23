@@ -309,7 +309,7 @@ named temporal or witness-based verdicts.
 | `PS-03` | `PS-03.e` | tests | direct | `crates/rafter-runtime/src/tests/crash_window/boundary.rs#reopen_completes_compaction_when_snapshot_boundary_is_past_the_log_tail` |
 | `PS-03` | `PS-03.e` | tests | direct | `crates/rafter-runtime/src/tests/local_ids/recovery.rs#restart_replays_committed_tracked_entry_without_local_id`; persistence evidence `crash_reopen` |
 | `PS-03` | `PS-03.c` | tests | direct | `crates/rafter-runtime/src/tests/recovery.rs#restarted_node_recovers_committed_dynamic_membership_suffix_after_snapshot` |
-| `PS-03` | `PS-03.a` | tests | direct | `crates/rafter-storage/src/raft_hard_state_store.rs#file_store_reopens_latest_written_hard_state` |
+| `PS-03` | `PS-03.a` | tests | direct | `crates/rafter-storage/src/raft_hard_state_store/file_test.rs#file_store_reopens_latest_written_hard_state` |
 | `PS-03` | `PS-03.b` | tests | direct | `crates/rafter-storage/src/raft_log_segment_test.rs#file_raft_log_segment_replays_entries_after_reopen` |
 | `PS-03` | `PS-03.d` | tests | direct | `crates/rafter-storage/src/raft_snapshot_store_test.rs#file_snapshot_store_reopens_manifest_selected_snapshot` |
 | `PS-04` | `PS-04.a,PS-04.b` | maelstrom | e2e | `scripts/maelstrom-lin-kv-app-persist-crash#RAFTER_MAELSTROM_CRASH_AFTER_APP_PERSIST_ONCE` |
@@ -335,7 +335,7 @@ named temporal or witness-based verdicts.
 | `SS-01` | `SS-01.a` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_rejects_local_snapshot_behind_installed_boundary_before_writes` |
 | `SS-01` | `SS-01.b` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_snapshot_promote_failure_suppresses_apply_and_success_response` |
 | `SS-01` | `SS-01.c` | tests | direct | `crates/rafter-runtime/src/tests/snapshot/install.rs#runtime_persists_installed_snapshot_and_compacts_log_past_local_tail` |
-| `SS-01` | `SS-01.c` | tests | direct | `crates/rafter-storage/src/raft_snapshot_codec_test.rs#decode_rejects_corrupt_snapshot_payload_checksum` |
+| `SS-01` | `SS-01.c` | tests | direct | `crates/rafter-storage/src/format/v1/raft_snapshot_codec_test.rs#decode_rejects_corrupt_snapshot_payload_checksum` |
 | `SS-01` | `SS-01.b` | tests | direct | `crates/rafter-storage/src/raft_snapshot_store_test.rs#file_snapshot_store_ignores_unmanifested_complete_snapshot_on_open` |
 | `SS-01` | `SS-01.b` | tests | direct | `crates/rafter-storage/src/raft_snapshot_store_test.rs#file_snapshot_store_reopens_manifest_selected_snapshot`; persistence evidence `crash_reopen` |
 | `SS-02` | `SS-02.b` | tests | direct | `crates/rafter-runtime/src/tests/crash_window/reopen.rs#reopen_rejects_log_compacted_past_the_snapshot` |

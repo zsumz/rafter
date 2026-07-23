@@ -6,6 +6,7 @@ use rafter::{
     CommittedConfiguration, ConfigurationId, LogIndex, MembershipConfig, MembershipSet,
     SnapshotCommittedConfiguration, SnapshotGroupId, Term,
 };
+use rafter_invariant_test::oracle_assert;
 
 fn snapshot(payload: &[u8]) -> PersistedRaftSnapshot {
     PersistedRaftSnapshot {

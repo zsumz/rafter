@@ -125,7 +125,7 @@ fn validate_verifier(
     let replay = &verifier.detector_replay;
     let valid = replay.required_inventory_sha256
         == super::replay::REVIEWED_DETECTOR_REPLAY_INVENTORY_SHA256
-        && replay.required_registry_packages == 247
+        && replay.required_registry_packages == 249
         && replay.maximum_registry_archive_bytes == 268_435_456
         && replay.maximum_registry_expanded_bytes == 2_147_483_648
         && replay.maximum_registry_entries == 250_000

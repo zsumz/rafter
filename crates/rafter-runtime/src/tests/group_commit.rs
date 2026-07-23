@@ -161,7 +161,7 @@ impl RaftLogSegment for FailAfterLogSegment {
         if self.allowed == 0 {
             return Err(RaftLogSegmentAppendError::Io {
                 operation: INJECTED_APPEND_OPERATION,
-                message: INJECTED_APPEND_MESSAGE.to_owned(),
+                source: std::io::Error::other(INJECTED_APPEND_MESSAGE).into(),
             });
         }
         self.allowed -= 1;

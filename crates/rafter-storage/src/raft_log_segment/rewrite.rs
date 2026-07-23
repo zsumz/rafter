@@ -35,20 +35,28 @@ pub(super) struct PreparedLogRewrite {
 }
 
 #[cfg(test)]
-thread_local! {
-    static FAIL_NEXT_LOG_REWRITE_PUBLICATION: std::cell::Cell<bool> = const {
-        std::cell::Cell::new(false)
-    };
-}
+static FAIL_NEXT_LOG_REWRITE_PUBLICATION: std::sync::Mutex<Vec<std::thread::ThreadId>> =
+    std::sync::Mutex::new(Vec::new());
 
 #[cfg(test)]
 pub(super) fn inject_log_rewrite_publication_failure() {
-    FAIL_NEXT_LOG_REWRITE_PUBLICATION.with(|fail| fail.set(true));
+    FAIL_NEXT_LOG_REWRITE_PUBLICATION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push(std::thread::current().id());
 }
 
 #[cfg(test)]
 fn take_log_rewrite_publication_failure() -> bool {
-    FAIL_NEXT_LOG_REWRITE_PUBLICATION.with(std::cell::Cell::take)
+    let current = std::thread::current().id();
+    let mut failures = FAIL_NEXT_LOG_REWRITE_PUBLICATION
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let Some(index) = failures.iter().position(|thread| *thread == current) else {
+        return false;
+    };
+    failures.swap_remove(index);
+    true
 }
 
 #[cfg(not(test))]

@@ -3,6 +3,7 @@
 use std::fs;
 
 use crate::{encode_raft_hard_state, DecodeRaftHardStateError, RaftHardState};
+use rafter_invariant_test::oracle_assert_eq;
 
 use super::test_support::{
     hard_state, hard_state_temp_path, remove_test_file, test_store_directory, test_store_path,
@@ -57,7 +58,7 @@ fn file_store_reopens_latest_written_hard_state() {
 
     let reopened = FileRaftHardStateStore::open(&path).expect("store reopens");
 
-    assert_eq!(reopened.current(), hard_state(2, Some(8)));
+    oracle_assert_eq!(reopened.current(), hard_state(2, Some(8)));
     remove_test_file(path);
 }
 

@@ -295,7 +295,7 @@ impl RaftHardStateStore for FailingCommittedConfigurationHardStateStore {
             return Err(RaftHardStateStoreWriteError::Io {
                 operation: "write committed configuration test hard state",
                 path: PathBuf::from("test-committed-configuration-hard-state"),
-                message: "injected failure".to_string(),
+                source: std::io::Error::other("injected failure").into(),
             });
         }
         self.durable.write_hard_state(state)

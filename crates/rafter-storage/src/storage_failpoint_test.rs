@@ -1,13 +1,16 @@
-//! Thread-local, one-shot filesystem failpoints for deterministic crash tests.
+//! Thread-scoped, one-shot filesystem failpoints for deterministic crash tests.
 //!
 //! Production builds do not compile this module. Storage implementations call
 //! it only from `#[cfg(test)]` blocks at named publication boundaries, keeping
 //! normal code free of fault-injection state and synchronization.
 
 use std::{
-    cell::{Cell, RefCell},
     io,
-    rc::Rc,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Mutex, MutexGuard,
+    },
+    thread::ThreadId,
 };
 
 /// Named storage boundaries where a test may inject one synthetic I/O failure.
@@ -37,21 +40,19 @@ pub(crate) enum DurabilityPoint {
 
 #[derive(Debug)]
 struct Armed {
+    thread: ThreadId,
     point: DurabilityPoint,
-    triggered: Rc<Cell<bool>>,
+    triggered: Arc<AtomicBool>,
 }
 
-thread_local! {
-    static ACTIVE_FAILPOINT: RefCell<Option<Armed>> = const {
-        RefCell::new(None)
-    };
-}
+static ACTIVE_FAILPOINTS: Mutex<Vec<Armed>> = Mutex::new(Vec::new());
 
 /// Clears an armed failpoint when a scenario exits before reaching it.
 #[derive(Debug)]
 pub(crate) struct Guard {
+    thread: ThreadId,
     point: DurabilityPoint,
-    triggered: Rc<Cell<bool>>,
+    triggered: Arc<AtomicBool>,
 }
 
 /// Arms one failpoint on the current test thread.
@@ -60,38 +61,41 @@ pub(crate) struct Guard {
 /// parallel tests from observing the injection.
 #[must_use]
 pub(crate) fn arm(point: DurabilityPoint) -> Guard {
-    let triggered = Rc::new(Cell::new(false));
-    ACTIVE_FAILPOINT.with(|slot| {
-        let mut active = slot.borrow_mut();
-        assert!(
-            active.is_none(),
-            "a storage failpoint is already armed on this test thread"
-        );
-        *active = Some(Armed {
-            point,
-            triggered: Rc::clone(&triggered),
-        });
+    let thread = std::thread::current().id();
+    let triggered = Arc::new(AtomicBool::new(false));
+    let mut active = active_failpoints();
+    assert!(
+        active.iter().all(|armed| armed.thread != thread),
+        "a storage failpoint is already armed on this test thread"
+    );
+    active.push(Armed {
+        thread,
+        point,
+        triggered: Arc::clone(&triggered),
     });
-    Guard { point, triggered }
+    Guard {
+        thread,
+        point,
+        triggered,
+    }
 }
 
 /// Returns one synthetic I/O failure when `point` is the armed boundary.
 pub(crate) fn check(point: DurabilityPoint) -> io::Result<()> {
-    ACTIVE_FAILPOINT.with(|slot| {
-        let mut active = slot.borrow_mut();
-        let matches = active.as_ref().is_some_and(|armed| armed.point == point);
-        if !matches {
-            return Ok(());
-        }
+    let thread = std::thread::current().id();
+    let mut active = active_failpoints();
+    let Some(index) = active
+        .iter()
+        .position(|armed| armed.thread == thread && armed.point == point)
+    else {
+        return Ok(());
+    };
 
-        let armed = active
-            .take()
-            .expect("matching failpoint must still be armed");
-        armed.triggered.set(true);
-        Err(io::Error::other(format!(
-            "injected storage failpoint: {point:?}"
-        )))
-    })
+    let armed = active.swap_remove(index);
+    armed.triggered.store(true, Ordering::Relaxed);
+    Err(io::Error::other(format!(
+        "injected storage failpoint: {point:?}"
+    )))
 }
 
 impl Guard {
@@ -99,7 +103,7 @@ impl Guard {
     #[track_caller]
     pub(crate) fn assert_triggered(&self) {
         assert!(
-            self.triggered.get(),
+            self.triggered.load(Ordering::Relaxed),
             "storage failpoint {:?} was not reached",
             self.point
         );
@@ -108,16 +112,21 @@ impl Guard {
 
 impl Drop for Guard {
     fn drop(&mut self) {
-        ACTIVE_FAILPOINT.with(|slot| {
-            let should_clear = slot
-                .borrow()
-                .as_ref()
-                .is_some_and(|armed| armed.point == self.point);
-            if should_clear {
-                *slot.borrow_mut() = None;
-            }
-        });
+        let mut active = active_failpoints();
+        if let Some(index) = active.iter().position(|armed| {
+            armed.thread == self.thread
+                && armed.point == self.point
+                && Arc::ptr_eq(&armed.triggered, &self.triggered)
+        }) {
+            active.swap_remove(index);
+        }
     }
+}
+
+fn active_failpoints() -> MutexGuard<'static, Vec<Armed>> {
+    ACTIVE_FAILPOINTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
 mod hard_state_test;
