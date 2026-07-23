@@ -222,6 +222,59 @@ fn cli_crate_root_macro_paths_cannot_bypass_the_dependency_graph() {
 }
 
 #[test]
+fn producer_relative_macro_paths_cannot_bypass_the_dependency_graph() {
+    for (relative, forbidden_path) in [
+        (
+            "crates/rafter-invariants/src/producer/mod.rs",
+            "super::verify_report_set",
+        ),
+        (
+            "crates/rafter-invariants/src/producer/nested.rs",
+            "super::super::verify_report_set",
+        ),
+    ] {
+        let scratch = ScratchTree::new();
+        scratch.write("crates/rafter-invariants/src/lib.rs", "mod producer;");
+        let fixture = format!(
+            r"
+            macro_rules! bypass {{
+                () => {{
+                    fn invoke_forbidden_api() {{
+                        let _ = {forbidden_path};
+                    }}
+                }};
+            }}
+            bypass!();
+            "
+        );
+        if relative.ends_with("nested.rs") {
+            scratch.write(
+                "crates/rafter-invariants/src/producer/mod.rs",
+                "mod nested;",
+            );
+        }
+        scratch.write(relative, &fixture);
+        let modules = declared_module_graph_from_roots(
+            scratch.path(),
+            &[scratch.path().join("crates/rafter-invariants/src/lib.rs")],
+        );
+
+        let rejection = std::panic::catch_unwind(|| {
+            assert_domain_source_imports_follow_manifest(
+                scratch.path(),
+                &modules,
+                "producer",
+                "crates/rafter-invariants/src/producer",
+            );
+        });
+        assert!(
+            rejection.is_err(),
+            "producer relative macro path escaped dependency analysis: {forbidden_path}"
+        );
+    }
+}
+
+#[test]
 fn module_graph_follows_both_roots_cfg_attr_paths_and_attributed_includes() {
     let scratch = ScratchTree::new();
     scratch.write(
