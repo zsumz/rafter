@@ -113,6 +113,10 @@ measurement procedure are documented in
 `run-all` loads one immutable execution plan, runs every required layer, and
 aggregates only the evidence produced by that invocation. `check` is the
 separate aggregation-only command for existing result bundles. The
+production `run` and `run-all` evidence subprocesses require Linux
+descriptor-bound executable launch and fail closed on other operating systems.
+The macOS CI lane exercises launcher mechanics under test-only fallback; it
+does not produce accepted invariant evidence. The
 deterministic PR aggregate emits exactly one verdict for each of the 44
 reviewed IDs. Branch protection on `main` requires the stable `invariants-pr`
 job; missing, malformed, incomplete, or stale evidence makes that job red.

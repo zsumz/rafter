@@ -9,8 +9,8 @@ use std::{
 use syn::visit::Visit;
 
 use super::architecture_support::{
-    declared_module_graph_from_roots, module_is_test_only, BlockingProcessCollector, PathContext,
-    RustPathCollector,
+    assert_domain_source_imports_follow_manifest, declared_module_graph_from_roots,
+    module_is_test_only, BlockingProcessCollector, PathContext, RustPathCollector,
 };
 
 static SCRATCH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -107,6 +107,63 @@ fn grouped_and_inline_relative_domain_paths_are_normalized() {
         2
     );
     assert!(dependencies.contains(&"verdict"));
+}
+
+#[test]
+fn companion_library_paths_are_normalized_to_the_invariant_crate_root() {
+    let syntax = syn::parse_file(
+        r"
+        use rafter_invariants::produce;
+        fn execute() {
+            rafter_invariants::produce();
+        }
+        ",
+    )
+    .expect("parse companion-library fixture");
+    let mut paths = RustPathCollector::new(vec!["cli".to_owned()]);
+    paths.visit_file(&syntax);
+
+    assert_eq!(
+        paths
+            .occurrences
+            .iter()
+            .filter(|occurrence| occurrence.normalized == ["crate", "produce"])
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn cli_companion_library_imports_cannot_bypass_the_dependency_graph() {
+    for source in [
+        "use rafter_invariants::produce;",
+        "use rafter_invariants as invariants; use invariants::produce;",
+    ] {
+        let scratch = ScratchTree::new();
+        scratch.write("crates/rafter-invariants/src/lib.rs", "");
+        scratch.write("crates/rafter-invariants/src/main.rs", "mod cli;");
+        scratch.write("crates/rafter-invariants/src/cli/mod.rs", source);
+        let modules = declared_module_graph_from_roots(
+            scratch.path(),
+            &[
+                scratch.path().join("crates/rafter-invariants/src/lib.rs"),
+                scratch.path().join("crates/rafter-invariants/src/main.rs"),
+            ],
+        );
+
+        let rejection = std::panic::catch_unwind(|| {
+            assert_domain_source_imports_follow_manifest(
+                scratch.path(),
+                &modules,
+                "cli",
+                "crates/rafter-invariants/src/cli",
+            );
+        });
+        assert!(
+            rejection.is_err(),
+            "CLI companion-library import escaped dependency analysis: {source}"
+        );
+    }
 }
 
 #[test]

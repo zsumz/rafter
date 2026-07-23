@@ -1,6 +1,8 @@
 //! Invariant-gate orchestration over verified evidence intake.
 
 mod check;
+/// Binary command adapters that preserve gate-owned lifecycle preconditions.
+pub mod command;
 mod report;
 mod report_set;
 mod run;

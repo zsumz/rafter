@@ -14,7 +14,8 @@ mod artifact_verify_tla;
 mod contract;
 mod evidence;
 mod execution;
-mod gate;
+/// Source-bound producer orchestration, verification, and command adaptation.
+pub mod gate;
 mod plan;
 mod producer;
 mod provenance;
@@ -41,6 +42,7 @@ pub use contract::registry::{
     PersistenceEvidenceKind, RegistryClause, RegistryCounts, RegistryDocument, RegistryEvidence,
     RegistryInvariant, RegistryParseError, REGISTRY_SCHEMA_VERSION,
 };
+#[cfg(test)]
 pub(crate) use evidence::ResultBundle;
 pub use evidence::{
     ArtifactRef, CheckCompletion, CheckReceipt, EvidenceResult, EvidenceStatus, ExecutableReceipt,

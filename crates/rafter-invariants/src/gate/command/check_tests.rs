@@ -3,6 +3,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::profile_result_files;
+use crate::contract::catalog::EvidenceLayer;
 
 static DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -27,9 +28,9 @@ fn implicit_discovery_includes_missing_required_layers() {
         &root,
         "pr",
         &[
-            rafter_invariants::EvidenceLayer::Tests,
-            rafter_invariants::EvidenceLayer::Simulator,
-            rafter_invariants::EvidenceLayer::Tla,
+            EvidenceLayer::Tests,
+            EvidenceLayer::Simulator,
+            EvidenceLayer::Tla,
         ],
     );
     assert_eq!(

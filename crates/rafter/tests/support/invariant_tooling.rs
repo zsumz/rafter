@@ -111,51 +111,7 @@ pub(super) const ENFORCED_DOMAIN_SOURCES: &[EnforcedDomainSource] = &[
     },
     EnforcedDomainSource {
         domain: "producer",
-        path: "crates/rafter-invariants/src/producer/maelstrom.rs",
-    },
-    EnforcedDomainSource {
-        domain: "producer",
-        path: "crates/rafter-invariants/src/producer/maelstrom",
-    },
-    EnforcedDomainSource {
-        domain: "producer",
-        path: "crates/rafter-invariants/src/producer/process",
-    },
-    EnforcedDomainSource {
-        domain: "producer",
-        path: "crates/rafter-invariants/src/producer/simulator.rs",
-    },
-    EnforcedDomainSource {
-        domain: "producer",
-        path: "crates/rafter-invariants/src/producer/simulator",
-    },
-    EnforcedDomainSource {
-        domain: "producer",
-        path: "crates/rafter-invariants/src/producer/source.rs",
-    },
-    EnforcedDomainSource {
-        domain: "producer",
-        path: "crates/rafter-invariants/src/producer/test_compile.rs",
-    },
-    EnforcedDomainSource {
-        domain: "producer",
-        path: "crates/rafter-invariants/src/producer/test_compile",
-    },
-    EnforcedDomainSource {
-        domain: "producer",
-        path: "crates/rafter-invariants/src/producer/test_exec.rs",
-    },
-    EnforcedDomainSource {
-        domain: "producer",
-        path: "crates/rafter-invariants/src/producer/test_exec",
-    },
-    EnforcedDomainSource {
-        domain: "producer",
-        path: "crates/rafter-invariants/src/producer/tla.rs",
-    },
-    EnforcedDomainSource {
-        domain: "producer",
-        path: "crates/rafter-invariants/src/producer/tla",
+        path: "crates/rafter-invariants/src/producer",
     },
     EnforcedDomainSource {
         domain: "verification",

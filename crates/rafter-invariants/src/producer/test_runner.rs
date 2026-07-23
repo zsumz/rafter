@@ -6,11 +6,16 @@ use std::{
     path::Path,
 };
 
-use crate::evidence::RESULT_SCHEMA_VERSION;
 use crate::{
-    contract::{catalog::Catalog, profile::ProfileContract},
-    CheckReceipt, EvidenceDescriptor, EvidenceResult, EvidenceStatus, ExecutionReceipt,
-    ResultBundle, SourceReceipt, TestIdentity,
+    contract::{
+        catalog::{Catalog, EvidenceDescriptor},
+        profile::ProfileContract,
+        TestIdentity,
+    },
+    evidence::{
+        CheckReceipt, EvidenceResult, EvidenceStatus, ExecutionReceipt, ResultBundle,
+        SourceReceipt, RESULT_SCHEMA_VERSION,
+    },
 };
 
 use super::{
