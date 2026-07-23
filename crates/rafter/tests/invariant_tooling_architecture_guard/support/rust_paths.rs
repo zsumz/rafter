@@ -92,7 +92,7 @@ impl<'ast> Visit<'ast> for RustPathCollector {
         }
         if macro_.path.is_ident("macro_rules") {
             self.relative_macro_definition_paths.extend(
-                relative_use_aliases_in_macro_transcribers(macro_.tokens.clone()),
+                relative_invocation_site_uses_in_macro_transcribers(macro_.tokens.clone()),
             );
         }
         let identifiers = token_identifiers(macro_.tokens.clone());
@@ -352,9 +352,9 @@ fn grouped_path_entry(prefix: &[String], tokens: &[TokenTree]) -> Vec<Vec<String
     vec![path]
 }
 
-fn relative_use_aliases_in_macro_transcribers(tokens: TokenStream) -> Vec<Vec<String>> {
+fn relative_invocation_site_uses_in_macro_transcribers(tokens: TokenStream) -> Vec<Vec<String>> {
     let tokens = tokens.into_iter().collect::<Vec<_>>();
-    let mut aliases = Vec::new();
+    let mut relative_uses = Vec::new();
     for index in 0..tokens.len().saturating_sub(2) {
         if !token_is_punctuation(tokens.get(index), '=')
             || !token_is_punctuation(tokens.get(index + 1), '>')
@@ -362,17 +362,20 @@ fn relative_use_aliases_in_macro_transcribers(tokens: TokenStream) -> Vec<Vec<St
             continue;
         }
         if let Some(TokenTree::Group(transcriber)) = tokens.get(index + 2) {
-            collect_relative_use_aliases(transcriber.stream(), &mut aliases);
+            collect_relative_invocation_site_uses(transcriber.stream(), &mut relative_uses);
         }
     }
-    aliases
+    relative_uses
 }
 
-fn collect_relative_use_aliases(tokens: TokenStream, aliases: &mut Vec<Vec<String>>) {
+fn collect_relative_invocation_site_uses(
+    tokens: TokenStream,
+    relative_uses: &mut Vec<Vec<String>>,
+) {
     let tokens = tokens.into_iter().collect::<Vec<_>>();
     for token in &tokens {
         if let TokenTree::Group(group) = token {
-            collect_relative_use_aliases(group.stream(), aliases);
+            collect_relative_invocation_site_uses(group.stream(), relative_uses);
         }
     }
     for (index, token) in tokens.iter().enumerate() {
@@ -393,34 +396,41 @@ fn collect_relative_use_aliases(tokens: TokenStream, aliases: &mut Vec<Vec<Strin
         let Ok(item) = syn::parse2::<ItemUse>(declaration) else {
             continue;
         };
-        collect_relative_renamed_use_paths(&item.tree, Vec::new(), aliases);
+        collect_relative_invocation_site_use_paths(&item.tree, Vec::new(), relative_uses);
     }
 }
 
-fn collect_relative_renamed_use_paths(
+fn collect_relative_invocation_site_use_paths(
     tree: &UseTree,
     prefix: Vec<String>,
-    aliases: &mut Vec<Vec<String>>,
+    relative_uses: &mut Vec<Vec<String>>,
 ) {
     match tree {
         UseTree::Path(path) => {
             let mut prefix = prefix;
             prefix.push(path.ident.to_string());
-            collect_relative_renamed_use_paths(&path.tree, prefix, aliases);
+            collect_relative_invocation_site_use_paths(&path.tree, prefix, relative_uses);
         }
         UseTree::Rename(rename) => {
             let mut path = prefix;
             path.push(rename.ident.to_string());
             if matches!(path.first().map(String::as_str), Some("self" | "super")) {
-                aliases.push(path);
+                relative_uses.push(path);
+            }
+        }
+        UseTree::Glob(_) => {
+            if matches!(prefix.first().map(String::as_str), Some("self" | "super")) {
+                let mut path = prefix;
+                path.push("*".to_owned());
+                relative_uses.push(path);
             }
         }
         UseTree::Group(group) => {
             for tree in &group.items {
-                collect_relative_renamed_use_paths(tree, prefix.clone(), aliases);
+                collect_relative_invocation_site_use_paths(tree, prefix.clone(), relative_uses);
             }
         }
-        UseTree::Name(_) | UseTree::Glob(_) => {}
+        UseTree::Name(_) => {}
     }
 }
 
