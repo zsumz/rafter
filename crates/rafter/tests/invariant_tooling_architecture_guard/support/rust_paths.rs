@@ -190,8 +190,13 @@ pub(crate) fn normalize_rust_path(
     match first {
         "crate" | "rafter_invariants" => index = 1,
         "self" => {
-            normalized.extend_from_slice(module);
+            let mut owner = module.to_vec();
             index = 1;
+            while written.get(index).map(String::as_str) == Some("super") {
+                owner.pop()?;
+                index += 1;
+            }
+            normalized.extend(owner);
         }
         "super" => {
             let mut owner = module.to_vec();
@@ -255,16 +260,83 @@ fn rooted_paths_in_tokens(tokens: TokenStream) -> Vec<Vec<String>> {
         }
         let mut path = vec![root];
         let mut cursor = index + 1;
+        let mut grouped = None;
         while token_is_colon(tokens.get(cursor)) && token_is_colon(tokens.get(cursor + 1)) {
-            let Some(TokenTree::Ident(segment)) = tokens.get(cursor + 2) else {
-                break;
-            };
-            path.push(normalized_identifier(segment));
-            cursor += 3;
+            match tokens.get(cursor + 2) {
+                Some(TokenTree::Ident(segment)) => {
+                    path.push(normalized_identifier(segment));
+                    cursor += 3;
+                }
+                Some(TokenTree::Group(group))
+                    if group.delimiter() == proc_macro2::Delimiter::Brace =>
+                {
+                    grouped = Some(group.stream());
+                    break;
+                }
+                _ => break,
+            }
         }
-        paths.push(path);
+        if let Some(grouped) = grouped {
+            paths.extend(grouped_paths_in_tokens(&path, grouped));
+        } else {
+            paths.push(path);
+        }
     }
     paths
+}
+
+fn grouped_paths_in_tokens(prefix: &[String], tokens: TokenStream) -> Vec<Vec<String>> {
+    let tokens = tokens.into_iter().collect::<Vec<_>>();
+    let mut paths = Vec::new();
+    let mut entry_start = 0;
+    for index in 0..=tokens.len() {
+        let at_end = index == tokens.len();
+        let at_separator = matches!(tokens.get(index), Some(TokenTree::Punct(punctuation)) if punctuation.as_char() == ',');
+        if !at_end && !at_separator {
+            continue;
+        }
+        if entry_start < index {
+            paths.extend(grouped_path_entry(prefix, &tokens[entry_start..index]));
+        }
+        entry_start = index + 1;
+    }
+    paths
+}
+
+fn grouped_path_entry(prefix: &[String], tokens: &[TokenTree]) -> Vec<Vec<String>> {
+    let Some(first) = tokens.first() else {
+        return Vec::new();
+    };
+    if matches!(first, TokenTree::Punct(punctuation) if punctuation.as_char() == '*') {
+        let mut path = prefix.to_vec();
+        path.push("*".to_owned());
+        return vec![path];
+    }
+    let TokenTree::Ident(first) = first else {
+        return vec![prefix.to_vec()];
+    };
+    let mut path = prefix.to_vec();
+    let first = normalized_identifier(first);
+    if first != "self" {
+        path.push(first);
+    }
+    let mut cursor = 1;
+    while token_is_colon(tokens.get(cursor)) && token_is_colon(tokens.get(cursor + 1)) {
+        match tokens.get(cursor + 2) {
+            Some(TokenTree::Ident(segment)) => {
+                let segment = normalized_identifier(segment);
+                if segment != "self" {
+                    path.push(segment);
+                }
+                cursor += 3;
+            }
+            Some(TokenTree::Group(group)) if group.delimiter() == proc_macro2::Delimiter::Brace => {
+                return grouped_paths_in_tokens(&path, group.stream());
+            }
+            _ => break,
+        }
+    }
+    vec![path]
 }
 
 fn normalized_identifier(identifier: &proc_macro2::Ident) -> String {
