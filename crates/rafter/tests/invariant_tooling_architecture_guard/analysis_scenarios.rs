@@ -171,6 +171,28 @@ fn cli_crate_root_macro_paths_cannot_bypass_the_dependency_graph() {
     for source in [
         "macro_rules! bypass { () => { rafter_invariants::produce() }; }",
         "macro_rules! bypass { () => { crate::produce() }; }",
+        r"
+        macro_rules! bypass {
+            () => {
+                use rafter_invariants::{produce};
+                fn invoke_forbidden_api() {
+                    let _ = produce;
+                }
+            };
+        }
+        bypass!();
+        ",
+        r"
+        macro_rules! bypass {
+            () => {
+                use rafter_invariants as invariants;
+                fn invoke_forbidden_api() {
+                    let _ = invariants::produce;
+                }
+            };
+        }
+        bypass!();
+        ",
     ] {
         let scratch = ScratchTree::new();
         scratch.write("crates/rafter-invariants/src/lib.rs", "");

@@ -259,9 +259,7 @@ fn rooted_paths_in_tokens(tokens: TokenStream) -> Vec<Vec<String>> {
             path.push(normalized_identifier(segment));
             cursor += 3;
         }
-        if path.len() > 1 {
-            paths.push(path);
-        }
+        paths.push(path);
     }
     paths
 }
