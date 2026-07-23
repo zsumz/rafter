@@ -90,6 +90,7 @@ fn mature_invariant_facades_remain_declarative() {
             "crates/rafter-invariants/src/execution/filesystem/mod.rs",
             "crates/rafter-invariants/src/execution/mod.rs",
             "crates/rafter-invariants/src/execution/process/mod.rs",
+            "crates/rafter-invariants/src/gate/command/mod.rs",
             "crates/rafter-invariants/src/gate/mod.rs",
             "crates/rafter-invariants/src/plan/mod.rs",
             "crates/rafter-invariants/src/producer/maelstrom.rs",
@@ -200,45 +201,7 @@ fn migrated_domain_sources_follow_the_reviewed_dependency_graph() {
             ("execution", "crates/rafter-invariants/src/execution"),
             ("provenance", "crates/rafter-invariants/src/provenance"),
             ("plan", "crates/rafter-invariants/src/plan"),
-            (
-                "producer",
-                "crates/rafter-invariants/src/producer/maelstrom.rs"
-            ),
-            (
-                "producer",
-                "crates/rafter-invariants/src/producer/maelstrom"
-            ),
-            ("producer", "crates/rafter-invariants/src/producer/process"),
-            (
-                "producer",
-                "crates/rafter-invariants/src/producer/simulator.rs"
-            ),
-            (
-                "producer",
-                "crates/rafter-invariants/src/producer/simulator"
-            ),
-            (
-                "producer",
-                "crates/rafter-invariants/src/producer/source.rs"
-            ),
-            (
-                "producer",
-                "crates/rafter-invariants/src/producer/test_compile.rs"
-            ),
-            (
-                "producer",
-                "crates/rafter-invariants/src/producer/test_compile"
-            ),
-            (
-                "producer",
-                "crates/rafter-invariants/src/producer/test_exec.rs"
-            ),
-            (
-                "producer",
-                "crates/rafter-invariants/src/producer/test_exec"
-            ),
-            ("producer", "crates/rafter-invariants/src/producer/tla.rs"),
-            ("producer", "crates/rafter-invariants/src/producer/tla"),
+            ("producer", "crates/rafter-invariants/src/producer"),
             ("verification", "crates/rafter-invariants/src/verification"),
             ("verdict", "crates/rafter-invariants/src/verdict"),
             ("gate", "crates/rafter-invariants/src/gate"),

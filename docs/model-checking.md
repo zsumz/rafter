@@ -5,6 +5,9 @@ profiles differ in bounds and scheduling breadth; all exhaustive checks must
 end with `frontier_exhausted`. A state, time, or memory budget ending the run
 is incomplete coverage, not a pass.
 
+The invariant gate's ownership, dependency rules, and trust boundaries live in
+[Invariant tooling architecture](invariant-tooling-architecture.md).
+
 ## State Counts
 
 Each exhaustive check reports two distinct cardinalities:
@@ -190,8 +193,11 @@ This is deterministic repository provenance, not hostile-host attestation. It
 does not defend against a malicious producer binary, compromised kernel or CI
 runner, SHA-256 compromise, or a hostile same-UID process that can replace files
 between verification and `exec`. Those threats require an external build
-attestation system or OS-specific sealed execution and are outside the portable
-Linux/macOS invariant gate contract.
+attestation system or OS-specific sealed execution and are outside the
+repository provenance contract. Production evidence execution is narrower:
+descriptor-bound target launch is Linux-only and fails closed elsewhere. The
+macOS lane exercises launcher mechanics under test-only fallback; it does not
+produce accepted invariant evidence.
 
 Source capture also fails closed on Cargo configuration that can alter the
 compiled dependency graph without identifying the replacement source. In

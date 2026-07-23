@@ -60,6 +60,10 @@ pub struct ProducerOutcome {
     pub all_passed: bool,
 }
 
+pub(crate) fn ensure_immutable() -> Result<(), Box<dyn Error>> {
+    crate::provenance::image::ensure_immutable_producer()
+}
+
 pub(super) struct ProducerContext<'a> {
     pub plan: &'a ExecutionPlanReceipt,
     pub invocation: &'a InvocationReceipt,
@@ -188,7 +192,7 @@ pub(crate) fn produce_with_plan(
         && bundle
             .results
             .iter()
-            .all(|result| result.status == crate::EvidenceStatus::Pass);
+            .all(|result| result.status == crate::evidence::EvidenceStatus::Pass);
     let path = publish_bundle(&bundle, output_dir, &plan.receipt.profile, layer)?;
     Ok(ProducerOutcome { path, all_passed })
 }

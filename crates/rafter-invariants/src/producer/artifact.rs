@@ -10,7 +10,8 @@ use std::{
 use sha2::{Digest, Sha256};
 
 use crate::{
-    evidence::limits::MAX_ARTIFACT_BYTES, execution::filesystem::HeldDirectory, ArtifactRef,
+    evidence::{limits::MAX_ARTIFACT_BYTES, ArtifactRef},
+    execution::filesystem::HeldDirectory,
 };
 
 pub(super) fn validate_output_dir(path: &Path) -> Result<(), Box<dyn Error>> {

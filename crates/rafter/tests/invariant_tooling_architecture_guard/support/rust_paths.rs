@@ -58,7 +58,7 @@ impl<'ast> Visit<'ast> for RustPathCollector {
     }
 
     fn visit_item_extern_crate(&mut self, item: &'ast syn::ItemExternCrate) {
-        if item.ident == "self" {
+        if item.ident == "self" || item.ident == "rafter_invariants" {
             self.crate_root_aliases.push(
                 item.rename
                     .as_ref()
@@ -185,7 +185,7 @@ pub(crate) fn normalize_rust_path(
     let mut normalized = vec!["crate".to_owned()];
     let mut index = 0;
     match first {
-        "crate" => index = 1,
+        "crate" | "rafter_invariants" => index = 1,
         "self" => {
             normalized.extend_from_slice(module);
             index = 1;

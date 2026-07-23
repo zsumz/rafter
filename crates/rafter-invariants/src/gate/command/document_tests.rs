@@ -6,6 +6,7 @@ use std::{
 };
 
 use super::execute;
+use crate::gate::command::RenderDocumentOptions;
 
 static DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -22,8 +23,17 @@ fn document_check_fails_stale_and_accepts_canonical_output() {
     let output = root.join("raft-invariants.md");
     std::fs::write(&output, "stale\n").expect("stale fixture writes");
 
-    assert!(execute(&registry, &output, true).is_err());
-    assert!(execute(&registry, &output, false).expect("render document"));
-    assert!(execute(&registry, &output, true).expect("check current document"));
+    let options = |check| RenderDocumentOptions {
+        registry: registry.clone(),
+        output: output.clone(),
+        check,
+    };
+    assert!(execute(&options(true)).is_err());
+    assert!(execute(&options(false)).expect("render document").success);
+    assert!(
+        execute(&options(true))
+            .expect("check current document")
+            .success
+    );
     let _ = std::fs::remove_dir_all(root);
 }
