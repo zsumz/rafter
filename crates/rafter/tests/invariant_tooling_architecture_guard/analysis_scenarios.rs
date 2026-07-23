@@ -364,10 +364,11 @@ fn reusable_relative_macros_cannot_change_ownership_at_the_invocation_site() {
 }
 
 #[test]
-fn reusable_parent_aliases_cannot_change_ownership_at_the_invocation_site() {
+fn reusable_parent_imports_cannot_change_ownership_at_the_invocation_site() {
     for expansion in [
         "{ use super as root; let _ = root::ensure_immutable_producer; }",
         "{ use super::{self as root}; let _ = root::ensure_immutable_producer; }",
+        "{ use super::*; let _ = ensure_immutable_producer; }",
     ] {
         let (scratch, modules) = reusable_macro_bridge(expansion);
         let rejection = std::panic::catch_unwind(|| {
@@ -386,7 +387,7 @@ fn reusable_parent_aliases_cannot_change_ownership_at_the_invocation_site() {
         });
         assert!(
             rejection.is_err(),
-            "relative macro alias changed ownership at its invocation site: {expansion}"
+            "relative macro import changed ownership at its invocation site: {expansion}"
         );
     }
 }
