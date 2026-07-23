@@ -134,7 +134,8 @@ fn validate_verifier(
         && replay.required_targets == 2
         && replay.compile_timeout_seconds == 600
         && replay.fixture_timeout_seconds == 30
-        && replay.total_timeout_seconds == 900;
+        && replay.total_timeout_seconds
+            == super::replay::REVIEWED_DETECTOR_REPLAY_TOTAL_TIMEOUT_SECONDS;
     if !valid {
         return Err(CatalogError(format!(
             "profile {profile} has an unsupported detector replay contract"

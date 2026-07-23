@@ -32,7 +32,7 @@
         "required_targets": 2,
         "compile_timeout_seconds": 600,
         "fixture_timeout_seconds": 30,
-        "total_timeout_seconds": 900
+        "total_timeout_seconds": 1800
       }
     },
     "nightly": {
@@ -54,7 +54,7 @@
         "required_targets": 2,
         "compile_timeout_seconds": 600,
         "fixture_timeout_seconds": 30,
-        "total_timeout_seconds": 900
+        "total_timeout_seconds": 1800
       }
     },
     "weekly": {
@@ -76,7 +76,7 @@
         "required_targets": 2,
         "compile_timeout_seconds": 600,
         "fixture_timeout_seconds": 30,
-        "total_timeout_seconds": 900
+        "total_timeout_seconds": 1800
       }
     }
   },

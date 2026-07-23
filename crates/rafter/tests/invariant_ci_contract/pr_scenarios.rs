@@ -141,7 +141,8 @@ fn assert_pr_aggregate_contract(workflow: &str) {
     }
     assert!(
         workflow_step(aggregate, "Aggregate exactly 44 invariant verdicts")
-            .contains("timeout-minutes: 20")
+            .contains("timeout-minutes: 35"),
+        "the aggregate step must cover the reviewed 30-minute detector replay deadline plus startup and report publication"
     );
 }
 
