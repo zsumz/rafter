@@ -10,7 +10,8 @@ use syn::visit::Visit;
 
 use super::architecture_support::{
     assert_domain_source_imports_follow_manifest, declared_module_graph_from_roots,
-    module_is_test_only, BlockingProcessCollector, PathContext, RustPathCollector,
+    module_is_test_only, BlockingProcessCollector, DeclaredModuleGraph, PathContext,
+    RustPathCollector,
 };
 
 static SCRATCH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -320,6 +321,80 @@ fn producer_grouped_and_self_relative_paths_cannot_bypass_the_dependency_graph()
             "producer relative path escaped dependency analysis: {source}"
         );
     }
+}
+
+#[test]
+fn reusable_relative_macros_cannot_change_ownership_at_the_invocation_site() {
+    let (scratch, modules) = reusable_macro_bridge("super::ensure_immutable_producer");
+
+    let rejection = std::panic::catch_unwind(|| {
+        assert_domain_source_imports_follow_manifest(
+            scratch.path(),
+            &modules,
+            "producer",
+            "crates/rafter-invariants/src/producer",
+        );
+        assert_domain_source_imports_follow_manifest(
+            scratch.path(),
+            &modules,
+            "gate",
+            "crates/rafter-invariants/src/gate",
+        );
+    });
+    assert!(
+        rejection.is_err(),
+        "relative macro path changed ownership when invoked from another domain"
+    );
+}
+
+#[test]
+fn reusable_macros_can_name_their_owner_through_explicit_crate_hygiene() {
+    let (scratch, modules) = reusable_macro_bridge("$crate::producer::ensure_immutable_producer");
+
+    assert_domain_source_imports_follow_manifest(
+        scratch.path(),
+        &modules,
+        "producer",
+        "crates/rafter-invariants/src/producer",
+    );
+    assert_domain_source_imports_follow_manifest(
+        scratch.path(),
+        &modules,
+        "gate",
+        "crates/rafter-invariants/src/gate",
+    );
+}
+
+fn reusable_macro_bridge(expansion: &str) -> (ScratchTree, DeclaredModuleGraph) {
+    let scratch = ScratchTree::new();
+    scratch.write(
+        "crates/rafter-invariants/src/lib.rs",
+        "mod producer; mod gate;",
+    );
+    scratch.write(
+        "crates/rafter-invariants/src/producer/mod.rs",
+        "pub(crate) mod nested;",
+    );
+    scratch.write(
+        "crates/rafter-invariants/src/producer/nested.rs",
+        &format!("macro_rules! bridge {{ () => {{ {expansion} }}; }}\npub(crate) use bridge;"),
+    );
+    scratch.write("crates/rafter-invariants/src/gate/mod.rs", "mod somewhere;");
+    scratch.write(
+        "crates/rafter-invariants/src/gate/somewhere.rs",
+        r"
+        use crate::producer::nested::bridge;
+        fn invoke() {
+            let _ = bridge!();
+        }
+        ",
+    );
+    let modules = declared_module_graph_from_roots(
+        scratch.path(),
+        &[scratch.path().join("crates/rafter-invariants/src/lib.rs")],
+    );
+
+    (scratch, modules)
 }
 
 #[test]
