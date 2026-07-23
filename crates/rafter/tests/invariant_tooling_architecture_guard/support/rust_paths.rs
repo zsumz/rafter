@@ -90,6 +90,11 @@ impl<'ast> Visit<'ast> for RustPathCollector {
             }
             self.record(PathContext::Expression, path);
         }
+        if macro_.path.is_ident("macro_rules") {
+            self.relative_macro_definition_paths.extend(
+                relative_use_aliases_in_macro_transcribers(macro_.tokens.clone()),
+            );
+        }
         let identifiers = token_identifiers(macro_.tokens.clone());
         if identifiers
             .windows(2)
@@ -347,6 +352,78 @@ fn grouped_path_entry(prefix: &[String], tokens: &[TokenTree]) -> Vec<Vec<String
     vec![path]
 }
 
+fn relative_use_aliases_in_macro_transcribers(tokens: TokenStream) -> Vec<Vec<String>> {
+    let tokens = tokens.into_iter().collect::<Vec<_>>();
+    let mut aliases = Vec::new();
+    for index in 0..tokens.len().saturating_sub(2) {
+        if !token_is_punctuation(tokens.get(index), '=')
+            || !token_is_punctuation(tokens.get(index + 1), '>')
+        {
+            continue;
+        }
+        if let Some(TokenTree::Group(transcriber)) = tokens.get(index + 2) {
+            collect_relative_use_aliases(transcriber.stream(), &mut aliases);
+        }
+    }
+    aliases
+}
+
+fn collect_relative_use_aliases(tokens: TokenStream, aliases: &mut Vec<Vec<String>>) {
+    let tokens = tokens.into_iter().collect::<Vec<_>>();
+    for token in &tokens {
+        if let TokenTree::Group(group) = token {
+            collect_relative_use_aliases(group.stream(), aliases);
+        }
+    }
+    for (index, token) in tokens.iter().enumerate() {
+        let TokenTree::Ident(identifier) = token else {
+            continue;
+        };
+        if normalized_identifier(identifier) != "use" {
+            continue;
+        }
+        let Some(end) = tokens[index..]
+            .iter()
+            .position(|token| token_is_punctuation(Some(token), ';'))
+            .map(|offset| index + offset)
+        else {
+            continue;
+        };
+        let declaration = tokens[index..=end].iter().cloned().collect::<TokenStream>();
+        let Ok(item) = syn::parse2::<ItemUse>(declaration) else {
+            continue;
+        };
+        collect_relative_renamed_use_paths(&item.tree, Vec::new(), aliases);
+    }
+}
+
+fn collect_relative_renamed_use_paths(
+    tree: &UseTree,
+    prefix: Vec<String>,
+    aliases: &mut Vec<Vec<String>>,
+) {
+    match tree {
+        UseTree::Path(path) => {
+            let mut prefix = prefix;
+            prefix.push(path.ident.to_string());
+            collect_relative_renamed_use_paths(&path.tree, prefix, aliases);
+        }
+        UseTree::Rename(rename) => {
+            let mut path = prefix;
+            path.push(rename.ident.to_string());
+            if matches!(path.first().map(String::as_str), Some("self" | "super")) {
+                aliases.push(path);
+            }
+        }
+        UseTree::Group(group) => {
+            for tree in &group.items {
+                collect_relative_renamed_use_paths(tree, prefix.clone(), aliases);
+            }
+        }
+        UseTree::Name(_) | UseTree::Glob(_) => {}
+    }
+}
+
 fn normalized_identifier(identifier: &proc_macro2::Ident) -> String {
     let identifier = identifier.to_string();
     identifier
@@ -356,7 +433,11 @@ fn normalized_identifier(identifier: &proc_macro2::Ident) -> String {
 }
 
 fn token_is_colon(token: Option<&TokenTree>) -> bool {
-    matches!(token, Some(TokenTree::Punct(punctuation)) if punctuation.as_char() == ':')
+    token_is_punctuation(token, ':')
+}
+
+fn token_is_punctuation(token: Option<&TokenTree>, expected: char) -> bool {
+    matches!(token, Some(TokenTree::Punct(punctuation)) if punctuation.as_char() == expected)
 }
 
 fn blocking_process_calls_in_tokens(tokens: TokenStream) -> Vec<String> {
