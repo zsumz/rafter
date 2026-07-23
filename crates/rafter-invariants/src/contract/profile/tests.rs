@@ -153,10 +153,27 @@ fn validation_rejects_replay_identity_and_resource_drift() {
         |contract: &mut super::DetectorReplayContract| {
             contract.required_inventory_sha256 = "0".repeat(64);
         },
+        |contract: &mut super::DetectorReplayContract| {
+            contract.total_timeout_seconds -= 1;
+        },
     ] {
         let mut changed = manifest.clone();
         mutate(&mut changed.verifiers.get_mut("pr").unwrap().detector_replay);
         assert!(changed.validate(&catalog).is_err());
+    }
+}
+
+#[test]
+fn every_profile_preserves_the_reviewed_detector_replay_budget() {
+    let manifest = load_manifest();
+    for profile in ["pr", "nightly", "weekly"] {
+        assert_eq!(
+            manifest.verifiers[profile]
+                .detector_replay
+                .total_timeout_seconds,
+            super::replay::REVIEWED_DETECTOR_REPLAY_TOTAL_TIMEOUT_SECONDS,
+            "{profile} detector replay budget drifted"
+        );
     }
 }
 

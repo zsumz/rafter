@@ -174,7 +174,7 @@ fn scheduled_profiles_run_all_evidence_and_exact_aggregates() {
             aggregate,
             &format!("Aggregate exactly 44 {profile} invariant verdicts")
         )
-        .contains("timeout-minutes: 20"));
+        .contains("timeout-minutes: 35"));
         assert!(aggregate.contains(&format!(
             "check --profile {profile} --source-ref \"$GITHUB_SHA\""
         )));

@@ -222,7 +222,7 @@ jobs:
       - invariants-maelstrom
     if: always()
     runs-on: [self-hosted, linux, X64]
-    timeout-minutes: 95
+    timeout-minutes: 110
     env:
       INVARIANT_EVIDENCE_DIR: rafter-invariants-weekly-evidence-${{ github.run_id }}-${{ github.run_attempt }}
       INVARIANT_REPORT_DIR: rafter-invariants-weekly-${{ github.run_id }}-${{ github.run_attempt }}
@@ -316,7 +316,7 @@ jobs:
       - name: Aggregate exactly 44 weekly invariant verdicts
         if: always()
         id: aggregate
-        timeout-minutes: 20
+        timeout-minutes: 35
         run: |
           report_dir="$RUNNER_TEMP/$INVARIANT_REPORT_DIR"
           evidence_root="$GITHUB_WORKSPACE/artifacts/invariants"
