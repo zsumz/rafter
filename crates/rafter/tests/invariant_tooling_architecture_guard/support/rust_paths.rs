@@ -247,7 +247,10 @@ fn rooted_paths_in_tokens(tokens: TokenStream) -> Vec<Vec<String>> {
             continue;
         };
         let root = normalized_identifier(identifier);
-        if root != "crate" && root != "rafter_invariants" {
+        if !matches!(
+            root.as_str(),
+            "crate" | "rafter_invariants" | "self" | "super"
+        ) {
             continue;
         }
         let mut path = vec![root];
