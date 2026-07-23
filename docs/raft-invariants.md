@@ -13,7 +13,7 @@ Repository: `zsumz/rafter`
 
 Catalog origin ref: `ca400ace5744dd03be05508eb61e6ac6f70440e0`
 
-Catalog working ref (non-authoritative): `invariants-work-cleanup`
+Catalog working ref (non-authoritative): `main`
 
 Audit date: `2026-07-10`
 
