@@ -485,6 +485,105 @@ fn snapshot_chunk_outputs_are_reported_without_poisoning() {
         .is_some_and(|metrics| metrics.fatal_state == GroupFatalState::Healthy));
 }
 
+/// The readiness predicate is runtime-derived precisely so it stays false while
+/// a restarted node still holds recovery outputs the caller has not applied — a
+/// floor tracked from applies the group has *seen* would report ready here.
+#[test]
+fn readiness_predicate_is_false_until_recovery_outputs_are_applied() {
+    use rafter_runtime::DurableRaftNode;
+    use rafter_storage::{
+        InMemoryRaftHardStateStore, InMemoryRaftLogSegment, InMemoryRaftSnapshotStore,
+        PersistedRaftLogEntry, RaftHardState, RaftHardStateStore, RaftLogSegment,
+    };
+
+    let mut hard_state_store = InMemoryRaftHardStateStore::new();
+    hard_state_store
+        .write_hard_state(RaftHardState {
+            current_term: Term(1),
+            voted_for: None,
+            commit_index: LogIndex(3),
+            committed_configuration: None,
+        })
+        .expect("durable commit floor writes");
+    let mut log_segment = InMemoryRaftLogSegment::new();
+    log_segment
+        .append_entries(&[
+            PersistedRaftLogEntry::application(LogIndex(1), Term(1), b"one".to_vec()),
+            PersistedRaftLogEntry::application(LogIndex(2), Term(1), b"two".to_vec()),
+            PersistedRaftLogEntry::application(LogIndex(3), Term(1), b"three".to_vec()),
+        ])
+        .expect("committed application entries persist");
+    let (runtime, recovery_outputs) =
+        DurableRaftNode::recover_with_storage_and_snapshot_store_applied_through(
+            NodeConfig::new(NodeId(1), vec![NodeId(2), NodeId(3)], 1)
+                .expect("test node config is valid"),
+            hard_state_store,
+            log_segment,
+            InMemoryRaftSnapshotStore::new(),
+            LogIndex(1),
+        )
+        .expect("runtime recovers above the applied floor")
+        .into_parts();
+
+    let mut group = RaftGroup::with_applied_index(
+        7,
+        NodeId(1),
+        runtime,
+        RecordingStateMachine {
+            applied_index: LogIndex(1),
+            ..RecordingStateMachine::default()
+        },
+        LogIndex(1),
+    );
+
+    assert_eq!(group.committed_application_index(), LogIndex(3));
+    assert!(
+        group.state_machine().applied_index().expect("floor reads")
+            < group.committed_application_index(),
+        "a replica holding undrained recovery outputs must not read as ready"
+    );
+
+    group
+        .apply_raft_outputs(recovery_outputs)
+        .expect("recovery outputs apply");
+
+    assert!(
+        group.state_machine().applied_index().expect("floor reads")
+            >= group.committed_application_index(),
+        "the replica is ready once the recovery outputs are applied"
+    );
+    assert_eq!(group.state_machine().applied_index(), Ok(LogIndex(3)));
+}
+
+/// Poison does not change the runtime's answer, and a poisoned group will never
+/// apply again — so a readiness gate that consults only this value would hold a
+/// dead replica open. The doc says to check `fatal_state` too; this pins the
+/// half that is easy to assume away.
+#[test]
+fn committed_application_index_is_reported_by_a_poisoned_group() {
+    let mut runtime = ScriptedRuntime::with_step_outputs([]);
+    runtime.commit_index = LogIndex(9);
+    runtime.committed_application_index = LogIndex(8);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine {
+            fail_decode: true,
+            ..RecordingStateMachine::default()
+        },
+        runtime,
+    );
+    assert_eq!(group.committed_application_index(), LogIndex(8));
+
+    let _ = group
+        .apply_raft_outputs(vec![apply_output(2, b"bad", Some(LocalProposalId(40)))])
+        .expect_err("decode failure is fatal");
+
+    assert!(matches!(
+        group.fatal_state(),
+        GroupFatalState::Poisoned { .. }
+    ));
+    assert_eq!(group.committed_application_index(), LogIndex(8));
+}
+
 #[test]
 fn decode_failure_poisons_group() {
     let mut group = scripted_group(RecordingStateMachine {

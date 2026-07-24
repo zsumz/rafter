@@ -394,6 +394,35 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
         self.node.committed_membership()
     }
 
+    /// Returns the index the local state machine must reach to have consumed
+    /// every committed application command.
+    ///
+    /// See [`PersistedRaftRuntime::committed_application_index`] for the
+    /// contract. This implementation scans the committed retained log suffix
+    /// backwards for the highest application entry and falls back to the
+    /// snapshot boundary, which subsumes every application entry it covers.
+    ///
+    /// The scan is O(1) whenever the tail below the commit index is an
+    /// application entry, which is the steady state of a busy group. Its worst
+    /// case is the whole committed retained suffix, reached when the retained
+    /// log holds no committed application entry at all — a group that has only
+    /// ever elected and reconfigured. Callers evaluate this at readiness
+    /// boundaries, not per step, so no derived index is kept in the kernel.
+    #[must_use]
+    pub fn committed_application_index(&self) -> LogIndex {
+        let snapshot_index = self.node.snapshot_index();
+        let commit_index = self.node.commit_index();
+        let first_retained = snapshot_index.next();
+        self.node
+            .log_entries_slice_from(first_retained)
+            .iter()
+            .enumerate()
+            .rev()
+            .map(|(offset, entry)| (LogIndex(first_retained.0 + offset as u64), entry))
+            .find(|(index, entry)| *index <= commit_index && entry.application_payload().is_some())
+            .map_or(snapshot_index, |(index, _)| index)
+    }
+
     /// Returns the committed configuration entry, if the log has committed one.
     #[must_use]
     pub fn committed_configuration_entry(&self) -> Option<ConfigurationEntry> {
@@ -776,6 +805,10 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
 
     fn snapshot_index(&self) -> LogIndex {
         DurableRaftNode::snapshot_index(self)
+    }
+
+    fn committed_application_index(&self) -> LogIndex {
+        DurableRaftNode::committed_application_index(self)
     }
 
     fn membership(&self) -> MembershipConfig {

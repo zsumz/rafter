@@ -1,6 +1,7 @@
 #![allow(dead_code, unused_imports)]
 
 use std::{
+    cmp::max,
     collections::{BTreeMap, VecDeque},
     error::Error,
     fmt,
@@ -212,6 +213,23 @@ impl PersistedRaftRuntime for KernelRuntime {
         self.node.snapshot_index()
     }
 
+    /// This fake owns a real kernel, so it answers from the kernel's own log:
+    /// the highest committed entry carrying an application payload, floored at
+    /// the snapshot boundary.
+    fn committed_application_index(&self) -> LogIndex {
+        let snapshot_index = self.node.snapshot_index();
+        let commit_index = self.node.commit_index();
+        let first_retained = snapshot_index.next();
+        self.node
+            .log_entries_slice_from(first_retained)
+            .iter()
+            .enumerate()
+            .rev()
+            .map(|(offset, entry)| (LogIndex(first_retained.0 + offset as u64), entry))
+            .find(|(index, entry)| *index <= commit_index && entry.application_payload().is_some())
+            .map_or(snapshot_index, |(index, _)| index)
+    }
+
     fn membership(&self) -> MembershipConfig {
         self.node.effective_membership()
     }
@@ -253,6 +271,10 @@ pub(crate) struct ScriptedRuntime {
     pub(crate) commit_index: LogIndex,
     pub(crate) last_log_index: LogIndex,
     pub(crate) snapshot_index: LogIndex,
+    /// This fake models no log, so the highest committed application entry is
+    /// whatever a test declares it to be. It is reported floored at the
+    /// snapshot boundary, which subsumes the entries it covers.
+    pub(crate) committed_application_index: LogIndex,
     pub(crate) membership: MembershipConfig,
     pub(crate) committed_membership: MembershipConfig,
     pub(crate) replication: Vec<ReplicationProgress>,
@@ -275,6 +297,7 @@ impl ScriptedRuntime {
             commit_index: LogIndex::ZERO,
             last_log_index: LogIndex::ZERO,
             snapshot_index: LogIndex::ZERO,
+            committed_application_index: LogIndex::ZERO,
             membership: membership(&[1], &[]),
             committed_membership: membership(&[1], &[]),
             replication: Vec::new(),
@@ -336,6 +359,10 @@ impl PersistedRaftRuntime for ScriptedRuntime {
 
     fn snapshot_index(&self) -> LogIndex {
         self.snapshot_index
+    }
+
+    fn committed_application_index(&self) -> LogIndex {
+        max(self.committed_application_index, self.snapshot_index)
     }
 
     fn membership(&self) -> MembershipConfig {

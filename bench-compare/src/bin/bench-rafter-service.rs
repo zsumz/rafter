@@ -239,6 +239,10 @@ impl PersistedRaftRuntime for RecordingRuntime {
         self.inner.snapshot_index()
     }
 
+    fn committed_application_index(&self) -> LogIndex {
+        self.inner.committed_application_index()
+    }
+
     fn membership(&self) -> MembershipConfig {
         self.inner.membership()
     }

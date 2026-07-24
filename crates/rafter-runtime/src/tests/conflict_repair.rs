@@ -116,6 +116,63 @@ fn follower_conflict_repair_replaces_durable_uncommitted_suffix() {
     );
 }
 
+/// Conflict repair truncates only the uncommitted suffix, so the committed
+/// application index cannot move backwards — the monotonicity a readiness gate
+/// depends on when it persists the value it is waiting for.
+#[test]
+fn committed_application_index_does_not_decrease_across_conflict_repair() {
+    let mut log_segment = InMemoryRaftLogSegment::new();
+    log_segment
+        .append_entries(&[
+            PersistedRaftLogEntry::application(LogIndex(1), Term(1), b"prefix".to_vec()),
+            PersistedRaftLogEntry::application(
+                LogIndex(2),
+                Term(1),
+                b"old-uncommitted-suffix".to_vec(),
+            ),
+        ])
+        .expect("old leader entries persist");
+    let mut hard_state_store = InMemoryRaftHardStateStore::new();
+    hard_state_store
+        .write_hard_state(RaftHardState {
+            current_term: Term(1),
+            voted_for: None,
+            commit_index: LogIndex(1),
+            committed_configuration: None,
+        })
+        .expect("durable commit floor writes");
+    let mut runtime = durable_node_with_log(2, &[1, 3], hard_state_store, log_segment);
+    assert_eq!(runtime.committed_application_index(), LogIndex(1));
+
+    // The replacement suffix is a leadership noop, so repair removes the only
+    // application entry above the commit floor and puts back a non-application
+    // one.
+    let _ = runtime
+        .step(RaftInput::Message {
+            from: RaftNodeId(1),
+            message: Message::AppendEntries(AppendEntries {
+                sequence: 0,
+                term: Term(2),
+                leader_id: RaftNodeId(1),
+                prev_log_index: LogIndex(1),
+                prev_log_term: Term(1),
+                entries: vec![LogEntry::noop(Term(2))].into(),
+                leader_commit: LogIndex(2),
+            }),
+        })
+        .expect("durable log repairs the uncommitted suffix");
+
+    assert_eq!(
+        runtime.log_segment.replay_entries(),
+        vec![
+            PersistedRaftLogEntry::application(LogIndex(1), Term(1), b"prefix".to_vec()),
+            PersistedRaftLogEntry::noop(LogIndex(2), Term(2)),
+        ]
+    );
+    assert_eq!(runtime.commit_index(), LogIndex(2));
+    assert_eq!(runtime.committed_application_index(), LogIndex(1));
+}
+
 #[test]
 fn file_backed_follower_conflict_repair_survives_restart() {
     let path = test_raft_log_path("conflict-repair");

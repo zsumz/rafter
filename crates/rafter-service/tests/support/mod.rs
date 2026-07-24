@@ -272,6 +272,13 @@ impl PersistedRaftRuntime for ScriptedReadRuntime {
         LogIndex::ZERO
     }
 
+    /// This fake only answers read-index requests: it never appends, commits,
+    /// or snapshots an application entry, so there is nothing for a state
+    /// machine to catch up to.
+    fn committed_application_index(&self) -> LogIndex {
+        LogIndex::ZERO
+    }
+
     fn membership(&self) -> MembershipConfig {
         MembershipConfig::stable(
             MembershipSet::new(vec![NodeId(1)], Vec::new()).expect("scripted membership is valid"),
@@ -373,6 +380,12 @@ impl PersistedRaftRuntime for ScriptedWriteRuntime {
     }
 
     fn snapshot_index(&self) -> LogIndex {
+        LogIndex::ZERO
+    }
+
+    /// This fake appends but never commits: `commit_index` stays at zero, so
+    /// no application entry is committed for a state machine to reach.
+    fn committed_application_index(&self) -> LogIndex {
         LogIndex::ZERO
     }
 

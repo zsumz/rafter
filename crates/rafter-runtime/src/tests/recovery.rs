@@ -240,6 +240,123 @@ where
         .expect("follower acknowledgement commits new entry")
 }
 
+/// The whole reason the value is not `commit_index`: elections and membership
+/// changes commit entries the state machine never sees.
+#[test]
+fn committed_application_index_ignores_noop_and_configuration_entries() {
+    let mut runtime = durable_node_with_log(
+        1,
+        &[],
+        InMemoryRaftHardStateStore::new(),
+        InMemoryRaftLogSegment::new(),
+    );
+
+    let _ = runtime.step(RaftInput::Tick).expect("single node elects");
+    oracle_assert_eq!(runtime.commit_index(), LogIndex(1));
+    oracle_assert_eq!(
+        runtime.committed_application_index(),
+        LogIndex::ZERO,
+        "a committed leadership noop is not an application entry"
+    );
+
+    let _ = runtime
+        .step(RaftInput::ClientProposal {
+            payload: b"one".to_vec(),
+        })
+        .expect("application entry commits");
+    oracle_assert_eq!(runtime.commit_index(), LogIndex(2));
+    oracle_assert_eq!(runtime.committed_application_index(), LogIndex(2));
+
+    let _ = runtime
+        .step(RaftInput::AddLearner {
+            learner_id: RaftNodeId(2),
+        })
+        .expect("configuration entry commits");
+    oracle_assert_eq!(runtime.commit_index(), LogIndex(3));
+    oracle_assert_eq!(
+        runtime.committed_application_index(),
+        LogIndex(2),
+        "a caught-up state machine trails the committed index forever here"
+    );
+}
+
+/// A snapshot subsumes every application entry it covers, so the boundary is a
+/// floor — and compaction above the last committed application entry raises the
+/// value in one jump, which is still non-decreasing.
+#[test]
+fn committed_application_index_uses_the_snapshot_boundary_after_compaction() {
+    let mut runtime = durable_node_with_log(
+        1,
+        &[],
+        InMemoryRaftHardStateStore::new(),
+        InMemoryRaftLogSegment::new(),
+    );
+    let _ = runtime.step(RaftInput::Tick).expect("single node elects");
+    let _ = runtime
+        .step(RaftInput::ClientProposal {
+            payload: b"one".to_vec(),
+        })
+        .expect("application entry commits");
+    let _ = runtime
+        .step(RaftInput::AddLearner {
+            learner_id: RaftNodeId(2),
+        })
+        .expect("configuration entry commits");
+    oracle_assert_eq!(runtime.committed_application_index(), LogIndex(2));
+
+    runtime
+        .compact_log_with_snapshot(raft_snapshot(3, 1, 1, b"payload"))
+        .expect("local snapshot compacts the log");
+
+    oracle_assert_eq!(runtime.snapshot_index(), LogIndex(3));
+    oracle_assert_eq!(
+        runtime.committed_application_index(),
+        LogIndex(3),
+        "the snapshot covers the application entry the compacted log no longer holds"
+    );
+}
+
+/// A group that has only ever elected and reconfigured has nothing for a state
+/// machine to catch up to — and is the backward scan's worst case, since no
+/// application entry ends it early.
+#[test]
+fn committed_application_index_is_zero_on_a_node_with_no_application_entries() {
+    let fresh = durable_node_with_log(
+        1,
+        &[2],
+        InMemoryRaftHardStateStore::new(),
+        InMemoryRaftLogSegment::new(),
+    );
+    oracle_assert_eq!(fresh.committed_application_index(), LogIndex::ZERO);
+    drop(fresh);
+
+    let mut hard_state_store = InMemoryRaftHardStateStore::new();
+    hard_state_store
+        .write_hard_state(RaftHardState {
+            current_term: Term(1),
+            voted_for: None,
+            commit_index: LogIndex(2),
+            committed_configuration: None,
+        })
+        .expect("hard state writes");
+    let mut log_segment = InMemoryRaftLogSegment::new();
+    log_segment
+        .append_entries(&[
+            PersistedRaftLogEntry::noop(LogIndex(1), Term(1)),
+            PersistedRaftLogEntry::configuration(
+                LogIndex(2),
+                Term(1),
+                learner_configuration_entry(ConfigurationId(1)),
+            ),
+        ])
+        .expect("noop and configuration entries persist");
+
+    let recovered = durable_node_with_log(1, &[2], hard_state_store, log_segment);
+
+    oracle_assert_eq!(recovered.commit_index(), LogIndex(2));
+    oracle_assert_eq!(recovered.committed_application_index(), LogIndex::ZERO);
+}
+
 /// Decomposition is the in-process half of restart: the stores that come back
 /// must recover the same node the retired incarnation was.
 #[test]

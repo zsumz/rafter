@@ -1,7 +1,7 @@
 use super::{
     report_has_proposal_lifecycle, ApplyEntry, Debug, GroupError, GroupInput, GroupResult,
-    GroupStepReport, LeadershipTransferEvent, MembershipConfig, MembershipStepContext, Message,
-    NodeId, PeerEnvelope, PersistedRaftRuntime, Proposal, ProposalEvent, RaftGroup,
+    GroupStepReport, LeadershipTransferEvent, LogIndex, MembershipConfig, MembershipStepContext,
+    Message, NodeId, PeerEnvelope, PersistedRaftRuntime, Proposal, ProposalEvent, RaftGroup,
     RaftGroupMetrics, RaftInput, RaftOutput, ReplicatedStateMachine, SnapshotEvent,
     StepReportOptions, StepReportResult,
 };
@@ -38,6 +38,39 @@ where
             reserved_reads: self.reserved_read_count(),
             fatal_state: self.fatal_state.clone(),
         }
+    }
+
+    /// Returns the index this group's state machine must reach to have applied
+    /// every committed application command.
+    ///
+    /// Compare it with the state machine's own applied index to gate readiness
+    /// after recovery:
+    ///
+    /// ```text
+    /// state_machine.applied_index()? >= group.committed_application_index()
+    /// ```
+    ///
+    /// Use `>=`, never equality. A state machine that installed a snapshot whose
+    /// boundary sits above the last committed application entry legitimately
+    /// reports a higher applied index, as does one seeded through
+    /// [`RaftGroup::with_applied_index`].
+    ///
+    /// The predicate is false while a restarted node still holds recovery outputs
+    /// the caller has not applied, which is exactly when a readiness gate must hold
+    /// a replica back. It is not a linearizability signal: it proves only that this
+    /// replica has applied everything *it* knows to be committed. Group poison does
+    /// not change it — a poisoned group reports the same runtime value and will
+    /// never apply again, so a readiness gate must check
+    /// [`RaftGroup::fatal_state`] as well.
+    ///
+    /// A caller that compacts at a boundary above the index its state machine
+    /// reports applied raises this value past what that state machine will ever
+    /// reach. Compact at the applied index, as
+    /// [`crate::state_machine::ReplicatedStateMachine::build_snapshot`] already
+    /// requires.
+    #[must_use]
+    pub fn committed_application_index(&self) -> LogIndex {
+        self.raft.committed_application_index()
     }
 
     /// Steps one group input and returns all explicit side effects.

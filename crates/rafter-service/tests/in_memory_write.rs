@@ -244,6 +244,12 @@ impl PersistedRaftRuntime for BatchRecordingRuntime {
         LogIndex::ZERO
     }
 
+    /// Every index this fake records is an application proposal, and it
+    /// commits each one as it records it.
+    fn committed_application_index(&self) -> LogIndex {
+        self.last_recorded_index()
+    }
+
     fn membership(&self) -> MembershipConfig {
         MembershipConfig::stable(
             MembershipSet::new(vec![NodeId(1)], Vec::new()).expect("scripted membership is valid"),
