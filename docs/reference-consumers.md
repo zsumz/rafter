@@ -401,6 +401,9 @@ same shape. Shared harness code may own process orchestration, fault injection,
 history recording, and package setup. It may not own domain transitions,
 validation, deduplication, or oracle logic.
 
+Every API promoted under this rule is recorded in
+[`docs/api-promotions.md`](./api-promotions.md).
+
 ## Delivery Plan
 
 Work proceeds in vertical, reviewable slices. Each slice ends with its focused
