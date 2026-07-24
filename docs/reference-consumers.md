@@ -100,6 +100,9 @@ The acceptance job will:
 7. reject internal test hooks and unpublished private crates; and
 8. verify required package contents, including README and format documents.
 
+`scripts/reference-package-check` runs that job and reports every boundary it
+finds violated.
+
 This mode tests the artifact users receive, not merely the source tree that
 produced it.
 

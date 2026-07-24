@@ -1,0 +1,630 @@
+#!/usr/bin/env bash
+# Run the reference consumers against exact Rafter package archives.
+#
+# Usage:
+#   scripts/reference-package-check              # full package-consumer lane
+#   scripts/reference-package-check --keep       # keep the temporary workdir
+#   scripts/reference-package-check --offline    # pass --offline to every cargo call
+#   scripts/reference-package-check --no-verify  # skip Cargo's own archive verification
+#
+# docs/reference-consumers.md defines two dependency modes over one set of
+# consumer sources. This script is package-consumer mode: it packages every
+# publishable Rafter crate, unpacks the exact archives, patches a copy of the
+# reference workspace to those unpacked archives, generates a fresh lockfile,
+# builds and runs the consumer tests, and then rejects any graph that reaches
+# back into the checkout, pulls an unpublished crate, or turns on an internal
+# test hook. It tests the artifact users receive, not the source tree that
+# produced it. Fast source mode is a separate lane and lives in
+# scripts/reference-source-check; this script never builds a consumer against
+# `crates/`.
+#
+# Why one `cargo package` invocation covers the whole publish set:
+# the workspace crates depend on each other by version as well as by path, so
+# packaging one crate on its own makes Cargo resolve `rafter = "0.0.1"` against
+# crates.io and fail until that version is live there. Packaging the whole set
+# in a single invocation lets Cargo resolve those requirements against the
+# sibling archives it just produced, build a temporary registry from them, and
+# still verify each archive by compiling it. The archives stay exact and
+# --no-verify is not needed. --no-verify remains available for slow machines;
+# the real proof that the artifacts compose is phase 5, which builds the
+# consumers against nothing but the unpacked archives.
+#
+# Network use: every Rafter crate in the consumer graph resolves through
+# [patch.crates-io] to an unpacked archive, so none of them is ever fetched.
+# The only registry traffic is the index refresh `cargo package` performs and
+# the third-party crates a publishable crate depends on (today `fs4`, reached
+# through rafter-storage, and its transitive dependencies). Once those are in
+# the local Cargo cache the whole lane runs under --offline.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P)"
+
+keep_workdir=false
+offline=false
+verify_packages=true
+workdir=""
+
+usage() {
+    sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --keep)
+            keep_workdir=true
+            ;;
+        --offline)
+            offline=true
+            ;;
+        --no-verify)
+            verify_packages=false
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "error: unknown option: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
+
+for tool in cargo jq tar; do
+    if ! command -v "$tool" > /dev/null 2>&1; then
+        echo "error: $tool is required by scripts/reference-package-check" >&2
+        exit 1
+    fi
+done
+
+# Support crates: packaged and patched, but absent from RELEASE.md's publish
+# list. A published rafter-codec or rafter-storage carries
+# `rafter-crc32 = { version = "0.0.1" }`, so any consumer graph that reaches
+# either one needs rafter-crc32 from the registry as well. Packaging it here
+# keeps the consumer from falling back to crates.io for a Rafter crate. That
+# RELEASE.md names it in neither section is a release-checklist gap, not a
+# licence to leave it out of the graph.
+support_crates=("rafter-crc32")
+
+phase_count=6
+phase_name=(
+    "package publishable crates"
+    "unpack exact archives"
+    "verify required archive contents"
+    "patch consumer workspace to archives"
+    "build and test the consumers"
+    "reject checkout paths, private crates, and hooks"
+)
+phase_status=(pending pending pending pending pending pending)
+current_phase=-1
+
+finding_count=0
+findings=()
+
+log() {
+    printf '%s\n' "$*"
+}
+
+# Command traces go to stderr so that a caller may pipe a command's own output.
+run() {
+    printf '+ %s\n' "$*" >&2
+    "$@"
+}
+
+cargo_run() {
+    if [[ "$offline" == true ]]; then
+        run cargo "$1" --offline "${@:2}"
+    else
+        run cargo "$@"
+    fi
+}
+
+add_finding() {
+    findings[finding_count]="$1"
+    finding_count=$((finding_count + 1))
+}
+
+begin_phase() {
+    current_phase="$1"
+    printf '\n==> phase=%d/%d name=%s\n' \
+        "$((current_phase + 1))" "$phase_count" "${phase_name[$current_phase]}"
+}
+
+end_phase() {
+    phase_status[current_phase]=pass
+}
+
+fail() {
+    printf 'error: %s\n' "$*" >&2
+    if ((current_phase >= 0)); then
+        phase_status[current_phase]=fail
+    fi
+    exit 1
+}
+
+print_summary() {
+    local status="$1"
+    local index
+
+    printf '\n==> summary\n'
+    printf '%-3s %-50s %s\n' "#" "phase" "result"
+    for ((index = 0; index < phase_count; index++)); do
+        printf '%-3s %-50s %s\n' \
+            "$((index + 1))" "${phase_name[$index]}" "${phase_status[$index]}"
+    done
+
+    if ((finding_count > 0)); then
+        printf '\npackage-content findings (reported here, fixed in crates/):\n'
+        for ((index = 0; index < finding_count; index++)); do
+            printf -- '- %s\n' "${findings[$index]}"
+        done
+    fi
+
+    printf '\n'
+    if ((status == 0)); then
+        printf 'reference package-consumer check passed\n'
+    else
+        printf 'reference package-consumer check failed with status %s\n' "$status" >&2
+    fi
+}
+
+cleanup() {
+    local status=$?
+    local index
+    local incomplete=false
+    trap - EXIT
+
+    # A run that ended before its last phase failed, whatever Bash reports: an
+    # aborted expansion or an unset-variable exit must never read as a pass. A
+    # phase interrupted by a failing command it did not check itself, such as a
+    # cargo error under set -e, is the phase that failed; later phases never ran.
+    for ((index = 0; index < phase_count; index++)); do
+        if [[ "${phase_status[$index]}" != pass ]]; then
+            incomplete=true
+            break
+        fi
+    done
+    if [[ "$incomplete" == true ]]; then
+        if ((status == 0)); then
+            status=1
+        fi
+        if ((current_phase >= 0)) && [[ "${phase_status[current_phase]}" != pass ]]; then
+            phase_status[current_phase]=fail
+        fi
+        for ((index = current_phase + 1; index < phase_count; index++)); do
+            if [[ "${phase_status[$index]}" == pending ]]; then
+                phase_status[index]=skipped
+            fi
+        done
+    fi
+
+    print_summary "$status"
+    if [[ -n "$workdir" && -d "$workdir" ]]; then
+        if ((status == 0)) && [[ "$keep_workdir" == false ]]; then
+            rm -rf "$workdir"
+        else
+            printf 'workdir retained: %s\n' "$workdir"
+        fi
+    fi
+    exit "$status"
+}
+
+# RELEASE.md owns both crate lists. Reading them here keeps one authority for
+# what is public instead of a second copy that can drift.
+release_crate_list() {
+    local heading="$1"
+    awk -v heading="$heading" '
+        index($0, heading) == 1 { wanted = 1; next }
+        wanted && /^```/ { if (inside) { exit } ; inside = 1; next }
+        inside && NF { print $1 }
+    ' "$repo_root/RELEASE.md"
+}
+
+# Required package contents.
+#
+# docs/reference-consumers.md requires this mode to "verify required package
+# contents, including README and format documents". The list below was taken
+# from the crates themselves, not guessed: every entry is a document that the
+# crate's own published README links to, so a missing one ships a dead link to
+# a crates.io reader.
+#
+#   rafter          README.md, ARCHITECTURE.md, STYLE.md
+#   rafter-codec    README.md, WIRE_FORMAT_V1.md
+#   rafter-storage  README.md, STORAGE_FORMAT_V1.md, DURABILITY_PROTOCOL.md
+#   other crates    README.md
+#
+# rafter-crc32 is the one exemption: it carries no README today and RELEASE.md
+# lists it in neither section, so its documentation requirement has not been
+# decided. Phase 3 reports that as a finding rather than failing the lane.
+required_package_files() {
+    case "$1" in
+        rafter)
+            printf 'README.md ARCHITECTURE.md STYLE.md'
+            ;;
+        rafter-codec)
+            printf 'README.md WIRE_FORMAT_V1.md'
+            ;;
+        rafter-storage)
+            printf 'README.md STORAGE_FORMAT_V1.md DURABILITY_PROTOCOL.md'
+            ;;
+        rafter-crc32)
+            printf ''
+            ;;
+        *)
+            printf 'README.md'
+            ;;
+    esac
+}
+
+if [[ ! -f "$repo_root/RELEASE.md" ]]; then
+    fail "RELEASE.md is missing; it owns the publishable crate list"
+fi
+if [[ ! -f "$repo_root/reference/Cargo.toml" ]]; then
+    fail "reference/Cargo.toml is missing; there is no consumer workspace to check"
+fi
+
+publish_crates=()
+while IFS= read -r crate; do
+    [[ -n "$crate" ]] || continue
+    publish_crates+=("$crate")
+done <<< "$(release_crate_list 'Publish these crates')"
+
+never_publish_crates=()
+while IFS= read -r crate; do
+    [[ -n "$crate" ]] || continue
+    never_publish_crates+=("$crate")
+done <<< "$(release_crate_list 'Do not publish these crates')"
+
+if ((${#publish_crates[@]} == 0)); then
+    fail "RELEASE.md lists no publishable crates"
+fi
+if ((${#never_publish_crates[@]} == 0)); then
+    fail "RELEASE.md lists no unpublishable crates"
+fi
+
+packaged_crates=("${publish_crates[@]}" "${support_crates[@]}")
+for crate in "${packaged_crates[@]}"; do
+    if [[ ! -f "$repo_root/crates/$crate/Cargo.toml" ]]; then
+        fail "packaged crate $crate has no manifest under crates/"
+    fi
+done
+
+log "publishable crates: ${publish_crates[*]}"
+log "support crates: ${support_crates[*]}"
+log "never-publish crates: ${never_publish_crates[*]}"
+
+workdir="$(mktemp -d "${TMPDIR:-/tmp}/rafter-package-check.XXXXXX")"
+workdir="$(cd "$workdir" && pwd -P)"
+trap cleanup EXIT
+
+# Phase 6 proves that nothing in the consumer graph resolves inside the
+# checkout. A workdir under the checkout would make that check meaningless.
+case "$workdir/" in
+    "$repo_root"/*)
+        fail "TMPDIR resolves inside the checkout; set TMPDIR outside $repo_root"
+        ;;
+esac
+
+log "workdir: $workdir"
+
+package_target="$workdir/package-target"
+package_dir="$package_target/package"
+unpack_root="$workdir/unpacked"
+consumer_root="$workdir/consumer"
+consumer_workspace="$consumer_root/reference"
+consumer_target="$workdir/consumer-target"
+
+# ---------------------------------------------------------------------------
+# Phase 1: package every publishable crate.
+# ---------------------------------------------------------------------------
+begin_phase 0
+
+package_args=()
+for crate in "${packaged_crates[@]}"; do
+    package_args+=(-p "$crate")
+done
+if [[ "$verify_packages" == false ]]; then
+    package_args+=(--no-verify)
+fi
+
+# --locked keeps the checkout's Cargo.lock exactly as committed; CARGO_TARGET_DIR
+# keeps every build artifact inside the workdir. --allow-dirty lets the lane run
+# on a working tree, and means the archives describe the tree as it stands
+# rather than as it was last committed.
+export CARGO_TARGET_DIR="$package_target"
+cargo_run package \
+    --manifest-path "$repo_root/Cargo.toml" \
+    --locked --allow-dirty \
+    "${package_args[@]}"
+
+versions_file="$workdir/crate-versions"
+cargo_run metadata --format-version 1 --no-deps \
+    --manifest-path "$repo_root/Cargo.toml" \
+    | jq -r '.packages[] | "\(.name) \(.version)"' > "$versions_file"
+
+end_phase
+
+# ---------------------------------------------------------------------------
+# Phase 2: unpack the exact archives. Everything after this point reads only
+# from $unpack_root, never from crates/.
+# ---------------------------------------------------------------------------
+begin_phase 1
+
+mkdir -p "$unpack_root"
+for crate in "${packaged_crates[@]}"; do
+    version="$(awk -v name="$crate" '$1 == name { print $2; exit }' "$versions_file")"
+    if [[ -z "$version" ]]; then
+        fail "no version for $crate in the root workspace metadata"
+    fi
+
+    archive="$package_dir/$crate-$version.crate"
+    if [[ ! -f "$archive" ]]; then
+        fail "cargo package produced no archive at $archive"
+    fi
+
+    digest="unavailable"
+    if command -v openssl > /dev/null 2>&1; then
+        digest="$(openssl dgst -sha256 "$archive" | awk '{ print $NF }')"
+    fi
+    entries="$(tar tzf "$archive" | wc -l | tr -d ' ')"
+    log "archive=$crate-$version.crate sha256=$digest entries=$entries"
+
+    tar xzf "$archive" -C "$unpack_root"
+    if [[ ! -d "$unpack_root/$crate-$version" ]]; then
+        fail "archive $crate-$version.crate did not unpack to $crate-$version/"
+    fi
+done
+
+end_phase
+
+# ---------------------------------------------------------------------------
+# Phase 3: required archive contents.
+# ---------------------------------------------------------------------------
+begin_phase 2
+
+contents_failed=false
+for crate in "${packaged_crates[@]}"; do
+    version="$(awk -v name="$crate" '$1 == name { print $2; exit }' "$versions_file")"
+    unpacked="$unpack_root/$crate-$version"
+
+    for required in $(required_package_files "$crate"); do
+        if [[ -f "$unpacked/$required" ]]; then
+            log "contents ok: $crate-$version/$required"
+        else
+            printf 'error: %s\n' "$crate-$version.crate is missing required $required" >&2
+            contents_failed=true
+        fi
+    done
+
+    # A crate that declares a readme must ship it, whatever its name. This
+    # catches an include/exclude rule that drops the file crates.io renders.
+    declared_readme="$(awk -F'"' '/^readme = / { print $2; exit }' "$unpacked/Cargo.toml")"
+    if [[ -n "$declared_readme" && ! -f "$unpacked/$declared_readme" ]]; then
+        printf 'error: %s\n' "$crate-$version.crate declares readme $declared_readme but does not ship it" >&2
+        contents_failed=true
+    fi
+
+    if [[ ! -f "$unpacked/README.md" ]]; then
+        add_finding "$crate ships no README.md in its package archive"
+    fi
+done
+
+if [[ "$contents_failed" == true ]]; then
+    fail "one or more package archives are missing required contents"
+fi
+
+end_phase
+
+# ---------------------------------------------------------------------------
+# Phase 4: patch a copy of the consumer workspace to the unpacked archives.
+# ---------------------------------------------------------------------------
+begin_phase 3
+
+mkdir -p "$consumer_root"
+cp -R "$repo_root/reference" "$consumer_workspace"
+find "$consumer_workspace" -type d -name target -prune -exec rm -rf {} +
+rm -f "$consumer_workspace/Cargo.lock"
+
+# The ledger's dependency_boundary test reads the root workspace manifest three
+# directories above itself to assert that the root still excludes reference/.
+# Package mode reproduces that layout with a copy, never a symlink or a path
+# dependency, so the assertion still has something to read while the consumer
+# workspace keeps no live link to the checkout.
+cp "$repo_root/Cargo.toml" "$consumer_root/Cargo.toml"
+
+mkdir -p "$consumer_workspace/.cargo"
+config_file="$consumer_workspace/.cargo/config.toml"
+{
+    printf '# Generated by scripts/reference-package-check. Do not commit.\n'
+    printf '# Every Rafter crate resolves to an unpacked package archive, so the\n'
+    printf '# consumer builds against published artifacts and never against crates/.\n'
+    printf '[patch.crates-io]\n'
+    for crate in "${packaged_crates[@]}"; do
+        version="$(awk -v name="$crate" '$1 == name { print $2; exit }' "$versions_file")"
+        printf '%s = { path = "%s" }\n' "$crate" "$unpack_root/$crate-$version"
+    done
+} > "$config_file"
+log "generated $config_file"
+cat "$config_file"
+
+cd "$consumer_workspace"
+export CARGO_TARGET_DIR="$consumer_target"
+
+# Cargo warns about patch entries a consumer does not reach yet. That is the
+# expected shape while the portfolio is one consumer wide, and phase 6 is what
+# proves the entries that are used point at archives.
+log "note: unused [patch] warnings are expected until every Rafter crate has a consumer"
+cargo_run generate-lockfile
+
+if [[ ! -f "$consumer_workspace/Cargo.lock" ]]; then
+    fail "cargo generate-lockfile produced no consumer lockfile"
+fi
+# Only [[package]] blocks: a lockfile also carries the format version and a
+# [[patch.unused]] block for every patch entry this consumer does not reach.
+log "consumer lockfile packages:"
+awk -F'"' '
+    /^\[\[package\]\]/ { in_package = 1; next }
+    /^\[/ { in_package = 0 }
+    in_package && /^name = / { name = $2 }
+    in_package && /^version = / { printf "  %s %s\n", name, $2 }
+' "$consumer_workspace/Cargo.lock"
+
+end_phase
+
+# ---------------------------------------------------------------------------
+# Phase 5: build and test the consumers against the archives.
+# ---------------------------------------------------------------------------
+begin_phase 4
+
+cargo_run build --workspace --all-targets --locked
+cargo_run test --workspace --locked
+
+end_phase
+
+# ---------------------------------------------------------------------------
+# Phase 6: reject checkout paths, unpublished crates, and internal hooks.
+# ---------------------------------------------------------------------------
+begin_phase 5
+
+metadata_file="$workdir/consumer-metadata.json"
+cargo_run metadata --format-version 1 --locked > "$metadata_file"
+
+violation_count=0
+violations=()
+add_violation() {
+    violations[violation_count]="$1"
+    violation_count=$((violation_count + 1))
+}
+
+# Every rejection reads the resolved graph through jq. A filter that errors must
+# fail the lane rather than report an empty, reassuring result.
+reject_metadata() {
+    local label="$1"
+    local filter="$2"
+    shift 2
+    local output entry
+    if ! output="$(jq -r "$@" "$filter" "$metadata_file")"; then
+        fail "consumer metadata query failed: $label"
+    fi
+    while IFS= read -r entry; do
+        [[ -n "$entry" ]] || continue
+        add_violation "$label: $entry"
+    done <<< "$output"
+}
+
+reject_text() {
+    local label="$1"
+    local output entry
+    shift
+    output="$("$@" || true)"
+    while IFS= read -r entry; do
+        [[ -n "$entry" ]] || continue
+        add_violation "$label: $entry"
+    done <<< "$output"
+}
+
+# 6a. Nothing in the resolved graph may come from the checkout. This is the
+# strongest form of "reject path dependencies that resolve back into the
+# checkout": the consumer copy lives in the workdir, so a checkout path can
+# only appear through a dependency edge that escaped the patch table.
+# shellcheck disable=SC2016 # $root binds inside the jq filter, not in the shell
+reject_metadata "package resolves inside the checkout" '
+    .packages[]
+    | select(.manifest_path | startswith($root))
+    | "\(.name) -> \(.manifest_path)"
+' --arg root "$repo_root/"
+
+# 6b. Every Rafter crate that is not a consumer of our own must come from an
+# unpacked archive. A registry copy or a stray path override fails here.
+# shellcheck disable=SC2016 # $members and $unpacked bind inside the jq filter
+reject_metadata "Rafter crate is not an unpacked archive" '
+    .workspace_members as $members
+    | .packages[]
+    | . as $package
+    | select($package.name == "rafter" or ($package.name | startswith("rafter-")))
+    | select(($members | index($package.id)) == null)
+    | select(($package.manifest_path | startswith($unpacked)) | not)
+    | "\($package.name) -> \($package.manifest_path)"
+' --arg unpacked "$unpack_root/"
+
+# 6c. RELEASE.md's do-not-publish crates may never reach a consumer graph.
+for crate in "${never_publish_crates[@]}"; do
+    # shellcheck disable=SC2016 # $name binds inside the jq filter
+    reject_metadata "unpublished crate in the consumer graph" '
+        .packages[]
+        | select(.name == $name)
+        | "\(.name) -> \(.manifest_path)"
+    ' --arg name "$crate"
+done
+
+# 6d. The hidden internal-test-hooks feature may be declared by rafter but never
+# turned on: a package-mode consumer must reach Rafter through published API.
+reject_metadata "internal-test-hooks resolved" '
+    .resolve.nodes[]
+    | select(.features | index("internal-test-hooks"))
+    | .id
+'
+
+# shellcheck disable=SC2016 # $package binds inside the jq filter
+reject_metadata "internal-test-hooks requested by a dependency" '
+    .packages[] as $package
+    | $package.dependencies[]
+    | select(.features | index("internal-test-hooks"))
+    | "\($package.name) -> \(.name)"
+'
+
+reject_text "internal-test-hooks named in a consumer manifest" \
+    grep -rn --include=Cargo.toml 'internal-test-hooks' "$consumer_workspace"
+
+# 6e. Consumer manifests must stay registry-only. cargo metadata reports a path
+# for a path dependency and null otherwise, so this is exact; the text scan
+# below also catches a [patch] table smuggled into a manifest, which resolution
+# alone would silently honour.
+# shellcheck disable=SC2016 # $members and $package bind inside the jq filter
+reject_metadata "consumer manifest declares a path dependency" '
+    .workspace_members as $members
+    | .packages[]
+    | . as $package
+    | select($members | index($package.id))
+    | $package.dependencies[]
+    | select(.path != null)
+    | "\($package.name) -> \(.name) at \(.path)"
+'
+
+# shellcheck disable=SC2016 # $0 is an awk field, not a shell parameter
+reject_text "consumer manifest declares a path dependency" \
+    find "$consumer_workspace" -name Cargo.toml -exec awk '
+        /^[[:space:]]*\[/ { section = $0 }
+        /path[[:space:]]*=/ {
+            if (section ~ /dependencies/ || section ~ /^\[patch/) {
+                printf "%s:%d:%s\n", FILENAME, FNR, $0
+            }
+        }
+    ' {} +
+
+if ((violation_count > 0)); then
+    for ((index = 0; index < violation_count; index++)); do
+        printf 'error: %s\n' "${violations[$index]}" >&2
+    done
+    fail "the consumer graph violates the package-consumer boundary"
+fi
+
+log "no checkout paths, unpublished crates, internal hooks, or path dependencies"
+
+resolved_archives="$(jq -r --arg unpacked "$unpack_root/" '
+    .packages[]
+    | select(.manifest_path | startswith($unpacked))
+    | "  \(.name) \(.version) <- \(.manifest_path)"
+' "$metadata_file")"
+if [[ -n "$resolved_archives" ]]; then
+    log "Rafter crates resolved from archives:"
+    log "$resolved_archives"
+else
+    log "note: the consumers declare no Rafter dependency yet, so every [patch]"
+    log "      entry is unused. The rejections above still hold, and they bind as"
+    log "      soon as a consumer manifest names a versioned Rafter crate."
+fi
+
+end_phase
