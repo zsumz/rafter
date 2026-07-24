@@ -1,5 +1,8 @@
 /target
 /reference/target
+# Resolved per dependency mode: source mode patches to this checkout, and
+# package-consumer mode resolves against unpacked archives.
+/reference/Cargo.lock
 /crates/rafter-invariants/target/
 __pycache__/
 *.pyc

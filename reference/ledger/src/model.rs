@@ -27,6 +27,73 @@ pub struct LedgerSnapshot {
     successful_deposits: u128,
 }
 
+impl LedgerSnapshot {
+    /// Returns the snapshot's account balances in canonical order.
+    ///
+    /// Snapshot contents stay opaque outside this crate. The adapter reads
+    /// them only to define its versioned byte representation; it never
+    /// reconstructs ledger state without [`Ledger::from_snapshot`].
+    pub(crate) fn accounts(&self) -> &[(AccountId, u64)] {
+        &self.accounts
+    }
+
+    /// Returns the snapshot's active sessions in canonical order.
+    pub(crate) fn sessions(&self) -> Vec<SessionView> {
+        self.sessions
+            .iter()
+            .map(|(client_id, session)| SessionView {
+                client_id: *client_id,
+                session_epoch: session.session_epoch,
+                cached: session.cached.as_ref().map(|cached| {
+                    (
+                        cached.sequence,
+                        cached.mutation.clone(),
+                        cached.result.clone(),
+                    )
+                }),
+            })
+            .collect()
+    }
+
+    /// Returns the cumulative successful external deposits.
+    pub(crate) const fn successful_deposits(&self) -> u128 {
+        self.successful_deposits
+    }
+
+    /// Rebuilds a snapshot from decoded parts.
+    ///
+    /// This performs no validation: every bound, ownership, and supply rule is
+    /// enforced by [`Ledger::from_snapshot`] when the snapshot is restored.
+    pub(crate) fn from_parts(
+        accounts: Vec<(AccountId, u64)>,
+        sessions: Vec<SessionView>,
+        successful_deposits: u128,
+    ) -> Self {
+        Self {
+            accounts,
+            sessions: sessions
+                .into_iter()
+                .map(|session| {
+                    (
+                        session.client_id,
+                        SessionRecord {
+                            session_epoch: session.session_epoch,
+                            cached: session.cached.map(|(sequence, mutation, result)| {
+                                CachedCompletion {
+                                    sequence,
+                                    mutation,
+                                    result,
+                                }
+                            }),
+                        },
+                    )
+                })
+                .collect(),
+            successful_deposits,
+        }
+    }
+}
+
 /// Invalid ledger snapshot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SnapshotError {

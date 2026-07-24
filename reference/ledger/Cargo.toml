@@ -9,5 +9,13 @@ repository.workspace = true
 rust-version.workspace = true
 publish = false
 
+[dependencies]
+rafter = "0.0.1"
+rafter-app = "0.0.1"
+
+[dev-dependencies]
+rafter-runtime = "0.0.1"
+rafter-storage = "0.0.1"
+
 [lints]
 workspace = true

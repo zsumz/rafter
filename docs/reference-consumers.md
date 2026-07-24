@@ -86,6 +86,21 @@ Local development will pass an explicit Cargo configuration that patches the
 versioned Rafter dependencies to the checkout. Path overrides belong in the
 development command, not in the canonical consumer manifests.
 
+[`scripts/reference-source-check`](../scripts/reference-source-check) is that
+command. It patches every Rafter crate reachable from the consumer manifests,
+including transitive ones, then runs the reference workspace's format check,
+`clippy --all-targets -D warnings`, and tests. A partially patched graph would
+link checkout code against published code from the same workspace, so the
+override list covers the whole graph rather than only the direct dependencies.
+
+`reference/Cargo.lock` is deliberately untracked. Source mode resolves the
+patched crates to checkout paths, and package-consumer mode resolves the same
+manifests against unpacked archives and generates its own lockfile. Neither
+resolution is the other's, so committing one would pin a lockfile that the
+other mode has to rewrite on every run. The reference workspace depends only on
+Rafter crates plus their published dependencies, so nothing else needs pinning
+here; the root workspace lockfile remains the pinned build.
+
 ### Package-consumer mode
 
 The acceptance job will:

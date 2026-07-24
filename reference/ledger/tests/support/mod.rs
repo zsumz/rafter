@@ -1,3 +1,7 @@
+// `cluster` and `storage` live beside this module but are included only by the
+// integration test that drives a cluster, so the model-only tests neither
+// compile nor link the driver.
+
 use rafter_reference_ledger::{
     Amount, ClientId, Command, LedgerConfig, Mutation, RequestIdentity, Sequence, SessionEpoch,
 };

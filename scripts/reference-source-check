@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# Run the reference-consumer workspace in fast source mode.
+#
+# Usage:
+#   scripts/reference-source-check              # fmt, clippy, and tests
+#   scripts/reference-source-check --print-args # show the dependency overrides
+#   scripts/reference-source-check -- <args>    # extra args for `cargo test`
+#
+# The reference consumers depend on published Rafter versions. This command
+# patches those versions to the crates in this checkout so local changes are
+# exercised before they are published. Path overrides stay here rather than in
+# the canonical consumer manifests, which must keep resolving like an external
+# user's manifest.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+reference_root="${repo_root}/reference"
+print_args=false
+test_args=()
+
+usage() {
+    sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --print-args)
+            print_args=true
+            ;;
+        --)
+            shift
+            test_args=("$@")
+            break
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "error: unknown option: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
+
+# Every Rafter crate reachable from the consumer manifests, including
+# transitive ones: a partially patched graph would link checkout code against
+# published code of the same workspace.
+patched_crates=(
+    rafter
+    rafter-app
+    rafter-crc32
+    rafter-runtime
+    rafter-runtime-api
+    rafter-storage
+)
+
+config_args=()
+for crate in "${patched_crates[@]}"; do
+    crate_dir="${repo_root}/crates/${crate}"
+    if [[ ! -f "${crate_dir}/Cargo.toml" ]]; then
+        echo "error: patched crate is missing: ${crate_dir}" >&2
+        exit 1
+    fi
+    config_args+=(--config "patch.crates-io.${crate}.path='${crate_dir}'")
+done
+
+if [[ "$print_args" == true ]]; then
+    printf '%s\n' "${config_args[@]}"
+    exit 0
+fi
+
+cd "$reference_root"
+
+# `reference/Cargo.lock` is intentionally untracked: the source-mode lockfile
+# records patched checkout paths, while package-consumer mode resolves the same
+# manifests against unpacked archives and generates its own lockfile. Committing
+# either one would pin a resolution the other mode has to rewrite.
+echo "reference source mode: cargo fmt --all -- --check"
+cargo fmt --all -- --check
+
+echo "reference source mode: cargo clippy --all-targets -- -D warnings"
+cargo clippy "${config_args[@]}" --all-targets -- -D warnings
+
+echo "reference source mode: cargo test"
+cargo test "${config_args[@]}" ${test_args[@]+"${test_args[@]}"}
+
+echo "reference source mode passed"

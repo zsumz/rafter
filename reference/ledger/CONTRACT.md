@@ -2,10 +2,11 @@
 
 Status: first reference-consumer contract for Rafter 1.0 API discovery.
 
-This crate begins as a dependency-free deterministic ledger. It does not use
-Rafter yet. The next slice will integrate this exact application contract
-through Rafter's public crates and record every seam that is missing, awkward,
-or product-specific.
+This crate began as a dependency-free deterministic ledger. It now also carries
+the `rafter-app` adapter that runs that exact application contract through
+Rafter's public crates, plus a consumer-owned deterministic three-node driver
+used by its integration tests. Every seam that is missing, awkward, or
+product-specific is recorded as it is found.
 
 The ledger is deliberately small. It exists to prove:
 
@@ -157,8 +158,14 @@ The pure model snapshot is transport-neutral and opaque outside the
 implementation. Restoring it validates configured bounds, client-slot
 ownership, uniqueness, and the ledger supply invariant.
 
-The durable adapter will later define a versioned byte representation. Its
-application transaction must atomically persist:
+The adapter defines the versioned byte representation. Its snapshot frame
+carries the applied Raft index alongside account balances, active sessions,
+cached mutations, and cached results, and installing one restores through the
+model's validating restore path. An install whose payload index disagrees with
+the declared index is refused, as is an install that would move the applied
+index backwards.
+
+The durable adapter's application transaction must atomically persist:
 
 ```text
 account mutations
@@ -167,7 +174,9 @@ cached command result
 applied Raft index
 ```
 
-Compaction must never make an acknowledged command executable again.
+Compaction must never make an acknowledged command executable again. The
+adapter enforces the same rule against replay: a committed entry at or below
+the applied index is refused rather than applied a second time.
 
 ## History Vocabulary
 
@@ -195,5 +204,28 @@ The first milestone contains:
 - differential exploration over small command histories; and
 - the history vocabulary.
 
-It intentionally contains no Rafter dependency, transport, filesystem backend,
-shared reference framework, or new Rafter public API.
+It intentionally contains no transport, filesystem backend, shared reference
+framework, or new Rafter public API.
+
+## Adapter Boundary
+
+The adapter slice adds:
+
+- the `rafter-app` replicated state machine over the pure model, with versioned
+  command and snapshot frames;
+- the linearizable `GetAccount` and `GetLedgerSummary` read path;
+- a consumer-owned deterministic three-node driver in test support; and
+- integration tests that drive the session protocol, a leader change with an
+  unknown-outcome window, linearizable reads, restart, and a snapshot round
+  trip through real replication.
+
+The adapter adapts the implementation model only. It never touches the oracle,
+never re-derives a ledger, session, or deduplication decision, and depends only
+on published Rafter crates. It still contains no transport, no filesystem
+backend, no shared reference framework, and no new Rafter public API.
+
+The driver models two things it does not yet make real: durable Raft state
+lives in shared in-memory media that outlive one node incarnation, and
+application state survives a restart because the state machine carries its
+applied index with its data. A transactional application backend, application
+crash points, and durable process composition arrive with the later slices.
