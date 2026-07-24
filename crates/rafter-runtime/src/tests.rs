@@ -15,6 +15,7 @@ mod hard_state;
 mod local_ids;
 mod persistence_contract;
 mod persistence_ordering;
+mod recording_stores;
 mod recovery;
 mod replay_recovery;
 mod snapshot;

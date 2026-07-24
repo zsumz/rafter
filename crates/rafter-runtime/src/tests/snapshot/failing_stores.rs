@@ -49,7 +49,7 @@ impl RaftLogSegment for FailingCompactRaftLogSegment {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct FailingSnapshotStore;
+pub(in crate::tests) struct FailingSnapshotStore;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct FailingPromoteSnapshotStore(pub(super) InMemoryRaftSnapshotStore);

@@ -21,6 +21,5 @@ pub(super) use chunk_helpers::{
     install_snapshot_chunk_at_term, restart_snapshot_follower, snapshot_transfer_id,
     stale_snapshot_follower,
 };
-use failing_stores::{
-    FailingCompactRaftLogSegment, FailingPromoteSnapshotStore, FailingSnapshotStore,
-};
+pub(super) use failing_stores::FailingSnapshotStore;
+use failing_stores::{FailingCompactRaftLogSegment, FailingPromoteSnapshotStore};

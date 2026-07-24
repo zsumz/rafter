@@ -1,3 +1,7 @@
+use super::recording_stores::{
+    RecordingHardStateStore, RecordingLogSegment, RecordingSnapshotStore, StoreJournal,
+};
+use super::snapshot::{raft_snapshot, FailingSnapshotStore};
 use super::*;
 use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
@@ -234,4 +238,110 @@ where
             }),
         })
         .expect("follower acknowledgement commits new entry")
+}
+
+/// Decomposition is the in-process half of restart: the stores that come back
+/// must recover the same node the retired incarnation was.
+#[test]
+fn into_storage_returns_stores_that_recover_to_the_same_state() {
+    let mut runtime = durable_node_with_log(
+        1,
+        &[2],
+        hard_state_store(0, None),
+        InMemoryRaftLogSegment::new(),
+    );
+    elect_runtime_leader_with_grant(&mut runtime, RaftNodeId(2));
+    let _ = propose_and_ack_runtime_entry(&mut runtime, RaftNodeId(2), LogIndex(2), b"before");
+    let expected_hard_state = runtime.hard_state_store.current();
+    let expected_entries = runtime.log_segment.replay_entries();
+    let expected_snapshot_index = runtime.snapshot_index();
+    let expected_commit_index = runtime.commit_index();
+
+    let storage = runtime.into_storage();
+
+    oracle_assert_eq!(storage.hard_state_store.current(), expected_hard_state);
+    oracle_assert_eq!(storage.log_segment.replay_entries(), expected_entries);
+    let recovered = DurableRaftNode::with_storage_and_snapshot_store(
+        raft_config(1, &[2]),
+        storage.hard_state_store,
+        storage.log_segment,
+        storage.snapshot_store,
+    )
+    .expect("returned stores recover a node");
+    oracle_assert_eq!(recovered.commit_index(), expected_commit_index);
+    oracle_assert_eq!(recovered.snapshot_index(), expected_snapshot_index);
+    oracle_assert_eq!(recovered.last_log_index(), LogIndex(2));
+    oracle_assert_eq!(
+        recovered.log_entries_from(LogIndex(1)),
+        vec![
+            LogEntry::noop(Term(1)),
+            LogEntry::application(Term(1), b"before".to_vec()),
+        ]
+    );
+}
+
+/// Poison is the state a caller most needs to leave, so decomposition is
+/// allowed there and returns the medium rather than the in-memory state that
+/// ran ahead of it.
+#[test]
+fn into_storage_after_a_fatal_persistence_error_returns_the_durable_stores() {
+    let mut runtime = DurableRaftNode::with_storage_and_snapshot_store(
+        raft_config(1, &[]),
+        hard_state_store(0, None),
+        InMemoryRaftLogSegment::new(),
+        FailingSnapshotStore,
+    )
+    .expect("single-voter node hydrates");
+    runtime.step(RaftInput::Tick).expect("single node elects");
+    let durable_before = runtime.log_segment.replay_entries();
+
+    let error = runtime
+        .compact_log_with_snapshot(raft_snapshot(1, 1, 1, b"payload"))
+        .expect_err("the snapshot store refuses every write");
+    oracle_assert!(matches!(error, RaftRuntimeError::SnapshotWrite(_)));
+    assert_poisoned_after_failure(&mut runtime, |cause| {
+        matches!(cause, RaftRuntimeFatalError::SnapshotWrite(_))
+    });
+
+    let storage = runtime.into_storage();
+
+    // The medium never took the snapshot, so what comes back is the
+    // pre-failure node rather than the boundary the poisoned runtime implied.
+    oracle_assert_eq!(storage.log_segment.replay_entries(), durable_before);
+    oracle_assert_eq!(storage.snapshot_store.current_snapshot(), None);
+    let recovered = DurableRaftNode::with_storage_and_snapshot_store(
+        raft_config(1, &[]),
+        storage.hard_state_store,
+        storage.log_segment,
+        InMemoryRaftSnapshotStore::new(),
+    )
+    .expect("poisoned runtime's stores still recover");
+    oracle_assert_eq!(recovered.snapshot_index(), LogIndex::ZERO);
+    oracle_assert_eq!(recovered.last_log_index(), LogIndex(1));
+}
+
+/// Decomposition writes nothing: it neither flushes nor closes, and a caller
+/// reopening the same medium is responsible for dropping the returned handles
+/// first.
+#[test]
+fn into_storage_does_not_flush_or_close() {
+    let journal = StoreJournal::new();
+    let mut runtime = DurableRaftNode::with_storage_and_snapshot_store(
+        raft_config(1, &[]),
+        RecordingHardStateStore::new(&journal, hard_state_store(0, None)),
+        RecordingLogSegment::new(&journal, InMemoryRaftLogSegment::new()),
+        RecordingSnapshotStore::new(&journal, InMemoryRaftSnapshotStore::new()),
+    )
+    .expect("single-voter node hydrates");
+    runtime.step(RaftInput::Tick).expect("single node elects");
+    // Positive control: the journal does observe what a step writes, so an
+    // empty delta below means "wrote nothing", not "watched nothing".
+    oracle_assert!(!journal.is_empty());
+    let observed_while_live = journal.entries();
+
+    let storage = runtime.into_storage();
+
+    oracle_assert_eq!(journal.entries(), observed_while_live);
+    drop(storage);
+    oracle_assert_eq!(journal.entries(), observed_while_live);
 }
