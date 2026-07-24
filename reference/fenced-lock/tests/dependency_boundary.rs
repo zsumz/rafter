@@ -1,6 +1,6 @@
 const ROOT_WORKSPACE: &str = include_str!("../../../Cargo.toml");
 const REFERENCE_WORKSPACE: &str = include_str!("../../Cargo.toml");
-const LEDGER_MANIFEST: &str = include_str!("../Cargo.toml");
+const FENCED_LOCK_MANIFEST: &str = include_str!("../Cargo.toml");
 
 #[test]
 fn reference_workspace_is_explicitly_isolated_from_the_root() {
@@ -21,15 +21,27 @@ fn reference_workspace_is_explicitly_isolated_from_the_root() {
 #[test]
 fn canonical_consumer_manifest_has_no_checkout_or_internal_hook_dependency() {
     assert!(
-        !LEDGER_MANIFEST.contains("path ="),
+        !FENCED_LOCK_MANIFEST.contains("path ="),
         "canonical consumer dependencies must not point into the checkout"
     );
     assert!(
-        !LEDGER_MANIFEST.contains("internal-test-hooks"),
+        !FENCED_LOCK_MANIFEST.contains("internal-test-hooks"),
         "reference consumers must not use unpublished internal hooks"
     );
     assert!(
-        LEDGER_MANIFEST.contains("publish = false"),
+        FENCED_LOCK_MANIFEST.contains("publish = false"),
         "reference consumers are acceptance systems, not published products"
+    );
+}
+
+#[test]
+fn this_slice_declares_no_dependencies_at_all() {
+    assert!(
+        !FENCED_LOCK_MANIFEST.contains("[dependencies]"),
+        "the foundation slice is dependency-free, including of Rafter itself"
+    );
+    assert!(
+        !FENCED_LOCK_MANIFEST.contains("rafter-reference-ledger"),
+        "reference consumers must not share code with one another"
     );
 }

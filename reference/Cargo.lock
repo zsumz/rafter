@@ -3,5 +3,9 @@
 version = 4
 
 [[package]]
+name = "rafter-reference-fenced-lock"
+version = "0.0.0"
+
+[[package]]
 name = "rafter-reference-ledger"
 version = "0.0.0"

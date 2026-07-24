@@ -1,0 +1,13 @@
+[package]
+name = "rafter-reference-fenced-lock"
+version = "0.0.0"
+description = "Independent fenced lock acceptance system for Rafter's public authority surface."
+readme = "CONTRACT.md"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true
