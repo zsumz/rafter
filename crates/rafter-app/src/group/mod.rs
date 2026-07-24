@@ -45,8 +45,8 @@ mod validation;
 
 pub use types::{
     GroupFatalState, GroupInput, GroupStepReport, LeadershipTransferEvent, PoisonedWaiters,
-    ProposalBatchBeginReport, ProposalBeginReport, RaftGroup, ReadBarrierBeginReport, ReadReport,
-    StepReportOptions,
+    ProposalBatchBeginReport, ProposalBeginReport, RaftGroup, RaftGroupParts,
+    ReadBarrierBeginReport, ReadReport, StepReportOptions,
 };
 
 use types::{

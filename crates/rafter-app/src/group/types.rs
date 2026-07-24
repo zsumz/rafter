@@ -192,6 +192,19 @@ pub struct ReadBarrierBeginReport<G, R> {
     pub report: GroupStepReport<G, R>,
 }
 
+/// The reusable pieces of a decomposed [`RaftGroup`].
+#[derive(Debug)]
+pub struct RaftGroupParts<G, A, R> {
+    pub group_id: G,
+    pub node_id: NodeId,
+    pub runtime: R,
+    pub state_machine: A,
+    pub local_proposal_id_watermark: Option<LocalProposalId>,
+    pub read_id_watermark: Option<ReadId>,
+    pub fatal_state: GroupFatalState,
+    pub poisoned_waiters: PoisonedWaiters,
+}
+
 /// Full-fidelity result of a state-machine read.
 ///
 /// This carries three type parameters where its siblings carry two, because a
@@ -382,5 +395,60 @@ impl<G, A, R> RaftGroup<G, A, R> {
     #[must_use]
     pub fn drain_poisoned_waiters(&mut self) -> PoisonedWaiters {
         std::mem::take(&mut self.poisoned_waiters)
+    }
+
+    /// Consumes the group and returns the parts a caller can reuse.
+    ///
+    /// This is the in-process teardown path. An embedder replacing a group —
+    /// after poison, on a supervised restart, or when a host closes one group of
+    /// many — reclaims the state machine and the runtime instead of dropping
+    /// them. It is the group-level half of decomposition;
+    /// `DurableRaftNode::into_storage` in `rafter-runtime` is the runtime-level
+    /// half that reaches the durable stores.
+    ///
+    /// Decomposition never steps the runtime, never applies, and never emits
+    /// outputs, so no protocol effect can be lost by calling it. What ends is
+    /// local waiter tracking: every pending proposal and every reserved read
+    /// disappears with the group. A proposal already appended may still commit
+    /// and apply under a later incarnation, so a caller that has acknowledged
+    /// nothing must treat each dropped waiter exactly as
+    /// [`crate::proposal::ProposalEvent::UnknownOutcome`] — the write may or may
+    /// not have taken effect.
+    ///
+    /// Decomposition is allowed on a poisoned group, because poison is the state
+    /// a caller most needs to leave. `fatal_state` and `poisoned_waiters` travel
+    /// with the parts, so a caller that decomposes without inspecting the group
+    /// first can still resolve its clients.
+    ///
+    /// The returned watermarks are load-bearing when `runtime` is carried into a
+    /// new group. A live runtime still tracks local proposal IDs for entries it
+    /// has not yet committed, and a new group starts with no watermark of its
+    /// own, so it must be given IDs strictly above both returned watermarks.
+    /// Reusing an ID completes the new group's waiter with the older proposal's
+    /// result, at the older proposal's index — silently, because both the
+    /// runtime and the new group are behaving exactly as documented. A runtime
+    /// rebuilt from durable storage carries no local proposal tracking, and a
+    /// group over it may restart its IDs at zero.
+    ///
+    /// The applied floor is not returned: the state machine reports it through
+    /// [`crate::state_machine::ReplicatedStateMachine::applied_index`], and a
+    /// group never advances its own floor past what the state machine reported.
+    ///
+    /// Nothing is closed and nothing is flushed. The runtime and its stores stay
+    /// live until the caller drops them, so a caller reopening the same durable
+    /// medium must drop the returned runtime first when the store requires
+    /// exclusive access.
+    #[must_use]
+    pub fn into_parts(self) -> RaftGroupParts<G, A, R> {
+        RaftGroupParts {
+            group_id: self.group_id,
+            node_id: self.node_id,
+            runtime: self.raft,
+            state_machine: self.app,
+            local_proposal_id_watermark: self.last_seen_local_proposal_id,
+            read_id_watermark: self.last_seen_read_id,
+            fatal_state: self.fatal_state,
+            poisoned_waiters: self.poisoned_waiters,
+        }
     }
 }

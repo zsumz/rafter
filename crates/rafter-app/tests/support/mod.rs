@@ -449,6 +449,93 @@ pub(crate) fn group(
     )
 }
 
+/// Drives a real kernel-backed group to leadership by scripting node 2's
+/// pre-vote and vote grants, and returns the term it won.
+pub(crate) fn elect_group_leader(
+    group: &mut RaftGroup<u64, RecordingStateMachine, KernelRuntime>,
+) -> Term {
+    let report = group.step(GroupInput::Tick).expect("pre-vote starts");
+    let pre_vote_term = report
+        .peer_messages
+        .iter()
+        .find_map(|envelope| match &envelope.message {
+            Message::PreVote(request) => Some(request.term),
+            _ => None,
+        })
+        .expect("pre-vote request is emitted");
+    let report = group
+        .step(GroupInput::PeerMessage {
+            envelope: PeerEnvelope {
+                group_id: 7,
+                from: NodeId(2),
+                to: NodeId(1),
+                message: Message::PreVoteResponse(PreVoteResponse {
+                    term: pre_vote_term,
+                    voter_id: NodeId(2),
+                    vote_granted: true,
+                }),
+            },
+        })
+        .expect("pre-vote grant starts the election");
+    let vote_term = report
+        .peer_messages
+        .iter()
+        .find_map(|envelope| match &envelope.message {
+            Message::RequestVote(request) => Some(request.term),
+            _ => None,
+        })
+        .expect("request vote is emitted");
+    let _ = group
+        .step(GroupInput::PeerMessage {
+            envelope: PeerEnvelope {
+                group_id: 7,
+                from: NodeId(2),
+                to: NodeId(1),
+                message: Message::RequestVoteResponse(RequestVoteResponse {
+                    term: vote_term,
+                    voter_id: NodeId(2),
+                    vote_granted: true,
+                }),
+            },
+        })
+        .expect("vote grant elects the leader");
+    assert_eq!(group.metrics().role, Role::Leader);
+    vote_term
+}
+
+/// Acknowledges replication up to `match_index` from node 2, which is quorum in
+/// a three-node group led by node 1.
+pub(crate) fn acknowledge_replication(
+    group: &mut RaftGroup<u64, RecordingStateMachine, KernelRuntime>,
+    term: Term,
+    match_index: LogIndex,
+    peer_messages: &[PeerEnvelope<u64>],
+) -> GroupStepReport<u64, Vec<u8>> {
+    let sequence = peer_messages
+        .iter()
+        .find_map(|envelope| match &envelope.message {
+            Message::AppendEntries(AppendEntries { sequence, .. }) => Some(*sequence),
+            _ => None,
+        })
+        .expect("the leader replicated its append");
+    group
+        .step(GroupInput::PeerMessage {
+            envelope: PeerEnvelope {
+                group_id: 7,
+                from: NodeId(2),
+                to: NodeId(1),
+                message: Message::AppendEntriesResponse(AppendEntriesResponse {
+                    term,
+                    follower_id: NodeId(2),
+                    success: true,
+                    match_index,
+                    sequence,
+                }),
+            },
+        })
+        .expect("quorum acknowledgement commits and applies")
+}
+
 pub(crate) fn membership(voters: &[u64], learners: &[u64]) -> MembershipConfig {
     MembershipConfig::stable(membership_set(voters, learners))
 }

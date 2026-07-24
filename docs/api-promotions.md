@@ -458,6 +458,7 @@ in-tree change is mechanical.
 | [`crates/rafter-runtime/src/tests/snapshot/chunk_transfer.rs:177`](../crates/rafter-runtime/src/tests/snapshot/chunk_transfer.rs), [`.../failing_stores.rs:111,164`](../crates/rafter-runtime/src/tests/snapshot/failing_stores.rs) | Three fault-injection implementors |
 | `crates/rafter-storage/src/raft_snapshot_store/pending_transfer_test.rs`, `pending_transfer_cleanup_test.rs` | 14 assertions lose a `&` |
 | `crates/rafter-storage/src/raft_snapshot_store/pending_transfer/recovery_test.rs:88,110` | Drop `.cloned()` |
+| Every other in-tree assertion site — `validation_test.rs`, `health_test.rs`, `inventory_test.rs`, `storage_failpoint_test/snapshot_test.rs`, `tests/open_recovery_report.rs`, `tests/store_conformance/support.rs`, `crates/rafter-runtime/src/tests/snapshot/**` | Compare owned values; most need no edit at all |
 | [`reference/ledger/tests/support/storage.rs`](../reference/ledger/tests/support/storage.rs) | Mirror deleted |
 
 `reference/` is excluded from the root workspace and `bench-compare/` is not a
@@ -617,10 +618,12 @@ pub struct RaftGroupParts<G, A, R> {
 ///
 /// The returned watermarks are load-bearing when `runtime` is carried into a new
 /// group. A live runtime still tracks local proposal IDs for entries it has not
-/// yet committed, so a group built over it must continue allocating IDs strictly
-/// above both watermarks; reusing an ID can complete a new waiter with an older
-/// proposal's result. A runtime rebuilt from durable storage carries no local
-/// proposal tracking, and a group over it may restart its IDs at zero.
+/// yet committed, and a new group starts with no watermark of its own, so it must
+/// be given IDs strictly above both returned watermarks. Reusing an ID completes
+/// the new group's waiter with the older proposal's result, at the older
+/// proposal's index — silently, because both the runtime and the new group are
+/// behaving exactly as documented. A runtime rebuilt from durable storage carries
+/// no local proposal tracking, and a group over it may restart its IDs at zero.
 ///
 /// The applied floor is not returned: the state machine reports it through
 /// [`crate::state_machine::ReplicatedStateMachine::applied_index`], and a group
@@ -687,9 +690,13 @@ bounds required to step it.
   `pending_reads`, `pending_query_reads`, `completed_query_reads`. A completed
   read proof that was never consumed is discarded with them.
 - **Watermark hazard, made visible.** Carrying the same runtime into a new group
-  and restarting IDs at zero can complete a new waiter with an older proposal's
-  result. The watermarks are in the returned parts precisely so a caller can
-  avoid this without reading the source.
+  and restarting IDs at zero completes the new waiter with an older proposal's
+  result. The mechanism is reproducible and is now a permanent negative test: the
+  kernel's local-proposal tracking is volatile state that survives decomposition,
+  the app layer correlates applies by local proposal ID alone, and a rebuilt group
+  has no watermark of its own to reject the reused ID. Nothing rejects it, so the
+  watermarks are in the returned parts precisely so a caller can avoid this
+  without reading the source.
 - **Group level versus node level.** Two methods, not one, because
   `rafter-app` is generic over a storage-free runtime trait. A consumer that
   needs only application state calls one; a consumer that needs storage calls
@@ -723,10 +730,18 @@ In `crates/rafter-app/tests/group_lifecycle.rs`:
   with waiters outstanding, decompose without calling
   `drain_poisoned_waiters` first, assert both arrive in the parts.
 - `into_parts_reports_id_watermarks_after_use`.
-- Negative: `a_group_rebuilt_over_the_same_runtime_rejects_ids_at_or_below_the_watermark`
-  — rebuild with `RaftGroup::with_applied_index`, submit an ID at the
-  watermark, assert `GroupError::NonMonotonicLocalProposalId`, then submit above
-  it and assert acceptance. This makes the documented hazard executable.
+- Negative: `a_group_rebuilt_over_the_same_runtime_completes_a_reused_id_with_the_older_result`
+  — over a real kernel runtime, append a proposal without committing it,
+  decompose, build a new group over the returned runtime, restart IDs at zero,
+  and assert the new waiter is completed by the retired incarnation's entry:
+  right ID, older index, older result, and no event at all for the proposal the
+  caller actually made. This makes the documented hazard executable.
+
+  The hazard cannot be written as a rejection. A group built by
+  `RaftGroup::new` or `RaftGroup::with_applied_index` starts with no ID
+  watermark, so it does not reject an ID at the retired group's watermark — that
+  absence *is* the hazard, and it is why the watermarks have to leave in the
+  parts rather than being recoverable from the runtime.
 
 In `crates/rafter-runtime/src/tests/recovery.rs`:
 
