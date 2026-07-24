@@ -398,6 +398,17 @@ impl RequestFingerprint {
         Self(digest.finish())
     }
 
+    /// Rebuilds a fingerprint from a digest that arrived on the wire.
+    ///
+    /// A frame must round-trip the digest a client actually sent, including one
+    /// that does not describe its own operation. Recomputing the digest here
+    /// would silently repair the malformed envelope that
+    /// [`RequestRejection::FingerprintMismatch`] exists to reject.
+    #[must_use]
+    pub const fn from_digest(digest: u64) -> Self {
+        Self(digest)
+    }
+
     /// Returns the numeric digest.
     #[must_use]
     pub const fn get(self) -> u64 {

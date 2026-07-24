@@ -1,0 +1,342 @@
+//! Consumer-owned deterministic transport over the public service contract.
+//!
+//! `rafter-service` ships transport *traits* and an inbound validator, but no
+//! driver that consumes them, so this module is what an external embedder has
+//! to write. It implements [`RaftTransport`] with explicit delivery control:
+//! nothing moves between replicas until the test asks for it, and a cut link
+//! is a real refusal rather than a silently skipped queue.
+//!
+//! Frames leave a node as [`PeerEnvelope`] values and arrive as
+//! [`AuthenticatedPeerEnvelope`] values that must pass
+//! [`validate_inbound_peer_envelope`] before any group sees them. That is the
+//! production shape the crate documents, and it is the only reason a
+//! `PeerPrincipal` exists here: proving who is on the far end of a connection
+//! and deciding which Raft replica that is are separate steps.
+//!
+//! Lock order is node state first, network second. Every path that sends holds
+//! a node lock and then takes the network lock; no path takes them the other
+//! way around.
+
+use std::{
+    collections::{BTreeMap, BTreeSet, VecDeque},
+    error::Error,
+    fmt,
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
+};
+
+use rafter::NodeId;
+use rafter_service::{
+    validate_inbound_peer_envelope, AuthenticatedPeerEnvelope, AuthenticatedPeerEnvelopeError,
+    AuthenticatedPeerValidator, PeerEnvelope, PeerSet, RaftTransport,
+};
+
+use crate::cluster::{LockGroupId, GROUP_ID};
+
+/// Frames the network will hold before it refuses to accept more.
+///
+/// The service contract asks transports for bounded queues rather than
+/// unbounded growth. A deterministic test never reaches this bound, which is
+/// the point: exceeding it means the driver stopped draining.
+const MAX_IN_FLIGHT: usize = 256;
+
+/// Authenticated transport identity of one replica.
+///
+/// A principal is deliberately not a [`NodeId`]. The transport authenticates a
+/// principal; the validator decides which Raft replica that principal is
+/// allowed to be. Collapsing the two would erase the check that
+/// [`AuthenticatedPeerEnvelopeError::AuthenticatedPeerMismatch`] exists for.
+#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct PeerPrincipal(String);
+
+impl PeerPrincipal {
+    /// Returns the principal this deployment issues to one replica.
+    pub fn for_node(node_id: NodeId) -> Self {
+        Self(format!("replica-{}", node_id.0))
+    }
+}
+
+impl fmt::Display for PeerPrincipal {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+/// Why the deterministic transport refused a frame.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TransportError {
+    /// Every link out of the sending replica is cut.
+    PeerUnreachable { peer: NodeId },
+    /// The frame names a group this deployment does not route.
+    UnknownGroup,
+    /// The bounded in-flight queue is full, so the frame fails closed.
+    QueueFull { limit: usize },
+}
+
+impl fmt::Display for TransportError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PeerUnreachable { peer } => write!(formatter, "peer {peer} is unreachable"),
+            Self::UnknownGroup => formatter.write_str("frame names an unrouted group"),
+            Self::QueueFull { limit } => {
+                write!(formatter, "transport queue is full at {limit} frames")
+            }
+        }
+    }
+}
+
+impl Error for TransportError {}
+
+/// Shared deterministic in-memory network for one lock cluster.
+#[derive(Clone, Debug, Default)]
+pub struct DeterministicNetwork {
+    shared: Arc<Mutex<NetworkState>>,
+}
+
+#[derive(Debug, Default)]
+struct NetworkState {
+    in_flight: VecDeque<AuthenticatedPeerEnvelope<LockGroupId, PeerPrincipal>>,
+    blocked_inbound: BTreeSet<NodeId>,
+    blocked_outbound: BTreeSet<NodeId>,
+    dropped_inbound: u64,
+}
+
+impl DeterministicNetwork {
+    /// Creates an idle network with every link up.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns the transport endpoint one replica sends through.
+    pub fn endpoint(&self, node_id: NodeId, directory: PeerDirectory) -> NodeTransport {
+        NodeTransport {
+            network: self.clone(),
+            local_node_id: node_id,
+            local_principal: PeerPrincipal::for_node(node_id),
+            directory,
+        }
+    }
+
+    /// Removes every frame currently in flight, dropping those the receiver
+    /// cannot hear.
+    ///
+    /// Draining in one batch is what makes delivery deterministic: frames a
+    /// delivery produces are handled by the next call, never appended to the
+    /// batch being processed.
+    pub fn take_deliverable(&self) -> Vec<AuthenticatedPeerEnvelope<LockGroupId, PeerPrincipal>> {
+        let mut state = lock(&self.shared);
+        let batch = std::mem::take(&mut state.in_flight);
+        let mut deliverable = Vec::with_capacity(batch.len());
+        for envelope in batch {
+            if state.blocked_inbound.contains(&envelope.raft_to) {
+                state.dropped_inbound += 1;
+                continue;
+            }
+            deliverable.push(envelope);
+        }
+        deliverable
+    }
+
+    /// Cuts every link to and from `node_id`.
+    pub fn isolate(&self, node_id: NodeId) {
+        let mut state = lock(&self.shared);
+        state.blocked_inbound.insert(node_id);
+        state.blocked_outbound.insert(node_id);
+    }
+
+    /// Cuts only the links into `node_id`.
+    ///
+    /// A replica in this state keeps sending and keeps believing whatever its
+    /// last successful round told it, because nothing can contradict it. That
+    /// is exactly the isolated-former-leader shape the fencing proof needs.
+    pub fn isolate_inbound(&self, node_id: NodeId) {
+        lock(&self.shared).blocked_inbound.insert(node_id);
+    }
+
+    /// Restores every cut link.
+    pub fn heal(&self) {
+        let mut state = lock(&self.shared);
+        state.blocked_inbound.clear();
+        state.blocked_outbound.clear();
+    }
+
+    /// Returns whether `node_id` can currently receive frames.
+    pub fn reaches(&self, node_id: NodeId) -> bool {
+        let state = lock(&self.shared);
+        !state.blocked_inbound.contains(&node_id) && !state.blocked_outbound.contains(&node_id)
+    }
+
+    /// Returns how many accepted frames were dropped before delivery.
+    pub fn dropped_inbound(&self) -> u64 {
+        lock(&self.shared).dropped_inbound
+    }
+
+    /// Returns whether any accepted frame is still waiting to be delivered.
+    pub fn is_idle(&self) -> bool {
+        lock(&self.shared).in_flight.is_empty()
+    }
+
+    fn accept(
+        &self,
+        envelope: AuthenticatedPeerEnvelope<LockGroupId, PeerPrincipal>,
+        from: NodeId,
+    ) -> Result<(), TransportError> {
+        let mut state = lock(&self.shared);
+        if state.blocked_outbound.contains(&from) {
+            return Err(TransportError::PeerUnreachable {
+                peer: envelope.raft_to,
+            });
+        }
+        if state.in_flight.len() >= MAX_IN_FLIGHT {
+            return Err(TransportError::QueueFull {
+                limit: MAX_IN_FLIGHT,
+            });
+        }
+        state.in_flight.push_back(envelope);
+        Ok(())
+    }
+}
+
+/// One replica's endpoint on the deterministic network.
+#[derive(Clone, Debug)]
+pub struct NodeTransport {
+    network: DeterministicNetwork,
+    local_node_id: NodeId,
+    local_principal: PeerPrincipal,
+    directory: PeerDirectory,
+}
+
+impl NodeTransport {
+    /// Validates an inbound frame against this replica's own policy.
+    ///
+    /// # Errors
+    ///
+    /// Returns the app-layer validation error when the sender is unmapped,
+    /// unauthorized, fenced, or addressed the wrong replica.
+    pub fn accept_inbound(
+        &self,
+        envelope: AuthenticatedPeerEnvelope<LockGroupId, PeerPrincipal>,
+    ) -> Result<PeerEnvelope<LockGroupId>, AuthenticatedPeerEnvelopeError> {
+        validate_inbound_peer_envelope(envelope, self.local_node_id, &self.directory)
+    }
+}
+
+impl RaftTransport<LockGroupId> for NodeTransport {
+    type PeerPrincipal = PeerPrincipal;
+    type Error = TransportError;
+
+    fn send(&self, envelope: PeerEnvelope<LockGroupId>) -> Result<(), Self::Error> {
+        if envelope.group_id != GROUP_ID {
+            return Err(TransportError::UnknownGroup);
+        }
+        self.network.accept(
+            AuthenticatedPeerEnvelope {
+                group_id: envelope.group_id,
+                authenticated_peer: self.local_principal.clone(),
+                raft_from: envelope.from,
+                raft_to: envelope.to,
+                message: envelope.message,
+            },
+            self.local_node_id,
+        )
+    }
+
+    fn update_peers(
+        &self,
+        group_id: &LockGroupId,
+        peers: PeerSet<Self::PeerPrincipal>,
+    ) -> Result<(), Self::Error> {
+        if *group_id != GROUP_ID {
+            return Err(TransportError::UnknownGroup);
+        }
+        self.directory.replace_authorized(peers.into_peers());
+        Ok(())
+    }
+
+    fn fence_peer(
+        &self,
+        group_id: &LockGroupId,
+        peer: Self::PeerPrincipal,
+    ) -> Result<(), Self::Error> {
+        if *group_id != GROUP_ID {
+            return Err(TransportError::UnknownGroup);
+        }
+        self.directory.fence(&peer);
+        Ok(())
+    }
+}
+
+/// One replica's view of which principals may speak to it.
+#[derive(Clone, Debug, Default)]
+pub struct PeerDirectory {
+    shared: Arc<Mutex<DirectoryState>>,
+}
+
+#[derive(Debug, Default)]
+struct DirectoryState {
+    /// Every principal this deployment can name, and the replica it is.
+    known: BTreeMap<PeerPrincipal, NodeId>,
+    /// The principals currently allowed to speak, set through `update_peers`.
+    authorized: BTreeSet<PeerPrincipal>,
+    /// Principals refused regardless of authorization.
+    fenced: BTreeSet<PeerPrincipal>,
+}
+
+impl PeerDirectory {
+    /// Builds a directory that knows every replica and authorizes `peers`.
+    pub fn new(all_nodes: &[NodeId], peers: &[NodeId]) -> Self {
+        let directory = Self::default();
+        {
+            let mut state = lock(&directory.shared);
+            for node_id in all_nodes {
+                state
+                    .known
+                    .insert(PeerPrincipal::for_node(*node_id), *node_id);
+            }
+        }
+        directory.replace_authorized(peers.iter().copied().map(PeerPrincipal::for_node).collect());
+        directory
+    }
+
+    fn replace_authorized(&self, peers: Vec<PeerPrincipal>) {
+        let mut state = lock(&self.shared);
+        state.authorized = peers.into_iter().collect();
+    }
+
+    fn fence(&self, peer: &PeerPrincipal) {
+        lock(&self.shared).fenced.insert(peer.clone());
+    }
+}
+
+impl AuthenticatedPeerValidator<LockGroupId, PeerPrincipal> for PeerDirectory {
+    fn is_known_group(&self, group_id: &LockGroupId) -> bool {
+        *group_id == GROUP_ID
+    }
+
+    fn node_for_authenticated_peer(
+        &self,
+        _group_id: &LockGroupId,
+        peer: &PeerPrincipal,
+    ) -> Option<NodeId> {
+        lock(&self.shared).known.get(peer).copied()
+    }
+
+    fn is_authorized_peer(&self, _group_id: &LockGroupId, node_id: NodeId) -> bool {
+        let state = lock(&self.shared);
+        state
+            .authorized
+            .iter()
+            .any(|peer| state.known.get(peer) == Some(&node_id))
+    }
+
+    fn is_fenced_peer(&self, _group_id: &LockGroupId, node_id: NodeId) -> bool {
+        let state = lock(&self.shared);
+        state
+            .fenced
+            .iter()
+            .any(|peer| state.known.get(peer) == Some(&node_id))
+    }
+}
+
+fn lock<T>(shared: &Mutex<T>) -> MutexGuard<'_, T> {
+    shared.lock().unwrap_or_else(PoisonError::into_inner)
+}

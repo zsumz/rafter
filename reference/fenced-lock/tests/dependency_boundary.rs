@@ -35,11 +35,21 @@ fn canonical_consumer_manifest_has_no_checkout_or_internal_hook_dependency() {
 }
 
 #[test]
-fn this_slice_declares_no_dependencies_at_all() {
-    assert!(
-        !FENCED_LOCK_MANIFEST.contains("[dependencies]"),
-        "the foundation slice is dependency-free, including of Rafter itself"
-    );
+fn rafter_dependencies_are_versioned_registry_requirements() {
+    for requirement in [
+        "rafter = \"0.0.1\"",
+        "rafter-app = \"0.0.1\"",
+        "rafter-service = \"0.0.1\"",
+    ] {
+        assert!(
+            FENCED_LOCK_MANIFEST.contains(requirement),
+            "the canonical manifest must resolve {requirement} like an external user's would"
+        );
+    }
+}
+
+#[test]
+fn no_reference_consumer_depends_on_another() {
     assert!(
         !FENCED_LOCK_MANIFEST.contains("rafter-reference-ledger"),
         "reference consumers must not share code with one another"

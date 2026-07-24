@@ -4,15 +4,26 @@
 //! The implementation and independent oracle share only the public vocabulary
 //! in this crate. Their transition code remains separate by design, and the
 //! guarded resource downstream of both knows nothing but fencing tokens.
+//!
+//! The adapter carries that model onto Rafter's published crates: a
+//! `rafter-app` replicated state machine, versioned command and result frames,
+//! and a `rafter-service` client whose queries are always linearizable. It
+//! adapts and never re-decides; the oracle stays out of its reach entirely.
 
 #![forbid(unsafe_code)]
 
+mod adapter;
 mod guarded;
 mod history;
 mod model;
 mod oracle;
 mod types;
 
+pub use adapter::{
+    decode_command, decode_result, encode_command, encode_result, unknown_outcome_reason,
+    LockAdapterError, LockClient, LockCodecError, LockHandle, LockQuery, LockQueryResult,
+    LockStateMachine, NonZeroField, QueryOutcome, SubmitOutcome,
+};
 pub use guarded::{GuardedRejection, GuardedResource, GuardedWrite};
 pub use history::{HistoryEvent, OperationId};
 pub use model::{LockService, LockServiceSnapshot, SnapshotError};

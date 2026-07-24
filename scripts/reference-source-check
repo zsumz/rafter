@@ -54,6 +54,7 @@ patched_crates=(
     rafter-crc32
     rafter-runtime
     rafter-runtime-api
+    rafter-service
     rafter-storage
 )
 
