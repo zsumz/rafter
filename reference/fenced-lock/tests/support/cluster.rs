@@ -456,7 +456,7 @@ impl NodeState {
             return;
         }
         let query = waiter.query;
-        let outcome = self.group.read(ReadRequest::Linearizable {
+        let outcome = self.group.read_outcome(ReadRequest::Linearizable {
             group_id: GROUP_ID,
             read_id,
             query,
@@ -640,10 +640,9 @@ impl NodeState {
             ProposalEvent::Rejected {
                 local_proposal_id,
                 reason,
+                leader_hint,
             } => {
-                // A rejection observed as a later lifecycle event carries no
-                // leader hint of its own; only the immediate begin does.
-                let error = write_error_from_rejection(reason.clone(), None);
+                let error = write_error_from_rejection(reason.clone(), *leader_hint);
                 self.resolve_write(*local_proposal_id, Err(error));
             }
             ProposalEvent::UnknownOutcome {
