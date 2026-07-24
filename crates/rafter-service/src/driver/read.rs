@@ -24,8 +24,8 @@ where
         let read_id = self.read_id_for_consistency(consistency)?;
         for _ in 0..self.max_drive_steps {
             let request = self.read_request(query, consistency, read_id)?;
-            let outcome = match self.primary_group_mut()?.read(request) {
-                Ok(outcome) => outcome,
+            let read = match self.primary_group_mut()?.read(request) {
+                Ok(read) => read,
                 Err(error) => {
                     if let Some(read_id) = read_id {
                         if let Some(read_error) = self.poisoned_read_error_from_primary(read_id) {
@@ -37,7 +37,10 @@ where
                     return Err(error.into());
                 }
             };
-            if let Some(receipt) = self.handle_read_outcome(outcome, read_id)? {
+            // Every other driver path routes its step report; the read path
+            // could not, because the old signature never handed one back.
+            self.route_report(read.report);
+            if let Some(receipt) = self.handle_read_outcome(read.outcome, read_id)? {
                 return Ok(receipt);
             }
             if let Err(error) = self.drain_network() {
@@ -69,10 +72,8 @@ where
                 self.publish_primary_metrics();
                 Ok(Some(QueryReceipt { result, proof }))
             }
-            ReadOutcome::Pending { peer_messages, .. } => {
-                self.network.extend(peer_messages);
-                Ok(None)
-            }
+            // Peer messages reached the network through the routed report.
+            ReadOutcome::Pending { .. } => Ok(None),
             ReadOutcome::Rejected {
                 read_id,
                 reason,

@@ -152,7 +152,7 @@ fn in_memory_driver_rejects_adopted_group_with_reserved_read_state() {
             context: Vec::new(),
         })
         .expect("scripted read starts and remains pending");
-    assert!(matches!(read, ReadOutcome::Pending { .. }));
+    assert!(matches!(read.outcome, ReadOutcome::Pending { .. }));
     assert_eq!(group.metrics().reserved_reads, 1);
 
     assert_eq!(

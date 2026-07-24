@@ -18,8 +18,8 @@ pub(crate) use rafter::{
 };
 pub(crate) use rafter_app::error::{GroupError, StateMachineOperation};
 pub(crate) use rafter_app::group::{
-    GroupFatalState, GroupInput, LeadershipTransferEvent, PoisonedWaiters, RaftGroup,
-    StepReportOptions,
+    GroupFatalState, GroupInput, GroupStepReport, LeadershipTransferEvent, PoisonedWaiters,
+    RaftGroup, ReadReport, StepReportOptions,
 };
 pub(crate) use rafter_app::membership::{MembershipChange, MembershipEvent, NodeInfo};
 pub(crate) use rafter_app::proposal::{

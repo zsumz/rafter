@@ -45,7 +45,7 @@ mod validation;
 
 pub use types::{
     GroupFatalState, GroupInput, GroupStepReport, LeadershipTransferEvent, PoisonedWaiters,
-    ProposalBatchBeginReport, ProposalBeginReport, RaftGroup, ReadBarrierBeginReport,
+    ProposalBatchBeginReport, ProposalBeginReport, RaftGroup, ReadBarrierBeginReport, ReadReport,
     StepReportOptions,
 };
 
@@ -53,5 +53,5 @@ use types::{
     report_has_proposal_lifecycle, ApplyEntryResult, CompletedQueryRead, GroupResult,
     MembershipStepContext, PendingQueryRead, PendingRead, ProposalBatchBeginReportResult,
     ProposalBeginReportResult, ProposalBeginResult, ReadBarrierBeginReportResult,
-    ReadOutcomeResult, RuntimeGroupError, StepReportResult,
+    ReadOutcomeResult, ReadReportResult, RuntimeGroupError, StepReportResult,
 };

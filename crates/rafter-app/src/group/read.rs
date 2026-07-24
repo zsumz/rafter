@@ -3,8 +3,9 @@ use super::{
     LogIndex, MembershipConfig, PendingQueryRead, PendingRead, PersistedRaftRuntime, RaftGroup,
     RaftInput, ReadBarrier, ReadBarrierBeginReport, ReadBarrierBeginReportResult,
     ReadBarrierRequest, ReadConsistency, ReadEvent, ReadId, ReadIndexCancelReason,
-    ReadIndexRejection, ReadOutcome, ReadOutcomeResult, ReadProof, ReadProofOutcome, ReadRequest,
-    ReplicatedStateMachine, StateMachineOperation, StepReportOptions, StepReportResult,
+    ReadIndexRejection, ReadOutcome, ReadOutcomeResult, ReadProof, ReadProofOutcome, ReadReport,
+    ReadReportResult, ReadRequest, ReplicatedStateMachine, StateMachineOperation,
+    StepReportOptions, StepReportResult,
 };
 
 impl<G, A, R> RaftGroup<G, A, R>
@@ -128,35 +129,48 @@ where
         self.completed_query_reads.remove(&read_id).is_some()
     }
 
-    /// Attempts a synchronous state-machine read using the requested
-    /// consistency mode.
+    /// Attempts a synchronous state-machine read using the requested consistency
+    /// mode, and returns the outcome plus the full step report generated while
+    /// serving it.
     ///
-    /// Local reads do not contact Raft, may be stale, and do not carry or
-    /// consume `ReadId`s. A local read can return
-    /// [`ReadOutcome::LocalFreshnessUnavailable`] when `min_applied_index` is
-    /// above the local applied index; that outcome does not reserve read
-    /// state. Linearizable reads use the same read-index barrier and
-    /// pending-read table as
-    /// [`RaftGroup::begin_read_barrier`]; callers that receive
-    /// [`ReadOutcome::Pending`] should route returned peer messages, continue
-    /// driving normal group steps, then retry with the same [`ReadId`],
-    /// freshness requirement, and context to consume the completed proof.
-    /// Callers that receive
-    /// [`ReadOutcome::LinearizableFreshnessUnavailable`] should also keep
-    /// driving and retry with the same local read parameters, or call
-    /// [`RaftGroup::cancel_read`] before abandoning the read. Once a
-    /// linearizable read-index operation is submitted, that `ReadId` is
-    /// consumed even if the caller cancels or drops local helper state.
-    /// Rafter does not compare opaque query values. Lease reads are rejected
-    /// until lease support is explicitly configured in this layer.
+    /// Local reads do not contact Raft, may be stale, and do not carry or consume
+    /// `ReadId`s. A local read can return [`ReadOutcome::LocalFreshnessUnavailable`]
+    /// when `min_applied_index` is above the local applied index; that outcome does
+    /// not reserve read state. Linearizable reads use the same read-index barrier
+    /// and pending-read table as [`RaftGroup::begin_read_barrier`]; callers that
+    /// receive [`ReadOutcome::Pending`] should route the report's peer messages,
+    /// continue driving normal group steps, then retry with the same [`ReadId`],
+    /// freshness requirement, and context to consume the completed proof. Callers
+    /// that receive [`ReadOutcome::LinearizableFreshnessUnavailable`] should also
+    /// keep driving and retry with the same local read parameters, or call
+    /// [`RaftGroup::cancel_read`] before abandoning the read. Once a linearizable
+    /// read-index operation is submitted, that `ReadId` is consumed even if the
+    /// caller cancels or drops local helper state. Rafter does not compare opaque
+    /// query values. Lease reads are rejected until lease support is explicitly
+    /// configured in this layer.
+    ///
+    /// The returned report is the complete record of the step this call ran: peer
+    /// messages the caller must route, committed applies, proposal events, read
+    /// events belonging to other barriers, snapshot events, membership events,
+    /// leadership-transfer events, and the metrics snapshot. Those effects are
+    /// produced whether this read completes, stalls, is rejected, or is canceled;
+    /// the outcome value alone never carries them. Reads that consume an already
+    /// completed proof, and every [`ReadRequest::Local`] read, do not step the
+    /// runtime and return an empty report for this group.
+    ///
+    /// A terminal read event clears local waiter state, so a caller that keeps
+    /// retrying after observing [`ReadEvent::Rejected`] or [`ReadEvent::Canceled`]
+    /// in the report receives [`GroupError::NonMonotonicReadId`] rather than a
+    /// second statement of the rejection. Read the report's read events before
+    /// retrying.
     ///
     /// # Errors
     ///
     /// Returns a group error when the group is poisoned, the request targets a
-    /// different group, the runtime rejects the underlying read-index request,
-    /// the state machine cannot report its applied index, or the state-machine
-    /// read fails.
-    pub fn read(&mut self, request: ReadRequest<G, A::Query>) -> ReadOutcomeResult<G, A, R> {
+    /// different group, the runtime rejects the underlying read-index request, the
+    /// state machine cannot report its applied index, or the state-machine read
+    /// fails.
+    pub fn read(&mut self, request: ReadRequest<G, A::Query>) -> ReadReportResult<G, A, R> {
         self.reject_if_poisoned()?;
         match request {
             ReadRequest::Local {
@@ -194,6 +208,31 @@ where
                 })
             }
         }
+    }
+
+    /// Attempts a synchronous state-machine read and returns only its immediate
+    /// outcome.
+    ///
+    /// This outcome-only helper intentionally discards the co-emitted step report.
+    /// It is lossless for [`ReadRequest::Local`], which never steps the runtime,
+    /// and for a retry that consumes an already completed proof. For a
+    /// [`ReadRequest::Linearizable`] read that starts a barrier it discards peer
+    /// messages, applies, proposal events, other barriers' read events, snapshot
+    /// events, membership events, leadership-transfer events, and metrics emitted
+    /// while the barrier started. A discarded [`ReadEvent::Granted`] destroys the
+    /// only copy of that barrier's proof, and a discarded snapshot chunk directive
+    /// is a lost protocol effect the caller was responsible for delivering. Use
+    /// [`RaftGroup::read`] unless this group holds no other waiters and the caller
+    /// routes no peer traffic.
+    ///
+    /// # Errors
+    ///
+    /// As [`RaftGroup::read`].
+    pub fn read_outcome(
+        &mut self,
+        request: ReadRequest<G, A::Query>,
+    ) -> ReadOutcomeResult<G, A, R> {
+        Ok(self.read(request)?.outcome)
     }
     pub(super) fn record_rejected_read(
         &mut self,
@@ -297,7 +336,7 @@ where
         &self,
         query: A::Query,
         min_applied_index: Option<LogIndex>,
-    ) -> ReadOutcomeResult<G, A, R> {
+    ) -> ReadReportResult<G, A, R> {
         let local_applied_index =
             self.app
                 .applied_index()
@@ -310,10 +349,12 @@ where
             min_applied_index.unwrap_or(local_applied_index),
         );
         if local_applied_index < required_applied_index {
-            return Ok(ReadOutcome::LocalFreshnessUnavailable {
-                required_applied_index,
-                local_applied_index,
-            });
+            return Ok(
+                self.unstepped_read_report(ReadOutcome::LocalFreshnessUnavailable {
+                    required_applied_index,
+                    local_applied_index,
+                }),
+            );
         }
 
         let barrier = ReadBarrier {
@@ -321,10 +362,10 @@ where
             local_applied_index,
         };
         let result = self.read_state_machine(query, barrier)?;
-        Ok(ReadOutcome::Ready {
+        Ok(self.unstepped_read_report(ReadOutcome::Ready {
             result,
             proof: None,
-        })
+        }))
     }
 
     pub(super) fn read_linearizable(
@@ -333,7 +374,7 @@ where
         query: A::Query,
         min_applied_index: Option<LogIndex>,
         context: Vec<u8>,
-    ) -> ReadOutcomeResult<G, A, R> {
+    ) -> ReadReportResult<G, A, R> {
         if let Some(completed) = self.completed_query_reads.get(&read_id) {
             if completed.min_applied_index != min_applied_index || completed.context != context {
                 return Err(GroupError::DuplicateReadId { read_id });
@@ -342,7 +383,8 @@ where
                 return Err(GroupError::DuplicateReadId { read_id });
             };
             self.pending_query_reads.remove(&read_id);
-            return self.read_with_proof(query, completed.proof);
+            let outcome = self.read_with_proof(query, completed.proof)?;
+            return Ok(self.unstepped_read_report(outcome));
         }
 
         if let Some(pending_query) = self.pending_query_reads.get(&read_id) {
@@ -351,7 +393,8 @@ where
             {
                 return Err(GroupError::DuplicateReadId { read_id });
             }
-            return self.try_complete_pending_query_read(read_id, query);
+            let outcome = self.try_complete_pending_query_read(read_id, query)?;
+            return Ok(self.unstepped_read_report(outcome));
         }
 
         let request = ReadBarrierRequest {
@@ -360,9 +403,12 @@ where
             min_applied_index,
             context: context.clone(),
         };
-        let outcome = self.begin_read_barrier(request)?.outcome;
+        let ReadBarrierBeginReport {
+            outcome: proof_outcome,
+            report,
+        } = self.begin_read_barrier(request)?;
         if matches!(
-            outcome,
+            proof_outcome,
             ReadProofOutcome::Pending { .. } | ReadProofOutcome::FreshnessUnavailable { .. }
         ) {
             self.pending_query_reads.insert(
@@ -373,7 +419,21 @@ where
                 },
             );
         }
-        self.read_outcome_from_proof_outcome(read_id, query, outcome)
+        let outcome = self.read_outcome_from_proof_outcome(read_id, query, proof_outcome)?;
+        Ok(ReadReport { outcome, report })
+    }
+
+    /// Pairs an outcome with an empty report for a read that never stepped the
+    /// runtime, so a caller routes the report unconditionally instead of
+    /// branching on whether this particular read touched Raft.
+    fn unstepped_read_report(
+        &self,
+        outcome: ReadOutcome<G, A::QueryResult>,
+    ) -> ReadReport<G, A::QueryResult, A::CommandResult> {
+        ReadReport {
+            outcome,
+            report: GroupStepReport::new(self.group_id.clone()),
+        }
     }
 
     pub(super) fn read_id_is_active(&self, read_id: ReadId) -> bool {

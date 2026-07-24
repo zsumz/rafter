@@ -225,6 +225,9 @@ impl ReplicatedStateMachine for KvStateMachine {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ScriptedReadMode {
     Grant(LogIndex),
+    /// Grants a read index the state machine has not reached *and* emits a peer
+    /// message in the same step, which no non-`Pending` read outcome can carry.
+    GrantWithPeerTraffic(LogIndex),
     Pending,
     Reject,
     Cancel,
@@ -257,7 +260,7 @@ impl PersistedRaftRuntime for ScriptedReadRuntime {
 
     fn commit_index(&self) -> LogIndex {
         match self.mode {
-            ScriptedReadMode::Grant(index) => index,
+            ScriptedReadMode::Grant(index) | ScriptedReadMode::GrantWithPeerTraffic(index) => index,
             ScriptedReadMode::Pending | ScriptedReadMode::Reject | ScriptedReadMode::Cancel => {
                 self.metric_index
             }
@@ -297,6 +300,16 @@ impl PersistedRaftRuntime for ScriptedReadRuntime {
                     read_index,
                 }])
             }
+            (
+                ScriptedReadMode::GrantWithPeerTraffic(read_index),
+                RaftInput::ReadIndex { read_id },
+            ) => Ok(vec![
+                RaftOutput::ReadIndexGranted {
+                    read_id,
+                    read_index,
+                },
+                missing_node_message(),
+            ]),
             (ScriptedReadMode::Reject, RaftInput::ReadIndex { read_id }) => {
                 self.metric_index = LogIndex(1);
                 Ok(vec![RaftOutput::ReadIndexRejected {

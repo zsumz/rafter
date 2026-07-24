@@ -68,6 +68,15 @@ pub(super) type ReadBarrierBeginReportResult<G, A, R> =
     GroupResult<A, R, ReadBarrierBeginReport<G, <A as ReplicatedStateMachine>::CommandResult>>;
 pub(super) type ReadOutcomeResult<G, A, R> =
     GroupResult<A, R, ReadOutcome<G, <A as ReplicatedStateMachine>::QueryResult>>;
+pub(super) type ReadReportResult<G, A, R> = GroupResult<
+    A,
+    R,
+    ReadReport<
+        G,
+        <A as ReplicatedStateMachine>::QueryResult,
+        <A as ReplicatedStateMachine>::CommandResult,
+    >,
+>;
 pub(super) type ApplyEntryResult<A, R> =
     GroupResult<A, R, ApplyEntry<<A as ReplicatedStateMachine>::Command>>;
 
@@ -180,6 +189,17 @@ pub struct ProposalBatchBeginReport<G, R> {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReadBarrierBeginReport<G, R> {
     pub outcome: ReadProofOutcome<G>,
+    pub report: GroupStepReport<G, R>,
+}
+
+/// Full-fidelity result of a state-machine read.
+///
+/// This carries three type parameters where its siblings carry two, because a
+/// query read is the only group operation whose outcome type differs from the
+/// report's result type.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReadReport<G, Q, R> {
+    pub outcome: ReadOutcome<G, Q>,
     pub report: GroupStepReport<G, R>,
 }
 

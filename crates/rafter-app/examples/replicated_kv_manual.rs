@@ -15,7 +15,7 @@
 use std::collections::{BTreeMap, VecDeque};
 
 use rafter::{LocalProposalId, LogIndex, NodeConfig, NodeId, ReadId, Role};
-use rafter_app::group::{GroupInput, GroupStepReport, RaftGroup};
+use rafter_app::group::{GroupInput, GroupStepReport, RaftGroup, ReadReport};
 use rafter_app::proposal::{Proposal, ProposalEvent};
 use rafter_app::read::{ReadOutcome, ReadRequest};
 use rafter_app::state_machine::{
@@ -86,11 +86,12 @@ fn main() {
 
     reports.clear();
     let read_id = ReadId(200);
-    let mut read = record_read_outcome(
+    let mut read = record_read(
         group_mut(&mut groups, NodeId(1))
             .read(read_request(read_id))
             .expect("linearizable read starts"),
         &mut network,
+        &mut reports,
     );
     dispatch_all(&mut groups, &mut network, &mut reports);
     for _ in 0..8 {
@@ -102,11 +103,12 @@ fn main() {
             .expect("leader tick succeeds");
         record_report(report, &mut network, &mut reports);
         dispatch_all(&mut groups, &mut network, &mut reports);
-        read = record_read_outcome(
+        read = record_read(
             group_mut(&mut groups, NodeId(1))
                 .read(read_request(read_id))
                 .expect("linearizable read completes"),
             &mut network,
+            &mut reports,
         );
         dispatch_all(&mut groups, &mut network, &mut reports);
     }
@@ -214,17 +216,21 @@ fn read_request(read_id: ReadId) -> ReadRequest<ShardGroupId, KvQuery> {
     }
 }
 
-fn record_read_outcome(
-    outcome: ReadOutcome<ShardGroupId, Option<String>>,
+/// Routes everything a read's step emitted, then classifies the outcome.
+///
+/// The report is the caller's copy of the step's protocol effects, so it is
+/// recorded exactly like any other step's — the outcome alone would leave a
+/// stalled or rejected read's peer traffic undelivered.
+fn record_read(
+    read: ReadReport<ShardGroupId, Option<String>, KvCommandResult>,
     network: &mut VecDeque<PeerEnvelope<ShardGroupId>>,
+    reports: &mut Vec<KvReport>,
 ) -> ReadPoll {
-    match outcome {
+    record_report(read.report, network, reports);
+    match read.outcome {
         ReadOutcome::Ready { result, .. } => ReadPoll::Ready { result },
-        ReadOutcome::Pending { peer_messages, .. } => {
-            network.extend(peer_messages);
-            ReadPoll::Pending
-        }
-        ReadOutcome::LinearizableFreshnessUnavailable { .. }
+        ReadOutcome::Pending { .. }
+        | ReadOutcome::LinearizableFreshnessUnavailable { .. }
         | ReadOutcome::LocalFreshnessUnavailable { .. } => ReadPoll::Pending,
         ReadOutcome::Rejected { reason, .. } => {
             panic!("linearizable read rejected: {reason:?}");

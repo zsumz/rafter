@@ -22,7 +22,8 @@ fn begin_read_barrier_rejects_helper_owned_pending_query_read_id() {
             min_applied_index: Some(LogIndex(3)),
             context: b"helper".to_vec(),
         })
-        .expect("helper read starts");
+        .expect("helper read starts")
+        .outcome;
     assert_eq!(
         first,
         ReadOutcome::Pending {
@@ -68,7 +69,8 @@ fn linearizable_read_retry_rejects_changed_pending_parameters() {
             min_applied_index: None,
             context: b"same".to_vec(),
         })
-        .expect("linearizable read starts");
+        .expect("linearizable read starts")
+        .outcome;
     assert_eq!(
         first,
         ReadOutcome::Pending {
@@ -124,7 +126,8 @@ fn linearizable_read_retry_rejects_changed_pending_parameters() {
             min_applied_index: None,
             context: b"same".to_vec(),
         })
-        .expect("same parameters remain retryable");
+        .expect("same parameters remain retryable")
+        .outcome;
     assert_eq!(
         retry,
         ReadOutcome::Pending {
@@ -151,7 +154,8 @@ fn changed_retry_does_not_consume_completed_query_read() {
             ReadConsistency::Linearizable,
             None,
         ))
-        .expect("linearizable read starts");
+        .expect("linearizable read starts")
+        .outcome;
     assert_eq!(
         first,
         ReadOutcome::Pending {
@@ -193,7 +197,8 @@ fn changed_retry_does_not_consume_completed_query_read() {
             ReadConsistency::Linearizable,
             None,
         ))
-        .expect("original parameters consume completed proof");
+        .expect("original parameters consume completed proof")
+        .outcome;
     assert!(matches!(
         completed,
         ReadOutcome::Ready {
@@ -226,7 +231,8 @@ fn begin_read_barrier_rejects_completed_helper_read_without_consuming_proof() {
             ReadConsistency::Linearizable,
             None,
         ))
-        .expect("linearizable read starts");
+        .expect("linearizable read starts")
+        .outcome;
     assert_eq!(
         first,
         ReadOutcome::Pending {
@@ -269,7 +275,8 @@ fn begin_read_barrier_rejects_completed_helper_read_without_consuming_proof() {
             ReadConsistency::Linearizable,
             None,
         ))
-        .expect("original helper retry still consumes completed proof");
+        .expect("original helper retry still consumes completed proof")
+        .outcome;
     assert!(matches!(
         completed,
         ReadOutcome::Ready {
@@ -305,7 +312,8 @@ fn freshness_unavailable_helper_read_reserves_until_cancel_read() {
             ReadConsistency::Linearizable,
             None,
         ))
-        .expect("linearizable read starts and observes freshness gap");
+        .expect("linearizable read starts and observes freshness gap")
+        .outcome;
     assert_eq!(
         outcome,
         ReadOutcome::LinearizableFreshnessUnavailable {
@@ -397,7 +405,8 @@ fn canceled_linearizable_read_helper_clears_query_state() {
             ReadConsistency::Linearizable,
             None,
         ))
-        .expect("linearizable read starts");
+        .expect("linearizable read starts")
+        .outcome;
     assert_eq!(
         first,
         ReadOutcome::Pending {
@@ -439,7 +448,8 @@ fn canceled_linearizable_read_helper_clears_query_state() {
             ReadConsistency::Linearizable,
             None,
         ))
-        .expect("higher read id starts cleanly after cancellation");
+        .expect("higher read id starts cleanly after cancellation")
+        .outcome;
     assert_eq!(
         retry,
         ReadOutcome::Pending {
@@ -471,7 +481,8 @@ fn cancel_read_drops_pending_helper_state_and_ignores_late_cancellation() {
             ReadConsistency::Linearizable,
             None,
         ))
-        .expect("linearizable read starts");
+        .expect("linearizable read starts")
+        .outcome;
     assert_eq!(
         first,
         ReadOutcome::Pending {
@@ -511,7 +522,8 @@ fn drop_completed_read_removes_cached_proof_and_allows_fresh_retry() {
             ReadConsistency::Linearizable,
             None,
         ))
-        .expect("linearizable read starts");
+        .expect("linearizable read starts")
+        .outcome;
     assert_eq!(
         first,
         ReadOutcome::Pending {
@@ -548,7 +560,8 @@ fn drop_completed_read_removes_cached_proof_and_allows_fresh_retry() {
             ReadConsistency::Linearizable,
             None,
         ))
-        .expect("higher read id may start after dropping completed proof");
+        .expect("higher read id may start after dropping completed proof")
+        .outcome;
     assert_eq!(
         retry,
         ReadOutcome::Pending {

@@ -126,7 +126,8 @@ fn local_read_helper_returns_state_machine_result_without_raft_step() {
 
     let outcome = group
         .read(read_helper_request(read_id, ReadConsistency::Local, None))
-        .expect("local read succeeds");
+        .expect("local read succeeds")
+        .outcome;
 
     assert_eq!(
         outcome,
@@ -157,7 +158,8 @@ fn local_read_helper_reports_requested_freshness_gap() {
             ReadConsistency::Local,
             Some(LogIndex(5)),
         ))
-        .expect("local read reports freshness");
+        .expect("local read reports freshness")
+        .outcome;
 
     assert_eq!(
         outcome,
@@ -223,7 +225,8 @@ fn linearizable_read_helper_returns_result_when_barrier_grants() {
             ReadConsistency::Linearizable,
             Some(LogIndex(5)),
         ))
-        .expect("linearizable read succeeds");
+        .expect("linearizable read succeeds")
+        .outcome;
 
     oracle_assert!(matches!(
         outcome,
@@ -259,7 +262,8 @@ fn pending_linearizable_read_helper_completes_after_normal_progress() {
             ReadConsistency::Linearizable,
             None,
         ))
-        .expect("linearizable read starts");
+        .expect("linearizable read starts")
+        .outcome;
     assert_eq!(
         first,
         ReadOutcome::Pending {
@@ -276,7 +280,8 @@ fn pending_linearizable_read_helper_completes_after_normal_progress() {
             ReadConsistency::Linearizable,
             None,
         ))
-        .expect("pending linearizable read can be retried");
+        .expect("pending linearizable read can be retried")
+        .outcome;
     assert_eq!(
         retry,
         ReadOutcome::Pending {
@@ -311,7 +316,8 @@ fn pending_linearizable_read_helper_completes_after_normal_progress() {
             ReadConsistency::Linearizable,
             None,
         ))
-        .expect("completed proof drives state-machine read");
+        .expect("completed proof drives state-machine read")
+        .outcome;
     assert!(matches!(
         completed,
         ReadOutcome::Ready {
@@ -518,4 +524,307 @@ fn read_index_canceled_consumes_read_id() {
         .begin_read_barrier_outcome(read_request(read_id, None))
         .expect_err("canceled read id remains consumed");
     assert_non_monotonic_read_id(&reuse, read_id, read_id);
+}
+
+/// The effect `ReadOutcome::Pending` structurally cannot carry.
+///
+/// A read-index broadcast reaches snapshot streaming for any follower behind the
+/// snapshot boundary, and an embedder with its own runtime must deliver that
+/// directive. The outcome value has nowhere to put it.
+#[test]
+fn read_report_carries_snapshot_chunk_directives_emitted_by_the_barrier_step() {
+    let read_id = ReadId(80);
+    let snapshot = test_snapshot(11);
+    let send = snapshot_chunk_send(&snapshot);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([vec![RaftOutput::SendSnapshotChunk {
+            to: NodeId(2),
+            chunk: send.clone(),
+        }]]),
+    );
+
+    let read = group
+        .read(read_helper_request(
+            read_id,
+            ReadConsistency::Linearizable,
+            None,
+        ))
+        .expect("linearizable read starts");
+
+    assert!(matches!(read.outcome, ReadOutcome::Pending { .. }));
+    assert_eq!(
+        read.report.snapshot_events,
+        vec![SnapshotEvent::SendChunk {
+            group_id: 7,
+            to: NodeId(2),
+            chunk: send,
+        }]
+    );
+}
+
+/// Every step resolves every pending barrier whose read index is satisfied, so
+/// one barrier's proof can be emitted inside another barrier's read. The proof
+/// is the only copy: resolution removes the barrier from the pending table.
+#[test]
+fn read_report_carries_another_barriers_granted_event() {
+    let stalled_id = ReadId(81);
+    let read_id = ReadId(82);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine {
+            applied_index: LogIndex(2),
+            ..RecordingStateMachine::default()
+        },
+        ScriptedRuntime::with_step_outputs([
+            vec![RaftOutput::ReadIndexGranted {
+                read_id: stalled_id,
+                read_index: LogIndex(4),
+            }],
+            Vec::new(),
+        ]),
+    );
+
+    // Barrier A is granted a read index its state machine has not reached.
+    let stalled = group
+        .begin_read_barrier_outcome(read_request(stalled_id, None))
+        .expect("barrier A starts");
+    assert!(matches!(
+        stalled,
+        ReadProofOutcome::FreshnessUnavailable { .. }
+    ));
+
+    // The documented maintenance hook advances the applied floor behind the
+    // group, which is what makes A resolvable during an unrelated step.
+    group.state_machine_mut().applied_index = LogIndex(4);
+
+    let read = group
+        .read(read_helper_request(
+            read_id,
+            ReadConsistency::Linearizable,
+            None,
+        ))
+        .expect("barrier B starts");
+
+    assert!(read.report.read_events.iter().any(|event| matches!(
+        event,
+        ReadEvent::Granted {
+            read_id: granted_id,
+            proof,
+        } if *granted_id == stalled_id && proof.read_index == LogIndex(4)
+    )));
+    assert_eq!(group.metrics().pending_reads, 1);
+}
+
+/// The documented footgun, pinned: the outcome-only form destroys the other
+/// barrier's proof, and no later step re-emits it because resolution already
+/// removed that barrier from the pending table.
+#[test]
+fn read_outcome_discards_co_emitted_read_events() {
+    let stalled_id = ReadId(83);
+    let read_id = ReadId(84);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine {
+            applied_index: LogIndex(2),
+            ..RecordingStateMachine::default()
+        },
+        ScriptedRuntime::with_step_outputs([
+            vec![RaftOutput::ReadIndexGranted {
+                read_id: stalled_id,
+                read_index: LogIndex(4),
+            }],
+            Vec::new(),
+            Vec::new(),
+        ]),
+    );
+    let _ = group
+        .begin_read_barrier_outcome(read_request(stalled_id, None))
+        .expect("barrier A starts");
+    group.state_machine_mut().applied_index = LogIndex(4);
+
+    let outcome = group
+        .read_outcome(read_helper_request(
+            read_id,
+            ReadConsistency::Linearizable,
+            None,
+        ))
+        .expect("barrier B starts");
+
+    assert!(matches!(outcome, ReadOutcome::Pending { .. }));
+    // A is gone from the pending table and its proof was never handed out.
+    assert_eq!(group.metrics().pending_reads, 1);
+    let later = group
+        .step(GroupInput::Tick)
+        .expect("driving the group further cannot recover the proof");
+    assert!(later.read_events.is_empty());
+    assert!(!group.cancel_read(stalled_id));
+}
+
+/// A local read never steps the runtime, so its report is empty for this group
+/// — but it is still a report, so a caller routes it unconditionally.
+#[test]
+fn read_report_is_empty_for_local_reads() {
+    let read_id = ReadId(85);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine {
+            applied_index: LogIndex(5),
+            ..RecordingStateMachine::default()
+        },
+        ScriptedRuntime::with_step_outputs([]),
+    );
+
+    let read = group
+        .read(read_helper_request(read_id, ReadConsistency::Local, None))
+        .expect("local read succeeds");
+
+    assert_empty_report(&read.report);
+    assert!(group.runtime().step_inputs.is_empty());
+}
+
+/// A retry that consumes an already completed proof does not step either, so
+/// the outcome-only form is lossless for exactly this case.
+#[test]
+fn read_report_is_empty_when_consuming_a_completed_proof() {
+    let read_id = ReadId(86);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine {
+            applied_index: LogIndex(2),
+            ..RecordingStateMachine::default()
+        },
+        ScriptedRuntime::with_step_outputs([
+            Vec::new(),
+            vec![RaftOutput::ReadIndexGranted {
+                read_id,
+                read_index: LogIndex(4),
+            }],
+        ]),
+    );
+    let first = group
+        .read(read_helper_request(
+            read_id,
+            ReadConsistency::Linearizable,
+            None,
+        ))
+        .expect("linearizable read starts");
+    assert!(matches!(first.outcome, ReadOutcome::Pending { .. }));
+    group.state_machine_mut().applied_index = LogIndex(4);
+    let granted = group
+        .step(GroupInput::Tick)
+        .expect("the barrier completes on a later step");
+    assert!(granted
+        .read_events
+        .iter()
+        .any(|event| matches!(event, ReadEvent::Granted { .. })));
+    let steps_before_retry = group.runtime().step_inputs.len();
+
+    let retry = group
+        .read(read_helper_request(
+            read_id,
+            ReadConsistency::Linearizable,
+            None,
+        ))
+        .expect("the retry consumes the completed proof");
+
+    assert!(matches!(retry.outcome, ReadOutcome::Ready { .. }));
+    assert_empty_report(&retry.report);
+    assert_eq!(group.runtime().step_inputs.len(), steps_before_retry);
+}
+
+/// Negative: a misrouted request is refused before anything runs, so there is
+/// no report to route and no read state to clean up.
+#[test]
+fn read_rejects_a_wrong_group_request_without_a_report() {
+    let mut group = scripted_group(RecordingStateMachine::default());
+
+    let error = group
+        .read(ReadRequest::Linearizable {
+            group_id: 9,
+            read_id: ReadId(87),
+            query: b"query".to_vec(),
+            min_applied_index: None,
+            context: Vec::new(),
+        })
+        .expect_err("a request for another group is refused");
+
+    assert!(matches!(error, GroupError::WrongGroup));
+    assert!(group.runtime().step_inputs.is_empty());
+    assert_eq!(group.read_id_watermark(), None);
+}
+
+/// Negative: poison is checked before anything runs, so a poisoned group
+/// produces no report on this path either.
+#[test]
+fn read_rejects_a_poisoned_group_without_a_report() {
+    let mut group = scripted_group(RecordingStateMachine {
+        apply_mode: ApplyMode::Fail,
+        ..RecordingStateMachine::default()
+    });
+    let _ = group
+        .apply_raft_outputs(vec![apply_output(2, b"bad", Some(LocalProposalId(88)))])
+        .expect_err("apply failure poisons the group");
+    let steps_before = group.runtime().step_inputs.len();
+
+    let error = group
+        .read(read_helper_request(
+            ReadId(88),
+            ReadConsistency::Linearizable,
+            None,
+        ))
+        .expect_err("a poisoned group refuses reads");
+
+    assert!(matches!(error, GroupError::Poisoned { .. }));
+    assert_eq!(group.runtime().step_inputs.len(), steps_before);
+}
+
+/// Negative: a terminal read event clears local waiter state, so retrying after
+/// one is a non-monotonic ID error rather than a second statement of the
+/// rejection. The report is where a caller learns to stop.
+#[test]
+fn read_retry_after_a_terminal_read_event_is_non_monotonic() {
+    let read_id = ReadId(89);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine::default(),
+        ScriptedRuntime::with_step_outputs([vec![RaftOutput::ReadIndexRejected {
+            read_id,
+            reason: ReadIndexRejection::NotLeader {
+                role: Role::Follower,
+                term: Term(2),
+            },
+        }]]),
+    );
+
+    let read = group
+        .read(read_helper_request(
+            read_id,
+            ReadConsistency::Linearizable,
+            None,
+        ))
+        .expect("the rejection is reported as an outcome");
+    assert!(matches!(read.outcome, ReadOutcome::Rejected { .. }));
+    assert!(read
+        .report
+        .read_events
+        .iter()
+        .any(|event| matches!(event, ReadEvent::Rejected { .. })));
+
+    let retry = group
+        .read(read_helper_request(
+            read_id,
+            ReadConsistency::Linearizable,
+            None,
+        ))
+        .expect_err("a rejected read id stays consumed");
+
+    assert_non_monotonic_read_id(&retry, read_id, read_id);
+}
+
+fn assert_empty_report(report: &GroupStepReport<u64, Vec<u8>>) {
+    assert_eq!(report.group_id, 7);
+    assert!(report.peer_messages.is_empty());
+    assert!(report.applied.is_empty());
+    assert!(report.proposal_events.is_empty());
+    assert!(report.read_events.is_empty());
+    assert!(report.leadership_transfer_events.is_empty());
+    assert!(report.snapshot_events.is_empty());
+    assert!(report.membership_events.is_empty());
+    assert_eq!(report.metrics, None);
 }

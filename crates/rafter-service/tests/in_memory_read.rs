@@ -97,6 +97,31 @@ fn in_memory_driver_cancels_freshness_unavailable_linearizable_reads() {
     }
 }
 
+/// The managed read path routes its step report like every other driver path.
+///
+/// This barrier step grants a read index the state machine has not reached and
+/// emits a peer message in the same step. The outcome is
+/// `LinearizableFreshnessUnavailable`, which carries no peer messages, so the
+/// old signature dropped that message and the driver abandoned the read as
+/// though nothing were in flight. Now the message reaches the network and the
+/// driver keeps driving, which the unroutable destination makes visible.
+#[test]
+fn managed_read_routes_every_effect_the_barrier_step_emitted() {
+    let driver = scripted_read_driver(ScriptedReadMode::GrantWithPeerTraffic(LogIndex(5)));
+    let handle = driver.handle();
+
+    let error = block_on(handle.read("missing".to_owned(), ReadConsistency::Linearizable))
+        .expect_err("the routed peer message has no destination in this fixture");
+
+    assert!(
+        matches!(
+            &error,
+            ReadError::Transport { message } if message.contains("missing node")
+        ),
+        "the read step's peer message must reach the network, got {error:?}"
+    );
+}
+
 #[test]
 fn in_memory_driver_cancels_stalled_linearizable_reads() {
     let driver = scripted_read_driver(ScriptedReadMode::Pending);
