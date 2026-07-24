@@ -1,4 +1,5 @@
 /target
+/reference/target
 /crates/rafter-invariants/target/
 __pycache__/
 *.pyc

@@ -21,6 +21,8 @@
   <span> · </span>
   <a href="#crates">Crates</a>
   <span> · </span>
+  <a href="#reference-consumers">Reference Consumers</a>
+  <span> · </span>
   <a href="#testing">Testing</a>
   <span> · </span>
   <a href="#benchmarks">Benchmarks</a>
@@ -90,6 +92,15 @@ for output in node.step(Input::Tick) {
 | Async managed handle | [`rafter-service`](./crates/rafter-service/README.md) |
 | Many Raft groups | [`rafter-multiraft`](./crates/rafter-multiraft/README.md) |
 | Simulation | [`rafter-sim`](./crates/rafter-sim/README.md) |
+
+## Reference Consumers
+
+Rafter's 1.0 plan includes three independent acceptance systems: a replicated
+ledger, a fenced lock service, and a sharded counter service. They prove
+application durability, linearizable authority, and managed multi-group
+scheduling without moving product policy into Rafter. Their contracts,
+isolation rules, verification lanes, and delivery order live in
+[`docs/reference-consumers.md`](./docs/reference-consumers.md).
 
 ## Testing
 

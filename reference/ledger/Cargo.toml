@@ -1,0 +1,13 @@
+[package]
+name = "rafter-reference-ledger"
+version = "0.0.0"
+description = "Independent ledger acceptance system for Rafter's public application surface."
+readme = "CONTRACT.md"
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+publish = false
+
+[lints]
+workspace = true

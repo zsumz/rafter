@@ -16,6 +16,7 @@ members = [
     "crates/rafter-maelstrom",
     "crates/rafter-transport-tcp-insecure",
 ]
+exclude = ["reference"]
 resolver = "2"
 
 [workspace.package]
