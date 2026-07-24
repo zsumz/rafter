@@ -25,7 +25,7 @@ fn file_snapshot_store_reopens_pending_snapshot_transfer() {
 
     assert_eq!(
         reopened.current_pending_snapshot_transfer(),
-        Some(&pending_transfer(22, 64))
+        Some(pending_transfer(22, 64))
     );
     remove_test_dir(directory);
 }
@@ -52,13 +52,13 @@ fn file_snapshot_store_extends_pending_snapshot_body() {
     );
     assert_eq!(
         store.current_pending_snapshot_transfer(),
-        Some(&pending_transfer(22, 64))
+        Some(pending_transfer(22, 64))
     );
     assert_eq!(
         FileRaftSnapshotStore::open(&directory)
             .expect("store reopens")
             .current_pending_snapshot_transfer(),
-        Some(&pending_transfer(22, 64))
+        Some(pending_transfer(22, 64))
     );
     remove_test_dir(directory);
 }
@@ -81,13 +81,13 @@ fn file_snapshot_store_restarts_staging_on_offset_zero_chunk() {
     );
     assert_eq!(
         store.current_pending_snapshot_transfer(),
-        Some(&pending_transfer(2, 64))
+        Some(pending_transfer(2, 64))
     );
     assert_eq!(
         FileRaftSnapshotStore::open(&directory)
             .expect("store reopens")
             .current_pending_snapshot_transfer(),
-        Some(&pending_transfer(2, 64))
+        Some(pending_transfer(2, 64))
     );
     remove_test_dir(directory);
 }
@@ -125,7 +125,7 @@ fn file_snapshot_store_rejects_continuation_chunk_with_offset_gap() {
     );
     assert_eq!(
         store.current_pending_snapshot_transfer(),
-        Some(&pending_transfer(7, 64))
+        Some(pending_transfer(7, 64))
     );
     remove_test_dir(directory);
 }
@@ -229,7 +229,7 @@ fn file_snapshot_store_promotes_staged_transfer_resumed_after_reopen() {
     let mut resumed = FileRaftSnapshotStore::open(&directory).expect("store reopens");
     oracle_assert_eq!(
         resumed.current_pending_snapshot_transfer(),
-        Some(&pending_transfer_for_payload(4, payload))
+        Some(pending_transfer_for_payload(4, payload))
     );
     resumed
         .stage_snapshot_chunk(&staged_chunk_for_payload(4, &payload[4..], payload))
@@ -240,7 +240,7 @@ fn file_snapshot_store_promotes_staged_transfer_resumed_after_reopen() {
     let mut store = FileRaftSnapshotStore::open(&directory).expect("store reopens again");
     oracle_assert_eq!(
         store.current_pending_snapshot_transfer(),
-        Some(&pending_transfer_for_payload(total, payload))
+        Some(pending_transfer_for_payload(total, payload))
     );
     store
         .promote_staged_snapshot(&rafter::RaftSnapshot::from_payload(
@@ -319,7 +319,7 @@ fn file_snapshot_store_rejects_promotion_of_incomplete_staged_transfer() {
     );
     assert_eq!(
         store.current_pending_snapshot_transfer(),
-        Some(&pending_transfer(22, 64))
+        Some(pending_transfer(22, 64))
     );
     remove_test_dir(directory);
 }
@@ -352,7 +352,7 @@ fn in_memory_snapshot_store_stages_and_promotes_snapshot_transfer() {
         .expect("first chunk stages");
     assert_eq!(
         store.current_pending_snapshot_transfer(),
-        Some(&pending_transfer_for_payload(9, payload))
+        Some(pending_transfer_for_payload(9, payload))
     );
     assert_eq!(
         store.stage_snapshot_chunk(&staged_chunk_for_payload(11, b"gap", payload)),
@@ -380,6 +380,83 @@ fn in_memory_snapshot_store_stages_and_promotes_snapshot_transfer() {
         })
     );
     assert_eq!(store.current_pending_snapshot_transfer(), None);
+}
+
+/// `None` means "nothing is staged", in both stores and across a reopen.
+///
+/// The owned read makes it possible to satisfy the signature by handing back a
+/// copy of something. Nothing staged must still read as nothing staged: an
+/// implementation that answered from a stale copy would leave the runtime's
+/// open-time repair resuming a transfer the medium does not hold.
+#[test]
+fn an_empty_staging_area_reports_none() {
+    let directory = test_store_dir("pending-empty-reports-none");
+    let memory = InMemoryRaftSnapshotStore::new();
+    let mut file = FileRaftSnapshotStore::open(&directory).expect("store opens");
+
+    assert_eq!(memory.current_pending_snapshot_transfer(), None);
+    assert_eq!(file.current_pending_snapshot_transfer(), None);
+
+    // Clearing an already-empty staging area is not a way to acquire one.
+    file.clear_pending_snapshot_transfer()
+        .expect("clearing empty staging succeeds");
+    assert_eq!(file.current_pending_snapshot_transfer(), None);
+    assert_eq!(
+        FileRaftSnapshotStore::open(&directory)
+            .expect("store reopens")
+            .current_pending_snapshot_transfer(),
+        None
+    );
+    remove_test_dir(directory);
+}
+
+/// Promotion consumes the staged transfer, and no store may keep reporting it.
+///
+/// A promoted transfer that still reads back is the exact failure a cached copy
+/// produces, and the runtime's open-time repair would promote it a second time
+/// against a snapshot boundary that has already moved.
+#[test]
+fn a_promoted_transfer_reports_none() {
+    let directory = test_store_dir("pending-promoted-reports-none");
+    let payload = b"opaque application snapshot";
+    let descriptor = rafter::RaftSnapshot::from_payload(transfer_metadata(), payload);
+    let mut memory = InMemoryRaftSnapshotStore::new();
+    let mut file = FileRaftSnapshotStore::open(&directory).expect("store opens");
+
+    for (store, label) in [
+        (&mut memory as &mut dyn RaftSnapshotStore, "in-memory"),
+        (&mut file as &mut dyn RaftSnapshotStore, "file"),
+    ] {
+        store
+            .stage_snapshot_chunk(&staged_chunk_for_payload(0, &payload[..9], payload))
+            .expect("first chunk stages");
+        store
+            .stage_snapshot_chunk(&staged_chunk_for_payload(9, &payload[9..], payload))
+            .expect("final chunk stages");
+        assert_eq!(
+            store.current_pending_snapshot_transfer(),
+            Some(pending_transfer_for_payload(payload.len() as u64, payload)),
+            "{label} store reports the completed staging before promotion"
+        );
+
+        store
+            .promote_staged_snapshot(&descriptor)
+            .expect("completed staged transfer promotes");
+
+        assert_eq!(
+            store.current_pending_snapshot_transfer(),
+            None,
+            "{label} store reports no staging after promotion"
+        );
+    }
+
+    assert_eq!(
+        FileRaftSnapshotStore::open(&directory)
+            .expect("store reopens")
+            .current_pending_snapshot_transfer(),
+        None
+    );
+    remove_test_dir(directory);
 }
 
 #[test]

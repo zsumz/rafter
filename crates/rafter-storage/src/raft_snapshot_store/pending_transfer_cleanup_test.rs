@@ -60,13 +60,13 @@ fn file_snapshot_store_preserves_valid_pending_snapshot_transfer_during_abandone
 
     assert_eq!(
         store.current_pending_snapshot_transfer(),
-        Some(&pending_transfer(22, 64))
+        Some(pending_transfer(22, 64))
     );
     assert_eq!(
         FileRaftSnapshotStore::open(&directory)
             .expect("store reopens")
             .current_pending_snapshot_transfer(),
-        Some(&pending_transfer(22, 64))
+        Some(pending_transfer(22, 64))
     );
     remove_test_dir(directory);
 }
@@ -151,13 +151,13 @@ fn file_snapshot_store_recovers_from_crash_between_body_and_manifest_replace() {
 
     assert_eq!(
         store.current_pending_snapshot_transfer(),
-        Some(&pending_transfer(11, 64))
+        Some(pending_transfer(11, 64))
     );
     assert_eq!(
         FileRaftSnapshotStore::open(&directory)
             .expect("store reopens")
             .current_pending_snapshot_transfer(),
-        Some(&pending_transfer(11, 64))
+        Some(pending_transfer(11, 64))
     );
     remove_test_dir(directory);
 }

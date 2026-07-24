@@ -109,6 +109,78 @@ fn runtime_persists_pending_snapshot_chunk_and_resumes_after_restart() {
     );
 }
 
+/// Both staging repairs must work when the store is only readable through a
+/// guard: the open-time resume and the per-step abandoned-staging clear.
+///
+/// The medium is held by a second handle throughout, so every assertion reads
+/// what the runtime actually persisted rather than what the runtime's own store
+/// handle remembers.
+#[test]
+fn resume_and_clear_drive_correctly_over_a_guarded_store() {
+    let payload = b"abcdefghi".to_vec();
+    let metadata = snapshot_metadata(3, 4, 5);
+    let descriptor = RaftSnapshot::from_payload(metadata.clone(), &payload);
+    let medium = GuardedSnapshotStore::default();
+    let observer = medium.clone();
+    let mut follower = DurableRaftNode::with_storage_and_snapshot_store(
+        raft_config(2, &[1, 3]),
+        hard_state_store(5, None),
+        InMemoryRaftLogSegment::new(),
+        medium.clone(),
+    )
+    .expect("runtime hydrates over a guarded store");
+
+    follower
+        .step(RaftInput::Message {
+            from: RaftNodeId(1),
+            message: Message::InstallSnapshotChunk(rafter::InstallSnapshotChunk {
+                term: Term(5),
+                leader_id: RaftNodeId(1),
+                transfer_id: descriptor.transfer_id(),
+                metadata: metadata.clone(),
+                total_payload_len: payload.len() as u64,
+                application_payload_crc32: descriptor.application_payload_crc32,
+                offset: 0,
+                chunk: payload[..4].to_vec(),
+                done: false,
+            }),
+        })
+        .expect("first snapshot chunk persists through the guard");
+    assert_eq!(
+        observer
+            .current_pending_snapshot_transfer()
+            .expect("staging is durable in the shared medium")
+            .received_len,
+        4
+    );
+
+    // Open-time repair: the resume reads staging back through the guard.
+    drop(follower);
+    let mut restarted = DurableRaftNode::with_storage_and_snapshot_store(
+        raft_config(2, &[1, 3]),
+        hard_state_store(5, None),
+        InMemoryRaftLogSegment::new(),
+        medium,
+    )
+    .expect("runtime resumes the guarded pending transfer");
+    assert_eq!(
+        restarted
+            .snapshot_transfer_status()
+            .follower
+            .expect("resumed transfer is visible after restart")
+            .received_bytes,
+        4
+    );
+
+    // Per-step repair: winning an election abandons the inbound transfer, and
+    // the durable staging must not outlive the kernel's tracking of it.
+    win_election_with_scripted_votes(&mut restarted);
+
+    assert!(restarted.snapshot_transfer_status().follower.is_none());
+    assert_eq!(observer.current_pending_snapshot_transfer(), None);
+    assert_eq!(observer.current_snapshot(), None);
+}
+
 #[test]
 fn runtime_clears_stale_pending_snapshot_transfer_on_restart() {
     let mut snapshot_store = InMemoryRaftSnapshotStore::with_snapshot(PersistedRaftSnapshot {

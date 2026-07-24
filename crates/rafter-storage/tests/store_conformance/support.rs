@@ -3,17 +3,20 @@
 use std::{
     fs,
     path::PathBuf,
-    sync::atomic::{AtomicU64, Ordering},
+    sync::{
+        atomic::{AtomicU64, Ordering},
+        Arc, Mutex,
+    },
 };
 
 use rafter::{
     ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion, LogIndex,
-    NodeId, RaftSnapshot, RaftSnapshotMetadata, SnapshotChunkRequest, SnapshotChunkSource,
-    SnapshotGroupId, StagedSnapshotChunk, Term,
+    NodeId, PendingSnapshotTransfer, RaftSnapshot, RaftSnapshotMetadata, SnapshotChunkRequest,
+    SnapshotChunkSource, SnapshotGroupId, StagedSnapshotChunk, Term,
 };
 use rafter_storage::{
     FileRaftLogSegment, FileRaftSnapshotStore, InMemoryRaftLogSegment, InMemoryRaftSnapshotStore,
-    PersistedRaftSnapshot, RaftLogSegment, RaftSnapshotStore,
+    PersistedRaftSnapshot, RaftLogSegment, RaftSnapshotStore, RaftSnapshotStoreWriteError,
 };
 
 static WORKSPACE_ID: AtomicU64 = AtomicU64::new(0);
@@ -119,22 +122,103 @@ pub(super) fn staged_chunk(
     }
 }
 
-pub(super) fn assert_snapshot_equivalent(
-    memory: &InMemoryRaftSnapshotStore,
-    file: &FileRaftSnapshotStore,
-) {
-    let memory_current = memory.current_snapshot();
+/// A snapshot store whose whole state lives behind a lock, cloneable into
+/// several handles onto the same medium.
+///
+/// This is the shape the storage contract invites and a borrow-returning read
+/// excludes: nothing here outlives the guard, so every read has to be owned.
+/// It holds no cached copy of anything, which is the point — a second handle
+/// must see the first handle's staging.
+#[derive(Clone, Debug, Default)]
+pub(super) struct GuardedSnapshotStore {
+    medium: Arc<Mutex<InMemoryRaftSnapshotStore>>,
+}
+
+impl GuardedSnapshotStore {
+    pub(super) fn new() -> Self {
+        Self::default()
+    }
+
+    /// Another handle onto the same medium, as a reopen would produce.
+    pub(super) fn handle(&self) -> Self {
+        self.clone()
+    }
+
+    fn medium(&self) -> std::sync::MutexGuard<'_, InMemoryRaftSnapshotStore> {
+        self.medium.lock().expect("guarded snapshot store is live")
+    }
+}
+
+impl RaftSnapshotStore for GuardedSnapshotStore {
+    fn write_snapshot(
+        &mut self,
+        snapshot: PersistedRaftSnapshot,
+    ) -> Result<(), RaftSnapshotStoreWriteError> {
+        self.medium().write_snapshot(snapshot)
+    }
+
+    fn write_snapshot_from_source(
+        &mut self,
+        snapshot: &RaftSnapshot,
+        source: &dyn SnapshotChunkSource,
+    ) -> Result<(), RaftSnapshotStoreWriteError> {
+        self.medium().write_snapshot_from_source(snapshot, source)
+    }
+
+    fn current_snapshot(&self) -> Option<RaftSnapshot> {
+        self.medium().current_snapshot()
+    }
+
+    fn stage_snapshot_chunk(
+        &mut self,
+        chunk: &StagedSnapshotChunk,
+    ) -> Result<(), RaftSnapshotStoreWriteError> {
+        self.medium().stage_snapshot_chunk(chunk)
+    }
+
+    fn promote_staged_snapshot(
+        &mut self,
+        snapshot: &RaftSnapshot,
+    ) -> Result<(), RaftSnapshotStoreWriteError> {
+        self.medium().promote_staged_snapshot(snapshot)
+    }
+
+    fn clear_pending_snapshot_transfer(&mut self) -> Result<(), RaftSnapshotStoreWriteError> {
+        self.medium().clear_pending_snapshot_transfer()
+    }
+
+    fn current_pending_snapshot_transfer(&self) -> Option<PendingSnapshotTransfer> {
+        self.medium().current_pending_snapshot_transfer()
+    }
+}
+
+impl SnapshotChunkSource for GuardedSnapshotStore {
+    fn snapshot_chunk(&self, request: SnapshotChunkRequest<'_>) -> Option<Vec<u8>> {
+        self.medium().snapshot_chunk(request)
+    }
+}
+
+/// Asserts that `reference` and the file-backed store agree on everything the
+/// public contract exposes.
+///
+/// The reference side is generic so the same equivalence holds for any
+/// implementation shape, not only the plain owned-field one.
+pub(super) fn assert_snapshot_equivalent<S>(reference: &S, file: &FileRaftSnapshotStore)
+where
+    S: RaftSnapshotStore + SnapshotChunkSource,
+{
+    let reference_current = reference.current_snapshot();
     let file_current = file.current_snapshot();
-    assert_eq!(memory_current, file_current);
+    assert_eq!(reference_current, file_current);
     assert_eq!(
-        memory.current_pending_snapshot_transfer(),
+        reference.current_pending_snapshot_transfer(),
         file.current_pending_snapshot_transfer()
     );
     assert!(!file.requires_reopen());
 
-    if let Some(descriptor) = memory_current {
+    if let Some(descriptor) = reference_current {
         assert_eq!(
-            read_payload(memory, &descriptor),
+            read_payload(reference, &descriptor),
             read_payload(file, &descriptor)
         );
     }

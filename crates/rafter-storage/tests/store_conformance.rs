@@ -8,7 +8,12 @@
 #[path = "store_conformance/support.rs"]
 mod support;
 
-use rafter::{CommittedConfiguration, ConfigurationId, LogIndex, NodeId, RaftSnapshot, Term};
+use std::path::Path;
+
+use rafter::{
+    CommittedConfiguration, ConfigurationId, LogIndex, NodeId, RaftSnapshot, SnapshotChunkSource,
+    Term,
+};
 use rafter_storage::{
     BorrowedPersistedRaftLogEntry, FileRaftHardStateStore, FileRaftLogSegment,
     FileRaftSnapshotStore, InMemoryRaftHardStateStore, InMemoryRaftLogSegment,
@@ -19,7 +24,7 @@ use rafter_storage::{
 
 use support::{
     assert_log_equivalent, assert_snapshot_equivalent, persisted_snapshot, staged_chunk,
-    staged_chunks, TestWorkspace,
+    staged_chunks, GuardedSnapshotStore, TestWorkspace,
 };
 
 #[test]
@@ -176,43 +181,114 @@ fn retained_log_trace_matches_after_every_reopen() {
 #[test]
 fn snapshot_trace_matches_after_every_reopen() {
     let workspace = TestWorkspace::new("snapshot");
-    let directory = workspace.path("snapshots");
-    let mut memory = InMemoryRaftSnapshotStore::new();
-    let mut file = FileRaftSnapshotStore::open(&directory).expect("file snapshot store opens");
+    run_snapshot_trace(
+        InMemoryRaftSnapshotStore::new(),
+        &workspace.path("snapshots"),
+    );
+}
 
-    assert_snapshot_equivalent(&memory, &file);
+/// The same trace over a store whose entire state sits behind a lock.
+///
+/// A guard-based store can hand out no borrow of its staging area, so before
+/// the pending transfer became an owned read this implementation could not be
+/// written at all. Running the full conformance trace over it is the evidence
+/// that the contract now admits the implementations it invites.
+#[test]
+fn shared_handle_store_satisfies_the_snapshot_store_contract() {
+    let workspace = TestWorkspace::new("snapshot-guarded");
+    run_snapshot_trace(GuardedSnapshotStore::new(), &workspace.path("snapshots"));
+}
+
+/// Staging written through one handle must be visible through another handle
+/// onto the same medium.
+///
+/// A store that satisfied the contract by caching its own copy of the staging
+/// area would pass every single-handle assertion and fail here, reporting the
+/// staging state as of whenever that handle last mutated the medium.
+#[test]
+fn pending_transfer_read_through_a_second_handle_observes_staging_from_the_first() {
+    let mut writer = GuardedSnapshotStore::new();
+    let reader = writer.handle();
+    let incoming = persisted_snapshot(7, 6, 8, b"incoming snapshot payload");
+    let (descriptor, first_chunk, final_chunk) = staged_chunks(&incoming, 8);
+
+    assert_eq!(reader.current_pending_snapshot_transfer(), None);
+
+    writer
+        .stage_snapshot_chunk(&first_chunk)
+        .expect("first chunk stages through the writing handle");
+    assert_eq!(
+        reader.current_pending_snapshot_transfer(),
+        writer.current_pending_snapshot_transfer(),
+        "a second handle reads the medium, not a private copy"
+    );
+    let staged = reader
+        .current_pending_snapshot_transfer()
+        .expect("the reading handle sees the staged transfer");
+    assert_eq!(staged.received_len, 8);
+    assert!(!staged.is_complete());
+
+    writer
+        .stage_snapshot_chunk(&final_chunk)
+        .expect("final chunk stages through the writing handle");
+    assert!(reader
+        .current_pending_snapshot_transfer()
+        .expect("the reading handle sees the completed transfer")
+        .is_complete());
+
+    writer
+        .promote_staged_snapshot(&descriptor)
+        .expect("completed staged transfer promotes");
+    assert_eq!(
+        reader.current_pending_snapshot_transfer(),
+        None,
+        "promotion through one handle clears staging for every handle"
+    );
+    assert_eq!(reader.current_snapshot(), Some(descriptor));
+}
+
+/// Runs every snapshot-store operation against `reference` and the file-backed
+/// store, reopening the file store after each one so restart reconstruction is
+/// part of the equivalence rather than a separate assertion.
+fn run_snapshot_trace<S>(mut reference: S, directory: &Path)
+where
+    S: RaftSnapshotStore + SnapshotChunkSource,
+{
+    let mut file = FileRaftSnapshotStore::open(directory).expect("file snapshot store opens");
+
+    assert_snapshot_equivalent(&reference, &file);
 
     let first = persisted_snapshot(3, 2, 4, b"first durable snapshot");
-    memory
+    reference
         .write_snapshot(first.clone())
-        .expect("in-memory snapshot writes");
+        .expect("reference store snapshot writes");
     file.write_snapshot(first).expect("file snapshot writes");
-    file = FileRaftSnapshotStore::open(&directory).expect("snapshot store reopens after write");
-    assert_snapshot_equivalent(&memory, &file);
+    file = FileRaftSnapshotStore::open(directory).expect("snapshot store reopens after write");
+    assert_snapshot_equivalent(&reference, &file);
 
     let streamed = persisted_snapshot(5, 4, 6, b"snapshot pulled through a bounded source");
     let streamed_descriptor =
         RaftSnapshot::from_payload(streamed.metadata.clone(), &streamed.application_payload);
     let streamed_source = InMemoryRaftSnapshotStore::with_snapshot(streamed);
-    memory
+    reference
         .write_snapshot_from_source(&streamed_descriptor, &streamed_source)
-        .expect("in-memory streamed snapshot writes");
+        .expect("reference store streamed snapshot writes");
     file.write_snapshot_from_source(&streamed_descriptor, &streamed_source)
         .expect("file streamed snapshot writes");
-    file = FileRaftSnapshotStore::open(&directory)
+    file = FileRaftSnapshotStore::open(directory)
         .expect("snapshot store reopens after streamed write");
-    assert_snapshot_equivalent(&memory, &file);
+    assert_snapshot_equivalent(&reference, &file);
 
     let incoming = persisted_snapshot(7, 6, 8, b"incoming snapshot payload");
     let (descriptor, first_chunk, final_chunk) = staged_chunks(&incoming, 8);
-    memory
+    reference
         .stage_snapshot_chunk(&first_chunk)
-        .expect("in-memory first chunk stages");
+        .expect("reference store first chunk stages");
     file.stage_snapshot_chunk(&first_chunk)
         .expect("file first chunk stages");
     file =
-        FileRaftSnapshotStore::open(&directory).expect("snapshot store reopens after first chunk");
-    assert_snapshot_equivalent(&memory, &file);
+        FileRaftSnapshotStore::open(directory).expect("snapshot store reopens after first chunk");
+    assert_snapshot_equivalent(&reference, &file);
 
     let staged_len =
         u64::try_from(first_chunk.bytes.len()).expect("staged test chunk length fits u64");
@@ -228,60 +304,63 @@ fn snapshot_trace_matches_after_every_reopen() {
         expected_offset: staged_len,
         offset: invalid_offset,
     };
-    assert_eq!(memory.stage_snapshot_chunk(&invalid), Err(expected.clone()));
+    assert_eq!(
+        reference.stage_snapshot_chunk(&invalid),
+        Err(expected.clone())
+    );
     assert_eq!(file.stage_snapshot_chunk(&invalid), Err(expected));
-    assert_snapshot_equivalent(&memory, &file);
+    assert_snapshot_equivalent(&reference, &file);
 
-    memory
+    reference
         .clear_pending_snapshot_transfer()
-        .expect("in-memory pending transfer clears");
+        .expect("reference store pending transfer clears");
     file.clear_pending_snapshot_transfer()
         .expect("file pending transfer clears");
-    file = FileRaftSnapshotStore::open(&directory).expect("snapshot store reopens after clear");
-    assert_snapshot_equivalent(&memory, &file);
+    file = FileRaftSnapshotStore::open(directory).expect("snapshot store reopens after clear");
+    assert_snapshot_equivalent(&reference, &file);
 
-    memory
+    reference
         .stage_snapshot_chunk(&first_chunk)
-        .expect("in-memory first chunk restages");
+        .expect("reference store first chunk restages");
     file.stage_snapshot_chunk(&first_chunk)
         .expect("file first chunk restages");
-    file = FileRaftSnapshotStore::open(&directory).expect("snapshot store reopens after restaging");
-    assert_snapshot_equivalent(&memory, &file);
+    file = FileRaftSnapshotStore::open(directory).expect("snapshot store reopens after restaging");
+    assert_snapshot_equivalent(&reference, &file);
 
-    memory
+    reference
         .stage_snapshot_chunk(&final_chunk)
-        .expect("in-memory final chunk stages");
+        .expect("reference store final chunk stages");
     file.stage_snapshot_chunk(&final_chunk)
         .expect("file final chunk stages");
     file =
-        FileRaftSnapshotStore::open(&directory).expect("snapshot store reopens after final chunk");
-    assert_snapshot_equivalent(&memory, &file);
+        FileRaftSnapshotStore::open(directory).expect("snapshot store reopens after final chunk");
+    assert_snapshot_equivalent(&reference, &file);
 
-    memory
+    reference
         .promote_staged_snapshot(&descriptor)
-        .expect("in-memory staged snapshot promotes");
+        .expect("reference store staged snapshot promotes");
     file.promote_staged_snapshot(&descriptor)
         .expect("file staged snapshot promotes");
-    file = FileRaftSnapshotStore::open(&directory).expect("snapshot store reopens after promotion");
-    assert_snapshot_equivalent(&memory, &file);
+    file = FileRaftSnapshotStore::open(directory).expect("snapshot store reopens after promotion");
+    assert_snapshot_equivalent(&reference, &file);
 
     let replacement = persisted_snapshot(10, 9, 11, b"replacement current snapshot");
     let (_, pending_chunk, _) = staged_chunks(&replacement, 5);
-    memory
+    reference
         .stage_snapshot_chunk(&pending_chunk)
-        .expect("in-memory replacement transfer begins");
+        .expect("reference store replacement transfer begins");
     file.stage_snapshot_chunk(&pending_chunk)
         .expect("file replacement transfer begins");
-    file = FileRaftSnapshotStore::open(&directory)
+    file = FileRaftSnapshotStore::open(directory)
         .expect("snapshot store reopens after replacement staging");
-    assert_snapshot_equivalent(&memory, &file);
+    assert_snapshot_equivalent(&reference, &file);
 
-    memory
+    reference
         .write_snapshot(replacement.clone())
-        .expect("in-memory complete snapshot replaces pending transfer");
+        .expect("reference store complete snapshot replaces pending transfer");
     file.write_snapshot(replacement)
         .expect("file complete snapshot replaces pending transfer");
     file =
-        FileRaftSnapshotStore::open(&directory).expect("snapshot store reopens after replacement");
-    assert_snapshot_equivalent(&memory, &file);
+        FileRaftSnapshotStore::open(directory).expect("snapshot store reopens after replacement");
+    assert_snapshot_equivalent(&reference, &file);
 }

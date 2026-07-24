@@ -17,10 +17,19 @@ fn elected_leader_with_snapshot_store<S: RaftSnapshotStore + SnapshotChunkSource
         snapshot_store,
     )
     .expect("leader hydrates");
+    win_election_with_scripted_votes(&mut leader);
+    leader
+}
 
-    let outputs = leader
-        .step(RaftInput::Tick)
-        .expect("election timeout fires");
+/// Drives `node` from follower to leader by scripting node 3's pre-vote and
+/// vote grants, which is quorum in any of these three-node fixtures.
+fn win_election_with_scripted_votes<H, L, S>(node: &mut DurableRaftNode<H, L, S>)
+where
+    H: RaftHardStateStore,
+    L: RaftLogSegment,
+    S: RaftSnapshotStore + SnapshotChunkSource,
+{
+    let outputs = node.step(RaftInput::Tick).expect("election timeout fires");
     let poll_term = outputs
         .iter()
         .find_map(|output| match output {
@@ -31,7 +40,7 @@ fn elected_leader_with_snapshot_store<S: RaftSnapshotStore + SnapshotChunkSource
             _ => None,
         })
         .expect("timed-out node opens a pre-vote poll");
-    let outputs = leader
+    let outputs = node
         .step(RaftInput::Message {
             from: RaftNodeId(3),
             message: Message::PreVoteResponse(rafter::PreVoteResponse {
@@ -51,18 +60,16 @@ fn elected_leader_with_snapshot_store<S: RaftSnapshotStore + SnapshotChunkSource
             _ => None,
         })
         .expect("timed-out node starts an election");
-    leader
-        .step(RaftInput::Message {
-            from: RaftNodeId(3),
-            message: Message::RequestVoteResponse(RequestVoteResponse {
-                term: vote_term,
-                voter_id: RaftNodeId(3),
-                vote_granted: true,
-            }),
-        })
-        .expect("granted vote elects the leader");
-    assert_eq!(leader.role(), RaftRole::Leader);
-    leader
+    node.step(RaftInput::Message {
+        from: RaftNodeId(3),
+        message: Message::RequestVoteResponse(RequestVoteResponse {
+            term: vote_term,
+            voter_id: RaftNodeId(3),
+            vote_granted: true,
+        }),
+    })
+    .expect("granted vote elects the leader");
+    assert_eq!(node.role(), RaftRole::Leader);
 }
 
 fn commit_with_follower_ack<S: RaftSnapshotStore + SnapshotChunkSource>(
@@ -131,6 +138,72 @@ fn report_follower_lag<S: RaftSnapshotStore + SnapshotChunkSource>(
         .expect("failed probe persists nothing but may emit a snapshot chunk")
 }
 
+/// A snapshot store whose whole state sits behind a lock, cloneable into
+/// several handles onto one medium.
+///
+/// The runtime's staging repairs read the store through the trait; this store
+/// can hand out nothing that outlives its guard and caches nothing, so a repair
+/// that worked only against an owned-field store fails here.
+#[derive(Clone, Debug, Default)]
+struct GuardedSnapshotStore {
+    medium: std::sync::Arc<std::sync::Mutex<InMemoryRaftSnapshotStore>>,
+}
+
+impl GuardedSnapshotStore {
+    fn medium(&self) -> std::sync::MutexGuard<'_, InMemoryRaftSnapshotStore> {
+        self.medium.lock().expect("guarded snapshot store is live")
+    }
+}
+
+impl RaftSnapshotStore for GuardedSnapshotStore {
+    fn write_snapshot(
+        &mut self,
+        snapshot: PersistedRaftSnapshot,
+    ) -> Result<(), RaftSnapshotStoreWriteError> {
+        self.medium().write_snapshot(snapshot)
+    }
+
+    fn write_snapshot_from_source(
+        &mut self,
+        snapshot: &RaftSnapshot,
+        source: &dyn SnapshotChunkSource,
+    ) -> Result<(), RaftSnapshotStoreWriteError> {
+        self.medium().write_snapshot_from_source(snapshot, source)
+    }
+
+    fn current_snapshot(&self) -> Option<RaftSnapshot> {
+        self.medium().current_snapshot()
+    }
+
+    fn stage_snapshot_chunk(
+        &mut self,
+        chunk: &StagedSnapshotChunk,
+    ) -> Result<(), RaftSnapshotStoreWriteError> {
+        self.medium().stage_snapshot_chunk(chunk)
+    }
+
+    fn promote_staged_snapshot(
+        &mut self,
+        snapshot: &RaftSnapshot,
+    ) -> Result<(), RaftSnapshotStoreWriteError> {
+        self.medium().promote_staged_snapshot(snapshot)
+    }
+
+    fn clear_pending_snapshot_transfer(&mut self) -> Result<(), RaftSnapshotStoreWriteError> {
+        self.medium().clear_pending_snapshot_transfer()
+    }
+
+    fn current_pending_snapshot_transfer(&self) -> Option<PendingSnapshotTransfer> {
+        self.medium().current_pending_snapshot_transfer()
+    }
+}
+
+impl SnapshotChunkSource for GuardedSnapshotStore {
+    fn snapshot_chunk(&self, request: rafter::SnapshotChunkRequest<'_>) -> Option<Vec<u8>> {
+        self.medium().snapshot_chunk(request)
+    }
+}
+
 /// Delegates storage to an in-memory store but cannot serve any snapshot
 /// chunk, forcing every leader chunk directive to be unresolvable.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -174,7 +247,7 @@ impl RaftSnapshotStore for UnservableChunkSourceStore {
         self.0.clear_pending_snapshot_transfer()
     }
 
-    fn current_pending_snapshot_transfer(&self) -> Option<&PendingSnapshotTransfer> {
+    fn current_pending_snapshot_transfer(&self) -> Option<PendingSnapshotTransfer> {
         self.0.current_pending_snapshot_transfer()
     }
 }

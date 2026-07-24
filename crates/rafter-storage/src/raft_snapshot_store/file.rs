@@ -38,6 +38,12 @@ impl FileRaftSnapshotStore {
         let result = remove_abandoned_pending_snapshot_transfer_staging(&self.directory);
         result.map_err(|error| self.poison_if_io(error))
     }
+
+    /// The staged transfer as this store holds it, for the validation paths
+    /// that run per inbound chunk and must not pay for a clone.
+    fn staged_transfer(&self) -> Option<&PendingSnapshotTransfer> {
+        self.pending.as_ref().map(|pending| &pending.transfer)
+    }
 }
 
 impl RaftSnapshotStore for FileRaftSnapshotStore {
@@ -88,7 +94,10 @@ impl RaftSnapshotStore for FileRaftSnapshotStore {
         chunk: &StagedSnapshotChunk,
     ) -> Result<(), RaftSnapshotStoreWriteError> {
         self.ensure_writable()?;
-        let validated = validate_staged_chunk(chunk, self.current_pending_snapshot_transfer())?;
+        // Validate against the staged field rather than the trait method: the
+        // trait hands out an owned clone, and staging runs once per inbound
+        // chunk.
+        let validated = validate_staged_chunk(chunk, self.staged_transfer())?;
         let body_crc_before_chunk = if chunk.offset == 0 {
             RunningCrc32::new()
         } else {
@@ -123,7 +132,7 @@ impl RaftSnapshotStore for FileRaftSnapshotStore {
         snapshot: &RaftSnapshot,
     ) -> Result<(), RaftSnapshotStoreWriteError> {
         self.ensure_writable()?;
-        validate_staged_promotion(snapshot, self.current_pending_snapshot_transfer())?;
+        validate_staged_promotion(snapshot, self.staged_transfer())?;
         let requested = snapshot.transfer_id();
         let received_len = match self.pending.as_ref() {
             Some(staged) => staged.transfer.received_len,
@@ -162,7 +171,7 @@ impl RaftSnapshotStore for FileRaftSnapshotStore {
         Ok(())
     }
 
-    fn current_pending_snapshot_transfer(&self) -> Option<&PendingSnapshotTransfer> {
-        self.pending.as_ref().map(|pending| &pending.transfer)
+    fn current_pending_snapshot_transfer(&self) -> Option<PendingSnapshotTransfer> {
+        self.staged_transfer().cloned()
     }
 }

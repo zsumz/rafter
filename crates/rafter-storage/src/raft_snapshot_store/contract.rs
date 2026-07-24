@@ -102,5 +102,20 @@ pub trait RaftSnapshotStore {
 
     /// Returns the logical pending inbound snapshot transfer, if one is
     /// resumable.
-    fn current_pending_snapshot_transfer(&self) -> Option<&PendingSnapshotTransfer>;
+    ///
+    /// The value is owned so the trait can be implemented over shared handles,
+    /// interior mutability, or staging read from the medium on demand: a store
+    /// holding its staging area behind a guard has no borrow to hand out, and a
+    /// store that reads staging lazily has nothing to borrow from. Stores that
+    /// keep the transfer in a field clone it. The clone allocates only when a
+    /// transfer is staged; a store with an empty staging area returns `None`
+    /// without allocating, which is the steady state on the per-step probe.
+    ///
+    /// The returned value must reflect durable staging rather than a cache that
+    /// can disagree with the medium, and `None` must mean "nothing is staged". A
+    /// store that reports `None` to hide a failed read defeats both repairs that
+    /// depend on this value: an interrupted promotion is left unpromoted and
+    /// fails every later reopen, and an abandoned staging area survives into the
+    /// next incarnation as a transfer the protocol has already moved past.
+    fn current_pending_snapshot_transfer(&self) -> Option<PendingSnapshotTransfer>;
 }

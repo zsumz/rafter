@@ -156,7 +156,7 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore> DurableRaft
         // leftover of a crash between promotion and the staging clear; it is
         // stale, and the kernel's resume path below reports it as such so
         // the existing branch clears it.
-        if let Some(transfer) = snapshot_store.current_pending_snapshot_transfer().cloned() {
+        if let Some(transfer) = snapshot_store.current_pending_snapshot_transfer() {
             let staged_boundary = transfer.metadata.last_included_index;
             let current_boundary = snapshot_store
                 .current_snapshot()
@@ -236,7 +236,7 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore> DurableRaft
         )
         .map_err(RaftRuntimeError::Bootstrap)?;
 
-        if let Some(transfer) = snapshot_store.current_pending_snapshot_transfer().cloned() {
+        if let Some(transfer) = snapshot_store.current_pending_snapshot_transfer() {
             match node.resume_pending_snapshot_transfer(transfer) {
                 Ok(()) => {}
                 Err(PendingSnapshotTransferResumeError::StaleSnapshot { .. }) => {

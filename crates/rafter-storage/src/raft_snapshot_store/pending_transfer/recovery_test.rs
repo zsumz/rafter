@@ -85,7 +85,7 @@ fn recovery_rejects_transfer_id_not_derived_from_the_manifest_descriptor() {
 
     assert_eq!(
         FileRaftSnapshotStore::open(&directory)
-            .map(|store| store.current_pending_snapshot_transfer().cloned()),
+            .map(|store| store.current_pending_snapshot_transfer()),
         Err(OpenRaftSnapshotStoreError::PendingTransfer(
             DecodePendingSnapshotTransferError::TransferIdMismatch {
                 expected,
@@ -107,7 +107,7 @@ fn recovery_rejects_received_length_past_total_before_looking_up_the_body() {
 
     assert_eq!(
         FileRaftSnapshotStore::open(&directory)
-            .map(|store| store.current_pending_snapshot_transfer().cloned()),
+            .map(|store| store.current_pending_snapshot_transfer()),
         Err(OpenRaftSnapshotStoreError::PendingTransfer(
             DecodePendingSnapshotTransferError::ReceivedPayloadTooLong {
                 received_bytes: 5,

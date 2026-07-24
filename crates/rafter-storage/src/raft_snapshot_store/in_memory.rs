@@ -53,6 +53,12 @@ impl InMemoryRaftSnapshotStore {
     pub fn current(&self) -> Option<&PersistedRaftSnapshot> {
         self.current.as_ref()
     }
+
+    /// The staged transfer as this store holds it, for the validation paths
+    /// that run per inbound chunk and must not pay for a clone.
+    fn staged_transfer(&self) -> Option<&PendingSnapshotTransfer> {
+        self.pending.as_ref().map(|staged| &staged.transfer)
+    }
 }
 
 impl RaftSnapshotStore for InMemoryRaftSnapshotStore {
@@ -105,7 +111,10 @@ impl RaftSnapshotStore for InMemoryRaftSnapshotStore {
         &mut self,
         chunk: &StagedSnapshotChunk,
     ) -> Result<(), RaftSnapshotStoreWriteError> {
-        let validated = validate_staged_chunk(chunk, self.current_pending_snapshot_transfer())?;
+        // Validate against the staged field rather than the trait method: the
+        // trait hands out an owned clone, and staging runs once per inbound
+        // chunk.
+        let validated = validate_staged_chunk(chunk, self.staged_transfer())?;
         let transfer = pending_transfer_after_chunk(chunk, validated);
         if chunk.offset == 0 {
             self.pending = Some(InMemoryStagedTransfer {
@@ -129,7 +138,7 @@ impl RaftSnapshotStore for InMemoryRaftSnapshotStore {
         &mut self,
         snapshot: &RaftSnapshot,
     ) -> Result<(), RaftSnapshotStoreWriteError> {
-        validate_staged_promotion(snapshot, self.current_pending_snapshot_transfer())?;
+        validate_staged_promotion(snapshot, self.staged_transfer())?;
         let requested = snapshot.transfer_id();
         let Some(staged) = self.pending.as_ref() else {
             return Err(RaftSnapshotStoreWriteError::PromoteWithoutStagedTransfer { requested });
@@ -157,8 +166,8 @@ impl RaftSnapshotStore for InMemoryRaftSnapshotStore {
         Ok(())
     }
 
-    fn current_pending_snapshot_transfer(&self) -> Option<&PendingSnapshotTransfer> {
-        self.pending.as_ref().map(|staged| &staged.transfer)
+    fn current_pending_snapshot_transfer(&self) -> Option<PendingSnapshotTransfer> {
+        self.staged_transfer().cloned()
     }
 }
 

@@ -108,7 +108,7 @@ impl RaftSnapshotStore for FailingSnapshotStore {
         Ok(())
     }
 
-    fn current_pending_snapshot_transfer(&self) -> Option<&PendingSnapshotTransfer> {
+    fn current_pending_snapshot_transfer(&self) -> Option<PendingSnapshotTransfer> {
         None
     }
 }
@@ -161,7 +161,7 @@ impl RaftSnapshotStore for FailingPromoteSnapshotStore {
         self.0.clear_pending_snapshot_transfer()
     }
 
-    fn current_pending_snapshot_transfer(&self) -> Option<&PendingSnapshotTransfer> {
+    fn current_pending_snapshot_transfer(&self) -> Option<PendingSnapshotTransfer> {
         self.0.current_pending_snapshot_transfer()
     }
 }

@@ -125,11 +125,7 @@ impl SharedSnapshotStore {
     }
 
     fn refresh_pending_mirror(&mut self) {
-        self.pending_mirror = self
-            .medium
-            .borrow()
-            .current_pending_snapshot_transfer()
-            .cloned();
+        self.pending_mirror = self.medium.borrow().current_pending_snapshot_transfer();
     }
 }
 
@@ -184,8 +180,8 @@ impl RaftSnapshotStore for SharedSnapshotStore {
         result
     }
 
-    fn current_pending_snapshot_transfer(&self) -> Option<&PendingSnapshotTransfer> {
-        self.pending_mirror.as_ref()
+    fn current_pending_snapshot_transfer(&self) -> Option<PendingSnapshotTransfer> {
+        self.pending_mirror.clone()
     }
 }
 
