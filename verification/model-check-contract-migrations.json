@@ -3,8 +3,8 @@
   "migrations": [
     {
       "id": "simulator-v12-to-v13-reviewed-bounds",
-      "pivot_commit": "c5608f2741b0bd40567f7e5bc90d714aaf99d28e",
-      "pivot_parent": "255f757b4db913ba782e5ae47bae4baca2b68907",
+      "pivot_commit": "8c7052acf5af741a9ced6f7a11987f5ba10b187e",
+      "pivot_parent": "aebbf6f46d44e8819d36e02de8fd4e285b9357d4",
       "changed_paths": [
         "crates/rafter-sim/src/bin/rafter_model_check_fast/profile.rs",
         "crates/rafter-sim/src/bin/rafter_model_check_fast/runner/checks.rs",
