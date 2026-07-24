@@ -508,17 +508,16 @@ impl LedgerCluster {
                     },
                 );
             }
-            // A rejection observed as a later lifecycle event carries no leader
-            // hint of its own; only the immediate begin outcome does.
             ProposalEvent::Rejected {
                 local_proposal_id,
                 reason,
+                leader_hint,
             } => {
                 self.proposal_outcomes.insert(
                     *local_proposal_id,
                     ProposalOutcome::Rejected {
                         reason: reason.clone(),
-                        leader_hint: None,
+                        leader_hint: *leader_hint,
                     },
                 );
             }

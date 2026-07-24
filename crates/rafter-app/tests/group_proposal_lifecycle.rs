@@ -1003,6 +1003,7 @@ fn stale_local_proposal_drop_after_rejection_is_ignored() {
                 term: Term(1),
                 payload_len: 0,
             },
+            leader_hint: Some(NodeId(1)),
         }]
     );
     assert_eq!(group.metrics().pending_proposals, 0);
@@ -1190,4 +1191,170 @@ fn reused_local_proposal_id_is_rejected_and_stale_rejection_is_ignored() {
 
     assert!(stale_rejection.proposal_events.is_empty());
     assert_eq!(group.metrics().pending_proposals, 1);
+}
+
+/// A follower that knows its leader hands the redirect to a caller who observes
+/// the rejection asynchronously, not only to one that reads the begin outcome.
+#[test]
+fn rejected_proposal_event_carries_the_leader_hint() {
+    let proposal_id = LocalProposalId(101);
+    let mut runtime = ScriptedRuntime::with_step_outputs([
+        vec![RaftOutput::LocalProposalAppended {
+            proposal_id,
+            index: LogIndex(2),
+            term: Term(1),
+        }],
+        Vec::new(),
+    ]);
+    runtime.role = Role::Follower;
+    runtime.leader_hint = Some(NodeId(3));
+    let mut group = scripted_group_with_runtime(RecordingStateMachine::default(), runtime);
+    begin_pending_proposal(&mut group, proposal_id, None, 2);
+
+    let report = group
+        .apply_raft_outputs(vec![RaftOutput::RejectProposal {
+            proposal_id: Some(proposal_id),
+            reason: ProposalRejection::NotLeader {
+                role: Role::Follower,
+                term: Term(1),
+                payload_len: 0,
+            },
+        }])
+        .expect("proposal rejection is reported");
+
+    assert_eq!(
+        report.proposal_events,
+        vec![ProposalEvent::Rejected {
+            local_proposal_id: proposal_id,
+            reason: ProposalRejection::NotLeader {
+                role: Role::Follower,
+                term: Term(1),
+                payload_len: 0,
+            },
+            leader_hint: Some(NodeId(3)),
+        }]
+    );
+}
+
+/// `None` means "no leader is known", which a caller must treat as "retry
+/// discovery" rather than "not applicable".
+#[test]
+fn rejected_proposal_event_carries_no_hint_when_no_leader_is_known() {
+    let proposal_id = LocalProposalId(102);
+    let mut runtime = ScriptedRuntime::with_step_outputs([
+        vec![RaftOutput::LocalProposalAppended {
+            proposal_id,
+            index: LogIndex(2),
+            term: Term(1),
+        }],
+        Vec::new(),
+    ]);
+    runtime.role = Role::Follower;
+    runtime.leader_hint = None;
+    let mut group = scripted_group_with_runtime(RecordingStateMachine::default(), runtime);
+    begin_pending_proposal(&mut group, proposal_id, None, 2);
+
+    let report = group
+        .apply_raft_outputs(vec![RaftOutput::RejectProposal {
+            proposal_id: Some(proposal_id),
+            reason: ProposalRejection::NotLeader {
+                role: Role::Follower,
+                term: Term(1),
+                payload_len: 0,
+            },
+        }])
+        .expect("proposal rejection is reported");
+
+    assert!(matches!(
+        report.proposal_events.as_slice(),
+        [ProposalEvent::Rejected {
+            leader_hint: None,
+            ..
+        }]
+    ));
+}
+
+/// The immediate and asynchronous views of one rejection read the same hint,
+/// because the begin outcome now takes it from the event instead of re-reading
+/// the runtime after the whole report is built.
+#[test]
+fn rejected_proposal_event_hint_matches_the_immediate_begin_outcome() {
+    let proposal_id = LocalProposalId(103);
+    let mut runtime = ScriptedRuntime::with_step_outputs([vec![RaftOutput::RejectProposal {
+        proposal_id: Some(proposal_id),
+        reason: ProposalRejection::NotLeader {
+            role: Role::Follower,
+            term: Term(1),
+            payload_len: 0,
+        },
+    }]]);
+    runtime.role = Role::Follower;
+    runtime.leader_hint = Some(NodeId(2));
+    let mut group = scripted_group_with_runtime(RecordingStateMachine::default(), runtime);
+
+    let started = group
+        .begin_proposal(Proposal {
+            local_proposal_id: proposal_id,
+            client_request_id: None,
+            command: b"redirect me".to_vec(),
+        })
+        .expect("a rejected proposal still reports a begin outcome");
+
+    let event_hint = started
+        .report
+        .proposal_events
+        .iter()
+        .find_map(|event| match event {
+            ProposalEvent::Rejected { leader_hint, .. } => Some(*leader_hint),
+            _ => None,
+        })
+        .expect("the report carries the rejection");
+    let begin_hint = match started.begin {
+        ProposalBegin::Rejected { leader_hint, .. } => leader_hint,
+        other => panic!("expected a rejected begin outcome, got {other:?}"),
+    };
+    assert_eq!(event_hint, Some(NodeId(2)));
+    assert_eq!(begin_hint, event_hint);
+}
+
+/// The hint is this node's belief about leadership, not a claim about why the
+/// proposal was refused — a caller must not read a present hint as "this was a
+/// leadership rejection".
+#[test]
+fn a_non_leadership_rejection_still_reports_the_current_hint() {
+    let proposal_id = LocalProposalId(104);
+    let mut runtime = ScriptedRuntime::with_step_outputs([
+        vec![RaftOutput::LocalProposalAppended {
+            proposal_id,
+            index: LogIndex(2),
+            term: Term(1),
+        }],
+        Vec::new(),
+    ]);
+    runtime.leader_hint = Some(NodeId(1));
+    let mut group = scripted_group_with_runtime(RecordingStateMachine::default(), runtime);
+    begin_pending_proposal(&mut group, proposal_id, None, 2);
+
+    let report = group
+        .apply_raft_outputs(vec![RaftOutput::RejectProposal {
+            proposal_id: Some(proposal_id),
+            reason: ProposalRejection::PayloadTooLarge {
+                payload_len: 4096,
+                max_payload_len: 1024,
+            },
+        }])
+        .expect("payload rejection is reported");
+
+    assert_eq!(
+        report.proposal_events,
+        vec![ProposalEvent::Rejected {
+            local_proposal_id: proposal_id,
+            reason: ProposalRejection::PayloadTooLarge {
+                payload_len: 4096,
+                max_payload_len: 1024,
+            },
+            // This node is the leader and still refused the write.
+            leader_hint: Some(NodeId(1)),
+        }]
+    );
 }

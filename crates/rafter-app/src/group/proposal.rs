@@ -170,18 +170,23 @@ where
             });
         }
 
-        if let Some(reason) = report.proposal_events.iter().find_map(|event| match event {
-            ProposalEvent::Rejected {
-                local_proposal_id: id,
-                reason,
-            } if *id == local_proposal_id => Some(reason.clone()),
-            _ => None,
-        }) {
+        // The hint comes from the event rather than a post-step re-read, so the
+        // immediate and asynchronous views of one rejection cannot disagree.
+        if let Some((reason, leader_hint)) =
+            report.proposal_events.iter().find_map(|event| match event {
+                ProposalEvent::Rejected {
+                    local_proposal_id: id,
+                    reason,
+                    leader_hint,
+                } if *id == local_proposal_id => Some((reason.clone(), *leader_hint)),
+                _ => None,
+            })
+        {
             return Ok(ProposalBegin::Rejected {
                 group_id: self.group_id.clone(),
                 local_proposal_id,
                 reason,
-                leader_hint: self.raft.leader_hint(),
+                leader_hint,
             });
         }
 

@@ -376,6 +376,7 @@ where
                     report.proposal_events.push(ProposalEvent::Rejected {
                         local_proposal_id: proposal_id,
                         reason,
+                        leader_hint: self.raft.leader_hint(),
                     });
                 }
             }

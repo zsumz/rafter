@@ -84,8 +84,7 @@ where
             Err(error) => return self.finish_failed_write_batch(states, error),
         };
 
-        let rejection_leader_hint = self.rejection_leader_hint(&report);
-        observe_batch_report(&mut states, &report, rejection_leader_hint);
+        observe_batch_report(&mut states, &report);
         self.route_report(report);
         if write_batch_complete(&states) {
             self.publish_primary_metrics();
@@ -119,8 +118,7 @@ where
                 }
             };
             if let Some(report) = dispatched {
-                let rejection_leader_hint = self.rejection_leader_hint(&report);
-                observe_batch_report(&mut states, &report, rejection_leader_hint);
+                observe_batch_report(&mut states, &report);
                 self.route_report(report);
                 if write_batch_complete(&states) {
                     self.publish_primary_metrics();
@@ -242,40 +240,10 @@ where
             })
             .collect()
     }
-
-    fn rejection_leader_hint(
-        &self,
-        report: &GroupStepReport<G, A::CommandResult>,
-    ) -> Option<NodeId> {
-        let has_not_leader_rejection = report.proposal_events.iter().any(|event| {
-            matches!(
-                event,
-                ProposalEvent::Rejected {
-                    reason: ProposalRejection::NotLeader { .. },
-                    ..
-                }
-            )
-        });
-        if !has_not_leader_rejection {
-            return None;
-        }
-        report
-            .metrics
-            .as_ref()
-            .and_then(|metrics| metrics.leader_hint)
-            .or_else(|| {
-                self.groups
-                    .get(&self.primary_node_id)
-                    .and_then(rafter_app::group::RaftGroup::leader_hint)
-            })
-    }
 }
 
-fn observe_batch_report<G, R>(
-    states: &mut [BatchWriteState<R>],
-    report: &GroupStepReport<G, R>,
-    rejection_leader_hint: Option<NodeId>,
-) where
+fn observe_batch_report<G, R>(states: &mut [BatchWriteState<R>], report: &GroupStepReport<G, R>)
+where
     R: Clone,
 {
     debug_assert!(states
@@ -312,10 +280,14 @@ fn observe_batch_report<G, R>(
                     result: result.clone(),
                 }));
             }
-            ProposalEvent::Rejected { reason, .. } => {
+            ProposalEvent::Rejected {
+                reason,
+                leader_hint,
+                ..
+            } => {
                 state.outcome = Some(Err(write_error_from_rejection(
                     reason.clone(),
-                    rejection_leader_hint,
+                    *leader_hint,
                 )));
             }
             ProposalEvent::UnknownOutcome {
@@ -413,14 +385,9 @@ where
         ProposalEvent::Rejected {
             local_proposal_id: id,
             reason,
+            leader_hint,
         } if *id == local_proposal_id => Some(Err(ManagedOperationError::Write(
-            write_error_from_rejection(
-                reason.clone(),
-                report
-                    .metrics
-                    .as_ref()
-                    .and_then(|metrics| metrics.leader_hint),
-            ),
+            write_error_from_rejection(reason.clone(), *leader_hint),
         ))),
         ProposalEvent::UnknownOutcome {
             local_proposal_id: id,
@@ -582,7 +549,7 @@ mod tests {
             metrics: None,
         };
 
-        observe_batch_report(&mut states, &report, None);
+        observe_batch_report(&mut states, &report);
 
         assert!(states[0].saw_local_append);
         assert_eq!(
@@ -604,7 +571,7 @@ mod tests {
     }
 
     #[test]
-    fn observe_batch_report_uses_explicit_rejection_leader_hint() {
+    fn observe_batch_report_uses_the_leader_hint_carried_by_the_rejection_event() {
         let mut states: Vec<BatchWriteState<()>> = vec![BatchWriteState {
             local_proposal_id: LocalProposalId(7),
             options: WriteOptions::default(),
@@ -622,15 +589,18 @@ mod tests {
                     term: Term(3),
                     payload_len: 11,
                 },
+                leader_hint: Some(NodeId(2)),
             }],
             read_events: Vec::new(),
             leadership_transfer_events: Vec::new(),
             snapshot_events: Vec::new(),
             membership_events: Vec::new(),
+            // The hint travels with the event, so a report with no metrics
+            // snapshot still redirects the client.
             metrics: None,
         };
 
-        observe_batch_report(&mut states, &report, Some(NodeId(2)));
+        observe_batch_report(&mut states, &report);
 
         assert_eq!(
             states[0].outcome,

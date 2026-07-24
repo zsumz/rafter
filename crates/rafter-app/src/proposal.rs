@@ -116,9 +116,20 @@ pub enum ProposalEvent<R> {
         term: Term,
         result: R,
     },
+    /// The local node refused this proposal before replication.
+    ///
+    /// `leader_hint` is the leader this node believed in when the rejection was
+    /// recorded. It is a redirect hint, never authority: it may be `None`, it
+    /// may already be stale, and it may name this node when the rejection was
+    /// not about leadership. It is recorded at the same point as the hints on
+    /// [`crate::read::ReadEvent::Rejected`] and
+    /// [`crate::group::LeadershipTransferEvent::Rejected`], so a caller that
+    /// observes this rejection asynchronously sees the same value the immediate
+    /// [`ProposalBegin::Rejected`] carries for the same rejection.
     Rejected {
         local_proposal_id: LocalProposalId,
         reason: ProposalRejection,
+        leader_hint: Option<NodeId>,
     },
     /// The runtime can no longer determine whether this local proposal
     /// eventually committed and applied.

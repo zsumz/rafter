@@ -9,8 +9,8 @@ use std::{
 pub(crate) use rafter::{
     ClientProposalInput, Input as RaftInput, LeadershipTransferRejection, LocalProposalId,
     LogIndex, MembershipConfig, MembershipSet, Message, NodeConfig, NodeId, Output as RaftOutput,
-    ReadId, ReadIndexCancelReason, ReadIndexRejection, ReplicationProgress, RequestVote, Role,
-    SharedPayload, Term,
+    ProposalRejection, ReadId, ReadIndexCancelReason, ReadIndexRejection, ReplicationProgress,
+    RequestVote, Role, SharedPayload, Term,
 };
 pub(crate) use rafter_app::{
     group::RaftGroup,
@@ -345,6 +345,8 @@ pub(crate) enum ScriptedWriteMode {
     AppendThenMissingNode,
     PreAppendRuntimeError,
     PreAppendNoLifecycleMessage,
+    /// A follower that knows its leader and refuses the write.
+    RejectNotLeader,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -360,11 +362,17 @@ impl PersistedRaftRuntime for ScriptedWriteRuntime {
     }
 
     fn leader_hint(&self) -> Option<NodeId> {
-        Some(NodeId(1))
+        match self.mode {
+            ScriptedWriteMode::RejectNotLeader => Some(NodeId(2)),
+            _ => Some(NodeId(1)),
+        }
     }
 
     fn role(&self) -> Role {
-        Role::Leader
+        match self.mode {
+            ScriptedWriteMode::RejectNotLeader => Role::Follower,
+            _ => Role::Leader,
+        }
     }
 
     fn current_term(&self) -> Term {
@@ -401,9 +409,22 @@ impl PersistedRaftRuntime for ScriptedWriteRuntime {
 
     fn step(&mut self, input: RaftInput) -> Result<Vec<RaftOutput>, RaftRuntimeError> {
         match input {
-            RaftInput::TrackedClientProposal { proposal_id, .. } => {
+            RaftInput::TrackedClientProposal {
+                proposal_id,
+                payload,
+            } => {
                 if self.mode == ScriptedWriteMode::PreAppendRuntimeError {
                     return Err(RaftRuntimeError::LogPrefixDiverged { index: LogIndex(1) });
+                }
+                if self.mode == ScriptedWriteMode::RejectNotLeader {
+                    return Ok(vec![RaftOutput::RejectProposal {
+                        proposal_id: Some(proposal_id),
+                        reason: ProposalRejection::NotLeader {
+                            role: Role::Follower,
+                            term: Term(1),
+                            payload_len: payload.len(),
+                        },
+                    }]);
                 }
                 let mut outputs = Vec::new();
                 if self.mode != ScriptedWriteMode::PreAppendNoLifecycleMessage {
@@ -422,8 +443,9 @@ impl PersistedRaftRuntime for ScriptedWriteRuntime {
                     | ScriptedWriteMode::PreAppendNoLifecycleMessage => {
                         outputs.push(missing_node_message());
                     }
-                    ScriptedWriteMode::PreAppendRuntimeError => {
-                        unreachable!("pre-append runtime errors return before outputs are produced")
+                    ScriptedWriteMode::PreAppendRuntimeError
+                    | ScriptedWriteMode::RejectNotLeader => {
+                        unreachable!("these modes return before outputs are produced")
                     }
                 }
                 Ok(outputs)

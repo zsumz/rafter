@@ -202,6 +202,26 @@ fn in_memory_driver_reports_not_leader_before_election() {
     ));
 }
 
+/// The managed write path steps with metrics disabled, so a rejection observed
+/// there has no metrics snapshot to borrow a redirect from. The hint has to
+/// travel on the event or the client is told "not leader" with nowhere to go.
+#[test]
+fn write_rejection_reports_a_leader_hint_when_metrics_are_disabled() {
+    let driver = scripted_write_driver(ScriptedWriteMode::RejectNotLeader);
+    let handle = driver.handle();
+
+    let error = block_on(handle.write(("alpha".to_owned(), "one".to_owned())))
+        .expect_err("a follower refuses the write");
+
+    assert_eq!(
+        error,
+        WriteError::NotLeader {
+            leader_hint: Some(NodeId(2)),
+            term: Term(1),
+        }
+    );
+}
+
 #[derive(Debug, Default)]
 struct BatchRuntimeStats {
     step_batches: Vec<Vec<RaftInput>>,
