@@ -269,6 +269,149 @@ live process proves which bytes reached the file and what a fresh opener makes
 of them. It does not prove that a durability barrier reached the medium, and
 removing one leaves the suite green.
 
+## Process Composition
+
+The ledger runs as one operating-system process per replica. This is the
+**integration** composition level defined in
+[`docs/reference-consumers.md`](../../docs/reference-consumers.md), and this
+section says exactly what that level establishes and exactly what it does not.
+No claim below closes the 1.0 production-composition criterion.
+
+### The replica process
+
+One process owns one replica directory:
+
+```text
+<cluster-dir>/node-<id>/
+  raft/          Rafter's file-backed hard state, log, and snapshots
+  app/           the ledger journal
+  peer.addr      this replica's advertised peer address
+```
+
+Startup order is part of the contract, not an implementation detail:
+
+1. bind the client port and announce it, refusing service;
+2. acquire exclusive ownership of the replica directory;
+3. open the durable application store and read its applied floor;
+4. recover the Raft runtime *through that floor* and consume the recovery
+   outputs before anything else touches the group; then
+5. announce readiness and begin serving.
+
+Step 1 precedes step 2 deliberately. A replica that cannot yet recover is
+reachable and says so, rather than being indistinguishable from one that is not
+running.
+
+### Ownership
+
+Two live processes over one replica directory would interleave publications and
+corrupt each other. The invariant is that one process owns one directory, and
+it is enforced by the operating-system lock `rafter-storage` takes over the
+Raft store directory, acquired before the application journal is opened and
+held for the life of the process.
+
+The ledger journal has no lock of its own, so this invariant rests on that
+ordering rather than on the journal defending itself. A second process is
+refused at the Raft store and therefore never reaches the journal it would have
+corrupted. A replica that finds its directory owned waits for a bounded period
+rather than failing immediately, because a restarting replica legitimately
+races the exit of the incarnation it replaces.
+
+### Readiness
+
+A replica refuses every client operation until it has applied every command it
+knows to be committed — the promoted committed-application-index floor, never
+the commit index, because elections and membership changes commit entries the
+application is never told about. Status is reported whether or not the gate is
+open, so readiness is observable while it is closed.
+
+Readiness means recovery finished. It does **not** mean the replica is current
+with its cluster: a replica that recovers a durable floor below the cluster's
+committed index is ready, and its local reads may be behind until it catches
+up. Anything routing on readiness must understand it as a recovery signal, not
+a freshness one.
+
+### The link between replicas
+
+Peer messages travel over TCP in a consumer-owned frame format. Both the
+transport and its encoding are deployment policy: Rafter's contract asks a
+transport to deliver a message value to a peer and says nothing about the bytes
+in between.
+
+The encoding is consumer-owned rather than borrowed from Rafter's demo TCP
+transport for a boundary reason. That crate and `rafter-codec` are outside the
+set of Rafter crates the source-mode dependency override patches, so a consumer
+naming them would resolve two Rafter crates from the registry while resolving
+the rest from the checkout — the partially patched graph the program document
+warns about. The two structurally awkward payloads are not hand-written: log
+entries and snapshot metadata are encoded through `rafter-storage`'s published
+codecs, so no membership encoding is ever re-derived here.
+
+The link bounds what it can: a maximum frame length refused before its bytes
+are read, a bounded outbound queue per peer whose overflow drops frames, and
+deadlines on connect and write. Dropping is correct rather than lossy — Raft
+tolerates loss, reordering, and duplication, while a blocked send would convert
+one slow peer into a stalled replica.
+
+It authenticates nothing. It does not prove sender identity, prevent replay, or
+fence a removed member, and a message's claimed sender is the field inside the
+message rather than anything the connection established.
+
+### The client protocol
+
+Clients speak a line-oriented protocol over a second port. It carries the three
+terminal mutation outcomes intact across the process boundary, and the
+distinction between them is the same one this contract draws everywhere else:
+
+- a replicated response, with its disposition;
+- a provable refusal, emitted only when the application layer reported the
+  local node refusing the proposal before replication, or when the readiness
+  gate refused before the command was handed to `rafter-app` at all; and
+- an unknown outcome, which is everything else, including the answer a killed
+  replica never sent.
+
+The protocol authenticates nothing and identifies no client. A client identity
+in this ledger is a bounded slot number in the replicated state machine, which
+is deduplication vocabulary and not a principal.
+
+### What the process suite establishes
+
+Real processes are killed with `SIGKILL` and restarted from their own durable
+stores. The suite establishes that:
+
+- three processes elect a leader and serve the ledger over real sockets;
+- a session retry after the leader is killed returns the cached result rather
+  than executing again;
+- a write lost to a dying leader takes effect exactly once once its identity is
+  retried, under every reading of where the kill landed;
+- a replica killed mid-write recovers a durable applied floor from its own
+  journal and catches up past it;
+- readiness gates: a replica that cannot complete recovery refuses to
+  replicate and refuses to read, and answers the same request once recovery
+  completes; and
+- nothing acknowledged before a cluster-wide kill executes a second time after
+  it.
+
+Every history is recorded in this contract's vocabulary and checked by the same
+black-box linearizability checker the deterministic suites use.
+
+### What it deliberately does not establish
+
+- **Transport security.** Nothing is authenticated, encrypted, replay
+  protected, or fenced.
+- **Authenticated identity.** Neither a peer nor a client proves who it is.
+- **Persisted replica identity.** A replica's identity is an argument and a
+  directory name, not a durable, verifiable fact.
+- **Discovery.** Peers find each other through a file in a shared directory.
+- **Structured metrics and diagnostics.** Lifecycle is a handful of stdout
+  lines.
+- **Signal handling.** Clean shutdown is a client command. There is no signal
+  handler, because installing one from `std` alone is not possible and this
+  workspace takes no external dependency; `SIGTERM` and `SIGKILL` both
+  terminate abruptly, which the store's crash contract already covers.
+- **Durability barriers reaching the medium.** Killing a process proves what a
+  fresh opener makes of the bytes that reached the file. It does not prove that
+  a barrier reached the disk.
+
 ## History Vocabulary
 
 A client operation history contains:
@@ -458,12 +601,60 @@ Two limits stay. Raft's own durable state is still in-memory media the driver
 hands between incarnations, so this is application durability rather than
 process durability. And the crash tests interrupt publications inside one live
 process, which cannot establish that a durability barrier reached the medium.
-Both close with the durable process-composition slice, which is also where the
-production composition the program requires — authenticated transport, bounded
-frames, readiness gating after complete recovery — is assembled.
+
+The first of those closes with [Process Composition](#process-composition): a
+replica is an operating-system process over file-backed Raft stores, and a
+restart is a new process reading both durable stores back from disk. The second
+does not close there and does not close anywhere in this crate: killing a
+process proves that the bytes which reached the file are recovered correctly,
+which is a stronger statement than the in-process crash tests make but still
+not a statement about the medium.
 
 Two limits are deliberate. The checker decides bounded histories only, and says
 so rather than approximating. And the `NotCommitted` criterion is stated in
 terms of what `rafter-app` reports, not in terms of what the driver happens to
 know about its own network: a criterion the driver could only meet by privileged
 observation would not survive the move to real processes.
+
+## Process Composition Boundary
+
+The process slice makes a replica a process. It adds:
+
+- a `ledger-node` binary configured entirely by arguments and environment
+  variables, following the startup order under
+  [Process Composition](#process-composition);
+- a consumer-owned TCP peer link and peer frame format, reusing
+  `rafter-storage`'s published codecs for log entries and snapshot metadata;
+- a line-oriented client protocol that preserves this contract's three terminal
+  mutation outcomes across the process boundary;
+- process orchestration in test support that spawns, kills, and restarts real
+  processes with per-test scratch directories and bounded predicate waits; and
+- a process suite that kills replicas with `SIGKILL` and checks the resulting
+  histories with the same black-box checker.
+
+That criterion the previous slice worried about held. `NotCommitted` is still
+decided by what the application layer reports, and it crossed the process
+boundary without needing anything the client could not observe.
+
+The suite is labelled integration evidence, and it is `#[ignore]`d by default:
+`docs/reference-consumers.md` puts durable process tests in the main and
+nightly lanes, while the every-PR lane wants a package build and the
+deterministic suites. Both dependency modes still compile the binary and the
+suite, so a consumer that stopped building is caught everywhere; only running
+it is deferred.
+
+Three limits stay, and none of them is an oversight:
+
+1. The composition is the integration level. Everything under [what it
+   deliberately does not establish](#what-it-deliberately-does-not-establish)
+   remains open, and the production-composition criterion is untouched.
+2. Real time is load bearing in a way the deterministic driver never allowed.
+   The suite bounds it rather than eliminating it: every wait is a polled
+   predicate against a deadline, no test sleeps and assumes, and every test
+   that kills a process asserts the property that holds wherever the kill
+   landed. What real time did surface is worth recording — leadership genuinely
+   changes under load even with a surviving quorum, and pre-vote leader
+   stickiness means the survivor with the *longest* election timeout wins a
+   failover rather than the shortest.
+3. The ledger journal still has no lock of its own. One process per replica
+   directory is enforced by the Raft store's lock and by opening it first.

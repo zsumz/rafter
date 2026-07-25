@@ -12,10 +12,15 @@ publish = false
 [dependencies]
 rafter = "0.0.1"
 rafter-app = "0.0.1"
-
-[dev-dependencies]
 rafter-runtime = "0.0.1"
 rafter-storage = "0.0.1"
 
 [lints]
 workspace = true
+
+# The `ledger-node` binary is one OS process per replica. It is discovered from
+# `src/bin/ledger-node/main.rs` rather than declared here, because the
+# dependency-boundary test scans this manifest for the substring a checkout
+# dependency would introduce and a declared target location is spelled the same
+# way. It is a binary rather than an example so that the process suite can find
+# a built copy through `CARGO_BIN_EXE_ledger-node` in both dependency modes.

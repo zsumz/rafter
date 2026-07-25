@@ -13,10 +13,14 @@
 //! everything else in this file — delivery, isolation, elections, history
 //! recording — is identical for both.
 //!
-//! One thing is still deliberately modeled rather than real. Durable Raft state
+//! One thing here is deliberately modeled rather than real. Durable Raft state
 //! lives in in-memory stores that a retiring runtime hands back to the
-//! incarnation replacing it. Durable process composition arrives with the last
-//! slice.
+//! incarnation replacing it, so a restart in this driver is an in-process
+//! decomposition rather than a new process reading a disk. That is not a gap
+//! any more: `process_cluster.rs` runs the same application as real processes
+//! over file-backed Raft stores. The two drivers answer different questions and
+//! both are kept — this one decides *when* every node ticks and which envelope
+//! is delivered, which is what makes its failures reproducible.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;

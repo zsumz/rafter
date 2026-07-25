@@ -49,8 +49,16 @@
 //! over one directory would interleave appends and corrupt each other, and
 //! nothing here stops them; the staging name carries a process ID so an
 //! abandoned rewrite cannot be mistaken for a live one, which is a smaller
-//! claim. A durable process composition needs a real exclusive lock, and that
-//! arrives with the slice that runs these replicas as processes.
+//! claim.
+//!
+//! The process composition supplies the missing exclusion without changing this
+//! file. A replica process takes `rafter-storage`'s operating-system lock over
+//! its Raft store directory *before* it opens this journal, and holds it for
+//! the process's life, so a second process is refused at the sibling directory
+//! and never reaches this one. That is an ordering discipline stated in
+//! `CONTRACT.md` rather than a lock this store holds, and the difference
+//! matters to anyone embedding [`LedgerStore`] on its own: alone, it defends
+//! nothing.
 //!
 //! Unless a record says otherwise:
 //!
