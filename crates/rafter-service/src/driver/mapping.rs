@@ -207,7 +207,7 @@ where
     RE: Debug + fmt::Display,
 {
     match error {
-        GroupError::Poisoned { reason } => WriteError::Poisoned { reason },
+        GroupError::Poisoned { reason, .. } => WriteError::Poisoned { reason },
         GroupError::NonMonotonicLocalProposalId {
             local_proposal_id,
             last_seen_local_proposal_id,
@@ -246,7 +246,7 @@ where
     RE: Debug + fmt::Display,
 {
     match error {
-        GroupError::Poisoned { reason } => ReadError::Poisoned { reason },
+        GroupError::Poisoned { reason, .. } => ReadError::Poisoned { reason },
         GroupError::DuplicateReadId { read_id } => ReadError::ManagedInvariantViolation {
             message: format!(
                 "managed driver local-ID invariant violation: generated duplicate read id {read_id}"
@@ -281,7 +281,7 @@ where
     RE: Debug + fmt::Display,
 {
     match error {
-        GroupError::Poisoned { reason } => TransferLeadershipError::Poisoned { reason },
+        GroupError::Poisoned { reason, .. } => TransferLeadershipError::Poisoned { reason },
         GroupError::Runtime(error) => TransferLeadershipError::Storage {
             message: error.to_string(),
         },

@@ -16,7 +16,7 @@ use rafter::{
 };
 use rafter_runtime_api::PersistedRaftRuntime;
 
-use crate::error::{GroupError, StateMachineOperation};
+use crate::error::{ErrorCause, GroupError, StateMachineOperation};
 use crate::membership::{MembershipChange, MembershipEvent};
 use crate::metrics::RaftGroupMetrics;
 use crate::proposal::{

@@ -1,6 +1,6 @@
 use super::{
-    BTreeSet, Debug, GroupError, GroupFatalState, GroupResult, PersistedRaftRuntime, RaftGroup,
-    ReplicatedStateMachine, RuntimeGroupError, StateMachineOperation,
+    BTreeSet, Debug, ErrorCause, GroupError, GroupFatalState, GroupResult, PersistedRaftRuntime,
+    RaftGroup, ReplicatedStateMachine, RuntimeGroupError, StateMachineOperation,
 };
 
 impl<G, A, R> RaftGroup<G, A, R>
@@ -14,6 +14,7 @@ where
         if let GroupFatalState::Poisoned { reason } = &self.fatal_state {
             return Err(GroupError::Poisoned {
                 reason: reason.clone(),
+                cause: self.poison_cause.clone(),
             });
         }
         Ok(())
@@ -24,7 +25,7 @@ where
         operation: StateMachineOperation,
         source: A::Error,
     ) -> RuntimeGroupError<A, R> {
-        self.enter_poisoned(format!("{operation:?} failed"));
+        self.enter_poisoned(format!("{operation:?} failed"), None);
         GroupError::StateMachine { operation, source }
     }
 
@@ -32,12 +33,15 @@ where
         &mut self,
         reason: String,
     ) -> RuntimeGroupError<A, R> {
-        self.enter_poisoned(format!("malformed snapshot output: {reason}"));
+        // A malformed snapshot output has no underlying error, so there is
+        // nothing honest to retain beside the health state.
+        self.enter_poisoned(format!("malformed snapshot output: {reason}"), None);
         GroupError::MalformedSnapshot { reason }
     }
 
-    pub(super) fn enter_poisoned(&mut self, reason: String) {
+    pub(super) fn enter_poisoned(&mut self, reason: String, cause: Option<ErrorCause>) {
         self.fatal_state = GroupFatalState::Poisoned { reason };
+        self.poison_cause = cause;
         self.poisoned_waiters.proposals.extend(
             self.pending_proposals
                 .iter()

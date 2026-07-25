@@ -54,10 +54,13 @@ where
                 self.poison_with_state_machine_error(StateMachineOperation::ApplyBatch, source)
             })?;
         if results.len() != expected_count {
-            self.enter_poisoned(format!(
-                "state machine returned {} apply results for {expected_count} committed entries",
-                results.len()
-            ));
+            self.enter_poisoned(
+                format!(
+                    "state machine returned {} apply results for {expected_count} committed entries",
+                    results.len()
+                ),
+                None,
+            );
             return Err(GroupError::ApplyResultCountMismatch {
                 expected: expected_count,
                 actual: results.len(),
@@ -71,7 +74,10 @@ where
                 || result.term != *expected_term
                 || result.local_proposal_id != *expected_local_proposal_id
             {
-                self.enter_poisoned("state machine returned mismatched apply metadata".to_owned());
+                self.enter_poisoned(
+                    "state machine returned mismatched apply metadata".to_owned(),
+                    None,
+                );
                 return Err(GroupError::ApplyResultMetadataMismatch {
                     expected_index: *expected_index,
                     actual_index: result.index,
@@ -114,9 +120,12 @@ where
         let app_applied_index = self.app_applied_index()?;
         let group_applied_index = self.last_applied_index;
         if app_applied_index < group_applied_index {
-            self.enter_poisoned(format!(
-                "state machine reported applied index {app_applied_index} below group applied floor {group_applied_index}"
-            ));
+            self.enter_poisoned(
+                format!(
+                    "state machine reported applied index {app_applied_index} below group applied floor {group_applied_index}"
+                ),
+                None,
+            );
             return Err(GroupError::AppliedIndexBehind {
                 required: group_applied_index,
                 actual: app_applied_index,
@@ -127,10 +136,13 @@ where
             .iter()
             .find(|entry| entry.index <= app_applied_index)
         {
-            self.enter_poisoned(format!(
-                "refusing to replay committed entry {} because the state machine already reports applied index {app_applied_index}",
-                entry.index
-            ));
+            self.enter_poisoned(
+                format!(
+                    "refusing to replay committed entry {} because the state machine already reports applied index {app_applied_index}",
+                    entry.index
+                ),
+                None,
+            );
             return Err(GroupError::ApplyEntryAlreadyApplied {
                 entry_index: entry.index,
                 app_applied_index,
@@ -148,9 +160,10 @@ where
     ) -> GroupResult<A, R, LogIndex> {
         let actual = self.app_applied_index()?;
         if actual < required {
-            self.enter_poisoned(format!(
-                "state machine reported applied index {actual} below required {required}"
-            ));
+            self.enter_poisoned(
+                format!("state machine reported applied index {actual} below required {required}"),
+                None,
+            );
             return Err(GroupError::AppliedIndexBehind { required, actual });
         }
         Ok(actual)

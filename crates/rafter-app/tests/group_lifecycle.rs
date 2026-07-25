@@ -514,3 +514,57 @@ fn a_group_rebuilt_over_the_same_runtime_completes_a_reused_id_with_the_older_re
     // Allocating strictly above the returned watermark avoids all of it.
     assert!(reused_id <= parts.local_proposal_id_watermark.expect("watermark is set"));
 }
+
+/// The poison cause is an `Option` because some poisons have no underlying
+/// error, and a malformed snapshot output is the clearest of them: the group
+/// refuses the output before the state machine is touched, so there is nothing
+/// to preserve and nothing may be invented.
+#[test]
+fn a_group_poisoned_by_a_malformed_snapshot_reports_no_cause() {
+    let mut snapshot = test_snapshot(9);
+    snapshot.metadata.last_included_index = LogIndex::ZERO;
+    let mut group = scripted_group(RecordingStateMachine::default());
+
+    let error = group
+        .apply_raft_outputs(vec![RaftOutput::ApplySnapshot { snapshot }])
+        .expect_err("malformed snapshot output is fatal");
+
+    assert!(matches!(error, GroupError::MalformedSnapshot { .. }));
+    assert!(matches!(
+        group.fatal_state(),
+        GroupFatalState::Poisoned { .. }
+    ));
+    assert!(group.poison_cause().is_none());
+
+    // Every later operation reports the poison, and it reports no cause either.
+    let refused = group
+        .step(GroupInput::Tick)
+        .expect_err("a poisoned group refuses every input");
+    assert!(matches!(refused, GroupError::Poisoned { cause: None, .. }));
+
+    // And the absence survives decomposition rather than being reconstructed.
+    let parts = group.into_parts();
+    assert!(parts.poison_cause.is_none());
+}
+
+/// A metrics snapshot is cloned and compared on every step, so the health state
+/// it publishes stays a plain comparable value and the cause is held beside it.
+/// This pins the split rather than leaving it to review.
+#[test]
+fn a_metrics_snapshot_does_not_carry_the_poison_cause() {
+    let mut snapshot = test_snapshot(9);
+    snapshot.metadata.last_included_index = LogIndex::ZERO;
+    let mut group = scripted_group(RecordingStateMachine::default());
+    let _ = group
+        .apply_raft_outputs(vec![RaftOutput::ApplySnapshot { snapshot }])
+        .expect_err("malformed snapshot output is fatal");
+
+    let metrics = group.metrics();
+
+    assert_eq!(metrics, group.metrics());
+    assert_eq!(&metrics.fatal_state, group.fatal_state());
+    assert!(matches!(
+        metrics.fatal_state,
+        GroupFatalState::Poisoned { .. }
+    ));
+}

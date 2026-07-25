@@ -1,5 +1,5 @@
 use super::{
-    ApplyEntry, ApplyResult, BTreeMap, ClientRequestId, Debug, GroupError,
+    ApplyEntry, ApplyResult, BTreeMap, ClientRequestId, Debug, ErrorCause, GroupError,
     LeadershipTransferRejection, LocalProposalId, LogIndex, MembershipChange, MembershipConfig,
     MembershipEvent, NodeId, PeerEnvelope, PersistedRaftRuntime, Proposal, ProposalBegin,
     ProposalEvent, RaftGroupMetrics, ReadBarrierRequest, ReadEvent, ReadId, ReadOutcome, ReadProof,
@@ -50,6 +50,11 @@ pub struct RaftGroup<G, A, R> {
     pub(super) last_seen_read_id: Option<ReadId>,
     pub(super) last_applied_index: LogIndex,
     pub(super) fatal_state: GroupFatalState,
+    /// The error that poisoned this group, when the poison came from a typed
+    /// failure. Held beside [`RaftGroup::fatal_state`] rather than inside it,
+    /// because the health state is published in every metrics snapshot and a
+    /// snapshot must stay a plain comparable value.
+    pub(super) poison_cause: Option<ErrorCause>,
     pub(super) poisoned_waiters: PoisonedWaiters,
 }
 
@@ -211,6 +216,9 @@ pub struct RaftGroupParts<G, A, R> {
     pub local_proposal_id_watermark: Option<LocalProposalId>,
     pub read_id_watermark: Option<ReadId>,
     pub fatal_state: GroupFatalState,
+    /// The error that poisoned the group, when the poison came from a typed
+    /// failure. Carried so decomposition stays lossless.
+    pub poison_cause: Option<ErrorCause>,
     pub poisoned_waiters: PoisonedWaiters,
 }
 
@@ -318,6 +326,7 @@ impl<G, A, R> RaftGroup<G, A, R> {
             last_seen_read_id: None,
             last_applied_index: applied_index,
             fatal_state: GroupFatalState::Healthy,
+            poison_cause: None,
             poisoned_waiters: PoisonedWaiters::default(),
         }
     }
@@ -367,6 +376,19 @@ impl<G, A, R> RaftGroup<G, A, R> {
     #[must_use]
     pub fn fatal_state(&self) -> &GroupFatalState {
         &self.fatal_state
+    }
+
+    /// Returns the error that poisoned this group, if it is poisoned and the
+    /// poison came from a typed failure.
+    ///
+    /// [`GroupFatalState`] says *that* a group is poisoned and is published in
+    /// every metrics snapshot, so it stays a plain comparable value. The cause
+    /// is a diagnostic held beside it and is never published: a metrics
+    /// snapshot is cloned and compared on every step and must not carry a
+    /// `dyn Error`.
+    #[must_use]
+    pub fn poison_cause(&self) -> Option<&ErrorCause> {
+        self.poison_cause.as_ref()
     }
 
     /// Returns shared access to the owned replicated state machine.
@@ -427,9 +449,10 @@ impl<G, A, R> RaftGroup<G, A, R> {
     /// not have taken effect.
     ///
     /// Decomposition is allowed on a poisoned group, because poison is the state
-    /// a caller most needs to leave. `fatal_state` and `poisoned_waiters` travel
-    /// with the parts, so a caller that decomposes without inspecting the group
-    /// first can still resolve its clients.
+    /// a caller most needs to leave. `fatal_state`, `poison_cause`, and
+    /// `poisoned_waiters` travel with the parts, so a caller that decomposes
+    /// without inspecting the group first can still resolve its clients and
+    /// still report what broke.
     ///
     /// The returned watermarks are load-bearing when `runtime` is carried into a
     /// new group. A live runtime still tracks local proposal IDs for entries it
@@ -459,6 +482,7 @@ impl<G, A, R> RaftGroup<G, A, R> {
             local_proposal_id_watermark: self.last_seen_local_proposal_id,
             read_id_watermark: self.last_seen_read_id,
             fatal_state: self.fatal_state,
+            poison_cause: self.poison_cause,
             poisoned_waiters: self.poisoned_waiters,
         }
     }

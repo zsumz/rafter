@@ -1416,7 +1416,7 @@ fn write_error_from_rejection(
 /// caller downstream of this driver can only read the rendered message.
 fn write_error_from_group(error: &LockGroupError) -> WriteError {
     match error {
-        GroupError::Poisoned { reason } => WriteError::Poisoned {
+        GroupError::Poisoned { reason, .. } => WriteError::Poisoned {
             reason: reason.clone(),
         },
         GroupError::StateMachine { source, .. } => WriteError::ApplyFailed {
@@ -1430,7 +1430,7 @@ fn write_error_from_group(error: &LockGroupError) -> WriteError {
 
 fn read_error_from_group(error: &LockGroupError) -> ReadError {
     match error {
-        GroupError::Poisoned { reason } => ReadError::Poisoned {
+        GroupError::Poisoned { reason, .. } => ReadError::Poisoned {
             reason: reason.clone(),
         },
         GroupError::StateMachine { source, .. } => ReadError::ApplyFailed {
@@ -1449,7 +1449,7 @@ fn read_error_from_group(error: &LockGroupError) -> ReadError {
 
 fn transfer_error_from_group(error: &LockGroupError) -> TransferLeadershipError {
     match error {
-        GroupError::Poisoned { reason } => TransferLeadershipError::Poisoned {
+        GroupError::Poisoned { reason, .. } => TransferLeadershipError::Poisoned {
             reason: reason.clone(),
         },
         error => TransferLeadershipError::Transport {

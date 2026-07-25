@@ -4288,19 +4288,30 @@ crate upward, so no change is written twice and every step ends green.
 10. **`ErrorCause` and the app-layer poison cause.** `rafter-app` only, and
     additive: the new type, `GroupError::Poisoned { cause }`,
     `RaftGroup::poison_cause`, `RaftGroupParts::poison_cause`, and the retention
-    in `enter_poisoned`. `GroupError` and `RaftGroupParts` derive `Debug` only,
-    so no implementor and no trait impl changes. Doing it first means the two
-    crates above it have a cause type to preserve into before either of them
+    slot in `enter_poisoned`. `GroupError` and `RaftGroupParts` derive `Debug`
+    only, so no implementor and no trait impl changes. Doing it first means the
+    two crates above it have a cause type to preserve into before either of them
     needs one.
+
+    The retention is plumbing here and only plumbing: `ErrorCause::new` requires
+    `Error + Send + Sync + 'static`, and the only poison path with a typed error
+    to preserve is `poison_with_state_machine_error`, whose source is
+    `A::Error` — unbounded until step 11. Supplying a bound in this step would
+    propagate it to every `RaftGroup` method and *be* step 11's break, in the
+    wrong place. So every caller passes `None` here, the two poisons that
+    genuinely have no underlying error keep passing `None` forever, and step 11
+    wires the state-machine path as the first producer.
 11. **`ReplicatedStateMachine`, both changes at once.** The `Error` bound, the
     required `SNAPSHOT_SUPPORT` const, the two provided snapshot bodies and
-    `ApplicationSnapshotError`, `GroupError`'s three new variants, and the
-    declaration check in `apply_snapshot_output`. Then one pass over all ten
-    implementors: six declare a typed error, seven delete or rewrite their
-    snapshot methods, and the two examples that install a snapshot by clearing
-    their state are fixed rather than carried forward. Breaking, and the only
-    step whose adoption is expected to change behavior in files nobody set out
-    to touch; see [Coupled designs](#coupled-designs) for why it is not split.
+    `ApplicationSnapshotError`, `GroupError`'s three new variants, the
+    declaration check in `apply_snapshot_output`, and — now that the bound
+    exists — the state-machine poison cause step 10 left unsupplied. Then one
+    pass over all ten implementors: six declare a typed error, seven delete or
+    rewrite their snapshot methods, and the two examples that install a snapshot
+    by clearing their state are fixed rather than carried forward. Breaking, and
+    the only step whose adoption is expected to change behavior in files nobody
+    set out to touch; see [Coupled designs](#coupled-designs) for why it is not
+    split.
 12. **The `rafter-service` re-export completion.** `DriverFuture`,
     `StateMachineOperation`, the `metrics_watch_from_current` deletion, and the
     `public_surface.rs` test. Small, independent, and placed first in the
