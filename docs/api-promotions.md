@@ -15,9 +15,11 @@ document designs the better shape and says why.
 The first five entries all come from the replicated ledger's `rafter-app`
 adapter and its consumer-owned deterministic driver. They are not five
 unrelated additions: two of them are one change to step reporting, two are one
-restart surface, and the fifth completes the restart story. The couplings are
-recorded in [Coupled designs](#coupled-designs), and the implementation
-sequence in [Adoption order](#adoption-order).
+restart surface, and the fifth completes the restart story. The sixth comes
+from the fenced lock service and is the only entry so far that corrects a
+behavior rather than exposing a missing one. The couplings are recorded in
+[Coupled designs](#coupled-designs), and the implementation sequence in
+[Adoption order](#adoption-order).
 
 Every entry is a pre-1.0 change. Breaking changes are permitted here;
 gratuitous ones are not. Each entry states which parts break and why the break
@@ -91,7 +93,7 @@ What is reachable today is narrower and still disqualifying:
   and `ReadOutcome::Pending` carries `peer_messages` only. `DurableRaftNode`
   resolves those directives into `Send` before the app sees them, so the loss
   lands on embedders with their own `PersistedRaftRuntime` — of which this
-  workspace already has six.
+  workspace already has seven.
 - **Another barrier's granted proof.** Every step ends in
   `complete_ready_reads`
   ([`crates/rafter-app/src/group/read.rs:237-295`](../crates/rafter-app/src/group/read.rs)),
@@ -1175,9 +1177,682 @@ same redirect for an asynchronously observed rejection as for an immediate one.
 `rafter-service` deletes `rejection_leader_hint` and stops applying one hint to
 a whole batch.
 
+## Read-Barrier Application Floor
+
+### Origin
+
+A linearizable read cannot be answered after a leader election until an
+unrelated application entry commits. This is not a delay measured in rounds; on
+a read-only tail it never ends.
+
+Every term's leader appends a `Noop` as its first entry
+([`crates/rafter/src/node/lifecycle.rs:42`](../crates/rafter/src/node/lifecycle.rs)),
+and the kernel refuses read barriers until that entry commits
+([`crates/rafter/src/node/read_index.rs:50-52`](../crates/rafter/src/node/read_index.rs)).
+The moment it commits, barriers are granted at
+`read_index = self.volatile.commit_index`
+([`:71`](../crates/rafter/src/node/read_index.rs)) — which is the `Noop`. The
+state machine never sees that entry: `apply_committed_into` advances the
+kernel's applied index over every committed entry but emits `Output::Apply`
+only for `LogEntryKind::Application`
+([`crates/rafter/src/node/commit/apply.rs:66-90`](../crates/rafter/src/node/commit/apply.rs)).
+`complete_ready_reads` then compares the barrier against the state machine's own
+cursor
+([`crates/rafter-app/src/group/read.rs:293-302`](../crates/rafter-app/src/group/read.rs)):
+
+```rust
+let required_applied_index = max(read_index, min_applied_index.unwrap_or(read_index));
+if local_applied_index >= required_applied_index {
+```
+
+`local_applied_index` comes from `A::applied_index()`, which advances only
+through `apply_batch` and `install_snapshot`
+([`crates/rafter-app/src/group/apply.rs:93-94`](../crates/rafter-app/src/group/apply.rs),
+[`crates/rafter-app/src/group/snapshot.rs:29-32`](../crates/rafter-app/src/group/snapshot.rs)).
+It can never equal a `Noop` index. The barrier therefore reports
+`ReadEvent::FreshnessUnavailable` on that step, and on every step after it,
+forever. A brand-new cluster is the extreme case: its first-ever entry is the
+`Noop` at index 1, so its first-ever linearizable read stalls until somebody
+writes.
+
+The fenced-lock consumer pinned the finding rather than assuming it away
+([`reference/fenced-lock/tests/adapter_cluster.rs:403-422`](../reference/fenced-lock/tests/adapter_cluster.rs)):
+
+```rust
+// API finding, pinned here rather than assumed away. A new leader's only
+// entry in its own term is a Raft noop, and a noop never reaches the state
+// machine, so the barrier's required applied index is briefly unreachable
+// and the query cannot answer yet. Whatever it does, it must never answer
+// from state that predates the leader change.
+```
+
+The word "briefly" is the consumer being generous. The test can only assert
+"fresh answer or no answer", then commits an idempotent `open_session` command
+to lift the floor before it may assert an answer at all. Its driver's
+freshness arm — "Keep waiting; the next round applies more"
+([`reference/fenced-lock/tests/support/cluster.rs:501-503`](../reference/fenced-lock/tests/support/cluster.rs))
+— spins the whole `MAX_ROUNDS` budget and then abandons the read
+([`:1198-1213`](../reference/fenced-lock/tests/support/cluster.rs)).
+
+Two production paths pay the same bill, and neither is a reference consumer.
+
+- **`rafter-service`.** `handle_linearizable_freshness_gap` abandons the read
+  and returns `ReadError::FreshnessUnavailable` as soon as the network drains
+  ([`crates/rafter-service/src/driver/read.rs:139-156`](../crates/rafter-service/src/driver/read.rs)).
+  After an election the network does drain, because nothing else is happening.
+  The managed driver therefore fails every linearizable read after every
+  election until a write commits, and it passes `min_applied_index: None`
+  ([`:174-206`](../crates/rafter-service/src/driver/read.rs)), so the caller
+  cannot work around it.
+- **`rafter-maelstrom`.** It has the same defect independently, reached through
+  the kernel rather than through `RaftGroup`. `flush_reads` gates on
+  `self.app.applied >= read.read_index`
+  ([`crates/rafter-maelstrom/src/client.rs:166-182`](../crates/rafter-maelstrom/src/client.rs)),
+  and `app.applied` advances only in `apply_committed_command` and on snapshot
+  install
+  ([`crates/rafter-maelstrom/src/app.rs:174,190`](../crates/rafter-maelstrom/src/app.rs)).
+  It is worse there: `flush_reads` is called only from the grant arm, from an
+  apply, and from a snapshot install
+  ([`crates/rafter-maelstrom/src/raft.rs:100,168`](../crates/rafter-maelstrom/src/raft.rs),
+  [`crates/rafter-maelstrom/src/raft/snapshots.rs:46`](../crates/rafter-maelstrom/src/raft/snapshots.rs)),
+  so a stalled read is never re-examined at all. `scripts/maelstrom-lin-kv` is
+  registered evidence for `RD-04` and `RD-06`
+  ([`verification/raft-invariants.yaml:1687-1691`](../verification/raft-invariants.yaml));
+  the workload is write-mixed, so the stall shows up as post-partition read
+  latency rather than as a failure. The defect is inside the evidence.
+
+### Classification
+
+Raft mechanism, following directly from a documented correctness contract —
+and, unusually for this document, from a contradiction between two of them.
+
+The kernel defines what a state machine can ever observe: `Application` entries
+produce `Output::Apply`, `Configuration` and `Noop` produce none
+([`crates/rafter/src/node/commit/apply.rs:66-69`](../crates/rafter/src/node/commit/apply.rs)).
+`ReplicatedStateMachine` has exactly two state-changing entry points,
+`apply_batch` and `install_snapshot`
+([`crates/rafter-app/src/state_machine.rs:60-97`](../crates/rafter-app/src/state_machine.rs)),
+and neither is reachable from a non-application entry. Meanwhile
+`ReadConsistency::Linearizable` promises the read "requires the local state
+machine to be applied through the returned read index"
+([`crates/rafter-app/src/read.rs:14-16`](../crates/rafter-app/src/read.rs)). The
+two contracts are jointly unsatisfiable whenever the read index lands on an
+entry the first contract guarantees the state machine will never be told about.
+That is not a missing feature; it is a requirement the library states and then
+makes impossible to meet.
+
+The predicate that replaces it — has this state machine applied every committed
+*application* entry at or below the read index — is entirely about Raft log
+structure and contains no application policy, exactly as for
+[Committed Application Index](#committed-application-index). This entry
+generalizes that one; see [Coupled designs](#coupled-designs).
+
+The rule's "at least one other plausible consumer" test is not needed here, but
+it is satisfied by demonstration rather than plausibility: `rafter-service` and
+`rafter-maelstrom` both contain the defect today, in tree, written independently
+of each other and of the consumer that found it.
+
+**Why no verification artifact caught it.** `RD-04` reads "The application
+returns a read result only after its local applied index reaches the granted
+read index"
+([`docs/raft-invariants.md:458`](./raft-invariants.md)). "Local applied index"
+names two different quantities in this repository, and every oracle picked the
+one that cannot fail. The simulator sources it from `Node::applied_index()`
+([`crates/rafter-sim/src/inspection.rs:87-91`](../crates/rafter-sim/src/inspection.rs)),
+the kernel cursor, which advances over `Noop` and `Configuration`; its check
+`proof.local_applied_index < proof.read_index`
+([`crates/rafter-sim/src/model_check/invariants/client.rs:177-188`](../crates/rafter-sim/src/model_check/invariants/client.rs))
+is therefore near-vacuous. The TLA model has no `Noop` entry kind at all — only
+`Command` and `Configuration`
+([`specs/tla/raft/Raft.tla:68-69`](../specs/tla/raft/Raft.tla)) — and its
+`Apply` action advances `AppliedThrough` one entry at a time regardless of kind
+([`:941-954`](../specs/tla/raft/Raft.tla)), so the model cannot express the gap
+either. `RD-04` has no TLA coverage; the only model-checked read invariant is
+`RD-03`, which constrains `readIndex >= committedFloor`
+([`:546-551`](../specs/tla/raft/Raft.tla)) and is untouched by this change. The
+app layer implemented `RD-04`'s words against the quantity the app layer owns,
+and it is the only layer where those words are false.
+
+### Design
+
+Three changes, one idea: **the barrier's required floor is the highest
+committed application entry at or below the read index, resolved once when the
+read index is granted.**
+
+#### The runtime derivation
+
+`PersistedRaftRuntime::committed_application_index` already answers this
+question — bounded at the commit index rather than at an arbitrary index. It is
+not close enough to reuse, and the reason is precise: **a barrier's read index
+is captured at registration and consumed arbitrarily later.**
+`read_index_batch` stores `read_index: self.volatile.commit_index` into the
+pending round
+([`crates/rafter/src/node/read_index.rs:71`](../crates/rafter/src/node/read_index.rs))
+and grants it only when a later heartbeat round is quorum-confirmed
+([`:108-140`](../crates/rafter/src/node/read_index.rs)); after the grant,
+`complete_ready_reads` re-evaluates the barrier on every subsequent step. The
+commit index advances throughout. So `commit_index > read_index` is the normal
+case on a busy leader, and an uncapped floor would require the read to wait for
+a write it is not ordered after.
+
+The required method is therefore generalized to take its bound, and the
+existing one becomes a provided method defined in terms of it, so the two can
+never disagree and no implementor answers the same question twice.
+
+In `crates/rafter-runtime-api/src/lib.rs`:
+
+```rust
+/// Returns the index the local state machine must reach to have consumed
+/// every committed application command at or below `index`.
+///
+/// This is the highest index at or below both `index` and
+/// [`PersistedRaftRuntime::commit_index`] whose log entry carries an
+/// application payload; when no such entry is retained it is the snapshot
+/// boundary, which subsumes every application entry it covers, capped at
+/// `index`. It is `LogIndex::ZERO` when the node holds no snapshot and has
+/// committed no application entry at or below `index`.
+///
+/// The result never exceeds `index`. That is the load-bearing property for a
+/// read barrier: elections and membership changes commit entries the state
+/// machine never sees, so a barrier that required its state machine to reach
+/// the read index itself would require an index the kernel guarantees it will
+/// never report. Requiring more than this is not conservative — it makes a
+/// read wait for a write that is not ordered before it.
+///
+/// The value is non-decreasing in `index`, and non-decreasing over time for a
+/// fixed `index` within one node incarnation: committed entries are never
+/// truncated, and compaction can only raise the answer to a boundary the
+/// state machine has itself already reached.
+///
+/// The value is local, and it is not a freshness proof. Pairing it with a
+/// granted read index is what makes a read linearizable; on its own it says
+/// only what this replica knows.
+///
+/// Implementations must report the true value for their own log rather than
+/// an optimistic bound. A runtime that reports an index below the highest
+/// committed application entry at or below `index` lets a barrier grant
+/// before the state machine has applied an acknowledged write.
+fn committed_application_index_through(&self, index: LogIndex) -> LogIndex;
+
+/// Returns the index the local state machine must reach to have consumed
+/// every committed application command.
+///
+/// This is [`PersistedRaftRuntime::committed_application_index_through`] at
+/// the commit index, and it is the readiness predicate: compare it with the
+/// state machine's applied index after recovery. Implementations should not
+/// override it.
+///
+/// Elections and membership changes commit entries the state machine never
+/// sees, so this is not `commit_index`, and a fully caught-up state machine
+/// may trail the committed index forever.
+fn committed_application_index(&self) -> LogIndex {
+    self.committed_application_index_through(self.commit_index())
+}
+```
+
+`DurableRaftNode`'s existing backward scan
+([`crates/rafter-runtime/src/lib.rs:411-424`](../crates/rafter-runtime/src/lib.rs))
+already has the shape; it gains a bound, replacing `commit_index` with
+`min(index, commit_index)` in the `find` predicate and returning
+`min(snapshot_index, index)` instead of `snapshot_index` when the scan finds
+nothing. Its cost profile is unchanged and its documented rationale — O(1) on a
+busy group's tail, worst case the committed retained suffix — still holds. The
+kernel does not change.
+
+`RaftGroup` gains the matching forwarder beside the one it already has
+([`crates/rafter-app/src/group/output.rs:71-74`](../crates/rafter-app/src/group/output.rs)),
+because it is the tool a caller needs to turn an arbitrary index into a floor a
+state machine can actually reach:
+
+```rust
+/// Returns the index this group's state machine must reach to have applied
+/// every committed application command at or below `index`.
+///
+/// Use this to convert a raw log index into a reachable applied floor. A
+/// commit index, a read index, or a snapshot boundary may name an entry the
+/// state machine will never be told about, and waiting for the state machine
+/// to report that index waits forever. An index taken from
+/// [`crate::proposal::ProposalEvent::Applied`] never needs the conversion: it
+/// already names an application entry.
+///
+/// This is what [`RaftGroup::read`] applies to a granted read index on the
+/// caller's behalf. It is not applied to a caller-supplied
+/// `min_applied_index`; see [`crate::read::ReadRequest`].
+#[must_use]
+pub fn committed_application_index_through(&self, index: LogIndex) -> LogIndex;
+```
+
+#### Resolving the floor once, at grant
+
+`PendingRead` currently stores the granted read index alone
+([`crates/rafter-app/src/group/types.rs:84-87`](../crates/rafter-app/src/group/types.rs)).
+It stores the resolved floor with it:
+
+```rust
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct GrantedReadIndex {
+    /// What the quorum round certified.
+    pub(super) read_index: LogIndex,
+    /// The highest committed application entry at or below `read_index`, and
+    /// therefore the applied index a state machine can actually reach.
+    pub(super) application_floor: LogIndex,
+}
+
+pub(super) struct PendingRead {
+    pub(super) min_applied_index: Option<LogIndex>,
+    pub(super) granted: Option<GrantedReadIndex>,
+}
+```
+
+The `RaftOutput::ReadIndexGranted` arm of `record_raft_output`
+([`crates/rafter-app/src/group/output.rs:414-421`](../crates/rafter-app/src/group/output.rs))
+resolves the floor there, once per barrier, rather than re-deriving it on every
+step for every pending read. It must compute the floor before taking the
+`&mut` borrow of the pending entry.
+
+`complete_ready_reads` and `try_complete_pending_query_read`
+([`crates/rafter-app/src/group/read.rs:300-302,490-491`](../crates/rafter-app/src/group/read.rs))
+then read a stored scalar, so the per-step cost of the read table is exactly
+what it is today, and both compute:
+
+```rust
+let required_applied_index = match min_applied_index {
+    Some(min) => max(granted.application_floor, min),
+    None => granted.application_floor,
+};
+```
+
+The changed default is load-bearing and easy to miss: today the `None` case
+folds in `read_index`, and leaving it there would make `max` re-raise the floor
+to exactly the value this change removes.
+
+Resolving at grant rather than per evaluation is not only cheaper. It makes the
+floor a fixed property of the barrier, so a caller polling toward
+`ReadEvent::FreshnessUnavailable { required_applied_index }` sees a stable
+target, and a later compaction or commit cannot move it.
+
+#### The correctness argument
+
+The claim to establish is that granting once the state machine has applied
+every application entry at or below the read index serves exactly the
+linearizable state, and it rests on three facts already in the repository.
+
+1. **The read index is a sound cut.** A granted `read_index` is the leader's
+   commit index at registration, confirmed by a quorum round at or after
+   registration
+   ([`crates/rafter/src/node/read_index.rs:18-21,67-83,108-140`](../crates/rafter/src/node/read_index.rs)),
+   with barriers refused until the leader has committed in its own term
+   ([`:50-52`](../crates/rafter/src/node/read_index.rs)). Every write that
+   completed before the read began is therefore committed at an index at or
+   below `read_index`. This is `RD-03`, model-checked as
+   `ReadBarrierLinearizability`
+   ([`specs/tla/raft/Raft.tla:546-551`](../specs/tla/raft/Raft.tla)), and this
+   change does not touch it.
+2. **Application state is a function of application entries alone.** The kernel
+   dispatches `Output::Apply` only for `LogEntryKind::Application`
+   ([`crates/rafter/src/node/commit/apply.rs:66-90`](../crates/rafter/src/node/commit/apply.rs)),
+   and the only other input to a `ReplicatedStateMachine` is
+   `install_snapshot`, which carries a boundary the snapshot already covers.
+   A `Noop` or `Configuration` entry cannot change any state a query can
+   observe, because no code path exists to tell the state machine it happened.
+3. **`applied_index` is a faithful witness.** The state machine's cursor takes
+   values only at application-entry indexes and snapshot boundaries, advances
+   in log order, and is verified against the group's floor on every batch
+   ([`crates/rafter-app/src/group/apply.rs:110-157`](../crates/rafter-app/src/group/apply.rs));
+   a state machine that reports a cursor below the floor, or that is handed an
+   already-applied entry, poisons the group. So
+   `applied_index >= application_floor(read_index)` holds exactly when every
+   application entry at or below `read_index` has been incorporated — "highest"
+   is sufficient precisely because applies are ordered and gapless.
+
+(1) and (2) give: every write that completed before the read began is an
+application entry at index at or below `read_index`. (3) gives: the floor
+predicate is true exactly when all of them are incorporated. The state the
+query then reads is the state machine's *current* state, at
+`local_applied_index >= required_applied_index` — the barrier certifies a lower
+bound on freshness, never a point to rewind to, which is why `ReadBarrier`
+carries both numbers
+([`crates/rafter-app/src/state_machine.rs:124-129`](../crates/rafter-app/src/state_machine.rs)).
+Serving state fresher than the cut is still linearizable; it places the read's
+linearization point later within its own interval.
+
+**What breaks if this is wrong.** A stale read: the barrier grants, the query
+answers from a state missing a write the client already saw acknowledged, and
+`RD-04` and `RD-06` both fail. There are exactly two ways to get there, and
+both are worth stating because they are what the negative tests must attack.
+The first is a log entry kind that changes application-visible state without
+being `LogEntryKind::Application` — impossible today, and the floor is defined
+against the same `application_payload()` predicate the kernel's own dispatch
+uses
+([`crates/rafter/src/types/configuration.rs:178-181`](../crates/rafter/src/types/configuration.rs)),
+so the two cannot drift apart without breaking simultaneously. The second is a
+state machine whose `applied_index` runs ahead of what it has durably
+incorporated; that is already forbidden
+([`crates/rafter-app/src/state_machine.rs:26-30`](../crates/rafter-app/src/state_machine.rs))
+and is not newly load-bearing here — today's floor trusts the same number.
+
+### Semantics and edge cases
+
+- **Mixed logs: an application entry above the read index must not be
+  required.** With `Noop@6` as the read index and an application entry
+  committing at 7 while the barrier's round is in flight, the floor is the
+  highest application entry at or below 6. Entry 7 is not ordered before this
+  read and waiting for it is a defect, not caution. This is the case an
+  uncapped `committed_application_index()` gets wrong, and it is the reason the
+  method is generalized rather than reused.
+- **Caller-supplied floors are honored verbatim.** `min_applied_index` is not
+  capped, not lowered, and not snapped to an application entry. A caller may be
+  expressing "at least as fresh as the write I already observed", and Rafter
+  must not silently weaken that. The natural source of the value —
+  `ProposalEvent::Applied { index }` — always names an application entry, so
+  the natural usage is always reachable. A caller that sources it from a commit
+  index or a read index gets an unreachable floor and a permanent
+  `FreshnessUnavailable`; the documented remedy is
+  `RaftGroup::committed_application_index_through`, not a silent repair.
+- **Local reads are unaffected, and keep the same trap.** `read_local` bases
+  its requirement on the local applied index, never on a read index
+  ([`crates/rafter-app/src/group/read.rs:347-350`](../crates/rafter-app/src/group/read.rs)),
+  so `LocalFreshnessUnavailable` is reachable only through a caller-supplied
+  `min_applied_index`. That path is unchanged and gets the same doc pointer.
+- **No follower or lease read path exists to fix.** The kernel rejects
+  `ReadIndex` on non-leaders
+  ([`crates/rafter/src/node/read_index.rs:34-40`](../crates/rafter/src/node/read_index.rs)),
+  and `ReadConsistency::LeaseRead` is refused by the app layer
+  ([`crates/rafter-app/src/group/read.rs:198-209`](../crates/rafter-app/src/group/read.rs)).
+  The kernel's lease fast path grants at the commit index of that moment
+  ([`crates/rafter/src/node/read_index.rs:58-65`](../crates/rafter/src/node/read_index.rs)),
+  so if lease support is later enabled in this layer it arrives through the
+  same `ReadIndexGranted` arm and inherits the fix with no further work.
+- **Snapshot boundary above the read index.** The floor is capped at the read
+  index, so a boundary above it yields a floor of exactly the read index —
+  which a state machine that installed the snapshot has already passed. The
+  barrier grants immediately, as it should: the snapshot subsumes every entry
+  in the cut.
+- **Snapshot boundary below the read index.** The scan covers
+  `(snapshot_index, read_index]` and falls back to the boundary. Correct: the
+  boundary subsumes everything under it, and the retained window holds every
+  committed entry above it.
+- **The provided method is exactly today's behavior.** The equivalence rests on
+  `snapshot_index <= commit_index`, which the kernel maintains: installing a
+  snapshot raises the commit index to the boundary when it sits below
+  ([`crates/rafter/src/node/log.rs:209-211`](../crates/rafter/src/node/log.rs)).
+  At `index = commit_index` the new `min(snapshot_index, index)` fallback is
+  therefore `snapshot_index`, which is what
+  `DurableRaftNode::committed_application_index` returns today. The cap only
+  ever bites for a bound below the commit index, which is the read-barrier case
+  and no existing caller.
+- **Compaction after the grant cannot move the floor.** Because the floor is
+  resolved at grant and stored, a later compaction is invisible to the barrier.
+  Even if it were re-derived, compaction can only raise the answer to a
+  boundary at or below the state machine's own applied index — `build_snapshot`
+  compacts at the applied index, and an install forces the cursor to the
+  boundary — so it can never make a satisfiable barrier unsatisfiable.
+- **The proof's two indexes stop being the same number.** `ReadProof` already
+  separates `read_index` from `required_applied_index`
+  ([`crates/rafter-app/src/read.rs:133-142`](../crates/rafter-app/src/read.rs));
+  the type anticipated this distinction and the app layer collapsed it. After
+  this change `required_applied_index <= read_index` unless `min_applied_index`
+  raised it, and each field means what it says: what the quorum certified, and
+  what the state machine had to reach. No type changes.
+- **A read barrier certifies application freshness, not membership freshness.**
+  `Configuration` entries change kernel state that a query cannot observe
+  through `ReplicatedStateMachine`; callers needing committed membership read
+  `RaftGroup::metrics().membership`, which is not barrier-gated and never was.
+  Worth stating because the TLA model folds membership into its application
+  state ([`specs/tla/raft/Raft.tla:148-151`](../specs/tla/raft/Raft.tla)) while
+  the implementation does not.
+- **Poison and cancellation are unchanged.** The floor changes when a barrier is
+  satisfied, not which barriers exist, so rejection, cancellation,
+  `cancel_read`, and poison drain paths are untouched.
+- **Fakes must answer for whatever they model.** A runtime with no log answers
+  from whatever it does model, exactly as for the uncapped method. The contract
+  is stated in terms a scripted runtime can meet: a fake that models a set of
+  application-entry indexes answers by taking the greatest one at or below the
+  bound.
+
+### Blast radius
+
+Breaking: `PersistedRaftRuntime`'s required method changes shape. The kernel
+changes one doc comment and no code.
+
+| File | Change |
+| --- | --- |
+| [`crates/rafter-runtime-api/src/lib.rs:51-77`](../crates/rafter-runtime-api/src/lib.rs) | `committed_application_index_through` required; `committed_application_index` provided |
+| [`crates/rafter-runtime/src/lib.rs:397-424,810-812`](../crates/rafter-runtime/src/lib.rs) | Bound the scan; drop the now-provided trait method |
+| [`crates/rafter-app/src/group/types.rs:84-87`](../crates/rafter-app/src/group/types.rs) | `GrantedReadIndex`; `PendingRead.granted` |
+| [`crates/rafter-app/src/group/output.rs:414-421`](../crates/rafter-app/src/group/output.rs) | Resolve the floor at grant; add the `RaftGroup` forwarder |
+| [`crates/rafter-app/src/group/read.rs:300-302,490-491`](../crates/rafter-app/src/group/read.rs) | Use the stored floor; `min_applied_index` defaults to `ZERO`, not `read_index` |
+| [`crates/rafter-app/src/read.rs:13-16,120-142`](../crates/rafter-app/src/read.rs) | `ReadConsistency::Linearizable`, `ReadRequest`, and `ReadProof` docs |
+| [`crates/rafter/src/node/read_index.rs:1-5`](../crates/rafter/src/node/read_index.rs) | Module doc: "the granted index" becomes "every application entry at or below the granted index" |
+| [`crates/rafter-maelstrom/src/client.rs:166-182`](../crates/rafter-maelstrom/src/client.rs) | `flush_reads` gates on the runtime's floor; add a tick-driven retry so a stalled read is re-examined |
+
+Every `PersistedRaftRuntime` implementor changes. There are eight in the tree:
+`DurableRaftNode` plus seven others. Two earlier entries said "six" — the
+embedder count under [Full-Fidelity Query Reads](#full-fidelity-query-reads) and
+the implementor count in [Adoption order](#adoption-order); both were off by one
+and are corrected in place. The blast-radius table under
+[Committed Application Index](#committed-application-index) was always complete.
+
+| File | Type | Change |
+| --- | --- | --- |
+| [`crates/rafter-runtime/src/lib.rs:777`](../crates/rafter-runtime/src/lib.rs) | `DurableRaftNode` | Real; bound the scan |
+| [`crates/rafter-app/tests/support/mod.rs:185,216-232`](../crates/rafter-app/tests/support/mod.rs) | `KernelRuntime` | Owns a real kernel; bound its scan the same way |
+| [`crates/rafter-app/tests/support/mod.rs:333,364-366`](../crates/rafter-app/tests/support/mod.rs) | `ScriptedRuntime` | No log; needs a scripted application-entry index set |
+| [`crates/rafter-service/tests/support/mod.rs:242,281-283`](../crates/rafter-service/tests/support/mod.rs) | `ScriptedReadRuntime` | Commits no application entry; still `ZERO`, now bounded |
+| [`crates/rafter-service/tests/support/mod.rs:370,409-411`](../crates/rafter-service/tests/support/mod.rs) | `ScriptedWriteRuntime` | Appends but never commits; still `ZERO` |
+| [`crates/rafter-service/tests/in_memory_write.rs:236,269-271`](../crates/rafter-service/tests/in_memory_write.rs) | `BatchRecordingRuntime` | Highest recorded index at or below the bound |
+| `bench-compare/src/bin/bench-rafter-service.rs:242`, `bench-rafter-multiraft.rs:261` | `RecordingRuntime` | Delegate |
+
+`ScriptedRuntime` is the one that needs real thought: the whole
+`group_read*.rs` suite drives it, and it has no log to answer from. Giving it an
+explicit set of application-entry indexes is also what makes the mixed-log
+negative test writable.
+
+Tests that pin the current floor:
+
+| File | Pin |
+| --- | --- |
+| [`crates/rafter-app/tests/group_read.rs:43-114,248-334`](../crates/rafter-app/tests/group_read.rs) | Assert `required_applied_index == read_index == 4` on the `min_applied_index: None` path |
+| [`crates/rafter-app/tests/group_read.rs:8-40,207-246`](../crates/rafter-app/tests/group_read.rs) | `min_applied_index: Some(5)` above read index 4; the `max` arm still dominates, so these survive |
+| [`crates/rafter-app/tests/group_read.rs:569-616,621-660`](../crates/rafter-app/tests/group_read.rs) | Barrier at read index 4 with applied 2 must stay stalled |
+| [`crates/rafter-app/tests/group_read_lifecycle.rs:295-389,579-624`](../crates/rafter-app/tests/group_read_lifecycle.rs) | `FreshnessUnavailable { required_applied_index: 4, local_applied_index: 2 }`, then granted after applying an application entry at exactly 4 |
+| [`crates/rafter-app/tests/group_read_lifecycle.rs:141-215,218-293`](../crates/rafter-app/tests/group_read_lifecycle.rs) | Proof triples where required equals the read index |
+| [`crates/rafter-service/tests/in_memory_read.rs:78-98,100-123`](../crates/rafter-service/tests/in_memory_read.rs) | `ScriptedReadMode::Grant(LogIndex(5))` with applied `ZERO` must still cancel |
+| [`crates/rafter-app/tests/support/mod.rs:615-630`](../crates/rafter-app/tests/support/mod.rs) | `begin_pending_read_barrier` asserts the outcome is pending or freshness-stalled |
+
+Most survive because the scripted fixtures already put an application entry at
+the read index; each still has to be re-read and re-justified rather than
+assumed, since "required equals read index" is now a coincidence of the fixture
+rather than a rule.
+
+Verification registry:
+
+| File | Change |
+| --- | --- |
+| [`verification/raft-invariants.yaml:1658-1691`](../verification/raft-invariants.yaml) | Split `RD-04` into `RD-04.a` (dispatch floor; simulator evidence unchanged) and `RD-04.b` (application floor; new app-layer evidence plus the fixed maelstrom gate) |
+| [`docs/raft-invariants.md`](./raft-invariants.md) | Regenerated by `scripts/render-raft-invariants-doc`; not hand-edited |
+
+The `RD-04` restatement is a sharpening, not a weakening. `RD-04.a` keeps the
+existing sentence for the layer where "local applied index" means the kernel
+cursor, which is what the simulator and its negative fixture
+`client_history_detects_completed_read_before_local_apply_floor` actually
+measure. `RD-04.b` states the app-layer obligation the current wording made
+unsatisfiable. No TLA predicate is added, so the `tla_predicates_now: 9` ratchet
+and the four `.cfg` invariant blocks are untouched.
+
+`rafter-multiraft` and `rafter-sim` need no change: the former only forwards
+read events, and the latter measures the kernel cursor. Its `register_value_at`
+already selects the highest applied entry at or below the read index
+([`crates/rafter-sim/src/model_check/state/client.rs:134-149`](../crates/rafter-sim/src/model_check/state/client.rs))
+— the same idea, reached independently, for choosing a value rather than for
+gating.
+
+The break is justified on the same ground as the method it generalizes: no
+default is both safe and useful. The obvious default,
+`min(committed_application_index(), index)`, is wrong; see
+[Rejected alternatives](#rejected-alternatives-5).
+
+### Focused-test plan
+
+In `crates/rafter-app/tests/group_read.rs`, over a `ScriptedRuntime` carrying an
+explicit application-entry index set:
+
+- `read_barrier_grants_when_the_read_index_is_a_non_application_entry` — commit
+  index 6 with application entries at 3 and 4 only, read index 6, state machine
+  applied 4. Assert `ReadOutcome::Ready` with
+  `ReadProof { read_index: 6, required_applied_index: 4, .. }`. This is the
+  headline defect, and it fails today.
+- `read_barrier_grants_on_a_cluster_that_has_committed_no_application_entry` —
+  the fresh-cluster case: `Noop@1`, nothing else, applied `ZERO`. Assert the
+  first read of a cluster's life answers.
+- `read_barrier_does_not_require_an_application_entry_above_the_read_index` —
+  read index 6, application entries at 4 and 7, commit index 7, applied 4.
+  Assert granted at floor 4. This is the mixed-log case and the direct
+  refutation of an uncapped floor.
+- `read_barrier_floor_is_fixed_at_grant` — grant, then advance commit and
+  compact, then assert every later `FreshnessUnavailable` reports the same
+  `required_applied_index`.
+- `read_barrier_honors_a_caller_supplied_floor_verbatim` — floor 3 from the log,
+  `min_applied_index: Some(9)`; assert `required_applied_index == 9` and that no
+  capping occurs.
+- Negative: **`read_barrier_does_not_grant_while_an_application_entry_below_the_read_index_is_unapplied`**
+  — the stale-read attempt the argument must survive. Application entries at 3
+  and 5, `Noop@6`, read index 6, state machine applied 3. Assert
+  `FreshnessUnavailable { required_applied_index: 5 }` and that the query is not
+  served. Then apply 5 and assert the answer includes entry 5's effect. If the
+  floor were ever computed as anything but the *highest* application entry in
+  the cut, this test serves a state missing an acknowledged write.
+- Negative: `read_barrier_floor_never_exceeds_the_read_index` — a
+  property-style assertion over the scripted entry sets, so no future
+  derivation can reintroduce a floor above the cut.
+- Negative: `a_state_machine_that_skips_an_application_entry_poisons_before_a_read_can_grant`
+  — assert the ordering guarantee that makes "highest" sufficient is enforced
+  rather than assumed, via the existing `validate_apply_floor` path.
+
+In `crates/rafter-runtime/src/tests/recovery.rs`, beside the existing
+`committed_application_index_*` tests:
+
+- `committed_application_index_through_ignores_entries_above_its_bound`.
+- `committed_application_index_through_uses_the_snapshot_boundary_capped_at_its_bound`
+  — both the boundary-above and boundary-below cases.
+- `committed_application_index_equals_the_bounded_form_at_the_commit_index` —
+  pins the provided method's definition against the required one.
+
+In `crates/rafter-service/tests/in_memory_read.rs`:
+
+- `managed_read_answers_after_an_election_without_an_intervening_write` — the
+  production regression. Today the managed driver returns
+  `ReadError::FreshnessUnavailable` here.
+
+In `crates/rafter-maelstrom`:
+
+- `a_read_granted_at_a_noop_index_flushes_without_a_later_apply` — the same
+  regression at the kernel-direct gate, plus coverage that a stalled read is
+  re-examined without an apply to trigger it.
+
+In `reference/fenced-lock/tests/adapter_cluster.rs`:
+
+- `a_linearizable_query_resolves_to_a_non_answer_when_leadership_is_lost` loses
+  its pin and its idempotent command; see [After-state](#after-state-5).
+
+### Rejected alternatives
+
+- **Reuse `committed_application_index()` uncapped.** It is bounded at the
+  commit index, and a barrier's read index is captured at registration and
+  consumed arbitrarily later, so `commit_index > read_index` is normal. The
+  read would wait on writes it is not ordered after, and the proof would report
+  a `required_applied_index` above the `read_index` the quorum actually
+  certified.
+- **Default the new method to `min(committed_application_index(), index)`.**
+  This is the shortcut that looks right and is not, which is exactly why the
+  method must be required rather than provided. It happens to fix the headline
+  case, and it fails on mixed logs: with application entries at 3 and 5 and
+  `Noop@4`, bounding at 4 yields 4 — an index the state machine will never
+  report — so the read waits for entry 5 instead of being served at 3. A
+  defaulted implementor would inherit a subtler version of the defect being
+  fixed.
+- **`Output::AppliedNonApplication { index }` in the kernel (candidate b).**
+  Designed and rejected on four grounds, in increasing order of weight. First,
+  it is redundant: the app layer can already derive the same fact from a log
+  the runtime already exposes, once per barrier, and the derivation is the one
+  this document promoted a release earlier. Second, it fails open where the
+  chosen design fails closed — the floor would advance from an output the
+  caller might mishandle rather than from the state machine's own
+  `applied_index()`, and `record_raft_output` runs before `apply_entries` in
+  the same step
+  ([`crates/rafter-app/src/group/output.rs:324-329`](../crates/rafter-app/src/group/output.rs)),
+  so the counter leads the state it stands for and is safe only because a
+  failed apply poisons the group first. Third, it fixes nothing for
+  `min_applied_index`, for local reads, or for the `rafter-maelstrom` gate,
+  each of which still needs an index-to-floor conversion. Fourth, the blast
+  radius is large and partly silent. `Output` is deliberately closed — "This
+  enum is exhaustive because node steps emit this closed set of side effects"
+  ([`crates/rafter/src/node/event/output.rs:32-33`](../crates/rafter/src/node/event/output.rs))
+  — and the proposed variant is the first that would announce the *absence* of a
+  side effect. Adding it breaks 16 exhaustive matches across 13 files, including
+  the deliberate tripwire in
+  [`crates/rafter-runtime/src/tests/persistence_contract.rs:1-5,101-133`](../crates/rafter-runtime/src/tests/persistence_contract.rs)
+  that forces every new output to be classified for persistence, and it passes
+  silently through roughly ten wildcard arms — among them
+  [`crates/rafter/tests/annotation_erasure.rs:85`](../crates/rafter/tests/annotation_erasure.rs),
+  where an unclassified variant would weaken a Layer-0 invariant instead of
+  failing a build. Two things do *not* count against it, and are recorded so the
+  argument is not overstated: kernel `Output` is never wire-encoded — the codec
+  handles `Message` only
+  ([`crates/rafter-codec/src/lib.rs:18-19`](../crates/rafter-codec/src/lib.rs))
+  — so no format changes, and the TLA mapping projects the simulator's input
+  `Action` enum rather than kernel outputs
+  ([`crates/rafter-sim/src/model_check/tla/projection.rs:47-55`](../crates/rafter-sim/src/model_check/tla/projection.rs)),
+  so it would not change either.
+- **A kernel accessor `Node::committed_application_index_through`.** Tempting,
+  because it would place the derivation where the log lives and delete the
+  duplicate scan. It is not worth a kernel addition: every consumer that needs
+  it — `rafter-app`, `rafter-service`, `rafter-maelstrom`, both reference
+  consumers, both benches — reaches the log through `DurableRaftNode`, so there
+  is exactly one real implementation site. The only duplicate is
+  `KernelRuntime`, a test fake, which already mirrors the unbounded scan
+  through the same public `log_entries_slice_from` accessor.
+- **Advance the state machine's applied index over non-application entries.**
+  Either by having the app layer call a new state-machine hook, or by letting
+  the group report a cursor its state machine did not. Both break the contract
+  that makes the applied index recoverable: `apply_batch` promises effects
+  through the highest returned index are durable
+  ([`crates/rafter-app/src/state_machine.rs:8-15`](../crates/rafter-app/src/state_machine.rs)),
+  and an index the state machine never persisted cannot survive restart. The
+  floor belongs to the reader, not to the state machine.
+- **Serve the read at the state as of the read index.** Would require the state
+  machine to hold versioned history it has no contract to keep. The barrier is a
+  lower bound on freshness, not a snapshot request; serving current state at or
+  above the cut is already linearizable.
+
+### After-state
+
+`reference/fenced-lock` un-pins. The finding comment and the "fresh answer or no
+answer" match at
+[`tests/adapter_cluster.rs:403-422`](../reference/fenced-lock/tests/adapter_cluster.rs)
+collapse into a direct assertion that the new leader answers the query with no
+intervening write, and the idempotent `open_session` that follows it disappears.
+The driver's freshness arm stops being a comment about waiting and becomes a
+genuine transient.
+
+`rafter-service` gains a behavior it never had: a linearizable read that is
+issued after an election and before any write returns a result instead of
+`ReadError::FreshnessUnavailable`. No signature changes there; the driver's
+freshness path simply stops being reached in the common case.
+
+`rafter-maelstrom` stops holding reads until an unrelated write arrives, and
+its `RD-04` and `RD-06` evidence starts covering the case it was silently
+failing.
+
+`RD-04` says two true things where it previously said one thing that was true at
+one layer and impossible at another, and
+`RaftGroup::committed_application_index` becomes the zero-argument case of a
+method that answers the same question at any index — one derivation serving both
+readiness and freshness.
+
 ## Coupled designs
 
-The five promotions form three surfaces, not five independent additions.
+The six promotions form four surfaces, not six independent additions.
 
 **Step reporting — the read report and the rejection hint.** Both establish the
 same rule: *a step report is the complete record of its step, and every event in
@@ -1203,6 +1878,15 @@ The two are used in the same sequence and documented as a pair: decompose,
 recover, apply recovery outputs, then gate on the index and on
 `RaftGroup::fatal_state`.
 
+**The application floor — readiness and freshness are one derivation.** The
+read-barrier floor is `committed_application_index` bounded at a read index
+instead of at the commit index, so the two are one method with two callers, not
+two methods. They must land as one change to the runtime trait: introducing the
+unbounded form first and generalizing it later would rewrite all eight
+implementors twice, and would leave a released signature whose obvious use in a
+read barrier is wrong. Implement the bounded form as the required method from
+the start and derive the readiness accessor from it.
+
 ## Adoption order
 
 The sequence minimizes churn by moving from the lowest crate upward, so no
@@ -1214,10 +1898,14 @@ change is written twice and every step ends green.
    implementors. Nothing above the storage crate changes behavior.
 2. **`DurableRaftNode::into_storage`.** Additive in `rafter-runtime`, and now
    able to return stores that any consumer can wrap.
-3. **`committed_application_index`, whole.** `rafter-runtime-api`, then
-   `DurableRaftNode`, then the six test and bench implementors, then the
-   one-line `RaftGroup` forwarder. Do this before any other `rafter-app` change
-   so the app layer compiles once against a complete runtime trait.
+3. **`committed_application_index_through` and `committed_application_index`,
+   whole.** `rafter-runtime-api` with the bounded form as the required method
+   and the unbounded form provided from it, then `DurableRaftNode`, then the
+   seven other test and bench implementors, then both one-line `RaftGroup`
+   forwarders. The bounded form lands here rather than in step 7 so no
+   implementor is written twice; see
+   [Coupled designs](#coupled-designs). Do this before any other `rafter-app`
+   change so the app layer compiles once against a complete runtime trait.
 4. **`ProposalEvent::Rejected { leader_hint }`.** `rafter-app`, plus
    `proposal_begin_from_report`, plus the `rafter-service` write path that stops
    reconstructing the hint.
@@ -1225,16 +1913,35 @@ change is written twice and every step ends green.
    the `rafter-service` read path, the manual example, and the app-layer read
    tests. Landing after step 4 means the new report tests assert the final
    `ProposalEvent` shape.
-6. **`RaftGroup::into_parts` and `RaftGroupParts`.** Additive, and last at the
-   app layer because its tests exercise the rebuilt-group path that steps 3 and 5
-   also touch.
-7. **Reference-consumer adoption.** Delete the five workarounds in
-   [`reference/ledger/tests/support/`](../reference/ledger/tests/support), then
-   re-run both source mode and package-consumer mode. The consumers are the
+6. **`RaftGroup::into_parts` and `RaftGroupParts`.** Additive, and last of the
+   additive app-layer changes because its tests exercise the rebuilt-group path
+   that steps 3 and 5 also touch.
+7. **The read-barrier application floor.** `PendingRead` and the grant arm in
+   `rafter-app`, then `complete_ready_reads` and
+   `try_complete_pending_query_read`, then the kernel's read-index module doc,
+   then the `rafter-maelstrom` gate. It consumes step 3's bounded method and
+   lands after step 5 so its new tests assert the final `ReadReport` shape.
+   Re-read every test in the step-5 suites that asserts a proof triple: they
+   mostly survive, but only because their fixtures place an application entry
+   at the read index.
+8. **The `RD-04` restatement.** Split the clause in
+   [`verification/raft-invariants.yaml`](../verification/raft-invariants.yaml)
+   and regenerate [`docs/raft-invariants.md`](./raft-invariants.md) with
+   `scripts/render-raft-invariants-doc`. Separate from step 7 so the code change
+   and the evidence change are reviewable apart, and last of the two because the
+   new clause's evidence is the tests step 7 adds.
+9. **Reference-consumer adoption.** Delete the five workarounds in
+   [`reference/ledger/tests/support/`](../reference/ledger/tests/support) and
+   un-pin the read-cancellation test in
+   [`reference/fenced-lock/tests/adapter_cluster.rs`](../reference/fenced-lock/tests/adapter_cluster.rs),
+   then re-run both source mode and package-consumer mode. The consumers are the
    acceptance evidence for the promotions, so they are adopted last and re-run in
    full.
 
-Steps 1, 3, 4, and 5 are breaking. Each break is confined to one crate and the
-crates above it in the same step, and `reference/` and `bench-compare/` are
-outside the root workspace — they must be built explicitly for every one of
+Steps 1, 3, 4, and 5 are breaking. Step 7 changes observable behavior without
+changing a signature, which is the harder kind to review: it is the only step
+whose correctness argument lives in prose rather than in a type, and its
+negative tests are the acceptance evidence. Each break is confined to one crate
+and the crates above it in the same step, and `reference/` and `bench-compare/`
+are outside the root workspace — they must be built explicitly for every one of
 those steps.
