@@ -381,6 +381,11 @@ where
     /// differently until the group emits a [`ReadEvent::Granted`] for them, and
     /// attempting them anyway would spin: a read against a barrier the group
     /// already tracks returns an unstepped report.
+    ///
+    /// One barrier's fault never denies service to the rest. Every group error a
+    /// read call can raise is about the one `ReadId` that call named, so it
+    /// resolves that barrier's client and the pass continues; nothing but a
+    /// released group leaves this method as an error.
     pub(super) fn drive_pending_reads(&mut self) -> Result<(), ManagedDriverError> {
         if self.group.is_none() {
             return Err(ManagedDriverError::NoGroup);
@@ -403,6 +408,15 @@ where
     /// This both starts a barrier, when [`TransportDriverState::begin_read`]
     /// calls it, and consumes a granted one afterwards. Only the first of those
     /// steps the group.
+    ///
+    /// A failure is the barrier's own. `RaftGroup::read` is called with one
+    /// request naming one `ReadId`, so there is no second barrier the error
+    /// could be about, and it reaches the client through the same category
+    /// mapping `InMemoryRaftDriver` uses: a state machine that refuses a query
+    /// is reported as a state-machine failure with its own error preserved, not
+    /// as a driver invariant violation naming a routing defect that did not
+    /// occur. The two ID variants still map to that violation, because for them
+    /// it is what happened.
     pub(super) fn attempt_read(&mut self, read_id: ReadId) -> Result<(), ManagedDriverError> {
         let Some(waiter) = self.read_waiters.get(&read_id) else {
             return Ok(());
@@ -411,47 +425,21 @@ where
             return Ok(());
         }
         let request = waiter.request.clone();
-        let read = match self.group_mut()?.read(request) {
-            Ok(read) => read,
-            Err(error) => return self.fail_read(read_id, error),
-        };
-        self.route_report(read.report);
-        self.handle_read_outcome(read_id, read.outcome);
-        Ok(())
-    }
-
-    /// Attributes one read call's failure to the barrier that caused it.
-    ///
-    /// The group refuses a spent `ReadId` and a retry whose parameters moved,
-    /// and both mean one thing here: this driver still holds a waiter for a
-    /// barrier the group no longer tracks. Routing terminal read events is what
-    /// makes that unreachable, so reaching it is a driver invariant violation —
-    /// and the client is told so. Propagating instead would leave that waiter
-    /// unresolved forever while every later call raised the same error, and
-    /// would deny service to every other barrier in the same pass. Anything else
-    /// is not attributable to one barrier and reaches the caller.
-    fn fail_read(
-        &mut self,
-        read_id: ReadId,
-        error: GroupError<A::Error, R::Error>,
-    ) -> Result<(), ManagedDriverError> {
-        if !matches!(
-            error,
-            GroupError::NonMonotonicReadId { .. } | GroupError::DuplicateReadId { .. }
-        ) {
-            return Err(ManagedDriverError::Group {
-                cause: ErrorCause::new(error),
-            });
+        let read = self.group_mut()?.read(request);
+        match read {
+            Ok(read) => {
+                self.route_report(read.report);
+                self.drain_poisoned_waiters();
+                self.handle_read_outcome(read_id, read.outcome);
+            }
+            Err(error) => {
+                // The drain runs first so a barrier the group handed over keeps
+                // the poison's own answer; `resolve_read` keeps the first
+                // outcome either way, and both arms say `Poisoned`.
+                self.drain_poisoned_waiters();
+                self.resolve_read(read_id, Err(read_error_from_group(error)));
+            }
         }
-        self.resolve_read(
-            read_id,
-            Err(ReadError::ManagedInvariantViolation {
-                message: format!(
-                    "managed driver still holds a waiter for {read_id}, which its group no \
-                     longer tracks: a terminal read event was not routed"
-                ),
-            }),
-        );
         Ok(())
     }
 
