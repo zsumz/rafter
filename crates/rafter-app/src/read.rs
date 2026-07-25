@@ -98,9 +98,15 @@ pub enum ReadOutcome<G, R> {
         result: R,
         proof: Option<ReadProof<G>>,
     },
-    /// The read-index round is still in flight. Route `peer_messages`, keep
-    /// driving the group, and retry with the same `read_id`, freshness, and
-    /// context; call `RaftGroup::cancel_read` if abandoning the helper read.
+    /// The read-index round is still in flight. Keep driving the group and
+    /// retry with the same `read_id`, freshness, and context; call
+    /// `RaftGroup::cancel_read` if abandoning the helper read.
+    ///
+    /// `peer_messages` duplicates the step report's list so that
+    /// `RaftGroup::read_outcome` callers, who never see a report, can route
+    /// the round. A `RaftGroup::read` caller must route the report's list or
+    /// this one, never both — routing both sends every read-index frame
+    /// twice.
     Pending {
         read_id: ReadId,
         peer_messages: Vec<PeerEnvelope<G>>,

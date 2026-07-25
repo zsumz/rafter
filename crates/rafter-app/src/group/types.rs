@@ -413,7 +413,9 @@ impl<G, A, R> RaftGroup<G, A, R> {
     /// many — reclaims the state machine and the runtime instead of dropping
     /// them. It is the group-level half of decomposition;
     /// `DurableRaftNode::into_storage` in `rafter-runtime` is the runtime-level
-    /// half that reaches the durable stores.
+    /// half that reaches the durable stores. Decomposition takes the group by
+    /// value, so a group kept in shared or lock-guarded state needs a movable
+    /// slot — an `Option` holding the group is the usual shape.
     ///
     /// Decomposition never steps the runtime, never applies, and never emits
     /// outputs, so no protocol effect can be lost by calling it. What ends is

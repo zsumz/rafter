@@ -161,8 +161,11 @@ where
     /// A terminal read event clears local waiter state, so a caller that keeps
     /// retrying after observing [`ReadEvent::Rejected`] or [`ReadEvent::Canceled`]
     /// in the report receives [`GroupError::NonMonotonicReadId`] rather than a
-    /// second statement of the rejection. Read the report's read events before
-    /// retrying.
+    /// second statement of the rejection. Check the read events of every report
+    /// the caller records before retrying — a barrier is most often ended by
+    /// the tick or delivery step that observes a leadership change, so its
+    /// terminal event arrives in that step's report rather than in one this
+    /// method returned.
     ///
     /// # Errors
     ///

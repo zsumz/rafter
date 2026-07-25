@@ -68,6 +68,11 @@ where
     /// reach. Compact at the applied index, as
     /// [`crate::state_machine::ReplicatedStateMachine::build_snapshot`] already
     /// requires.
+    ///
+    /// The same per-replica predicate is a cluster harness's convergence wait:
+    /// every replica the harness can still reach must satisfy it before the
+    /// cluster has settled. Replicas the harness has partitioned or removed
+    /// cannot advance and are the caller's to skip.
     #[must_use]
     pub fn committed_application_index(&self) -> LogIndex {
         self.raft.committed_application_index()
