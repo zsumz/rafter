@@ -444,17 +444,32 @@ fn a_released_driver_refuses_every_operation() {
         Err(ManagedDriverError::NoGroup)
     ));
 
+    // A refusal, not a lost outcome: nothing was proposed, so no ID names it.
+    // The driver used to answer `UnknownOutcome` with a fabricated
+    // `LocalProposalId(0)`, which a caller can compare against a real one.
     let write = block_on(handle.write(("alpha".to_owned(), "one".to_owned())))
         .expect_err("a released driver serves no writes");
     assert!(
         matches!(
             write,
-            WriteError::UnknownOutcome {
-                reason: UnknownOutcomeReason::DriverReleased,
+            WriteError::Transport {
+                fate: WriteFate::NotAppended,
                 ..
             }
         ),
         "got {write:?}"
+    );
+    assert!(
+        !matches!(write, WriteError::UnknownOutcome { .. }),
+        "a write that never started has no proposal to be unknown about"
+    );
+
+    let read = block_on(handle.read("alpha".to_owned(), ReadConsistency::Linearizable))
+        .expect_err("a released driver serves no reads");
+    assert!(matches!(read, ReadError::Transport { .. }), "got {read:?}");
+    assert!(
+        !matches!(read, ReadError::Abandoned { .. }),
+        "a read that reserved no barrier has no read id to abandon"
     );
 }
 

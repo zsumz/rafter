@@ -166,9 +166,22 @@ pub(super) enum ManagedOperationError<E, RE> {
 /// layer authors an error object rather than preserving somebody else's.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DriverRoutingError {
-    MissingNode { node_id: NodeId },
-    DriveBoundReached { max_steps: usize },
-    PendingWaiterLimit { max_pending_waiters: usize },
+    MissingNode {
+        node_id: NodeId,
+    },
+    DriveBoundReached {
+        max_steps: usize,
+    },
+    PendingWaiterLimit {
+        max_pending_waiters: usize,
+    },
+    /// The driver released its group, so the operation was never started.
+    ///
+    /// This is a refusal rather than a lost outcome, and it is here rather
+    /// than fabricated into an `UnknownOutcome` or an `Abandoned` because
+    /// those variants carry an ID, and an operation that never started has
+    /// none.
+    NoGroup,
 }
 
 impl fmt::Display for DriverRoutingError {
@@ -187,6 +200,9 @@ impl fmt::Display for DriverRoutingError {
                 formatter,
                 "managed driver already holds {max_pending_waiters} unresolved waiters"
             ),
+            Self::NoGroup => {
+                formatter.write_str("managed driver has released its group and holds none")
+            }
         }
     }
 }

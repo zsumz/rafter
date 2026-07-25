@@ -6,7 +6,10 @@
 //! the public surface and the mechanism behind it are read for different
 //! reasons: one is a contract, the other is a loop.
 
-use std::task::{Context, Poll, Waker};
+use std::{
+    error::Error,
+    task::{Context, Poll, Waker},
+};
 
 use crate::transport::{AuthenticatedPeerValidator, RaftTransport};
 
@@ -15,7 +18,6 @@ use super::TransportDriverOptions;
 
 pub(super) struct WriteWaiter<R> {
     options: WriteOptions,
-    saw_local_append: bool,
     outcome: Option<Result<WriteReceipt<R>, WriteError>>,
     waker: Option<Waker>,
 }
@@ -31,6 +33,16 @@ pub(super) struct ReadWaiter<G, Q, QR> {
     proof_ready: bool,
     outcome: Option<Result<QueryReceipt<G, QR>, ReadError>>,
     waker: Option<Waker>,
+}
+
+/// Why one group step did not run, or did not finish.
+///
+/// The group error travels unwrapped so each caller can report it in its own
+/// vocabulary: a driver hears `ManagedDriverError`, and a client hears the
+/// typed write or read category the same mapping gives `InMemoryRaftDriver`.
+pub(super) enum StepFailure<E, RE> {
+    NoGroup,
+    Group(GroupError<E, RE>),
 }
 
 /// The driver's state, shared by every clone and every client future.
@@ -78,34 +90,119 @@ where
         self.group.as_mut().ok_or(ManagedDriverError::NoGroup)
     }
 
+    /// Steps the group and routes everything the step produced or captured.
+    ///
+    /// The group error survives here rather than being wrapped, because the
+    /// caller decides how a client hears about it: `tick` and `deliver` report
+    /// to a driver, and `begin_write` reports to a client through the typed
+    /// write mapping. A single wrapped error could serve only one of them.
+    ///
+    /// The poison drain runs on both paths. A step that poisons can return
+    /// `Ok`, and a step that fails is the likeliest place for a poison to have
+    /// happened; draining only where the report exists would strand exactly the
+    /// waiters a poison captured.
+    pub(super) fn step_group(
+        &mut self,
+        input: GroupInput<G, A::Command>,
+    ) -> Result<(), StepFailure<A::Error, R::Error>> {
+        let Some(group) = self.group.as_mut() else {
+            return Err(StepFailure::NoGroup);
+        };
+        let stepped = group.step_with_options(input, StepReportOptions::without_metrics());
+        let result = match stepped {
+            Ok(report) => {
+                self.route_report(report);
+                Ok(())
+            }
+            Err(error) => Err(StepFailure::Group(error)),
+        };
+        self.drain_poisoned_waiters();
+        self.publish_metrics();
+        result
+    }
+
     pub(super) fn step(
         &mut self,
         input: GroupInput<G, A::Command>,
     ) -> Result<(), ManagedDriverError> {
-        let report = self
-            .group_mut()?
-            .step_with_options(input, StepReportOptions::without_metrics())
-            .map_err(|error| ManagedDriverError::Group {
+        self.step_group(input).map_err(|failure| match failure {
+            StepFailure::NoGroup => ManagedDriverError::NoGroup,
+            StepFailure::Group(error) => ManagedDriverError::Group {
                 cause: ErrorCause::new(error),
-            })?;
-        self.route_report(report);
-        self.publish_metrics();
-        Ok(())
+            },
+        })
     }
 
     pub(super) fn apply_recovery_outputs(
         &mut self,
         outputs: Vec<RaftOutput>,
     ) -> Result<(), ManagedDriverError> {
-        let report = self
-            .group_mut()?
-            .apply_raft_outputs(outputs)
-            .map_err(|error| ManagedDriverError::Group {
+        let applied = self.group_mut()?.apply_raft_outputs(outputs);
+        let result = match applied {
+            Ok(report) => {
+                self.route_report(report);
+                Ok(())
+            }
+            Err(error) => Err(ManagedDriverError::Group {
                 cause: ErrorCause::new(error),
-            })?;
-        self.route_report(report);
+            }),
+        };
+        self.drain_poisoned_waiters();
         self.publish_metrics();
-        Ok(())
+        result
+    }
+
+    /// Resolves every waiter the group handed over when it poisoned.
+    ///
+    /// A poison is not an event stream. `RaftGroup::enter_poisoned` moves every
+    /// pending proposal and every reserved read out of the group's live tables
+    /// into `poisoned_waiters` and emits nothing further for them, so a driver
+    /// that routes reports and nothing else leaves those clients waiting
+    /// forever while every later call raises the same refusal.
+    ///
+    /// Writes resolve as unknown rather than refused, for the reason a released
+    /// driver's do: the entry may be in the durable log, and an incarnation
+    /// reopened over that log can still commit it. Reads resolve as poisoned,
+    /// which is the whole truth about them — a barrier the group dropped
+    /// produces no answer, ever.
+    pub(super) fn drain_poisoned_waiters(&mut self) {
+        let Some(group) = self.group.as_mut() else {
+            return;
+        };
+        if group.poisoned_waiters().is_empty() {
+            return;
+        }
+        let GroupFatalState::Poisoned { reason } = group.fatal_state().clone() else {
+            // Adoption refuses a healthy group holding poisoned waiters, so
+            // there is no poison to report and nothing honest to say.
+            return;
+        };
+        let cause = group.poison_cause().cloned();
+        let waiters = group.drain_poisoned_waiters();
+        for (local_proposal_id, client_request_id) in waiters.proposals {
+            let client_request_id = client_request_id.or_else(|| {
+                self.write_waiters
+                    .get(&local_proposal_id)
+                    .and_then(|waiter| waiter.options.client_request_id)
+            });
+            self.resolve_write(
+                local_proposal_id,
+                Err(WriteError::UnknownOutcome {
+                    local_proposal_id,
+                    client_request_id,
+                    reason: UnknownOutcomeReason::GroupPoisoned,
+                }),
+            );
+        }
+        for read_id in waiters.reads {
+            self.resolve_read(
+                read_id,
+                Err(ReadError::Poisoned {
+                    reason: reason.clone(),
+                    cause: cause.clone(),
+                }),
+            );
+        }
     }
 
     /// Hands the report's peer messages to the transport and its lifecycle
@@ -188,14 +285,11 @@ where
 
     pub(super) fn observe_proposal_event(&mut self, event: &ProposalEvent<A::CommandResult>) {
         let (local_proposal_id, outcome) = match event {
-            ProposalEvent::Appended {
-                local_proposal_id, ..
-            } => {
-                if let Some(waiter) = self.write_waiters.get_mut(local_proposal_id) {
-                    waiter.saw_local_append = true;
-                }
-                return;
-            }
+            // A local append is not a terminal outcome and is not recorded.
+            // The driver used to keep it as a fate discriminator; it could not
+            // be one, because "no append was observed" is not "no append
+            // happened", and the fate this driver reports is only ever the one
+            // it observed.
             ProposalEvent::Applied {
                 local_proposal_id,
                 index,
@@ -539,10 +633,13 @@ where
             return Err(WriteError::WrongGroup);
         }
         if self.group.is_none() {
-            return Err(WriteError::UnknownOutcome {
-                local_proposal_id: LocalProposalId(0),
-                client_request_id: options.client_request_id,
-                reason: UnknownOutcomeReason::DriverReleased,
+            // A refusal, not an unknown outcome: nothing was proposed, so there
+            // is no proposal to be unknown about and no ID that names one. The
+            // fabricated `LocalProposalId(0)` this used to carry was a value a
+            // caller could compare against a real allocation.
+            return Err(WriteError::Transport {
+                fate: WriteFate::NotAppended,
+                cause: ErrorCause::new(DriverRoutingError::NoGroup),
             });
         }
         let unresolved = self
@@ -571,7 +668,6 @@ where
             local_proposal_id,
             WriteWaiter {
                 options,
-                saw_local_append: false,
                 outcome: None,
                 waker: None,
             },
@@ -581,23 +677,13 @@ where
             client_request_id: options.client_request_id,
             command,
         };
-        if let Err(error) = self.step(GroupInput::Proposal { proposal }) {
-            let fate = if self
-                .write_waiters
-                .get(&local_proposal_id)
-                .is_some_and(|waiter| waiter.saw_local_append)
-            {
-                WriteFate::Unresolved
-            } else {
-                WriteFate::NotAppended
-            };
-            self.resolve_write(
-                local_proposal_id,
-                Err(WriteError::Transport {
-                    fate,
-                    cause: ErrorCause::new(error),
-                }),
-            );
+        if let Err(failure) = self.step_group(GroupInput::Proposal { proposal }) {
+            // `step_group` already drained any waiter the poison captured, and
+            // `resolve_write` keeps the first outcome, so a captured proposal
+            // keeps its `GroupPoisoned` answer and never reaches the mapping
+            // below. That ordering is the whole mechanism, and it is the one
+            // `InMemoryRaftDriver::finish_failed_write_batch` uses.
+            self.resolve_write(local_proposal_id, Err(write_failure(failure, options)));
         }
         Ok(local_proposal_id)
     }
@@ -616,9 +702,11 @@ where
             return Err(ReadError::WrongGroup);
         }
         if self.group.is_none() {
-            return Err(ReadError::Abandoned {
-                read_id: ReadId(0),
-                reason: ReadAbandonReason::DriverReleased,
+            // A refusal, for the reason the write side gives: no barrier was
+            // reserved, so there is no `ReadId` to abandon and `ReadId(0)` named
+            // one that never existed.
+            return Err(ReadError::Transport {
+                cause: ErrorCause::new(DriverRoutingError::NoGroup),
             });
         }
         if !matches!(consistency, ReadConsistency::Linearizable) {
@@ -722,5 +810,41 @@ where
         }
         waiter.waker = Some(context.waker().clone());
         Poll::Pending
+    }
+}
+
+/// Maps one failed proposing step onto the fate the driver can prove.
+///
+/// The three arms are `InMemoryRaftDriver::finish_failed_write_batch`'s, in its
+/// order and for its reasons. What changed here is the last one: the driver no
+/// longer infers `NotAppended` from the absence of an observed append. A step
+/// that failed after the group was asked to propose is unresolved, because the
+/// entry may be on disk and a node reopened over the same durable log can still
+/// replicate and commit it. `NotAppended` survives only where the refusal is
+/// itself the event — a pre-proposal driver refusal, a `ProposalEvent::Rejected`
+/// whose mapped variants carry no fate at all, and
+/// `GroupError::NonMonotonicLocalProposalId`, which `write_error_from_group`
+/// stamps itself because the group refuses before it proposes.
+fn write_failure<E, RE>(failure: StepFailure<E, RE>, options: WriteOptions) -> WriteError
+where
+    E: Error + Send + Sync + 'static,
+    RE: Error + Send + Sync + 'static,
+{
+    match failure {
+        StepFailure::NoGroup => WriteError::Transport {
+            fate: WriteFate::NotAppended,
+            cause: ErrorCause::new(DriverRoutingError::NoGroup),
+        },
+        // The app layer's own name for "the runtime said nothing": it states
+        // that the layer below does not know what happened to the proposal,
+        // which is exactly what an unknown outcome reports.
+        StepFailure::Group(GroupError::ProposalDidNotStart { local_proposal_id }) => {
+            WriteError::UnknownOutcome {
+                local_proposal_id,
+                client_request_id: options.client_request_id,
+                reason: UnknownOutcomeReason::RuntimeDroppedProposal,
+            }
+        }
+        StepFailure::Group(error) => write_error_from_group(error, WriteFate::Unresolved),
     }
 }
