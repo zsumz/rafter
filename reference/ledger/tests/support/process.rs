@@ -48,7 +48,7 @@ use std::{
     collections::BTreeMap,
     io::{BufRead, BufReader, Write},
     net::{SocketAddr, TcpStream},
-    path::Path,
+    path::{Path, PathBuf},
     process::{Child, ChildStdout, Command as OsCommand, Stdio},
     sync::mpsc::{self, Receiver},
     thread,
@@ -255,6 +255,26 @@ impl NodeProcess {
     /// serving replica asks for one with [`NodeProcess::wait_ready`]; a caller
     /// testing the readiness gate needs the window in between.
     pub fn spawn(cluster_dir: &Path, node_id: NodeId, config: LedgerConfig) -> Self {
+        Self::spawn_inner(cluster_dir, node_id, config, false)
+    }
+
+    /// Spawns one replica with the destructive application-store repair on.
+    ///
+    /// A replica whose journal will not open refuses to serve, and this is the
+    /// only way past that refusal. It is a separate constructor because it is a
+    /// separate decision: the repair discards a region that may hold
+    /// transactions the replica already acknowledged, and no restart ever
+    /// reaches it by accident.
+    pub fn spawn_repairing(cluster_dir: &Path, node_id: NodeId, config: LedgerConfig) -> Self {
+        Self::spawn_inner(cluster_dir, node_id, config, true)
+    }
+
+    fn spawn_inner(
+        cluster_dir: &Path,
+        node_id: NodeId,
+        config: LedgerConfig,
+        repair_app_store: bool,
+    ) -> Self {
         let election_timeout_ticks = ELECTION_TIMEOUT_TICKS
             .iter()
             .find(|(id, _)| *id == node_id)
@@ -285,6 +305,8 @@ impl NodeProcess {
             .arg(config.max_clients().to_string())
             .arg("--max-accounts")
             .arg(config.max_accounts().to_string())
+            .arg("--repair-app-store")
+            .arg(if repair_app_store { "true" } else { "false" })
             .stdin(Stdio::null())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit());
@@ -322,8 +344,36 @@ impl NodeProcess {
     ///
     /// Returns the applied index it recovered to, which is the durable floor a
     /// restart test asserts against.
+    ///
+    /// A replica whose application journal will not open is never going to
+    /// announce readiness, so this refuses it immediately rather than spending
+    /// the whole timeout on a wait that cannot end. That refusal is the process
+    /// half of the store's fail-closed rule: the readiness gate is where a
+    /// journal needing an operator's decision stops the replica, and a harness
+    /// that waited it out would be asserting nothing.
     pub fn wait_ready(&mut self) -> LogIndex {
-        let line = self.wait_for_line("READY");
+        let node_id = self.node_id;
+        let deadline = Instant::now() + WAIT_TIMEOUT;
+        let line = loop {
+            self.drain_lifecycle();
+            if let Some(line) = self
+                .seen
+                .iter()
+                .find(|line| line.starts_with("NEEDS_REPAIR"))
+            {
+                panic!("replica {} refused to serve: {line}", node_id.0);
+            }
+            if let Some(line) = self.seen.iter().find(|line| line.starts_with("READY")) {
+                break line.clone();
+            }
+            assert!(
+                Instant::now() < deadline,
+                "replica {} never announced READY; it announced {:?}",
+                node_id.0,
+                self.seen
+            );
+            thread::sleep(POLL_INTERVAL);
+        };
         LogIndex(
             line.split_whitespace()
                 .nth(3)
@@ -331,6 +381,15 @@ impl NodeProcess {
                 .parse()
                 .expect("the announced applied index parses"),
         )
+    }
+
+    /// Returns this replica's directory under the cluster root.
+    ///
+    /// A test that wants to reach past the process and at the artifact — to
+    /// corrupt a journal, or to check what a repair left — needs the same path
+    /// the replica uses.
+    pub fn node_dir(cluster_dir: &Path, node_id: NodeId) -> PathBuf {
+        cluster_dir.join(format!("node-{}", node_id.0))
     }
 
     /// Returns whether this replica has already announced readiness.
@@ -485,6 +544,15 @@ impl ProcessCluster {
     /// Returns the ledger bounds every replica runs under.
     pub const fn config(&self) -> LedgerConfig {
         self.config
+    }
+
+    /// Returns the directory holding every replica's durable state.
+    ///
+    /// A test that wants to reach past the processes and at the artifacts — to
+    /// corrupt a journal, or to see what a repair left — needs the same root
+    /// the replicas were spawned with.
+    pub fn root(&self) -> &Path {
+        self.root.path()
     }
 
     /// Returns the recorded client history.

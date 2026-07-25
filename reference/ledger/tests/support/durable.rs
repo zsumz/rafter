@@ -7,7 +7,7 @@
 //! unaffected and the injection stays deterministic.
 
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, BTreeSet},
     path::{Path, PathBuf},
 };
 
@@ -25,6 +25,14 @@ pub struct DurableLedgerApps {
     root: PathBuf,
     config: LedgerConfig,
     armed: BTreeMap<NodeId, FaultPlan>,
+    /// Replicas a scenario has deliberately interrupted at some point.
+    ///
+    /// A recovery report is only evidence if something reads it, and the
+    /// strongest thing this factory can say is that a replica nobody
+    /// interrupted came back with nothing to report. Remembering which replicas
+    /// were armed is what makes that assertion possible without also failing
+    /// the crash tests, whose whole purpose is to produce residue.
+    interrupted: BTreeSet<NodeId>,
 }
 
 impl DurableLedgerApps {
@@ -34,6 +42,7 @@ impl DurableLedgerApps {
             root: root.to_path_buf(),
             config,
             armed: BTreeMap::new(),
+            interrupted: BTreeSet::new(),
         }
     }
 
@@ -42,6 +51,7 @@ impl DurableLedgerApps {
     /// The plan applies from the next opening onward, which for a running
     /// replica means its next transaction.
     pub fn arm(&mut self, node_id: NodeId, plan: FaultPlan) {
+        self.interrupted.insert(node_id);
         self.armed.insert(node_id, plan);
     }
 
@@ -61,6 +71,22 @@ impl DurableLedgerApps {
                     directory.display()
                 )
             });
+
+        // The recovery report is asserted on rather than dropped. A replica no
+        // scenario ever interrupted has no business finding residue in its own
+        // journal, and a driver that let one through would hide exactly the
+        // class of bug the report exists to expose.
+        let recovery = *store.recovery();
+        assert!(
+            recovery.repair().is_none(),
+            "replica {} repaired its journal, which `open_with_faults` must never do: {recovery:?}",
+            node_id.0
+        );
+        assert!(
+            recovery.is_clean() || self.interrupted.contains(&node_id),
+            "replica {} recovered from residue no scenario put there: {recovery:?}",
+            node_id.0
+        );
         DurableLedgerStateMachine::new(store)
     }
 }

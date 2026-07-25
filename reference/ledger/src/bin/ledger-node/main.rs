@@ -29,7 +29,15 @@
 //! --request-timeout-ms <u64>      RAFTER_LEDGER_REQUEST_MS        [5000]
 //! --max-clients <u32>             RAFTER_LEDGER_MAX_CLIENTS       [8]
 //! --max-accounts <usize>          RAFTER_LEDGER_MAX_ACCOUNTS      [16]
+//! --repair-app-store <bool>       RAFTER_LEDGER_REPAIR_APP_STORE  [false]
 //! ```
+//!
+//! `--repair-app-store` is the one option that can lose acknowledged work. The
+//! application store refuses to open when it meets a region this build cannot
+//! read, because the transactions in that region may be ones this replica
+//! already answered a client with; setting this discards the region and reports
+//! what it cost. It is off by default and a restart never turns it on, so
+//! reaching it is always somebody's decision.
 //!
 //! A replica's durable state lives under `<cluster-dir>/node-<id>/`, split into
 //! `raft/` for Rafter's stores and `app/` for the ledger journal.
@@ -42,12 +50,20 @@
 //! ```text
 //! LISTENING <id> <client_addr>     the client port is open; service is refused
 //! WAITING_FOR_OWNERSHIP <id>       another process still owns this directory
+//! RECOVERED <id> frames=<n> ...    the journal held residue from a crash
+//! REPAIRED <id> <what was lost>    a repair discarded part of the journal
+//! NEEDS_REPAIR <id> <detail>       the journal will not open without a decision
 //! PEER_LISTENING <id> <peer_addr>  the peer port is published and dialable
 //! READY <id> <client_addr> <applied_index>
 //! LINK <id> dropped=<n> encode_failures=<n>
 //! STOPPED <id>
 //! FATAL <detail>                   followed by a nonzero exit
 //! ```
+//!
+//! `RECOVERED`, `REPAIRED`, and `NEEDS_REPAIR` are the durable store's recovery
+//! report reaching somebody who can act on it. A report nothing reads is a
+//! report that costs nothing to be wrong, so the process announces what opening
+//! found and refuses to serve on the one report that needs a human.
 //!
 //! `LINK` is emitted once during shutdown and is diagnostic rather than
 //! protocol: a nonzero drop count is normal under load, while a nonzero encode
@@ -143,6 +159,7 @@ struct Config {
     ownership_wait: Duration,
     request_timeout: Duration,
     ledger: LedgerConfig,
+    repair_app_store: bool,
 }
 
 impl Config {
@@ -238,6 +255,10 @@ impl Config {
                 5_000,
             )?),
             ledger,
+            // Anything other than a literal `true` leaves it off. A destructive
+            // option should not be reachable through a typo.
+            repair_app_store: lookup("repair-app-store", "RAFTER_LEDGER_REPAIR_APP_STORE")
+                .is_some_and(|value| value == "true"),
         })
     }
 
@@ -356,6 +377,7 @@ fn serve(
                     &config.peers,
                     config.election_timeout_ticks,
                     config.ledger,
+                    config.repair_app_store,
                 ) {
                     Ok(replica) => {
                         // The address is published only now, so a peer never
@@ -381,6 +403,14 @@ fn serve(
                                 directory.display()
                             ));
                         }
+                    }
+                    // A journal this build cannot read fully is the one startup
+                    // failure a restart cannot clear, so the readiness gate
+                    // never opens and the process says why in a line a
+                    // supervisor can match on rather than only inside `FATAL`.
+                    Err(error @ OpenError::ApplicationStoreNeedsRepair { .. }) => {
+                        emit(&format!("NEEDS_REPAIR {} {error}", config.node_id.0));
+                        return Err(error.to_string());
                     }
                     Err(error) => return Err(error.to_string()),
                 }

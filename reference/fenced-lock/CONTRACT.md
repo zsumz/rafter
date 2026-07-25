@@ -541,8 +541,13 @@ and opens normally: its copies are empty, not damaged.
 The recovery report names **which** copy was damaged as well as how. That index
 is what distinguishes benign crash residue from anything else, and a report that
 could not draw the distinction would leave a caller unable to tell a clean
-restart from one worth investigating. Consumers of this store assert on it: a
-reopen that reports damage is a fact to be looked at, not stepped over.
+restart from one worth investigating.
+
+Reports are consumed rather than produced. The driver that reopens a replica's
+store across a restart asserts that a replica no scenario interrupted came back
+with nothing to report, so a rollback or a stray damaged slot fails a test
+rather than passing quietly. A report nothing reads is a report that costs
+nothing to be wrong.
 
 ### Mark durability
 

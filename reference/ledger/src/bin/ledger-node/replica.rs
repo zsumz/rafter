@@ -48,8 +48,9 @@ use rafter_app::{
     transport::PeerEnvelope,
 };
 use rafter_reference_ledger::{
-    store::LedgerStore, ApplyDisposition, ApplyOutcome, Command, DurableLedgerStateMachine,
-    LedgerConfig, LedgerQuery, LedgerQueryResult, LedgerResponse,
+    store::{LedgerStore, LedgerStoreError},
+    ApplyDisposition, ApplyOutcome, Command, DurableLedgerStateMachine, LedgerConfig, LedgerQuery,
+    LedgerQueryResult, LedgerResponse,
 };
 use rafter_runtime::DurableRaftNode;
 use rafter_storage::{
@@ -79,6 +80,16 @@ pub enum OpenError {
     DirectoryOwned { directory: PathBuf },
     /// A durable store could not be opened or recovered.
     Store { detail: String },
+    /// The application journal holds a region this build cannot read.
+    ///
+    /// This is kept apart from every other store failure because it is the one
+    /// a human has to answer. The journal is intact enough to open at a shorter
+    /// history and no further, and shortening it destroys transactions this
+    /// replica may already have acknowledged, so the store refuses and says so
+    /// rather than deciding for an operator. Restarting will not help; running
+    /// with `--repair-app-store true` discards the unreadable region and reports
+    /// what it cost.
+    ApplicationStoreNeedsRepair { detail: String },
     /// The Raft runtime could not recover through the application's floor.
     Runtime { detail: String },
     /// The replica directory could not be created.
@@ -100,6 +111,12 @@ impl fmt::Display for OpenError {
                 directory.display()
             ),
             Self::Store { detail } => write!(formatter, "durable store failed: {detail}"),
+            Self::ApplicationStoreNeedsRepair { detail } => write!(
+                formatter,
+                "the application journal needs an operator decision and this replica will not \
+                 serve until it gets one: {detail}. Restarting will not change it. Running with \
+                 --repair-app-store true discards the unreadable region and reports what it cost"
+            ),
             Self::Runtime { detail } => write!(formatter, "raft recovery failed: {detail}"),
             Self::Io {
                 operation,
@@ -197,6 +214,7 @@ impl Replica {
         peers: &[NodeId],
         election_timeout_ticks: u64,
         ledger_config: LedgerConfig,
+        repair_app_store: bool,
     ) -> Result<Self, OpenError> {
         let raft_dir = node_dir.join("raft");
         let app_dir = node_dir.join("app");
@@ -220,10 +238,41 @@ impl Replica {
         })?;
         let (hard_state, log_segment, snapshot_store) = stores.into_parts();
 
-        let store =
-            LedgerStore::open(&app_dir, ledger_config).map_err(|error| OpenError::Store {
+        // Opening is a read. The only thing that shortens this journal is the
+        // repair path, and reaching it takes an explicit flag rather than a
+        // restart, because the transactions it discards may be ones this
+        // replica already acknowledged to a client.
+        let opened = if repair_app_store {
+            LedgerStore::open_and_repair(&app_dir, ledger_config)
+        } else {
+            LedgerStore::open(&app_dir, ledger_config)
+        };
+        let store = opened.map_err(|error| match error {
+            LedgerStoreError::UnreadableFrame { .. } => OpenError::ApplicationStoreNeedsRepair {
                 detail: error.to_string(),
-            })?;
+            },
+            other => OpenError::Store {
+                detail: other.to_string(),
+            },
+        })?;
+
+        // The recovery report is consumed rather than dropped. Residue from an
+        // interrupted transaction is ordinary after a kill and is announced so
+        // an operator can see it; a repair is announced because it is the one
+        // thing this process does that can lose acknowledged work.
+        let recovery = *store.recovery();
+        if let Some(repair) = recovery.repair() {
+            crate::emit(&format!("REPAIRED {} {repair}", node_id.0));
+        } else if !recovery.is_clean() {
+            crate::emit(&format!(
+                "RECOVERED {} frames={} discarded={} swept={}",
+                node_id.0,
+                recovery.committed_frames(),
+                recovery.discarded_bytes(),
+                recovery.removed_staged_file()
+            ));
+        }
+
         let app = DurableLedgerStateMachine::new(store);
         let applied_index = app.applied_index().map_err(|error| OpenError::Store {
             detail: error.to_string(),

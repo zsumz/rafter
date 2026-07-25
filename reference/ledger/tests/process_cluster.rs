@@ -49,11 +49,13 @@ mod scratch;
 
 use rafter::{LogIndex, NodeId};
 use rafter_reference_ledger::{
-    check_linearizable, AccountId, ApplyDisposition, LedgerConfig, LedgerQuery, LedgerResponse,
-    Mutation, MutationResult,
+    check_linearizable,
+    store::{raw_journal, COMMIT_LEN},
+    AccountId, ApplyDisposition, LedgerConfig, LedgerQuery, LedgerResponse, Mutation,
+    MutationResult,
 };
 
-use process::{ProcessCluster, QueryOutcome, SubmitOutcome};
+use process::{NodeProcess, ProcessCluster, QueryOutcome, SubmitOutcome};
 use support::{amount, config, execute, open_session};
 
 /// The bounds every process test runs under.
@@ -367,6 +369,88 @@ fn a_replica_killed_mid_write_recovers_from_its_journal_and_rejoins() {
             .account_balance(),
         Some(90),
         "the rejoined replica's own state agrees with the cluster it caught up to"
+    );
+
+    assert_linearizable(&cluster);
+    cluster.shutdown();
+}
+
+#[test]
+#[ignore = "spawns real processes; run with --ignored (see the module docs)"]
+fn readiness_refuses_a_journal_that_needs_an_operator_decision() {
+    // The kill window does not matter here: the replica is killed while idle,
+    // and what the test corrupts afterwards is a frame the surviving quorum
+    // already committed, so there is nothing indeterminate about what was lost.
+    //
+    // This is the process half of the store's fail-closed rule. A journal
+    // holding a region this build cannot read may still open at a shorter
+    // history, and that shorter history may be missing transactions this
+    // replica already answered a client with. The store refuses; the readiness
+    // gate is where that refusal becomes visible, and it must not be reachable
+    // by restarting.
+    let mut cluster = ProcessCluster::start("needs-repair", process_config());
+    cluster.submit_to_leader(&open_session(0, 1));
+    cluster.submit_to_leader(&execute(0, 1, 1, open_account(7)));
+    cluster.submit_to_leader(&execute(0, 1, 2, deposit(7, 60)));
+
+    let victim = NodeId(3);
+    cluster.wait_applied_through(victim, LogIndex(1));
+    cluster.kill(victim);
+
+    // Corrupt the image of a frame the replica had already committed. Only the
+    // checksum changes; the framing is untouched, so recovery reaches the frame
+    // and cannot verify it.
+    let app_dir = NodeProcess::node_dir(cluster.root(), victim).join("app");
+    let mut bytes = raw_journal::read(&app_dir).expect("the killed replica's journal reads back");
+    let target = bytes.len() - COMMIT_LEN - 3;
+    bytes[target] ^= 0xFF;
+    raw_journal::write(&app_dir, &bytes).expect("the journal rewrites");
+
+    // Restarting does not clear it, and the replica says so rather than sitting
+    // silently at NOTREADY forever.
+    let mut refused = NodeProcess::spawn(cluster.root(), victim, cluster.config());
+    let announced = refused.wait_for_line("NEEDS_REPAIR");
+    assert!(
+        announced.contains("--repair-app-store"),
+        "the refusal must name the way out, observed {announced:?}"
+    );
+    assert!(
+        !refused.has_announced("READY"),
+        "a replica whose journal will not open must never announce readiness"
+    );
+    assert!(
+        !refused.has_announced("REPAIRED"),
+        "a plain restart must never repair anything"
+    );
+    drop(refused);
+
+    // The surviving quorum was serving throughout, which is what makes the
+    // refusal safe to take: one replica declining to guess is not an outage.
+    let leader = cluster.wait_for_agreed_leader();
+    assert_ne!(leader, victim, "the refusing replica cannot be the leader");
+    cluster.submit(leader, &execute(0, 1, 3, deposit(7, 5)));
+
+    // Repairing is an explicit act, and it reports what it discarded.
+    let mut repaired = NodeProcess::spawn_repairing(cluster.root(), victim, cluster.config());
+    let report = repaired.wait_for_line("REPAIRED");
+    assert!(
+        report.contains("discarded"),
+        "a repair must say what it discarded, observed {report:?}"
+    );
+    repaired.wait_ready();
+    cluster.adopt(victim, repaired);
+
+    // And the repaired replica catches up through ordinary replication rather
+    // than through anything the repair did, so the cluster converges.
+    cluster.submit(leader, &execute(0, 1, 4, deposit(7, 5)));
+    cluster.wait_applied_through(victim, LogIndex(1));
+    let summary = cluster
+        .query_leader(LedgerQuery::GetLedgerSummary)
+        .summary()
+        .expect("the summary query answers");
+    assert_eq!(
+        summary.total_balance, 70,
+        "the quorum's history is intact after one replica repaired its own journal"
     );
 
     assert_linearizable(&cluster);

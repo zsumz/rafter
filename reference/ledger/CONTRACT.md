@@ -408,6 +408,20 @@ committed index is ready, and its local reads may be behind until it catches
 up. Anything routing on readiness must understand it as a recovery signal, not
 a freshness one.
 
+The readiness gate is also where a journal that will not open stops the
+replica. An application store holding a region this build cannot read reports a
+distinct startup error, and the replica announces it and refuses to serve rather
+than opening at whatever shorter history it can reach — that history may be
+missing transactions this replica already answered a client with. Restarting
+never clears it. Discarding the region takes an explicit option, and the replica
+announces what the discard cost.
+
+Recovery reports are consumed rather than produced. A replica announces residue
+it recovered from and refuses on the report that needs a human, and the drivers
+that reopen a store in the test suites assert that a replica no scenario
+interrupted came back with nothing to report. A report nothing reads is a report
+that costs nothing to be wrong.
+
 ### The link between replicas
 
 Peer messages travel over TCP in a consumer-owned frame format. Both the
@@ -461,6 +475,9 @@ stores. The suite establishes that:
   than executing again;
 - a write lost to a dying leader takes effect exactly once once its identity is
   retried, under every reading of where the kill landed;
+- a replica whose journal holds an unreadable region refuses to serve, says so
+  in a line a supervisor can match on, and is not talked round by a restart;
+  repairing it is a separate, explicit run that reports what it discarded;
 - a replica killed mid-write recovers a durable applied floor from its own
   journal and catches up past it;
 - readiness gates: a replica that cannot complete recovery refuses to
