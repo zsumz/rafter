@@ -1,9 +1,12 @@
 //! Public `rafter-app` integration for the pure ledger model.
 //!
-//! The adapter owns encoding, applied-index discipline, the query surface, and
-//! the versioned snapshot representation the contract promises. Every ledger
+//! The adapter owns encoding, applied-index discipline, the read path, and the
+//! versioned snapshot representation the contract promises. Every ledger
 //! transition, session decision, and deduplication rule stays in
-//! [`crate::Ledger`]; nothing here re-derives them.
+//! [`crate::Ledger`]; nothing here re-derives them. The query vocabulary itself
+//! is application contract rather than integration, so it lives in
+//! [`crate::LedgerQuery`] where the history checker can reach it without
+//! reaching through this Rafter-facing module.
 
 mod codec;
 
@@ -14,30 +17,11 @@ use rafter_app::state_machine::{
     ApplicationSnapshot, ApplyBatch, ApplyResult, ReadBarrier, ReplicatedStateMachine,
 };
 
-use crate::{AccountId, ApplyOutcome, Command, Ledger, LedgerConfig, LedgerSummary, SnapshotError};
+use crate::{
+    ApplyOutcome, Command, Ledger, LedgerConfig, LedgerQuery, LedgerQueryResult, SnapshotError,
+};
 
 pub use codec::{LedgerCodecError, NonZeroField};
-
-/// Linearizable query accepted by the ledger read path.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LedgerQuery {
-    /// Reads one account's balance, if the account is open.
-    GetAccount { account_id: AccountId },
-    /// Reads the aggregate ledger summary.
-    GetLedgerSummary,
-}
-
-/// Result of one ledger query.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LedgerQueryResult {
-    /// Balance of an account, or `None` when it is not open.
-    Account {
-        account_id: AccountId,
-        balance: Option<u64>,
-    },
-    /// Aggregate ledger summary.
-    Summary(LedgerSummary),
-}
 
 /// Failure of an adapter operation, as distinct from a ledger result.
 ///
@@ -244,13 +228,7 @@ impl ReplicatedStateMachine for LedgerStateMachine {
                 applied_index: self.applied_index,
             });
         }
-        Ok(match query {
-            LedgerQuery::GetAccount { account_id } => LedgerQueryResult::Account {
-                account_id,
-                balance: self.ledger.account_balance(account_id),
-            },
-            LedgerQuery::GetLedgerSummary => LedgerQueryResult::Summary(self.ledger.summary()),
-        })
+        Ok(self.ledger.query(query))
     }
 
     fn build_snapshot(&mut self, at: LogIndex) -> Result<ApplicationSnapshot, Self::Error> {

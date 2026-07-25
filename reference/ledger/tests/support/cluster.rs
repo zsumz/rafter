@@ -90,6 +90,29 @@ impl ProposalOutcome {
     }
 }
 
+/// A command the driver started and has not resolved.
+///
+/// Its history invocation is already recorded, so the operation's real-time
+/// interval is open from the moment this handle exists.
+#[derive(Debug)]
+pub struct PendingProposal {
+    operation_id: OperationId,
+    local_proposal_id: LocalProposalId,
+    /// Set when the proposal was already terminal on the way in.
+    outcome: Option<ProposalOutcome>,
+}
+
+/// A linearizable query the driver issued and has not resolved.
+#[derive(Debug)]
+pub struct PendingRead {
+    operation_id: OperationId,
+    read_id: ReadId,
+    node_id: NodeId,
+    query: LedgerQuery,
+    /// Set when the barrier answered on its first attempt.
+    outcome: Option<ReadOutcome>,
+}
+
 /// Terminal outcome of one linearizable query.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ReadOutcome {
@@ -423,6 +446,18 @@ impl LedgerCluster {
     /// The command, its response, and any unknown outcome are recorded in the
     /// history under one operation identity.
     pub fn submit(&mut self, node_id: NodeId, command: Command) -> ProposalOutcome {
+        let pending = self.begin_submit(node_id, command);
+        self.resolve_proposal(pending)
+    }
+
+    /// Starts one command without waiting for its outcome.
+    ///
+    /// Splitting invocation from resolution is what lets a test overlap
+    /// operations: everything begun before the first resolution is genuinely
+    /// concurrent in real time, and the recorded history says so. A client that
+    /// waits is the special case, not the general one.
+    #[must_use]
+    pub fn begin_submit(&mut self, node_id: NodeId, command: Command) -> PendingProposal {
         let operation_id = self.record_invocation(command.clone());
         let local_proposal_id = self.allocate_local_proposal_id();
         let started = self
@@ -435,73 +470,128 @@ impl LedgerCluster {
             })
             .expect("a healthy group accepts proposals");
         self.record_report(started.report);
-        if let Some(outcome) = immediate_outcome(&started.begin) {
-            return self.record_completion(operation_id, outcome);
+        // A proposal that is already terminal completed here, so its history
+        // completion belongs at this position rather than wherever the caller
+        // gets around to resolving it.
+        let outcome = immediate_outcome(&started.begin)
+            .map(|outcome| self.record_completion(operation_id, outcome));
+        PendingProposal {
+            operation_id,
+            local_proposal_id,
+            outcome,
         }
+    }
 
+    /// Drives the cluster until `pending` reaches a terminal outcome.
+    pub fn resolve_proposal(&mut self, pending: PendingProposal) -> ProposalOutcome {
+        if let Some(outcome) = pending.outcome {
+            return outcome;
+        }
         for _ in 0..MAX_ROUNDS {
-            if let Some(outcome) = self.proposal_outcomes.get(&local_proposal_id) {
+            if let Some(outcome) = self.proposal_outcomes.get(&pending.local_proposal_id) {
                 let outcome = outcome.clone();
-                return self.record_completion(operation_id, outcome);
+                return self.record_completion(pending.operation_id, outcome);
             }
             self.deliver_all();
             self.tick_reachable();
             self.deliver_all();
         }
-        self.record_completion(operation_id, ProposalOutcome::Unknown)
+        self.record_completion(pending.operation_id, ProposalOutcome::Unknown)
     }
 
-    /// Runs one linearizable query against `node_id`.
+    /// Runs one linearizable query against `node_id` and waits for its answer.
+    pub fn read(&mut self, node_id: NodeId, query: LedgerQuery) -> ReadOutcome {
+        let pending = self.begin_read(node_id, query);
+        self.resolve_read(pending)
+    }
+
+    /// Issues one linearizable query without waiting for its answer.
+    #[must_use]
+    pub fn begin_read(&mut self, node_id: NodeId, query: LedgerQuery) -> PendingRead {
+        let operation_id = self.record_query_invocation(query);
+        let read_id = self.allocate_read_id();
+        let outcome = self
+            .attempt_read(node_id, read_id, query)
+            .map(|outcome| self.record_query_completion(operation_id, outcome));
+        PendingRead {
+            operation_id,
+            read_id,
+            node_id,
+            query,
+            outcome,
+        }
+    }
+
+    /// Drives the cluster until `pending` answers or runs out of rounds.
     ///
     /// The group owns the barrier, the proof, and the state-machine read. The
     /// driver's job is to route the report each attempt produces through the
     /// same path as every other step, and to stop retrying once a terminal read
     /// event says the barrier ended.
-    pub fn read(&mut self, node_id: NodeId, query: LedgerQuery) -> ReadOutcome {
-        let read_id = self.allocate_read_id();
+    pub fn resolve_read(&mut self, pending: PendingRead) -> ReadOutcome {
+        if let Some(outcome) = pending.outcome {
+            return outcome;
+        }
         for _ in 0..MAX_ROUNDS {
-            // A terminal read event ends the barrier wherever it was observed,
-            // including in the report of an unrelated tick or delivery. The
-            // group drops its waiter with the event, so retrying the same read
-            // ID afterwards is refused as non-monotonic instead of restating
-            // the outcome.
-            if let Some(terminal) = self.read_failures.remove(&read_id) {
-                return terminal;
-            }
-            let ReadReport { outcome, report } = self
-                .node_mut(node_id)
-                .group
-                .read(ReadRequest::Linearizable {
-                    group_id: GROUP_ID,
-                    read_id,
-                    query,
-                    min_applied_index: None,
-                    context: Vec::new(),
-                })
-                .expect("a healthy group accepts linearizable reads");
-            self.record_report(report);
-            if let Some(terminal) = self.read_failures.remove(&read_id) {
-                return terminal;
-            }
-            match outcome {
-                GroupReadOutcome::Ready { result, .. } => return ReadOutcome::Ready(result),
-                // The barrier is still in flight, or this replica has not
-                // applied through it yet. Either way the contract is to keep
-                // driving and retry with the same read ID, freshness, and
-                // context.
-                GroupReadOutcome::Pending { .. }
-                | GroupReadOutcome::LinearizableFreshnessUnavailable { .. } => {}
-                // Rejections and cancellations are read events in the report
-                // above, so the check that follows it has already answered
-                // them.
-                outcome => unreachable!("a linearizable ledger read cannot produce {outcome:?}"),
-            }
             self.deliver_all();
             self.tick_reachable();
             self.deliver_all();
+            if let Some(outcome) =
+                self.attempt_read(pending.node_id, pending.read_id, pending.query)
+            {
+                return self.record_query_completion(pending.operation_id, outcome);
+            }
         }
-        self.node_mut(node_id).group.cancel_read(read_id);
-        ReadOutcome::Unresolved
+        self.node_mut(pending.node_id)
+            .group
+            .cancel_read(pending.read_id);
+        self.record_query_completion(pending.operation_id, ReadOutcome::Unresolved)
+    }
+
+    /// Makes one barrier attempt without driving the cluster.
+    ///
+    /// Returns `None` while the barrier is still in flight; every other state
+    /// is terminal for this read.
+    fn attempt_read(
+        &mut self,
+        node_id: NodeId,
+        read_id: ReadId,
+        query: LedgerQuery,
+    ) -> Option<ReadOutcome> {
+        // A terminal read event ends the barrier wherever it was observed,
+        // including in the report of an unrelated tick or delivery. The group
+        // drops its waiter with the event, so retrying the same read ID
+        // afterwards is refused as non-monotonic instead of restating the
+        // outcome.
+        if let Some(terminal) = self.read_failures.remove(&read_id) {
+            return Some(terminal);
+        }
+        let ReadReport { outcome, report } = self
+            .node_mut(node_id)
+            .group
+            .read(ReadRequest::Linearizable {
+                group_id: GROUP_ID,
+                read_id,
+                query,
+                min_applied_index: None,
+                context: Vec::new(),
+            })
+            .expect("a healthy group accepts linearizable reads");
+        self.record_report(report);
+        if let Some(terminal) = self.read_failures.remove(&read_id) {
+            return Some(terminal);
+        }
+        match outcome {
+            GroupReadOutcome::Ready { result, .. } => Some(ReadOutcome::Ready(result)),
+            // The barrier is still in flight, or this replica has not applied
+            // through it yet. Either way the contract is to keep driving and
+            // retry with the same read ID, freshness, and context.
+            GroupReadOutcome::Pending { .. }
+            | GroupReadOutcome::LinearizableFreshnessUnavailable { .. } => None,
+            // Rejections and cancellations are read events in the report above,
+            // so the check that follows it has already answered them.
+            outcome => unreachable!("a linearizable ledger read cannot produce {outcome:?}"),
+        }
     }
 
     fn record_report(&mut self, report: LedgerReport) {
@@ -594,8 +684,7 @@ impl LedgerCluster {
     }
 
     fn record_invocation(&mut self, command: Command) -> OperationId {
-        let operation_id = OperationId::new(self.next_operation_id);
-        self.next_operation_id += 1;
+        let operation_id = self.allocate_operation_id();
         self.history.push(HistoryEvent::Invoked {
             operation_id,
             command,
@@ -617,14 +706,61 @@ impl LedgerCluster {
                     response: applied.response.clone(),
                 });
             }
-            // A pre-replication rejection provably did not commit, but the
-            // contract's history vocabulary has no weaker terminal event than
-            // `Unknown`, and `Unknown` is the sound over-approximation.
-            ProposalOutcome::Rejected { .. } | ProposalOutcome::Unknown => {
+            // The app layer emits this rejection only from the pre-append
+            // admission check, so the command never entered this node's log and
+            // never left it. That is the contract's provable-refusal criterion,
+            // and it is strictly stronger than `Unknown`.
+            ProposalOutcome::Rejected { .. } => {
+                self.history
+                    .push(HistoryEvent::NotCommitted { operation_id });
+            }
+            // A lost outcome proves nothing either way: the command may still
+            // be in a log this client cannot see.
+            ProposalOutcome::Unknown => {
                 self.history.push(HistoryEvent::Unknown { operation_id });
             }
         }
         outcome
+    }
+
+    fn record_query_invocation(&mut self, query: LedgerQuery) -> OperationId {
+        let operation_id = self.allocate_operation_id();
+        self.history.push(HistoryEvent::QueryInvoked {
+            operation_id,
+            query,
+        });
+        operation_id
+    }
+
+    fn record_query_completion(
+        &mut self,
+        operation_id: OperationId,
+        outcome: ReadOutcome,
+    ) -> ReadOutcome {
+        match &outcome {
+            ReadOutcome::Ready(result) => self.history.push(HistoryEvent::QueryCompleted {
+                operation_id,
+                result: *result,
+            }),
+            // A refused barrier, a canceled barrier, and a client that stopped
+            // waiting all delivered no value, so none of them constrains an
+            // ordering. The history keeps the operation anyway: a query that
+            // was issued and answered nothing is evidence about availability
+            // even when it is not evidence about correctness.
+            ReadOutcome::Rejected { .. }
+            | ReadOutcome::Canceled { .. }
+            | ReadOutcome::Unresolved => {
+                self.history
+                    .push(HistoryEvent::QueryAbandoned { operation_id });
+            }
+        }
+        outcome
+    }
+
+    fn allocate_operation_id(&mut self) -> OperationId {
+        let operation_id = OperationId::new(self.next_operation_id);
+        self.next_operation_id += 1;
+        operation_id
     }
 
     fn allocate_local_proposal_id(&mut self) -> LocalProposalId {

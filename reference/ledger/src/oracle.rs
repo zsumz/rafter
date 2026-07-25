@@ -2,8 +2,8 @@ use std::cmp::Ordering;
 
 use crate::{
     AccountId, ApplyDisposition, ApplyOutcome, BusinessRejection, ClientId, Command, LedgerConfig,
-    LedgerResponse, LedgerSummary, LedgerView, Mutation, MutationResult, RequestIdentity,
-    RequestRejection, Sequence, SessionEpoch, SessionView,
+    LedgerQuery, LedgerQueryResult, LedgerResponse, LedgerSummary, LedgerView, Mutation,
+    MutationResult, RequestIdentity, RequestRejection, Sequence, SessionEpoch, SessionView,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -69,6 +69,23 @@ impl ReferenceLedger {
             open_accounts: self.accounts.len(),
             total_balance,
             successful_deposits: self.successful_deposits,
+        }
+    }
+
+    /// Answers one linearizable query from the oracle's own state.
+    ///
+    /// Queries never change ledger state, so this is the read half of the
+    /// sequential specification the history checker linearizes against. The
+    /// adapter answers the same query from the implementation model; neither
+    /// path calls the other.
+    #[must_use]
+    pub fn query(&self, query: LedgerQuery) -> LedgerQueryResult {
+        match query {
+            LedgerQuery::GetAccount { account_id } => LedgerQueryResult::Account {
+                account_id,
+                balance: self.account_balance(account_id),
+            },
+            LedgerQuery::GetLedgerSummary => LedgerQueryResult::Summary(self.summary()),
         }
     }
 

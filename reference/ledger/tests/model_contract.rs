@@ -1,8 +1,8 @@
 mod support;
 
 use rafter_reference_ledger::{
-    AccountId, ApplyDisposition, BusinessRejection, Command, HistoryEvent, Ledger, LedgerResponse,
-    Mutation, MutationResult, OperationId, RequestRejection,
+    AccountId, ApplyDisposition, BusinessRejection, Command, HistoryEvent, Ledger, LedgerQuery,
+    LedgerQueryResult, LedgerResponse, Mutation, MutationResult, OperationId, RequestRejection,
 };
 use support::{amount, client, config, epoch, execute, open_session, sequence};
 
@@ -349,25 +349,48 @@ fn configured_bounds_reject_without_evicting_live_state() {
 }
 
 #[test]
-fn history_vocabulary_represents_completion_rejection_and_unknown_outcomes() {
-    let command = open_session(0, 1);
+fn history_vocabulary_covers_every_terminal_outcome_a_client_can_observe() {
     let operation_id = OperationId::new(7);
+    let account_id = AccountId::new(3);
     let history = [
         HistoryEvent::Invoked {
             operation_id,
-            command,
+            command: open_session(0, 1),
         },
+        // A deterministic rejection is an ordinary completion: the client got
+        // its answer, and the answer was "no".
         HistoryEvent::Completed {
             operation_id,
             response: LedgerResponse::Rejected(RequestRejection::SessionNotOpen),
         },
         HistoryEvent::Unknown { operation_id },
+        HistoryEvent::NotCommitted { operation_id },
+        HistoryEvent::QueryInvoked {
+            operation_id,
+            query: LedgerQuery::GetAccount { account_id },
+        },
+        HistoryEvent::QueryCompleted {
+            operation_id,
+            result: LedgerQueryResult::Account {
+                account_id,
+                balance: Some(0),
+            },
+        },
+        HistoryEvent::QueryAbandoned { operation_id },
     ];
 
-    assert_eq!(history.len(), 3);
     assert_eq!(operation_id.get(), 7);
     assert_eq!(client(0).get(), 0);
-    assert!(matches!(history[2], HistoryEvent::Unknown { .. }));
+    for event in &history {
+        assert_eq!(
+            event.operation_id(),
+            operation_id,
+            "every event names the operation it belongs to"
+        );
+    }
+    // The two lost-outcome events are distinct: one says the command may have
+    // committed, the other says it provably did not.
+    assert_ne!(history[2], history[3]);
 }
 
 #[test]

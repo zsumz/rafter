@@ -1,7 +1,7 @@
 use std::num::NonZeroU64;
 
 /// Account identifier in one ledger.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct AccountId(u64);
 
 impl AccountId {
@@ -19,7 +19,7 @@ impl AccountId {
 }
 
 /// Index of one bounded client-session slot.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct ClientId(u32);
 
 impl ClientId {
@@ -37,7 +37,7 @@ impl ClientId {
 }
 
 /// Nonzero session generation for one client slot.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct SessionEpoch(NonZeroU64);
 
 impl SessionEpoch {
@@ -58,7 +58,7 @@ impl SessionEpoch {
 }
 
 /// Nonzero monotonically increasing request sequence within one session.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Sequence(NonZeroU64);
 
 impl Sequence {
@@ -79,7 +79,7 @@ impl Sequence {
 }
 
 /// Nonzero ledger amount.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct Amount(NonZeroU64);
 
 impl Amount {
@@ -163,7 +163,7 @@ pub struct RequestIdentity {
 }
 
 /// Deterministic mutation applied by the ledger.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum Mutation {
     /// Opens a new zero-balance account.
     OpenAccount { account_id: AccountId },
@@ -198,7 +198,7 @@ pub enum Command {
 }
 
 /// Deterministic result of an admitted mutation.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub enum MutationResult {
     /// A zero-balance account was opened.
     AccountOpened,
@@ -214,7 +214,7 @@ pub enum MutationResult {
 }
 
 /// Ledger-level deterministic rejection that consumes and caches its sequence.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
 pub enum BusinessRejection {
     /// The account is already open.
     AccountAlreadyExists,
@@ -291,6 +291,32 @@ pub struct ApplyOutcome {
     pub disposition: ApplyDisposition,
 }
 
+/// Linearizable query accepted by the ledger read path.
+///
+/// Queries are application vocabulary rather than Rafter integration: the
+/// adapter answers them behind a read barrier and the oracle answers them from
+/// its own state, so the type has to be reachable from both without either
+/// depending on the other.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LedgerQuery {
+    /// Reads one account's balance, if the account is open.
+    GetAccount { account_id: AccountId },
+    /// Reads the aggregate ledger summary.
+    GetLedgerSummary,
+}
+
+/// Result of one ledger query.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LedgerQueryResult {
+    /// Balance of an account, or `None` when it is not open.
+    Account {
+        account_id: AccountId,
+        balance: Option<u64>,
+    },
+    /// Aggregate ledger summary.
+    Summary(LedgerSummary),
+}
+
 /// Query result summarizing one ledger state.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct LedgerSummary {
@@ -303,7 +329,7 @@ pub struct LedgerSummary {
 }
 
 /// Public deterministic inspection of one active client session.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct SessionView {
     /// Client slot that owns the session.
     pub client_id: ClientId,
@@ -314,7 +340,13 @@ pub struct SessionView {
 }
 
 /// Canonical deterministic state view shared only for differential assertions.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// Both collections are ordered by identifier rather than by the order the
+/// producing model happened to store them in, so two models that behave
+/// identically always produce equal views. That canonical form is why the
+/// history checker can use a view as a state key: equal views are
+/// indistinguishable to every later command and query.
+#[derive(Clone, Debug, Eq, Hash, PartialEq)]
 pub struct LedgerView {
     /// Sorted account balances.
     pub accounts: Vec<(AccountId, u64)>,

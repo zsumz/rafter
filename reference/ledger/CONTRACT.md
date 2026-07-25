@@ -14,7 +14,8 @@ The ledger is deliberately small. It exists to prove:
 - bounded request deduplication;
 - deterministic retries after unknown outcomes;
 - snapshot-safe client sessions;
-- linearizable queries once attached to Rafter; and
+- linearizable reads and mutations, checked as an ordering property over
+  recorded histories rather than inferred from preserved aggregates; and
 - agreement between an implementation and a structurally independent oracle.
 
 ## Resource Model
@@ -55,9 +56,11 @@ GetAccount(account_id)
 GetLedgerSummary
 ```
 
-The Rafter adapter will serve queries only after an ordinary linearizable read
-barrier. Query behavior is modeled here, but transport and read barriers are
-not.
+A query is application vocabulary rather than Rafter integration. Both the
+implementation model and the oracle answer queries from their own state through
+their own code, so a query has a specified answer independent of any adapter.
+The Rafter adapter serves a query only after an ordinary linearizable read
+barrier; the barrier is the adapter's, the answer is the model's.
 
 ## Session Protocol
 
@@ -130,9 +133,11 @@ The implementation and oracle must establish:
    results, deposit totals, and retry behavior.
 10. Resource bounds fail closed without evicting live correctness state.
 
-Aggregate invariants do not imply linearizability. The later process adapter
-will record invocation, completion, rejection, unknown outcome, and real-time
-ordering for an independent history checker.
+Aggregate invariants do not imply linearizability, and the two are checked
+separately. The driver records invocation, completion, rejection, unknown
+outcome, provable refusal, query result, and real-time ordering; the
+[history checker](#linearizability) decides the ordering property over that
+record.
 
 ## Independent Oracle Rule
 
@@ -186,11 +191,110 @@ A client operation history contains:
 Invoked(operation_id, command)
 Completed(operation_id, response)
 Unknown(operation_id)
+NotCommitted(operation_id)
+
+QueryInvoked(operation_id, query)
+QueryCompleted(operation_id, result)
+QueryAbandoned(operation_id)
 ```
 
-Deterministic rejections are normal completed responses. `Unknown` means the
-caller cannot tell whether the replicated command committed and must retry the
-same request identity.
+Position in the recorded sequence is the real-time order. An operation whose
+terminal event precedes another operation's invocation happened before it; two
+operations whose intervals overlap are concurrent and may be ordered either way.
+Every operation contributes exactly one invocation event and exactly one
+terminal event, correlated by `operation_id`. An operation that is invoked and
+never reaches a terminal event is a recorder defect, not a representable
+outcome: a caller that is still waiting is recorded as `Unknown`, and a query
+that never answered is recorded as `QueryAbandoned`.
+
+The vocabulary is closed and in-memory. It is deliberately not a wire format —
+the versioned frames this contract defines are the replicated command and
+snapshot frames — so adding a terminal outcome is a change to this document
+rather than a compatibility negotiation.
+
+Deterministic rejections are normal completed responses.
+
+### Mutation outcomes
+
+The three mutation outcomes differ only in what the caller can prove:
+
+- `Completed` carries the replicated response.
+- `NotCommitted` means the command provably never entered the replicated log.
+  No copy of that attempt can commit later, so its request identity is still
+  unused and the caller may issue a fresh attempt.
+- `Unknown` means the caller cannot tell. The command may have committed, so
+  the caller must retry the *same* request identity and let the session cache
+  decide.
+
+A refusal is provable only when the application layer reports it as a proposal
+rejection — `ProposalBegin::Rejected` or the equivalent `ProposalEvent::Rejected`
+for the same local proposal. `rafter-app` documents that event as the local node
+refusing the proposal before replication, and Rafter emits it only from the
+pre-append admission check: leadership, pending leadership transfer, and payload
+size are all decided before the entry is appended. The command therefore never
+entered this node's log and was never sent to a peer, and no other node holds a
+copy of that attempt because only this node ever had the bytes.
+
+Every other lost outcome stays `Unknown`, including all of the following, none
+of which the caller can distinguish from a commit:
+
+- `ProposalEvent::UnknownOutcome`, whatever its diagnostic reason. A dropped
+  local proposal may already have replicated to a quorum.
+- A proposal that was accepted and appended, after which the caller stopped
+  waiting. The entry exists and may yet commit.
+- Any outcome lost to process or connection failure.
+
+The distinction is worth drawing because `Unknown` is the weaker claim: a
+checker must allow an `Unknown` operation to have taken effect, so an
+implementation that wrongly applied a refused command would be explained away.
+`NotCommitted` removes that excuse.
+
+### Query outcomes
+
+Queries are linearizable operations in the history, not observations outside it.
+A `QueryCompleted` result must be explained by the same ordering that explains
+every mutation around it.
+
+`QueryAbandoned` records a query that returned no value to the caller. A refused
+barrier, a barrier canceled by leadership loss, and a caller that stopped
+waiting are deliberately not distinguished: none of them delivered a result, and
+a query that returned nothing constrains no ordering. The event is retained
+because an issued query that answered nothing is evidence about availability
+even when it is not evidence about correctness.
+
+## Linearizability
+
+Every recorded history must admit a legal real-time ordering: a total order over
+its operations such that
+
+1. the order respects real time — if one operation's terminal event precedes
+   another's invocation, it comes first;
+2. running that order through the ledger's sequential specification produces
+   exactly the response each `Completed` operation observed and exactly the
+   result each `QueryCompleted` operation observed;
+3. each `Unknown` mutation appears in the order, or does not, whichever admits
+   an explanation — both readings are permitted because both are consistent
+   with what the caller saw; and
+4. each `NotCommitted` mutation does not appear in the order at all, and each
+   `QueryAbandoned` query is likewise absent.
+
+The sequential specification is the independent oracle, never the implementation
+model. A checker that replayed the implementation would agree with it by
+construction.
+
+Application invariants and linearizability remain separate checks. Total balance
+equalling total deposits holds for orderings that never happened; it says
+nothing about whether the observed operations can be arranged in real time at
+all. Both are asserted.
+
+The checker is a bounded decision procedure, so it also has to say when it will
+not decide. It refuses a history that needs more operations ordered than its
+declared bound, and it refuses a search that exceeds its configuration budget.
+Both are refusals, reported as undecided; neither silently checks a truncated
+history. Operations settled without searching — a `NotCommitted` mutation, a
+`QueryAbandoned` query — do not count against the operation bound, because
+removing them is exact rather than approximate: no ordering constraint between
+two remaining operations passes through a removed one.
 
 ## First Milestone Boundary
 
@@ -229,3 +333,30 @@ lives in shared in-memory media that outlive one node incarnation, and
 application state survives a restart because the state machine carries its
 applied index with its data. A transactional application backend, application
 crash points, and durable process composition arrive with the later slices.
+
+## History Checker Boundary
+
+The checker slice closes the two gaps the adapter slice deferred: queries were
+absent from the recorded history, and a provable refusal was recorded as an
+unknown outcome. It adds:
+
+- query invocation and completion events, plus the `NotCommitted` terminal
+  outcome and its observable criterion;
+- a black-box linearizability checker over recorded histories, using the oracle
+  as its sequential specification and sharing no transition code with the
+  implementation model;
+- driver support for starting an operation without waiting for it, so recorded
+  histories contain genuinely overlapping operations rather than a serial
+  transcript; and
+- seeded workloads that record queries, unknown outcomes, and refusals, checked
+  both for model agreement and for linearizability.
+
+The checker reads only the history. It never inspects replicas, logs, applied
+indexes, or the implementation model, so an external user recording the same
+client-visible events could run the same check.
+
+Two limits are deliberate. The checker decides bounded histories only, and says
+so rather than approximating. And the `NotCommitted` criterion is stated in
+terms of what `rafter-app` reports, not in terms of what the driver happens to
+know about its own network: a criterion the driver could only meet by privileged
+observation would not survive the move to real processes.

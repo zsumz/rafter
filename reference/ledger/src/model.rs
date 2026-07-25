@@ -2,8 +2,8 @@ use std::{cmp::Ordering, collections::BTreeMap};
 
 use crate::{
     AccountId, ApplyDisposition, ApplyOutcome, BusinessRejection, ClientId, Command, LedgerConfig,
-    LedgerResponse, LedgerSummary, LedgerView, Mutation, MutationResult, RequestIdentity,
-    RequestRejection, Sequence, SessionEpoch, SessionView,
+    LedgerQuery, LedgerQueryResult, LedgerResponse, LedgerSummary, LedgerView, Mutation,
+    MutationResult, RequestIdentity, RequestRejection, Sequence, SessionEpoch, SessionView,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -210,6 +210,22 @@ impl Ledger {
             open_accounts: self.accounts.len(),
             total_balance: self.total_balance(),
             successful_deposits: self.successful_deposits,
+        }
+    }
+
+    /// Answers one linearizable query.
+    ///
+    /// The adapter calls this after its read barrier is satisfied. The oracle
+    /// answers the same query from its own state through its own code, so a
+    /// differential test compares two independent readers.
+    #[must_use]
+    pub fn query(&self, query: LedgerQuery) -> LedgerQueryResult {
+        match query {
+            LedgerQuery::GetAccount { account_id } => LedgerQueryResult::Account {
+                account_id,
+                balance: self.account_balance(account_id),
+            },
+            LedgerQuery::GetLedgerSummary => LedgerQueryResult::Summary(self.summary()),
         }
     }
 

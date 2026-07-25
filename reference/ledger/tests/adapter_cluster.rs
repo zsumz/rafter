@@ -5,14 +5,14 @@ mod cluster;
 #[path = "support/storage.rs"]
 mod storage;
 
-use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 
-use rafter::LogIndex;
+use rafter::{LogIndex, ProposalRejection};
 use rafter_app::state_machine::{ApplyBatch, ApplyEntry, ReplicatedStateMachine};
 use rafter_reference_ledger::{
-    AccountId, ApplyDisposition, BusinessRejection, Command, HistoryEvent, LedgerAdapterError,
-    LedgerConfig, LedgerQuery, LedgerQueryResult, LedgerResponse, LedgerStateMachine, Mutation,
-    MutationResult, OperationId, ReferenceLedger, RequestRejection,
+    check_linearizable, AccountId, ApplyDisposition, BusinessRejection, Command, HistoryEvent,
+    LedgerAdapterError, LedgerConfig, LedgerQuery, LedgerQueryResult, LedgerResponse,
+    LedgerStateMachine, Mutation, MutationResult, ReferenceLedger, RequestRejection,
 };
 
 use cluster::{LedgerCluster, ProposalOutcome, ReadOutcome};
@@ -90,10 +90,10 @@ fn replicated_ledger_traffic_agrees_with_the_independent_oracle() {
     let leader_ledger = cluster.state_machine(leader).ledger();
     assert_eq!(
         leader_ledger.view(),
-        replayed.state.view(),
+        replayed.view(),
         "the replicated ledger diverged from the independent oracle"
     );
-    assert_eq!(leader_ledger.summary(), replayed.state.summary());
+    assert_eq!(leader_ledger.summary(), replayed.summary());
     assert_eq!(
         leader_ledger.summary().total_balance,
         leader_ledger.summary().successful_deposits,
@@ -109,7 +109,9 @@ fn replicated_ledger_traffic_agrees_with_the_independent_oracle() {
             "replica {node_id} diverged"
         );
     }
-    assert_history_agrees_with_oracle(cluster.history(), &replayed.responses);
+    // The aggregate invariants above hold for orderings that never happened,
+    // so the history gets its own check.
+    assert_eq!(assert_linearizable(&cluster), 8);
 }
 
 #[test]
@@ -207,6 +209,7 @@ fn session_protocol_survives_real_replication() {
         Some(7),
         "rejected identities changed no ledger state"
     );
+    assert_linearizable(&cluster);
 }
 
 #[test]
@@ -248,6 +251,19 @@ fn a_leader_change_leaves_an_unknown_outcome_that_a_retry_resolves() {
         "the former leader reported that it lost its proposal's outcome"
     );
 
+    // This read is what forces the unknown outcome to be read one specific way.
+    // The isolated leader's entry never replicated, so no ordering that runs
+    // the deposit can explain a zero balance here, and the checker has to
+    // backtrack into the never-happened reading of the same operation.
+    assert_eq!(
+        cluster.read(second_leader, LedgerQuery::GetAccount { account_id: ALPHA }),
+        ReadOutcome::Ready(LedgerQueryResult::Account {
+            account_id: ALPHA,
+            balance: Some(0),
+        }),
+        "the proposal the former leader lost never reached the replicated log"
+    );
+
     let retry = cluster.submit(second_leader, deposit);
     assert_eq!(
         retry.response(),
@@ -257,6 +273,14 @@ fn a_leader_change_leaves_an_unknown_outcome_that_a_retry_resolves() {
         "the retry under the same identity resolves the unknown window"
     );
     cluster.settle();
+    assert_eq!(
+        cluster.read(second_leader, LedgerQuery::GetAccount { account_id: ALPHA }),
+        ReadOutcome::Ready(LedgerQueryResult::Account {
+            account_id: ALPHA,
+            balance: Some(25),
+        }),
+        "and the retry's effect is visible afterwards"
+    );
 
     for node_id in cluster.node_ids() {
         assert_eq!(
@@ -273,9 +297,8 @@ fn a_leader_change_leaves_an_unknown_outcome_that_a_retry_resolves() {
         replay_through_oracle(cluster.config(), &cluster.committed_commands(second_leader));
     assert_eq!(
         cluster.state_machine(second_leader).ledger().view(),
-        replayed.state.view()
+        replayed.view()
     );
-    assert_history_agrees_with_oracle(cluster.history(), &replayed.responses);
     assert!(
         cluster
             .history()
@@ -283,6 +306,7 @@ fn a_leader_change_leaves_an_unknown_outcome_that_a_retry_resolves() {
             .any(|event| matches!(event, HistoryEvent::Unknown { .. })),
         "the history retains the unknown-outcome window"
     );
+    assert_linearizable(&cluster);
 }
 
 #[test]
@@ -354,6 +378,171 @@ fn linearizable_reads_interleave_with_mutations() {
         Some(leader),
         "a refused barrier redirects the client to the leader the follower believes in"
     );
+
+    // Every answered query is part of the ordering the checker has to find; the
+    // refused one delivered no value and constrains nothing.
+    assert_eq!(assert_linearizable(&cluster), 8);
+    assert!(
+        cluster
+            .history()
+            .iter()
+            .any(|event| matches!(event, HistoryEvent::QueryAbandoned { .. })),
+        "the history retains the query that answered nothing"
+    );
+}
+
+#[test]
+fn a_refused_proposal_is_recorded_as_provably_uncommitted() {
+    let mut cluster = LedgerCluster::new(config(2, 4));
+    let leader = cluster.elect_leader();
+    commit(&mut cluster, leader, open_session(0, 1));
+    commit(
+        &mut cluster,
+        leader,
+        execute(0, 1, 1, Mutation::OpenAccount { account_id: ALPHA }),
+    );
+    cluster.settle();
+
+    let follower = cluster
+        .node_ids()
+        .into_iter()
+        .find(|node_id| *node_id != leader)
+        .expect("a three-node cluster has followers");
+    let deposit = execute(
+        0,
+        1,
+        2,
+        Mutation::Deposit {
+            account_id: ALPHA,
+            amount: amount(25),
+        },
+    );
+    let refused = cluster.submit(follower, deposit.clone());
+    let ProposalOutcome::Rejected {
+        reason,
+        leader_hint,
+    } = refused
+    else {
+        panic!("a follower refuses a proposal before replicating it, got {refused:?}");
+    };
+    assert!(matches!(reason, ProposalRejection::NotLeader { .. }));
+    assert_eq!(leader_hint, Some(leader));
+    assert!(
+        cluster
+            .history()
+            .iter()
+            .any(|event| matches!(event, HistoryEvent::NotCommitted { .. })),
+        "the history records the stronger terminal event, not merely an unknown outcome"
+    );
+
+    // The stronger event is only honest if the command really is absent
+    // everywhere. Two independent client-visible facts say so: the balance is
+    // untouched, and the request identity the refusal carried is still unused,
+    // so resubmitting it executes rather than replaying a cached result.
+    assert_eq!(
+        cluster.read(leader, LedgerQuery::GetAccount { account_id: ALPHA }),
+        ReadOutcome::Ready(LedgerQueryResult::Account {
+            account_id: ALPHA,
+            balance: Some(0),
+        })
+    );
+    let accepted = cluster.submit(leader, deposit);
+    assert_eq!(accepted.disposition(), Some(ApplyDisposition::Applied));
+    assert_eq!(
+        accepted.response(),
+        Some(&LedgerResponse::Mutation(MutationResult::Deposited {
+            balance: 25
+        }))
+    );
+
+    let report = check_linearizable(cluster.config(), cluster.history())
+        .unwrap_or_else(|error| panic!("{error}"));
+    assert_eq!(
+        report.discharged_operations(),
+        1,
+        "the refused command is settled without searching for a place to put it"
+    );
+}
+
+#[test]
+fn overlapping_reads_and_writes_order_correctly_across_a_leader_change() {
+    let mut cluster = LedgerCluster::new(config(2, 4));
+    let first_leader = cluster.elect_leader();
+    commit(&mut cluster, first_leader, open_session(0, 1));
+    commit(
+        &mut cluster,
+        first_leader,
+        execute(0, 1, 1, Mutation::OpenAccount { account_id: ALPHA }),
+    );
+    commit(
+        &mut cluster,
+        first_leader,
+        execute(
+            0,
+            1,
+            2,
+            Mutation::Deposit {
+                account_id: ALPHA,
+                amount: amount(10),
+            },
+        ),
+    );
+    cluster.settle();
+
+    cluster.partition(first_leader);
+    let second_leader = cluster.elect_leader();
+    assert_ne!(second_leader, first_leader, "leadership moved");
+    cluster.heal();
+    cluster.settle();
+
+    // Three operations the client starts before any of them answers. Their
+    // real-time intervals all overlap, so the history permits several orderings
+    // and the responses have to pick out a consistent one.
+    let balance_across =
+        cluster.begin_read(second_leader, LedgerQuery::GetAccount { account_id: ALPHA });
+    let deposit = cluster.begin_submit(
+        second_leader,
+        execute(
+            0,
+            1,
+            3,
+            Mutation::Deposit {
+                account_id: ALPHA,
+                amount: amount(7),
+            },
+        ),
+    );
+    let summary_across = cluster.begin_read(second_leader, LedgerQuery::GetLedgerSummary);
+
+    let observed_balance = cluster.resolve_read(balance_across);
+    let committed = cluster.resolve_proposal(deposit);
+    let observed_summary = cluster.resolve_read(summary_across);
+
+    assert_eq!(
+        committed.response(),
+        Some(&LedgerResponse::Mutation(MutationResult::Deposited {
+            balance: 17
+        })),
+        "the new leader replicated the write that overlapped both reads"
+    );
+    // Either balance is legal: the read overlaps the write, so an ordering may
+    // place it on either side. What is not legal is a balance the write can
+    // never produce, or a summary that disagrees with the balance the same
+    // ordering already committed to.
+    let ReadOutcome::Ready(LedgerQueryResult::Account { balance, .. }) = observed_balance else {
+        panic!("the new leader must answer a barrier without a write behind it, got {observed_balance:?}");
+    };
+    assert!(
+        balance == Some(10) || balance == Some(17),
+        "a read overlapping the deposit saw {balance:?}"
+    );
+    assert!(matches!(
+        observed_summary,
+        ReadOutcome::Ready(LedgerQueryResult::Summary(_))
+    ));
+
+    assert_has_overlapping_operations(cluster.history());
+    assert_eq!(assert_linearizable(&cluster), 6);
 }
 
 #[test]
@@ -433,6 +622,7 @@ fn a_restarted_replica_recovers_its_ledger_and_keeps_replicating() {
         Some(42),
         "the restarted replica kept replicating"
     );
+    assert_linearizable(&cluster);
 }
 
 #[test]
@@ -456,6 +646,7 @@ fn a_snapshot_round_trip_preserves_balances_sessions_and_deduplication() {
     );
     let acknowledged_response = commit(&mut cluster, leader, acknowledged.clone());
     cluster.settle();
+    assert_linearizable(&cluster);
 
     let applied_index = cluster.applied_index(leader);
     let snapshot = cluster
@@ -555,6 +746,7 @@ fn business_rejections_replicate_as_results_rather_than_adapter_errors() {
     );
     assert_eq!(cached.disposition(), Some(ApplyDisposition::Replayed));
     assert_eq!(cached.response(), Some(&rejected));
+    assert_linearizable(&cluster);
 }
 
 /// Submits a command and asserts that it committed, returning its response.
@@ -570,60 +762,61 @@ fn commit(
     }
 }
 
-struct OracleReplay {
-    state: ReferenceLedger,
-    responses: Vec<(Command, LedgerResponse)>,
-}
-
 /// Replays a real committed command sequence through the independent oracle.
-fn replay_through_oracle(config: LedgerConfig, commands: &[Command]) -> OracleReplay {
+///
+/// This is the application-invariant half of the ledger's evidence: it says the
+/// replicated state machine holds the state the specification says it should.
+/// It says nothing about ordering, which is why every caller also checks the
+/// recorded history for linearizability.
+fn replay_through_oracle(config: LedgerConfig, commands: &[Command]) -> ReferenceLedger {
     let mut state = ReferenceLedger::new(config);
-    let responses = commands
-        .iter()
-        .map(|command| (command.clone(), state.apply(command.clone()).response))
-        .collect();
-    OracleReplay { state, responses }
+    for command in commands {
+        state.apply(command.clone());
+    }
+    state
 }
 
-/// Checks every terminal client response against the oracle's replay.
+/// Checks the recorded history for linearizability, printing it on failure.
 ///
-/// Operations that ended in an unknown outcome constrain nothing, which is
-/// exactly what the contract's `Unknown` event means.
-fn assert_history_agrees_with_oracle(
-    history: &[HistoryEvent],
-    responses: &[(Command, LedgerResponse)],
-) {
-    let mut invoked = BTreeMap::<OperationId, &Command>::new();
+/// This subsumes the per-response oracle replay this suite used to do: matching
+/// each response against some position in the committed log allowed answers
+/// that no single real-time ordering could produce together, and a query's
+/// answer was never checked at all.
+fn assert_linearizable(cluster: &LedgerCluster) -> usize {
+    match check_linearizable(cluster.config(), cluster.history()) {
+        Ok(report) => {
+            assert!(
+                report.checked_operations() > 0,
+                "the checker was handed a history with nothing to check"
+            );
+            report.checked_operations()
+        }
+        Err(error) => panic!("{error}"),
+    }
+}
+
+/// Asserts that the recorded history really contains concurrent operations.
+///
+/// A driver change that quietly serialized every operation would leave the
+/// checker with a single forced ordering, and the linearizability assertions in
+/// the concurrent scenarios would pass for the wrong reason.
+fn assert_has_overlapping_operations(history: &[HistoryEvent]) {
+    let mut in_flight = BTreeSet::new();
+    let mut overlapped = false;
     for event in history {
-        if let HistoryEvent::Invoked {
-            operation_id,
-            command,
-        } = event
-        {
-            invoked.insert(*operation_id, command);
+        let operation_id = event.operation_id();
+        match event {
+            HistoryEvent::Invoked { .. } | HistoryEvent::QueryInvoked { .. } => {
+                overlapped |= !in_flight.is_empty();
+                in_flight.insert(operation_id);
+            }
+            _ => {
+                in_flight.remove(&operation_id);
+            }
         }
     }
-
-    let mut checked = 0_usize;
-    for event in history {
-        let HistoryEvent::Completed {
-            operation_id,
-            response,
-        } = event
-        else {
-            continue;
-        };
-        let command = invoked
-            .get(operation_id)
-            .expect("every completion follows its invocation");
-        assert!(
-            responses
-                .iter()
-                .any(|(replayed, replayed_response)| replayed == *command
-                    && replayed_response == response),
-            "no committed execution of {command:?} produced the observed response {response:?}"
-        );
-        checked += 1;
-    }
-    assert!(checked > 0, "the history checked no completed operations");
+    assert!(
+        overlapped,
+        "the recorded history has no overlapping operations to order"
+    );
 }
