@@ -15,8 +15,8 @@ use rafter_app::{
         GroupFatalState, GroupInput, GroupStepReport, LeadershipTransferEvent, RaftGroup,
         StepReportOptions,
     },
-    proposal::{Proposal, ProposalEvent, ProposalUnknownOutcomeReason},
-    read::{ReadConsistency, ReadOutcome, ReadRequest},
+    proposal::{ClientRequestId, Proposal, ProposalEvent, ProposalUnknownOutcomeReason},
+    read::{ReadConsistency, ReadEvent, ReadOutcome, ReadRequest},
     state_machine::ReplicatedStateMachine,
     transport::PeerEnvelope,
 };
@@ -47,7 +47,9 @@ pub use driver_trait::{DriverCommandSender, DriverFuture};
 pub use in_memory::InMemoryRaftDriver;
 pub use mapping::ManagedDriverError;
 pub use options::{QueryReceipt, WriteBatchEntry, WriteOptions, WriteReceipt};
-pub use transport::{InboundEnvelopeError, TransportDriverOptions, TransportRaftDriver};
+pub use transport::{
+    InboundEnvelopeError, PendingWrite, TransportDriverOptions, TransportRaftDriver,
+};
 
 use mapping::{
     transfer_error_from_group, write_error_from_group, DriverRoutingError, ManagedOperationError,

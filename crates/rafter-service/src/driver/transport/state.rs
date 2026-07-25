@@ -22,6 +22,13 @@ pub(super) struct WriteWaiter<R> {
 
 pub(super) struct ReadWaiter<G, Q, QR> {
     request: ReadRequest<G, Q>,
+    /// Whether a routed [`ReadEvent::Granted`] said this barrier's proof is
+    /// cached and waiting for a read call to consume it.
+    ///
+    /// This is the whole retry policy. A read against a barrier the group
+    /// already tracks returns an unstepped report, so a second attempt without
+    /// a grant in between cannot see a different answer.
+    proof_ready: bool,
     outcome: Option<Result<QueryReceipt<G, QR>, ReadError>>,
     waker: Option<Waker>,
 }
@@ -107,6 +114,13 @@ where
     /// A refused send is counted rather than propagated: Raft tolerates drops
     /// and re-sends, so a write must not fail because one heartbeat could not
     /// be delivered.
+    ///
+    /// Read events are routed here for the same reason proposal events are: the
+    /// app layer ends a barrier in whichever step observes the cause, and for a
+    /// leadership change that step is a tick or a delivery rather than a read
+    /// call. A driver that read only its own read calls' outcomes would leave
+    /// that client waiting forever and then ask the group to re-reserve a spent
+    /// `ReadId`.
     pub(super) fn route_report(&mut self, report: DriverStepReport<G, A>) {
         for envelope in report.peer_messages {
             if self.transport.send(envelope).is_err() {
@@ -115,6 +129,60 @@ where
         }
         for event in &report.proposal_events {
             self.observe_proposal_event(event);
+        }
+        for event in &report.read_events {
+            self.observe_read_event(event);
+        }
+    }
+
+    /// Resolves a barrier the group itself ended, and records one it granted.
+    ///
+    /// The terminal mapping is the one
+    /// [`TransportDriverState::handle_read_outcome`] uses, so a barrier resolves
+    /// identically whichever step observed its end. Neither terminal arm touches
+    /// the group again: the event carries the whole answer, and the group has
+    /// already dropped that barrier's state.
+    pub(super) fn observe_read_event(&mut self, event: &ReadEvent<G>) {
+        match event {
+            // Not terminal. The proof is cached in the group and a later read
+            // call consumes it; recording the grant is what lets
+            // `drive_pending_reads` attempt exactly the barriers whose answer
+            // can have changed.
+            ReadEvent::Granted { read_id, .. } => {
+                if let Some(waiter) = self.read_waiters.get_mut(read_id) {
+                    waiter.proof_ready = true;
+                }
+            }
+            ReadEvent::Rejected {
+                read_id,
+                reason,
+                leader_hint,
+            } => self.resolve_read(
+                *read_id,
+                Err(ReadError::Rejected {
+                    read_id: Some(*read_id),
+                    reason: *reason,
+                    leader_hint: *leader_hint,
+                }),
+            ),
+            ReadEvent::Canceled {
+                read_id,
+                reason,
+                leader_hint,
+            } => self.resolve_read(
+                *read_id,
+                Err(ReadError::Canceled {
+                    read_id: *read_id,
+                    reason: *reason,
+                    leader_hint: *leader_hint,
+                }),
+            ),
+            // `FreshnessUnavailable` is not terminal either: the barrier stays
+            // reserved, and the same app-layer path emits `Granted` once the
+            // applied index catches up. A variant this driver does not know
+            // falls here for the same reason — it is not an answer, so the
+            // waiter keeps waiting for one.
+            _ => {}
         }
     }
 
@@ -212,122 +280,213 @@ where
         }
     }
 
+    /// Collects every barrier whose proof a routed grant said is ready.
+    ///
+    /// Barriers still waiting on a quorum round, and granted barriers this
+    /// replica has not applied through, are left alone. They cannot answer
+    /// differently until the group emits a [`ReadEvent::Granted`] for them, and
+    /// attempting them anyway would spin: a read against a barrier the group
+    /// already tracks returns an unstepped report.
     pub(super) fn drive_pending_reads(&mut self) -> Result<(), ManagedDriverError> {
         if self.group.is_none() {
             return Err(ManagedDriverError::NoGroup);
         }
-        let pending = self
+        let ready = self
             .read_waiters
             .iter()
-            .filter(|(_, waiter)| waiter.outcome.is_none())
+            .filter(|(_, waiter)| waiter.outcome.is_none() && waiter.proof_ready)
             .map(|(read_id, _)| *read_id)
             .collect::<Vec<_>>();
-        for read_id in pending {
-            for _ in 0..self.options.max_read_retries {
-                if !self.retry_read(read_id)? {
-                    break;
-                }
-            }
+        for read_id in ready {
+            self.attempt_read(read_id)?;
         }
         self.publish_metrics();
         Ok(())
     }
 
-    /// Retries one barrier once. Returns whether another retry could help.
-    pub(super) fn retry_read(&mut self, read_id: ReadId) -> Result<bool, ManagedDriverError> {
+    /// Runs one read call for one barrier and resolves whatever it produced.
+    ///
+    /// This both starts a barrier, when [`TransportDriverState::begin_read`]
+    /// calls it, and consumes a granted one afterwards. Only the first of those
+    /// steps the group.
+    pub(super) fn attempt_read(&mut self, read_id: ReadId) -> Result<(), ManagedDriverError> {
         let Some(waiter) = self.read_waiters.get(&read_id) else {
-            return Ok(false);
+            return Ok(());
         };
         if waiter.outcome.is_some() {
-            return Ok(false);
+            return Ok(());
         }
         let request = waiter.request.clone();
-        let read = self
-            .group_mut()?
-            .read(request)
-            .map_err(|error| ManagedDriverError::Group {
-                cause: ErrorCause::new(error),
-            })?;
+        let read = match self.group_mut()?.read(request) {
+            Ok(read) => read,
+            Err(error) => return self.fail_read(read_id, error),
+        };
         self.route_report(read.report);
-        Ok(self.handle_read_outcome(read_id, read.outcome))
+        self.handle_read_outcome(read_id, read.outcome);
+        Ok(())
     }
 
-    /// Resolves one barrier's outcome. Returns whether another retry could
-    /// change the answer.
+    /// Attributes one read call's failure to the barrier that caused it.
+    ///
+    /// The group refuses a spent `ReadId` and a retry whose parameters moved,
+    /// and both mean one thing here: this driver still holds a waiter for a
+    /// barrier the group no longer tracks. Routing terminal read events is what
+    /// makes that unreachable, so reaching it is a driver invariant violation —
+    /// and the client is told so. Propagating instead would leave that waiter
+    /// unresolved forever while every later call raised the same error, and
+    /// would deny service to every other barrier in the same pass. Anything else
+    /// is not attributable to one barrier and reaches the caller.
+    fn fail_read(
+        &mut self,
+        read_id: ReadId,
+        error: GroupError<A::Error, R::Error>,
+    ) -> Result<(), ManagedDriverError> {
+        if !matches!(
+            error,
+            GroupError::NonMonotonicReadId { .. } | GroupError::DuplicateReadId { .. }
+        ) {
+            return Err(ManagedDriverError::Group {
+                cause: ErrorCause::new(error),
+            });
+        }
+        self.resolve_read(
+            read_id,
+            Err(ReadError::ManagedInvariantViolation {
+                message: format!(
+                    "managed driver still holds a waiter for {read_id}, which its group no \
+                     longer tracks: a terminal read event was not routed"
+                ),
+            }),
+        );
+        Ok(())
+    }
+
+    /// Resolves one barrier's outcome, or leaves it waiting for a grant.
     pub(super) fn handle_read_outcome(
         &mut self,
         read_id: ReadId,
         outcome: ReadOutcome<G, A::QueryResult>,
-    ) -> bool {
+    ) {
         match outcome {
             ReadOutcome::Ready { result, proof } => {
                 self.resolve_read(read_id, Ok(QueryReceipt { result, proof }));
-                false
             }
-            // The quorum round is waiting on an inbound frame, which only
-            // `deliver` can bring; retrying here would spin against a group
-            // whose state cannot change in between.
-            ReadOutcome::Pending { .. } => false,
-            // The barrier is granted and the state machine is behind it.
-            // Retrying is worth it: a read step also steps the group, so a
-            // committed entry can apply between one attempt and the next.
-            ReadOutcome::LinearizableFreshnessUnavailable { .. } => true,
+            // Both are waits rather than retries. The quorum round needs an
+            // inbound frame only `deliver` can bring, and a granted barrier
+            // ahead of this replica's applied index needs an apply; either way
+            // the group announces the change with a `ReadEvent::Granted` that
+            // `route_report` records.
+            ReadOutcome::Pending { .. } | ReadOutcome::LinearizableFreshnessUnavailable { .. } => {}
             ReadOutcome::Rejected {
                 read_id: rejected,
                 reason,
                 leader_hint,
-            } => {
-                self.resolve_read(
-                    read_id,
-                    Err(ReadError::Rejected {
-                        read_id: Some(rejected),
-                        reason,
-                        leader_hint,
-                    }),
-                );
-                false
-            }
+            } => self.resolve_read(
+                read_id,
+                Err(ReadError::Rejected {
+                    read_id: Some(rejected),
+                    reason,
+                    leader_hint,
+                }),
+            ),
             ReadOutcome::Canceled {
                 read_id: canceled,
                 reason,
                 leader_hint,
-            } => {
-                self.resolve_read(
-                    read_id,
-                    Err(ReadError::Canceled {
-                        read_id: canceled,
-                        reason,
-                        leader_hint,
-                    }),
-                );
-                false
-            }
+            } => self.resolve_read(
+                read_id,
+                Err(ReadError::Canceled {
+                    read_id: canceled,
+                    reason,
+                    leader_hint,
+                }),
+            ),
             ReadOutcome::LocalFreshnessUnavailable {
                 required_applied_index,
                 local_applied_index,
-            } => {
-                self.resolve_read(
-                    read_id,
-                    Err(ReadError::FreshnessUnavailable {
-                        read_id: None,
-                        required_applied_index,
-                        local_applied_index,
-                    }),
-                );
-                false
-            }
-            _ => {
-                self.resolve_read(
-                    read_id,
-                    Err(ReadError::ManagedInvariantViolation {
-                        message:
-                            "managed driver received unsupported app-layer read outcome variant"
-                                .to_owned(),
-                    }),
-                );
-                false
-            }
+            } => self.resolve_read(
+                read_id,
+                Err(ReadError::FreshnessUnavailable {
+                    read_id: None,
+                    required_applied_index,
+                    local_applied_index,
+                }),
+            ),
+            _ => self.resolve_read(
+                read_id,
+                Err(ReadError::ManagedInvariantViolation {
+                    message: "managed driver received unsupported app-layer read outcome variant"
+                        .to_owned(),
+                }),
+            ),
         }
+    }
+
+    /// Stops waiting for one write and resolves its client.
+    ///
+    /// Resolving rather than removing: a caller that abandons may still hold the
+    /// future, and a future that answered `ManagedInvariantViolation` because its
+    /// own caller abandoned it would be a worse answer than the one it asked
+    /// for. The slot is freed either way, because `max_pending_waiters` counts
+    /// unresolved waiters.
+    pub(super) fn abandon_write(&mut self, local_proposal_id: LocalProposalId) -> bool {
+        let Some(waiter) = self.write_waiters.get(&local_proposal_id) else {
+            return false;
+        };
+        if waiter.outcome.is_some() {
+            return false;
+        }
+        let client_request_id = waiter.options.client_request_id;
+        self.resolve_write(
+            local_proposal_id,
+            Err(WriteError::UnknownOutcome {
+                local_proposal_id,
+                client_request_id,
+                reason: UnknownOutcomeReason::DriveBoundReached,
+            }),
+        );
+        true
+    }
+
+    /// Stops waiting for one read, cancelling its barrier through the group
+    /// first so `reserved_reads` returns to its previous value.
+    pub(super) fn abandon_read(&mut self, read_id: ReadId) -> bool {
+        let Some(waiter) = self.read_waiters.get(&read_id) else {
+            return false;
+        };
+        if waiter.outcome.is_some() {
+            return false;
+        }
+        if let Some(group) = self.group.as_mut() {
+            group.cancel_read(read_id);
+        }
+        self.resolve_read(
+            read_id,
+            Err(ReadError::Abandoned {
+                read_id,
+                reason: ReadAbandonReason::DriveBoundReached,
+            }),
+        );
+        true
+    }
+
+    pub(super) fn pending_writes(&self) -> Vec<PendingWrite> {
+        self.write_waiters
+            .iter()
+            .filter(|(_, waiter)| waiter.outcome.is_none())
+            .map(|(local_proposal_id, waiter)| PendingWrite {
+                local_proposal_id: *local_proposal_id,
+                client_request_id: waiter.options.client_request_id,
+            })
+            .collect()
+    }
+
+    pub(super) fn pending_reads(&self) -> Vec<ReadId> {
+        self.read_waiters
+            .iter()
+            .filter(|(_, waiter)| waiter.outcome.is_none())
+            .map(|(read_id, _)| *read_id)
+            .collect()
     }
 
     /// Resolves every outstanding waiter as the incarnation lets go of them.
@@ -479,6 +638,9 @@ where
         let next = self.next_read_id.ok_or(ReadError::ReadIdExhausted)?;
         self.next_read_id = next.checked_add(1);
         let read_id = ReadId(next);
+        // Registered before the barrier starts, for the reason a write waiter
+        // is: a terminal event emitted inside the very step that starts the
+        // barrier must find a waiter listening.
         self.read_waiters.insert(
             read_id,
             ReadWaiter {
@@ -489,24 +651,18 @@ where
                     min_applied_index: None,
                     context: Vec::new(),
                 },
+                proof_ready: false,
                 outcome: None,
                 waker: None,
             },
         );
-        for _ in 0..self.options.max_read_retries {
-            match self.retry_read(read_id) {
-                Ok(true) => {}
-                Ok(false) => break,
-                Err(error) => {
-                    self.resolve_read(
-                        read_id,
-                        Err(ReadError::Transport {
-                            cause: ErrorCause::new(error),
-                        }),
-                    );
-                    break;
-                }
-            }
+        if let Err(error) = self.attempt_read(read_id) {
+            self.resolve_read(
+                read_id,
+                Err(ReadError::Transport {
+                    cause: ErrorCause::new(error),
+                }),
+            );
         }
         self.publish_metrics();
         Ok(read_id)

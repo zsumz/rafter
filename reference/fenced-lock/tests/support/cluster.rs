@@ -78,17 +78,6 @@ pub type NodeDriver = TransportRaftDriver<
 
 type LockGroup = RaftGroup<LockGroupId, SharedStateMachine, SharedRuntime>;
 
-/// Bounds this deployment puts on one driver's local work.
-///
-/// One retry per pump is the whole contract here: a barrier that is granted but
-/// still ahead of this replica's applied index cannot advance without another
-/// delivery, and a barrier still waiting on its quorum round cannot either. The
-/// shipped default of 1024 would spin against a group whose state nothing in
-/// between can change.
-fn driver_options() -> TransportDriverOptions {
-    TransportDriverOptions::default().with_max_read_retries(1)
-}
-
 /// Terminal client outcomes are carried by the application's own vocabulary,
 /// so the cluster records history against these rather than raw receipts.
 pub struct PendingSubmit {
@@ -216,8 +205,14 @@ impl LockCluster {
                     "a replica that has never started recovers nothing to route"
                 );
 
-                let driver = NodeDriver::new(group, transport, directory, driver_options())
-                    .expect("a quiescent group is adoptable");
+                let driver = NodeDriver::new(
+                    group,
+                    Vec::new(),
+                    transport,
+                    directory,
+                    TransportDriverOptions::default(),
+                )
+                .expect("a quiescent group is adoptable");
                 let handle = driver.handle();
                 let metrics = handle
                     .metrics()

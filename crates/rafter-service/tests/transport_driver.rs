@@ -15,11 +15,12 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use rafter_app::proposal::ClientRequestId;
 use rafter_runtime::DurableRaftNode;
 use rafter_service::{
     AuthenticatedPeerEnvelope, AuthenticatedPeerEnvelopeError, AuthenticatedPeerValidator,
     InboundEnvelopeError, PeerEnvelope, PeerSet, RaftTransport, TransportDriverOptions,
-    TransportRaftDriver,
+    TransportRaftDriver, WriteOptions,
 };
 use support::*;
 
@@ -171,6 +172,7 @@ fn driver_with_options(
     };
     let driver = TransportRaftDriver::new(
         numbered_group(GROUP, node_id, peers, 3),
+        Vec::new(),
         transport.clone(),
         validator,
         options,
@@ -371,6 +373,47 @@ fn a_read_barrier_resolves_through_drive_pending_reads() {
         .expect("the barrier resolves once the round completes")
         .expect("the read answers");
     assert_eq!(receipt.result, Some("one".to_owned()));
+}
+
+/// A barrier ended by a step that was not a read call still belongs to a
+/// client.
+///
+/// The app layer ends a barrier in whichever step observes the cause, which for
+/// a leadership change is a tick or a delivery. A driver that only reads its own
+/// read calls' outcomes never hears it: the group drops the barrier's state, the
+/// client waits forever, and the driver's next retry asks the group to
+/// re-reserve a spent `ReadId`.
+#[test]
+fn a_barrier_canceled_during_a_delivery_resolves_its_client() {
+    let nodes = cluster(&[1, 2, 3]);
+    elect(&nodes, NodeId(1));
+    let (driver, _transport) = &nodes[&NodeId(1)];
+    let handle = driver.handle();
+
+    // Nothing is exchanged after this, so the quorum round cannot finish on its
+    // own and the barrier is still reserved when the delivery below lands.
+    let mut read = Box::pin(handle.read("alpha".to_owned(), ReadConsistency::Linearizable));
+    assert!(
+        start(&mut read).is_none(),
+        "the barrier is waiting on its quorum round"
+    );
+
+    // A higher term on an inbound frame makes the leader step down, and the
+    // delivery step that observes it cancels every barrier the leader held.
+    driver
+        .deliver(vote_envelope(NodeId(2), NodeId(1)))
+        .expect("an authorized peer's frame is accepted");
+
+    let error = poll_once(&mut read)
+        .expect("the step that ended the barrier resolved its client")
+        .expect_err("a canceled barrier carries no answer");
+    assert!(
+        matches!(error, ReadError::Canceled { .. }),
+        "the cluster invalidated the barrier, so the client hears that, got {error:?}"
+    );
+    driver
+        .drive_pending_reads()
+        .expect("a resolved barrier leaves nothing to re-reserve");
 }
 
 #[test]
@@ -717,8 +760,273 @@ fn a_write_released_after_local_append_may_still_apply_under_the_next_incarnatio
     );
 }
 
-/// Zero is meaningless rather than merely small for both bounds, so the driver
-/// refuses to be built with one instead of failing at the first request.
+/// Observation is what `release_group` cannot offer: it hands the group back by
+/// resolving every outstanding waiter, so it retires a replica rather than
+/// looking at one.
+#[test]
+fn with_group_reads_a_running_replica_without_releasing_it() {
+    let nodes = cluster(&[1, 2]);
+    elect(&nodes, NodeId(1));
+    let (driver, _transport) = &nodes[&NodeId(1)];
+    let handle = driver.handle();
+    let mut write = Box::pin(handle.write(("alpha".to_owned(), "one".to_owned())));
+    assert!(start(&mut write).is_none());
+    settle(&nodes);
+    let _ = poll_once(&mut write)
+        .expect("the write resolves")
+        .expect("the write commits and applies");
+
+    let value = driver
+        .with_group(|group| group.state_machine().values.get("alpha").cloned())
+        .expect("a running driver holds its group");
+    assert_eq!(value, Some("one".to_owned()));
+
+    let applied = driver
+        .with_group(|group| group.metrics().applied_index)
+        .expect("a running driver holds its group");
+    assert!(
+        applied
+            >= driver
+                .committed_application_index()
+                .expect("the group is here"),
+        "this replica has applied everything it knows to be committed"
+    );
+
+    // The replica is still running, which is the whole point of the surface.
+    let mut second = Box::pin(handle.write(("beta".to_owned(), "two".to_owned())));
+    assert!(start(&mut second).is_none());
+    settle(&nodes);
+    let _ = poll_once(&mut second)
+        .expect("the driver kept serving")
+        .expect("the second write commits and applies");
+}
+
+#[test]
+fn with_group_refuses_after_release() {
+    let (driver, _transport) = driver_for(1, &[2]);
+    let _ = driver.release_group().expect("the driver holds a group");
+
+    assert!(matches!(
+        driver.with_group(RaftGroup::node_id),
+        Err(ManagedDriverError::NoGroup)
+    ));
+    assert!(matches!(
+        driver.committed_application_index(),
+        Err(ManagedDriverError::NoGroup)
+    ));
+}
+
+/// A caller that stops waiting says so, and gets its slot back without waiting
+/// for the client to poll.
+#[test]
+fn abandoning_a_write_resolves_its_client_and_frees_its_slot() {
+    let overrides = BTreeMap::from([(
+        1,
+        TransportDriverOptions::default().with_max_pending_waiters(1),
+    )]);
+    let nodes = cluster_with_options(&[1, 2], &overrides);
+    elect(&nodes, NodeId(1));
+    let (driver, _transport) = &nodes[&NodeId(1)];
+    let handle = driver.handle();
+
+    let mut write = Box::pin(handle.write(("alpha".to_owned(), "one".to_owned())));
+    assert!(start(&mut write).is_none(), "the first write is pending");
+    let pending = driver.pending_writes();
+    assert_eq!(pending.len(), 1, "the driver names what it is holding");
+
+    assert!(driver.abandon_write(pending[0].local_proposal_id));
+    assert!(
+        !driver.abandon_write(pending[0].local_proposal_id),
+        "abandoning twice is a no-op rather than a fault"
+    );
+
+    let error = poll_once(&mut write)
+        .expect("the abandoned client has an answer")
+        .expect_err("an abandoned write has no receipt");
+    assert!(
+        matches!(
+            error,
+            WriteError::UnknownOutcome {
+                reason: UnknownOutcomeReason::DriveBoundReached,
+                ..
+            }
+        ),
+        "got {error:?}"
+    );
+    assert!(
+        error.fate().may_commit(),
+        "an appended entry may still commit, which is what unknown means"
+    );
+
+    // The slot came back, so the bound admits the next write.
+    let mut second = Box::pin(handle.write(("beta".to_owned(), "two".to_owned())));
+    assert!(
+        start(&mut second).is_none(),
+        "the abandoned waiter stopped counting against the bound"
+    );
+}
+
+/// Late events for an abandoned ID are harmless, and the direction is that the
+/// first outcome wins: the client already holds a terminal answer.
+#[test]
+fn a_late_proposal_event_does_not_overwrite_an_abandoned_write() {
+    let nodes = cluster(&[1, 2]);
+    elect(&nodes, NodeId(1));
+    let (driver, _transport) = &nodes[&NodeId(1)];
+    let handle = driver.handle();
+
+    let mut write = Box::pin(handle.write(("alpha".to_owned(), "one".to_owned())));
+    assert!(start(&mut write).is_none());
+    let local_proposal_id = driver.pending_writes()[0].local_proposal_id;
+    assert!(driver.abandon_write(local_proposal_id));
+
+    // The proposal the caller walked away from goes on to commit and apply.
+    settle(&nodes);
+
+    let error = poll_once(&mut write)
+        .expect("the client still holds what abandonment gave it")
+        .expect_err("the later apply did not overwrite it");
+    assert!(
+        matches!(
+            error,
+            WriteError::UnknownOutcome {
+                reason: UnknownOutcomeReason::DriveBoundReached,
+                ..
+            }
+        ),
+        "got {error:?}"
+    );
+    let applied = driver
+        .with_group(|group| group.state_machine().values.get("alpha").cloned())
+        .expect("the driver still holds its group");
+    assert_eq!(
+        applied,
+        Some("one".to_owned()),
+        "unknown means it may still commit, and here it did"
+    );
+    assert!(
+        driver.pending_writes().is_empty(),
+        "nothing is left unresolved"
+    );
+}
+
+/// The barrier is always cancelled first, so `reserved_reads` returns to its
+/// previous value rather than leaking a reservation.
+#[test]
+fn abandoning_a_read_cancels_its_barrier() {
+    let nodes = cluster(&[1, 2]);
+    elect(&nodes, NodeId(1));
+    let (driver, _transport) = &nodes[&NodeId(1)];
+    let handle = driver.handle();
+    let reserved_before = driver
+        .with_group(|group| group.metrics().reserved_reads)
+        .expect("the driver holds its group");
+
+    let mut read = Box::pin(handle.read("alpha".to_owned(), ReadConsistency::Linearizable));
+    assert!(start(&mut read).is_none(), "the barrier is in flight");
+    let read_ids = driver.pending_reads();
+    assert_eq!(read_ids.len(), 1);
+
+    assert!(driver.abandon_read(read_ids[0]));
+
+    let error = poll_once(&mut read)
+        .expect("the abandoned client has an answer")
+        .expect_err("an abandoned read has no answer");
+    assert!(
+        matches!(
+            error,
+            ReadError::Abandoned {
+                reason: ReadAbandonReason::DriveBoundReached,
+                ..
+            }
+        ),
+        "got {error:?}"
+    );
+    assert_eq!(
+        driver
+            .with_group(|group| group.metrics().reserved_reads)
+            .expect("the driver holds its group"),
+        reserved_before,
+        "the barrier was cancelled through the group before the error was returned"
+    );
+    driver
+        .drive_pending_reads()
+        .expect("an abandoned barrier is not retried");
+}
+
+/// A caller with several writes in flight tells them apart by the ID it
+/// supplied, which is why `PendingWrite` carries both.
+#[test]
+fn a_pending_write_is_addressable_before_it_resolves() {
+    let nodes = cluster(&[1, 2]);
+    elect(&nodes, NodeId(1));
+    let (driver, _transport) = &nodes[&NodeId(1)];
+    let handle = driver.handle();
+
+    let options = WriteOptions {
+        client_request_id: Some(ClientRequestId {
+            client_id: 7,
+            sequence: 3,
+        }),
+    };
+    let mut write =
+        Box::pin(handle.write_with_options(("alpha".to_owned(), "one".to_owned()), options));
+    assert!(start(&mut write).is_none());
+
+    let pending = driver.pending_writes();
+    assert_eq!(pending.len(), 1);
+    assert_eq!(pending[0].client_request_id, options.client_request_id);
+
+    settle(&nodes);
+    let _ = poll_once(&mut write)
+        .expect("the write resolves")
+        .expect("the write commits and applies");
+    assert!(
+        driver.pending_writes().is_empty(),
+        "a resolved write is no longer pending"
+    );
+}
+
+/// The counterpart to `adopt_routes_the_recovery_outputs_it_was_given`: a first
+/// incarnation over non-empty storage recovers effects too, and a caller that
+/// applied them outside the driver would drop them.
+#[test]
+fn new_routes_the_recovery_outputs_it_was_given() {
+    let transport = QueueTransport::default();
+    let validator = Validator {
+        transport: transport.clone(),
+        authorized: BTreeSet::from([NodeId(2)]),
+    };
+    let recovery_outputs = vec![RaftOutput::Send {
+        to: NodeId(2),
+        message: Message::RequestVote(RequestVote {
+            term: Term(1),
+            candidate_id: NodeId(1),
+            last_log_index: LogIndex::ZERO,
+            last_log_term: Term(0),
+        }),
+    }];
+
+    let _driver: Driver = TransportRaftDriver::new(
+        numbered_group(GROUP, 1, &[2], 3),
+        recovery_outputs,
+        transport.clone(),
+        validator,
+        TransportDriverOptions::default(),
+    )
+    .expect("a quiescent group is adoptable");
+
+    let observed = transport.observed();
+    assert_eq!(
+        observed.len(),
+        1,
+        "the recovery report's peer messages reached the transport, got {observed:?}"
+    );
+    assert_eq!(observed[0].to, NodeId(2));
+}
+
+/// Zero is meaningless rather than merely small, so the driver refuses to be
+/// built with it instead of failing at the first request.
 #[test]
 fn a_zero_bound_is_refused_at_construction() {
     let transport = QueueTransport::default();
@@ -729,18 +1037,19 @@ fn a_zero_bound_is_refused_at_construction() {
 
     let error = TransportRaftDriver::new(
         numbered_group(GROUP, 1, &[2], 3),
+        Vec::new(),
         transport,
         validator,
-        TransportDriverOptions::default().with_max_read_retries(0),
+        TransportDriverOptions::default().with_max_pending_waiters(0),
     )
     .map(|_: Driver| ())
-    .expect_err("zero retries never collects a granted proof");
+    .expect_err("a driver that admits no waiters cannot serve anything");
 
     assert!(
         matches!(
             error,
             ManagedDriverError::InvalidOptions {
-                field: "max_read_retries",
+                field: "max_pending_waiters",
                 ..
             }
         ),

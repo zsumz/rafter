@@ -21,14 +21,6 @@ use super::*;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub struct TransportDriverOptions {
-    /// Retries a pending read barrier at most this many times within one
-    /// [`TransportRaftDriver::drive_pending_reads`] call before leaving it
-    /// pending for the next one.
-    ///
-    /// Defaults to 1024, matching [`InMemoryRaftDriver`]'s own drive bound:
-    /// both count local steps taken on behalf of one operation, and a driver
-    /// that allowed more of them would spin rather than hand control back.
-    pub max_read_retries: usize,
     /// Refuses to enqueue more than this many unresolved client waiters of
     /// each kind, so a driver whose transport is down fails closed rather than
     /// growing.
@@ -36,6 +28,11 @@ pub struct TransportDriverOptions {
     /// Defaults to 1024. The transport contract already requires bounded
     /// queues of a transport; a driver that buffered without a bound would
     /// move the unbounded growth one layer up.
+    ///
+    /// A waiter stops counting the moment it resolves, including when
+    /// [`TransportRaftDriver::abandon_write`] or
+    /// [`TransportRaftDriver::abandon_read`] resolves it, so a caller that stops
+    /// waiting gets its slot back without waiting for the client to poll.
     pub max_pending_waiters: usize,
 }
 
@@ -44,23 +41,15 @@ impl TransportDriverOptions {
     #[must_use]
     pub const fn new() -> Self {
         Self {
-            max_read_retries: 1024,
             max_pending_waiters: 1024,
         }
     }
 
-    /// Sets [`TransportDriverOptions::max_read_retries`].
+    /// Sets [`TransportDriverOptions::max_pending_waiters`].
     ///
     /// A setter rather than struct-update syntax, because the type is
     /// `#[non_exhaustive]`: an embedder outside this crate cannot name every
     /// field, and a later field must not break their construction.
-    #[must_use]
-    pub const fn with_max_read_retries(mut self, max_read_retries: usize) -> Self {
-        self.max_read_retries = max_read_retries;
-        self
-    }
-
-    /// Sets [`TransportDriverOptions::max_pending_waiters`].
     #[must_use]
     pub const fn with_max_pending_waiters(mut self, max_pending_waiters: usize) -> Self {
         self.max_pending_waiters = max_pending_waiters;
@@ -69,17 +58,10 @@ impl TransportDriverOptions {
 
     /// Fails closed on a bound that would make an operation impossible.
     ///
-    /// Zero is meaningless for both fields rather than merely small: zero
-    /// retries never collects a granted barrier, and zero pending waiters
-    /// refuses every write. A driver that accepted either would be a driver
-    /// that cannot serve anything, discovered at the first request.
+    /// Zero is meaningless rather than merely small: a driver that admits no
+    /// waiters refuses every write, which is a driver that cannot serve
+    /// anything, discovered at the first request.
     fn validate(self) -> Result<Self, ManagedDriverError> {
-        if self.max_read_retries == 0 {
-            return Err(ManagedDriverError::InvalidOptions {
-                field: "max_read_retries",
-                reason: "a driver that never retries a barrier never collects a granted proof",
-            });
-        }
         if self.max_pending_waiters == 0 {
             return Err(ManagedDriverError::InvalidOptions {
                 field: "max_pending_waiters",
@@ -94,6 +76,21 @@ impl Default for TransportDriverOptions {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// One unresolved write a driver is still holding.
+///
+/// Named both ways a caller can name it, because the two IDs answer different
+/// questions: the driver's own ID is what
+/// [`TransportRaftDriver::abandon_write`] takes, and the caller's is how a
+/// caller with several writes in flight tells them apart.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct PendingWrite {
+    /// The ID this driver allocated for the proposal.
+    pub local_proposal_id: LocalProposalId,
+    /// The ID the caller supplied in [`WriteOptions`], if any.
+    pub client_request_id: Option<ClientRequestId>,
 }
 
 /// Why an inbound peer envelope did not reach a group.
@@ -192,7 +189,8 @@ where
     T: RaftTransport<G>,
     V: AuthenticatedPeerValidator<G, T::PeerPrincipal> + Send + Sync + 'static,
 {
-    /// Builds a driver over one already-configured group.
+    /// Builds a driver over one already-configured group and routes its
+    /// recovery outputs.
     ///
     /// The group must be quiescent — no pending proposals and no reserved
     /// reads — for the same reason [`InMemoryRaftDriver::new`] requires it: the
@@ -200,13 +198,22 @@ where
     /// not create can never be resolved. Generated IDs start above the group's
     /// adopted watermarks.
     ///
+    /// `recovery_outputs` are the outputs the recovered runtime released, taken
+    /// here for the reason [`TransportRaftDriver::adopt_group`] takes them: a
+    /// recovery report carries peer messages and snapshot directives that must
+    /// be routed, and a caller that applied them outside the driver would drop
+    /// exactly the effects a restart depends on. A first incarnation over empty
+    /// storage recovers nothing and passes an empty vector.
+    ///
     /// # Errors
     ///
     /// Returns [`ManagedDriverError`] when the group is poisoned, holds
     /// undrained poisoned waiters, is not quiescent, has exhausted a local
-    /// ID space, or the options are out of range.
+    /// ID space, the options are out of range, or the recovery outputs fail to
+    /// apply.
     pub fn new(
         group: RaftGroup<G, A, R>,
+        recovery_outputs: Vec<RaftOutput>,
         transport: T,
         validator: V,
         options: TransportDriverOptions,
@@ -217,7 +224,7 @@ where
         let (next_proposal_id, next_read_id) =
             adopted_watermarks(&group, PendingProposals::Refuse)?;
         let metrics = MetricsPublisher::new(group.metrics());
-        Ok(Self {
+        let driver = Self {
             inner: Arc::new(Mutex::new(TransportDriverState {
                 group_id,
                 node_id,
@@ -233,7 +240,115 @@ where
                 refused_sends: 0,
                 shutting_down: false,
             })),
-        })
+        };
+        if !recovery_outputs.is_empty() {
+            lock_state(&driver.inner).apply_recovery_outputs(recovery_outputs)?;
+        }
+        Ok(driver)
+    }
+
+    /// Reads the adopted group under this driver's own lock.
+    ///
+    /// The closure receives a shared borrow for its own duration and nothing
+    /// outlives the call: no guard, no owned escape, no way to keep the group
+    /// after the lock is released. `&RaftGroup` rather than `&mut` is the whole
+    /// policy — this driver correlates outcomes to waiters it created, and a
+    /// group stepped, read, or cancelled from outside would break that
+    /// correspondence silently.
+    ///
+    /// This is how an embedder observes a *running* replica.
+    /// [`TransportRaftDriver::release_group`] also hands the group back, but it
+    /// resolves every outstanding waiter to do so, which makes it a way to
+    /// retire a replica rather than a way to look at one.
+    ///
+    /// The closure runs with the driver locked, so it must not call back into
+    /// this driver. A shared borrow of the group offers no way to.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ManagedDriverError::NoGroup`] when the driver has released its
+    /// group.
+    pub fn with_group<U>(
+        &self,
+        read: impl FnOnce(&RaftGroup<G, A, R>) -> U,
+    ) -> Result<U, ManagedDriverError> {
+        let state = lock_state(&self.inner);
+        let group = state.group.as_ref().ok_or(ManagedDriverError::NoGroup)?;
+        Ok(read(group))
+    }
+
+    /// Returns the index this replica's state machine must reach to have
+    /// applied every application command it knows to be committed.
+    ///
+    /// A direct forwarder because this one is the readiness gate the
+    /// decomposition recipe is written around, and because it takes no argument
+    /// and returns a scalar, so [`TransportRaftDriver::with_group`] would be
+    /// pure ceremony around it. Reads that project out of the state machine keep
+    /// using the closure, which is what they need anyway.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ManagedDriverError::NoGroup`] when the driver has released its
+    /// group.
+    pub fn committed_application_index(&self) -> Result<LogIndex, ManagedDriverError> {
+        self.with_group(RaftGroup::committed_application_index)
+    }
+
+    /// Stops waiting for one write and resolves its client.
+    ///
+    /// This is the caller's own decision, not the cluster's, so the client
+    /// resolves as [`WriteError::UnknownOutcome`] with
+    /// [`UnknownOutcomeReason::DriveBoundReached`]: the proposal may already be
+    /// in the durable log and may still commit, and there is no
+    /// `cancel_proposal` that could make it otherwise. The waiter stops counting
+    /// against [`TransportDriverOptions::max_pending_waiters`] immediately.
+    ///
+    /// Abandonment is terminal for the client. A later `Applied`, `Rejected`, or
+    /// `UnknownOutcome` event for this proposal resolves nothing and changes
+    /// nothing, which is the correct direction: the client already holds a
+    /// terminal answer, and on this side that answer is *unknown*, which is
+    /// exactly the statement that the proposal may still commit. A caller that
+    /// wants the eventual fact keeps its future and does not call this.
+    ///
+    /// Returns whether a waiter was retired. Abandoning a write this driver no
+    /// longer holds, or one that has already resolved, is a no-op rather than an
+    /// error: a caller racing its own completion is not a fault.
+    #[must_use]
+    pub fn abandon_write(&self, local_proposal_id: LocalProposalId) -> bool {
+        lock_state(&self.inner).abandon_write(local_proposal_id)
+    }
+
+    /// Stops waiting for one read and resolves its client.
+    ///
+    /// The barrier is cancelled through
+    /// [`rafter_app::group::RaftGroup::cancel_read`] first, so the group's
+    /// `reserved_reads` returns to its previous value, and the client resolves
+    /// as [`ReadError::Abandoned`] with
+    /// [`ReadAbandonReason::DriveBoundReached`]. The `ReadId` is spent: a retry
+    /// issues a new read.
+    ///
+    /// Returns whether a waiter was retired.
+    #[must_use]
+    pub fn abandon_read(&self, read_id: ReadId) -> bool {
+        lock_state(&self.inner).abandon_read(read_id)
+    }
+
+    /// Returns every write this driver has not resolved.
+    ///
+    /// [`DriverCommandSender::write`] returns a future and nothing else, so the
+    /// ID it allocated is otherwise unreachable until the future resolves —
+    /// which is too late for a caller that wants to stop waiting. This answers
+    /// "what is this driver still holding", which is also the question a
+    /// supervisor draining one asks.
+    #[must_use]
+    pub fn pending_writes(&self) -> Vec<PendingWrite> {
+        lock_state(&self.inner).pending_writes()
+    }
+
+    /// Returns the read IDs of every barrier this driver has not resolved.
+    #[must_use]
+    pub fn pending_reads(&self) -> Vec<ReadId> {
+        lock_state(&self.inner).pending_reads()
     }
 
     /// Returns a cloneable handle connected to this driver.
