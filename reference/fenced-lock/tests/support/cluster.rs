@@ -1306,10 +1306,11 @@ impl LockCluster {
                     response: outcome.response,
                 });
             }
-            // A refusal provably did not commit, but the contract's history
-            // vocabulary has no weaker terminal event than `Unknown`, and
-            // `Unknown` is the sound over-approximation.
-            SubmitOutcome::Refused { .. } | SubmitOutcome::Unknown { .. } => {
+            SubmitOutcome::Refused { .. } => {
+                self.history
+                    .push(HistoryEvent::NotCommitted { operation_id });
+            }
+            SubmitOutcome::Unknown { .. } => {
                 self.history.push(HistoryEvent::Unknown { operation_id });
             }
         }

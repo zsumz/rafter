@@ -22,7 +22,7 @@ use rafter_reference_fenced_lock::{
     OperationId, OperationResult, QueryOutcome, ReferenceLockService, RequestFingerprint,
     RequestRejection, ResourceStatus, SubmitOutcome,
 };
-use rafter_service::{ReadError, UnknownOutcomeReason};
+use rafter_service::{ReadError, UnknownOutcomeReason, WriteError};
 
 use cluster::{LockCluster, MAX_ROUNDS};
 use support::{
@@ -558,6 +558,101 @@ fn a_proposal_stranded_on_an_isolated_leader_is_dropped_and_retried_once() {
     );
     assert_replicas_agree(&cluster, second_leader);
     assert_history_agrees_with_oracle(&cluster, second_leader);
+}
+
+#[test]
+fn a_refused_acquisition_is_recorded_as_provably_uncommitted() {
+    let mut cluster = LockCluster::new(config(4, 4));
+    let leader = cluster.elect_leader();
+    let follower = other_node(&cluster, leader);
+    committed(&mut cluster, leader, open_session(0, 1));
+    cluster.settle();
+
+    // The client aims its first acquisition at a replica that does not lead.
+    // That replica refuses in its own admission check, before appending
+    // anything, so no peer ever holds a copy of these bytes.
+    let attempt = submit(0, 1, 1, acquire(RESOURCE, 10));
+    let refused = cluster.submit(follower, attempt);
+    let SubmitOutcome::Refused { error } = &refused else {
+        panic!("a follower refuses a proposal before replicating it, got {refused:?}");
+    };
+    assert!(
+        matches!(error, WriteError::NotLeader { leader_hint, .. } if *leader_hint == Some(leader)),
+        "the service reported a pre-append refusal and redirected, got {error:?}"
+    );
+
+    let refused_id = cluster
+        .history()
+        .iter()
+        .find_map(|event| match event {
+            HistoryEvent::NotCommitted { operation_id } => Some(*operation_id),
+            _ => None,
+        })
+        .expect("a provable refusal earns the stronger terminal event, not merely `Unknown`");
+    assert!(
+        cluster.history().iter().any(|event| matches!(
+            event,
+            HistoryEvent::Invoked {
+                operation_id,
+                command,
+            } if *operation_id == refused_id && *command == attempt
+        )),
+        "the terminal event names the acquisition that never replicated"
+    );
+
+    // The stronger event is honest only if the acquisition really is absent
+    // everywhere. Three client-visible facts say so: the resource is untracked,
+    // the session still expects the sequence the refusal carried, and
+    // resubmitting that identity executes rather than replaying a cached
+    // acquisition.
+    let status = answered(cluster.get_lock(leader, resource(RESOURCE)));
+    assert_eq!(status.holder, None, "no tenure opened");
+    assert_eq!(
+        status.token_floor, None,
+        "a refused acquisition mints no fencing token, so the name stays untracked"
+    );
+
+    let gap = committed(&mut cluster, leader, submit(0, 1, 2, acquire(RESOURCE, 10)));
+    assert_eq!(
+        gap,
+        LockResponse::Rejected(RequestRejection::SequenceGap {
+            expected: sequence(1),
+        }),
+        "the replicated session never consumed the refused sequence"
+    );
+
+    let accepted = cluster.submit(leader, attempt);
+    assert_eq!(
+        disposition(&accepted),
+        ApplyDisposition::Applied,
+        "the request identity was still unused, so the retry executed"
+    );
+    let (issued, _) = acquisition(accepted.committed().expect("the retry committed").response);
+    assert_eq!(
+        issued,
+        token(1),
+        "the resource's first accepted tenure gets token 1"
+    );
+
+    cluster.settle();
+    assert_eq!(
+        cluster
+            .history()
+            .iter()
+            .filter(|event| matches!(event, HistoryEvent::NotCommitted { .. }))
+            .count(),
+        1,
+        "exactly one operation was refused; the rest reached the log"
+    );
+    assert!(
+        !cluster
+            .history()
+            .iter()
+            .any(|event| matches!(event, HistoryEvent::Unknown { .. })),
+        "no outcome was lost here, so the weaker terminal event must not appear"
+    );
+    assert_replicas_agree(&cluster, leader);
+    assert_history_agrees_with_oracle(&cluster, leader);
 }
 
 #[test]

@@ -38,7 +38,22 @@ pub enum HistoryEvent {
     },
     /// The connection or process failed without revealing whether the command
     /// committed.
+    ///
+    /// The command may or may not have taken effect, so the client must retry
+    /// the *same* request identity and let the session cache decide.
     Unknown {
+        /// Operation identity from the matching invocation.
+        operation_id: OperationId,
+    },
+    /// The command provably never entered the replicated log.
+    ///
+    /// This is strictly stronger than [`HistoryEvent::Unknown`]: no copy of the
+    /// attempt can commit later, so it minted no fencing token, consumed no
+    /// sequence, and left its request identity free for a fresh attempt. A
+    /// checker must linearize it as never having happened. `CONTRACT.md`
+    /// defines exactly which observations earn it; every other lost outcome
+    /// stays `Unknown`.
+    NotCommitted {
         /// Operation identity from the matching invocation.
         operation_id: OperationId,
     },
@@ -51,7 +66,8 @@ impl HistoryEvent {
         match *self {
             Self::Invoked { operation_id, .. }
             | Self::Completed { operation_id, .. }
-            | Self::Unknown { operation_id } => operation_id,
+            | Self::Unknown { operation_id }
+            | Self::NotCommitted { operation_id } => operation_id,
         }
     }
 

@@ -679,7 +679,7 @@ fn submissions_outside_an_open_session_or_slot_range_are_rejected() {
 }
 
 #[test]
-fn history_vocabulary_represents_completion_rejection_and_unknown_outcomes() {
+fn history_vocabulary_represents_completion_rejection_and_lost_outcomes() {
     let operation_id = OperationId::new(7);
     let command = submit(0, 1, 1, acquire("alpha", 5));
     let history = [
@@ -688,6 +688,7 @@ fn history_vocabulary_represents_completion_rejection_and_unknown_outcomes() {
             command,
         },
         HistoryEvent::Unknown { operation_id },
+        HistoryEvent::NotCommitted { operation_id },
         HistoryEvent::Completed {
             operation_id,
             response: LockResponse::Rejected(RequestRejection::SessionNotOpen),
@@ -702,5 +703,9 @@ fn history_vocabulary_represents_completion_rejection_and_unknown_outcomes() {
     };
     assert_eq!(history[0].request_identity(), Some(request));
     assert_eq!(history[1].request_identity(), None);
+    assert_eq!(history[2].request_identity(), None);
     assert!(matches!(history[1], HistoryEvent::Unknown { .. }));
+    // The two lost-outcome events are separate terminal claims. Collapsing them
+    // would let a provable refusal be read as a possible commit.
+    assert_ne!(history[1], history[2]);
 }

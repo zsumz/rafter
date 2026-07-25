@@ -362,10 +362,10 @@ The implementation and oracle must establish:
     has written.
 
 Aggregate invariants do not imply linearizability. The later process adapter
-will record invocation, completion, rejection, unknown outcome, and real-time
-ordering for an independent history checker, and will cover leadership loss,
-read cancellation, isolated former leaders, and stale-owner attempts against
-the guarded resource.
+will record invocation, completion, rejection, unknown outcome, provable
+refusal, and real-time ordering for an independent history checker, and will
+cover leadership loss, read cancellation, isolated former leaders, and
+stale-owner attempts against the guarded resource.
 
 ## Independent Oracle Rule
 
@@ -428,12 +428,64 @@ A client operation history contains:
 Invoked(operation_id, command)
 Completed(operation_id, response)
 Unknown(operation_id)
+NotCommitted(operation_id)
 ```
 
-Deterministic rejections are normal completed responses. `Unknown` means the
-caller cannot tell whether the replicated command committed and must retry the
-same request identity. Every invocation carries its full command, so retries
-under one request identity are recoverable from the history alone.
+Deterministic rejections are normal completed responses. Every invocation
+carries its full command, so retries under one request identity are recoverable
+from the history alone.
+
+### Mutation outcomes
+
+The three terminal outcomes differ only in what the caller can prove:
+
+- `Completed` carries the replicated response, lock and request rejections
+  included.
+- `NotCommitted` means the command provably never entered the replicated log.
+  No copy of that attempt can commit later, so it minted no fencing token and
+  consumed no sequence, and the caller may issue a fresh attempt under the same
+  request identity.
+- `Unknown` means the caller cannot tell. The command may have committed, so
+  the caller must retry the *same* request identity and let the session cache
+  decide.
+
+A refusal is provable only when the managed write surface this application
+consumes reports a `WriteError` that the service cannot reach once an entry has
+been appended. That is the adapter's `SubmitOutcome::Refused`, and it is
+exactly this set:
+
+- `NotLeader`, `Rejected`, and `PayloadTooLarge`, which are the service's
+  rendering of a proposal rejection. `rafter-app` documents that rejection as
+  the local node refusing the proposal before replication, and Rafter raises it
+  only from the pre-append admission check, so the command entered no log and
+  no peer ever received the bytes.
+- `ShuttingDown`, refused at admission before a proposal is started.
+- `LocalProposalIdExhausted`, refused before the command reaches the group at
+  all.
+
+Every other lost outcome stays `Unknown`, because none of them is
+distinguishable from a commit:
+
+- `UnknownOutcome`, whatever diagnostic reason it carries. A dropped local
+  proposal may already have replicated to a quorum.
+- `ApplyFailed`, `Storage`, `Transport`, `Poisoned`, and
+  `ManagedInvariantViolation`, none of which the service confines to the
+  pre-append window, and each of which carries only a rendered message that a
+  caller cannot inspect further.
+- A proposal that was appended and then abandoned by a caller that stopped
+  waiting. The entry exists and may yet commit.
+- Any outcome lost to process or connection failure.
+- Any `WriteError` variant this document does not name. That type is
+  `#[non_exhaustive]`, so an unrecognized refusal defaults to the weaker claim.
+
+What a driver knows about its own network never earns `NotCommitted`. A test may
+have cut every link itself, but a history records only what the service surface
+reported, because that is all a deployed client can read.
+
+The distinction is worth drawing because `Unknown` is the weaker claim: a
+checker must allow an `Unknown` operation to have taken effect, so an
+implementation that minted a token for a refused acquisition would be explained
+away. `NotCommitted` removes that excuse.
 
 ## First Milestone Boundary
 
