@@ -9,6 +9,13 @@ use rafter::{
 use rafter_app::proposal::ClientRequestId;
 use rafter_app::read::ReadConsistency;
 
+/// Types this module's errors carry across the `rafter-app` boundary.
+///
+/// They are re-exported rather than redeclared: a caller must be able to
+/// compare the value it receives here with the one `rafter-app` produced, so
+/// there can be only one type.
+pub use rafter_app::error::{ErrorCause, StateMachineOperation};
+
 /// Diagnostic cause for a managed write with unknown outcome.
 ///
 /// This reason explains why the managed service lost the final write outcome.

@@ -23,13 +23,19 @@ pub mod transport;
 /// Metrics publisher/watch surfaces for managed groups.
 pub mod watch;
 
+// Every type or trait named in the signature of a public item is reachable
+// from this root. `DriverFuture` is the return type of four of the five
+// `DriverCommandSender` methods, so every implementor of that trait names it;
+// `StateMachineOperation` and `ErrorCause` are `rafter-app`'s own types that
+// this crate's public error variants carry. A public signature that names an
+// unreachable type is a defect, and `tests/public_surface.rs` is the check.
 pub use driver::{
-    DriverCommandSender, InMemoryRaftDriver, ManagedDriverError, QueryReceipt, WriteBatchEntry,
-    WriteOptions, WriteReceipt,
+    DriverCommandSender, DriverFuture, InMemoryRaftDriver, ManagedDriverError, QueryReceipt,
+    WriteBatchEntry, WriteOptions, WriteReceipt,
 };
 pub use error::{
-    MetricsError, ReadError, ShutdownError, TransferLeadershipError, UnknownOutcomeReason,
-    WriteError,
+    ErrorCause, MetricsError, ReadError, ShutdownError, StateMachineOperation,
+    TransferLeadershipError, UnknownOutcomeReason, WriteError,
 };
 pub use handle::RaftHandle;
 pub use membership::{MembershipController, PlannedMembershipChange};

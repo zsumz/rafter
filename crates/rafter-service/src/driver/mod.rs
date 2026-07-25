@@ -13,7 +13,6 @@ use rafter_app::{
         GroupFatalState, GroupInput, GroupStepReport, LeadershipTransferEvent, RaftGroup,
         StepReportOptions,
     },
-    metrics::RaftGroupMetrics,
     proposal::{Proposal, ProposalEvent, ProposalUnknownOutcomeReason},
     read::{ReadConsistency, ReadOutcome, ReadRequest},
     state_machine::ReplicatedStateMachine,
@@ -35,7 +34,6 @@ mod adoption;
 mod driver_trait;
 mod in_memory;
 mod mapping;
-mod metrics;
 mod options;
 mod read;
 mod state;
@@ -45,7 +43,6 @@ mod write;
 pub use driver_trait::{DriverCommandSender, DriverFuture};
 pub use in_memory::InMemoryRaftDriver;
 pub use mapping::ManagedDriverError;
-pub use metrics::metrics_watch_from_current;
 pub use options::{QueryReceipt, WriteBatchEntry, WriteOptions, WriteReceipt};
 
 use mapping::{write_error_from_group, ManagedOperationError};

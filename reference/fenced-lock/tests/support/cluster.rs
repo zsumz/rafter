@@ -46,10 +46,9 @@ use rafter_reference_fenced_lock::{
 };
 use rafter_runtime::{DurableRaftNode, DurableRaftNodeStorage, RaftRuntimeError};
 use rafter_service::{
-    driver::DriverFuture, DriverCommandSender, MetricsError, MetricsPublisher, MetricsWatch,
-    PeerEnvelope, QueryReceipt, RaftHandle, RaftTransport, ReadConsistency, ReadError,
-    ShutdownError, TransferLeadershipError, UnknownOutcomeReason, WriteError, WriteOptions,
-    WriteReceipt,
+    DriverCommandSender, DriverFuture, MetricsError, MetricsPublisher, MetricsWatch, PeerEnvelope,
+    QueryReceipt, RaftHandle, RaftTransport, ReadConsistency, ReadError, ShutdownError,
+    TransferLeadershipError, UnknownOutcomeReason, WriteError, WriteOptions, WriteReceipt,
 };
 use rafter_storage::{
     InMemoryRaftHardStateStore, InMemoryRaftLogSegment, InMemoryRaftSnapshotStore,
