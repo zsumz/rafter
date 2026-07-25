@@ -238,9 +238,17 @@ where
                 write_waiters: BTreeMap::new(),
                 read_waiters: BTreeMap::new(),
                 refused_sends: 0,
+                refused_peer_updates: 0,
+                known_members: BTreeSet::new(),
                 shutting_down: false,
             })),
         };
+        // Published before the driver serves anything, so the transport's peer
+        // set is the group's membership from construction onward rather than
+        // undefined until the first membership change. A group that never
+        // changes membership would otherwise never tell its link layer anything,
+        // and a recovery report carries no membership event to stand in.
+        lock_state(&driver.inner).publish_adopted_membership();
         if !recovery_outputs.is_empty() {
             lock_state(&driver.inner).apply_recovery_outputs(recovery_outputs)?;
         }
@@ -445,6 +453,23 @@ where
         lock_state(&self.inner).refused_sends
     }
 
+    /// Returns how many membership updates this driver could not publish.
+    ///
+    /// Counted rather than propagated, for the reason a refused send is: a peer
+    /// set that could not be updated is a link-layer condition, and a client's
+    /// write must not fail for one. It is a separate count from
+    /// [`TransportRaftDriver::refused_sends`] because the two do not repair the
+    /// same way — Raft re-sends a dropped frame, and nothing re-publishes a peer
+    /// set until the membership changes again.
+    ///
+    /// A non-zero value means either the transport refused the update or this
+    /// driver's validator could not name a principal for some replica in the
+    /// membership. Both leave the link layer's peer set behind the group's.
+    #[must_use]
+    pub fn refused_peer_updates(&self) -> u64 {
+        lock_state(&self.inner).refused_peer_updates
+    }
+
     /// Retires the running incarnation and returns its group.
     ///
     /// This is the driver-level half of decomposition.
@@ -522,6 +547,7 @@ where
         state.next_read_id = highest(state.next_read_id, next_read_id);
         state.group = Some(group);
         state.shutting_down = false;
+        state.publish_adopted_membership();
         if recovery_outputs.is_empty() {
             state.publish_metrics();
             return Ok(());

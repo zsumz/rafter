@@ -8,7 +8,7 @@
 
 use std::error::Error;
 
-use rafter::NodeId;
+use rafter::{NodeId, SnapshotChunkSend};
 
 use crate::driver::DriverFuture;
 
@@ -16,6 +16,22 @@ pub use rafter_app::transport::{
     message_sender, AuthenticatedPeerEnvelope, AuthenticatedPeerEnvelopeError,
     AuthenticatedPeerValidator, PeerEnvelope,
 };
+
+/// One leader snapshot chunk directive addressed to a peer.
+///
+/// A directive rather than a message, because the kernel never holds an
+/// application snapshot payload: `chunk` names the bytes by transfer, offset,
+/// and length, and the transport reads them from the snapshot store with
+/// [`SnapshotChunkSend::resolve`] before framing them. This is the shape the
+/// kernel already documents for the boundary — payload bytes flow from the
+/// application's snapshot store to the network without entering kernel state.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SnapshotChunkEnvelope<G> {
+    pub group_id: G,
+    pub from: NodeId,
+    pub to: NodeId,
+    pub chunk: SnapshotChunkSend,
+}
 
 /// Current transport principals authorized for a group.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -93,6 +109,32 @@ pub trait RaftTransport<G>: Send + Sync + 'static {
     /// sent.
     fn send(&self, envelope: PeerEnvelope<G>) -> Result<(), Self::Error>;
 
+    /// Resolves one leader snapshot chunk directive and sends it.
+    ///
+    /// This is the only path by which a follower below the leader's snapshot
+    /// boundary is caught up. Implementations resolve `envelope.chunk` against
+    /// their own [`rafter::SnapshotChunkSource`] with
+    /// [`SnapshotChunkSend::resolve`] and send the resulting
+    /// [`rafter::Message::InstallSnapshotChunk`] frame. A directive the source
+    /// cannot serve is dropped like a lost message, exactly as `resolve`
+    /// documents: the transfer resumes from the follower's acknowledged offset
+    /// once the source and the kernel agree on the current snapshot again.
+    ///
+    /// There is no provided body on purpose. The only one expressible returns
+    /// `Ok(())` and drops the chunk, which would let a transport disable
+    /// snapshot transfer by omission and report success for it.
+    ///
+    /// A runtime that resolves directives itself — `DurableRaftNode` does,
+    /// because it owns its snapshot store — never produces one of these, so an
+    /// embedder over the shipped runtime may implement this as a refusal.
+    ///
+    /// # Errors
+    ///
+    /// Returns the transport implementation's error when the chunk cannot be
+    /// sent. Like [`RaftTransport::send`], a refusal is counted by the driver
+    /// rather than propagated to a client.
+    fn send_snapshot_chunk(&self, envelope: SnapshotChunkEnvelope<G>) -> Result<(), Self::Error>;
+
     /// Replaces the authorized transport principals for `group_id`.
     ///
     /// # Errors
@@ -136,6 +178,18 @@ pub trait AsyncRaftTransport<G>: Send + Sync + 'static {
     /// The returned future resolves after the transport accepts or enqueues the
     /// message, not after remote delivery or commit.
     fn send(&self, envelope: PeerEnvelope<G>) -> TransportFuture<(), Self::Error>;
+
+    /// Resolves one leader snapshot chunk directive and sends it.
+    ///
+    /// The asynchronous twin of [`RaftTransport::send_snapshot_chunk`], with
+    /// the same contract. It is here rather than omitted because this trait's
+    /// delivery semantics already claim parity with the synchronous one on
+    /// snapshot chunk expectations, and a trait that made the claim without the
+    /// method would make the sentence false.
+    fn send_snapshot_chunk(
+        &self,
+        envelope: SnapshotChunkEnvelope<G>,
+    ) -> TransportFuture<(), Self::Error>;
 
     /// Receives one authenticated inbound envelope.
     ///
@@ -206,6 +260,12 @@ mod tests {
             peer: &&'static str,
         ) -> Option<NodeId> {
             self.principal_map.get(peer).copied()
+        }
+
+        fn principal_for_node(&self, _group_id: &u64, node_id: NodeId) -> Option<&'static str> {
+            self.principal_map
+                .iter()
+                .find_map(|(principal, mapped)| (*mapped == node_id).then_some(*principal))
         }
 
         fn is_authorized_peer(&self, _group_id: &u64, node_id: NodeId) -> bool {

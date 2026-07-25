@@ -28,6 +28,7 @@ use std::{
 use rafter::NodeId;
 use rafter_service::{
     AuthenticatedPeerEnvelope, AuthenticatedPeerValidator, PeerEnvelope, PeerSet, RaftTransport,
+    SnapshotChunkEnvelope,
 };
 
 use crate::cluster::{LockGroupId, GROUP_ID};
@@ -70,6 +71,14 @@ pub enum TransportError {
     UnknownGroup,
     /// The bounded in-flight queue is full, so the frame fails closed.
     QueueFull { limit: usize },
+    /// A leader snapshot chunk directive reached the transport.
+    ///
+    /// This deployment's runtime resolves chunk directives against its own
+    /// snapshot store before the app layer ever sees one, so a directive
+    /// arriving here means the runtime and the driver disagree about who owns
+    /// the payload. Refusing says so; the driver counts it and the protocol
+    /// re-sends.
+    UnresolvedSnapshotChunk { to: NodeId },
 }
 
 impl fmt::Display for TransportError {
@@ -80,6 +89,10 @@ impl fmt::Display for TransportError {
             Self::QueueFull { limit } => {
                 write!(formatter, "transport queue is full at {limit} frames")
             }
+            Self::UnresolvedSnapshotChunk { to } => write!(
+                formatter,
+                "a snapshot chunk directive for {to} reached a transport that resolves none"
+            ),
         }
     }
 }
@@ -225,6 +238,25 @@ impl RaftTransport<LockGroupId> for NodeTransport {
         )
     }
 
+    /// Refuses every directive, and says why.
+    ///
+    /// [`LockNode`](crate::cluster::NodeDriver) is a `DurableRaftNode`, which
+    /// owns its snapshot store and resolves `SendSnapshotChunk` outputs into
+    /// `InstallSnapshotChunk` frames inside `step`. Those frames arrive here
+    /// through [`RaftTransport::send`] like any other. A directive reaching this
+    /// method would mean a runtime that did not resolve it, which this
+    /// deployment does not have — so the honest body is a refusal rather than a
+    /// second snapshot store bolted onto a link.
+    fn send_snapshot_chunk(
+        &self,
+        envelope: SnapshotChunkEnvelope<LockGroupId>,
+    ) -> Result<(), Self::Error> {
+        if envelope.group_id != GROUP_ID {
+            return Err(TransportError::UnknownGroup);
+        }
+        Err(TransportError::UnresolvedSnapshotChunk { to: envelope.to })
+    }
+
     fn update_peers(
         &self,
         group_id: &LockGroupId,
@@ -303,6 +335,22 @@ impl AuthenticatedPeerValidator<LockGroupId, PeerPrincipal> for PeerDirectory {
         peer: &PeerPrincipal,
     ) -> Option<NodeId> {
         lock(&self.shared).known.get(peer).copied()
+    }
+
+    /// The inverse lookup, out of the same directory the forward one uses.
+    ///
+    /// The driver needs it to express a group's membership as a peer set: a
+    /// membership names replicas, and `update_peers` takes principals.
+    fn principal_for_node(
+        &self,
+        _group_id: &LockGroupId,
+        node_id: NodeId,
+    ) -> Option<PeerPrincipal> {
+        let state = lock(&self.shared);
+        state
+            .known
+            .iter()
+            .find_map(|(principal, mapped)| (*mapped == node_id).then(|| principal.clone()))
     }
 
     fn is_authorized_peer(&self, _group_id: &LockGroupId, node_id: NodeId) -> bool {

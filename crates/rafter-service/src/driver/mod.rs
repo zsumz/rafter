@@ -1,7 +1,7 @@
 //! Managed service driver loop.
 
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fmt::{self, Debug},
     sync::{Arc, Mutex, MutexGuard},
 };
@@ -15,8 +15,10 @@ use rafter_app::{
         GroupFatalState, GroupInput, GroupStepReport, LeadershipTransferEvent, RaftGroup,
         StepReportOptions,
     },
+    membership::MembershipEvent,
     proposal::{ClientRequestId, Proposal, ProposalEvent, ProposalUnknownOutcomeReason},
     read::{ReadConsistency, ReadEvent, ReadOutcome, ReadRequest},
+    snapshot::SnapshotEvent,
     state_machine::ReplicatedStateMachine,
     transport::PeerEnvelope,
 };

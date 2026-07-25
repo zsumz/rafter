@@ -45,6 +45,6 @@ pub use rafter_app::read::ReadConsistency;
 pub use transport::{
     validate_inbound_peer_envelope, AsyncRaftTransport, AuthenticatedPeerEnvelope,
     AuthenticatedPeerEnvelopeError, AuthenticatedPeerValidator, InboundEnvelopeFuture,
-    PeerEnvelope, PeerSet, RaftTransport, TransportFuture,
+    PeerEnvelope, PeerSet, RaftTransport, SnapshotChunkEnvelope, TransportFuture,
 };
 pub use watch::{MetricsPublisher, MetricsWatch};

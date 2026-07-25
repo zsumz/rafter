@@ -48,6 +48,23 @@ pub trait AuthenticatedPeerValidator<G, P> {
 
     fn node_for_authenticated_peer(&self, group_id: &G, peer: &P) -> Option<NodeId>;
 
+    /// Returns the principal this deployment issues to `node_id`, when it can
+    /// name one.
+    ///
+    /// The inverse of
+    /// [`AuthenticatedPeerValidator::node_for_authenticated_peer`], and the
+    /// same policy: the object that decides which replica a principal is, is
+    /// the object that knows which principal a replica has. A driver needs this
+    /// direction to publish a group's membership as a transport peer set and to
+    /// fence a replica the cluster removed.
+    ///
+    /// `None` means this deployment cannot name a principal for `node_id`. A
+    /// caller must not read that as an empty peer set: a peer set missing a
+    /// replica the membership contains authorizes fewer replicas than the
+    /// cluster has, which is a quorum-splitting configuration change made by
+    /// accident.
+    fn principal_for_node(&self, group_id: &G, node_id: NodeId) -> Option<P>;
+
     fn is_authorized_peer(&self, group_id: &G, node_id: NodeId) -> bool;
 
     fn is_fenced_peer(&self, group_id: &G, node_id: NodeId) -> bool;
@@ -240,6 +257,12 @@ mod tests {
             peer: &&'static str,
         ) -> Option<NodeId> {
             self.principals.get(peer).copied()
+        }
+
+        fn principal_for_node(&self, _group_id: &u64, node_id: NodeId) -> Option<&'static str> {
+            self.principals
+                .iter()
+                .find_map(|(principal, mapped)| (*mapped == node_id).then_some(*principal))
         }
 
         fn is_authorized_peer(&self, _group_id: &u64, node_id: NodeId) -> bool {

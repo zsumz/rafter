@@ -11,7 +11,7 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
-use crate::transport::{AuthenticatedPeerValidator, RaftTransport};
+use crate::transport::{AuthenticatedPeerValidator, PeerSet, RaftTransport, SnapshotChunkEnvelope};
 
 use super::super::*;
 use super::TransportDriverOptions;
@@ -33,6 +33,16 @@ pub(super) struct ReadWaiter<G, Q, QR> {
     proof_ready: bool,
     outcome: Option<Result<QueryReceipt<G, QR>, ReadError>>,
     waker: Option<Waker>,
+}
+
+/// Whether a membership publication may fence what left the set.
+///
+/// Only a committed removal licenses fencing, so this is a decision the caller
+/// makes rather than one the publisher infers.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum Fencing {
+    FenceRemoved,
+    Withhold,
 }
 
 /// Why one group step did not run, or did not finish.
@@ -64,6 +74,14 @@ where
     pub(super) write_waiters: BTreeMap<LocalProposalId, WriteWaiter<A::CommandResult>>,
     pub(super) read_waiters: BTreeMap<ReadId, ReadWaiter<G, A::Query, A::QueryResult>>,
     pub(super) refused_sends: u64,
+    pub(super) refused_peer_updates: u64,
+    /// The membership this driver last published to its transport, or tried to.
+    ///
+    /// Kept even when publishing was refused, because it is the driver's record
+    /// of what the group says rather than of what the link layer accepted: a
+    /// later committed removal has to be computed against the membership the
+    /// cluster had, not against the last one a transport happened to take.
+    pub(super) known_members: BTreeSet<NodeId>,
     pub(super) shutting_down: bool,
 }
 
@@ -224,12 +242,152 @@ where
                 self.refused_sends = self.refused_sends.saturating_add(1);
             }
         }
+        for event in report.snapshot_events {
+            self.route_snapshot_event(event);
+        }
+        for event in &report.membership_events {
+            self.route_membership_event(event);
+        }
         for event in &report.proposal_events {
             self.observe_proposal_event(event);
         }
         for event in &report.read_events {
             self.observe_read_event(event);
         }
+    }
+
+    /// Hands a leader chunk directive to the transport, and lets the other two
+    /// snapshot events alone.
+    ///
+    /// `SendChunk` is the only snapshot effect a driver owns.
+    /// [`crate::RaftTransport::send_snapshot_chunk`] resolves the directive
+    /// against the embedder's snapshot store and frames it; a refusal is counted
+    /// like any other, because the protocol re-sends.
+    ///
+    /// `StageChunk` is already durable. The runtime contract forbids releasing
+    /// an output whose snapshot obligation has not completed, and staging the
+    /// chunk *is* that obligation — `DurableRaftNode` discharges it before it
+    /// returns anything. A second staging area in the driver could only diverge
+    /// from the one recovery actually reads. `Apply` is likewise done: the group
+    /// installed the snapshot into the state machine and moved its own applied
+    /// floor before emitting the event.
+    fn route_snapshot_event(&mut self, event: SnapshotEvent<G>) {
+        let SnapshotEvent::SendChunk {
+            group_id,
+            to,
+            chunk,
+        } = event
+        else {
+            return;
+        };
+        let envelope = SnapshotChunkEnvelope {
+            group_id,
+            from: self.node_id,
+            to,
+            chunk,
+        };
+        if self.transport.send_snapshot_chunk(envelope).is_err() {
+            self.refused_sends = self.refused_sends.saturating_add(1);
+        }
+    }
+
+    /// Keeps the transport's peer set level with the group's membership.
+    ///
+    /// An `Appended` change is effective and uncommitted, so it may only widen:
+    /// a replica joining under joint consensus has to be able to speak before
+    /// the change commits, or it can never catch up and the change can never
+    /// commit, and an uncommitted change can still be reverted, so nothing may
+    /// be taken away for it. An `Applied` change is committed, which is the only
+    /// fact that licenses narrowing the set and fencing what left it.
+    fn route_membership_event(&mut self, event: &MembershipEvent<G>) {
+        match event {
+            MembershipEvent::Appended { membership, .. } => {
+                let mut widened = self.known_members.clone();
+                widened.extend(membership.replica_ids());
+                self.publish_membership(widened, Fencing::Withhold);
+            }
+            MembershipEvent::Applied { membership, .. } => {
+                self.publish_membership(
+                    membership.replica_ids().into_iter().collect(),
+                    Fencing::FenceRemoved,
+                );
+            }
+            // A rejected change never entered the log, and a variant this driver
+            // does not know is not a membership fact it can act on.
+            _ => {}
+        }
+    }
+
+    /// Publishes one membership to the transport as a peer set.
+    ///
+    /// All or nothing. A membership the validator cannot fully name is not
+    /// published at all: a partial peer set authorizes fewer replicas than the
+    /// cluster has, which is a quorum-splitting configuration change made by
+    /// accident, while leaving the previous set in place is merely stale. Both
+    /// that and a transport refusal are counted, because a peer set that never
+    /// updated does not repair itself the way a dropped frame does.
+    ///
+    /// The local replica is not in its own peer set: a `PeerSet` names who may
+    /// speak *to* this node, and a node is not a peer of itself.
+    pub(super) fn publish_membership(&mut self, members: BTreeSet<NodeId>, fencing: Fencing) {
+        let removed = match fencing {
+            Fencing::FenceRemoved => self
+                .known_members
+                .difference(&members)
+                .copied()
+                .filter(|node_id| *node_id != self.node_id)
+                .collect::<Vec<_>>(),
+            Fencing::Withhold => Vec::new(),
+        };
+        self.known_members = members;
+        let mut principals = Vec::new();
+        for node_id in self
+            .known_members
+            .iter()
+            .copied()
+            .filter(|node_id| *node_id != self.node_id)
+        {
+            let Some(principal) = self.validator.principal_for_node(&self.group_id, node_id) else {
+                self.refused_peer_updates = self.refused_peer_updates.saturating_add(1);
+                return;
+            };
+            principals.push(principal);
+        }
+        if self
+            .transport
+            .update_peers(&self.group_id, PeerSet::new(principals))
+            .is_err()
+        {
+            self.refused_peer_updates = self.refused_peer_updates.saturating_add(1);
+        }
+        for node_id in removed {
+            let Some(principal) = self.validator.principal_for_node(&self.group_id, node_id) else {
+                self.refused_peer_updates = self.refused_peer_updates.saturating_add(1);
+                continue;
+            };
+            if self
+                .transport
+                .fence_peer(&self.group_id, principal)
+                .is_err()
+            {
+                self.refused_peer_updates = self.refused_peer_updates.saturating_add(1);
+            }
+        }
+    }
+
+    /// Publishes the adopted group's membership, so the transport's peer set is
+    /// defined from construction rather than from the first change.
+    pub(super) fn publish_adopted_membership(&mut self) {
+        let Some(group) = self.group.as_ref() else {
+            return;
+        };
+        let members = group
+            .runtime()
+            .membership()
+            .replica_ids()
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        self.publish_membership(members, Fencing::Withhold);
     }
 
     /// Resolves a barrier the group itself ended, and records one it granted.

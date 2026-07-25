@@ -15,12 +15,13 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use rafter::InMemorySnapshotChunkSource;
 use rafter_app::proposal::ClientRequestId;
 use rafter_runtime::DurableRaftNode;
 use rafter_service::{
     AuthenticatedPeerEnvelope, AuthenticatedPeerEnvelopeError, AuthenticatedPeerValidator,
-    InboundEnvelopeError, PeerEnvelope, PeerSet, RaftTransport, TransportDriverOptions,
-    TransportRaftDriver, WriteOptions,
+    InboundEnvelopeError, PeerEnvelope, PeerSet, RaftTransport, SnapshotChunkEnvelope,
+    TransportDriverOptions, TransportRaftDriver, WriteOptions,
 };
 use support::*;
 
@@ -56,6 +57,11 @@ struct QueueState {
     observed: Vec<PeerEnvelope<u64>>,
     cut: bool,
     fenced: BTreeSet<NodeId>,
+    /// Every peer set this transport was told to authorize, in order.
+    peer_sets: Vec<Vec<Principal>>,
+    /// The snapshot payloads this link can serve, which is what makes it able
+    /// to resolve a chunk directive into a frame.
+    snapshots: InMemorySnapshotChunkSource,
 }
 
 /// A transport that holds every frame until a test asks for it.
@@ -104,11 +110,31 @@ impl RaftTransport<u64> for QueueTransport {
         Ok(())
     }
 
+    /// Resolves the directive against this link's own snapshot payloads and
+    /// sends the frame, which is the division of labour the kernel documents:
+    /// the driver routes directives, the transport owns the bytes.
+    fn send_snapshot_chunk(&self, envelope: SnapshotChunkEnvelope<u64>) -> Result<(), Self::Error> {
+        let resolved = {
+            let state = self.lock();
+            envelope.chunk.resolve(&state.snapshots)
+        };
+        let Some(chunk) = resolved else {
+            return Err(TransportError("this link serves no such snapshot payload"));
+        };
+        self.send(PeerEnvelope {
+            group_id: envelope.group_id,
+            from: envelope.from,
+            to: envelope.to,
+            message: Message::InstallSnapshotChunk(chunk),
+        })
+    }
+
     fn update_peers(
         &self,
         _group_id: &u64,
-        _peers: PeerSet<Self::PeerPrincipal>,
+        peers: PeerSet<Self::PeerPrincipal>,
     ) -> Result<(), Self::Error> {
+        self.lock().peer_sets.push(peers.into_peers());
         Ok(())
     }
 
@@ -134,6 +160,12 @@ fn principal_node(principal: &Principal) -> Option<NodeId> {
 struct Validator {
     transport: QueueTransport,
     authorized: BTreeSet<NodeId>,
+    /// Which replicas this deployment can name a principal for.
+    ///
+    /// `None` means every replica, which is the ordinary case. A test that
+    /// restricts it is modelling a directory that has not learned a new
+    /// replica's identity yet.
+    nameable: Option<BTreeSet<NodeId>>,
 }
 
 impl AuthenticatedPeerValidator<u64, Principal> for Validator {
@@ -143,6 +175,13 @@ impl AuthenticatedPeerValidator<u64, Principal> for Validator {
 
     fn node_for_authenticated_peer(&self, _group_id: &u64, peer: &Principal) -> Option<NodeId> {
         principal_node(peer)
+    }
+
+    fn principal_for_node(&self, _group_id: &u64, node_id: NodeId) -> Option<Principal> {
+        self.nameable
+            .as_ref()
+            .is_none_or(|nameable| nameable.contains(&node_id))
+            .then(|| Principal::for_node(node_id))
     }
 
     fn is_authorized_peer(&self, _group_id: &u64, node_id: NodeId) -> bool {
@@ -169,6 +208,7 @@ fn driver_with_options(
     let validator = Validator {
         transport: transport.clone(),
         authorized: peers.iter().copied().map(NodeId).collect(),
+        nameable: None,
     };
     let driver = TransportRaftDriver::new(
         numbered_group(GROUP, node_id, peers, 3),
@@ -1011,6 +1051,7 @@ fn new_routes_the_recovery_outputs_it_was_given() {
     let validator = Validator {
         transport: transport.clone(),
         authorized: BTreeSet::from([NodeId(2)]),
+        nameable: None,
     };
     let recovery_outputs = vec![RaftOutput::Send {
         to: NodeId(2),
@@ -1048,6 +1089,7 @@ fn a_zero_bound_is_refused_at_construction() {
     let validator = Validator {
         transport: transport.clone(),
         authorized: BTreeSet::from([NodeId(2)]),
+        nameable: None,
     };
 
     let error = TransportRaftDriver::new(
