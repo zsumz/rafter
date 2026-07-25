@@ -12,6 +12,16 @@ public shape that answers it. The consumer's reported signature is treated as
 a statement of need; where reading the code produced a better shape, this
 document designs the better shape and says why.
 
+Three reading conventions hold throughout. Origin and blast-radius citations
+are as of discovery: a promotion that succeeds deletes the workaround it
+cites, so a dead path or out-of-range line in an Origin section is the
+promotion working, not an error to repoint. Design blocks are immutable as
+approved: when adoption evidence revises a design, the revision lands as its
+own dated subsection and the original stays, with forward pointers connecting
+the two — the latest revision plus the After-state is current truth. And an
+After-state describes what its promotion left behind at adoption time; later
+slices keep moving the same files.
+
 The first five entries all come from the replicated ledger's `rafter-app`
 adapter and its consumer-owned deterministic driver. They are not five
 unrelated additions: two of them are one change to step reporting, two are one
@@ -4743,7 +4753,10 @@ two methods. They must land as one change to the runtime trait: introducing the
 unbounded form first and generalizing it later would rewrite all eight
 implementors twice, and would leave a released signature whose obvious use in a
 read barrier is wrong. Implement the bounded form as the required method from
-the start and derive the readiness accessor from it.
+the start and derive the readiness accessor from it. (History spent this rule
+the expensive way: the unbounded form shipped in the first wave and the
+read-barrier work rewrote all eight implementors — Adoption order step 3
+records it. The rule stands for the next occasion.)
 
 **Failure typing — the error surface and the read vocabulary are one change to
 one type.** `ReadError::Transport` gains a required `ErrorCause`, and an
