@@ -1,6 +1,11 @@
 # Reference Consumers
 
-Status: active API-discovery and acceptance program for Rafter 1.0.
+Status: active API-discovery and acceptance program for Rafter 1.0. Two of the
+three systems are built: the ledger through all eight of its slices, and the
+fenced lock through its durable backend and crash points, with process
+composition still outstanding. The sharded counter has not started. Eleven APIs
+have been promoted under the rule below and are recorded in
+[`docs/api-promotions.md`](./api-promotions.md).
 
 Sequencing: the reference consumers are built before the 1.0 public surface is
 frozen. They reveal which mechanisms belong in Rafter and prove that each
@@ -74,24 +79,25 @@ reference/
   harness/             # added only after demonstrated reuse
 ```
 
-The root workspace will exclude `reference/`. This prevents the consumers from
+The root workspace excludes `reference/`. This prevents the consumers from
 accidentally inheriting root workspace dependencies, features, or metadata.
-Their canonical manifests will depend on versioned Rafter crates.
+Their canonical manifests depend on versioned Rafter crates.
 
-Two dependency modes will use those same consumer sources:
+Two dependency modes use those same consumer sources:
 
 ### Fast source mode
 
-Local development will pass an explicit Cargo configuration that patches the
+Local development passes an explicit Cargo configuration that patches the
 versioned Rafter dependencies to the checkout. Path overrides belong in the
 development command, not in the canonical consumer manifests.
 
 [`scripts/reference-source-check`](../scripts/reference-source-check) is that
-command. It patches every Rafter crate reachable from the consumer manifests,
-including transitive ones, then runs the reference workspace's format check,
-`clippy --all-targets -D warnings`, and tests. A partially patched graph would
-link checkout code against published code from the same workspace, so the
-override list covers the whole graph rather than only the direct dependencies.
+command. It patches every publishable Rafter crate — the whole set, not only
+the ones a consumer reaches today — then runs the reference workspace's format
+check, `clippy --all-targets -D warnings`, and tests. A partially patched graph
+would link checkout code against published code from the same workspace, and a
+list derived from what the consumers currently reach goes stale the moment one
+of them takes a new dependency, so the override list is the publishable set.
 
 `reference/Cargo.lock` is deliberately untracked. Source mode resolves the
 patched crates to checkout paths, and package-consumer mode resolves the same
@@ -122,11 +128,15 @@ This mode tests the artifact users receive, not merely the source tree that
 produced it.
 
 Until `rafter-sim` has an intentional public surface without hidden internal
-hooks, package-mode consumers will use a small consumer-owned deterministic
-cluster driver over public APIs. Repository-internal verification may
-additionally run the richer `rafter-sim` checks. The consumer driver is itself
-a useful test: an external user must be able to orchestrate and observe Rafter
-without privileged access.
+hooks, package-mode consumers use a small consumer-owned deterministic cluster
+driver over public APIs. Repository-internal verification may additionally run
+the richer `rafter-sim` checks. The consumer driver is itself a useful test: an
+external user must be able to orchestrate and observe Rafter without privileged
+access. What "consumer-owned" covers has narrowed as the program ran: the lock
+now drives its replicas through the promoted `rafter-service` transport driver
+and owns only the deterministic network and the cluster orchestration around
+it, which is the correct direction — a consumer should own what a deployment
+owns.
 
 ## Shared Construction Rules
 
@@ -420,6 +430,8 @@ tests and keeps the repository green.
 Do not create an empty framework crate, shared harness, generic history schema,
 or package runner before the ledger supplies a real use for it.
 
+All three are complete.
+
 ### Ledger
 
 1. Write the command, session, replay, and snapshot contract.
@@ -436,6 +448,8 @@ or package runner before the ledger supplies a real use for it.
 No shared application framework is extracted during the first three ledger
 slices.
 
+All eight are complete. None extracted a shared framework.
+
 ### Fenced lock
 
 1. Write the logical-time, session, token, and guarded-resource contract.
@@ -444,6 +458,13 @@ slices.
 4. Add leadership-loss, cancellation, retry, and stale-owner histories.
 5. Add durable snapshots, restart, processes, and package-mode tests.
 6. Extract only the orchestration code now proven common with the ledger.
+
+Slices 1 through 4 are complete. Slice 5 is complete except for process
+composition: the lock's durable backend, its snapshots, its restart path, and
+its package-mode coverage are in place, but every replica still runs in one
+process. Slice 6 is not reached, and nothing has been extracted — the ledger
+now has a process suite of its own, so that is where the common orchestration,
+if any, will first be visible.
 
 ### Sharded counter and scheduler
 

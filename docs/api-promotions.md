@@ -639,6 +639,10 @@ pub struct RaftGroupParts<G, A, R> {
 }
 ```
 
+A ninth field, `poison_cause: Option<ErrorCause>`, joins this list later and
+ships between `fatal_state` and `poisoned_waiters` rather than appended after
+them; see [Typed Service Failure Surface](#typed-service-failure-surface).
+
 ```rust
 /// Consumes the group and returns the parts a caller can reuse.
 ///
@@ -714,8 +718,8 @@ pub fn into_storage(self) -> DurableRaftNodeStorage<H, L, S>;
 ```
 
 Both methods sit on the unconstrained impl blocks
-([`crates/rafter-app/src/group/types.rs:242`](../crates/rafter-app/src/group/types.rs),
-[`crates/rafter-runtime/src/lib.rs:89`](../crates/rafter-runtime/src/lib.rs)),
+([`crates/rafter-app/src/group/types.rs:292`](../crates/rafter-app/src/group/types.rs),
+[`crates/rafter-runtime/src/lib.rs:97`](../crates/rafter-runtime/src/lib.rs)),
 so decomposition works for a group or node whose stores no longer satisfy the
 bounds required to step it.
 
@@ -2736,7 +2740,8 @@ history records a terminal refusal where it previously recorded an unknown, and
 a retrying client stops burning a request identity it never used.
 `write_error_from_group` and its comment about a lost type disappear with the
 rest of the consumer's driver in the next entry; until then the type survives
-the mapping.
+the mapping. Both have since happened: the mappers are gone with the driver,
+and `closes_outcome_window` is the two-line body above in the tree.
 
 **Corrected during adoption.** This paragraph named "a wrong-group write, a
 payload-too-large write, and a pre-append runtime failure" as the three cases
@@ -2952,6 +2957,12 @@ pub struct TransportDriverOptions {
     pub max_pending_waiters: usize,
 }
 ```
+
+`max_read_retries` and `with_max_read_retries` did not survive adoption:
+[Revision after adoption](#revision-after-adoption) removes the retry bound in
+favour of a grant-gated retry, so the shipped struct carries
+`max_pending_waiters` alone and the paragraph above reads as a design that had
+two bounds rather than as a description of the type.
 
 ```rust
 impl<G, A, R, T, V> TransportRaftDriver<G, A, R, T, V>
@@ -3405,6 +3416,20 @@ repeats on every later call. The lock reproduces this in
 incarnation cannot route them the way `adopt_group` does — the asymmetry is
 harmless only while the first incarnation recovers nothing.
 
+**Closed by the revision.** Everything the four paragraphs above record as
+outstanding has since landed; see
+[Revision after adoption](#revision-after-adoption). `route_report` routes read
+events, so a barrier the cluster ends during a `tick` or a `deliver` resolves
+its client instead of stranding it behind `GroupError::NonMonotonicReadId`;
+`new` takes recovery outputs; and `with_group` reads a running replica under
+the driver's own lock. `tests/support/observe.rs` is deleted with the gap it
+existed for, so `NodeDriver` is now a `TransportRaftDriver` over the lock's own
+state machines rather than over wrappers of them, and the two waiters
+`LockCluster` had to keep alive are retired through `abandon_write` and
+`abandon_read`. The **-501** measurement is the net at step 15 and is not the
+current one: the support directory stands at 1,532 lines, having lost
+`observe.rs` and then gained the durable slice's own modules.
+
 Three of the consumer's own notes disappear with the code. The comment that
 `rafter-service` "ships one driver, and it owns every replica behind a private
 queue"; the comment that it "ships transport *traits* and an inbound validator,
@@ -3484,11 +3509,11 @@ fails for a reason not attributable to one barrier.
 
 `release_group` is the only way to see inside a running driver, and it resolves
 every outstanding waiter, so looking costs the caller its clients. The consumer
-paid 232 lines to avoid that
-([`reference/fenced-lock/tests/support/observe.rs`](../reference/fenced-lock/tests/support/observe.rs)):
-a shared state machine and a shared runtime, each re-implementing the public
-trait the group requires, held on the side so the harness can still read what
-the driver took.
+paid 232 lines to avoid that, in a
+`reference/fenced-lock/tests/support/observe.rs` this fix deleted: a shared
+state machine and a shared runtime, each re-implementing the public trait the
+group requires, held on the side so the harness can still read what the driver
+took.
 
 ```rust
 impl<G, A, R, T, V> TransportRaftDriver<G, A, R, T, V> {
@@ -4043,6 +4068,18 @@ the client cannot reach it. The lock keeps its abandoned write futures alive
 solely so a late `UnknownOutcomeReason::RuntimeDroppedProposal` is still
 observed by somebody.
 
+**And returned.** That correction described one release only. Per-waiter
+abandon is now part of the transport driver — see
+[Revision after adoption](#revision-after-adoption), fix 3 — so
+`ReadAbandonReason::DriveBoundReached` and
+`UnknownOutcomeReason::DriveBoundReached` have the producer this entry designed
+them for, and the ID a caller needs in order to reach it is readable from
+`pending_writes` and `pending_reads` rather than unlearnable. The lock's own
+round budget now expires into `TransportRaftDriver::abandon_write` and
+`abandon_read`, and it authors no terminal outcome of its own;
+`RuntimeDroppedProposal` survives there only as a predicate over an error the
+app layer produced, which is the layer that reason names.
+
 More concretely, this entry is what lets
 [Transport-Attached Group Driver](#transport-attached-group-driver) document
 `release_group` at all: "every outstanding waiter resolves before this returns"
@@ -4085,8 +4122,8 @@ pub type TransportFuture<T, E> = DriverFuture<Result<T, E>>;
 ```
 
 The same audit finds one item in the other direction.
-`driver::metrics_watch_from_current`
-([`crates/rafter-service/src/driver/metrics.rs:3-7`](../crates/rafter-service/src/driver/metrics.rs))
+`driver::metrics_watch_from_current`, in a
+`crates/rafter-service/src/driver/metrics.rs` this entry deleted,
 is re-exported from `driver`
 ([`driver/mod.rs:48`](../crates/rafter-service/src/driver/mod.rs)), is not
 re-exported from the root, has zero callers anywhere in the workspace or in
@@ -4145,6 +4182,11 @@ only one type.
 
 `driver::metrics_watch_from_current` and its module are deleted.
 
+The shipped `driver` list carries one name beyond the block above, `PendingWrite`,
+added under this rule when [Revision after adoption](#revision-after-adoption)
+put it in a public driver signature. That is the rule working: a later entry
+extended the list instead of re-deciding what belongs on it.
+
 ### Semantics and edge cases
 
 - **Module paths keep working.** These are re-exports, not moves, so
@@ -4172,7 +4214,7 @@ Additive apart from one deletion.
 | File | Change |
 | --- | --- |
 | [`crates/rafter-service/src/lib.rs:26-42`](../crates/rafter-service/src/lib.rs) | Complete both re-export lists |
-| [`crates/rafter-service/src/driver/metrics.rs`](../crates/rafter-service/src/driver/metrics.rs) | Deleted |
+| `crates/rafter-service/src/driver/metrics.rs` | Deleted |
 | [`crates/rafter-service/src/driver/mod.rs:38,48`](../crates/rafter-service/src/driver/mod.rs) | Drop the module and its re-export |
 | [`reference/fenced-lock/tests/support/cluster.rs:48-53`](../reference/fenced-lock/tests/support/cluster.rs) | One import path |
 
@@ -4645,6 +4687,20 @@ lock's durable slice lands, the declaration flips to `Supported` and the two
 methods come back, which is a diff a reviewer can read as the durability claim
 it is.
 
+**The flip has happened, and it read exactly that way.** The lock's durable
+slice moved `LockStateMachine` to
+`const SNAPSHOT_SUPPORT: SnapshotSupport = SnapshotSupport::Supported`
+([`reference/fenced-lock/src/adapter/mod.rs`](../reference/fenced-lock/src/adapter/mod.rs)),
+restored both methods over the adapter's own snapshot frame, and added a second
+declaring implementor,
+[`DurableLockStateMachine`](../reference/fenced-lock/src/adapter/durable.rs).
+`LockAdapterError` did not stay at three variants: implementing snapshots is
+what gave it honest snapshot faults to name — an index it cannot reproduce, an
+install that would move the applied floor backwards, a missing or mismatched
+payload, and a payload that violates a service invariant. Those are the
+variants the `Unsupported` state had no way to earn, and the module comment is
+still true with them in it.
+
 `rafter-app` gains a question it can answer before it needs to, and the
 workspace gains a list of six state machines that have been quietly answering a
 question they should have declined — two of them in examples that install a
@@ -4741,6 +4797,18 @@ change is written twice and every step ends green.
    implementor is written twice; see
    [Coupled designs](#coupled-designs). Do this before any other `rafter-app`
    change so the app layer compiles once against a complete runtime trait.
+
+   **This is the one step the tree did not follow, and the cost was the
+   predicted one.** The unbounded method shipped first, across all eight
+   implementors, before the read-barrier floor was designed; the bounded form
+   then landed as its own change after step 9's consumer adoption and rewrote
+   the same eight. So every implementor *was* written twice, which is exactly
+   what this step and [Coupled designs](#coupled-designs) set out to avoid.
+   Nothing about the end state is wrong — the required method is the bounded
+   form and the unbounded one is provided from it — but the sequencing
+   rationale above describes a plan rather than a record, and the ordering
+   argument stands unspent for the next generalization of a required trait
+   method.
 4. **`ProposalEvent::Rejected { leader_hint }`.** `rafter-app`, plus
    `proposal_begin_from_report`, plus the `rafter-service` write path that stops
    reconstructing the hint.
@@ -4848,18 +4916,37 @@ crate upward, so no change is written twice and every step ends green.
     `closes_outcome_window` is the acceptance evidence for step 13 and the
     ~790-line deletion is the acceptance evidence for step 14, so the consumer
     is adopted last and re-run in full.
+16. **The transport driver's revision.** Not planned here — step 15's adoption
+    produced it. `route_report` routes read events, `with_group` and the
+    `committed_application_index` forwarder replace observation-by-release,
+    `abandon_write` and `abandon_read` retire one waiter, `new` takes recovery
+    outputs, and `max_read_retries` is removed in favour of a grant-gated
+    retry; the design is
+    [Revision after adoption](#revision-after-adoption). Then the consumer
+    adoption that step 15 could not yet make: `tests/support/observe.rs` and
+    the read-side workarounds are deleted. Breaking for `new` and
+    `max_read_retries`, both one release old, which is the cheapest that
+    correction was ever going to be.
+
+Steps 10–16 are the service-layer cluster and are complete in the tree, as are
+steps 1–9. The reference consumers have moved on past both waves — the ledger
+through its transactional backend and its durable process suite, the lock
+through its durable backend and crash points — so an entry's After-state
+describes the shape a promotion left behind, not the consumer's current line
+count.
 
 Steps 11, 13, and 14 are breaking. `reference/` and `bench-compare/` are
 outside the root workspace and must be built explicitly for steps 11, 13, 14,
 and 15 — `bench-compare` needs no source change for step 13, since its state
 machines already declare typed errors, but it must be built to prove it.
 
-Two things about this cluster differ from the first wave and are worth stating
-before the work starts. Step 13 removes `Eq` from four public error types, so
-its adoption is a broad, mechanical rewrite of assertions across two crates and
-one reference consumer, and the rewrite is where a real regression could hide
-in the noise — every converted assertion should say more than it did, not less.
-And step 11 is the only step in this document so far whose adoption is expected
-to *find* defects rather than only remove workarounds; the six state machines
-it forces to declare their snapshot support are not all going to answer the same
-way, and two of them are wrong today.
+Two things about this cluster differed from the first wave and were worth
+stating before the work started. Step 13 removes `Eq` from four public error
+types, so its adoption is a broad, mechanical rewrite of assertions across two
+crates and one reference consumer, and the rewrite is where a real regression
+could hide in the noise — every converted assertion should say more than it
+did, not less. And step 11 is the only step in this document whose adoption was
+expected to *find* defects rather than only remove workarounds; the six state
+machines it forced to declare their snapshot support did not all answer the
+same way, and the two that were wrong — examples installing a snapshot by
+discarding the state it carried — were fixed rather than carried forward.
