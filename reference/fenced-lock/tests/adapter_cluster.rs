@@ -398,24 +398,10 @@ fn a_linearizable_query_resolves_to_a_non_answer_when_leadership_is_lost() {
     // The lock itself is unaffected: a lost read never changes replicated state.
     cluster.settle();
 
-    // API finding, pinned here rather than assumed away. A new leader's only
-    // entry in its own term is a Raft noop, and a noop never reaches the state
-    // machine, so the barrier's required applied index is briefly unreachable
-    // and the query cannot answer yet. Whatever it does, it must never answer
-    // from state that predates the leader change.
-    let immediately_after = cluster.get_lock(second_leader, resource(RESOURCE));
-    match &immediately_after {
-        QueryOutcome::Unavailable { .. } => {}
-        QueryOutcome::Answered { status, .. } => assert_eq!(
-            status.holder.map(|holder| holder.owner),
-            Some(client(0)),
-            "an answer must be fresh or absent, never stale"
-        ),
-    }
-
-    // One committed application command lifts the state machine's applied floor
-    // to the new term's commit index, and the same query answers.
-    committed(&mut cluster, second_leader, open_session(0, 1));
+    // The new leader answers the same query with no intervening write. Its
+    // only entry in the new term is a Raft noop the state machine never sees,
+    // and the barrier requires only the highest committed application entry at
+    // or below the read index, so a read-only workload survives the election.
     let status = answered(cluster.get_lock(second_leader, resource(RESOURCE)));
     assert_eq!(status.holder.map(|holder| holder.owner), Some(client(0)));
     assert_history_agrees_with_oracle(&cluster, second_leader);
