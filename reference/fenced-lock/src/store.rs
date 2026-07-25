@@ -72,6 +72,32 @@
 //! resource issues next. These are the durability boundary refusing to publish
 //! or adopt a state that contradicts contract invariant 2.
 //!
+//! # Republishing one commit point
+//!
+//! [`LockStore::install`] may republish the applied index the store already
+//! holds, because adopting the state a replica already has must not require
+//! inventing an index. That is the one publication whose freshness the applied
+//! index cannot judge — two images can name the same index and still disagree
+//! about which requests have completed.
+//!
+//! The session cache is what disagrees. Dropping a client slot's cached
+//! completion makes an acknowledged operation executable again, and for an
+//! acquisition that mints a *second* fencing token for one tenure — the same
+//! failure as a lost mark, reached by another road. So an install at an
+//! unchanged applied index must also dominate the durable session cache, slot
+//! by slot, through [`SessionProgress`]: the session epoch first, then the
+//! highest completed sequence under it. Opening a newer epoch is what
+//! legitimately clears an older epoch's cache, which is why the epoch outranks
+//! the sequence rather than sitting beside it.
+//!
+//! The check is scoped to an unchanged index deliberately. Above that index the
+//! model has legitimately advanced, and it — not the durability boundary — is
+//! the authority on which sessions it retired or replaced along the way. At an
+//! unchanged index nothing legitimately changed, so a state that lost a
+//! completion is simply a poorer image of the same commit point, and
+//! [`LockStoreError::SessionCacheRegression`] refuses it before a byte is
+//! written.
+//!
 //! # Format
 //!
 //! The store owns one directory containing exactly two files, `lock-state.0`
@@ -88,7 +114,8 @@
 //!
 //! - integers are unsigned and big-endian;
 //! - records are packed with no alignment or padding;
-//! - a magic or version other than the one named here is rejected;
+//! - a magic or version other than the one named here refuses the store, and is
+//!   never quietly skipped in favour of the other slot;
 //! - checksums are CRC-32/IEEE, an accidental-corruption check and not an
 //!   authentication tag; and
 //! - a slot file of zero bytes has never been published to.
@@ -169,27 +196,61 @@
 //! - After the trailer's sync returns, the new slot is committed, outranks the
 //!   old one by generation, and is what recovery adopts.
 //!
-//! Nothing is truncated or repaired at open. A damaged slot is simply not
-//! eligible, and the next publication overwrites it, so the store heals itself
-//! without a repair path that could run at the wrong moment.
+//! Nothing is truncated or repaired at open. The next publication overwrites
+//! the slot it does not adopt, so the store heals itself without a repair path
+//! that could run at the wrong moment.
 //!
-//! Recovery refuses to open when **both** slots are damaged, rather than
-//! starting empty. A lock service that cannot read any image cannot know its
-//! high-water marks, and one that started empty would hand out token 1 for a
-//! resource whose guarded downstream has already accepted a far higher token.
-//! Failing closed is the only safe answer. A store that has never committed is
-//! a different case and is not refused: its slots are empty, not damaged.
+//! # Which unreadable slots recovery may skip
 //!
-//! One residue is deliberately *not* refused, and it is worth naming because
-//! the files cannot distinguish it. A publication that dies immediately after
-//! truncating leaves its slot empty, so "one damaged slot beside an empty one"
-//! could in principle mean either "the first publication ever tore" — where
-//! opening empty is correct — or "the live slot was corrupted while the stale
-//! one was mid-truncation", where it is not. The second needs a corruption of a
-//! file this store never opened for writing, which is outside the crash model
-//! above; the first is ordinary. Refusing both would make a store unopenable
-//! whenever its very first transaction was interrupted, so the ordinary case
-//! wins and the extraordinary one is stated here rather than silently handled.
+//! Recovery is allowed to skip a slot it cannot read only when it can *prove*
+//! that slot was not the live image. There is exactly one proof available, and
+//! it comes from the shape of the write path.
+//!
+//! A publication truncates the stale slot to nothing and writes one image
+//! forward. Every state it can be interrupted in is therefore a strict prefix
+//! of that image, and a prefix has four possible shapes: a short header, a
+//! short payload, a payload with no trailer, and a torn trailer. Those four —
+//! [`SlotDamage::is_publication_residue`] — are the only damage an interrupted
+//! publication of this build can leave. A prefix always carries this store's
+//! magic and this build's version byte; every byte it does carry is a byte that
+//! was written, so it cannot fail a checksum computed over bytes that are all
+//! present; and it cannot run past the seal.
+//!
+//! Residue therefore *proves* the slot was the one being written, which proves
+//! it was not the live image, which is what makes skipping it safe. **Every
+//! other damage refuses the whole store.** A foreign magic, a format version
+//! this build does not write, a header or commit checksum over bytes that are
+//! all present, bytes beyond the seal: none of those is a prefix of anything
+//! this build wrote, so recovery has no argument that the slot was the stale
+//! one, and adopting its partner would silently roll the store back one
+//! generation. A rollback drops an acknowledged fencing high-water mark and the
+//! next acquisition reissues a token a guarded resource has already accepted,
+//! which is the exact failure this whole design exists to prevent. That is
+//! [`LockStoreError::UnreadableSlot`], and it is a refusal to open rather than
+//! damage to skip.
+//!
+//! A format-version mismatch is the sharpest case and is worth naming on its
+//! own, because it needs no corruption at all: a binary downgrade produces it
+//! from two entirely healthy files. The version byte is the fifth byte a
+//! publication writes and is always this build's, so a slot declaring another
+//! version was written whole by another build. It is always a refusal.
+//!
+//! Recovery also refuses when **both** slots are damaged, whatever the damage,
+//! rather than starting empty. A lock service that cannot read any image cannot
+//! know its high-water marks, and one that started empty would hand out token 1
+//! for a resource whose guarded downstream has already accepted a far higher
+//! token. That is [`LockStoreError::NoReadableImage`].
+//!
+//! A store that has never committed is a different case and is not refused: its
+//! slots are empty, not damaged. One slot holding residue beside an *empty*
+//! partner is that case — a publication only ever writes the stale slot, so an
+//! empty partner means no publication has ever committed and there was never a
+//! mark to lose.
+//!
+//! [`RecoveryReport::damaged_slot`] names **which** slot was damaged as well as
+//! how. That index is the load-bearing half: it is what tells a caller the
+//! residue sat in the slot that was being written, rather than leaving benign
+//! crash residue and a lost generation looking alike.
 //!
 //! After any write error the handle is poisoned and every later publication is
 //! refused with [`LockStoreError::StoreRequiresReopen`], because a store that
@@ -219,7 +280,8 @@ use rafter::LogIndex;
 
 use crate::{
     adapter::{decode_snapshot, encode_snapshot},
-    FencingToken, LockCodecError, LockConfig, LockService, ResourceName, SnapshotError,
+    ClientId, FencingToken, LockCodecError, LockConfig, LockService, ResourceName, Sequence,
+    SessionEpoch, SnapshotError,
 };
 
 /// Fixed length of a slot header, in bytes.
@@ -358,6 +420,25 @@ pub enum LockStoreError {
         /// What each slot looked like, indexed by [`SlotIndex`].
         slots: [SlotState; 2],
     },
+    /// One slot holds bytes no interrupted publication could have left behind.
+    ///
+    /// Recovery cannot rule out that this slot was the live image, so adopting
+    /// its partner would silently roll the store back one generation: an
+    /// acknowledged fencing high-water mark would drop and the next acquisition
+    /// would reissue a token a guarded resource has already accepted. A slot
+    /// this build cannot read is a refusal to open, never residue to skip.
+    ///
+    /// See [`SlotDamage::is_publication_residue`] for which damage this catches
+    /// and why the rest is safe to skip.
+    UnreadableSlot {
+        /// Slot that could not be read.
+        slot: SlotIndex,
+        /// Why it could not be read.
+        damage: SlotDamage,
+        /// What the partner slot held — the image recovery declined to adopt in
+        /// its place.
+        other: SlotState,
+    },
     /// Both slots claim the same generation.
     ///
     /// Publications assign strictly increasing generations, so this is
@@ -430,6 +511,22 @@ pub enum LockStoreError {
         /// Mark the offered state carries, if it tracks the resource at all.
         offered: Option<FencingToken>,
     },
+    /// A republication at an unchanged applied index would move a client slot's
+    /// session cache backwards.
+    ///
+    /// The applied Raft index is not the whole ordering key for the session
+    /// cache: two images can name the same index and still disagree about which
+    /// requests have completed. Adopting the poorer one makes an acknowledged
+    /// operation executable again, and for an acquisition that mints a second
+    /// fencing token for one tenure.
+    SessionCacheRegression {
+        /// Client slot whose session cache would move backwards.
+        client: ClientId,
+        /// Progress this store has durably acknowledged for that slot.
+        acknowledged: SessionProgress,
+        /// Progress the offered state carries, if it holds the slot at all.
+        offered: Option<SessionProgress>,
+    },
     /// An image is larger than the slot header's length field can describe.
     ImageTooLarge {
         /// Encoded length of the payload.
@@ -474,6 +571,16 @@ impl fmt::Display for LockStoreError {
                 SlotIndex::One,
                 slots[1]
             ),
+            Self::UnreadableSlot {
+                slot,
+                damage,
+                other,
+            } => write!(
+                formatter,
+                "{slot} holds {damage}, which no interrupted publication leaves, so it may have been \
+                 the live image; {} holds {other} and is not adopted in its place",
+                slot.other()
+            ),
             Self::AmbiguousGeneration { generation } => write!(
                 formatter,
                 "both slots claim generation {generation}, so neither outranks the other"
@@ -511,21 +618,12 @@ impl fmt::Display for LockStoreError {
                 resource,
                 acknowledged,
                 offered,
-            } => match offered {
-                Some(offered) => write!(
-                    formatter,
-                    "resource {} would drop from fencing high-water mark {} to {}",
-                    resource.as_str(),
-                    acknowledged.get(),
-                    offered.get()
-                ),
-                None => write!(
-                    formatter,
-                    "resource {} would lose its fencing high-water mark of {}",
-                    resource.as_str(),
-                    acknowledged.get()
-                ),
-            },
+            } => write_mark_regression(formatter, *resource, *acknowledged, *offered),
+            Self::SessionCacheRegression {
+                client,
+                acknowledged,
+                offered,
+            } => write_session_cache_regression(formatter, *client, *acknowledged, *offered),
             Self::ImageTooLarge { length } => write!(
                 formatter,
                 "image of {length} bytes exceeds the slot header's length field"
@@ -540,18 +638,67 @@ impl fmt::Display for LockStoreError {
     }
 }
 
+/// Renders a mark regression, which reads differently when the resource
+/// vanished from the offered state than when its mark merely dropped.
+fn write_mark_regression(
+    formatter: &mut fmt::Formatter<'_>,
+    resource: ResourceName,
+    acknowledged: FencingToken,
+    offered: Option<FencingToken>,
+) -> fmt::Result {
+    match offered {
+        Some(offered) => write!(
+            formatter,
+            "resource {} would drop from fencing high-water mark {} to {}",
+            resource.as_str(),
+            acknowledged.get(),
+            offered.get()
+        ),
+        None => write!(
+            formatter,
+            "resource {} would lose its fencing high-water mark of {}",
+            resource.as_str(),
+            acknowledged.get()
+        ),
+    }
+}
+
+/// Renders a session cache regression, which reads differently when the client
+/// slot vanished from the offered state than when its progress merely dropped.
+fn write_session_cache_regression(
+    formatter: &mut fmt::Formatter<'_>,
+    client: ClientId,
+    acknowledged: SessionProgress,
+    offered: Option<SessionProgress>,
+) -> fmt::Result {
+    match offered {
+        Some(offered) => write!(
+            formatter,
+            "client slot {} would drop from {acknowledged} to {offered} at an unchanged applied index",
+            client.get()
+        ),
+        None => write!(
+            formatter,
+            "client slot {} would lose its session cache at {acknowledged}",
+            client.get()
+        ),
+    }
+}
+
 impl Error for LockStoreError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Io { source, .. } => Some(source),
             Self::Image { source, .. } => Some(source),
             Self::NoReadableImage { .. }
+            | Self::UnreadableSlot { .. }
             | Self::AmbiguousGeneration { .. }
             | Self::ConfigMismatch { .. }
             | Self::Snapshot { .. }
             | Self::AppliedIndexDisagreement { .. }
             | Self::AppliedIndexRegression { .. }
             | Self::MarkRegression { .. }
+            | Self::SessionCacheRegression { .. }
             | Self::ImageTooLarge { .. }
             | Self::StoreRequiresReopen
             | Self::InjectedFault { .. } => None,
@@ -651,6 +798,43 @@ impl fmt::Display for FaultPlan {
     }
 }
 
+/// How far one client slot's session had progressed when it was made durable.
+///
+/// This is the key the session cache is ordered by, and it is deliberately not
+/// the applied Raft index: an install may republish the index the store already
+/// holds, and at that index the index itself says nothing about which requests
+/// have completed.
+///
+/// Ordering is lexicographic — the epoch first, then the highest completed
+/// sequence under it — because opening a newer epoch is exactly what
+/// legitimately clears an older epoch's cache. A slot on a later epoch has not
+/// lost anything by holding no completion yet.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct SessionProgress {
+    /// Session generation the slot was on.
+    pub epoch: SessionEpoch,
+    /// Highest completed sequence cached under that epoch, if any.
+    pub completed: Option<Sequence>,
+}
+
+impl fmt::Display for SessionProgress {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.completed {
+            Some(sequence) => write!(
+                formatter,
+                "epoch {} through sequence {}",
+                self.epoch.get(),
+                sequence.get()
+            ),
+            None => write!(
+                formatter,
+                "epoch {} with nothing completed",
+                self.epoch.get()
+            ),
+        }
+    }
+}
+
 /// Why a slot could not be adopted.
 ///
 /// A damaged slot is the normal residue of an interrupted publication, not a
@@ -658,6 +842,11 @@ impl fmt::Display for FaultPlan {
 /// [`LockStoreError`]. Each variant names the byte boundary the interrupted
 /// write reached, which is what lets a crash test prove that its injection bit
 /// where it aimed.
+///
+/// Only four of these variants are residue an interrupted publication can
+/// actually leave; see [`SlotDamage::is_publication_residue`]. The rest are
+/// reported here because the report says what recovery *found*, but finding one
+/// refuses the store rather than skipping the slot.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum SlotDamage {
     /// Fewer bytes are present than one slot header needs.
@@ -710,6 +899,37 @@ pub enum SlotDamage {
         /// Bytes beyond the sealed image.
         extra: u64,
     },
+}
+
+impl SlotDamage {
+    /// Whether an interrupted publication of *this* build could have left this.
+    ///
+    /// A publication truncates the stale slot to nothing and writes one image
+    /// forward, so every state it can be interrupted in is a strict prefix of
+    /// that image. The four shapes below are exactly those prefixes: a short
+    /// header, a short payload, a payload with no trailer, and a torn trailer.
+    ///
+    /// Nothing else is a prefix of anything this build writes. A prefix always
+    /// carries this store's magic and this build's version byte; every byte it
+    /// does carry is a byte that was written, so it cannot fail a checksum
+    /// computed over bytes that are all present; and it cannot run past the
+    /// seal.
+    ///
+    /// That asymmetry is the whole recovery argument. Residue proves the slot
+    /// was the one being written, and therefore that it was not the live image,
+    /// which is what makes skipping it safe. Damage outside this set proves
+    /// nothing of the kind, so recovery cannot rule out that the slot it cannot
+    /// read held the newest committed state, and it refuses to open instead.
+    #[must_use]
+    pub const fn is_publication_residue(self) -> bool {
+        matches!(
+            self,
+            Self::HeaderIncomplete { .. }
+                | Self::PayloadIncomplete { .. }
+                | Self::MissingCommitChecksum
+                | Self::PartialCommitChecksum { .. }
+        )
+    }
 }
 
 impl fmt::Display for SlotDamage {
@@ -824,16 +1044,37 @@ impl RecoveryReport {
         self.live_slot
     }
 
-    /// Returns the damage an interrupted publication left behind.
+    /// Returns which slot an interrupted publication damaged, and how.
     ///
-    /// At most one slot can be damaged in a store that opened: two damaged
-    /// slots fail closed, so this is unambiguous.
+    /// At most one slot can be damaged in a store that opened, so this is
+    /// unambiguous: two damaged slots fail closed with
+    /// [`LockStoreError::NoReadableImage`], and damage no publication could
+    /// have left fails closed with [`LockStoreError::UnreadableSlot`].
+    ///
+    /// The slot index is the load-bearing half. Without it a caller cannot tell
+    /// benign residue in the slot that was being written from anything else,
+    /// which is the difference between "the crash cost nothing" and a question
+    /// worth asking.
     #[must_use]
-    pub const fn damaged_slot(&self) -> Option<SlotDamage> {
+    pub const fn damaged_slot(&self) -> Option<(SlotIndex, SlotDamage)> {
         match self.slots[0].damage() {
-            Some(damage) => Some(damage),
-            None => self.slots[1].damage(),
+            Some(damage) => Some((SlotIndex::Zero, damage)),
+            None => match self.slots[1].damage() {
+                Some(damage) => Some((SlotIndex::One, damage)),
+                None => None,
+            },
         }
+    }
+
+    /// Whether this opening found nothing to report.
+    ///
+    /// A clean opening adopted an image with no damaged slot beside it, or
+    /// created the store. Anything else — residue from an interrupted
+    /// publication — is a fact a caller reopening a store after a crash should
+    /// have to look at rather than step over.
+    #[must_use]
+    pub const fn is_clean(&self) -> bool {
+        self.damaged_slot().is_none()
     }
 
     /// Whether recovery found a second intact slot and re-checked the fencing
@@ -1111,8 +1352,9 @@ impl LockStore {
     ///
     /// Returns an error when the handle is poisoned, when `applied_index` would
     /// move the applied floor backwards, when the state would lower a fencing
-    /// high-water mark, when the image cannot be encoded, or when the write or
-    /// its durability barrier fails.
+    /// high-water mark, when republishing an unchanged applied index would move
+    /// a session cache backwards, when the image cannot be encoded, or when the
+    /// write or its durability barrier fails.
     pub fn install(
         &mut self,
         service: &LockService,
@@ -1124,6 +1366,18 @@ impl LockStore {
                 previous: self.applied_index,
                 found: applied_index,
             });
+        }
+        if applied_index == self.applied_index {
+            // The one publication the applied floor cannot judge. Two images at
+            // one index can still disagree about which requests have completed,
+            // and the poorer one makes an acknowledged acquisition executable
+            // again — a second fencing token for one tenure. Above this index
+            // the model is the authority on the sessions it retired along the
+            // way, so the check is scoped to exactly here.
+            verify_session_cache_dominates(
+                &session_progress_of(&self.service),
+                &session_progress_of(service),
+            )?;
         }
         self.publish(service, applied_index)
     }
@@ -1428,22 +1682,52 @@ fn decode_image(
     })
 }
 
-/// Picks the slot recovery adopts, failing closed when neither is readable.
+/// Picks the slot recovery adopts, refusing any slot it cannot read.
+///
+/// Unreadability is settled *before* anything is chosen, because the question
+/// the generation comparison answers — which image is newer — is exactly the
+/// question a slot this build cannot read has already made unanswerable.
 fn choose_live_slot(
     states: &[SlotState; 2],
     images: [Option<DecodedImage>; 2],
 ) -> Result<Option<AdoptedImage>, LockStoreError> {
+    // Both damaged is reported as the stronger fact it is: there is no image at
+    // all, whatever each slot's damage happened to be. A lock service that
+    // cannot read any image cannot know its high-water marks, and opening empty
+    // would reissue token 1 for a resource whose guarded downstream has already
+    // accepted far more.
+    if states.iter().all(|state| state.damage().is_some()) {
+        return Err(LockStoreError::NoReadableImage { slots: *states });
+    }
+    // One damaged slot. Skipping it is safe only when its damage proves it was
+    // the slot being written; anything else could be the live image, and
+    // adopting the partner would roll an acknowledged mark back one generation.
+    for slot in [SlotIndex::Zero, SlotIndex::One] {
+        let Some(damage) = states[slot.position()].damage() else {
+            continue;
+        };
+        if !damage.is_publication_residue() {
+            return Err(LockStoreError::UnreadableSlot {
+                slot,
+                damage,
+                other: states[slot.other().position()],
+            });
+        }
+    }
+
     let generations = [generation_of(states[0]), generation_of(states[1])];
     let [zero, one] = images;
 
-    let adopted = match (generations[0], generations[1], zero, one) {
+    match (generations[0], generations[1], zero, one) {
         (Some(left), Some(right), _, _) if left == right => {
-            return Err(LockStoreError::AmbiguousGeneration { generation: left });
+            Err(LockStoreError::AmbiguousGeneration { generation: left })
         }
         (Some(left), Some(right), Some(zero), Some(one)) => {
-            // Both slots survived, which is the ordinary case and the one that
-            // lets recovery re-check the marks across the commit boundary it is
-            // recovering rather than take the newest image's word for it.
+            // Both slots hold a committed image. This is the only shape in
+            // which a second committed image exists to compare against, and
+            // wherever it exists the comparison runs: recovery re-checks the
+            // marks across the commit boundary it is recovering rather than
+            // taking the newest image's word for it.
             let (newer_slot, newer, older) = if left > right {
                 (SlotIndex::Zero, zero, one)
             } else {
@@ -1456,41 +1740,37 @@ fn choose_live_slot(
                     found: newer.applied_index,
                 });
             }
-            Some(AdoptedImage {
+            Ok(Some(AdoptedImage {
                 slot: newer_slot,
                 generation: left.max(right),
                 image: newer,
                 cross_checked_marks: true,
-            })
+            }))
         }
-        (Some(generation), None, Some(image), _) => Some(AdoptedImage {
+        // One committed image beside a slot holding none. Reaching here is a
+        // proof rather than a default: the partner is empty, or it holds
+        // residue, and residue means the partner was the slot being written —
+        // so whatever it last committed was older than what is adopted here.
+        // There is no second committed image to compare against, and
+        // `cross_checked_marks` says so rather than implying a check ran.
+        (Some(generation), None, Some(image), _) => Ok(Some(AdoptedImage {
             slot: SlotIndex::Zero,
             generation,
             image,
             cross_checked_marks: false,
-        }),
-        (None, Some(generation), _, Some(image)) => Some(AdoptedImage {
+        })),
+        (None, Some(generation), _, Some(image)) => Ok(Some(AdoptedImage {
             slot: SlotIndex::One,
             generation,
             image,
             cross_checked_marks: false,
-        }),
-        _ => None,
-    };
-    if adopted.is_some() {
-        return Ok(adopted);
+        })),
+        // Neither slot holds a committed image, and neither is unreadable. A
+        // publication only ever writes the stale slot, so an empty partner
+        // means no publication has ever committed and there was never a mark to
+        // lose. This is the one case the fail-closed rules must not catch.
+        _ => Ok(None),
     }
-
-    // No image was readable. A store whose slots are *both* damaged cannot know
-    // its high-water marks, and opening empty would reissue token 1, so it
-    // fails closed. One damaged slot beside an empty one is the different case
-    // the rule must not catch: a publication only ever writes the stale slot,
-    // so an empty partner means no publication has ever committed and there was
-    // never a mark to lose.
-    if states.iter().all(|state| state.damage().is_some()) {
-        return Err(LockStoreError::NoReadableImage { slots: *states });
-    }
-    Ok(None)
 }
 
 const fn generation_of(state: SlotState) -> Option<u64> {
@@ -1508,6 +1788,46 @@ fn marks_of(service: &LockService) -> BTreeMap<ResourceName, FencingToken> {
         .into_iter()
         .map(|resource| (resource.resource, resource.token_floor))
         .collect()
+}
+
+/// Returns every client slot's session progress.
+fn session_progress_of(service: &LockService) -> BTreeMap<ClientId, SessionProgress> {
+    service
+        .view()
+        .sessions
+        .into_iter()
+        .map(|session| {
+            (
+                session.client_id,
+                SessionProgress {
+                    epoch: session.session_epoch,
+                    completed: session.cached.map(|(sequence, _, _)| sequence),
+                },
+            )
+        })
+        .collect()
+}
+
+/// Refuses a state that would move any client slot's session cache backwards.
+///
+/// A slot that disappears is the same failure as one whose progress decreases:
+/// both let an acknowledged operation execute a second time, and for an
+/// acquisition that is a second fencing token for one tenure.
+fn verify_session_cache_dominates(
+    acknowledged: &BTreeMap<ClientId, SessionProgress>,
+    offered: &BTreeMap<ClientId, SessionProgress>,
+) -> Result<(), LockStoreError> {
+    for (client, progress) in acknowledged {
+        let found = offered.get(client).copied();
+        if found.is_none_or(|offered_progress| offered_progress < *progress) {
+            return Err(LockStoreError::SessionCacheRegression {
+                client: *client,
+                acknowledged: *progress,
+                offered: found,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Refuses a state that would lower or drop any acknowledged mark.
@@ -1619,103 +1939,126 @@ fn as_u64(value: usize) -> u64 {
     u64::try_from(value).expect("slot sizes fit a u64")
 }
 
-/// Reads one slot's raw bytes.
+/// Direct access to a slot file's bytes, for crash tests only.
 ///
-/// Crash tests corrupt sealed images to prove the checksums are load bearing,
-/// which needs the exact bytes the store wrote.
+/// Everything here reaches past [`LockStore`] and reads or rewrites the artifact
+/// the store owns. That is not a capability a durable application ever needs: an
+/// application publishes through [`LockStore::commit`] and
+/// [`LockStore::install`] and reads through [`LockStore::open`], and nothing
+/// else in this crate calls into this module.
 ///
-/// # Errors
+/// It is a named public module rather than a hidden item because the honest
+/// statement is that these functions *are* reachable, and hiding them from the
+/// rendered documentation would not change that. A `#[doc(hidden)]` function
+/// sitting beside the store's own API reads at the call site exactly like API; a
+/// call that has to name `raw_slot` says what it is doing every time it appears,
+/// and greps for one word. The crate's dependency boundary forbids gating this
+/// behind a feature or an internal hook — a consumer manifest must resolve like
+/// an external user's — so the guard is the name, this paragraph, and review.
 ///
-/// Returns an error when the slot cannot be read.
-pub fn read_slot_bytes(directory: &Path, slot: SlotIndex) -> Result<Vec<u8>, LockStoreError> {
-    let path = slot_path(directory, slot);
-    let mut bytes = Vec::new();
-    File::open(&path)
-        .and_then(|mut file| file.read_to_end(&mut bytes))
-        .map_err(|source| LockStoreError::Io {
-            operation: "read a lock store slot",
-            path,
-            source,
-        })?;
-    Ok(bytes)
-}
+/// Nothing here validates anything. The store's own checks are what a forged
+/// artifact is aimed at, so a caller is responsible for the bytes being the ones
+/// it means to present.
+pub mod raw_slot {
+    use super::{
+        crc32, slot_path, File, LockStoreError, LogIndex, OpenOptions, Path, Read, SlotIndex,
+        Write, HEADER_APPLIED_INDEX_OFFSET, HEADER_CHECKSUM_OFFSET, SLOT_HEADER_LEN,
+        SLOT_TRAILER_LEN,
+    };
 
-/// Recomputes both checksums over a modified slot image.
-///
-/// Several header fields — the generation, the declared bounds, the applied
-/// index — are protected by a checksum precisely so recovery can trust them,
-/// which means flipping one of them cannot reach the check that reads it: the
-/// checksum catches the flip first. Resealing is how a test presents a
-/// *well-formed* image that nonetheless says something a correct store would
-/// never write, so that the checks behind the checksums are reachable at all.
-///
-/// It exists for crash tests and has no place in a durable application's own
-/// code path.
-///
-/// # Panics
-///
-/// Panics when `image` is too short to hold a header and a trailer, which is
-/// not an image any store wrote.
-#[must_use]
-pub fn reseal_image(mut image: Vec<u8>) -> Vec<u8> {
-    assert!(
-        image.len() >= SLOT_HEADER_LEN + SLOT_TRAILER_LEN,
-        "a resealable image is at least a header and a trailer"
-    );
-    let header_checksum = crc32(&image[..HEADER_CHECKSUM_OFFSET]);
-    image[HEADER_CHECKSUM_OFFSET..SLOT_HEADER_LEN].copy_from_slice(&header_checksum.to_be_bytes());
-    let sealed = image.len() - SLOT_TRAILER_LEN;
-    let commit_checksum = crc32(&image[..sealed]);
-    image[sealed..].copy_from_slice(&commit_checksum.to_be_bytes());
-    image
-}
+    /// Reads one slot's raw bytes.
+    ///
+    /// Crash tests corrupt sealed images to prove the checksums are load
+    /// bearing, which needs the exact bytes the store wrote.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the slot cannot be read.
+    pub fn read(directory: &Path, slot: SlotIndex) -> Result<Vec<u8>, LockStoreError> {
+        let path = slot_path(directory, slot);
+        let mut bytes = Vec::new();
+        File::open(&path)
+            .and_then(|mut file| file.read_to_end(&mut bytes))
+            .map_err(|source| LockStoreError::Io {
+                operation: "read a lock store slot",
+                path,
+                source,
+            })?;
+        Ok(bytes)
+    }
 
-/// Overwrites the applied Raft index a slot header declares, leaving the
-/// payload's own copy alone.
-///
-/// The two copies exist so recovery can order and report without decoding, and
-/// they are cross-checked because a disagreement means the artifact is not what
-/// it says it is. A correct store cannot produce that disagreement — both
-/// copies come from one argument — so this is the only way to reach the check.
-///
-/// # Panics
-///
-/// Panics when `image` is too short to hold a header and a trailer.
-#[must_use]
-pub fn overwrite_header_applied_index(mut image: Vec<u8>, applied_index: LogIndex) -> Vec<u8> {
-    assert!(
-        image.len() >= SLOT_HEADER_LEN + SLOT_TRAILER_LEN,
-        "a rewritable image is at least a header and a trailer"
-    );
-    image[HEADER_APPLIED_INDEX_OFFSET..HEADER_APPLIED_INDEX_OFFSET + 8]
-        .copy_from_slice(&applied_index.0.to_be_bytes());
-    reseal_image(image)
-}
+    /// Overwrites one slot's raw bytes.
+    ///
+    /// This is the corruption half of [`read`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the slot cannot be written.
+    pub fn write(directory: &Path, slot: SlotIndex, bytes: &[u8]) -> Result<(), LockStoreError> {
+        let path = slot_path(directory, slot);
+        OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()))
+            .map_err(|source| LockStoreError::Io {
+                operation: "rewrite a lock store slot",
+                path,
+                source,
+            })
+    }
 
-/// Overwrites one slot's raw bytes.
-///
-/// This is the corruption half of [`read_slot_bytes`]; it exists for crash
-/// tests and has no place in a durable application's own code path.
-///
-/// # Errors
-///
-/// Returns an error when the slot cannot be written.
-pub fn write_slot_bytes(
-    directory: &Path,
-    slot: SlotIndex,
-    bytes: &[u8],
-) -> Result<(), LockStoreError> {
-    let path = slot_path(directory, slot);
-    OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(&path)
-        .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()))
-        .map_err(|source| LockStoreError::Io {
-            operation: "rewrite a lock store slot",
-            path,
-            source,
-        })
+    /// Recomputes both checksums over a modified slot image.
+    ///
+    /// Several header fields — the generation, the declared bounds, the applied
+    /// index — are protected by a checksum precisely so recovery can trust
+    /// them, which means flipping one of them cannot reach the check that reads
+    /// it: the checksum catches the flip first. Resealing is how a test
+    /// presents a *well-formed* image that nonetheless says something a correct
+    /// store would never write, so that the checks behind the checksums are
+    /// reachable at all.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `image` is too short to hold a header and a trailer, which
+    /// is not an image any store wrote.
+    #[must_use]
+    pub fn reseal(mut image: Vec<u8>) -> Vec<u8> {
+        assert!(
+            image.len() >= SLOT_HEADER_LEN + SLOT_TRAILER_LEN,
+            "a resealable image is at least a header and a trailer"
+        );
+        let header_checksum = crc32(&image[..HEADER_CHECKSUM_OFFSET]);
+        image[HEADER_CHECKSUM_OFFSET..SLOT_HEADER_LEN]
+            .copy_from_slice(&header_checksum.to_be_bytes());
+        let sealed = image.len() - SLOT_TRAILER_LEN;
+        let commit_checksum = crc32(&image[..sealed]);
+        image[sealed..].copy_from_slice(&commit_checksum.to_be_bytes());
+        image
+    }
+
+    /// Overwrites the applied Raft index a slot header declares, leaving the
+    /// payload's own copy alone.
+    ///
+    /// The two copies exist so recovery can order and report without decoding,
+    /// and they are cross-checked because a disagreement means the artifact is
+    /// not what it says it is. A correct store cannot produce that disagreement
+    /// — both copies come from one argument — so this is the only way to reach
+    /// the check.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `image` is too short to hold a header and a trailer.
+    #[must_use]
+    pub fn overwrite_header_applied_index(mut image: Vec<u8>, applied_index: LogIndex) -> Vec<u8> {
+        assert!(
+            image.len() >= SLOT_HEADER_LEN + SLOT_TRAILER_LEN,
+            "a rewritable image is at least a header and a trailer"
+        );
+        image[HEADER_APPLIED_INDEX_OFFSET..HEADER_APPLIED_INDEX_OFFSET + 8]
+            .copy_from_slice(&applied_index.0.to_be_bytes());
+        reseal(image)
+    }
 }
 
 #[cfg(test)]

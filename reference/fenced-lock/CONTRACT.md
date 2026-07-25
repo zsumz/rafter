@@ -440,6 +440,21 @@ different applied-index rules. An apply must strictly advance the applied index;
 an install may republish the current one, because adopting the state a replica
 already holds must not require inventing an index. Neither may lower it.
 
+That exception carries an obligation. **The applied Raft index is not the whole
+ordering key for the session cache.** Two images can name one index and still
+disagree about which requests have completed, so an install that republishes an
+unchanged index must also dominate the durable session cache, client slot by
+client slot: the session epoch first, then the highest completed sequence under
+it. Opening a newer epoch is what legitimately clears an older epoch's cache,
+which is why the epoch outranks the sequence rather than sitting beside it.
+
+Dropping a cached completion makes an acknowledged operation executable again,
+and for an acquisition that mints a second fencing token for one tenure — the
+same failure as a lost mark, reached by another road. The check is scoped to an
+unchanged index deliberately: above it the model has legitimately advanced and
+is the authority on the sessions it retired along the way, and the durability
+boundary does not second-guess it.
+
 The transaction commits before `apply_batch` returns, so a client's reply — and
 any fencing token inside it — can only follow the commit point.
 
@@ -447,8 +462,13 @@ any fencing token inside it — can only follow the commit point.
 
 The on-disk representation is versioned, self-describing, and checksummed. Every
 record declares a magic and a format version, and a build that does not
-recognize either refuses the artifact rather than reinterpreting it. Checksums
-are accidental-corruption checks, not authentication tags.
+recognize either refuses **the store**, rather than reinterpreting the artifact
+or quietly falling back to another copy of the state. Checksums are
+accidental-corruption checks, not authentication tags.
+
+A format version this build does not write deserves naming on its own, because
+it needs no corruption to occur: a binary downgrade produces it from entirely
+healthy files. It is always a refusal.
 
 A durable artifact records the `LockConfig` it was written under. Opening it
 under different bounds is refused, because the bounds decide which states are
@@ -488,14 +508,41 @@ found, and its report is evidence a test asserts on rather than a diagnostic:
 a crash test that could not show which window it reproduced would prove only
 that an uninterrupted store works.
 
-Recovery never repairs and never guesses. An unreadable artifact is not adopted,
-and the next transaction supersedes it.
+Recovery never repairs and never guesses. An unreadable artifact is not adopted.
 
-Recovery fails closed rather than starting empty when it can tell that a
-committed state existed and has become unreadable. A lock service that opened
-empty would hand out token 1 for a resource whose guarded downstream has already
-accepted a far higher token, which is worse than not starting at all. A store
-that has never committed is a different case and opens normally.
+**An artifact this build cannot read is never treated as absent.** That is the
+principle the rest of this section is an application of. Unreadable committed
+state is not residue to step over, not a copy to skip in favour of another one,
+and not a reason to open at an older state and carry on: it is a refusal to
+open, reported to the caller, who is the only party that can decide what to do
+about it.
+
+Recovery may skip a copy it cannot read only when it can *prove* that copy was
+not the live one, and there is exactly one proof available. A publication writes
+one image forward into the copy that is not authoritative, so every state it can
+be interrupted in is a strict prefix of that image, and the shapes a prefix can
+take are enumerable: a short header, a short payload, a payload with no seal, a
+torn seal. Finding one of those proves the copy was the one being written, and
+therefore that it was not the live image.
+
+Every other damage refuses the store. A foreign magic, an unreadable version, a
+checksum failing over bytes that are all present, bytes past the seal: none is a
+prefix of anything this build writes, so recovery has no argument about which
+copy the damage landed in. Skipping such a copy is a silent one-generation
+rollback — an acknowledged high-water mark drops, and the next acquisition
+reissues a token a guarded resource has already accepted.
+
+Recovery also fails closed, rather than starting empty, when no copy is readable
+at all. A lock service that opened empty would hand out token 1 for a resource
+whose guarded downstream has already accepted a far higher token, which is worse
+than not starting at all. A store that has never committed is a different case
+and opens normally: its copies are empty, not damaged.
+
+The recovery report names **which** copy was damaged as well as how. That index
+is what distinguishes benign crash residue from anything else, and a report that
+could not draw the distinction would leave a caller unable to tell a clean
+restart from one worth investigating. Consumers of this store assert on it: a
+reopen that reports damage is a fact to be looked at, not stepped over.
 
 ### Mark durability
 

@@ -51,9 +51,8 @@ use rafter_app::state_machine::{
 };
 use rafter_reference_fenced_lock::{
     store::{
-        overwrite_header_applied_index, read_slot_bytes, write_slot_bytes, FaultPlan, LockStore,
-        LockStoreError, SlotDamage, SlotIndex, SlotState, WriteFault, SLOT_HEADER_LEN,
-        SLOT_TRAILER_LEN,
+        raw_slot, FaultPlan, LockStore, LockStoreError, SlotDamage, SlotIndex, SlotState,
+        WriteFault, SLOT_HEADER_LEN, SLOT_TRAILER_LEN,
     },
     ApplyDisposition, ApplyOutcome, Command, DurableLockError, DurableLockStateMachine,
     FencingToken, GuardedResource, GuardedWrite, LockResponse, LockService, OperationResult,
@@ -133,10 +132,10 @@ fn a_crash_at_every_byte_of_a_publication_recovers_to_exactly_one_side_of_it() {
         let report = recovered.store().recovery();
         assert_eq!(
             report.damaged_slot(),
-            expected_damage(stop, payload_len, image_len),
-            "`{plan}` left a residue the format does not describe"
+            expected_damage(stop, payload_len, image_len).map(|damage| (stale_before, damage)),
+            "`{plan}` left a residue the format does not describe, or left it in the wrong slot"
         );
-        observed.insert(damage_kind(report.damaged_slot()));
+        observed.insert(damage_kind(report.damaged_slot().map(|(_, damage)| damage)));
 
         if committed {
             assert_eq!(
@@ -235,6 +234,7 @@ fn a_written_but_uncommitted_image_is_not_a_transaction() {
     let plan = FaultPlan::at(as_u64(commands.len()), WriteFault::AfterBytes(stop));
     let mut app = open(scratch.path(), plan.clone());
     apply_all(&mut app, &commands[..commands.len() - 1]);
+    let stale = app.store().next_slot();
     apply_one(
         &mut app,
         index_of(commands.len()),
@@ -250,8 +250,8 @@ fn a_written_but_uncommitted_image_is_not_a_transaction() {
     let recovered = open(scratch.path(), FaultPlan::none());
     assert_eq!(
         recovered.store().recovery().damaged_slot(),
-        Some(SlotDamage::MissingCommitChecksum),
-        "the residue is a written image with no commit checksum (`{plan}`)"
+        Some((stale, SlotDamage::MissingCommitChecksum)),
+        "the residue is a written image with no commit checksum, in the slot that was being written (`{plan}`)"
     );
     assert_eq!(
         durable_state(&recovered),
@@ -272,6 +272,7 @@ fn a_torn_commit_checksum_does_not_commit() {
     let plan = FaultPlan::at(as_u64(commands.len()), WriteFault::AfterBytes(stop));
     let mut app = open(scratch.path(), plan.clone());
     apply_all(&mut app, &commands[..commands.len() - 1]);
+    let stale = app.store().next_slot();
     apply_one(
         &mut app,
         index_of(commands.len()),
@@ -283,7 +284,7 @@ fn a_torn_commit_checksum_does_not_commit() {
     let recovered = open(scratch.path(), FaultPlan::none());
     assert_eq!(
         recovered.store().recovery().damaged_slot(),
-        Some(SlotDamage::PartialCommitChecksum { present: 3 }),
+        Some((stale, SlotDamage::PartialCommitChecksum { present: 3 })),
         "under `{plan}`"
     );
     assert_eq!(
@@ -686,8 +687,8 @@ fn recovery_re_checks_the_marks_across_the_commit_boundary_it_recovers() {
     let donor_slot = donor.store().live_slot().expect("the donor committed");
     drop(donor);
 
-    let image = read_slot_bytes(source.path(), donor_slot).expect("the donor slot reads back");
-    write_slot_bytes(target.path(), stale, &image).expect("the target slot rewrites");
+    let image = raw_slot::read(source.path(), donor_slot).expect("the donor slot reads back");
+    raw_slot::write(target.path(), stale, &image).expect("the target slot rewrites");
 
     // The higher generation wins the ordering, and then the older slot the
     // design preserves is what proves the marks went backwards.
@@ -713,11 +714,11 @@ fn two_damaged_slots_fail_closed_rather_than_opening_an_empty_lock_service() {
     drop(app);
 
     for slot in [SlotIndex::Zero, SlotIndex::One] {
-        let mut bytes = read_slot_bytes(scratch.path(), slot).expect("the slot reads back");
+        let mut bytes = raw_slot::read(scratch.path(), slot).expect("the slot reads back");
         assert!(!bytes.is_empty(), "{slot} must hold an image to damage");
         let last = bytes.len() - 1;
         bytes[last] ^= 0xFF;
-        write_slot_bytes(scratch.path(), slot, &bytes).expect("the slot rewrites");
+        raw_slot::write(scratch.path(), slot, &bytes).expect("the slot rewrites");
     }
 
     // Opening empty here would hand out token 1 for a resource whose guarded
@@ -745,7 +746,10 @@ fn a_store_that_never_committed_opens_empty_even_with_a_damaged_slot() {
     let recovered = open(scratch.path(), FaultPlan::none());
     assert_eq!(
         recovered.store().recovery().damaged_slot(),
-        Some(SlotDamage::HeaderIncomplete { present: 20 }),
+        Some((
+            SlotIndex::Zero,
+            SlotDamage::HeaderIncomplete { present: 20 }
+        )),
         "under `{plan}`"
     );
     assert_eq!(recovered.store().recovery().live_slot(), None);
@@ -759,19 +763,245 @@ fn a_store_that_never_committed_opens_empty_even_with_a_damaged_slot() {
     );
 }
 
+#[test]
+fn a_live_slot_this_build_cannot_read_refuses_rather_than_adopting_the_older_one() {
+    let lock_config = config(2, 4);
+    let scratch = ScratchDir::new("downgrade-refusal");
+    let commands = workload();
+
+    // Two publications, so the stale slot holds a real superseded image: mark 1
+    // for the resource, against the live slot's mark 2. That gap is the whole
+    // scenario — a rollback here loses an acknowledged fencing mark.
+    let mut app = open(scratch.path(), FaultPlan::none());
+    apply_all(&mut app, &commands[..2]);
+    let superseded = durable_state(&app);
+    apply_all_from(&mut app, &commands[2..4], 3);
+    let acknowledged = durable_state(&app);
+    let live = app
+        .store()
+        .live_slot()
+        .expect("both publications committed");
+    drop(app);
+
+    assert_eq!(
+        app_mark(&acknowledged),
+        Some(token(2)),
+        "the live image must carry the higher mark"
+    );
+    assert_eq!(
+        app_mark(&superseded),
+        Some(token(1)),
+        "the stale image must carry the lower mark, or a rollback would cost nothing"
+    );
+
+    // A binary downgrade, and nothing else. No byte is corrupted: the version
+    // field is simply one this build does not write, which is exactly what a
+    // slot written by a later build looks like. The version is tested before
+    // the header checksum, so this needs no resealing.
+    let mut bytes = raw_slot::read(scratch.path(), live).expect("the live slot reads back");
+    assert_eq!(bytes[4], 1, "this build writes format version 1");
+    bytes[4] = 2;
+    raw_slot::write(scratch.path(), live, &bytes).expect("the live slot rewrites");
+
+    let error = LockStore::open(scratch.path(), lock_config)
+        .expect_err("a slot this build cannot read must refuse the store");
+    assert!(
+        matches!(
+            error,
+            LockStoreError::UnreadableSlot {
+                slot,
+                damage: SlotDamage::UnsupportedFormatVersion { version: 2 },
+                other: SlotState::Intact { .. },
+            } if slot == live
+        ),
+        "unexpected refusal: {error}"
+    );
+
+    // And the refusal destroyed nothing: putting the version byte back opens
+    // the store at the state it acknowledged, which is what proves the image
+    // recovery declined to adopt really was the superseded one.
+    bytes[4] = 1;
+    raw_slot::write(scratch.path(), live, &bytes).expect("the live slot rewrites");
+    let recovered = open(scratch.path(), FaultPlan::none());
+    assert_eq!(
+        durable_state(&recovered),
+        acknowledged,
+        "the refusal left the acknowledged image exactly where it was"
+    );
+}
+
+#[test]
+fn a_refused_downgrade_never_reissues_a_token_a_departed_owner_used() {
+    let lock_config = config(2, 4);
+    let scratch = ScratchDir::new("downgrade-fencing");
+    let commands = workload();
+
+    let mut app = open(scratch.path(), FaultPlan::none());
+    apply_all(&mut app, &commands[..4]);
+    let floor = index_of(4);
+    let live = app.store().live_slot().expect("the workload committed");
+    drop(app);
+
+    // The tenure holding token 2 writes downstream, as a real owner does. From
+    // here on the guard will refuse anything older, and it knows nothing about
+    // locks, sessions, or storage.
+    let mut guard = GuardedResource::new(resource(RESOURCE));
+    accept(&mut guard, token(2), 7);
+
+    let mut bytes = raw_slot::read(scratch.path(), live).expect("the live slot reads back");
+    bytes[4] = 2;
+    raw_slot::write(scratch.path(), live, &bytes).expect("the live slot rewrites");
+
+    // No service comes back from this artifact, so no second tenure exists to
+    // mint a token the guard has already accepted. Refusing to start is the
+    // point: a store that opened here would open one generation back, where the
+    // mark is 1, and the next acquisition would hand out 2 all over again.
+    assert!(
+        matches!(
+            LockStore::open(scratch.path(), lock_config),
+            Err(LockStoreError::UnreadableSlot { .. })
+        ),
+        "a downgraded live slot must not produce a lock service at all"
+    );
+
+    // The assertion above is only worth something if the repaired artifact does
+    // hand out a token the guard accepts. Restore the version byte and take a
+    // fresh tenure: it must outrank the departed owner's.
+    bytes[4] = 1;
+    raw_slot::write(scratch.path(), live, &bytes).expect("the live slot rewrites");
+    let mut recovered = open(scratch.path(), FaultPlan::none());
+    let (issued, _) = take_a_fresh_tenure(&mut recovered, floor, "a refused downgrade");
+    assert!(
+        issued > token(2),
+        "a fresh tenure reissued the departed owner's token {issued:?}"
+    );
+    accept(&mut guard, issued, 99);
+}
+
+#[test]
+fn recovery_separates_benign_residue_from_a_slot_it_cannot_read() {
+    let lock_config = config(2, 4);
+    let commands = workload();
+
+    // (a) The benign case: the *stale* slot is torn mid-publication. Nothing
+    // committed was lost, and the report says which slot it was.
+    let benign = ScratchDir::new("residue-benign");
+    let mut app = open(benign.path(), FaultPlan::at(3, WriteFault::AfterBytes(20)));
+    apply_all(&mut app, &commands[..2]);
+    let stale = app.store().next_slot();
+    apply_one(&mut app, index_of(3), commands[2]).expect_err("publication 3 is interrupted");
+    drop(app);
+
+    let recovered = LockStore::open(benign.path(), lock_config).expect("the store reopens");
+    let report = *recovered.recovery();
+    let (damaged, damage) = report
+        .damaged_slot()
+        .expect("the interrupted publication left residue");
+    assert_eq!(
+        damaged, stale,
+        "the residue must be in the slot the publication was writing"
+    );
+    assert!(
+        damage.is_publication_residue(),
+        "an interrupted publication leaves residue, not corruption: {damage}"
+    );
+    assert!(!report.is_clean(), "residue is not a clean opening");
+    assert_eq!(
+        report.live_slot(),
+        Some(stale.other()),
+        "the untouched slot stays live"
+    );
+
+    // (b) The case that used to look identical: the *live* slot cannot be read.
+    // It is no longer a report at all — it is a refusal, so there is nothing for
+    // a caller to mistake for the benign case above.
+    let harmful = ScratchDir::new("residue-harmful");
+    let mut app = open(harmful.path(), FaultPlan::none());
+    apply_all(&mut app, &commands[..4]);
+    let live = app.store().live_slot().expect("the workload committed");
+    drop(app);
+
+    let mut bytes = raw_slot::read(harmful.path(), live).expect("the live slot reads back");
+    bytes[4] = 2;
+    raw_slot::write(harmful.path(), live, &bytes).expect("the live slot rewrites");
+
+    let error = LockStore::open(harmful.path(), lock_config)
+        .expect_err("an unreadable live slot is a refusal, not a report");
+    assert!(
+        matches!(error, LockStoreError::UnreadableSlot { .. }),
+        "unexpected refusal: {error}"
+    );
+}
+
+#[test]
+fn an_install_at_an_unchanged_index_may_not_drop_a_session_cache() {
+    let lock_config = config(2, 4);
+    let scratch = ScratchDir::new("install-session-cache");
+    let commands = workload();
+
+    // Two states at one applied index. The poorer one is the state as it stood
+    // before the last operation completed, republished at the index that
+    // operation moved the store to — which is what a stale snapshot descriptor
+    // presents when its payload is one commit behind its index.
+    let mut poorer = LockService::new(lock_config);
+    for command in &commands[..commands.len() - 1] {
+        poorer.apply(*command);
+    }
+    let mut richer = poorer.clone();
+    richer.apply(commands[commands.len() - 1]);
+    let at = index_of(commands.len());
+
+    let mut store = LockStore::open(scratch.path(), lock_config).expect("a fresh store opens");
+    store.commit(&richer, at).expect("the transaction commits");
+
+    // The applied index is identical, and the marks are identical too, so
+    // neither of the store's other two floors can see anything wrong. Only the
+    // session cache moved backwards.
+    assert_eq!(
+        store.applied_index(),
+        at,
+        "the install below must not be judged by the applied index"
+    );
+    let error = store
+        .install(&poorer, at)
+        .expect_err("an install that loses a completed request must be refused");
+    assert!(
+        matches!(
+            error,
+            LockStoreError::SessionCacheRegression {
+                offered: Some(_),
+                ..
+            }
+        ),
+        "unexpected refusal: {error}"
+    );
+
+    // Republishing the same state is still legal — the check refuses a loss,
+    // not a republication.
+    store
+        .install(&richer, at)
+        .expect("republishing the durable state at its own index commits");
+}
+
 // ---------------------------------------------------------------------------
 // Format integrity
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_corrupted_sealed_image_is_detected_rather_than_trusted() {
+fn a_corrupted_sealed_image_refuses_the_store_rather_than_rolling_it_back() {
     let commands = workload();
-    let (before, payload_len) = state_and_payload_len(&commands, commands.len());
+    let (_, payload_len) = state_and_payload_len(&commands, commands.len());
 
     // One offset in each record, named by the check that is supposed to catch
     // it. The header's own checksum has to catch its corruption before the
     // commit checksum does, because the generation it protects is what recovery
     // orders by.
+    //
+    // None of these is a prefix of any image this build writes — every byte is
+    // present and only its value is wrong — so none of them proves the slot was
+    // the stale one. The store therefore may not skip the slot: the slot beside
+    // it is one generation older, and adopting it would drop an acknowledged
+    // fencing mark.
     let cases: [(u64, DamageTest); 3] = [
         (5, |damage| {
             matches!(damage, SlotDamage::HeaderChecksumMismatch { .. })
@@ -791,25 +1021,28 @@ fn a_corrupted_sealed_image_is_detected_rather_than_trusted() {
         let live = app.store().live_slot().expect("the workload committed");
         drop(app);
 
-        let mut bytes = read_slot_bytes(scratch.path(), live).expect("the slot reads back");
+        let mut bytes = raw_slot::read(scratch.path(), live).expect("the slot reads back");
         let target = usize::try_from(offset).expect("offsets are small");
         bytes[target] ^= 0xFF;
-        write_slot_bytes(scratch.path(), live, &bytes).expect("the slot rewrites");
+        raw_slot::write(scratch.path(), live, &bytes).expect("the slot rewrites");
 
-        let recovered = open(scratch.path(), FaultPlan::none());
-        let damage = recovered
-            .store()
-            .recovery()
-            .damaged_slot()
-            .unwrap_or_else(|| panic!("flipping byte {offset} was not caught at all"));
+        let error = LockStore::open(scratch.path(), config(2, 4))
+            .err()
+            .unwrap_or_else(|| panic!("flipping byte {offset} must refuse the store"));
+        let LockStoreError::UnreadableSlot { slot, damage, .. } = error else {
+            panic!("flipping byte {offset} was refused for the wrong reason: {error}");
+        };
+        assert_eq!(
+            slot, live,
+            "the refusal must name the slot it could not read"
+        );
         assert!(
             expected(damage),
             "flipping byte {offset} was caught as the wrong shape: {damage}"
         );
-        assert_eq!(
-            durable_state(&recovered),
-            before,
-            "a corrupt image is discarded, leaving the one before it"
+        assert!(
+            !damage.is_publication_residue(),
+            "a corruption is not residue an interrupted publication leaves"
         );
     }
 }
@@ -842,8 +1075,8 @@ fn a_commit_checksum_seals_only_the_header_it_was_written_under() {
     assert_ne!(older, newer, "a publication alternates slots");
     drop(store);
 
-    let mut old_image = read_slot_bytes(scratch.path(), older).expect("the slot reads back");
-    let new_image = read_slot_bytes(scratch.path(), newer).expect("the slot reads back");
+    let mut old_image = raw_slot::read(scratch.path(), older).expect("the slot reads back");
+    let new_image = raw_slot::read(scratch.path(), newer).expect("the slot reads back");
     let seal = old_image.len() - SLOT_TRAILER_LEN;
     assert_eq!(
         old_image[SLOT_HEADER_LEN..seal],
@@ -856,18 +1089,27 @@ fn a_commit_checksum_seals_only_the_header_it_was_written_under() {
         "the two headers must differ, or the splice changes nothing"
     );
     old_image[seal..].copy_from_slice(&new_image[seal..]);
-    write_slot_bytes(scratch.path(), older, &old_image).expect("the slot rewrites");
+    raw_slot::write(scratch.path(), older, &old_image).expect("the slot rewrites");
 
-    let recovered =
-        LockStore::open(scratch.path(), lock_config).expect("the newer slot is still readable");
+    // The seal catches it, and the store refuses. The spliced slot happens to
+    // be the older one, so a reader who knows the setup can see nothing was
+    // lost — but the artifact cannot say that. A seal matching no header is not
+    // a prefix of anything a publication writes, so recovery has no evidence
+    // about which slot the damage landed in, and it will not guess in whichever
+    // direction happens to be convenient.
+    let error = LockStore::open(scratch.path(), lock_config)
+        .expect_err("a seal written under another header must refuse the store");
     assert!(
         matches!(
-            recovered.recovery().damaged_slot(),
-            Some(SlotDamage::CommitChecksumMismatch { .. })
+            error,
+            LockStoreError::UnreadableSlot {
+                slot,
+                damage: SlotDamage::CommitChecksumMismatch { .. },
+                ..
+            } if slot == older
         ),
-        "a seal written under another header must not seal this one"
+        "unexpected refusal: {error}"
     );
-    assert_eq!(recovered.recovery().live_slot(), Some(newer));
 }
 
 #[test]
@@ -883,8 +1125,6 @@ fn a_commit_checksum_seals_only_the_payload_it_was_written_for() {
     let mut divergent = commands.clone();
     divergent[7] = submit(0, 1, 4, renew(RESOURCE, 2, 21));
 
-    let (before, _) = state_and_payload_len(&commands, commands.len());
-
     let mut app = open(mine.path(), FaultPlan::none());
     apply_all(&mut app, &commands);
     let target_slot = app.store().live_slot().expect("the workload committed");
@@ -894,8 +1134,8 @@ fn a_commit_checksum_seals_only_the_payload_it_was_written_for() {
     let source_slot = app.store().live_slot().expect("the workload committed");
     drop(app);
 
-    let mut target = read_slot_bytes(mine.path(), target_slot).expect("the slot reads back");
-    let source = read_slot_bytes(theirs.path(), source_slot).expect("the slot reads back");
+    let mut target = raw_slot::read(mine.path(), target_slot).expect("the slot reads back");
+    let source = raw_slot::read(theirs.path(), source_slot).expect("the slot reads back");
     assert_eq!(
         target.len(),
         source.len(),
@@ -914,17 +1154,21 @@ fn a_commit_checksum_seals_only_the_payload_it_was_written_for() {
         "the two seals must differ, or the splice changes nothing"
     );
     target[seal..].copy_from_slice(&source[seal..]);
-    write_slot_bytes(mine.path(), target_slot, &target).expect("the slot rewrites");
+    raw_slot::write(mine.path(), target_slot, &target).expect("the slot rewrites");
 
-    let recovered = open(mine.path(), FaultPlan::none());
+    let error = LockStore::open(mine.path(), config(2, 4))
+        .expect_err("a seal written for another payload must refuse the store");
     assert!(
         matches!(
-            recovered.store().recovery().damaged_slot(),
-            Some(SlotDamage::CommitChecksumMismatch { .. })
+            error,
+            LockStoreError::UnreadableSlot {
+                slot,
+                damage: SlotDamage::CommitChecksumMismatch { .. },
+                ..
+            } if slot == target_slot
         ),
-        "a seal written for another payload must not seal this one"
+        "unexpected refusal: {error}"
     );
-    assert_eq!(durable_state(&recovered), before);
 }
 
 #[test]
@@ -933,7 +1177,6 @@ fn the_slot_header_binds_a_store_to_its_format_and_its_bounds() {
     let mut app = open(scratch.path(), FaultPlan::none());
     apply_all(&mut app, &workload());
     let live = app.store().live_slot().expect("the workload committed");
-    let stale = app.store().next_slot();
     drop(app);
 
     // Different resource bounds decide which images are valid, so they are
@@ -947,11 +1190,16 @@ fn the_slot_header_binds_a_store_to_its_format_and_its_bounds() {
         "unexpected refusal: {error}"
     );
 
-    let original = read_slot_bytes(scratch.path(), live).expect("the slot reads back");
+    let original = raw_slot::read(scratch.path(), live).expect("the slot reads back");
 
-    // Damaging only the live slot leaves the stale one, which is intact and one
-    // generation older, so each of these is observed as damage rather than as a
-    // store that cannot open.
+    // Each of these damages only the live slot and leaves the stale one intact
+    // and one generation older — exactly the shape recovery is tempted to skip
+    // past. Skipping past it is a silent one-generation rollback, so each one
+    // refuses the store instead.
+    //
+    // The version case needs no corruption at all. It is what a binary
+    // downgrade produces from two entirely healthy files, which is why the
+    // format discipline names it separately.
     let cases: [(&str, ImageMutation, DamageTest); 3] = [
         (
             "foreign magic",
@@ -972,20 +1220,16 @@ fn the_slot_header_binds_a_store_to_its_format_and_its_bounds() {
     for (label, mutate, expected) in cases {
         let mut bytes = original.clone();
         mutate(&mut bytes);
-        write_slot_bytes(scratch.path(), live, &bytes).expect("the slot rewrites");
+        raw_slot::write(scratch.path(), live, &bytes).expect("the slot rewrites");
 
-        let recovered = open(scratch.path(), FaultPlan::none());
-        let damage = recovered
-            .store()
-            .recovery()
-            .damaged_slot()
-            .unwrap_or_else(|| panic!("{label} was not caught"));
+        let error = LockStore::open(scratch.path(), config(2, 4))
+            .err()
+            .unwrap_or_else(|| panic!("{label} must refuse the store"));
+        let LockStoreError::UnreadableSlot { slot, damage, .. } = error else {
+            panic!("{label} was refused for the wrong reason: {error}");
+        };
+        assert_eq!(slot, live, "{label} must name the slot it could not read");
         assert!(expected(damage), "{label} was caught as {damage}");
-        assert_eq!(
-            recovered.store().recovery().live_slot(),
-            Some(stale),
-            "{label} left the other slot as the only readable image"
-        );
     }
 }
 
@@ -1005,9 +1249,9 @@ fn a_slot_whose_two_applied_indexes_disagree_is_refused_rather_than_reconciled()
     // one argument, so a correct store cannot make them disagree. Resealing is
     // the only way to reach the check, and the check exists because an artifact
     // whose two copies disagree is not the artifact it claims to be.
-    let image = read_slot_bytes(scratch.path(), live).expect("the slot reads back");
-    let forged = overwrite_header_applied_index(image, LogIndex(floor.0 + 7));
-    write_slot_bytes(scratch.path(), live, &forged).expect("the slot rewrites");
+    let image = raw_slot::read(scratch.path(), live).expect("the slot reads back");
+    let forged = raw_slot::overwrite_header_applied_index(image, LogIndex(floor.0 + 7));
+    raw_slot::write(scratch.path(), live, &forged).expect("the slot rewrites");
 
     let error = LockStore::open(scratch.path(), config(2, 4))
         .expect_err("a self-contradicting image must not be adopted");
@@ -1035,8 +1279,8 @@ fn two_slots_at_one_generation_leave_recovery_no_rule_for_choosing() {
 
     // Two slots claiming one generation cannot happen from this store's own
     // writes, so it is corruption, and there is no rule that picks between them.
-    let image = read_slot_bytes(scratch.path(), live).expect("the slot reads back");
-    write_slot_bytes(scratch.path(), live.other(), &image).expect("the slot rewrites");
+    let image = raw_slot::read(scratch.path(), live).expect("the slot reads back");
+    raw_slot::write(scratch.path(), live.other(), &image).expect("the slot rewrites");
 
     let error = LockStore::open(scratch.path(), config(2, 4))
         .expect_err("two images of one generation must not be ranked");
@@ -1385,6 +1629,24 @@ fn workload() -> Vec<Command> {
         submit(1, 4, 2, expire_through(3)),
         submit(0, 1, 4, renew(RESOURCE, 2, 20)),
     ]
+}
+
+/// Applies `commands` at consecutive indexes starting at `first`.
+fn apply_all_from(app: &mut DurableLockStateMachine, commands: &[Command], first: usize) {
+    for (offset, command) in commands.iter().enumerate() {
+        apply_one(app, index_of(first + offset), *command)
+            .unwrap_or_else(|error| panic!("transaction {} must commit: {error}", first + offset));
+    }
+}
+
+/// Returns the fencing high-water mark a durable state carries for [`RESOURCE`].
+fn app_mark(state: &DurableState) -> Option<FencingToken> {
+    state
+        .view
+        .resources
+        .iter()
+        .find(|tracked| tracked.resource == resource(RESOURCE))
+        .map(|tracked| tracked.token_floor)
 }
 
 /// How a scenario got from one durable state to the next.
