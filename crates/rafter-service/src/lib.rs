@@ -34,8 +34,9 @@ pub use driver::{
     WriteBatchEntry, WriteOptions, WriteReceipt,
 };
 pub use error::{
-    ErrorCause, MetricsError, ReadError, ShutdownError, StateMachineOperation,
-    TransferLeadershipError, UnknownOutcomeReason, WriteError,
+    ErrorCause, MetricsError, ReadAbandonReason, ReadError, ReadErrorKind, ShutdownError,
+    StateMachineOperation, TransferLeadershipError, UnknownOutcomeReason, WriteError,
+    WriteErrorKind, WriteFate,
 };
 pub use handle::RaftHandle;
 pub use membership::{MembershipController, PlannedMembershipChange};

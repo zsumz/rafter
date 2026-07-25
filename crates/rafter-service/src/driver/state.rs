@@ -38,7 +38,8 @@ where
             return Err(ManagedOperationError::ShuttingDown);
         }
         if group_id != &self.group_id {
-            return Err(ManagedOperationError::Transport("wrong group".to_owned()));
+            // A command the driver never looked at is not a delivery failure.
+            return Err(ManagedOperationError::WrongGroup);
         }
         Ok(())
     }
@@ -53,7 +54,7 @@ where
             Err(error) => {
                 self.publish_primary_metrics();
                 return Err(ManagedDriverError::Group {
-                    message: format!("{error:?}"),
+                    cause: ErrorCause::new(error),
                 });
             }
         };
@@ -96,8 +97,9 @@ where
         if !group.poisoned_waiters().reads.contains(&read_id) {
             return None;
         }
+        let cause = group.poison_cause().cloned();
         let _ = group.drain_poisoned_waiters();
-        Some(ReadError::Poisoned { reason })
+        Some(ReadError::Poisoned { reason, cause })
     }
 
     pub(super) fn primary_poison_reason(&self) -> Option<String> {
@@ -129,10 +131,9 @@ where
             };
             self.route_report(report);
         }
-        Err(ManagedOperationError::Transport(format!(
-            "managed driver did not drain after {} steps",
-            self.max_drive_steps
-        )))
+        Err(ManagedOperationError::DriveBoundReached {
+            max_steps: self.max_drive_steps,
+        })
     }
 
     pub(super) fn publish_primary_metrics(&self) {

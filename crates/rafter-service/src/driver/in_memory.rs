@@ -146,9 +146,11 @@ where
         let inner = self.inner.clone();
         Box::pin(async move {
             let mut state = lock_state(&inner);
-            state
-                .write(&group_id, command, options)
-                .map_err(ManagedOperationError::into_write_error)
+            state.write(&group_id, command, options).map_err(|error| {
+                // Nothing reached a group, so the refusal is observed rather
+                // than inferred.
+                error.into_write_error(WriteFate::NotAppended)
+            })
         })
     }
 
@@ -194,9 +196,7 @@ where
         Box::pin(async move {
             let mut state = lock_state(&inner);
             if group_id != state.group_id {
-                return Err(ShutdownError::Transport {
-                    message: "wrong group".to_owned(),
-                });
+                return Err(ShutdownError::WrongGroup);
             }
             if state.shutting_down {
                 return Err(ShutdownError::AlreadyShutDown);

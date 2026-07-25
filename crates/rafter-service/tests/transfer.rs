@@ -25,12 +25,18 @@ fn in_memory_driver_reports_self_transfer_rejection() {
     let driver = elected_driver();
     let handle = driver.handle();
 
-    assert_eq!(
-        block_on(handle.transfer_leadership(NodeId(1))),
-        Err(TransferLeadershipError::Rejected {
-            reason: LeadershipTransferRejection::TargetIsSelf,
-            leader_hint: Some(NodeId(1)),
-        })
+    let error = block_on(handle.transfer_leadership(NodeId(1)))
+        .expect_err("a leader cannot transfer to itself");
+
+    assert!(
+        matches!(
+            error,
+            TransferLeadershipError::Rejected {
+                reason: LeadershipTransferRejection::TargetIsSelf,
+                leader_hint: Some(NodeId(1)),
+            }
+        ),
+        "got {error:?}"
     );
 }
 
@@ -39,12 +45,18 @@ fn in_memory_driver_reports_non_voter_transfer_rejection() {
     let driver = elected_driver();
     let handle = driver.handle();
 
-    assert_eq!(
-        block_on(handle.transfer_leadership(NodeId(99))),
-        Err(TransferLeadershipError::Rejected {
-            reason: LeadershipTransferRejection::TargetNotVoter,
-            leader_hint: Some(NodeId(1)),
-        })
+    let error = block_on(handle.transfer_leadership(NodeId(99)))
+        .expect_err("a non-voter cannot receive leadership");
+
+    assert!(
+        matches!(
+            error,
+            TransferLeadershipError::Rejected {
+                reason: LeadershipTransferRejection::TargetNotVoter,
+                leader_hint: Some(NodeId(1)),
+            }
+        ),
+        "got {error:?}"
     );
 }
 
@@ -53,11 +65,17 @@ fn in_memory_driver_reports_non_leader_transfer_rejection() {
     let driver = KvDriver::new(NodeId(1), groups()).expect("driver builds");
     let handle = driver.handle();
 
-    assert_eq!(
-        block_on(handle.transfer_leadership(NodeId(2))),
-        Err(TransferLeadershipError::Rejected {
-            reason: LeadershipTransferRejection::NotLeader,
-            leader_hint: None,
-        })
+    let error = block_on(handle.transfer_leadership(NodeId(2)))
+        .expect_err("a follower cannot hand leadership on");
+
+    assert!(
+        matches!(
+            error,
+            TransferLeadershipError::Rejected {
+                reason: LeadershipTransferRejection::NotLeader,
+                leader_hint: None,
+            }
+        ),
+        "got {error:?}"
     );
 }

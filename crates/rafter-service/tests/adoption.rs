@@ -6,22 +6,32 @@ use support::*;
 
 #[test]
 fn in_memory_driver_rejects_duplicate_primary_node_ids() {
-    assert_eq!(
-        KvDriver::new(NodeId(1), vec![group(1, &[], 3), group(1, &[], 3)])
-            .expect_err("duplicate primary ID is rejected"),
-        ManagedDriverError::DuplicateNode { node_id: NodeId(1) }
+    let error = KvDriver::new(NodeId(1), vec![group(1, &[], 3), group(1, &[], 3)])
+        .expect_err("duplicate primary ID is rejected");
+
+    assert!(
+        matches!(
+            error,
+            ManagedDriverError::DuplicateNode { node_id: NodeId(1) }
+        ),
+        "got {error:?}"
     );
 }
 
 #[test]
 fn in_memory_driver_rejects_duplicate_non_primary_node_ids() {
-    assert_eq!(
-        KvDriver::new(
-            NodeId(1),
-            vec![group(1, &[2], 3), group(2, &[1], 9), group(2, &[1], 9)]
-        )
-        .expect_err("duplicate non-primary ID is rejected"),
-        ManagedDriverError::DuplicateNode { node_id: NodeId(2) }
+    let error = KvDriver::new(
+        NodeId(1),
+        vec![group(1, &[2], 3), group(2, &[1], 9), group(2, &[1], 9)],
+    )
+    .expect_err("duplicate non-primary ID is rejected");
+
+    assert!(
+        matches!(
+            error,
+            ManagedDriverError::DuplicateNode { node_id: NodeId(2) }
+        ),
+        "got {error:?}"
     );
 }
 
@@ -102,16 +112,22 @@ fn in_memory_driver_seeds_read_ids_above_adopted_group_watermark() {
         .expect("quiescent manually driven group is adoptable");
     let handle = driver.handle();
 
-    assert_eq!(
-        block_on(handle.read("manual".to_owned(), ReadConsistency::Linearizable)),
-        Err(ReadError::Rejected {
-            read_id: Some(ReadId(11)),
-            reason: ReadIndexRejection::NotLeader {
-                role: Role::Follower,
-                term: Term(1),
-            },
-            leader_hint: Some(NodeId(1)),
-        })
+    let error = block_on(handle.read("manual".to_owned(), ReadConsistency::Linearizable))
+        .expect_err("the scripted group refuses the barrier");
+
+    assert!(
+        matches!(
+            error,
+            ReadError::Rejected {
+                read_id: Some(ReadId(11)),
+                reason: ReadIndexRejection::NotLeader {
+                    role: Role::Follower,
+                    term: Term(1),
+                },
+                leader_hint: Some(NodeId(1)),
+            }
+        ),
+        "got {error:?}"
     );
 }
 
@@ -128,14 +144,19 @@ fn in_memory_driver_rejects_adopted_group_with_pending_proposal() {
     assert!(matches!(begin, ProposalBegin::Appended { .. }));
     assert_eq!(group.metrics().pending_proposals, 1);
 
-    assert_eq!(
-        ScriptedWriteDriver::new(NodeId(1), vec![group])
-            .expect_err("non-quiescent group is rejected"),
-        ManagedDriverError::NonQuiescentGroup {
-            node_id: NodeId(1),
-            pending_proposals: 1,
-            reserved_reads: 0,
-        }
+    let error = ScriptedWriteDriver::new(NodeId(1), vec![group])
+        .expect_err("non-quiescent group is rejected");
+
+    assert!(
+        matches!(
+            error,
+            ManagedDriverError::NonQuiescentGroup {
+                node_id: NodeId(1),
+                pending_proposals: 1,
+                reserved_reads: 0,
+            }
+        ),
+        "got {error:?}"
     );
 }
 
@@ -155,14 +176,19 @@ fn in_memory_driver_rejects_adopted_group_with_reserved_read_state() {
     assert!(matches!(read.outcome, ReadOutcome::Pending { .. }));
     assert_eq!(group.metrics().reserved_reads, 1);
 
-    assert_eq!(
-        ScriptedReadDriver::new(NodeId(1), vec![group])
-            .expect_err("reserved read state is rejected"),
-        ManagedDriverError::NonQuiescentGroup {
-            node_id: NodeId(1),
-            pending_proposals: 0,
-            reserved_reads: 1,
-        }
+    let error = ScriptedReadDriver::new(NodeId(1), vec![group])
+        .expect_err("reserved read state is rejected");
+
+    assert!(
+        matches!(
+            error,
+            ManagedDriverError::NonQuiescentGroup {
+                node_id: NodeId(1),
+                pending_proposals: 0,
+                reserved_reads: 1,
+            }
+        ),
+        "got {error:?}"
     );
 }
 
@@ -177,12 +203,18 @@ fn in_memory_driver_rejects_adopted_group_with_exhausted_proposal_watermark() {
         })
         .expect("manual proposal consumes the maximum local proposal id");
 
-    assert_eq!(
-        KvDriver::new(NodeId(1), vec![group]).expect_err("exhausted adopted watermark is rejected"),
-        ManagedDriverError::LocalProposalIdExhausted {
-            node_id: NodeId(1),
-            last_seen_local_proposal_id: LocalProposalId(u64::MAX),
-        }
+    let error =
+        KvDriver::new(NodeId(1), vec![group]).expect_err("exhausted adopted watermark is rejected");
+
+    assert!(
+        matches!(
+            error,
+            ManagedDriverError::LocalProposalIdExhausted {
+                node_id: NodeId(1),
+                last_seen_local_proposal_id: LocalProposalId(u64::MAX),
+            }
+        ),
+        "got {error:?}"
     );
 }
 
@@ -198,12 +230,17 @@ fn in_memory_driver_rejects_adopted_group_with_exhausted_read_watermark() {
         })
         .expect("manual read consumes the maximum read id");
 
-    assert_eq!(
-        ScriptedReadDriver::new(NodeId(1), vec![group])
-            .expect_err("exhausted adopted read watermark is rejected"),
-        ManagedDriverError::ReadIdExhausted {
-            node_id: NodeId(1),
-            last_seen_read_id: ReadId(u64::MAX),
-        }
+    let error = ScriptedReadDriver::new(NodeId(1), vec![group])
+        .expect_err("exhausted adopted read watermark is rejected");
+
+    assert!(
+        matches!(
+            error,
+            ManagedDriverError::ReadIdExhausted {
+                node_id: NodeId(1),
+                last_seen_read_id: ReadId(u64::MAX),
+            }
+        ),
+        "got {error:?}"
     );
 }

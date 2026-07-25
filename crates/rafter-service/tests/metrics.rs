@@ -40,12 +40,12 @@ fn in_memory_driver_rejects_wrong_group_shutdown() {
         wrong_handle.metrics(),
         Err(MetricsError::WrongGroup)
     ));
-    assert_eq!(
-        block_on(wrong_handle.shutdown()),
-        Err(ShutdownError::Transport {
-            message: "wrong group".to_owned(),
-        })
-    );
+    let error =
+        block_on(wrong_handle.shutdown()).expect_err("a shutdown for another group is refused");
+
+    // Previously reported as a transport failure, which was both the wrong
+    // category and, on the write path, the wrong fate.
+    assert!(matches!(error, ShutdownError::WrongGroup), "got {error:?}");
     assert_eq!(
         driver
             .handle()
@@ -68,9 +68,14 @@ fn tick_primary_publishes_metrics_before_drain_error() {
         Role::Follower
     );
 
-    assert_eq!(
-        driver.tick_primary().expect_err("missing peer fails drain"),
-        ManagedDriverError::MissingNode { node_id: NodeId(2) }
+    let error = driver.tick_primary().expect_err("missing peer fails drain");
+
+    assert!(
+        matches!(
+            error,
+            ManagedDriverError::MissingNode { node_id: NodeId(2) }
+        ),
+        "got {error:?}"
     );
     assert_eq!(
         handle.metrics().expect("metrics").current().role,

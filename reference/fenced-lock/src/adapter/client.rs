@@ -28,7 +28,7 @@ pub type LockHandle<G, S> = RaftHandle<G, Command, LockQuery, ApplyOutcome, Lock
 /// request identity is still unused. An `Unknown` command may or may not have
 /// committed, so the caller must retry the *same* identity and let the session
 /// cache decide.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum SubmitOutcome {
     /// The command committed and applied; this is its replicated response.
     Completed {
@@ -64,7 +64,7 @@ impl SubmitOutcome {
 /// There is no third variant on purpose: a query either produces an answer that
 /// a granted read barrier proved fresh, or it produces no answer at all. A
 /// stale answer is never a legal result for this application.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum QueryOutcome<G> {
     /// The barrier was granted and the local replica was fresh enough.
     Answered {

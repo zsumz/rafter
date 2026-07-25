@@ -8,7 +8,7 @@ use std::{
 
 use rafter::{LocalProposalId, LogIndex, NodeId, ProposalRejection, ReadId, Role};
 use rafter_app::{
-    error::{GroupError, StateMachineOperation},
+    error::GroupError,
     group::{
         GroupFatalState, GroupInput, GroupStepReport, LeadershipTransferEvent, RaftGroup,
         StepReportOptions,
@@ -22,8 +22,8 @@ use rafter_runtime_api::PersistedRaftRuntime;
 
 use crate::{
     error::{
-        MetricsError, ReadError, ShutdownError, TransferLeadershipError, UnknownOutcomeReason,
-        WriteError,
+        ErrorCause, MetricsError, ReadAbandonReason, ReadError, ShutdownError,
+        TransferLeadershipError, UnknownOutcomeReason, WriteError, WriteFate,
     },
     handle::RaftHandle,
     watch::{MetricsPublisher, MetricsWatch},

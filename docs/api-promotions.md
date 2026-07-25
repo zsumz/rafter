@@ -2485,6 +2485,15 @@ cost.
   clones one mapped error across every state without consulting it
   (`:200-203`). After this change that field feeds `fate` on every path, which
   is why the change is a plumbing fix rather than new bookkeeping.
+- **An observed append is unresolved, and that is the truth rather than
+  caution.** An entry that reached the local log and then hit a failure is on
+  disk. A node reopened over the same durable log can still replicate and commit
+  it under a later incarnation, so `NotAppended` is not merely risky there — it
+  is unprovable. The symmetric half is what makes `NotAppended` reportable at
+  all: a group step report is the complete record of its step, so an entry the
+  driver never saw appended, in a step whose report it did see, was not
+  appended. Both halves are the driver reporting an observation; neither is a
+  margin of safety added on top of one.
 - **Non-exhaustive policy.** The error enums stay `#[non_exhaustive]` at the
   enum level and their variants stay constructible, which is the policy already
   settled under
@@ -2515,6 +2524,24 @@ cost.
   check at
   [`mapping.rs:211-220`](../crates/rafter-service/src/driver/mapping.rs)
   refuses before the group proposes.
+- **`ManagedDriverError::Group` carries a cause, not a message, and the type
+  loses its equality with it.** The rule that no free-text message field remains
+  in this surface applies to the driver's construction error too: the category
+  is the variant and the detail is the preserved cause. Carrying an
+  `ErrorCause` costs `ManagedDriverError` its `Eq`/`PartialEq` derives for
+  exactly the reason the four client-facing errors lose theirs, so its in-tree
+  assertions move to `matches!` in the same pass.
+- **The driver authors two errors about itself.** `ManagedOperationError` gains
+  `WrongGroup` and `DriveBoundReached` so a driver fact stops being smuggled
+  through `Transport(String)`, and a private `DriverRoutingError` is the typed
+  cause the driver preserves when the failure is its own routing rather than
+  somebody else's fault. It is the one place this layer constructs an error
+  object instead of preserving one, which is the same licence
+  `ManagedInvariantViolation` already has.
+- **`into_write_error` takes the fate as a parameter.** The mapper knows the
+  category; only its caller knows which side of the local append the failure was
+  on. Passing it in is what keeps the fate reported rather than inferred, and it
+  is why a batch can restamp one mapped error with a different fate per entry.
 - **`TransferLeadershipError::NotLeader` is left alone.** It has zero
   construction sites, like `MetricsError::Transport`, but it is not one of the
   variants this entry has to convert, and deleting it is a break with no

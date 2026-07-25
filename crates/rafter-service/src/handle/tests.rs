@@ -217,13 +217,16 @@ fn write_options_and_unknown_outcome_are_preserved() {
     ))
     .expect_err("unknown outcome is surfaced");
 
-    assert_eq!(
-        error,
-        WriteError::UnknownOutcome {
-            local_proposal_id: LocalProposalId(42),
-            client_request_id: Some(client_request_id),
-            reason: crate::error::UnknownOutcomeReason::RuntimeDroppedProposal,
-        }
+    assert!(
+        matches!(
+            error,
+            WriteError::UnknownOutcome {
+                local_proposal_id: LocalProposalId(42),
+                client_request_id: Some(actual),
+                reason: crate::error::UnknownOutcomeReason::RuntimeDroppedProposal,
+            } if actual == client_request_id
+        ),
+        "got {error:?}"
     );
     assert_eq!(
         sender.inner.lock().expect("lock state").writes,
@@ -248,12 +251,15 @@ fn not_leader_error_carries_leader_hint() {
 
     let error = block_on(handle.write("put".to_owned())).expect_err("write rejects");
 
-    assert_eq!(
-        error,
-        WriteError::NotLeader {
-            leader_hint: Some(NodeId(2)),
-            term: Term(8),
-        }
+    assert!(
+        matches!(
+            error,
+            WriteError::NotLeader {
+                leader_hint: Some(NodeId(2)),
+                term: Term(8),
+            }
+        ),
+        "got {error:?}"
     );
 }
 
@@ -319,21 +325,22 @@ fn shutdown_rejects_later_waiters() {
 
     block_on(handle.shutdown()).expect("shutdown succeeds");
 
-    assert_eq!(
-        block_on(handle.write("put".to_owned())),
-        Err(WriteError::ShuttingDown)
+    let write = block_on(handle.write("put".to_owned())).expect_err("the handle is closed");
+    let read = block_on(handle.read("get".to_owned(), ReadConsistency::Linearizable))
+        .expect_err("the handle is closed");
+    let transfer =
+        block_on(handle.transfer_leadership(NodeId(2))).expect_err("the handle is closed");
+    let shutdown = block_on(handle.shutdown()).expect_err("the handle is already closed");
+
+    assert!(matches!(write, WriteError::ShuttingDown), "got {write:?}");
+    assert!(matches!(read, ReadError::ShuttingDown), "got {read:?}");
+    assert!(
+        matches!(transfer, TransferLeadershipError::ShuttingDown),
+        "got {transfer:?}"
     );
-    assert_eq!(
-        block_on(handle.read("get".to_owned(), ReadConsistency::Linearizable)),
-        Err(ReadError::ShuttingDown)
-    );
-    assert_eq!(
-        block_on(handle.transfer_leadership(NodeId(2))),
-        Err(TransferLeadershipError::ShuttingDown)
-    );
-    assert_eq!(
-        block_on(handle.shutdown()),
-        Err(ShutdownError::AlreadyShutDown)
+    assert!(
+        matches!(shutdown, ShutdownError::AlreadyShutDown),
+        "got {shutdown:?}"
     );
 }
 
@@ -350,14 +357,17 @@ fn payload_rejection_is_represented_without_success_receipt() {
 
     let error = block_on(handle.write("oversized".to_owned())).expect_err("write rejects");
 
-    assert_eq!(
-        error,
-        WriteError::Rejected {
-            reason: ProposalRejection::PayloadTooLarge {
-                payload_len: 1024,
-                max_payload_len: 512,
-            },
-        }
+    assert!(
+        matches!(
+            error,
+            WriteError::Rejected {
+                reason: ProposalRejection::PayloadTooLarge {
+                    payload_len: 1024,
+                    max_payload_len: 512,
+                },
+            }
+        ),
+        "got {error:?}"
     );
 }
 
@@ -414,15 +424,18 @@ fn read_rejection_can_include_leader_hint() {
     let error = block_on(handle.read("get".to_owned(), ReadConsistency::Linearizable))
         .expect_err("read rejects");
 
-    assert_eq!(
-        error,
-        ReadError::Rejected {
-            read_id: Some(ReadId(5)),
-            reason: rafter::ReadIndexRejection::NotLeader {
-                role: Role::Follower,
-                term: Term(6),
-            },
-            leader_hint: Some(NodeId(4)),
-        }
+    assert!(
+        matches!(
+            error,
+            ReadError::Rejected {
+                read_id: Some(ReadId(5)),
+                reason: rafter::ReadIndexRejection::NotLeader {
+                    role: Role::Follower,
+                    term: Term(6),
+                },
+                leader_hint: Some(NodeId(4)),
+            }
+        ),
+        "got {error:?}"
     );
 }

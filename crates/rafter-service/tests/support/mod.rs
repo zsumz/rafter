@@ -15,6 +15,7 @@ pub(crate) use rafter::{
     RequestVote, Role, SharedPayload, Term,
 };
 pub(crate) use rafter_app::{
+    error::GroupError,
     group::RaftGroup,
     proposal::{Proposal, ProposalBegin},
     read::{ReadBarrierRequest, ReadOutcome, ReadProofOutcome, ReadRequest},
@@ -25,9 +26,10 @@ pub(crate) use rafter_app::{
 use rafter_runtime::{DurableRaftNode, RaftRuntimeError};
 use rafter_runtime_api::PersistedRaftRuntime;
 pub(crate) use rafter_service::{
-    InMemoryRaftDriver, ManagedDriverError, MetricsError, RaftHandle, ReadConsistency, ReadError,
-    ShutdownError, TransferLeadershipError, UnknownOutcomeReason, WriteBatchEntry, WriteError,
-    WriteReceipt,
+    ErrorCause, InMemoryRaftDriver, ManagedDriverError, MetricsError, RaftHandle,
+    ReadAbandonReason, ReadConsistency, ReadError, ReadErrorKind, ShutdownError,
+    StateMachineOperation, TransferLeadershipError, UnknownOutcomeReason, WriteBatchEntry,
+    WriteError, WriteErrorKind, WriteFate, WriteReceipt,
 };
 use rafter_storage::InMemoryRaftHardStateStore;
 
@@ -151,6 +153,7 @@ pub(crate) fn numbered_group(
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum KvStateMachineError {
     Apply,
+    Encode,
     MalformedCommand,
     ReadBarrierUnsatisfied,
 }
@@ -159,6 +162,7 @@ impl fmt::Display for KvStateMachineError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter.write_str(match self {
             Self::Apply => "apply failed",
+            Self::Encode => "encode failed",
             Self::MalformedCommand => "malformed command payload",
             Self::ReadBarrierUnsatisfied => "read barrier has not been reached",
         })
@@ -172,6 +176,7 @@ pub(crate) struct KvStateMachine {
     pub(crate) applied_index: LogIndex,
     pub(crate) values: BTreeMap<String, String>,
     pub(crate) fail_apply: bool,
+    pub(crate) fail_encode: bool,
 }
 
 impl ReplicatedStateMachine for KvStateMachine {
@@ -192,6 +197,9 @@ impl ReplicatedStateMachine for KvStateMachine {
     }
 
     fn encode_command(&self, command: &Self::Command) -> Result<Vec<u8>, Self::Error> {
+        if self.fail_encode {
+            return Err(KvStateMachineError::Encode);
+        }
         Ok(format!("{}\n{}", command.0, command.1).into_bytes())
     }
 

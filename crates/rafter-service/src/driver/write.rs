@@ -41,6 +41,7 @@ where
             Some(Err(error)) => Err(ManagedOperationError::Write(error)),
             None => Err(ManagedOperationError::Write(
                 WriteError::ManagedInvariantViolation {
+                    fate: WriteFate::Unresolved,
                     message: "managed single write produced no batch outcome".to_owned(),
                 },
             )),
@@ -58,7 +59,9 @@ where
 
         let write_count = writes.len();
         if let Err(error) = self.reject_for_operation(group_id) {
-            let error = error.into_write_error();
+            // Refused before any group was stepped, so the commands were
+            // observably not appended.
+            let error = error.into_write_error(WriteFate::NotAppended);
             return repeat_write_error(write_count, &error);
         }
         let PreparedWriteBatch {
@@ -75,7 +78,7 @@ where
                 StepReportOptions::without_metrics(),
             ),
             Err(error) => {
-                let error = error.into_write_error();
+                let error = error.into_write_error(WriteFate::NotAppended);
                 return repeat_write_error(write_count, &error);
             }
         };
@@ -96,7 +99,9 @@ where
                 Ok(dispatched) => dispatched,
                 Err(error) => {
                     let poisoned = self.poisoned_write_errors_from_primary_batch(&states);
-                    let write_error = error.into_write_error();
+                    // Entries with no observed append are the ones this error
+                    // describes, and for them the refusal was observed.
+                    let write_error = error.into_write_error(WriteFate::NotAppended);
                     complete_unresolved_writes(&mut states, |state| {
                         poisoned
                             .get(&state.local_proposal_id)
@@ -198,8 +203,12 @@ where
                 )
             });
         } else {
-            let write_error = write_error_from_group(error);
-            complete_unresolved_writes(&mut states, |_| write_error.clone());
+            // One failure, one error, but a fate per entry: `saw_local_append`
+            // is the observation, and it can differ across a batch.
+            let write_error = write_error_from_group(error, WriteFate::NotAppended);
+            complete_unresolved_writes(&mut states, |state| {
+                with_observed_fate(&write_error, state.saw_local_append)
+            });
         }
         self.publish_primary_metrics();
         finish_write_batch(states)
@@ -324,6 +333,28 @@ fn proposal_event_local_id<R>(event: &ProposalEvent<R>) -> Option<LocalProposalI
     }
 }
 
+/// Restamps a mapped error with the fate the driver observed for one entry.
+///
+/// The category is a property of the failure and is shared across the batch;
+/// the fate is a property of the entry. Variants whose fate follows from the
+/// variant alone are left as the mapper produced them.
+fn with_observed_fate(error: &WriteError, saw_local_append: bool) -> WriteError {
+    let observed = if saw_local_append {
+        WriteFate::Unresolved
+    } else {
+        WriteFate::NotAppended
+    };
+    let mut error = error.clone();
+    match &mut error {
+        WriteError::StateMachine { fate, .. }
+        | WriteError::Storage { fate, .. }
+        | WriteError::Transport { fate, .. }
+        | WriteError::Poisoned { fate, .. } => *fate = observed,
+        _ => {}
+    }
+    error
+}
+
 fn write_batch_complete<R>(states: &[BatchWriteState<R>]) -> bool {
     states.iter().all(|state| state.outcome.is_some())
 }
@@ -347,6 +378,7 @@ fn finish_write_batch<R>(
         .map(|state| match state.outcome {
             Some(outcome) => outcome,
             None => Err(WriteError::ManagedInvariantViolation {
+                fate: WriteFate::Unresolved,
                 message: "managed write batch finished without an outcome".to_owned(),
             }),
         })
@@ -552,21 +584,30 @@ mod tests {
         observe_batch_report(&mut states, &report);
 
         assert!(states[0].saw_local_append);
-        assert_eq!(
-            states[0].outcome,
-            Some(Err(WriteError::UnknownOutcome {
-                local_proposal_id: LocalProposalId(7),
-                client_request_id: Some(client_request_id),
-                reason: UnknownOutcomeReason::RuntimeDroppedProposal,
-            }))
+        assert!(
+            matches!(
+                &states[0].outcome,
+                Some(Err(WriteError::UnknownOutcome {
+                    local_proposal_id: LocalProposalId(7),
+                    client_request_id: Some(actual),
+                    reason: UnknownOutcomeReason::RuntimeDroppedProposal,
+                })) if *actual == client_request_id
+            ),
+            "got {:?}",
+            states[0].outcome
         );
         assert_eq!(
-            states[1].outcome,
-            Some(Ok(WriteReceipt {
+            states[1]
+                .outcome
+                .as_ref()
+                .expect("the second entry resolved")
+                .as_ref()
+                .expect("the second entry applied"),
+            &WriteReceipt {
                 index: LogIndex(8),
                 term: Term(1),
                 result: "done".to_owned(),
-            }))
+            }
         );
     }
 
@@ -602,12 +643,16 @@ mod tests {
 
         observe_batch_report(&mut states, &report);
 
-        assert_eq!(
-            states[0].outcome,
-            Some(Err(WriteError::NotLeader {
-                leader_hint: Some(NodeId(2)),
-                term: Term(3),
-            }))
+        assert!(
+            matches!(
+                &states[0].outcome,
+                Some(Err(WriteError::NotLeader {
+                    leader_hint: Some(NodeId(2)),
+                    term: Term(3),
+                }))
+            ),
+            "got {:?}",
+            states[0].outcome
         );
     }
 

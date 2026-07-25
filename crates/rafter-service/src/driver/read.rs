@@ -54,12 +54,21 @@ where
                 return Err(error);
             }
         }
+        // The driver stopped waiting; nothing refused anything. The barrier is
+        // cancelled first, so the group's `reserved_reads` returns to its
+        // previous value before this error is seen.
         if let Some(read_id) = read_id {
             self.abandon_read(read_id);
+            return Err(ManagedOperationError::Read(ReadError::Abandoned {
+                read_id,
+                reason: ReadAbandonReason::DriveBoundReached,
+            }));
         }
-        Err(ManagedOperationError::Read(ReadError::Transport {
-            message: format!("managed read stalled after {} steps", self.max_drive_steps),
-        }))
+        // A consistency level that reserves no read ID has no barrier to
+        // abandon, so the bound is the driver's own routing bound.
+        Err(ManagedOperationError::DriveBoundReached {
+            max_steps: self.max_drive_steps,
+        })
     }
 
     pub(super) fn handle_read_outcome(

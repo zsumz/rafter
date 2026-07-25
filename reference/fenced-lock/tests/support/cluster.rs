@@ -46,9 +46,10 @@ use rafter_reference_fenced_lock::{
 };
 use rafter_runtime::{DurableRaftNode, DurableRaftNodeStorage, RaftRuntimeError};
 use rafter_service::{
-    DriverCommandSender, DriverFuture, MetricsError, MetricsPublisher, MetricsWatch, PeerEnvelope,
-    QueryReceipt, RaftHandle, RaftTransport, ReadConsistency, ReadError, ShutdownError,
-    TransferLeadershipError, UnknownOutcomeReason, WriteError, WriteOptions, WriteReceipt,
+    DriverCommandSender, DriverFuture, ErrorCause, MetricsError, MetricsPublisher, MetricsWatch,
+    PeerEnvelope, QueryReceipt, RaftHandle, RaftTransport, ReadAbandonReason, ReadConsistency,
+    ReadError, ShutdownError, TransferLeadershipError, UnknownOutcomeReason, WriteError, WriteFate,
+    WriteOptions, WriteReceipt,
 };
 use rafter_storage::{
     InMemoryRaftHardStateStore, InMemoryRaftLogSegment, InMemoryRaftSnapshotStore,
@@ -185,17 +186,17 @@ impl NodeDriver {
     /// Abandons one outstanding read barrier because the caller stopped
     /// waiting.
     ///
-    /// The local waiter is cleared through the documented group API. The read
-    /// resolves to a non-answer; there is no typed "the caller stopped waiting"
-    /// read error, so this mirrors the shipped driver's own stalled-read
-    /// vocabulary.
+    /// The local waiter is cleared through the documented group API, and the
+    /// read resolves to a typed non-answer: nobody refused anything, the caller
+    /// stopped waiting.
     pub fn abandon_read(&self, read_id: ReadId) {
         let mut state = lock(&self.inner);
         state.group_mut().cancel_read(read_id);
         state.resolve_read(
             read_id,
-            Err(ReadError::Transport {
-                message: format!("lock read barrier {read_id} stalled and was abandoned"),
+            Err(ReadError::Abandoned {
+                read_id,
+                reason: ReadAbandonReason::DriveBoundReached,
             }),
         );
     }
@@ -318,7 +319,7 @@ impl NodeState {
             Ok(started) => started,
             Err(error) => {
                 self.write_waiters.remove(&local_proposal_id);
-                return settled_write(Err(write_error_from_group(&error)));
+                return settled_write(Err(write_error_from_group(error)));
             }
         };
         self.record_report(report);
@@ -380,6 +381,7 @@ impl NodeState {
     ) -> Poll<Result<WriteReceipt<ApplyOutcome>, WriteError>> {
         let Some(waiter) = self.write_waiters.get_mut(&local_proposal_id) else {
             return Poll::Ready(Err(WriteError::ManagedInvariantViolation {
+                fate: WriteFate::Unresolved,
                 message: format!("no waiter remains for {local_proposal_id}"),
             }));
         };
@@ -399,6 +401,7 @@ impl NodeState {
             .and_then(|waiter| waiter.outcome)
             .unwrap_or_else(|| {
                 Err(WriteError::ManagedInvariantViolation {
+                    fate: WriteFate::Unresolved,
                     message: format!("write {local_proposal_id} finished without an outcome"),
                 })
             })
@@ -499,7 +502,7 @@ impl NodeState {
             Ok(started) => started,
             Err(error) => {
                 self.group_mut().cancel_read(read_id);
-                self.resolve_read(read_id, Err(read_error_from_group(&error)));
+                self.resolve_read(read_id, Err(read_error_from_group(error)));
                 return;
             }
         };
@@ -554,9 +557,7 @@ impl NodeState {
         target: NodeId,
     ) -> Result<(), TransferLeadershipError> {
         if group_id != GROUP_ID {
-            return Err(TransferLeadershipError::Transport {
-                message: "wrong group".to_owned(),
-            });
+            return Err(TransferLeadershipError::WrongGroup);
         }
         if self.shutting_down {
             return Err(TransferLeadershipError::ShuttingDown);
@@ -564,7 +565,7 @@ impl NodeState {
         let report = self
             .group_mut()
             .step(GroupInput::TransferLeadership { target })
-            .map_err(|error| transfer_error_from_group(&error))?;
+            .map_err(transfer_error_from_group)?;
         let rejection = report
             .leadership_transfer_events
             .iter()
@@ -585,9 +586,7 @@ impl NodeState {
 
     fn shutdown(&mut self, group_id: LockGroupId) -> Result<(), ShutdownError> {
         if group_id != GROUP_ID {
-            return Err(ShutdownError::Transport {
-                message: "wrong group".to_owned(),
-            });
+            return Err(ShutdownError::WrongGroup);
         }
         if self.shutting_down {
             return Err(ShutdownError::AlreadyShutDown);
@@ -603,9 +602,7 @@ impl NodeState {
             return Err(WriteError::ShuttingDown);
         }
         if group_id != GROUP_ID {
-            return Err(WriteError::Transport {
-                message: "wrong group".to_owned(),
-            });
+            return Err(WriteError::WrongGroup);
         }
         Ok(())
     }
@@ -767,8 +764,9 @@ impl NodeState {
         for read_id in self.read_waiters.keys().copied().collect::<Vec<_>>() {
             self.resolve_read(
                 read_id,
-                Err(ReadError::Transport {
-                    message: format!("lock read barrier {read_id} lost its driver"),
+                Err(ReadError::Abandoned {
+                    read_id,
+                    reason: ReadAbandonReason::DriverReleased,
                 }),
             );
         }
@@ -1410,49 +1408,50 @@ fn write_error_from_rejection(
 /// Maps a group error into the service layer's write vocabulary.
 ///
 /// `GroupError::StateMachine` carries this consumer's own typed
-/// [`rafter_reference_fenced_lock::LockAdapterError`], but every `WriteError`
-/// variant that could hold it takes a `String`, so the type is lost here. A
-/// caller downstream of this driver can only read the rendered message.
-fn write_error_from_group(error: &LockGroupError) -> WriteError {
+/// [`rafter_reference_fenced_lock::LockAdapterError`], and the service layer's
+/// variants now carry it too, so the type survives the mapping.
+fn write_error_from_group(error: LockGroupError) -> WriteError {
     match error {
-        GroupError::Poisoned { reason, .. } => WriteError::Poisoned {
-            reason: reason.clone(),
+        GroupError::Poisoned { reason, cause } => WriteError::Poisoned {
+            fate: WriteFate::Unresolved,
+            reason,
+            cause,
         },
-        GroupError::StateMachine { source, .. } => WriteError::ApplyFailed {
-            message: source.to_string(),
+        GroupError::StateMachine { operation, source } => WriteError::StateMachine {
+            operation,
+            fate: WriteFate::Unresolved,
+            cause: ErrorCause::from_shared(source),
         },
         error => WriteError::Transport {
-            message: format!("{error:?}"),
+            fate: WriteFate::Unresolved,
+            cause: ErrorCause::new(error),
         },
     }
 }
 
-fn read_error_from_group(error: &LockGroupError) -> ReadError {
+fn read_error_from_group(error: LockGroupError) -> ReadError {
     match error {
-        GroupError::Poisoned { reason, .. } => ReadError::Poisoned {
-            reason: reason.clone(),
-        },
-        GroupError::StateMachine { source, .. } => ReadError::ApplyFailed {
-            message: source.to_string(),
+        GroupError::Poisoned { reason, cause } => ReadError::Poisoned { reason, cause },
+        GroupError::StateMachine { operation, source } => ReadError::StateMachine {
+            operation,
+            cause: ErrorCause::from_shared(source),
         },
         GroupError::UnsupportedReadConsistency { consistency } => {
-            ReadError::UnsupportedConsistency {
-                consistency: *consistency,
-            }
+            ReadError::UnsupportedConsistency { consistency }
         }
         error => ReadError::Transport {
-            message: format!("{error:?}"),
+            cause: ErrorCause::new(error),
         },
     }
 }
 
-fn transfer_error_from_group(error: &LockGroupError) -> TransferLeadershipError {
+fn transfer_error_from_group(error: LockGroupError) -> TransferLeadershipError {
     match error {
-        GroupError::Poisoned { reason, .. } => TransferLeadershipError::Poisoned {
-            reason: reason.clone(),
-        },
+        GroupError::Poisoned { reason, cause } => {
+            TransferLeadershipError::Poisoned { reason, cause }
+        }
         error => TransferLeadershipError::Transport {
-            message: format!("{error:?}"),
+            cause: ErrorCause::new(error),
         },
     }
 }
@@ -1464,8 +1463,9 @@ fn transfer_error_from_group(error: &LockGroupError) -> TransferLeadershipError 
 fn read_error_from_write(error: WriteError) -> ReadError {
     match error {
         WriteError::ShuttingDown => ReadError::ShuttingDown,
+        WriteError::WrongGroup => ReadError::WrongGroup,
         error => ReadError::Transport {
-            message: error.to_string(),
+            cause: ErrorCause::new(error),
         },
     }
 }

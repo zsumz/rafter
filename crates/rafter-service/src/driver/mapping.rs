@@ -4,10 +4,10 @@ use std::{error::Error, fmt};
 
 use super::*;
 
-/// Error returned while constructing or manually driving an in-memory managed
-/// service driver.
+/// Error returned while constructing or manually driving a managed service
+/// driver.
 #[non_exhaustive]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 pub enum ManagedDriverError {
     EmptyCluster,
     MissingPrimary {
@@ -41,8 +41,13 @@ pub enum ManagedDriverError {
         max_steps: usize,
     },
     ShuttingDown,
+    /// A group operation failed while the driver was driving it.
+    ///
+    /// The category is the variant and the detail is the preserved cause; there
+    /// is no free-text message field, so nothing downstream can be tempted to
+    /// match on rendered text.
     Group {
-        message: String,
+        cause: ErrorCause,
     },
 }
 
@@ -91,17 +96,39 @@ impl fmt::Display for ManagedDriverError {
                 "managed driver made no progress within {max_steps} drive steps"
             ),
             Self::ShuttingDown => formatter.write_str("managed driver is shutting down"),
-            Self::Group { message } => write!(formatter, "managed driver group error: {message}"),
+            Self::Group { .. } => formatter.write_str("managed driver group operation failed"),
         }
     }
 }
 
-impl Error for ManagedDriverError {}
+impl Error for ManagedDriverError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Group { cause } => Some(cause.as_error()),
+            Self::EmptyCluster
+            | Self::MissingPrimary { .. }
+            | Self::MissingNode { .. }
+            | Self::DuplicateNode { .. }
+            | Self::PoisonedGroup { .. }
+            | Self::NonQuiescentGroup { .. }
+            | Self::LocalProposalIdExhausted { .. }
+            | Self::ReadIdExhausted { .. }
+            | Self::MixedGroups
+            | Self::Stalled { .. }
+            | Self::ShuttingDown => None,
+        }
+    }
+}
 
+/// Internal error carried between driver stages before it reaches a client.
+///
+/// `WrongGroup` is a driver fact rather than a delivery failure, which is why
+/// it is a variant here instead of a synthesized transport error.
 #[derive(Debug)]
 pub(super) enum ManagedOperationError<E, RE> {
     MissingNode { node_id: NodeId },
-    Transport(String),
+    WrongGroup,
+    DriveBoundReached { max_steps: usize },
     ShuttingDown,
     Write(WriteError),
     Read(ReadError),
@@ -109,26 +136,64 @@ pub(super) enum ManagedOperationError<E, RE> {
     Group(GroupError<E, RE>),
 }
 
+/// A driver stage that could not route its own work.
+///
+/// This is the driver reporting on itself, so it is the one place the service
+/// layer authors an error object rather than preserving somebody else's.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DriverRoutingError {
+    MissingNode { node_id: NodeId },
+    DriveBoundReached { max_steps: usize },
+}
+
+impl fmt::Display for DriverRoutingError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingNode { node_id } => {
+                write!(formatter, "managed driver node {node_id} is missing")
+            }
+            Self::DriveBoundReached { max_steps } => write!(
+                formatter,
+                "managed driver did not drain within {max_steps} drive steps"
+            ),
+        }
+    }
+}
+
+impl Error for DriverRoutingError {}
+
 impl<E, RE> ManagedOperationError<E, RE>
 where
-    E: Debug,
-    RE: Debug + fmt::Display,
+    E: Error + Send + Sync + 'static,
+    RE: Error + Send + Sync + 'static,
 {
-    pub(super) fn into_write_error(self) -> WriteError {
+    /// Maps a staged error into the write surface.
+    ///
+    /// `fate` is the fate the driver observed for this write, and it is passed
+    /// in rather than inferred: the same fault can occur on either side of the
+    /// local append, and only the caller knows which side this one was on.
+    pub(super) fn into_write_error(self, fate: WriteFate) -> WriteError {
         match self {
             Self::Write(error) => error,
             Self::Read(error) => WriteError::Transport {
-                message: error.to_string(),
+                fate,
+                cause: ErrorCause::new(error),
             },
             Self::Transfer(error) => WriteError::Transport {
-                message: error.to_string(),
+                fate,
+                cause: ErrorCause::new(error),
             },
             Self::MissingNode { node_id } => WriteError::Transport {
-                message: format!("missing node {node_id}"),
+                fate,
+                cause: ErrorCause::new(DriverRoutingError::MissingNode { node_id }),
             },
-            Self::Transport(message) => WriteError::Transport { message },
+            Self::DriveBoundReached { max_steps } => WriteError::Transport {
+                fate,
+                cause: ErrorCause::new(DriverRoutingError::DriveBoundReached { max_steps }),
+            },
+            Self::WrongGroup => WriteError::WrongGroup,
             Self::ShuttingDown => WriteError::ShuttingDown,
-            Self::Group(error) => write_error_from_group(error),
+            Self::Group(error) => write_error_from_group(error, fate),
         }
     }
 
@@ -136,15 +201,18 @@ where
         match self {
             Self::Read(error) => error,
             Self::Write(error) => ReadError::Transport {
-                message: error.to_string(),
+                cause: ErrorCause::new(error),
             },
             Self::Transfer(error) => ReadError::Transport {
-                message: error.to_string(),
+                cause: ErrorCause::new(error),
             },
             Self::MissingNode { node_id } => ReadError::Transport {
-                message: format!("missing node {node_id}"),
+                cause: ErrorCause::new(DriverRoutingError::MissingNode { node_id }),
             },
-            Self::Transport(message) => ReadError::Transport { message },
+            Self::DriveBoundReached { max_steps } => ReadError::Transport {
+                cause: ErrorCause::new(DriverRoutingError::DriveBoundReached { max_steps }),
+            },
+            Self::WrongGroup => ReadError::WrongGroup,
             Self::ShuttingDown => ReadError::ShuttingDown,
             Self::Group(error) => read_error_from_group(error),
         }
@@ -154,15 +222,18 @@ where
         match self {
             Self::Transfer(error) => error,
             Self::Write(error) => TransferLeadershipError::Transport {
-                message: error.to_string(),
+                cause: ErrorCause::new(error),
             },
             Self::Read(error) => TransferLeadershipError::Transport {
-                message: error.to_string(),
+                cause: ErrorCause::new(error),
             },
             Self::MissingNode { node_id } => TransferLeadershipError::Transport {
-                message: format!("missing node {node_id}"),
+                cause: ErrorCause::new(DriverRoutingError::MissingNode { node_id }),
             },
-            Self::Transport(message) => TransferLeadershipError::Transport { message },
+            Self::DriveBoundReached { max_steps } => TransferLeadershipError::Transport {
+                cause: ErrorCause::new(DriverRoutingError::DriveBoundReached { max_steps }),
+            },
+            Self::WrongGroup => TransferLeadershipError::WrongGroup,
             Self::ShuttingDown => TransferLeadershipError::ShuttingDown,
             Self::Group(error) => transfer_error_from_group(error),
         }
@@ -177,76 +248,85 @@ impl<E, RE> From<GroupError<E, RE>> for ManagedOperationError<E, RE> {
 
 impl<E, RE> From<ManagedOperationError<E, RE>> for ManagedDriverError
 where
-    E: Debug,
-    RE: Debug + fmt::Display,
+    E: Error + Send + Sync + 'static,
+    RE: Error + Send + Sync + 'static,
 {
     fn from(error: ManagedOperationError<E, RE>) -> Self {
         match error {
             ManagedOperationError::MissingNode { node_id } => Self::MissingNode { node_id },
-            ManagedOperationError::Transport(message) => Self::Group { message },
+            ManagedOperationError::DriveBoundReached { max_steps } => Self::Group {
+                cause: ErrorCause::new(DriverRoutingError::DriveBoundReached { max_steps }),
+            },
+            ManagedOperationError::WrongGroup => Self::Group {
+                cause: ErrorCause::new(WriteError::WrongGroup),
+            },
             ManagedOperationError::ShuttingDown => Self::ShuttingDown,
             ManagedOperationError::Write(error) => Self::Group {
-                message: error.to_string(),
+                cause: ErrorCause::new(error),
             },
             ManagedOperationError::Read(error) => Self::Group {
-                message: error.to_string(),
+                cause: ErrorCause::new(error),
             },
             ManagedOperationError::Transfer(error) => Self::Group {
-                message: error.to_string(),
+                cause: ErrorCause::new(error),
             },
             ManagedOperationError::Group(error) => Self::Group {
-                message: format!("{error:?}"),
+                cause: ErrorCause::new(error),
             },
         }
     }
 }
 
-pub(super) fn write_error_from_group<E, RE>(error: GroupError<E, RE>) -> WriteError
+pub(super) fn write_error_from_group<E, RE>(error: GroupError<E, RE>, fate: WriteFate) -> WriteError
 where
-    E: Debug,
-    RE: Debug + fmt::Display,
+    E: Error + Send + Sync + 'static,
+    RE: Error + Send + Sync + 'static,
 {
     match error {
-        GroupError::Poisoned { reason, .. } => WriteError::Poisoned { reason },
+        GroupError::Poisoned { reason, cause } => WriteError::Poisoned {
+            fate,
+            reason,
+            cause,
+        },
         GroupError::NonMonotonicLocalProposalId {
             local_proposal_id,
             last_seen_local_proposal_id,
         } => {
+            // Provably pre-append: the group refuses before it proposes.
             WriteError::ManagedInvariantViolation {
+                fate: WriteFate::NotAppended,
                 message: format!(
                     "managed driver local-ID invariant violation: generated non-monotonic local proposal id {local_proposal_id} after {last_seen_local_proposal_id}"
                 ),
             }
         }
-        GroupError::StateMachine { operation, source } => match operation {
-            StateMachineOperation::ApplyBatch
-            | StateMachineOperation::DecodeCommand
-            | StateMachineOperation::Read
-            | StateMachineOperation::InstallSnapshot => WriteError::ApplyFailed {
-                message: format!("{source:?}"),
-            },
-            StateMachineOperation::AppliedIndex | StateMachineOperation::EncodeCommand => {
-                WriteError::Storage {
-                    message: format!("{source:?}"),
-                }
-            }
+        GroupError::WrongGroup => WriteError::WrongGroup,
+        // The operation is load-bearing and is no longer folded away: encoding
+        // a command touches no storage, and reporting it as a storage failure
+        // pointed an operator at the wrong subsystem.
+        GroupError::StateMachine { operation, source } => WriteError::StateMachine {
+            operation,
+            fate,
+            cause: ErrorCause::from_shared(source),
         },
         GroupError::Runtime(error) => WriteError::Storage {
-            message: error.to_string(),
+            fate,
+            cause: ErrorCause::new(error),
         },
         error => WriteError::Transport {
-            message: format!("{error:?}"),
+            fate,
+            cause: ErrorCause::new(error),
         },
     }
 }
 
 pub(super) fn read_error_from_group<E, RE>(error: GroupError<E, RE>) -> ReadError
 where
-    E: Debug,
-    RE: Debug + fmt::Display,
+    E: Error + Send + Sync + 'static,
+    RE: Error + Send + Sync + 'static,
 {
     match error {
-        GroupError::Poisoned { reason, .. } => ReadError::Poisoned { reason },
+        GroupError::Poisoned { reason, cause } => ReadError::Poisoned { reason, cause },
         GroupError::DuplicateReadId { read_id } => ReadError::ManagedInvariantViolation {
             message: format!(
                 "managed driver local-ID invariant violation: generated duplicate read id {read_id}"
@@ -260,39 +340,48 @@ where
                 "managed driver local-ID invariant violation: generated non-monotonic read id {read_id} after {last_seen_read_id}"
             ),
         },
-        GroupError::StateMachine { source, .. } => ReadError::ApplyFailed {
-            message: format!("{source:?}"),
+        GroupError::WrongGroup => ReadError::WrongGroup,
+        GroupError::StateMachine { operation, source } => ReadError::StateMachine {
+            operation,
+            cause: ErrorCause::from_shared(source),
         },
         GroupError::Runtime(error) => ReadError::Storage {
-            message: error.to_string(),
+            cause: ErrorCause::new(error),
         },
         GroupError::UnsupportedReadConsistency { consistency } => {
             ReadError::UnsupportedConsistency { consistency }
         }
         error => ReadError::Transport {
-            message: format!("{error:?}"),
+            cause: ErrorCause::new(error),
         },
     }
 }
 
 pub(super) fn transfer_error_from_group<E, RE>(error: GroupError<E, RE>) -> TransferLeadershipError
 where
-    E: Debug,
-    RE: Debug + fmt::Display,
+    E: Error + Send + Sync + 'static,
+    RE: Error + Send + Sync + 'static,
 {
     match error {
-        GroupError::Poisoned { reason, .. } => TransferLeadershipError::Poisoned { reason },
+        GroupError::Poisoned { reason, cause } => {
+            TransferLeadershipError::Poisoned { reason, cause }
+        }
+        GroupError::WrongGroup => TransferLeadershipError::WrongGroup,
         GroupError::Runtime(error) => TransferLeadershipError::Storage {
-            message: error.to_string(),
+            cause: ErrorCause::new(error),
         },
         error => TransferLeadershipError::Transport {
-            message: format!("{error:?}"),
+            cause: ErrorCause::new(error),
         },
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use rafter_app::error::StateMachineOperation;
+
     use super::*;
 
     #[derive(Debug)]
@@ -304,50 +393,97 @@ mod tests {
         }
     }
 
+    impl Error for MappingRuntimeError {}
+
+    #[derive(Debug)]
+    struct MappingAppError;
+
+    impl fmt::Display for MappingAppError {
+        fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+            formatter.write_str("mapping app error")
+        }
+    }
+
+    impl Error for MappingAppError {}
+
     #[test]
     fn non_monotonic_local_proposal_id_maps_to_managed_invariant_write_error() {
+        let error = write_error_from_group::<MappingAppError, MappingRuntimeError>(
+            GroupError::NonMonotonicLocalProposalId {
+                local_proposal_id: LocalProposalId(7),
+                last_seen_local_proposal_id: LocalProposalId(9),
+            },
+            WriteFate::Unresolved,
+        );
+
+        let WriteError::ManagedInvariantViolation { fate, message } = &error else {
+            panic!("expected a managed invariant violation, got {error:?}");
+        };
         assert_eq!(
-            write_error_from_group::<String, MappingRuntimeError>(
-                GroupError::NonMonotonicLocalProposalId {
-                    local_proposal_id: LocalProposalId(7),
-                    last_seen_local_proposal_id: LocalProposalId(9),
-                },
-            ),
-            WriteError::ManagedInvariantViolation {
-                message: "managed driver local-ID invariant violation: generated non-monotonic local proposal id local-proposal-7 after local-proposal-9".to_owned(),
-            }
+            message,
+            "managed driver local-ID invariant violation: generated non-monotonic local proposal id local-proposal-7 after local-proposal-9"
+        );
+        assert_eq!(
+            *fate,
+            WriteFate::NotAppended,
+            "the group refuses a non-monotonic id before it proposes"
         );
     }
 
     #[test]
     fn duplicate_read_id_maps_to_managed_invariant_read_error() {
+        let error = read_error_from_group::<MappingAppError, MappingRuntimeError>(
+            GroupError::DuplicateReadId { read_id: ReadId(8) },
+        );
+
+        let ReadError::ManagedInvariantViolation { message } = &error else {
+            panic!("expected a managed invariant violation, got {error:?}");
+        };
         assert_eq!(
-            read_error_from_group::<String, MappingRuntimeError>(GroupError::DuplicateReadId {
-                read_id: ReadId(8),
-            }),
-            ReadError::ManagedInvariantViolation {
-                message:
-                    "managed driver local-ID invariant violation: generated duplicate read id read-8"
-                        .to_owned(),
-            }
+            message,
+            "managed driver local-ID invariant violation: generated duplicate read id read-8"
         );
     }
 
     #[test]
     fn non_monotonic_read_id_maps_to_managed_invariant_read_error() {
-        assert_eq!(
-            read_error_from_group::<String, MappingRuntimeError>(
-                GroupError::NonMonotonicReadId {
-                    read_id: ReadId(8),
-                    last_seen_read_id: ReadId(10),
-                },
-            ),
-            ReadError::ManagedInvariantViolation {
-                message:
-                    "managed driver local-ID invariant violation: generated non-monotonic read id read-8 after read-10"
-                        .to_owned(),
-            }
+        let error = read_error_from_group::<MappingAppError, MappingRuntimeError>(
+            GroupError::NonMonotonicReadId {
+                read_id: ReadId(8),
+                last_seen_read_id: ReadId(10),
+            },
         );
+
+        let ReadError::ManagedInvariantViolation { message } = &error else {
+            panic!("expected a managed invariant violation, got {error:?}");
+        };
+        assert_eq!(
+            message,
+            "managed driver local-ID invariant violation: generated non-monotonic read id read-8 after read-10"
+        );
+    }
+
+    /// The old mapping folded six operations into two variants and got one
+    /// wrong: `EncodeCommand` was reported as a storage failure, and encoding a
+    /// command touches no storage.
+    #[test]
+    fn a_state_machine_error_keeps_the_operation_that_surfaced_it() {
+        let error = write_error_from_group::<MappingAppError, MappingRuntimeError>(
+            GroupError::StateMachine {
+                operation: StateMachineOperation::EncodeCommand,
+                source: Arc::new(MappingAppError),
+            },
+            WriteFate::NotAppended,
+        );
+
+        let WriteError::StateMachine {
+            operation, cause, ..
+        } = &error
+        else {
+            panic!("expected a state machine error, got {error:?}");
+        };
+        assert_eq!(*operation, StateMachineOperation::EncodeCommand);
+        assert!(cause.downcast_ref::<MappingAppError>().is_some());
     }
 
     #[test]
@@ -359,5 +495,23 @@ mod tests {
             standard_error.to_string(),
             "managed driver node node-9 is missing"
         );
+    }
+
+    /// The category is the variant; the detail is the preserved cause. There is
+    /// no message field to render into.
+    #[test]
+    fn a_group_driver_error_preserves_its_cause() {
+        let error = ManagedDriverError::from(ManagedOperationError::<
+            MappingAppError,
+            MappingRuntimeError,
+        >::Group(GroupError::Runtime(
+            MappingRuntimeError,
+        )));
+
+        let source = error.source().expect("the group error is preserved");
+
+        assert!(source
+            .downcast_ref::<GroupError<MappingAppError, MappingRuntimeError>>()
+            .is_some());
     }
 }

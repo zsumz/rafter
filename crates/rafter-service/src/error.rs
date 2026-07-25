@@ -1,4 +1,18 @@
 //! Error types for the managed service layer.
+//!
+//! A failed managed operation answers three different questions, and this
+//! module keeps them apart because they have different types, different
+//! lifetimes, and different audiences:
+//!
+//! - *What kind of failure was this?* — the variant, projected to a `Copy`
+//!   category through [`WriteError::kind`] and [`ReadError::kind`]. A metric
+//!   label, a map key, or a structured-log field.
+//! - *May the command still take effect?* — a reported [`WriteFate`], never an
+//!   inference from the category.
+//! - *What actually failed?* — the typed [`ErrorCause`], reached through
+//!   `source()`.
+//!
+//! Collapsing any two of them back together loses one of the three answers.
 
 use std::{error::Error, fmt};
 
@@ -38,6 +52,19 @@ pub enum UnknownOutcomeReason {
     /// The group entered a poisoned state before the final proposal result was
     /// known.
     GroupPoisoned,
+    /// The driver released the group that held this proposal's waiter before
+    /// the final proposal result was known.
+    ///
+    /// This is the in-process restart and shutdown case. The incarnation that
+    /// accepted the proposal is gone; a proposal already appended is still in
+    /// the durable log and may commit and apply under the next incarnation,
+    /// which is exactly what an unknown outcome means.
+    ///
+    /// It is distinct from [`UnknownOutcomeReason::RuntimeDroppedProposal`],
+    /// which reports that the app or runtime layer itself declared local
+    /// proposal tracking lost while the driver kept running. The two point at
+    /// different layers and lead to different investigations.
+    DriverReleased,
 }
 
 impl fmt::Display for UnknownOutcomeReason {
@@ -50,12 +77,139 @@ impl fmt::Display for UnknownOutcomeReason {
             }
             Self::RuntimeDroppedProposal => "the app/runtime layer dropped local proposal tracking",
             Self::GroupPoisoned => "the Raft group was poisoned before the outcome was known",
+            Self::DriverReleased => "the driver released the group holding this proposal",
         })
     }
 }
 
+/// Why a managed read barrier was abandoned without an answer.
+///
+/// Abandonment is the driver's own decision, so every variant names something
+/// the driver did. None of them says anything about the cluster: a read that
+/// was refused reports [`ReadError::Rejected`], and a barrier the cluster
+/// invalidated reports [`ReadError::Canceled`].
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ReadAbandonReason {
+    /// The managed read reached its configured drive-step bound before the
+    /// barrier resolved.
+    DriveBoundReached,
+    /// The driver released the group that held this barrier.
+    DriverReleased,
+}
+
+impl fmt::Display for ReadAbandonReason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::DriveBoundReached => "the managed drive-step bound was reached",
+            Self::DriverReleased => "the driver released the group holding this barrier",
+        })
+    }
+}
+
+/// What a failed managed write proves about the command's fate.
+///
+/// This is the retry question, and it is the only part of a write error a
+/// client may branch on when deciding whether a request identity is still
+/// unused. It is separate from the error's category because the two answer
+/// different questions: a storage failure before the local append and a
+/// storage failure after it are the same fault and different facts.
+///
+/// A driver reports the fate it observed. It never infers one from a category,
+/// and a caller must not either — the category says what broke, not when.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum WriteFate {
+    /// The command was refused before it reached the local Raft log. It cannot
+    /// commit, now or later, and its request identity is still unused.
+    ///
+    /// A driver reports this only when it observed the refusal itself.
+    NotAppended,
+    /// The command may or may not commit and apply.
+    ///
+    /// Retry only under the same request identity, and only with
+    /// application-level idempotency if duplicate effects matter. A driver that
+    /// cannot prove [`WriteFate::NotAppended`] reports this.
+    ///
+    /// A locally appended entry that was never sent is unresolved rather than
+    /// refused, and that is the truth rather than caution: the entry is on
+    /// disk, and a node reopened over the same durable log can still replicate
+    /// and commit it under a later incarnation. `NotAppended` would be
+    /// unprovable there.
+    Unresolved,
+}
+
+impl WriteFate {
+    /// Returns whether the command may still take effect.
+    ///
+    /// Written as the negation of [`WriteFate::NotAppended`] so a future
+    /// variant reads as unresolved until a caller is updated to interpret it.
+    /// This is the safe direction, and it is the only direction this enum is
+    /// meant to be tested in.
+    #[must_use]
+    pub const fn may_commit(self) -> bool {
+        !matches!(self, Self::NotAppended)
+    }
+}
+
+/// Stable category of a [`WriteError`].
+///
+/// This is the low-cardinality projection of the error: `Copy`, totally
+/// ordered, hashable, and free of payload, so it can be a metric label, a map
+/// key, or a structured-log field. The variants themselves carry indices, node
+/// IDs, and messages, so neither `Display` nor `Debug` is bounded enough to
+/// label with.
+///
+/// New categories are additive. A caller that aggregates by kind must keep a
+/// bucket for kinds it does not recognize rather than dropping them.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum WriteErrorKind {
+    NotLeader,
+    Rejected,
+    PayloadTooLarge,
+    UnknownOutcome,
+    WrongGroup,
+    StateMachine,
+    Storage,
+    Transport,
+    ShuttingDown,
+    Poisoned,
+    LocalProposalIdExhausted,
+    ManagedInvariantViolation,
+}
+
+/// Stable category of a [`ReadError`].
+///
+/// The same low-cardinality projection [`WriteErrorKind`] is, for the same
+/// reasons and with the same rule for unrecognized values.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ReadErrorKind {
+    NotLeader,
+    Rejected,
+    Canceled,
+    UnsupportedConsistency,
+    FreshnessUnavailable,
+    Abandoned,
+    WrongGroup,
+    StateMachine,
+    Storage,
+    Transport,
+    ShuttingDown,
+    Poisoned,
+    ReadIdExhausted,
+    ManagedInvariantViolation,
+}
+
 /// Errors returned by managed writes.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// Equality is deliberately absent. An error carrying a `dyn Error` has no
+/// honest equality: comparing `Arc` pointers makes two errors built from the
+/// same failure unequal, and comparing rendered output rebuilds the
+/// stringly-typed semantics this surface exists to remove. `Clone` is kept,
+/// because one failure fans out to every entry of a write batch.
+#[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum WriteError {
     NotLeader {
@@ -78,30 +232,109 @@ pub enum WriteError {
         client_request_id: Option<ClientRequestId>,
         reason: UnknownOutcomeReason,
     },
-    ApplyFailed {
-        message: String,
+    /// The request named a group this driver does not own.
+    ///
+    /// The command was never handed to a group, so its request identity is
+    /// still unused.
+    WrongGroup,
+    /// The application state machine failed.
+    ///
+    /// `operation` is the callback that surfaced the failure, and it is
+    /// load-bearing: encoding a command, reading an applied index, and applying
+    /// a batch fail for unrelated reasons and at unrelated moments.
+    StateMachine {
+        operation: StateMachineOperation,
+        fate: WriteFate,
+        cause: ErrorCause,
     },
+    /// The Raft runtime failed to persist or query local durable state.
     Storage {
-        message: String,
+        fate: WriteFate,
+        cause: ErrorCause,
     },
+    /// The driver could not route or deliver the work this write required.
     Transport {
-        message: String,
+        fate: WriteFate,
+        cause: ErrorCause,
     },
     ShuttingDown,
+    /// The group is permanently poisoned.
+    ///
+    /// `cause` is the error that poisoned the group, when the poison came from
+    /// a typed failure. It is `None` for a poison with no underlying error,
+    /// such as a malformed snapshot output.
     Poisoned {
+        fate: WriteFate,
         reason: String,
+        cause: Option<ErrorCause>,
     },
     LocalProposalIdExhausted,
+    /// The driver violated one of its own documented invariants.
+    ///
+    /// This is the one variant whose message is authored rather than rendered:
+    /// a driver reporting its own bug has no underlying error to preserve.
     ManagedInvariantViolation {
+        fate: WriteFate,
         message: String,
     },
+}
+
+impl WriteError {
+    /// Returns what this error proves about the command's fate.
+    ///
+    /// Variants that describe a refusal — not leader, rejected, payload too
+    /// large, shutting down, wrong group, exhausted local IDs — answer
+    /// [`WriteFate::NotAppended`] from the variant alone, because reaching them
+    /// is the proof. [`WriteError::UnknownOutcome`] answers
+    /// [`WriteFate::Unresolved`] for the same reason. The remaining variants
+    /// carry the fate the driver observed, because the same fault can occur on
+    /// either side of the local append.
+    #[must_use]
+    pub const fn fate(&self) -> WriteFate {
+        match self {
+            Self::NotLeader { .. }
+            | Self::Rejected { .. }
+            | Self::PayloadTooLarge { .. }
+            | Self::WrongGroup
+            | Self::ShuttingDown
+            | Self::LocalProposalIdExhausted => WriteFate::NotAppended,
+            Self::UnknownOutcome { .. } => WriteFate::Unresolved,
+            Self::StateMachine { fate, .. }
+            | Self::Storage { fate, .. }
+            | Self::Transport { fate, .. }
+            | Self::Poisoned { fate, .. }
+            | Self::ManagedInvariantViolation { fate, .. } => *fate,
+        }
+    }
+
+    /// Returns this error's stable category.
+    #[must_use]
+    pub const fn kind(&self) -> WriteErrorKind {
+        match self {
+            Self::NotLeader { .. } => WriteErrorKind::NotLeader,
+            Self::Rejected { .. } => WriteErrorKind::Rejected,
+            Self::PayloadTooLarge { .. } => WriteErrorKind::PayloadTooLarge,
+            Self::UnknownOutcome { .. } => WriteErrorKind::UnknownOutcome,
+            Self::WrongGroup => WriteErrorKind::WrongGroup,
+            Self::StateMachine { .. } => WriteErrorKind::StateMachine,
+            Self::Storage { .. } => WriteErrorKind::Storage,
+            Self::Transport { .. } => WriteErrorKind::Transport,
+            Self::ShuttingDown => WriteErrorKind::ShuttingDown,
+            Self::Poisoned { .. } => WriteErrorKind::Poisoned,
+            Self::LocalProposalIdExhausted => WriteErrorKind::LocalProposalIdExhausted,
+            Self::ManagedInvariantViolation { .. } => WriteErrorKind::ManagedInvariantViolation,
+        }
+    }
 }
 
 impl fmt::Display for WriteError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotLeader { leader_hint, term } => {
-                write!(formatter, "write rejected: this node is not leader in term {term}")?;
+                write!(
+                    formatter,
+                    "write rejected: this node is not leader in term {term}"
+                )?;
                 write_leader_hint(formatter, *leader_hint)
             }
             Self::Rejected { reason } => write!(formatter, "write rejected: {reason}"),
@@ -117,23 +350,77 @@ impl fmt::Display for WriteError {
                 formatter,
                 "write outcome is unknown for local proposal {local_proposal_id} and client request {client_request_id:?}: {reason}"
             ),
-            Self::ApplyFailed { message } => write!(formatter, "write apply failed: {message}"),
-            Self::Storage { message } => write!(formatter, "write storage failed: {message}"),
-            Self::Transport { message } => write!(formatter, "write transport failed: {message}"),
-            Self::ShuttingDown => formatter.write_str("write rejected because the service is shutting down"),
-            Self::Poisoned { reason } => write!(formatter, "write rejected because the group is poisoned: {reason}"),
-            Self::LocalProposalIdExhausted => formatter.write_str("write rejected because local proposal ids are exhausted"),
-            Self::ManagedInvariantViolation { message } => {
-                write!(formatter, "managed write invariant violation: {message}")
+            Self::WrongGroup => {
+                formatter.write_str("write rejected: this driver does not own the requested group")
+            }
+            Self::StateMachine {
+                operation, fate, ..
+            } => {
+                write!(formatter, "write state machine {operation} failed")?;
+                write_write_fate(formatter, *fate)
+            }
+            Self::Storage { fate, .. } => {
+                formatter.write_str("write storage failed")?;
+                write_write_fate(formatter, *fate)
+            }
+            Self::Transport { fate, .. } => {
+                formatter.write_str("write transport failed")?;
+                write_write_fate(formatter, *fate)
+            }
+            Self::ShuttingDown => {
+                formatter.write_str("write rejected because the service is shutting down")
+            }
+            Self::Poisoned { fate, reason, .. } => {
+                write!(
+                    formatter,
+                    "write rejected because the group is poisoned: {reason}"
+                )?;
+                write_write_fate(formatter, *fate)
+            }
+            Self::LocalProposalIdExhausted => {
+                formatter.write_str("write rejected because local proposal ids are exhausted")
+            }
+            Self::ManagedInvariantViolation { fate, message } => {
+                write!(formatter, "managed write invariant violation: {message}")?;
+                write_write_fate(formatter, *fate)
             }
         }
     }
 }
 
-impl Error for WriteError {}
+impl Error for WriteError {
+    /// Returns the preserved error, not the [`ErrorCause`] wrapper.
+    ///
+    /// A chain printer therefore shows one link per real failure rather than
+    /// one per boundary crossed, which is why `ErrorCause` is not itself an
+    /// `Error`.
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::StateMachine { cause, .. }
+            | Self::Storage { cause, .. }
+            | Self::Transport { cause, .. } => Some(cause.as_error()),
+            Self::Poisoned { cause, .. } => match cause {
+                Some(cause) => Some(cause.as_error()),
+                None => None,
+            },
+            Self::NotLeader { .. }
+            | Self::Rejected { .. }
+            | Self::PayloadTooLarge { .. }
+            | Self::UnknownOutcome { .. }
+            | Self::WrongGroup
+            | Self::ShuttingDown
+            | Self::LocalProposalIdExhausted
+            | Self::ManagedInvariantViolation { .. } => None,
+        }
+    }
+}
 
 /// Errors returned by managed reads.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// A read that fails takes no effect, so there is no [`WriteFate`] here and no
+/// later outcome for a client to be uncertain about. Equality is absent for the
+/// same reason it is absent on [`WriteError`].
+#[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum ReadError {
     NotLeader {
@@ -160,18 +447,47 @@ pub enum ReadError {
         required_applied_index: LogIndex,
         local_applied_index: LogIndex,
     },
-    ApplyFailed {
-        message: String,
+    /// The driver stopped waiting for this barrier and released it.
+    ///
+    /// The barrier was cancelled through
+    /// [`rafter_app::group::RaftGroup::cancel_read`] before this error was
+    /// returned, so no local read state leaks and no later step will report an
+    /// outcome for `read_id`. That `ReadId` is spent: a retry issues a new
+    /// read, and reusing this one is
+    /// [`rafter_app::error::GroupError::NonMonotonicReadId`].
+    ///
+    /// Unlike an abandoned write, an abandoned read has no outcome that can
+    /// still occur — a read takes no effect — so this is a terminal error
+    /// rather than an unknown outcome. A caller learns nothing about the
+    /// queried state, which is the correct result when freshness cannot be
+    /// proved.
+    Abandoned {
+        read_id: ReadId,
+        reason: ReadAbandonReason,
     },
+    /// The request named a group this driver does not own.
+    WrongGroup,
+    /// The application state machine failed.
+    StateMachine {
+        operation: StateMachineOperation,
+        cause: ErrorCause,
+    },
+    /// The Raft runtime failed to persist or query local durable state.
     Storage {
-        message: String,
+        cause: ErrorCause,
     },
+    /// The driver could not route or deliver the work this read required.
     Transport {
-        message: String,
+        cause: ErrorCause,
     },
     ShuttingDown,
+    /// The group is permanently poisoned.
+    ///
+    /// `cause` is the error that poisoned the group, when the poison came from
+    /// a typed failure.
     Poisoned {
         reason: String,
+        cause: Option<ErrorCause>,
     },
     ReadIdExhausted,
     ManagedInvariantViolation {
@@ -179,11 +495,37 @@ pub enum ReadError {
     },
 }
 
+impl ReadError {
+    /// Returns this error's stable category.
+    #[must_use]
+    pub const fn kind(&self) -> ReadErrorKind {
+        match self {
+            Self::NotLeader { .. } => ReadErrorKind::NotLeader,
+            Self::Rejected { .. } => ReadErrorKind::Rejected,
+            Self::Canceled { .. } => ReadErrorKind::Canceled,
+            Self::UnsupportedConsistency { .. } => ReadErrorKind::UnsupportedConsistency,
+            Self::FreshnessUnavailable { .. } => ReadErrorKind::FreshnessUnavailable,
+            Self::Abandoned { .. } => ReadErrorKind::Abandoned,
+            Self::WrongGroup => ReadErrorKind::WrongGroup,
+            Self::StateMachine { .. } => ReadErrorKind::StateMachine,
+            Self::Storage { .. } => ReadErrorKind::Storage,
+            Self::Transport { .. } => ReadErrorKind::Transport,
+            Self::ShuttingDown => ReadErrorKind::ShuttingDown,
+            Self::Poisoned { .. } => ReadErrorKind::Poisoned,
+            Self::ReadIdExhausted => ReadErrorKind::ReadIdExhausted,
+            Self::ManagedInvariantViolation { .. } => ReadErrorKind::ManagedInvariantViolation,
+        }
+    }
+}
+
 impl fmt::Display for ReadError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotLeader { leader_hint, term } => {
-                write!(formatter, "read rejected: this node is not leader in term {term}")?;
+                write!(
+                    formatter,
+                    "read rejected: this node is not leader in term {term}"
+                )?;
                 write_leader_hint(formatter, *leader_hint)
             }
             Self::Rejected {
@@ -217,12 +559,28 @@ impl fmt::Display for ReadError {
                 formatter,
                 "read barrier {read_id:?} requires applied index {required_applied_index}, but the local app is at {local_applied_index}"
             ),
-            Self::ApplyFailed { message } => write!(formatter, "read apply failed: {message}"),
-            Self::Storage { message } => write!(formatter, "read storage failed: {message}"),
-            Self::Transport { message } => write!(formatter, "read transport failed: {message}"),
-            Self::ShuttingDown => formatter.write_str("read rejected because the service is shutting down"),
-            Self::Poisoned { reason } => write!(formatter, "read rejected because the group is poisoned: {reason}"),
-            Self::ReadIdExhausted => formatter.write_str("read rejected because read ids are exhausted"),
+            Self::Abandoned { read_id, reason } => write!(
+                formatter,
+                "read barrier {read_id} was abandoned by the driver: {reason}"
+            ),
+            Self::WrongGroup => {
+                formatter.write_str("read rejected: this driver does not own the requested group")
+            }
+            Self::StateMachine { operation, .. } => {
+                write!(formatter, "read state machine {operation} failed")
+            }
+            Self::Storage { .. } => formatter.write_str("read storage failed"),
+            Self::Transport { .. } => formatter.write_str("read transport failed"),
+            Self::ShuttingDown => {
+                formatter.write_str("read rejected because the service is shutting down")
+            }
+            Self::Poisoned { reason, .. } => write!(
+                formatter,
+                "read rejected because the group is poisoned: {reason}"
+            ),
+            Self::ReadIdExhausted => {
+                formatter.write_str("read rejected because read ids are exhausted")
+            }
             Self::ManagedInvariantViolation { message } => {
                 write!(formatter, "managed read invariant violation: {message}")
             }
@@ -230,10 +588,32 @@ impl fmt::Display for ReadError {
     }
 }
 
-impl Error for ReadError {}
+impl Error for ReadError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::StateMachine { cause, .. }
+            | Self::Storage { cause }
+            | Self::Transport { cause } => Some(cause.as_error()),
+            Self::Poisoned { cause, .. } => match cause {
+                Some(cause) => Some(cause.as_error()),
+                None => None,
+            },
+            Self::NotLeader { .. }
+            | Self::Rejected { .. }
+            | Self::Canceled { .. }
+            | Self::UnsupportedConsistency { .. }
+            | Self::FreshnessUnavailable { .. }
+            | Self::Abandoned { .. }
+            | Self::WrongGroup
+            | Self::ShuttingDown
+            | Self::ReadIdExhausted
+            | Self::ManagedInvariantViolation { .. } => None,
+        }
+    }
+}
 
 /// Errors returned by managed leadership transfer.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum TransferLeadershipError {
     NotLeader {
@@ -244,15 +624,18 @@ pub enum TransferLeadershipError {
         reason: LeadershipTransferRejection,
         leader_hint: Option<NodeId>,
     },
+    /// The request named a group this driver does not own.
+    WrongGroup,
     Storage {
-        message: String,
+        cause: ErrorCause,
     },
     Transport {
-        message: String,
+        cause: ErrorCause,
     },
     ShuttingDown,
     Poisoned {
         reason: String,
+        cause: Option<ErrorCause>,
     },
 }
 
@@ -273,15 +656,14 @@ impl fmt::Display for TransferLeadershipError {
                 write!(formatter, "leadership transfer rejected: {reason}")?;
                 write_leader_hint(formatter, *leader_hint)
             }
-            Self::Storage { message } => {
-                write!(formatter, "leadership transfer storage failed: {message}")
-            }
-            Self::Transport { message } => {
-                write!(formatter, "leadership transfer transport failed: {message}")
-            }
+            Self::WrongGroup => formatter.write_str(
+                "leadership transfer rejected: this driver does not own the requested group",
+            ),
+            Self::Storage { .. } => formatter.write_str("leadership transfer storage failed"),
+            Self::Transport { .. } => formatter.write_str("leadership transfer transport failed"),
             Self::ShuttingDown => formatter
                 .write_str("leadership transfer rejected because the service is shutting down"),
-            Self::Poisoned { reason } => write!(
+            Self::Poisoned { reason, .. } => write!(
                 formatter,
                 "leadership transfer rejected because the group is poisoned: {reason}"
             ),
@@ -289,21 +671,37 @@ impl fmt::Display for TransferLeadershipError {
     }
 }
 
-impl Error for TransferLeadershipError {}
+impl Error for TransferLeadershipError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Storage { cause } | Self::Transport { cause } => Some(cause.as_error()),
+            Self::Poisoned { cause, .. } => match cause {
+                Some(cause) => Some(cause.as_error()),
+                None => None,
+            },
+            Self::NotLeader { .. }
+            | Self::Rejected { .. }
+            | Self::WrongGroup
+            | Self::ShuttingDown => None,
+        }
+    }
+}
 
 /// Errors returned while opening a managed metrics watch.
-#[derive(Clone, Debug, Eq, PartialEq)]
+///
+/// This one keeps `Copy` and equality: after the deletion of an unconstructed
+/// transport variant it carries no cause, and there is nothing dishonest left
+/// to compare.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum MetricsError {
     WrongGroup,
-    Transport { message: String },
 }
 
 impl fmt::Display for MetricsError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::WrongGroup => formatter.write_str("metrics watch targets the wrong group"),
-            Self::Transport { message } => write!(formatter, "metrics transport failed: {message}"),
         }
     }
 }
@@ -311,25 +709,37 @@ impl fmt::Display for MetricsError {
 impl Error for MetricsError {}
 
 /// Errors returned by managed service shutdown.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum ShutdownError {
-    Transport { message: String },
+    /// The request named a group this driver does not own.
+    WrongGroup,
+    Transport {
+        cause: ErrorCause,
+    },
     AlreadyShutDown,
 }
 
 impl fmt::Display for ShutdownError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Transport { message } => {
-                write!(formatter, "shutdown transport failed: {message}")
+            Self::WrongGroup => {
+                formatter.write_str("shutdown targets a group this driver does not own")
             }
+            Self::Transport { .. } => formatter.write_str("shutdown transport failed"),
             Self::AlreadyShutDown => formatter.write_str("service is already shut down"),
         }
     }
 }
 
-impl Error for ShutdownError {}
+impl Error for ShutdownError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        match self {
+            Self::Transport { cause } => Some(cause.as_error()),
+            Self::WrongGroup | Self::AlreadyShutDown => None,
+        }
+    }
+}
 
 fn write_leader_hint(
     formatter: &mut fmt::Formatter<'_>,
@@ -341,6 +751,19 @@ fn write_leader_hint(
     Ok(())
 }
 
+/// Renders the fate without rendering the cause.
+///
+/// The fate is the one thing a client branches on, so it belongs in the
+/// message. The cause does not: a `Display` that interpolated it would
+/// reproduce today's message in a place a caller cannot parse, and a chain
+/// printer would print it twice.
+fn write_write_fate(formatter: &mut fmt::Formatter<'_>, fate: WriteFate) -> fmt::Result {
+    formatter.write_str(match fate {
+        WriteFate::NotAppended => "; the command was not appended",
+        WriteFate::Unresolved => "; the command may still commit and apply",
+    })
+}
+
 const fn read_cancel_reason_message(reason: ReadIndexCancelReason) -> &'static str {
     match reason {
         ReadIndexCancelReason::LeadershipLost => "leadership was lost",
@@ -350,39 +773,5 @@ const fn read_cancel_reason_message(reason: ReadIndexCancelReason) -> &'static s
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn assert_error(error: &(dyn Error + 'static)) -> String {
-        error.to_string()
-    }
-
-    #[test]
-    fn write_error_is_a_standard_error_with_display_message() {
-        let error = WriteError::Storage {
-            message: "disk full".to_owned(),
-        };
-
-        assert_eq!(assert_error(&error), "write storage failed: disk full");
-    }
-
-    #[test]
-    fn read_error_formats_leader_hint_without_debug_dump() {
-        let error = ReadError::NotLeader {
-            leader_hint: Some(NodeId(2)),
-            term: Term(7),
-        };
-
-        assert_eq!(
-            error.to_string(),
-            "read rejected: this node is not leader in term 7; leader hint is node-2"
-        );
-    }
-
-    #[test]
-    fn shutdown_error_is_a_standard_error() {
-        let error = ShutdownError::AlreadyShutDown;
-
-        assert_eq!(assert_error(&error), "service is already shut down");
-    }
-}
+#[path = "error/tests.rs"]
+mod tests;
