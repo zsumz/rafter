@@ -10,8 +10,6 @@ mod support;
 
 #[path = "support/cluster.rs"]
 mod cluster;
-#[path = "support/observe.rs"]
-mod observe;
 #[path = "support/transport.rs"]
 mod transport;
 
@@ -560,9 +558,10 @@ fn a_proposal_stranded_on_an_isolated_leader_is_dropped_and_retried_once() {
     cluster.heal();
     cluster.run_rounds(6);
     cluster.settle();
-    // The client had already stopped waiting, so this arrives on the future it
-    // walked away from rather than through a driver counter: the app layer says
-    // the outcome is lost, and the public client surface is where it is heard.
+    // The app layer says the outcome is lost rather than silently forgetting
+    // it, and the driver hands that fact to whoever holds the client future.
+    // There is no driver counter for it, so the public client surface is where
+    // it is heard.
     assert!(
         cluster.runtime_unknown_outcomes(first_leader) > 0,
         "the former leader reported that it lost its proposal's outcome"

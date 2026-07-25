@@ -14,9 +14,10 @@
 //! while it is in flight, and then watch the outcome window close.
 //!
 //! No simulator, no internal hooks, no privileged observation: an external user
-//! with the published crates can write the same thing. The one place that takes
-//! effort is reading a running replica's state at all, which is
-//! [`crate::observe`].
+//! with the published crates can write the same thing. A running replica's
+//! state machine and durable log are read through
+//! [`TransportRaftDriver::with_group`], which borrows the group under the
+//! driver's own lock, so no replica is wrapped in anything to be observable.
 
 use std::{
     fmt,
@@ -36,19 +37,16 @@ use rafter_reference_fenced_lock::{
     unknown_outcome_reason, Command, HistoryEvent, LockClient, LockConfig, LockStateMachine,
     LogicalTime, OperationId, QueryOutcome, ResourceName, SubmitOutcome,
 };
-use rafter_runtime::{DurableRaftNode, PersistedRaftRuntime};
+use rafter_runtime::{DurableRaftNode, DurableRaftNodeStorage};
 use rafter_service::{
-    ErrorCause, InboundEnvelopeError, MetricsWatch, ReadAbandonReason, ReadError,
-    TransportDriverOptions, TransportRaftDriver, UnknownOutcomeReason, WriteError,
+    InboundEnvelopeError, MetricsWatch, TransportDriverOptions, TransportRaftDriver,
+    UnknownOutcomeReason,
 };
 use rafter_storage::{
     InMemoryRaftHardStateStore, InMemoryRaftLogSegment, InMemoryRaftSnapshotStore,
 };
 
-use crate::{
-    observe::{LockStorage, SharedRuntime, SharedStateMachine},
-    transport::{DeterministicNetwork, NodeTransport, PeerDirectory},
-};
+use crate::transport::{DeterministicNetwork, NodeTransport, PeerDirectory};
 
 /// Bound on driver rounds spent waiting for one outcome.
 ///
@@ -67,22 +65,35 @@ pub struct LockGroupId(pub u64);
 /// The one group every node in this driver serves.
 pub const GROUP_ID: LockGroupId = LockGroupId(1);
 
-/// One replica's managed driver over its own transport endpoint.
-pub type NodeDriver = TransportRaftDriver<
-    LockGroupId,
-    SharedStateMachine,
-    SharedRuntime,
-    NodeTransport,
-    PeerDirectory,
+/// Durable media one replica keeps across incarnations.
+pub type LockStorage = DurableRaftNodeStorage<
+    InMemoryRaftHardStateStore,
+    InMemoryRaftLogSegment,
+    InMemoryRaftSnapshotStore,
 >;
 
-type LockGroup = RaftGroup<LockGroupId, SharedStateMachine, SharedRuntime>;
+/// The durable runtime a replica runs, held by its group and nothing else.
+type LockNode =
+    DurableRaftNode<InMemoryRaftHardStateStore, InMemoryRaftLogSegment, InMemoryRaftSnapshotStore>;
+
+/// One replica's managed driver over its own transport endpoint.
+///
+/// Over the lock's own types rather than wrappers of them: the driver borrows
+/// the group it owns, so nothing has to be shared with the cluster to stay
+/// visible.
+pub type NodeDriver =
+    TransportRaftDriver<LockGroupId, LockStateMachine, LockNode, NodeTransport, PeerDirectory>;
+
+type LockGroup = RaftGroup<LockGroupId, LockStateMachine, LockNode>;
 
 /// Terminal client outcomes are carried by the application's own vocabulary,
 /// so the cluster records history against these rather than raw receipts.
 pub struct PendingSubmit {
     operation_id: OperationId,
     node_id: NodeId,
+    /// The ID the driver allocated for this write, learned before the future
+    /// resolved so this caller can retire exactly its own waiter.
+    local_proposal_id: Option<LocalProposalId>,
     future: SubmitFuture,
 }
 
@@ -101,6 +112,9 @@ impl fmt::Debug for PendingSubmit {
 /// One linearizable query in flight against a chosen replica.
 pub struct PendingQuery {
     node_id: NodeId,
+    /// The ID the driver allocated for this barrier, learned the same way and
+    /// for the same reason as [`PendingSubmit::local_proposal_id`].
+    read_id: Option<ReadId>,
     future: Pin<Box<dyn Future<Output = QueryOutcome<LockGroupId>>>>,
 }
 
@@ -121,17 +135,9 @@ struct ClusterNode {
     driver: NodeDriver,
     client: LockClient<LockGroupId, NodeDriver>,
     metrics: MetricsWatch<LockGroupId>,
-    app: SharedStateMachine,
-    runtime: SharedRuntime,
-    /// Proposals the app layer declared unresolvable after their caller had
-    /// already stopped waiting. See [`LockCluster::runtime_unknown_outcomes`].
+    /// Proposals the app layer itself declared unresolvable.
+    /// See [`LockCluster::runtime_unknown_outcomes`].
     runtime_unknown_outcomes: usize,
-    /// The most recent barrier this replica's driver could not carry forward.
-    ///
-    /// One slot is enough because this harness keeps at most one query in
-    /// flight per replica, and the driver repeats the same refusal on every
-    /// later pump. See [`LockCluster::drive_reads`].
-    lost_barrier: Option<ReadError>,
 }
 
 /// Deterministic three-node lock cluster with explicit delivery control.
@@ -141,15 +147,6 @@ pub struct LockCluster {
     nodes: Vec<ClusterNode>,
     history: Vec<HistoryEvent>,
     next_operation_id: u64,
-    /// Client futures whose caller stopped waiting.
-    ///
-    /// The driver removes a waiter only when its future is polled after the
-    /// waiter resolved, and offers no way to abandon one, so a caller that
-    /// walked away leaves a slot the driver will fill and nobody will read.
-    /// Keeping the future is how this cluster still observes a late outcome —
-    /// which is the stronger evidence anyway, because it arrives through the
-    /// public client surface rather than through a private counter.
-    abandoned: Vec<(NodeId, SubmitFuture)>,
 }
 
 impl fmt::Debug for LockCluster {
@@ -159,7 +156,6 @@ impl fmt::Debug for LockCluster {
             .field("config", &self.config)
             .field("nodes", &self.nodes)
             .field("history", &self.history)
-            .field("abandoned", &self.abandoned.len())
             .finish_non_exhaustive()
     }
 }
@@ -180,34 +176,20 @@ impl LockCluster {
                     .collect::<Vec<_>>();
                 let directory = PeerDirectory::new(&all_nodes, &peers);
                 let transport = network.endpoint(node_id, directory.clone());
-                let app = SharedStateMachine::new(LockStateMachine::new(config));
                 let opened = open_group(
                     node_id,
                     &peers,
                     election_timeout_ticks,
                     empty_storage(),
-                    app.clone(),
+                    LockStateMachine::new(config),
                 );
-
-                // `TransportRaftDriver::new` takes a group and no recovery
-                // outputs, so a first incarnation has to apply them outside the
-                // driver — unlike `adopt_group`, which routes them. That is
-                // lossless only while the report they produce carries nothing to
-                // route, which this asserts rather than assumes. A replica whose
-                // first incarnation recovered a non-empty durable log would need
-                // the restart path instead.
-                let mut group = opened.group;
-                let report = group
-                    .apply_raft_outputs(opened.recovery_outputs)
-                    .expect("recovered outputs apply");
-                assert!(
-                    report.peer_messages.is_empty(),
-                    "a replica that has never started recovers nothing to route"
-                );
-
+                // A first incarnation hands its recovery outputs to the driver
+                // exactly as a restart does, so a replica that recovered a
+                // non-empty durable log would route what it recovered rather
+                // than needing the restart path.
                 let driver = NodeDriver::new(
-                    group,
-                    Vec::new(),
+                    opened.group,
+                    opened.recovery_outputs,
                     transport,
                     directory,
                     TransportDriverOptions::default(),
@@ -224,10 +206,7 @@ impl LockCluster {
                     client: LockClient::new(handle),
                     driver,
                     metrics,
-                    app,
-                    runtime: opened.runtime,
                     runtime_unknown_outcomes: 0,
-                    lost_barrier: None,
                 }
             })
             .collect();
@@ -238,7 +217,6 @@ impl LockCluster {
             nodes,
             history: Vec::new(),
             next_operation_id: 1,
-            abandoned: Vec::new(),
         }
     }
 
@@ -289,8 +267,15 @@ impl LockCluster {
     }
 
     /// Returns a copy of one replica's state machine.
+    ///
+    /// The driver borrows the group it owns for the length of the closure, so a
+    /// running replica is readable without retiring it and without the cluster
+    /// holding a second handle to anything.
     pub fn state_machine(&self, node_id: NodeId) -> LockStateMachine {
-        self.node(node_id).app.observe()
+        self.node(node_id)
+            .driver
+            .with_group(|group| group.state_machine().clone())
+            .expect("a running replica holds its group")
     }
 
     /// Returns the replica's applied index.
@@ -306,40 +291,52 @@ impl LockCluster {
     /// This is the readiness half of [`LockCluster::applied_index`]: the two
     /// together say whether a replica has consumed everything it knows about.
     pub fn committed_application_index(&self, node_id: NodeId) -> LogIndex {
-        self.node(node_id).runtime.committed_application_index()
+        self.node(node_id)
+            .driver
+            .committed_application_index()
+            .expect("a running replica holds its group")
     }
 
     /// Returns the commands committed on one replica, in log order.
     ///
     /// This reads the durable log through the public runtime accessor and
     /// decodes it with the same adapter the replica applies with, so the
-    /// checker can replay a real replicated history through the oracle.
+    /// checker can replay a real replicated history through the oracle. Both
+    /// halves come off the same borrowed group, which is why this is a closure
+    /// rather than two forwarders.
     pub fn committed_commands(&self, node_id: NodeId) -> Vec<Command> {
-        let node = self.node(node_id);
-        let commit_index = node.runtime.commit_index();
-        let first_index = node.runtime.snapshot_index().0 + 1;
-        node.runtime
-            .log_entries_from(LogIndex(first_index))
-            .into_iter()
-            .zip(first_index..)
-            .take_while(|(_, index)| LogIndex(*index) <= commit_index)
-            .filter_map(|(entry, _)| match entry.kind {
-                LogEntryKind::Application(payload) => Some(
-                    node.app
-                        .decode_command(payload.as_ref())
-                        .expect("replicas only append frames this adapter encoded"),
-                ),
-                LogEntryKind::Configuration(_) | LogEntryKind::Noop => None,
+        self.node(node_id)
+            .driver
+            .with_group(|group| {
+                let runtime = group.runtime();
+                let commit_index = runtime.commit_index();
+                let first_index = runtime.snapshot_index().0 + 1;
+                runtime
+                    .log_entries_from(LogIndex(first_index))
+                    .into_iter()
+                    .zip(first_index..)
+                    .take_while(|(_, index)| LogIndex(*index) <= commit_index)
+                    .filter_map(|(entry, _)| match entry.kind {
+                        LogEntryKind::Application(payload) => Some(
+                            group
+                                .state_machine()
+                                .decode_command(payload.as_ref())
+                                .expect("replicas only append frames this adapter encoded"),
+                        ),
+                        LogEntryKind::Configuration(_) | LogEntryKind::Noop => None,
+                    })
+                    .collect()
             })
-            .collect()
+            .expect("a running replica holds its group")
     }
 
     /// Returns how many of this replica's proposals the app layer itself
-    /// declared unresolvable after their caller had stopped waiting.
+    /// declared unresolvable.
     ///
-    /// A driver never reports this on its own — it resolves the waiter and the
-    /// fact goes wherever the client future went — so the cluster keeps those
-    /// futures and reads the answer off the public client surface.
+    /// A driver keeps no count of its own: it resolves the waiter, and the fact
+    /// goes to whoever holds that client future. So this is read off the public
+    /// client surface, which is the stronger evidence anyway — it is the same
+    /// value a real client would see.
     pub fn runtime_unknown_outcomes(&self, node_id: NodeId) -> usize {
         self.node(node_id).runtime_unknown_outcomes
     }
@@ -385,7 +382,6 @@ impl LockCluster {
             self.tick_all();
             self.deliver_all();
             self.drive_reads();
-            self.poll_abandoned();
         }
     }
 
@@ -421,26 +417,17 @@ impl LockCluster {
         panic!("peer delivery did not quiesce within {MAX_DELIVERY_PASSES} passes");
     }
 
-    /// Retries every outstanding read barrier on every replica.
+    /// Collects every granted read proof on every replica.
     ///
-    /// A driver error here is not a cluster failure, and catching it is a
-    /// workaround rather than a design. `TransportRaftDriver` never inspects a
-    /// step report's read events, so a barrier the cluster rejected or
-    /// cancelled during a tick or a delivery is never reported to its client.
-    /// The group has dropped that barrier's state, so the driver's next retry
-    /// asks it to re-reserve a spent `ReadId` and the group refuses with
-    /// `GroupError::NonMonotonicReadId`. That refusal arrives here as the only
-    /// evidence the barrier is gone, and the driver leaves the client waiter
-    /// unresolved forever, so the cluster records it and hands it to the caller
-    /// in [`LockCluster::resolve_query`]. A driver that observed read events
-    /// would resolve the waiter itself and this arm would be unreachable.
+    /// A granted barrier is consumed by a read call rather than announced to a
+    /// client, so this is the third entry point beside tick and deliver. A
+    /// barrier the cluster rejected or cancelled needs nothing from here: the
+    /// step that observed it resolved its client already.
     pub fn drive_reads(&mut self) {
-        for node in &mut self.nodes {
-            if let Err(error) = node.driver.drive_pending_reads() {
-                node.lost_barrier = Some(ReadError::Transport {
-                    cause: ErrorCause::new(error),
-                });
-            }
+        for node in &self.nodes {
+            node.driver
+                .drive_pending_reads()
+                .expect("a running replica collects its own granted proofs");
         }
     }
 
@@ -495,7 +482,7 @@ impl LockCluster {
         // proposal tracking, so a group over it may restart its IDs at zero.
         // The driver's own counters never restart anyway, which is stricter
         // than the contract requires.
-        let storage = runtime.take_storage();
+        let storage = runtime.into_storage();
 
         let opened = open_group(
             node_id,
@@ -504,7 +491,6 @@ impl LockCluster {
             storage,
             state_machine,
         );
-        self.nodes[index].runtime = opened.runtime;
         self.nodes[index]
             .driver
             .adopt_group(opened.group, opened.recovery_outputs)
@@ -529,17 +515,18 @@ impl LockCluster {
         PendingSubmit {
             operation_id,
             node_id,
+            local_proposal_id: newest_pending_write(&self.node(node_id).driver),
             future,
         }
     }
 
     /// Waits for a pending submission for at most `rounds` driver rounds.
     ///
-    /// A caller that runs out of rounds stops waiting and closes its own
-    /// outcome window as unknown. That is a real client's situation, not a test
-    /// shortcut. The driver offers no way to say so — nothing abandons one
-    /// waiter — so the outcome is authored here and the future is kept, because
-    /// the driver may still resolve it with something worth observing.
+    /// A caller that runs out of rounds stops waiting and hands the write back
+    /// to the driver, which resolves this client with its own vocabulary and its
+    /// own allocated `LocalProposalId` — neither of which a caller could author.
+    /// That is a real client's situation, not a test shortcut, and the window it
+    /// closes is genuinely unknown: an appended entry may still commit.
     pub fn resolve(&mut self, mut pending: PendingSubmit, rounds: usize) -> SubmitOutcome {
         for _ in 0..rounds {
             if let Poll::Ready(outcome) = poll_once(&mut pending.future) {
@@ -552,8 +539,20 @@ impl LockCluster {
             self.observe_outcome(pending.node_id, &outcome);
             return self.record_completion(pending.operation_id, outcome);
         }
-        self.abandoned.push((pending.node_id, pending.future));
-        self.record_completion(pending.operation_id, caller_stopped_waiting())
+        let local_proposal_id = pending
+            .local_proposal_id
+            .expect("an unresolved write is one the driver named at submission");
+        assert!(
+            self.node(pending.node_id)
+                .driver
+                .abandon_write(local_proposal_id),
+            "an unresolved write is still the driver's to retire"
+        );
+        let Poll::Ready(outcome) = poll_once(&mut pending.future) else {
+            panic!("an abandoned write resolves its client before this returns");
+        };
+        self.observe_outcome(pending.node_id, &outcome);
+        self.record_completion(pending.operation_id, outcome)
     }
 
     /// Submits one command and waits for it under the default round budget.
@@ -570,16 +569,21 @@ impl LockCluster {
         if let Poll::Ready(outcome) = poll_once(&mut future) {
             future = Box::pin(std::future::ready(outcome));
         }
-        PendingQuery { node_id, future }
+        PendingQuery {
+            node_id,
+            read_id: newest_pending_read(&self.node(node_id).driver),
+            future,
+        }
     }
 
     /// Waits for a pending query for at most `rounds` driver rounds.
     ///
-    /// A barrier the driver lost (see [`LockCluster::drive_reads`]) is reported
-    /// with the driver's own typed error, because that is the only account of
-    /// it that exists. Otherwise the caller simply stopped waiting, and an
-    /// abandoned read is a terminal non-answer rather than an unknown outcome:
-    /// a read takes no effect, so there is nothing left to happen.
+    /// A caller that runs out of rounds hands the barrier back to the driver,
+    /// which cancels it through the group and resolves this client with its own
+    /// terminal vocabulary — including the `ReadId`, which the caller learns
+    /// from the driver rather than inventing. An abandoned read is a terminal
+    /// non-answer rather than an unknown outcome: a read takes no effect, so
+    /// there is nothing left to happen.
     pub fn resolve_query(
         &mut self,
         mut pending: PendingQuery,
@@ -594,12 +598,17 @@ impl LockCluster {
         if let Poll::Ready(outcome) = poll_once(&mut pending.future) {
             return outcome;
         }
-        let index = self.node_index(pending.node_id);
-        let error = self.nodes[index]
-            .lost_barrier
-            .take()
-            .unwrap_or_else(caller_stopped_reading);
-        QueryOutcome::Unavailable { error }
+        let read_id = pending
+            .read_id
+            .expect("an unresolved barrier is one the driver named at submission");
+        assert!(
+            self.node(pending.node_id).driver.abandon_read(read_id),
+            "an unresolved barrier is still the driver's to retire"
+        );
+        let Poll::Ready(outcome) = poll_once(&mut pending.future) else {
+            panic!("an abandoned barrier resolves its client before this returns");
+        };
+        outcome
     }
 
     /// Runs one linearizable `GetLock` under the default round budget.
@@ -622,27 +631,10 @@ impl LockCluster {
         self.state_machine(node_id).service().logical_time()
     }
 
-    /// Polls every future whose caller stopped waiting.
-    ///
-    /// Its terminal event is already in the history; this only observes what
-    /// the driver eventually had to say, which is how a replica reports that it
-    /// lost a proposal nobody was listening for any more.
-    fn poll_abandoned(&mut self) {
-        let mut retained = Vec::with_capacity(self.abandoned.len());
-        for (node_id, mut future) in std::mem::take(&mut self.abandoned) {
-            match poll_once(&mut future) {
-                Poll::Ready(outcome) => self.observe_outcome(node_id, &outcome),
-                Poll::Pending => retained.push((node_id, future)),
-            }
-        }
-        self.abandoned = retained;
-    }
-
     /// Records what a resolved write outcome said about the app layer.
     ///
     /// The driver hands the fact to whoever holds the client future and keeps
-    /// no count of its own, so this is the one place it is seen — whether the
-    /// caller was still waiting or had already walked away.
+    /// no count of its own, so this is the one place it is seen.
     fn observe_outcome(&mut self, node_id: NodeId, outcome: &SubmitOutcome) {
         if outcome_lost_its_proposal(outcome) {
             let index = self.node_index(node_id);
@@ -685,7 +677,6 @@ impl LockCluster {
 struct OpenedGroup {
     group: LockGroup,
     recovery_outputs: Vec<RaftOutput>,
-    runtime: SharedRuntime,
 }
 
 /// Returns empty durable storage for a replica that has never started.
@@ -708,7 +699,7 @@ fn open_group(
     peers: &[NodeId],
     election_timeout_ticks: u64,
     storage: LockStorage,
-    app: SharedStateMachine,
+    app: LockStateMachine,
 ) -> OpenedGroup {
     let config = NodeConfig::new(node_id, peers.to_vec(), election_timeout_ticks)
         .expect("three-node static configuration is valid");
@@ -724,37 +715,10 @@ fn open_group(
     )
     .expect("retained durable state reopens");
     let (node, recovery_outputs) = recovered.into_parts();
-    let runtime = SharedRuntime::new(node);
-    let group =
-        RaftGroup::with_applied_index(GROUP_ID, node_id, runtime.clone(), app, applied_index);
+    let group = RaftGroup::with_applied_index(GROUP_ID, node_id, node, app, applied_index);
     OpenedGroup {
         group,
         recovery_outputs,
-        runtime,
-    }
-}
-
-/// The outcome a client authors when it stops waiting for a write.
-///
-/// The driver has no term for this. `UnknownOutcomeReason::DriveBoundReached`
-/// is the closest one it publishes, and it names a *driver's* bound rather than
-/// a client's; the local proposal ID is unavailable for the same reason, since
-/// nothing exposes which one the driver allocated.
-fn caller_stopped_waiting() -> SubmitOutcome {
-    SubmitOutcome::Unknown {
-        error: WriteError::UnknownOutcome {
-            local_proposal_id: LocalProposalId(0),
-            client_request_id: None,
-            reason: UnknownOutcomeReason::DriveBoundReached,
-        },
-    }
-}
-
-/// The non-answer a client authors when it stops waiting for a barrier.
-fn caller_stopped_reading() -> ReadError {
-    ReadError::Abandoned {
-        read_id: ReadId(0),
-        reason: ReadAbandonReason::DriveBoundReached,
     }
 }
 
@@ -764,6 +728,25 @@ fn outcome_lost_its_proposal(outcome: &SubmitOutcome) -> bool {
         return false;
     };
     unknown_outcome_reason(error) == Some(UnknownOutcomeReason::RuntimeDroppedProposal)
+}
+
+/// Returns the ID of the write a driver most recently admitted.
+///
+/// Local proposal IDs are strictly increasing for a driver's lifetime, so the
+/// highest unresolved one is the write that was just started. `None` means the
+/// write resolved inside its first poll and has no waiter left to name.
+fn newest_pending_write(driver: &NodeDriver) -> Option<LocalProposalId> {
+    driver
+        .pending_writes()
+        .into_iter()
+        .map(|write| write.local_proposal_id)
+        .max()
+}
+
+/// Returns the ID of the barrier a driver most recently admitted, on the same
+/// monotonicity as [`newest_pending_write`].
+fn newest_pending_read(driver: &NodeDriver) -> Option<ReadId> {
+    driver.pending_reads().into_iter().max()
 }
 
 fn poll_once<T>(future: &mut Pin<Box<dyn Future<Output = T>>>) -> Poll<T> {
