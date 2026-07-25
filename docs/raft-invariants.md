@@ -100,7 +100,7 @@ scheduling properties that are not per-group Raft consensus properties.
 | `RD-01` | Only a current leader with a committed current-term entry may initiate/grant ReadIndex; pending reads are canceled on leadership loss or transfer. |
 | `RD-02` | A non-lease read is confirmed only by a quorum round at or after registration; delayed, zero-sequence, or pre-registration acknowledgements cannot satisfy it. |
 | `RD-03` | Every grant corresponds to a registered request and has read_index at least the cluster-wide committed floor observed at registration. |
-| `RD-04` | The application returns a read result only after its local applied index reaches the granted read index. |
+| `RD-04` | The application returns a read result only after the node's dispatch cursor reaches the granted read index and its state machine has applied every committed application entry at or below that index; "local applied index" names two distinct quantities here and each is stated separately. |
 | `RD-05` | Lease reads require pre-vote and check-quorum, a fresh quorum checkpoint, and a bounded lease window; stale acknowledgements cannot renew the lease and an isolated leader cannot use it. |
 | `RD-06` | Completed reads and writes admit a legal real-time-respecting sequential history; unknown write outcomes are not treated as absent. |
 | `PS-01` | Hard state, log, committed configuration, and snapshot mutations are durable before dependent peer sends, apply outputs, or successful client replies escape. |
@@ -267,9 +267,12 @@ named temporal or witness-based verdicts.
 | `RD-03` | `RD-03.a` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/persistence_read.rs#read_barrier_invariant_detects_unregistered_grant` |
 | `RD-03` | `RD-03.b` | tests | direct | `crates/rafter-sim/src/model_check/invariants/tests/persistence_read.rs#read_barrier_invariant_detects_grant_below_registration_floor` |
 | `RD-03` | `RD-03.a,RD-03.b` | tla | direct | `specs/tla/raft/Raft.tla#ReadBarrierLinearizability` |
-| `RD-04` | `RD-04.a` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
+| `RD-04` | `RD-04.a,RD-04.b` | maelstrom | e2e | `scripts/maelstrom-lin-kv#--workload lin-kv` |
 | `RD-04` | `RD-04.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/client.rs#check_client_history_read_write_invariants`; negative fixture `client_history_detects_completed_read_before_local_apply_floor` |
 | `RD-04` | `RD-04.a` | tests | direct | `crates/rafter-app/tests/group_read.rs#linearizable_read_helper_returns_result_when_barrier_grants` |
+| `RD-04` | `RD-04.b` | tests | direct | `crates/rafter-app/tests/group_read.rs#read_barrier_grants_when_the_read_index_is_a_non_application_entry` |
+| `RD-04` | `RD-04.b` | tests | direct | `crates/rafter-app/tests/group_read.rs#read_barrier_does_not_grant_while_an_application_entry_below_the_read_index_is_unapplied` |
+| `RD-04` | `RD-04.b` | tests | direct | `crates/rafter-maelstrom/src/raft/read_tests.rs#a_read_granted_at_a_noop_index_flushes_without_a_later_apply` |
 | `RD-05` | `RD-05.e` | maelstrom | e2e | `scripts/maelstrom-lin-kv-lease-isolation#RAFTER_MAELSTROM_RESTART_MODE` |
 | `RD-05` | `RD-05.b` | tests | direct | `crates/rafter/src/node/tests/read/lease.rs#a_confirmed_lease_grants_barriers_without_a_round_trip` |
 | `RD-05` | `RD-05.a` | tests | direct | `crates/rafter/src/node/tests/read/lease.rs#the_lease_opt_in_is_inert_without_its_safety_foundation` |
@@ -455,7 +458,8 @@ named temporal or witness-based verdicts.
 | `RD-02.d` | `RD-02` | An acknowledgement observed before registration cannot confirm a read. |
 | `RD-03.a` | `RD-03` | Every read grant corresponds to a registered request. |
 | `RD-03.b` | `RD-03` | Every read grant's read index is at least the cluster-wide committed floor observed at registration. |
-| `RD-04.a` | `RD-04` | The application returns a read result only after local applied index reaches the granted read index. |
+| `RD-04.a` | `RD-04` | The application returns a read result only after the node's dispatch cursor, which advances over every committed entry, reaches the granted read index. |
+| `RD-04.b` | `RD-04` | The application returns a read result only after its state machine has applied every committed application entry at or below the granted read index, and it is never held for an index the state machine cannot reach. |
 | `RD-05.a` | `RD-05` | Lease reads require both pre-vote and check-quorum. |
 | `RD-05.b` | `RD-05` | Only a fresh quorum checkpoint may establish or renew a lease. |
 | `RD-05.c` | `RD-05` | Every lease grant is bounded by the configured lease window. |
@@ -1178,14 +1182,15 @@ Next (future_strengthening): Already strong; unify duplicate simulator checks un
 
 Kind: safety. Tier: feature.
 
-Statement: The application returns a read result only after its local applied index reaches the granted read index.
+Statement: The application returns a read result only after the node's dispatch cursor reaches the granted read index and its state machine has applied every committed application entry at or below that index; "local applied index" names two distinct quantities here and each is stated separately.
 
 Scope: ReadIndex, lease-read, adapter, and client-history behavior for one Raft group.
 
-Assumptions: Sequence numbers and ticks are monotone; bounded lease conclusions use the configured tick duration and clock assumptions.
+Assumptions: Sequence numbers and ticks are monotone; bounded lease conclusions use the configured tick duration and clock assumptions. Only application entries reach a state machine, and its applied index advances in log order without gaps.
 
 Required clauses:
-- `RD-04.a`: The application returns a read result only after local applied index reaches the granted read index.
+- `RD-04.a`: The application returns a read result only after the node's dispatch cursor, which advances over every committed entry, reaches the granted read index.
+- `RD-04.b`: The application returns a read result only after its state machine has applied every committed application entry at or below the granted read index, and it is never held for an index the state machine cannot reach.
 
 Evidence now:
 - TLA+: none (no direct registry evidence in this layer)
@@ -1193,7 +1198,7 @@ Evidence now:
 - Tests: D: clause-bound executable evidence; see evidence references
 - Maelstrom: E2E: source-bound client-visible evidence; see evidence references
 
-Next (future_strengthening): Retain the adapter assertion and deliberately early-read simulator negative fixture.
+Next (future_strengthening): Retain the adapter assertion and deliberately early-read simulator negative fixture; keep the application-floor clause bound to its own app-layer and Maelstrom evidence rather than folding it back into the dispatch-cursor wording.
 
 #### `RD-05` Lease-read safety
 

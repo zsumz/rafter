@@ -1701,7 +1701,7 @@ and are corrected in place. The blast-radius table under
 | [`crates/rafter-runtime/src/lib.rs:777`](../crates/rafter-runtime/src/lib.rs) | `DurableRaftNode` | Real; bound the scan |
 | [`crates/rafter-app/tests/support/mod.rs:185,216-232`](../crates/rafter-app/tests/support/mod.rs) | `KernelRuntime` | Owns a real kernel; bound its scan the same way |
 | [`crates/rafter-app/tests/support/mod.rs:333,364-366`](../crates/rafter-app/tests/support/mod.rs) | `ScriptedRuntime` | No log; needs a scripted application-entry index set |
-| [`crates/rafter-service/tests/support/mod.rs:242,281-283`](../crates/rafter-service/tests/support/mod.rs) | `ScriptedReadRuntime` | Commits no application entry; still `ZERO`, now bounded |
+| [`crates/rafter-service/tests/support/mod.rs:242,281-283`](../crates/rafter-service/tests/support/mod.rs) | `ScriptedReadRuntime` | Models application entries through its commit index, so `min(index, commit_index)`; a new `GrantAtNonApplicationIndex` mode models the post-election log and answers `ZERO` |
 | [`crates/rafter-service/tests/support/mod.rs:370,409-411`](../crates/rafter-service/tests/support/mod.rs) | `ScriptedWriteRuntime` | Appends but never commits; still `ZERO` |
 | [`crates/rafter-service/tests/in_memory_write.rs:236,269-271`](../crates/rafter-service/tests/in_memory_write.rs) | `BatchRecordingRuntime` | Highest recorded index at or below the bound |
 | `bench-compare/src/bin/bench-rafter-service.rs:242`, `bench-rafter-multiraft.rs:261` | `RecordingRuntime` | Delegate |
@@ -1709,7 +1709,20 @@ and are corrected in place. The blast-radius table under
 `ScriptedRuntime` is the one that needs real thought: the whole
 `group_read*.rs` suite drives it, and it has no log to answer from. Giving it an
 explicit set of application-entry indexes is also what makes the mixed-log
-negative test writable.
+negative test writable. The set defaults to "every index is an application
+entry", which is what every fixture written before the floor existed assumed, so
+those fixtures keep their behavior with no rewrite. It also gains a per-step log
+reshape queue, because the group exposes its runtime only by shared reference
+and `read_barrier_floor_is_fixed_at_grant` must commit and compact *behind* a
+granted barrier.
+
+Two `ScriptedReadRuntime` rows above were corrected against the code. Answering
+a flat `ZERO` would have made the driver's freshness path unreachable from every
+existing fixture, deleting the coverage in
+[`in_memory_read.rs:78-98,100-123`](../crates/rafter-service/tests/in_memory_read.rs)
+that the pin table below requires to survive; the fake models a committed
+prefix of application entries instead, and a new mode models the post-election
+log the regression test needs.
 
 Tests that pin the current floor:
 
@@ -1739,9 +1752,23 @@ The `RD-04` restatement is a sharpening, not a weakening. `RD-04.a` keeps the
 existing sentence for the layer where "local applied index" means the kernel
 cursor, which is what the simulator and its negative fixture
 `client_history_detects_completed_read_before_local_apply_floor` actually
-measure. `RD-04.b` states the app-layer obligation the current wording made
-unsatisfiable. No TLA predicate is added, so the `tla_predicates_now: 9` ratchet
-and the four `.cfg` invariant blocks are untouched.
+measure — naming that quantity explicitly, since the ambiguity is why every
+oracle missed the defect. `RD-04.b` states the app-layer obligation the current
+wording made unsatisfiable. No TLA predicate is added, so the
+`tla_predicates_now: 9` ratchet and the four `.cfg` invariant blocks are
+untouched, and no catalog entry is added, so the `total_entries: 44` counts are
+untouched too.
+
+The three existing `RD-04` evidence rows stay where they are. The `lin-kv` row
+binds `RD-04.a,RD-04.b` rather than being duplicated: one Maelstrom run
+evidences both clauses, which is the same shape `RD-03` and `RD-06` already use,
+and duplicating it would assert two runs that do not exist. That row is a
+clause-bound record, so the reviewed Maelstrom receipt policy in
+[`crates/rafter-invariants/src/verification/maelstrom/receipt/mod.rs:32-35`](../crates/rafter-invariants/src/verification/maelstrom/receipt/mod.rs)
+counts twenty rather than nineteen; the scenario count stays at six. The
+kernel's module-doc edit also rotates the reviewed detector-replay inventory
+pin, since the `rafter` lib is one of the two replay targets and the fingerprint
+covers file contents.
 
 `rafter-multiraft` and `rafter-sim` need no change: the former only forwards
 read events, and the latter measures the kernel cursor. Its `register_value_at`
@@ -1807,11 +1834,13 @@ In `crates/rafter-service/tests/in_memory_read.rs`:
   production regression. Today the managed driver returns
   `ReadError::FreshnessUnavailable` here.
 
-In `crates/rafter-maelstrom`:
+In `crates/rafter-maelstrom`, as `src/raft/read_tests.rs`:
 
 - `a_read_granted_at_a_noop_index_flushes_without_a_later_apply` — the same
-  regression at the kernel-direct gate, plus coverage that a stalled read is
-  re-examined without an apply to trigger it.
+  regression at the kernel-direct gate.
+- `a_stalled_read_is_reexamined_by_a_tick_with_no_apply_to_trigger_it` — the
+  second half of that coverage, split out because it is a separate claim about
+  the tick loop rather than about the floor.
 
 In `reference/fenced-lock/tests/adapter_cluster.rs`:
 

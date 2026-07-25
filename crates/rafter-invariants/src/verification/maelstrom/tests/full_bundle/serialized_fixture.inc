@@ -102,7 +102,10 @@ fn canonical_counterexample_intake(
             .map(|check| &check.check_id)
             .collect::<Vec<_>>()
     );
-    assert_eq!(maelstrom.results.len(), 19);
+    // One result per clause-bound Maelstrom record; the lin-kv scenario carries
+    // both RD-04 clauses since one run evidences the dispatch floor and the
+    // application floor together.
+    assert_eq!(maelstrom.results.len(), 20);
     let execution_id = maelstrom
         .results
         .iter()

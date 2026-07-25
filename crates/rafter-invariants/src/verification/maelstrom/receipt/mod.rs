@@ -28,9 +28,9 @@ pub(crate) fn validate(
             )
         })
         .collect::<BTreeMap<_, _>>();
-    if required.len() != 19 || bundle.execution.checks.len() != 6 {
+    if required.len() != 20 || bundle.execution.checks.len() != 6 {
         return Err(
-            "Maelstrom receipt must contain six scenarios covering nineteen clause-bound E2E records",
+            "Maelstrom receipt must contain six scenarios covering twenty clause-bound E2E records",
         );
     }
     let rd06 = expected
