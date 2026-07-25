@@ -2,10 +2,10 @@
 
 Status: second reference-consumer contract for Rafter 1.0 API discovery.
 
-This crate begins as a dependency-free deterministic lock service. It does not
-use Rafter yet. A later slice will integrate this exact application contract
-through Rafter's public crates and record every seam that is missing, awkward,
-or product-specific.
+This crate began as a dependency-free deterministic lock service and now carries
+that same application contract onto Rafter's public crates, over a durable
+transactional backend of its own. Every seam that proves missing, awkward, or
+product-specific is recorded as it is found.
 
 The lock service is deliberately small. It exists to prove:
 
@@ -405,8 +405,22 @@ Restoring it validates configured bounds, client-slot ownership and range,
 uniqueness, cached-fingerprint agreement, the expiry invariant, and the
 held-token/high-water-mark equality.
 
-The durable adapter will later define a versioned byte representation. Its
-application transaction must atomically persist:
+The durable adapter defines the versioned byte representation. There is exactly
+one: the frame the application snapshot carries is the same frame the durable
+store commits. The contract enumerates one set of facts for both, so a second
+encoding would be a second chance to forget a high-water mark.
+
+Compaction must never make an acknowledged command executable again, and must
+never lower a high-water mark.
+
+## Durable Backend
+
+The durable composition keeps the lock service in a consumer-owned transactional
+store. The store is an implementation choice; everything in this section is not.
+
+### Transaction boundary
+
+One transaction atomically commits:
 
 ```text
 lock table mutations
@@ -417,8 +431,117 @@ replicated logical time
 applied Raft index
 ```
 
-Compaction must never make an acknowledged command executable again, and must
-never lower a high-water mark.
+All of it or none of it. There is no recoverable state in which a lock moved
+without the cached result that explains it, or in which the applied index moved
+without the data it names.
+
+Applying a batch and installing a snapshot are the same transaction with
+different applied-index rules. An apply must strictly advance the applied index;
+an install may republish the current one, because adopting the state a replica
+already holds must not require inventing an index. Neither may lower it.
+
+The transaction commits before `apply_batch` returns, so a client's reply — and
+any fencing token inside it — can only follow the commit point.
+
+### Format discipline
+
+The on-disk representation is versioned, self-describing, and checksummed. Every
+record declares a magic and a format version, and a build that does not
+recognize either refuses the artifact rather than reinterpreting it. Checksums
+are accidental-corruption checks, not authentication tags.
+
+A durable artifact records the `LockConfig` it was written under. Opening it
+under different bounds is refused, because the bounds decide which states are
+valid and a smaller resource bound would describe a service that could evict a
+mark.
+
+The applied Raft index appears both in the framing a recovery reads without
+decoding and in the payload the snapshot install path checks. An artifact whose
+two copies disagree is refused rather than reconciled.
+
+A committed payload is restored through the pure model's own validating restore.
+Verified bytes are not a licence to skip the invariant checks: a state that
+breaks the expiry invariant or the held-token/high-water-mark equality is
+refused however well sealed it is.
+
+### Crash windows
+
+Crash points cover every byte boundary before, during, and after the
+transaction, including the interval after application persistence but before a
+client reply. That last window is real and is answered by the deduplication
+cache: the client retries the same request identity and receives the token the
+crashed run minted, rather than a second token for one tenure.
+
+A crash at any byte boundary leaves the store recoverable to exactly the
+pre-transaction or the post-transaction state, never between. A failure reported
+by the store means the outcome is unknown; reopening is the only thing that
+decides it, and no caller may infer from an error that no bytes changed.
+
+After a failed publication the handle is poisoned and refuses every later
+transaction until it is reopened. A store that failed part way through
+publishing cannot describe its own artifact.
+
+### Recovery guarantees
+
+Recovery is the oracle for every interrupted transaction. It reports what it
+found, and its report is evidence a test asserts on rather than a diagnostic:
+a crash test that could not show which window it reproduced would prove only
+that an uninterrupted store works.
+
+Recovery never repairs and never guesses. An unreadable artifact is not adopted,
+and the next transaction supersedes it.
+
+Recovery fails closed rather than starting empty when it can tell that a
+committed state existed and has become unreadable. A lock service that opened
+empty would hand out token 1 for a resource whose guarded downstream has already
+accepted a far higher token, which is worse than not starting at all. A store
+that has never committed is a different case and opens normally.
+
+### Mark durability
+
+This is the statement the whole durable design exists to keep:
+
+> A recovered store must never issue a fencing token at or below any per-resource
+> high-water mark it has ever durably acknowledged.
+
+It holds across every path: apply, crash, recovery, replay, snapshot build,
+snapshot install, and restart. A resource that disappears from the state is the
+same violation as one whose mark decreases, and both are refused.
+
+The durability boundary enforces it directly rather than trusting the model to
+have been right. No transaction that would lower or drop an acknowledged mark is
+published, and no recovered artifact that lowers one is adopted. These checks do
+not replace the model's bookkeeping — the pure lock service remains the semantic
+authority on which token a resource issues next — they refuse to make a
+contradiction durable.
+
+The property is asserted against the independent guarded resource, which knows
+nothing about locks, sessions, or storage. If any recovery path lost a mark, the
+next acquisition would mint a token the guard had already accepted and the guard
+would refuse the current owner. That refusal is the observable form of the
+failure fencing exists to prevent, and no aggregate check substitutes for it.
+
+### What the durable slice does not close
+
+Process-per-node composition is deferred. Every replica in these tests runs in
+one process over its own store directory, and Raft's own durable state is still
+modeled by in-memory stores handed between incarnations. Restart is therefore
+real for the application and modeled for Raft.
+
+Two consequences follow and are stated rather than left to be discovered.
+Exclusive ownership of a store directory is assumed, not enforced; a real
+deployment needs a lock that only a process composition can take. And a crash
+test that never leaves its process reads its own writes back through the page
+cache, so it proves which bytes reached the file and what a fresh opener makes
+of them, but it does not prove that a durability barrier reached the medium.
+Those barriers are justified by the ordering argument in the store's own
+documentation and by review. A power-loss claim on a particular filesystem needs
+evidence this suite does not supply.
+
+Raft log compaction driven through the managed service is deferred with the
+process half for the same reason. The application's participation in compaction
+— building a snapshot at its own applied index, and installing one without
+making an acknowledged command executable again — is covered here.
 
 ## History Vocabulary
 

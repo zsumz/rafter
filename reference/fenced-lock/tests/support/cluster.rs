@@ -18,8 +18,22 @@
 //! state machine and durable log are read through
 //! [`TransportRaftDriver::with_group`], which borrows the group under the
 //! driver's own lock, so no replica is wrapped in anything to be observable.
+//!
+//! The driver is generic over the application each replica serves, because the
+//! two lock state machines differ only in where their state lives. An in-memory
+//! replica keeps its service in the value the retiring group hands back; a
+//! durable replica drops that value and reopens its own slot files, which is
+//! what a restarting process actually does. [`LockApps`] is the seam:
+//! everything else in this file — delivery, isolation, elections, history
+//! recording — is identical for both.
+//!
+//! One thing is still deliberately modeled rather than real. Durable Raft state
+//! lives in in-memory stores that a retiring runtime hands back to the
+//! incarnation replacing it, and every replica runs in one process. Durable
+//! process composition arrives with a later slice.
 
 use std::{
+    collections::BTreeMap,
     fmt,
     future::Future,
     pin::Pin,
@@ -34,19 +48,110 @@ use rafter_app::{
     state_machine::ReplicatedStateMachine,
 };
 use rafter_reference_fenced_lock::{
-    unknown_outcome_reason, Command, HistoryEvent, LockClient, LockConfig, LockStateMachine,
-    LogicalTime, OperationId, QueryOutcome, ResourceName, SubmitOutcome,
+    unknown_outcome_reason, ApplyOutcome, Command, DurableLockStateMachine, HistoryEvent,
+    LockClient, LockConfig, LockQuery, LockQueryResult, LockService, LockStateMachine, LogicalTime,
+    OperationId, QueryOutcome, ResourceName, ResourceStatus, ServiceView, SubmitOutcome,
 };
 use rafter_runtime::{DurableRaftNode, DurableRaftNodeStorage};
 use rafter_service::{
-    InboundEnvelopeError, MetricsWatch, TransportDriverOptions, TransportRaftDriver,
-    UnknownOutcomeReason,
+    InboundEnvelopeError, ManagedDriverError, MetricsWatch, TransportDriverOptions,
+    TransportRaftDriver, UnknownOutcomeReason,
 };
 use rafter_storage::{
     InMemoryRaftHardStateStore, InMemoryRaftLogSegment, InMemoryRaftSnapshotStore,
 };
 
 use crate::transport::{DeterministicNetwork, NodeTransport, PeerDirectory};
+
+/// The application contract every replica in this driver serves.
+///
+/// This names the lock service's application vocabulary without naming which
+/// state machine provides it. It pins the associated types so the driver's
+/// reports and history stay concrete, and it adds exactly one method.
+///
+/// That method exists because of a real property of the managed driver rather
+/// than for convenience. [`TransportRaftDriver::with_group`] lends its group
+/// only for the length of a closure and never returns a borrow that outlives
+/// it, so unlike a hand-rolled group owner this cluster cannot hand a test back
+/// a `&A::App`. Requiring one read accessor keeps every state comparison in
+/// this file uniform across the two compositions instead of making the
+/// in-memory machine `Clone` a precondition for being observable.
+/// `Send + 'static` is not this file's requirement. It is
+/// [`TransportRaftDriver`]'s, because a managed service resolves a client
+/// waiter on a different task from the one that stepped the group.
+pub trait LockApp:
+    ReplicatedStateMachine<
+        Command = Command,
+        CommandResult = ApplyOutcome,
+        Query = LockQuery,
+        QueryResult = LockQueryResult,
+    > + fmt::Debug
+    + Send
+    + 'static
+{
+    /// Returns the lock service this machine drives.
+    fn lock_service(&self) -> &LockService;
+}
+
+impl LockApp for LockStateMachine {
+    fn lock_service(&self) -> &LockService {
+        self.service()
+    }
+}
+
+impl LockApp for DurableLockStateMachine {
+    fn lock_service(&self) -> &LockService {
+        self.service()
+    }
+}
+
+/// Supplies each replica's application and reopens it across a restart.
+///
+/// `reopen` is where the two compositions genuinely differ, and the difference
+/// is the point: an in-memory replica's state survives because the value does,
+/// while a durable replica's state — including every fencing high-water mark —
+/// survives because its slot files do. A test that restarts a durable replica
+/// must be dropping the value, or it is proving nothing about durability.
+pub trait LockApps: fmt::Debug {
+    /// The application this factory opens.
+    type App: LockApp;
+
+    /// Whether a replica's application can fail a driver step.
+    ///
+    /// An in-memory lock service cannot: it has no medium to fail on, so a
+    /// refused step is a defect and this driver panics on it rather than
+    /// recording a crash and carrying on with a quietly empty cluster. A
+    /// durable composition can, and interrupting one is the whole point of its
+    /// crash suite, so it opts in and the failure becomes an observation a test
+    /// asserts on.
+    const APPLICATIONS_CAN_FAIL: bool = false;
+
+    /// Opens the application for a replica starting for the first time.
+    fn open(&mut self, node_id: NodeId) -> Self::App;
+
+    /// Reopens a restarting replica's application.
+    fn reopen(&mut self, node_id: NodeId, retired: Self::App) -> Self::App;
+}
+
+/// Applications that keep their lock service in memory.
+#[derive(Clone, Copy, Debug)]
+pub struct InMemoryLockApps {
+    config: LockConfig,
+}
+
+impl LockApps for InMemoryLockApps {
+    type App = LockStateMachine;
+
+    fn open(&mut self, _node_id: NodeId) -> Self::App {
+        LockStateMachine::new(self.config)
+    }
+
+    /// An in-memory replica recovers because the retiring group handed its
+    /// state machine back, applied index and all.
+    fn reopen(&mut self, _node_id: NodeId, retired: Self::App) -> Self::App {
+        retired
+    }
+}
 
 /// Bound on driver rounds spent waiting for one outcome.
 ///
@@ -81,10 +186,10 @@ type LockNode =
 /// Over the lock's own types rather than wrappers of them: the driver borrows
 /// the group it owns, so nothing has to be shared with the cluster to stay
 /// visible.
-pub type NodeDriver =
-    TransportRaftDriver<LockGroupId, LockStateMachine, LockNode, NodeTransport, PeerDirectory>;
+pub type NodeDriver<A> =
+    TransportRaftDriver<LockGroupId, A, LockNode, NodeTransport, PeerDirectory>;
 
-type LockGroup = RaftGroup<LockGroupId, LockStateMachine, LockNode>;
+type LockGroup<A> = RaftGroup<LockGroupId, A, LockNode>;
 
 /// Terminal client outcomes are carried by the application's own vocabulary,
 /// so the cluster records history against these rather than raw receipts.
@@ -128,12 +233,12 @@ impl fmt::Debug for PendingQuery {
 }
 
 #[derive(Debug)]
-struct ClusterNode {
+struct ClusterNode<A: LockApp> {
     node_id: NodeId,
     peers: Vec<NodeId>,
     election_timeout_ticks: u64,
-    driver: NodeDriver,
-    client: LockClient<LockGroupId, NodeDriver>,
+    driver: NodeDriver<A>,
+    client: LockClient<LockGroupId, NodeDriver<A>>,
     metrics: MetricsWatch<LockGroupId>,
     /// Proposals the app layer itself declared unresolvable.
     /// See [`LockCluster::runtime_unknown_outcomes`].
@@ -141,29 +246,40 @@ struct ClusterNode {
 }
 
 /// Deterministic three-node lock cluster with explicit delivery control.
-pub struct LockCluster {
+pub struct LockCluster<A: LockApps = InMemoryLockApps> {
     config: LockConfig,
     network: DeterministicNetwork,
-    nodes: Vec<ClusterNode>,
+    nodes: Vec<ClusterNode<A::App>>,
+    apps: A,
+    /// Replicas whose application failed, with what each one reported.
+    crashed: BTreeMap<NodeId, String>,
     history: Vec<HistoryEvent>,
     next_operation_id: u64,
 }
 
-impl fmt::Debug for LockCluster {
+impl<A: LockApps> fmt::Debug for LockCluster<A> {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("LockCluster")
             .field("config", &self.config)
             .field("nodes", &self.nodes)
+            .field("crashed", &self.crashed)
             .field("history", &self.history)
             .finish_non_exhaustive()
     }
 }
 
-impl LockCluster {
+impl LockCluster<InMemoryLockApps> {
+    /// Builds three replicas whose lock services live in memory.
+    pub fn new(config: LockConfig) -> Self {
+        Self::with_apps(config, InMemoryLockApps { config })
+    }
+}
+
+impl<A: LockApps> LockCluster<A> {
     /// Builds three replicas whose election timeouts make every uncontested
     /// election deterministic: the lowest-numbered reachable node wins.
-    pub fn new(config: LockConfig) -> Self {
+    pub fn with_apps(config: LockConfig, mut apps: A) -> Self {
         let network = DeterministicNetwork::new();
         let all_nodes = [NodeId(1), NodeId(2), NodeId(3)];
         let nodes = [(NodeId(1), 4), (NodeId(2), 6), (NodeId(3), 8)]
@@ -181,7 +297,7 @@ impl LockCluster {
                     &peers,
                     election_timeout_ticks,
                     empty_storage(),
-                    LockStateMachine::new(config),
+                    apps.open(node_id),
                 );
                 // A first incarnation hands its recovery outputs to the driver
                 // exactly as a restart does, so a replica that recovered a
@@ -215,6 +331,8 @@ impl LockCluster {
             config,
             network,
             nodes,
+            apps,
+            crashed: BTreeMap::new(),
             history: Vec::new(),
             next_operation_id: 1,
         }
@@ -223,6 +341,41 @@ impl LockCluster {
     /// Returns the configured lock bounds shared by every replica.
     pub fn config(&self) -> LockConfig {
         self.config
+    }
+
+    /// Returns the replicas whose durable application failed, with what each
+    /// one reported.
+    ///
+    /// A test that does not expect a crash must assert this is empty. The
+    /// driver records a refused step instead of panicking, so a regression that
+    /// broke every replica would otherwise leave a suite green with an empty
+    /// cluster quietly doing nothing.
+    pub fn crashed(&self) -> Vec<(NodeId, &str)> {
+        self.crashed
+            .iter()
+            .map(|(node_id, reason)| (*node_id, reason.as_str()))
+            .collect()
+    }
+
+    /// Whether a replica's application has failed and it needs a restart.
+    ///
+    /// A crashed replica is not a partitioned one. Its process is still up and
+    /// its transport still works, but its group is poisoned, so it neither
+    /// ticks nor applies until a restart reopens it.
+    pub fn is_crashed(&self, node_id: NodeId) -> bool {
+        self.crashed.contains_key(&node_id)
+    }
+
+    /// Reads one replica's state machine under the driver's own lock.
+    ///
+    /// This is the general accessor, and it works on a crashed replica too:
+    /// borrowing the group never checks poison, which is what lets a test ask a
+    /// failed replica what it durably holds.
+    pub fn with_state_machine<R>(&self, node_id: NodeId, read: impl FnOnce(&A::App) -> R) -> R {
+        self.node(node_id)
+            .driver
+            .with_group(|group| read(group.state_machine()))
+            .expect("a running replica holds its group")
     }
 
     /// Returns the recorded client history.
@@ -236,20 +389,23 @@ impl LockCluster {
     }
 
     /// Returns one replica's managed lock client.
-    pub fn client(&self, node_id: NodeId) -> &LockClient<LockGroupId, NodeDriver> {
+    pub fn client(&self, node_id: NodeId) -> &LockClient<LockGroupId, NodeDriver<A::App>> {
         &self.node(node_id).client
     }
 
     /// Returns one replica's managed driver.
-    pub fn driver(&self, node_id: NodeId) -> &NodeDriver {
+    pub fn driver(&self, node_id: NodeId) -> &NodeDriver<A::App> {
         &self.node(node_id).driver
     }
 
     /// Returns the reachable leader with the highest term, if one exists.
+    ///
+    /// A crashed replica is never a leader: its group stopped stepping, so
+    /// whatever role its last successful round published is stale.
     pub fn leader(&self) -> Option<NodeId> {
         self.nodes
             .iter()
-            .filter(|node| self.network.reaches(node.node_id))
+            .filter(|node| self.network.reaches(node.node_id) && !self.is_crashed(node.node_id))
             .filter_map(|node| {
                 let metrics = node.metrics.current();
                 (metrics.role == Role::Leader).then_some((metrics.term, node.node_id))
@@ -266,23 +422,22 @@ impl LockCluster {
         self.node(node_id).metrics.current().role == Role::Leader
     }
 
-    /// Returns a copy of one replica's state machine.
-    ///
-    /// The driver borrows the group it owns for the length of the closure, so a
-    /// running replica is readable without retiring it and without the cluster
-    /// holding a second handle to anything.
-    pub fn state_machine(&self, node_id: NodeId) -> LockStateMachine {
-        self.node(node_id)
-            .driver
-            .with_group(|group| group.state_machine().clone())
-            .expect("a running replica holds its group")
-    }
-
     /// Returns the replica's applied index.
     pub fn applied_index(&self, node_id: NodeId) -> LogIndex {
-        self.state_machine(node_id)
-            .applied_index()
-            .expect("lock state machines always report an applied index")
+        self.with_state_machine(node_id, |app| {
+            app.applied_index()
+                .expect("lock state machines always report an applied index")
+        })
+    }
+
+    /// Returns the canonical lock state one replica has applied.
+    pub fn service_view(&self, node_id: NodeId) -> ServiceView {
+        self.with_state_machine(node_id, |app| app.lock_service().view())
+    }
+
+    /// Returns one resource's status as one replica holds it.
+    pub fn lock_status(&self, node_id: NodeId, resource: ResourceName) -> ResourceStatus {
+        self.with_state_machine(node_id, |app| app.lock_service().status(resource))
     }
 
     /// Returns the index a replica's state machine must reach to have applied
@@ -364,6 +519,7 @@ impl LockCluster {
         for _ in 0..MAX_ROUNDS {
             let converged = self.node_ids().into_iter().all(|node_id| {
                 !self.network.reaches(node_id)
+                    || self.is_crashed(node_id)
                     || self.applied_index(node_id) >= self.committed_application_index(node_id)
             });
             if converged && self.network.is_idle() {
@@ -389,10 +545,16 @@ impl LockCluster {
     ///
     /// A partitioned replica is not a stopped replica. It keeps ticking, keeps
     /// offering frames its transport refuses, and keeps believing whatever its
-    /// last successful round told it.
+    /// last successful round told it. A *crashed* replica is different: its
+    /// application failed, its group is poisoned, and it is skipped until a
+    /// restart reopens it.
     pub fn tick_all(&mut self) {
-        for node in &self.nodes {
-            node.driver.tick().expect("a healthy group accepts ticks");
+        for node_id in self.node_ids() {
+            if self.is_crashed(node_id) {
+                continue;
+            }
+            let outcome = self.node(node_id).driver.tick();
+            self.record_step(node_id, outcome);
         }
     }
 
@@ -404,12 +566,19 @@ impl LockCluster {
                 return;
             }
             for envelope in batch {
-                let driver = &self.node(envelope.raft_to).driver;
+                let node_id = envelope.raft_to;
+                if self.is_crashed(node_id) {
+                    continue;
+                }
                 // A frame that fails this replica's own authentication policy is
                 // refused inside the driver, before the group is stepped, which
                 // is exactly where a production embedder refuses it.
-                match driver.deliver(envelope) {
+                match self.node(node_id).driver.deliver(envelope) {
                     Ok(()) | Err(InboundEnvelopeError::Rejected { .. }) => {}
+                    // An application that could not make a committed entry
+                    // durable poisons its group. That is a crashed replica, not
+                    // a malformed frame, and the driver reports it here.
+                    Err(InboundEnvelopeError::Driver { source }) => self.crash(node_id, &source),
                     Err(error) => panic!("a healthy group accepts validated frames: {error}"),
                 }
             }
@@ -424,11 +593,35 @@ impl LockCluster {
     /// barrier the cluster rejected or cancelled needs nothing from here: the
     /// step that observed it resolved its client already.
     pub fn drive_reads(&mut self) {
-        for node in &self.nodes {
-            node.driver
-                .drive_pending_reads()
-                .expect("a running replica collects its own granted proofs");
+        for node_id in self.node_ids() {
+            if self.is_crashed(node_id) {
+                continue;
+            }
+            let outcome = self.node(node_id).driver.drive_pending_reads();
+            self.record_step(node_id, outcome);
         }
+    }
+
+    /// Records a driver step's outcome, marking the replica crashed on failure.
+    fn record_step(&mut self, node_id: NodeId, outcome: Result<(), ManagedDriverError>) {
+        if let Err(error) = outcome {
+            self.crash(node_id, &error);
+        }
+    }
+
+    /// Marks a replica crashed, keeping the first failure it reported.
+    ///
+    /// The first one is the interesting one: every later step on a poisoned
+    /// group reports the poison rather than what caused it.
+    fn crash(&mut self, node_id: NodeId, error: &ManagedDriverError) {
+        assert!(
+            A::APPLICATIONS_CAN_FAIL,
+            "replica {} failed a driver step in a composition whose application cannot fail: {error}",
+            node_id.0
+        );
+        self.crashed
+            .entry(node_id)
+            .or_insert_with(|| error.to_string());
     }
 
     /// Cuts every link to and from `node_id`.
@@ -446,7 +639,7 @@ impl LockCluster {
         self.network.heal();
     }
 
-    /// Restarts one replica over its retained durable media.
+    /// Restarts one replica over its retained durable media, clearing a crash.
     ///
     /// The driver owns the movable slot, so the recipe is release, decompose,
     /// recover, adopt. `release_group` retires the running incarnation and
@@ -475,6 +668,11 @@ impl LockCluster {
             runtime,
             ..
         } = group.into_parts();
+        // The application is reopened rather than carried across. For a durable
+        // replica that means the retiring value is dropped and everything the
+        // new incarnation knows — including every fencing high-water mark — is
+        // read back from its slot files.
+        let state_machine = self.apps.reopen(node_id, state_machine);
         // The returned ID watermarks are deliberately unused. They are
         // load-bearing only when the same runtime is carried into the new
         // group; this replica drops that runtime and rebuilds one from the
@@ -495,6 +693,7 @@ impl LockCluster {
             .driver
             .adopt_group(opened.group, opened.recovery_outputs)
             .expect("the reopened incarnation installs and its outputs apply");
+        self.crashed.remove(&node_id);
     }
 
     /// Invokes one command against `node_id` without waiting for it.
@@ -628,7 +827,7 @@ impl LockCluster {
 
     /// Returns replicated logical time as one replica has applied it.
     pub fn logical_time(&self, node_id: NodeId) -> LogicalTime {
-        self.state_machine(node_id).service().logical_time()
+        self.with_state_machine(node_id, |app| app.lock_service().logical_time())
     }
 
     /// Records what a resolved write outcome said about the app layer.
@@ -661,7 +860,7 @@ impl LockCluster {
         outcome
     }
 
-    fn node(&self, node_id: NodeId) -> &ClusterNode {
+    fn node(&self, node_id: NodeId) -> &ClusterNode<A::App> {
         &self.nodes[self.node_index(node_id)]
     }
 
@@ -674,8 +873,8 @@ impl LockCluster {
 }
 
 /// One replica's incarnation, before a driver takes it.
-struct OpenedGroup {
-    group: LockGroup,
+struct OpenedGroup<A: LockApp> {
+    group: LockGroup<A>,
     recovery_outputs: Vec<RaftOutput>,
 }
 
@@ -683,9 +882,8 @@ struct OpenedGroup {
 ///
 /// Only a replica that has never started gets this. Every later incarnation
 /// recovers from the stores `DurableRaftNode::into_storage` returned, including
-/// the snapshot store — which this slice's state machine never writes, because
-/// it declares no snapshot support, but which is still its own medium rather
-/// than something a restart may quietly replace.
+/// the snapshot store, which is its own medium rather than something a restart
+/// may quietly replace.
 fn empty_storage() -> LockStorage {
     LockStorage {
         hard_state_store: InMemoryRaftHardStateStore::default(),
@@ -694,13 +892,13 @@ fn empty_storage() -> LockStorage {
     }
 }
 
-fn open_group(
+fn open_group<A: LockApp>(
     node_id: NodeId,
     peers: &[NodeId],
     election_timeout_ticks: u64,
     storage: LockStorage,
-    app: LockStateMachine,
-) -> OpenedGroup {
+    app: A,
+) -> OpenedGroup<A> {
     let config = NodeConfig::new(node_id, peers.to_vec(), election_timeout_ticks)
         .expect("three-node static configuration is valid");
     let applied_index = app
@@ -735,7 +933,7 @@ fn outcome_lost_its_proposal(outcome: &SubmitOutcome) -> bool {
 /// Local proposal IDs are strictly increasing for a driver's lifetime, so the
 /// highest unresolved one is the write that was just started. `None` means the
 /// write resolved inside its first poll and has no waiter left to name.
-fn newest_pending_write(driver: &NodeDriver) -> Option<LocalProposalId> {
+fn newest_pending_write<A: LockApp>(driver: &NodeDriver<A>) -> Option<LocalProposalId> {
     driver
         .pending_writes()
         .into_iter()
@@ -745,7 +943,7 @@ fn newest_pending_write(driver: &NodeDriver) -> Option<LocalProposalId> {
 
 /// Returns the ID of the barrier a driver most recently admitted, on the same
 /// monotonicity as [`newest_pending_write`].
-fn newest_pending_read(driver: &NodeDriver) -> Option<ReadId> {
+fn newest_pending_read<A: LockApp>(driver: &NodeDriver<A>) -> Option<ReadId> {
     driver.pending_reads().into_iter().max()
 }
 

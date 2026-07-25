@@ -7,21 +7,28 @@
 //! the independent oracle.
 
 mod client;
-mod codec;
+pub(crate) mod codec;
+mod discipline;
+mod durable;
 
 use std::{error::Error, fmt};
 
 use rafter::LogIndex;
 use rafter_app::state_machine::{
-    ApplyBatch, ApplyResult, ReadBarrier, ReplicatedStateMachine, SnapshotSupport,
+    ApplicationSnapshot, ApplicationSnapshotError, ApplyBatch, ApplyResult, ReadBarrier,
+    ReplicatedStateMachine, SnapshotSupport,
 };
 
-use crate::{ApplyOutcome, Command, LockConfig, LockService, ResourceName, ResourceStatus};
+use crate::{
+    ApplyOutcome, Command, LockConfig, LockService, ResourceName, ResourceStatus, SnapshotError,
+};
 
 pub use client::{unknown_outcome_reason, LockClient, LockHandle, QueryOutcome, SubmitOutcome};
 pub use codec::{
-    decode_command, decode_result, encode_command, encode_result, LockCodecError, NonZeroField,
+    decode_command, decode_result, decode_snapshot, encode_command, encode_result, encode_snapshot,
+    LockCodecError, NonZeroField,
 };
+pub use durable::{DurableLockError, DurableLockStateMachine};
 
 /// Query accepted by the lock service read path.
 ///
@@ -75,6 +82,28 @@ pub enum LockAdapterError {
         required_applied_index: LogIndex,
         applied_index: LogIndex,
     },
+    /// A snapshot was requested at an index this replica cannot reproduce.
+    SnapshotIndexUnavailable {
+        requested_index: LogIndex,
+        applied_index: LogIndex,
+    },
+    /// An install would move the durable applied floor backwards.
+    ///
+    /// Adopting it would make acknowledged commands executable again and could
+    /// lower a fencing high-water mark.
+    SnapshotBehindAppliedIndex {
+        snapshot_index: LogIndex,
+        applied_index: LogIndex,
+    },
+    /// An install carried no inline application payload.
+    SnapshotPayloadUnavailable { applied_index: LogIndex },
+    /// An install's payload names a different index than its descriptor.
+    SnapshotIndexMismatch {
+        payload_index: LogIndex,
+        declared_index: LogIndex,
+    },
+    /// A snapshot's contents violate a lock service invariant.
+    Snapshot(SnapshotError),
 }
 
 impl fmt::Display for LockAdapterError {
@@ -95,6 +124,32 @@ impl fmt::Display for LockAdapterError {
                 formatter,
                 "read barrier requires applied index {required_applied_index}, but this replica applied {applied_index}"
             ),
+            Self::SnapshotIndexUnavailable {
+                requested_index,
+                applied_index,
+            } => write!(
+                formatter,
+                "snapshot requested at index {requested_index}, but this replica holds the state of {applied_index}"
+            ),
+            Self::SnapshotBehindAppliedIndex {
+                snapshot_index,
+                applied_index,
+            } => write!(
+                formatter,
+                "snapshot at index {snapshot_index} is behind applied index {applied_index}"
+            ),
+            Self::SnapshotPayloadUnavailable { applied_index } => write!(
+                formatter,
+                "snapshot at index {applied_index} carries no inline application payload"
+            ),
+            Self::SnapshotIndexMismatch {
+                payload_index,
+                declared_index,
+            } => write!(
+                formatter,
+                "snapshot payload names index {payload_index} but was declared at {declared_index}"
+            ),
+            Self::Snapshot(error) => write!(formatter, "invalid lock snapshot: {error:?}"),
         }
     }
 }
@@ -103,7 +158,13 @@ impl Error for LockAdapterError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Codec(error) => Some(error),
-            Self::AppliedIndexRegression { .. } | Self::ReadBarrierUnsatisfied { .. } => None,
+            Self::AppliedIndexRegression { .. }
+            | Self::ReadBarrierUnsatisfied { .. }
+            | Self::SnapshotIndexUnavailable { .. }
+            | Self::SnapshotBehindAppliedIndex { .. }
+            | Self::SnapshotPayloadUnavailable { .. }
+            | Self::SnapshotIndexMismatch { .. }
+            | Self::Snapshot(_) => None,
         }
     }
 }
@@ -159,15 +220,12 @@ impl ReplicatedStateMachine for LockStateMachine {
     type QueryResult = LockQueryResult;
     type Error = LockAdapterError;
 
-    /// Declared `Unsupported`: `CONTRACT.md` defers the durable byte
-    /// representation to a later slice, so this adapter has no snapshot
-    /// format to offer and says so instead of shipping one it would break.
-    /// Both snapshot methods are the trait's provided bodies, which refuse in
-    /// Rafter's own vocabulary rather than in this application's.
-    // The durable slice flips this to `SnapshotSupport::Supported` and brings
-    // both method bodies back, which is a diff a reviewer reads as the
-    // durability claim it is.
-    const SNAPSHOT_SUPPORT: SnapshotSupport = SnapshotSupport::Unsupported;
+    /// Declared `Supported`: both methods below round-trip the whole
+    /// contract-enumerated state — the lock table, every fencing high-water
+    /// mark, sessions with their cached operation, fingerprint, and result, the
+    /// replicated logical time, and the applied Raft index — through the
+    /// adapter's own snapshot frame, and `adapter_contract.rs` proves it.
+    const SNAPSHOT_SUPPORT: SnapshotSupport = SnapshotSupport::Supported;
 
     fn applied_index(&self) -> Result<LogIndex, Self::Error> {
         Ok(self.applied_index)
@@ -187,12 +245,7 @@ impl ReplicatedStateMachine for LockStateMachine {
     ) -> Result<Vec<ApplyResult<Self::CommandResult>>, Self::Error> {
         let mut results = Vec::with_capacity(batch.entries.len());
         for entry in batch.entries {
-            if entry.index <= self.applied_index {
-                return Err(LockAdapterError::AppliedIndexRegression {
-                    entry_index: entry.index,
-                    applied_index: self.applied_index,
-                });
-            }
+            discipline::admit_entry(entry.index, self.applied_index)?;
             let result = self.service.apply(entry.command);
             self.applied_index = entry.index;
             results.push(ApplyResult {
@@ -210,17 +263,38 @@ impl ReplicatedStateMachine for LockStateMachine {
         query: Self::Query,
         barrier: ReadBarrier,
     ) -> Result<Self::QueryResult, Self::Error> {
-        if self.applied_index < barrier.required_applied_index {
-            return Err(LockAdapterError::ReadBarrierUnsatisfied {
-                required_applied_index: barrier.required_applied_index,
-                applied_index: self.applied_index,
-            });
-        }
+        discipline::admit_read(barrier, self.applied_index)?;
         Ok(match query {
             // Querying an unknown name must not track it, which is the pure
             // model's rule and is why this arm consults `status` rather than
             // anything that could insert.
             LockQuery::GetLock { resource } => LockQueryResult::Lock(self.service.status(resource)),
         })
+    }
+
+    fn build_snapshot(
+        &mut self,
+        at: LogIndex,
+    ) -> Result<ApplicationSnapshot, ApplicationSnapshotError<Self::Error>> {
+        discipline::admit_snapshot_request(at, self.applied_index)?;
+        Ok(ApplicationSnapshot {
+            applied_index: at,
+            payload: codec::encode_snapshot(at.0, &self.service.snapshot())
+                .map_err(LockAdapterError::from)?,
+            raft_snapshot: None,
+        })
+    }
+
+    fn install_snapshot(
+        &mut self,
+        snapshot: ApplicationSnapshot,
+    ) -> Result<(), ApplicationSnapshotError<Self::Error>> {
+        let service_snapshot = discipline::admit_install(&snapshot, self.applied_index)?;
+        // The model's own validating restore decides whether these parts
+        // describe a legal service; this adapter never reconstructs one itself.
+        self.service = LockService::from_snapshot(self.config, service_snapshot)
+            .map_err(LockAdapterError::Snapshot)?;
+        self.applied_index = snapshot.applied_index;
+        Ok(())
     }
 }

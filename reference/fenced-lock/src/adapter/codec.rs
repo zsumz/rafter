@@ -8,16 +8,25 @@
 use std::{error::Error, fmt, str};
 
 use crate::{
+    model::{CachedRequestSnapshot, SessionSnapshot},
     ApplyDisposition, ApplyOutcome, ClientId, Command, FencingToken, LeaseDuration, LockRejection,
-    LockResponse, LogicalTime, Operation, OperationResult, RequestFingerprint, RequestIdentity,
-    RequestRejection, ResourceName, ResourceNameError, Sequence, SessionEpoch,
-    MAX_RESOURCE_NAME_LEN,
+    LockResponse, LockServiceSnapshot, LogicalTime, Operation, OperationResult, RequestFingerprint,
+    RequestIdentity, RequestRejection, ResourceName, ResourceNameError, ResourceView, Sequence,
+    SessionEpoch, MAX_RESOURCE_NAME_LEN,
 };
 
 /// Version byte of the replicated command frame.
 const COMMAND_FORMAT_VERSION: u8 = 1;
 /// Version byte of the client response frame.
 const RESULT_FORMAT_VERSION: u8 = 1;
+/// Version byte of the application snapshot frame.
+const SNAPSHOT_FORMAT_VERSION: u8 = 1;
+
+const RESOURCE_FREE: u8 = 0;
+const RESOURCE_HELD: u8 = 1;
+
+const NO_CACHED_COMPLETION: u8 = 0;
+const CACHED_COMPLETION: u8 = 1;
 
 const COMMAND_OPEN_SESSION: u8 = 1;
 const COMMAND_SUBMIT: u8 = 2;
@@ -74,6 +83,8 @@ pub enum LockCodecError {
     UnsupportedCommandVersion { version: u8 },
     /// The frame declares a response format this build cannot decode.
     UnsupportedResultVersion { version: u8 },
+    /// The frame declares a snapshot format this build cannot decode.
+    UnsupportedSnapshotVersion { version: u8 },
     /// The frame names an unknown command kind.
     UnknownCommandTag { tag: u8 },
     /// The frame names an unknown operation kind.
@@ -88,6 +99,15 @@ pub enum LockCodecError {
     UnknownRequestRejectionTag { tag: u8 },
     /// The frame names an unknown apply disposition.
     UnknownDispositionTag { tag: u8 },
+    /// The frame names an unknown resource holder marker.
+    UnknownHolderMarker { marker: u8 },
+    /// The frame names an unknown cached-completion marker.
+    UnknownCacheMarker { marker: u8 },
+    /// The snapshot holds more resources or sessions than a frame can count.
+    ///
+    /// A configured service is bounded well below this, so reaching it means
+    /// the caller built a snapshot the configuration could never produce.
+    SnapshotCountOverflow { count: usize },
     /// A field that the contract requires to be nonzero decoded as zero.
     ZeroValuedField { field: NonZeroField },
     /// The frame declared a resource name longer than the inline bound.
@@ -133,6 +153,9 @@ impl fmt::Display for LockCodecError {
             Self::UnsupportedResultVersion { version } => {
                 write!(formatter, "unsupported result format version {version}")
             }
+            Self::UnsupportedSnapshotVersion { version } => {
+                write!(formatter, "unsupported snapshot format version {version}")
+            }
             Self::UnknownCommandTag { tag } => write!(formatter, "unknown command tag {tag}"),
             Self::UnknownOperationTag { tag } => write!(formatter, "unknown operation tag {tag}"),
             Self::UnknownResponseTag { tag } => write!(formatter, "unknown response tag {tag}"),
@@ -148,6 +171,16 @@ impl fmt::Display for LockCodecError {
             Self::UnknownDispositionTag { tag } => {
                 write!(formatter, "unknown apply disposition tag {tag}")
             }
+            Self::UnknownHolderMarker { marker } => {
+                write!(formatter, "unknown resource holder marker {marker}")
+            }
+            Self::UnknownCacheMarker { marker } => {
+                write!(formatter, "unknown cached completion marker {marker}")
+            }
+            Self::SnapshotCountOverflow { count } => write!(
+                formatter,
+                "snapshot holds {count} entries, above what a frame can count"
+            ),
             Self::ZeroValuedField { field } => write!(
                 formatter,
                 "{field} decoded as zero, which the contract forbids"
@@ -265,6 +298,141 @@ pub fn decode_result(payload: &[u8]) -> Result<ApplyOutcome, LockCodecError> {
         response,
         disposition,
     })
+}
+
+/// Encodes one application snapshot, carrying every fact the contract lists.
+///
+/// The frame holds the lock table, every tracked resource's fencing high-water
+/// mark, all sessions with their cached operation, fingerprint, and result, the
+/// replicated logical time, and the applied Raft index. It is the single
+/// representation of durable application state: the store commits these exact
+/// bytes and the Raft install path carries them, so there is one place to
+/// forget a high-water mark rather than two.
+///
+/// # Errors
+///
+/// Returns a codec error when the snapshot holds more resources or sessions
+/// than the frame's count fields can express.
+pub fn encode_snapshot(
+    applied_index: u64,
+    snapshot: &LockServiceSnapshot,
+) -> Result<Vec<u8>, LockCodecError> {
+    let resources = snapshot.resources();
+    let sessions = snapshot.sessions();
+
+    let mut bytes = vec![SNAPSHOT_FORMAT_VERSION];
+    put_u64(&mut bytes, applied_index);
+    put_u64(&mut bytes, snapshot.logical_time().get());
+
+    put_u32(&mut bytes, count(resources.len())?);
+    for view in &resources {
+        put_resource(&mut bytes, &view.resource);
+        put_u64(&mut bytes, view.token_floor.get());
+        match view.holder {
+            None => bytes.push(RESOURCE_FREE),
+            Some(holder) => {
+                bytes.push(RESOURCE_HELD);
+                put_client(&mut bytes, holder.owner);
+                put_u64(&mut bytes, holder.token.get());
+                put_u64(&mut bytes, holder.expiry.get());
+            }
+        }
+    }
+
+    put_u32(&mut bytes, count(sessions.len())?);
+    for session in &sessions {
+        put_client(&mut bytes, session.client_id);
+        put_u64(&mut bytes, session.session_epoch.get());
+        match session.cached {
+            None => bytes.push(NO_CACHED_COMPLETION),
+            Some(cached) => {
+                bytes.push(CACHED_COMPLETION);
+                put_u64(&mut bytes, cached.sequence.get());
+                // The stored digest, not a recomputed one: a frame whose
+                // fingerprint stopped describing its operation must still be
+                // rejected by the model's restore rather than repaired here.
+                put_u64(&mut bytes, cached.fingerprint.get());
+                put_operation(&mut bytes, &cached.operation);
+                put_operation_result(&mut bytes, cached.result);
+            }
+        }
+    }
+    Ok(bytes)
+}
+
+/// Decodes one application snapshot frame into its applied index and the opaque
+/// model snapshot.
+///
+/// The returned snapshot is unvalidated. Only [`crate::LockService::from_snapshot`]
+/// knows the configured bounds, so it decides whether these parts describe a
+/// legal service.
+///
+/// # Errors
+///
+/// Returns a codec error when the frame is truncated, carries trailing bytes,
+/// names an unknown kind, or violates a bound the contract requires.
+pub fn decode_snapshot(payload: &[u8]) -> Result<(u64, LockServiceSnapshot), LockCodecError> {
+    let mut cursor = Cursor::new(payload);
+    let version = cursor.take_u8()?;
+    if version != SNAPSHOT_FORMAT_VERSION {
+        return Err(LockCodecError::UnsupportedSnapshotVersion { version });
+    }
+    let applied_index = cursor.take_u64()?;
+    let logical_time = LogicalTime::new(cursor.take_u64()?);
+
+    let resource_count = cursor.take_u32()?;
+    let mut resources = Vec::new();
+    for _ in 0..resource_count {
+        let resource = cursor.take_resource()?;
+        let token_floor = cursor.take_token()?;
+        let holder = match cursor.take_u8()? {
+            RESOURCE_FREE => None,
+            RESOURCE_HELD => Some(crate::LockHolderView {
+                owner: cursor.take_client()?,
+                token: cursor.take_token()?,
+                expiry: LogicalTime::new(cursor.take_u64()?),
+            }),
+            marker => return Err(LockCodecError::UnknownHolderMarker { marker }),
+        };
+        resources.push(ResourceView {
+            resource,
+            token_floor,
+            holder,
+        });
+    }
+
+    let session_count = cursor.take_u32()?;
+    let mut sessions = Vec::new();
+    for _ in 0..session_count {
+        let client_id = cursor.take_client()?;
+        let session_epoch = cursor.take_session_epoch()?;
+        let cached = match cursor.take_u8()? {
+            NO_CACHED_COMPLETION => None,
+            CACHED_COMPLETION => Some(CachedRequestSnapshot {
+                sequence: cursor.take_sequence()?,
+                fingerprint: RequestFingerprint::from_digest(cursor.take_u64()?),
+                operation: cursor.take_operation()?,
+                result: cursor.take_operation_result()?,
+            }),
+            marker => return Err(LockCodecError::UnknownCacheMarker { marker }),
+        };
+        sessions.push(SessionSnapshot {
+            client_id,
+            session_epoch,
+            cached,
+        });
+    }
+    cursor.finish()?;
+
+    Ok((
+        applied_index,
+        LockServiceSnapshot::from_parts(logical_time, resources, sessions),
+    ))
+}
+
+/// Narrows a collection length to the frame's count field.
+fn count(length: usize) -> Result<u32, LockCodecError> {
+    u32::try_from(length).map_err(|_| LockCodecError::SnapshotCountOverflow { count: length })
 }
 
 fn put_u32(bytes: &mut Vec<u8>, value: u32) {
@@ -642,5 +810,67 @@ impl<'a> Cursor<'a> {
                 remaining: self.bytes.len(),
             })
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{decode_snapshot, encode_snapshot};
+    use crate::{
+        model::{CachedRequestSnapshot, SessionSnapshot},
+        ClientId, FencingToken, LeaseDuration, LockServiceSnapshot, LogicalTime, Operation,
+        OperationResult, RequestFingerprint, ResourceName, ResourceView, Sequence, SessionEpoch,
+    };
+
+    /// The snapshot frame must carry the digest a session *stored*, not one it
+    /// recomputes.
+    ///
+    /// Every state the model produces satisfies `fingerprint == of(operation)`,
+    /// so a decoder that recomputed instead of round-tripping would agree with
+    /// this one on every legal state and could never be caught by driving the
+    /// service. It would also make `SnapshotError::CachedFingerprintMismatch`
+    /// unreachable, because restore would then only ever compare a value
+    /// against itself. This builds the one state that tells them apart.
+    #[test]
+    fn a_snapshot_frame_round_trips_a_fingerprint_that_contradicts_its_operation() {
+        let resource = ResourceName::new("orders/shard-0").expect("an admissible name");
+        let operation = Operation::Acquire {
+            resource,
+            lease: LeaseDuration::new(10).expect("a nonzero lease"),
+        };
+        let honest = RequestFingerprint::of(&operation);
+        let stored = RequestFingerprint::from_digest(honest.get() ^ u64::MAX);
+        assert_ne!(stored, honest, "the stored digest must be the wrong one");
+
+        let token = FencingToken::first();
+        let snapshot = LockServiceSnapshot::from_parts(
+            LogicalTime::new(4),
+            vec![ResourceView {
+                resource,
+                token_floor: token,
+                holder: None,
+            }],
+            vec![SessionSnapshot {
+                client_id: ClientId::new(0),
+                session_epoch: SessionEpoch::new(1).expect("a nonzero epoch"),
+                cached: Some(CachedRequestSnapshot {
+                    sequence: Sequence::first(),
+                    fingerprint: stored,
+                    operation,
+                    result: OperationResult::Acquired {
+                        token,
+                        expiry: LogicalTime::new(14),
+                    },
+                }),
+            }],
+        );
+
+        let frame = encode_snapshot(9, &snapshot).expect("a bounded snapshot encodes");
+        let (applied_index, decoded) = decode_snapshot(&frame).expect("its own frame decodes");
+        assert_eq!(applied_index, 9);
+        assert_eq!(
+            decoded, snapshot,
+            "the frame repaired an envelope the model is supposed to reject"
+        );
     }
 }

@@ -17,12 +17,14 @@ mod guarded;
 mod history;
 mod model;
 mod oracle;
+pub mod store;
 mod types;
 
 pub use adapter::{
-    decode_command, decode_result, encode_command, encode_result, unknown_outcome_reason,
-    LockAdapterError, LockClient, LockCodecError, LockHandle, LockQuery, LockQueryResult,
-    LockStateMachine, NonZeroField, QueryOutcome, SubmitOutcome,
+    decode_command, decode_result, decode_snapshot, encode_command, encode_result, encode_snapshot,
+    unknown_outcome_reason, DurableLockError, DurableLockStateMachine, LockAdapterError,
+    LockClient, LockCodecError, LockHandle, LockQuery, LockQueryResult, LockStateMachine,
+    NonZeroField, QueryOutcome, SubmitOutcome,
 };
 pub use guarded::{GuardedRejection, GuardedResource, GuardedWrite};
 pub use history::{HistoryEvent, OperationId};

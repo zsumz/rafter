@@ -8,6 +8,10 @@
 
 mod support;
 
+// The driver is shared with `durable_crash.rs`, which drives the durable
+// composition and is where its crash accounting is exercised. These histories
+// use the in-memory one and a different part of the same driver.
+#[allow(dead_code)]
 #[path = "support/cluster.rs"]
 mod cluster;
 #[path = "support/transport.rs"]
@@ -154,9 +158,7 @@ fn a_leadership_loss_closes_the_outcome_window_and_a_retry_replays_it() {
     cluster.settle();
     assert_eq!(
         cluster
-            .state_machine(second_leader)
-            .service()
-            .status(resource(RESOURCE))
+            .lock_status(second_leader, resource(RESOURCE))
             .token_floor,
         Some(token(1)),
         "the identity executed exactly once, so exactly one token was issued"
@@ -680,7 +682,7 @@ fn a_restarted_replica_recovers_its_locks_and_keeps_replicating() {
     cluster.settle();
 
     let follower = other_node(&cluster, leader);
-    let before = cluster.state_machine(follower).service().view();
+    let before = cluster.service_view(follower);
     let applied_before = cluster.applied_index(follower);
     let committed_before = cluster.committed_application_index(follower);
     assert!(
@@ -690,7 +692,7 @@ fn a_restarted_replica_recovers_its_locks_and_keeps_replicating() {
 
     cluster.restart(follower);
     assert_eq!(
-        cluster.state_machine(follower).service().view(),
+        cluster.service_view(follower),
         before,
         "the reopened replica recovered its lock table, sessions, and marks"
     );
@@ -714,9 +716,7 @@ fn a_restarted_replica_recovers_its_locks_and_keeps_replicating() {
     cluster.settle();
     assert_eq!(
         cluster
-            .state_machine(follower)
-            .service()
-            .status(resource(RESOURCE))
+            .lock_status(follower, resource(RESOURCE))
             .token_floor,
         Some(token(2)),
         "the reopened replica kept replicating and the mark advanced once"
@@ -765,10 +765,10 @@ fn other_node(cluster: &LockCluster, node_id: NodeId) -> NodeId {
 
 /// Asserts every reachable replica holds the same lock state.
 fn assert_replicas_agree(cluster: &LockCluster, leader: NodeId) {
-    let expected = cluster.state_machine(leader).service().view();
+    let expected = cluster.service_view(leader);
     for node_id in cluster.node_ids() {
         assert_eq!(
-            cluster.state_machine(node_id).service().view(),
+            cluster.service_view(node_id),
             expected,
             "replica {node_id} diverged"
         );
@@ -789,7 +789,7 @@ fn assert_history_agrees_with_oracle(cluster: &LockCluster, node_id: NodeId) {
         .collect::<Vec<_>>();
 
     assert_eq!(
-        cluster.state_machine(node_id).service().view(),
+        cluster.service_view(node_id),
         oracle.view(),
         "the replicated lock service diverged from the independent oracle"
     );

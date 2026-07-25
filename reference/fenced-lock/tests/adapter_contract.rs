@@ -345,38 +345,131 @@ fn querying_an_unknown_name_never_tracks_it() {
     assert_eq!(app.service().summary().tracked_resources, 0);
 }
 
+/// The declaration and the frame have to agree, and the frame has to carry the
+/// high-water marks: a snapshot that dropped one would reissue a token the
+/// guarded resource already accepted.
 #[test]
-fn durable_snapshots_are_declared_undefined_rather_than_refused_as_a_fault() {
+fn a_snapshot_round_trip_preserves_everything_the_contract_lists() {
+    assert_eq!(
+        LockStateMachine::SNAPSHOT_SUPPORT,
+        SnapshotSupport::Supported,
+        "a declaration and a pair of real method bodies are one claim"
+    );
+
+    let mut app = LockStateMachine::new(config(4, 4));
+    // A history that leaves every field of the snapshot non-trivial: a held
+    // lock, a resource that was released and reacquired so its mark outran its
+    // first tenure, advanced logical time, and a cached completion.
+    apply(&mut app, 1, open_session(0, 1));
+    apply(&mut app, 2, submit(0, 1, 1, acquire(RESOURCE, 10)));
+    apply(&mut app, 3, submit(0, 1, 2, release(RESOURCE, 1)));
+    apply(&mut app, 4, submit(0, 1, 3, acquire(RESOURCE, 10)));
+    apply(&mut app, 5, open_session(1, 4));
+    apply(&mut app, 6, submit(1, 4, 1, acquire("audit/log", 3)));
+    apply(&mut app, 7, submit(1, 4, 2, expire_through(3)));
+
+    let expected_view = app.service().view();
+    let expected_index = LogIndex(7);
+    assert_eq!(app.applied_index(), Ok(expected_index));
+
+    let snapshot = app
+        .build_snapshot(expected_index)
+        .expect("a state machine snapshots its own applied index");
+    assert_eq!(snapshot.applied_index, expected_index);
+
+    let mut restored = LockStateMachine::new(config(4, 4));
+    restored
+        .install_snapshot(snapshot)
+        .expect("a matching snapshot installs");
+    assert_eq!(
+        restored.service().view(),
+        expected_view,
+        "the lock table, every high-water mark, sessions with their cached \
+         operation, fingerprint, and result, and logical time all survive"
+    );
+    assert_eq!(restored.applied_index(), Ok(expected_index));
+
+    // The mark specifically, named rather than left to the view comparison.
+    let status = restored.service().status(resource(RESOURCE));
+    assert_eq!(
+        status.token_floor,
+        Some(token(2)),
+        "the reacquired resource kept the mark its second tenure issued"
+    );
+}
+
+#[test]
+fn a_snapshot_this_replica_cannot_reproduce_or_adopt_is_refused() {
     let mut app = LockStateMachine::new(config(4, 4));
     apply(&mut app, 1, open_session(0, 1));
 
-    assert_eq!(
-        LockStateMachine::SNAPSHOT_SUPPORT,
-        SnapshotSupport::Unsupported,
-        "the durable slice has not defined a byte representation yet"
-    );
-    // The declaration is the whole statement, so both bodies are the trait's
-    // provided ones. A limitation this application declared must not arrive as
-    // an application error a reader has to interpret as "not really a fault".
+    // A state machine holds the state of its own applied index and no other.
     assert!(
         matches!(
-            app.build_snapshot(LogIndex(1)),
-            Err(ApplicationSnapshotError::Unsupported)
+            app.build_snapshot(LogIndex(2)),
+            Err(ApplicationSnapshotError::StateMachine(
+                LockAdapterError::SnapshotIndexUnavailable {
+                    requested_index: LogIndex(2),
+                    applied_index: LogIndex(1),
+                }
+            ))
         ),
-        "shipping a format now would be a format the durable slice has to break"
+        "a snapshot at an index this replica never reached is not buildable"
     );
+
+    let good = app
+        .build_snapshot(LogIndex(1))
+        .expect("a state machine snapshots its own applied index");
+
+    apply(&mut app, 2, submit(0, 1, 1, acquire(RESOURCE, 10)));
+    // Installing the older snapshot would move the floor back to before the
+    // acquisition, which is exactly how a token gets minted twice.
+    assert!(
+        matches!(
+            app.install_snapshot(good),
+            Err(ApplicationSnapshotError::StateMachine(
+                LockAdapterError::SnapshotBehindAppliedIndex { .. }
+            ))
+        ),
+        "an install must never lower the applied floor"
+    );
+
+    // Rafter's own install path hands over a descriptor whose bytes live in the
+    // replica's snapshot store; this application cannot fetch them, so it
+    // refuses rather than installing an empty state over live marks.
     assert!(matches!(
         app.install_snapshot(ApplicationSnapshot {
-            applied_index: LogIndex(5),
+            applied_index: LogIndex(9),
             payload: Vec::new(),
             raft_snapshot: None,
         }),
-        Err(ApplicationSnapshotError::Unsupported)
+        Err(ApplicationSnapshotError::StateMachine(
+            LockAdapterError::SnapshotPayloadUnavailable {
+                applied_index: LogIndex(9)
+            }
+        ))
     ));
+
+    // A payload that names a different index than its descriptor is not the
+    // snapshot the installer thinks it is.
+    let mismatched = app
+        .build_snapshot(LogIndex(2))
+        .expect("a state machine snapshots its own applied index");
+    assert!(matches!(
+        app.install_snapshot(ApplicationSnapshot {
+            applied_index: LogIndex(3),
+            payload: mismatched.payload,
+            raft_snapshot: None,
+        }),
+        Err(ApplicationSnapshotError::StateMachine(
+            LockAdapterError::SnapshotIndexMismatch { .. }
+        ))
+    ));
+
     assert_eq!(
         app.applied_index(),
-        Ok(LogIndex(1)),
-        "a refused install moved nothing"
+        Ok(LogIndex(2)),
+        "every refused install moved nothing"
     );
 }
 

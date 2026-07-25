@@ -44,6 +44,115 @@ pub struct LockServiceSnapshot {
     sessions: Vec<(ClientId, SessionRecord)>,
 }
 
+/// One session exactly as a snapshot carries it, fingerprint included.
+///
+/// [`SessionView`] deliberately omits the fingerprint, because a differential
+/// comparison can derive it from the cached operation. A snapshot frame cannot:
+/// it has to round-trip the digest the session actually stored, or
+/// [`LockService::from_snapshot`]'s fingerprint check would only ever compare a
+/// value against itself and [`SnapshotError::CachedFingerprintMismatch`] would
+/// be unreachable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct SessionSnapshot {
+    pub(crate) client_id: ClientId,
+    pub(crate) session_epoch: SessionEpoch,
+    pub(crate) cached: Option<CachedRequestSnapshot>,
+}
+
+/// The one completed request a session caches, exactly as it is stored.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) struct CachedRequestSnapshot {
+    pub(crate) sequence: Sequence,
+    pub(crate) fingerprint: RequestFingerprint,
+    pub(crate) operation: Operation,
+    pub(crate) result: OperationResult,
+}
+
+impl LockServiceSnapshot {
+    /// Returns the replicated logical time the snapshot was taken at.
+    pub(crate) const fn logical_time(&self) -> LogicalTime {
+        self.logical_time
+    }
+
+    /// Returns every tracked resource, each with its retained high-water mark.
+    pub(crate) fn resources(&self) -> Vec<ResourceView> {
+        self.resources
+            .iter()
+            .map(|(resource, record)| ResourceView {
+                resource: *resource,
+                token_floor: record.token_floor,
+                holder: record.holder.map(holder_view),
+            })
+            .collect()
+    }
+
+    /// Returns every session with its cached completion.
+    pub(crate) fn sessions(&self) -> Vec<SessionSnapshot> {
+        self.sessions
+            .iter()
+            .map(|(client_id, session)| SessionSnapshot {
+                client_id: *client_id,
+                session_epoch: session.session_epoch,
+                cached: session.cached.map(|cached| CachedRequestSnapshot {
+                    sequence: cached.sequence,
+                    fingerprint: cached.fingerprint,
+                    operation: cached.operation,
+                    result: cached.result,
+                }),
+            })
+            .collect()
+    }
+
+    /// Reassembles a snapshot from decoded parts, validating nothing.
+    ///
+    /// Validation belongs to [`LockService::from_snapshot`], which is the one
+    /// place that knows the configured bounds. A decoder that pre-validated
+    /// would be a second opinion on the model's own invariants, and the two
+    /// could drift.
+    pub(crate) fn from_parts(
+        logical_time: LogicalTime,
+        resources: Vec<ResourceView>,
+        sessions: Vec<SessionSnapshot>,
+    ) -> Self {
+        Self {
+            logical_time,
+            resources: resources
+                .into_iter()
+                .map(|view| {
+                    (
+                        view.resource,
+                        ResourceRecord {
+                            token_floor: view.token_floor,
+                            holder: view.holder.map(|holder| HeldLock {
+                                owner: holder.owner,
+                                token: holder.token,
+                                expiry: holder.expiry,
+                            }),
+                        },
+                    )
+                })
+                .collect(),
+            sessions: sessions
+                .into_iter()
+                .map(|session| {
+                    (
+                        session.client_id,
+                        SessionRecord {
+                            session_epoch: session.session_epoch,
+                            cached: session.cached.map(|cached| CachedCompletion {
+                                sequence: cached.sequence,
+                                fingerprint: cached.fingerprint,
+                                operation: cached.operation,
+                                result: cached.result,
+                            }),
+                        },
+                    )
+                })
+                .collect(),
+        }
+    }
+}
+
 /// Invalid lock service snapshot.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SnapshotError {
