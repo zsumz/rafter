@@ -183,6 +183,92 @@ Compaction must never make an acknowledged command executable again. The
 adapter enforces the same rule against replay: a committed entry at or below
 the applied index is refused rather than applied a second time.
 
+## Durable Backend
+
+The durable adapter's backend is a consumer-written store over one journal
+file. It is not a Rafter API and never will be: where an application's state
+lives is application policy, and the only thing Rafter's contract asks of it is
+that a returned apply be recoverable.
+
+Two state machines serve this application. They differ in where state lives and
+in nothing else. Every ledger, session, and deduplication decision is the pure
+model's, and the applied-index, read-barrier, and snapshot-admission rules are
+shared code rather than two implementations that agree today.
+
+### Transaction boundary
+
+One transaction carries the whole application state at one applied index. The
+four facts the contract lists are not assembled from separate writes: they are
+encoded into one image, and that image is the unit the journal commits.
+
+The transaction's commit point is the durability barrier that follows its
+commit record. Applying a batch commits once, then returns its results, so the
+results a caller replies with have already survived the crash they describe.
+The interval between that commit point and the reply is a real window, and the
+contract's answer to it is the deduplication cache: the caller retries the same
+request identity and the cached result answers it.
+
+`Ok` means the new state is visible to a fresh opener. An error means the
+outcome is unknown; reopening decides it, and no caller may infer from an error
+that no bytes changed. A store whose publication failed refuses every later
+transaction until it is reopened.
+
+### Crash windows
+
+A crash at any byte boundary leaves the store recoverable to exactly the
+pre-transaction or the post-transaction state, never between:
+
+- before the transaction emits a byte;
+- part-way through its begin record, its image, or its commit record;
+- with the image whole and the commit record absent — the write-ahead window,
+  which is the pre-transaction state because a transaction is committed by its
+  commit record and by nothing else;
+- after the commit point but before the reply is released; and
+- during a snapshot install, which publishes by rewriting the journal and
+  therefore commits at its rename.
+
+Recovery discards an uncommitted tail before accepting another transaction, so
+an append never follows abandoned bytes.
+
+### Versioning and integrity
+
+Every record carries a four-byte magic, a version byte, and a trailing
+CRC-32/IEEE over its own preceding bytes; integers are unsigned and big-endian
+and nothing is padded. A version this build cannot read is refused rather than
+reinterpreted, and the journal header records the resource bounds it was
+created under, so a journal cannot be reopened under bounds that would change
+which images are valid.
+
+A frame carries three checksums, and each answers a different question: the
+begin record's own checksum makes the image length safe to trust, the image
+checksum detects a torn or corrupt image, and the commit record's frame
+checksum binds that commit record to that begin record and that image, so a
+record surviving from an abandoned tail cannot seal a frame it never covered.
+The checksums detect accidental corruption and torn writes; they are not
+authentication tags.
+
+Recovery decodes a committed image through the model's validating restore path,
+so an image whose checksums verify still cannot produce a ledger that violates
+a resource or supply invariant.
+
+### What the crash tests establish
+
+The crash tests interrupt real publications at named byte boundaries, reopen
+the store, and compare the whole recovered state — balances, sessions, cached
+mutations, cached results, deposit total, and applied index together — against
+the two states the transaction sits between. Comparing them as one value is how
+"atomically" is asserted: there is no way to be equal on the effects and not on
+the cached result, or on the data and not on the applied index.
+
+They also establish that recovery followed by replay from the recovered applied
+index reconstructs the uninterrupted run, checked against the independent
+oracle rather than against the implementation.
+
+Their limit is stated rather than implied: interrupting a publication inside a
+live process proves which bytes reached the file and what a fresh opener makes
+of them. It does not prove that a durability barrier reached the medium, and
+removing one leaves the suite green.
+
 ## History Vocabulary
 
 A client operation history contains:
@@ -328,11 +414,9 @@ never re-derives a ledger, session, or deduplication decision, and depends only
 on published Rafter crates. It still contains no transport, no filesystem
 backend, no shared reference framework, and no new Rafter public API.
 
-The driver models two things it does not yet make real: durable Raft state
-lives in shared in-memory media that outlive one node incarnation, and
-application state survives a restart because the state machine carries its
-applied index with its data. A transactional application backend, application
-crash points, and durable process composition arrive with the later slices.
+The driver still models one thing it does not make real: durable Raft state
+lives in shared in-memory media that outlive one node incarnation. Durable
+process composition arrives with the last slice.
 
 ## History Checker Boundary
 
@@ -354,6 +438,29 @@ unknown outcome. It adds:
 The checker reads only the history. It never inspects replicas, logs, applied
 indexes, or the implementation model, so an external user recording the same
 client-visible events could run the same check.
+
+## Durable Backend Boundary
+
+The durable slice makes the application's state real. It adds:
+
+- the transactional store described under [Durable Backend](#durable-backend),
+  with its versioned journal, its checksums, its typed failures, and its
+  deterministic per-store fault seam;
+- a second `rafter-app` state machine over that store, sharing the pure model
+  and every applied-index and snapshot rule with the in-memory one;
+- crash-point tests over every boundary the transaction has, including a sweep
+  of every byte of one transaction's frame; and
+- a driver that opens each replica's application through a factory, so a
+  restart reopens a journal rather than handing back a value, and a replica
+  whose durable apply failed is treated as the dead process it is.
+
+Two limits stay. Raft's own durable state is still in-memory media the driver
+hands between incarnations, so this is application durability rather than
+process durability. And the crash tests interrupt publications inside one live
+process, which cannot establish that a durability barrier reached the medium.
+Both close with the durable process-composition slice, which is also where the
+production composition the program requires — authenticated transport, bounded
+frames, readiness gating after complete recovery — is assembled.
 
 Two limits are deliberate. The checker decides bounded histories only, and says
 so rather than approximating. And the `NotCommitted` criterion is stated in

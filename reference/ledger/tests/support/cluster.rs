@@ -5,14 +5,21 @@
 //! It uses no simulator, no internal hooks, and no privileged observation; an
 //! external user with the published crates can write the same thing.
 //!
-//! Two things are deliberately modeled rather than real at this slice. Durable
-//! Raft state lives in in-memory stores that a retiring runtime hands back to
-//! the incarnation replacing it, and application state survives a restart
-//! because the state machine carries its applied index with its data. A
-//! transactional application backend and application crash points arrive with
-//! the durable slices.
+//! The driver is generic over the application each replica serves, because the
+//! two ledger state machines differ only in where their state lives. An
+//! in-memory replica keeps its ledger in the value the retiring group hands
+//! back; a durable replica drops that value and reopens its own journal, which
+//! is what a restarting process actually does. [`LedgerApps`] is the seam:
+//! everything else in this file — delivery, isolation, elections, history
+//! recording — is identical for both.
+//!
+//! One thing is still deliberately modeled rather than real. Durable Raft state
+//! lives in in-memory stores that a retiring runtime hands back to the
+//! incarnation replacing it. Durable process composition arrives with the last
+//! slice.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
+use std::fmt;
 
 use rafter::{
     LocalProposalId, LogEntryKind, LogIndex, NodeConfig, NodeId, ProposalRejection, ReadId,
@@ -32,6 +39,70 @@ use rafter_storage::{InMemoryRaftHardStateStore, InMemoryRaftLogSegment};
 
 use crate::storage::SharedSnapshotStore;
 
+/// The application contract every replica in this driver serves.
+///
+/// This names the ledger's application vocabulary without naming which state
+/// machine provides it. It adds no methods: the driver needs the associated
+/// types pinned so its reports and history stay concrete, and everything a test
+/// wants to inspect is an inherent accessor on whichever machine it built.
+pub trait LedgerApp:
+    ReplicatedStateMachine<
+        Command = Command,
+        CommandResult = ApplyOutcome,
+        Query = LedgerQuery,
+        QueryResult = LedgerQueryResult,
+    > + fmt::Debug
+{
+}
+
+impl<A> LedgerApp for A where
+    A: ReplicatedStateMachine<
+            Command = Command,
+            CommandResult = ApplyOutcome,
+            Query = LedgerQuery,
+            QueryResult = LedgerQueryResult,
+        > + fmt::Debug
+{
+}
+
+/// Supplies each replica's application and reopens it across a restart.
+///
+/// `reopen` is where the two compositions genuinely differ, and the difference
+/// is the point: an in-memory replica's state survives because the value does,
+/// while a durable replica's state survives because its journal does. A test
+/// that restarts a durable replica must be dropping the value, or it is
+/// proving nothing about durability.
+pub trait LedgerApps: fmt::Debug {
+    /// The application this factory opens.
+    type App: LedgerApp;
+
+    /// Opens the application for a replica starting for the first time.
+    fn open(&mut self, node_id: NodeId) -> Self::App;
+
+    /// Reopens a restarting replica's application.
+    fn reopen(&mut self, node_id: NodeId, retired: Self::App) -> Self::App;
+}
+
+/// Applications that keep their ledger in memory.
+#[derive(Clone, Copy, Debug)]
+pub struct InMemoryLedgerApps {
+    config: LedgerConfig,
+}
+
+impl LedgerApps for InMemoryLedgerApps {
+    type App = LedgerStateMachine;
+
+    fn open(&mut self, _node_id: NodeId) -> Self::App {
+        LedgerStateMachine::new(self.config)
+    }
+
+    /// An in-memory replica recovers because the retiring group handed its
+    /// state machine back, applied index and all.
+    fn reopen(&mut self, _node_id: NodeId, retired: Self::App) -> Self::App {
+        retired
+    }
+}
+
 /// Bound on driver rounds spent waiting for one outcome.
 ///
 /// Every wait is bounded so a stalled protocol fails the test instead of
@@ -50,7 +121,7 @@ type LedgerStorage =
     DurableRaftNodeStorage<InMemoryRaftHardStateStore, InMemoryRaftLogSegment, SharedSnapshotStore>;
 type LedgerRuntime =
     DurableRaftNode<InMemoryRaftHardStateStore, InMemoryRaftLogSegment, SharedSnapshotStore>;
-type LedgerGroup = RaftGroup<LedgerGroupId, LedgerStateMachine, LedgerRuntime>;
+type LedgerGroup<App> = RaftGroup<LedgerGroupId, App, LedgerRuntime>;
 type LedgerReport = GroupStepReport<LedgerGroupId, ApplyOutcome>;
 
 /// Terminal client-visible outcome of one submitted command.
@@ -133,19 +204,29 @@ pub enum ReadOutcome {
 }
 
 #[derive(Debug)]
-struct ClusterNode {
+struct ClusterNode<App> {
     node_id: NodeId,
     election_timeout_ticks: u64,
-    group: LedgerGroup,
+    group: LedgerGroup<App>,
 }
 
 /// Deterministic three-node ledger cluster with explicit delivery control.
 #[derive(Debug)]
-pub struct LedgerCluster {
+pub struct LedgerCluster<A: LedgerApps = InMemoryLedgerApps> {
     config: LedgerConfig,
-    nodes: Vec<ClusterNode>,
+    apps: A,
+    nodes: Vec<ClusterNode<A::App>>,
     network: VecDeque<PeerEnvelope<LedgerGroupId>>,
     isolated: BTreeSet<NodeId>,
+    /// Replicas whose group refused a step, keyed to what it reported.
+    ///
+    /// A durable application that cannot commit a transaction poisons its
+    /// group, and a process in that state is finished: it serves no reads,
+    /// replicates nothing, and answers no peer. Modeling it as unreachable
+    /// until a restart is what a real deployment sees, and it lets the rest of
+    /// the cluster carry on with its quorum while the dead replica's journal
+    /// waits on disk for recovery.
+    crashed: BTreeMap<NodeId, String>,
     proposal_outcomes: BTreeMap<LocalProposalId, ProposalOutcome>,
     /// Terminal read outcomes the report path has observed.
     ///
@@ -160,10 +241,17 @@ pub struct LedgerCluster {
     history: Vec<HistoryEvent>,
 }
 
-impl LedgerCluster {
+impl LedgerCluster<InMemoryLedgerApps> {
+    /// Builds three replicas whose ledgers live in memory.
+    pub fn new(config: LedgerConfig) -> Self {
+        Self::with_apps(config, InMemoryLedgerApps { config })
+    }
+}
+
+impl<A: LedgerApps> LedgerCluster<A> {
     /// Builds three replicas whose election timeouts make every uncontested
     /// election deterministic: the lowest-numbered reachable node wins.
-    pub fn new(config: LedgerConfig) -> Self {
+    pub fn with_apps(config: LedgerConfig, mut apps: A) -> Self {
         let nodes = [
             (NodeId(1), &[2, 3][..], 4),
             (NodeId(2), &[1, 3][..], 6),
@@ -171,13 +259,9 @@ impl LedgerCluster {
         ]
         .into_iter()
         .map(|(node_id, peers, election_timeout_ticks)| {
-            let (group, _) = open_group(
-                node_id,
-                peers,
-                election_timeout_ticks,
-                empty_storage(),
-                LedgerStateMachine::new(config),
-            );
+            let app = apps.open(node_id);
+            let (group, _) =
+                open_group(node_id, peers, election_timeout_ticks, empty_storage(), app);
             ClusterNode {
                 node_id,
                 election_timeout_ticks,
@@ -188,9 +272,11 @@ impl LedgerCluster {
 
         Self {
             config,
+            apps,
             nodes,
             network: VecDeque::new(),
             isolated: BTreeSet::new(),
+            crashed: BTreeMap::new(),
             proposal_outcomes: BTreeMap::new(),
             read_failures: BTreeMap::new(),
             runtime_unknown_outcomes: 0,
@@ -204,6 +290,28 @@ impl LedgerCluster {
     /// Returns the configured ledger bounds shared by every replica.
     pub fn config(&self) -> LedgerConfig {
         self.config
+    }
+
+    /// Returns the replicas whose durable application failed, with what each
+    /// one reported.
+    ///
+    /// A test that does not expect a crash must assert this is empty. The
+    /// driver records a refused step instead of panicking, so a regression that
+    /// broke every replica would otherwise leave a suite green with an empty
+    /// cluster quietly doing nothing.
+    pub fn crashed(&self) -> Vec<(NodeId, &str)> {
+        self.crashed
+            .iter()
+            .map(|(node_id, reason)| (*node_id, reason.as_str()))
+            .collect()
+    }
+
+    /// Whether a replica is currently unable to exchange messages.
+    ///
+    /// A partitioned replica and a crashed one are both unreachable; only the
+    /// second one needs a restart to come back.
+    fn unreachable(&self, node_id: NodeId) -> bool {
+        self.isolated.contains(&node_id) || self.crashed.contains_key(&node_id)
     }
 
     /// Returns the recorded client history.
@@ -230,7 +338,7 @@ impl LedgerCluster {
     pub fn leader(&self) -> Option<NodeId> {
         self.nodes
             .iter()
-            .filter(|node| !self.isolated.contains(&node.node_id))
+            .filter(|node| !self.unreachable(node.node_id))
             .filter_map(|node| {
                 let metrics = node.group.metrics();
                 (metrics.role == Role::Leader).then_some((metrics.term, node.node_id))
@@ -240,7 +348,7 @@ impl LedgerCluster {
     }
 
     /// Returns the state machine owned by one replica.
-    pub fn state_machine(&self, node_id: NodeId) -> &LedgerStateMachine {
+    pub fn state_machine(&self, node_id: NodeId) -> &A::App {
         self.node(node_id).group.state_machine()
     }
 
@@ -249,7 +357,7 @@ impl LedgerCluster {
     /// This is the maintenance hook the group layer documents. It is used here
     /// only to build application snapshots, which read state rather than move
     /// the durable applied floor.
-    pub fn state_machine_mut(&mut self, node_id: NodeId) -> &mut LedgerStateMachine {
+    pub fn state_machine_mut(&mut self, node_id: NodeId) -> &mut A::App {
         self.node_mut(node_id).group.state_machine_mut()
     }
 
@@ -335,7 +443,7 @@ impl LedgerCluster {
     pub fn settle(&mut self) {
         for _ in 0..MAX_ROUNDS {
             if self.node_ids().into_iter().all(|node_id| {
-                self.isolated.contains(&node_id)
+                self.unreachable(node_id)
                     || self.applied_index(node_id) >= self.committed_application_index(node_id)
             }) {
                 return;
@@ -357,30 +465,44 @@ impl LedgerCluster {
     /// Ticks every reachable node once.
     pub fn tick_reachable(&mut self) {
         for node_id in self.node_ids() {
-            if self.isolated.contains(&node_id) {
+            if self.unreachable(node_id) {
                 continue;
             }
-            let report = self
-                .node_mut(node_id)
-                .group
-                .step(GroupInput::Tick)
-                .expect("a healthy group accepts ticks");
-            self.record_report(report);
+            let outcome = self.node_mut(node_id).group.step(GroupInput::Tick);
+            self.absorb(node_id, outcome);
         }
     }
 
     /// Delivers every queued envelope, including envelopes queued by delivery.
     pub fn deliver_all(&mut self) {
         while let Some(envelope) = self.network.pop_front() {
-            if self.isolated.contains(&envelope.to) || self.isolated.contains(&envelope.from) {
+            if self.unreachable(envelope.to) || self.unreachable(envelope.from) {
                 continue;
             }
-            let report = self
-                .node_mut(envelope.to)
+            let to = envelope.to;
+            let outcome = self
+                .node_mut(to)
                 .group
-                .step(GroupInput::PeerMessage { envelope })
-                .expect("a healthy group accepts peer messages");
-            self.record_report(report);
+                .step(GroupInput::PeerMessage { envelope });
+            self.absorb(to, outcome);
+        }
+    }
+
+    /// Records a step's report, or the failure that ended the replica.
+    ///
+    /// A group only refuses a step once something fatal happened to it, and for
+    /// this application that means the durable backend could not commit. The
+    /// replica stops here rather than the test stopping: what happens next —
+    /// the surviving quorum carrying on, then a restart recovering the journal
+    /// — is the behavior under test.
+    fn absorb<E: fmt::Display>(&mut self, node_id: NodeId, outcome: Result<LedgerReport, E>) {
+        match outcome {
+            Ok(report) => self.record_report(report),
+            Err(error) => {
+                self.crashed
+                    .entry(node_id)
+                    .or_insert_with(|| error.to_string());
+            }
         }
     }
 
@@ -396,6 +518,10 @@ impl LedgerCluster {
 
     /// Restarts one replica over its retained durable state.
     ///
+    /// This is also how a crashed replica comes back: the poisoned group is
+    /// decomposed, its application is reopened, and the new incarnation knows
+    /// only what recovery could read back.
+    ///
     /// Decomposition is the in-process restart path. The retiring group hands
     /// back its state machine, and its runtime hands back the durable stores
     /// the next incarnation recovers from, so nothing is cloned and the driver
@@ -404,6 +530,7 @@ impl LedgerCluster {
     /// applied floor, recover through the same floor, then hand the recovery
     /// outputs to the new group before using it.
     pub fn restart(&mut self, node_id: NodeId) {
+        self.crashed.remove(&node_id);
         let index = self.node_index(node_id);
         let peers = self
             .node_ids()
@@ -422,14 +549,13 @@ impl LedgerCluster {
         // The driver's own counters never restart anyway, which is stricter
         // than the contract requires.
         let storage = parts.runtime.into_storage();
+        // The application is reopened rather than carried across. An in-memory
+        // replica gets its own value back; a durable one drops it and recovers
+        // from its journal, which is the only version of this that proves
+        // anything about durability.
+        let app = self.apps.reopen(node_id, parts.state_machine);
 
-        let (group, report) = open_group(
-            node_id,
-            &peers,
-            election_timeout_ticks,
-            storage,
-            parts.state_machine,
-        );
+        let (group, report) = open_group(node_id, &peers, election_timeout_ticks, storage, app);
         self.nodes.insert(
             index,
             ClusterNode {
@@ -782,11 +908,11 @@ impl LedgerCluster {
             .expect("the driver only addresses its own nodes")
     }
 
-    fn node(&self, node_id: NodeId) -> &ClusterNode {
+    fn node(&self, node_id: NodeId) -> &ClusterNode<A::App> {
         &self.nodes[self.node_index(node_id)]
     }
 
-    fn node_mut(&mut self, node_id: NodeId) -> &mut ClusterNode {
+    fn node_mut(&mut self, node_id: NodeId) -> &mut ClusterNode<A::App> {
         let index = self.node_index(node_id);
         &mut self.nodes[index]
     }
@@ -829,13 +955,13 @@ fn empty_storage() -> LedgerStorage {
     }
 }
 
-fn open_group(
+fn open_group<App: LedgerApp>(
     node_id: NodeId,
     peers: &[u64],
     election_timeout_ticks: u64,
     storage: LedgerStorage,
-    app: LedgerStateMachine,
-) -> (LedgerGroup, LedgerReport) {
+    app: App,
+) -> (LedgerGroup<App>, LedgerReport) {
     let config = NodeConfig::new(
         node_id,
         peers.iter().copied().map(NodeId).collect(),

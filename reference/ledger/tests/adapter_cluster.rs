@@ -455,6 +455,11 @@ fn a_refused_proposal_is_recorded_as_provably_uncommitted() {
         }))
     );
 
+    assert_eq!(
+        cluster.crashed(),
+        Vec::new(),
+        "an in-memory replica has no durable backend that could fail"
+    );
     let report = check_linearizable(cluster.config(), cluster.history())
         .unwrap_or_else(|error| panic!("{error}"));
     assert_eq!(
@@ -783,6 +788,14 @@ fn replay_through_oracle(config: LedgerConfig, commands: &[Command]) -> Referenc
 /// that no single real-time ordering could produce together, and a query's
 /// answer was never checked at all.
 fn assert_linearizable(cluster: &LedgerCluster) -> usize {
+    // Nothing in this suite may lose a replica. The driver records a refused
+    // step rather than panicking on it, so without this the whole cluster could
+    // be dead and the history would still linearize — over no operations.
+    assert_eq!(
+        cluster.crashed(),
+        Vec::new(),
+        "an in-memory replica has no durable backend that could fail"
+    );
     match check_linearizable(cluster.config(), cluster.history()) {
         Ok(report) => {
             assert!(

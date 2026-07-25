@@ -10,6 +10,11 @@
 //! oracle. Application invariants and linearizability stay separate checks: a
 //! preserved total balance does not show that the observed operations admit a
 //! legal real-time ordering.
+//!
+//! The durable path adds a consumer-written transactional backend in
+//! [`store`], and a second `rafter-app` state machine over it. Both machines
+//! drive the same pure model and share the same applied-index and snapshot
+//! rules; only the location of the state differs.
 
 #![forbid(unsafe_code)]
 
@@ -18,9 +23,13 @@ mod checker;
 mod history;
 mod model;
 mod oracle;
+pub mod store;
 mod types;
 
-pub use adapter::{LedgerAdapterError, LedgerCodecError, LedgerStateMachine, NonZeroField};
+pub use adapter::{
+    DurableLedgerError, DurableLedgerStateMachine, LedgerAdapterError, LedgerCodecError,
+    LedgerStateMachine, NonZeroField,
+};
 pub use checker::{
     check_linearizable, Blocked, BlockedReason, CheckError, CheckReport, HistoryDefect, Violation,
     MAX_HISTORY_OPERATIONS, MAX_SEARCH_CONFIGURATIONS,

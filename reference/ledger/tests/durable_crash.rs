@@ -1,0 +1,1215 @@
+//! Application crash points over the durable transactional backend.
+//!
+//! Every test here interrupts a real publication at a named boundary, reopens
+//! the store, and asks the same question: is the recovered state exactly the
+//! one before the transaction or exactly the one after it? "Exactly" is load
+//! bearing. The comparison is over a whole [`DurableState`] — account
+//! balances, sessions, cached mutations, cached results, the deposit total,
+//! and the applied Raft index together — so a recovery that moved a balance
+//! without its cached result, or an applied index without its data, fails here
+//! rather than being caught by whichever later assertion happened to look.
+//!
+//! Injection is deterministic and per-store. Every failure message carries the
+//! [`FaultPlan`] that produced it, which is the whole reproduction input.
+//!
+//! The suite is also required to prove that its own injections bite: a crash
+//! test that silently stopped interrupting anything would assert only that an
+//! uninterrupted store works. Each scenario asserts that its fault fired, and
+//! the byte sweep asserts that it reached every torn-tail shape the format can
+//! produce.
+
+mod support;
+
+// The driver is shared with `adapter_cluster.rs`, which is where its read path,
+// its unknown-outcome accounting, and its in-memory construction are exercised.
+// This suite drives the durable composition and uses a smaller part of it.
+#[allow(dead_code)]
+#[path = "support/cluster.rs"]
+mod cluster;
+#[path = "support/durable.rs"]
+mod durable;
+#[path = "support/scratch.rs"]
+mod scratch;
+#[path = "support/storage.rs"]
+mod storage;
+
+use std::{collections::BTreeSet, path::Path};
+
+use rafter::{LogIndex, NodeId, Term};
+use rafter_app::state_machine::{
+    ApplicationSnapshot, ApplyBatch, ApplyEntry, ReplicatedStateMachine,
+};
+use rafter_reference_ledger::{
+    check_linearizable,
+    store::{
+        read_journal_bytes, write_journal_bytes, FaultPlan, LedgerStore, LedgerStoreError,
+        TornTail, WriteFault, BEGIN_LEN, COMMIT_LEN, HEADER_LEN,
+    },
+    AccountId, ApplyDisposition, ApplyOutcome, Command, DurableLedgerError,
+    DurableLedgerStateMachine, LedgerResponse, LedgerView, Mutation, MutationResult,
+    ReferenceLedger,
+};
+
+use cluster::LedgerCluster;
+use durable::DurableLedgerApps;
+use scratch::ScratchDir;
+use support::{amount, config, execute, open_session};
+
+const ALPHA: AccountId = AccountId::new(11);
+const BETA: AccountId = AccountId::new(12);
+
+/// Everything one transaction is required to move, compared as one value.
+///
+/// The contract names four things the transaction commits together. Three of
+/// them live in the view — account mutations, the session and deduplication
+/// mutation, and the cached command result — and the fourth is the applied
+/// index beside it. Comparing the pair is how "together" is asserted: there is
+/// no way to be equal on one half and not the other.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct DurableState {
+    applied_index: LogIndex,
+    view: LedgerView,
+}
+
+// ---------------------------------------------------------------------------
+// Store-level crash points
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_crash_at_every_byte_of_a_transaction_recovers_to_exactly_one_side_of_it() {
+    let commands = workload();
+    let interrupted = commands.len();
+    let prefix = &commands[..interrupted - 1];
+
+    // Establish the two legal answers, and the exact frame the interrupted
+    // store would have appended, by running the same workload uninterrupted.
+    let reference = ScratchDir::new("sweep-reference");
+    let mut app = open(reference.path(), FaultPlan::none());
+    apply_all(&mut app, prefix);
+    let before = durable_state(&app);
+    apply_one(
+        &mut app,
+        index_of(interrupted),
+        commands[interrupted - 1].clone(),
+    )
+    .expect("an uninterrupted transaction commits");
+    let after = durable_state(&app);
+    let frame_len = LedgerStore::planned_frame_len(app.ledger(), after.applied_index)
+        .expect("the frame the sweep interrupts is encodable");
+    drop(app);
+
+    assert_ne!(
+        before, after,
+        "a sweep whose two answers were equal would prove nothing"
+    );
+
+    let image_len = frame_len - as_u64(BEGIN_LEN) - as_u64(COMMIT_LEN);
+    let mut observed_tails = BTreeSet::new();
+
+    for stop in 0..=frame_len {
+        let plan = FaultPlan::at(as_u64(interrupted), WriteFault::AfterBytes(stop));
+        let scratch = ScratchDir::new("sweep");
+        let mut app = open(scratch.path(), plan.clone());
+        apply_all(&mut app, prefix);
+        let outcome = apply_one(
+            &mut app,
+            index_of(interrupted),
+            commands[interrupted - 1].clone(),
+        );
+
+        let committed = stop == frame_len;
+        if committed {
+            outcome.unwrap_or_else(|error| {
+                panic!("a whole frame commits under `{plan}`: {error}");
+            });
+            assert_eq!(
+                app.store().fired_fault(),
+                None,
+                "a fault that stops after the last byte stops nothing (`{plan}`)"
+            );
+        } else {
+            let error = outcome.expect_err(&format!("`{plan}` must interrupt the transaction"));
+            assert!(
+                matches!(
+                    error,
+                    DurableLedgerError::Store(LedgerStoreError::InjectedFault { .. })
+                ),
+                "`{plan}` failed for the wrong reason: {error}"
+            );
+            assert_eq!(
+                app.store().fired_fault(),
+                Some(WriteFault::AfterBytes(stop)),
+                "`{plan}` never reached its boundary"
+            );
+            assert!(
+                app.store().requires_reopen(),
+                "a store that failed mid-publication cannot say where its file ends (`{plan}`)"
+            );
+            // The machine reports a *durable* applied index, so a transaction
+            // that did not commit must not have moved it — nor the ledger
+            // beside it. A machine that adopted state before publishing it
+            // would report a floor above what recovery can reach, and an
+            // in-process restart from that floor would skip an entry that
+            // never committed.
+            assert_eq!(
+                durable_state(&app),
+                before,
+                "a failed transaction moved the reported state (`{plan}`)"
+            );
+        }
+        // Dropping the handle is the crash: everything below is what a fresh
+        // process can read back.
+        drop(app);
+
+        let recovered = open(scratch.path(), FaultPlan::none());
+        let expected_tail = expected_tail(stop, image_len, frame_len);
+        assert_eq!(
+            recovered.store().recovery().torn_tail(),
+            expected_tail,
+            "`{plan}` left a residue the format does not describe"
+        );
+        observed_tails.insert(expected_tail);
+        assert_eq!(
+            durable_state(&recovered),
+            if committed {
+                after.clone()
+            } else {
+                before.clone()
+            },
+            "`{plan}` recovered to neither side of the transaction"
+        );
+    }
+
+    // The sweep is only evidence if it actually produced every shape the
+    // format can leave behind.
+    assert_eq!(
+        observed_tails,
+        BTreeSet::from([
+            None,
+            Some(TornTail::PartialBeginRecord),
+            Some(TornTail::PartialImage),
+            Some(TornTail::MissingCommitRecord),
+            Some(TornTail::PartialCommitRecord),
+        ]),
+        "the sweep missed a torn-tail shape"
+    );
+}
+
+#[test]
+fn a_crash_before_the_transaction_begins_leaves_the_journal_untouched() {
+    let commands = workload();
+    let scratch = ScratchDir::new("before-first-byte");
+    let plan = FaultPlan::at(1, WriteFault::BeforeFirstByte);
+    let mut app = open(scratch.path(), plan.clone());
+
+    apply_one(&mut app, LogIndex(1), commands[0].clone())
+        .expect_err("the first transaction never starts");
+    assert_eq!(app.store().fired_fault(), Some(WriteFault::BeforeFirstByte));
+    assert_eq!(
+        app.store().journal_len(),
+        as_u64(HEADER_LEN),
+        "a transaction that emitted nothing appended nothing (`{plan}`)"
+    );
+    drop(app);
+
+    let recovered = open(scratch.path(), FaultPlan::none());
+    assert_eq!(recovered.store().recovery().torn_tail(), None);
+    assert_eq!(recovered.store().recovery().discarded_bytes(), 0);
+    assert_eq!(
+        durable_state(&recovered),
+        DurableState {
+            applied_index: LogIndex::ZERO,
+            view: ReferenceLedger::new(config(2, 4)).view(),
+        },
+        "an empty journal recovers to an empty ledger"
+    );
+}
+
+#[test]
+fn a_written_but_uncommitted_transaction_is_not_a_transaction() {
+    let commands = workload();
+    let scratch = ScratchDir::new("no-commit-record");
+    let (before, image_len) = state_and_image_len(&commands, commands.len());
+
+    // Stop exactly where the image ends: everything the transaction changes is
+    // on disk, and the record that says it counts is not. This is the window a
+    // write-ahead journal exists to make representable, and the answer has to
+    // be that nothing happened.
+    let stop = as_u64(BEGIN_LEN) + image_len;
+    let plan = FaultPlan::at(as_u64(commands.len()), WriteFault::AfterBytes(stop));
+    let mut app = open(scratch.path(), plan.clone());
+    apply_all(&mut app, &commands[..commands.len() - 1]);
+    apply_one(
+        &mut app,
+        index_of(commands.len()),
+        commands[commands.len() - 1].clone(),
+    )
+    .expect_err("the transaction was never committed");
+    assert_eq!(
+        app.store().fired_fault(),
+        Some(WriteFault::AfterBytes(stop))
+    );
+    drop(app);
+
+    let recovered = open(scratch.path(), FaultPlan::none());
+    assert_eq!(
+        recovered.store().recovery().torn_tail(),
+        Some(TornTail::MissingCommitRecord),
+        "the residue is a written transaction with no commit record (`{plan}`)"
+    );
+    assert_eq!(
+        recovered.store().recovery().discarded_bytes(),
+        stop,
+        "every byte of the uncommitted transaction is discarded (`{plan}`)"
+    );
+    assert_eq!(
+        durable_state(&recovered),
+        before,
+        "an uncommitted transaction changed nothing (`{plan}`)"
+    );
+}
+
+#[test]
+fn a_torn_commit_record_does_not_commit() {
+    let commands = workload();
+    let scratch = ScratchDir::new("torn-commit-record");
+    let (before, image_len) = state_and_image_len(&commands, commands.len());
+
+    // One byte short of a whole commit record. Every other check in the frame
+    // passes; the only thing missing is the seal.
+    let stop = as_u64(BEGIN_LEN) + image_len + as_u64(COMMIT_LEN) - 1;
+    let plan = FaultPlan::at(as_u64(commands.len()), WriteFault::AfterBytes(stop));
+    let mut app = open(scratch.path(), plan.clone());
+    apply_all(&mut app, &commands[..commands.len() - 1]);
+    apply_one(
+        &mut app,
+        index_of(commands.len()),
+        commands[commands.len() - 1].clone(),
+    )
+    .expect_err("a torn commit record is not a commit");
+    drop(app);
+
+    let recovered = open(scratch.path(), FaultPlan::none());
+    assert_eq!(
+        recovered.store().recovery().torn_tail(),
+        Some(TornTail::PartialCommitRecord),
+        "under `{plan}`"
+    );
+    assert_eq!(
+        durable_state(&recovered),
+        before,
+        "a frame missing one byte of its commit record is not committed (`{plan}`)"
+    );
+}
+
+#[test]
+fn a_failed_durability_barrier_leaves_the_outcome_to_recovery() {
+    let commands = workload();
+    let scratch = ScratchDir::new("failed-sync");
+    let (before, _) = state_and_image_len(&commands, commands.len());
+    let after = uninterrupted_state(&commands);
+
+    let plan = FaultPlan::at(as_u64(commands.len()), WriteFault::AtFileSync);
+    let mut app = open(scratch.path(), plan.clone());
+    apply_all(&mut app, &commands[..commands.len() - 1]);
+    apply_one(
+        &mut app,
+        index_of(commands.len()),
+        commands[commands.len() - 1].clone(),
+    )
+    .expect_err("a failed barrier is a failed transaction");
+    assert_eq!(app.store().fired_fault(), Some(WriteFault::AtFileSync));
+    assert!(
+        app.store().requires_reopen(),
+        "a caller cannot infer from `Err` that no bytes changed (`{plan}`)"
+    );
+    drop(app);
+
+    // The contract does not promise which side a failed barrier lands on. It
+    // promises the answer is one of the two, and that recovery is what decides.
+    let recovered = open(scratch.path(), FaultPlan::none());
+    let state = durable_state(&recovered);
+    assert!(
+        state == before || state == after,
+        "a failed barrier recovered to a state that is neither side of the transaction (`{plan}`)"
+    );
+}
+
+#[test]
+fn recovery_truncates_the_torn_tail_so_the_next_transaction_appends_cleanly() {
+    let commands = workload();
+    let scratch = ScratchDir::new("truncating-recovery");
+    let plan = FaultPlan::at(as_u64(commands.len()), WriteFault::AfterBytes(40));
+    let mut app = open(scratch.path(), plan.clone());
+    apply_all(&mut app, &commands[..commands.len() - 1]);
+    let before = durable_state(&app);
+    apply_one(
+        &mut app,
+        index_of(commands.len()),
+        commands[commands.len() - 1].clone(),
+    )
+    .expect_err("the last transaction is interrupted");
+    drop(app);
+
+    let mut recovered = open(scratch.path(), FaultPlan::none());
+    assert!(
+        recovered.store().recovery().torn_tail().is_some(),
+        "the scenario left no residue to truncate (`{plan}`)"
+    );
+    assert_eq!(recovered.store().recovery().discarded_bytes(), 40);
+    assert_eq!(durable_state(&recovered), before);
+
+    // The point of truncating is that an append cannot follow abandoned bytes.
+    apply_one(
+        &mut recovered,
+        index_of(commands.len()),
+        commands[commands.len() - 1].clone(),
+    )
+    .expect("a recovered journal accepts the retried transaction");
+    let retried = durable_state(&recovered);
+    drop(recovered);
+
+    let reopened = open(scratch.path(), FaultPlan::none());
+    assert_eq!(
+        reopened.store().recovery().torn_tail(),
+        None,
+        "the retried transaction sits on a clean boundary"
+    );
+    assert_eq!(durable_state(&reopened), retried);
+    assert_eq!(
+        retried,
+        uninterrupted_state(&commands),
+        "retrying after recovery reaches the state the uninterrupted run reached"
+    );
+}
+
+#[test]
+fn an_acknowledged_command_is_never_re_executed_after_recovery() {
+    let commands = workload();
+    let scratch = ScratchDir::new("no-re-execution");
+    let acknowledged = commands[3].clone();
+
+    let plan = FaultPlan::at(as_u64(commands.len()), WriteFault::AfterBytes(40));
+    let mut app = open(scratch.path(), plan.clone());
+    apply_all(&mut app, &commands[..commands.len() - 1]);
+    let acknowledged_balance = app.ledger().account_balance(ALPHA);
+    apply_one(
+        &mut app,
+        index_of(commands.len()),
+        commands[commands.len() - 1].clone(),
+    )
+    .expect_err("the last transaction is interrupted");
+    drop(app);
+
+    let mut recovered = open(scratch.path(), FaultPlan::none());
+    let recovered_floor = recovered
+        .applied_index()
+        .expect("a durable ledger reports its applied index");
+
+    // The deposit at sequence 3 was acknowledged before the crash. Its session
+    // entry has to have survived in the same transaction that moved the
+    // balance, so replaying it returns the cached result rather than depositing
+    // again.
+    let replayed = apply_one(
+        &mut recovered,
+        LogIndex(recovered_floor.0 + 1),
+        acknowledged,
+    )
+    .expect("a fresh index applies");
+    assert_eq!(
+        replayed.disposition,
+        ApplyDisposition::Replayed,
+        "an acknowledged command must not execute a second time (`{plan}`)"
+    );
+    assert_eq!(
+        replayed.response,
+        LedgerResponse::Mutation(MutationResult::Deposited { balance: 40 })
+    );
+    assert_eq!(
+        recovered.ledger().account_balance(ALPHA),
+        acknowledged_balance,
+        "the replay changed no balance (`{plan}`)"
+    );
+
+    // And the entry itself can never come back at or below the floor.
+    let error = apply_one(&mut recovered, recovered_floor, commands[0].clone())
+        .expect_err("an entry at the applied floor is refused");
+    assert!(
+        matches!(
+            error,
+            DurableLedgerError::Adapter(
+                rafter_reference_ledger::LedgerAdapterError::AppliedIndexRegression { .. }
+            )
+        ),
+        "unexpected refusal: {error}"
+    );
+}
+
+#[test]
+fn a_crash_after_the_commit_point_but_before_the_reply_is_answered_by_the_cache() {
+    let commands = workload();
+    let scratch = ScratchDir::new("commit-without-reply");
+    let mut app = open(scratch.path(), FaultPlan::none());
+    apply_all(&mut app, &commands[..commands.len() - 1]);
+
+    // This transaction commits. Its results are then dropped on the floor,
+    // which is exactly what a process death between the commit point and the
+    // client reply looks like: durable effects, no acknowledgement.
+    let unreplied = apply_one(
+        &mut app,
+        index_of(commands.len()),
+        commands[commands.len() - 1].clone(),
+    )
+    .expect("the transaction commits");
+    let committed = durable_state(&app);
+    drop(app);
+
+    let mut recovered = open(scratch.path(), FaultPlan::none());
+    assert_eq!(
+        durable_state(&recovered),
+        committed,
+        "a committed transaction survives a crash that swallowed its reply"
+    );
+
+    // The client never heard an answer, so it retries the same request
+    // identity. The cache the transaction committed alongside the balance is
+    // what makes that safe.
+    let retried = apply_one(
+        &mut recovered,
+        LogIndex(committed.applied_index.0 + 1),
+        commands[commands.len() - 1].clone(),
+    )
+    .expect("a fresh index applies");
+    assert_eq!(retried.disposition, ApplyDisposition::Replayed);
+    assert_eq!(
+        retried.response, unreplied.response,
+        "the retry returns the answer the crashed run computed"
+    );
+    assert_eq!(
+        recovered.ledger().view(),
+        committed.view,
+        "the retry moved no balance"
+    );
+}
+
+#[test]
+fn recovery_then_replay_reconstructs_the_uninterrupted_run() {
+    let commands = workload();
+    let uninterrupted = uninterrupted_state(&commands);
+
+    // Interrupt each transaction in turn, recover, replay the rest of the log
+    // from the recovered floor, and land in the same place every time.
+    for interrupted in 1..=commands.len() {
+        let plan = FaultPlan::at(as_u64(interrupted), WriteFault::AfterBytes(35));
+        let scratch = ScratchDir::new("replay-equivalence");
+        let mut app = open(scratch.path(), plan.clone());
+        for (position, command) in commands.iter().enumerate().take(interrupted) {
+            let outcome = apply_one(&mut app, index_of(position + 1), command.clone());
+            if position + 1 == interrupted {
+                outcome.expect_err(&format!(
+                    "`{plan}` must interrupt transaction {interrupted}"
+                ));
+            } else {
+                outcome.expect("earlier transactions commit");
+            }
+        }
+        drop(app);
+
+        let mut recovered = open(scratch.path(), FaultPlan::none());
+        let floor = recovered
+            .applied_index()
+            .expect("a durable ledger reports its applied index");
+        assert!(
+            floor.0 < as_u64(interrupted),
+            "the interrupted transaction must not have committed (`{plan}`)"
+        );
+
+        for (position, command) in commands.iter().enumerate() {
+            let index = index_of(position + 1);
+            if index > floor {
+                apply_one(&mut recovered, index, command.clone())
+                    .unwrap_or_else(|error| panic!("replay after `{plan}` failed: {error}"));
+            }
+        }
+
+        assert_eq!(
+            durable_state(&recovered),
+            uninterrupted,
+            "replay from the recovered floor did not reconstruct the uninterrupted run (`{plan}`)"
+        );
+        assert_eq!(
+            recovered.ledger().view(),
+            replay_through_oracle(&commands).view(),
+            "the reconstructed ledger disagrees with the independent oracle (`{plan}`)"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Format integrity
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_corrupted_committed_frame_is_detected_rather_than_trusted() {
+    let commands = workload();
+    let (before, image_len) = state_and_image_len(&commands, commands.len());
+    let last_frame_len = as_u64(BEGIN_LEN) + image_len + as_u64(COMMIT_LEN);
+
+    // Offsets into the last frame, one in each record, named by the check that
+    // is supposed to catch them.
+    let cases = [
+        (0_u64, TornTail::BeginRecordCorrupt),
+        (as_u64(BEGIN_LEN) + 2, TornTail::ImageCorrupt),
+        (
+            as_u64(BEGIN_LEN) + image_len + 6,
+            TornTail::CommitRecordCorrupt,
+        ),
+    ];
+
+    for (offset_in_frame, expected) in cases {
+        let scratch = ScratchDir::new("corrupt-frame");
+        let mut app = open(scratch.path(), FaultPlan::none());
+        apply_all(&mut app, &commands);
+        drop(app);
+
+        let mut bytes = read_journal_bytes(scratch.path()).expect("the journal reads back");
+        let frame_start = as_u64(bytes.len()) - last_frame_len;
+        let target = usize::try_from(frame_start + offset_in_frame).expect("offsets are small");
+        bytes[target] ^= 0xFF;
+        write_journal_bytes(scratch.path(), &bytes).expect("the journal rewrites");
+
+        let recovered = open(scratch.path(), FaultPlan::none());
+        assert_eq!(
+            recovered.store().recovery().torn_tail(),
+            Some(expected),
+            "flipping byte {offset_in_frame} of the last frame must be caught as {expected}"
+        );
+        assert_eq!(
+            durable_state(&recovered),
+            before,
+            "a corrupt frame is discarded, leaving the frame before it"
+        );
+    }
+}
+
+#[test]
+fn a_commit_record_seals_only_the_frame_it_was_written_for() {
+    // Two journals whose last frames differ in content but not in length: the
+    // ledger's fields are fixed width, so a different deposit amount encodes to
+    // the same number of bytes. Splicing one journal's commit record onto the
+    // other's image passes every local check — the magic, the version, the
+    // record's own checksum, and the image's checksum are all intact — and is
+    // still refused, because the commit record's frame checksum was computed
+    // over a frame it no longer follows.
+    let mine = ScratchDir::new("splice-target");
+    let theirs = ScratchDir::new("splice-source");
+    let commands = workload();
+    let mut divergent = commands.clone();
+    divergent[3] = execute(
+        0,
+        1,
+        3,
+        Mutation::Deposit {
+            account_id: ALPHA,
+            amount: amount(41),
+        },
+    );
+
+    let (before, image_len) = state_and_image_len(&commands, commands.len());
+    let frame_len = as_u64(BEGIN_LEN) + image_len + as_u64(COMMIT_LEN);
+
+    let mut app = open(mine.path(), FaultPlan::none());
+    apply_all(&mut app, &commands);
+    drop(app);
+    let mut app = open(theirs.path(), FaultPlan::none());
+    apply_all(&mut app, &divergent);
+    drop(app);
+
+    let mut target = read_journal_bytes(mine.path()).expect("the journal reads back");
+    let source = read_journal_bytes(theirs.path()).expect("the journal reads back");
+    assert_eq!(
+        target.len(),
+        source.len(),
+        "the two journals must be the same shape for this splice to be interesting"
+    );
+    let commit_start = target.len() - COMMIT_LEN;
+    assert_ne!(
+        target[commit_start..],
+        source[commit_start..],
+        "the two commit records must differ, or the splice changes nothing"
+    );
+    target[commit_start..].copy_from_slice(&source[commit_start..]);
+    write_journal_bytes(mine.path(), &target).expect("the journal rewrites");
+
+    let recovered = open(mine.path(), FaultPlan::none());
+    assert_eq!(
+        recovered.store().recovery().torn_tail(),
+        Some(TornTail::CommitRecordCorrupt),
+        "a commit record from another frame must not seal this one"
+    );
+    assert_eq!(
+        recovered.store().recovery().discarded_bytes(),
+        frame_len,
+        "the whole unsealed frame is discarded"
+    );
+    assert_eq!(durable_state(&recovered), before);
+}
+
+#[test]
+fn the_journal_header_binds_a_store_to_its_format_and_its_bounds() {
+    let scratch = ScratchDir::new("header");
+    let mut app = open(scratch.path(), FaultPlan::none());
+    apply_all(&mut app, &workload());
+    drop(app);
+
+    // Different resource bounds decide which images are valid, so they are
+    // refused rather than reinterpreted.
+    let error = LedgerStore::open(scratch.path(), config(3, 4))
+        .expect_err("a journal is bound to the configuration it was created under");
+    assert!(
+        matches!(error, LedgerStoreError::ConfigMismatch { .. }),
+        "unexpected refusal: {error}"
+    );
+
+    let original = read_journal_bytes(scratch.path()).expect("the journal reads back");
+
+    let mut wrong_magic = original.clone();
+    wrong_magic[1] = b'X';
+    write_journal_bytes(scratch.path(), &wrong_magic).expect("the journal rewrites");
+    assert!(
+        matches!(
+            LedgerStore::open(scratch.path(), config(2, 4)),
+            Err(LedgerStoreError::NotALedgerJournal { .. })
+        ),
+        "a file that is not a ledger journal is not opened as one"
+    );
+
+    let mut wrong_version = original.clone();
+    wrong_version[4] = 9;
+    write_journal_bytes(scratch.path(), &wrong_version).expect("the journal rewrites");
+    assert!(
+        matches!(
+            LedgerStore::open(scratch.path(), config(2, 4)),
+            Err(LedgerStoreError::UnsupportedFormatVersion { version: 9 })
+        ),
+        "a format this build cannot read is refused rather than guessed at"
+    );
+
+    let mut corrupt_header = original;
+    corrupt_header[HEADER_LEN - 1] ^= 0xFF;
+    write_journal_bytes(scratch.path(), &corrupt_header).expect("the journal rewrites");
+    assert!(
+        matches!(
+            LedgerStore::open(scratch.path(), config(2, 4)),
+            Err(LedgerStoreError::HeaderChecksumMismatch { .. })
+        ),
+        "a corrupt header is caught by its own checksum"
+    );
+}
+
+#[test]
+fn the_store_refuses_a_transaction_that_does_not_advance_the_applied_floor() {
+    // The state machine already refuses a replayed entry, so this is the store
+    // saying the same thing on its own. It matters that both do: the store is
+    // the thing recovery reads, and a journal holding two frames at the same
+    // index has no rule for choosing between them.
+    let scratch = ScratchDir::new("monotonic");
+    let ledger_config = config(2, 4);
+    let mut store = LedgerStore::open(scratch.path(), ledger_config).expect("a fresh store opens");
+    let mut ledger = rafter_reference_ledger::Ledger::new(ledger_config);
+    ledger.apply(open_session(0, 1));
+
+    store
+        .commit(&ledger, LogIndex(1))
+        .expect("the first transaction advances the floor");
+
+    for repeated in [LogIndex(1), LogIndex::ZERO] {
+        let error = store
+            .commit(&ledger, repeated)
+            .expect_err("a non-advancing append must be refused");
+        assert!(
+            matches!(error, LedgerStoreError::NonMonotonicAppliedIndex { .. }),
+            "unexpected refusal at {repeated}: {error}"
+        );
+    }
+
+    // A rewrite is the exception, and only at the current index: compacting in
+    // place must not require inventing one.
+    store
+        .replace(&ledger, LogIndex(1))
+        .expect("a rewrite may republish the current index");
+    let error = store
+        .replace(&ledger, LogIndex::ZERO)
+        .expect_err("a rewrite must not move the floor backwards");
+    assert!(
+        matches!(error, LedgerStoreError::NonMonotonicAppliedIndex { .. }),
+        "unexpected refusal: {error}"
+    );
+}
+
+#[test]
+fn a_poisoned_store_refuses_every_later_transaction() {
+    let commands = workload();
+    let scratch = ScratchDir::new("poisoned");
+    let plan = FaultPlan::at(1, WriteFault::AtFileSync);
+    let mut app = open(scratch.path(), plan.clone());
+
+    apply_one(&mut app, LogIndex(1), commands[0].clone())
+        .expect_err("the first transaction fails its barrier");
+    assert!(app.store().requires_reopen(), "under `{plan}`");
+
+    let error = apply_one(&mut app, LogIndex(2), commands[1].clone())
+        .expect_err("a poisoned store accepts nothing");
+    assert!(
+        matches!(
+            error,
+            DurableLedgerError::Store(LedgerStoreError::StoreRequiresReopen)
+        ),
+        "a poisoned store must say so rather than fail some other way: {error}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Snapshots and compaction
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_snapshot_round_trip_preserves_everything_the_contract_lists() {
+    let commands = workload();
+    let source = ScratchDir::new("snapshot-source");
+    let destination = ScratchDir::new("snapshot-destination");
+
+    let mut app = open(source.path(), FaultPlan::none());
+    apply_all(&mut app, &commands);
+    let expected = durable_state(&app);
+    let snapshot = app
+        .build_snapshot(expected.applied_index)
+        .expect("a durable ledger snapshots its own applied index");
+    drop(app);
+
+    let mut installed = open(destination.path(), FaultPlan::none());
+    installed
+        .install_snapshot(snapshot)
+        .expect("a matching snapshot installs");
+    assert_eq!(
+        durable_state(&installed),
+        expected,
+        "balances, sessions, cached mutations, cached results, and the applied floor all survive"
+    );
+    drop(installed);
+
+    // The install has to have been a transaction, not an in-memory adoption.
+    let reopened = open(destination.path(), FaultPlan::none());
+    assert_eq!(
+        durable_state(&reopened),
+        expected,
+        "an installed snapshot is durable without any further write"
+    );
+    assert_eq!(
+        reopened.store().recovery().committed_frames(),
+        1,
+        "an install replaces the journal rather than extending it"
+    );
+}
+
+#[test]
+fn a_crash_during_a_snapshot_install_leaves_the_pre_install_state() {
+    let commands = workload();
+    let source = ScratchDir::new("install-crash-source");
+    let mut app = open(source.path(), FaultPlan::none());
+    apply_all(&mut app, &commands);
+    let installed_state = durable_state(&app);
+    let snapshot = app
+        .build_snapshot(installed_state.applied_index)
+        .expect("a durable ledger snapshots its own applied index");
+    drop(app);
+
+    // The destination already holds a shorter prefix of the same history, so
+    // "pre-install" is a real state rather than an empty one.
+    let prefix = &commands[..2];
+    let mut observed_pre_install = 0;
+    let mut observed_post_install = 0;
+
+    for fault in [
+        WriteFault::BeforeFirstByte,
+        WriteFault::AfterBytes(10),
+        WriteFault::AfterBytes(as_u64(HEADER_LEN) + as_u64(BEGIN_LEN) + 4),
+        WriteFault::AtFileSync,
+        WriteFault::BeforeRename,
+        WriteFault::AfterRename,
+    ] {
+        let destination = ScratchDir::new("install-crash");
+        // Two clean transactions, then the install is the third write plan.
+        let plan = FaultPlan::at(3, fault);
+        let mut app = open(destination.path(), plan.clone());
+        apply_all(&mut app, prefix);
+        let before = durable_state(&app);
+
+        app.install_snapshot(clone_snapshot(&snapshot))
+            .expect_err(&format!("`{plan}` must interrupt the install"));
+        assert_eq!(
+            app.store().fired_fault(),
+            Some(fault),
+            "`{plan}` never reached its boundary"
+        );
+        drop(app);
+
+        let recovered = open(destination.path(), FaultPlan::none());
+        let state = durable_state(&recovered);
+        if state == before {
+            observed_pre_install += 1;
+            assert_eq!(
+                recovered.store().recovery().torn_tail(),
+                None,
+                "an interrupted rewrite never damages the journal it did not replace (`{plan}`)"
+            );
+        } else {
+            assert_eq!(
+                state, installed_state,
+                "`{plan}` recovered to neither side of the install"
+            );
+            observed_post_install += 1;
+        }
+    }
+
+    // A rewrite publishes at the rename, so the faults before it must land on
+    // one side and the fault after it on the other. A run that saw only one
+    // side would mean the rename stopped being the commit point.
+    assert_eq!(
+        (observed_pre_install, observed_post_install),
+        (5, 1),
+        "the rename is the install's commit point"
+    );
+}
+
+#[test]
+fn an_abandoned_staging_file_is_removed_rather_than_reused() {
+    let commands = workload();
+    let scratch = ScratchDir::new("staging");
+    let plan = FaultPlan::at(3, WriteFault::BeforeRename);
+    let mut app = open(scratch.path(), plan.clone());
+    apply_all(&mut app, &commands[..2]);
+    let before = durable_state(&app);
+    app.compact()
+        .expect_err("the compaction is interrupted before it publishes");
+    drop(app);
+
+    let recovered = open(scratch.path(), FaultPlan::none());
+    assert!(
+        recovered.store().recovery().removed_staged_file(),
+        "an abandoned staging file must be removed at open (`{plan}`)"
+    );
+    assert_eq!(durable_state(&recovered), before);
+}
+
+#[test]
+fn compaction_never_makes_an_acknowledged_command_executable_again() {
+    let commands = workload();
+    let scratch = ScratchDir::new("compaction");
+    // The highest completed sequence is the only one a session still answers
+    // from cache, so the command to retry is the last one the run acknowledged.
+    let acknowledged = commands[commands.len() - 1].clone();
+
+    let mut app = open(scratch.path(), FaultPlan::none());
+    apply_all(&mut app, &commands);
+    let expected = durable_state(&app);
+    let before_compaction = app.store().journal_len();
+    app.compact().expect("compaction publishes");
+    assert!(
+        app.store().journal_len() < before_compaction,
+        "compaction left the journal at {before_compaction} bytes"
+    );
+    drop(app);
+
+    let mut recovered = open(scratch.path(), FaultPlan::none());
+    assert_eq!(
+        recovered.store().recovery().committed_frames(),
+        1,
+        "a compacted journal holds exactly the current state"
+    );
+    assert_eq!(
+        durable_state(&recovered),
+        expected,
+        "compaction preserved every fact the transaction moved"
+    );
+
+    // The deduplication state is the thing compaction must not drop: without
+    // it, this acknowledged deposit would run a second time.
+    let replayed = apply_one(
+        &mut recovered,
+        LogIndex(expected.applied_index.0 + 1),
+        acknowledged,
+    )
+    .expect("a fresh index applies");
+    assert_eq!(replayed.disposition, ApplyDisposition::Replayed);
+    assert_eq!(
+        recovered.ledger().view(),
+        expected.view,
+        "the replay after compaction moved no balance"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Replication
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_replica_that_crashed_mid_transaction_recovers_and_rejoins() {
+    let scratch = ScratchDir::new("cluster-crash");
+    let ledger_config = config(2, 4);
+    let mut apps = DurableLedgerApps::new(scratch.path(), ledger_config);
+
+    // Node 3 loses power part way through the image of its third durable
+    // transaction. The image is never shorter than its fixed prologue, so a
+    // stop 13 bytes into it lands inside the image for any ledger this test
+    // can build.
+    let stop = as_u64(BEGIN_LEN) + 13;
+    let plan = FaultPlan::at(3, WriteFault::AfterBytes(stop));
+    apps.arm(NodeId(3), plan.clone());
+
+    let mut cluster = LedgerCluster::with_apps(ledger_config, apps);
+    let leader = cluster.elect_leader();
+    assert_eq!(leader, NodeId(1), "the lowest election timeout wins");
+
+    let commands = workload();
+    for command in &commands {
+        cluster.submit(leader, command.clone());
+    }
+
+    assert_eq!(
+        cluster
+            .crashed()
+            .into_iter()
+            .map(|(node_id, _)| node_id)
+            .collect::<Vec<_>>(),
+        vec![NodeId(3)],
+        "the armed replica must be the one that died, and the only one (`{plan}`)"
+    );
+
+    // The surviving quorum kept serving while node 3 was down, so the cluster
+    // is strictly ahead of anything node 3 can recover on its own.
+    cluster.settle();
+    let quorum_view = cluster.state_machine(NodeId(2)).ledger().view();
+
+    cluster.restart(NodeId(3));
+    let recovered = cluster.state_machine(NodeId(3));
+    assert_eq!(
+        recovered.store().recovery().torn_tail(),
+        Some(TornTail::PartialImage),
+        "the restarted replica recovered across the transaction it died in (`{plan}`)"
+    );
+    assert!(
+        !recovered.store().recovery().created(),
+        "a restart reads the journal it left behind rather than making a new one"
+    );
+    assert_ne!(
+        recovered.ledger().view(),
+        quorum_view,
+        "a replica that came back already caught up would make the catch-up vacuous"
+    );
+    assert!(
+        cluster.crashed().is_empty(),
+        "the restarted replica is alive again"
+    );
+
+    // Catching up is the leader's work, not recovery's: a restarted replica
+    // knows only what its own durable state said, and the entries committed
+    // while it was gone reach it through ordinary replication.
+    cluster.submit(
+        leader,
+        execute(
+            0,
+            1,
+            5,
+            Mutation::Deposit {
+                account_id: BETA,
+                amount: amount(7),
+            },
+        ),
+    );
+    cluster.run_rounds(8);
+    cluster.settle();
+
+    let converged = cluster.state_machine(leader).ledger().view();
+    assert_ne!(
+        converged, quorum_view,
+        "the post-restart command must have moved the cluster on"
+    );
+    for node_id in cluster.node_ids() {
+        assert_eq!(
+            cluster.state_machine(node_id).ledger().view(),
+            converged,
+            "replica {} did not converge with the rest (`{plan}`)",
+            node_id.0
+        );
+    }
+    assert!(
+        cluster.crashed().is_empty(),
+        "no replica died during the catch-up (`{plan}`)"
+    );
+    check_linearizable(cluster.config(), cluster.history())
+        .unwrap_or_else(|error| panic!("under `{plan}`: {error}"));
+}
+
+// ---------------------------------------------------------------------------
+// Scenario support
+// ---------------------------------------------------------------------------
+
+/// The command sequence these scenarios replicate, at indexes 1 upward.
+///
+/// It opens a session, opens two accounts, deposits, and transfers, so the
+/// committed state exercises every field the transaction has to carry: two
+/// balances, an active session, a cached mutation, a cached result, and the
+/// deposit total.
+fn workload() -> Vec<Command> {
+    vec![
+        open_session(0, 1),
+        execute(0, 1, 1, Mutation::OpenAccount { account_id: ALPHA }),
+        execute(0, 1, 2, Mutation::OpenAccount { account_id: BETA }),
+        execute(
+            0,
+            1,
+            3,
+            Mutation::Deposit {
+                account_id: ALPHA,
+                amount: amount(40),
+            },
+        ),
+        execute(
+            0,
+            1,
+            4,
+            Mutation::Transfer {
+                from: ALPHA,
+                to: BETA,
+                amount: amount(15),
+            },
+        ),
+    ]
+}
+
+/// Opens a durable ledger over `directory` under `faults`.
+fn open(directory: &Path, faults: FaultPlan) -> DurableLedgerStateMachine {
+    let armed = faults.to_string();
+    let store =
+        LedgerStore::open_with_faults(directory, config(2, 4), faults).unwrap_or_else(|error| {
+            panic!(
+                "a ledger store opens at {} under `{armed}`: {error}",
+                directory.display()
+            )
+        });
+    DurableLedgerStateMachine::new(store)
+}
+
+/// Applies one command at `index`, returning its outcome.
+fn apply_one(
+    app: &mut DurableLedgerStateMachine,
+    index: LogIndex,
+    command: Command,
+) -> Result<ApplyOutcome, DurableLedgerError> {
+    app.apply_batch(ApplyBatch {
+        entries: vec![ApplyEntry {
+            index,
+            term: Term(1),
+            command,
+            local_proposal_id: None,
+        }],
+    })
+    .map(|mut results| {
+        results
+            .pop()
+            .expect("a one-entry batch returns one result")
+            .result
+    })
+}
+
+/// Applies `commands` at consecutive indexes from one, expecting each to commit.
+fn apply_all(app: &mut DurableLedgerStateMachine, commands: &[Command]) {
+    for (position, command) in commands.iter().enumerate() {
+        apply_one(app, index_of(position + 1), command.clone())
+            .unwrap_or_else(|error| panic!("transaction {} must commit: {error}", position + 1));
+    }
+}
+
+/// Returns everything a transaction moves, as one comparable value.
+fn durable_state(app: &DurableLedgerStateMachine) -> DurableState {
+    DurableState {
+        applied_index: app
+            .applied_index()
+            .expect("a durable ledger reports its applied index"),
+        view: app.ledger().view(),
+    }
+}
+
+/// Returns the state before the `interrupted`-th command, and that command's
+/// image length.
+fn state_and_image_len(commands: &[Command], interrupted: usize) -> (DurableState, u64) {
+    let scratch = ScratchDir::new("measure");
+    let mut app = open(scratch.path(), FaultPlan::none());
+    apply_all(&mut app, &commands[..interrupted - 1]);
+    let before = durable_state(&app);
+    apply_one(
+        &mut app,
+        index_of(interrupted),
+        commands[interrupted - 1].clone(),
+    )
+    .expect("an uninterrupted transaction commits");
+    let frame_len = LedgerStore::planned_frame_len(
+        app.ledger(),
+        app.applied_index()
+            .expect("a durable ledger reports its applied index"),
+    )
+    .expect("the measured frame is encodable");
+    (before, frame_len - as_u64(BEGIN_LEN) - as_u64(COMMIT_LEN))
+}
+
+/// Returns the state an uninterrupted run of `commands` reaches.
+fn uninterrupted_state(commands: &[Command]) -> DurableState {
+    let scratch = ScratchDir::new("uninterrupted");
+    let mut app = open(scratch.path(), FaultPlan::none());
+    apply_all(&mut app, commands);
+    durable_state(&app)
+}
+
+/// Replays `commands` through the structurally independent oracle.
+fn replay_through_oracle(commands: &[Command]) -> ReferenceLedger {
+    let mut oracle = ReferenceLedger::new(config(2, 4));
+    for command in commands {
+        oracle.apply(command.clone());
+    }
+    oracle
+}
+
+/// Returns the torn tail a stop after `stop` bytes of a frame must leave.
+fn expected_tail(stop: u64, image_len: u64, frame_len: u64) -> Option<TornTail> {
+    let begin = as_u64(BEGIN_LEN);
+    if stop == 0 || stop == frame_len {
+        None
+    } else if stop < begin {
+        Some(TornTail::PartialBeginRecord)
+    } else if stop < begin + image_len {
+        Some(TornTail::PartialImage)
+    } else if stop == begin + image_len {
+        Some(TornTail::MissingCommitRecord)
+    } else {
+        Some(TornTail::PartialCommitRecord)
+    }
+}
+
+/// Copies a snapshot so one built value can be installed repeatedly.
+fn clone_snapshot(snapshot: &ApplicationSnapshot) -> ApplicationSnapshot {
+    ApplicationSnapshot {
+        applied_index: snapshot.applied_index,
+        payload: snapshot.payload.clone(),
+        raft_snapshot: None,
+    }
+}
+
+/// The one-based log index of the `position`-th command.
+fn index_of(position: usize) -> LogIndex {
+    LogIndex(as_u64(position))
+}
+
+fn as_u64(value: usize) -> u64 {
+    u64::try_from(value).expect("test sizes fit a u64")
+}

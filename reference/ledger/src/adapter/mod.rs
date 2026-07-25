@@ -8,7 +8,9 @@
 //! [`crate::LedgerQuery`] where the history checker can reach it without
 //! reaching through this Rafter-facing module.
 
-mod codec;
+pub(crate) mod codec;
+mod discipline;
+mod durable;
 
 use std::{error::Error, fmt};
 
@@ -23,6 +25,7 @@ use crate::{
 };
 
 pub use codec::{LedgerCodecError, NonZeroField};
+pub use durable::{DurableLedgerError, DurableLedgerStateMachine};
 
 /// Failure of an adapter operation, as distinct from a ledger result.
 ///
@@ -204,12 +207,7 @@ impl ReplicatedStateMachine for LedgerStateMachine {
     ) -> Result<Vec<ApplyResult<Self::CommandResult>>, Self::Error> {
         let mut results = Vec::with_capacity(batch.entries.len());
         for entry in batch.entries {
-            if entry.index <= self.applied_index {
-                return Err(LedgerAdapterError::AppliedIndexRegression {
-                    entry_index: entry.index,
-                    applied_index: self.applied_index,
-                });
-            }
+            discipline::admit_entry(entry.index, self.applied_index)?;
             let result = self.ledger.apply(entry.command);
             self.applied_index = entry.index;
             results.push(ApplyResult {
@@ -227,12 +225,7 @@ impl ReplicatedStateMachine for LedgerStateMachine {
         query: Self::Query,
         barrier: ReadBarrier,
     ) -> Result<Self::QueryResult, Self::Error> {
-        if self.applied_index < barrier.required_applied_index {
-            return Err(LedgerAdapterError::ReadBarrierUnsatisfied {
-                required_applied_index: barrier.required_applied_index,
-                applied_index: self.applied_index,
-            });
-        }
+        discipline::admit_read(barrier, self.applied_index)?;
         Ok(self.ledger.query(query))
     }
 
@@ -240,13 +233,7 @@ impl ReplicatedStateMachine for LedgerStateMachine {
         &mut self,
         at: LogIndex,
     ) -> Result<ApplicationSnapshot, ApplicationSnapshotError<Self::Error>> {
-        if at != self.applied_index {
-            return Err(LedgerAdapterError::SnapshotIndexUnavailable {
-                requested_index: at,
-                applied_index: self.applied_index,
-            }
-            .into());
-        }
+        discipline::admit_snapshot_request(at, self.applied_index)?;
         Ok(ApplicationSnapshot {
             applied_index: at,
             payload: codec::encode_snapshot(at.0, &self.ledger.snapshot())
@@ -259,30 +246,7 @@ impl ReplicatedStateMachine for LedgerStateMachine {
         &mut self,
         snapshot: ApplicationSnapshot,
     ) -> Result<(), ApplicationSnapshotError<Self::Error>> {
-        if snapshot.applied_index < self.applied_index {
-            return Err(LedgerAdapterError::SnapshotBehindAppliedIndex {
-                snapshot_index: snapshot.applied_index,
-                applied_index: self.applied_index,
-            }
-            .into());
-        }
-        if snapshot.payload.is_empty() {
-            return Err(LedgerAdapterError::SnapshotPayloadUnavailable {
-                applied_index: snapshot.applied_index,
-            }
-            .into());
-        }
-
-        let (payload_index, ledger_snapshot) =
-            codec::decode_snapshot(&snapshot.payload).map_err(LedgerAdapterError::from)?;
-        if payload_index != snapshot.applied_index.0 {
-            return Err(LedgerAdapterError::SnapshotIndexMismatch {
-                payload_index: LogIndex(payload_index),
-                declared_index: snapshot.applied_index,
-            }
-            .into());
-        }
-
+        let ledger_snapshot = discipline::admit_install(&snapshot, self.applied_index)?;
         self.ledger = Ledger::from_snapshot(self.config, ledger_snapshot)
             .map_err(LedgerAdapterError::Snapshot)?;
         self.applied_index = snapshot.applied_index;
