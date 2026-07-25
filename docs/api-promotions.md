@@ -3420,6 +3420,341 @@ was written: an embedder holds a `RaftGroup`, a transport, and a validator,
 calls `tick` and `deliver`, and gets a `RaftHandle`. The sharded counter builds
 one of these per group.
 
+### Revision after adoption
+
+The findings above are one bug and four gaps. This subsection designs the fixes
+and lands before them, so the design is reviewable against the evidence that
+produced it rather than against the code that answered it. Nothing here reopens
+the entry's shape: the driver still owns one replica, one movable slot, and the
+waiter tables, and every fix is inside that.
+
+#### 1. A step report's read events are routed
+
+`route_report` handles `peer_messages` and `proposal_events`
+([`driver/transport/state.rs:110-119`](../crates/rafter-service/src/driver/transport/state.rs))
+and drops `read_events` on the floor. That is not a missing refinement; the app
+layer documents the exact hazard against the method the driver calls
+([`crates/rafter-app/src/group/read.rs:161-168`](../crates/rafter-app/src/group/read.rs)):
+
+```rust
+/// A terminal read event clears local waiter state, so a caller that keeps
+/// retrying after observing [`ReadEvent::Rejected`] or [`ReadEvent::Canceled`]
+/// in the report receives [`GroupError::NonMonotonicReadId`] rather than a
+/// second statement of the rejection. Check the read events of every report
+/// the caller records before retrying — a barrier is most often ended by
+/// the tick or delivery step that observes a leadership change, so its
+/// terminal event arrives in that step's report rather than in one this
+/// method returned.
+```
+
+The driver is the caller that keeps retrying. `route_report` gains a read-event
+pass that reaches the same terminal mapping `drive_pending_reads` already
+reaches through `handle_read_outcome`, so a barrier resolves identically
+whichever step observed its end:
+
+| `ReadEvent` | Waiter |
+| --- | --- |
+| `Rejected { read_id, reason, leader_hint }` | `ReadError::Rejected { read_id: Some(read_id), reason, leader_hint }` |
+| `Canceled { read_id, reason, leader_hint }` | `ReadError::Canceled { read_id, reason, leader_hint }` |
+| `Granted { read_id, .. }` | Not terminal. The proof is now cached in the group; the driver records that this barrier is ready to collect, which is what fix 5 waits on. |
+| `FreshnessUnavailable { .. }` | Not terminal. The barrier is still reserved and a later `Granted` follows it. |
+
+The event carries the answer for the first two rows and nothing the group still
+needs, so the driver resolves them without touching the group again — which is
+the point, because the group has already dropped that barrier's state.
+
+**The invariant this creates, and what breaks it.** Once terminal events resolve
+their waiters, a read that `drive_pending_reads` still tracks and the group does
+not is no longer a reachable state; it is a driver invariant violation. The
+driver must not report that as a permanent client hang, which is what it does
+today: `GroupError::NonMonotonicReadId` propagates out of `drive_pending_reads`,
+the waiter is never resolved, and every later call raises the same error while
+the client waits forever. Instead, a per-barrier group error resolves that
+barrier's waiter with `ReadError::ManagedInvariantViolation` naming the
+invariant, and `drive_pending_reads` continues with the others. Two reasons for
+that shape rather than propagation. A client learning that its read produced no
+answer can act; a client that hangs cannot. And `drive_pending_reads` serves
+every barrier, so one barrier's fault must not deny service to the rest — which
+is the same rule the entry already states for the group as a whole, one level
+down. The method's error contract is unchanged and now true: it returns
+`ManagedDriverError` when the driver has released its group, or a read step
+fails for a reason not attributable to one barrier.
+
+#### 2. Observation without release
+
+`release_group` is the only way to see inside a running driver, and it resolves
+every outstanding waiter, so looking costs the caller its clients. The consumer
+paid 232 lines to avoid that
+([`reference/fenced-lock/tests/support/observe.rs`](../reference/fenced-lock/tests/support/observe.rs)):
+a shared state machine and a shared runtime, each re-implementing the public
+trait the group requires, held on the side so the harness can still read what
+the driver took.
+
+```rust
+impl<G, A, R, T, V> TransportRaftDriver<G, A, R, T, V> {
+    /// Reads the adopted group under the driver's own lock.
+    ///
+    /// The closure receives a shared borrow for its own duration and nothing
+    /// outlives the call: no guard, no owned escape, no way to keep the group
+    /// after the lock is released. `&RaftGroup` rather than `&mut` is the whole
+    /// policy — the driver correlates outcomes to waiters it created, and a
+    /// group stepped, read, or cancelled from outside would break that
+    /// correspondence silently.
+    ///
+    /// The closure runs with the driver locked, so it must not call back into
+    /// this driver. A shared borrow of the group offers no way to.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ManagedDriverError::NoGroup`] when the driver has released its
+    /// group.
+    pub fn with_group<U>(
+        &self,
+        read: impl FnOnce(&RaftGroup<G, A, R>) -> U,
+    ) -> Result<U, ManagedDriverError>;
+
+    /// Returns the index this replica's state machine must reach to have
+    /// applied every application command it knows to be committed.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ManagedDriverError::NoGroup`] when the driver has released its
+    /// group.
+    pub fn committed_application_index(&self) -> Result<LogIndex, ManagedDriverError>;
+}
+```
+
+`RaftGroup` already exposes `state_machine`, `runtime`, `metrics`, and
+`committed_application_index`
+([`crates/rafter-app/src/group/types.rs:396,415`](../crates/rafter-app/src/group/types.rs),
+[`group/output.rs:18,77`](../crates/rafter-app/src/group/output.rs)), so the
+closure needs no new app-layer surface. That is the test of whether this is the
+right seam: the missing thing was reachability, not vocabulary.
+
+**One forwarder, not two.** `committed_application_index` gets a direct method
+because it is a zero-argument scalar that the promoted decomposition recipe
+names as the readiness gate, and `with_group(|group| group.committed_application_index())`
+is pure ceremony around it. The state machine gets no forwarder, because every
+real state-machine read is a projection the closure has to express anyway, and
+the consumer's own three call sites prove it: one clones the machine, one
+derives an applied index from that clone, and one decodes durable log payloads
+through the machine's decoder while holding the runtime's log — which no
+forwarder over `&A` alone could serve.
+
+**Rejected: a guard type.** `fn group(&self) -> Result<GroupGuard<'_, ...>>`
+reads better at a call site and hands a caller a lock it can hold across
+arbitrary code, including a call back into the driver that deadlocks. The
+closure makes the lock's extent a syntactic fact.
+
+#### 3. Per-waiter abandon
+
+`release_group` and `shutdown` resolve every waiter; nothing retires one. A
+client that stops waiting drops its future, and its waiter stays unresolved,
+counting against `max_pending_waiters` until something the client is not
+listening for fills it.
+
+```rust
+impl<G, A, R, T, V> TransportRaftDriver<G, A, R, T, V> {
+    /// Stops waiting for one write and resolves its client.
+    ///
+    /// Returns whether a waiter was retired, so abandoning an ID this driver
+    /// no longer holds is a no-op rather than an error: a caller racing its own
+    /// completion is not a fault.
+    pub fn abandon_write(&self, local_proposal_id: LocalProposalId) -> bool;
+
+    /// Stops waiting for one read, cancelling its barrier through the group
+    /// first.
+    pub fn abandon_read(&self, read_id: ReadId) -> bool;
+
+    /// Returns every write this driver has not resolved.
+    pub fn pending_writes(&self) -> Vec<PendingWrite>;
+
+    /// Returns the read IDs of every barrier this driver has not resolved.
+    pub fn pending_reads(&self) -> Vec<ReadId>;
+}
+
+/// One unresolved write, named both ways a caller can name it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct PendingWrite {
+    /// The ID the driver allocated, which [`TransportRaftDriver::abandon_write`]
+    /// takes.
+    pub local_proposal_id: LocalProposalId,
+    /// The ID the caller supplied in [`WriteOptions`], which is how a caller
+    /// with several writes in flight tells them apart.
+    pub client_request_id: Option<ClientRequestId>,
+}
+```
+
+**Vocabulary: the one that exists.** A write resolves as
+`UnknownOutcome { local_proposal_id, client_request_id, reason: DriveBoundReached }`
+and a read as `Abandoned { read_id, reason: DriveBoundReached }`, with
+`cancel_read` called first so the retired group stays quiescent — the same
+ordering `release_group` uses and the same guarantee
+[Terminal Driver Vocabulary](#terminal-driver-vocabulary) makes for the variant.
+No new reason is minted. That entry described this producer when it named "a
+caller's own round budget expires", and a caller's round budget is a drive bound
+reached by the caller; its after-state note records that the producer was then
+lost, and this is it returning.
+
+**Resolve, do not remove.** An abandoned waiter keeps its resolved outcome in
+the table until its future is polled, exactly as every other resolution does. A
+caller that abandons may still hold the future — the lock does, one line later —
+and a future that answered `ManagedInvariantViolation` because its own caller
+abandoned it would be a worse answer than the one it asked for. The slot is
+freed regardless, because `max_pending_waiters` counts *unresolved* waiters.
+
+**Late events: the first outcome wins.** `resolve_write` and `resolve_read`
+already refuse to overwrite a waiter that has one, and abandonment is an
+outcome, so a later `Applied`, `Rejected`, `Canceled`, or `UnknownOutcome` for
+an abandoned ID resolves nothing and changes nothing. That direction is the
+correct one and not merely the convenient one: the client already holds a
+terminal answer, and on the write side that answer is *unknown*, which is
+exactly the statement that the proposal may still commit. The consequence is
+worth naming plainly, because it decides when a caller should abandon at all: a
+client that abandons stops hearing. A caller that wants the eventual fact keeps
+its future and does not abandon. Those are two different situations and only one
+of them is abandonment.
+
+**Learning the ID.** `DriverCommandSender::write` and `read` return a future and
+nothing else, so today the allocated ID exists only inside the driver until the
+future resolves — which is too late for a caller that wants to stop waiting.
+`pending_writes` and `pending_reads` close that from the driver side rather than
+through the trait, which is shared with `InMemoryRaftDriver`, whose waiters are
+not addressable this way and whose futures resolve inside the call that made
+them. Reading the driver's own unresolved table is also the honest surface: it
+answers "what is this driver still holding", which is the question a supervisor
+draining one actually asks.
+
+#### 4. `new` takes recovery outputs
+
+```rust
+pub fn new(
+    group: RaftGroup<G, A, R>,
+    recovery_outputs: Vec<RaftOutput>,
+    transport: T,
+    validator: V,
+    options: TransportDriverOptions,
+) -> Result<Self, ManagedDriverError>;
+```
+
+Symmetric with `adopt_group`, and for the reason `adopt_group` already gives: a
+recovery report carries peer messages and snapshot directives that must be
+routed, and a caller that applied them outside the driver drops exactly the
+effects a restart depends on. A first incarnation over empty storage passes
+`Vec::new()`. The consumer proved the asymmetry by writing the workaround and
+then asserting its own escape hatch was safe
+([`cluster.rs:203-218`](../reference/fenced-lock/tests/support/cluster.rs)) —
+`assert!(report.peer_messages.is_empty())`, which holds only because that
+replica had never started.
+
+Ordering inside `new` is the ordering `adopt_group` uses: validate the group and
+take its watermarks, install it, then apply and route the outputs. A group the
+driver refuses never leaves a half-built driver behind.
+
+This breaks a constructor one commit old with two in-tree call sites, which is
+the cheapest this correction will ever be.
+
+#### 5. Retries become event-driven, and `max_read_retries` goes
+
+The selective-retry rule rests on a premise the app layer contradicts. The entry
+says a granted-but-stale barrier is worth retrying "because a read step also
+steps the group, so a committed entry can apply between one attempt and the
+next". That is true of the call that *starts* a barrier and false of every
+retry: `RaftGroup::read` against a barrier the group already tracks returns
+through `unstepped_read_report`
+([`crates/rafter-app/src/group/read.rs:384-404,433-440`](../crates/rafter-app/src/group/read.rs)),
+so nothing steps and no index moves. Every waiter `drive_pending_reads` iterates
+had its barrier submitted by `begin_read`, so that is the only shape the loop
+ever has, and every attempt after the first is a spin against a group whose
+state nothing in between can change. The consumer measured this and worked
+around it with `max_read_retries: 1`
+([`cluster.rs:81-90`](../reference/fenced-lock/tests/support/cluster.rs)).
+
+**Chosen: event-driven, off the read events fix 1 now routes.** A reserved
+barrier has exactly one transition that changes its answer, and after fix 1 the
+driver sees it: `ReadEvent::Granted` says the proof is cached and the next read
+call will consume it. So `drive_pending_reads` attempts a barrier when a grant
+has arrived for it and leaves it alone otherwise. `Pending` and
+`FreshnessUnavailable` are waits, not retries — and `FreshnessUnavailable` is
+re-emitted on each step until the applied index catches up, at which point the
+same code path emits `Granted`
+([`group/read.rs:303-338`](../crates/rafter-app/src/group/read.rs)), so nothing
+is lost by waiting.
+
+**Rejected: step the group once per retry.** The only step a driver could take
+is a tick, election and heartbeat timing is measured in ticks, and this entry
+already states that the tick interval is the embedder's policy and Rafter does
+not choose it. A driver that injected ticks to service a read would move an
+election to answer a query. There is no neutral step to take, which is why the
+event is the right signal.
+
+**`max_read_retries` is removed rather than defaulted.** With grants announced,
+a second attempt within one call is provably useless, and a bound that cannot
+change any behavior is a bound that lies about having one. The field and
+`with_max_read_retries` go together; `TransportDriverOptions` keeps
+`max_pending_waiters`, which is a real refusal. This is the same one-commit-old
+sanction fix 4 takes, and it removes a knob rather than adding one.
+
+**`drive_pending_reads` stays, and stays required.** The grant is announced, but
+the *proof* is still consumed by a read call, and that call runs the state
+machine — which the driver will not do inside a tick the embedder asked for on
+its own timer. What changes is that the call is now a no-op unless a grant
+arrived, instead of a bounded spin on every barrier every time.
+
+#### Blast radius of the revision
+
+| File | Change |
+| --- | --- |
+| [`crates/rafter-service/src/driver/transport.rs`](../crates/rafter-service/src/driver/transport.rs) | `new` takes recovery outputs; `with_group`, `committed_application_index`, `abandon_write`, `abandon_read`, `pending_writes`, `pending_reads`; `max_read_retries` and its setter removed |
+| [`crates/rafter-service/src/driver/transport/state.rs`](../crates/rafter-service/src/driver/transport/state.rs) | Read events routed; grant-gated retry; per-barrier group errors resolve their own waiter |
+| [`crates/rafter-service/src/lib.rs`](../crates/rafter-service/src/lib.rs) | Re-export `PendingWrite` |
+| [`crates/rafter-service/tests/transport_driver.rs`](../crates/rafter-service/tests/transport_driver.rs) | The regression test below, the new surfaces, and every `new` call site |
+| [`reference/fenced-lock/tests/support/`](../reference/fenced-lock/tests/support/) | `observe.rs` deleted; the read-side workarounds and the options override go with it |
+
+Additive apart from `new`, `max_read_retries`, and the read-event routing, which
+changes when a client future resolves — earlier, and to the answer the cluster
+gave rather than to nothing.
+
+#### Focused-test plan for the revision
+
+In `crates/rafter-service/tests/transport_driver.rs`:
+
+- `a_barrier_canceled_during_a_delivery_resolves_its_client` — the regression
+  test, written first and failing first. Start a linearizable read on a leader,
+  make it lose leadership through a delivered frame, and assert the client
+  future resolves to `ReadError::Canceled`. Before the fix it stays pending
+  forever and the next `drive_pending_reads` errors with
+  `GroupError::NonMonotonicReadId`; the test asserts the resolution, so both
+  halves of the defect are pinned by one assertion.
+- No direct test for the invariant violation, and the reason is the point of
+  having named it: once terminal events are routed there is no public sequence
+  that reaches the state. The driver's `ReadId`s are monotonic across release
+  and re-adoption, its retry request is byte-identical to the one that started
+  the barrier, and `with_group` hands out a shared borrow, so nothing outside
+  the driver can cancel or re-reserve a barrier it holds. The regression test
+  above closes the only route that existed, and its final
+  `drive_pending_reads().expect(...)` is where a regression would land.
+- `with_group_reads_a_running_replica_without_releasing_it` — read the state
+  machine and the applied index through the closure, then assert the driver
+  still serves a write, which is the property `release_group` cannot offer.
+- `with_group_refuses_after_release` — `ManagedDriverError::NoGroup`.
+- `abandoning_a_write_resolves_its_client_and_frees_its_slot` — fill to
+  `max_pending_waiters`, abandon one, assert the next write is admitted.
+- `a_late_proposal_event_does_not_overwrite_an_abandoned_write` — abandon, then
+  drive the proposal to commit, and assert the client still holds
+  `DriveBoundReached` and nothing panics.
+- `abandoning_a_read_cancels_its_barrier` — assert `ReadError::Abandoned` and
+  `reserved_reads` back to its prior value.
+- `a_pending_write_is_addressable_before_it_resolves` — `pending_writes` names
+  the in-flight write with the `client_request_id` the caller supplied, and
+  stops naming it once resolved.
+- `new_routes_the_recovery_outputs_it_was_given` — the counterpart to
+  `adopt_routes_the_recovery_outputs_it_was_given`, asserting the transport saw
+  the recovery report's peer messages.
+- `a_zero_bound_is_refused_at_construction` — narrowed to
+  `max_pending_waiters`, the only bound left.
+
 ## Terminal Driver Vocabulary
 
 ### Origin
