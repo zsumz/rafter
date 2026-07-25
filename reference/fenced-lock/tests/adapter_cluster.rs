@@ -10,6 +10,8 @@ mod support;
 
 #[path = "support/cluster.rs"]
 mod cluster;
+#[path = "support/observe.rs"]
+mod observe;
 #[path = "support/transport.rs"]
 mod transport;
 
@@ -22,7 +24,7 @@ use rafter_reference_fenced_lock::{
     OperationId, OperationResult, QueryOutcome, ReferenceLockService, RequestFingerprint,
     RequestRejection, ResourceStatus, SubmitOutcome,
 };
-use rafter_service::{ReadError, UnknownOutcomeReason, WriteError};
+use rafter_service::{ReadError, UnknownOutcomeReason, WriteError, WriteErrorKind, WriteFate};
 
 use cluster::{LockCluster, MAX_ROUNDS};
 use support::{
@@ -108,6 +110,12 @@ fn a_leadership_loss_closes_the_outcome_window_and_a_retry_replays_it() {
         unknown_outcome_reason(error),
         Some(UnknownOutcomeReason::DriveBoundReached),
         "the outcome window closed rather than resolving, got {error:?}"
+    );
+    // The window is open because the driver could not prove it closed, which is
+    // the one fact a retrying client may act on.
+    assert!(
+        error.fate().may_commit(),
+        "an entry that reached the followers' logs may still commit"
     );
     assert!(
         cluster.believes_it_leads(first_leader),
@@ -552,8 +560,11 @@ fn a_proposal_stranded_on_an_isolated_leader_is_dropped_and_retried_once() {
     cluster.heal();
     cluster.run_rounds(6);
     cluster.settle();
+    // The client had already stopped waiting, so this arrives on the future it
+    // walked away from rather than through a driver counter: the app layer says
+    // the outcome is lost, and the public client surface is where it is heard.
     assert!(
-        cluster.driver(first_leader).runtime_unknown_outcomes() > 0,
+        cluster.runtime_unknown_outcomes(first_leader) > 0,
         "the former leader reported that it lost its proposal's outcome"
     );
     assert_replicas_agree(&cluster, second_leader);
@@ -580,6 +591,12 @@ fn a_refused_acquisition_is_recorded_as_provably_uncommitted() {
         matches!(error, WriteError::NotLeader { leader_hint, .. } if *leader_hint == Some(leader)),
         "the service reported a pre-append refusal and redirected, got {error:?}"
     );
+    // The stronger terminal event rests on exactly this: the driver reported
+    // the fate it observed, rather than this application inferring one from the
+    // category. `NotAppended` is what makes the request identity still unused.
+    assert_eq!(error.kind(), WriteErrorKind::NotLeader);
+    assert_eq!(error.fate(), WriteFate::NotAppended);
+    assert!(!error.fate().may_commit());
 
     let refused_id = cluster
         .history()

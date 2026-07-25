@@ -13,8 +13,7 @@ use std::{error::Error, fmt};
 
 use rafter::LogIndex;
 use rafter_app::state_machine::{
-    ApplicationSnapshot, ApplicationSnapshotError, ApplyBatch, ApplyResult, ReadBarrier,
-    ReplicatedStateMachine, SnapshotSupport,
+    ApplyBatch, ApplyResult, ReadBarrier, ReplicatedStateMachine, SnapshotSupport,
 };
 
 use crate::{ApplyOutcome, Command, LockConfig, LockService, ResourceName, ResourceStatus};
@@ -76,19 +75,6 @@ pub enum LockAdapterError {
         required_applied_index: LogIndex,
         applied_index: LogIndex,
     },
-    /// A durable application snapshot was requested before this slice defines
-    /// its byte representation.
-    ///
-    /// `CONTRACT.md` states that the durable adapter "will later define a
-    /// versioned byte representation" covering the lock table, every
-    /// high-water mark, sessions, cached results, and replicated logical time.
-    /// Until that slice lands, the pure model's snapshot stays opaque and this
-    /// adapter refuses rather than shipping a format that a later slice would
-    /// have to break. A driver that never compacts never reaches this path.
-    DurableSnapshotUndefined {
-        snapshot_index: LogIndex,
-        applied_index: LogIndex,
-    },
 }
 
 impl fmt::Display for LockAdapterError {
@@ -109,13 +95,6 @@ impl fmt::Display for LockAdapterError {
                 formatter,
                 "read barrier requires applied index {required_applied_index}, but this replica applied {applied_index}"
             ),
-            Self::DurableSnapshotUndefined {
-                snapshot_index,
-                applied_index,
-            } => write!(
-                formatter,
-                "durable lock snapshots are undefined until the durable slice; refused at index {snapshot_index} with applied index {applied_index}"
-            ),
         }
     }
 }
@@ -124,9 +103,7 @@ impl Error for LockAdapterError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Codec(error) => Some(error),
-            Self::AppliedIndexRegression { .. }
-            | Self::ReadBarrierUnsatisfied { .. }
-            | Self::DurableSnapshotUndefined { .. } => None,
+            Self::AppliedIndexRegression { .. } | Self::ReadBarrierUnsatisfied { .. } => None,
         }
     }
 }
@@ -185,6 +162,11 @@ impl ReplicatedStateMachine for LockStateMachine {
     /// Declared `Unsupported`: `CONTRACT.md` defers the durable byte
     /// representation to a later slice, so this adapter has no snapshot
     /// format to offer and says so instead of shipping one it would break.
+    /// Both snapshot methods are the trait's provided bodies, which refuse in
+    /// Rafter's own vocabulary rather than in this application's.
+    // The durable slice flips this to `SnapshotSupport::Supported` and brings
+    // both method bodies back, which is a diff a reviewer reads as the
+    // durability claim it is.
     const SNAPSHOT_SUPPORT: SnapshotSupport = SnapshotSupport::Unsupported;
 
     fn applied_index(&self) -> Result<LogIndex, Self::Error> {
@@ -240,27 +222,5 @@ impl ReplicatedStateMachine for LockStateMachine {
             // anything that could insert.
             LockQuery::GetLock { resource } => LockQueryResult::Lock(self.service.status(resource)),
         })
-    }
-
-    fn build_snapshot(
-        &mut self,
-        at: LogIndex,
-    ) -> Result<ApplicationSnapshot, ApplicationSnapshotError<Self::Error>> {
-        Err(LockAdapterError::DurableSnapshotUndefined {
-            snapshot_index: at,
-            applied_index: self.applied_index,
-        }
-        .into())
-    }
-
-    fn install_snapshot(
-        &mut self,
-        snapshot: ApplicationSnapshot,
-    ) -> Result<(), ApplicationSnapshotError<Self::Error>> {
-        Err(LockAdapterError::DurableSnapshotUndefined {
-            snapshot_index: snapshot.applied_index,
-            applied_index: self.applied_index,
-        }
-        .into())
     }
 }

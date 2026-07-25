@@ -1,17 +1,18 @@
 //! Consumer-owned deterministic transport over the public service contract.
 //!
-//! `rafter-service` ships transport *traits* and an inbound validator, but no
-//! driver that consumes them, so this module is what an external embedder has
-//! to write. It implements [`RaftTransport`] with explicit delivery control:
-//! nothing moves between replicas until the test asks for it, and a cut link
-//! is a real refusal rather than a silently skipped queue.
+//! A real deployment supplies a real network and a test supplies a controllable
+//! one, so this module is consumer-owned on purpose rather than for want of a
+//! shipped driver. It implements [`RaftTransport`] with explicit delivery
+//! control: nothing moves between replicas until the test asks for it, and a
+//! cut link is a real refusal rather than a silently skipped queue.
 //!
 //! Frames leave a node as [`PeerEnvelope`] values and arrive as
-//! [`AuthenticatedPeerEnvelope`] values that must pass
-//! [`validate_inbound_peer_envelope`] before any group sees them. That is the
-//! production shape the crate documents, and it is the only reason a
-//! `PeerPrincipal` exists here: proving who is on the far end of a connection
-//! and deciding which Raft replica that is are separate steps.
+//! [`AuthenticatedPeerEnvelope`] values, which `TransportRaftDriver::deliver`
+//! validates before any group sees them. That is the production shape the crate
+//! documents, and it is the only reason a `PeerPrincipal` exists here: proving
+//! who is on the far end of a connection and deciding which Raft replica that is
+//! are separate steps, so [`PeerDirectory`] is the driver's validator while
+//! [`NodeTransport`] is its link.
 //!
 //! Lock order is node state first, network second. Every path that sends holds
 //! a node lock and then takes the network lock; no path takes them the other
@@ -26,8 +27,7 @@ use std::{
 
 use rafter::NodeId;
 use rafter_service::{
-    validate_inbound_peer_envelope, AuthenticatedPeerEnvelope, AuthenticatedPeerEnvelopeError,
-    AuthenticatedPeerValidator, PeerEnvelope, PeerSet, RaftTransport,
+    AuthenticatedPeerEnvelope, AuthenticatedPeerValidator, PeerEnvelope, PeerSet, RaftTransport,
 };
 
 use crate::cluster::{LockGroupId, GROUP_ID};
@@ -203,21 +203,6 @@ pub struct NodeTransport {
     local_node_id: NodeId,
     local_principal: PeerPrincipal,
     directory: PeerDirectory,
-}
-
-impl NodeTransport {
-    /// Validates an inbound frame against this replica's own policy.
-    ///
-    /// # Errors
-    ///
-    /// Returns the app-layer validation error when the sender is unmapped,
-    /// unauthorized, fenced, or addressed the wrong replica.
-    pub fn accept_inbound(
-        &self,
-        envelope: AuthenticatedPeerEnvelope<LockGroupId, PeerPrincipal>,
-    ) -> Result<PeerEnvelope<LockGroupId>, AuthenticatedPeerEnvelopeError> {
-        validate_inbound_peer_envelope(envelope, self.local_node_id, &self.directory)
-    }
 }
 
 impl RaftTransport<LockGroupId> for NodeTransport {

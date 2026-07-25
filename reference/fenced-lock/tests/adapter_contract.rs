@@ -6,16 +6,21 @@
 
 mod support;
 
-use rafter::{LogIndex, Term};
+use std::error::Error;
+
+use rafter::{LocalProposalId, LogIndex, NodeId, ProposalRejection, Term};
 use rafter_app::state_machine::{
     ApplicationSnapshot, ApplicationSnapshotError, ApplyBatch, ApplyEntry, ReadBarrier,
     ReplicatedStateMachine, SnapshotSupport,
 };
 use rafter_reference_fenced_lock::{
     decode_command, decode_result, encode_command, encode_result, ApplyDisposition, ApplyOutcome,
-    Command, LockAdapterError, LockCodecError, LockQuery, LockRejection, LockResponse,
-    LockStateMachine, NonZeroField, Operation, OperationResult, RequestFingerprint,
-    RequestIdentity, RequestRejection, ResourceNameError,
+    Command, HistoryEvent, LockAdapterError, LockCodecError, LockQuery, LockRejection,
+    LockResponse, LockStateMachine, NonZeroField, Operation, OperationId, OperationResult,
+    RequestFingerprint, RequestIdentity, RequestRejection, ResourceNameError, SubmitOutcome,
+};
+use rafter_service::{
+    ErrorCause, StateMachineOperation, UnknownOutcomeReason, WriteError, WriteErrorKind, WriteFate,
 };
 
 use support::{
@@ -341,7 +346,7 @@ fn querying_an_unknown_name_never_tracks_it() {
 }
 
 #[test]
-fn durable_snapshots_are_refused_until_the_durable_slice_defines_them() {
+fn durable_snapshots_are_declared_undefined_rather_than_refused_as_a_fault() {
     let mut app = LockStateMachine::new(config(4, 4));
     apply(&mut app, 1, open_session(0, 1));
 
@@ -350,15 +355,13 @@ fn durable_snapshots_are_refused_until_the_durable_slice_defines_them() {
         SnapshotSupport::Unsupported,
         "the durable slice has not defined a byte representation yet"
     );
+    // The declaration is the whole statement, so both bodies are the trait's
+    // provided ones. A limitation this application declared must not arrive as
+    // an application error a reader has to interpret as "not really a fault".
     assert!(
         matches!(
             app.build_snapshot(LogIndex(1)),
-            Err(ApplicationSnapshotError::StateMachine(
-                LockAdapterError::DurableSnapshotUndefined {
-                    snapshot_index: LogIndex(1),
-                    applied_index: LogIndex(1),
-                }
-            ))
+            Err(ApplicationSnapshotError::Unsupported)
         ),
         "shipping a format now would be a format the durable slice has to break"
     );
@@ -368,18 +371,166 @@ fn durable_snapshots_are_refused_until_the_durable_slice_defines_them() {
             payload: Vec::new(),
             raft_snapshot: None,
         }),
-        Err(ApplicationSnapshotError::StateMachine(
-            LockAdapterError::DurableSnapshotUndefined {
-                snapshot_index: LogIndex(5),
-                applied_index: LogIndex(1),
-            }
-        ))
+        Err(ApplicationSnapshotError::Unsupported)
     ));
     assert_eq!(
         app.applied_index(),
         Ok(LogIndex(1)),
         "a refused install moved nothing"
     );
+}
+
+/// Every remaining adapter error is a genuine fault, which is what the module
+/// comment claims and what the deleted snapshot variant used to contradict.
+#[test]
+fn every_adapter_error_carries_a_fault_rather_than_a_declared_limitation() {
+    let faults = [
+        LockAdapterError::Codec(LockCodecError::UnsupportedCommandVersion { version: 9 }),
+        LockAdapterError::AppliedIndexRegression {
+            entry_index: LogIndex(2),
+            applied_index: LogIndex(2),
+        },
+        LockAdapterError::ReadBarrierUnsatisfied {
+            required_applied_index: LogIndex(3),
+            applied_index: LogIndex(2),
+        },
+    ];
+
+    for fault in faults {
+        let carried = ErrorCause::new(fault);
+        assert_eq!(
+            carried.downcast_ref::<LockAdapterError>(),
+            Some(&fault),
+            "a preserved cause hands this application back its own type"
+        );
+    }
+}
+
+/// The client's three-way classification and the history's terminal vocabulary
+/// answer one question, and this is the only place they are compared.
+///
+/// `HistoryEvent::NotCommitted` claims the attempt provably never entered the
+/// replicated log, and the service layer proves exactly that as
+/// `WriteFate::NotAppended`. If the two ever disagreed, the checker would be
+/// told a refusal the cluster never observed and would linearize an operation
+/// as never having happened while its entry sat in a durable log.
+#[test]
+fn a_refusal_is_recorded_as_not_committed_exactly_when_the_write_was_not_appended() {
+    let operation_id = OperationId::new(1);
+    let mut refusals = 0_usize;
+    let mut unknowns = 0_usize;
+
+    for error in write_errors_across_the_surface() {
+        let fate = error.fate();
+        let kind = error.kind();
+        let outcome = SubmitOutcome::from_write_error(error);
+        let event = outcome.history_event(operation_id);
+
+        assert_eq!(
+            matches!(event, HistoryEvent::NotCommitted { .. }),
+            fate == WriteFate::NotAppended,
+            "{kind:?} earned {event:?} while the driver reported {fate:?}"
+        );
+        assert_eq!(
+            matches!(event, HistoryEvent::Unknown { .. }),
+            fate.may_commit(),
+            "{kind:?} earned {event:?} while the driver reported {fate:?}"
+        );
+        match event {
+            HistoryEvent::NotCommitted { .. } => refusals += 1,
+            HistoryEvent::Unknown { .. } => unknowns += 1,
+            other => panic!("a failed write is never {other:?}"),
+        }
+    }
+
+    assert!(refusals > 0 && unknowns > 0, "the check saw both answers");
+}
+
+/// A state-machine failure reaches this application as its own type.
+///
+/// The write path carries the adapter's typed error rather than a rendered
+/// message, so the recovery an embedder would write is expressible: match the
+/// category, then recover the exact fault through the error chain.
+#[test]
+fn a_state_machine_failure_reaches_the_client_as_this_adapters_own_error() {
+    let fault = LockAdapterError::AppliedIndexRegression {
+        entry_index: LogIndex(2),
+        applied_index: LogIndex(2),
+    };
+    let error = WriteError::StateMachine {
+        operation: StateMachineOperation::ApplyBatch,
+        fate: WriteFate::Unresolved,
+        cause: ErrorCause::new(fault),
+    };
+
+    assert_eq!(error.kind(), WriteErrorKind::StateMachine);
+    let source = error
+        .source()
+        .expect("a state-machine failure has a source");
+    assert_eq!(
+        source.downcast_ref::<LockAdapterError>(),
+        Some(&fault),
+        "`source()` reaches the preserved fault in one link, not the wrapper"
+    );
+    assert!(
+        !format!("{error}").contains(&fault.to_string()),
+        "the category's message does not repeat what the chain already prints"
+    );
+    assert!(
+        SubmitOutcome::from_write_error(error).is_unknown(),
+        "an apply failure after replication began leaves the outcome open"
+    );
+}
+
+/// One representative error per public [`WriteErrorKind`], so a new variant
+/// cannot join the surface without this file being updated.
+fn write_errors_across_the_surface() -> Vec<WriteError> {
+    let cause = || {
+        ErrorCause::new(LockAdapterError::ReadBarrierUnsatisfied {
+            required_applied_index: LogIndex(3),
+            applied_index: LogIndex(2),
+        })
+    };
+    vec![
+        WriteError::NotLeader {
+            leader_hint: Some(NodeId(2)),
+            term: Term(4),
+        },
+        WriteError::Rejected {
+            reason: ProposalRejection::LeadershipTransferInProgress { target: NodeId(3) },
+        },
+        WriteError::PayloadTooLarge { max: 8, actual: 64 },
+        WriteError::UnknownOutcome {
+            local_proposal_id: LocalProposalId(1),
+            client_request_id: None,
+            reason: UnknownOutcomeReason::DriveBoundReached,
+        },
+        WriteError::WrongGroup,
+        WriteError::StateMachine {
+            operation: StateMachineOperation::EncodeCommand,
+            fate: WriteFate::NotAppended,
+            cause: cause(),
+        },
+        WriteError::Storage {
+            fate: WriteFate::Unresolved,
+            cause: cause(),
+        },
+        WriteError::Transport {
+            fate: WriteFate::NotAppended,
+            cause: cause(),
+        },
+        WriteError::ShuttingDown,
+        WriteError::Poisoned {
+            fate: WriteFate::Unresolved,
+            reason: "ApplyBatch failed".to_owned(),
+            cause: Some(cause()),
+        },
+        WriteError::LocalProposalIdExhausted,
+        WriteError::ManagedInvariantViolation {
+            fate: WriteFate::NotAppended,
+            message: "a driver reporting its own bug".to_owned(),
+        },
+    ]
 }
 
 #[test]

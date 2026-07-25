@@ -16,7 +16,10 @@ use rafter_service::{
     WriteOptions,
 };
 
-use crate::{ApplyOutcome, Command, LockQuery, LockQueryResult, ResourceName, ResourceStatus};
+use crate::{
+    ApplyOutcome, Command, HistoryEvent, LockQuery, LockQueryResult, OperationId, ResourceName,
+    ResourceStatus,
+};
 
 /// Managed handle specialized to the lock service's command and query types.
 pub type LockHandle<G, S> = RaftHandle<G, Command, LockQuery, ApplyOutcome, LockQueryResult, S>;
@@ -43,6 +46,42 @@ pub enum SubmitOutcome {
 }
 
 impl SubmitOutcome {
+    /// Classifies a failed write into the two terminal shapes a retrying client
+    /// may act on.
+    ///
+    /// This is the only place the classification is made, so a caller cannot
+    /// arrive at a refusal by any route other than the one the driver proved.
+    #[must_use]
+    pub fn from_write_error(error: WriteError) -> Self {
+        if closes_outcome_window(&error) {
+            Self::Unknown { error }
+        } else {
+            Self::Refused { error }
+        }
+    }
+
+    /// Returns the terminal history event this outcome earns.
+    ///
+    /// [`HistoryEvent::NotCommitted`] is strictly stronger than
+    /// [`HistoryEvent::Unknown`], and `CONTRACT.md` defines exactly which
+    /// observations earn it: an attempt that provably never entered the
+    /// replicated log. The service layer answers that question as
+    /// [`rafter_service::WriteFate::NotAppended`], so this method is the single
+    /// joint between the client's three-way classification and the history's
+    /// terminal vocabulary. Two independent mappings would be two chances for
+    /// the checker to be told a refusal the cluster never proved.
+    #[must_use]
+    pub const fn history_event(&self, operation_id: OperationId) -> HistoryEvent {
+        match self {
+            Self::Completed { outcome, .. } => HistoryEvent::Completed {
+                operation_id,
+                response: outcome.response,
+            },
+            Self::Refused { .. } => HistoryEvent::NotCommitted { operation_id },
+            Self::Unknown { .. } => HistoryEvent::Unknown { operation_id },
+        }
+    }
+
     /// Returns the replicated outcome when the command committed.
     #[must_use]
     pub const fn committed(&self) -> Option<&ApplyOutcome> {
@@ -129,8 +168,7 @@ where
                 term: receipt.term,
                 outcome: receipt.result,
             },
-            Err(error) if closes_outcome_window(&error) => SubmitOutcome::Unknown { error },
-            Err(error) => SubmitOutcome::Refused { error },
+            Err(error) => SubmitOutcome::from_write_error(error),
         }
     }
 
@@ -178,23 +216,12 @@ fn request_metadata(command: &Command) -> Option<ClientRequestId> {
 
 /// Returns whether a write error leaves the commit outcome unknown.
 ///
-/// Only the errors that prove the command never entered the replicated log are
-/// refusals; everything else has to be retried under the same request identity.
-/// The listed variants are the complete set that proves non-replication today.
-/// Everything else falls through, including `UnknownOutcome` and the ambiguous
-/// apply/storage/transport/poison errors, which carry only a formatted `String`
-/// and so cannot be inspected to narrow the window further. `WriteError` is
-/// also `#[non_exhaustive]`, so a future variant must default to the safe
-/// answer rather than to a refusal.
+/// The driver reports the fate it observed, so this application no longer
+/// enumerates the variants that prove non-replication and no longer widens the
+/// window for the ones it could not inspect. The window is now exactly as wide
+/// as the facts require.
 fn closes_outcome_window(error: &WriteError) -> bool {
-    !matches!(
-        error,
-        WriteError::NotLeader { .. }
-            | WriteError::Rejected { .. }
-            | WriteError::PayloadTooLarge { .. }
-            | WriteError::ShuttingDown
-            | WriteError::LocalProposalIdExhausted
-    )
+    error.fate().may_commit()
 }
 
 /// Returns the diagnostic reason an unknown write outcome carried, if any.

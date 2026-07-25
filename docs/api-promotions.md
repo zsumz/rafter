@@ -2730,13 +2730,29 @@ fn closes_outcome_window(error: &WriteError) -> bool {
 ```
 
 That is the acceptance evidence for this entry, and it is checkable rather than
-rhetorical: a wrong-group write, a payload-too-large write, and a
-pre-append runtime failure all move from `SubmitOutcome::Unknown` to
-`SubmitOutcome::Refused`, which means the lock's history records a terminal
-refusal where it previously recorded an unknown, and a retrying client stops
-burning a request identity it never used. `write_error_from_group` and its
-comment about a lost type disappear with the rest of the consumer's driver in
-the next entry; until then the type survives the mapping.
+rhetorical: every write the driver observed as refused moves from
+`SubmitOutcome::Unknown` to `SubmitOutcome::Refused`, which means the lock's
+history records a terminal refusal where it previously recorded an unknown, and
+a retrying client stops burning a request identity it never used.
+`write_error_from_group` and its comment about a lost type disappear with the
+rest of the consumer's driver in the next entry; until then the type survives
+the mapping.
+
+**Corrected during adoption.** This paragraph named "a wrong-group write, a
+payload-too-large write, and a pre-append runtime failure" as the three cases
+that move. `PayloadTooLarge` is not one of them: it is in the old enumeration's
+own refusal list, so it was already a refusal and moves nothing. The cases that
+actually move are `WriteError::WrongGroup`, which the old list could not name
+because the variant did not exist, and every fate-carrying variant the driver
+observed before the local append — `Storage`, `Transport`, `StateMachine`,
+`Poisoned`, and `ManagedInvariantViolation` with `WriteFate::NotAppended`. That
+last group is the real width of the change: it is the set the old comment
+described as carrying "only a formatted `String`" and therefore uninspectable,
+and it is now five variants rather than one. The lock pins the resulting
+equivalence — a refusal is recorded as `HistoryEvent::NotCommitted` exactly
+when the fate is `NotAppended` — in one test over one representative error per
+`WriteErrorKind`, so the client's classification and the history's terminal
+vocabulary cannot drift apart.
 
 `rafter-service` stops rendering. `mapping.rs` becomes a category assignment
 plus a `fate`, with the `GroupError` moved into an `ErrorCause` rather than
@@ -3347,6 +3363,48 @@ links are cut, when a replica restarts, and what the history records.
 `transport.rs` is unchanged, which is the correct outcome — a deterministic
 network is test infrastructure, not a workaround.
 
+**Corrected during adoption.** Three of those sentences were optimistic, and the
+measurements are these.
+
+`cluster.rs` fell from 1,496 lines to 778, a deletion of 718 rather than 790,
+and the difference is not rounding: what stayed is the client-side machinery the
+driver does not offer a term for. `transport.rs` is *not* unchanged. It loses
+`NodeTransport::accept_inbound`, because `TransportRaftDriver::deliver` performs
+inbound validation itself, which is the entry working as designed; the module's
+premise sentence — that the crate "ships transport *traits* and an inbound
+validator, but no driver that consumes them" — also stops being true.
+
+`NodeDriver` is a `TransportRaftDriver` over *wrappers* of the lock's own types
+rather than over the types themselves. The driver takes its `RaftGroup` by value
+and exposes no accessor for what is inside it, and `RaftGroupMetrics` carries
+neither the state machine, nor the durable log, nor
+`committed_application_index`. `release_group` is not a way to look, because it
+resolves every outstanding waiter. So the consumer supplies a 232-line
+`tests/support/observe.rs` holding a shared state machine and a shared runtime,
+each implementing the public trait the group requires. That module is new
+workaround, written to satisfy this entry, and the support directory's honest
+net is 1,947 lines to 1,446 — **-501**, not -790.
+
+`LockCluster` also keeps two things this paragraph did not anticipate: client
+futures whose caller stopped waiting, because nothing abandons one waiter and
+the fact the driver eventually reports has nowhere else to go, and a slot for a
+barrier the driver could not carry forward. See
+[Terminal Driver Vocabulary](#terminal-driver-vocabulary) for the first and the
+note below for the second.
+
+**Two defects the adoption found.** `TransportRaftDriver` never inspects a step
+report's `read_events`. A barrier the cluster rejects or cancels during a `tick`
+or a `deliver` is therefore never reported to its client; the group drops that
+barrier's state, and the driver's next `drive_pending_reads` asks the group to
+re-reserve a spent `ReadId`, which it refuses with
+`GroupError::NonMonotonicReadId`. That error propagates out of
+`drive_pending_reads` while the client waiter stays unresolved forever, and it
+repeats on every later call. The lock reproduces this in
+`a_linearizable_query_resolves_to_a_non_answer_when_leadership_is_lost`. Second,
+`TransportRaftDriver::new` takes a group and no recovery outputs, so a first
+incarnation cannot route them the way `adopt_group` does — the asymmetry is
+harmless only while the first incarnation recovers nothing.
+
 Three of the consumer's own notes disappear with the code. The comment that
 `rafter-service` "ships one driver, and it owns every replica behind a private
 queue"; the comment that it "ships transport *traits* and an inbound validator,
@@ -3635,6 +3693,20 @@ disappear, and so do the two other message strings it needed for the same idea.
 `rafter-service` stops describing its own bounded loop in prose that a caller
 can only read, and an operator investigating a restart is pointed at the driver
 rather than at the runtime.
+
+**Corrected during adoption.** `abandon_read` disappears, and so does the
+consumer's ability to abandon anything. `TransportRaftDriver` resolves waiters
+in bulk on `release_group` and `shutdown`, and offers no way to retire one; a
+client that stops waiting drops its future, and the driver's waiter stays in the
+table until something resolves it and nobody reads the answer. So the two
+`DriveBoundReached` reasons still have exactly one producer each — the shipped
+in-memory driver's loop — and the case this entry described as "a caller's own
+round budget expires" is now authored by the caller, outside any driver, with a
+`ReadId(0)` and a `LocalProposalId(0)` it has no way to learn. That is a smaller
+version of the same defect the entry set out to fix: the vocabulary is right and
+the client cannot reach it. The lock keeps its abandoned write futures alive
+solely so a late `UnknownOutcomeReason::RuntimeDroppedProposal` is still
+observed by somebody.
 
 More concretely, this entry is what lets
 [Transport-Attached Group Driver](#transport-attached-group-driver) document
