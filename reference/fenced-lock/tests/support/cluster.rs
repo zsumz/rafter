@@ -6,7 +6,8 @@
 //! that driver. Each replica gets its own sender, its own transport endpoint,
 //! and its own [`RaftHandle`]; the cluster below owns only the parts a real
 //! deployment would own too — when a node ticks, which frames are delivered,
-//! which links are cut, and when a replica reopens its durable media.
+//! which links are cut, and when a replica retires one incarnation for another
+//! over the same durable stores.
 //!
 //! The split matters for the histories. A client future here resolves when the
 //! *driver loop* observes a terminal proposal or read outcome, not when the
@@ -30,7 +31,10 @@ use rafter::{
 };
 use rafter_app::{
     error::GroupError,
-    group::{GroupInput, GroupStepReport, LeadershipTransferEvent, ProposalBeginReport, RaftGroup},
+    group::{
+        GroupInput, GroupStepReport, LeadershipTransferEvent, ProposalBeginReport, RaftGroup,
+        ReadReport,
+    },
     proposal::{Proposal, ProposalBegin, ProposalEvent, ProposalUnknownOutcomeReason},
     read::{ReadEvent, ReadOutcome, ReadRequest},
     state_machine::ReplicatedStateMachine,
@@ -40,16 +44,17 @@ use rafter_reference_fenced_lock::{
     LockQueryResult, LockStateMachine, LogicalTime, OperationId, QueryOutcome, ResourceName,
     SubmitOutcome,
 };
-use rafter_runtime::{DurableRaftNode, RaftRuntimeError};
+use rafter_runtime::{DurableRaftNode, DurableRaftNodeStorage, RaftRuntimeError};
 use rafter_service::{
     driver::DriverFuture, DriverCommandSender, MetricsError, MetricsPublisher, MetricsWatch,
     PeerEnvelope, QueryReceipt, RaftHandle, RaftTransport, ReadConsistency, ReadError,
     ShutdownError, TransferLeadershipError, UnknownOutcomeReason, WriteError, WriteOptions,
     WriteReceipt,
 };
-use rafter_storage::InMemoryRaftSnapshotStore;
+use rafter_storage::{
+    InMemoryRaftHardStateStore, InMemoryRaftLogSegment, InMemoryRaftSnapshotStore,
+};
 
-use crate::storage::{NodeStorage, SharedHardStateStore, SharedLogSegment};
 use crate::transport::{DeterministicNetwork, NodeTransport, PeerDirectory};
 
 /// Bound on driver rounds spent waiting for one outcome.
@@ -69,8 +74,13 @@ pub struct LockGroupId(pub u64);
 /// The one group every node in this driver serves.
 pub const GROUP_ID: LockGroupId = LockGroupId(1);
 
+type LockStorage = DurableRaftNodeStorage<
+    InMemoryRaftHardStateStore,
+    InMemoryRaftLogSegment,
+    InMemoryRaftSnapshotStore,
+>;
 type LockRuntime =
-    DurableRaftNode<SharedHardStateStore, SharedLogSegment, InMemoryRaftSnapshotStore>;
+    DurableRaftNode<InMemoryRaftHardStateStore, InMemoryRaftLogSegment, InMemoryRaftSnapshotStore>;
 type LockGroup = RaftGroup<LockGroupId, LockStateMachine, LockRuntime>;
 type LockReport = GroupStepReport<LockGroupId, ApplyOutcome>;
 type LockGroupError = GroupError<LockAdapterError, RaftRuntimeError>;
@@ -123,8 +133,13 @@ struct ReadWaiter {
 struct NodeState {
     election_timeout_ticks: u64,
     peers: Vec<NodeId>,
-    storage: NodeStorage,
-    group: LockGroup,
+    /// The live group, absent only while a restart swaps incarnations.
+    ///
+    /// `RaftGroup::into_parts` consumes the group it retires, so the slot has
+    /// to be movable. This state is shared behind a lock and can never be moved
+    /// out of, which leaves taking the group out of an `Option` as the only way
+    /// to decompose it in place.
+    group: Option<LockGroup>,
     transport: NodeTransport,
     metrics: MetricsPublisher<LockGroupId>,
     write_waiters: BTreeMap<LocalProposalId, WriteWaiter>,
@@ -177,7 +192,7 @@ impl NodeDriver {
     /// vocabulary.
     pub fn abandon_read(&self, read_id: ReadId) {
         let mut state = lock(&self.inner);
-        state.group.cancel_read(read_id);
+        state.group_mut().cancel_read(read_id);
         state.resolve_read(
             read_id,
             Err(ReadError::Transport {
@@ -259,6 +274,18 @@ impl DriverCommandSender<LockGroupId, Command, LockQuery, ApplyOutcome, LockQuer
 }
 
 impl NodeState {
+    fn group(&self) -> &LockGroup {
+        self.group
+            .as_ref()
+            .expect("a node holds its group except while a restart swaps incarnations")
+    }
+
+    fn group_mut(&mut self) -> &mut LockGroup {
+        self.group
+            .as_mut()
+            .expect("a node holds its group except while a restart swaps incarnations")
+    }
+
     fn begin_write(
         &mut self,
         group_id: LockGroupId,
@@ -283,7 +310,7 @@ impl NodeState {
                 waker: None,
             },
         );
-        let started = self.group.begin_proposal(Proposal {
+        let started = self.group_mut().begin_proposal(Proposal {
             local_proposal_id,
             client_request_id: options.client_request_id,
             command,
@@ -448,6 +475,12 @@ impl NodeState {
     /// The contract for a pending helper read is to retry with the same read
     /// ID, freshness, and context until it resolves, which is what makes this
     /// safe to call once per driver round.
+    ///
+    /// A read step is a step like any other, so its report goes through
+    /// [`NodeState::record_report`] alongside the reports proposals and ticks
+    /// produce. That is the only place peer frames are routed and the only
+    /// place a terminal read event resolves its waiter, whichever step
+    /// happened to observe it.
     fn drive_read(&mut self, read_id: ReadId) {
         let Some(waiter) = self.read_waiters.get(&read_id) else {
             return;
@@ -456,55 +489,45 @@ impl NodeState {
             return;
         }
         let query = waiter.query;
-        let outcome = self.group.read_outcome(ReadRequest::Linearizable {
+        let started = self.group_mut().read(ReadRequest::Linearizable {
             group_id: GROUP_ID,
             read_id,
             query,
             min_applied_index: None,
             context: Vec::new(),
         });
+        let ReadReport { outcome, report } = match started {
+            Ok(started) => started,
+            Err(error) => {
+                self.group_mut().cancel_read(read_id);
+                self.resolve_read(read_id, Err(read_error_from_group(&error)));
+                return;
+            }
+        };
+        self.record_report(report);
         match outcome {
-            Ok(ReadOutcome::Ready { result, proof }) => {
+            ReadOutcome::Ready { result, proof } => {
                 self.resolve_read(read_id, Ok(QueryReceipt { result, proof }));
             }
-            Ok(ReadOutcome::Pending { peer_messages, .. }) => {
-                self.send_all(peer_messages);
-            }
-            Ok(ReadOutcome::Rejected {
-                reason,
-                leader_hint,
-                ..
-            }) => {
-                self.resolve_read(
-                    read_id,
-                    Err(ReadError::Rejected {
-                        read_id: Some(read_id),
-                        reason,
-                        leader_hint,
-                    }),
-                );
-            }
-            Ok(ReadOutcome::Canceled {
-                reason,
-                leader_hint,
-                ..
-            }) => {
-                self.resolve_read(
-                    read_id,
-                    Err(ReadError::Canceled {
-                        read_id,
-                        reason,
-                        leader_hint,
-                    }),
-                );
-            }
-            // The barrier has an index but this replica has not applied
-            // through it yet. Keep waiting; the next round applies more.
-            Ok(ReadOutcome::LinearizableFreshnessUnavailable { .. }) => {}
-            Ok(ReadOutcome::LocalFreshnessUnavailable {
+            // The barrier is in flight, or this replica has not applied through
+            // it yet. Keep waiting; the next round applies more.
+            ReadOutcome::Pending { .. } | ReadOutcome::LinearizableFreshnessUnavailable { .. } => {}
+            // A rejection or cancellation is a read event in the report above,
+            // so `record_report` resolved the waiter from it before this match
+            // ran. Restating it from the outcome would answer the same question
+            // twice; asserting it instead pins the report as the one place a
+            // terminal read outcome comes from, whichever step observed it.
+            ReadOutcome::Rejected { .. } | ReadOutcome::Canceled { .. } => assert!(
+                self.read_waiters
+                    .get(&read_id)
+                    .is_none_or(|waiter| waiter.outcome.is_some()),
+                "a terminal read outcome must reach the driver as a read event \
+                 in the report of the step that produced it"
+            ),
+            ReadOutcome::LocalFreshnessUnavailable {
                 required_applied_index,
                 local_applied_index,
-            }) => {
+            } => {
                 self.resolve_read(
                     read_id,
                     Err(ReadError::FreshnessUnavailable {
@@ -514,18 +537,14 @@ impl NodeState {
                     }),
                 );
             }
-            Ok(_) => {
-                self.group.cancel_read(read_id);
+            _ => {
+                self.group_mut().cancel_read(read_id);
                 self.resolve_read(
                     read_id,
                     Err(ReadError::ManagedInvariantViolation {
                         message: "lock driver saw an unsupported read outcome".to_owned(),
                     }),
                 );
-            }
-            Err(error) => {
-                self.group.cancel_read(read_id);
-                self.resolve_read(read_id, Err(read_error_from_group(&error)));
             }
         }
     }
@@ -544,7 +563,7 @@ impl NodeState {
             return Err(TransferLeadershipError::ShuttingDown);
         }
         let report = self
-            .group
+            .group_mut()
             .step(GroupInput::TransferLeadership { target })
             .map_err(|error| transfer_error_from_group(&error))?;
         let rejection = report
@@ -839,20 +858,18 @@ impl LockCluster {
                     .collect::<Vec<_>>();
                 let directory = PeerDirectory::new(&all_nodes, &peers);
                 let transport = network.endpoint(node_id, directory);
-                let storage = NodeStorage::new();
                 let (group, report) = open_group(
                     node_id,
                     &peers,
                     election_timeout_ticks,
-                    &storage,
+                    empty_storage(),
                     LockStateMachine::new(config),
                 );
                 let metrics = MetricsPublisher::new(group.metrics());
                 let mut state = NodeState {
                     election_timeout_ticks,
                     peers,
-                    storage,
-                    group,
+                    group: Some(group),
                     transport,
                     metrics,
                     write_waiters: BTreeMap::new(),
@@ -916,7 +933,7 @@ impl LockCluster {
             .iter()
             .filter(|node| self.network.reaches(node.node_id))
             .filter_map(|node| {
-                let metrics = lock(&node.driver.inner).group.metrics();
+                let metrics = lock(&node.driver.inner).group().metrics();
                 (metrics.role == Role::Leader).then_some((metrics.term, node.node_id))
             })
             .max()
@@ -928,13 +945,17 @@ impl LockCluster {
     /// A node with cut links keeps reporting whatever its last round told it,
     /// which is how an isolated former leader still believes it leads.
     pub fn believes_it_leads(&self, node_id: NodeId) -> bool {
-        lock(&self.node(node_id).driver.inner).group.metrics().role == Role::Leader
+        lock(&self.node(node_id).driver.inner)
+            .group()
+            .metrics()
+            .role
+            == Role::Leader
     }
 
     /// Returns a copy of one replica's state machine.
     pub fn state_machine(&self, node_id: NodeId) -> LockStateMachine {
         lock(&self.node(node_id).driver.inner)
-            .group
+            .group()
             .state_machine()
             .clone()
     }
@@ -944,6 +965,17 @@ impl LockCluster {
         self.state_machine(node_id)
             .applied_index()
             .expect("lock state machines always report an applied index")
+    }
+
+    /// Returns the index a replica's state machine must reach to have applied
+    /// every application command that replica knows to be committed.
+    ///
+    /// This is the readiness half of [`LockCluster::applied_index`]: the two
+    /// together say whether a replica has consumed everything it knows about.
+    pub fn committed_application_index(&self, node_id: NodeId) -> LogIndex {
+        lock(&self.node(node_id).driver.inner)
+            .group()
+            .committed_application_index()
     }
 
     /// Returns the commands committed on one replica, in log order.
@@ -957,7 +989,7 @@ impl LockCluster {
             .into_iter()
             .map(|(_, payload)| {
                 state
-                    .group
+                    .group()
                     .state_machine()
                     .decode_command(&payload)
                     .expect("replicas only append frames this adapter encoded")
@@ -976,16 +1008,19 @@ impl LockCluster {
         panic!("no leader was elected within {MAX_ROUNDS} rounds");
     }
 
-    /// Drives the cluster until every reachable replica has applied through
-    /// its committed index.
+    /// Drives the cluster until every reachable replica has applied every
+    /// application command it knows to be committed.
     ///
-    /// Convergence is a precondition for comparing replicas to each other and
-    /// to the oracle, never something a test may assume.
+    /// Elections and membership changes commit entries the state machine never
+    /// sees, so the applied index legitimately trails the commit index and the
+    /// gate is the group's committed application index instead. Convergence is
+    /// a precondition for comparing replicas to each other and to the oracle,
+    /// never something a test may assume.
     pub fn settle(&mut self) {
         for _ in 0..MAX_ROUNDS {
             let converged = self.node_ids().into_iter().all(|node_id| {
                 !self.network.reaches(node_id)
-                    || self.applied_index(node_id) >= self.committed_application_floor(node_id)
+                    || self.applied_index(node_id) >= self.committed_application_index(node_id)
             });
             if converged && self.network.is_idle() {
                 return;
@@ -1018,7 +1053,7 @@ impl LockCluster {
                 continue;
             }
             let report = state
-                .group
+                .group_mut()
                 .step(GroupInput::Tick)
                 .expect("a healthy group accepts ticks");
             state.record_report(report);
@@ -1045,7 +1080,7 @@ impl LockCluster {
                     continue;
                 };
                 let report = state
-                    .group
+                    .group_mut()
                     .step(GroupInput::PeerMessage { envelope })
                     .expect("a healthy group accepts validated peer messages");
                 state.record_report(report);
@@ -1081,25 +1116,41 @@ impl LockCluster {
 
     /// Restarts one replica over its retained durable media.
     ///
-    /// This follows the documented restart recipe: read the application's
-    /// durable applied floor, recover the runtime through the same floor, then
+    /// Decomposition is the in-process restart path. The retiring group hands
+    /// back its state machine, and its runtime hands back all three durable
+    /// stores, so nothing is cloned and no store is silently replaced by an
+    /// empty one. From there this follows the documented recipe: read the
+    /// application's durable applied floor, recover through the same floor, then
     /// hand the recovery outputs to the new group before using it. The managed
     /// handle survives, because a handle names a service rather than a node
     /// incarnation.
     pub fn restart(&mut self, node_id: NodeId) {
         let mut state = lock(&self.node(node_id).driver.inner);
         state.abandon_all_waiters(UnknownOutcomeReason::RuntimeDroppedProposal);
-        // `RaftGroup` has no decomposition path, so the surviving application
-        // state has to be taken through the state-machine accessor before the
-        // old incarnation is dropped.
-        let app = state.group.state_machine().clone();
-        let storage = state.storage.reopen();
         let peers = state.peers.clone();
         let election_timeout_ticks = state.election_timeout_ticks;
+        let parts = state
+            .group
+            .take()
+            .expect("a running node holds its group")
+            .into_parts();
+        // The returned ID watermarks are deliberately unused. They are
+        // load-bearing only when the same runtime is carried into the new
+        // group; this driver drops that runtime and rebuilds one from the
+        // durable storage it returns, and a rebuilt runtime carries no local
+        // proposal tracking, so a group over it may restart its IDs at zero.
+        // This replica's own counters never restart anyway, which is stricter
+        // than the contract requires.
+        let storage = parts.runtime.into_storage();
 
-        let (group, report) = open_group(node_id, &peers, election_timeout_ticks, &storage, app);
-        state.storage = storage;
-        state.group = group;
+        let (group, report) = open_group(
+            node_id,
+            &peers,
+            election_timeout_ticks,
+            storage,
+            parts.state_machine,
+        );
+        state.group = Some(group);
         state.record_report(report);
     }
 
@@ -1233,13 +1284,6 @@ impl LockCluster {
         self.state_machine(node_id).service().logical_time()
     }
 
-    fn committed_application_floor(&self, node_id: NodeId) -> LogIndex {
-        let state = lock(&self.node(node_id).driver.inner);
-        committed_application_entries(&state)
-            .last()
-            .map_or(LogIndex::ZERO, |(index, _)| *index)
-    }
-
     fn record_invocation(&mut self, command: Command) -> OperationId {
         let operation_id = OperationId::new(self.next_operation_id);
         self.next_operation_id += 1;
@@ -1280,8 +1324,13 @@ impl LockCluster {
     }
 }
 
+/// Returns the log entries whose payloads the checker replays.
+///
+/// This walks the log because it needs the encoded commands themselves. The
+/// convergence predicate does not: the group reports the committed application
+/// index directly.
 fn committed_application_entries(state: &NodeState) -> Vec<(LogIndex, Vec<u8>)> {
-    let runtime = state.group.runtime();
+    let runtime = state.group().runtime();
     let commit_index = runtime.commit_index();
     let first_index = runtime.snapshot_index().0 + 1;
     runtime
@@ -1298,11 +1347,26 @@ fn committed_application_entries(state: &NodeState) -> Vec<(LogIndex, Vec<u8>)> 
         .collect()
 }
 
+/// Returns empty durable storage for a replica that has never started.
+///
+/// Only a replica that has never started gets this. Every later incarnation
+/// recovers from the stores `DurableRaftNode::into_storage` returned, including
+/// the snapshot store — which this slice's state machine never writes, because
+/// it refuses to build a durable application snapshot, but which is still its
+/// own medium rather than something a restart may quietly replace.
+fn empty_storage() -> LockStorage {
+    LockStorage {
+        hard_state_store: InMemoryRaftHardStateStore::default(),
+        log_segment: InMemoryRaftLogSegment::default(),
+        snapshot_store: InMemoryRaftSnapshotStore::new(),
+    }
+}
+
 fn open_group(
     node_id: NodeId,
     peers: &[NodeId],
     election_timeout_ticks: u64,
-    storage: &NodeStorage,
+    storage: LockStorage,
     app: LockStateMachine,
 ) -> (LockGroup, LockReport) {
     let config = NodeConfig::new(node_id, peers.to_vec(), election_timeout_ticks)
@@ -1312,9 +1376,9 @@ fn open_group(
         .expect("lock state machines always report an applied index");
     let recovered = DurableRaftNode::recover_with_storage_and_snapshot_store_applied_through(
         config,
-        storage.hard_state.clone(),
-        storage.log.clone(),
-        InMemoryRaftSnapshotStore::new(),
+        storage.hard_state_store,
+        storage.log_segment,
+        storage.snapshot_store,
         applied_index,
     )
     .expect("retained durable state reopens");

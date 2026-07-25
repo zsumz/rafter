@@ -10,14 +10,12 @@ mod support;
 
 #[path = "support/cluster.rs"]
 mod cluster;
-#[path = "support/storage.rs"]
-mod storage;
 #[path = "support/transport.rs"]
 mod transport;
 
 use std::collections::BTreeMap;
 
-use rafter::{NodeId, ReadIndexCancelReason, Role};
+use rafter::{LogIndex, NodeId, ReadIndexCancelReason, Role};
 use rafter_reference_fenced_lock::{
     unknown_outcome_reason, ApplyDisposition, Command, FencingToken, GuardedRejection,
     GuardedResource, GuardedWrite, HistoryEvent, LockRejection, LockResponse, LogicalTime,
@@ -587,6 +585,11 @@ fn a_restarted_replica_recovers_its_locks_and_keeps_replicating() {
     let follower = other_node(&cluster, leader);
     let before = cluster.state_machine(follower).service().view();
     let applied_before = cluster.applied_index(follower);
+    let committed_before = cluster.committed_application_index(follower);
+    assert!(
+        committed_before > LogIndex::ZERO,
+        "the replica has committed application entries to recover"
+    );
 
     cluster.restart(follower);
     assert_eq!(
@@ -598,6 +601,15 @@ fn a_restarted_replica_recovers_its_locks_and_keeps_replicating() {
         cluster.applied_index(follower),
         applied_before,
         "the durable applied floor came back with the data"
+    );
+    // The new incarnation recovered from the stores the retired runtime handed
+    // back, so it knows exactly the same committed application entries. A
+    // restart that opened a different medium would report a lower floor here
+    // and the readiness comparison would silently pass on an empty replica.
+    assert_eq!(
+        cluster.committed_application_index(follower),
+        committed_before,
+        "the reopened runtime recovered from the retired one's durable stores"
     );
 
     committed(&mut cluster, leader, submit(0, 1, 2, release(RESOURCE, 1)));

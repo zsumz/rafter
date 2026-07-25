@@ -342,12 +342,17 @@ fn linearizable_reads_interleave_with_mutations() {
         .into_iter()
         .find(|node_id| *node_id != leader)
         .expect("a three-node cluster has followers");
-    assert!(
-        matches!(
-            cluster.read(follower, LedgerQuery::GetLedgerSummary),
-            ReadOutcome::Rejected { .. }
-        ),
-        "a follower cannot issue the linearizable barrier itself"
+    let refused = cluster.read(follower, LedgerQuery::GetLedgerSummary);
+    let ReadOutcome::Rejected { leader_hint, .. } = refused else {
+        panic!("a follower cannot issue the linearizable barrier itself, got {refused:?}");
+    };
+    // The rejection reaches the driver only as a read event inside the step
+    // report the read returned, and it carries the redirect a client needs. A
+    // driver that could not observe the report would have neither.
+    assert_eq!(
+        leader_hint,
+        Some(leader),
+        "a refused barrier redirects the client to the leader the follower believes in"
     );
 }
 
@@ -383,6 +388,11 @@ fn a_restarted_replica_recovers_its_ledger_and_keeps_replicating() {
         .expect("a three-node cluster has followers");
     let before = cluster.state_machine(follower).ledger().view();
     let applied_before = cluster.applied_index(follower);
+    let committed_before = cluster.committed_application_index(follower);
+    assert!(
+        committed_before > LogIndex::ZERO,
+        "the replica has committed application entries to recover"
+    );
 
     cluster.restart(follower);
     assert_eq!(
@@ -391,6 +401,15 @@ fn a_restarted_replica_recovers_its_ledger_and_keeps_replicating() {
         "the restarted replica recovered its ledger"
     );
     assert_eq!(cluster.applied_index(follower), applied_before);
+    // The new incarnation recovered from the stores the retired runtime handed
+    // back, so it knows exactly the same committed application entries. A
+    // restart that opened a different medium would report a lower floor here
+    // and the readiness comparison would silently pass on an empty replica.
+    assert_eq!(
+        cluster.committed_application_index(follower),
+        committed_before,
+        "the reopened runtime recovered from the retired one's durable stores"
+    );
 
     commit(
         &mut cluster,

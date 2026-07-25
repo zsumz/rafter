@@ -328,8 +328,30 @@ The ledger driver's `read` becomes a bounded retry loop over
 `record_report` path as every other step. `read_proofs`, `read_under_proof`,
 and the manual `ReadBarrier` reconstruction disappear. The driver keeps
 watching read events, because a terminal event is still how an asynchronously
-observed rejection arrives — but it watches them in the report it already
-records, not in a private map.
+observed rejection arrives.
+
+Corrected in adoption: it does not watch them only in the report the read call
+returns. A barrier is canceled by whatever step observes the leadership loss —
+usually a tick or a delivery — so the driver still keeps one small
+`ReadId`-keyed map of terminal read outcomes, filled by `record_report` and
+drained by the read loop. What that map no longer holds is proofs. The
+distinction is the whole adoption: the driver stopped caching the group's
+proof in order to serve the query itself, and kept exactly the one-slot buffer
+any driver needs between the step that observes a terminal event and the
+caller waiting on it. The loop must check that buffer *before* it retries: a
+terminal event clears the group's waiter, so the next `read` with the same
+`ReadId` returns `GroupError::NonMonotonicReadId` rather than restating the
+rejection.
+
+The `rafter-service` consumer takes the same shape and gains a stronger
+statement of it. Its `drive_read` routes the report through the same
+`record_report` that already handles proposal and tick reports, deletes the
+`ReadOutcome::Pending` arm that made a read the one step whose peer messages
+came from somewhere else, and stops translating `ReadOutcome::Rejected` and
+`ReadOutcome::Canceled` a second time — the report's read events already
+resolved the waiter. An assertion in that arm pins the property: a terminal
+read outcome must reach the driver as a read event in the report of the step
+that produced it.
 
 ## Owned Pending Snapshot Transfer
 
@@ -509,9 +531,19 @@ In `crates/rafter-runtime/src/tests/snapshot/chunk_transfer/pending.rs`:
 ### After-state
 
 `SharedSnapshotStore` loses `pending_mirror`, `refresh_pending_mirror`, and six
-refresh calls; the method becomes a one-line delegation and `reopen()` becomes
-`self.clone()`. Any store the durable slices later introduce — pooled, locked,
-or lazily loading — is implementable without a cache.
+refresh calls; the method becomes a one-line delegation. Any store the durable
+slices later introduce — pooled, locked, or lazily loading — is implementable
+without a cache.
+
+Corrected in adoption: `reopen()` does not become `self.clone()`, it is
+deleted. Reopening by handle only existed because the driver had to hold a
+second handle for the next incarnation, and decomposition ends that. The store
+itself stays a guarded handle on purpose: it is the consumer-side evidence that
+a store whose staging lives behind a `RefCell` — or a pool, a lock, or a lazy
+read from the medium — satisfies the contract with no cache at all. It is now
+the ledger's only non-plain store, and that asymmetry is the finding: hard
+state and the log never needed a handle, because neither of their reads ever
+returned a borrow.
 
 ## Group and Runtime Decomposition
 
@@ -781,6 +813,32 @@ opening, instead of holding a parallel handle to every medium for the life of
 the cluster. Combined with the owned pending transfer, the consumer's storage
 support file has almost nothing left to own.
 
+Confirmed and extended in adoption. `NodeStorage` collapses into
+`DurableRaftNodeStorage` itself — the promoted type is the bundle both
+consumers construct once and thereafter only receive — and both consumers drop
+their `storage` field entirely. The fenced-lock's storage support file is
+deleted outright, which also fixes a real defect the parallel-handle shape was
+hiding: its `open_group` built a fresh `InMemoryRaftSnapshotStore` on every
+restart, so each incarnation silently replaced the previous one's snapshot
+medium. `into_storage` returns all three stores, so it cannot.
+
+Two frictions the design did not anticipate:
+
+- `into_parts(self)` needs a movable slot. The ledger's replicas live in a
+  `Vec` it can `remove` and `insert`; the fenced-lock's live inside an
+  `Arc<Mutex<NodeState>>` shared with every cloned handle, which nothing can
+  move out of, so its group field became `Option<LockGroup>` with two
+  `expect`ing accessors. That is the shape any single-process supervisor with a
+  lock-guarded group will need — including the sharded counter host this
+  promotion names as its second consumer — and the doc-comment does not
+  mention it.
+- The watermarks are inert for a restart that rebuilds the runtime. Both
+  consumers ignore `local_proposal_id_watermark` and `read_id_watermark`
+  because they drop the returned runtime and recover a new one from the
+  returned storage, which is exactly the case the doc-comment's last paragraph
+  describes. The hazard is real but belongs to the same-runtime rebuild, which
+  neither consumer performs.
+
 ## Committed Application Index
 
 ### Origin
@@ -1008,10 +1066,15 @@ In `crates/rafter-app/tests/group_apply.rs`:
 
 ### After-state
 
-`LedgerCluster::committed_application_floor` and
-`committed_application_entries` disappear, and `settle()` compares two public
-numbers. `committed_commands` keeps its log walk, because it needs the decoded
-payloads rather than the floor — an honest remainder, not a workaround.
+`LedgerCluster::committed_application_floor` disappears, and `settle()` compares
+two public numbers. `committed_commands` keeps its log walk, because it needs
+the decoded payloads rather than the floor — an honest remainder, not a
+workaround.
+
+Corrected in adoption: `committed_application_entries` does not disappear, and
+the sentence above contradicted itself in saying so. It *is* the log walk
+`committed_commands` keeps. What disappears is the `.last()` fold over it that
+reconstructed the floor, in both consumers.
 
 ## Leader Hint on Proposal Rejection
 

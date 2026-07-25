@@ -6,10 +6,11 @@
 //! external user with the published crates can write the same thing.
 //!
 //! Two things are deliberately modeled rather than real at this slice. Durable
-//! Raft state lives in shared in-memory media that outlive a node incarnation,
-//! and application state survives a restart because the state machine carries
-//! its applied index with its data. A transactional application backend and
-//! application crash points arrive with the durable slices.
+//! Raft state lives in in-memory stores that a retiring runtime hands back to
+//! the incarnation replacing it, and application state survives a restart
+//! because the state machine carries its applied index with its data. A
+//! transactional application backend and application crash points arrive with
+//! the durable slices.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 
@@ -17,18 +18,19 @@ use rafter::{
     LocalProposalId, LogEntryKind, LogIndex, NodeConfig, NodeId, ProposalRejection, ReadId,
     ReadIndexCancelReason, ReadIndexRejection, Role, Term,
 };
-use rafter_app::group::{GroupInput, GroupStepReport, RaftGroup};
+use rafter_app::group::{GroupInput, GroupStepReport, RaftGroup, ReadReport};
 use rafter_app::proposal::{Proposal, ProposalBegin, ProposalEvent};
-use rafter_app::read::{ReadBarrierRequest, ReadEvent, ReadProof};
-use rafter_app::state_machine::{ReadBarrier, ReplicatedStateMachine};
+use rafter_app::read::{ReadEvent, ReadOutcome as GroupReadOutcome, ReadRequest};
+use rafter_app::state_machine::ReplicatedStateMachine;
 use rafter_app::transport::PeerEnvelope;
 use rafter_reference_ledger::{
     ApplyDisposition, ApplyOutcome, Command, HistoryEvent, LedgerConfig, LedgerQuery,
     LedgerQueryResult, LedgerResponse, LedgerStateMachine, OperationId,
 };
-use rafter_runtime::DurableRaftNode;
+use rafter_runtime::{DurableRaftNode, DurableRaftNodeStorage};
+use rafter_storage::{InMemoryRaftHardStateStore, InMemoryRaftLogSegment};
 
-use crate::storage::{NodeStorage, SharedHardStateStore, SharedLogSegment, SharedSnapshotStore};
+use crate::storage::SharedSnapshotStore;
 
 /// Bound on driver rounds spent waiting for one outcome.
 ///
@@ -44,7 +46,10 @@ pub struct LedgerGroupId(pub u64);
 /// The one group every node in this driver serves.
 pub const GROUP_ID: LedgerGroupId = LedgerGroupId(1);
 
-type LedgerRuntime = DurableRaftNode<SharedHardStateStore, SharedLogSegment, SharedSnapshotStore>;
+type LedgerStorage =
+    DurableRaftNodeStorage<InMemoryRaftHardStateStore, InMemoryRaftLogSegment, SharedSnapshotStore>;
+type LedgerRuntime =
+    DurableRaftNode<InMemoryRaftHardStateStore, InMemoryRaftLogSegment, SharedSnapshotStore>;
 type LedgerGroup = RaftGroup<LedgerGroupId, LedgerStateMachine, LedgerRuntime>;
 type LedgerReport = GroupStepReport<LedgerGroupId, ApplyOutcome>;
 
@@ -108,7 +113,6 @@ pub enum ReadOutcome {
 struct ClusterNode {
     node_id: NodeId,
     election_timeout_ticks: u64,
-    storage: NodeStorage,
     group: LedgerGroup,
 }
 
@@ -120,7 +124,11 @@ pub struct LedgerCluster {
     network: VecDeque<PeerEnvelope<LedgerGroupId>>,
     isolated: BTreeSet<NodeId>,
     proposal_outcomes: BTreeMap<LocalProposalId, ProposalOutcome>,
-    read_proofs: BTreeMap<ReadId, ReadProof<LedgerGroupId>>,
+    /// Terminal read outcomes the report path has observed.
+    ///
+    /// A barrier can end in a report belonging to an unrelated tick or
+    /// delivery, so the driver needs one place to hold that answer between the
+    /// step that recorded it and the read that was waiting for it.
     read_failures: BTreeMap<ReadId, ReadOutcome>,
     runtime_unknown_outcomes: usize,
     next_local_proposal_id: u64,
@@ -140,18 +148,16 @@ impl LedgerCluster {
         ]
         .into_iter()
         .map(|(node_id, peers, election_timeout_ticks)| {
-            let storage = NodeStorage::new();
             let (group, _) = open_group(
                 node_id,
                 peers,
                 election_timeout_ticks,
-                &storage,
+                empty_storage(),
                 LedgerStateMachine::new(config),
             );
             ClusterNode {
                 node_id,
                 election_timeout_ticks,
-                storage,
                 group,
             }
         })
@@ -163,7 +169,6 @@ impl LedgerCluster {
             network: VecDeque::new(),
             isolated: BTreeSet::new(),
             proposal_outcomes: BTreeMap::new(),
-            read_proofs: BTreeMap::new(),
             read_failures: BTreeMap::new(),
             runtime_unknown_outcomes: 0,
             next_local_proposal_id: 1,
@@ -234,6 +239,15 @@ impl LedgerCluster {
             .expect("ledger state machines always report an applied index")
     }
 
+    /// Returns the index a replica's state machine must reach to have applied
+    /// every application command that replica knows to be committed.
+    ///
+    /// This is the readiness half of [`LedgerCluster::applied_index`]: the two
+    /// together say whether a replica has consumed everything it knows about.
+    pub fn committed_application_index(&self, node_id: NodeId) -> LogIndex {
+        self.node(node_id).group.committed_application_index()
+    }
+
     /// Returns the commands committed on one replica, in log order.
     ///
     /// This reads the durable log through the public runtime accessor and
@@ -252,18 +266,11 @@ impl LedgerCluster {
             .collect()
     }
 
-    /// Returns the highest committed index the state machine can ever apply.
+    /// Returns the log entries whose payloads the checker replays.
     ///
-    /// Elections and membership changes commit entries the state machine never
-    /// sees, so a replica's applied index legitimately trails its commit index.
-    /// Progress therefore has to be measured against committed application
-    /// entries, which the app layer does not report on its own.
-    fn committed_application_floor(&self, node_id: NodeId) -> LogIndex {
-        self.committed_application_entries(node_id)
-            .last()
-            .map_or(LogIndex::ZERO, |(index, _)| *index)
-    }
-
+    /// This walks the log because it needs the encoded commands themselves.
+    /// The convergence predicate does not: the group reports the committed
+    /// application index directly.
     fn committed_application_entries(&self, node_id: NodeId) -> Vec<(LogIndex, Vec<u8>)> {
         let runtime = self.node(node_id).group.runtime();
         let commit_index = runtime.commit_index();
@@ -294,16 +301,19 @@ impl LedgerCluster {
         panic!("no leader was elected within {MAX_ROUNDS} rounds");
     }
 
-    /// Drives the cluster until every reachable replica has applied through
-    /// its committed index.
+    /// Drives the cluster until every reachable replica has applied every
+    /// application command it knows to be committed.
     ///
-    /// Convergence is a precondition for comparing replicas to each other and
-    /// to the oracle, never something a test may assume.
+    /// Elections and membership changes commit entries the state machine never
+    /// sees, so the applied index legitimately trails the commit index and the
+    /// gate is the group's committed application index instead. Convergence is
+    /// a precondition for comparing replicas to each other and to the oracle,
+    /// never something a test may assume.
     pub fn settle(&mut self) {
         for _ in 0..MAX_ROUNDS {
             if self.node_ids().into_iter().all(|node_id| {
                 self.isolated.contains(&node_id)
-                    || self.applied_index(node_id) >= self.committed_application_floor(node_id)
+                    || self.applied_index(node_id) >= self.committed_application_index(node_id)
             }) {
                 return;
             }
@@ -363,27 +373,48 @@ impl LedgerCluster {
 
     /// Restarts one replica over its retained durable state.
     ///
-    /// This follows the documented restart recipe: read the application's
-    /// durable applied floor, recover the runtime through the same floor, then
-    /// hand the recovery outputs to the new group before using it.
+    /// Decomposition is the in-process restart path. The retiring group hands
+    /// back its state machine, and its runtime hands back the durable stores
+    /// the next incarnation recovers from, so nothing is cloned and the driver
+    /// holds no parallel handle to a medium it is not currently driving. From
+    /// there this follows the documented recipe: read the application's durable
+    /// applied floor, recover through the same floor, then hand the recovery
+    /// outputs to the new group before using it.
     pub fn restart(&mut self, node_id: NodeId) {
         let index = self.node_index(node_id);
-        let election_timeout_ticks = self.nodes[index].election_timeout_ticks;
         let peers = self
             .node_ids()
             .into_iter()
             .filter(|peer| *peer != node_id)
             .map(|peer| peer.0)
             .collect::<Vec<_>>();
-        // `RaftGroup` has no decomposition path, so the surviving application
-        // state has to be taken through the state-machine accessor before the
-        // old incarnation is dropped.
-        let app = self.nodes[index].group.state_machine().clone();
-        let storage = self.nodes[index].storage.reopen();
+        let retired = self.nodes.remove(index);
+        let election_timeout_ticks = retired.election_timeout_ticks;
+        let parts = retired.group.into_parts();
+        // The returned ID watermarks are deliberately unused. They are
+        // load-bearing only when the same runtime is carried into the new
+        // group; this driver drops that runtime and rebuilds one from the
+        // durable storage it returns, and a rebuilt runtime carries no local
+        // proposal tracking, so a group over it may restart its IDs at zero.
+        // The driver's own counters never restart anyway, which is stricter
+        // than the contract requires.
+        let storage = parts.runtime.into_storage();
 
-        let (group, report) = open_group(node_id, &peers, election_timeout_ticks, &storage, app);
-        self.nodes[index].storage = storage;
-        self.nodes[index].group = group;
+        let (group, report) = open_group(
+            node_id,
+            &peers,
+            election_timeout_ticks,
+            storage,
+            parts.state_machine,
+        );
+        self.nodes.insert(
+            index,
+            ClusterNode {
+                node_id,
+                election_timeout_ticks,
+                group,
+            },
+        );
         self.record_report(report);
     }
 
@@ -422,31 +453,48 @@ impl LedgerCluster {
 
     /// Runs one linearizable query against `node_id`.
     ///
-    /// The driver assembles the barrier itself and reads the state machine
-    /// under the granted proof, so no step report is lost while a read is in
-    /// flight.
+    /// The group owns the barrier, the proof, and the state-machine read. The
+    /// driver's job is to route the report each attempt produces through the
+    /// same path as every other step, and to stop retrying once a terminal read
+    /// event says the barrier ended.
     pub fn read(&mut self, node_id: NodeId, query: LedgerQuery) -> ReadOutcome {
         let read_id = self.allocate_read_id();
-        // The barrier's immediate outcome is derived from the same read events
-        // this report carries, so recording the report records the outcome.
-        let barrier = self
-            .node_mut(node_id)
-            .group
-            .begin_read_barrier(ReadBarrierRequest {
-                group_id: GROUP_ID,
-                read_id,
-                min_applied_index: None,
-                context: Vec::new(),
-            })
-            .expect("a healthy group accepts read barriers");
-        self.record_report(barrier.report);
-
         for _ in 0..MAX_ROUNDS {
-            if let Some(failure) = self.read_failures.remove(&read_id) {
-                return failure;
+            // A terminal read event ends the barrier wherever it was observed,
+            // including in the report of an unrelated tick or delivery. The
+            // group drops its waiter with the event, so retrying the same read
+            // ID afterwards is refused as non-monotonic instead of restating
+            // the outcome.
+            if let Some(terminal) = self.read_failures.remove(&read_id) {
+                return terminal;
             }
-            if let Some(proof) = self.read_proofs.remove(&read_id) {
-                return ReadOutcome::Ready(self.read_under_proof(node_id, query, &proof));
+            let ReadReport { outcome, report } = self
+                .node_mut(node_id)
+                .group
+                .read(ReadRequest::Linearizable {
+                    group_id: GROUP_ID,
+                    read_id,
+                    query,
+                    min_applied_index: None,
+                    context: Vec::new(),
+                })
+                .expect("a healthy group accepts linearizable reads");
+            self.record_report(report);
+            if let Some(terminal) = self.read_failures.remove(&read_id) {
+                return terminal;
+            }
+            match outcome {
+                GroupReadOutcome::Ready { result, .. } => return ReadOutcome::Ready(result),
+                // The barrier is still in flight, or this replica has not
+                // applied through it yet. Either way the contract is to keep
+                // driving and retry with the same read ID, freshness, and
+                // context.
+                GroupReadOutcome::Pending { .. }
+                | GroupReadOutcome::LinearizableFreshnessUnavailable { .. } => {}
+                // Rejections and cancellations are read events in the report
+                // above, so the check that follows it has already answered
+                // them.
+                outcome => unreachable!("a linearizable ledger read cannot produce {outcome:?}"),
             }
             self.deliver_all();
             self.tick_reachable();
@@ -454,25 +502,6 @@ impl LedgerCluster {
         }
         self.node_mut(node_id).group.cancel_read(read_id);
         ReadOutcome::Unresolved
-    }
-
-    fn read_under_proof(
-        &self,
-        node_id: NodeId,
-        query: LedgerQuery,
-        proof: &ReadProof<LedgerGroupId>,
-    ) -> LedgerQueryResult {
-        self.node(node_id)
-            .group
-            .state_machine()
-            .read(
-                query,
-                ReadBarrier {
-                    required_applied_index: proof.required_applied_index,
-                    local_applied_index: proof.local_applied_index,
-                },
-            )
-            .expect("a granted proof proves the local replica is fresh enough")
     }
 
     fn record_report(&mut self, report: LedgerReport) {
@@ -534,9 +563,6 @@ impl LedgerCluster {
 
     fn record_read_event(&mut self, event: &ReadEvent<LedgerGroupId>) {
         match event {
-            ReadEvent::Granted { read_id, proof } => {
-                self.read_proofs.insert(*read_id, proof.clone());
-            }
             ReadEvent::Rejected {
                 read_id,
                 reason,
@@ -658,11 +684,20 @@ fn immediate_outcome(
     }
 }
 
+/// Returns empty durable storage for a replica that has never started.
+fn empty_storage() -> LedgerStorage {
+    LedgerStorage {
+        hard_state_store: InMemoryRaftHardStateStore::default(),
+        log_segment: InMemoryRaftLogSegment::default(),
+        snapshot_store: SharedSnapshotStore::default(),
+    }
+}
+
 fn open_group(
     node_id: NodeId,
     peers: &[u64],
     election_timeout_ticks: u64,
-    storage: &NodeStorage,
+    storage: LedgerStorage,
     app: LedgerStateMachine,
 ) -> (LedgerGroup, LedgerReport) {
     let config = NodeConfig::new(
@@ -676,9 +711,9 @@ fn open_group(
         .expect("ledger state machines always report an applied index");
     let recovered = DurableRaftNode::recover_with_storage_and_snapshot_store_applied_through(
         config,
-        storage.hard_state.clone(),
-        storage.log.clone(),
-        storage.snapshots.reopen(),
+        storage.hard_state_store,
+        storage.log_segment,
+        storage.snapshot_store,
         applied_index,
     )
     .expect("retained durable state reopens");
