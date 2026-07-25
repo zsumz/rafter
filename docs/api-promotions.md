@@ -3463,6 +3463,12 @@ produced it rather than against the code that answered it. Nothing here reopens
 the entry's shape: the driver still owns one replica, one movable slot, and the
 waiter tables, and every fix is inside that.
 
+A later adversarial review found seven more, including three the fixes below
+did not touch and one this subsection's own fix 1 created. They are designed in
+[Second revision after adoption (2026-07-25)](#second-revision-after-adoption-2026-07-25),
+which is current truth wherever the two disagree; the two places they disagree
+are named there.
+
 #### 1. A step report's read events are routed
 
 `route_report` handles `peer_messages` and `proposal_events`
@@ -3789,6 +3795,750 @@ In `crates/rafter-service/tests/transport_driver.rs`:
   the recovery report's peer messages.
 - `a_zero_bound_is_refused_at_construction` — narrowed to
   `max_pending_waiters`, the only bound left.
+
+### Second revision after adoption (2026-07-25)
+
+An adversarial review of the shipped driver reproduced seven findings, each
+with a test that passes only while its defect stands. Two are critical and
+change what a client is told about a write it may have committed; one is
+critical and silently disables snapshot transfer; the rest are a denial of
+service across barriers, a bypassed error vocabulary, an unbounded table, and
+four smaller shapes. One of them —
+[fix 4](#4-a-barriers-own-fault-resolves-that-barrier-and-only-that-barrier) —
+is a defect the previous subsection's own fix 1 introduced, which is recorded
+here rather than corrected in place because a design block is immutable as
+approved.
+
+Nothing below reopens the entry's shape. The driver still owns one replica, one
+movable slot, and two waiter tables. What changes is that every statement the
+driver makes about a client's operation is now one it observed, and every
+stream a step produces is either routed or has a written reason why not.
+
+One rule governs the whole subsection, and it is the entry's own rule stated
+strictly enough to be checkable: **a driver reports what it observed, and says
+"unknown" for everything else.** Six of the seven findings are the same
+violation of it seen from different sides.
+
+#### 1. A failing step reports a fate it observed, or none at all
+
+`begin_write` derives the reported fate from a flag:
+
+```rust
+if let Err(error) = self.step(GroupInput::Proposal { proposal }) {
+    let fate = if self.write_waiters.get(&local_proposal_id)
+        .is_some_and(|waiter| waiter.saw_local_append)
+    { WriteFate::Unresolved } else { WriteFate::NotAppended };
+```
+
+`saw_local_append` is set by `observe_proposal_event`, which runs from
+`route_report`, which `step` reaches only on the success path — and this branch
+is the failure path. `step_with_options` returns `Result<Report, GroupError>`,
+so on failure there is no report at all, and the flag is not merely unset but
+structurally unreachable. Every failing step therefore reports
+`WriteFate::NotAppended`, and `WriteFate::NotAppended` is documented as
+"refused before it reached the local Raft log. It cannot commit, now or later,
+and its request identity is still unused"
+([`error.rs:122-127`](../crates/rafter-service/src/error.rs)).
+
+The review reproduced the worst case it licenses. A single-voter leader
+appends, commits, and applies inside the step that proposes; when the state
+machine refuses that apply the group poisons and the step returns `Err`. The
+driver told the client `NotAppended` for an entry the same test then read out of
+the group at `last_log_index = 2` and `commit_index = 2`. A caller obeying the
+documented meaning retries under a fresh identity and double-applies a
+committed write.
+
+The same branch is reached with nothing appended at all — a runtime that
+returns no proposal lifecycle event yields `GroupError::ProposalDidNotStart`,
+which states that the app layer does not know what the runtime did — and the
+client is told `NotAppended` there too. One answer for two opposite facts is
+the proof that the answer is not an observation.
+
+**The fate rule, stated so it can be checked.** `WriteFate::NotAppended` is
+reported only where the refusal is the thing that happened:
+
+| Situation | Fate | Why it is an observation |
+| --- | --- | --- |
+| The driver refused before proposing — wrong group, shutting down, no group, waiter bound reached, local IDs exhausted | `NotAppended` | Nothing was handed to a group. The refusal is the whole event. |
+| `ProposalEvent::Rejected` | n/a | `write_error_from_rejection` produces `NotLeader`, `PayloadTooLarge`, or `Rejected`, none of which carry a fate field: the variant *is* the proof. |
+| `GroupError::NonMonotonicLocalProposalId` | `NotAppended` | The group refuses before it proposes, and `write_error_from_group` already stamps this variant rather than taking the passed fate. |
+| Any other group error from the proposing step | `Unresolved` | The driver asked a group to propose and did not learn what happened. |
+
+The last row is the change, and `saw_local_append` goes with it. The flag was
+not just unreachable here; it could not be made into a proof if it were
+reachable. `false` means "no append was observed", and the entry's own
+`WriteFate` doc is explicit that unobserved is not refused: "A locally appended
+entry that was never sent is unresolved rather than refused, and that is the
+truth rather than caution." `InMemoryRaftDriver` keeps its `saw_local_append`
+because it drives to completion inside one call and its batch mapper needs a
+per-entry discriminator across a shared error; this driver resolves each waiter
+from the event that named it, so the only thing the flag could add is an
+inference.
+
+**The two shapes `InMemoryRaftDriver` already answers, adopted verbatim.** Its
+`finish_failed_write_batch`
+([`driver/write.rs:178-215`](../crates/rafter-service/src/driver/write.rs)) is
+a three-way decision, and this driver takes the same three in the same order:
+
+1. The group captured this proposal in `poisoned_waiters` →
+   `UnknownOutcome { reason: GroupPoisoned }`. This is fix 2, and it is first
+   for the reason it is first there: the poison is a more specific fact about
+   this proposal than the step error is.
+2. `GroupError::ProposalDidNotStart` →
+   `UnknownOutcome { reason: RuntimeDroppedProposal }`. The app layer's variant
+   name says the driver does not know what the runtime did, and
+   `RuntimeDroppedProposal` is the service layer's word for exactly that.
+3. Otherwise → `write_error_from_group(error, WriteFate::Unresolved)`, which is
+   fix 5.
+
+The single-voter poisoning apply lands in row 1 and answers
+`UnknownOutcome { GroupPoisoned }` — the same answer `InMemoryRaftDriver`
+gives for the identical fault, which is the outcome the review asked for by
+running both drivers against one fixture.
+
+#### 2. Poisoned waiters are drained wherever a step can poison
+
+`RaftGroup::enter_poisoned` moves every pending proposal and every reserved
+read out of the group's live tables and into `poisoned_waiters`
+([`crates/rafter-app/src/group/poison.rs:54-70`](../crates/rafter-app/src/group/poison.rs)).
+After that the group emits no further event for them: they are not dropped,
+they are handed over. `TransportRaftDriver` never reads that table, so every
+in-flight client future at the moment of a poison waits forever, and every
+later `tick` and `drive_pending_reads` raises the same refusal without ever
+resolving anybody. The review reproduced it on two voters: the follower's
+acknowledgement commits, the apply fails, the group poisons, and thirty-two
+further ticks later the write is still pending and the group is still holding
+its captured waiter.
+
+There is no API gap here. The driver owns the group mutably and
+`drain_poisoned_waiters` is public and `#[must_use]`; the previous revision
+simply never called it.
+
+```rust
+/// Resolves every waiter the group handed over when it poisoned.
+///
+/// A poison is not an event stream: `enter_poisoned` moves pending proposals
+/// and reserved reads into `poisoned_waiters` and emits nothing for them, so a
+/// driver that only routes reports leaves their clients waiting forever. This
+/// runs after every group interaction that can poison, on both the success and
+/// the failure path, because a step that poisons can still return `Ok`.
+fn drain_poisoned_waiters(&mut self);
+```
+
+Vocabulary, matched to what each side can prove:
+
+| Waiter | Resolution |
+| --- | --- |
+| Proposal | `WriteError::UnknownOutcome { local_proposal_id, client_request_id, reason: GroupPoisoned }`. The entry may be in the durable log; a later incarnation over the same log can still commit it. |
+| Read | `ReadError::Poisoned { reason, cause }`, the same pair `InMemoryRaftState::poisoned_read_error_from_primary` produces ([`driver/state.rs:91-103`](../crates/rafter-service/src/driver/state.rs)). |
+
+`client_request_id` comes from the captured waiter when the group carried one
+and from the driver's own `WriteOptions` otherwise, which is the same
+`or(...)` the in-memory driver uses.
+
+`UnknownOutcomeReason::GroupPoisoned` becomes reachable through this driver for
+the first time. It was already reachable through `InMemoryRaftDriver`, so this
+is not a new reason; it is a producer that was missing.
+
+**Call sites, chosen by "can this poison".** `step` (tick, delivery, and the
+proposing step), `apply_recovery_outputs`, `attempt_read`, and the
+leadership-transfer step. Every one of them calls into a group method that can
+reach `enter_poisoned`, and the drain runs after each on both paths. The
+alternative — draining inside `route_report` — is wrong precisely for the case
+that produced the finding: `route_report` does not run when the step fails, and
+a failing step is the most likely place for a poison to have happened.
+
+**Ordering against fix 1.** The drain runs before the step error is mapped for
+the client, so a proposal that was captured resolves as `GroupPoisoned` and the
+generic mapping never reaches it. `resolve_write` already refuses to overwrite
+a waiter that has an outcome, so the ordering is the whole mechanism.
+
+#### 3. Every report stream is routed or argued, one by one
+
+`GroupStepReport` has eight streams. `route_report` handles three. This is the
+per-stream disposition, and a stream with no row here would be a defect in this
+subsection rather than a simplification of it.
+
+**`peer_messages` — routed** (unchanged). `transport.send`, refusals counted.
+
+**`proposal_events` — routed** (unchanged), with fix 1's mapping.
+
+**`read_events` — routed** (unchanged), from the previous revision's fix 1.
+
+**`snapshot_events::SendChunk` — routed, through a new transport method.**
+`RaftOutput::SendSnapshotChunk` is the leader's only snapshot-send path: for
+any follower whose progress is in `ProgressMode::Snapshot`,
+`replicate_snapshot_to_follower` emits exactly one of these and nothing else
+([`crates/rafter/src/node/replication/send.rs:147-153`](../crates/rafter/src/node/replication/send.rs)),
+and the app layer records it as `SnapshotEvent::SendChunk`
+([`crates/rafter-app/src/group/output.rs:474-480`](../crates/rafter-app/src/group/output.rs)).
+Dropping it does not degrade a transfer; it removes the only mechanism by which
+a follower below the leader's snapshot boundary can ever be caught up, on a
+transport whose own contract already says snapshot transfers use
+`InstallSnapshotChunk` frames
+([`crates/rafter-service/src/transport.rs:69-74`](../crates/rafter-service/src/transport.rs)).
+
+The directive is not a frame. `SnapshotChunkSend` carries `offset` and `len`
+and no bytes, because the kernel never holds an application snapshot payload,
+and the kernel names the layer that closes the gap: "The transport resolves
+each directive against a source with `SnapshotChunkSend::resolve` before
+putting the chunk on the wire, so payload bytes flow from the application's
+snapshot store to the network without entering kernel state"
+([`crates/rafter/src/types/snapshot/source.rs:9-19`](../crates/rafter/src/types/snapshot/source.rs)).
+So the driver hands the directive to the transport and the transport resolves
+it, which is what the kernel already says happens:
+
+```rust
+/// One leader snapshot chunk directive addressed to a peer.
+///
+/// A directive rather than a message, because the kernel holds no application
+/// snapshot payload: `chunk` names the bytes by transfer, offset, and length,
+/// and the transport reads them from the snapshot store with
+/// [`rafter::SnapshotChunkSend::resolve`] before framing them.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SnapshotChunkEnvelope<G> {
+    pub group_id: G,
+    pub from: NodeId,
+    pub to: NodeId,
+    pub chunk: SnapshotChunkSend,
+}
+
+pub trait RaftTransport<G>: Send + Sync + 'static {
+    // ...
+    /// Resolves one leader snapshot chunk directive and sends it.
+    ///
+    /// Implementations resolve `envelope.chunk` against their own
+    /// [`rafter::SnapshotChunkSource`] and send the resulting
+    /// [`rafter::Message::InstallSnapshotChunk`]. A directive the source
+    /// cannot serve is dropped like a lost message, exactly as
+    /// [`rafter::SnapshotChunkSend::resolve`] documents: the transfer resumes
+    /// from the follower's acknowledged offset once the source and the kernel
+    /// agree on the current snapshot again.
+    ///
+    /// # Errors
+    ///
+    /// Returns the transport implementation's error when the chunk cannot be
+    /// sent. Like [`RaftTransport::send`], a refusal is counted rather than
+    /// propagated to a client.
+    fn send_snapshot_chunk(
+        &self,
+        envelope: SnapshotChunkEnvelope<G>,
+    ) -> Result<(), Self::Error>;
+}
+```
+
+**No default body.** The only default expressible here returns `Ok(())` and
+drops the chunk, which is the defect with a signature on it. A required method
+costs the two in-tree implementors one body each and makes it impossible for a
+transport to disable snapshot transfer by omission. `AsyncRaftTransport` gets
+the same method returning `TransportFuture<(), Self::Error>`, because its
+delivery-semantics paragraph already claims parity with the synchronous trait
+on exactly this point — "Snapshot chunk and message-size expectations are also
+the same as the synchronous trait" — and a trait that made the claim without
+the method would make the sentence false. It has no in-tree implementor, so the
+cost is the sentence staying true.
+
+**Why the driver does not resolve the chunk itself.** It would need a
+`SnapshotChunkSource`, which means a sixth type parameter or a `dyn` field, and
+the source belongs to the snapshot store, which belongs to the embedder's
+storage — the same object that builds the transport. `DurableRaftNode` resolves
+directives inside `step` because it owns its store
+([`crates/rafter-runtime/src/lib.rs:301,707-727`](../crates/rafter-runtime/src/lib.rs)),
+which is why a driver over the shipped runtime never sees a `SendChunk` at all
+and why this routing exists for embedders with their own
+`PersistedRaftRuntime` — of which this workspace has several.
+
+**`snapshot_events::StageChunk` — argued out, with a contract citation.** The
+receive side is already durable when the event exists.
+`PersistedRaftRuntime` requires that "outputs that depend on hard-state, log,
+snapshot, or compaction changes must not be released until those changes are
+durably reflected"
+([`crates/rafter-runtime-api/src/lib.rs:16-22`](../crates/rafter-runtime-api/src/lib.rs)),
+and staging a chunk *is* that output's durability obligation.
+`DurableRaftNode` discharges it in `persist_snapshot_outputs_for_step` before
+it returns any output
+([`crates/rafter-runtime/src/lib.rs:286,663-685`](../crates/rafter-runtime/src/lib.rs)).
+A driver that staged again would write a second copy into a store the kernel
+never reads back: recovery resumes a transfer from
+`current_pending_snapshot_transfer` on the *runtime's* store
+([`construction.rs:148-176`](../crates/rafter-runtime/src/construction.rs)),
+so a driver-side staging area could only diverge from it. The event is a
+notification of a completed write, and the honest routing of a notification the
+driver has no second use for is none. `InMemoryRaftDriver` reaches the same
+disposition by the same fact, which is why its `route_report` handles peer
+messages alone.
+
+This is the one place the fix is a written reason rather than a call, so it is
+also the one place with a test whose job is to pin the reason: a report
+carrying `StageChunk` steps cleanly, reaches no transport, and leaves the
+driver healthy.
+
+**`snapshot_events::Apply` — argued out.** The group installs the snapshot into
+the state machine and advances its own applied floor before pushing the event
+([`crates/rafter-app/src/group/snapshot.rs:38-67`](../crates/rafter-app/src/group/snapshot.rs)),
+and the runtime promoted the staged snapshot and compacted the log before
+releasing the output. Nothing is left to do; the boundary move is visible in
+the metrics snapshot the driver publishes after every step.
+
+**`membership_events` — routed, to `update_peers` and `fence_peer`.** The
+transport's peer set is the link layer's copy of who may speak, and a driver
+that never updates it leaves a joined replica unable to be heard and a removed
+replica able to speak forever. The review reproduced the second half directly:
+no `TransportRaftDriver` in the tree has ever called either method.
+
+Routing needs a `NodeId → PeerPrincipal` direction the crate does not have.
+`AuthenticatedPeerValidator` has the forward direction,
+`node_for_authenticated_peer`, and the entry's own rejected alternative
+explains why that direction lives on the validator rather than the transport:
+"the crate separates authenticating a principal from deciding which Raft
+replica that principal is". Naming the principal for a replica is that same
+decision read the other way, and the one implementor in the tree proves the
+object already holds both — `PeerDirectory` keeps a
+`BTreeMap<PeerPrincipal, NodeId>` and answers the forward direction by lookup
+([`reference/fenced-lock/tests/support/transport.rs:259-267`](../reference/fenced-lock/tests/support/transport.rs)).
+So the inverse joins it:
+
+```rust
+pub trait AuthenticatedPeerValidator<G, P> {
+    // ...
+    /// Returns the principal this deployment issues to `node_id`, when it can
+    /// name one.
+    ///
+    /// The inverse of
+    /// [`AuthenticatedPeerValidator::node_for_authenticated_peer`], and the
+    /// same policy: a validator that decides which replica a principal is, is
+    /// the object that knows which principal a replica has. A driver
+    /// needs this direction to publish a group's membership as a transport
+    /// peer set and to fence a removed replica.
+    ///
+    /// `None` means this deployment cannot name a principal for `node_id`. A
+    /// caller must not treat that as an empty peer set: see the all-or-nothing
+    /// rule in the transport driver's membership routing.
+    fn principal_for_node(&self, group_id: &G, node_id: NodeId) -> Option<P>;
+}
+```
+
+This is the subsection's one change outside `rafter-service`, and it is a
+transport-surface addition rather than a group-surface one: no `RaftGroup`
+method, type, or report changes. It is required rather than defaulted, for the
+reason `send_snapshot_chunk` is: the only possible default returns `None` for
+every node, which disables membership routing silently. Four in-tree
+implementors, three of them test fixtures.
+
+The driver keeps the set it last published and moves it on two events:
+
+| Event | Action |
+| --- | --- |
+| `Appended { membership }` — the effective configuration changed and has not committed | Publish the **union** of the current set and `membership.replica_ids()`. Never fence. A replica joining under joint consensus must be able to speak before the change commits, or it can never catch up and the change can never commit; and an uncommitted change can still be reverted, so nothing may be taken away here. |
+| `Applied { membership }` — the committed configuration changed | Publish exactly `membership.replica_ids()`, then fence every principal that was in the previous set and is not in this one. Committed removal is the only fact that licenses fencing. |
+| `Rejected { .. }` | Nothing. The change never entered the log. |
+
+**Publishing at adoption, not only on change.** `new` and `adopt_group`
+publish the group's current membership before serving anything. A driver that
+published only on change would leave the transport's peer set undefined for the
+whole first incarnation, which is the state the reproduction found: a
+single-voter group whose membership never changes never told its transport
+anything. The invariant this creates is checkable and is the one worth having —
+*the transport's peer set is the driver's last-known membership, from
+construction onward.*
+
+**All-or-nothing.** A membership the validator cannot fully name is not
+published. A partial peer set authorizes fewer replicas than the membership
+has, which is a quorum-splitting configuration change performed by accident;
+refusing to publish leaves the previous set in place, which is merely stale.
+The refusal is counted:
+
+```rust
+/// Returns how many membership updates this driver could not publish.
+///
+/// Counted, not propagated, for the reason a refused send is: a peer-set
+/// update that failed is a link-layer condition, and a write must not fail
+/// because of one. A non-zero value means either the transport refused the
+/// update or the validator could not name a principal for some replica in the
+/// membership — two different faults with one consequence, that the link
+/// layer's peer set is behind the group's.
+#[must_use]
+pub fn refused_peer_updates(&self) -> u64;
+```
+
+It is separate from `refused_sends` because a dropped frame is routine and Raft
+re-sends, while a peer set that never updated does not repair itself.
+
+**`leadership_transfer_events` — argued out, with the limitation named.**
+`transfer_leadership` already reads them, from the report of the step it
+issued, and resolves its own future
+([`driver/transport.rs:683-700`](../crates/rafter-service/src/driver/transport.rs)).
+There is no waiter table for transfers, because the operation is created and
+resolved inside one call. A `Rejected` arriving in a later tick's report
+belongs to a transfer whose future has already returned `Ok`, meaning "the
+driver accepted the request" — which the trait's own doc says is all it means,
+and which it explicitly tells callers to follow with a metrics observation
+("callers that need completion semantics should observe metrics until the
+target is reported as leader",
+[`driver/trait.rs:37-48`](../crates/rafter-service/src/driver/trait.rs)). The
+metrics snapshot the driver publishes after every step carries the role and the
+leader hint, so the later fact reaches the caller through the surface the
+contract already points at. Adding a transfer waiter table would be a new
+promoted mechanism with no consumer behind it, which is the generalization the
+promotion rule defers.
+
+**`applied` — argued out.** The `ApplyResult`s were produced by applying them
+to the state machine; by the time the report exists the effect has happened.
+The client-visible subset is re-reported as `ProposalEvent::Applied` carrying
+the same index, term, and result, which is the path that resolves a waiter, and
+routing the stream again would resolve nothing twice. An embedder that wants
+the full apply stream, including entries no local client proposed, reads it
+through `with_group`.
+
+**`metrics` — argued out, structurally.** The driver steps with
+`StepReportOptions::without_metrics()`, so this field is always `None` in every
+report this driver ever sees. It publishes `group.metrics()` itself after each
+step, which is strictly fresher than the in-report snapshot would be: it is
+taken after the report was routed rather than during the step.
+
+#### 4. A barrier's own fault resolves that barrier, and only that barrier
+
+The previous revision's `fail_read` attributes exactly two group errors to
+their barrier and propagates everything else:
+
+```rust
+if !matches!(
+    error,
+    GroupError::NonMonotonicReadId { .. } | GroupError::DuplicateReadId { .. }
+) {
+    return Err(ManagedDriverError::Group { cause: ErrorCause::new(error) });
+}
+```
+
+That list is not the set of per-barrier faults; it is the set of faults that
+subsection anticipated. The review found the obvious omission by making a state
+machine refuse a query. `GroupError::StateMachine { operation: Read }` escapes
+`drive_pending_reads`, and three things go wrong at once. The failing barrier's
+client is not resolved. Every other barrier in the same pass is skipped,
+including ones that never failed — the reproduction has a second barrier,
+granted and ready, that is simply not served. And the failure is
+unrecoverable in a way the client is then lied to about: `read_linearizable`
+removes the completed proof from `completed_query_reads` *before* running the
+state-machine read
+([`crates/rafter-app/src/group/read.rs:384-392`](../crates/rafter-app/src/group/read.rs)),
+so the proof is consumed and gone, the next pass re-reserves a spent `ReadId`,
+and `fail_read`'s surviving arm resolves the client with
+`ReadError::ManagedInvariantViolation` whose message reads "a terminal read
+event was not routed". No terminal event was ever emitted; the state machine
+refused the query, and the cause that says so is discarded.
+
+**Every group error from a read call is attributable to that read's barrier.**
+`RaftGroup::read` is called with one `ReadRequest` naming one `ReadId`, so
+there is no second barrier the error could be about. `fail_read` therefore
+resolves the barrier with `read_error_from_group(error)` — fix 5 — and returns
+`Ok(())` so the loop continues. The two anticipated arms are not special-cased
+away: `read_error_from_group` already maps `NonMonotonicReadId` and
+`DuplicateReadId` to `ManagedInvariantViolation` with a message naming the ID
+invariant, which is the correct report for those and only those.
+
+`ReadError::StateMachine { operation: Read, cause }` becomes the answer to the
+reproduction, with the state machine's own error preserved under `source()`.
+
+**What still leaves `drive_pending_reads`.** Only
+`ManagedDriverError::NoGroup`. Nothing else in the method can fail without
+being about one barrier, so the doc comment's error clause narrows to that, and
+becomes true rather than aspirational. The previous revision argued for exactly
+this shape one level up — "one barrier's fault must not deny service to the
+rest" — and then implemented it for two error variants; this is that argument
+applied to the rest.
+
+**The invariant-violation message survives, and its claim narrows.** It is now
+reached only from the two ID variants, where "this driver holds a waiter for a
+barrier its group no longer tracks" is literally what happened. It is no longer
+reachable for a state-machine refusal, which is the misattribution the review
+named.
+
+#### 5. Group failures reach clients through the typed mapping
+
+`write_error_from_group` and `read_error_from_group` exist, are used by
+`InMemoryRaftDriver`, and are the reason
+[Typed Service Failure Surface](#typed-service-failure-surface) can claim that
+`Poisoned`, `Storage`, and `StateMachine` are categories rather than strings.
+`TransportRaftDriver` calls neither. Every group failure it reports arrives as
+`WriteError::Transport` or `ReadError::Transport` wrapping a
+`ManagedDriverError` wrapping the `GroupError` — so on the driver the entry
+exists to make usable, a
+poisoned group is reported as a transport fault, and the reproduction shows
+both sides of it at once:
+
+```
+write=Transport { fate: NotAppended, cause: Group { cause: Poisoned { .. } } }
+read=Transport  { cause: Group { cause: Poisoned { .. } } }
+```
+
+Three call sites change, and none of them is a new mapping — each is the
+existing one:
+
+| Site | Was | Becomes |
+| --- | --- | --- |
+| `begin_write`'s failing step | `Transport { fate: inferred, cause: ManagedDriverError }` | fix 1's three-way decision, ending in `write_error_from_group(error, WriteFate::Unresolved)` |
+| `attempt_read`'s failing read | propagated, or `ManagedInvariantViolation` | `read_error_from_group(error)` |
+| The poison drain | nothing | fix 2's vocabulary |
+
+To reach them, the state's `step` splits: an inner form returning the
+`GroupError` unchanged, and the outer `ManagedDriverError` form that `tick` and
+`deliver` keep. `WriteError::Transport` and `ReadError::Transport` stay for what
+they name — a driver that could not route or deliver, which is the waiter
+bound, the missing group, and a genuine transport fault.
+
+#### 6. A dropped client future reclaims its waiter
+
+`poll_write` and `poll_read` remove a waiter when a poll takes its outcome.
+Nothing removes one whose outcome was taken by nobody. The documented
+supervisor drain is exactly that shape — a client times out and drops its
+future, the supervisor abandons the waiter to free its slot — and abandonment
+resolves rather than removes, deliberately, so the future can still answer. The
+review filled a bounded driver four times over with dropped futures and found
+four resolved waiters that nothing will ever poll, each holding its cloned
+`ReadRequest`, permanently.
+
+The slot accounting is not what leaks: `max_pending_waiters` counts unresolved
+waiters, so the bound is respected. The `BTreeMap` entries are what leak, and
+they leak once per timed-out client for the life of the driver.
+
+**Chosen: the future owns its waiter, and dropping it is the reclamation.**
+Each client future carries a guard whose `Drop` removes its own waiter from the
+table if the future did not already poll it out.
+
+```rust
+/// Removes a waiter whose client future was dropped.
+///
+/// The future is the only thing that can consume a resolved outcome, so a
+/// dropped future is the moment the waiter provably has no reader. A read that
+/// was still unresolved has its barrier cancelled through the group first, so
+/// `reserved_reads` returns to its previous value: a client that stopped
+/// listening must not leave a barrier reserved in the group any more than it
+/// leaves a waiter in the driver.
+fn discard_write(&mut self, local_proposal_id: LocalProposalId);
+fn discard_read(&mut self, read_id: ReadId);
+```
+
+This composes with the previous revision's rule rather than replacing it, and
+the composition is the whole design:
+
+- **Resolve, do not remove** still holds for abandonment. `abandon_write` and
+  `abandon_read` write an outcome and leave the entry in place, so a caller
+  that abandons and still holds its future gets `DriveBoundReached` on the next
+  poll. The lock does exactly this, one line later.
+- **The late poll is safe** because the entry is still there. There is no
+  window: only the future's own `Drop` removes it, and a future cannot be
+  dropped and polled.
+- **A dropped future frees everything**, table entry included, without anyone
+  having to call `abandon_*` at all.
+- **Abandoning after a drop returns `false`.** The waiter is gone, so nothing
+  is retired. That is the honest answer — abandonment resolves a client, and
+  there is no client — and it is the one behavioural difference a caller can
+  observe. It is recorded in `abandon_write`'s and `abandon_read`'s doc
+  comments, which already promise "returns whether a waiter was retired".
+- **`pending_writes` and `pending_reads` sharpen.** They now answer "what is
+  this driver holding for a client that is still listening", which is a
+  strictly better answer to the question a draining supervisor asks than "what
+  is this driver holding, including for clients that left".
+
+**Rejected: reclaim on a later sweep.** A sweep needs a rule for when a
+resolved-and-unpolled waiter is dead, and there is no such rule: a future may
+be parked for an arbitrary time before its executor polls it. Any time-based or
+count-based sweep either drops an answer a live client was about to read, or
+does not bound the table. Drop is the exact signal, and it is free.
+
+**Rejected: remove on resolution and keep a terminal ledger.** It answers the
+late poll from a side table, and the side table is the original problem with an
+extra hop.
+
+#### 7. Four smaller corrections
+
+**Fabricated IDs are replaced by the refusal they were standing in for.** A
+released driver answers `begin_write` with
+`UnknownOutcome { local_proposal_id: LocalProposalId(0), .. }` and `begin_read`
+with `Abandoned { read_id: ReadId(0), .. }`. Both IDs name operations that do
+not exist, and `LocalProposalId(0)` is a value a caller can compare against a
+real allocation. Neither operation started, so neither is an outcome to be
+unknown about: they are refusals, and the driver already has a refusal shape
+for "could not route this" — the one the waiter bound uses,
+`WriteError::Transport { fate: NotAppended, cause: DriverRoutingError::_ }`.
+`DriverRoutingError` gains `NoGroup`, and reads take the same shape without a
+fate. No public variant is added; `DriverRoutingError` is internal and reaches
+callers as a preserved `source()`.
+
+**`adopt_group` refuses after a completed shutdown.** Today it clears
+`shutting_down`, so `shutdown` → `release_group` → `adopt_group` produces a
+driver serving again — which the review recorded as observed behaviour, because
+the vocabulary calls shutdown terminal and `shutdown` itself refuses a second
+call with `ShutdownError::AlreadyShutDown`. The entry's own sentence is "a
+supervisor restarting a replica calls release; a supervisor stopping one calls
+shutdown and then release", which makes shutdown the stopping path. A stopping
+path that can be walked backwards is not a stopping path. `adopt_group`
+therefore returns `ManagedDriverError::ShuttingDown` when the driver has shut
+down, and stops clearing the flag; a supervisor that wants to serve again
+builds a driver. The restart path — `release_group` then `adopt_group`, without
+a shutdown — is untouched, which is the path the entry exists for.
+
+**`min_applied_index` carries the caller's floor.** Both drivers hardcode
+`None`, and the app layer documents what that discards: a floor is "honored
+verbatim … A caller may be expressing 'at least as fresh as the write I already
+observed', and Rafter must not silently weaken that", with
+`ProposalEvent::Applied` named as its natural source
+([`crates/rafter-app/src/read.rs:49-59`](../crates/rafter-app/src/read.rs)). A
+client that just received a `WriteReceipt` and wants to read its own write has
+no way to say so, and no workaround: the floor is a property of the barrier and
+cannot be applied afterwards.
+
+The shape is the one `WriteOptions` already established, so reads stop being
+the asymmetric half of the pair:
+
+```rust
+/// Per-read options.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct ReadOptions {
+    /// The applied index this read must observe, if the caller has one.
+    ///
+    /// Honored verbatim by the app layer: it is not capped at the read index
+    /// and not lowered. The natural source is the `index` of a
+    /// [`WriteReceipt`] the caller already holds, which always names an
+    /// application entry. An index taken from a commit index, a read index, or
+    /// a snapshot boundary may name an entry the state machine is never told
+    /// about; convert it with
+    /// [`TransportRaftDriver::committed_application_index`] first.
+    pub min_applied_index: Option<LogIndex>,
+}
+
+pub trait DriverCommandSender<G, C, Q, R, QR>: Clone + Send + Sync + 'static {
+    fn read(
+        &self,
+        group_id: G,
+        query: Q,
+        consistency: ReadConsistency,
+        options: ReadOptions,
+    ) -> DriverFuture<Result<QueryReceipt<G, QR>, ReadError>>;
+}
+
+impl<G, C, Q, R, QR, S> RaftHandle<G, C, Q, R, QR, S> {
+    /// Runs a query that must observe at least the caller's own floor.
+    pub async fn read_with_options(
+        &self,
+        query: Q,
+        consistency: ReadConsistency,
+        options: ReadOptions,
+    ) -> Result<QueryReceipt<G, QR>, ReadError>;
+}
+```
+
+`RaftHandle::read` keeps its signature and passes `ReadOptions::default()`, so
+every call site that does not want a floor is unchanged — the trait has four
+implementors in the tree, two of them test fixtures. Both drivers thread the
+value into the `ReadRequest` they build; the transport driver stores it on the
+waiter, because the app layer requires a retry to present the same freshness or
+be refused with `GroupError::DuplicateReadId`
+([`group/read.rs:384-400`](../crates/rafter-app/src/group/read.rs)), and
+`drive_pending_reads` is that retry.
+
+**`metrics()` after a release is stale, and says so.** The watch stays open
+across a release, which is correct — a handle names a service rather than an
+incarnation, and re-adoption republishes — but the last snapshot describes the
+retired incarnation and nothing refreshes it in between. Closing the watch
+would break re-adoption; publishing an empty snapshot would require inventing a
+`RaftGroupMetrics` for a group that does not exist. So the boundary is
+documented on `release_group` rather than signalled: the last published
+snapshot is the retired incarnation's until `adopt_group` publishes the new
+one, and the surface that distinguishes "released" from "idle" is
+`with_group`/`committed_application_index`, which answer
+`ManagedDriverError::NoGroup` and are the reason those methods exist.
+
+#### Blast radius of the second revision
+
+| File | Change |
+| --- | --- |
+| [`crates/rafter-service/src/driver/transport/state.rs`](../crates/rafter-service/src/driver/transport/state.rs) | Fate mapping; poison drain; snapshot and membership routing; per-barrier read failures; typed mapping; `discard_write`/`discard_read`; `min_applied_index` on the waiter |
+| [`crates/rafter-service/src/driver/transport.rs`](../crates/rafter-service/src/driver/transport.rs) | Waiter guards on the client futures; `refused_peer_updates`; `adopt_group` refuses after shutdown; membership published at construction and adoption |
+| [`crates/rafter-service/src/driver/mapping.rs`](../crates/rafter-service/src/driver/mapping.rs) | `DriverRoutingError::NoGroup` |
+| [`crates/rafter-service/src/driver/options.rs`](../crates/rafter-service/src/driver/options.rs) | `ReadOptions` |
+| [`crates/rafter-service/src/driver/trait.rs`](../crates/rafter-service/src/driver/trait.rs) | `DriverCommandSender::read` takes `ReadOptions` |
+| [`crates/rafter-service/src/driver/read.rs`](../crates/rafter-service/src/driver/read.rs), [`in_memory.rs`](../crates/rafter-service/src/driver/in_memory.rs) | The in-memory driver threads the floor |
+| [`crates/rafter-service/src/handle.rs`](../crates/rafter-service/src/handle.rs) | `read_with_options` |
+| [`crates/rafter-service/src/transport.rs`](../crates/rafter-service/src/transport.rs) | `SnapshotChunkEnvelope`; `send_snapshot_chunk` on both transport traits |
+| [`crates/rafter-app/src/transport.rs`](../crates/rafter-app/src/transport.rs) | `AuthenticatedPeerValidator::principal_for_node` |
+| [`crates/rafter-service/src/lib.rs`](../crates/rafter-service/src/lib.rs) | Re-export `ReadOptions` and `SnapshotChunkEnvelope` |
+| [`reference/fenced-lock/tests/support/transport.rs`](../reference/fenced-lock/tests/support/transport.rs) | The two new trait methods |
+
+Breaking for implementors of `RaftTransport`, `AsyncRaftTransport`,
+`AuthenticatedPeerValidator`, and `DriverCommandSender`, and for direct callers
+of `DriverCommandSender::read`. Every break is a required method or parameter
+whose default would be a silent wrong answer, which is the criterion the
+pre-1.0 rule asks for. `RaftHandle`'s surface is additive.
+
+The behavioural breaks are the ones worth naming, because they change what a
+correct caller sees: a failing write step now reports `Unresolved` where it
+reported `NotAppended`, a poisoned group now reports `Poisoned` and
+`UnknownOutcome` where it reported `Transport`, a per-barrier read failure now
+resolves its client where it returned an error to the driver, and
+`abandon_write`/`abandon_read` now return `false` for a waiter whose future was
+already dropped.
+
+#### Focused-test plan for the second revision
+
+Every reproduction the review supplied becomes a regression test with its
+assertion inverted, keeping its fixture and its name where the name still
+describes the scenario.
+
+In `crates/rafter-service/tests/transport_driver.rs`:
+
+- `a_poisoning_apply_reports_unknown_for_an_entry_that_is_committed` — the
+  fate reproduction. Single voter, failing apply; assert the client receives
+  `UnknownOutcome { GroupPoisoned }` and that the entry really is committed, so
+  the test still proves the fate mattered.
+- `both_drivers_call_the_same_poisoning_apply_unknown` — the review's
+  two-driver fixture, now asserting the answers agree.
+- `a_write_with_no_proposal_lifecycle_event_is_unresolved_rather_than_refused`
+  — `ProposalDidNotStart` maps to `UnknownOutcome { RuntimeDroppedProposal }`.
+- `a_poison_resolves_every_in_flight_waiter` — the two-voter reproduction;
+  assert the write resolves as `GroupPoisoned`, a concurrent read as
+  `ReadError::Poisoned`, and that the group's `poisoned_waiters` is drained.
+- `a_poisoned_group_reports_poisoned_rather_than_transport` — the vocabulary
+  reproduction, for both a write and a read.
+- `a_snapshot_chunk_directive_reaches_the_transport` — the snapshot
+  reproduction, over a transport that resolves against an in-memory source;
+  assert an `InstallSnapshotChunk` frame is observed and a refused directive
+  increments `refused_sends`.
+- `a_staged_chunk_is_the_runtimes_obligation_and_reaches_no_transport` — the
+  argued-out half, pinned.
+- `membership_reaches_the_transports_peer_set` — the membership reproduction;
+  assert the peer set is published at construction, widened on `Appended`,
+  narrowed on `Applied`, and that a removed replica is fenced.
+- `a_membership_the_validator_cannot_name_is_not_published` — all-or-nothing,
+  with `refused_peer_updates` incremented.
+- `a_dropped_read_future_reclaims_its_waiter_and_its_barrier` — the
+  unbounded-growth reproduction; four reads started and dropped leave no
+  waiters, no reserved reads, and a full budget.
+- `an_abandoned_waiter_still_answers_a_late_poll` — the composition rule:
+  abandon, then poll the still-held future, and get `DriveBoundReached`.
+- `abandoning_a_waiter_whose_future_was_dropped_retires_nothing`.
+- `a_released_driver_refuses_without_fabricating_an_id` — both sides.
+- `adoption_does_not_reverse_a_completed_shutdown` — the review's
+  `observed_` probe, inverted to `ManagedDriverError::ShuttingDown`.
+- `a_read_floor_is_honored_verbatim` — a read whose `min_applied_index` is
+  above the local applied index stalls rather than answering, and answers once
+  the state machine catches up.
+
+In `crates/rafter-service/tests/read_waiters.rs`, from the review's second
+file:
+
+- `one_barriers_state_machine_failure_resolves_only_that_barrier` — the denial
+  reproduction; assert the failing client gets
+  `ReadError::StateMachine { operation: Read }` with its cause preserved, the
+  second barrier is served in the same pass, and `drive_pending_reads` returns
+  `Ok`.
+- `a_refused_query_is_reported_as_a_state_machine_failure` — the
+  misattribution reproduction, asserting the cause downcasts to the state
+  machine's own error.
+- The review's seven held-under-attack probes are kept as written; they pass
+  before and after, and their job is to fail if a fix moves something it was
+  not meant to move.
 
 ## Terminal Driver Vocabulary
 
