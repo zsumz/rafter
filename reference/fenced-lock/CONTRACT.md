@@ -573,33 +573,39 @@ The three terminal outcomes differ only in what the caller can prove:
   decide.
 
 A refusal is provable only when the managed write surface this application
-consumes reports a `WriteError` that the service cannot reach once an entry has
-been appended. That is the adapter's `SubmitOutcome::Refused`, and it is
-exactly this set:
+consumes reports `WriteFate::NotAppended` for the failed write. That fate is the
+driver's own report that it observed the refusal before the command reached the
+local Raft log, and it is the adapter's `SubmitOutcome::Refused`. This
+application does not maintain its own list of refusing variants: a second
+classification here could disagree with the one the cluster actually proved, so
+the criterion is the reported fate and nothing else.
+
+The service reports that fate for two groups of failure:
 
 - `NotLeader`, `Rejected`, and `PayloadTooLarge`, which are the service's
   rendering of a proposal rejection. `rafter-app` documents that rejection as
   the local node refusing the proposal before replication, and Rafter raises it
   only from the pre-append admission check, so the command entered no log and
-  no peer ever received the bytes.
-- `ShuttingDown`, refused at admission before a proposal is started.
-- `LocalProposalIdExhausted`, refused before the command reaches the group at
-  all.
+  no peer ever received the bytes. `WrongGroup`, `ShuttingDown`, and
+  `LocalProposalIdExhausted` are refused at admission, before the command
+  reaches the group at all.
+- `StateMachine`, `Storage`, `Transport`, `Poisoned`, and
+  `ManagedInvariantViolation`, each of which carries an explicit fate rather
+  than a fixed one, and so proves non-replication only when the driver observed
+  it before the append.
 
 Every other lost outcome stays `Unknown`, because none of them is
 distinguishable from a commit:
 
 - `UnknownOutcome`, whatever diagnostic reason it carries. A dropped local
   proposal may already have replicated to a quorum.
-- `ApplyFailed`, `Storage`, `Transport`, `Poisoned`, and
-  `ManagedInvariantViolation`, none of which the service confines to the
-  pre-append window, and each of which carries only a rendered message that a
-  caller cannot inspect further.
+- Any of the fate-carrying variants above whose fate is `Unresolved`.
 - A proposal that was appended and then abandoned by a caller that stopped
   waiting. The entry exists and may yet commit.
 - Any outcome lost to process or connection failure.
-- Any `WriteError` variant this document does not name. That type is
-  `#[non_exhaustive]`, so an unrecognized refusal defaults to the weaker claim.
+- Any `WriteError` variant this build does not recognize. That type is
+  `#[non_exhaustive]` and `WriteFate::may_commit` is written as the negation of
+  the refusal, so an unrecognized variant defaults to the weaker claim.
 
 What a driver knows about its own network never earns `NotCommitted`. A test may
 have cut every link itself, but a history records only what the service surface
@@ -612,7 +618,14 @@ away. `NotCommitted` removes that excuse.
 
 ## First Milestone Boundary
 
-The first milestone contains:
+This section records where the crate stopped at its first milestone. The
+sections above supersede it: the adapter carries this contract onto Rafter's
+published crates, and [Durable Backend](#durable-backend) puts the service's
+state in a real transactional store. It is kept because the boundary it names
+is what gave the adapter an application contract to meet, rather than letting
+integration convenience define the application.
+
+The first milestone contained:
 
 - this contract;
 - bounded command and result types;
@@ -623,5 +636,8 @@ The first milestone contains:
 - differential exploration and seeded differential workloads; and
 - the history vocabulary.
 
-It intentionally contains no Rafter dependency, transport, filesystem backend,
-shared reference framework, or new Rafter public API.
+It intentionally contained no Rafter dependency, transport, filesystem backend,
+shared reference framework, or new Rafter public API. Of those, three still
+hold: there is no shared reference framework, no new Rafter public API, and no
+real transport — the deterministic network the tests drive routes messages in
+process, and the process composition remains deferred.

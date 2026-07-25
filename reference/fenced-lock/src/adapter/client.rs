@@ -216,10 +216,13 @@ fn request_metadata(command: &Command) -> Option<ClientRequestId> {
 
 /// Returns whether a write error leaves the commit outcome unknown.
 ///
-/// The driver reports the fate it observed, so this application no longer
-/// enumerates the variants that prove non-replication and no longer widens the
-/// window for the ones it could not inspect. The window is now exactly as wide
-/// as the facts require.
+/// The fate is the driver's own report of what it observed, and this
+/// application must not second-guess it: enumerating the refusing variants here
+/// would be a second classification that could disagree with the one the
+/// cluster actually proved. [`WriteError`] is `#[non_exhaustive]`, and
+/// [`rafter_service::WriteFate::may_commit`] is written as the negation of the
+/// refusal, so a variant this build does not recognize reads as unknown — the
+/// weaker and therefore safe claim.
 fn closes_outcome_window(error: &WriteError) -> bool {
     error.fate().may_commit()
 }

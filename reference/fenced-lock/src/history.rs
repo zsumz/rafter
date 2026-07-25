@@ -19,6 +19,25 @@ impl OperationId {
 }
 
 /// A client-visible event retained for later history checking.
+///
+/// A history is the recorded sequence of these events, and every operation
+/// contributes exactly one invocation event and exactly one terminal event,
+/// correlated by [`OperationId`]. The three terminal outcomes differ only in
+/// what the caller can prove, which is why they are distinct events rather than
+/// one lost-outcome event: a checker must allow a [`HistoryEvent::Unknown`]
+/// operation to have taken effect, so recording a provable refusal as unknown
+/// would explain away an implementation that minted a token for a command the
+/// cluster refused.
+///
+/// This crate records histories and asserts against them directly; it has no
+/// linearizability checker of its own, and the real-time ordering property is
+/// left to the process adapter that `CONTRACT.md` describes.
+///
+/// The vocabulary is closed and in-memory. It is deliberately not a wire
+/// format: the versioned frames this crate defines are the replicated command
+/// and snapshot frames in the adapter's codec, and a history never crosses a
+/// process boundary. Adding an outcome here is a contract change recorded in
+/// `CONTRACT.md`, not a compatibility negotiation.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum HistoryEvent {
     /// The client invoked a command.

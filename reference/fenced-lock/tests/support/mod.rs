@@ -1,3 +1,8 @@
+// This module holds only the command builders every suite needs. The heavier
+// support modules beside it — `cluster`, `durable`, `scratch`, and `transport`
+// — are pulled in by `#[path]` only by the suites that drive them, so the
+// model-only tests neither compile nor link a driver or a filesystem.
+
 use rafter_reference_fenced_lock::{
     ClientId, Command, FencingToken, LeaseDuration, LockConfig, LogicalTime, Operation,
     RequestFingerprint, RequestIdentity, ResourceName, Sequence, SessionEpoch,
