@@ -22,15 +22,19 @@ pub(super) fn ps04_production_open_rejects_app_floor_beyond_commit() {
     drop(opened);
 
     let uncommitted_index = LogIndex(commit_index.0 + 1);
-    let (_, mut log, _) = FileRaftNodeStores::open(root.join("raft"))
-        .expect("file-backed stores reopen")
-        .into_parts();
-    log.append_entries(&[PersistedRaftLogEntry::application(
-        uncommitted_index,
-        current_term,
-        serde_json::to_vec(&write_command(2, 1)).expect("command encodes"),
-    )])
-    .expect("uncommitted durable tail appends");
+    // Every part shares the directory-ownership guard, so the log handle must
+    // drop before production open can acquire the directory again.
+    {
+        let (_, mut log, _) = FileRaftNodeStores::open(root.join("raft"))
+            .expect("file-backed stores reopen")
+            .into_parts();
+        log.append_entries(&[PersistedRaftLogEntry::application(
+            uncommitted_index,
+            current_term,
+            serde_json::to_vec(&write_command(2, 1)).expect("command encodes"),
+        )])
+        .expect("uncommitted durable tail appends");
+    }
     persist_invalid_floor(&root, uncommitted_index);
 
     let error = open_application_node(&root, NodeId(1), Vec::new()).err();
