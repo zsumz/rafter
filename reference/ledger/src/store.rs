@@ -40,16 +40,27 @@
 //!
 //! # Format
 //!
-//! The store owns one directory containing the journal `ledger.journal`. A
-//! rewrite stages `ledger.journal.<pid>.tmp` beside it and renames it into
-//! place; no other file is durable state, and a leftover staging file is
-//! removed at open.
+//! The store owns one directory containing the journal `ledger.journal`.
+//! Anything that does not extend the journal — a rewrite, and the creation of
+//! the journal itself — stages `ledger.journal.tmp` beside it and renames it
+//! into place. No other file is durable state, and every staging file present
+//! at open is removed.
 //!
-//! Ownership of that directory is assumed rather than enforced. Two live stores
-//! over one directory would interleave appends and corrupt each other, and
-//! nothing here stops them; the staging name carries a process ID so an
-//! abandoned rewrite cannot be mistaken for a live one, which is a smaller
-//! claim.
+//! "Every staging file" is meant literally: the sweep removes anything beside
+//! the journal whose name begins with the journal's name and a dot, whoever
+//! wrote it. That is a deliberate widening. A staging file is left behind by a
+//! process that *died*, so the process that finds one is never the process that
+//! wrote it, and a name only its author could recognize — a process ID, say —
+//! is a name nobody ever removes. An earlier shape of this store carried the
+//! process ID and could therefore clean up after every crash except the one
+//! kind of crash that produces staging files, leaking a whole image per
+//! interrupted rewrite.
+//!
+//! Removing another writer's file is safe because there is no other writer.
+//! Ownership of the directory is assumed rather than enforced here — two live
+//! stores over one directory would interleave appends and corrupt each other,
+//! and nothing in this file stops them — but the composition supplies it, and
+//! the sweep leans on that rather than on a name.
 //!
 //! The process composition supplies the missing exclusion without changing this
 //! file. A replica process takes `rafter-storage`'s operating-system lock over
@@ -58,13 +69,41 @@
 //! and never reaches this one. That is an ordering discipline stated in
 //! `CONTRACT.md` rather than a lock this store holds, and the difference
 //! matters to anyone embedding [`LedgerStore`] on its own: alone, it defends
-//! nothing.
+//! nothing. It is also what the staging sweep above rests on: at the moment the
+//! sweep runs there is exactly one live writer for this directory, so every
+//! staging file it finds was abandoned by an incarnation that is gone.
+//!
+//! # Creating the journal
+//!
+//! Creation is a rename, for the same reason a rewrite is. Writing a header
+//! into a freshly created file leaves a window between the two in which the
+//! directory holds a journal too short to be one — and a later open cannot
+//! recover from that, because the file exists, so creation never runs again and
+//! the header is never written. The directory would be bricked by a crash in a
+//! two-statement function.
+//!
+//! So creation stages the header in `ledger.journal.tmp`, syncs it, renames it
+//! to `ledger.journal`, and syncs the directory. The journal therefore appears
+//! with its header or does not appear at all, an interrupted creation leaves
+//! only a staging file the next open sweeps, and the next open then creates the
+//! journal properly.
+//!
+//! A journal shorter than its header is consequently not a state this store can
+//! produce, and [`LedgerStoreError::HeaderTruncated`] stays a refusal rather
+//! than becoming a reason to create the journal again. Re-creating it would be
+//! the same mistake this file's recovery rules exist to avoid, in its plainest
+//! form: a file that has been truncated to nothing is unreadable, not absent,
+//! and nothing about it says whether it once held committed transactions.
+//! Opening a fresh empty ledger over it would be a silent history deletion with
+//! no corrupted byte anywhere. The crash window is closed by the rename; the
+//! refusal is what covers everything the rename does not explain.
 //!
 //! Unless a record says otherwise:
 //!
 //! - integers are unsigned and big-endian;
 //! - records are packed with no alignment or padding;
-//! - a magic or version other than the one named here is rejected;
+//! - a magic or version other than the one named here is rejected, and never
+//!   quietly discarded as a tail;
 //! - each record's trailing `crc32` is CRC-32/IEEE over every preceding byte of
 //!   that record, and checksum coverage ends immediately before `crc32`; and
 //! - CRC-32 is an accidental-corruption check, not an authentication tag.
@@ -166,6 +205,49 @@
 //! discards only bytes that no commit point ever covered, and it is idempotent:
 //! a crash during it leaves work a later open repeats.
 //!
+//! # Which residue [`LedgerStore::open`] may truncate
+//!
+//! That last sentence is a promise, and keeping it needs a rule sharper than
+//! "the scan stopped here". Recovery walks frames from the header and stops at
+//! the first one it cannot read. Where it stopped is *not* evidence about
+//! whether the bytes beyond it were committed: a frame in the middle of a long
+//! journal can become unreadable, and everything after it — whole, correctly
+//! sealed, acknowledged transactions — is then unreachable too, because the
+//! next frame's offset is only knowable through the one that cannot be read.
+//!
+//! So `open` may truncate only residue it can *prove* no commit point covered,
+//! and there is exactly one proof available. An append writes one frame forward
+//! at the end of the file, so every state it can be interrupted in is a strict
+//! prefix of that frame, and a prefix has four possible shapes: fewer bytes
+//! than a begin record, a partial image, a whole image with no commit record,
+//! and a partial commit record. [`TornTail::is_interrupted_append`] names those
+//! four. A prefix carries this store's magic and this build's version byte, and
+//! every byte it does carry is a byte that was written, so it can never fail a
+//! checksum computed over bytes that are all present.
+//!
+//! The other three shapes — a whole begin record that does not verify, a whole
+//! image that does not match its checksum, a whole commit record that seals
+//! nothing — are therefore not prefixes of anything this build wrote. They are
+//! corruption, they may sit at or below the last commit point, and they make
+//! everything after them unreadable. `open` refuses with
+//! [`LedgerStoreError::UnreadableFrame`] rather than treating them as a tail,
+//! because treating them as a tail means deleting acknowledged history from the
+//! medium during what the caller asked for as a *read*.
+//!
+//! # Repairing, as a separate act
+//!
+//! Discarding a region a commit point may have covered is sometimes the only
+//! way forward, so it is available — as [`LedgerStore::open_and_repair`], never
+//! as a side effect of opening. That entry point discards from the unreadable
+//! frame to the end of the file and records what it did in
+//! [`RecoveryReport::repair`]: the offset, the corruption that stopped the
+//! scan, and the byte count.
+//!
+//! It cannot report how many *transactions* were in that region, and that is
+//! the honest limit rather than an omission: the frames past a corrupt one
+//! cannot be located, let alone counted, which is precisely why discarding them
+//! has to be something a caller asks for by name.
+//!
 //! After any write error the handle is poisoned and every later mutation is
 //! refused with [`LedgerStoreError::StoreRequiresReopen`], because a store that
 //! failed mid-publication cannot say where its file ends.
@@ -182,6 +264,7 @@
 //! particular filesystem needs evidence this suite does not supply.
 
 use std::{
+    collections::BTreeMap,
     error::Error,
     fmt,
     fs::{self, File, OpenOptions},
@@ -193,7 +276,7 @@ use rafter::LogIndex;
 
 use crate::{
     adapter::codec::{decode_snapshot, encode_snapshot},
-    Ledger, LedgerCodecError, LedgerConfig, SnapshotError,
+    ClientId, Ledger, LedgerCodecError, LedgerConfig, Sequence, SessionEpoch, SnapshotError,
 };
 
 /// Fixed length of the journal header, in bytes.
@@ -212,6 +295,14 @@ const JOURNAL_FORMAT_VERSION: u8 = 1;
 
 /// Stable name of the journal inside the store's directory.
 const JOURNAL_FILE_NAME: &str = "ledger.journal";
+
+/// Stable name of the file a rewrite or a creation stages beside the journal.
+///
+/// There is no process ID in it. An abandoned staging file is by definition the
+/// work of a process that died, so a name only its author could recognize is a
+/// name nobody ever removes; exclusivity comes from the directory ownership
+/// discipline instead, and the sweep at open removes whatever it finds.
+const STAGED_FILE_NAME: &str = "ledger.journal.tmp";
 
 const CRC32_POLYNOMIAL: u32 = 0xEDB8_8320;
 
@@ -291,6 +382,27 @@ pub enum LedgerStoreError {
         /// Account bound the caller opened with.
         requested_max_accounts: u64,
     },
+    /// The journal holds a frame no interrupted append could have left.
+    ///
+    /// Where the scan stopped says nothing about whether the bytes beyond it
+    /// were committed: everything after an unreadable frame is unreachable,
+    /// because the next frame's offset is only knowable through the one that
+    /// cannot be read. Treating that as a torn tail deletes acknowledged
+    /// history from the medium during a read, so `open` refuses instead.
+    ///
+    /// [`LedgerStore::open_and_repair`] is the entry point that discards it, by
+    /// name and with a report.
+    UnreadableFrame {
+        /// Byte offset the unreadable frame begins at.
+        offset: u64,
+        /// Why the frame could not be read.
+        corruption: TornTail,
+        /// Committed frames the scan replayed before reaching it.
+        committed_frames: u64,
+        /// Bytes from `offset` to the end of the journal, which is what a
+        /// repair would discard.
+        unreadable_bytes: u64,
+    },
     /// A committed frame's image is not a decodable application snapshot.
     Image(LedgerCodecError),
     /// A committed frame's image violates a model resource or supply
@@ -305,6 +417,22 @@ pub enum LedgerStoreError {
         previous: LogIndex,
         /// Applied index of the frame that followed it.
         found: LogIndex,
+    },
+    /// A rewrite at an unchanged applied index would move a client slot's
+    /// deduplication state backwards.
+    ///
+    /// The applied Raft index is not the whole ordering key for the
+    /// deduplication cache: two images can name the same index and still
+    /// disagree about which requests have completed. Adopting the poorer one
+    /// makes an acknowledged mutation executable again, which is the one thing
+    /// the cache exists to prevent.
+    DeduplicationRegression {
+        /// Client slot whose deduplication state would move backwards.
+        client_id: ClientId,
+        /// Progress this store has durably acknowledged for that slot.
+        acknowledged: DeduplicationProgress,
+        /// Progress the offered ledger carries, if it holds the slot at all.
+        offered: Option<DeduplicationProgress>,
     },
     /// An encoded image does not fit the begin record's length field.
     ///
@@ -368,12 +496,28 @@ impl fmt::Display for LedgerStoreError {
                 "journal was created for {journal_max_clients} clients and {journal_max_accounts} accounts, \
                  but was opened for {requested_max_clients} clients and {requested_max_accounts} accounts"
             ),
+            Self::UnreadableFrame {
+                offset,
+                corruption,
+                committed_frames,
+                unreadable_bytes,
+            } => write!(
+                formatter,
+                "the frame at byte {offset} is {corruption}, which no interrupted append leaves; \
+                 {committed_frames} frames were readable before it and the {unreadable_bytes} bytes \
+                 from there on may hold committed transactions"
+            ),
             Self::Image(error) => write!(formatter, "malformed committed image: {error}"),
             Self::Snapshot(error) => write!(formatter, "invalid committed image: {error:?}"),
             Self::NonMonotonicAppliedIndex { previous, found } => write!(
                 formatter,
                 "committed frame at applied index {found} follows one at {previous}"
             ),
+            Self::DeduplicationRegression {
+                client_id,
+                acknowledged,
+                offered,
+            } => write_deduplication_regression(formatter, *client_id, *acknowledged, *offered),
             Self::ImageTooLarge { length } => {
                 write!(formatter, "image of {length} bytes exceeds the frame's length field")
             }
@@ -387,6 +531,28 @@ impl fmt::Display for LedgerStoreError {
     }
 }
 
+/// Renders a deduplication regression, which reads differently when the client
+/// slot vanished from the offered ledger than when its progress merely dropped.
+fn write_deduplication_regression(
+    formatter: &mut fmt::Formatter<'_>,
+    client_id: ClientId,
+    acknowledged: DeduplicationProgress,
+    offered: Option<DeduplicationProgress>,
+) -> fmt::Result {
+    match offered {
+        Some(offered) => write!(
+            formatter,
+            "client slot {} would drop from {acknowledged} to {offered} at an unchanged applied index",
+            client_id.get()
+        ),
+        None => write!(
+            formatter,
+            "client slot {} would lose its deduplication state at {acknowledged}",
+            client_id.get()
+        ),
+    }
+}
+
 impl Error for LedgerStoreError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
@@ -397,11 +563,50 @@ impl Error for LedgerStoreError {
             | Self::UnsupportedFormatVersion { .. }
             | Self::HeaderChecksumMismatch { .. }
             | Self::ConfigMismatch { .. }
+            | Self::UnreadableFrame { .. }
             | Self::Snapshot(_)
             | Self::NonMonotonicAppliedIndex { .. }
+            | Self::DeduplicationRegression { .. }
             | Self::ImageTooLarge { .. }
             | Self::StoreRequiresReopen
             | Self::InjectedFault { .. } => None,
+        }
+    }
+}
+
+/// How far one client slot's session had progressed when it was made durable.
+///
+/// This is the key the deduplication cache is ordered by, and it is deliberately
+/// not the applied Raft index: a rewrite may republish the index the store
+/// already holds, and at that index the index itself says nothing about which
+/// requests have completed.
+///
+/// Ordering is lexicographic — the session epoch first, then the highest
+/// completed sequence under it — because opening a newer epoch is exactly what
+/// legitimately clears an older epoch's cache. A slot on a later epoch has not
+/// lost anything by holding no completion yet.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub struct DeduplicationProgress {
+    /// Session generation the slot was on.
+    pub session_epoch: SessionEpoch,
+    /// Highest completed sequence cached under that epoch, if any.
+    pub completed: Option<Sequence>,
+}
+
+impl fmt::Display for DeduplicationProgress {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.completed {
+            Some(sequence) => write!(
+                formatter,
+                "epoch {} through sequence {}",
+                self.session_epoch.get(),
+                sequence.get()
+            ),
+            None => write!(
+                formatter,
+                "epoch {} with nothing completed",
+                self.session_epoch.get()
+            ),
         }
     }
 }
@@ -508,6 +713,10 @@ impl fmt::Display for FaultPlan {
 /// so it is reported here rather than as a [`LedgerStoreError`]. Each variant
 /// names the byte boundary the interrupted write reached, which is what lets a
 /// crash test prove that its injection bit where it aimed.
+///
+/// Only four of these variants are residue an interrupted append can actually
+/// leave; see [`TornTail::is_interrupted_append`]. The other three name
+/// corruption, and reaching one refuses the store rather than truncating.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum TornTail {
     /// Fewer bytes remain than one begin record needs.
@@ -527,6 +736,38 @@ pub enum TornTail {
     PartialCommitRecord,
     /// The commit record is complete but does not seal this frame.
     CommitRecordCorrupt,
+}
+
+impl TornTail {
+    /// Whether an interrupted append of *this* build could have left this.
+    ///
+    /// An append writes one frame forward at the end of the journal, so every
+    /// state it can be interrupted in is a strict prefix of that frame. The
+    /// four shapes below are exactly those prefixes: fewer bytes than a begin
+    /// record, a partial image, a whole image with no commit record, and a
+    /// partial commit record.
+    ///
+    /// Nothing else is a prefix of anything this build writes. A prefix carries
+    /// this store's magic and this build's version byte, and every byte it does
+    /// carry is a byte that was written, so it cannot fail a checksum computed
+    /// over bytes that are all present.
+    ///
+    /// That asymmetry is what makes truncation safe. Residue proves the bytes
+    /// beyond the last committed frame were never committed, so discarding them
+    /// discards nothing. The other three shapes prove nothing of the kind: the
+    /// unreadable frame may itself have been committed, and every frame after
+    /// it is unreachable regardless, so `open` refuses rather than shortening
+    /// the journal on a caller's behalf.
+    #[must_use]
+    pub const fn is_interrupted_append(self) -> bool {
+        matches!(
+            self,
+            Self::PartialBeginRecord
+                | Self::PartialImage
+                | Self::MissingCommitRecord
+                | Self::PartialCommitRecord
+        )
+    }
 }
 
 impl fmt::Display for TornTail {
@@ -561,6 +802,56 @@ pub struct RecoveryReport {
     torn_tail: Option<TornTail>,
     discarded_bytes: u64,
     removed_staged_file: bool,
+    repair: Option<Repair>,
+}
+
+/// What [`LedgerStore::open_and_repair`] discarded, when it discarded anything.
+///
+/// A repair is the one thing this store does that can lose committed
+/// transactions, so it is recorded rather than implied, and it is unreachable
+/// through [`LedgerStore::open`] at all.
+///
+/// The count of *transactions* lost is deliberately absent. Frames past a
+/// corrupt one cannot be located, let alone decoded, so nobody can count them;
+/// pretending otherwise would put a number in a report that no one computed.
+/// The byte count and the offset are what is actually known.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Repair {
+    offset: u64,
+    corruption: TornTail,
+    discarded_bytes: u64,
+}
+
+impl Repair {
+    /// Byte offset the unreadable frame began at.
+    #[must_use]
+    pub const fn offset(&self) -> u64 {
+        self.offset
+    }
+
+    /// Why the frame at [`Repair::offset`] could not be read.
+    #[must_use]
+    pub const fn corruption(&self) -> TornTail {
+        self.corruption
+    }
+
+    /// Bytes discarded, from [`Repair::offset`] to the end of the journal.
+    ///
+    /// Any number of committed transactions may have been inside them.
+    #[must_use]
+    pub const fn discarded_bytes(&self) -> u64 {
+        self.discarded_bytes
+    }
+}
+
+impl fmt::Display for Repair {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "discarded {} bytes from byte {}, where the journal held {}",
+            self.discarded_bytes, self.offset, self.corruption
+        )
+    }
 }
 
 impl RecoveryReport {
@@ -583,6 +874,11 @@ impl RecoveryReport {
     }
 
     /// Bytes truncated from the journal's uncommitted tail.
+    ///
+    /// These are bytes no commit point ever covered — a strict prefix of one
+    /// interrupted append — so discarding them discards nothing. Bytes lost to
+    /// a repair are counted separately, by [`Repair::discarded_bytes`], because
+    /// they are a different kind of loss.
     #[must_use]
     pub const fn discarded_bytes(&self) -> u64 {
         self.discarded_bytes
@@ -592,6 +888,27 @@ impl RecoveryReport {
     #[must_use]
     pub const fn removed_staged_file(&self) -> bool {
         self.removed_staged_file
+    }
+
+    /// What a repair discarded, when this opening was a repair that found work.
+    ///
+    /// Always `None` for [`LedgerStore::open`], which refuses rather than
+    /// repairing.
+    #[must_use]
+    pub const fn repair(&self) -> Option<Repair> {
+        self.repair
+    }
+
+    /// Whether this opening found nothing that needs a decision.
+    ///
+    /// A clean opening created the journal or read it whole. Anything else —
+    /// residue from an interrupted transaction, a staging file an earlier
+    /// incarnation abandoned, a repair that discarded a region — is a fact a
+    /// caller reopening a store after a crash should have to look at rather
+    /// than step over.
+    #[must_use]
+    pub const fn is_clean(&self) -> bool {
+        self.torn_tail.is_none() && !self.removed_staged_file && self.repair.is_none()
     }
 }
 
@@ -628,10 +945,41 @@ impl LedgerStore {
     ///
     /// Returns an error when the directory or journal cannot be opened, when
     /// the journal header is corrupt or was written under different resource
-    /// bounds, or when a committed frame's image is malformed or violates a
-    /// model invariant.
+    /// bounds, when a committed frame's image is malformed or violates a model
+    /// invariant, or when the journal holds a frame no interrupted append could
+    /// have left — see [`LedgerStoreError::UnreadableFrame`], and
+    /// [`LedgerStore::open_and_repair`] for the entry point that discards it.
     pub fn open(directory: &Path, config: LedgerConfig) -> Result<Self, LedgerStoreError> {
         Self::open_with_faults(directory, config, FaultPlan::none())
+    }
+
+    /// Opens the store, discarding an unreadable frame and everything after it.
+    ///
+    /// This is the destructive half of [`LedgerStore::open`], and it is a
+    /// separate entry point because it is a separate decision. Opening a store
+    /// is a read; a caller that runs this one has decided that a journal it
+    /// cannot fully read is better shortened than left alone, and
+    /// [`RecoveryReport::repair`] tells it exactly what that cost — the offset,
+    /// the corruption, and the byte count.
+    ///
+    /// A journal with nothing wrong is opened exactly as [`LedgerStore::open`]
+    /// opens it, and reports no repair. Repairing is not the same as being
+    /// willing to repair.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`LedgerStore::open`] except
+    /// [`LedgerStoreError::UnreadableFrame`], which is what this discards.
+    pub fn open_and_repair(
+        directory: &Path,
+        config: LedgerConfig,
+    ) -> Result<Self, LedgerStoreError> {
+        Self::open_inner(
+            directory,
+            config,
+            FaultPlan::none(),
+            OnUnreadableFrame::Discard,
+        )
     }
 
     /// Opens the store with a deterministic fault schedule.
@@ -648,6 +996,22 @@ impl LedgerStore {
         config: LedgerConfig,
         faults: FaultPlan,
     ) -> Result<Self, LedgerStoreError> {
+        Self::open_inner(directory, config, faults, OnUnreadableFrame::Refuse)
+    }
+
+    /// The one opening path, parameterized by what it does with an unreadable
+    /// frame.
+    ///
+    /// Both entry points read the same bytes and run the same scan. They differ
+    /// in exactly one branch, which is the point: a reader auditing this can
+    /// see that refusing and repairing agree about everything except whether a
+    /// region a commit point may have covered is allowed to disappear.
+    fn open_inner(
+        directory: &Path,
+        config: LedgerConfig,
+        faults: FaultPlan,
+        on_unreadable: OnUnreadableFrame,
+    ) -> Result<Self, LedgerStoreError> {
         fs::create_dir_all(directory).map_err(|source| LedgerStoreError::Io {
             operation: "create the ledger store directory",
             path: directory.to_path_buf(),
@@ -655,22 +1019,13 @@ impl LedgerStore {
         })?;
 
         let journal_path = directory.join(JOURNAL_FILE_NAME);
-        let staged_path = staged_path(directory);
-        let removed_staged_file = match fs::remove_file(&staged_path) {
-            Ok(()) => true,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
-            Err(source) => {
-                return Err(LedgerStoreError::Io {
-                    operation: "remove an abandoned staging file",
-                    path: staged_path,
-                    source,
-                })
-            }
-        };
+        // Before anything looks at the journal, so an interrupted creation's
+        // staging file is gone by the time `exists` decides whether to create.
+        let removed_staged_file = sweep_staged_files(directory)?;
 
         let created = !journal_path.exists();
         if created {
-            create_journal(directory, &journal_path, config)?;
+            create_journal(directory, config)?;
         }
 
         let bytes = fs::read(&journal_path).map_err(|source| LedgerStoreError::Io {
@@ -679,6 +1034,31 @@ impl LedgerStore {
             source,
         })?;
         let scan = scan_journal(&bytes, config)?;
+
+        // The whole fail-closed rule, in one branch. Truncating is only ever
+        // legal for a strict prefix of one interrupted append; anything else
+        // may sit at or below the last commit point, and shortening the file
+        // there would delete acknowledged history during a read.
+        let unreadable = scan
+            .torn_tail
+            .filter(|tail| !tail.is_interrupted_append())
+            .map(|corruption| Repair {
+                offset: scan.committed_len as u64,
+                corruption,
+                discarded_bytes: (bytes.len() - scan.committed_len) as u64,
+            });
+        let repair = match (unreadable, on_unreadable) {
+            (Some(repair), OnUnreadableFrame::Refuse) => {
+                return Err(LedgerStoreError::UnreadableFrame {
+                    offset: repair.offset,
+                    corruption: repair.corruption,
+                    committed_frames: scan.committed_frames,
+                    unreadable_bytes: repair.discarded_bytes,
+                })
+            }
+            (repair, OnUnreadableFrame::Discard) => repair,
+            (None, OnUnreadableFrame::Refuse) => None,
+        };
 
         if scan.committed_len < bytes.len() {
             truncate_journal(&journal_path, scan.committed_len)?;
@@ -704,8 +1084,15 @@ impl LedgerStore {
                 created,
                 committed_frames: scan.committed_frames,
                 torn_tail: scan.torn_tail,
-                discarded_bytes: (bytes.len() - scan.committed_len) as u64,
+                // A repair's losses are counted by the repair, not here: these
+                // are the bytes no commit point ever covered.
+                discarded_bytes: if repair.is_some() {
+                    0
+                } else {
+                    (bytes.len() - scan.committed_len) as u64
+                },
                 removed_staged_file,
+                repair,
             },
         })
     }
@@ -822,8 +1209,10 @@ impl LedgerStore {
     /// # Errors
     ///
     /// Returns an error when the handle is poisoned, when `applied_index` would
-    /// move the applied floor backwards, when the image cannot be encoded, or
-    /// when staging, renaming, or a durability barrier fails.
+    /// move the applied floor backwards, when republishing an unchanged applied
+    /// index would move a client slot's deduplication state backwards, when the
+    /// image cannot be encoded, or when staging, renaming, or a durability
+    /// barrier fails.
     pub fn replace(
         &mut self,
         ledger: &Ledger,
@@ -835,6 +1224,20 @@ impl LedgerStore {
                 previous: self.applied_index,
                 found: applied_index,
             });
+        }
+        if applied_index == self.applied_index {
+            // The one publication the applied floor cannot judge. Two images at
+            // one index can still disagree about which requests have completed,
+            // and the poorer one makes an acknowledged mutation executable a
+            // second time — exactly what the deduplication cache exists to
+            // prevent, reached through the store rather than through a replay.
+            // Above this index the model has legitimately advanced and is the
+            // authority on the sessions it retired, so the check is scoped to
+            // here.
+            verify_deduplication_dominates(
+                &deduplication_progress_of(&self.ledger),
+                &deduplication_progress_of(ledger),
+            )?;
         }
 
         let mut contents = encode_header(self.config);
@@ -1029,6 +1432,57 @@ impl LedgerStore {
         }
         Ok(limit)
     }
+}
+
+/// What an opening does when it meets a frame no interrupted append could have
+/// left.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OnUnreadableFrame {
+    /// Refuse to open. This is [`LedgerStore::open`].
+    Refuse,
+    /// Discard from that frame to the end of the journal, and report it. This
+    /// is [`LedgerStore::open_and_repair`].
+    Discard,
+}
+
+/// Returns every client slot's deduplication progress.
+fn deduplication_progress_of(ledger: &Ledger) -> BTreeMap<ClientId, DeduplicationProgress> {
+    ledger
+        .view()
+        .sessions
+        .into_iter()
+        .map(|session| {
+            (
+                session.client_id,
+                DeduplicationProgress {
+                    session_epoch: session.session_epoch,
+                    completed: session.cached.map(|(sequence, _, _)| sequence),
+                },
+            )
+        })
+        .collect()
+}
+
+/// Refuses a ledger that would move any client slot's deduplication state
+/// backwards.
+///
+/// A slot that disappears is the same failure as one whose progress decreases:
+/// both let a request identity the store has already answered execute again.
+fn verify_deduplication_dominates(
+    acknowledged: &BTreeMap<ClientId, DeduplicationProgress>,
+    offered: &BTreeMap<ClientId, DeduplicationProgress>,
+) -> Result<(), LedgerStoreError> {
+    for (client_id, progress) in acknowledged {
+        let found = offered.get(client_id).copied();
+        if found.is_none_or(|offered_progress| offered_progress < *progress) {
+            return Err(LedgerStoreError::DeduplicationRegression {
+                client_id: *client_id,
+                acknowledged: *progress,
+                offered: found,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// The step a fault is armed at.
@@ -1238,29 +1692,41 @@ fn encode_frame(ledger: &Ledger, applied_index: LogIndex) -> Result<Vec<u8>, Led
     Ok(frame)
 }
 
-/// Creates an empty journal and makes both it and its directory entry durable.
-fn create_journal(
-    directory: &Path,
-    journal_path: &Path,
-    config: LedgerConfig,
-) -> Result<(), LedgerStoreError> {
+/// Creates the journal by staging its header and renaming it into place.
+///
+/// Renaming rather than creating-then-writing is what closes the crash window
+/// between the two. A journal that existed but held no header could never be
+/// completed by a later open — the file exists, so creation would never run
+/// again — and the directory would be bricked by a crash inside a
+/// two-statement function. With a rename, an interrupted creation leaves only a
+/// staging file, the next open sweeps it, and creation runs properly.
+fn create_journal(directory: &Path, config: LedgerConfig) -> Result<(), LedgerStoreError> {
+    let staged_path = staged_path(directory);
     let mut file = OpenOptions::new()
-        .create_new(true)
+        .create(true)
+        .truncate(true)
         .write(true)
-        .open(journal_path)
+        .open(&staged_path)
         .map_err(|source| LedgerStoreError::Io {
-            operation: "create the ledger journal",
-            path: journal_path.to_path_buf(),
+            operation: "stage the ledger journal header",
+            path: staged_path.clone(),
             source,
         })?;
     file.write_all(&encode_header(config))
         .and_then(|()| file.sync_data())
         .map_err(|source| LedgerStoreError::Io {
             operation: "write the ledger journal header",
-            path: journal_path.to_path_buf(),
+            path: staged_path.clone(),
             source,
         })?;
     drop(file);
+
+    let journal_path = directory.join(JOURNAL_FILE_NAME);
+    fs::rename(&staged_path, &journal_path).map_err(|source| LedgerStoreError::Io {
+        operation: "publish the staged ledger journal",
+        path: journal_path,
+        source,
+    })?;
     sync_directory(directory)
 }
 
@@ -1294,12 +1760,62 @@ fn sync_directory(directory: &Path) -> Result<(), LedgerStoreError> {
         })
 }
 
-/// Staging path for a rewrite.
-///
-/// The process ID keeps a staging file from one process out of the way of
-/// another's; an abandoned one is removed at open rather than reused.
+/// Staging path for a rewrite or a creation.
 fn staged_path(directory: &Path) -> PathBuf {
-    directory.join(format!("{JOURNAL_FILE_NAME}.{}.tmp", std::process::id()))
+    directory.join(STAGED_FILE_NAME)
+}
+
+/// Removes every file this store could have staged, returning whether it
+/// removed any.
+///
+/// The rule is wide on purpose: anything beside the journal whose name begins
+/// with the journal's name and a dot is residue, whoever wrote it. That covers
+/// the staging name, and it covers the process-scoped names an earlier shape of
+/// this store used — names the process that finds them can never have written,
+/// and so could never remove.
+///
+/// Removing a file this incarnation did not write is safe because there is no
+/// other writer. The directory ownership discipline is what supplies that: a
+/// replica takes `rafter-storage`'s operating-system lock over its Raft store
+/// directory before it opens this journal and holds it for the process's life,
+/// so a second process is refused before it reaches this directory at all. At
+/// the moment this runs there is exactly one live writer, and every staging
+/// file present was abandoned by an incarnation that is gone.
+fn sweep_staged_files(directory: &Path) -> Result<bool, LedgerStoreError> {
+    let prefix = format!("{JOURNAL_FILE_NAME}.");
+    let entries = fs::read_dir(directory).map_err(|source| LedgerStoreError::Io {
+        operation: "read the ledger store directory",
+        path: directory.to_path_buf(),
+        source,
+    })?;
+
+    let mut removed = false;
+    for entry in entries {
+        let entry = entry.map_err(|source| LedgerStoreError::Io {
+            operation: "read a ledger store directory entry",
+            path: directory.to_path_buf(),
+            source,
+        })?;
+        // A name this store cannot have written is left alone, which includes
+        // any name that is not valid UTF-8.
+        let name = entry.file_name();
+        if !name.to_str().is_some_and(|name| name.starts_with(&prefix)) {
+            continue;
+        }
+        let path = entry.path();
+        match fs::remove_file(&path) {
+            Ok(()) => removed = true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(source) => {
+                return Err(LedgerStoreError::Io {
+                    operation: "remove an abandoned staging file",
+                    path,
+                    source,
+                })
+            }
+        }
+    }
+    Ok(removed)
 }
 
 fn read_u32(bytes: &[u8]) -> u32 {
@@ -1310,47 +1826,71 @@ fn read_u64(bytes: &[u8]) -> u64 {
     u64::from_be_bytes(bytes.try_into().expect("callers pass eight bytes"))
 }
 
-/// Reads a journal's raw bytes.
+/// Direct access to the journal's bytes, for crash tests only.
 ///
-/// Crash tests corrupt committed frames to prove the checksums are load
-/// bearing, which needs the exact bytes the store wrote.
+/// Everything here reaches past [`LedgerStore`] and reads or rewrites the file
+/// the store owns. That is not a capability a durable application ever needs: an
+/// application commits through [`LedgerStore::commit`] and
+/// [`LedgerStore::replace`] and reads through [`LedgerStore::open`], and nothing
+/// else in this crate calls into this module.
 ///
-/// # Errors
+/// It is a named public module rather than a hidden item because the honest
+/// statement is that these functions *are* reachable, and keeping them out of
+/// the rendered documentation would not change that. A `#[doc(hidden)]`
+/// function sitting beside the store's own API reads at the call site exactly
+/// like API; a call that has to name `raw_journal` says what it is doing every
+/// time it appears, and greps for one word. The crate's dependency boundary
+/// forbids gating this behind a feature or an internal hook — a consumer
+/// manifest must resolve like an external user's — so the guard is the name,
+/// this paragraph, and review.
 ///
-/// Returns an error when the journal cannot be read.
-pub fn read_journal_bytes(directory: &Path) -> Result<Vec<u8>, LedgerStoreError> {
-    let path = directory.join(JOURNAL_FILE_NAME);
-    let mut bytes = Vec::new();
-    File::open(&path)
-        .and_then(|mut file| file.read_to_end(&mut bytes))
-        .map_err(|source| LedgerStoreError::Io {
-            operation: "read the ledger journal",
-            path,
-            source,
-        })?;
-    Ok(bytes)
-}
+/// Nothing here validates anything. The store's own checks are what a corrupted
+/// journal is aimed at, so a caller is responsible for the bytes being the ones
+/// it means to present.
+pub mod raw_journal {
+    use super::{File, LedgerStoreError, OpenOptions, Path, Read, Write, JOURNAL_FILE_NAME};
 
-/// Overwrites a journal's raw bytes.
-///
-/// This is the corruption half of [`read_journal_bytes`]; it exists for crash
-/// tests and has no place in a durable application's own code path.
-///
-/// # Errors
-///
-/// Returns an error when the journal cannot be written.
-pub fn write_journal_bytes(directory: &Path, bytes: &[u8]) -> Result<(), LedgerStoreError> {
-    let path = directory.join(JOURNAL_FILE_NAME);
-    OpenOptions::new()
-        .write(true)
-        .truncate(true)
-        .open(&path)
-        .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()))
-        .map_err(|source| LedgerStoreError::Io {
-            operation: "rewrite the ledger journal",
-            path,
-            source,
-        })
+    /// Reads the journal's raw bytes.
+    ///
+    /// Crash tests corrupt committed frames to prove the checksums are load
+    /// bearing, which needs the exact bytes the store wrote.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the journal cannot be read.
+    pub fn read(directory: &Path) -> Result<Vec<u8>, LedgerStoreError> {
+        let path = directory.join(JOURNAL_FILE_NAME);
+        let mut bytes = Vec::new();
+        File::open(&path)
+            .and_then(|mut file| file.read_to_end(&mut bytes))
+            .map_err(|source| LedgerStoreError::Io {
+                operation: "read the ledger journal",
+                path,
+                source,
+            })?;
+        Ok(bytes)
+    }
+
+    /// Overwrites the journal's raw bytes.
+    ///
+    /// This is the corruption half of [`read`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the journal cannot be written.
+    pub fn write(directory: &Path, bytes: &[u8]) -> Result<(), LedgerStoreError> {
+        let path = directory.join(JOURNAL_FILE_NAME);
+        OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(&path)
+            .and_then(|mut file| file.write_all(bytes).and_then(|()| file.sync_all()))
+            .map_err(|source| LedgerStoreError::Io {
+                operation: "rewrite the ledger journal",
+                path,
+                source,
+            })
+    }
 }
 
 #[cfg(test)]

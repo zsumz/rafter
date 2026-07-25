@@ -183,6 +183,24 @@ Compaction must never make an acknowledged command executable again. The
 adapter enforces the same rule against replay: a committed entry at or below
 the applied index is refused rather than applied a second time.
 
+The durable store enforces it once more, at the one publication the applied
+index cannot judge. A rewrite — which is how both an install and a compaction
+publish — may republish the applied index the store already holds, because
+compacting in place must not require inventing a new one. **The applied Raft
+index is not the whole ordering key for the deduplication cache**: two images
+can name one index and still disagree about which requests have completed, so a
+rewrite at an unchanged index must also dominate the durable cache, client slot
+by client slot — the session epoch first, then the highest completed sequence
+under it. Replacing a session epoch is what legitimately clears an older epoch's
+cache, which is why the epoch outranks the sequence rather than sitting beside
+it.
+
+The check is scoped to an unchanged index deliberately. Above it the model has
+legitimately advanced and is the authority on the sessions it replaced along the
+way; at an unchanged index nothing legitimately changed, so a state that lost a
+completion is a poorer image of the same commit point and is refused before a
+byte is written.
+
 ## Durable Backend
 
 The durable adapter's backend is a consumer-written store over one journal
@@ -230,6 +248,60 @@ pre-transaction or the post-transaction state, never between:
 Recovery discards an uncommitted tail before accepting another transaction, so
 an append never follows abandoned bytes.
 
+### What opening may discard
+
+**An image of committed state this build cannot read is never treated as
+absent.** Unreadable bytes are not residue to step over and not a reason to open
+at a shorter history and carry on: they are a refusal to open, reported to the
+caller, who is the only party that can decide what to do about them.
+
+That principle has teeth here because recovery walks frames forward and stops at
+the first one it cannot read. Where it stopped is *not* evidence about the bytes
+beyond it. A frame in the middle of a long journal can become unreadable, and
+every frame after it is then unreachable too — whole, correctly sealed,
+acknowledged transactions included — because a frame's offset is only knowable
+through the frame before it.
+
+So opening may discard only residue it can *prove* no commit point covered, and
+there is one proof available. An append writes one frame forward at the end of
+the file, so every state it can be interrupted in is a strict prefix of that
+frame: fewer bytes than a begin record, a partial image, a whole image with no
+commit record, a partial commit record. A prefix carries this store's magic and
+this build's version, and every byte it does carry is a byte that was written,
+so it can never fail a checksum computed over bytes that are all present.
+
+The other three shapes — a whole begin record that does not verify, a whole
+image that does not match its checksum, a whole commit record that seals nothing
+— are corruption, may sit at or below the last commit point, and refuse the
+store. Discarding them would mean deleting acknowledged history from the medium
+during an operation the caller asked for as a read.
+
+Destructive recovery remains available and is a separate, named entry point. It
+discards from the unreadable frame to the end of the file and reports the
+offset, the corruption, and the byte count. It cannot report how many
+transactions were lost — frames past a corrupt one cannot be located, let alone
+counted — and that unknowable number is exactly why discarding them has to be
+something a caller asks for rather than something a read does quietly.
+
+The same principle covers a journal too short to hold its header. Creation is a
+rename, so an interrupted creation leaves a staging file and never a headerless
+journal; a headerless journal is therefore something else's doing, it is
+unreadable rather than absent, and it is refused rather than re-created.
+
+### Directory residue
+
+Anything beside the journal whose name begins with the journal's name is residue
+of an interrupted rewrite or creation, and opening removes it, whoever wrote it.
+The sweep is deliberately not scoped to the current process: the only crash that
+produces a staging file is one that kills the process holding it, so the process
+that finds one is never the process that wrote it, and a name only its author
+could recognize is a name nobody ever removes.
+
+Removing another writer's file is safe because there is no other writer. That
+comes from the ownership discipline below — the Raft store's lock, taken before
+the journal is opened and held for the life of the process — and not from the
+staging name, which defends nothing on its own.
+
 ### Versioning and integrity
 
 Every record carries a four-byte magic, a version byte, and a trailing
@@ -250,6 +322,12 @@ authentication tags.
 Recovery decodes a committed image through the model's validating restore path,
 so an image whose checksums verify still cannot produce a ledger that violates
 a resource or supply invariant.
+
+A recovery report is evidence a caller asserts on rather than a diagnostic. It
+records what opening found and did — the frames it replayed, the residue it
+truncated, the staging file it swept, and, for a repair, exactly what was
+discarded — and a reopen that reports any of those is a fact to be looked at
+rather than stepped over.
 
 ### What the crash tests establish
 

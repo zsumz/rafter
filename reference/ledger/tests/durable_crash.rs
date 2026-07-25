@@ -42,8 +42,8 @@ use rafter_app::state_machine::{
 use rafter_reference_ledger::{
     check_linearizable,
     store::{
-        read_journal_bytes, write_journal_bytes, FaultPlan, LedgerStore, LedgerStoreError,
-        TornTail, WriteFault, BEGIN_LEN, COMMIT_LEN, HEADER_LEN,
+        raw_journal, FaultPlan, LedgerStore, LedgerStoreError, TornTail, WriteFault, BEGIN_LEN,
+        COMMIT_LEN, HEADER_LEN,
     },
     AccountId, ApplyDisposition, ApplyOutcome, Command, DurableLedgerError,
     DurableLedgerStateMachine, LedgerResponse, LedgerView, Mutation, MutationResult,
@@ -550,13 +550,17 @@ fn recovery_then_replay_reconstructs_the_uninterrupted_run() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn a_corrupted_committed_frame_is_detected_rather_than_trusted() {
+fn a_corrupted_committed_frame_refuses_the_store_rather_than_truncating_it() {
     let commands = workload();
     let (before, image_len) = state_and_image_len(&commands, commands.len());
     let last_frame_len = as_u64(BEGIN_LEN) + image_len + as_u64(COMMIT_LEN);
 
     // Offsets into the last frame, one in each record, named by the check that
-    // is supposed to catch them.
+    // is supposed to catch them. None of these is a prefix of any frame this
+    // build writes — every byte is present and only its value is wrong — so
+    // none of them proves the frame was never committed. Recovery cannot tell
+    // whether it is looking at an interrupted append or at acknowledged history
+    // that has rotted, so it refuses instead of shortening the file.
     let cases = [
         (0_u64, TornTail::BeginRecordCorrupt),
         (as_u64(BEGIN_LEN) + 2, TornTail::ImageCorrupt),
@@ -572,24 +576,127 @@ fn a_corrupted_committed_frame_is_detected_rather_than_trusted() {
         apply_all(&mut app, &commands);
         drop(app);
 
-        let mut bytes = read_journal_bytes(scratch.path()).expect("the journal reads back");
-        let frame_start = as_u64(bytes.len()) - last_frame_len;
+        let mut bytes = raw_journal::read(scratch.path()).expect("the journal reads back");
+        let whole_len = as_u64(bytes.len());
+        let frame_start = whole_len - last_frame_len;
         let target = usize::try_from(frame_start + offset_in_frame).expect("offsets are small");
         bytes[target] ^= 0xFF;
-        write_journal_bytes(scratch.path(), &bytes).expect("the journal rewrites");
+        raw_journal::write(scratch.path(), &bytes).expect("the journal rewrites");
 
-        let recovered = open(scratch.path(), FaultPlan::none());
+        let error = LedgerStore::open(scratch.path(), config(2, 4)).expect_err(&format!(
+            "flipping byte {offset_in_frame} of the last frame must refuse the store"
+        ));
+        assert!(
+            matches!(
+                error,
+                LedgerStoreError::UnreadableFrame {
+                    offset,
+                    corruption,
+                    unreadable_bytes,
+                    ..
+                } if offset == frame_start
+                    && corruption == expected
+                    && unreadable_bytes == last_frame_len
+            ),
+            "unexpected refusal for byte {offset_in_frame}: {error}"
+        );
+
+        // And the refusal changed nothing on the medium. This is the whole
+        // point: a read that shortens the file is not a read.
         assert_eq!(
-            recovered.store().recovery().torn_tail(),
-            Some(expected),
-            "flipping byte {offset_in_frame} of the last frame must be caught as {expected}"
+            journal_len_on_disk(scratch.path()),
+            whole_len,
+            "a refused open must not have touched the journal"
+        );
+
+        // Discarding it is available, by name, and it says what it cost.
+        let repaired = LedgerStore::open_and_repair(scratch.path(), config(2, 4))
+            .expect("a repair opens what is readable");
+        let repair = repaired
+            .recovery()
+            .repair()
+            .expect("the repair discarded a region and must report it");
+        assert_eq!(repair.offset(), frame_start);
+        assert_eq!(repair.corruption(), expected);
+        assert_eq!(repair.discarded_bytes(), last_frame_len);
+        assert_eq!(
+            DurableState {
+                applied_index: repaired.applied_index(),
+                view: repaired.ledger().view(),
+            },
+            before,
+            "the repair left the frames before the corruption"
         );
         assert_eq!(
-            durable_state(&recovered),
-            before,
-            "a corrupt frame is discarded, leaving the frame before it"
+            journal_len_on_disk(scratch.path()),
+            whole_len - last_frame_len,
+            "the repair shortened the journal by exactly what it reported"
         );
     }
+}
+
+#[test]
+fn an_early_corrupt_frame_never_deletes_the_frames_after_it() {
+    // The cascade the fail-closed rule exists to stop. One flipped bit inside
+    // an *early* committed frame makes every later frame unreachable, because a
+    // frame's offset is only knowable through the frame before it. Treating
+    // that as a torn tail deletes whole, correctly sealed, acknowledged
+    // transactions from the medium — during an operation the caller asked for
+    // as a read.
+    let commands = workload();
+    let scratch = ScratchDir::new("corruption-cascade");
+    let mut app = open(scratch.path(), FaultPlan::none());
+    apply_all(&mut app, &commands);
+    let acknowledged = durable_state(&app);
+    drop(app);
+
+    let original = raw_journal::read(scratch.path()).expect("the journal reads back");
+    let whole_len = as_u64(original.len());
+
+    // Byte 2 of the second frame's image: frame one is untouched, and frames
+    // three onward are whole and correctly sealed.
+    let first_image_len =
+        u32::from_be_bytes(original[26..30].try_into().expect("four bytes")) as usize;
+    let second_frame = HEADER_LEN + BEGIN_LEN + first_image_len + COMMIT_LEN;
+    let mut corrupt = original.clone();
+    corrupt[second_frame + BEGIN_LEN + 2] ^= 0x01;
+    raw_journal::write(scratch.path(), &corrupt).expect("the journal rewrites");
+
+    let error = LedgerStore::open(scratch.path(), config(2, 4))
+        .expect_err("a corrupt early frame must refuse the store");
+    assert!(
+        matches!(
+            error,
+            LedgerStoreError::UnreadableFrame {
+                offset,
+                corruption: TornTail::ImageCorrupt,
+                committed_frames: 1,
+                ..
+            } if offset == as_u64(second_frame)
+        ),
+        "unexpected refusal: {error}"
+    );
+    assert_eq!(
+        journal_len_on_disk(scratch.path()),
+        whole_len,
+        "every acknowledged frame is still on the medium after the refusal"
+    );
+
+    // Undoing the bit flip is enough to get the whole history back, which is
+    // what proves those frames were never damaged and would have been destroyed
+    // for nothing.
+    raw_journal::write(scratch.path(), &original).expect("the journal rewrites");
+    let recovered = open(scratch.path(), FaultPlan::none());
+    assert_eq!(
+        durable_state(&recovered),
+        acknowledged,
+        "the refusal preserved every transaction the run acknowledged"
+    );
+    assert_eq!(
+        recovered.store().recovery().committed_frames(),
+        as_u64(commands.len()),
+        "all of the frames were readable all along"
+    );
 }
 
 #[test]
@@ -615,7 +722,7 @@ fn a_commit_record_seals_only_the_frame_it_was_written_for() {
         },
     );
 
-    let (before, image_len) = state_and_image_len(&commands, commands.len());
+    let (_, image_len) = state_and_image_len(&commands, commands.len());
     let frame_len = as_u64(BEGIN_LEN) + image_len + as_u64(COMMIT_LEN);
 
     let mut app = open(mine.path(), FaultPlan::none());
@@ -625,8 +732,8 @@ fn a_commit_record_seals_only_the_frame_it_was_written_for() {
     apply_all(&mut app, &divergent);
     drop(app);
 
-    let mut target = read_journal_bytes(mine.path()).expect("the journal reads back");
-    let source = read_journal_bytes(theirs.path()).expect("the journal reads back");
+    let mut target = raw_journal::read(mine.path()).expect("the journal reads back");
+    let source = raw_journal::read(theirs.path()).expect("the journal reads back");
     assert_eq!(
         target.len(),
         source.len(),
@@ -639,20 +746,172 @@ fn a_commit_record_seals_only_the_frame_it_was_written_for() {
         "the two commit records must differ, or the splice changes nothing"
     );
     target[commit_start..].copy_from_slice(&source[commit_start..]);
-    write_journal_bytes(mine.path(), &target).expect("the journal rewrites");
+    raw_journal::write(mine.path(), &target).expect("the journal rewrites");
 
-    let recovered = open(mine.path(), FaultPlan::none());
+    // A whole commit record that seals nothing is not a prefix of anything an
+    // append writes, so it is corruption rather than residue, and the store
+    // refuses rather than deciding on the caller's behalf that the frame it
+    // cannot verify was never committed.
+    let error = LedgerStore::open(mine.path(), config(2, 4))
+        .expect_err("a commit record from another frame must not seal this one");
+    assert!(
+        matches!(
+            error,
+            LedgerStoreError::UnreadableFrame {
+                corruption: TornTail::CommitRecordCorrupt,
+                unreadable_bytes,
+                ..
+            } if unreadable_bytes == frame_len
+        ),
+        "unexpected refusal: {error}"
+    );
+}
+
+#[test]
+fn creating_the_journal_survives_a_crash_at_every_stage() {
+    // Creation stages a header and renames it. Both states an interrupted
+    // creation can leave — a partial staging file and a whole one that was
+    // never renamed — must open into a working store, because the alternative
+    // is a directory that no later open can ever fix.
+    let ledger_config = config(2, 4);
+    let whole_header = {
+        let measure = ScratchDir::new("create-measure");
+        let store = LedgerStore::open(measure.path(), ledger_config).expect("a fresh store opens");
+        assert!(
+            store.recovery().created(),
+            "the measurement created a store"
+        );
+        drop(store);
+        raw_journal::read(measure.path()).expect("the journal reads back")
+    };
     assert_eq!(
-        recovered.store().recovery().torn_tail(),
-        Some(TornTail::CommitRecordCorrupt),
-        "a commit record from another frame must not seal this one"
+        whole_header.len(),
+        HEADER_LEN,
+        "a created journal is exactly its header"
+    );
+
+    for (label, staged) in [
+        ("a partial staged header", &whole_header[..7]),
+        (
+            "a whole staged header that was never renamed",
+            &whole_header[..],
+        ),
+    ] {
+        let scratch = ScratchDir::new("create-crash");
+        std::fs::write(scratch.path().join("ledger.journal.tmp"), staged)
+            .expect("the staging file writes");
+
+        let recovered = LedgerStore::open(scratch.path(), ledger_config).unwrap_or_else(|error| {
+            panic!("an open after {label} must create the journal: {error}")
+        });
+        assert!(
+            recovered.recovery().created(),
+            "an interrupted creation left nothing to adopt, so {label} creates ({:?})",
+            recovered.recovery()
+        );
+        assert!(
+            recovered.recovery().removed_staged_file(),
+            "{label} must be swept"
+        );
+        assert_eq!(
+            journal_len_on_disk(scratch.path()),
+            as_u64(HEADER_LEN),
+            "{label} left a journal that is exactly its header"
+        );
+        assert_eq!(
+            names_in(scratch.path()),
+            vec![String::from("ledger.journal")],
+            "{label} left something beside the journal"
+        );
+    }
+}
+
+#[test]
+fn a_staging_file_another_process_abandoned_is_removed_at_open() {
+    // The only crash that produces a staging file is one that kills the process
+    // holding it, so the process that finds one is never the process that wrote
+    // it. A staging name only its author could recognize is a name nobody ever
+    // removes, and the directory would grow one whole image per interrupted
+    // rewrite, forever.
+    let ledger_config = config(2, 4);
+    let scratch = ScratchDir::new("foreign-staging");
+    let mut app = open(scratch.path(), FaultPlan::none());
+    apply_all(&mut app, &workload()[..2]);
+    let before = durable_state(&app);
+    drop(app);
+
+    let foreign = format!("ledger.journal.{}.tmp", std::process::id().wrapping_add(1));
+    for name in [foreign.as_str(), "ledger.journal.tmp"] {
+        std::fs::write(scratch.path().join(name), vec![0_u8; 4096])
+            .expect("an abandoned staging file writes");
+    }
+
+    let recovered = LedgerStore::open(scratch.path(), ledger_config).expect("the store reopens");
+    assert!(
+        recovered.recovery().removed_staged_file(),
+        "an abandoned staging file must be removed at open"
     );
     assert_eq!(
-        recovered.store().recovery().discarded_bytes(),
-        frame_len,
-        "the whole unsealed frame is discarded"
+        names_in(scratch.path()),
+        vec![String::from("ledger.journal")],
+        "the directory holds nothing but the journal after a sweep"
     );
-    assert_eq!(durable_state(&recovered), before);
+    assert_eq!(
+        DurableState {
+            applied_index: recovered.applied_index(),
+            view: recovered.ledger().view(),
+        },
+        before,
+        "sweeping residue is not a change of state"
+    );
+}
+
+#[test]
+fn a_rewrite_at_an_unchanged_index_may_not_drop_the_deduplication_cache() {
+    let ledger_config = config(2, 4);
+    let scratch = ScratchDir::new("replace-dedup");
+    let commands = workload();
+
+    // Two ledgers at one applied index. The poorer one is the state as it stood
+    // before the last mutation completed, republished at the index that
+    // mutation moved the store to — which is what a stale snapshot presents
+    // when its payload is one commit behind the index it declares.
+    let mut poorer = rafter_reference_ledger::Ledger::new(ledger_config);
+    for command in &commands[..commands.len() - 1] {
+        poorer.apply(command.clone());
+    }
+    let mut richer = poorer.clone();
+    richer.apply(commands[commands.len() - 1].clone());
+    let at = index_of(commands.len());
+
+    let mut store = LedgerStore::open(scratch.path(), ledger_config).expect("a fresh store opens");
+    store
+        .commit(&richer, at)
+        .expect("the first transaction commits");
+
+    // The applied index is identical, so the store's only other floor sees
+    // nothing wrong. Only the deduplication cache moved backwards.
+    assert_eq!(store.applied_index(), at);
+    let error = store
+        .replace(&poorer, at)
+        .expect_err("a rewrite that loses a completed request must be refused");
+    assert!(
+        matches!(
+            error,
+            LedgerStoreError::DeduplicationRegression {
+                offered: Some(_),
+                ..
+            }
+        ),
+        "unexpected refusal: {error}"
+    );
+
+    // Republishing the same state is still legal — the check refuses a loss,
+    // not a rewrite. Compaction is exactly this call.
+    store
+        .replace(&richer, at)
+        .expect("republishing the durable state at its own index commits");
+    store.compact().expect("compaction republishes in place");
 }
 
 #[test]
@@ -671,11 +930,11 @@ fn the_journal_header_binds_a_store_to_its_format_and_its_bounds() {
         "unexpected refusal: {error}"
     );
 
-    let original = read_journal_bytes(scratch.path()).expect("the journal reads back");
+    let original = raw_journal::read(scratch.path()).expect("the journal reads back");
 
     let mut wrong_magic = original.clone();
     wrong_magic[1] = b'X';
-    write_journal_bytes(scratch.path(), &wrong_magic).expect("the journal rewrites");
+    raw_journal::write(scratch.path(), &wrong_magic).expect("the journal rewrites");
     assert!(
         matches!(
             LedgerStore::open(scratch.path(), config(2, 4)),
@@ -686,7 +945,7 @@ fn the_journal_header_binds_a_store_to_its_format_and_its_bounds() {
 
     let mut wrong_version = original.clone();
     wrong_version[4] = 9;
-    write_journal_bytes(scratch.path(), &wrong_version).expect("the journal rewrites");
+    raw_journal::write(scratch.path(), &wrong_version).expect("the journal rewrites");
     assert!(
         matches!(
             LedgerStore::open(scratch.path(), config(2, 4)),
@@ -697,7 +956,7 @@ fn the_journal_header_binds_a_store_to_its_format_and_its_bounds() {
 
     let mut corrupt_header = original;
     corrupt_header[HEADER_LEN - 1] ^= 0xFF;
-    write_journal_bytes(scratch.path(), &corrupt_header).expect("the journal rewrites");
+    raw_journal::write(scratch.path(), &corrupt_header).expect("the journal rewrites");
     assert!(
         matches!(
             LedgerStore::open(scratch.path(), config(2, 4)),
@@ -1178,6 +1437,30 @@ fn replay_through_oracle(commands: &[Command]) -> ReferenceLedger {
         oracle.apply(command.clone());
     }
     oracle
+}
+
+/// Returns the journal's length on the medium, which is what a destructive
+/// recovery would have changed.
+fn journal_len_on_disk(directory: &Path) -> u64 {
+    std::fs::metadata(directory.join("ledger.journal"))
+        .expect("the journal exists")
+        .len()
+}
+
+/// Returns every file name in the store's directory, sorted.
+fn names_in(directory: &Path) -> Vec<String> {
+    let mut names: Vec<String> = std::fs::read_dir(directory)
+        .expect("the store directory reads")
+        .map(|entry| {
+            entry
+                .expect("a directory entry reads")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
+        .collect();
+    names.sort();
+    names
 }
 
 /// Returns the torn tail a stop after `stop` bytes of a frame must leave.
