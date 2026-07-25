@@ -1,6 +1,8 @@
-// `cluster` and `storage` live beside this module but are included only by the
-// integration test that drives a cluster, so the model-only tests neither
-// compile nor link the driver.
+// This module holds only the command builders every suite needs. The heavier
+// support modules beside it — `cluster`, `durable`, `process`, `scratch`, and
+// `storage` — are pulled in by `#[path]` only by the suites that drive them,
+// so the model-only tests neither compile nor link a driver, a process, or a
+// filesystem.
 
 use rafter_reference_ledger::{
     Amount, ClientId, Command, LedgerConfig, Mutation, RequestIdentity, Sequence, SessionEpoch,

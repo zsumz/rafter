@@ -233,7 +233,7 @@ fn a_leader_change_leaves_an_unknown_outcome_that_a_retry_resolves() {
             amount: amount(25),
         },
     );
-    cluster.partition(first_leader);
+    cluster.isolate(first_leader);
     let unknown = cluster.submit(first_leader, deposit.clone());
     assert_eq!(
         unknown,
@@ -494,7 +494,7 @@ fn overlapping_reads_and_writes_order_correctly_across_a_leader_change() {
     );
     cluster.settle();
 
-    cluster.partition(first_leader);
+    cluster.isolate(first_leader);
     let second_leader = cluster.elect_leader();
     assert_ne!(second_leader, first_leader, "leadership moved");
     cluster.heal();

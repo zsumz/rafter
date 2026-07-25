@@ -306,7 +306,10 @@ pub enum LedgerStoreError {
         /// Applied index of the frame that followed it.
         found: LogIndex,
     },
-    /// A committed image declares an applied index the caller cannot accept.
+    /// An encoded image does not fit the begin record's length field.
+    ///
+    /// The frame declares its image length as a `u32`, so an image above that
+    /// bound could not be found again by recovery.
     ImageTooLarge {
         /// Encoded length of the image.
         length: u64,

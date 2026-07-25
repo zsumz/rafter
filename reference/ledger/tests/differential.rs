@@ -171,7 +171,7 @@ fn run_workload(seed: u64, bounds: LedgerConfig) -> Vec<HistoryEvent> {
         }
 
         let pending = in_flight.remove(rng.index(in_flight.len()));
-        settle(
+        resolve(
             pending,
             seed,
             &mut implementation,
@@ -184,9 +184,12 @@ fn run_workload(seed: u64, bounds: LedgerConfig) -> Vec<HistoryEvent> {
     recorder.history
 }
 
-/// Settles one in-flight operation: its effect, its differential comparison,
+/// Resolves one in-flight operation: its effect, its differential comparison,
 /// and its terminal event all happen here, at the moment the seed chose.
-fn settle(
+///
+/// Named for the cluster driver's `resolve_proposal` and `resolve_read` rather
+/// than for its `settle`, which drives a whole cluster to quiescence.
+fn resolve(
     pending: Pending,
     seed: u64,
     implementation: &mut Ledger,

@@ -312,7 +312,7 @@ impl<A: LedgerApps> LedgerCluster<A> {
 
     /// Whether a replica is currently unable to exchange messages.
     ///
-    /// A partitioned replica and a crashed one are both unreachable; only the
+    /// An isolated replica and a crashed one are both unreachable; only the
     /// second one needs a restart to come back.
     fn unreachable(&self, node_id: NodeId) -> bool {
         self.isolated.contains(&node_id) || self.crashed.contains_key(&node_id)
@@ -511,7 +511,7 @@ impl<A: LedgerApps> LedgerCluster<A> {
     }
 
     /// Cuts every link to and from `node_id`.
-    pub fn partition(&mut self, node_id: NodeId) {
+    pub fn isolate(&mut self, node_id: NodeId) {
         self.isolated.insert(node_id);
     }
 

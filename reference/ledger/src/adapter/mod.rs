@@ -69,9 +69,10 @@ pub enum LedgerAdapterError {
     },
     /// A snapshot install carried no inline payload.
     ///
-    /// Resolving a promoted payload from a Raft snapshot descriptor requires a
-    /// durable application snapshot store, which arrives with the durable
-    /// composition slice.
+    /// Rafter's own install path supplies a descriptor whose application bytes
+    /// live in the replica's snapshot store rather than in the message, and
+    /// this application has no path to fetch them. It refuses rather than
+    /// installing an empty ledger over live state.
     SnapshotPayloadUnavailable { applied_index: LogIndex },
     /// A decoded snapshot violated a model resource or supply invariant.
     Snapshot(SnapshotError),

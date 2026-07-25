@@ -42,10 +42,16 @@
 //! ```text
 //! LISTENING <id> <client_addr>     the client port is open; service is refused
 //! WAITING_FOR_OWNERSHIP <id>       another process still owns this directory
+//! PEER_LISTENING <id> <peer_addr>  the peer port is published and dialable
 //! READY <id> <client_addr> <applied_index>
+//! LINK <id> dropped=<n> encode_failures=<n>
 //! STOPPED <id>
 //! FATAL <detail>                   followed by a nonzero exit
 //! ```
+//!
+//! `LINK` is emitted once during shutdown and is diagnostic rather than
+//! protocol: a nonzero drop count is normal under load, while a nonzero encode
+//! failure means the kernel produced a frame the peer format does not carry.
 //!
 //! `LISTENING` deliberately precedes recovery. A client may connect at once and
 //! will be refused with `NOTREADY` until `READY`, which is what makes the
