@@ -570,6 +570,20 @@ fn vote_from(candidate_id: NodeId) -> Message {
     })
 }
 
+/// Polls a future exactly once.
+///
+/// A transport driver resolves a client future from a later `tick` or
+/// `deliver`, so a test needs to observe "still pending" without blocking on a
+/// completion that only another call can produce.
+pub(crate) fn poll_once<F: Future + Unpin>(future: &mut F) -> Option<F::Output> {
+    let waker = Waker::noop();
+    let mut context = Context::from_waker(waker);
+    match std::pin::Pin::new(future).poll(&mut context) {
+        Poll::Ready(output) => Some(output),
+        Poll::Pending => None,
+    }
+}
+
 pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
     let waker = Waker::noop();
     let mut context = Context::from_waker(waker);

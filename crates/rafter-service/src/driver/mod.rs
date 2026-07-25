@@ -2,11 +2,13 @@
 
 use std::{
     collections::{BTreeMap, VecDeque},
-    fmt::Debug,
+    fmt::{self, Debug},
     sync::{Arc, Mutex, MutexGuard},
 };
 
-use rafter::{LocalProposalId, LogIndex, NodeId, ProposalRejection, ReadId, Role};
+use rafter::{
+    LocalProposalId, LogIndex, NodeId, Output as RaftOutput, ProposalRejection, ReadId, Role,
+};
 use rafter_app::{
     error::GroupError,
     group::{
@@ -38,15 +40,20 @@ mod options;
 mod read;
 mod state;
 mod transfer;
+mod transport;
 mod write;
 
 pub use driver_trait::{DriverCommandSender, DriverFuture};
 pub use in_memory::InMemoryRaftDriver;
 pub use mapping::ManagedDriverError;
 pub use options::{QueryReceipt, WriteBatchEntry, WriteOptions, WriteReceipt};
+pub use transport::{InboundEnvelopeError, TransportDriverOptions, TransportRaftDriver};
 
-use mapping::{write_error_from_group, ManagedOperationError};
+use mapping::{
+    transfer_error_from_group, write_error_from_group, DriverRoutingError, ManagedOperationError,
+};
 use state::{lock_state, InMemoryRaftState};
+use write::{managed_unknown_reason_from_app, write_error_from_rejection};
 
 type DriverStepReport<G, A> = GroupStepReport<G, <A as ReplicatedStateMachine>::CommandResult>;
 type ManagedError<A, R> =

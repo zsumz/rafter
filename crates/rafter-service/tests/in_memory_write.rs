@@ -752,3 +752,55 @@ fn in_memory_driver_maps_no_lifecycle_proposal_output_to_unknown_outcome() {
         "malformed no-lifecycle output is cleaned up before returning"
     );
 }
+
+/// The counterpart to a constructor that takes its groups by value: nothing
+/// returned them before, so a driver was where a group went to be unreachable.
+#[test]
+fn release_groups_returns_every_group_the_driver_adopted() {
+    let driver = KvDriver::new_elected(NodeId(1), groups()).expect("primary elects");
+    block_on(
+        driver
+            .handle()
+            .write(("alpha".to_owned(), "one".to_owned())),
+    )
+    .expect("the write commits and applies");
+
+    let released = driver
+        .release_groups()
+        .expect("the driver holds its groups");
+
+    assert_eq!(
+        released.keys().copied().collect::<Vec<_>>(),
+        vec![NodeId(1), NodeId(2), NodeId(3)]
+    );
+    let primary = &released[&NodeId(1)];
+    assert_eq!(primary.state_machine().values["alpha"], "one");
+    assert_eq!(primary.metrics().pending_proposals, 0);
+}
+
+#[test]
+fn a_released_in_memory_driver_refuses_every_operation() {
+    let driver = KvDriver::new_elected(NodeId(1), groups()).expect("primary elects");
+    let handle = driver.handle();
+    let _ = driver
+        .release_groups()
+        .expect("the driver holds its groups");
+
+    assert!(matches!(
+        driver.release_groups().map(|_| ()),
+        Err(ManagedDriverError::ShuttingDown)
+    ));
+    assert!(matches!(
+        driver.tick_primary(),
+        Err(ManagedDriverError::ShuttingDown)
+    ));
+
+    let write = block_on(handle.write(("beta".to_owned(), "two".to_owned())))
+        .expect_err("a released driver serves no writes");
+    assert!(matches!(write, WriteError::ShuttingDown), "got {write:?}");
+    assert_eq!(
+        write.fate(),
+        WriteFate::NotAppended,
+        "a refused write never reached the log"
+    );
+}

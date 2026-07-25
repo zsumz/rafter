@@ -2909,6 +2909,15 @@ In a new `crates/rafter-service/src/driver/transport.rs`:
 pub struct TransportRaftDriver<G, A, R, T, V> { /* Arc<Mutex<_>> */ }
 ```
 
+Both bounds default to 1024, matching the shipped driver's own
+`max_drive_steps`: all three count local steps taken on behalf of one
+operation. Both are validated at construction and fail closed on zero, which is
+meaningless rather than merely small — zero retries never collects a granted
+barrier and zero waiters refuses every write, so a driver built with either is
+one that cannot serve anything. Because the struct is `#[non_exhaustive]`, an
+embedder outside the crate cannot use struct-update syntax, so it gets
+`with_max_read_retries` and `with_max_pending_waiters` setters beside `new`.
+
 ```rust
 /// Bounds on one driver's local work.
 ///
@@ -3070,10 +3079,13 @@ impl<G, A, R, T, V> TransportRaftDriver<G, A, R, T, V> {
     /// snapshot directives that must be routed, and a caller that applied them
     /// outside the driver would drop exactly the effects a restart depends on.
     ///
-    /// The new group must be quiescent, and its local ID watermarks must be at
-    /// or above the retired incarnation's when the two share a runtime; see
-    /// [`rafter_app::group::RaftGroupParts`]. A driver that rebuilt its runtime
-    /// from durable storage may restart its IDs at zero.
+    /// The new group must hold no reserved reads, and its local ID watermarks
+    /// must be at or above the retired incarnation's when the two share a
+    /// runtime; see [`rafter_app::group::RaftGroupParts`]. A driver that
+    /// rebuilt its runtime from durable storage may restart its IDs at zero.
+    ///
+    /// Unlike `new`, this accepts a group that still tracks appended
+    /// proposals; see the note below on why a released group has them.
     ///
     /// # Errors
     ///
@@ -3161,6 +3173,18 @@ The one implementor in the tree already satisfies it
   [`transport.rs:59-61`](../crates/rafter-service/src/transport.rs)) and what
   the promotion rule demands of a promoted API. The refusal is
   `WriteError::Transport` with `WriteFate::NotAppended`: nothing was proposed.
+- **A released group carries its appended proposals, and `adopt_group` takes
+  them.** `release_group` cancels every read barrier through
+  `RaftGroup::cancel_read`, so the retired group reports no reserved reads. It
+  cannot do the same for proposals, and must not: the app layer has no
+  `cancel_proposal`, because an appended entry is in the durable log and will
+  commit or not on its own. That is exactly why the client's write resolves as
+  *unknown* rather than refused. So the returned group is quiescent in reads and
+  not in proposals, and `adopt_group` accepts what `new` refuses — a proposal
+  whose waiter this driver already resolved is safe to carry, and its later
+  `Applied` event correctly resolves nothing. Requiring full quiescence here
+  would make the restart case this entry exists for unreachable, which its own
+  focused test demonstrates.
 - **A released driver refuses; it does not panic.** Every operation on a
   driver with no group returns `ManagedDriverError::NoGroup`, and every client
   future resolves with the corresponding service error. The consumer's
@@ -3196,7 +3220,11 @@ The one implementor in the tree already satisfies it
 - **Read retries are bounded per call, not per barrier.** A barrier that is
   still pending after `max_read_retries` stays pending and is retried on the
   next call, so the driver never spins and never abandons a barrier that the
-  network could still resolve. Abandoning is the caller's decision, and its
+  network could still resolve. Within a call the driver retries only where a
+  retry can change the answer: a granted barrier whose state machine is behind
+  it retries, because a read step also steps the group and a committed entry can
+  apply between attempts, while a barrier still waiting on its quorum round does
+  not, because only `deliver` can bring the frame it needs. Abandoning is the caller's decision, and its
   vocabulary is
   [Terminal Driver Vocabulary](#terminal-driver-vocabulary).
 
@@ -3210,7 +3238,7 @@ Additive apart from one trait bound. No existing signature changes.
 | [`crates/rafter-service/src/driver/mod.rs:33-49`](../crates/rafter-service/src/driver/mod.rs) | Declare and re-export the module |
 | [`crates/rafter-service/src/driver/in_memory.rs`](../crates/rafter-service/src/driver/in_memory.rs) | Add `release_groups` |
 | [`crates/rafter-service/src/driver/state.rs:5-15`](../crates/rafter-service/src/driver/state.rs) | `groups` becomes releasable |
-| [`crates/rafter-service/src/driver/mapping.rs:11-47`](../crates/rafter-service/src/driver/mapping.rs) | `ManagedDriverError::{NoGroup, GroupAlreadyAdopted}` |
+| [`crates/rafter-service/src/driver/mapping.rs:11-47`](../crates/rafter-service/src/driver/mapping.rs) | `ManagedDriverError::{NoGroup, GroupAlreadyAdopted, InvalidOptions}` |
 | [`crates/rafter-service/src/transport.rs:73-76,117-120`](../crates/rafter-service/src/transport.rs) | `type Error: Error + Send + Sync + 'static` on both traits |
 | [`crates/rafter-service/src/lib.rs:26-41`](../crates/rafter-service/src/lib.rs) | Re-export the new types |
 
@@ -4394,10 +4422,16 @@ crate upward, so no change is written twice and every step ends green.
 14. **The transport seam.** `RaftTransport::Error` and
     `AsyncRaftTransport::Error` gain their bound, then `TransportRaftDriver`,
     `TransportDriverOptions`, `InboundEnvelopeError`,
-    `ManagedDriverError::{NoGroup, GroupAlreadyAdopted}`, and
+    `ManagedDriverError::{NoGroup, GroupAlreadyAdopted, InvalidOptions}`, and
     `InMemoryRaftDriver::release_groups`. Additive apart from the bound, and
     after step 13 so the new driver builds its errors in their final shape and
     never carries a rendering path that step 13 would have to delete.
+
+    `InMemoryRaftDriver::release_groups` needs no waiter release of its own: that
+    driver resolves every client future inside the call that created it, so
+    there is never an outstanding waiter when it is called. It drops undelivered
+    frames, closes its metrics, and refuses afterwards, which is what its
+    documented counterpart promises.
 15. **Reference-consumer adoption.** Collapse
     `reference/fenced-lock/src/adapter/client.rs`'s `closes_outcome_window`,
     delete `reference/fenced-lock/tests/support/cluster.rs:90-789,1393-1478` in

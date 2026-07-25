@@ -41,6 +41,18 @@ pub enum ManagedDriverError {
         max_steps: usize,
     },
     ShuttingDown,
+    /// The driver released its group and has not adopted a new one.
+    ///
+    /// Every operation refuses in this state; nothing panics, because a slot
+    /// with a typed empty state is the point of having one.
+    NoGroup,
+    /// The driver still holds a group, so it cannot adopt another.
+    GroupAlreadyAdopted,
+    /// A [`crate::TransportDriverOptions`] field was outside its valid range.
+    InvalidOptions {
+        field: &'static str,
+        reason: &'static str,
+    },
     /// A group operation failed while the driver was driving it.
     ///
     /// The category is the variant and the detail is the preserved cause; there
@@ -96,6 +108,15 @@ impl fmt::Display for ManagedDriverError {
                 "managed driver made no progress within {max_steps} drive steps"
             ),
             Self::ShuttingDown => formatter.write_str("managed driver is shutting down"),
+            Self::NoGroup => {
+                formatter.write_str("managed driver has released its group and holds none")
+            }
+            Self::GroupAlreadyAdopted => {
+                formatter.write_str("managed driver already holds a group")
+            }
+            Self::InvalidOptions { field, reason } => {
+                write!(formatter, "managed driver option {field} is invalid: {reason}")
+            }
             Self::Group { .. } => formatter.write_str("managed driver group operation failed"),
         }
     }
@@ -115,7 +136,10 @@ impl Error for ManagedDriverError {
             | Self::ReadIdExhausted { .. }
             | Self::MixedGroups
             | Self::Stalled { .. }
-            | Self::ShuttingDown => None,
+            | Self::ShuttingDown
+            | Self::NoGroup
+            | Self::GroupAlreadyAdopted
+            | Self::InvalidOptions { .. } => None,
         }
     }
 }
@@ -144,6 +168,7 @@ pub(super) enum ManagedOperationError<E, RE> {
 pub(super) enum DriverRoutingError {
     MissingNode { node_id: NodeId },
     DriveBoundReached { max_steps: usize },
+    PendingWaiterLimit { max_pending_waiters: usize },
 }
 
 impl fmt::Display for DriverRoutingError {
@@ -155,6 +180,12 @@ impl fmt::Display for DriverRoutingError {
             Self::DriveBoundReached { max_steps } => write!(
                 formatter,
                 "managed driver did not drain within {max_steps} drive steps"
+            ),
+            Self::PendingWaiterLimit {
+                max_pending_waiters,
+            } => write!(
+                formatter,
+                "managed driver already holds {max_pending_waiters} unresolved waiters"
             ),
         }
     }

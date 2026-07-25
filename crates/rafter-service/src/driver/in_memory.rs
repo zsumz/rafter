@@ -97,6 +97,31 @@ where
         state.tick_primary()
     }
 
+    /// Shuts the driver down and returns every group it owns.
+    ///
+    /// The counterpart to [`InMemoryRaftDriver::new`], which takes its groups
+    /// by value. This driver resolves every client future inside the call that
+    /// created it, so there is never an outstanding waiter to release here;
+    /// undelivered frames in the in-memory network are dropped, and the driver
+    /// refuses every later operation — there is no re-adoption, because this
+    /// driver's constructor builds a whole cluster rather than installing one
+    /// node.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ManagedDriverError::ShuttingDown`] when the driver has already
+    /// shut down or released its groups.
+    pub fn release_groups(
+        &self,
+    ) -> Result<BTreeMap<NodeId, RaftGroup<G, A, R>>, ManagedDriverError> {
+        let mut state = lock_state(&self.inner);
+        state.reject_if_shutting_down()?;
+        state.shutting_down = true;
+        state.network.clear();
+        state.metrics.close();
+        Ok(std::mem::take(&mut state.groups))
+    }
+
     /// Drives ticks on the primary until it is leader.
     ///
     /// # Errors

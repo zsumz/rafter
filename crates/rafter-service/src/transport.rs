@@ -6,6 +6,8 @@
 //! intentionally provides traits only; any future unauthenticated demo
 //! transport must be clearly named and documented as insecure/demo-only.
 
+use std::error::Error;
+
 use rafter::NodeId;
 
 use crate::driver::DriverFuture;
@@ -72,7 +74,16 @@ impl<P> PeerSet<P> {
 /// wire-format bumps need an explicit compatibility or migration plan.
 pub trait RaftTransport<G>: Send + Sync + 'static {
     type PeerPrincipal;
-    type Error;
+    /// Error returned when the transport cannot send or update peer metadata.
+    ///
+    /// Transport errors are part of the public app/service error stack, so
+    /// implementations expose typed errors rather than debug-only strings —
+    /// the same contract [`rafter_runtime_api::PersistedRaftRuntime::Error`]
+    /// and [`rafter_app::state_machine::ReplicatedStateMachine::Error`] state
+    /// for the other halves of it. Without the bound a driver cannot preserve
+    /// a send failure as a [`crate::error::ErrorCause`], and would have to
+    /// render it.
+    type Error: Error + Send + Sync + 'static;
 
     /// Sends one validated outbound Raft peer envelope.
     ///
@@ -116,7 +127,9 @@ pub trait RaftTransport<G>: Send + Sync + 'static {
 /// are also the same as the synchronous trait.
 pub trait AsyncRaftTransport<G>: Send + Sync + 'static {
     type PeerPrincipal: Send + 'static;
-    type Error: Send + 'static;
+    /// Error returned when the transport cannot send, receive, or update peer
+    /// metadata. Bounded for the same reason [`RaftTransport::Error`] is.
+    type Error: Error + Send + Sync + 'static;
 
     /// Sends one validated outbound Raft peer envelope.
     ///
