@@ -1,5 +1,5 @@
 use super::{
-    report_has_proposal_lifecycle, ClientProposalInput, Debug, GroupError, GroupResult,
+    report_has_proposal_lifecycle, Arc, ClientProposalInput, Debug, GroupError, GroupResult,
     GroupStepReport, LocalProposalDropReason, LocalProposalId, LogIndex, PersistedRaftRuntime,
     Proposal, ProposalBatchBeginReport, ProposalBatchBeginReportResult, ProposalBegin,
     ProposalBeginReport, ProposalBeginReportResult, ProposalBeginResult, ProposalEvent,
@@ -232,7 +232,7 @@ where
             .encode_command(&proposal.command)
             .map_err(|source| GroupError::StateMachine {
                 operation: StateMachineOperation::EncodeCommand,
-                source,
+                source: Arc::new(source),
             })?;
         self.last_seen_local_proposal_id = Some(proposal.local_proposal_id);
         self.pending_proposals
@@ -275,7 +275,7 @@ where
                 .encode_command(&proposal.command)
                 .map_err(|source| GroupError::StateMachine {
                     operation: StateMachineOperation::EncodeCommand,
-                    source,
+                    source: Arc::new(source),
                 })?;
             last_seen = Some(proposal.local_proposal_id);
             batch.push(ClientProposalInput {

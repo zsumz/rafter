@@ -2,7 +2,8 @@ mod support;
 
 use rafter::{LogIndex, Term};
 use rafter_app::state_machine::{
-    ApplicationSnapshot, ApplyBatch, ApplyEntry, ReadBarrier, ReplicatedStateMachine,
+    ApplicationSnapshot, ApplicationSnapshotError, ApplyBatch, ApplyEntry, ReadBarrier,
+    ReplicatedStateMachine,
 };
 use rafter_reference_ledger::{
     AccountId, ApplyDisposition, BusinessRejection, Command, LedgerAdapterError, LedgerCodecError,
@@ -252,12 +253,16 @@ fn snapshots_bind_their_payload_to_one_applied_index() {
         ],
     );
 
-    assert_eq!(
-        app.build_snapshot(LogIndex(1)),
-        Err(LedgerAdapterError::SnapshotIndexUnavailable {
-            requested_index: LogIndex(1),
-            applied_index: LogIndex(2),
-        }),
+    assert!(
+        matches!(
+            app.build_snapshot(LogIndex(1)),
+            Err(ApplicationSnapshotError::StateMachine(
+                LedgerAdapterError::SnapshotIndexUnavailable {
+                    requested_index: LogIndex(1),
+                    applied_index: LogIndex(2),
+                }
+            ))
+        ),
         "state only exists at the current applied index"
     );
 
@@ -282,16 +287,20 @@ fn snapshots_bind_their_payload_to_one_applied_index() {
         .install_snapshot(snapshot)
         .expect("a matching snapshot installs");
     assert_eq!(restored.ledger().view(), app.ledger().view());
-    assert_eq!(
-        restored.install_snapshot(ApplicationSnapshot {
-            applied_index: LogIndex(1),
-            payload: vec![1],
-            raft_snapshot: None,
-        }),
-        Err(LedgerAdapterError::SnapshotBehindAppliedIndex {
-            snapshot_index: LogIndex(1),
-            applied_index: LogIndex(2),
-        }),
+    assert!(
+        matches!(
+            restored.install_snapshot(ApplicationSnapshot {
+                applied_index: LogIndex(1),
+                payload: vec![1],
+                raft_snapshot: None,
+            }),
+            Err(ApplicationSnapshotError::StateMachine(
+                LedgerAdapterError::SnapshotBehindAppliedIndex {
+                    snapshot_index: LogIndex(1),
+                    applied_index: LogIndex(2),
+                }
+            ))
+        ),
         "an older snapshot would make acknowledged commands executable again"
     );
 }

@@ -13,6 +13,8 @@
 //! ```
 
 use std::collections::BTreeMap;
+use std::error::Error;
+use std::fmt;
 
 use rafter::{
     AppendEntries, AppendEntriesResponse, LocalProposalId, LogIndex, Message, NodeConfig, NodeId,
@@ -22,7 +24,8 @@ use rafter_app::{
     group::{GroupInput, GroupStepReport, RaftGroup},
     proposal::{Proposal, ProposalEvent},
     state_machine::{
-        ApplicationSnapshot, ApplyBatch, ApplyResult, ReadBarrier, ReplicatedStateMachine,
+        ApplicationSnapshot, ApplicationSnapshotError, ApplyBatch, ApplyResult, ReadBarrier,
+        ReplicatedStateMachine, SnapshotSupport,
     },
     transport::PeerEnvelope,
 };
@@ -252,12 +255,84 @@ struct KvStateMachine {
     values: BTreeMap<String, String>,
 }
 
+/// A failure from this example's key-value state machine.
+///
+/// `ReplicatedStateMachine::Error` is part of the public app/service error
+/// stack, so it is a real `std::error::Error` an operator can walk rather than
+/// a `String` every layer above has to render.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct KvError(String);
+
+impl KvError {
+    fn new(message: impl Into<String>) -> Self {
+        Self(message.into())
+    }
+}
+
+impl fmt::Display for KvError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(&self.0)
+    }
+}
+
+impl Error for KvError {}
+
+impl KvStateMachine {
+    /// Encodes the whole map so an install can restore it.
+    ///
+    /// An example is a template. An `install_snapshot` that reported the
+    /// snapshot's applied index while discarding the data it carries would
+    /// claim durability through a boundary whose effects it just deleted, and
+    /// every later read and every readiness gate would believe it.
+    fn encode_snapshot(&self, at: LogIndex) -> Result<Vec<u8>, KvError> {
+        let mut text = format!("index {}\n", at.0);
+        for (key, value) in &self.values {
+            if key.contains(['\n', '=']) || value.contains('\n') {
+                return Err(KvError::new(
+                    "example snapshot keys and values must be line-safe",
+                ));
+            }
+            text.push_str(key);
+            text.push('=');
+            text.push_str(value);
+            text.push('\n');
+        }
+        Ok(text.into_bytes())
+    }
+
+    fn decode_snapshot(payload: &[u8]) -> Result<(LogIndex, BTreeMap<String, String>), KvError> {
+        let text =
+            String::from_utf8(payload.to_vec()).map_err(|error| KvError::new(error.to_string()))?;
+        let mut lines = text.lines();
+        let index = lines
+            .next()
+            .and_then(|header| header.strip_prefix("index "))
+            .ok_or_else(|| KvError::new("snapshot payload has no index header"))?
+            .parse::<u64>()
+            .map(LogIndex)
+            .map_err(|error| KvError::new(error.to_string()))?;
+        let mut values = BTreeMap::new();
+        for line in lines {
+            let (key, value) = line
+                .split_once('=')
+                .ok_or_else(|| KvError::new("snapshot payload has an invalid key/value row"))?;
+            values.insert(key.to_owned(), value.to_owned());
+        }
+        Ok((index, values))
+    }
+}
+
 impl ReplicatedStateMachine for KvStateMachine {
     type Command = KvCommand;
     type CommandResult = KvCommandResult;
     type Query = String;
     type QueryResult = Option<String>;
-    type Error = String;
+    type Error = KvError;
+
+    /// Declared `Supported` because both snapshot methods below round-trip the
+    /// map. A state machine that has no snapshot format declares
+    /// `SnapshotSupport::Unsupported` and inherits the provided bodies.
+    const SNAPSHOT_SUPPORT: SnapshotSupport = SnapshotSupport::Supported;
 
     fn applied_index(&self) -> Result<LogIndex, Self::Error> {
         Ok(self.applied_index)
@@ -278,10 +353,12 @@ impl ReplicatedStateMachine for KvStateMachine {
     fn decode_command(&self, payload: &[u8]) -> Result<Self::Command, Self::Error> {
         let parts = payload.split(|byte| *byte == 0).collect::<Vec<_>>();
         if parts.len() != 3 || parts[0] != b"put" {
-            return Err("invalid put command".to_owned());
+            return Err(KvError::new("invalid put command"));
         }
-        let key = String::from_utf8(parts[1].to_vec()).map_err(|error| error.to_string())?;
-        let value = String::from_utf8(parts[2].to_vec()).map_err(|error| error.to_string())?;
+        let key = String::from_utf8(parts[1].to_vec())
+            .map_err(|error| KvError::new(error.to_string()))?;
+        let value = String::from_utf8(parts[2].to_vec())
+            .map_err(|error| KvError::new(error.to_string()))?;
         Ok(KvCommand::Put { key, value })
     }
 
@@ -309,22 +386,47 @@ impl ReplicatedStateMachine for KvStateMachine {
 
     fn read(&self, query: String, barrier: ReadBarrier) -> Result<Self::QueryResult, Self::Error> {
         if self.applied_index < barrier.required_applied_index {
-            return Err("read barrier has not been reached".to_owned());
+            return Err(KvError::new("read barrier has not been reached"));
         }
         Ok(self.values.get(&query).cloned())
     }
 
-    fn build_snapshot(&mut self, at: LogIndex) -> Result<ApplicationSnapshot, Self::Error> {
+    fn build_snapshot(
+        &mut self,
+        at: LogIndex,
+    ) -> Result<ApplicationSnapshot, ApplicationSnapshotError<Self::Error>> {
         Ok(ApplicationSnapshot {
             applied_index: at,
-            payload: Vec::new(),
+            payload: self.encode_snapshot(at)?,
             raft_snapshot: None,
         })
     }
 
-    fn install_snapshot(&mut self, snapshot: ApplicationSnapshot) -> Result<(), Self::Error> {
+    /// Restores the map the snapshot carries, then adopts its applied index.
+    ///
+    /// This example keeps its snapshot bytes inline. A Raft-driven install
+    /// whose payload the runtime promoted into a snapshot store arrives with an
+    /// empty payload and a descriptor instead; refusing it is honest, and
+    /// `rafter-app`'s `snapshot_install` example shows how to read the promoted
+    /// bytes back.
+    fn install_snapshot(
+        &mut self,
+        snapshot: ApplicationSnapshot,
+    ) -> Result<(), ApplicationSnapshotError<Self::Error>> {
+        if snapshot.payload.is_empty() && snapshot.raft_snapshot.is_some() {
+            return Err(KvError::new(
+                "this example reads inline snapshot bytes and was handed a promoted payload",
+            )
+            .into());
+        }
+        let (payload_index, values) = Self::decode_snapshot(&snapshot.payload)?;
+        if payload_index != snapshot.applied_index {
+            return Err(
+                KvError::new("snapshot payload index does not match the installed index").into(),
+            );
+        }
+        self.values = values;
         self.applied_index = snapshot.applied_index;
-        self.values.clear();
         Ok(())
     }
 }

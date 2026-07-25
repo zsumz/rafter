@@ -568,3 +568,71 @@ fn a_metrics_snapshot_does_not_carry_the_poison_cause() {
         GroupFatalState::Poisoned { .. }
     ));
 }
+
+/// The cause the group keeps is the state machine's own error object, not a
+/// rendering of it. Every later refusal on a poisoned group reports it, which is
+/// what the reason string alone could never do.
+#[test]
+fn a_poisoned_group_reports_the_error_that_poisoned_it() {
+    let proposal_id = LocalProposalId(60);
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine {
+            apply_mode: ApplyMode::Fail,
+            ..RecordingStateMachine::default()
+        },
+        ScriptedRuntime::with_step_outputs([vec![append_output(proposal_id, 2)], Vec::new()]),
+    );
+    begin_pending_proposal(&mut group, proposal_id, None, 2);
+
+    let error = group
+        .apply_raft_outputs(vec![apply_output(2, b"bad", Some(proposal_id))])
+        .expect_err("apply failure poisons the group");
+
+    // The failure has two owners from here: the error the caller received and
+    // the cause the group kept, sharing one allocation.
+    assert!(matches!(
+        error,
+        GroupError::StateMachine {
+            operation: StateMachineOperation::ApplyBatch,
+            ref source,
+        } if **source == RecordingStateMachineError::Apply
+    ));
+    assert_eq!(
+        group
+            .poison_cause()
+            .and_then(ErrorCause::downcast_ref::<RecordingStateMachineError>),
+        Some(&RecordingStateMachineError::Apply)
+    );
+
+    // A later refusal carries the same cause rather than the reason string
+    // alone, and exposes it as its `source()`.
+    let refused = group
+        .step(GroupInput::Tick)
+        .expect_err("a poisoned group refuses every input");
+    let GroupError::Poisoned { cause, .. } = &refused else {
+        panic!("a poisoned group reports poison, got {refused:?}");
+    };
+    assert_eq!(
+        cause
+            .as_ref()
+            .and_then(ErrorCause::downcast_ref::<RecordingStateMachineError>),
+        Some(&RecordingStateMachineError::Apply)
+    );
+    assert_eq!(
+        std::error::Error::source(&refused)
+            .expect("the poison cause is the error's source")
+            .to_string(),
+        "apply failed"
+    );
+
+    // And it survives decomposition, so a caller that never inspected the group
+    // can still report what broke.
+    let parts = group.into_parts();
+    assert_eq!(
+        parts
+            .poison_cause
+            .as_ref()
+            .and_then(ErrorCause::downcast_ref::<RecordingStateMachineError>),
+        Some(&RecordingStateMachineError::Apply)
+    );
+}

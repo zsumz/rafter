@@ -13,7 +13,8 @@ use std::{error::Error, fmt};
 
 use rafter::LogIndex;
 use rafter_app::state_machine::{
-    ApplicationSnapshot, ApplyBatch, ApplyResult, ReadBarrier, ReplicatedStateMachine,
+    ApplicationSnapshot, ApplicationSnapshotError, ApplyBatch, ApplyResult, ReadBarrier,
+    ReplicatedStateMachine, SnapshotSupport,
 };
 
 use crate::{ApplyOutcome, Command, LockConfig, LockService, ResourceName, ResourceStatus};
@@ -181,6 +182,11 @@ impl ReplicatedStateMachine for LockStateMachine {
     type QueryResult = LockQueryResult;
     type Error = LockAdapterError;
 
+    /// Declared `Unsupported`: `CONTRACT.md` defers the durable byte
+    /// representation to a later slice, so this adapter has no snapshot
+    /// format to offer and says so instead of shipping one it would break.
+    const SNAPSHOT_SUPPORT: SnapshotSupport = SnapshotSupport::Unsupported;
+
     fn applied_index(&self) -> Result<LogIndex, Self::Error> {
         Ok(self.applied_index)
     }
@@ -236,17 +242,25 @@ impl ReplicatedStateMachine for LockStateMachine {
         })
     }
 
-    fn build_snapshot(&mut self, at: LogIndex) -> Result<ApplicationSnapshot, Self::Error> {
+    fn build_snapshot(
+        &mut self,
+        at: LogIndex,
+    ) -> Result<ApplicationSnapshot, ApplicationSnapshotError<Self::Error>> {
         Err(LockAdapterError::DurableSnapshotUndefined {
             snapshot_index: at,
             applied_index: self.applied_index,
-        })
+        }
+        .into())
     }
 
-    fn install_snapshot(&mut self, snapshot: ApplicationSnapshot) -> Result<(), Self::Error> {
+    fn install_snapshot(
+        &mut self,
+        snapshot: ApplicationSnapshot,
+    ) -> Result<(), ApplicationSnapshotError<Self::Error>> {
         Err(LockAdapterError::DurableSnapshotUndefined {
             snapshot_index: snapshot.applied_index,
             applied_index: self.applied_index,
-        })
+        }
+        .into())
     }
 }

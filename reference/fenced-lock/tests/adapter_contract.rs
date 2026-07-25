@@ -8,7 +8,8 @@ mod support;
 
 use rafter::{LogIndex, Term};
 use rafter_app::state_machine::{
-    ApplicationSnapshot, ApplyBatch, ApplyEntry, ReadBarrier, ReplicatedStateMachine,
+    ApplicationSnapshot, ApplicationSnapshotError, ApplyBatch, ApplyEntry, ReadBarrier,
+    ReplicatedStateMachine, SnapshotSupport,
 };
 use rafter_reference_fenced_lock::{
     decode_command, decode_result, encode_command, encode_result, ApplyDisposition, ApplyOutcome,
@@ -345,24 +346,35 @@ fn durable_snapshots_are_refused_until_the_durable_slice_defines_them() {
     apply(&mut app, 1, open_session(0, 1));
 
     assert_eq!(
-        app.build_snapshot(LogIndex(1)),
-        Err(LockAdapterError::DurableSnapshotUndefined {
-            snapshot_index: LogIndex(1),
-            applied_index: LogIndex(1),
-        }),
+        LockStateMachine::SNAPSHOT_SUPPORT,
+        SnapshotSupport::Unsupported,
+        "the durable slice has not defined a byte representation yet"
+    );
+    assert!(
+        matches!(
+            app.build_snapshot(LogIndex(1)),
+            Err(ApplicationSnapshotError::StateMachine(
+                LockAdapterError::DurableSnapshotUndefined {
+                    snapshot_index: LogIndex(1),
+                    applied_index: LogIndex(1),
+                }
+            ))
+        ),
         "shipping a format now would be a format the durable slice has to break"
     );
-    assert_eq!(
+    assert!(matches!(
         app.install_snapshot(ApplicationSnapshot {
             applied_index: LogIndex(5),
             payload: Vec::new(),
             raft_snapshot: None,
         }),
-        Err(LockAdapterError::DurableSnapshotUndefined {
-            snapshot_index: LogIndex(5),
-            applied_index: LogIndex(1),
-        })
-    );
+        Err(ApplicationSnapshotError::StateMachine(
+            LockAdapterError::DurableSnapshotUndefined {
+                snapshot_index: LogIndex(5),
+                applied_index: LogIndex(1),
+            }
+        ))
+    ));
     assert_eq!(
         app.applied_index(),
         Ok(LogIndex(1)),

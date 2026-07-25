@@ -45,6 +45,24 @@ impl ErrorCause {
         self.0.as_ref()
     }
 
+    /// Preserves an already-shared `error` as the cause of a Rafter error.
+    ///
+    /// This is the constructor for a failure with two owners. A group that
+    /// poisons retains the state machine's error as its poison cause *and*
+    /// hands the same error back to the caller inside
+    /// [`GroupError::StateMachine`], and [`ReplicatedStateMachine::Error`] is
+    /// deliberately not `Clone`, so one allocation is shared rather than two
+    /// values produced.
+    ///
+    /// [`ReplicatedStateMachine::Error`]: crate::state_machine::ReplicatedStateMachine::Error
+    #[must_use]
+    pub fn from_shared<E>(error: Arc<E>) -> Self
+    where
+        E: Error + Send + Sync + 'static,
+    {
+        Self(error)
+    }
+
     /// Returns the preserved error when it is of type `E`.
     ///
     /// An embedder whose own state machine or runtime produced the failure
@@ -107,9 +125,17 @@ impl fmt::Display for StateMachineOperation {
 #[non_exhaustive]
 pub enum GroupError<E, R> {
     Runtime(R),
+    /// The application state machine failed.
+    ///
+    /// `source` is shared rather than owned because a failure that poisons the
+    /// group has two owners: the group retains it as its
+    /// [`crate::group::RaftGroup::poison_cause`] so every later refusal can
+    /// report what broke, and the same error travels here to the caller that
+    /// triggered it. `ReplicatedStateMachine::Error` is deliberately not
+    /// `Clone`, so the two share one allocation.
     StateMachine {
         operation: StateMachineOperation,
-        source: E,
+        source: Arc<E>,
     },
     ApplyResultCountMismatch {
         expected: usize,
@@ -134,6 +160,21 @@ pub enum GroupError<E, R> {
     },
     MalformedSnapshot {
         reason: String,
+    },
+    /// A Raft-driven snapshot install reached a state machine that declared
+    /// [`crate::state_machine::SnapshotSupport::Unsupported`].
+    ///
+    /// The state machine was not called. This replica has fallen behind the
+    /// leader's compacted prefix and cannot catch up, so the group poisons.
+    SnapshotsUnsupported {
+        snapshot_index: LogIndex,
+    },
+    /// A state machine that declared
+    /// [`crate::state_machine::SnapshotSupport::Supported`] refused the
+    /// install as unsupported, which means it inherited a provided method body
+    /// while declaring support.
+    SnapshotSupportMisdeclared {
+        snapshot_index: LogIndex,
     },
     /// The group is permanently poisoned.
     ///
@@ -211,6 +252,14 @@ where
                 "state machine applied index {actual} is behind required index {required}"
             ),
             Self::MalformedSnapshot { reason } => write!(formatter, "malformed snapshot: {reason}"),
+            Self::SnapshotsUnsupported { snapshot_index } => write!(
+                formatter,
+                "refusing snapshot install at index {snapshot_index}: the state machine declares no application snapshot support"
+            ),
+            Self::SnapshotSupportMisdeclared { snapshot_index } => write!(
+                formatter,
+                "state machine declares application snapshot support but refused the install at index {snapshot_index} as unsupported"
+            ),
             Self::Poisoned { reason, .. } => write!(formatter, "Raft group is poisoned: {reason}"),
             Self::WrongGroup => formatter.write_str("input targets a different Raft group"),
             Self::WrongRecipient { expected, actual } => write!(
@@ -256,7 +305,7 @@ where
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Runtime(error) => Some(error),
-            Self::StateMachine { source, .. } => Some(source),
+            Self::StateMachine { source, .. } => Some(&**source),
             // Transparent to the preserved cause: a chain printer walks one
             // link per real failure rather than one per boundary crossed.
             Self::Poisoned { cause, .. } => match cause {
@@ -268,6 +317,8 @@ where
             | Self::ApplyEntryAlreadyApplied { .. }
             | Self::AppliedIndexBehind { .. }
             | Self::MalformedSnapshot { .. }
+            | Self::SnapshotsUnsupported { .. }
+            | Self::SnapshotSupportMisdeclared { .. }
             | Self::WrongGroup
             | Self::WrongRecipient { .. }
             | Self::NonMonotonicLocalProposalId { .. }
@@ -299,13 +350,34 @@ mod tests {
     fn group_error_display_uses_underlying_error_messages() {
         let error = GroupError::<TestError, TestError>::StateMachine {
             operation: StateMachineOperation::ApplyBatch,
-            source: TestError("apply failed"),
+            source: Arc::new(TestError("apply failed")),
         };
 
         assert_eq!(
             error.to_string(),
             "state machine batch apply failed: apply failed"
         );
+    }
+
+    /// The shared source is the same object the group kept as its poison cause,
+    /// and it stays reachable as a typed `source()` link.
+    #[test]
+    fn a_state_machine_group_error_exposes_its_shared_source() {
+        let source = Arc::new(TestError("apply failed"));
+        let error = GroupError::<TestError, TestError>::StateMachine {
+            operation: StateMachineOperation::ApplyBatch,
+            source: Arc::clone(&source),
+        };
+        let cause = ErrorCause::from_shared(source);
+
+        assert_eq!(
+            error
+                .source()
+                .expect("the state machine error is exposed")
+                .to_string(),
+            "apply failed"
+        );
+        assert!(cause.downcast_ref::<TestError>().is_some());
     }
 
     #[test]

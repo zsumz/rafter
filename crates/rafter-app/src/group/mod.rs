@@ -7,6 +7,7 @@
 use std::cmp::max;
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
+use std::sync::Arc;
 
 use rafter::{
     ClientProposalInput, Input as RaftInput, LeadershipTransferRejection, LocalProposalDropReason,
@@ -28,7 +29,8 @@ use crate::read::{
 };
 use crate::snapshot::SnapshotEvent;
 use crate::state_machine::{
-    ApplicationSnapshot, ApplyBatch, ApplyEntry, ApplyResult, ReadBarrier, ReplicatedStateMachine,
+    ApplicationSnapshot, ApplicationSnapshotError, ApplyBatch, ApplyEntry, ApplyResult,
+    ReadBarrier, ReplicatedStateMachine, SnapshotSupport,
 };
 use crate::transport::PeerEnvelope;
 

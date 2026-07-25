@@ -14,7 +14,8 @@ use std::{error::Error, fmt};
 
 use rafter::LogIndex;
 use rafter_app::state_machine::{
-    ApplicationSnapshot, ApplyBatch, ApplyResult, ReadBarrier, ReplicatedStateMachine,
+    ApplicationSnapshot, ApplicationSnapshotError, ApplyBatch, ApplyResult, ReadBarrier,
+    ReplicatedStateMachine, SnapshotSupport,
 };
 
 use crate::{
@@ -181,6 +182,10 @@ impl ReplicatedStateMachine for LedgerStateMachine {
     type QueryResult = LedgerQueryResult;
     type Error = LedgerAdapterError;
 
+    /// Declared `Supported`: both methods below round-trip the whole ledger
+    /// through the adapter's own frames, and `adapter_contract.rs` proves it.
+    const SNAPSHOT_SUPPORT: SnapshotSupport = SnapshotSupport::Supported;
+
     fn applied_index(&self) -> Result<LogIndex, Self::Error> {
         Ok(self.applied_index)
     }
@@ -231,39 +236,51 @@ impl ReplicatedStateMachine for LedgerStateMachine {
         Ok(self.ledger.query(query))
     }
 
-    fn build_snapshot(&mut self, at: LogIndex) -> Result<ApplicationSnapshot, Self::Error> {
+    fn build_snapshot(
+        &mut self,
+        at: LogIndex,
+    ) -> Result<ApplicationSnapshot, ApplicationSnapshotError<Self::Error>> {
         if at != self.applied_index {
             return Err(LedgerAdapterError::SnapshotIndexUnavailable {
                 requested_index: at,
                 applied_index: self.applied_index,
-            });
+            }
+            .into());
         }
         Ok(ApplicationSnapshot {
             applied_index: at,
-            payload: codec::encode_snapshot(at.0, &self.ledger.snapshot())?,
+            payload: codec::encode_snapshot(at.0, &self.ledger.snapshot())
+                .map_err(LedgerAdapterError::from)?,
             raft_snapshot: None,
         })
     }
 
-    fn install_snapshot(&mut self, snapshot: ApplicationSnapshot) -> Result<(), Self::Error> {
+    fn install_snapshot(
+        &mut self,
+        snapshot: ApplicationSnapshot,
+    ) -> Result<(), ApplicationSnapshotError<Self::Error>> {
         if snapshot.applied_index < self.applied_index {
             return Err(LedgerAdapterError::SnapshotBehindAppliedIndex {
                 snapshot_index: snapshot.applied_index,
                 applied_index: self.applied_index,
-            });
+            }
+            .into());
         }
         if snapshot.payload.is_empty() {
             return Err(LedgerAdapterError::SnapshotPayloadUnavailable {
                 applied_index: snapshot.applied_index,
-            });
+            }
+            .into());
         }
 
-        let (payload_index, ledger_snapshot) = codec::decode_snapshot(&snapshot.payload)?;
+        let (payload_index, ledger_snapshot) =
+            codec::decode_snapshot(&snapshot.payload).map_err(LedgerAdapterError::from)?;
         if payload_index != snapshot.applied_index.0 {
             return Err(LedgerAdapterError::SnapshotIndexMismatch {
                 payload_index: LogIndex(payload_index),
                 declared_index: snapshot.applied_index,
-            });
+            }
+            .into());
         }
 
         self.ledger = Ledger::from_snapshot(self.config, ledger_snapshot)

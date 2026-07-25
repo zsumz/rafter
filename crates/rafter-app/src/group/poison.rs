@@ -1,6 +1,7 @@
 use super::{
-    BTreeSet, Debug, ErrorCause, GroupError, GroupFatalState, GroupResult, PersistedRaftRuntime,
-    RaftGroup, ReplicatedStateMachine, RuntimeGroupError, StateMachineOperation,
+    Arc, BTreeSet, Debug, ErrorCause, GroupError, GroupFatalState, GroupResult,
+    PersistedRaftRuntime, RaftGroup, ReplicatedStateMachine, RuntimeGroupError,
+    StateMachineOperation,
 };
 
 impl<G, A, R> RaftGroup<G, A, R>
@@ -20,12 +21,23 @@ where
         Ok(())
     }
 
+    /// Poisons the group and reports the state machine's own error.
+    ///
+    /// The failure has two owners from here on: the group keeps it as the
+    /// poison cause, so every later refusal on this group reports what broke
+    /// rather than the reason string alone, and the caller that triggered it
+    /// receives the same error inside [`GroupError::StateMachine`]. They share
+    /// one allocation because `A::Error` is deliberately not `Clone`.
     pub(super) fn poison_with_state_machine_error(
         &mut self,
         operation: StateMachineOperation,
         source: A::Error,
     ) -> RuntimeGroupError<A, R> {
-        self.enter_poisoned(format!("{operation:?} failed"), None);
+        let source = Arc::new(source);
+        self.enter_poisoned(
+            format!("{operation:?} failed"),
+            Some(ErrorCause::from_shared(Arc::clone(&source))),
+        );
         GroupError::StateMachine { operation, source }
     }
 

@@ -28,7 +28,7 @@ fn apply_failure_poisons_group_and_rejects_writes() {
         GroupError::StateMachine {
             operation: StateMachineOperation::ApplyBatch,
             ref source,
-        } if source == "apply failed"
+        } if **source == RecordingStateMachineError::Apply
     ));
     assert!(matches!(
         group.fatal_state(),
@@ -388,7 +388,7 @@ fn apply_snapshot_failure_poisons_group_and_clears_waiters() {
         GroupError::StateMachine {
             operation: StateMachineOperation::InstallSnapshot,
             ref source,
-        } if source == "install snapshot failed"
+        } if **source == RecordingStateMachineError::InstallSnapshot
     ));
     assert!(matches!(
         group.fatal_state(),
@@ -601,7 +601,7 @@ fn decode_failure_poisons_group() {
         GroupError::StateMachine {
             operation: StateMachineOperation::DecodeCommand,
             ref source,
-        } if source == "decode failed"
+        } if **source == RecordingStateMachineError::Decode
     ));
     assert!(matches!(
         group.fatal_state(),

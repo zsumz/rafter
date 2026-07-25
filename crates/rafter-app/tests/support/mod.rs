@@ -16,7 +16,7 @@ pub(crate) use rafter::{
     ReadIndexCancelReason, ReadIndexRejection, ReplicationProgress, RequestVoteResponse, Role,
     SharedPayload, SnapshotChunkSend, SnapshotGroupId, StagedSnapshotChunk, Term,
 };
-pub(crate) use rafter_app::error::{GroupError, StateMachineOperation};
+pub(crate) use rafter_app::error::{ErrorCause, GroupError, StateMachineOperation};
 pub(crate) use rafter_app::group::{
     GroupFatalState, GroupInput, GroupStepReport, LeadershipTransferEvent, PoisonedWaiters,
     RaftGroup, ReadReport, StepReportOptions,
@@ -31,7 +31,8 @@ pub(crate) use rafter_app::read::{
 };
 pub(crate) use rafter_app::snapshot::SnapshotEvent;
 pub(crate) use rafter_app::state_machine::{
-    ApplicationSnapshot, ApplyBatch, ApplyResult, ReadBarrier, ReplicatedStateMachine,
+    ApplicationSnapshot, ApplicationSnapshotError, ApplyBatch, ApplyResult, ReadBarrier,
+    ReplicatedStateMachine, SnapshotSupport,
 };
 pub(crate) use rafter_app::transport::PeerEnvelope;
 pub(crate) use rafter_runtime_api::PersistedRaftRuntime;
@@ -46,6 +47,32 @@ pub(crate) enum ApplyMode {
     WrongTerm,
     WrongLocalProposalId,
 }
+
+/// The fault this fake was told to inject.
+///
+/// A typed error rather than a `String` because the trait now requires one, and
+/// because a test that wants to know *which* callback failed should read a
+/// variant rather than match a message.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RecordingStateMachineError {
+    Encode,
+    Decode,
+    Apply,
+    InstallSnapshot,
+}
+
+impl fmt::Display for RecordingStateMachineError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Encode => "encode failed",
+            Self::Decode => "decode failed",
+            Self::Apply => "apply failed",
+            Self::InstallSnapshot => "install snapshot failed",
+        })
+    }
+}
+
+impl Error for RecordingStateMachineError {}
 
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct RecordingStateMachine {
@@ -65,7 +92,11 @@ impl ReplicatedStateMachine for RecordingStateMachine {
     type CommandResult = Vec<u8>;
     type Query = Vec<u8>;
     type QueryResult = Option<Vec<u8>>;
-    type Error = String;
+    type Error = RecordingStateMachineError;
+
+    /// Declared `Supported` because this fake is driven through real installs
+    /// and its `fail_install_snapshot` switch is the coverage that must survive.
+    const SNAPSHOT_SUPPORT: SnapshotSupport = SnapshotSupport::Supported;
 
     fn applied_index(&self) -> Result<LogIndex, Self::Error> {
         Ok(self.reported_applied_index.unwrap_or(self.applied_index))
@@ -73,14 +104,14 @@ impl ReplicatedStateMachine for RecordingStateMachine {
 
     fn encode_command(&self, command: &Self::Command) -> Result<Vec<u8>, Self::Error> {
         if self.fail_encode {
-            return Err("encode failed".to_owned());
+            return Err(RecordingStateMachineError::Encode);
         }
         Ok(command.clone())
     }
 
     fn decode_command(&self, payload: &[u8]) -> Result<Self::Command, Self::Error> {
         if self.fail_decode {
-            return Err("decode failed".to_owned());
+            return Err(RecordingStateMachineError::Decode);
         }
         Ok(payload.to_vec())
     }
@@ -90,7 +121,7 @@ impl ReplicatedStateMachine for RecordingStateMachine {
         batch: ApplyBatch<Self::Command>,
     ) -> Result<Vec<ApplyResult<Self::CommandResult>>, Self::Error> {
         if self.apply_mode == ApplyMode::Fail {
-            return Err("apply failed".to_owned());
+            return Err(RecordingStateMachineError::Apply);
         }
 
         self.batches
@@ -139,7 +170,10 @@ impl ReplicatedStateMachine for RecordingStateMachine {
         Ok(Some(query))
     }
 
-    fn build_snapshot(&mut self, at: LogIndex) -> Result<ApplicationSnapshot, Self::Error> {
+    fn build_snapshot(
+        &mut self,
+        at: LogIndex,
+    ) -> Result<ApplicationSnapshot, ApplicationSnapshotError<Self::Error>> {
         Ok(ApplicationSnapshot {
             applied_index: at,
             payload: Vec::new(),
@@ -147,9 +181,12 @@ impl ReplicatedStateMachine for RecordingStateMachine {
         })
     }
 
-    fn install_snapshot(&mut self, snapshot: ApplicationSnapshot) -> Result<(), Self::Error> {
+    fn install_snapshot(
+        &mut self,
+        snapshot: ApplicationSnapshot,
+    ) -> Result<(), ApplicationSnapshotError<Self::Error>> {
         if self.fail_install_snapshot {
-            return Err("install snapshot failed".to_owned());
+            return Err(RecordingStateMachineError::InstallSnapshot.into());
         }
         self.applied_index = snapshot.applied_index;
         self.installed_snapshots.push(snapshot);
@@ -684,7 +721,7 @@ pub(crate) fn assert_read_metrics(
 }
 
 pub(crate) fn assert_non_monotonic_read_id(
-    error: &GroupError<String, TestRuntimeError>,
+    error: &GroupError<RecordingStateMachineError, TestRuntimeError>,
     read_id: ReadId,
     last_seen_read_id: ReadId,
 ) {

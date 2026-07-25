@@ -2166,6 +2166,15 @@ impl ErrorCause {
     #[must_use]
     pub fn as_error(&self) -> &(dyn Error + Send + Sync + 'static);
 
+    /// Preserves an already-shared `error` as the cause of a Rafter error.
+    ///
+    /// The constructor for a failure with two owners; see the note on
+    /// [the poison cause](#the-poison-cause-one-layer-down).
+    #[must_use]
+    pub fn from_shared<E>(error: Arc<E>) -> Self
+    where
+        E: Error + Send + Sync + 'static;
+
     /// Returns the preserved error when it is of type `E`.
     ///
     /// An embedder whose own state machine or runtime produced the failure
@@ -2434,6 +2443,22 @@ impl<G, A, R> RaftGroup<G, A, R> {
 stays lossless. Both types derive `Debug` only, so neither addition costs a
 trait impl.
 
+**One failure, two owners.** `poison_with_state_machine_error` receives the
+state machine's error once and has to place it twice: in the group's poison
+slot, and in the `GroupError::StateMachine` it returns — which the focused test
+below and every existing apply-failure assertion require to keep carrying the
+typed source. `ReplicatedStateMachine::Error` is deliberately not `Clone`
+(forcing `Clone` on it is a
+[rejected alternative](#rejected-alternatives-6) in this very entry), so the two
+owners share one allocation: `GroupError::StateMachine` holds
+`source: Arc<E>` and the group holds an `ErrorCause` built from the same `Arc`
+through `ErrorCause::from_shared`. The alternative — dropping the typed source
+from the returned error, or leaving `poison_cause` permanently `None` for the
+only poison path that has a typed error — would make `RaftGroup::poison_cause`
+dead API. The six construction sites in `group/proposal.rs` and `group/read.rs`
+that do *not* poison pay one allocation on an error path, which is the whole
+cost.
+
 ### Semantics and edge cases
 
 - **Equality is removed, deliberately, and not replaced.** `WriteError`,
@@ -2513,7 +2538,7 @@ changes in `rafter-service`, and the loss of `Eq` on four public error types.
 
 | File | Change |
 | --- | --- |
-| [`crates/rafter-app/src/error.rs`](../crates/rafter-app/src/error.rs) | Add `ErrorCause`; `GroupError::Poisoned` gains `cause` |
+| [`crates/rafter-app/src/error.rs`](../crates/rafter-app/src/error.rs) | Add `ErrorCause`; `GroupError::Poisoned` gains `cause`; `GroupError::StateMachine` shares its `source` as `Arc<E>` |
 | [`crates/rafter-app/src/state_machine.rs:21`](../crates/rafter-app/src/state_machine.rs) | `type Error: Error + Send + Sync + 'static` |
 | [`crates/rafter-app/src/group/poison.rs:22-40`](../crates/rafter-app/src/group/poison.rs) | Retain the cause when entering poison |
 | [`crates/rafter-app/src/group/types.rs:9-16,204-215`](../crates/rafter-app/src/group/types.rs) | `RaftGroupParts.poison_cause`; `RaftGroup::poison_cause` |
@@ -3889,7 +3914,15 @@ pub enum ApplicationSnapshotError<E> {
 }
 
 impl<E> From<E> for ApplicationSnapshotError<E>;
+impl<E: Display> Display for ApplicationSnapshotError<E>;
+impl<E: Error + 'static> Error for ApplicationSnapshotError<E>; // source() is the inner error
 ```
+
+It gets `Display` and `Error` because it is a public error type returned from a
+public trait method, and this cluster's whole argument is that such a type must
+be a real `std::error::Error` a caller can walk. It deliberately gets no
+`PartialEq`: an implementor's own error may have one, but a wrapper that exists
+to carry a refusal is compared with `matches!`, not `assert_eq!`.
 
 ```rust
 pub trait ReplicatedStateMachine {
@@ -4033,28 +4066,33 @@ of the ten get shorter.
 | File | Type | Change |
 | --- | --- | --- |
 | [`crates/rafter-app/src/state_machine.rs:16-98`](../crates/rafter-app/src/state_machine.rs) | trait | `SnapshotSupport`, `ApplicationSnapshotError`, `SNAPSHOT_SUPPORT`, two provided bodies, `build_snapshot`'s caller-driven contract |
-| [`crates/rafter-app/src/error.rs:39-97`](../crates/rafter-app/src/error.rs) | `GroupError` | Two variants and their `Display` arms |
+| [`crates/rafter-app/src/error.rs`](../crates/rafter-app/src/error.rs) | `GroupError` | Two variants and their `Display` arms |
 | [`crates/rafter-app/src/group/snapshot.rs:13-38`](../crates/rafter-app/src/group/snapshot.rs) | group | Check the declaration before installing; map the misdeclaration |
-| [`crates/rafter-app/src/group/mod.rs`](../crates/rafter-app/src/group/mod.rs) | — | Re-export the two new types from `state_machine` |
+| [`crates/rafter-app/src/group/mod.rs`](../crates/rafter-app/src/group/mod.rs) | — | Import the two new types from `state_machine`. Not a re-export: `rafter-app` exposes modules and gives every type exactly one path, so `SnapshotSupport` is named `rafter_app::state_machine::SnapshotSupport` and nothing else |
 
 | File | Type | Declaration | Bodies |
 | --- | --- | --- | --- |
 | [`reference/ledger/src/adapter/mod.rs:193,256,270`](../reference/ledger/src/adapter/mod.rs) | `LedgerStateMachine` | `Supported` | Both kept; error type wrapped |
 | [`crates/rafter-app/examples/snapshot_install.rs:170,239,247`](../crates/rafter-app/examples/snapshot_install.rs) | `KvStateMachine` | `Supported` | Both kept; error type wrapped |
 | [`crates/rafter-app/tests/support/mod.rs:63,142,150`](../crates/rafter-app/tests/support/mod.rs) | `RecordingStateMachine` | `Supported` | Both kept; the fault switch survives |
-| [`reference/fenced-lock/src/adapter/mod.rs:177,239,246`](../reference/fenced-lock/src/adapter/mod.rs) | `LockStateMachine` | `Unsupported` | Both deleted; `DurableSnapshotUndefined` deleted |
-| [`crates/rafter-app/examples/replicated_kv_manual.rs:283,351,359`](../crates/rafter-app/examples/replicated_kv_manual.rs) | `KvStateMachine` | Re-examine | The lossy install is a defect, not a simplification |
-| [`crates/rafter-multiraft/examples/real_raft_groups.rs:255,317,325`](../crates/rafter-multiraft/examples/real_raft_groups.rs) | `KvStateMachine` | Re-examine | Same |
-| [`crates/rafter-service/examples/replicated_kv_service.rs:91,144,152`](../crates/rafter-service/examples/replicated_kv_service.rs) | `KvStateMachine` | Re-examine | Vacuous both ways |
-| [`crates/rafter-service/tests/support/mod.rs:156,212,220`](../crates/rafter-service/tests/support/mod.rs) | `KvStateMachine` | Re-examine | Vacuous both ways |
-| `bench-compare/src/bin/bench-rafter-service.rs:130,174,182` | `BenchStateMachine` | Re-examine | Vacuous both ways |
-| `bench-compare/src/bin/bench-rafter-multiraft.rs:149,193,201` | `BenchStateMachine` | Re-examine | Vacuous both ways |
+| [`reference/fenced-lock/src/adapter/mod.rs`](../reference/fenced-lock/src/adapter/mod.rs) | `LockStateMachine` | `Unsupported` | Both kept for now, error type wrapped; the deletion, and `DurableSnapshotUndefined`'s, belong to step 15 |
+| [`crates/rafter-app/examples/replicated_kv_manual.rs`](../crates/rafter-app/examples/replicated_kv_manual.rs) | `KvStateMachine` | `Supported` | Both rewritten to round-trip the map |
+| [`crates/rafter-multiraft/examples/real_raft_groups.rs`](../crates/rafter-multiraft/examples/real_raft_groups.rs) | `KvStateMachine` | `Supported` | Same |
+| [`crates/rafter-service/examples/replicated_kv_service.rs`](../crates/rafter-service/examples/replicated_kv_service.rs) | `KvStateMachine` | `Unsupported` | Both deleted |
+| [`crates/rafter-service/tests/support/mod.rs`](../crates/rafter-service/tests/support/mod.rs) | `KvStateMachine` | `Unsupported` | Both deleted; no service test drives an install |
+| `bench-compare/src/bin/bench-rafter-service.rs` | `BenchStateMachine` | `Unsupported` | Both deleted |
+| `bench-compare/src/bin/bench-rafter-multiraft.rs` | `BenchStateMachine` | `Unsupported` | Both deleted |
 
-"Re-examine" is the honest instruction and the point of the entry: each of those
-six must decide whether it models snapshots or declares that it does not, and
-the two that clear their state on install must not answer `Supported` while
-doing so. This is the only step in this cluster whose adoption is expected to
-change behavior in files nobody set out to touch.
+"Re-examine" was the honest instruction, and the answers above are what it
+produced. The two examples that installed a snapshot by clearing their state
+now encode and decode their whole map, because an example is what a user
+copies: an `install_snapshot` that reports the snapshot's applied index while
+discarding the data it carries claims durability through a boundary whose
+effects it just deleted. The four that never see an install — a demo, a service
+test fake, and two benches — declare `Unsupported` and inherit the provided
+bodies, which is the sentence the const exists to make writable. This is the
+only step in this cluster whose adoption changed behavior in files nobody set
+out to touch.
 
 `reference/` and `bench-compare/` are outside the root workspace and must be
 built for this step.
@@ -4303,7 +4341,7 @@ crate upward, so no change is written twice and every step ends green.
     wires the state-machine path as the first producer.
 11. **`ReplicatedStateMachine`, both changes at once.** The `Error` bound, the
     required `SNAPSHOT_SUPPORT` const, the two provided snapshot bodies and
-    `ApplicationSnapshotError`, `GroupError`'s three new variants, the
+    `ApplicationSnapshotError`, `GroupError`'s two new snapshot variants, the
     declaration check in `apply_snapshot_output`, and — now that the bound
     exists — the state-machine poison cause step 10 left unsupplied. Then one
     pass over all ten implementors: six declare a typed error, seven delete or

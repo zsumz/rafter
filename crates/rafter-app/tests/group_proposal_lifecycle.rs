@@ -172,7 +172,7 @@ fn command_encode_failure_does_not_consume_local_proposal_id() {
         GroupError::StateMachine {
             operation: StateMachineOperation::EncodeCommand,
             ref source,
-        } if source == "encode failed"
+        } if **source == RecordingStateMachineError::Encode
     ));
     assert_eq!(group.local_proposal_id_watermark(), None);
     assert_eq!(group.metrics().pending_proposals, 0);

@@ -3,6 +3,7 @@
 use std::{
     cmp::min,
     collections::BTreeMap,
+    fmt,
     future::Future,
     task::{Context, Poll, Waker},
 };
@@ -18,7 +19,7 @@ pub(crate) use rafter_app::{
     proposal::{Proposal, ProposalBegin},
     read::{ReadBarrierRequest, ReadOutcome, ReadProofOutcome, ReadRequest},
     state_machine::{
-        ApplicationSnapshot, ApplyBatch, ApplyResult, ReadBarrier, ReplicatedStateMachine,
+        ApplyBatch, ApplyResult, ReadBarrier, ReplicatedStateMachine, SnapshotSupport,
     },
 };
 use rafter_runtime::{DurableRaftNode, RaftRuntimeError};
@@ -146,6 +147,26 @@ pub(crate) fn numbered_group(
     RaftGroup::new(group_id, NodeId(id), raft, KvStateMachine::default())
 }
 
+/// A failure injected by, or detected in, the service test fake.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum KvStateMachineError {
+    Apply,
+    MalformedCommand,
+    ReadBarrierUnsatisfied,
+}
+
+impl fmt::Display for KvStateMachineError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Apply => "apply failed",
+            Self::MalformedCommand => "malformed command payload",
+            Self::ReadBarrierUnsatisfied => "read barrier has not been reached",
+        })
+    }
+}
+
+impl std::error::Error for KvStateMachineError {}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct KvStateMachine {
     pub(crate) applied_index: LogIndex,
@@ -158,7 +179,13 @@ impl ReplicatedStateMachine for KvStateMachine {
     type CommandResult = Option<String>;
     type Query = String;
     type QueryResult = Option<String>;
-    type Error = String;
+    type Error = KvStateMachineError;
+
+    /// Declared `Unsupported`: this state machine has no snapshot
+    /// representation, so it inherits the trait's provided bodies rather than
+    /// answering a question it cannot answer. A group over it refuses a
+    /// Raft-driven install before the state machine is touched.
+    const SNAPSHOT_SUPPORT: SnapshotSupport = SnapshotSupport::Unsupported;
 
     fn applied_index(&self) -> Result<LogIndex, Self::Error> {
         Ok(self.applied_index)
@@ -169,10 +196,11 @@ impl ReplicatedStateMachine for KvStateMachine {
     }
 
     fn decode_command(&self, payload: &[u8]) -> Result<Self::Command, Self::Error> {
-        let text = std::str::from_utf8(payload).map_err(|error| error.to_string())?;
+        let text =
+            std::str::from_utf8(payload).map_err(|_| KvStateMachineError::MalformedCommand)?;
         let (key, value) = text
             .split_once('\n')
-            .ok_or_else(|| "malformed command payload".to_owned())?;
+            .ok_or(KvStateMachineError::MalformedCommand)?;
         Ok((key.to_owned(), value.to_owned()))
     }
 
@@ -181,7 +209,7 @@ impl ReplicatedStateMachine for KvStateMachine {
         batch: ApplyBatch<Self::Command>,
     ) -> Result<Vec<ApplyResult<Self::CommandResult>>, Self::Error> {
         if self.fail_apply {
-            return Err("apply failed".to_owned());
+            return Err(KvStateMachineError::Apply);
         }
         let mut results = Vec::with_capacity(batch.entries.len());
         for entry in batch.entries {
@@ -204,22 +232,9 @@ impl ReplicatedStateMachine for KvStateMachine {
         barrier: ReadBarrier,
     ) -> Result<Self::QueryResult, Self::Error> {
         if self.applied_index < barrier.required_applied_index {
-            return Err("read barrier has not been reached".to_owned());
+            return Err(KvStateMachineError::ReadBarrierUnsatisfied);
         }
         Ok(self.values.get(&query).cloned())
-    }
-
-    fn build_snapshot(&mut self, at: LogIndex) -> Result<ApplicationSnapshot, Self::Error> {
-        Ok(ApplicationSnapshot {
-            applied_index: at,
-            payload: Vec::new(),
-            raft_snapshot: None,
-        })
-    }
-
-    fn install_snapshot(&mut self, snapshot: ApplicationSnapshot) -> Result<(), Self::Error> {
-        self.applied_index = snapshot.applied_index;
-        Ok(())
     }
 }
 

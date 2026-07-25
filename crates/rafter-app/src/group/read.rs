@@ -1,11 +1,11 @@
 use super::{
-    max, BTreeSet, CompletedQueryRead, Debug, GroupError, GroupInput, GroupResult, GroupStepReport,
-    LogIndex, MembershipConfig, PendingQueryRead, PendingRead, PersistedRaftRuntime, RaftGroup,
-    RaftInput, ReadBarrier, ReadBarrierBeginReport, ReadBarrierBeginReportResult,
-    ReadBarrierRequest, ReadConsistency, ReadEvent, ReadId, ReadIndexCancelReason,
-    ReadIndexRejection, ReadOutcome, ReadOutcomeResult, ReadProof, ReadProofOutcome, ReadReport,
-    ReadReportResult, ReadRequest, ReplicatedStateMachine, StateMachineOperation,
-    StepReportOptions, StepReportResult,
+    max, Arc, BTreeSet, CompletedQueryRead, Debug, GroupError, GroupInput, GroupResult,
+    GroupStepReport, LogIndex, MembershipConfig, PendingQueryRead, PendingRead,
+    PersistedRaftRuntime, RaftGroup, RaftInput, ReadBarrier, ReadBarrierBeginReport,
+    ReadBarrierBeginReportResult, ReadBarrierRequest, ReadConsistency, ReadEvent, ReadId,
+    ReadIndexCancelReason, ReadIndexRejection, ReadOutcome, ReadOutcomeResult, ReadProof,
+    ReadProofOutcome, ReadReport, ReadReportResult, ReadRequest, ReplicatedStateMachine,
+    StateMachineOperation, StepReportOptions, StepReportResult,
 };
 
 impl<G, A, R> RaftGroup<G, A, R>
@@ -298,7 +298,7 @@ where
                 .applied_index()
                 .map_err(|source| GroupError::StateMachine {
                     operation: StateMachineOperation::AppliedIndex,
-                    source,
+                    source: Arc::new(source),
                 })?;
         for (read_id, granted, min_applied_index) in granted_reads {
             let required_applied_index = match min_applied_index {
@@ -348,7 +348,7 @@ where
                 .applied_index()
                 .map_err(|source| GroupError::StateMachine {
                     operation: StateMachineOperation::AppliedIndex,
-                    source,
+                    source: Arc::new(source),
                 })?;
         let required_applied_index = max(
             local_applied_index,
@@ -491,7 +491,7 @@ where
                 .applied_index()
                 .map_err(|source| GroupError::StateMachine {
                     operation: StateMachineOperation::AppliedIndex,
-                    source,
+                    source: Arc::new(source),
                 })?;
         let required_applied_index = match pending.min_applied_index {
             Some(min) => max(granted.application_floor, min),
@@ -600,7 +600,7 @@ where
             .read(query, barrier)
             .map_err(|source| GroupError::StateMachine {
                 operation: StateMachineOperation::Read,
-                source,
+                source: Arc::new(source),
             })
     }
 

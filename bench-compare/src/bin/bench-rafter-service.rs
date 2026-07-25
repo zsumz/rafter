@@ -20,7 +20,7 @@ use rafter::{
 };
 use rafter_app::group::RaftGroup;
 use rafter_app::state_machine::{
-    ApplicationSnapshot, ApplyBatch, ApplyResult, ReadBarrier, ReplicatedStateMachine,
+    ApplyBatch, ApplyResult, ReadBarrier, ReplicatedStateMachine, SnapshotSupport,
 };
 use rafter_runtime::{DurableRaftNode, PersistedRaftRuntime, RaftRuntimeError};
 use rafter_service::{InMemoryRaftDriver, WriteBatchEntry};
@@ -134,6 +134,12 @@ impl ReplicatedStateMachine for BenchStateMachine {
     type QueryResult = ();
     type Error = BenchStateMachineError;
 
+    /// Declared `Unsupported`: this state machine has no snapshot
+    /// representation, so it inherits the trait's provided bodies rather than
+    /// answering a question it cannot answer. A group over it refuses a
+    /// Raft-driven install before the state machine is touched.
+    const SNAPSHOT_SUPPORT: SnapshotSupport = SnapshotSupport::Unsupported;
+
     fn applied_index(&self) -> Result<LogIndex, Self::Error> {
         Ok(self.applied_index)
     }
@@ -168,19 +174,6 @@ impl ReplicatedStateMachine for BenchStateMachine {
         _query: Self::Query,
         _barrier: ReadBarrier,
     ) -> Result<Self::QueryResult, Self::Error> {
-        Ok(())
-    }
-
-    fn build_snapshot(&mut self, at: LogIndex) -> Result<ApplicationSnapshot, Self::Error> {
-        Ok(ApplicationSnapshot {
-            applied_index: at,
-            payload: Vec::new(),
-            raft_snapshot: None,
-        })
-    }
-
-    fn install_snapshot(&mut self, snapshot: ApplicationSnapshot) -> Result<(), Self::Error> {
-        self.applied_index = snapshot.applied_index;
         Ok(())
     }
 }
