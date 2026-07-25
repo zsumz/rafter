@@ -607,6 +607,7 @@ where
         group_id: &G,
         query: A::Query,
         consistency: ReadConsistency,
+        options: ReadOptions,
     ) -> Result<ReadId, ReadError> {
         if self.shutting_down {
             return Err(ReadError::ShuttingDown);
@@ -640,7 +641,10 @@ where
         let read_id = ReadId(next);
         // Registered before the barrier starts, for the reason a write waiter
         // is: a terminal event emitted inside the very step that starts the
-        // barrier must find a waiter listening.
+        // barrier must find a waiter listening. The request is stored whole
+        // because `drive_pending_reads` retries with it: the app layer refuses
+        // a retry whose freshness or context moved, so the caller's floor has
+        // to survive on the waiter rather than be rebuilt per attempt.
         self.read_waiters.insert(
             read_id,
             ReadWaiter {
@@ -648,7 +652,7 @@ where
                     group_id: self.group_id.clone(),
                     read_id,
                     query,
-                    min_applied_index: None,
+                    min_applied_index: options.min_applied_index,
                     context: Vec::new(),
                 },
                 proof_ready: false,

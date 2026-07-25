@@ -6,7 +6,7 @@ use rafter::NodeId;
 use rafter_app::read::ReadConsistency;
 
 use crate::{
-    driver::{DriverCommandSender, QueryReceipt, WriteOptions, WriteReceipt},
+    driver::{DriverCommandSender, QueryReceipt, ReadOptions, WriteOptions, WriteReceipt},
     error::{MetricsError, ReadError, ShutdownError, TransferLeadershipError, WriteError},
     membership::MembershipController,
     watch::MetricsWatch,
@@ -99,8 +99,30 @@ where
         query: Q,
         consistency: ReadConsistency,
     ) -> Result<QueryReceipt<G, QR>, ReadError> {
+        self.read_with_options(query, consistency, ReadOptions::default())
+            .await
+    }
+
+    /// Runs an application query that must observe the caller's own floor.
+    ///
+    /// [`ReadOptions::min_applied_index`] is how a caller says "at least as
+    /// fresh as the write I already observed". It is honored verbatim; the
+    /// natural source is the `index` of a [`WriteReceipt`] this caller already
+    /// holds.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReadError`] when the driver rejects the read, cannot satisfy
+    /// the requested freshness, shuts down, or encounters storage/transport
+    /// failure.
+    pub async fn read_with_options(
+        &self,
+        query: Q,
+        consistency: ReadConsistency,
+        options: ReadOptions,
+    ) -> Result<QueryReceipt<G, QR>, ReadError> {
         self.tx
-            .read(self.group_id.clone(), query, consistency)
+            .read(self.group_id.clone(), query, consistency, options)
             .await
     }
 

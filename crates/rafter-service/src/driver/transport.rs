@@ -645,9 +645,10 @@ where
         group_id: G,
         query: A::Query,
         consistency: ReadConsistency,
+        options: ReadOptions,
     ) -> DriverFuture<Result<QueryReceipt<G, A::QueryResult>, ReadError>> {
         let inner = self.inner.clone();
-        let started = lock_state(&inner).begin_read(&group_id, query, consistency);
+        let started = lock_state(&inner).begin_read(&group_id, query, consistency, options);
         match started {
             Ok(read_id) => Box::pin(poll_fn(move |context| {
                 lock_state(&inner).poll_read(read_id, context)

@@ -18,8 +18,8 @@ use std::future::ready;
 use rafter::{LogIndex, NodeId, Term};
 use rafter_service::{
     DriverCommandSender, DriverFuture, ErrorCause, MetricsError, MetricsWatch, QueryReceipt,
-    ReadConsistency, ReadError, ShutdownError, StateMachineOperation, TransferLeadershipError,
-    WriteError, WriteOptions, WriteReceipt,
+    ReadConsistency, ReadError, ReadOptions, ShutdownError, StateMachineOperation,
+    TransferLeadershipError, WriteError, WriteOptions, WriteReceipt,
 };
 
 /// A driver that refuses everything, written the way an external embedder would
@@ -42,6 +42,7 @@ impl DriverCommandSender<u64, Vec<u8>, Vec<u8>, (), ()> for RefusingDriver {
         _group_id: u64,
         _query: Vec<u8>,
         _consistency: ReadConsistency,
+        _options: ReadOptions,
     ) -> DriverFuture<Result<QueryReceipt<u64, ()>, ReadError>> {
         Box::pin(ready(Err(ReadError::ShuttingDown)))
     }

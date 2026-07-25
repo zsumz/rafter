@@ -184,12 +184,13 @@ where
         group_id: G,
         query: A::Query,
         consistency: ReadConsistency,
+        options: ReadOptions,
     ) -> DriverFuture<Result<QueryReceipt<G, A::QueryResult>, ReadError>> {
         let inner = self.inner.clone();
         Box::pin(async move {
             let mut state = lock_state(&inner);
             state
-                .read(&group_id, &query, consistency)
+                .read(&group_id, &query, consistency, options)
                 .map_err(ManagedOperationError::into_read_error)
         })
     }

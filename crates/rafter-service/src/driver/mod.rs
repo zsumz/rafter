@@ -46,7 +46,7 @@ mod write;
 pub use driver_trait::{DriverCommandSender, DriverFuture};
 pub use in_memory::InMemoryRaftDriver;
 pub use mapping::ManagedDriverError;
-pub use options::{QueryReceipt, WriteBatchEntry, WriteOptions, WriteReceipt};
+pub use options::{QueryReceipt, ReadOptions, WriteBatchEntry, WriteOptions, WriteReceipt};
 pub use transport::{
     InboundEnvelopeError, PendingWrite, TransportDriverOptions, TransportRaftDriver,
 };

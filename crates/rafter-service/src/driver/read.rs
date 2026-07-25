@@ -19,11 +19,12 @@ where
         group_id: &G,
         query: &A::Query,
         consistency: ReadConsistency,
+        options: ReadOptions,
     ) -> ManagedQueryResult<G, A, R> {
         self.reject_for_operation(group_id)?;
         let read_id = self.read_id_for_consistency(consistency)?;
         for _ in 0..self.max_drive_steps {
-            let request = self.read_request(query, consistency, read_id)?;
+            let request = self.read_request(query, consistency, read_id, options)?;
             let read = match self.primary_group_mut()?.read(request) {
                 Ok(read) => read,
                 Err(error) => {
@@ -194,29 +195,36 @@ where
         }
     }
 
+    /// Builds one read request, carrying the caller's freshness floor verbatim.
+    ///
+    /// The floor is not capped, lowered, or substituted: the app layer honors
+    /// what it is given, and a driver that quietly weakened it would turn a
+    /// read-your-writes request into an ordinary one.
     pub(super) fn read_request(
         &self,
         query: &A::Query,
         consistency: ReadConsistency,
         read_id: Option<ReadId>,
+        options: ReadOptions,
     ) -> ReadRequestResult<G, A, R> {
+        let min_applied_index = options.min_applied_index;
         match (consistency, read_id) {
             (ReadConsistency::Linearizable, Some(read_id)) => Ok(ReadRequest::Linearizable {
                 group_id: self.group_id.clone(),
                 read_id,
                 query: query.clone(),
-                min_applied_index: None,
+                min_applied_index,
                 context: Vec::new(),
             }),
             (ReadConsistency::Local, None) => Ok(ReadRequest::Local {
                 group_id: self.group_id.clone(),
                 query: query.clone(),
-                min_applied_index: None,
+                min_applied_index,
             }),
             (ReadConsistency::LeaseRead, None) => Ok(ReadRequest::Lease {
                 group_id: self.group_id.clone(),
                 query: query.clone(),
-                min_applied_index: None,
+                min_applied_index,
             }),
             (ReadConsistency::Linearizable, None)
             | (ReadConsistency::LeaseRead | ReadConsistency::Local, Some(_)) => {

@@ -8,7 +8,7 @@ use crate::{
     watch::MetricsWatch,
 };
 
-use super::{QueryReceipt, WriteOptions, WriteReceipt};
+use super::{QueryReceipt, ReadOptions, WriteOptions, WriteReceipt};
 
 /// Boxed future returned by managed driver senders.
 pub type DriverFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
@@ -27,11 +27,19 @@ pub trait DriverCommandSender<G, C, Q, R, QR>: Clone + Send + Sync + 'static {
         options: WriteOptions,
     ) -> DriverFuture<Result<WriteReceipt<R>, WriteError>>;
 
+    /// Runs a query under `consistency`, honoring the caller's freshness floor.
+    ///
+    /// `options` carries [`ReadOptions::min_applied_index`], which the app
+    /// layer honors verbatim. Implementations must pass it into the
+    /// `ReadRequest` they build rather than substituting one of their own: a
+    /// floor a driver lowered is a read-your-writes guarantee silently
+    /// weakened.
     fn read(
         &self,
         group_id: G,
         query: Q,
         consistency: ReadConsistency,
+        options: ReadOptions,
     ) -> DriverFuture<Result<QueryReceipt<G, QR>, ReadError>>;
 
     /// Requests a leadership transfer.

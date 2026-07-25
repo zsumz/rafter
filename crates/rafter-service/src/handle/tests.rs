@@ -18,7 +18,7 @@ use rafter_app::{
 
 use super::*;
 use crate::{
-    driver::{DriverFuture, QueryReceipt, WriteOptions, WriteReceipt},
+    driver::{DriverFuture, QueryReceipt, ReadOptions, WriteOptions, WriteReceipt},
     error::{MetricsError, ReadError, ShutdownError, TransferLeadershipError, WriteError},
     watch::MetricsWatch,
 };
@@ -33,7 +33,7 @@ struct RecordingSender {
 #[derive(Debug)]
 struct RecordingState {
     writes: Vec<(u64, String, WriteOptions)>,
-    reads: Vec<(u64, String, ReadConsistency)>,
+    reads: Vec<(u64, String, ReadConsistency, ReadOptions)>,
     transfers: Vec<(u64, NodeId)>,
     metrics_requests: Vec<u64>,
     shutdowns: Vec<u64>,
@@ -116,6 +116,7 @@ impl DriverCommandSender<u64, String, String, String, String> for RecordingSende
         group_id: u64,
         query: String,
         consistency: ReadConsistency,
+        options: ReadOptions,
     ) -> DriverFuture<Result<QueryReceipt<u64, String>, ReadError>> {
         let inner = self.inner.clone();
         Box::pin(async move {
@@ -123,7 +124,7 @@ impl DriverCommandSender<u64, String, String, String, String> for RecordingSende
             if state.shutting_down {
                 return Err(ReadError::ShuttingDown);
             }
-            state.reads.push((group_id, query, consistency));
+            state.reads.push((group_id, query, consistency, options));
             state.next_reads.pop_front().unwrap_or_else(|| {
                 Ok(QueryReceipt {
                     result: "value".to_owned(),
@@ -292,7 +293,42 @@ fn read_passes_consistency_and_returns_query_receipt() {
     );
     assert_eq!(
         sender.inner.lock().expect("lock state").reads,
-        vec![(7, "get a".to_owned(), ReadConsistency::Linearizable)]
+        vec![(
+            7,
+            "get a".to_owned(),
+            ReadConsistency::Linearizable,
+            ReadOptions::default()
+        )]
+    );
+}
+
+/// The floor a caller supplies must arrive at the driver as the caller wrote
+/// it. A handle that dropped it would turn a read-your-writes request into an
+/// ordinary read with no way for the caller to tell.
+#[test]
+fn read_with_options_hands_the_callers_floor_to_the_driver() {
+    let sender = RecordingSender::default();
+    sender.push_read(Ok(QueryReceipt {
+        result: "1".to_owned(),
+        proof: None,
+    }));
+    let handle = TestHandle::new(7, sender.clone());
+
+    block_on(handle.read_with_options(
+        "get a".to_owned(),
+        ReadConsistency::Linearizable,
+        ReadOptions::default().with_min_applied_index(LogIndex(9)),
+    ))
+    .expect("read succeeds");
+
+    assert_eq!(
+        sender.inner.lock().expect("lock state").reads,
+        vec![(
+            7,
+            "get a".to_owned(),
+            ReadConsistency::Linearizable,
+            ReadOptions::default().with_min_applied_index(LogIndex(9))
+        )]
     );
 }
 

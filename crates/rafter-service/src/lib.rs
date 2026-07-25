@@ -31,8 +31,8 @@ pub mod watch;
 // unreachable type is a defect, and `tests/public_surface.rs` is the check.
 pub use driver::{
     DriverCommandSender, DriverFuture, InMemoryRaftDriver, InboundEnvelopeError,
-    ManagedDriverError, PendingWrite, QueryReceipt, TransportDriverOptions, TransportRaftDriver,
-    WriteBatchEntry, WriteOptions, WriteReceipt,
+    ManagedDriverError, PendingWrite, QueryReceipt, ReadOptions, TransportDriverOptions,
+    TransportRaftDriver, WriteBatchEntry, WriteOptions, WriteReceipt,
 };
 pub use error::{
     ErrorCause, MetricsError, ReadAbandonReason, ReadError, ReadErrorKind, ShutdownError,
