@@ -1,8 +1,8 @@
 #![allow(dead_code, unused_imports)]
 
 use std::{
-    cmp::max,
-    collections::{BTreeMap, VecDeque},
+    cmp::{max, min},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     error::Error,
     fmt,
 };
@@ -214,11 +214,11 @@ impl PersistedRaftRuntime for KernelRuntime {
     }
 
     /// This fake owns a real kernel, so it answers from the kernel's own log:
-    /// the highest committed entry carrying an application payload, floored at
-    /// the snapshot boundary.
-    fn committed_application_index(&self) -> LogIndex {
+    /// the highest committed entry carrying an application payload at or below
+    /// the bound, falling back to the snapshot boundary capped at the bound.
+    fn committed_application_index_through(&self, index: LogIndex) -> LogIndex {
         let snapshot_index = self.node.snapshot_index();
-        let commit_index = self.node.commit_index();
+        let bound = index.min(self.node.commit_index());
         let first_retained = snapshot_index.next();
         self.node
             .log_entries_slice_from(first_retained)
@@ -226,8 +226,10 @@ impl PersistedRaftRuntime for KernelRuntime {
             .enumerate()
             .rev()
             .map(|(offset, entry)| (LogIndex(first_retained.0 + offset as u64), entry))
-            .find(|(index, entry)| *index <= commit_index && entry.application_payload().is_some())
-            .map_or(snapshot_index, |(index, _)| index)
+            .find(|(entry_index, entry)| {
+                *entry_index <= bound && entry.application_payload().is_some()
+            })
+            .map_or_else(|| snapshot_index.min(index), |(entry_index, _)| entry_index)
     }
 
     fn membership(&self) -> MembershipConfig {
@@ -262,6 +264,17 @@ impl PersistedRaftRuntime for KernelRuntime {
     }
 }
 
+/// A modeled log shape this fake adopts at the start of a step.
+///
+/// Reshaping mid-flight is how a test commits and compacts behind a barrier
+/// whose read index was already granted.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ScriptedLogShape {
+    pub(crate) application_entries: Option<BTreeSet<LogIndex>>,
+    pub(crate) commit_index: LogIndex,
+    pub(crate) snapshot_index: LogIndex,
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ScriptedRuntime {
     pub(crate) node_id: NodeId,
@@ -271,14 +284,19 @@ pub(crate) struct ScriptedRuntime {
     pub(crate) commit_index: LogIndex,
     pub(crate) last_log_index: LogIndex,
     pub(crate) snapshot_index: LogIndex,
-    /// This fake models no log, so the highest committed application entry is
-    /// whatever a test declares it to be. It is reported floored at the
-    /// snapshot boundary, which subsumes the entries it covers.
-    pub(crate) committed_application_index: LogIndex,
+    /// Indexes whose log entry carries an application payload, since this fake
+    /// models no log. `None` — the default — models a log in which every index
+    /// is an application entry, so a floor is exactly its own bound; that is
+    /// what every fixture written before the read barrier gained an application
+    /// floor assumed. A mixed log lists its application entries explicitly.
+    pub(crate) application_entries: Option<BTreeSet<LogIndex>>,
     pub(crate) membership: MembershipConfig,
     pub(crate) committed_membership: MembershipConfig,
     pub(crate) replication: Vec<ReplicationProgress>,
     pub(crate) terms: BTreeMap<LogIndex, Term>,
+    /// Log shapes adopted at the start of a step, so a test can commit and
+    /// compact behind a barrier that has already been granted.
+    pub(crate) step_log_shapes: VecDeque<ScriptedLogShape>,
     pub(crate) step_memberships: VecDeque<(MembershipConfig, MembershipConfig)>,
     pub(crate) step_inputs: Vec<RaftInput>,
     pub(crate) step_batches: Vec<Vec<RaftInput>>,
@@ -297,11 +315,12 @@ impl ScriptedRuntime {
             commit_index: LogIndex::ZERO,
             last_log_index: LogIndex::ZERO,
             snapshot_index: LogIndex::ZERO,
-            committed_application_index: LogIndex::ZERO,
+            application_entries: None,
             membership: membership(&[1], &[]),
             committed_membership: membership(&[1], &[]),
             replication: Vec::new(),
             terms: terms.into_iter().collect(),
+            step_log_shapes: VecDeque::new(),
             step_memberships: VecDeque::new(),
             step_inputs: Vec::new(),
             step_batches: Vec::new(),
@@ -361,8 +380,16 @@ impl PersistedRaftRuntime for ScriptedRuntime {
         self.snapshot_index
     }
 
-    fn committed_application_index(&self) -> LogIndex {
-        max(self.committed_application_index, self.snapshot_index)
+    /// The fake holds no log, so it answers from the application-entry set it
+    /// models: the greatest modeled application entry at or below the bound,
+    /// falling back to the snapshot boundary capped at the bound.
+    fn committed_application_index_through(&self, index: LogIndex) -> LogIndex {
+        let boundary = min(self.snapshot_index, index);
+        let highest = match &self.application_entries {
+            None => (index > self.snapshot_index).then_some(index),
+            Some(entries) => entries.range(..=index).next_back().copied(),
+        };
+        highest.map_or(boundary, |entry| max(entry, boundary))
     }
 
     fn membership(&self) -> MembershipConfig {
@@ -382,6 +409,11 @@ impl PersistedRaftRuntime for ScriptedRuntime {
             self.last_log_index = self.last_log_index.next();
             self.terms.insert(self.last_log_index, self.current_term);
             self.membership = membership(&[1], &[learner_id.0]);
+        }
+        if let Some(shape) = self.step_log_shapes.pop_front() {
+            self.application_entries = shape.application_entries;
+            self.commit_index = shape.commit_index;
+            self.snapshot_index = shape.snapshot_index;
         }
         if let Some((membership, committed_membership)) = self.step_memberships.pop_front() {
             self.membership = membership;

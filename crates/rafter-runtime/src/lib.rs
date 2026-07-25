@@ -395,23 +395,24 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
     }
 
     /// Returns the index the local state machine must reach to have consumed
-    /// every committed application command.
+    /// every committed application command at or below `index`.
     ///
-    /// See [`PersistedRaftRuntime::committed_application_index`] for the
+    /// See [`PersistedRaftRuntime::committed_application_index_through`] for the
     /// contract. This implementation scans the committed retained log suffix
-    /// backwards for the highest application entry and falls back to the
-    /// snapshot boundary, which subsumes every application entry it covers.
+    /// backwards for the highest application entry at or below the bound and
+    /// falls back to the snapshot boundary, which subsumes every application
+    /// entry it covers, capped at the bound.
     ///
-    /// The scan is O(1) whenever the tail below the commit index is an
-    /// application entry, which is the steady state of a busy group. Its worst
-    /// case is the whole committed retained suffix, reached when the retained
-    /// log holds no committed application entry at all — a group that has only
-    /// ever elected and reconfigured. Callers evaluate this at readiness
-    /// boundaries, not per step, so no derived index is kept in the kernel.
+    /// The scan is O(1) whenever the entry at the bound is an application entry,
+    /// which is the steady state of a busy group. Its worst case is the whole
+    /// committed retained suffix, reached when the retained log holds no
+    /// committed application entry at all — a group that has only ever elected
+    /// and reconfigured. Callers evaluate this at readiness boundaries and once
+    /// per read barrier, not per step, so no derived index is kept in the kernel.
     #[must_use]
-    pub fn committed_application_index(&self) -> LogIndex {
+    pub fn committed_application_index_through(&self, index: LogIndex) -> LogIndex {
         let snapshot_index = self.node.snapshot_index();
-        let commit_index = self.node.commit_index();
+        let bound = index.min(self.node.commit_index());
         let first_retained = snapshot_index.next();
         self.node
             .log_entries_slice_from(first_retained)
@@ -419,8 +420,22 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
             .enumerate()
             .rev()
             .map(|(offset, entry)| (LogIndex(first_retained.0 + offset as u64), entry))
-            .find(|(index, entry)| *index <= commit_index && entry.application_payload().is_some())
-            .map_or(snapshot_index, |(index, _)| index)
+            .find(|(entry_index, entry)| {
+                *entry_index <= bound && entry.application_payload().is_some()
+            })
+            .map_or_else(|| snapshot_index.min(index), |(entry_index, _)| entry_index)
+    }
+
+    /// Returns the index the local state machine must reach to have consumed
+    /// every committed application command.
+    ///
+    /// See [`PersistedRaftRuntime::committed_application_index`] for the
+    /// contract. This is
+    /// [`DurableRaftNode::committed_application_index_through`] at the commit
+    /// index.
+    #[must_use]
+    pub fn committed_application_index(&self) -> LogIndex {
+        self.committed_application_index_through(self.node.commit_index())
     }
 
     /// Returns the committed configuration entry, if the log has committed one.
@@ -807,8 +822,8 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
         DurableRaftNode::snapshot_index(self)
     }
 
-    fn committed_application_index(&self) -> LogIndex {
-        DurableRaftNode::committed_application_index(self)
+    fn committed_application_index_through(&self, index: LogIndex) -> LogIndex {
+        DurableRaftNode::committed_application_index_through(self, index)
     }
 
     fn membership(&self) -> MembershipConfig {

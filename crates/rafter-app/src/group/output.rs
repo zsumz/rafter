@@ -73,6 +73,24 @@ where
         self.raft.committed_application_index()
     }
 
+    /// Returns the index this group's state machine must reach to have applied
+    /// every committed application command at or below `index`.
+    ///
+    /// Use this to convert a raw log index into a reachable applied floor. A
+    /// commit index, a read index, or a snapshot boundary may name an entry the
+    /// state machine will never be told about, and waiting for the state machine
+    /// to report that index waits forever. An index taken from
+    /// [`crate::proposal::ProposalEvent::Applied`] never needs the conversion: it
+    /// already names an application entry.
+    ///
+    /// This is what [`RaftGroup::read`] applies to a granted read index on the
+    /// caller's behalf. It is not applied to a caller-supplied
+    /// `min_applied_index`; see [`crate::read::ReadRequest`].
+    #[must_use]
+    pub fn committed_application_index_through(&self, index: LogIndex) -> LogIndex {
+        self.raft.committed_application_index_through(index)
+    }
+
     /// Steps one group input and returns all explicit side effects.
     ///
     /// # Errors

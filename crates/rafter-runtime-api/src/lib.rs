@@ -49,32 +49,51 @@ pub trait PersistedRaftRuntime {
     fn snapshot_index(&self) -> LogIndex;
 
     /// Returns the index the local state machine must reach to have consumed
+    /// every committed application command at or below `index`.
+    ///
+    /// This is the highest index at or below both `index` and
+    /// [`PersistedRaftRuntime::commit_index`] whose log entry carries an
+    /// application payload; when no such entry is retained it is the snapshot
+    /// boundary, which subsumes every application entry it covers, capped at
+    /// `index`. It is `LogIndex::ZERO` when the node holds no snapshot and has
+    /// committed no application entry at or below `index`.
+    ///
+    /// The result never exceeds `index`. That is the load-bearing property for a
+    /// read barrier: elections and membership changes commit entries the state
+    /// machine never sees, so a barrier that required its state machine to reach
+    /// the read index itself would require an index the kernel guarantees it will
+    /// never report. Requiring more than this is not conservative — it makes a
+    /// read wait for a write that is not ordered before it.
+    ///
+    /// The value is non-decreasing in `index`, and non-decreasing over time for a
+    /// fixed `index` within one node incarnation: committed entries are never
+    /// truncated, and compaction can only raise the answer to a boundary the
+    /// state machine has itself already reached.
+    ///
+    /// The value is local, and it is not a freshness proof. Pairing it with a
+    /// granted read index is what makes a read linearizable; on its own it says
+    /// only what this replica knows.
+    ///
+    /// Implementations must report the true value for their own log rather than
+    /// an optimistic bound. A runtime that reports an index below the highest
+    /// committed application entry at or below `index` lets a barrier grant
+    /// before the state machine has applied an acknowledged write.
+    fn committed_application_index_through(&self, index: LogIndex) -> LogIndex;
+
+    /// Returns the index the local state machine must reach to have consumed
     /// every committed application command.
     ///
-    /// This is the highest index at or below
-    /// [`PersistedRaftRuntime::commit_index`] whose log entry carries an
-    /// application payload, or [`PersistedRaftRuntime::snapshot_index`] when the
-    /// snapshot boundary is higher — a snapshot subsumes every application entry
-    /// it covers. It is `LogIndex::ZERO` when the node has committed no
-    /// application entry and holds no snapshot.
+    /// This is [`PersistedRaftRuntime::committed_application_index_through`] at
+    /// the commit index, and it is the readiness predicate: compare it with the
+    /// state machine's applied index after recovery. Implementations should not
+    /// override it.
     ///
     /// Elections and membership changes commit entries the state machine never
     /// sees, so this is not `commit_index`, and a fully caught-up state machine
     /// may trail the committed index forever.
-    ///
-    /// The value never decreases within one node incarnation: committed entries
-    /// are never truncated, and the snapshot boundary only advances.
-    ///
-    /// The value is local. It says nothing about what the cluster has committed:
-    /// a stale follower and an isolated former leader each report their own view,
-    /// and both can report a fully applied state machine while missing entries a
-    /// current leader has committed. It is a recovery and readiness signal, not a
-    /// freshness proof — a linearizable read still requires a read-index barrier.
-    ///
-    /// Implementations must report the true value for their own log rather than
-    /// an optimistic bound. A runtime that reports zero makes a readiness gate
-    /// pass before recovery has replayed anything.
-    fn committed_application_index(&self) -> LogIndex;
+    fn committed_application_index(&self) -> LogIndex {
+        self.committed_application_index_through(self.commit_index())
+    }
 
     /// Returns the currently effective Raft membership.
     fn membership(&self) -> MembershipConfig;

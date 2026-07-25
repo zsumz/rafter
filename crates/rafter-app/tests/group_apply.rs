@@ -563,7 +563,9 @@ fn readiness_predicate_is_false_until_recovery_outputs_are_applied() {
 fn committed_application_index_is_reported_by_a_poisoned_group() {
     let mut runtime = ScriptedRuntime::with_step_outputs([]);
     runtime.commit_index = LogIndex(9);
-    runtime.committed_application_index = LogIndex(8);
+    // A committed tail that is not an application entry: the highest committed
+    // application entry sits at 8, which is what a readiness gate must compare.
+    runtime.application_entries = Some([LogIndex(8)].into_iter().collect());
     let mut group = scripted_group_with_runtime(
         RecordingStateMachine {
             fail_decode: true,

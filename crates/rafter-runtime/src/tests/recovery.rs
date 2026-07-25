@@ -357,6 +357,156 @@ fn committed_application_index_is_zero_on_a_node_with_no_application_entries() {
     oracle_assert_eq!(recovered.committed_application_index(), LogIndex::ZERO);
 }
 
+/// The bound is what makes this usable as a read barrier's floor: a read index
+/// captured at registration is consumed arbitrarily later, so `commit_index >
+/// index` is the normal case and an entry above the cut is not ordered before
+/// the read.
+#[test]
+fn committed_application_index_through_ignores_entries_above_its_bound() {
+    let mut runtime = durable_node_with_log(
+        1,
+        &[],
+        InMemoryRaftHardStateStore::new(),
+        InMemoryRaftLogSegment::new(),
+    );
+    let _ = runtime.step(RaftInput::Tick).expect("single node elects");
+    let _ = runtime
+        .step(RaftInput::ClientProposal {
+            payload: b"one".to_vec(),
+        })
+        .expect("application entry commits at 2");
+    let _ = runtime
+        .step(RaftInput::AddLearner {
+            learner_id: RaftNodeId(2),
+        })
+        .expect("configuration entry commits at 3");
+    let _ = runtime
+        .step(RaftInput::ClientProposal {
+            payload: b"two".to_vec(),
+        })
+        .expect("application entry commits at 4");
+    oracle_assert_eq!(runtime.commit_index(), LogIndex(4));
+
+    oracle_assert_eq!(
+        runtime.committed_application_index_through(LogIndex(3)),
+        LogIndex(2),
+        "the application entry at 4 is above the cut and is not required by it"
+    );
+    oracle_assert_eq!(
+        runtime.committed_application_index_through(LogIndex(1)),
+        LogIndex::ZERO,
+        "a bound that names the leadership noop requires nothing of a state machine"
+    );
+    oracle_assert_eq!(
+        runtime.committed_application_index_through(LogIndex(2)),
+        LogIndex(2)
+    );
+    oracle_assert_eq!(
+        runtime.committed_application_index_through(LogIndex(4)),
+        LogIndex(4)
+    );
+    oracle_assert!(
+        [
+            LogIndex::ZERO,
+            LogIndex(1),
+            LogIndex(2),
+            LogIndex(3),
+            LogIndex(4),
+            LogIndex(9),
+        ]
+        .into_iter()
+        .all(|bound| runtime.committed_application_index_through(bound) <= bound),
+        "the result never exceeds its bound"
+    );
+}
+
+/// A boundary above the bound is capped to the bound, which a state machine
+/// that installed the snapshot has already passed. A boundary below it is the
+/// fallback when the retained window holds no application entry in the cut.
+#[test]
+fn committed_application_index_through_uses_the_snapshot_boundary_capped_at_its_bound() {
+    let mut runtime = durable_node_with_log(
+        1,
+        &[],
+        InMemoryRaftHardStateStore::new(),
+        InMemoryRaftLogSegment::new(),
+    );
+    let _ = runtime.step(RaftInput::Tick).expect("single node elects");
+    let _ = runtime
+        .step(RaftInput::ClientProposal {
+            payload: b"one".to_vec(),
+        })
+        .expect("application entry commits at 2");
+    let _ = runtime
+        .step(RaftInput::AddLearner {
+            learner_id: RaftNodeId(2),
+        })
+        .expect("configuration entry commits at 3");
+    runtime
+        .compact_log_with_snapshot(raft_snapshot(3, 1, 1, b"payload"))
+        .expect("local snapshot compacts the log");
+    oracle_assert_eq!(runtime.snapshot_index(), LogIndex(3));
+
+    oracle_assert_eq!(
+        runtime.committed_application_index_through(LogIndex(2)),
+        LogIndex(2),
+        "a boundary above the bound is capped at the bound the snapshot subsumes"
+    );
+
+    let _ = runtime
+        .step(RaftInput::AddLearner {
+            learner_id: RaftNodeId(3),
+        })
+        .expect("configuration entry commits at 4");
+    oracle_assert_eq!(runtime.commit_index(), LogIndex(4));
+    oracle_assert_eq!(
+        runtime.committed_application_index_through(LogIndex(4)),
+        LogIndex(3),
+        "the retained window above the boundary holds no application entry"
+    );
+}
+
+/// The provided readiness accessor is defined as the bounded form at the commit
+/// index, so the two can never disagree.
+#[test]
+fn committed_application_index_equals_the_bounded_form_at_the_commit_index() {
+    let mut runtime = durable_node_with_log(
+        1,
+        &[],
+        InMemoryRaftHardStateStore::new(),
+        InMemoryRaftLogSegment::new(),
+    );
+    let assert_agrees = |runtime: &DurableRaftNode<_, _>| {
+        oracle_assert_eq!(
+            runtime.committed_application_index(),
+            runtime.committed_application_index_through(runtime.commit_index())
+        );
+    };
+
+    assert_agrees(&runtime);
+    let _ = runtime.step(RaftInput::Tick).expect("single node elects");
+    assert_agrees(&runtime);
+    let _ = runtime
+        .step(RaftInput::ClientProposal {
+            payload: b"one".to_vec(),
+        })
+        .expect("application entry commits");
+    assert_agrees(&runtime);
+    let _ = runtime
+        .step(RaftInput::AddLearner {
+            learner_id: RaftNodeId(2),
+        })
+        .expect("configuration entry commits");
+    assert_agrees(&runtime);
+    oracle_assert_eq!(runtime.committed_application_index(), LogIndex(2));
+
+    runtime
+        .compact_log_with_snapshot(raft_snapshot(3, 1, 1, b"payload"))
+        .expect("local snapshot compacts the log");
+    assert_agrees(&runtime);
+    oracle_assert_eq!(runtime.committed_application_index(), LogIndex(3));
+}
+
 /// Decomposition is the in-process half of restart: the stores that come back
 /// must recover the same node the retired incarnation was.
 #[test]

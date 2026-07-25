@@ -265,9 +265,10 @@ impl PersistedRaftRuntime for BatchRecordingRuntime {
     }
 
     /// Every index this fake records is an application proposal, and it
-    /// commits each one as it records it.
-    fn committed_application_index(&self) -> LogIndex {
-        self.last_recorded_index()
+    /// commits each one as it records it, so the floor for a bound is the
+    /// highest recorded index at or below it.
+    fn committed_application_index_through(&self, index: LogIndex) -> LogIndex {
+        std::cmp::min(index, self.last_recorded_index())
     }
 
     fn membership(&self) -> MembershipConfig {

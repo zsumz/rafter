@@ -1,6 +1,7 @@
 #![allow(dead_code, unused_imports)]
 
 use std::{
+    cmp::min,
     collections::BTreeMap,
     future::Future,
     task::{Context, Poll, Waker},
@@ -228,6 +229,11 @@ pub(crate) enum ScriptedReadMode {
     /// Grants a read index the state machine has not reached *and* emits a peer
     /// message in the same step, which no non-`Pending` read outcome can carry.
     GrantWithPeerTraffic(LogIndex),
+    /// Grants a read index that names an entry the state machine will never be
+    /// told about — the `Noop` every new leader appends first. The application
+    /// floor below it is `LogIndex::ZERO`, so a fresh state machine satisfies
+    /// the barrier without any write ever committing.
+    GrantAtNonApplicationIndex(LogIndex),
     Pending,
     Reject,
     Cancel,
@@ -260,7 +266,9 @@ impl PersistedRaftRuntime for ScriptedReadRuntime {
 
     fn commit_index(&self) -> LogIndex {
         match self.mode {
-            ScriptedReadMode::Grant(index) | ScriptedReadMode::GrantWithPeerTraffic(index) => index,
+            ScriptedReadMode::Grant(index)
+            | ScriptedReadMode::GrantWithPeerTraffic(index)
+            | ScriptedReadMode::GrantAtNonApplicationIndex(index) => index,
             ScriptedReadMode::Pending | ScriptedReadMode::Reject | ScriptedReadMode::Cancel => {
                 self.metric_index
             }
@@ -275,11 +283,19 @@ impl PersistedRaftRuntime for ScriptedReadRuntime {
         LogIndex::ZERO
     }
 
-    /// This fake only answers read-index requests: it never appends, commits,
-    /// or snapshots an application entry, so there is nothing for a state
-    /// machine to catch up to.
-    fn committed_application_index(&self) -> LogIndex {
-        LogIndex::ZERO
+    /// This fake models a log whose committed prefix is application entries,
+    /// except in [`ScriptedReadMode::GrantAtNonApplicationIndex`], which models
+    /// the post-election log a barrier actually lands on: a committed `Noop`
+    /// with no application entry anywhere below it.
+    fn committed_application_index_through(&self, index: LogIndex) -> LogIndex {
+        match self.mode {
+            ScriptedReadMode::GrantAtNonApplicationIndex(_) => LogIndex::ZERO,
+            ScriptedReadMode::Grant(_)
+            | ScriptedReadMode::GrantWithPeerTraffic(_)
+            | ScriptedReadMode::Pending
+            | ScriptedReadMode::Reject
+            | ScriptedReadMode::Cancel => min(index, self.commit_index()),
+        }
     }
 
     fn membership(&self) -> MembershipConfig {
@@ -294,12 +310,14 @@ impl PersistedRaftRuntime for ScriptedReadRuntime {
 
     fn step(&mut self, input: RaftInput) -> Result<Vec<RaftOutput>, RaftRuntimeError> {
         match (self.mode, input) {
-            (ScriptedReadMode::Grant(read_index), RaftInput::ReadIndex { read_id }) => {
-                Ok(vec![RaftOutput::ReadIndexGranted {
-                    read_id,
-                    read_index,
-                }])
-            }
+            (
+                ScriptedReadMode::Grant(read_index)
+                | ScriptedReadMode::GrantAtNonApplicationIndex(read_index),
+                RaftInput::ReadIndex { read_id },
+            ) => Ok(vec![RaftOutput::ReadIndexGranted {
+                read_id,
+                read_index,
+            }]),
             (
                 ScriptedReadMode::GrantWithPeerTraffic(read_index),
                 RaftInput::ReadIndex { read_id },
@@ -405,8 +423,9 @@ impl PersistedRaftRuntime for ScriptedWriteRuntime {
     }
 
     /// This fake appends but never commits: `commit_index` stays at zero, so
-    /// no application entry is committed for a state machine to reach.
-    fn committed_application_index(&self) -> LogIndex {
+    /// no application entry is committed for a state machine to reach at any
+    /// bound.
+    fn committed_application_index_through(&self, _index: LogIndex) -> LogIndex {
         LogIndex::ZERO
     }
 
