@@ -81,9 +81,18 @@ pub(super) type ApplyEntryResult<A, R> =
     GroupResult<A, R, ApplyEntry<<A as ReplicatedStateMachine>::Command>>;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) struct GrantedReadIndex {
+    /// What the quorum round certified.
+    pub(super) read_index: LogIndex,
+    /// The highest committed application entry at or below `read_index`, and
+    /// therefore the applied index a state machine can actually reach.
+    pub(super) application_floor: LogIndex,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct PendingRead {
     pub(super) min_applied_index: Option<LogIndex>,
-    pub(super) read_index: Option<LogIndex>,
+    pub(super) granted: Option<GrantedReadIndex>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

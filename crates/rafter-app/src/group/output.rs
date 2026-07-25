@@ -1,9 +1,9 @@
 use super::{
-    report_has_proposal_lifecycle, ApplyEntry, Debug, GroupError, GroupInput, GroupResult,
-    GroupStepReport, LeadershipTransferEvent, LogIndex, MembershipConfig, MembershipStepContext,
-    Message, NodeId, PeerEnvelope, PersistedRaftRuntime, Proposal, ProposalEvent, RaftGroup,
-    RaftGroupMetrics, RaftInput, RaftOutput, ReplicatedStateMachine, SnapshotEvent,
-    StepReportOptions, StepReportResult,
+    report_has_proposal_lifecycle, ApplyEntry, Debug, GrantedReadIndex, GroupError, GroupInput,
+    GroupResult, GroupStepReport, LeadershipTransferEvent, LogIndex, MembershipConfig,
+    MembershipStepContext, Message, NodeId, PeerEnvelope, PersistedRaftRuntime, Proposal,
+    ProposalEvent, RaftGroup, RaftGroupMetrics, RaftInput, RaftOutput, ReadId,
+    ReplicatedStateMachine, SnapshotEvent, StepReportOptions, StepReportResult,
 };
 
 impl<G, A, R> RaftGroup<G, A, R>
@@ -354,6 +354,24 @@ where
         Ok(report)
     }
 
+    /// Records a quorum-confirmed read index and resolves its application floor.
+    ///
+    /// The floor is derived once, here, rather than on every later step for
+    /// every pending read: that keeps the read table's per-step cost unchanged,
+    /// and it makes the floor a fixed property of the barrier, so a caller
+    /// polling toward [`crate::read::ReadEvent::FreshnessUnavailable`] sees a
+    /// stable target that a later commit or compaction cannot move. It is
+    /// computed before the pending entry is borrowed mutably.
+    fn record_granted_read_index(&mut self, read_id: ReadId, read_index: LogIndex) {
+        let application_floor = self.raft.committed_application_index_through(read_index);
+        if let Some(pending) = self.pending_reads.get_mut(&read_id) {
+            pending.granted = Some(GrantedReadIndex {
+                read_index,
+                application_floor,
+            });
+        }
+    }
+
     pub(super) fn record_raft_output(
         &mut self,
         output: RaftOutput,
@@ -432,11 +450,7 @@ where
             RaftOutput::ReadIndexGranted {
                 read_id,
                 read_index,
-            } => {
-                if let Some(pending) = self.pending_reads.get_mut(&read_id) {
-                    pending.read_index = Some(read_index);
-                }
-            }
+            } => self.record_granted_read_index(read_id, read_index),
             RaftOutput::ReadIndexRejected { read_id, reason } => {
                 self.record_rejected_read(read_id, reason, report);
             }

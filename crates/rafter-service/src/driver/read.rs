@@ -136,6 +136,20 @@ where
         }
     }
 
+    /// Abandons a read whose freshness gap cannot close on its own.
+    ///
+    /// The gap this handles is a real one: the state machine has not yet
+    /// applied the committed application entries at or below the granted read
+    /// index. It closes as those applies drain, so the driver keeps driving
+    /// while anything is still in flight and gives up only once the network is
+    /// quiet and nothing can advance the applied index.
+    ///
+    /// This path used to be reached after every election. The barrier required
+    /// the state machine to reach the read index itself, which named the new
+    /// leader's `Noop`, and the network drains promptly when nothing else is
+    /// happening — so a linearizable read failed until an unrelated write
+    /// committed. The barrier now requires only the application floor below the
+    /// read index, so the common post-election read answers here instead.
     pub(super) fn handle_linearizable_freshness_gap(
         &mut self,
         read_id: ReadId,

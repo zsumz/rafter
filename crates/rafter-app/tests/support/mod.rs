@@ -125,11 +125,17 @@ impl ReplicatedStateMachine for RecordingStateMachine {
         Ok(results)
     }
 
+    /// An empty query reads served state instead of echoing itself, so a test
+    /// can tell whether a read answered from state that predates a write. Every
+    /// other query is echoed, which is all a test of barrier plumbing needs.
     fn read(
         &self,
         query: Self::Query,
         _barrier: ReadBarrier,
     ) -> Result<Self::QueryResult, Self::Error> {
+        if query.is_empty() {
+            return Ok(self.applied.last().cloned());
+        }
         Ok(Some(query))
     }
 
@@ -733,6 +739,21 @@ pub(crate) fn snapshot_chunk_send(snapshot: &RaftSnapshot) -> SnapshotChunkSend 
         len: u32::try_from(snapshot.application_payload_len)
             .expect("test snapshot payload length fits in one chunk"),
         done: true,
+    }
+}
+
+/// A linearizable request whose query reads served state rather than echoing
+/// itself. Use this when the point of the test is *what* a read answered.
+pub(crate) fn state_read_request(
+    read_id: ReadId,
+    min_applied_index: Option<LogIndex>,
+) -> ReadRequest<u64, Vec<u8>> {
+    ReadRequest::Linearizable {
+        group_id: 7,
+        read_id,
+        query: Vec::new(),
+        min_applied_index,
+        context: Vec::new(),
     }
 }
 

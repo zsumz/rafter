@@ -122,6 +122,34 @@ fn managed_read_routes_every_effect_the_barrier_step_emitted() {
     );
 }
 
+/// The production regression. After an election the new leader's only entry in
+/// its own term is a `Noop`, and the barrier grants there. The managed driver
+/// passes `min_applied_index: None`, so a caller cannot work around a floor it
+/// does not control — and the network drains promptly when nothing else is
+/// happening, so the driver reached `handle_linearizable_freshness_gap` and
+/// returned `FreshnessUnavailable` for every linearizable read until an
+/// unrelated write committed. It now answers.
+#[test]
+fn managed_read_answers_after_an_election_without_an_intervening_write() {
+    let driver = scripted_read_driver(ScriptedReadMode::GrantAtNonApplicationIndex(LogIndex(1)));
+    let handle = driver.handle();
+
+    let receipt = block_on(handle.read("missing".to_owned(), ReadConsistency::Linearizable))
+        .expect("a post-election linearizable read answers with no write in between");
+
+    assert_eq!(receipt.result, None);
+    let proof = receipt
+        .proof
+        .expect("a linearizable read carries its proof");
+    assert_eq!(proof.read_index, LogIndex(1));
+    assert_eq!(
+        proof.required_applied_index,
+        LogIndex::ZERO,
+        "the leadership noop at the read index requires nothing of the state machine"
+    );
+    assert_eq!(proof.local_applied_index, LogIndex::ZERO);
+}
+
 #[test]
 fn in_memory_driver_cancels_stalled_linearizable_reads() {
     let driver = scripted_read_driver(ScriptedReadMode::Pending);

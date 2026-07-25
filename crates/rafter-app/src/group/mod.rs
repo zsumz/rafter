@@ -50,8 +50,9 @@ pub use types::{
 };
 
 use types::{
-    report_has_proposal_lifecycle, ApplyEntryResult, CompletedQueryRead, GroupResult,
-    MembershipStepContext, PendingQueryRead, PendingRead, ProposalBatchBeginReportResult,
-    ProposalBeginReportResult, ProposalBeginResult, ReadBarrierBeginReportResult,
-    ReadOutcomeResult, ReadReportResult, RuntimeGroupError, StepReportResult,
+    report_has_proposal_lifecycle, ApplyEntryResult, CompletedQueryRead, GrantedReadIndex,
+    GroupResult, MembershipStepContext, PendingQueryRead, PendingRead,
+    ProposalBatchBeginReportResult, ProposalBeginReportResult, ProposalBeginResult,
+    ReadBarrierBeginReportResult, ReadOutcomeResult, ReadReportResult, RuntimeGroupError,
+    StepReportResult,
 };

@@ -32,7 +32,7 @@ where
             read_id,
             PendingRead {
                 min_applied_index: request.min_applied_index,
-                read_index: None,
+                granted: None,
             },
         );
         self.last_seen_read_id = Some(read_id);
@@ -282,8 +282,8 @@ where
             .iter()
             .filter_map(|(read_id, pending)| {
                 pending
-                    .read_index
-                    .map(|read_index| (*read_id, read_index, pending.min_applied_index))
+                    .granted
+                    .map(|granted| (*read_id, granted, pending.min_applied_index))
             })
             .collect::<Vec<_>>();
         if granted_reads.is_empty() {
@@ -297,15 +297,18 @@ where
                     operation: StateMachineOperation::AppliedIndex,
                     source,
                 })?;
-        for (read_id, read_index, min_applied_index) in granted_reads {
-            let required_applied_index = max(read_index, min_applied_index.unwrap_or(read_index));
+        for (read_id, granted, min_applied_index) in granted_reads {
+            let required_applied_index = match min_applied_index {
+                Some(min) => max(granted.application_floor, min),
+                None => granted.application_floor,
+            };
             if local_applied_index >= required_applied_index {
                 self.pending_reads.remove(&read_id);
                 let proof = ReadProof {
                     group_id: self.group_id.clone(),
                     issued_by: self.node_id,
                     term: self.raft.current_term(),
-                    read_index,
+                    read_index: granted.read_index,
                     required_applied_index,
                     local_applied_index,
                 };
@@ -473,7 +476,7 @@ where
                 peer_messages: Vec::new(),
             });
         };
-        let Some(read_index) = pending.read_index else {
+        let Some(granted) = pending.granted else {
             return Ok(ReadOutcome::Pending {
                 read_id,
                 peer_messages: Vec::new(),
@@ -487,8 +490,10 @@ where
                     operation: StateMachineOperation::AppliedIndex,
                     source,
                 })?;
-        let required_applied_index =
-            max(read_index, pending.min_applied_index.unwrap_or(read_index));
+        let required_applied_index = match pending.min_applied_index {
+            Some(min) => max(granted.application_floor, min),
+            None => granted.application_floor,
+        };
         if local_applied_index < required_applied_index {
             return Ok(ReadOutcome::LinearizableFreshnessUnavailable {
                 read_id,
@@ -503,7 +508,7 @@ where
             group_id: self.group_id.clone(),
             issued_by: self.node_id,
             term: self.raft.current_term(),
-            read_index,
+            read_index: granted.read_index,
             required_applied_index,
             local_applied_index,
         };

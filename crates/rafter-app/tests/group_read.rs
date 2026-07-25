@@ -2,6 +2,8 @@
 
 mod support;
 
+use std::collections::BTreeSet;
+
 use rafter_invariant_test::oracle_assert;
 use support::*;
 
@@ -815,6 +817,445 @@ fn read_retry_after_a_terminal_read_event_is_non_monotonic() {
         .expect_err("a rejected read id stays consumed");
 
     assert_non_monotonic_read_id(&retry, read_id, read_id);
+}
+
+/// The headline defect. A new leader's first entry in its term is a `Noop`, so
+/// the barrier grants at an index the state machine is never told about. Before
+/// the floor was introduced this read stalled forever on a read-only tail.
+#[test]
+fn read_barrier_grants_when_the_read_index_is_a_non_application_entry() {
+    let read_id = ReadId(90);
+    let mut runtime = ScriptedRuntime::with_step_outputs([vec![RaftOutput::ReadIndexGranted {
+        read_id,
+        read_index: LogIndex(6),
+    }]]);
+    runtime.commit_index = LogIndex(6);
+    runtime.application_entries = Some([LogIndex(3), LogIndex(4)].into_iter().collect());
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine {
+            applied_index: LogIndex(4),
+            ..RecordingStateMachine::default()
+        },
+        runtime,
+    );
+
+    let outcome = group
+        .read(read_helper_request(
+            read_id,
+            ReadConsistency::Linearizable,
+            None,
+        ))
+        .expect("linearizable read succeeds")
+        .outcome;
+
+    oracle_assert!(
+        matches!(
+            outcome,
+            ReadOutcome::Ready {
+                result: Some(ref result),
+                proof: Some(ReadProof {
+                    read_index: LogIndex(6),
+                    required_applied_index: LogIndex(4),
+                    local_applied_index: LogIndex(4),
+                    ..
+                }),
+            } if result == b"query"
+        ),
+        "a barrier granted at a non-application entry must require only the \
+         application floor below it, got {outcome:?}"
+    );
+    assert_eq!(group.metrics().pending_reads, 0);
+}
+
+/// The extreme case: a cluster whose only entry is its first leader's `Noop`.
+/// Its first-ever linearizable read must answer without anyone writing first.
+#[test]
+fn read_barrier_grants_on_a_cluster_that_has_committed_no_application_entry() {
+    let read_id = ReadId(91);
+    let mut runtime = ScriptedRuntime::with_step_outputs([vec![RaftOutput::ReadIndexGranted {
+        read_id,
+        read_index: LogIndex(1),
+    }]]);
+    runtime.commit_index = LogIndex(1);
+    runtime.application_entries = Some(BTreeSet::new());
+    let mut group = scripted_group_with_runtime(RecordingStateMachine::default(), runtime);
+
+    let outcome = group
+        .read(read_helper_request(
+            read_id,
+            ReadConsistency::Linearizable,
+            None,
+        ))
+        .expect("the first read of a cluster's life succeeds");
+
+    oracle_assert!(
+        matches!(
+            outcome.outcome,
+            ReadOutcome::Ready {
+                proof: Some(ReadProof {
+                    read_index: LogIndex(1),
+                    required_applied_index: LogIndex::ZERO,
+                    local_applied_index: LogIndex::ZERO,
+                    ..
+                }),
+                ..
+            }
+        ),
+        "a cluster with no committed application entry requires nothing of its \
+         state machine, got {:?}",
+        outcome.outcome
+    );
+}
+
+/// The mixed-log case, and the direct refutation of an uncapped floor. Entry 7
+/// commits while the barrier's round is in flight; it is not ordered before
+/// this read and waiting for it would be a defect, not caution.
+#[test]
+fn read_barrier_does_not_require_an_application_entry_above_the_read_index() {
+    let read_id = ReadId(92);
+    let mut runtime = ScriptedRuntime::with_step_outputs([vec![RaftOutput::ReadIndexGranted {
+        read_id,
+        read_index: LogIndex(6),
+    }]]);
+    runtime.commit_index = LogIndex(7);
+    runtime.application_entries = Some([LogIndex(4), LogIndex(7)].into_iter().collect());
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine {
+            applied_index: LogIndex(4),
+            ..RecordingStateMachine::default()
+        },
+        runtime,
+    );
+
+    let outcome = group
+        .read(read_helper_request(
+            read_id,
+            ReadConsistency::Linearizable,
+            None,
+        ))
+        .expect("linearizable read succeeds")
+        .outcome;
+
+    oracle_assert!(
+        matches!(
+            outcome,
+            ReadOutcome::Ready {
+                proof: Some(ReadProof {
+                    read_index: LogIndex(6),
+                    required_applied_index: LogIndex(4),
+                    ..
+                }),
+                ..
+            }
+        ),
+        "an application entry above the read index is not ordered before the \
+         read and must not be required, got {outcome:?}"
+    );
+}
+
+/// The floor is resolved once, at grant, and stored. A caller polling toward
+/// `FreshnessUnavailable` therefore sees a stable target that a later commit or
+/// compaction cannot move.
+#[test]
+fn read_barrier_floor_is_fixed_at_grant() {
+    let read_id = ReadId(93);
+    let mut runtime = ScriptedRuntime::with_step_outputs([vec![RaftOutput::ReadIndexGranted {
+        read_id,
+        read_index: LogIndex(6),
+    }]]);
+    runtime.commit_index = LogIndex(6);
+    runtime.application_entries = Some([LogIndex(3)].into_iter().collect());
+    // The barrier step consumes the first shape unchanged; the tick after it
+    // commits an application entry at 5 and compacts to a boundary at 4, which
+    // is exactly the reshape that would move a re-derived floor from 3 to 5.
+    runtime.step_log_shapes = [
+        ScriptedLogShape {
+            application_entries: Some([LogIndex(3)].into_iter().collect()),
+            commit_index: LogIndex(6),
+            snapshot_index: LogIndex::ZERO,
+        },
+        ScriptedLogShape {
+            application_entries: Some([LogIndex(3), LogIndex(5)].into_iter().collect()),
+            commit_index: LogIndex(8),
+            snapshot_index: LogIndex(4),
+        },
+    ]
+    .into_iter()
+    .collect();
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine {
+            applied_index: LogIndex(2),
+            ..RecordingStateMachine::default()
+        },
+        runtime,
+    );
+
+    let outcome = group
+        .begin_read_barrier_outcome(read_request(read_id, None))
+        .expect("barrier starts and stalls");
+    assert_eq!(
+        outcome,
+        ReadProofOutcome::FreshnessUnavailable {
+            read_id,
+            required_applied_index: LogIndex(3),
+            local_applied_index: LogIndex(2),
+        }
+    );
+
+    for step in 0..2 {
+        let report = group
+            .step(GroupInput::Tick)
+            .expect("driving the group re-examines the stalled barrier");
+        oracle_assert!(
+            report.read_events
+                == vec![ReadEvent::FreshnessUnavailable {
+                    read_id,
+                    required_applied_index: LogIndex(3),
+                    local_applied_index: LogIndex(2),
+                }],
+            "step {step} must report the floor resolved at grant, got {:?}",
+            report.read_events
+        );
+    }
+    assert_eq!(
+        group
+            .runtime()
+            .committed_application_index_through(LogIndex(6)),
+        LogIndex(5),
+        "a re-derived floor would have moved, which is what the stored one avoids"
+    );
+}
+
+/// A caller-supplied floor is honored verbatim: not capped at the read index,
+/// not lowered to an application entry, not silently repaired.
+#[test]
+fn read_barrier_honors_a_caller_supplied_floor_verbatim() {
+    let read_id = ReadId(94);
+    let mut runtime = ScriptedRuntime::with_step_outputs([vec![RaftOutput::ReadIndexGranted {
+        read_id,
+        read_index: LogIndex(6),
+    }]]);
+    runtime.commit_index = LogIndex(6);
+    runtime.application_entries = Some([LogIndex(3)].into_iter().collect());
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine {
+            applied_index: LogIndex(9),
+            ..RecordingStateMachine::default()
+        },
+        runtime,
+    );
+
+    let outcome = group
+        .begin_read_barrier_outcome(read_request(read_id, Some(LogIndex(9))))
+        .expect("barrier starts");
+
+    oracle_assert!(
+        matches!(
+            outcome,
+            ReadProofOutcome::Granted {
+                proof: ReadProof {
+                    read_index: LogIndex(6),
+                    required_applied_index: LogIndex(9),
+                    local_applied_index: LogIndex(9),
+                    ..
+                }
+            }
+        ),
+        "a caller floor above the read index must dominate and must not be \
+         capped, got {outcome:?}"
+    );
+}
+
+/// Negative: the stale-read attempt the correctness argument must survive.
+///
+/// This test tries to construct a stale read and must fail to. Application
+/// entries commit at 3 and 5, the leader's `Noop` at 6 is the read index, and
+/// the state machine has applied only through 3 — so entry 5 is an
+/// acknowledged write inside the cut that the state machine has not
+/// incorporated. Serving here would answer from state missing that write and
+/// break both `RD-04` and `RD-06`.
+///
+/// The two ways to get there are both attacked. Computing the floor as
+/// anything but the *highest* application entry in the cut — the lowest, or the
+/// snapshot boundary, or the state machine's own cursor — yields 3 or less and
+/// serves immediately; the assertion below rejects every one of those. Treating
+/// the `Noop` at 6 as application-visible would raise the floor to an index no
+/// state machine can reach, which the sibling tests reject from the other side.
+#[test]
+fn read_barrier_does_not_grant_while_an_application_entry_below_the_read_index_is_unapplied() {
+    let read_id = ReadId(95);
+    let mut runtime = ScriptedRuntime::with_step_outputs([
+        vec![RaftOutput::ReadIndexGranted {
+            read_id,
+            read_index: LogIndex(6),
+        }],
+        Vec::new(),
+    ]);
+    runtime.commit_index = LogIndex(6);
+    runtime.application_entries = Some([LogIndex(3), LogIndex(5)].into_iter().collect());
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine {
+            applied_index: LogIndex(3),
+            applied: vec![b"three".to_vec()],
+            ..RecordingStateMachine::default()
+        },
+        runtime,
+    );
+
+    let stalled = group
+        .read(state_read_request(read_id, None))
+        .expect("the barrier starts")
+        .outcome;
+
+    oracle_assert!(
+        matches!(
+            stalled,
+            ReadOutcome::LinearizableFreshnessUnavailable {
+                required_applied_index: LogIndex(5),
+                local_applied_index: LogIndex(3),
+                ..
+            }
+        ),
+        "an unapplied application entry inside the cut must hold the barrier, \
+         got {stalled:?}"
+    );
+
+    // Entry 5's effect reaches the state machine only now.
+    let _ = group
+        .apply_raft_outputs(vec![apply_output(5, b"five", None)])
+        .expect("entry 5 applies");
+
+    let served = group
+        .read(state_read_request(read_id, None))
+        .expect("the barrier grants once entry 5 is applied")
+        .outcome;
+
+    oracle_assert!(
+        matches!(
+            served,
+            ReadOutcome::Ready {
+                result: Some(ref result),
+                proof: Some(ReadProof {
+                    read_index: LogIndex(6),
+                    required_applied_index: LogIndex(5),
+                    local_applied_index: LogIndex(5),
+                    ..
+                }),
+            } if result == b"five"
+        ),
+        "the answer must carry entry 5's effect, not the state that predates \
+         it, got {served:?}"
+    );
+}
+
+/// Negative: no derivation may reintroduce a floor above the cut, which is the
+/// failure an uncapped `committed_application_index()` would produce.
+#[test]
+fn read_barrier_floor_never_exceeds_the_read_index() {
+    let entry_sets = [
+        None,
+        Some(BTreeSet::new()),
+        Some([LogIndex(1)].into_iter().collect::<BTreeSet<_>>()),
+        Some([LogIndex(3), LogIndex(5)].into_iter().collect()),
+        Some(
+            [LogIndex(2), LogIndex(4), LogIndex(6), LogIndex(7)]
+                .into_iter()
+                .collect(),
+        ),
+    ];
+    let mut read_id = 100_u64;
+    for entries in entry_sets {
+        for snapshot in [0_u64, 2, 9] {
+            for read_index in [0_u64, 1, 3, 4, 6, 7] {
+                read_id += 1;
+                let read_id = ReadId(read_id);
+                let mut runtime =
+                    ScriptedRuntime::with_step_outputs([vec![RaftOutput::ReadIndexGranted {
+                        read_id,
+                        read_index: LogIndex(read_index),
+                    }]]);
+                runtime.commit_index = LogIndex(9);
+                runtime.snapshot_index = LogIndex(snapshot);
+                runtime.application_entries = entries.clone();
+                oracle_assert!(
+                    runtime.committed_application_index_through(LogIndex(read_index))
+                        <= LogIndex(read_index),
+                    "derivation exceeded its bound for entries {entries:?} \
+                     snapshot {snapshot} bound {read_index}"
+                );
+
+                let mut group = scripted_group_with_runtime(
+                    RecordingStateMachine {
+                        applied_index: LogIndex(9),
+                        ..RecordingStateMachine::default()
+                    },
+                    runtime,
+                );
+                let outcome = group
+                    .begin_read_barrier_outcome(read_request(read_id, None))
+                    .expect("barrier starts");
+                let ReadProofOutcome::Granted { proof } = outcome else {
+                    panic!(
+                        "a fully applied state machine must satisfy every floor \
+                         at or below the read index, got {outcome:?}"
+                    );
+                };
+                oracle_assert!(
+                    proof.required_applied_index <= proof.read_index,
+                    "proof required {} above read index {} for entries \
+                     {entries:?} snapshot {snapshot}",
+                    proof.required_applied_index,
+                    proof.read_index
+                );
+            }
+        }
+    }
+}
+
+/// Negative: "highest application entry in the cut" is sufficient only because
+/// applies are ordered and gapless. That is enforced, not assumed — a state
+/// machine whose cursor skipped an entry poisons the group on the existing
+/// apply-floor path, before any barrier can be satisfied against that cursor.
+#[test]
+fn a_state_machine_that_skips_an_application_entry_poisons_before_a_read_can_grant() {
+    let read_id = ReadId(96);
+    let mut runtime = ScriptedRuntime::with_step_outputs([Vec::new()]);
+    runtime.commit_index = LogIndex(6);
+    runtime.application_entries = Some([LogIndex(3), LogIndex(5)].into_iter().collect());
+    let mut group = scripted_group_with_runtime(
+        RecordingStateMachine {
+            applied_index: LogIndex(3),
+            // Claims to have consumed entry 5 without ever being handed it.
+            reported_applied_index: Some(LogIndex(5)),
+            ..RecordingStateMachine::default()
+        },
+        runtime,
+    );
+
+    let error = group
+        .apply_raft_outputs(vec![apply_output(5, b"five", None)])
+        .expect_err("a cursor that ran ahead of the applies is fatal");
+
+    oracle_assert!(
+        matches!(
+            error,
+            GroupError::ApplyEntryAlreadyApplied {
+                entry_index: LogIndex(5),
+                app_applied_index: LogIndex(5),
+                ..
+            }
+        ),
+        "the skipped entry must poison rather than be silently dropped, got {error:?}"
+    );
+    assert!(matches!(
+        group.fatal_state(),
+        GroupFatalState::Poisoned { .. }
+    ));
+
+    let refused = group
+        .begin_read_barrier_outcome(read_request(read_id, None))
+        .expect_err("a poisoned group can never grant a barrier");
+    assert!(matches!(refused, GroupError::Poisoned { .. }));
 }
 
 fn assert_empty_report(report: &GroupStepReport<u64, Vec<u8>>) {

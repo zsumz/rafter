@@ -2,7 +2,13 @@
 //!
 //! Read registration, quorum confirmation, cancellation, and grant ordering
 //! live here; callers remain responsible for waiting until local apply reaches
-//! the granted index before serving a read.
+//! every application entry at or below the granted index before serving a read.
+//!
+//! Not the granted index itself. A grant names this leader's commit index, and
+//! the entry there is often one no state machine will ever see — every term's
+//! leader appends a `Noop` first, and only `LogEntryKind::Application` produces
+//! an `Output::Apply`. Waiting for a state machine to report the granted index
+//! can therefore wait forever.
 
 use crate::{LogIndex, NodeId, ReadId};
 
