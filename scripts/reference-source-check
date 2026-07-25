@@ -45,17 +45,23 @@ while [[ $# -gt 0 ]]; do
     shift
 done
 
-# Every Rafter crate reachable from the consumer manifests, including
-# transitive ones: a partially patched graph would link checkout code against
-# published code of the same workspace.
+# Every publishable Rafter crate, whether or not a consumer reaches it yet.
+# A crate missing from this list does not fail to resolve — it silently pulls
+# the published registry copy, which is exactly the partially patched graph
+# that links checkout code against published code of the same workspace. The
+# process-composition slice hit that with the peer codec and demo transport,
+# so the list is the publishable set, not the currently reached set.
 patched_crates=(
     rafter
     rafter-app
+    rafter-codec
     rafter-crc32
+    rafter-multiraft
     rafter-runtime
     rafter-runtime-api
     rafter-service
     rafter-storage
+    rafter-transport-tcp-insecure
 )
 
 config_args=()
