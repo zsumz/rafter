@@ -11,6 +11,8 @@ use crate::{
     InitializedNode,
 };
 
+#[cfg(test)]
+mod read_tests;
 pub(crate) mod snapshots;
 
 impl InitializedNode {
@@ -93,9 +95,13 @@ impl InitializedNode {
                     read_id,
                     read_index,
                 } => {
+                    // Resolve the floor once, here: the highest committed
+                    // application entry at or below what the quorum certified.
+                    let application_floor =
+                        self.node.committed_application_index_through(read_index);
                     let request_id = read_id.0;
                     if let Some(read) = self.pending_reads.get_mut(&request_id) {
-                        read.read_index = read_index;
+                        read.application_floor = Some(application_floor);
                     }
                     self.flush_reads();
                 }

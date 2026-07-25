@@ -116,10 +116,18 @@ impl MaelstromNode {
         self.initialized.is_some()
     }
 
-    fn tick(&mut self) {
+    /// Drives one tick of Raft time and re-examines the reads waiting on it.
+    ///
+    /// Without the flush a stalled read is only ever reconsidered by an apply
+    /// or a snapshot install, so a read that becomes answerable through any
+    /// other path — including one that lands between the grant and this node's
+    /// next committed command — waits for unrelated traffic to arrive and
+    /// trigger a pass. The tick is the one event this node always produces.
+    pub(crate) fn tick(&mut self) {
         if let Some(node) = self.initialized.as_mut() {
             node.step(Input::Tick);
             node.drive_membership();
+            node.flush_reads();
         }
     }
 

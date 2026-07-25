@@ -24,7 +24,15 @@ struct PendingRead {
     client: String,
     in_reply_to: u64,
     key: Value,
-    read_index: LogIndex,
+    /// The applied index this read waits for: the highest committed
+    /// application entry at or below the granted read index, resolved once
+    /// when the barrier is granted. `None` until then.
+    ///
+    /// Not the read index itself. A barrier grants at the leader's commit
+    /// index, and after an election the entry there is that leader's `Noop`,
+    /// which never reaches the application — so waiting for the read index
+    /// waits forever on a read-only tail.
+    application_floor: Option<LogIndex>,
 }
 
 #[derive(Debug)]

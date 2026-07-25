@@ -1,6 +1,6 @@
 use std::fmt::Write as _;
 
-use rafter::{Input, LogIndex, ReadId, Role};
+use rafter::{Input, ReadId, Role};
 use serde_json::{json, Value};
 
 use crate::{
@@ -138,7 +138,7 @@ impl InitializedNode {
                 client,
                 in_reply_to,
                 key,
-                read_index: LogIndex(u64::MAX),
+                application_floor: None,
             },
         );
         self.step(Input::ReadIndex {
@@ -163,12 +163,22 @@ impl InitializedNode {
         self.step(Input::ClientProposal { payload });
     }
 
+    /// Answers every pending read whose application floor the applied state has
+    /// reached.
+    ///
+    /// A read with no floor yet has no granted barrier and is never ready. This
+    /// runs from the grant arm, from every apply, from a snapshot install, and
+    /// from the tick loop — the tick is what re-examines a read that stalled
+    /// and would otherwise wait for an unrelated write to arrive and trigger a
+    /// pass.
     pub(crate) fn flush_reads(&mut self) {
         let ready = self
             .pending_reads
             .iter()
             .filter_map(|(request_id, read)| {
-                (self.app.applied >= read.read_index).then_some(*request_id)
+                read.application_floor
+                    .is_some_and(|floor| self.app.applied >= floor)
+                    .then_some(*request_id)
             })
             .collect::<Vec<_>>();
         for request_id in ready {
