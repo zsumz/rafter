@@ -96,9 +96,27 @@ pub trait PersistedRaftRuntime {
     }
 
     /// Returns the currently effective Raft membership.
+    ///
+    /// Effective, not committed: a configuration takes effect on append, so
+    /// this may name a change that is still uncommitted and could yet be
+    /// reverted. Widening a transport's peer set to match it is safe and
+    /// necessary — a joining replica must be able to speak before the change
+    /// commits, or it can never catch up. Narrowing one is not.
     fn membership(&self) -> MembershipConfig;
 
     /// Returns the latest committed Raft membership.
+    ///
+    /// A committed configuration cannot be reverted, which makes this the only
+    /// membership that licenses narrowing a peer set or fencing a replica that
+    /// left it.
+    ///
+    /// **Any implementation that can be mid-change must override this.** The
+    /// provided body answers with the effective membership, which is correct
+    /// only for a runtime that has no uncommitted configuration to distinguish
+    /// — a fixed-membership test runtime, say. Inheriting it under joint
+    /// consensus reports an appended-but-uncommitted change as committed, and a
+    /// layer above will fence a replica the cluster may still need, on a change
+    /// that may still be reverted.
     fn committed_membership(&self) -> MembershipConfig {
         self.membership()
     }
