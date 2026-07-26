@@ -412,7 +412,7 @@ pub enum FaultSite {
     ///
     /// Its discriminant *is* the number of sites, so a variant added above it
     /// changes `ALL`'s length and fails the const check below unless it is also
-    /// threaded onto [`Self::next`]. It must stay last, and `ALL` never
+    /// threaded onto `Self::next`. It must stay last, and `ALL` never
     /// contains it. A variant declared *after* it escapes — which is a
     /// statement that this marker is not the end, not an omission.
     #[doc(hidden)]

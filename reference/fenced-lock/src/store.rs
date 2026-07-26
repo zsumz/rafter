@@ -387,7 +387,7 @@
 //! refusals a way forward.
 //!
 //! Whether a repair that must discard a higher-marked image is ever legitimate
-//! is argued, and answered no, on [`verify_discard_preserves_marks`], together
+//! is argued, and answered no, on `verify_discard_preserves_marks`, together
 //! with what the refusal costs and the way forward it leaves. Two boundaries of
 //! that rule are stated there and tested on both sides: the session cache is
 //! deliberately *not* required to survive a repair, and an image this build
@@ -746,7 +746,7 @@ pub enum LockStoreError {
     ///
     /// Both entry points refuse it, including [`LockStore::open_and_repair`].
     /// The argument for refusing rather than repairing-and-reporting is on
-    /// [`verify_discard_preserves_marks`], with what it costs and what it
+    /// `verify_discard_preserves_marks`, with what it costs and what it
     /// deliberately does not cover.
     DiscardWouldRegressMark {
         /// Slot whose image would have been given up or set aside.
@@ -1701,7 +1701,7 @@ impl LockStore {
     /// and nothing else — and not even all of that. A repair whose adopted image
     /// does not carry every fencing high-water mark the discarded one held is
     /// [`LockStoreError::DiscardWouldRegressMark`] and is refused here too;
-    /// [`verify_discard_preserves_marks`] argues why, and says what the refusal
+    /// `verify_discard_preserves_marks` argues why, and says what the refusal
     /// costs. It does **not** clear:
     ///
     /// - a damaged slot whose partner is not intact, which stays

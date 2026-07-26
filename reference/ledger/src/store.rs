@@ -341,7 +341,7 @@
 //! implicit.
 //!
 //! The second reading is only reached by bytes that already carry this build's
-//! begin identity, because [`verify_identity`] runs above the mark test. Three
+//! begin identity, because `verify_identity` runs above the mark test. Three
 //! shapes come out of it, and they are three different facts:
 //!
 //! - **Not a whole frame**, at a step this build can read: too short for a begin
@@ -2233,7 +2233,7 @@ fn classify_unsealed(bytes: &[u8]) -> TornTail {
 /// what a completed append left.
 ///
 /// There is no magic test here, and its absence is structural rather than an
-/// omission: [`verify_identity`] establishes the magic at every length above
+/// omission: `verify_identity` establishes the magic at every length above
 /// both callers, and neither can be reached without it. Repeating it here would
 /// make the ordering a coincidence of two tests agreeing instead of a property
 /// of the one path.

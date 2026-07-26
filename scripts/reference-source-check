@@ -94,4 +94,11 @@ cargo clippy "${config_args[@]}" --all-targets -- -D warnings
 echo "reference source mode: cargo test"
 cargo test "${config_args[@]}" ${test_args[@]+"${test_args[@]}"}
 
+# The consumers are read as exemplars, so a doc that cannot build is a defect in
+# the artifact they exist to be. This gate was absent long enough for four
+# public doc comments to link to private items, all written by the round that
+# was correcting those same paragraphs.
+echo "reference source mode: cargo doc --no-deps (RUSTDOCFLAGS=-D warnings)"
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps "${config_args[@]}"
+
 echo "reference source mode passed"

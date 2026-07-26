@@ -707,7 +707,7 @@ pub enum Cheat {
     ///
     /// Its discriminant *is* the size of the family, so a cheat added above it
     /// changes `ALL`'s length and fails the const check below unless it is also
-    /// threaded onto [`Self::next`]. It must stay last, and `ALL` never
+    /// threaded onto `Self::next`. It must stay last, and `ALL` never
     /// contains it. A variant declared *after* it escapes — a statement that
     /// this marker is not the end, rather than an omission.
     ///
