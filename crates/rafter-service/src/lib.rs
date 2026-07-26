@@ -5,6 +5,7 @@
 //! `RaftGroup` and transport traits for production integrations. The
 //! deterministic kernel, runtime API boundary, and synchronous app driver stay
 //! free of async runtime dependencies.
+//!
 //! `rafter-service` owns handle ergonomics, managed command routing, async
 //! sender traits, watch surfaces, and transport contracts. It does not own
 //! durable storage, concrete authenticated transport implementations, or the
