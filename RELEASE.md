@@ -12,6 +12,7 @@ Publish these crates for 0.0.1:
 ```text
 rafter
 rafter-runtime-api
+rafter-crc32
 rafter-storage
 rafter-codec
 rafter-transport-tcp-insecure
@@ -21,14 +22,27 @@ rafter-service
 rafter-multiraft
 ```
 
+`rafter-crc32` is small, but it is not optional. A published `rafter-codec` or
+`rafter-storage` carries `rafter-crc32 = { version = "0.0.1" }`, so the two
+format crates cannot resolve on crates.io until it is live there. This list is
+the complete set of Rafter crates a consumer graph can reach.
+
 Do not publish these crates for 0.0.1:
 
 ```text
 rafter-sim
 rafter-maelstrom
+rafter-invariants
+rafter-invariant-test
+rafter-invariant-test-macros
 rafter-fuzz
 bench-compare
 ```
+
+Together the two lists cover every crate in the repository: the workspace
+members plus `rafter-fuzz` and `bench-compare`, which keep their own manifests
+outside the workspace. Every crate in the second list carries `publish = false`;
+no crate in the first list does.
 
 `rafter-sim` stays workspace-only until its dependency on the core crate's
 hidden `internal-test-hooks` feature is either removed or promoted into an
@@ -46,6 +60,9 @@ cargo publish -p rafter
 
 cargo publish --dry-run -p rafter-runtime-api
 cargo publish -p rafter-runtime-api
+
+cargo publish --dry-run -p rafter-crc32
+cargo publish -p rafter-crc32
 
 cargo publish --dry-run -p rafter-storage
 cargo publish -p rafter-storage
@@ -70,6 +87,13 @@ cargo publish -p rafter-multiraft
 ```
 
 ### Verification
+
+Cargo packages only files under a crate's own directory, so every publishable
+crate keeps a physical copy of the repository's `LICENSE` and `NOTICE` beside
+its manifest. The root files stay authoritative: the per-crate copies must match
+them byte for byte, and a copy that drifts ships a licence the project did not
+grant. Nothing enforces that today; comparing each copy against the root is a
+good CI check to add.
 
 Before publishing, run:
 

@@ -79,14 +79,14 @@ for tool in cargo jq tar; do
     fi
 done
 
-# Support crates: packaged and patched, but absent from RELEASE.md's publish
-# list. A published rafter-codec or rafter-storage carries
-# `rafter-crc32 = { version = "0.0.1" }`, so any consumer graph that reaches
-# either one needs rafter-crc32 from the registry as well. Packaging it here
-# keeps the consumer from falling back to crates.io for a Rafter crate. That
-# RELEASE.md names it in neither section is a release-checklist gap, not a
-# licence to leave it out of the graph.
-support_crates=("rafter-crc32")
+# RELEASE.md's publish list is the complete set of Rafter crates a consumer
+# graph can reach, rafter-crc32 included: every crate that a publishable crate
+# depends on by version is itself publishable. This script therefore packages
+# exactly that list and needs no side list of support crates to package
+# alongside it. If a future internal crate becomes a versioned dependency of a
+# publishable one without joining the list, phase 1 fails outright: Cargo
+# resolves it against crates.io and finds nothing. That loud failure is the
+# check; do not paper over it by packaging the crate here.
 
 phase_count=6
 phase_name=(
@@ -225,35 +225,36 @@ release_crate_list() {
 # Required package contents.
 #
 # docs/reference-consumers.md requires this mode to "verify required package
-# contents, including README and format documents". The list below was taken
-# from the crates themselves, not guessed: every entry is a document that the
-# crate's own published README links to, so a missing one ships a dead link to
-# a crates.io reader.
+# contents, including README and format documents".
 #
-#   rafter          README.md, ARCHITECTURE.md, STYLE.md
-#   rafter-codec    README.md, WIRE_FORMAT_V1.md
-#   rafter-storage  README.md, STORAGE_FORMAT_V1.md, DURABILITY_PROTOCOL.md
-#   other crates    README.md
+# Every publishable archive must carry three files. README.md is what a
+# crates.io reader lands on. LICENSE and NOTICE are the terms the archive ships
+# under: Cargo packages only files under the crate directory, so the repository
+# root's copies never reach an archive on their own and each crate keeps its
+# own. RELEASE.md's verification section owns the rule that those per-crate
+# copies match the root.
 #
-# rafter-crc32 is the one exemption: it carries no README today and RELEASE.md
-# lists it in neither section, so its documentation requirement has not been
-# decided. Phase 3 reports that as a finding rather than failing the lane.
+# The per-crate entries beyond those three were taken from the crates
+# themselves, not guessed: each is a document that the crate's own published
+# README links to, so a missing one ships a dead link to a crates.io reader.
+#
+#   rafter          + ARCHITECTURE.md, STYLE.md
+#   rafter-codec    + WIRE_FORMAT_V1.md
+#   rafter-storage  + STORAGE_FORMAT_V1.md, DURABILITY_PROTOCOL.md
+#   other crates    the three common files only
 required_package_files() {
     case "$1" in
         rafter)
-            printf 'README.md ARCHITECTURE.md STYLE.md'
+            printf 'README.md LICENSE NOTICE ARCHITECTURE.md STYLE.md'
             ;;
         rafter-codec)
-            printf 'README.md WIRE_FORMAT_V1.md'
+            printf 'README.md LICENSE NOTICE WIRE_FORMAT_V1.md'
             ;;
         rafter-storage)
-            printf 'README.md STORAGE_FORMAT_V1.md DURABILITY_PROTOCOL.md'
-            ;;
-        rafter-crc32)
-            printf ''
+            printf 'README.md LICENSE NOTICE STORAGE_FORMAT_V1.md DURABILITY_PROTOCOL.md'
             ;;
         *)
-            printf 'README.md'
+            printf 'README.md LICENSE NOTICE'
             ;;
     esac
 }
@@ -284,7 +285,7 @@ if ((${#never_publish_crates[@]} == 0)); then
     fail "RELEASE.md lists no unpublishable crates"
 fi
 
-packaged_crates=("${publish_crates[@]}" "${support_crates[@]}")
+packaged_crates=("${publish_crates[@]}")
 for crate in "${packaged_crates[@]}"; do
     if [[ ! -f "$repo_root/crates/$crate/Cargo.toml" ]]; then
         fail "packaged crate $crate has no manifest under crates/"
@@ -292,7 +293,6 @@ for crate in "${packaged_crates[@]}"; do
 done
 
 log "publishable crates: ${publish_crates[*]}"
-log "support crates: ${support_crates[*]}"
 log "never-publish crates: ${never_publish_crates[*]}"
 
 workdir="$(mktemp -d "${TMPDIR:-/tmp}/rafter-package-check.XXXXXX")"
@@ -406,6 +406,9 @@ for crate in "${packaged_crates[@]}"; do
         contents_failed=true
     fi
 
+    # Backstop for the list above, which now requires README.md of every crate:
+    # a future per-crate arm that forgets it would silently stop checking, and
+    # this reports that. On a passing run it never fires.
     if [[ ! -f "$unpacked/README.md" ]]; then
         add_finding "$crate ships no README.md in its package archive"
     fi
