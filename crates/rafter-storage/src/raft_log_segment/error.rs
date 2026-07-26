@@ -135,6 +135,10 @@ pub enum RaftLogSegmentCompactError {
         compacted_through: LogIndex,
         next_index: LogIndex,
     },
+    /// Compaction through `u64::MAX` was requested. The retained suffix starts
+    /// at `through_index.next()`, so this boundary leaves nowhere for it to
+    /// start and would publish a marker that reopening must reject.
+    ThroughIndexAtMaximum,
     Encode(EncodeRaftLogEntryError),
     /// The compaction commit point was not confirmed. Reopen to determine which
     /// durable state won before another mutation.
@@ -162,6 +166,9 @@ impl fmt::Display for RaftLogSegmentCompactError {
             } => write!(
                 formatter,
                 "Raft log compaction is out of bounds with prefix compacted through index {compacted_through} and next index {next_index}"
+            ),
+            Self::ThroughIndexAtMaximum => formatter.write_str(
+                "Raft log compaction through the maximum log index would leave no room for the retained suffix that must follow it",
             ),
             Self::Encode(error) => {
                 write!(formatter, "Raft log entry could not be encoded: {error}")
@@ -191,7 +198,9 @@ impl Error for RaftLogSegmentCompactError {
             Self::Io { source, .. } | Self::CompactedButReclamationFailed { source, .. } => {
                 Some(source.as_io_error())
             }
-            Self::OutOfBounds { .. } | Self::StoreRequiresReopen => None,
+            Self::OutOfBounds { .. } | Self::ThroughIndexAtMaximum | Self::StoreRequiresReopen => {
+                None
+            }
         }
     }
 }

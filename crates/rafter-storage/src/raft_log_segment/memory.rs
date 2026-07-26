@@ -8,8 +8,8 @@ use rafter::LogIndex;
 use crate::{BorrowedPersistedRaftLogEntry, PersistedRaftLogEntry};
 
 use super::{
-    reject_truncate_bounds, ContiguousLogEntries, RaftLogSegment, RaftLogSegmentAppendError,
-    RaftLogSegmentCompactError, RaftLogSegmentTruncateError,
+    reject_compact_bounds, reject_truncate_bounds, ContiguousLogEntries, RaftLogSegment,
+    RaftLogSegmentAppendError, RaftLogSegmentCompactError, RaftLogSegmentTruncateError,
 };
 
 /// In-memory [`RaftLogSegment`] implementation for tests and volatile
@@ -70,6 +70,7 @@ impl RaftLogSegment for InMemoryRaftLogSegment {
         &mut self,
         through_index: LogIndex,
     ) -> Result<(), RaftLogSegmentCompactError> {
+        reject_compact_bounds(through_index)?;
         if through_index <= self.compacted_through {
             return Ok(());
         }

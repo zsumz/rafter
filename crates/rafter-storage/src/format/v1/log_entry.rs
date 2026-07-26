@@ -11,7 +11,8 @@ use rafter::{
 };
 
 use crate::format::{
-    finish_checksummed, verify_checksum, ChecksumError, CursorError, Reader, Writer,
+    advanceable_log_index, finish_checksummed, verify_checksum, ChecksumError, CursorError, Reader,
+    Writer,
 };
 
 /// Magic prefix for the persisted Raft log-entry envelope.
@@ -134,6 +135,12 @@ pub enum EncodeRaftLogEntryError {
     /// Stable or joint membership contains more node ids than the format can
     /// represent.
     TooManyMembers { len: usize },
+    /// The entry sits at `u64::MAX`, the one log index with no successor.
+    ///
+    /// Encoding is refused so the format cannot durably record an entry that
+    /// [`decode_raft_log_entry`] would then refuse to read back: replay walks
+    /// every retained index with `LogIndex::next()`.
+    IndexAtMaximum,
 }
 
 /// Error returned when a persisted Raft log entry envelope cannot be decoded or
@@ -151,6 +158,11 @@ pub enum DecodeRaftLogEntryError {
     UnsupportedVersion(u8),
     /// The entry-kind tag is not a known application or configuration variant.
     UnknownEntryKind(u8),
+    /// The stored index is `u64::MAX`, the one log index with no successor.
+    ///
+    /// Replay advances past every retained entry with `LogIndex::next()`, so
+    /// this index cannot be admitted into the retained suffix.
+    IndexAtMaximum,
     /// A stable or joint membership entry failed Raft membership validation.
     InvalidMembership(MembershipValidationError),
     /// Member ids were valid but not stored in canonical ascending order.
@@ -176,6 +188,9 @@ impl fmt::Display for EncodeRaftLogEntryError {
                 formatter,
                 "Raft log entry membership with {len} node ids does not fit in the envelope format"
             ),
+            Self::IndexAtMaximum => formatter.write_str(
+                "Raft log entry sits at the maximum log index, which replay cannot advance past",
+            ),
         }
     }
 }
@@ -200,6 +215,9 @@ impl fmt::Display for DecodeRaftLogEntryError {
             Self::UnknownEntryKind(kind) => {
                 write!(formatter, "Raft log entry kind {kind} is unknown")
             }
+            Self::IndexAtMaximum => formatter.write_str(
+                "Raft log-entry envelope stores the maximum log index, which replay cannot advance past",
+            ),
             Self::InvalidMembership(error) => {
                 write!(formatter, "Raft log entry membership is invalid: {error}")
             }
@@ -233,6 +251,7 @@ impl Error for DecodeRaftLogEntryError {
             | Self::InvalidMagic(_)
             | Self::UnsupportedVersion(_)
             | Self::UnknownEntryKind(_)
+            | Self::IndexAtMaximum
             | Self::NonCanonicalMembershipOrder { .. }
             | Self::ChecksumMismatch { .. }
             | Self::TrailingBytes(_) => None,
@@ -278,7 +297,9 @@ impl From<ChecksumError> for DecodeRaftLogEntryError {
 /// # Errors
 ///
 /// Returns [`EncodeRaftLogEntryError::PayloadTooLarge`] when the payload cannot
-/// be represented in the envelope format.
+/// be represented in the envelope format, or
+/// [`EncodeRaftLogEntryError::IndexAtMaximum`] when the entry sits at the one
+/// log index replay could not advance past.
 pub fn encode_raft_log_entry(
     entry: &PersistedRaftLogEntry,
 ) -> Result<Vec<u8>, EncodeRaftLogEntryError> {
@@ -291,10 +312,15 @@ pub fn encode_raft_log_entry(
 /// # Errors
 ///
 /// Returns [`EncodeRaftLogEntryError::PayloadTooLarge`] when the payload cannot
-/// be represented in the envelope format.
+/// be represented in the envelope format, or
+/// [`EncodeRaftLogEntryError::IndexAtMaximum`] when the entry sits at the one
+/// log index replay could not advance past.
 pub fn encode_borrowed_raft_log_entry(
     entry: BorrowedPersistedRaftLogEntry<'_>,
 ) -> Result<Vec<u8>, EncodeRaftLogEntryError> {
+    if advanceable_log_index(entry.index.0).is_none() {
+        return Err(EncodeRaftLogEntryError::IndexAtMaximum);
+    }
     let mut writer = Writer::new();
     writer.bytes(&RAFT_LOG_ENTRY_MAGIC);
     writer.u8(RAFT_LOG_ENTRY_VERSION);
@@ -326,7 +352,8 @@ pub fn decode_raft_log_entry(
         return Err(DecodeRaftLogEntryError::UnsupportedVersion(version));
     }
 
-    let index = LogIndex(reader.u64()?);
+    let index =
+        advanceable_log_index(reader.u64()?).ok_or(DecodeRaftLogEntryError::IndexAtMaximum)?;
     let term = Term(reader.u64()?);
     let kind = read_log_entry_kind(&mut reader)?;
     reader.finish()?;

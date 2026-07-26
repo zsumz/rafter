@@ -5,7 +5,8 @@ use std::{error::Error, fmt};
 use rafter::LogIndex;
 
 use crate::format::{
-    finish_checksummed, verify_checksum, ChecksumError, CursorError, Reader, Writer,
+    advanceable_log_index, finish_checksummed, verify_checksum, ChecksumError, CursorError, Reader,
+    Writer,
 };
 
 const RAFT_LOG_COMPACTION_MAGIC: [u8; 4] = *b"RFLC";
@@ -17,10 +18,20 @@ const RAFT_LOG_COMPACTION_VERSION: u8 = 1;
 /// corruption and format failures.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DecodeRaftLogCompactionMarkerError {
-    UnexpectedEof { needed: usize, remaining: usize },
+    UnexpectedEof {
+        needed: usize,
+        remaining: usize,
+    },
     InvalidMagic([u8; 4]),
     UnsupportedVersion(u8),
-    ChecksumMismatch { expected: u32, actual: u32 },
+    /// The marker names `u64::MAX` as the compacted prefix. Replay derives the
+    /// retained-suffix floor as `compacted_through.next()`, which that value has
+    /// no room for.
+    CompactedThroughAtMaximum,
+    ChecksumMismatch {
+        expected: u32,
+        actual: u32,
+    },
     TrailingBytes(usize),
 }
 
@@ -38,6 +49,9 @@ impl fmt::Display for DecodeRaftLogCompactionMarkerError {
             Self::UnsupportedVersion(version) => write!(
                 formatter,
                 "Raft log compaction marker version {version} is not supported"
+            ),
+            Self::CompactedThroughAtMaximum => formatter.write_str(
+                "Raft log compaction marker compacts through the maximum log index, which leaves no room for the retained suffix that must follow it",
             ),
             Self::ChecksumMismatch { expected, actual } => write!(
                 formatter,
@@ -111,7 +125,8 @@ pub fn decode_raft_log_compaction_marker(
             version,
         ));
     }
-    let compacted_through = LogIndex(reader.u64()?);
+    let compacted_through = advanceable_log_index(reader.u64()?)
+        .ok_or(DecodeRaftLogCompactionMarkerError::CompactedThroughAtMaximum)?;
     reader.finish()?;
     Ok(compacted_through)
 }

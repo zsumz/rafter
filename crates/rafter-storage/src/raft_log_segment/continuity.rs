@@ -6,9 +6,9 @@
 
 use rafter::LogIndex;
 
-use crate::PersistedRaftLogEntry;
+use crate::{format::advanceable_log_index, PersistedRaftLogEntry};
 
-use super::RaftLogSegmentTruncateError;
+use super::{RaftLogSegmentCompactError, RaftLogSegmentTruncateError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct NonContiguousRaftEntry {
@@ -135,6 +135,21 @@ pub(super) fn validate_contiguous(
             });
         }
         expected = expected.next();
+    }
+    Ok(())
+}
+
+/// Rejects a compaction boundary the retained suffix could not start after.
+///
+/// Every segment derives its retained-suffix floor as `through_index.next()`,
+/// so `u64::MAX` is refused here rather than wrapped to [`LogIndex::ZERO`]. This
+/// keeps the caller-supplied boundary inside the same bound the RFLC decoder
+/// enforces on the marker this compaction would go on to publish.
+pub(super) fn reject_compact_bounds(
+    through_index: LogIndex,
+) -> Result<(), RaftLogSegmentCompactError> {
+    if advanceable_log_index(through_index.0).is_none() {
+        return Err(RaftLogSegmentCompactError::ThroughIndexAtMaximum);
     }
     Ok(())
 }

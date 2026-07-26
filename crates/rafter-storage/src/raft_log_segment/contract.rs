@@ -83,7 +83,9 @@ pub trait RaftLogSegment {
     /// Returns [`RaftLogSegmentCompactError`] when encoding, marker publication,
     /// or physical reclamation fails. A file-backed handle returns
     /// [`RaftLogSegmentCompactError::StoreRequiresReopen`] after an earlier
-    /// mutating I/O failure.
+    /// mutating I/O failure. Every implementation returns
+    /// [`RaftLogSegmentCompactError::ThroughIndexAtMaximum`] for a boundary of
+    /// `u64::MAX`, which leaves no index for the retained suffix to start at.
     fn compact_prefix_through(
         &mut self,
         through_index: LogIndex,

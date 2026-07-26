@@ -11,9 +11,9 @@ use rafter::LogIndex;
 use crate::{BorrowedPersistedRaftLogEntry, PersistedRaftLogEntry};
 
 use super::{
-    append_borrowed_raft_log_frame, prepare_log_rewrite, reject_truncate_bounds,
-    FileRaftLogSegment, PrepareLogRewriteError, RaftLogSegment, RaftLogSegmentAppendError,
-    RaftLogSegmentCompactError, RaftLogSegmentTruncateError,
+    append_borrowed_raft_log_frame, prepare_log_rewrite, reject_compact_bounds,
+    reject_truncate_bounds, FileRaftLogSegment, PrepareLogRewriteError, RaftLogSegment,
+    RaftLogSegmentAppendError, RaftLogSegmentCompactError, RaftLogSegmentTruncateError,
 };
 
 impl RaftLogSegment for FileRaftLogSegment {
@@ -126,6 +126,7 @@ impl RaftLogSegment for FileRaftLogSegment {
         if self.requires_reopen() {
             return Err(RaftLogSegmentCompactError::StoreRequiresReopen);
         }
+        reject_compact_bounds(through_index)?;
         if through_index <= self.compacted_through {
             return Ok(());
         }

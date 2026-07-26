@@ -22,7 +22,9 @@ pub use error::{
 pub use memory::InMemoryRaftLogSegment;
 pub use state::FileRaftLogSegment;
 
-use continuity::{reject_truncate_bounds, ContiguousLogEntries, NonContiguousRaftEntry};
+use continuity::{
+    reject_compact_bounds, reject_truncate_bounds, ContiguousLogEntries, NonContiguousRaftEntry,
+};
 use frames::{
     append_borrowed_raft_log_frame, read_raft_log_frames, write_raft_log_frames,
     WriteRaftLogFramesError,
