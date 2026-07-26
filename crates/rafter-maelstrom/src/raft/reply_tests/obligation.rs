@@ -18,14 +18,14 @@ use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 use serde_json::{json, Value};
 
 use crate::{
-    app::{encode_snapshot_payload, persist_snapshot_application_state},
+    app::{encode_snapshot_payload, persist_snapshot_application_state, ClientResult},
     protocol::{body_type, encode_hex, Envelope},
     InitializedNode,
 };
 
 use super::{
-    direct_answer, elected_single_node_process, forwarded_write, fresh_cluster_member,
-    remove_test_root, replicate, test_root,
+    direct_answer, direct_answers, elected_single_node_process, forwarded_write,
+    fresh_cluster_member, remove_test_root, replicate, test_root,
 };
 
 // ---------------------------------------------------------------------------
@@ -42,6 +42,11 @@ use super::{
 /// The cap is not a hop counter on the wire: a request that arrived from a peer
 /// is never relayed at all, so the chain is one hop by construction and no
 /// count can be miscarried or forged.
+///
+/// The bound asserted is one hop rather than merely a finite number, because
+/// `has_accepted` also bounds this interleaving — the second node to see the
+/// request is the first one again, which now refuses it — and a threshold loose
+/// enough to pass on that alone would stop testing the hop cap at all.
 #[test]
 fn a_forward_is_not_bounced_between_two_peers_forever() {
     let root_one = test_root("obligation-forward-pingpong-n1");
@@ -88,9 +93,12 @@ fn a_forward_is_not_bounced_between_two_peers_forever() {
 
     let hops = client_forwards(first.initialized.as_ref().expect("n1"))
         + client_forwards(second.initialized.as_ref().expect("n2"));
-    oracle_assert!(
-        hops <= 2,
-        "one client request must not be forwarded without bound; hops = {hops}"
+    oracle_assert_eq!(
+        hops,
+        1,
+        "one client request travels exactly one hop: n1 hands it to the leader \
+         it believes in, and n2 — which believes in n1 — must refuse rather \
+         than hand it back"
     );
     remove_test_root(root_one);
     remove_test_root(root_two);
@@ -437,6 +445,128 @@ fn an_accepted_request_with_no_outcome_is_answered_indefinitely_at_its_deadline(
 }
 
 // ---------------------------------------------------------------------------
+// One request is accepted once.
+// ---------------------------------------------------------------------------
+
+/// One request puts one answer on the wire, however many copies carry it.
+///
+/// The record is keyed by the request, but it was re-inserted by every
+/// `propose` and nothing consulted it before proposing, so two copies of one
+/// request put two `client_result` envelopes on the wire for it. The direct arm
+/// had `completed_replies` behind it; the remote arm had nothing.
+#[test]
+fn one_request_puts_one_answer_on_the_wire_however_many_copies_carry_it() {
+    let root = test_root("obligation-duplicate-answers");
+    let mut process = elected_single_node_process(&root);
+    let node = process.initialized.as_mut().expect("node initializes");
+
+    for _ in 0..2 {
+        node.handle_envelope(forward_envelope(
+            "n2",
+            "n1",
+            "c1",
+            5,
+            &json!({ "type": "write", "key": "counter", "value": 7 }),
+        ));
+    }
+
+    oracle_assert_eq!(
+        forwarded_answers(node, "n2", 5),
+        1,
+        "one accepted request must leave this node holding one answer for it; \
+         emitted = {:#?}",
+        node.emitted
+    );
+    remove_test_root(root);
+}
+
+/// One request's answer leaves this node once, whichever arm sends it.
+///
+/// `deliver_result` claims to be total in a specific way: every call either
+/// puts an answer on the wire or finds that this node already put one there for
+/// the same request. The second half was checked only for the arm that replies
+/// straight to a client — the arm that hands a `client_result` back to a peer
+/// had no suppression of its own at all, so the claim held for one arm and was
+/// merely true of the other. This drives both directly, which is the only way
+/// to reach the second delivery now that `has_accepted` stops a repeated
+/// request before it can produce one.
+#[test]
+fn one_requests_answer_leaves_this_node_once_whichever_arm_sends_it() {
+    let root = test_root("obligation-deliver-once");
+    let mut process = fresh_cluster_member(&root, "n1", &["n1", "n2", "n3"]);
+    let node = process.initialized.as_mut().expect("node initializes");
+
+    // The arm that answers a peer.
+    for _ in 0..2 {
+        node.deliver_result("n2", "c1", 5, ClientResult::WriteOk);
+    }
+    oracle_assert_eq!(
+        forwarded_answers(node, "n2", 5),
+        1,
+        "a peer is handed one answer per request; emitted = {:#?}",
+        node.emitted
+    );
+
+    // The arm that answers a client directly.
+    let name = node.name.clone();
+    for _ in 0..2 {
+        node.deliver_result(&name, "c2", 9, ClientResult::WriteOk);
+    }
+    oracle_assert_eq!(
+        direct_answers(node, "c2", 9),
+        1,
+        "and a client gets one reply per request; emitted = {:#?}",
+        node.emitted
+    );
+    remove_test_root(root);
+}
+
+/// A repeated request does not re-apply its mutation.
+///
+/// The linearizability failure behind the duplicate, and the reason dropping
+/// the second copy is the conservative choice rather than the lossy one.
+/// Nothing deduplicated a request before it was proposed, so two copies of one
+/// `cas` committed as two log entries and the state machine ran the mutation
+/// twice. A second client's committed `cas` landing between them was silently
+/// rolled back: a lost update, from a request its client issued once.
+#[test]
+fn a_repeated_request_does_not_reapply_its_mutation() {
+    let root = test_root("obligation-duplicate-apply");
+    let mut process = elected_single_node_process(&root);
+    let node = process.initialized.as_mut().expect("node initializes");
+
+    node.handle_envelope(client_write("n1", "c0", 1, "counter", 1));
+
+    // c1's cas, relayed by n2, commits and is answered.
+    let c1_cas = json!({ "type": "cas", "key": "counter", "from": 1, "to": 2 });
+    node.handle_envelope(forward_envelope("n2", "n1", "c1", 5, &c1_cas));
+    oracle_assert_eq!(
+        node.app.kv.get("\"counter\""),
+        Some(&json!(2)),
+        "c1's cas applied"
+    );
+
+    // c2's cas commits after it, and is answered.
+    node.handle_envelope(client_cas("n1", "c2", 9, "counter", 2, 1));
+    oracle_assert_eq!(
+        node.app.kv.get("\"counter\""),
+        Some(&json!(1)),
+        "c2's cas applied on top of it"
+    );
+
+    // A second copy of c1's one request arrives.
+    node.handle_envelope(forward_envelope("n2", "n1", "c1", 5, &c1_cas));
+
+    oracle_assert_eq!(
+        node.app.kv.get("\"counter\""),
+        Some(&json!(1)),
+        "a request issued once must not apply twice and undo a committed write \
+         that linearized after it"
+    );
+    remove_test_root(root);
+}
+
+// ---------------------------------------------------------------------------
 // Helpers.
 // ---------------------------------------------------------------------------
 
@@ -446,6 +576,17 @@ fn client_write(dest: &str, client: &str, msg_id: u64, key: &str, value: u64) ->
         src: client.to_owned(),
         dest: dest.to_owned(),
         body: json!({ "type": "write", "msg_id": msg_id, "key": key, "value": value }),
+    }
+}
+
+/// A client's `cas` arriving straight at `dest`.
+fn client_cas(dest: &str, client: &str, msg_id: u64, key: &str, from: u64, to: u64) -> Envelope {
+    Envelope {
+        src: client.to_owned(),
+        dest: dest.to_owned(),
+        body: json!({
+            "type": "cas", "msg_id": msg_id, "key": key, "from": from, "to": to,
+        }),
     }
 }
 
@@ -517,6 +658,18 @@ fn forwarded_request(
                 && envelope.body.get("in_reply_to").and_then(Value::as_u64) == Some(in_reply_to)
         })
         .map(|envelope| envelope.body.clone())
+}
+
+/// How many `client_result` envelopes this node mailed `origin` for one request.
+fn forwarded_answers(node: &InitializedNode, origin: &str, in_reply_to: u64) -> usize {
+    node.emitted
+        .iter()
+        .filter(|envelope| {
+            envelope.dest == origin
+                && body_type(&envelope.body) == Some("client_result")
+                && envelope.body.get("in_reply_to").and_then(Value::as_u64) == Some(in_reply_to)
+        })
+        .count()
 }
 
 /// How many `client_forward` envelopes this node put on the wire.

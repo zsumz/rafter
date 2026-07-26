@@ -76,6 +76,11 @@ impl OwedAnswers {
         self.owed.get(key).map(|owed| owed.answer_to.as_str())
     }
 
+    /// Whether an answer for `key` is still owed.
+    pub(crate) fn is_owed(&self, key: &RequestKey) -> bool {
+        self.owed.contains_key(key)
+    }
+
     /// Discards the record for `key`. The only way a record ceases to exist.
     pub(crate) fn retire(&mut self, key: &RequestKey) {
         self.owed.remove(key);

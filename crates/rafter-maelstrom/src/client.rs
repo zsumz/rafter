@@ -59,6 +59,21 @@
 //! rather than a counter on the wire, and it holds however wrong `known_leader`
 //! is on however many nodes.
 //!
+//! # Why a request is acted on once
+//!
+//! The section above is the *at least once* half. This is the at most once
+//! half, and it is the one with teeth for linearizability:
+//! [`InitializedNode::has_accepted`] refuses a request this node has already
+//! taken responsibility for, before anything is proposed or relayed. Without
+//! it two copies of one `cas` commit as two entries and the state machine runs
+//! the mutation twice — which can roll back another client's committed write
+//! that linearized between them, from a request its client issued once.
+//!
+//! Refusing is not a loss. A repeat of `(client, in_reply_to)` is the same
+//! request arriving twice, never a new attempt: Maelstrom allocates a fresh
+//! `msg_id` per attempt. So an answer for it is already owed or already sent,
+//! and the deadline above covers the former.
+//!
 //! # Why the two rules differ
 //!
 //! A read exists on one node. A committed write exists on all of them. A read's
@@ -256,6 +271,9 @@ impl InitializedNode {
             Reception::FromClient => self.name.clone(),
             Reception::FromPeer(peer) => peer.clone(),
         };
+        if self.has_accepted(&(client.clone(), in_reply_to)) {
+            return;
+        }
         let request = match parse_client_request(body) {
             Ok(request) => request,
             Err(result) => {
@@ -421,6 +439,28 @@ impl InitializedNode {
             self.accept_answer_obligation(&command.origin, &command.client, command.in_reply_to);
         }
         self.handle_outputs(outputs);
+    }
+
+    /// Whether this node has already taken responsibility for this request.
+    ///
+    /// Two states, and no third — checked rather than argued. A record is
+    /// created when a request is accepted and destroyed only by
+    /// [`Self::deliver_result`], which in the same call and before it can
+    /// return puts the request into `completed_replies`. So an accepted request
+    /// is in the ledger or in the dedupe set, never between them and never in
+    /// neither, and these two together are exactly "this node has seen it".
+    /// Should a third state ever appear, it appears as a request this returns
+    /// `false` for and which is then accepted a second time — which is what the
+    /// duplicate tests fail on.
+    ///
+    /// A repeat is a duplicate delivery, never a client retry: Maelstrom gives
+    /// every attempt a fresh `msg_id`, so a second `(client, in_reply_to)` is
+    /// by construction the same request arriving twice. Dropping it is
+    /// therefore not a lost request — an answer for it is already owed or
+    /// already sent — while acting on it appends a second log entry for a
+    /// request issued once and runs its mutation again.
+    fn has_accepted(&self, key: &(String, u64)) -> bool {
+        self.owed_answers.is_owed(key) || self.completed_replies.contains(key)
     }
 
     /// Records that this node owes `origin` an answer for one request it has
