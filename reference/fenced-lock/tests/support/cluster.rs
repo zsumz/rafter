@@ -290,7 +290,7 @@ impl<A: LockApps> LockCluster<A> {
                     .copied()
                     .filter(|peer| *peer != node_id)
                     .collect::<Vec<_>>();
-                let directory = PeerDirectory::new(&all_nodes, &peers);
+                let directory = PeerDirectory::new(&all_nodes);
                 let transport = network.endpoint(node_id, directory.clone());
                 let opened = open_group(
                     node_id,

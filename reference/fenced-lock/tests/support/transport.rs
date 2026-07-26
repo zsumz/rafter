@@ -299,18 +299,23 @@ struct DirectoryState {
 }
 
 impl PeerDirectory {
-    /// Builds a directory that knows every replica and authorizes `peers`.
-    pub fn new(all_nodes: &[NodeId], peers: &[NodeId]) -> Self {
+    /// Builds a directory that can name every replica and authorizes none.
+    ///
+    /// Naming is the deployment's knowledge and authorizing is the cluster's,
+    /// so this half is all a directory can supply on its own. The driver
+    /// publishes the group's membership as a peer set when it adopts the group,
+    /// before it serves anything, which is what fills the other half — and a
+    /// directory that pre-authorized its peers here would hide whether that
+    /// happened.
+    pub fn new(all_nodes: &[NodeId]) -> Self {
         let directory = Self::default();
-        {
-            let mut state = lock(&directory.shared);
-            for node_id in all_nodes {
-                state
-                    .known
-                    .insert(PeerPrincipal::for_node(*node_id), *node_id);
-            }
+        let mut state = lock(&directory.shared);
+        for node_id in all_nodes {
+            state
+                .known
+                .insert(PeerPrincipal::for_node(*node_id), *node_id);
         }
-        directory.replace_authorized(peers.iter().copied().map(PeerPrincipal::for_node).collect());
+        drop(state);
         directory
     }
 
