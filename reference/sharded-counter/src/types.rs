@@ -948,12 +948,15 @@ pub enum SessionOutcome {
 /// starved of anything.
 ///
 /// There is exactly one reason, and that is a property rather than an
-/// oversight. The scheduler maintains its ready set exactly, so a plan entry's
-/// readiness can only be revoked by something the scheduler did not do itself,
-/// and the only such thing is an external readiness signal arriving mid-pass.
-/// Every other way a group could stop being ready — its queue emptying, its
-/// lifecycle moving, its own work poisoning it — requires the dispatch that
-/// this same offer would have been.
+/// oversight. Two of the ways a group could stop being ready — its queue
+/// emptying and its own work poisoning it — each require the dispatch that this
+/// same offer would have been, so neither can happen first. The third is
+/// different: an operator may move a planned group's lifecycle at any time,
+/// with no dispatch involved. It still cannot revoke readiness, because the
+/// only edge that would is removal, and removal is refused while the group
+/// holds a queue it has not drained — which is the same queue that made it
+/// ready. That leaves an external readiness signal as the one revocation a pass
+/// can actually observe.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SkipReason {
     /// An external readiness signal stalled the group after the plan was armed.
@@ -1144,8 +1147,9 @@ pub struct GroupView {
 /// Canonical deterministic state view shared only for differential assertions.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SchedulerView {
-    /// Live groups sorted by ID. Removed and tombstoned slots are reported too,
-    /// because a slot that has left still constrains what may address it.
+    /// Every slot that has ever been created, sorted by ID. Removed and
+    /// tombstoned slots are reported alongside live ones, because a slot that
+    /// has left still constrains what may address it.
     pub groups: Vec<GroupView>,
     /// Items queued across every group.
     pub queued: u32,

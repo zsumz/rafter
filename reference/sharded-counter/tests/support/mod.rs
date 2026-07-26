@@ -5,9 +5,10 @@
 //! did, and [`UnfairScheduler`] is the negative control that proves the audit
 //! has teeth.
 
-// This module is compiled into every suite, and no single suite needs all of
-// it: `dependency_boundary` uses none of it, and the other two overlap without
-// coinciding.
+// Two suites declare this module — `model_contract` and `differential` — and
+// each compiles its own copy of the whole thing while using a different subset.
+// `dependency_boundary` reads manifests only and does not declare it at all.
+// The unused half of each copy is the cost of that arrangement, not dead code.
 #![allow(dead_code)]
 
 use std::{collections::BTreeMap, fmt};
@@ -195,8 +196,13 @@ pub fn faulty(class: SystemClass, service_cost: u32) -> Work {
 /// The recorder writes one history in the canonical order — external signals,
 /// then worker releases, then the plan, then the turns and the work each took,
 /// then the plan retiring — and feeds it to a [`ReferenceScheduler`] as it goes.
-/// It never copies a model answer into the oracle's input: the outcomes it
-/// collects for comparison are kept beside the history, not inside it.
+///
+/// The model's answers do reach that history, as the observation events a real
+/// caller would have seen. They cannot influence anything the oracle derives,
+/// because the oracle folds no observation at all — which is the property
+/// `the_oracle_ignores_the_conclusions_it_is_meant_to_be_checking` asserts. The
+/// copies used for comparison are the separate ones in `outcomes`, `services`,
+/// and `failures`, kept beside the history rather than read back out of it.
 #[derive(Clone)]
 pub struct Recorder {
     scheduler: ManagedScheduler,

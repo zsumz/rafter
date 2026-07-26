@@ -29,7 +29,7 @@ pub enum SchedulingViolation {
         group: GroupId,
         /// First pass of the longest denial run.
         from_pass: PassIndex,
-        /// Length of that run in complete passes.
+        /// Length of that run, counted in armed plans.
         denied_passes: u32,
     },
     /// A plan was armed while an earlier plan still owed a group its turn.
@@ -169,7 +169,12 @@ pub struct FairnessReport {
     pub opportunities: u64,
     /// Largest plan armed.
     pub widest_plan: u32,
-    /// Largest run of complete passes any ready group went without a turn.
+    /// Largest run of armed plans any ready group went without a turn.
+    ///
+    /// Readiness is sampled at each arming, so the run is counted in plans
+    /// armed rather than in passes retired. That is the stricter of the two: a
+    /// plan that omitted a ready group and then never completed is still
+    /// counted here, where a pass-based count would have lost it.
     ///
     /// The bound is that this is zero. It is reported rather than merely
     /// asserted so that a green run says which number it proved.
@@ -330,6 +335,12 @@ impl DerivedGroup {
         }
     }
 
+    /// Drops everything a removed slot must not keep.
+    ///
+    /// `servicing` survives on purpose: it stands for a worker the departing
+    /// incarnation is still occupying, and a slot reopened before that
+    /// occupancy ends must not be dispatched into a busy worker. The release
+    /// event is what clears it.
     fn clear(&mut self) {
         self.counter = 0;
         self.sessions.clear();
@@ -441,6 +452,19 @@ impl Gap {
     }
 }
 
+/// One traversal of a history, and everything that history implies.
+///
+/// The fold *is* the oracle. It is built fresh for every replay and dropped
+/// afterwards, so nothing it derives can survive into the next question asked
+/// of the same log — a replay is always a function of the events alone. Each
+/// field is either a re-derivation of something [`crate::ManagedScheduler`]
+/// also tracks (the groups, the queues, the counts) or an accounting of the
+/// scheduling decisions themselves, which the scheduler keeps none of.
+///
+/// `violation` holds the *first* structural fault and ignores later ones. A
+/// history that broke one rule usually goes on to break several more as a
+/// consequence, and reporting the first is what makes the answer name a cause
+/// instead of its aftermath.
 struct Fold {
     config: SchedulerConfig,
     groups: BTreeMap<GroupId, DerivedGroup>,
@@ -819,6 +843,10 @@ impl Fold {
         AdmissionOutcome::Queued { work: id }
     }
 
+    /// Recomputes the gates that depend only on the addressed slot's identity:
+    /// whether it is configured, exists, has been tombstoned, and is the
+    /// incarnation the traffic named. Every later gate needs a live slot, so
+    /// these run first and answer for both submissions and session opens.
     fn address(
         &self,
         group: GroupId,
@@ -1175,7 +1203,7 @@ impl Fold {
     }
 
     /// Returns the worst opportunity gap the history produced, when any group
-    /// went a complete pass without the turn it was owed. Ties go to the lowest
+    /// was ready as a plan was armed and left out of it. Ties go to the lowest
     /// group ID so that one history always names one group.
     fn widest_gap(&self) -> Option<SchedulingViolation> {
         self.gaps

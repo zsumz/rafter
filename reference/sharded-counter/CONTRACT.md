@@ -429,8 +429,11 @@ doc's sentence, and this is its proof.
 ### The executable assertion
 
 Define, for each group `g`, its **opportunity gap**: the longest run of
-consecutive complete passes in which `g` was ready at arm time and absent from
-the plan. The bound is:
+consecutive *armed plans* in which `g` was ready at arm time and absent from the
+plan. Readiness is sampled at each arming, which is where a plan either owes a
+group a turn or does not; counting armed plans rather than retired passes is the
+stricter of the two, because a plan that omitted a ready group and then never
+completed is still counted. The bound is:
 
 ```text
 widest_gap == 0
@@ -485,12 +488,16 @@ history decides exactly, on every run, at any scale.
 ### The ready set is exact, and what follows
 
 The scheduler maintains ready-set membership exactly and in constant time per
-change. A consequence worth naming: a plan entry's readiness can only be revoked
-by something the scheduler did not do itself. Its queue emptying, its lifecycle
-moving, its own work poisoning it — each requires the dispatch that the offer
-in question would have been. The only external revocation is a readiness report,
-so `Stalled` is the only reason a turn can be skipped, and its being the only
-one is a property rather than an omission.
+change. A consequence worth naming: a plan entry's readiness cannot be revoked
+between its plan being armed and its turn arriving, except by an external
+readiness report. Two of the three ways it could be — its queue emptying, its
+own work poisoning it — each require the dispatch that the offer in question
+would have been, so neither can happen first. The third does not: an operator
+may move a planned group's lifecycle mid-pass, with no dispatch involved. It
+still revokes nothing, because the only edge that would is removal, and removal
+is refused while the group holds a queue it has not drained — which is the same
+queue that made it ready. So `Stalled` is the only reason a turn can be skipped,
+and its being the only one is a property rather than an omission.
 
 ### Pass order
 
@@ -630,8 +637,8 @@ The implementation and oracle must establish:
    retires.
 2. No plan is armed while another still owes a group its turn.
 3. A plan names exactly the ready set at the instant it was armed.
-4. Therefore `widest_gap` is zero: no continuously ready group ever goes a
-   complete pass without a turn.
+4. Therefore `widest_gap` is zero: no group that was ready when a plan was armed
+   is ever left out of it.
 5. Worker exhaustion suspends a pass and never restarts it.
 6. One turn services `min(quota, pending)` items, or fewer only when the group
    poisoned itself part way through.

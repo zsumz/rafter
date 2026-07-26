@@ -87,6 +87,15 @@ impl Group {
     /// has to be refused rather than executed: there is no cache left to
     /// recognize it as a retry, so executing it would apply an acknowledged
     /// command a second time.
+    ///
+    /// Two fields are deliberately left alone. `servicing` tracks a *physical*
+    /// worker, and the worker the departing incarnation was occupying is still
+    /// occupied; clearing the flag would let a slot reopened before that
+    /// occupancy ends be dispatched into a worker that is still busy. A slot
+    /// reopened while its predecessor's work is outstanding therefore reports
+    /// `servicing` until the release arrives, and stays out of the ready set
+    /// until then. `ready_position` is owned by `refresh_ready`, which every
+    /// caller of this method runs afterwards.
     fn clear(&mut self) {
         self.counter = 0;
         self.sessions.clear();
