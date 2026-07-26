@@ -129,6 +129,7 @@ impl Error for InboundEnvelopeError {
 }
 
 mod state;
+mod waiters;
 
 use state::{SharedState, TransportDriverState};
 
@@ -319,8 +320,10 @@ where
     /// wants the eventual fact keeps its future and does not call this.
     ///
     /// Returns whether a waiter was retired. Abandoning a write this driver no
-    /// longer holds, or one that has already resolved, is a no-op rather than an
-    /// error: a caller racing its own completion is not a fault.
+    /// longer holds, one that has already resolved, or one whose client future
+    /// was dropped — which reclaims the waiter — is a no-op rather than an
+    /// error: a caller racing its own completion is not a fault, and abandonment
+    /// resolves a client, so there is nothing to do for one that left.
     #[must_use]
     pub fn abandon_write(&self, local_proposal_id: LocalProposalId) -> bool {
         lock_state(&self.inner).abandon_write(local_proposal_id)
@@ -335,7 +338,9 @@ where
     /// [`ReadAbandonReason::DriveBoundReached`]. The `ReadId` is spent: a retry
     /// issues a new read.
     ///
-    /// Returns whether a waiter was retired.
+    /// Returns whether a waiter was retired. A read whose client future was
+    /// already dropped has none: dropping the future cancels the barrier and
+    /// reclaims the waiter on its own.
     #[must_use]
     pub fn abandon_read(&self, read_id: ReadId) -> bool {
         lock_state(&self.inner).abandon_read(read_id)
@@ -491,6 +496,16 @@ where
     /// not close the transport: the same link serves the next incarnation, and
     /// closing it is the embedder's decision.
     ///
+    /// The metrics watch stays open across the gap, because a handle names a
+    /// service rather than an incarnation — but its last snapshot describes the
+    /// retired one and nothing refreshes it until `adopt_group` publishes the
+    /// next. Closing the watch would break re-adoption, and there is no metrics
+    /// snapshot to publish for a group that does not exist, so the surface that
+    /// tells a released driver from an idle one is
+    /// [`TransportRaftDriver::with_group`] and
+    /// [`TransportRaftDriver::committed_application_index`], which answer
+    /// [`ManagedDriverError::NoGroup`].
+    ///
     /// # Errors
     ///
     /// Returns [`ManagedDriverError::NoGroup`] when the driver has already
@@ -528,8 +543,10 @@ where
     ///
     /// # Errors
     ///
-    /// Returns [`ManagedDriverError::GroupAlreadyAdopted`] when the driver
-    /// still holds a group, the same validation errors as
+    /// Returns [`ManagedDriverError::ShuttingDown`] when the driver has shut
+    /// down — that is terminal, and a supervisor that wants to serve again
+    /// builds a driver — [`ManagedDriverError::GroupAlreadyAdopted`] when the
+    /// driver still holds a group, the same validation errors as
     /// [`TransportRaftDriver::new`], and a group error when the recovery
     /// outputs fail to apply.
     pub fn adopt_group(
@@ -538,6 +555,12 @@ where
         recovery_outputs: Vec<RaftOutput>,
     ) -> Result<(), ManagedDriverError> {
         let mut state = lock_state(&self.inner);
+        // Shutdown is terminal, and `shutdown` itself says so by refusing a
+        // second call. A driver that could be re-armed by adopting a group would
+        // make the entry's own distinction — a supervisor restarting a replica
+        // releases, a supervisor stopping one shuts down and then releases —
+        // a distinction with no consequence.
+        state.reject_if_shutting_down()?;
         if state.group.is_some() {
             return Err(ManagedDriverError::GroupAlreadyAdopted);
         }
@@ -546,13 +569,98 @@ where
         state.next_proposal_id = highest(state.next_proposal_id, next_proposal_id);
         state.next_read_id = highest(state.next_read_id, next_read_id);
         state.group = Some(group);
-        state.shutting_down = false;
         state.publish_adopted_membership();
         if recovery_outputs.is_empty() {
             state.publish_metrics();
             return Ok(());
         }
         state.apply_recovery_outputs(recovery_outputs)
+    }
+}
+
+/// Which waiter a [`WaiterGuard`] reclaims.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum WaiterId {
+    Write(LocalProposalId),
+    Read(ReadId),
+}
+
+/// Reclaims one waiter when its client future is dropped.
+///
+/// Every client future owns one of these. A future polled to completion
+/// releases it, because `poll_write` and `poll_read` already removed the entry
+/// they answered from; a future dropped before that reclaims the entry itself,
+/// which is what keeps the tables bounded for a driver whose clients time out.
+///
+/// The guard is the only remover other than a completing poll. Abandonment
+/// deliberately resolves without removing, so an abandoned waiter still answers
+/// a late poll from a future its caller kept.
+struct WaiterGuard<G, A, R, T, V>
+where
+    G: Clone + Ord + Debug + Send + Sync + 'static,
+    A: ReplicatedStateMachine + Send + 'static,
+    A::Command: Send + 'static,
+    A::CommandResult: Clone + Send + 'static,
+    A::Query: Clone + Send + 'static,
+    A::QueryResult: Send + 'static,
+    R: PersistedRaftRuntime + Send + 'static,
+    T: RaftTransport<G>,
+    V: AuthenticatedPeerValidator<G, T::PeerPrincipal> + Send + Sync + 'static,
+{
+    inner: SharedState<G, A, R, T, V>,
+    waiter: Option<WaiterId>,
+}
+
+impl<G, A, R, T, V> WaiterGuard<G, A, R, T, V>
+where
+    G: Clone + Ord + Debug + Send + Sync + 'static,
+    A: ReplicatedStateMachine + Send + 'static,
+    A::Command: Send + 'static,
+    A::CommandResult: Clone + Send + 'static,
+    A::Query: Clone + Send + 'static,
+    A::QueryResult: Send + 'static,
+    R: PersistedRaftRuntime + Send + 'static,
+    T: RaftTransport<G>,
+    V: AuthenticatedPeerValidator<G, T::PeerPrincipal> + Send + Sync + 'static,
+{
+    fn new(inner: SharedState<G, A, R, T, V>, waiter: WaiterId) -> Self {
+        Self {
+            inner,
+            waiter: Some(waiter),
+        }
+    }
+
+    fn state(&self) -> &SharedState<G, A, R, T, V> {
+        &self.inner
+    }
+
+    /// Marks the waiter as already consumed by a completed poll.
+    fn release(&mut self) {
+        self.waiter = None;
+    }
+}
+
+impl<G, A, R, T, V> Drop for WaiterGuard<G, A, R, T, V>
+where
+    G: Clone + Ord + Debug + Send + Sync + 'static,
+    A: ReplicatedStateMachine + Send + 'static,
+    A::Command: Send + 'static,
+    A::CommandResult: Clone + Send + 'static,
+    A::Query: Clone + Send + 'static,
+    A::QueryResult: Send + 'static,
+    R: PersistedRaftRuntime + Send + 'static,
+    T: RaftTransport<G>,
+    V: AuthenticatedPeerValidator<G, T::PeerPrincipal> + Send + Sync + 'static,
+{
+    fn drop(&mut self) {
+        let Some(waiter) = self.waiter.take() else {
+            return;
+        };
+        let mut state = lock_state(&self.inner);
+        match waiter {
+            WaiterId::Write(local_proposal_id) => state.discard_write(local_proposal_id),
+            WaiterId::Read(read_id) => state.discard_read(read_id),
+        }
     }
 }
 
@@ -659,9 +767,16 @@ where
         // resolves it rather than arriving before anything is listening.
         let started = lock_state(&inner).begin_write(&group_id, command, options);
         match started {
-            Ok(local_proposal_id) => Box::pin(poll_fn(move |context| {
-                lock_state(&inner).poll_write(local_proposal_id, context)
-            })),
+            Ok(local_proposal_id) => {
+                let mut guard = WaiterGuard::new(inner, WaiterId::Write(local_proposal_id));
+                Box::pin(poll_fn(move |context| {
+                    let polled = lock_state(guard.state()).poll_write(local_proposal_id, context);
+                    if polled.is_ready() {
+                        guard.release();
+                    }
+                    polled
+                }))
+            }
             Err(error) => Box::pin(ready(Err(error))),
         }
     }
@@ -676,9 +791,16 @@ where
         let inner = self.inner.clone();
         let started = lock_state(&inner).begin_read(&group_id, query, consistency, options);
         match started {
-            Ok(read_id) => Box::pin(poll_fn(move |context| {
-                lock_state(&inner).poll_read(read_id, context)
-            })),
+            Ok(read_id) => {
+                let mut guard = WaiterGuard::new(inner, WaiterId::Read(read_id));
+                Box::pin(poll_fn(move |context| {
+                    let polled = lock_state(guard.state()).poll_read(read_id, context);
+                    if polled.is_ready() {
+                        guard.release();
+                    }
+                    polled
+                }))
+            }
             Err(error) => Box::pin(ready(Err(error))),
         }
     }
