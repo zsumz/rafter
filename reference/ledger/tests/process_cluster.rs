@@ -375,6 +375,71 @@ fn a_replica_killed_mid_write_recovers_from_its_journal_and_rejoins() {
     cluster.shutdown();
 }
 
+/// The other restart: the one that shortens the journal and serves anyway.
+///
+/// `--repair-app-store` is not the only way this process can lose acknowledged
+/// work, though the documentation said so for several revisions. A journal
+/// whose tail reached the medium as zeros is truncated by the plain `open`,
+/// with no flag and no operator, and the deleted bytes may be committed frames
+/// a zeroed region erased. `TornTail::is_truncatable_residue` argues why that
+/// trade is made rather than gated; what is owed here is that it reaches
+/// somebody, which is the `possibly_committed=` field.
+///
+/// The zeros are **appended** rather than written over a committed frame, and
+/// that is deliberate. Appended zeros lose nothing. An erased final frame loses
+/// a transaction. They are the same bytes, the store cannot tell them apart,
+/// and the announcement is identical for both — which is the whole reason the
+/// announcement has to exist. A test that only ever damaged the harmless one
+/// would be checking the shape of a line; this checks that the process says the
+/// same thing in the case where it matters, because it has no way to say less.
+#[test]
+#[ignore = "spawns real processes; run with --ignored (see the module docs)"]
+fn a_truncated_zero_tail_is_announced_on_a_plain_restart() {
+    let mut cluster = ProcessCluster::start("zero-tail-announced", process_config());
+    cluster.submit_to_leader(&open_session(0, 1));
+    cluster.submit_to_leader(&execute(0, 1, 1, open_account(7)));
+    cluster.submit_to_leader(&execute(0, 1, 2, deposit(7, 60)));
+
+    let victim = NodeId(3);
+    cluster.wait_applied_through(victim, LogIndex(1));
+    cluster.kill(victim);
+
+    let app_dir = NodeProcess::node_dir(cluster.root(), victim).join("app");
+    let mut bytes = raw_journal::read(&app_dir).expect("the killed replica's journal reads back");
+    bytes.extend(std::iter::repeat_n(0_u8, 96));
+    raw_journal::write(&app_dir, &bytes).expect("the journal rewrites");
+
+    let mut restarted = NodeProcess::spawn(cluster.root(), victim, cluster.config());
+    let announced = restarted.wait_for_line("RECOVERED");
+    assert!(
+        announced.contains("possibly_committed=96"),
+        "a restart that shortened the journal without proof must say how much, \
+         observed {announced:?}"
+    );
+    assert!(
+        !restarted.has_announced("NEEDS_REPAIR"),
+        "a zero tail must not need an operator; refusing it would send them to the flag"
+    );
+    assert!(
+        !restarted.has_announced("REPAIRED"),
+        "no flag was passed, so nothing may report itself as a repair"
+    );
+    restarted.wait_ready();
+    cluster.adopt(victim, restarted);
+
+    let leader = cluster.wait_for_agreed_leader();
+    cluster.submit(leader, &execute(0, 1, 3, deposit(7, 5)));
+    cluster.wait_applied_through(victim, LogIndex(1));
+    let summary = cluster
+        .query_leader(LedgerQuery::GetLedgerSummary)
+        .summary()
+        .expect("the summary query answers");
+    assert_eq!(summary.total_balance, 65);
+
+    assert_linearizable(&cluster);
+    cluster.shutdown();
+}
+
 #[test]
 #[ignore = "spawns real processes; run with --ignored (see the module docs)"]
 fn readiness_refuses_a_journal_that_needs_an_operator_decision() {

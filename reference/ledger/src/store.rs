@@ -200,10 +200,16 @@
 //!
 //! - Before the first byte of a frame, the journal is unchanged, so recovery
 //!   sees the pre-transaction state with a clean tail.
-//! - From that first byte to the *second to last*, the tail carries the unsealed
+//! - From that first byte to the *second to last*, **when the bytes reached the
+//!   medium in the order they were written**, the tail carries the unsealed
 //!   append mark and is not a whole frame. Recovery stops at the last committed
 //!   frame — the pre-transaction state — and reports
-//!   [`TornTail::UnsealedAppend`].
+//!   [`TornTail::UnsealedAppend`]. The qualification is load-bearing and is not
+//!   a hedge: the same interrupted append with its *leading* bytes still in a
+//!   lost cache leaves a foreign begin magic, which is
+//!   [`TornTail::NotALedgerFrame`] and refuses. That is fail-closed rather than
+//!   pre-or-post, and it is enumerated under
+//!   [`TornTail::is_truncatable_residue`] rather than left to be met.
 //! - With the whole frame durable and the seal not yet written, the transaction
 //!   is written but not committed, which is the same pre-transaction state — and
 //!   this is the one boundary `open` will not resolve on its own. These bytes
@@ -225,23 +231,31 @@
 //! `Ok` is withheld.
 //!
 //! Recovery truncates a torn tail before the store accepts another
-//! transaction, so an append can never follow abandoned bytes. Truncation
-//! discards only bytes that no commit point ever covered, and it is idempotent:
-//! a crash during it leaves work a later open repeats.
+//! transaction, so an append can never follow abandoned bytes. It is
+//! idempotent: a crash during it leaves work a later open repeats.
 //!
 //! # Which residue [`LedgerStore::open`] may truncate
 //!
-//! That last sentence is a promise, and keeping it needs a rule sharper than
-//! "the scan stopped here". Recovery walks frames from the header and stops at
-//! the first one it cannot read. Where it stopped is *not* evidence about
-//! whether the bytes beyond it were committed: a frame in the middle of a long
-//! journal can become unreadable, and everything after it — whole, correctly
-//! sealed, acknowledged transactions — is then unreachable too, because the
-//! next frame's offset is only knowable through the one that cannot be read.
+//! **Opening this store is not a read.** It is nearly one, and the exception is
+//! the subject of this section, so it is stated first and without a softening
+//! clause: `open` shortens the journal in two cases, and in one of the two the
+//! bytes it deletes may be a transaction this replica already acknowledged to a
+//! client. No flag gates that case. [`LedgerStore::open_and_repair`] is a
+//! different and larger loss, not the only one.
 //!
-//! So `open` may truncate only residue it can *prove* no commit point covered.
-//! This section is that proof, and it is written in the direction the proof is
-//! used.
+//! Keeping the truncation honest needs a rule sharper than "the scan stopped
+//! here". Recovery walks frames from the header and stops at the first one it
+//! cannot read. Where it stopped is *not* evidence about whether the bytes
+//! beyond it were committed: a frame in the middle of a long journal can become
+//! unreadable, and everything after it — whole, correctly sealed, acknowledged
+//! transactions — is then unreachable too, because the next frame's offset is
+//! only knowable through the one that cannot be read.
+//!
+//! So `open` truncates under exactly two rules, and they carry two different
+//! guarantees. The first is a proof that no commit point covered the bytes. The
+//! second is not a proof and does not claim to be. Both are stated in the
+//! direction they are used, and [`TornTail::is_truncatable_residue`] is where
+//! the pair is written down with each one's boundary.
 //!
 //! An earlier shape of this store argued the other direction. It enumerated
 //! what an interrupted append leaves — fewer bytes than a begin record, a
@@ -307,14 +321,25 @@
 //! is [`TornTail::ZeroFilledToEnd`] and is truncated. That is what a crash on a
 //! delayed-allocation filesystem leaves when the file's size reached the medium
 //! and its data did not, and refusing it would brick a replica on the most
-//! ordinary crash there is. The premise underneath it is a claim about the
-//! physical world rather than about this program, and
+//! ordinary crash there is.
+//!
+//! This is the case where `open` may delete an acknowledged transaction, and
+//! the trade is made deliberately. The premise underneath it is a claim about
+//! the physical world rather than about this program, and
 //! [`TornTail::is_truncatable_residue`] states it, states the loss it admits — a
-//! committed *final* frame that a zeroed sector erased is discarded — and states
-//! the bound that makes the trade tolerable: the loss can never reach a byte
-//! that is not itself zero, and never a frame beyond the damage. Every zero run
-//! with a single non-zero byte anywhere after it, which is every zero run that
-//! has a committed frame behind it, fails the identity test and refuses.
+//! committed final region that a zeroed sector erased is discarded — and states
+//! the bound: the loss can never reach a byte that is not itself zero, and never
+//! a frame beyond the damage. [`RecoveryReport::discarded_without_proof`] is how
+//! a caller learns it happened without having to match on the variant and read
+//! this page.
+//!
+//! Every *other* zero run refuses, but not for the reason this paragraph used to
+//! give. It said such a run is "every zero run that has a committed frame behind
+//! it", and that is a different set: an interrupted append whose leading bytes
+//! never landed is a zero run with non-zero bytes after it and nothing committed
+//! behind it at all, and it refuses too. Refusing is fail-closed and costs an
+//! operator action on a crash that lost nothing; the enumeration is under
+//! [`TornTail::is_truncatable_residue`].
 //!
 //! ## The mark is half the rule, not the rule
 //!
@@ -448,10 +473,16 @@ const SEALED_FRAME_MARK: u8 = BEGIN_MAGIC[0];
 /// assuming it was the defect this store was corrected for: a tail carrying
 /// this value may equally be a committed frame whose mark byte rotted to zero.
 /// Truncating needs [`TornTail::is_interrupted_append`], which asks a second
-/// question beside this byte, not this byte alone. It is zero
-/// because that is also what a filesystem leaves when a crash extended a file
-/// without persisting its data: the ordinary residue of a delayed allocation
-/// reads as exactly what it is.
+/// question beside this byte, not this byte alone.
+///
+/// It is zero because that is also what a filesystem leaves when a crash
+/// extended a file without persisting its data. The coincidence is convenient
+/// and is not itself a rule — the sentence that used to finish this paragraph,
+/// that such residue "reads as exactly what it is", is the one the module doc
+/// retracts, because it made zeros landing over a *committed* frame read as
+/// residue too. What the value earns is a place in `verify_identity`'s first
+/// test. Everything past that is decided by `read_frame`'s ordering and by
+/// [`TornTail::is_truncatable_residue`].
 const UNSEALED_FRAME_MARK: u8 = 0x00;
 
 /// Version byte of every record this build writes.
@@ -908,16 +939,23 @@ impl fmt::Display for FaultPlan {
 /// Why recovery stopped before the end of the journal.
 ///
 /// This is reported here because the report says what recovery *found*, not
-/// because finding one is benign: only [`TornTail::UnsealedAppend`] is ordinary
-/// residue that truncates, and every other variant refuses the store through
-/// [`LedgerStoreError::UnreadableFrame`]. Each variant names the byte boundary
-/// the interrupted write reached, which is what lets a crash test prove that
-/// its injection bit where it aimed.
+/// because finding one is benign. Each variant names the byte boundary the
+/// interrupted write reached, which is what lets a crash test prove that its
+/// injection bit where it aimed.
 ///
-/// Exactly one of these variants is residue an interrupted append can leave;
-/// see [`TornTail::is_interrupted_append`]. The rest name either damage to a
-/// frame that was sealed or a whole frame this store cannot claim was never
-/// committed, and reaching one refuses the store rather than truncating.
+/// **Two** of these variants are truncated by [`LedgerStore::open`], and they
+/// are truncated on different grounds — see
+/// [`TornTail::is_truncatable_residue`], which is the predicate the destructive
+/// branch reads. Only one of the two carries a proof that no commit point
+/// covered the bytes. This paragraph used to say only one variant truncates at
+/// all and every other refuses, which was written when that was true and left
+/// standing when [`TornTail::ZeroFilledToEnd`] joined the disjunction.
+///
+/// Exactly one of these variants is residue an interrupted append can be shown
+/// to have left; see [`TornTail::is_interrupted_append`]. The rest name either
+/// damage to a frame that was sealed, a whole frame this store cannot claim was
+/// never committed, or bytes whose identity is gone — and reaching one of those
+/// refuses the store.
 ///
 /// "Exactly one" is a closure claim, so it is checked rather than asserted:
 /// `exactly_one_torn_tail_is_residue_an_interrupted_append_leaves` matches on
@@ -981,10 +1019,27 @@ pub enum TornTail {
     /// The bytes here do not carry this build's begin identity.
     ///
     /// Byte zero is neither frame mark, or the magic bytes beside it are not
-    /// this store's — as far as the bytes present go. Neither is something an
-    /// append can produce: an append writes the whole begin magic with byte zero
-    /// held unsealed, so bytes one through three carry the identity from the
-    /// first write that reaches them.
+    /// this store's — as far as the bytes present go.
+    ///
+    /// This used to say neither shape is something an append can produce,
+    /// because an append writes the whole begin magic with byte zero held
+    /// unsealed, so bytes one through three carry the identity from the first
+    /// write that reaches them. That is a statement about the order the bytes
+    /// were *written*, and this variant is decided by the order they reached
+    /// the medium. An append interrupted with its leading bytes still in a
+    /// cache the crash took leaves exactly this: `[0, 0, b'B', b'G']`, an
+    /// identity destroyed by an append that wrote it correctly.
+    ///
+    /// So one physical event — an interrupted append — lands in
+    /// [`TornTail::UnsealedAppend`] and truncates when its bytes arrived front
+    /// to back, and here and refuses when they did not. That is fail-closed and
+    /// stays fail-closed: the same bytes are also what a committed final frame
+    /// leaves when a zeroed region takes its identity and stops short of its
+    /// end, and nothing present distinguishes the two. Refusing costs an
+    /// operator action on a crash that lost nothing; accepting would delete a
+    /// transaction that was acknowledged. The boundary is enumerated under
+    /// [`TornTail::is_truncatable_residue`] and walked by
+    /// `gen5_an_interrupted_append_is_truncated_or_refused_by_sector_order_alone`.
     ///
     /// This is the sibling lock store's [`SlotDamage::NotALockImage`], under the
     /// name this format uses. The two stores are meant to answer the same byte
@@ -1062,7 +1117,7 @@ impl TornTail {
     /// frame beside it defeats this rule, as it defeats every checksum-based
     /// rule with a single check. What is now excluded is the single-fault case,
     /// which is what a one-byte rot is, and
-    /// `no_single_byte_change_to_a_sealed_frame_is_ever_interrupted_append`
+    /// `no_single_byte_change_to_a_sealed_frame_is_ever_truncatable`
     /// checks that exhaustively rather than asserting it here.
     ///
     /// The two things this deliberately does **not** cover are
@@ -1099,11 +1154,30 @@ impl TornTail {
     ///   rotted to zero **and** some other byte of the same frame lost or
     ///   altered — satisfy both halves and are truncated. One physical event
     ///   that does this is a torn or zeroed region beginning at the frame's
-    ///   first byte, and that case is caught by rule two's boundary instead,
-    ///   because such a region takes the identity bytes with it. What remains
-    ///   outside is two *disjoint* events, which the crash contract does not
-    ///   admit. `a_zero_run_over_a_committed_frame_is_refused_at_every_length`
-    ///   walks the first case on each side of that line.
+    ///   first byte, and such a region takes the identity bytes with it, so it
+    ///   reaches [`TornTail::NotALedgerFrame`] and refuses — except at length
+    ///   one, where the region *is* the mark byte, the identity survives, and
+    ///   the re-read makes it [`TornTail::UnsealedCompleteFrame`], which also
+    ///   refuses. What remains outside is two *disjoint* events, which the crash
+    ///   contract does not admit.
+    ///   `a_zero_run_over_a_committed_frame_is_refused_at_every_length` walks
+    ///   both of those on each side of the line.
+    ///
+    /// - An interrupted append whose **leading** bytes did not reach the medium
+    ///   is not in this scope either, and it is the case neither this list nor
+    ///   rule two's used to hold. It is one append, and its verdict flips on
+    ///   writeback order alone: front to back it is rule one and truncates,
+    ///   and with the first two bytes lost it is a foreign begin magic and
+    ///   refuses. No commit point covered those bytes, so refusing costs an
+    ///   operator action on a crash that lost nothing — and it stays a refusal,
+    ///   because the same bytes are what a committed final frame leaves when a
+    ///   zeroed region takes its identity and stops before its end. Nothing
+    ///   present separates the two, and only one of them can be truncated
+    ///   without deleting an acknowledged transaction.
+    ///   `gen5_an_interrupted_append_is_truncated_or_refused_by_sector_order_alone`
+    ///   is the pair, and `LedgerStore::open_and_repair` is the way out of the
+    ///   refusing half — where the `Repair` it reports is an upper bound on the
+    ///   loss and, in this case, an upper bound on nothing.
     ///
     /// **Rule two — [`TornTail::ZeroFilledToEnd`].** Scope: every byte from here
     /// to the end of the file is zero. Guarantee is weaker and is stated as the
@@ -1113,19 +1187,36 @@ impl TornTail {
     /// exactly these bytes, and nothing distinguishes it from the delayed
     /// allocation this rule exists for. What is outside this scope:
     ///
-    /// - A committed frame that is both the *last* frame and entirely zeroed is
-    ///   discarded, and the transactions in it are lost. This is the residual
-    ///   loss of the whole design and it is bounded by the zeroed region: the
-    ///   loss can never reach a byte that is not itself zero, and never a frame
-    ///   beyond the damage. `a_zeroed_final_frame_is_lost_and_the_loss_stops_
-    ///   there` pins it, on both sides of the boundary.
+    /// - Committed frames at the end of the journal that a zeroed region erased
+    ///   are discarded, and the transactions in them are lost — including
+    ///   transactions this replica already acknowledged to a client. **This
+    ///   happens under [`LedgerStore::open`], with no flag.** It is the residual
+    ///   loss of the whole design, it is bounded by the zeroed region — the loss
+    ///   can never reach a byte that is not itself zero, and never a frame
+    ///   beyond the damage — and it is bounded by nothing else.
+    ///   `a_zeroed_final_frame_is_lost_and_the_loss_stops_there` pins it on both
+    ///   sides of the boundary. [`RecoveryReport::discarded_without_proof`]
+    ///   reports it, because a loss a caller has to match on a variant to learn
+    ///   about is a loss most callers will not learn about.
     /// - The premise underneath rule two is a claim about the physical world,
     ///   not about this program: that a crash which extends a file without
     ///   persisting its data leaves zeros, and that such a tail is far more
-    ///   often residue than an erased commit. Refusing instead would brick a
-    ///   replica on the most ordinary crash there is, which is why the trade is
-    ///   made — and why it is written down here rather than left to be
-    ///   rediscovered.
+    ///   often residue than an erased commit. It is not a proof and rule one's
+    ///   proof does not reach it; the two are kept apart for that reason.
+    ///
+    /// **Why rule two is not behind the repair flag.** It was considered and
+    /// rejected, and the reason is worth stating because the flag is where a
+    /// reader will expect to find it. Gating it would refuse the store on the
+    /// most ordinary crash on a delayed-allocation filesystem, so a replica
+    /// would need an operator after an ordinary power cut, and the operator's
+    /// only available remedy would be the flag — which discards strictly more.
+    /// A gate whose expected outcome is that everyone always passes it is not a
+    /// decision point; it is a slower default with a worse remedy attached.
+    ///
+    /// What that argument does *not* license is the sentence it used to sit
+    /// under, that opening is a read and only the flag can lose acknowledged
+    /// work. So the trade is made and the report names it, rather than the
+    /// report staying quiet and the prose covering for it.
     #[must_use]
     pub const fn is_truncatable_residue(self) -> bool {
         matches!(
@@ -1192,15 +1283,19 @@ pub struct RecoveryReport {
     committed_frames: u64,
     torn_tail: Option<TornTail>,
     discarded_bytes: u64,
+    discarded_without_proof: u64,
     removed_staged_bytes: Option<u64>,
     repair: Option<Repair>,
 }
 
 /// What [`LedgerStore::open_and_repair`] discarded, when it discarded anything.
 ///
-/// A repair is the one thing this store does that can lose committed
+/// A repair is the largest thing this store does that can lose committed
 /// transactions, so it is recorded rather than implied, and it is unreachable
-/// through [`LedgerStore::open`] at all.
+/// through [`LedgerStore::open`] at all. It is not the *only* such thing:
+/// `open` truncates a zero-filled tail, counted by
+/// [`RecoveryReport::discarded_without_proof`], and this type used to claim
+/// otherwise.
 ///
 /// The count of *transactions* lost is deliberately absent. Frames past a
 /// corrupt one cannot be located, let alone decoded, so nobody can count them;
@@ -1258,7 +1353,13 @@ impl RecoveryReport {
         self.committed_frames
     }
 
-    /// The residue an interrupted transaction left, if any.
+    /// What recovery found past the last committed frame, if anything.
+    ///
+    /// Not "the residue an interrupted transaction left", which is what this
+    /// said and is what only [`TornTail::UnsealedAppend`] can be shown to be.
+    /// Every other variant is a shape an interrupted transaction and a damaged
+    /// committed frame both produce, which is the whole reason they are separate
+    /// variants.
     #[must_use]
     pub const fn torn_tail(&self) -> Option<TornTail> {
         self.torn_tail
@@ -1280,6 +1381,30 @@ impl RecoveryReport {
     #[must_use]
     pub const fn discarded_bytes(&self) -> u64 {
         self.discarded_bytes
+    }
+
+    /// Of [`RecoveryReport::discarded_bytes`], how many `open` deleted without
+    /// being able to show no commit point covered them.
+    ///
+    /// Non-zero means the journal ended in a zero-filled tail and this opening
+    /// shortened the file there. The bytes may have been an interrupted append,
+    /// which is what the rule exists for, and they may equally have been
+    /// committed frames a zeroed region erased — including transactions this
+    /// replica already acknowledged. [`TornTail::is_truncatable_residue`] argues
+    /// why the trade is made rather than gated, and states its bound.
+    ///
+    /// This exists because the distinction was reachable only by matching on
+    /// [`RecoveryReport::torn_tail`] and reading two pages of prose, while the
+    /// prose in front of a caller said `open` could not lose data at all. A loss
+    /// a caller has to already know about in order to look for is one most
+    /// callers will not look for, so it is a number they receive instead.
+    ///
+    /// Zero for a clean opening, for a tail proved uncommitted, and for a
+    /// repair — whose losses [`Repair::discarded_bytes`] counts, and which is
+    /// the larger and separate decision.
+    #[must_use]
+    pub const fn discarded_without_proof(&self) -> u64 {
+        self.discarded_without_proof
     }
 
     /// Whether an abandoned staging file was removed.
@@ -1375,12 +1500,21 @@ impl LedgerStore {
 
     /// Opens the store, discarding an unreadable frame and everything after it.
     ///
-    /// This is the destructive half of [`LedgerStore::open`], and it is a
-    /// separate entry point because it is a separate decision. Opening a store
-    /// is a read; a caller that runs this one has decided that a journal it
-    /// cannot fully read is better shortened than left alone, and
-    /// [`RecoveryReport::repair`] tells it exactly what that cost — the offset,
-    /// the corruption, and the byte count.
+    /// This is the larger destructive half of [`LedgerStore::open`], and it is
+    /// a separate entry point because it is a separate decision: a caller that
+    /// runs this one has decided that a journal it cannot fully read is better
+    /// shortened than left alone, and [`RecoveryReport::repair`] tells it what
+    /// that cost — the offset, the corruption, and the byte count.
+    ///
+    /// "Larger" rather than "the" destructive half, and the difference is not
+    /// pedantry. [`LedgerStore::open`] shortens the journal too, in one case:
+    /// a zero-filled tail, which it truncates without being able to show no
+    /// commit point covered it — see
+    /// [`RecoveryReport::discarded_without_proof`] and, for why that trade is
+    /// made rather than gated behind this entry point,
+    /// [`TornTail::is_truncatable_residue`]. What this one adds is that it
+    /// discards a region recovery *positively* cannot read, of any length,
+    /// wherever the scan stopped.
     ///
     /// A journal with nothing wrong is opened exactly as [`LedgerStore::open`]
     /// opens it, and reports no repair. Repairing is not the same as being
@@ -1422,10 +1556,19 @@ impl LedgerStore {
     /// The one opening path, parameterized by what it does with an unreadable
     /// frame.
     ///
-    /// Both entry points read the same bytes and run the same scan. They differ
-    /// in exactly one branch, which is the point: a reader auditing this can
-    /// see that refusing and repairing agree about everything except whether a
-    /// region a commit point may have covered is allowed to disappear.
+    /// Both entry points read the same bytes and run the same scan, and they
+    /// differ in exactly one branch — the `match` on `on_unreadable` below.
+    /// What they differ *about* is narrower than this used to say. It said they
+    /// agree on everything except whether a region a commit point may have
+    /// covered is allowed to disappear. They do not: the
+    /// `is_truncatable_residue` filter sits **above** that branch, so both entry
+    /// points let a zero-filled tail disappear, and a commit point may have
+    /// covered it.
+    ///
+    /// The branch decides whether a region this build positively cannot read —
+    /// one that failed identity, or a whole frame with an unsealed mark, or
+    /// damage to a sealed frame — is discarded or refused. That is the
+    /// difference, and it is the larger one.
     fn open_inner(
         directory: &Path,
         config: LedgerConfig,
@@ -1515,12 +1658,30 @@ impl LedgerStore {
                 created,
                 committed_frames: scan.committed_frames,
                 torn_tail: scan.torn_tail,
-                // A repair's losses are counted by the repair, not here: these
-                // are the bytes no commit point ever covered.
+                // A repair's losses are counted by the repair, not here.
+                //
+                // What is left here is what `open` itself shortened, which is
+                // two different things under one total: bytes rule one proved
+                // no commit point covered, and bytes rule two discarded on the
+                // weaker premise. The second number is broken out rather than
+                // left inside the first, because a caller reading one total
+                // cannot tell a crash that cost nothing from one that may have
+                // cost an acknowledged transaction.
                 discarded_bytes: if repair.is_some() {
                     0
                 } else {
                     (bytes.len() - scan.committed_len) as u64
+                },
+                //
+                // There is no `repair.is_some()` guard here and it would be
+                // unreachable if there were: `ZeroFilledToEnd` is truncatable
+                // residue, so the filter above never turns one into a repair.
+                // A guard for a state that cannot arise reads as though it can,
+                // and `a_zero_filled_tail_is_truncatable_residue_at_every_length`
+                // is where that reason is checked instead.
+                discarded_without_proof: match scan.torn_tail {
+                    Some(TornTail::ZeroFilledToEnd { present }) => present,
+                    _ => 0,
                 },
                 removed_staged_bytes,
                 repair,
@@ -2158,9 +2319,25 @@ fn verify_identity(bytes: &[u8]) -> Result<(), TornTail> {
 ///
 /// Step 1 above step 2 is the one place this store trades a refusal for a
 /// truncation, and it is the trade named in [`TornTail::is_truncatable_residue`]
-/// rather than an accident of ordering. Every other zero run — any run with a
-/// single non-zero byte anywhere after it, which is every run that has a
-/// committed frame behind it — falls to step 2 and refuses.
+/// rather than an accident of ordering.
+///
+/// Every other zero run refuses, and this used to say why in a sentence with
+/// two halves that are not the same set: "any run with a single non-zero byte
+/// anywhere after it, **which is every run that has a committed frame behind
+/// it**". The first half is the mechanism and is true. The second is a claim
+/// about what the mechanism is *for*, and its counterexample is an interrupted
+/// append whose leading bytes never reached the medium — a run with non-zero
+/// bytes after it and nothing committed behind it anywhere, refused all the
+/// same. Nothing is lost by refusing it, and something would be lost by
+/// accepting it, because a committed final frame that a zeroed region hit at
+/// its front and stopped short of its end leaves the same bytes. Both halves
+/// are enumerated under [`TornTail::is_truncatable_residue`] now rather than
+/// joined by "which is".
+///
+/// One run does not reach step 2 at all: a single zeroed byte at a frame's
+/// front is the unsealed mark, passes the identity test with bytes one through
+/// three intact, and is refused by step 3's re-read as
+/// [`TornTail::UnsealedCompleteFrame`]. It refuses; it does not refuse *here*.
 ///
 /// `bytes` is never empty — the scan stops before calling this on nothing.
 fn read_frame(bytes: &[u8]) -> Result<Frame<'_>, TornTail> {
@@ -2810,7 +2987,7 @@ mod tests {
     /// about what `open` shortens, not about which of the two arguments it
     /// shortened on.
     #[test]
-    fn no_single_byte_change_to_a_sealed_frame_is_ever_interrupted_append() {
+    fn no_single_byte_change_to_a_sealed_frame_is_ever_truncatable() {
         let frame = sealed_frame();
         for offset in 0..frame.len() {
             let original = frame[offset];
@@ -2860,7 +3037,7 @@ mod tests {
     /// so the boundary between the two arguments is visible here rather than
     /// inferred.
     #[test]
-    fn every_strict_prefix_of_an_unsealed_frame_is_an_interrupted_append() {
+    fn every_strict_prefix_of_an_unsealed_frame_is_truncatable_residue() {
         let frame = sealed_frame();
         for present in 1..frame.len() {
             let mut residue = frame[..present].to_vec();
@@ -2897,7 +3074,7 @@ mod tests {
     /// mark, and the rename is the point: these bytes are truncated on a premise
     /// about the physical world, and the report now says which premise it used.
     #[test]
-    fn a_zero_filled_tail_is_an_interrupted_append_at_every_length() {
+    fn a_zero_filled_tail_is_truncatable_residue_at_every_length() {
         for present in 1..96_usize {
             let zeros = vec![0_u8; present];
             assert_eq!(

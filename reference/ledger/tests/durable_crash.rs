@@ -1379,6 +1379,112 @@ fn compaction_never_makes_an_acknowledged_command_executable_again() {
 // Replication
 // ---------------------------------------------------------------------------
 
+/// What `open` truncating a zero-filled tail actually costs a replica, and what
+/// gets it back.
+///
+/// `TornTail::is_truncatable_residue` takes a trade: it truncates a zero tail
+/// under `open`, with no flag, knowing the bytes may be committed frames a
+/// zeroed region erased. The argument for the trade is that refusing would
+/// refuse the store on the most ordinary crash there is. The argument for the
+/// trade being *survivable* is separate, and this is it — the application store
+/// is a projection of the replicated log, its applied index is the join point,
+/// and entries above that index are re-applied.
+///
+/// So the loss is real and local: this replica's applied floor moves backwards
+/// under an ordinary restart. It is also repaired by replication, and that half
+/// is checked here rather than asserted in a doc comment, because it is the
+/// half that makes the trade defensible and it is not a fact about the store.
+///
+/// What it does not show, and what nothing here can: that the group still holds
+/// those entries. A zeroing event across a quorum loses them outright.
+#[test]
+fn a_zero_filled_tail_costs_a_replica_its_floor_and_replication_returns_it() {
+    let scratch = ScratchDir::new("cluster-zero-tail");
+    let ledger_config = config(2, 4);
+    let mut apps = DurableLedgerApps::new(scratch.path(), ledger_config);
+    // No fault fires; this marks node 3 as one whose residue a scenario put
+    // there deliberately, so the factory's "no unexplained residue" assertion
+    // stays on for the other two.
+    apps.arm(NodeId(3), FaultPlan::none());
+    let node_three = apps.directory(NodeId(3));
+
+    let mut cluster = LedgerCluster::with_apps(ledger_config, apps);
+    let leader = cluster.elect_leader();
+    let commands = workload();
+    let (last, rest) = commands.split_last().expect("the workload is not empty");
+    for command in rest {
+        cluster.submit(leader, command.clone());
+    }
+    cluster.settle();
+
+    // The boundary the final frame begins at, taken from the store rather than
+    // computed, so the zeroing starts exactly where a frame does.
+    let boundary = journal_len(&cluster, NodeId(3));
+    let floor_before = cluster.applied_index(NodeId(3));
+
+    cluster.submit(leader, last.clone());
+    cluster.settle();
+    let quorum_view = cluster.state_machine(NodeId(2)).ledger().view();
+    let floor_after = cluster.applied_index(NodeId(3));
+    let total = journal_len(&cluster, NodeId(3));
+    assert!(
+        floor_after > floor_before && total > boundary,
+        "the final transaction has to have committed on node 3 for its loss to mean anything"
+    );
+
+    // The final frame's sector reaches the drive as zeros. Nothing else changes,
+    // and this is the whole of the injury.
+    let mut bytes = raw_journal::read(&node_three).expect("the journal reads");
+    for byte in &mut bytes[boundary..] {
+        *byte = 0;
+    }
+    raw_journal::write(&node_three, &bytes).expect("the journal rewrites");
+
+    cluster.restart(NodeId(3));
+    let recovery = *cluster.state_machine(NodeId(3)).store().recovery();
+    let zeroed = as_u64(total - boundary);
+    assert_eq!(
+        recovery.torn_tail(),
+        Some(TornTail::ZeroFilledToEnd { present: zeroed })
+    );
+    assert_eq!(
+        recovery.discarded_without_proof(),
+        zeroed,
+        "an ordinary restart deleted bytes it could not show were uncommitted, and has to say so"
+    );
+    assert_eq!(
+        recovery.repair(),
+        None,
+        "no flag was reached; this is the plain entry point"
+    );
+    assert!(
+        !recovery.created(),
+        "the journal was shortened, not replaced"
+    );
+
+    // The catch-up. Nothing is submitted, so anything node 3 regains is the log
+    // handing back what the restart deleted.
+    cluster.run_rounds(8);
+    cluster.settle();
+    assert_eq!(
+        cluster.applied_index(NodeId(3)),
+        floor_after,
+        "replication must return the applied floor the truncation took"
+    );
+    assert_eq!(
+        cluster.state_machine(NodeId(3)).ledger().view(),
+        quorum_view,
+        "and the transaction in those bytes with it"
+    );
+    assert!(cluster.crashed().is_empty());
+}
+
+/// One replica's committed journal length, as an index into its own bytes.
+fn journal_len(cluster: &LedgerCluster<DurableLedgerApps>, node_id: NodeId) -> usize {
+    usize::try_from(cluster.state_machine(node_id).store().journal_len())
+        .expect("a test journal fits this platform's address space")
+}
+
 #[test]
 fn a_replica_that_crashed_mid_transaction_recovers_and_rejoins() {
     let scratch = ScratchDir::new("cluster-crash");

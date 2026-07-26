@@ -241,12 +241,22 @@ fn a_zero_filled_tail_is_an_interrupted_append() {
 }
 
 // ---------------------------------------------------------------------------
-// The repair path reaches every unreadable region `open` refuses over, so
-// "refuses to open" is never a dead end.
+// The repair path clears an unreadable region wherever the scan stopped,
+// including the first frame, so "refuses to open" is not a dead end there.
+//
+// "Every" is what this section used to claim and the test never checked. It is
+// false in two ways worth naming rather than deleting the sentence over.
+// `UnsupportedFrameVersion` is refused by both entry points by design, because
+// discarding it would delete a newer build's committed work; and the errors
+// `scan_journal` raises above the repair branch — a corrupt journal header, a
+// snapshot that violates a model invariant, an applied index that does not
+// advance — are not regions to discard at all. What the test below does check
+// is the load-bearing case: the region is at offset zero, so the repair has no
+// committed prefix to fall back to and clears the whole history.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn open_and_repair_can_clear_every_unreadable_region_open_refuses() {
+fn open_and_repair_clears_an_unreadable_region_at_the_first_frame() {
     let scratch = ScratchDir::new("probe-repair-coverage");
     let commands = workload();
 

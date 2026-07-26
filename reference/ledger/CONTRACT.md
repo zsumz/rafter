@@ -327,13 +327,34 @@ through: a tail that is **zeros all the way to the end of the file** is
 truncated, because that is what a crash leaves when a file's size reached the
 medium and its data did not, and refusing it would need an operator after the
 most ordinary crash there is. That rule rests on a claim about the physical
-world rather than about this program, so its limit is stated with it: a
-committed frame that is both the *last* frame and entirely zeroed is discarded
-and its transactions are lost. What the rule guarantees instead is the bound —
-the loss can never reach a byte that is not itself zero, and never a frame
-beyond the damage. Every zero run with a single non-zero byte anywhere after it,
-which is every zero run with a committed frame behind it, fails the identity
-test and refuses.
+world rather than about this program, so its limit is stated with it: committed
+frames at the end of the journal that a zeroed region erased are discarded and
+their transactions are lost, **including transactions this replica already
+acknowledged to a client, under the ordinary opening, with no flag**. What the
+rule guarantees instead is the bound — the loss can never reach a byte that is
+not itself zero, and never a frame beyond the damage — and the report names it:
+`discarded_without_proof` counts exactly those bytes, and the process announces
+them as `possibly_committed=`.
+
+That is the one place opening is not a read, and the sections below said for
+several revisions that it was. Two things follow. Gating the rule behind the
+repair flag was considered and rejected, because a gate everybody always passes
+is a slower default with a worse remedy attached — the flag discards strictly
+more. And the loss is local rather than final: the application journal is a
+projection of the replicated log, its applied index is the join point, and the
+entries above it are re-applied on the next recovery. That second half is a fact
+about the composition, so it is tested end to end rather than asserted, and it
+stops holding exactly when the group can no longer supply the entries.
+
+Every *other* zero run refuses, and the reason is not the one this paragraph
+used to give. It said such a run is "every zero run with a committed frame
+behind it", which is a different set: an interrupted append whose leading bytes
+never reached the medium is a zero run with non-zero bytes after it and nothing
+committed behind it at all, and it refuses too. That refusal costs an operator
+action on a crash that lost nothing, and it stays a refusal because the same
+bytes are what a committed final frame leaves when a zeroed region takes its
+identity and stops before its end. Both boundaries are enumerated on
+`is_truncatable_residue` rather than joined by "which is".
 
 **The mark is half of the rule and not the rule.** Reading it as the whole rule
 is how this section was wrong the second time. `interrupted ⇒ unsealed` is what
@@ -348,11 +369,14 @@ the same begin record, being under a checksum, refused the store. The mark byte
 was the only byte no checksum was ever consulted for, because the mark test
 returned first.
 
-So truncating now requires the unsealed mark **and** positive evidence that the
-bytes are not a whole frame. Opening reads the tail a second time with the mark
-restored to its sealed value — the value every checksum in a frame is computed
-over — and truncates only what still fails to be a whole frame at a step this
-build can read. Three outcomes, three different facts:
+So truncating **on the mark** now requires the unsealed mark and positive
+evidence that the bytes are not a whole frame. That qualification matters: the
+zero-fill rule above requires neither, which is why it is a second rule with its
+own premise and its own report variant rather than a case of this one. Opening
+reads the tail a second time with the mark restored to its sealed value — the
+value every checksum in a frame is computed over — and truncates only what still
+fails to be a whole frame at a step this build can read. Three outcomes, three
+different facts:
 
 - **not a whole frame**: too short for a begin record, a begin record that does
   not verify, a partial or mismatched image, a missing or partial commit record.

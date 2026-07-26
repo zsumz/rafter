@@ -1,17 +1,21 @@
 //! A zero-filled tail gets one verdict, at every length.
 //!
-//! These sweep the *boundary* of `TornTail::is_interrupted_append` rather than
+//! These sweep the *boundary* of `TornTail::is_truncatable_residue` rather than
 //! poking one point. The classifier used to flip on length alone here: below a
-//! begin record any bytes at all were benign residue, and at or above it the
-//! same zeros failed the magic test and became corruption an operator had to
-//! clear with a destructive repair. Neither verdict was a statement about
-//! whether the bytes were committed, which is what the classifier is for.
+//! begin record any bytes at all were residue, and at or above it the same zeros
+//! failed the magic test and became corruption an operator had to clear with a
+//! destructive repair. Neither verdict was a statement about whether the bytes
+//! were committed, which is what the classifier is for.
 //!
 //! Zeros past the last committed frame are what a crash on a delayed-allocation
-//! filesystem leaves — the file's size reached the medium and its data did not
-//! — and they are also, exactly, what an unsealed frame mark looks like. The
-//! store puts that mark there on purpose, so the ordinary residue of a crash
-//! reads as what it is.
+//! filesystem leaves — the file's size reached the medium and its data did not.
+//! They are truncated, and that is a trade rather than a reading: the same bytes
+//! are what a zeroed sector leaves over the last committed frames, and
+//! `TornTail::is_truncatable_residue` argues why refusing them would be worse
+//! and what accepting them costs. These tests pin the uniformity of the verdict.
+//! They do not, and cannot, show the bytes were uncommitted — which is why the
+//! predicate they assert on is the disjunction and not
+//! `TornTail::is_interrupted_append`, whose proof does not reach here.
 
 #[allow(dead_code)]
 mod support;
@@ -77,8 +81,15 @@ fn commit_workload(directory: &Path) -> Vec<u8> {
 /// zero bytes.
 #[derive(Debug, Eq, PartialEq)]
 enum Verdict {
-    /// Classified as an interrupted append and silently truncated away.
-    TruncatedAsBenign(TornTail),
+    /// Truncated away by `open`, with no flag and no operator.
+    ///
+    /// Not "as benign", which is what this arm was called. `open` truncating a
+    /// zero tail is not a finding that the bytes were uncommitted; it is a
+    /// trade taken in their absence, and the bytes may have been a committed
+    /// frame a zeroed sector erased. `RecoveryReport::discarded_without_proof`
+    /// is what the store says about that, and the name here should not say
+    /// something softer than the store does.
+    Truncated(TornTail),
     /// Classified as corruption; the store refuses and needs an operator.
     RefusedAsCorruption(TornTail),
 }
@@ -100,9 +111,15 @@ fn verdict_for_zero_tail(zeros: usize) -> Verdict {
             assert_eq!(
                 after.len(),
                 committed_len,
-                "a benign verdict truncates the tail off the medium"
+                "a store that opened over a zero tail truncated it off the medium"
             );
-            Verdict::TruncatedAsBenign(tail)
+            assert_eq!(
+                store.recovery().discarded_without_proof(),
+                zeros as u64,
+                "every byte `open` shortened here was shortened without a proof it was \
+                 uncommitted, and the report has to say so"
+            );
+            Verdict::Truncated(tail)
         }
         Err(LedgerStoreError::UnreadableFrame { corruption, .. }) => {
             Verdict::RefusedAsCorruption(corruption)
@@ -112,7 +129,7 @@ fn verdict_for_zero_tail(zeros: usize) -> Verdict {
 }
 
 // ---------------------------------------------------------------------------
-// One kind of residue, one verdict — and it has to be the benign one.
+// One kind of residue, one verdict — and it has to be the truncating one.
 //
 // A zero fill was a fifth shape the four-shape enumeration did not name, and
 // the verdict on it flipped purely on how many zeros landed.
@@ -125,9 +142,9 @@ fn a_zero_filled_tail_gets_one_verdict_regardless_of_its_length() {
         transcript.push((zeros, verdict_for_zero_tail(zeros)));
     }
 
-    let benign: Vec<_> = transcript
+    let truncated: Vec<_> = transcript
         .iter()
-        .filter(|(_, verdict)| matches!(verdict, Verdict::TruncatedAsBenign(_)))
+        .filter(|(_, verdict)| matches!(verdict, Verdict::Truncated(_)))
         .collect();
     let refused: Vec<_> = transcript
         .iter()
@@ -138,21 +155,23 @@ fn a_zero_filled_tail_gets_one_verdict_regardless_of_its_length() {
         refused.is_empty(),
         "one kind of residue — zeros past the last committed frame — gets two opposite \
          verdicts depending only on how many bytes landed.\n\
-         truncated away as an interrupted append: {benign:?}\n\
+         truncated: {truncated:?}\n\
          refused as corruption needing an operator: {refused:?}\n\
          The flip used to sit at BEGIN_LEN (17): below it `read_frame` never reached the magic \
          test, so any bytes at all were `PartialBeginRecord`; at or above it the zeros failed \
          the magic test and became `BeginRecordCorrupt`. Neither verdict was a statement about \
-         whether the bytes were committed, which is what `is_interrupted_append` is for."
+         whether the bytes were committed, which is what the two truncation rules are for."
     );
     // "One verdict" is not enough on its own: refusing every length would be
     // consistent too, and would brick a replica on the most ordinary crash
-    // there is. The verdict has to be the benign one, because zeros past the
-    // last committed frame *are* the unsealed append mark.
+    // there is. So the verdict has to be the truncating one — not because these
+    // bytes are proved uncommitted, which no test on them can show, but because
+    // `TornTail::is_truncatable_residue` takes that trade deliberately and
+    // reports what it may have cost.
     assert_eq!(
-        benign.len(),
+        truncated.len(),
         transcript.len(),
-        "a zero-filled tail is what an interrupted append leaves, at every length"
+        "a zero-filled tail is truncated at every length"
     );
 }
 
@@ -166,13 +185,66 @@ fn a_zero_filled_tail_gets_one_verdict_regardless_of_its_length() {
 fn an_ordinary_crash_residue_does_not_demand_a_destructive_repair() {
     let verdict = verdict_for_zero_tail(64);
     assert!(
-        matches!(verdict, Verdict::TruncatedAsBenign(_)),
+        matches!(verdict, Verdict::Truncated(_)),
         "64 zero bytes past the last committed frame — a crash that extended the file \
          without persisting its data — is {verdict:?}. `open` refuses, `replica.rs` maps \
          `UnreadableFrame` to `ApplicationStoreNeedsRepair`, the readiness gate never opens, \
-         and the only documented way forward is `--repair-app-store true`, which discards \
-         from the unreadable offset to the end of the file. The store treats the one residue \
-         that lost nothing as fatal, and the residue that loses a committed frame \
-         (a short file) as benign."
+         and the only way forward is `--repair-app-store true`, which discards from the \
+         unreadable offset to the end of the file — strictly more than truncating the tail."
+    );
+}
+
+/// And what it costs is reported, so the replica coming back is not the same
+/// thing as the crash having lost nothing.
+///
+/// This is the pair to the test above and exists because that test's argument
+/// is a *trade*: refusing would be worse. A trade is only honest if the price
+/// is on the receipt, and this is the receipt. The store's own words for the
+/// two halves are `discarded_bytes` — everything opening shortened — and
+/// `discarded_without_proof`, the part it could not show was uncommitted.
+#[test]
+fn what_a_truncated_zero_tail_may_have_cost_is_reported_rather_than_implied() {
+    let scratch = ScratchDir::new("zero-tail-reported");
+    let mut bytes = commit_workload(scratch.path());
+    let committed_len = bytes.len();
+    bytes.extend(std::iter::repeat_n(0_u8, 96));
+    raw_journal::write(scratch.path(), &bytes).expect("the journal rewrites");
+
+    let store = LedgerStore::open(scratch.path(), config(2, 4)).expect("a zero tail opens");
+    let recovery = store.recovery();
+    assert_eq!(recovery.discarded_bytes(), 96);
+    assert_eq!(
+        recovery.discarded_without_proof(),
+        96,
+        "a zero tail is truncated on the weaker premise, and every byte of it counts"
+    );
+    assert_eq!(
+        recovery.repair(),
+        None,
+        "no flag was involved, which is exactly why the count above has to exist"
+    );
+    assert!(!recovery.is_clean(), "and the opening is not a clean one");
+    assert_eq!(store.journal_len(), committed_len as u64);
+
+    // The other side of the boundary: residue rule one *proved* uncommitted is
+    // discarded too, and reports nothing under the second count. A report that
+    // said "possibly committed" after every ordinary crash would be a report
+    // nobody reads.
+    let interrupted = ScratchDir::new("unsealed-tail-reported");
+    let mut bytes = commit_workload(interrupted.path());
+    bytes.extend_from_slice(&[0x00, b'L', b'B', b'G', 1, 0xAB]);
+    raw_journal::write(interrupted.path(), &bytes).expect("the journal rewrites");
+
+    let store =
+        LedgerStore::open(interrupted.path(), config(2, 4)).expect("an interrupted append opens");
+    assert_eq!(
+        store.recovery().torn_tail(),
+        Some(TornTail::UnsealedAppend { present: 6 })
+    );
+    assert_eq!(store.recovery().discarded_bytes(), 6);
+    assert_eq!(
+        store.recovery().discarded_without_proof(),
+        0,
+        "rule one proved no commit point covered these, so nothing here is unproven"
     );
 }

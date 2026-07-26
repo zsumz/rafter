@@ -238,10 +238,18 @@ impl Replica {
         })?;
         let (hard_state, log_segment, snapshot_store) = stores.into_parts();
 
-        // Opening is a read. The only thing that shortens this journal is the
-        // repair path, and reaching it takes an explicit flag rather than a
-        // restart, because the transactions it discards may be ones this
-        // replica already acknowledged to a client.
+        // Opening is not a read, and this comment used to say it was.
+        //
+        // Two things shorten this journal. The repair path below discards a
+        // region recovery positively cannot read, of any length, and takes an
+        // explicit flag because the transactions in it may be ones this replica
+        // already acknowledged to a client. The plain `open` beside it discards
+        // a zero-filled tail, and those bytes may equally have been an
+        // acknowledged transaction — a zeroed sector over the last frames
+        // leaves exactly that shape. No flag gates the second one; the store's
+        // `TornTail::is_truncatable_residue` argues why, and this process's
+        // obligation is to announce it, which is what the `possibly_committed=`
+        // field below is for.
         let opened = if repair_app_store {
             LedgerStore::open_and_repair(&app_dir, ledger_config)
         } else {
@@ -258,8 +266,16 @@ impl Replica {
 
         // The recovery report is consumed rather than dropped. Residue from an
         // interrupted transaction is ordinary after a kill and is announced so
-        // an operator can see it; a repair is announced because it is the one
-        // thing this process does that can lose acknowledged work.
+        // an operator can see it; a repair is announced because it is the
+        // largest thing this process does that can lose acknowledged work.
+        //
+        // `possibly_committed=` is the second such thing, and it is on the
+        // ordinary `RECOVERED` line rather than a line of its own because that
+        // is where a restart after a power cut actually lands. Zero on that
+        // field is the common case and says the residue was proved uncommitted;
+        // non-zero says this restart may have deleted an acknowledged
+        // transaction, which is a sentence no other output of this process
+        // would have let an operator reach.
         //
         // Creating the journal gets its own line rather than sharing one. It is
         // the ordinary first act of a replica that has never run, and it is
@@ -276,10 +292,11 @@ impl Replica {
             crate::emit(&format!("CREATED {} {}", node_id.0, app_dir.display()));
         } else if !recovery.is_clean() {
             crate::emit(&format!(
-                "RECOVERED {} frames={} discarded={} swept={}",
+                "RECOVERED {} frames={} discarded={} possibly_committed={} swept={}",
                 node_id.0,
                 recovery.committed_frames(),
                 recovery.discarded_bytes(),
+                recovery.discarded_without_proof(),
                 recovery.removed_staged_bytes().unwrap_or(0)
             ));
         }

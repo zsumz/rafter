@@ -32,12 +32,29 @@
 //! --repair-app-store <bool>       RAFTER_LEDGER_REPAIR_APP_STORE  [false]
 //! ```
 //!
-//! `--repair-app-store` is the one option that can lose acknowledged work. The
-//! application store refuses to open when it meets a region this build cannot
-//! read, because the transactions in that region may be ones this replica
-//! already answered a client with; setting this discards the region and reports
-//! what it cost. It is off by default and a restart never turns it on, so
-//! reaching it is always somebody's decision.
+//! `--repair-app-store` is the largest way this process can lose acknowledged
+//! work, and it is the only one anybody chooses. The application store refuses
+//! to open when it meets a region this build cannot read, because the
+//! transactions in that region may be ones this replica already answered a
+//! client with; setting this discards the region and reports what it cost. It
+//! is off by default and a restart never turns it on.
+//!
+//! It is **not** the only way this process can lose acknowledged work, and the
+//! documentation here said for several revisions that it was. A plain restart
+//! over a journal whose tail reached the medium as zeros — the ordinary residue
+//! of a crash on a delayed-allocation filesystem — shortens the journal at that
+//! tail, and the frames it deletes may be committed ones a zeroed region
+//! erased. No flag gates it, because gating it would refuse the store on an
+//! ordinary power cut and send every operator to the flag above, which discards
+//! strictly more. The store's `TornTail::is_truncatable_residue` argues that
+//! trade; what is owed here is that it is announced rather than described away,
+//! which is the `possibly_committed=` field on the `RECOVERED` line below.
+//!
+//! Neither loss is the end of the story for a *replica*: the application store
+//! is a projection of the replicated log, its applied index is the join point,
+//! and entries above that index are re-applied from the log on the next
+//! recovery. What is unrecoverable is the case where the group cannot supply
+//! them, which is a fact about the cluster and not about this process.
 //!
 //! A replica's durable state lives under `<cluster-dir>/node-<id>/`, split into
 //! `raft/` for Rafter's stores and `app/` for the ledger journal.
@@ -51,7 +68,8 @@
 //! LISTENING <id> <client_addr>     the client port is open; service is refused
 //! WAITING_FOR_OWNERSHIP <id>       another process still owns this directory
 //! CREATED <id> <app_dir>           there was no journal here, so one was made
-//! RECOVERED <id> frames=<n> ...    the journal held residue from a crash
+//! RECOVERED <id> frames=<n> discarded=<n> possibly_committed=<n> swept=<n>
+//!                                  the journal held residue from a crash
 //! REPAIRED <id> <what was lost>    a repair discarded part of the journal
 //! NEEDS_REPAIR <id> <detail>       the journal will not open without a decision
 //! PEER_LISTENING <id> <peer_addr>  the peer port is published and dialable
@@ -73,6 +91,14 @@
 //! empty ledger from applied index zero. The store cannot tell those apart —
 //! both are an absent file — so it reports the fact and leaves the judgement to
 //! whoever knows whether this replica has run before.
+//!
+//! `RECOVERED` has two byte counts and they mean different things.
+//! `discarded=` is everything opening shortened; `possibly_committed=` is how
+//! much of that opening could not show was uncommitted, which is a zero-filled
+//! tail and nothing else. A non-zero `possibly_committed=` on a restart is this
+//! process saying it may have deleted a transaction a client was told about —
+//! the entries are re-applied from the replicated log, and that is the recourse,
+//! not a reason for the line to stay quiet.
 //!
 //! `LINK` is emitted once during shutdown and is diagnostic rather than
 //! protocol: a nonzero drop count is normal under load, while a nonzero encode
