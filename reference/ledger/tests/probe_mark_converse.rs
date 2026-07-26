@@ -301,18 +301,80 @@ fn the_verdict_depends_only_on_which_byte_of_a_committed_frame_was_lost() {
 // The other store's half of the same shape, for the divergence.
 //
 // `reference/fenced-lock/tests/probe_mark_divergence.rs` presents an
-// interrupted publication by a newer build — byte zero unsealed, version byte
-// 2 — and the lock store refuses to open, terminally, because it has no repair
-// entry point. This is the ledger's answer to the identical fact: the mark is
-// read first, so it is an interrupted append and it is truncated.
+// interrupted write by a newer build — byte zero unsealed, version byte 2 — and
+// the lock store refuses. This store used to truncate it, on the strength of
+// byte zero alone, and that is the divergence the third-generation hunt found.
 //
-// This test PASSES. It is here so the divergence is one file apart rather than
-// one paragraph apart.
+// The two now agree, and the ledger is the one that moved. Truncating requires
+// the unsealed mark *and* evidence the bytes are not a whole frame, and a
+// version this build cannot read is exactly the absence of that evidence: not
+// knowing the layout is not knowing whether the bytes are whole. Both stores
+// refuse, and neither entry point clears it, because the bytes may equally be a
+// newer build's committed work.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_ledger_truncates_the_shape_the_lock_store_refuses() {
+fn the_ledger_refuses_the_shape_the_lock_store_refuses() {
     let scratch = ScratchDir::new("probe-mark-divergence-ledger");
+    let commands = workload();
+
+    let mut app = open(scratch.path());
+    apply_all(&mut app, &commands);
+    drop(app);
+
+    // An interrupted append by a newer build: the unsealed mark, this store's
+    // begin magic, a format version this build cannot read, and enough bytes to
+    // carry a whole begin record so the version field is actually reached.
+    let mut bytes = raw_journal::read(scratch.path()).expect("the journal reads");
+    let length_before = bytes.len();
+    let offset = length_before as u64;
+    bytes.extend_from_slice(&[0x00, b'L', b'B', b'G', 2]);
+    bytes.extend_from_slice(&[0_u8; BEGIN_LEN - 5]);
+    raw_journal::write(scratch.path(), &bytes).expect("the journal rewrites");
+
+    for (entry_point, opened) in [
+        ("open", LedgerStore::open(scratch.path(), config(2, 4))),
+        (
+            "open_and_repair",
+            LedgerStore::open_and_repair(scratch.path(), config(2, 4)),
+        ),
+    ] {
+        match opened {
+            Err(LedgerStoreError::UnsupportedFrameVersion {
+                version: 2,
+                offset: at,
+            }) => {
+                assert_eq!(at, offset, "`{entry_point}` named the wrong offset");
+            }
+            Err(other) => panic!("`{entry_point}` refused for the wrong reason: {other}"),
+            Ok(store) => panic!(
+                "`{entry_point}` resolved a tail declaring a version it cannot read, so a \
+                 downgrade meeting a newer build's committed frame becomes a way to delete it: \
+                 torn tail {:?}, discarded {} bytes",
+                store.recovery().torn_tail(),
+                store.recovery().discarded_bytes(),
+            ),
+        }
+        assert_eq!(
+            raw_journal::read(scratch.path())
+                .expect("the journal reads back")
+                .len(),
+            bytes.len(),
+            "`{entry_point}` must not shorten a journal it refused"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The other side of that gate: a foreign version byte in a tail too short to
+// hold a begin record is still ordinary residue, because the bytes are a strict
+// prefix whatever build wrote them. The evidence of incompleteness comes from
+// the length, not from a field this build cannot interpret.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_short_tail_is_residue_whatever_version_byte_it_carries() {
+    let scratch = ScratchDir::new("probe-mark-divergence-short");
     let commands = workload();
 
     let mut app = open(scratch.path());
@@ -320,17 +382,23 @@ fn the_ledger_truncates_the_shape_the_lock_store_refuses() {
     let applied = app.store().applied_index();
     drop(app);
 
-    // An interrupted append by a newer build: the unsealed mark, this store's
-    // magic, and a format version this build cannot read.
     let mut bytes = raw_journal::read(scratch.path()).expect("the journal reads");
+    let committed_len = bytes.len();
     bytes.extend_from_slice(&[0x00, b'L', b'B', b'G', 2, 0, 0, 0, 8]);
     raw_journal::write(scratch.path(), &bytes).expect("the journal rewrites");
 
     let store = LedgerStore::open(scratch.path(), config(2, 4))
-        .expect("the ledger reads the mark first and calls this an interrupted append");
+        .expect("nine bytes cannot be a whole frame under any layout");
     assert_eq!(store.applied_index(), applied);
-    assert!(matches!(
+    assert_eq!(
         store.recovery().torn_tail(),
-        Some(TornTail::UnsealedAppend { .. })
-    ));
+        Some(TornTail::UnsealedAppend { present: 9 })
+    );
+    assert_eq!(
+        raw_journal::read(scratch.path())
+            .expect("the journal reads back")
+            .len(),
+        committed_len,
+        "the residue is truncated off the medium"
+    );
 }

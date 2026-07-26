@@ -502,7 +502,7 @@ pub enum LedgerStoreError {
         /// Account bound the caller opened with.
         requested_max_accounts: u64,
     },
-    /// The journal holds a frame no interrupted append could have left.
+    /// The journal holds a frame recovery cannot show an interrupted append left.
     ///
     /// Where the scan stopped says nothing about whether the bytes beyond it
     /// were committed: everything after an unreadable frame is unreachable,
@@ -636,7 +636,8 @@ impl fmt::Display for LedgerStoreError {
                 unreadable_bytes,
             } => write!(
                 formatter,
-                "the frame at byte {offset} is {corruption}, which no interrupted append leaves; \
+                "the frame at byte {offset} is {corruption}, which recovery cannot show an \
+                 interrupted append left; \
                  {committed_frames} frames were readable before it and the {unreadable_bytes} bytes \
                  from there on may hold committed transactions"
             ),
@@ -1223,8 +1224,8 @@ impl LedgerStore {
     /// Returns an error when the directory or journal cannot be opened, when
     /// the journal header is corrupt or was written under different resource
     /// bounds, when a committed frame's image is malformed or violates a model
-    /// invariant, or when the journal holds a frame no interrupted append could
-    /// have left — see [`LedgerStoreError::UnreadableFrame`], and
+    /// invariant, or when the journal holds a frame recovery cannot show an
+    /// interrupted append left — see [`LedgerStoreError::UnreadableFrame`], and
     /// [`LedgerStore::open_and_repair`] for the entry point that discards it.
     pub fn open(directory: &Path, config: LedgerConfig) -> Result<Self, LedgerStoreError> {
         Self::open_with_faults(directory, config, FaultPlan::none())
@@ -1796,8 +1797,8 @@ impl LedgerStore {
     }
 }
 
-/// What an opening does when it meets a frame no interrupted append could have
-/// left.
+/// What an opening does when it meets a frame recovery cannot show an
+/// interrupted append left.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OnUnreadableFrame {
     /// Refuse to open. This is [`LedgerStore::open`].
