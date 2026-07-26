@@ -78,10 +78,18 @@ impl LogEntry {
     /// Size this entry contributes to the append-entries batching target: an
     /// upper bound of its wire encoding.
     ///
-    /// This is batch accounting, not a maximum encoded-frame size. A permitted
-    /// individual entry may exceed the target. Transport receive limits must
-    /// independently accommodate the largest permitted application entry plus
-    /// append-frame overhead, and snapshot metadata plus a full chunk. See
+    /// This is batch accounting, not a maximum encoded-frame size, and it is an
+    /// upper bound in one direction only: every entry kind is charged at least
+    /// as much here as it encodes on the wire. A permitted individual entry may
+    /// exceed the target, and a configuration entry is not charged against the
+    /// batch budget at all, so an append frame carrying one can be far larger
+    /// than this accounting suggests.
+    ///
+    /// A transport must therefore size its receive limit from the wire contract
+    /// rather than from this figure. `rafter-codec` publishes
+    /// `max_receive_frame_bytes`, which covers every frame a leader can emit —
+    /// including the joint-configuration append and the snapshot chunk, both of
+    /// which exceed the largest application entry. See
     /// `rafter-codec/WIRE_FORMAT_V1.md` for the peer-frame sizing contract.
     #[must_use]
     pub fn replication_bytes(&self) -> usize {
