@@ -264,10 +264,19 @@ fn an_appended_membership_never_narrows_and_never_fences() {
     );
 }
 
-/// The two arms compose: a widening append followed by the commit that
-/// removes someone fences exactly the replica the commit removed.
+/// The two arms compose, and a commit does not retract authorization that the
+/// membership currently in effect still needs.
+///
+/// One step can both commit a change and append the next one, and
+/// `rafter-app` emits the `Appended` for the newer one *before* the `Applied`
+/// for the older. An `Applied` arm that replaced the peer set with the
+/// committed configuration alone would undo the widening two lines earlier and
+/// fence the replica it authorized, so it publishes the union of the committed
+/// membership and the effective one and fences only what neither names. Here
+/// the fixture's runtime is a real node whose effective membership is `{1,2}`,
+/// so node 2 keeps speaking through a committed configuration that omits it.
 #[test]
-fn a_committed_change_after_an_append_fences_only_what_it_removed() {
+fn a_committed_change_does_not_narrow_past_the_membership_in_effect() {
     let (driver, transport) = driver(&[2]);
 
     {
@@ -286,11 +295,13 @@ fn a_committed_change_after_an_append_fences_only_what_it_removed() {
             .peer_sets()
             .last()
             .expect("a peer set was published"),
-        &vec![NodeId(3)]
+        &vec![NodeId(2), NodeId(3)],
+        "node 3 joined the committed set and node 2 is still in effect"
     );
-    assert_eq!(
-        transport.fenced(),
-        vec![NodeId(2)],
-        "node 2 left the committed set; node 3 joined it and node 1 is this replica"
+    assert!(
+        transport.fenced().is_empty(),
+        "nothing left both the committed membership and the effective one, so \
+         nothing may be fenced: fenced = {:?}",
+        transport.fenced()
     );
 }

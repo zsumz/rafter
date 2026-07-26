@@ -9,7 +9,10 @@
 
 mod support;
 
-use std::collections::BTreeSet;
+use std::{
+    collections::BTreeSet,
+    sync::{Arc, Mutex, MutexGuard},
+};
 
 use rafter::RaftSnapshot;
 use rafter_app::group::GroupFatalState;
@@ -278,39 +281,92 @@ fn a_staged_chunk_is_the_runtimes_obligation_and_reaches_no_transport() {
         .expect("the driver still holds its group"));
 }
 
-/// A runtime whose committed membership shrinks on the first tick.
+/// A runtime whose effective and committed memberships move independently.
 ///
-/// A committed removal is the only fact that licenses fencing, and
-/// `DurableRaftNode` over a static config never produces one, so the narrowing
-/// half of the membership contract needs a runtime that does.
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct ShrinkingMembershipRuntime {
-    committed: Vec<u64>,
-    ticked: bool,
+/// Two facts rather than one, because the driver's whole membership rule turns
+/// on telling them apart, and `DurableRaftNode` over a static config produces
+/// neither a removal nor a divergence between them. The state is shared so a
+/// test can move it while the driver holds no group, which is the only way to
+/// reach a change this replica observes across a release and re-adoption
+/// instead of through an event.
+#[derive(Clone, Debug)]
+struct ScriptedMembershipRuntime {
+    shared: Arc<Mutex<ScriptedMembership>>,
 }
 
-impl ShrinkingMembershipRuntime {
-    fn new() -> Self {
+#[derive(Debug)]
+struct ScriptedMembership {
+    effective: Vec<u64>,
+    committed: Vec<u64>,
+    /// Applied from inside `step`, so the group observes the change as a
+    /// membership event rather than as a value that was always this way.
+    change_on_step: Option<(Vec<u64>, Vec<u64>)>,
+}
+
+impl ScriptedMembershipRuntime {
+    fn new(effective: &[u64], committed: &[u64]) -> Self {
         Self {
-            committed: vec![1, 2, 3],
-            ticked: false,
+            shared: Arc::new(Mutex::new(ScriptedMembership {
+                effective: effective.to_vec(),
+                committed: committed.to_vec(),
+                change_on_step: None,
+            })),
         }
     }
 
-    fn config(&self) -> MembershipConfig {
-        let voters = self
-            .committed
-            .iter()
-            .copied()
-            .map(NodeId)
-            .collect::<Vec<_>>();
-        MembershipConfig::stable(
-            MembershipSet::new(voters, Vec::new()).expect("scripted membership is valid"),
-        )
+    fn handle(&self) -> Arc<Mutex<ScriptedMembership>> {
+        Arc::clone(&self.shared)
+    }
+
+    fn config(&self, committed: bool) -> MembershipConfig {
+        let state = lock_membership(&self.shared);
+        let source = if committed {
+            &state.committed
+        } else {
+            &state.effective
+        };
+        config_of(source)
     }
 }
 
-impl PersistedRaftRuntime for ShrinkingMembershipRuntime {
+fn lock_membership(shared: &Arc<Mutex<ScriptedMembership>>) -> MutexGuard<'_, ScriptedMembership> {
+    shared
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+fn config_of(voters: &[u64]) -> MembershipConfig {
+    MembershipConfig::stable(
+        MembershipSet::new(voters.iter().copied().map(NodeId).collect(), Vec::new())
+            .expect("scripted membership is valid"),
+    )
+}
+
+/// Moves the membership directly, for a change this replica learns about while
+/// the driver holds no group.
+fn set_membership(handle: &Arc<Mutex<ScriptedMembership>>, effective: &[u64], committed: &[u64]) {
+    let mut state = lock_membership(handle);
+    state.effective = effective.to_vec();
+    state.committed = committed.to_vec();
+}
+
+/// Arms a change the runtime applies from inside its next `step`, so the group
+/// reports it as a membership event.
+fn change_on_step(handle: &Arc<Mutex<ScriptedMembership>>, effective: &[u64], committed: &[u64]) {
+    lock_membership(handle).change_on_step = Some((effective.to_vec(), committed.to_vec()));
+}
+
+/// Pointer equality, because the state is shared: two handles to one scripted
+/// membership are the same runtime, and two separate ones never are.
+impl PartialEq for ScriptedMembershipRuntime {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.shared, &other.shared)
+    }
+}
+
+impl Eq for ScriptedMembershipRuntime {}
+
+impl PersistedRaftRuntime for ScriptedMembershipRuntime {
     type Error = rafter_runtime::RaftRuntimeError;
 
     fn id(&self) -> NodeId {
@@ -338,10 +394,10 @@ impl PersistedRaftRuntime for ShrinkingMembershipRuntime {
         std::cmp::min(index, LogIndex(5))
     }
     fn membership(&self) -> MembershipConfig {
-        self.config()
+        self.config(false)
     }
     fn committed_membership(&self) -> MembershipConfig {
-        self.config()
+        self.config(true)
     }
     fn replication(&self) -> Vec<ReplicationProgress> {
         Vec::new()
@@ -350,11 +406,11 @@ impl PersistedRaftRuntime for ShrinkingMembershipRuntime {
         (index <= LogIndex(5)).then_some(Term(1))
     }
 
-    fn step(&mut self, input: RaftInput) -> Result<Vec<RaftOutput>, Self::Error> {
-        if matches!(input, RaftInput::Tick) && !self.ticked {
-            self.ticked = true;
-            // Node 3 leaves by a committed configuration change.
-            self.committed = vec![1, 2];
+    fn step(&mut self, _input: RaftInput) -> Result<Vec<RaftOutput>, Self::Error> {
+        let mut state = lock_membership(&self.shared);
+        if let Some((effective, committed)) = state.change_on_step.take() {
+            state.effective = effective;
+            state.committed = committed;
         }
         Ok(Vec::new())
     }
@@ -375,10 +431,13 @@ impl PersistedRaftRuntime for ShrinkingMembershipRuntime {
     }
 }
 
-type ShrinkDriver =
-    TransportRaftDriver<u64, KvStateMachine, ShrinkingMembershipRuntime, QueueTransport, Validator>;
+type ScriptedDriver =
+    TransportRaftDriver<u64, KvStateMachine, ScriptedMembershipRuntime, QueueTransport, Validator>;
 
-fn shrink_driver(nameable: Option<BTreeSet<NodeId>>) -> (ShrinkDriver, QueueTransport) {
+fn scripted_driver(
+    runtime: ScriptedMembershipRuntime,
+    nameable: Option<BTreeSet<NodeId>>,
+) -> (ScriptedDriver, QueueTransport) {
     let transport = QueueTransport::default();
     let validator = Validator {
         transport: transport.clone(),
@@ -386,12 +445,7 @@ fn shrink_driver(nameable: Option<BTreeSet<NodeId>>) -> (ShrinkDriver, QueueTran
         nameable,
     };
     let driver = TransportRaftDriver::new(
-        RaftGroup::new(
-            GROUP,
-            NodeId(1),
-            ShrinkingMembershipRuntime::new(),
-            KvStateMachine::default(),
-        ),
+        RaftGroup::new(GROUP, NodeId(1), runtime, KvStateMachine::default()),
         Vec::new(),
         transport.clone(),
         validator,
@@ -401,16 +455,25 @@ fn shrink_driver(nameable: Option<BTreeSet<NodeId>>) -> (ShrinkDriver, QueueTran
     (driver, transport)
 }
 
+/// A driver over `{1,2,3}`, with node 3's removal armed for the first tick.
+fn shrink_driver(nameable: Option<BTreeSet<NodeId>>) -> (ScriptedDriver, QueueTransport) {
+    let runtime = ScriptedMembershipRuntime::new(&[1, 2, 3], &[1, 2, 3]);
+    let handle = runtime.handle();
+    change_on_step(&handle, &[1, 2], &[1, 2]);
+    scripted_driver(runtime, nameable)
+}
+
 /// The transport's peer set is the link layer's copy of who may speak, and this
 /// is the whole contract for keeping it level with the group.
 ///
-/// Three of the four clauses run here: the set is published at construction —
-/// a driver that published only on change left it undefined for the whole first
+/// Four of the five clauses run here: the set is published at adoption — a
+/// driver that published only on change left it undefined for the whole first
 /// incarnation, which is where a group whose membership never changes stays
-/// forever — narrowed on a committed change, and the replica the committed
-/// change removed is fenced. The fourth, widening on an uncommitted `Appended`,
-/// has no public entry point on this driver and is pinned in-crate beside the
-/// router; see the test module in `driver/transport/state.rs`.
+/// forever — narrowed on a committed change, the replica the committed change
+/// removed is fenced, and no replica the committed membership still names is
+/// fenced with it. The fifth, widening on an uncommitted `Appended`, has no
+/// public entry point on this driver and is pinned in-crate beside the router;
+/// see the test module in `driver/transport/state.rs`.
 #[test]
 fn membership_reaches_the_transports_peer_set() {
     let (driver, transport) = shrink_driver(None);
@@ -560,5 +623,163 @@ fn an_unfenceable_removal_is_counted_rather_than_silent() {
         driver.refused_peer_updates(),
         2,
         "construction could not name node 3, and the removal could not fence it"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Adoption is a publication like any other, and derives from the same fact.
+//
+// `TransportRaftDriver::new` and `TransportRaftDriver::adopt_group` are the two
+// public entry points that publish without an event to carry the membership, so
+// they are the two that have to read the authority for themselves.
+// ---------------------------------------------------------------------------
+
+/// An appended-but-uncommitted removal must not take authorization away at
+/// adoption, for the reason the routed `Appended` arm refuses to: an
+/// uncommitted change can still be reverted.
+///
+/// Nothing repairs it if it is. No `Applied` fires, because the committed
+/// membership never moved, and no `Appended` fires, because this driver has no
+/// input that carries a membership request — so the replica is cut off for as
+/// long as this incarnation runs.
+#[test]
+fn an_uncommitted_removal_does_not_narrow_the_peer_set_at_adoption() {
+    // Committed {1,2,3}; effective {1,2}, a removal of node 3 that has appended
+    // and has not committed.
+    let runtime = ScriptedMembershipRuntime::new(&[1, 2], &[1, 2, 3]);
+    let (driver, transport) = scripted_driver(runtime, None);
+
+    assert_eq!(
+        transport.peer_sets(),
+        vec![vec![
+            Principal::for_node(NodeId(2)),
+            Principal::for_node(NodeId(3))
+        ]],
+        "node 3's removal has not committed, so node 3 may still speak"
+    );
+    assert!(
+        !transport.is_fenced(NodeId(3)),
+        "and an uncommitted removal licenses no fence either"
+    );
+    assert_eq!(driver.refused_peer_updates(), 0);
+}
+
+/// The mirror clause: an appended-but-uncommitted *addition* is published at
+/// adoption, because a joining replica has to be able to speak before the
+/// change commits or the change can never commit.
+///
+/// This is what stops the fix above from being "publish the committed set":
+/// a replica that rebuilt its runtime from durable storage can hold either kind
+/// of change in its log, and only one of them may narrow.
+#[test]
+fn an_uncommitted_addition_widens_the_peer_set_at_adoption() {
+    // Committed {1,2}; effective {1,2,3}, an addition of node 3 in flight.
+    let runtime = ScriptedMembershipRuntime::new(&[1, 2, 3], &[1, 2]);
+    let (driver, transport) = scripted_driver(runtime, None);
+
+    assert_eq!(
+        transport.peer_sets(),
+        vec![vec![
+            Principal::for_node(NodeId(2)),
+            Principal::for_node(NodeId(3))
+        ]],
+        "node 3 is catching up under an uncommitted change and must be able to"
+    );
+    assert!(!transport.is_fenced(NodeId(3)));
+    assert_eq!(driver.refused_peer_updates(), 0);
+}
+
+/// A committed removal observed across a release and re-adoption installs both
+/// admission controls, not one of them.
+///
+/// This is the supervisor pattern the driver documents — release, rebuild the
+/// runtime from durable storage, adopt — and it is the one path on which a
+/// committed change arrives with no event to announce it. The driver still
+/// holds `known_members` from before the release, so the difference is there
+/// to be taken.
+#[test]
+fn a_committed_removal_across_release_and_adopt_narrows_and_fences() {
+    let runtime = ScriptedMembershipRuntime::new(&[1, 2, 3], &[1, 2, 3]);
+    let handle = runtime.handle();
+    let (driver, transport) = scripted_driver(runtime, None);
+
+    assert_eq!(
+        transport.peer_sets(),
+        vec![vec![
+            Principal::for_node(NodeId(2)),
+            Principal::for_node(NodeId(3))
+        ]],
+        "adoption publishes the whole membership"
+    );
+
+    let group = driver.release_group().expect("the driver holds a group");
+    // While detached, the cluster commits node 3's removal and this replica's
+    // rebuilt runtime reports it.
+    set_membership(&handle, &[1, 2], &[1, 2]);
+    driver
+        .adopt_group(group, Vec::new())
+        .expect("the released group is adoptable");
+
+    assert_eq!(
+        transport.peer_sets().last().expect("a set was published"),
+        &vec![Principal::for_node(NodeId(2))],
+        "the narrowed set reached the link layer"
+    );
+    assert!(
+        transport.is_fenced(NodeId(3)),
+        "and so did the fence the same committed fact licenses; \
+         refused_peer_updates = {}",
+        driver.refused_peer_updates(),
+    );
+    assert!(
+        !transport.is_fenced(NodeId(2)),
+        "node 2 is still committed and must still be able to speak"
+    );
+    assert_eq!(driver.refused_peer_updates(), 0);
+}
+
+/// One committed removal, two ways of observing it, one answer.
+///
+/// The control for the pair above. A driver whose two publication paths derived
+/// their fence from different facts gave two answers to the same question, and
+/// only one of them was the safe one; this asserts they agree rather than
+/// asserting each separately and hoping.
+#[test]
+fn a_committed_removal_fences_the_same_way_on_both_publication_paths() {
+    // Path A: observed across release and re-adoption.
+    let runtime = ScriptedMembershipRuntime::new(&[1, 2, 3], &[1, 2, 3]);
+    let handle = runtime.handle();
+    let (driver, adopted) = scripted_driver(runtime, None);
+    let group = driver.release_group().expect("the driver holds a group");
+    set_membership(&handle, &[1, 2], &[1, 2]);
+    driver
+        .adopt_group(group, Vec::new())
+        .expect("the released group is adoptable");
+
+    // Path B: observed as a routed `Applied` event.
+    let (ticked_driver, ticked) = shrink_driver(None);
+    ticked_driver
+        .tick()
+        .expect("the tick routes the membership change");
+
+    assert_eq!(
+        adopted.is_fenced(NodeId(3)),
+        ticked.is_fenced(NodeId(3)),
+        "one committed removal of node 3, two ways of observing it: across \
+         release/adopt fenced = {} (refused_peer_updates = {}); through a routed \
+         Applied event fenced = {} (refused_peer_updates = {})",
+        adopted.is_fenced(NodeId(3)),
+        driver.refused_peer_updates(),
+        ticked.is_fenced(NodeId(3)),
+        ticked_driver.refused_peer_updates(),
+    );
+    assert_eq!(
+        adopted.peer_sets().last(),
+        ticked.peer_sets().last(),
+        "and the peer set they publish for it is the same set"
+    );
+    assert!(
+        adopted.is_fenced(NodeId(3)),
+        "both paths fence, rather than both agreeing not to"
     );
 }

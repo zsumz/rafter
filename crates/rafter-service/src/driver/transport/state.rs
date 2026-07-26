@@ -17,14 +17,39 @@ use super::super::*;
 use super::waiters::{ReadWaiter, WriteWaiter};
 use super::TransportDriverOptions;
 
-/// Whether a membership publication may fence what left the set.
+/// The membership fact one publication is derived from.
 ///
-/// Only a committed removal licenses fencing, so this is a decision the caller
-/// makes rather than one the publisher infers.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum Fencing {
-    FenceRemoved,
-    Withhold,
+/// A fact rather than a set plus a decision, and that is the whole point of the
+/// type. Publishing answers two questions — which principals the link layer may
+/// authorize, and which it must fence — and both are licensed by the same one
+/// fact: what the cluster has *committed*. A caller that supplied a set and a
+/// fencing flag as separate arguments could answer the two inconsistently, and
+/// one did: adoption published a narrowed peer set for a committed removal and
+/// withheld the fence for it, because the two travelled apart. Here they cannot.
+///
+/// So every publisher names what it knows, and
+/// [`TransportDriverState::publish_membership`] derives both answers from it.
+pub(super) enum MembershipFact {
+    /// A configuration that is effective and may still be uncommitted.
+    ///
+    /// It may only widen. A replica joining under joint consensus has to be able
+    /// to speak before the change commits, or it can never catch up and the
+    /// change can never commit; and an uncommitted change can still be reverted,
+    /// so nothing may be taken away for it.
+    Effective(BTreeSet<NodeId>),
+    /// A committed configuration, and the effective one beside it.
+    ///
+    /// Both halves are load-bearing and neither stands alone. `committed` is the
+    /// only fact that licenses narrowing the set and fencing what left it.
+    /// `effective` is what keeps an in-flight change's joiner able to speak
+    /// across the same publication — a replica that rebuilt its runtime from
+    /// durable storage can hold an appended-but-uncommitted addition in its log,
+    /// and publishing the committed set alone would take the joiner's
+    /// authorization away and stall the change that needs it.
+    Committed {
+        committed: BTreeSet<NodeId>,
+        effective: BTreeSet<NodeId>,
+    },
 }
 
 /// Why one group step did not run, or did not finish.
@@ -446,24 +471,28 @@ where
 
     /// Keeps the transport's peer set level with the group's membership.
     ///
-    /// An `Appended` change is effective and uncommitted, so it may only widen:
-    /// a replica joining under joint consensus has to be able to speak before
-    /// the change commits, or it can never catch up and the change can never
-    /// commit, and an uncommitted change can still be reverted, so nothing may
-    /// be taken away for it. An `Applied` change is committed, which is the only
-    /// fact that licenses narrowing the set and fencing what left it.
+    /// `Appended` carries the effective configuration and `Applied` carries the
+    /// committed one — that is how `rafter-app` builds them — so each arm names
+    /// the fact it has and [`TransportDriverState::publish_membership`] decides
+    /// what the fact licenses. The `Applied` arm reads the effective membership
+    /// beside it for the reason [`MembershipFact::Committed`] gives: a change
+    /// committing does not retract a *later* change already appended over it.
     fn route_membership_event(&mut self, event: &MembershipEvent<G>) {
         match event {
             MembershipEvent::Appended { membership, .. } => {
-                let mut widened = self.known_members.clone();
-                widened.extend(membership.replica_ids());
-                self.publish_membership(widened, Fencing::Withhold);
+                let effective = membership.replica_ids().into_iter().collect();
+                self.publish_membership(MembershipFact::Effective(effective));
             }
             MembershipEvent::Applied { membership, .. } => {
-                self.publish_membership(
-                    membership.replica_ids().into_iter().collect(),
-                    Fencing::FenceRemoved,
-                );
+                let committed = membership.replica_ids().into_iter().collect();
+                // A driver holding no group contributes no widening and still
+                // honors the committed fact: an absent effective membership must
+                // not turn a fence into a silence.
+                let effective = self.effective_members().unwrap_or_default();
+                self.publish_membership(MembershipFact::Committed {
+                    committed,
+                    effective,
+                });
             }
             // A rejected change never entered the log, and a variant this driver
             // does not know is not a membership fact it can act on.
@@ -471,26 +500,54 @@ where
         }
     }
 
-    /// Publishes one membership to the transport, and fences what a committed
-    /// removal took out of it.
+    /// Publishes one membership to the transport, and fences what the committed
+    /// half of it no longer names.
     ///
-    /// Two decisions, taken in order and independently. Publishing the peer set
-    /// is all or nothing; fencing is per replica. Neither may be skipped
-    /// because the other could not be made, which is the whole shape of this
-    /// method: a membership event that both narrows the set and licenses a fence
-    /// installs two admission controls, and a driver that dropped one of them
-    /// because the other failed would leave a committed-removed replica able to
-    /// speak with nothing reporting why.
-    pub(super) fn publish_membership(&mut self, members: BTreeSet<NodeId>, fencing: Fencing) {
-        let removed = match fencing {
-            Fencing::FenceRemoved => self
-                .known_members
-                .difference(&members)
-                .copied()
-                .filter(|node_id| *node_id != self.node_id)
-                .collect::<Vec<_>>(),
-            Fencing::Withhold => Vec::new(),
+    /// Two statements, derived from one fact, installed in order and
+    /// independently. Publishing the peer set is all or nothing; fencing is per
+    /// replica. Neither may be skipped because the other could not be made,
+    /// which is half the shape of this method: a membership event that both
+    /// narrows the set and licenses a fence installs two admission controls, and
+    /// a driver that dropped one of them because the other failed would leave a
+    /// committed-removed replica able to speak with nothing reporting why.
+    ///
+    /// The other half is that no caller chooses between them. The set published
+    /// is a superset of the committed membership, and the replicas fenced are
+    /// exactly those the driver had published before and this superset no longer
+    /// names — so a fenced replica is always absent from the committed
+    /// membership, which is the only thing that licenses fencing it. Both
+    /// properties are consequences of the derivation below rather than
+    /// obligations on a caller, and every publisher therefore reaches them by
+    /// construction: a caller that supplies
+    /// [`MembershipFact::Effective`] cannot narrow or fence, and one that
+    /// supplies [`MembershipFact::Committed`] cannot narrow past what committed.
+    fn publish_membership(&mut self, fact: MembershipFact) {
+        let members = match fact {
+            // Union with what is already published, never a replacement: an
+            // uncommitted change may be reverted, so it may add authorization
+            // and may not take any away.
+            MembershipFact::Effective(effective) => {
+                let mut widened = self.known_members.clone();
+                widened.extend(effective);
+                widened
+            }
+            // Union of the two, so the committed half sets the floor the set may
+            // not narrow past and the effective half adds whatever a change in
+            // flight needs on top of it.
+            MembershipFact::Committed {
+                mut committed,
+                effective,
+            } => {
+                committed.extend(effective);
+                committed
+            }
         };
+        let removed = self
+            .known_members
+            .difference(&members)
+            .copied()
+            .filter(|node_id| *node_id != self.node_id)
+            .collect::<Vec<_>>();
         // Advanced before either half runs, and kept even when publishing is
         // refused: this is the driver's record of what the group says rather
         // than of what the link layer accepted, so the next committed removal is
@@ -564,19 +621,55 @@ where
         }
     }
 
+    /// Reads the group's effective membership, or `None` if it holds no group.
+    fn effective_members(&self) -> Option<BTreeSet<NodeId>> {
+        self.group.as_ref().map(|group| {
+            group
+                .runtime()
+                .membership()
+                .replica_ids()
+                .into_iter()
+                .collect()
+        })
+    }
+
     /// Publishes the adopted group's membership, so the transport's peer set is
-    /// defined from construction rather than from the first change.
+    /// defined from adoption rather than from the first change this incarnation
+    /// happens to observe.
+    ///
+    /// A committed fact, because an adoption is where a *change* can be observed
+    /// without any event announcing it. The supervisor pattern this driver
+    /// documents is release, rebuild the runtime from durable storage, adopt:
+    /// the committed membership a rebuilt runtime reports can have advanced past
+    /// a removal while the driver held no group, and no `Applied` will ever be
+    /// emitted for it because the change committed elsewhere. The driver still
+    /// holds its own `known_members` from before the release, so the difference
+    /// is there to be taken — and taking it is the only thing that makes one
+    /// committed removal mean the same at adoption as it does on a routed event.
+    ///
+    /// The effective membership travels with it rather than instead of it. A
+    /// runtime rebuilt from durable storage can hold an appended-but-uncommitted
+    /// change, which makes its effective membership *narrower* than its
+    /// committed one for a removal in flight; publishing that would take
+    /// authorization away for a change that may still revert, with nothing left
+    /// to repair it — no `Applied` fires, because committed never moved, and no
+    /// `Appended` fires, because this driver has no input that carries a
+    /// membership request.
     pub(super) fn publish_adopted_membership(&mut self) {
         let Some(group) = self.group.as_ref() else {
             return;
         };
-        let members = group
-            .runtime()
-            .membership()
+        let runtime = group.runtime();
+        let committed = runtime
+            .committed_membership()
             .replica_ids()
             .into_iter()
-            .collect::<BTreeSet<_>>();
-        self.publish_membership(members, Fencing::Withhold);
+            .collect();
+        let effective = runtime.membership().replica_ids().into_iter().collect();
+        self.publish_membership(MembershipFact::Committed {
+            committed,
+            effective,
+        });
     }
 
     pub(super) fn publish_metrics(&self) {
