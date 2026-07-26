@@ -47,10 +47,31 @@ impl fmt::Display for ReadId {
 pub struct Term(pub u64);
 
 impl Term {
-    /// Returns the next term.
+    /// The highest representable term, which has no successor.
+    pub const MAX: Self = Self(u64::MAX);
+
+    /// Returns the next term, saturating at [`Term::MAX`].
+    ///
+    /// Saturating rather than wrapping is a safety decision, not a taste one.
+    /// `Term(u64::MAX) + 1` wraps to zero, and zero is the bootstrap sentinel
+    /// every term comparison in the protocol is ordered against: a node that
+    /// wrapped would accept its own history again as newer. Overflow also
+    /// panics under `debug_assertions` and wraps without one, so the unguarded
+    /// form made a safety property depend on the build profile.
+    ///
+    /// Saturating keeps the value legal but makes the successor equal to the
+    /// term it came from, which no caller advancing a term wants silently. Use
+    /// [`Term::checked_next`] wherever the difference decides something; the
+    /// kernel's election paths do.
     #[must_use]
     pub fn next(self) -> Self {
-        Self(self.0 + 1)
+        Self(self.0.saturating_add(1))
+    }
+
+    /// Returns the next term, or `None` at [`Term::MAX`].
+    #[must_use]
+    pub fn checked_next(self) -> Option<Self> {
+        self.0.checked_add(1).map(Self)
     }
 
     /// Returns whether this is the zero bootstrap term.

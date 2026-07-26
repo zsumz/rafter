@@ -48,6 +48,13 @@ impl Node {
             self.election.reset_timeout();
             return Vec::new();
         }
+        // A poll proposes the successor term, and the maximum term has none.
+        // Refusing here keeps the node a follower rather than polling at its
+        // own term forever, which no voter could grant anyway.
+        let Some(proposed_term) = self.current_term().checked_next() else {
+            self.election.reset_timeout();
+            return Vec::new();
+        };
 
         // The round proposes current + 1 WITHOUT mutating persistent state:
         // no term increment, no voted_for, nothing persisted. Timing out
@@ -59,7 +66,7 @@ impl Node {
         self.election.begin_pre_vote(self_id);
 
         let request = PreVote {
-            term: self.current_term().next(),
+            term: proposed_term,
             candidate_id: self.id(),
             last_log_index: self.last_log_index(),
             last_log_term: self.last_log_term(),
@@ -89,10 +96,18 @@ impl Node {
             self.election.reset_timeout();
             return Vec::new();
         }
+        // Term exhaustion stops elections rather than restarting history. The
+        // increment is the first thing a campaign does, and at `Term::MAX`
+        // there is nothing to increment to: this node stays a follower, and
+        // says so by changing no state at all.
+        let Some(campaign_term) = self.persistent.current_term.checked_next() else {
+            self.election.reset_timeout();
+            return Vec::new();
+        };
 
         self.volatile.role = Role::Candidate;
         self.volatile.leader_hint = None;
-        self.persistent.current_term = self.persistent.current_term.next();
+        self.persistent.current_term = campaign_term;
         let self_id = self.id();
         self.persistent.voted_for = Some(self_id);
         self.election.begin_election(self_id);
@@ -231,7 +246,12 @@ impl Node {
         voter_id: NodeId,
         response: PreVoteResponse,
     ) -> Vec<Output> {
-        let proposed_term = self.current_term().next();
+        // At `Term::MAX` this node never polled, so nothing can confirm a
+        // proposal it did not make; a response carrying a newer term is
+        // impossible there, since no term is newer.
+        let Some(proposed_term) = self.current_term().checked_next() else {
+            return Vec::new();
+        };
         if response.term > proposed_term {
             return self.become_follower(response.term);
         }

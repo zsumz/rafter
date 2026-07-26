@@ -117,3 +117,47 @@ fn candidate_becomes_leader_after_quorum() {
         }
     )));
 }
+
+/// `Term::MAX` has no successor, and the protocol's whole ordering is by term.
+/// Incrementing past it wrapped to `Term(0)` in release builds — the bootstrap
+/// sentinel — so a node would have accepted its own history again as newer,
+/// while the same increment panicked under `debug_assertions`. A safety
+/// property that depends on the build profile is not one.
+///
+/// Exhaustion now stops elections instead: the node changes no state, stays a
+/// follower, and emits nothing. Both campaign entry points are covered,
+/// because the pre-vote poll proposes the successor term before the real
+/// election ever asks for it.
+#[test]
+fn term_exhaustion_stops_elections_instead_of_restarting_history() {
+    for pre_vote in [false, true] {
+        let mut node = Node::new(
+            NodeConfig::new(NodeId(1), vec![NodeId(2), NodeId(3)], 3)
+                .expect("test Raft node config is valid")
+                .with_pre_vote(pre_vote),
+        );
+        node.persistent.current_term = Term::MAX;
+
+        for _ in 0..8 {
+            oracle_assert!(
+                node.step(Input::Tick).is_empty(),
+                "an exhausted term emits no campaign traffic"
+            );
+        }
+
+        oracle_assert_eq!(node.current_term(), Term::MAX, "and never wraps past it");
+        oracle_assert_eq!(node.role(), Role::Follower);
+        oracle_assert_eq!(node.voted_for(), None, "nothing was persisted either");
+    }
+}
+
+/// The saturating successor is the other half of the same guarantee: whatever
+/// reaches `Term::next` at the maximum, the one thing it must never produce is
+/// a term ordered *below* the one it came from.
+#[test]
+fn the_maximum_term_has_no_successor_below_itself() {
+    oracle_assert_eq!(Term::MAX.next(), Term::MAX);
+    oracle_assert_eq!(Term::MAX.checked_next(), None);
+    oracle_assert!(!Term::MAX.next().is_zero());
+    oracle_assert_eq!(Term(4).checked_next(), Some(Term(5)));
+}
