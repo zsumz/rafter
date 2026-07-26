@@ -475,7 +475,7 @@ const SLOT_MAGIC: [u8; 4] = *b"RFLK";
 
 /// First byte of a slot whose image is sealed: the magic's leading byte.
 ///
-/// See [`UNSEALED_MARK`] for what the same byte says while an image is being
+/// See `UNSEALED_MARK` for what the same byte says while an image is being
 /// written, and the module's recovery section for why this byte is half of the
 /// skip rule rather than the whole of it.
 const SEALED_MARK: u8 = SLOT_MAGIC[0];
@@ -483,7 +483,7 @@ const SEALED_MARK: u8 = SLOT_MAGIC[0];
 /// First byte of a slot whose image is being written.
 ///
 /// A publication writes this value before any other byte of the image and
-/// replaces it with [`SEALED_MARK`] only after every other byte is durable, so
+/// replaces it with `SEALED_MARK` only after every other byte is durable, so
 /// every interrupted publication leaves it behind. The converse does not hold,
 /// and assuming it was the defect this store was corrected for: a slot carrying
 /// this value may equally hold a sealed image whose mark byte rotted to zero.
@@ -1162,8 +1162,8 @@ pub enum SlotDamage {
     /// A publication wrote part of an image and never sealed it.
     ///
     /// Both halves of that sentence are checked. The slot carries
-    /// [`UNSEALED_MARK`] in its first byte, *and* the bytes present are not a
-    /// whole image: read again with that byte restored to [`SEALED_MARK`] they
+    /// `UNSEALED_MARK` in its first byte, *and* the bytes present are not a
+    /// whole image: read again with that byte restored to `SEALED_MARK` they
     /// still fail to verify, at a step this build can read. `present` is the
     /// byte boundary the interrupted write reached.
     ///
@@ -1182,7 +1182,7 @@ pub enum SlotDamage {
     ///   barrier, and died before the one byte that seals it — the
     ///   written-but-not-committed window; or
     /// - a committed, adopted, acknowledged image whose one mark byte later
-    ///   rotted from [`SEALED_MARK`] to [`UNSEALED_MARK`].
+    ///   rotted from `SEALED_MARK` to `UNSEALED_MARK`.
     ///
     /// They are the same bytes because the mark is the only difference between
     /// those two states on the medium, and one byte cannot record which of them
@@ -1225,8 +1225,8 @@ pub enum SlotDamage {
     /// The slot does not begin with this store's magic.
     ///
     /// The mark this store writes into byte zero is part of that magic, so this
-    /// also covers a slot whose first byte is neither [`SEALED_MARK`] nor
-    /// [`UNSEALED_MARK`].
+    /// also covers a slot whose first byte is neither `SEALED_MARK` nor
+    /// `UNSEALED_MARK`.
     NotALockImage {
         /// The four bytes found where the magic belongs, zero-padded when the
         /// slot is shorter than four bytes.
@@ -1285,11 +1285,11 @@ impl SlotDamage {
     ///
     /// The proof, stated forwards rather than as somebody else's
     /// contrapositive. Suppose this returns `true`. Then the damage is
-    /// [`SlotDamage::UnsealedPublication`], and [`classify_unsealed`] produces
+    /// [`SlotDamage::UnsealedPublication`], and `classify_unsealed` produces
     /// that variant only when **both** of these hold of the slot's bytes:
     ///
-    /// 1. byte zero is [`UNSEALED_MARK`]; and
-    /// 2. read again with byte zero restored to [`SEALED_MARK`] — the value both
+    /// 1. byte zero is `UNSEALED_MARK`; and
+    /// 2. read again with byte zero restored to `SEALED_MARK` — the value both
     ///    of the slot's checksums are computed over — the bytes still fail to
     ///    verify as a whole image, at a step whose meaning this build knows.
     ///
@@ -2116,7 +2116,7 @@ impl LockStore {
     ///
     /// 1. **Byte zero goes out first, and goes out unsealed.** A crash leaves a
     ///    prefix of what was written, so every interrupted publication leaves
-    ///    [`UNSEALED_MARK`] in the slot's first byte. That is the half of
+    ///    `UNSEALED_MARK` in the slot's first byte. That is the half of
     ///    recovery's proof the write path is responsible for; the opener
     ///    supplies the other half by re-reading the slot with the mark
     ///    restored.
@@ -2335,7 +2335,7 @@ fn magic_of(bytes: &[u8]) -> [u8; 4] {
 /// this byte.
 ///
 /// The version byte is deliberately *not* tested here. It sits behind the seal
-/// test now, and [`classify_unsealed`] explains why an unsealed slot's version
+/// test now, and `classify_unsealed` explains why an unsealed slot's version
 /// is reached through the same path as everything else it declares rather than
 /// ahead of it. It is still consulted at every length that carries it.
 fn verify_identity(bytes: &[u8]) -> Result<(), SlotDamage> {
@@ -2363,7 +2363,7 @@ fn verify_identity(bytes: &[u8]) -> Result<(), SlotDamage> {
 /// of the fix behind it. An unsealed mark is one byte, and `b'R'` rots to `0x00`
 /// as readily as any other byte rots to any other value, so an unsealed mark no
 /// longer settles anything on its own: it sends the slot to
-/// [`classify_unsealed`], which asks whether these bytes are a whole image. A
+/// `classify_unsealed`, which asks whether these bytes are a whole image. A
 /// sealed mark does settle it, and may, because both checksums are computed over
 /// the sealed form — a slot whose mark reads sealed is a slot whose mark byte is
 /// covered by the same checksum as every other byte of its header.

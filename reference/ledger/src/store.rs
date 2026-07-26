@@ -443,7 +443,7 @@ const SEALED_FRAME_MARK: u8 = BEGIN_MAGIC[0];
 /// First byte of a frame that is still being appended.
 ///
 /// An append writes this value before any other byte of the frame and replaces
-/// it with [`SEALED_FRAME_MARK`] only after every other byte is durable, so
+/// it with `SEALED_FRAME_MARK` only after every other byte is durable, so
 /// every interrupted append leaves it behind. The converse does not hold, and
 /// assuming it was the defect this store was corrected for: a tail carrying
 /// this value may equally be a committed frame whose mark byte rotted to zero.
@@ -928,7 +928,7 @@ pub enum TornTail {
     /// An append wrote part of a frame and never sealed it.
     ///
     /// Both halves of that sentence are checked. The frame carries
-    /// [`UNSEALED_FRAME_MARK`] in its first byte, *and* the bytes present are
+    /// `UNSEALED_FRAME_MARK` in its first byte, *and* the bytes present are
     /// not a whole frame: with the mark restored to its sealed value they still
     /// fail to verify, at a step this build can read. `present` is how many
     /// bytes past the last committed frame it reached.
@@ -1036,12 +1036,12 @@ impl TornTail {
     ///
     /// The proof, stated forwards rather than as somebody else's
     /// contrapositive. Suppose this returns `true`. Then the tail is
-    /// [`TornTail::UnsealedAppend`], and [`classify_unsealed`] produces that
+    /// [`TornTail::UnsealedAppend`], and `classify_unsealed` produces that
     /// variant only when **both** of these hold of the bytes past the last
     /// committed frame:
     ///
-    /// 1. the first byte is [`UNSEALED_FRAME_MARK`]; and
-    /// 2. read again with that byte restored to [`SEALED_FRAME_MARK`] — the
+    /// 1. the first byte is `UNSEALED_FRAME_MARK`; and
+    /// 2. read again with that byte restored to `SEALED_FRAME_MARK` — the
     ///    value every checksum in a frame is computed over — the bytes still do
     ///    not verify as a whole frame, and they fail at a step whose meaning
     ///    this build knows.
@@ -1742,7 +1742,7 @@ impl LedgerStore {
     ///
     /// 1. **The frame's first byte goes out first, and goes out unsealed.** A
     ///    crash leaves a prefix of what was written, so every interrupted
-    ///    append leaves [`UNSEALED_FRAME_MARK`] where the next frame begins.
+    ///    append leaves `UNSEALED_FRAME_MARK` where the next frame begins.
     ///    That is the half of recovery's proof the write path is responsible
     ///    for; the opener supplies the other half by re-reading the tail with
     ///    the mark restored.
@@ -2143,7 +2143,7 @@ fn verify_identity(bytes: &[u8]) -> Result<(), TornTail> {
 ///    name rather than borrowing the interrupted-append verdict, because it is
 ///    truncated on a different premise; [`TornTail::is_truncatable_residue`]
 ///    holds the two apart.
-/// 2. **Do these bytes carry this build's begin identity?** [`verify_identity`]
+/// 2. **Do these bytes carry this build's begin identity?** `verify_identity`
 ///    asks at every length, before the mark decides anything. A zero run that
 ///    reaches byte one has destroyed the identity, and destroying it is not
 ///    something an append does.
@@ -2151,7 +2151,7 @@ fn verify_identity(bytes: &[u8]) -> Result<(), TornTail> {
 ///    used to be. An unsealed mark is one byte, and one byte is not evidence:
 ///    `b'R'` rots to `0x00` as easily as any other byte rots to any other value.
 ///    So an unsealed mark settles nothing by itself — it sends these bytes to
-///    [`classify_unsealed`], which asks whether they are a whole frame. A sealed
+///    `classify_unsealed`, which asks whether they are a whole frame. A sealed
 ///    mark does settle it, and may, because the checksums cover the sealed
 ///    value: a frame whose mark reads sealed is one whose mark byte is under the
 ///    same checksum as every other byte of its begin record.
