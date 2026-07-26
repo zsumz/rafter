@@ -372,7 +372,16 @@ fn an_occupancy_ends_at_its_deadline_with_no_release_ever_recorded() {
 /// A stall held unbroken is therefore the one legitimate way a group holding
 /// work receives nothing across a long run, and the audit says so rather than
 /// inventing a fault. That is not a hole; it is the external input doing its
-/// job. What makes it safe is the next test: a stall that *moves* buys nothing.
+/// job.
+///
+/// The next test is the counterpart, and it is worth stating at the width it
+/// actually has: a stall that *moves* buys nothing **across arming instants on
+/// a host whose plan its pool can hold**. Move it inside a pass whose plan
+/// outruns the pool and it buys everything, for as long as the host cares to
+/// keep that up — that is the fourth row of CONTRACT.md's "What falls outside
+/// that scope", and `a_plan_wider_than_the_pool_is_excused_from_its_arming_instant`
+/// is what it costs. Read without that qualification, this pair reads as a
+/// closure, and it is not one.
 #[test]
 fn a_stall_held_unbroken_is_the_one_legitimate_way_a_group_receives_nothing() {
     const PASSES: u64 = 20;
@@ -782,7 +791,7 @@ fn a_pass_the_host_cannot_finish_excuses_the_availability_it_spans() {
         .copied()
         .expect("the starved group exists");
     println!(
-        "saturated pool: passes_armed={} passes_completed={} serviced={} \
+        "unfinishable pass: passes_armed={} passes_completed={} serviced={} \
          widest_gap={}; starved group holds {} items and received nothing",
         report.passes_armed,
         report.passes_completed,

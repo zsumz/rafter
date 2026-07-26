@@ -622,23 +622,27 @@ either: twenty items moved.
 
 > **Scope.** For every recorded `Available` report naming a group that is, *at
 > that instant*, stalled, dispatchable but for its availability, holding no
-> worker, and not waiting behind a pass the host cannot finish: the group is
-> *owed the next plan armed*. The debt is discharged by a plan naming the
-> group, and by nothing else — not by a `Stalled` report, and not by a second
-> `Available` report saying what the first already said.
+> worker, and not waiting behind an open pass with more entries pending than
+> the pool has free workers: the group is *owed the next plan armed*. The debt
+> is discharged by a plan naming the group, and by nothing else — not by a
+> `Stalled` report, and not by a second `Available` report saying what the
+> first already said.
 
 A group owed a plan it does not appear in accrues gap. It is still not *ready*,
 so a plan that named it would break plan totality; the only way to settle the
 debt is to stop breaking the stall.
 
 Where the report falls in the *pass cycle* is not part of that, and it was. What
-replaced it is not "a pass was open" but **a pass the host cannot finish**: an
-open pass with more entries still pending than the pool has free workers to
-offer them with. No plan may be armed while one is open and no plan may retire
-owing a turn, so such a pass genuinely stands between the scheduler and the next
-arming — and it is the required bound's own precondition, "absent global
-resource exhaustion", rather than a fact a scheduler can manufacture by
-dispatching one group and waiting.
+replaced it is narrower — an open pass with more entries still pending than the
+pool has free workers to offer them with. No plan may be armed while one is open
+and no plan may retire owing a turn, so such a pass does stand between the
+scheduler and the next arming.
+
+It is **not** the required bound's own "absent global resource exhaustion"
+precondition, and earlier revisions of this section called it that. What the
+comparison prices is the width of the plan against the size of the pool, and
+both are things the host brings to the tick. The fourth row below is where that
+is stated at its real cost.
 
 #### What falls outside that scope
 
