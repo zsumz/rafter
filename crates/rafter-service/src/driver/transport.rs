@@ -441,31 +441,50 @@ where
             .map_err(|source| InboundEnvelopeError::Driver { source })
     }
 
-    /// Retries every unresolved read barrier.
+    /// Collects every barrier whose proof this driver has been told is ready.
     ///
-    /// A granted barrier is consumed by a later read call rather than
-    /// announced by an event, so a driver that only ticks and delivers leaves
-    /// granted proofs uncollected. Call this after each batch of deliveries and
-    /// after each tick. It is a no-op when no barrier is outstanding, and it is
-    /// safe to call at any time: the app layer's contract for a pending helper
-    /// read is to retry with the same read ID, freshness requirement, and
-    /// context until it resolves.
+    /// A grant is announced — `tick` and `deliver` route the group's read
+    /// events — but the proof it announces is *consumed* by a read call, and
+    /// that call runs the state machine, which this driver will not do inside a
+    /// tick the embedder asked for on its own timer. So the third entry point
+    /// stays: call it after each batch of deliveries and after each tick.
+    ///
+    /// It attempts exactly the barriers a routed `ReadEvent::Granted` named and
+    /// leaves the rest alone. A barrier still waiting on its quorum round, or
+    /// granted at an index this replica has not applied through, cannot answer
+    /// differently until the group says so, and a read against a barrier the
+    /// group already tracks returns an unstepped report — so attempting one
+    /// anyway would spin. With nothing granted this is a no-op, and it is safe
+    /// to call at any time.
     ///
     /// # Errors
     ///
-    /// Returns [`ManagedDriverError`] when the driver has released its group or
-    /// a read step fails for a reason that is not attributable to one barrier.
+    /// Returns [`ManagedDriverError::NoGroup`] when the driver has released its
+    /// group, and nothing else. Every group error a read call can raise names
+    /// the one barrier that call was for, so it resolves that barrier's client
+    /// and the pass continues: one barrier's fault does not deny service to the
+    /// rest.
     pub fn drive_pending_reads(&self) -> Result<(), ManagedDriverError> {
         let mut state = self.inner.lock();
         state.drive_pending_reads()
     }
 
-    /// Returns how many outbound frames the attached transport refused.
+    /// Returns how many outbound sends the attached transport refused.
     ///
-    /// A refused frame is not a failure. Raft tolerates drops and the protocol
-    /// re-sends, so the driver counts refusals rather than propagating them —
-    /// a write must not fail because one heartbeat could not be delivered. The
-    /// count is how an operator tells a cut link from an idle cluster, and a
+    /// Two producers, counted together: a peer frame [`crate::RaftTransport`]
+    /// would not take, and a leader snapshot chunk directive it could not
+    /// resolve and send. Neither is a failure. Raft tolerates drops and the
+    /// protocol re-sends, and the kernel says the same of a chunk directive its
+    /// source cannot serve — the transfer resumes from the follower's
+    /// acknowledged offset — so the driver counts refusals rather than
+    /// propagating them: a write must not fail because one heartbeat could not
+    /// be delivered.
+    ///
+    /// That shared property is why they share a counter, and it is what
+    /// separates both from [`TransportRaftDriver::refused_peer_updates`], which
+    /// counts the one link-layer statement that does *not* repair itself.
+    ///
+    /// The count is how an operator tells a cut link from an idle cluster, and a
     /// driver that discarded it would leave nothing to tell them apart.
     #[must_use]
     pub fn refused_sends(&self) -> u64 {
