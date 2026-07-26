@@ -27,10 +27,17 @@
 //! everything else in this file — delivery, isolation, elections, history
 //! recording — is identical for both.
 //!
-//! One thing is still deliberately modeled rather than real. Durable Raft state
-//! lives in in-memory stores that a retiring runtime hands back to the
-//! incarnation replacing it, and every replica runs in one process. Durable
-//! process composition arrives with a later slice.
+//! One thing here is deliberately modeled rather than real, and it stays that
+//! way. Durable Raft state lives in in-memory stores that a retiring runtime
+//! hands back to the incarnation replacing it, and every replica runs in one
+//! process. That is what buys this driver its control over delivery, which is
+//! the whole reason it exists.
+//!
+//! The process composition is `tests/process_cluster.rs` over the `lock-node`
+//! binary: real processes, file-backed Raft stores, real sockets, and `SIGKILL`.
+//! The two are not alternatives. This driver decides when a node ticks and
+//! which frame is delivered; that one cannot, and pays for real durability with
+//! a real clock.
 
 use std::{
     collections::BTreeMap,

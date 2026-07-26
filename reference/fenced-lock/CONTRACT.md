@@ -789,25 +789,290 @@ failure fencing exists to prevent, and no aggregate check substitutes for it.
 
 ### What the durable slice does not close
 
-Process-per-node composition is deferred. Every replica in these tests runs in
-one process over its own store directory, and Raft's own durable state is still
-modeled by in-memory stores handed between incarnations. Restart is therefore
-real for the application and modeled for Raft.
+The deterministic suites run every replica in one process over its own store
+directory, and Raft's own durable state there is modeled by in-memory stores
+handed between incarnations. Restart in those suites is therefore real for the
+application and modeled for Raft. [Process Composition](#process-composition)
+below closes that half — a replica is an operating-system process over
+file-backed Raft stores — and the deterministic suites keep their shape because
+what they buy is control over delivery, not durability.
 
-Two consequences follow and are stated rather than left to be discovered.
-Exclusive ownership of a store directory is assumed, not enforced; a real
-deployment needs a lock that only a process composition can take. And a crash
-test that never leaves its process reads its own writes back through the page
-cache, so it proves which bytes reached the file and what a fresh opener makes
-of them, but it does not prove that a durability barrier reached the medium.
-Those barriers are justified by the ordering argument in the store's own
-documentation and by review. A power-loss claim on a particular filesystem needs
-evidence this suite does not supply.
+One consequence of the deterministic suites' shape is stated rather than left to
+be discovered, and it is not closed anywhere in this crate: a crash test that
+never leaves its process reads its own writes back through the page cache, so it
+proves which bytes reached the file and what a fresh opener makes of them, but
+it does not prove that a durability barrier reached the medium. Killing a
+process does not close it either — the kernel still holds the page cache, so a
+`SIGKILL` loses nothing that reached a `write`. Those barriers are justified by
+the ordering argument in the store's own documentation and by review. A
+power-loss claim on a particular filesystem needs evidence no suite here
+supplies.
 
-Raft log compaction driven through the managed service is deferred with the
-process half for the same reason. The application's participation in compaction
-— building a snapshot at its own applied index, and installing one without
-making an acknowledged command executable again — is covered here.
+Raft log compaction driven through the managed service is still deferred. The
+application's participation in compaction — building a snapshot at its own
+applied index, and installing one without making an acknowledged command
+executable again — is covered here.
+
+## Process Composition
+
+The lock service runs as one operating-system process per replica. This is the
+**integration** composition level defined in
+[`docs/reference-consumers.md`](../../docs/reference-consumers.md), and this
+section says exactly what that level establishes and exactly what it does not.
+No claim below closes the 1.0 production-composition criterion.
+
+### The replica process
+
+One process owns one replica directory:
+
+```text
+<cluster-dir>/node-<id>/
+  raft/          Rafter's file-backed hard state, log, and snapshots
+  app/           the two lock-state slot files
+  peer.addr      this replica's advertised peer address
+```
+
+Startup order is part of the contract, not an implementation detail:
+
+1. bind the client port and announce it, refusing service;
+2. acquire exclusive ownership of the replica directory;
+3. open the durable lock store and read its applied floor;
+4. recover the Raft runtime *through that floor* and hand the recovery outputs
+   to the managed driver rather than applying them outside it; then
+5. announce readiness and begin serving.
+
+Step 1 precedes step 2 deliberately. A replica that cannot yet recover is
+reachable and says so, rather than being indistinguishable from one that is not
+running.
+
+Step 4 hands the driver the recovery *outputs*, not an already-stepped group.
+The outputs contain peer messages and snapshot directives, and a group stepped
+outside the driver would have dropped them where nothing could route them.
+
+### Ownership
+
+Two live processes over one replica directory would interleave publications and
+destroy each other's slots. The invariant is that one process owns one
+directory, and it is enforced by the operating-system lock `rafter-storage`
+takes over the Raft store directory, acquired before the lock store is opened
+and held for the life of the process.
+
+The lock store's slot files have no lock of their own, so this invariant rests
+on that ordering rather than on the store defending itself. A second process is
+refused at the Raft store and therefore never reaches the slots it would have
+corrupted. A replica that finds its directory owned waits for a bounded period
+rather than failing immediately, because a restarting replica legitimately races
+the exit of the incarnation it replaces.
+
+### Readiness
+
+A replica refuses every client operation until it has applied every command it
+knows to be committed — the group's committed *application* index, never the
+commit index, because elections and membership changes commit entries the
+application is never told about. Status is reported whether or not the gate is
+open, so readiness is observable while it is closed.
+
+Readiness means recovery finished. It does **not** mean the replica is current
+with its cluster: a replica that recovers a durable floor below the cluster's
+committed index is ready, and its local reads may be behind until it catches
+up. Anything routing on readiness must understand it as a recovery signal, not
+a freshness one.
+
+The readiness gate is also where a store that will not open stops the replica,
+and for this store that is not a rare event. `LockStore::open` refuses any
+damaged slot it cannot prove was the one being written, whether or not the
+partner is intact, because adopting the partner rolls the store back one
+generation and a generation can contain a fencing high-water mark a guarded
+resource has already accepted. A `SIGKILL` between a durable image and its seal
+produces exactly such a slot, so an ordinary crash can leave a replica that a
+plain restart will not open.
+
+### Recovery is a decision with three settings
+
+The process therefore takes `--recover`, and the three settings are strictly
+increasing in what they discard. None is reachable by restarting into the
+previous one:
+
+- `open` adopts what recovery can prove and refuses the rest;
+- `repair` additionally gives up a slot this build cannot read, and is itself
+  refused when the slot it would give up carries a mark the adopted slot cannot
+  dominate; and
+- `reseed` deletes this replica's durable lock state outright.
+
+Each announces what it cost, and a refusal names the setting that follows it.
+`reseed` discards acknowledged fencing marks, and it is safe only because those
+marks are also in the replicated log the replica is about to re-apply — which is
+a fact about the cluster, not about this process. A replica reseeded while its
+own log had been compacted past the discarded floor does not recover, and
+nothing claims otherwise.
+
+Recovery reports are consumed rather than produced. A replica announces the
+residue it recovered from, announces separately that it had to create its slot
+files, announces what a repair or a reseed discarded, and refuses on the report
+that needs a human. A report nothing reads is a report that costs nothing to be
+wrong.
+
+The creation announcement is the one that needs the supervisor's own knowledge
+beside it. On a replica's first boot it is expected; on a restart it means the
+slots are gone and the replica is about to serve an empty lock table from
+applied index zero with no fencing high-water marks at all. The store cannot
+distinguish those, so it reports and the supervisor judges.
+
+### The link between replicas
+
+Peer messages travel over TCP in `rafter-transport-tcp-insecure`'s published
+frame encoding, over connections this deployment owns. The split is deliberate:
+the frame format is a wire contract Rafter publishes, while connection
+lifetime, address discovery, queueing, and peer identity are deployment policy.
+The demo transport's own connection-per-message shape is not used, because a
+three-replica cluster ticking every 20 ms would leave hundreds of sockets a
+second in `TIME_WAIT` — a port-exhaustion failure that arrives only under load.
+
+The link bounds what it can: a maximum frame length refused before its bytes are
+read, a bounded outbound queue per peer whose overflow drops frames, and
+deadlines on connect and write. Dropping is correct rather than lossy — Raft
+tolerates loss, reordering, and duplication, `rafter-service` counts a refused
+send instead of failing the write behind it, and a blocking send inside the
+driver's own lock would convert one slow peer into a stalled replica.
+
+It authenticates nothing. `rafter-service` asks a deployment for an
+authenticated principal and a validator that maps principals to replicas; the
+principal supplied here is built from the sender field inside the frame that was
+just decoded, so the identity check is a tautology. The validator's other two
+questions are answered for real — an unrouted group is refused, and a fenced
+member is refused — and identity is not answered at all. A dialer additionally
+names the replica it believes it reached, and an acceptor that is not that
+replica closes the connection; that stops a recycled ephemeral port from
+misrouting a restarted replica's traffic, and it stops nothing an adversary
+would do.
+
+Peers find each other through a file in a shared directory, published only after
+a replica owns its directory and re-read on every dial, so a replica that
+restarted on a fresh port is found without reconfiguration.
+
+### The client protocol
+
+Clients speak a line-oriented protocol over a second port. It carries the three
+terminal write outcomes intact across the process boundary, and the distinction
+between them is the same one this contract draws everywhere else:
+
+- a replicated response, with its disposition;
+- a provable refusal, emitted only when the write error's own
+  `WriteFate` is `NotAppended` — which `rafter-service` documents as the driver
+  having observed the refusal itself — or when the readiness gate refused before
+  the command reached `rafter-service` at all; and
+- an unknown outcome, which is everything else, including the answer a killed
+  replica never sent.
+
+Two things the protocol does not carry are named here rather than discovered:
+
+**The request fingerprint.** A request identity carries a digest of the
+operation it claims, and the state machine rejects an envelope whose digest does
+not describe its operation. Over this protocol the operation travels in the
+clear on the same line, so the replica derives the digest from it and
+`FingerprintMismatch` is unreachable across the process boundary. It is
+exercised by the deterministic suites, where a caller can build an envelope that
+disagrees with its own operation. `ConflictingRetry` is unaffected, because the
+operation itself is compared.
+
+**Any notion of who is asking.** A client id here is a bounded slot number in
+the replicated state machine, which is deduplication vocabulary and not a
+principal. Nothing authenticates a connection, so nothing stops one connection
+from acting under another client's identity — including `ExpireThrough`, which
+[Replicated Logical Time](#replicated-logical-time) says only the service's
+authorized expiration driver should submit. That authorization lives outside the
+replicated state machine by design, and at this composition level it lives
+nowhere at all.
+
+### Reads across the process boundary
+
+`QUERY` is a linearizable read behind an ordinary barrier, which is the only
+consistency this application offers a client.
+
+`LOCAL` is not a weaker read on the same path, because there is no such path:
+`rafter-service`'s transport driver is linearizable-only by documented design
+and refuses every other level. `LOCAL` borrows the replica's group and reads its
+applied state directly. It answers with no barrier, no freshness claim, and no
+read proof, and it exists so an operator — or a test watching a rejoining
+replica — can ask what *this* replica holds. Nothing routing on correctness may
+use it.
+
+### What the process suite establishes
+
+Real processes are killed with `SIGKILL` and restarted from their own durable
+stores. The suite establishes that:
+
+- three processes elect a leader and serve the lock over real sockets, with
+  acquisition, renewal, release, and reacquisition behaving exactly as the
+  sections above specify;
+- a session retry after the leader is killed replays its cached result and
+  issues no second token;
+- a replica killed mid-write recovers a durable applied floor from its own
+  store, by whichever recovery setting that store's own report named, and
+  catches up past it — high-water mark included;
+- a store holding a slot this build cannot verify refuses to serve, says so in
+  a line a supervisor can match on, is not talked round by a restart, and names
+  the setting that opens it, which then reports what it discarded;
+- readiness gates: a replica that cannot complete recovery refuses to replicate
+  and refuses to read, and answers the same request once recovery completes;
+- every resource's fencing high-water mark is monotone across a cluster-wide
+  kill and restart, and the next tenure of each resource is strictly above what
+  was acknowledged before the cluster died;
+- an unauthenticated caller can act as any client and can drive replicated
+  logical time, and is still held to the session protocol; and
+- **fencing holds across process boundaries and across a restart.** A client
+  acquires a lock and writes to the guarded resource. Its replica is killed
+  while it still holds the lock — nothing has expired, and the surviving
+  majority confirms the tenure is intact. The majority then expires the lease
+  through consensus, a later client acquires a strictly higher token and writes,
+  and the original client, which has learned nothing, is refused by the guarded
+  resource. Every replica is then killed and restarted from its durable state,
+  and the high-water mark comes back, the next tenure is above it, and both
+  retired tokens stay refused.
+
+Nothing in that last item waits for a lease to lapse. Expiry here is a
+replicated command with a deterministic effect, which is why the lock's process
+suite has no timing in it beyond waiting for elections — an advantage over a
+clock-based lease that is worth stating, because it is why these tests bound
+real time to elections and socket delivery alone.
+
+### What it deliberately does not establish
+
+- **Transport security.** Nothing is authenticated, encrypted, replay
+  protected, or fenced by the link.
+- **Authenticated identity.** Neither a peer nor a client proves who it is. The
+  peer principal is the frame's own claim; the client identity is a slot number.
+- **The expiration driver as a role.** The contract says authorization for
+  `ExpireThrough` lives outside the state machine. At this level it exists
+  nowhere, and a test demonstrates that rather than leaving it to this
+  paragraph.
+- **Persisted replica identity.** A replica's identity is an argument and a
+  directory name, not a durable, verifiable fact.
+- **Discovery.** Peers find each other through a file in a shared directory.
+- **Structured metrics and diagnostics.** Lifecycle is a handful of stdout
+  lines.
+- **Signal handling.** Clean shutdown is a client command. There is no signal
+  handler, because installing one from `std` alone is not possible and this
+  workspace takes no external dependency; `SIGTERM` and `SIGKILL` both terminate
+  abruptly, which the store's crash contract already covers.
+- **Durability barriers reaching the medium.** Killing a process proves what a
+  fresh opener makes of the bytes that reached the file. It does not prove that
+  a barrier reached the disk.
+- **Snapshot transfer over the link.** These tests keep short logs and never
+  compact, so no replica ever installs a snapshot from a peer. The link refuses
+  a leader chunk directive on the ground that `DurableRaftNode` resolves every
+  one of them into an ordinary message before the driver sees it — which its
+  documentation states and its code does — and counts the refusal on the `LINK`
+  line so a violation is visible. No test here has made it fire, and none
+  claims to have.
+- **A linearizability decision over process histories.** The lock records the
+  history vocabulary below and checks two properties over it: that every
+  operation has exactly one invocation and one terminal event, and that no two
+  distinct request identities ever received the same fencing token for one
+  resource. It does not decide linearizability, because this crate has no
+  checker and the ledger's is not shared with it. The second property is a real
+  safety check read off client-visible events alone; the first is a check on the
+  recorder.
 
 ## History Vocabulary
 
@@ -903,7 +1168,57 @@ The first milestone contained:
 - the history vocabulary.
 
 It intentionally contained no Rafter dependency, transport, filesystem backend,
-shared reference framework, or new Rafter public API. Of those, three still
-hold: there is no shared reference framework, no new Rafter public API, and no
-real transport — the deterministic network the tests drive routes messages in
-process, and the process composition remains deferred.
+shared reference framework, or new Rafter public API. Two of those still hold:
+there is no shared reference framework and no new Rafter public API. The
+transport exclusion no longer does —
+[Process Composition](#process-composition) puts replicas on real sockets — and
+the deterministic suites keep their in-process network because controlling
+delivery is what they are for.
+
+## Process Composition Boundary
+
+The process slice makes a replica a process. It adds:
+
+- a `lock-node` binary configured entirely by arguments and environment
+  variables, following the startup order under
+  [Process Composition](#process-composition);
+- a consumer-owned TCP peer link over `rafter-transport-tcp-insecure`'s
+  published frame encoding, with a `RaftTransport` and an
+  `AuthenticatedPeerValidator` the managed driver owns;
+- a line-oriented client protocol that preserves this contract's three terminal
+  write outcomes across the process boundary;
+- process orchestration in test support that spawns, kills, restarts, and
+  escalates recovery for real processes, with per-test scratch directories and
+  bounded predicate waits; and
+- a process suite that kills replicas with `SIGKILL` and asserts the fencing
+  property against a guarded resource outside the cluster.
+
+The suite is labelled integration evidence, and it is `#[ignore]`d by default:
+`docs/reference-consumers.md` puts durable process tests in the main and
+nightly lanes, while the every-PR lane wants a package build and the
+deterministic suites. Both dependency modes still compile the binary and the
+suite, so a consumer that stopped building is caught everywhere; only running it
+is deferred. `scripts/reference-process-check` gates the selection against
+`verification/reference-process-test-inventory.fenced-lock.txt`, alongside the
+ledger's own inventory.
+
+Four limits stay, and none of them is an oversight:
+
+1. The composition is the integration level. Everything under [what it
+   deliberately does not establish](#what-it-deliberately-does-not-establish)
+   remains open, and the production-composition criterion is untouched.
+2. Real time is load bearing in a way the deterministic driver never allowed.
+   The suite bounds it rather than eliminating it: every wait is a polled
+   predicate against a deadline, no test sleeps and assumes, and every test that
+   kills a process asserts the property that holds wherever the kill landed.
+   Lease expiry is *not* one of those places — it is a replicated command, so no
+   test here waits for a lease to lapse.
+3. An ordinary crash of this store is not always recoverable by reopening. That
+   is the design working, not a defect: refusing a slot that cannot be proved is
+   recoverable under both readings of it, and adopting its partner is
+   recoverable under only one. The cost is that a restart may need an operator's
+   decision, so the process names it, the harness escalates only to the setting
+   the process named, and the escalation is recorded rather than absorbed.
+4. The lock store's slot files still have no lock of their own. One process per
+   replica directory is enforced by the Raft store's lock and by opening it
+   first.

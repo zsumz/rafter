@@ -117,13 +117,16 @@
 //! other's images, and nothing here stops them. A durable process composition
 //! needs a real exclusive lock.
 //!
-//! This consumer does not have one. It has no binary — the sibling ledger's
-//! `ledger-node` is where a process takes `rafter-storage`'s operating-system
-//! lock over its Raft directory before opening its application store — so for
-//! anything built on this crate the exclusion is the embedder's to supply, and
-//! nothing here will notice its absence. That is a gap in what this crate
-//! demonstrates, not a property of the format, and it is stated in that
-//! direction rather than deferred to a slice this crate does not have.
+//! This crate's `lock-node` binary supplies one, and it is worth being exact
+//! about what that does and does not mean for a store opened anywhere else.
+//! That process takes `rafter-storage`'s operating-system lock over its Raft
+//! directory *before* it opens the store beside it, and holds it for the life
+//! of the replica; a second process is refused there and never reaches these
+//! slots. Nothing in this module participates in that. An embedder that opens a
+//! store without an equivalent exclusion gets no complaint from here, and the
+//! first symptom is two interleaved publications. The exclusion is the
+//! embedder's, and it is stated in that direction because that is the direction
+//! the code enforces it in: not at all.
 //!
 //! Unless a record says otherwise:
 //!
