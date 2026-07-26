@@ -571,6 +571,13 @@ where
     /// snapshot directives that must be routed, and a caller that applied them
     /// outside the driver would drop exactly the effects a restart depends on.
     ///
+    /// The new group must serve the group ID this driver was built with. A
+    /// driver names one group for its whole life — its handles and metrics
+    /// watch were issued against that ID and adoption does not reissue them —
+    /// so a group with a different ID is refused rather than adopted under the
+    /// wrong name. The node ID may change, because a replacement incarnation is
+    /// still a replica of the same group.
+    ///
     /// The new group must hold no reserved reads, and its local ID watermarks
     /// must be at or above the retired incarnation's when the two share a
     /// runtime; see [`rafter_app::group::RaftGroupParts`]. A driver that
@@ -590,9 +597,10 @@ where
     /// Returns [`ManagedDriverError::ShuttingDown`] when the driver has shut
     /// down — that is terminal, and a supervisor that wants to serve again
     /// builds a driver — [`ManagedDriverError::GroupAlreadyAdopted`] when the
-    /// driver still holds a group, the same validation errors as
-    /// [`TransportRaftDriver::new`], and a group error when the recovery
-    /// outputs fail to apply.
+    /// driver still holds a group, [`ManagedDriverError::MixedGroups`] when the
+    /// group serves a different group ID than this driver, the same validation
+    /// errors as [`TransportRaftDriver::new`], and a group error when the
+    /// recovery outputs fail to apply.
     pub fn adopt_group(
         &self,
         group: RaftGroup<G, A, R>,
@@ -607,6 +615,18 @@ where
         state.reject_if_shutting_down()?;
         if state.group.is_some() {
             return Err(ManagedDriverError::GroupAlreadyAdopted);
+        }
+        // The driver's group ID is fixed at construction and adoption does not
+        // republish it: handles, the metrics watch, and every client-facing
+        // group check keep comparing against the original. A group serving a
+        // different ID would be driven under this driver's ID, and nothing
+        // downstream would catch it — `GroupInput::Proposal` carries no group
+        // ID, so a client write addressed to this driver would be proposed into
+        // the foreign group's log and answered with a real index and term.
+        // `InMemoryRaftDriver::new` refuses the same mismatch with the same
+        // error.
+        if group.group_id() != &state.group_id {
+            return Err(ManagedDriverError::MixedGroups);
         }
         let (next_proposal_id, next_read_id) = adopted_watermarks(&group, PendingProposals::Carry)?;
         state.node_id = group.node_id();

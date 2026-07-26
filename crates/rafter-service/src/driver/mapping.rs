@@ -10,14 +10,15 @@ use super::*;
 /// Both shipped drivers report through this type, and they do not reach the
 /// same variants. The cluster-shaped ones — [`ManagedDriverError::EmptyCluster`],
 /// [`ManagedDriverError::MissingPrimary`], [`ManagedDriverError::MissingNode`],
-/// [`ManagedDriverError::DuplicateNode`], [`ManagedDriverError::MixedGroups`],
-/// and [`ManagedDriverError::Stalled`] — describe a set of replicas and can only
-/// come from [`crate::InMemoryRaftDriver`], which owns one. The
-/// incarnation-shaped ones — [`ManagedDriverError::NoGroup`],
-/// [`ManagedDriverError::GroupAlreadyAdopted`], and
-/// [`ManagedDriverError::InvalidOptions`] — describe a single replica's slot and
-/// can only come from [`crate::TransportRaftDriver`], which has one. The rest
-/// are adoption and stepping faults that either driver reports.
+/// [`ManagedDriverError::DuplicateNode`], and [`ManagedDriverError::Stalled`] —
+/// describe a set of replicas and can only come from
+/// [`crate::InMemoryRaftDriver`], which owns one. The incarnation-shaped ones —
+/// [`ManagedDriverError::NoGroup`], [`ManagedDriverError::GroupAlreadyAdopted`],
+/// and [`ManagedDriverError::InvalidOptions`] — describe a single replica's slot
+/// and can only come from [`crate::TransportRaftDriver`], which has one. The
+/// rest are adoption and stepping faults that either driver reports, including
+/// [`ManagedDriverError::MixedGroups`]: each driver serves one group ID, and
+/// each refuses a group that does not belong to it.
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub enum ManagedDriverError {
@@ -69,10 +70,15 @@ pub enum ManagedDriverError {
         node_id: NodeId,
         last_seen_read_id: ReadId,
     },
-    /// The supplied groups do not all belong to one group ID.
+    /// A group offered to a driver does not belong to the group ID that driver
+    /// serves.
     ///
-    /// A driver serves exactly one group; a mixed set would give its handles a
-    /// group ID that names only some of the replicas.
+    /// A driver serves exactly one group. For
+    /// [`crate::InMemoryRaftDriver::new`] that means the supplied groups must
+    /// all share one ID, or its handles would name only some of the replicas.
+    /// For [`crate::TransportRaftDriver::adopt_group`] it means the incoming
+    /// group must serve the ID the driver was built with, or client commands
+    /// addressed to that ID would be proposed into another group's log.
     MixedGroups,
     /// The driver made no progress within its drive bound.
     ///
