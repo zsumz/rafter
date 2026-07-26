@@ -1,6 +1,6 @@
 # Nightly lane: curated deep/soak regressions, source-derived nightly
-# invariant evidence, the burn-in script, long fuzz runs, and the
-# nightly-scale ignored test.
+# invariant evidence, the burn-in script, long fuzz runs, the reference
+# ledger's durable process suite, and the nightly-scale ignored test.
 #
 # Profiles come from `rafter-model-check-fast --list-profiles`:
 #   fast (per-commit) | raft-deep, raft-soak (local-minutes) |
@@ -609,6 +609,36 @@ jobs:
           name: fuzz-long-${{ matrix.target }}-artifacts
           path: fuzz/artifacts/
           if-no-files-found: ignore
+
+  reference-process:
+    name: reference-process-nightly
+    # docs/reference-consumers.md assigns durable process tests to the
+    # main/nightly tier. ci.yml runs the same suite on pushes to main; this is
+    # the nightly half, so a scheduled run reports on the tip even when no
+    # push landed that day.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          cache-on-failure: true
+      - name: Ledger durable process suite
+        # The suite is #[ignore]d, so `--ignored` on its own would report
+        # success over zero tests the moment those attributes changed. The
+        # exact count is what makes running it evidence.
+        run: |
+          patch=()
+          while IFS= read -r argument; do
+            patch+=("$argument")
+          done < <(scripts/reference-source-check --print-args)
+          exact="$PWD/scripts/cargo-test-exact"
+          cd reference
+          "$exact" 7 - "${patch[@]}" -p rafter-reference-ledger \
+            --test process_cluster -- --ignored
 
   multi-gigabyte-test:
     name: multi-gigabyte-test

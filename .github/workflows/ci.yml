@@ -1,11 +1,18 @@
-# Per-PR lane: fmt, clippy -D warnings, workspace tests, deterministic
-# invariant evidence aggregation, and fuzz smoke.
+# Per-PR lane: fmt, clippy -D warnings, rustdoc, workspace tests, the
+# reference-consumer acceptance lanes, deterministic invariant evidence
+# aggregation, and fuzz smoke.
 #
 # "A PR cannot merge red" is enforced by branch protection, which lives in
 # repository settings, not in this file. Branch protection on `main` must
 # list these required status checks:
 #
-#   lint, test, fuzz-smoke, invariants-pr
+#   lint, test, reference-source, reference-package, fuzz-smoke, invariants-pr
+#
+# `reference-process` is deliberately absent from that list: it only runs on
+# pushes to main, so it never reports on a pull request and a required check
+# that never reports blocks every merge. docs/reference-consumers.md assigns
+# durable process tests to the main/nightly lane, and nightly.yml runs the
+# other half.
 #
 # The Rust toolchain is pinned to the workspace rust-version in Cargo.toml
 # (currently 1.88). Keep .github/actions/setup-rust/action.yml's default in
@@ -39,7 +46,7 @@ jobs:
   lint:
     name: lint
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -56,6 +63,36 @@ jobs:
         # Workspace lints set clippy::{all,pedantic} = warn; -D warnings
         # escalates them (and rustc warnings) to errors.
         run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: rustdoc
+        # The ten crates in RELEASE.md's publish list reach docs.rs, and until
+        # this step nothing built their documentation at all. The script
+        # explains why the published set is documented by name instead of
+        # relying on --workspace, which unifies rafter's internal-test-hooks
+        # feature in from rafter-sim and so documents a shape that never ships.
+        run: scripts/rustdoc-check
+      - name: out-of-workspace manifests
+        # `cargo fmt --all` and `cargo clippy --workspace` above stop at the
+        # workspace members. fuzz/ and bench-compare/ keep their own manifests
+        # outside the workspace, so they need their own invocations. Two gaps
+        # remain and are recorded in RELEASE.md rather than implied away:
+        # bench-compare is not format-checked here, and its third-party
+        # comparison binaries stay behind their default features because they
+        # need protoc, which only benchmarks.yml installs.
+        run: |
+          cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check
+          cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
+          cargo clippy --manifest-path bench-compare/Cargo.toml --locked \
+            --no-default-features --all-targets -- -D warnings
+      - name: reviewed action pins resolve upstream
+        # `cargo test --workspace` already asserts that these workflows use
+        # exactly the specifications in verification/github-actions.lock, and
+        # that each is a full 40-hex commit. That is a text comparison: it
+        # cannot tell a real revision from one that was never pushed or has
+        # since been removed. This resolves every locked specification against
+        # the GitHub API, which is the half the comparison cannot do.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: scripts/verify-action-pins
 
   test:
     name: test
@@ -85,6 +122,10 @@ jobs:
         run: python3 scripts/render-raft-invariants-doc --check
       - name: workspace tests
         run: scripts/ci-run-diagnosed workspace-tests target/rafter-invariants/ci-diagnostics/workspace-tests.log cargo test --workspace
+      - name: insecure TCP transport loopback tests
+        # Two #[ignore]d tests in a publishable crate that no lane ran. They
+        # are ignored because they bind loopback, which every runner here has.
+        run: scripts/cargo-test-exact 2 - -p rafter-transport-tcp-insecure --lib -- --ignored
       - name: replicated KV process lifecycle
         run: scripts/cargo-test-exact 1 - -p rafter-runtime --test replicated_kv_example -- --ignored --exact replicated_kv_process_per_node_tcp_survives_kill_restart --nocapture
       - name: Upload test process diagnostics
@@ -715,3 +756,100 @@ jobs:
           name: fuzz-smoke-artifacts
           path: fuzz/artifacts/
           if-no-files-found: ignore
+
+  # The reference-consumer acceptance lanes. docs/reference-consumers.md gives
+  # the every-PR tier "package build, pure implementation and reference-model
+  # tests, codec vectors, short deterministic simulations, and small history
+  # checks"; those are the deterministic suites reference-source-check runs and
+  # the package build reference-package-check performs. Root Cargo.toml
+  # excludes reference/, so no cargo invocation in the lint or test jobs above
+  # reaches these consumers: without these two jobs nothing compiles them.
+  reference-source:
+    name: reference-source
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          cache-on-failure: true
+      - name: Reference consumers in fast source mode
+        # Format, clippy -D warnings, the deterministic suites, and rustdoc,
+        # all against the checkout through the patched publishable set.
+        run: scripts/reference-source-check
+
+  reference-package:
+    name: reference-package
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      # Deliberately not the workspace 1.88 pin. `cargo package -p a -p b`
+      # only resolves a crate's versioned dependency on a sibling against the
+      # archive it just produced on newer Cargo; on 1.88 phase 1 fails outright
+      # with "no matching package named `rafter-crc32` found", because it looks
+      # for the sibling on crates.io where 0.0.1 is not yet live, and --no-verify
+      # does not avoid it. 1.96.1 is the toolchain benchmarks.yml already pins.
+      # The compatibility floor is not what this lane measures: reference-source
+      # above builds the same consumer sources on 1.88.
+      - uses: ./.github/actions/setup-rust
+        with:
+          toolchain: 1.96.1
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          cache-on-failure: true
+      - name: Reference consumers against exact package archives
+        # This is also the only lane that builds `rafter` in its published
+        # shape. Every cargo invocation over the root workspace resolves
+        # rafter-sim, which depends on rafter with `internal-test-hooks`, and
+        # resolver 2 unifies that feature into rafter for the whole invocation.
+        # Phase 6 rejects the hook in the consumer graph, so the archives are
+        # exercised with it off.
+        env:
+          # Phase 6 proves that no consumer dependency resolves back inside the
+          # checkout, so the workdir must live outside it. runner.temp is a
+          # sibling of the workspace, never a child.
+          TMPDIR: ${{ runner.temp }}
+        run: scripts/reference-package-check
+
+  reference-process:
+    name: reference-process
+    # docs/reference-consumers.md puts durable process tests on the
+    # main/nightly tier rather than on every PR. This is the "main" half,
+    # reached through this workflow's push trigger; nightly.yml carries the
+    # other. A pull request skips this job, which is why it must not be a
+    # required status check.
+    if: github.event_name == 'push'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-rust
+      - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
+        with:
+          cache-on-failure: true
+      - name: Ledger durable process suite
+        # The suite is #[ignore]d, so `--ignored` on its own would report
+        # success over zero tests the moment those attributes changed. The
+        # exact count is what makes running it evidence. --print-args is the
+        # source-mode patch table; the suite is run directly rather than
+        # through reference-source-check so that this job runs the process
+        # tests and not a second copy of the every-PR lane.
+        run: |
+          patch=()
+          while IFS= read -r argument; do
+            patch+=("$argument")
+          done < <(scripts/reference-source-check --print-args)
+          exact="$PWD/scripts/cargo-test-exact"
+          cd reference
+          "$exact" 7 - "${patch[@]}" -p rafter-reference-ledger \
+            --test process_cluster -- --ignored

@@ -1,0 +1,88 @@
+#!/usr/bin/env bash
+# Build the workspace's rustdoc under -D warnings, in the shape that ships.
+#
+# Usage:
+#   scripts/rustdoc-check
+#
+# Two builds, because neither one covers the other:
+#
+#  1. RELEASE.md's publish list, selected by name. This is the HTML a crates.io
+#     reader lands on, so a doc that does not build is a defect in the
+#     artifact. The crates are named rather than reached through --workspace
+#     because rafter-sim depends on rafter with the hidden internal-test-hooks
+#     feature, and resolver 2 unifies features across every package one
+#     invocation selects. `cargo doc --workspace` therefore documents rafter
+#     with a feature no published consumer can turn on, and a link that only
+#     resolves under that feature would pass a workspace-only gate and still
+#     break on docs.rs. Naming the publish set documents the published shape.
+#  2. The whole workspace. A broken link in an unpublished crate never reaches
+#     docs.rs, but it still misleads a reader of this repository.
+#
+# RELEASE.md owns the publish list; reading it here keeps one authority for
+# what is public instead of a second copy that drifts. This is the same reader
+# scripts/reference-package-check uses.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+usage() {
+    sed -n '2,4p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+if [[ $# -gt 0 ]]; then
+    case "$1" in
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "error: unknown option: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+fi
+
+release_crate_list() {
+    local heading="$1"
+    awk -v heading="$heading" '
+        index($0, heading) == 1 { wanted = 1; next }
+        wanted && /^```/ { if (inside) { exit } ; inside = 1; next }
+        inside && NF { print $1 }
+    ' "$repo_root/RELEASE.md"
+}
+
+if [[ ! -f "$repo_root/RELEASE.md" ]]; then
+    echo "error: RELEASE.md is missing; it owns the publishable crate list" >&2
+    exit 1
+fi
+
+publish_crates=()
+while IFS= read -r crate; do
+    [[ -n "$crate" ]] || continue
+    publish_crates+=("$crate")
+done <<< "$(release_crate_list 'Publish these crates')"
+
+if ((${#publish_crates[@]} == 0)); then
+    echo "error: RELEASE.md lists no publishable crates" >&2
+    exit 1
+fi
+
+package_args=()
+for crate in "${publish_crates[@]}"; do
+    if [[ ! -f "$repo_root/crates/$crate/Cargo.toml" ]]; then
+        echo "error: published crate $crate has no manifest under crates/" >&2
+        exit 1
+    fi
+    package_args+=(-p "$crate")
+done
+
+cd "$repo_root"
+
+echo "rustdoc: published crates (${publish_crates[*]})"
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked "${package_args[@]}"
+
+echo "rustdoc: whole workspace"
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --locked --workspace
+
+echo "rustdoc check passed"
