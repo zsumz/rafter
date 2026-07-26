@@ -50,6 +50,15 @@ what it is, and each of these three changes a public kernel shape. None of them
 adds an API a consumer asked for; each removes a promise the kernel was making
 and could not keep.
 
+The last entry is the same kind of arrival one crate higher. A cold audit of
+`crates/rafter-multiraft` — the only public crate no adversarial generation had
+read — found that the many-group host drops committed apply results and starves
+every group behind a failing one. Its consumer has not been written yet, so the
+entry is unusual in this document: it is designed against a *stated* acceptance
+contract rather than against a workaround someone had to write. That is the
+weaker kind of evidence, and the entry says which of its shapes the contract
+forces and which are the author's judgement.
+
 The couplings are recorded in [Coupled designs](#coupled-designs), and the
 implementation sequence in [Adoption order](#adoption-order).
 
@@ -2132,6 +2141,12 @@ and `MultiRaftError::Driver { group_id, message: String }`
 carries it. That crate is out of scope here — no consumer has exercised it yet,
 and the promotion rule defers extraction until one does — but it is the
 independent second occurrence the rule asks for.
+
+**That deferral is spent.** A cold audit of `rafter-multiraft` reproduced the
+consequence this paragraph predicted, and the reshaping is designed in
+[Many-Group Tick Passes, Group Retirement, and a Host Error That Renders](#many-group-tick-passes-group-retirement-and-a-host-error-that-renders).
+It reaches the same three answers by the same route, which is the strongest
+evidence this section's design was right that the workspace has produced.
 
 ### Design
 
@@ -7095,6 +7110,580 @@ both halves.
 **Rejected:** including the leader. It changes a published observability shape to
 satisfy a sentence, and the field name would then lie instead of the doc.
 
+## Many-Group Tick Passes, Group Retirement, and a Host Error That Renders
+
+### Origin
+
+`MultiRaftHost::tick_all` is four lines, and the fourth is the defect
+([`crates/rafter-multiraft/src/host.rs:96-102`](../crates/rafter-multiraft/src/host.rs),
+mirrored verbatim at
+[`typed.rs:153-159`](../crates/rafter-multiraft/src/typed.rs)):
+
+```rust
+let group_ids = self.groups.keys().cloned().collect::<Vec<_>>();
+group_ids
+    .into_iter()
+    .map(|group_id| self.step_group(&group_id, GroupInput::Tick))
+    .collect()
+```
+
+`collect()` into `Result<Vec<_>, _>` short-circuits. Every `Ok` produced before
+the first `Err` is dropped on the floor, and the layer below states exactly what
+is in them
+([`crates/rafter-app/src/group/types.rs:209-213`](../crates/rafter-app/src/group/types.rs)):
+
+> Results the state machine returned from applying committed entries.
+> An entry reaching this list has committed and applied. This is the only
+> list that proves a write took effect.
+
+`peer_messages` survives a dropped report because Raft re-sends. `applied` does
+not: nothing re-emits it. So a two-group host whose second group's driver fails
+its tick advances group 1's `applied_index` to 1, hands the caller a bare
+`MultiRaftError::Driver { group_id: 2 }`, and the client future waiting on
+group 1's write waits forever. There is no recovery path, because there is no
+second copy.
+
+The same line has a second consequence with a longer blast radius. `BTreeMap`
+iterates in key order, so the pass always fails at the same group, and every
+group behind it is never stepped at all — no election timeout, no heartbeat, no
+replication, no commit. Over 100 `tick_all` passes with a broken group 1 and a
+healthy group 2, group 1 is stepped 100 times and group 2 is stepped **0**
+times. And `rafter-app`'s poison is permanent by construction
+([`GroupError::Poisoned`](../crates/rafter-app/src/error.rs)), so a poisoned
+lowest-keyed group ends all Raft activity in the process until restart.
+
+That is a stated 1.0 acceptance criterion, negated
+([`docs/reference-consumers.md:364-366`](./reference-consumers.md)):
+
+> - work and failure in one group do not corrupt another;
+> - a poisoned group cannot stop unrelated groups;
+
+The host also has no way out of it. There is no `remove_group`, `close_group`,
+or eviction of any kind anywhere in the crate: a driver handed to `open_group`
+is owned until the host is dropped. `open_group` will not even hand back the
+driver it *refuses* — both error paths take `driver: D` by value and drop it,
+so a caller that misroutes an open loses the storage handles the driver owned.
+
+The rustdoc does not say any of this. `host.rs:87` says "Ticks every open group
+in deterministic key order", which the code stops doing at the first failure,
+and the `# Errors` block below it never mentions that the pass ends.
+
+The third finding is the error surface itself.
+[`crates/rafter-multiraft/src/error.rs`](../crates/rafter-multiraft/src/error.rs)
+is thirteen lines with no `impl` block at all: `MultiRaftError` is the only
+public error type in the workspace implementing neither `Display` nor
+`std::error::Error`. Upstream of it, the crate's only shipped blanket driver
+impl — the one on the path of every real embedder — throws the typed error away
+([`typed.rs:56`](../crates/rafter-multiraft/src/typed.rs)):
+
+```rust
+RaftGroup::step(self, input).map_err(|error| format!("{error:?}"))
+```
+
+`GroupError` has twenty `#[non_exhaustive]` variants, a `Display`, a `source()`
+chain, and an `ErrorCause` a caller can `downcast_ref`. All of it becomes a
+`Debug` string, so a caller cannot tell `Poisoned` — permanent, retire the group
+— from `Runtime` — which may not recur. And because `MultiRaftError` derives
+`Eq`, two unrelated failures that render alike compare *equal*, which
+`crates/rafter-service/src/error.rs:243-247` forbids in as many words:
+
+> Equality is deliberately absent. An error carrying a `dyn Error` has no
+> honest equality: comparing `Arc` pointers makes two errors built from the
+> same failure unequal, and comparing rendered output rebuilds the
+> stringly-typed semantics this surface exists to remove.
+
+This document already named that defect and deferred it
+([Typed Service Failure Surface](#typed-service-failure-surface)): the
+`String` in `GroupDriver::step` was "the independent second occurrence the rule
+asks for", left alone because no consumer had exercised it. That deferral is
+now spent.
+
+### Classification
+
+Raft and durable-lifecycle mechanism, on all three counts, and the first two are
+not close. Losing a committed apply result is a durability defect in the layer
+whose entire job is to hand committed effects to a caller. Starving a group of
+its tick is denying it elections and heartbeats, which is Raft liveness. Neither
+is application policy, and neither is expressible by a consumer working around
+the host: `tick_all`'s reports are gone before any caller sees them, and a
+consumer cannot evict a group from a map it has no handle to.
+
+Typed failure behavior is required of every promoted API
+([`docs/reference-consumers.md:462`](./reference-consumers.md)), and the 1.0
+production composition requires "structured metrics and failure diagnostics"
+([`:311`](./reference-consumers.md)). Neither is reachable from a `String`: a
+metrics label taken from a rendered `GroupError` has unbounded cardinality,
+because those messages embed node IDs, log indices, and proposal IDs.
+
+**The consumer, and the honesty about it.** The sharded counter is the stated
+acceptance workload for the managed multi-Raft scheduler
+([`docs/reference-consumers.md:300-317`](./reference-consumers.md)), and it
+declares no Rafter dependency yet
+([`:390`](./reference-consumers.md)). So this entry has no workaround to cite
+and no line count to delete — the promotion rule's usual evidence. What it has
+instead is a written contract the current code demonstrably fails, and the
+audit's repros are that failure made executable. Where a shape below follows
+from a clause in that contract, the clause is quoted. Where it does not, the
+entry says the shape is judgement and states what would change it.
+
+One boundary is drawn on the other side deliberately. The counter's workload
+lists "group creation, draining, removal, reopening, and tombstoning" and
+"messages arriving after removal". Creation, removal, and reopening are group
+lifecycle and land here. **Tombstoning does not**, and the reason is the
+classification rule: a tombstone is a retention decision — how long after a
+group is removed may its traffic still arrive — and that horizon is a
+deployment property, not a Raft one. A host that kept every removed key forever
+would grow without bound on behalf of a policy it cannot see. The host reports
+`UnknownGroup` for a removed key, exactly as for a key that never existed, and a
+caller that must tell those apart holds its own tombstone map. This is stated in
+the rustdoc and pinned by a test rather than left to be discovered.
+
+### Design
+
+Five changes in `crates/rafter-multiraft`, and none in any other crate. The
+typed and untyped hosts are line-for-line mirrors today and stay mirrors after.
+
+#### 1. A tick pass visits every group
+
+`tick_all` stops returning a `Result`. It returns the pass.
+
+```rust
+/// One complete pass over every group a host held when the pass began.
+///
+/// This is the executable form of the scheduler contract's unit of fairness:
+/// "every continuously ready group receives a scheduling opportunity within
+/// one complete pass over the ready set"
+/// (`docs/reference-consumers.md`). A pass carries one outcome per open group,
+/// in the host's key order, whatever any individual group did — a failing
+/// group consumes its own opportunity and nobody else's.
+#[derive(Debug)]
+#[must_use = "a tick pass carries every group's report, and a report's `applied` \
+              list is the only proof a write took effect; it is never re-emitted"]
+pub struct TickPass<G, R> {
+    outcomes: Vec<GroupOutcome<G, R>>,
+}
+
+impl<G, R> TickPass<G, R> {
+    /// Every outcome, one per group, in the host's key order.
+    #[must_use]
+    pub fn outcomes(&self) -> &[GroupOutcome<G, R>];
+
+    /// Takes the outcomes, which is how a caller routes what the pass proved.
+    #[must_use]
+    pub fn into_outcomes(self) -> Vec<GroupOutcome<G, R>>;
+
+    /// The number of groups this pass stepped.
+    ///
+    /// Equal to the host's open-group count at the moment the pass began. A
+    /// caller asserting fairness compares this against `MultiRaftHost::len`.
+    #[must_use]
+    pub fn visited(&self) -> usize;
+
+    /// The reports of the groups that stepped successfully.
+    pub fn reports(&self) -> impl Iterator<Item = &GroupStepReport<G, R>>;
+
+    /// The groups that failed, with the host key each failed under.
+    pub fn failures(&self) -> impl Iterator<Item = (&G, &MultiRaftError<G>)>;
+
+    /// Whether every group in this pass stepped successfully.
+    #[must_use]
+    pub fn is_complete(&self) -> bool;
+}
+
+/// One group's outcome within a pass.
+///
+/// `group_id` is the *host key* that was stepped, not the group ID the driver
+/// reported. The two can disagree — that disagreement is
+/// [`MultiRaftError::InvalidReport`] — and only the host key is authoritative.
+#[derive(Debug)]
+pub struct GroupOutcome<G, R> {
+    pub group_id: G,
+    pub result: Result<GroupStepReport<G, R>, MultiRaftError<G>>,
+}
+```
+
+The named type rather than a bare `Vec<GroupOutcome<_, _>>` earns its place on
+one argument: the fairness bound "must remain a deterministic assertion rather
+than a latency impression from benchmarks"
+([`docs/reference-consumers.md:355-356`](./reference-consumers.md)), and
+`visited()` is where that assertion is written down and checked. A `Vec` can
+carry the same data and cannot carry the promise.
+
+Only two error variants can appear inside a pass — `Driver` and
+`InvalidReport` — because the keys come from the host's own map and a `Tick`
+carries no group ID to mismatch. The rustdoc says so rather than leaving a
+caller to infer it from four unreachable arms.
+
+#### 2. A host can retire a group
+
+```rust
+/// Retires `group_id`, returning its driver.
+///
+/// The driver is returned rather than dropped so a caller can drain it — step
+/// it to quiescence, read its final metrics, close what it owns — after the
+/// host has stopped scheduling it. Retiring a group is how a poisoned group
+/// stops consuming a scheduling opportunity it can never use.
+///
+/// Idempotent: retiring a key that is not open returns `None`.
+///
+/// This host keeps no record of a retired key. A later input for it is
+/// [`MultiRaftError::UnknownGroup`], indistinguishable from a key that never
+/// existed, and `open_group` will reopen it. A caller that must fence late
+/// traffic against a removed group holds that tombstone itself; see the
+/// classification note above for why the horizon is not this crate's to pick.
+pub fn remove_group(&mut self, group_id: &G) -> Option<Box<dyn GroupDriver<G>>>;
+```
+
+With four accessors the host never had, because a host that cannot be asked
+what it holds cannot be scheduled over: `len`, `is_empty`, `contains_group`, and
+`group_ids`.
+
+#### 3. The driver reports a typed, categorized failure
+
+`GroupDriver::step` and `TypedGroupDriver::step` stop returning `String`.
+
+```rust
+/// Why a group driver could not complete a step.
+///
+/// This kind answers **permanence and nothing else**: may this group be
+/// stepped again, or is it finished? It deliberately does not answer what a
+/// failed proposal's fate was. That question is answered by
+/// `ProposalEvent` in the report, and a second answer here would be a second
+/// place to disagree with it.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum DriverErrorKind {
+    /// The group will never make progress again. Retire it.
+    Poisoned,
+    /// The step failed and the group has not declared itself permanently
+    /// unusable. This is the absence of a poison, not a promise that a retry
+    /// succeeds.
+    Transient,
+}
+
+impl DriverErrorKind {
+    /// Whether this failure retires the group.
+    ///
+    /// Written as a positive test for `Poisoned` so an unrecognized future
+    /// kind reads as *not* permanent. That is the safe direction: continuing
+    /// to tick a dead group wastes a scheduling opportunity, while retiring a
+    /// live one destroys a driver that still owned committed state.
+    #[must_use]
+    pub const fn is_permanent(self) -> bool { matches!(self, Self::Poisoned) }
+}
+
+/// A group driver's failure: what kind, and what actually failed.
+#[derive(Clone, Debug)]
+pub struct DriverError {
+    kind: DriverErrorKind,
+    cause: ErrorCause,
+}
+
+impl DriverError {
+    pub fn new(kind: DriverErrorKind, cause: ErrorCause) -> Self;
+    #[must_use] pub const fn kind(&self) -> DriverErrorKind;
+    #[must_use] pub const fn cause(&self) -> &ErrorCause;
+}
+
+impl fmt::Display for DriverError;
+impl std::error::Error for DriverError;  // source() -> the preserved cause
+```
+
+`ErrorCause` is re-exported from `rafter-app`, not redeclared, under the rule
+this document already set: "a caller must be able to compare the value it
+receives here with the one `rafter-app` produced, so there can be only one
+type" ([`crates/rafter-service/src/error.rs:29-33`](../crates/rafter-service/src/error.rs)).
+
+The blanket impl on `RaftGroup` then preserves what it used to render, and —
+this is the part that matters — **reports the permanence it observed rather
+than inferring it from the variant**:
+
+```rust
+Err(error) => {
+    let kind = match self.fatal_state() {
+        GroupFatalState::Poisoned { .. } => DriverErrorKind::Poisoned,
+        GroupFatalState::Healthy => DriverErrorKind::Transient,
+    };
+    Err(DriverError::new(kind, ErrorCause::new(error)))
+}
+```
+
+A failure that *causes* a poison does not return `GroupError::Poisoned` — it
+returns the underlying fault, and the group is poisoned afterwards. Classifying
+by variant would therefore call the first poisoning failure transient and only
+the second one permanent. Asking `fatal_state()` after the step is the same
+discipline `WriteFate` states one crate over: report what was observed, never
+what a category implies.
+
+#### 4. The host error renders, chains, and projects
+
+```rust
+/// Errors returned by a many-group host.
+///
+/// Equality is deliberately absent, for the reason `rafter-service` gives:
+/// an error carrying a `dyn Error` has no honest equality, and comparing
+/// rendered output rebuilds the stringly-typed semantics this reshaping
+/// removes.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub enum MultiRaftError<G> {
+    GroupAlreadyOpen { group_id: G },
+    UnknownGroup { group_id: G },
+    /// The *caller's input* named another group. Nothing was stepped.
+    WrongGroup { expected: G, actual: G },
+    /// The driver stepped, and then returned a report naming another group.
+    ///
+    /// The driver has already mutated itself; whatever the report described
+    /// has happened. The report is discarded because a driver that cannot
+    /// name its own group has forfeited the contract that made its `applied`
+    /// list mean anything — so this is a data loss, it is not silent, and the
+    /// repair is to retire the group.
+    InvalidReport { group_id: G, field: &'static str, reported: G },
+    /// The report carried a `#[non_exhaustive]` variant this host does not
+    /// recognize. The host failed to understand it; the driver did nothing
+    /// wrong.
+    UnrecognizedEvent { group_id: G, field: &'static str },
+    Driver { group_id: G, kind: DriverErrorKind, cause: ErrorCause },
+}
+
+impl<G: Debug> fmt::Display for MultiRaftError<G>;
+impl<G: Debug> std::error::Error for MultiRaftError<G>;  // source() -> cause
+
+/// Stable, payload-free category of a [`MultiRaftError`].
+///
+/// `MultiRaftError<G>` is generic over a caller-defined key and carries those
+/// keys in its payloads, so it is neither a bounded metric label nor a map
+/// key. This is. A host running thousands of groups aggregates failures by
+/// this and by nothing else.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum MultiRaftErrorKind {
+    GroupAlreadyOpen,
+    UnknownGroup,
+    WrongGroup,
+    InvalidReport,
+    UnrecognizedEvent,
+    DriverPoisoned,
+    DriverTransient,
+}
+
+impl<G> MultiRaftError<G> {
+    #[must_use] pub const fn kind(&self) -> MultiRaftErrorKind;
+}
+```
+
+`Display` and `Error` are bounded on `G: Debug`, not `G: Display`, because
+`Debug` is what the hosts already require of a key and what the crate's own
+`ShardId`-shaped examples implement. Requiring `Display` would make the error
+type unusable for the keys the crate ships examples for.
+
+The split between `WrongGroup` and `InvalidReport` is the whole of finding M4a.
+Today both are `WrongGroup { expected: 1, actual: 2 }` — byte-identical — and
+they are opposite facts: one means nothing happened, the other means something
+happened and was dropped. That is the same conflation `WriteFate` exists to
+prevent, arriving independently in a second crate.
+
+`Driver` carries `kind` and `cause` flat rather than a nested `DriverError`, so
+`source()` walks one link per real failure: host error → the preserved
+`GroupError` → the state machine's own error. `DriverError` remains the driver
+trait's return type, since a trait needs one error type to return.
+
+#### 5. `metrics` stops being all-or-nothing, and `open_group` gives the driver back
+
+```rust
+/// Metrics for every group whose driver reported the key it is open under.
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+pub struct MultiRaftMetrics<G> {
+    pub groups: Vec<RaftGroupMetrics<G>>,
+    /// The groups excluded, and why.
+    ///
+    /// A driver that reports another group's identity is excluded rather than
+    /// published under a key it disowns — publishing it would put a
+    /// fabricated `group_id` into a metrics stream. It is listed here rather
+    /// than dropped, so an operator sees a gap and its reason instead of a
+    /// shorter list.
+    pub failures: Vec<MultiRaftError<G>>,
+}
+
+pub fn metrics(&self) -> MultiRaftMetrics<G>;   // no longer fallible
+```
+
+and
+
+```rust
+/// A refused `open_group`, carrying the caller's driver back.
+#[derive(Debug)]
+pub struct OpenGroupRejected<G, D> {
+    pub error: MultiRaftError<G>,
+    pub driver: D,
+}
+
+pub fn open_group<D>(&mut self, group_id: G, driver: D)
+    -> Result<(), OpenGroupRejected<G, D>>;
+```
+
+A driver owns a runtime, a state machine, and open storage handles. Destroying
+one because the caller passed the wrong key is a data-loss bug wearing a
+validation error's clothes; `std` returns the value on `mpsc::SendError` and
+`String::from_utf8` for the same reason.
+
+### Semantics and edge cases
+
+**A pass is a snapshot of the key set.** `tick_all` collects keys, then steps
+them. A driver cannot reach the host to open or retire a group mid-pass — the
+host is `&mut`-borrowed for the duration — so `visited()` equals `len()` at
+entry, always. A caller that retires a group in response to a pass does it
+after the pass, and the next pass is one shorter.
+
+**Retiring a group inside a pass's own results.** A pass may report
+`DriverErrorKind::Poisoned` for a group whose report is also in the pass —
+`into_outcomes` hands back both, and routing the report before retiring the
+group is the caller's obligation, not the host's. The host never retires
+anything on its own: a host that evicted on poison would destroy a driver whose
+storage the caller may still need to inspect. This is stated where `remove_group`
+is documented.
+
+**`InvalidReport` does not retire the group either.** The host has no basis to
+decide that a misreporting driver is unusable rather than merely wrong once;
+the rustdoc says retirement is the repair and leaves the decision with the
+caller.
+
+**Five of seven `GroupInput` variants carry no group ID.** `PeerMessage` and
+`ReadBarrier` carry one and are cross-checked against the host key. `Tick`,
+`Proposal`, `ProposalBatch`, `Membership`, and `TransferLeadership` do not, so a
+caller's shard-map bug routes a command into the wrong group and **this host
+cannot detect it** — the information required to detect it is not in the input.
+Nothing here can fix that; the rustdoc names the two inputs the check covers
+instead of describing a check that sounds total, and a test pins both halves,
+including the uncomfortable half that proves a misrouted proposal is accepted.
+
+**`Default` is hand-written.** Deriving it put `G: Default` on the untyped host
+and `G: Default, C: Default, R: Default` on the typed one — `C` and `R` are the
+command and result types, which the host never stores by value — so
+`TypedMultiRaftHost::<u64, MyCommand, MyResult>::default()` did not compile for
+any real command type. The hand-written impl forwards to `new` and carries only
+`new`'s bounds.
+
+### Blast radius
+
+Entirely within `crates/rafter-multiraft` plus the three examples it ships.
+
+- **Breaking:** `tick_all` (return type), `metrics` (no longer `Result`),
+  `open_group` (error type), `GroupDriver::step` and `TypedGroupDriver::step`
+  (error type), `MultiRaftError` (loses `Eq`/`PartialEq`, gains two variants and
+  `#[non_exhaustive]`, `Driver`'s payload changes), `MultiRaftMetrics` (gains a
+  field and `#[non_exhaustive]`, loses `Eq`/`PartialEq`).
+- **Additive:** `remove_group`, `len`, `is_empty`, `contains_group`,
+  `group_ids`, `TickPass`, `GroupOutcome`, `DriverError`, `DriverErrorKind`,
+  `MultiRaftErrorKind`, `OpenGroupRejected`, the `ErrorCause` re-export, and
+  every `Display`/`Error` impl.
+- **No change:** `rafter-app`, and every crate below it. This was checked rather
+  than assumed: the reshaping needs `GroupError<E, R>` to be an
+  `Error + Send + Sync + 'static` so `ErrorCause::new` accepts it, and it
+  already is — `ReplicatedStateMachine::Error` and
+  `PersistedRaftRuntime::Error` both carry that exact bound today. The
+  permanence classification needs `RaftGroup::fatal_state`, which is public. So
+  the argument for touching `rafter-app` fails on its own terms, and it is not
+  touched.
+- `bench-compare` uses `open_group` and `step_group` on real `RaftGroup`s and
+  needs no source change, but is outside the root workspace and must be built.
+
+Dropping `Eq` is the change most likely to hide a regression, for the reason
+step 13 gave: it rewrites a pile of assertions mechanically. Every converted
+assertion should say more than it did, not less — an `assert_eq!` on a whole
+error becomes a `kind()` check *and* a field check, not a `matches!` that
+accepts any payload.
+
+### Focused-test plan
+
+The audit's eight repros are adopted verbatim as the regression suite, at
+`crates/rafter-multiraft/tests/audit_adversarial.rs`, and every one of them
+fails against the pre-fix tree. Added to them, one per boundary this entry
+draws:
+
+1. A pass over a host with a failing group still carries every healthy group's
+   `applied` list — untyped and typed.
+2. Over 100 passes, a broken group and a healthy group are each stepped 100
+   times.
+3. `visited()` equals `len()` for a pass in which every group fails.
+4. A retired group's driver comes back, its key stops being stepped, and the
+   key reopens.
+5. Retiring an absent key returns `None` twice.
+6. A message for a retired key is `UnknownGroup` — the tombstone boundary,
+   asserted in the direction the crate actually behaves.
+7. A refused input and a refused report have different `kind()`s.
+8. A misreporting driver is excluded from `metrics().groups` and named in
+   `metrics().failures`, while every healthy group stays visible.
+9. A refused `open_group` returns a driver that has not been dropped.
+10. A poisoning `RaftGroup` reaches the caller as `DriverErrorKind::Poisoned`
+    with a `GroupError` recoverable by `downcast_ref` — the blanket impl's own
+    path, through a real group.
+11. `MultiRaftError` and `DriverError` render non-empty `Display` output and
+    chain to the preserved cause through `source()`.
+12. A `Proposal` for the wrong shard is accepted, because the input carries no
+    group ID to check.
+
+Every new guard is mutation-tested: each check is inverted or deleted in turn
+and the test that must fail is recorded.
+
+### Rejected alternatives
+
+**Keep `tick_all -> Result` and document the short-circuit.** This is what the
+current rustdoc almost does. It cannot work: the caller receives an `Err` and
+the successful reports do not exist any more, so no amount of documentation
+gives them a way to route what already committed.
+
+**Have the host retire a poisoned group automatically.** Tempting, and wrong in
+the same direction as every other silent recovery: the driver owns storage the
+caller may need, and "poisoned" is reported by the driver, which is the party
+whose judgement is in question when it is misbehaving. The host surfaces the
+kind and the caller retires.
+
+**Return the invalid report alongside `InvalidReport`.** It would need
+`MultiRaftError<G, R>` — a second type parameter on an error type — to carry
+`GroupStepReport<G, R>`, and it would invite a caller to route apply results
+produced by a driver that just proved it does not know which group it is. The
+loss is real and is documented as a loss.
+
+**`remove_group` returning the caller's concrete `D`.** Requires `Any` on the
+driver trait, or a second generic method that cannot be object-safe. The
+returned `Box<dyn GroupDriver<G>>` still steps and still reports metrics, which
+is what draining needs. Revisit if a consumer shows a drain that needs the
+concrete type.
+
+**A `fate` on `DriverError`, mirroring `WriteFate`.** The write fate exists
+because `rafter-service` answers a client that asked "may I retry?". This crate
+answers a caller that already holds `GroupStepReport::proposal_events`, which
+carries per-proposal outcomes. Adding a second, coarser answer creates a place
+for the two to disagree. Not until a consumer shows the report is insufficient.
+
+**Tombstoning removed group keys in the host.** Covered above: unbounded state
+in service of a retention horizon the host cannot see.
+
+### After-state
+
+`rafter-multiraft` stops being the crate that claims what it does not do. The
+crate docs said the host retained "explicit control over routing, storage,
+authorization, recovery, metrics" — it has no authorization and no recovery, in
+any sense — and the README's twelve lines never used the words "manual",
+"scheduler", or "fairness". Both now state, first, that this is a manual host:
+it steps what it is told to step, it does no scheduling, no fairness, no
+admission control, no backpressure, and no queueing, and the component that
+does is the managed scheduler this document's consumer contract describes and
+that does not exist yet.
+
+What the crate does not do that a managed scheduler would, stated for the
+counter consumer: it does not decide *when* to step anything, so ticks arrive
+only as often as the caller loops; it enforces no per-group work quota, so a
+group with slow storage blocks the pass for as long as its driver takes; it has
+no queues and therefore no queue limits and no backpressure; it does not
+prioritize control traffic over bulk replication; it does not retire a poisoned
+group on its own; and it keeps no tombstones. `TickPass::visited` is a fairness
+*measurement*, not a fairness *mechanism* — it proves the pass reached every
+group, which is the weakest of the properties the scheduler contract lists and
+the only one a manual host can offer.
+
 ## Coupled designs
 
 The eleven promotions form seven surfaces, not eleven independent additions.
@@ -7169,6 +7758,18 @@ projections, and one type promoted out of `rafter-app` all have to be reachable
 from `rafter_service`'s root. [Driver Boundary Re-exports](#driver-boundary-re-exports)
 states the rule and adds the test that enforces it, so the other entries extend
 a list rather than each re-deciding what belongs on it.
+
+**The many-group host's three findings are one surface.**
+[Many-Group Tick Passes, Group Retirement, and a Host Error That Renders](#many-group-tick-passes-group-retirement-and-a-host-error-that-renders)
+reads as three unrelated defects — a lost report, an absent eviction, a
+stringly-typed error — and they meet in one type. A tick pass carries a
+`MultiRaftError` per group, so the pass shape cannot be settled until the error
+shape is; the error's permanence category is what tells a caller to retire a
+group, so retirement without it is an API nobody can decide to call; and
+retirement is what makes the pass's fairness promise recoverable rather than
+merely observable. Fixing any one of the three and stopping leaves the host
+still unable to survive a poisoned group. They land in three steps for
+bisectability, not because they are separable.
 
 ## Adoption order
 
@@ -7342,3 +7943,30 @@ expected to *find* defects rather than only remove workarounds; the six state
 machines it forced to declare their snapshot support did not all answer the
 same way, and the two that were wrong — examples installing a snapshot by
 discarding the state it carried — were fixed rather than carried forward.
+
+The many-group host is a third wave of one entry, and it moves the other way
+round from both: there is no lower crate to start from, because it changes no
+crate but its own. The sequence is by defect severity instead, so that the
+repro suite is green a finding at a time and a bisect lands on one finding.
+
+17. **The design, alone.** This document's entry, with no code. It is a public
+    API change to the crate the counter consumer is meant to validate, and the
+    argument for the shape is longer than the diff that implements it.
+18. **The tick pass and group retirement.** `TickPass`, `GroupOutcome`,
+    `tick_all`'s return type, `remove_group`, and the four host accessors, in
+    both hosts, plus the three examples. This is M1 and M2 — the two findings
+    that lose committed data — and it lands first for that reason alone.
+19. **The error surface.** `DriverError`, `DriverErrorKind`,
+    `MultiRaftErrorKind`, the `ErrorCause` re-export, the `Display`/`Error`
+    impls, the dropped `Eq`, `InvalidReport`, `UnrecognizedEvent`, and the
+    blanket impl on `RaftGroup` that stops rendering its typed error. Breaking,
+    and the step whose adoption rewrites the most assertions.
+20. **The remaining corrections and the claims.** `metrics` becoming
+    infallible, `open_group` returning its driver, the hand-written `Default`,
+    and then the README and `lib.rs` — every claim in them true of the code or
+    deleted.
+
+Step 17 is documentation. Steps 18, 19, and 20 are all breaking, all confined
+to one crate, and `bench-compare` must be built for each of them even though it
+needs no source change — it is outside the root workspace, and "needs no
+change" is a claim to check rather than assume.
