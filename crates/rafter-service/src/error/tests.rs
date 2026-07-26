@@ -184,6 +184,98 @@ fn every_read_error_kind_is_distinct_from_every_other() {
     assert_eq!(kinds.len(), errors.len());
 }
 
+fn every_transfer_leadership_error() -> Vec<TransferLeadershipError> {
+    vec![
+        TransferLeadershipError::NotLeader {
+            leader_hint: Some(NodeId(2)),
+            term: Term(7),
+        },
+        TransferLeadershipError::Rejected {
+            reason: LeadershipTransferRejection::TargetNotVoter,
+            leader_hint: None,
+        },
+        TransferLeadershipError::WrongGroup,
+        TransferLeadershipError::Storage {
+            cause: ErrorCause::new(TestCause("disk full")),
+        },
+        TransferLeadershipError::Transport {
+            cause: ErrorCause::new(TestCause("link down")),
+        },
+        TransferLeadershipError::ShuttingDown,
+        TransferLeadershipError::Poisoned {
+            reason: "ApplyBatch failed".to_owned(),
+            cause: None,
+        },
+    ]
+}
+
+fn every_shutdown_error() -> Vec<ShutdownError> {
+    vec![
+        ShutdownError::WrongGroup,
+        ShutdownError::Transport {
+            cause: ErrorCause::new(TestCause("link down")),
+        },
+        ShutdownError::AlreadyShutDown,
+    ]
+}
+
+/// The same property the write and read surfaces carry, over the two that had
+/// no projection at all: a category that collided with another would silently
+/// merge two facts in an operator's aggregate.
+#[test]
+fn every_transfer_leadership_error_kind_is_distinct_from_every_other() {
+    let errors = every_transfer_leadership_error();
+    let kinds = errors
+        .iter()
+        .map(TransferLeadershipError::kind)
+        .collect::<BTreeSet<_>>();
+
+    assert_eq!(kinds.len(), errors.len());
+}
+
+#[test]
+fn every_shutdown_error_kind_is_distinct_from_every_other() {
+    let errors = every_shutdown_error();
+    let kinds = errors
+        .iter()
+        .map(ShutdownError::kind)
+        .collect::<BTreeSet<_>>();
+
+    assert_eq!(kinds.len(), errors.len());
+}
+
+/// The point of the projection, asserted rather than described: all four
+/// surfaces are aggregable by the same shape of key, so an operator counting
+/// driver failures has four buckets to fill rather than two and two strings.
+#[test]
+fn all_four_operation_surfaces_project_to_a_category() {
+    fn tally<K: Ord>(kinds: impl IntoIterator<Item = K>) -> BTreeSet<K> {
+        kinds.into_iter().collect()
+    }
+
+    assert_eq!(
+        tally(every_write_error().iter().map(WriteError::kind)).len(),
+        every_write_error().len()
+    );
+    assert_eq!(
+        tally(every_read_error().iter().map(ReadError::kind)).len(),
+        every_read_error().len()
+    );
+    assert_eq!(
+        tally(
+            every_transfer_leadership_error()
+                .iter()
+                .map(TransferLeadershipError::kind)
+        )
+        .len(),
+        every_transfer_leadership_error().len()
+    );
+    assert_eq!(
+        tally(every_shutdown_error().iter().map(ShutdownError::kind)).len(),
+        every_shutdown_error().len()
+    );
+}
+
 /// Property-style, so a new refusal variant cannot silently join the
 /// unresolved side and tell a client its request identity may be spent.
 #[test]

@@ -179,6 +179,39 @@ pub enum WriteErrorKind {
     ManagedInvariantViolation,
 }
 
+/// Stable category of a [`TransferLeadershipError`].
+///
+/// The same low-cardinality projection [`WriteErrorKind`] is, for the same
+/// reasons and with the same rule for unrecognized values. This surface is
+/// smaller than the write one and it is projected for exactly the same reason:
+/// an operator aggregating failures across a driver has four operations to
+/// aggregate, and one that could not be projected would be counted as a string
+/// or not counted at all.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum TransferLeadershipErrorKind {
+    NotLeader,
+    Rejected,
+    WrongGroup,
+    Storage,
+    Transport,
+    ShuttingDown,
+    Poisoned,
+}
+
+/// Stable category of a [`ShutdownError`].
+///
+/// The same projection again, over the smallest of the four surfaces. Three
+/// variants is still three buckets, and a caller that aggregates by kind should
+/// not have to special-case one operation out of the four.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum ShutdownErrorKind {
+    WrongGroup,
+    Transport,
+    AlreadyShutDown,
+}
+
 /// Stable category of a [`ReadError`].
 ///
 /// The same low-cardinality projection [`WriteErrorKind`] is, for the same
@@ -656,6 +689,25 @@ pub enum TransferLeadershipError {
     },
 }
 
+impl TransferLeadershipError {
+    /// Projects this error to its stable category.
+    ///
+    /// The label to aggregate on. See [`WriteError::kind`] for why the variant
+    /// itself is not one.
+    #[must_use]
+    pub const fn kind(&self) -> TransferLeadershipErrorKind {
+        match self {
+            Self::NotLeader { .. } => TransferLeadershipErrorKind::NotLeader,
+            Self::Rejected { .. } => TransferLeadershipErrorKind::Rejected,
+            Self::WrongGroup => TransferLeadershipErrorKind::WrongGroup,
+            Self::Storage { .. } => TransferLeadershipErrorKind::Storage,
+            Self::Transport { .. } => TransferLeadershipErrorKind::Transport,
+            Self::ShuttingDown => TransferLeadershipErrorKind::ShuttingDown,
+            Self::Poisoned { .. } => TransferLeadershipErrorKind::Poisoned,
+        }
+    }
+}
+
 impl fmt::Display for TransferLeadershipError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -744,6 +796,21 @@ pub enum ShutdownError {
     /// stopped this" from "it was already stopped". Shutdown is terminal: a
     /// driver that has shut down refuses every operation, including adoption.
     AlreadyShutDown,
+}
+
+impl ShutdownError {
+    /// Projects this error to its stable category.
+    ///
+    /// The label to aggregate on. See [`WriteError::kind`] for why the variant
+    /// itself is not one.
+    #[must_use]
+    pub const fn kind(&self) -> ShutdownErrorKind {
+        match self {
+            Self::WrongGroup => ShutdownErrorKind::WrongGroup,
+            Self::Transport { .. } => ShutdownErrorKind::Transport,
+            Self::AlreadyShutDown => ShutdownErrorKind::AlreadyShutDown,
+        }
+    }
 }
 
 impl fmt::Display for ShutdownError {

@@ -44,8 +44,8 @@ pub use driver::{
 };
 pub use error::{
     ErrorCause, MetricsError, ReadAbandonReason, ReadError, ReadErrorKind, ShutdownError,
-    StateMachineOperation, TransferLeadershipError, UnknownOutcomeReason, WriteError,
-    WriteErrorKind, WriteFate,
+    ShutdownErrorKind, StateMachineOperation, TransferLeadershipError, TransferLeadershipErrorKind,
+    UnknownOutcomeReason, WriteError, WriteErrorKind, WriteFate,
 };
 pub use handle::RaftHandle;
 pub use membership::{MembershipController, PlannedMembershipChange};

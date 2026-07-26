@@ -19,8 +19,9 @@ use rafter::{LogIndex, NodeId, Term};
 use rafter_app::proposal::ClientRequestId;
 use rafter_service::{
     DriverCommandSender, DriverFuture, ErrorCause, MetricsError, MetricsWatch, QueryReceipt,
-    ReadConsistency, ReadError, ReadOptions, ShutdownError, StateMachineOperation,
-    TransferLeadershipError, WriteError, WriteOptions, WriteReceipt,
+    ReadConsistency, ReadError, ReadErrorKind, ReadOptions, ShutdownError, ShutdownErrorKind,
+    StateMachineOperation, TransferLeadershipError, TransferLeadershipErrorKind, WriteError,
+    WriteErrorKind, WriteOptions, WriteReceipt,
 };
 
 /// A driver that refuses everything, written the way an external embedder would
@@ -103,6 +104,25 @@ fn a_service_error_is_matchable_from_the_crate_root() {
 
     let cause: ErrorCause = app_cause();
     assert!(cause.downcast_ref::<MetricsError>().is_some());
+}
+
+/// Every category an operator aggregates on is nameable from the root, for all
+/// four failing operations rather than two of them.
+///
+/// The annotations are the assertion: a `kind()` whose return type fell off the
+/// re-export list would leave a caller able to call the method and unable to
+/// declare what it returns.
+#[test]
+fn every_operation_surface_projects_to_a_category_nameable_from_the_root() {
+    let write: WriteErrorKind = WriteError::ShuttingDown.kind();
+    let read: ReadErrorKind = ReadError::ShuttingDown.kind();
+    let transfer: TransferLeadershipErrorKind = TransferLeadershipError::ShuttingDown.kind();
+    let shutdown: ShutdownErrorKind = ShutdownError::AlreadyShutDown.kind();
+
+    assert_eq!(write, WriteErrorKind::ShuttingDown);
+    assert_eq!(read, ReadErrorKind::ShuttingDown);
+    assert_eq!(transfer, TransferLeadershipErrorKind::ShuttingDown);
+    assert_eq!(shutdown, ShutdownErrorKind::AlreadyShutDown);
 }
 
 /// The options pair is constructible from outside the crate, which for two
