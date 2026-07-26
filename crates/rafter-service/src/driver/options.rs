@@ -28,10 +28,9 @@ impl WriteOptions {
     /// Carries the caller's own name for this command through the write.
     ///
     /// A setter rather than struct-update syntax, for the reason
-    /// [`ReadOptions::with_min_applied_index`] is one: a later field must not
-    /// break an embedder's construction. It is here ahead of the
-    /// `#[non_exhaustive]` that would enforce it, so that callers can move off
-    /// struct literals before the enforcement lands rather than with it.
+    /// [`ReadOptions::with_min_applied_index`] is one: the type is
+    /// `#[non_exhaustive]`, so an embedder outside this crate cannot name every
+    /// field, and a later field must not break their construction.
     #[must_use]
     pub const fn with_client_request_id(mut self, client_request_id: ClientRequestId) -> Self {
         self.client_request_id = Some(client_request_id);

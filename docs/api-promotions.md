@@ -4565,6 +4565,14 @@ fix's own mechanism; a rule the fix stated, applied to one of the three
 situations that satisfy it. The fifth is the same fate rule read one step
 further. Nothing here reopens the entry's shape either.
 
+A third adversarial hunt attacked these fixes and reproduced two more, both of
+them fix 1 below failing on its own written terms at the one call site it never
+visited, and a craft pass over the same surface found five. They are designed in
+[Fourth revision after adoption](#fourth-revision-after-adoption-2026-07-26),
+which is current truth wherever the two disagree; the one place they disagree is
+fix 1's scope — it establishes a rule about publishing a membership and reaches
+two of the three publishers that owe it — and it is named there.
+
 The rule the second revision stated still governs — *a driver reports what it
 observed, and says "unknown" for everything else* — and this subsection adds the
 one the hunt makes unavoidable: **a promise in a doc comment is a claim about
@@ -5153,6 +5161,19 @@ than implying the pair is level, because a `WriteOptions` that documents itself
 as `ReadOptions`' equal while a field addition still breaks it is the failure
 mode this document keeps naming: prose ahead of the code. The remaining work is
 one attribute and one consumer call site.
+
+**Closed later in the same pass, not deferred past it.** The two paragraphs
+above are a scheduling argument that the pass they were written for outran.
+`#[non_exhaustive]` and the consumer conversion landed together a few commits
+after the setter, so `WriteOptions` carries the attribute today and the one
+struct literal at
+[`reference/fenced-lock/src/adapter/client.rs`](../reference/fenced-lock/src/adapter/client.rs)
+builds through the setter. The argument was right about the order — setter
+first, then the attribute with its call site, never the attribute alone — and
+wrong only about how many slices that order needed. Nothing in fix 4 is
+outstanding. Read the deferral sentences here, the blast-radius row for
+`options.rs`, and the `both_option_types_are_buildable_from_outside_the_crate`
+note in the test plan as the design as approved; the attribute is current state.
 
 #### 5. `TransferLeadershipError` and `ShutdownError` project a category
 
