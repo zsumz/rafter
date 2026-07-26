@@ -1,3 +1,10 @@
+//! Errors returned by the durable runtime.
+//!
+//! Two types, split by one question: did the in-memory kernel run ahead of the
+//! durable medium? [`RaftRuntimeError`] is everything a caller can be told;
+//! [`RaftRuntimeFatalError`] is the subset that poisons the runtime, and
+//! [`RaftRuntimeFatalError::from_runtime_error`] is the rule that decides.
+
 use std::{error::Error, fmt};
 
 use rafter::{
@@ -183,6 +190,23 @@ impl Error for RaftRuntimeError {
 }
 
 /// Fatal persistence errors that poison an in-memory runtime until restart.
+///
+/// These are exactly the failures after which the kernel's in-memory state may
+/// describe a log the medium does not hold. The kernel advances first and the
+/// store is written second, so a write that fails leaves the two disagreeing —
+/// and the kernel's view is the one that is wrong. Continuing from it would let
+/// a node vote, or acknowledge an entry, on the strength of state a crash would
+/// erase.
+///
+/// So the runtime refuses every later step rather than retrying: there is no
+/// in-memory repair for a divergence whose correct value only the medium has.
+/// Recovery is [`crate::DurableRaftNode::into_storage`] and a reopen, which
+/// rebuilds the kernel from what was actually persisted.
+///
+/// A validation failure is not here, and that is the distinction: a snapshot
+/// boundary ahead of the commit index, or a bootstrap configuration the kernel
+/// rejects, is caught before anything is written, so nothing diverged and the
+/// runtime keeps serving.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum RaftRuntimeFatalError {
@@ -256,6 +280,17 @@ impl Error for RaftRuntimeFatalError {
 }
 
 impl RaftRuntimeFatalError {
+    /// Decides whether one runtime error poisoned the runtime.
+    ///
+    /// `Some` for a failure that could leave the kernel ahead of the medium —
+    /// every store write, plus the two structural faults a step can discover
+    /// about an already-persisted log. `None` for a failure caught before
+    /// anything was written, which leaves the runtime usable.
+    ///
+    /// The match is exhaustive on purpose: a new [`RaftRuntimeError`] variant
+    /// must be classified here rather than defaulting to non-fatal, because the
+    /// safe default for an unclassified persistence failure is to poison, and a
+    /// wildcard arm would silently choose the other one.
     pub(crate) fn from_runtime_error(error: &RaftRuntimeError) -> Option<Self> {
         match error {
             RaftRuntimeError::HardStateWrite(error) => Some(Self::HardStateWrite(error.clone())),

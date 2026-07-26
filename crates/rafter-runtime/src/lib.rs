@@ -12,7 +12,7 @@
 //! Prefer the `recover_with_storage_and_snapshot_store*` constructors on
 //! restart paths so committed-but-unapplied recovery outputs are explicit and
 //! can be applied before serving reads or accepting new writes.
-//!
+
 #[cfg(test)]
 use rafter::BootstrapValidationError;
 use rafter::{
@@ -74,10 +74,18 @@ pub struct RecoveredDurableRaftNode<
 }
 
 /// The durable stores of a decomposed [`DurableRaftNode`].
+///
+/// These three are the node's whole durable truth: a new runtime recovered over
+/// them reconstructs the kernel exactly, which is why decomposing even a
+/// poisoned runtime is a sanctioned recovery.
 #[derive(Debug)]
 pub struct DurableRaftNodeStorage<H, L, S> {
+    /// Persisted term and vote — the promises this node has already made, and
+    /// the reason a restarted node cannot vote twice in one term.
     pub hard_state_store: H,
+    /// The persisted log suffix above the snapshot boundary.
     pub log_segment: L,
+    /// Promoted snapshots and any staging area for a transfer in flight.
     pub snapshot_store: S,
 }
 
