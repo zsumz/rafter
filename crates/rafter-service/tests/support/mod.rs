@@ -1,5 +1,8 @@
 #![allow(dead_code, unused_imports)]
 
+/// The transport, validator, and cluster the transport-driver suites share.
+pub(crate) mod transport;
+
 use std::{
     cmp::min,
     collections::BTreeMap,
