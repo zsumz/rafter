@@ -645,3 +645,64 @@ fn a_repair_over_a_healthy_store_reports_no_repair() {
         "being willing to repair is not repairing"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The generation comparison that keeps an ordinary crash out of the repair path
+// must be strict.
+//
+// A whole image whose mark reads unsealed is set aside — rather than refused —
+// only when the partner's *sealed* image carries a strictly greater generation,
+// because only then is the partner provably the newer committed image under both
+// readings of the unsealed bytes. Widening that to "greater or equal" looks
+// harmless and is not: two copies claiming one generation is corruption, and
+// resolving it silently adopts whichever of the two the comparison happens to
+// favour. Here that is a live copy set aside for a stale one.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_whole_unsealed_image_at_the_partners_generation_is_refused() {
+    let scratch = ScratchDir::new("probe-generation-tie");
+    let commands = workload();
+
+    let mut app = open(scratch.path());
+    apply_all(&mut app, &commands);
+    let live = app.store().live_slot().expect("the workload committed");
+    let stale = app.store().next_slot();
+    let generation = app.store().generation();
+    let applied = app.store().applied_index();
+    let acknowledged = mark(app.store()).expect("the resource has a mark");
+    drop(app);
+
+    // The stale copy, resealed to claim the live copy's generation. Only a
+    // corruption produces this: publications assign strictly increasing
+    // generations.
+    let mut stale_bytes = raw_slot::read(scratch.path(), stale).expect("the stale slot reads");
+    stale_bytes[5..13].copy_from_slice(&generation.to_be_bytes());
+    let stale_bytes = raw_slot::reseal(stale_bytes);
+    raw_slot::write(scratch.path(), stale, &stale_bytes).expect("the stale slot rewrites");
+
+    // The live copy, whole and verifying, with only its mark byte lost.
+    let mut live_bytes = raw_slot::read(scratch.path(), live).expect("the live slot reads");
+    live_bytes[0] = 0x00;
+    raw_slot::write(scratch.path(), live, &live_bytes).expect("the live slot rewrites");
+
+    match LockStore::open(scratch.path(), config(2, 4)) {
+        Err(LockStoreError::UnreadableSlot { slot, damage, .. }) => {
+            assert_eq!(slot, live, "the refusal names the copy it cannot place");
+            assert!(
+                matches!(damage, SlotDamage::UnsealedCompleteImage { .. }),
+                "unexpected damage: {damage:?}"
+            );
+        }
+        Err(other) => panic!("unexpected refusal: {other}"),
+        Ok(store) => panic!(
+            "recovery set aside a whole unsealed image of generation {generation} for a copy \
+             claiming the same generation, rather than refusing. Adopted slot {:?} at applied \
+             index {} where the live copy held {applied}; acknowledged mark {:?}, was \
+             {acknowledged:?}.",
+            store.live_slot(),
+            store.applied_index(),
+            mark(&store),
+        ),
+    }
+}

@@ -338,6 +338,15 @@
 //!   Likewise a slot file that should exist and does not:
 //!   [`LockStoreError::MissingSlot`].
 //!
+//! One byte in this store is still outside every checksum, and it is the one
+//! byte that cannot be inside one: a slot of length one is the creation mark,
+//! and the whole artifact is the byte. What holds it up is that a publication
+//! never shortens a slot below one header and one trailer, so the only one-byte
+//! slot this store writes is the one creation writes — a sealed image cut to one
+//! byte is [`SlotDamage::HeaderIncomplete`], and reaching the benign answer from
+//! a sealed image needs the truncation *and* a change to the surviving byte.
+//! `a_one_byte_slot_is_benign_only_at_the_creation_mark` pins all 256 values.
+//!
 //! A format-version mismatch is still worth naming on its own, because it needs
 //! no corruption at all: a binary downgrade produces it from two entirely
 //! healthy files. It is always a refusal, and it is the one refusal
@@ -3057,6 +3066,54 @@ mod tests {
                     present: present as u64
                 }),
                 "a {present} byte prefix of an unsealed publication must stay skippable"
+            );
+        }
+    }
+
+    /// The one artifact in this store no checksum can cover, pinned at both
+    /// values it can take.
+    ///
+    /// A slot of one byte is the creation mark, and "nothing has ever been
+    /// sealed here" is not damage — recovery adopts the partner and
+    /// `establish_slot_files` will finish an interrupted creation over it. That
+    /// makes it the last place where one byte's value decides something other
+    /// than a refusal, and it cannot be checksummed, because the whole artifact
+    /// is the byte.
+    ///
+    /// What holds it up instead is that a publication never shortens a slot
+    /// below one header and one trailer, so the only one-byte slot this store
+    /// writes is the one creation writes. A sealed image cut to one byte
+    /// therefore stays damage, and reaching the benign answer from a sealed
+    /// image needs the truncation *and* a change to the surviving byte — two
+    /// faults, which is the same bound the rest of this file's single-fault
+    /// reasoning rests on.
+    #[test]
+    fn a_one_byte_slot_is_benign_only_at_the_creation_mark() {
+        assert_eq!(
+            verify_slot(&[UNSEALED_MARK]).map(|image| image.is_none()),
+            Ok(true),
+            "the creation mark is not damage"
+        );
+        assert_eq!(
+            verify_slot(&[SEALED_MARK]).err(),
+            Some(SlotDamage::HeaderIncomplete { present: 1 }),
+            "a sealed image cut to one byte is damage, not a fresh slot"
+        );
+        assert_eq!(
+            verify_slot(&[]).err(),
+            Some(SlotDamage::SlotEmptied),
+            "and a slot of no bytes is damage too"
+        );
+        for byte in 0..=u8::MAX {
+            if byte == UNSEALED_MARK || byte == SEALED_MARK {
+                continue;
+            }
+            assert_eq!(
+                verify_slot(&[byte]).err(),
+                Some(SlotDamage::NotALockImage {
+                    magic: [byte, 0, 0, 0]
+                }),
+                "a one-byte slot holding {byte:#04x} is not this store's"
             );
         }
     }
