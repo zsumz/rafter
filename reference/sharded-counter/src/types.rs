@@ -1276,6 +1276,13 @@ impl SchedulerConfig {
     ///
     /// Worker count changes how long a pass takes. It never changes which
     /// groups a pass contains, so the fairness bound does not mention it.
+    ///
+    /// One of the bound's *qualifications* does mention it, so the audit's
+    /// verdict is not invariant under this number even though the bound is: the
+    /// fourth row of CONTRACT.md's "What falls outside that scope" compares an
+    /// open pass's pending entries against the workers this pool has free, and
+    /// one recorded event stream draws two different verdicts under two pool
+    /// sizes. See `redteam_occupancy::the_excuse_turns_on_a_pool_size_no_decision_records`.
     #[must_use]
     pub const fn workers(self) -> u32 {
         self.workers

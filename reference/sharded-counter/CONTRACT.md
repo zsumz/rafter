@@ -652,21 +652,51 @@ the rule rather than a claim about it. Each has a test.
 | Restored while the group holds a worker | The worker was what kept it out, and its price is work the group did | Once: to be occupied again it must be dispatched, which takes a plan naming it | `redteam_occupancy::restoring_availability_inside_an_occupancy_denies_one_window_and_no_more` |
 | Restored while the group holds no work, is poisoned, or is not serviceable | The stall was not what kept it out | Once: to empty the queue again it must be serviced | `redteam_occupancy::restoring_availability_with_an_empty_queue_denies_one_window_and_no_more` |
 | Reported available when it was not stalled | Not a transition; ordinary readiness already owes it every plan | Once: the window before a group's first stall | `redteam_occupancy::availability_reported_for_a_group_that_was_never_stalled_opens_no_debt` |
-| Restored while the open pass cannot be finished | The bound's own "absent global resource exhaustion" precondition | **No** — a host can arrange this every pass | `redteam_occupancy::a_pass_the_host_cannot_finish_excuses_the_availability_it_spans` |
+| Restored while the open pass has more entries pending than the pool has free workers | Named below; it is a limit, not a justification | **No** — it holds from the arming tick, at no cost | `redteam_occupancy::a_plan_wider_than_the_pool_is_excused_from_its_arming_instant` |
 
 The fourth row is the honest statement of what this rule does not reach, and it
-is not glossed as a cost: a host that keeps more plan entries pending than it
-has workers, and lets a group's availability appear only there, is owed nothing
-however long that runs. It is not distinguishable at the level of recorded
-decisions from a host that is simply busy, and the entries it holds pending are
-ready groups it must still offer. What refuses to certify such a run is the
-service floor, not the gap.
+is stated without a consoling clause. A host that keeps more plan entries
+pending than it has free workers, and lets a group's availability appear only
+there, is owed nothing however long that runs.
 
-The free-worker term is what keeps that row from swallowing the rule above it. A
-pass with an entry pending and a worker free to offer it with is not a pass the
-host *cannot* finish; it is one it chose not to, and
-`redteam_occupancy::a_pass_held_open_with_a_worker_to_spare_excuses_nothing` is
-that history — the same evasion, one qualification later, refused.
+It is not the cost it was previously described as. `pending.len() > free` is
+satisfied at the instant a plan is armed — `pending` is the whole plan and no
+worker is yet held — so **any** plan naming more groups than the pool has
+workers qualifies from its arming tick, with the pool idle and nothing
+dispatched. A host whose shard count exceeds its pool is in this state
+continuously and cannot leave it, because a plan that omitted a ready group
+would be an `OpportunityGap`. So it is not "a host that is simply busy"; it is
+the ordinary shape of a large host, busy or idle:
+
+```text
+arming-only escape: passes_armed=12 passes_completed=12 serviced=36
+widest_gap=0; starved group holds 1 items and received nothing across 12 passes
+```
+
+It also turns on a number the history never records. One event stream, folded
+under two configs differing only in `workers`, draws two verdicts —
+`redteam_occupancy::the_excuse_turns_on_a_pool_size_no_decision_records` pins
+that.
+
+**The obvious tightening is refuted, in the other direction.** Requiring genuine
+saturation — not one worker free — reads as saturated almost never: an occupancy
+is due at the tick its cost is paid and is not counted held at that tick, and a
+report is folded before that tick's releases and dispatches, so a host running
+unit-cost work on every worker it has reads zero workers held at exactly the
+instants the question is asked. Applied to
+`differential::independent_models_agree_across_thousands_of_groups` — four
+thousand groups on thirty-two workers, plans over half the host, passes spanning
+about a hundred ticks — it convicted the honest model of starving a group over
+an availability window eighteen ticks wide, during which no plan could be armed
+at all. Both candidates fail, in opposite directions, and this document has no
+third. That is why the row is stated rather than closed.
+
+The strictness of the comparison is what keeps the row from swallowing the rule
+above it, at both ends. A pass with an entry pending and a worker free to offer
+it with is not a pass the host *cannot* finish; it is one it chose not to
+(`redteam_occupancy::a_pass_held_open_with_a_worker_to_spare_excuses_nothing`).
+Neither is a pass with nothing pending at all, however booked out the pool is
+(`redteam_occupancy::a_pass_held_open_past_its_last_entry_excuses_nothing`).
 
 What this rule does *not* touch at all is a stall that holds. A group reported
 `Stalled` once and never reported available again is owed nothing however long
@@ -745,8 +775,20 @@ accounts for them by showing that neither belongs in it.
 can be handed out per tick, and therefore how many *ticks* a pass takes. It does
 not decide which groups a plan contains. A host with one worker and three
 thousand ready groups completes the same pass as a host with sixty-four; it
-takes longer. The bound is invariant under `W`, and that invariance is why the
-bound survives resource exhaustion rather than being excused by it.
+takes longer.
+
+**`W` does appear in one of the bound's qualifications, and the audit's verdict
+is not invariant under it.** An earlier revision of this paragraph said the
+bound was invariant under `W` and that this was "why the bound survives resource
+exhaustion rather than being excused by it". The first half is true of the
+formula and false of the audit: the fourth row of "What falls outside that
+scope" compares plan width against `W`, so one recorded event stream — the same
+plan, the same turns, the same releases — draws a violation under a pool of
+three and an acceptance under a pool of two.
+`redteam_occupancy::the_excuse_turns_on_a_pool_size_no_decision_records` is that
+pair. The second half was the conclusion drawn from the first, and it does not
+follow: that row is where the bound is *excused* by exhaustion, not where it
+survives it.
 
 **Quotas bound throughput share, not opportunity share.** A group's quota `Q_g`
 decides how much one turn does:
@@ -822,13 +864,19 @@ clothes. The honest fix was to stop letting the pass counter stand in for work.
 **A green audit says no rule the audit names was broken. It does not say the
 rule set is complete.** Every rule below has a deliberate violator and a control
 — see "Invariant 24 is the one that keeps the rest honest" — and that
-demonstrates the rules fire, not that they cover. Two starvations have now been
-found that broke no rule this document had written, both of them in the one
+demonstrates the rules fire, not that they cover. Three starvations have now
+been found that broke no rule this document had written, all of them in the one
 readiness condition the history reports rather than implies. One further
-starvation is *known* and left open, because closing it would blame a host that
-is merely busy: see the fourth row of "What falls outside that scope", under "A
-stall excuses only while it is unbroken". A reader who wants a bound on that
-case has to read the `serviced` floor, not `widest_gap`.
+starvation is *known* and left open: see the fourth row of "What falls outside
+that scope", under "A stall excuses only while it is unbroken".
+
+**This document offers no bound on that fourth row, and no number in the report
+is one.** An earlier revision of this paragraph sent a reader wanting one to the
+`serviced` floor. That was wrong twice over: a host inside that row is servicing
+at the full rate of its pool, so the floor rises with the evasion rather than
+against it, and the row does not even require the host to be busy — the
+qualification holds from the arming tick of any plan wider than the pool, with
+every worker idle.
 
 **Liveness is deliberately not claimed, in either of its two forms.** That
 plans continue to be armed, and that an armed plan eventually retires, are both

@@ -707,18 +707,26 @@ fn restoring_availability_with_an_empty_queue_denies_one_window_and_no_more() {
 
 /// The third boundary, and the one that is *not* bounded to a single window.
 ///
-/// A pass with more entries still pending than the pool has free workers cannot
-/// be finished, cannot be retired, and therefore stands between the scheduler
-/// and the next arming. That is the required bound's own precondition — "absent
-/// global resource exhaustion" — so availability that appears only there is
-/// excused, and a host willing to keep one entry pending behind a long turn can
+/// A pass with more entries pending than the pool has free workers cannot be
+/// finished this tick, cannot be retired, and therefore stands between the
+/// scheduler and the next arming, so availability that appears only there is
+/// excused. A host willing to keep one entry pending behind a long turn can
 /// arrange that every time.
 ///
 /// This test asserts the acceptance rather than a fault, because the acceptance
-/// is the honest answer: at the level of recorded decisions this host is not
-/// distinguishable from one that is simply busy, and the entry it holds pending
-/// is a ready group it must still offer. What refuses to certify it is the
-/// service floor, which is why the floor is reported beside the gap.
+/// is what the fold does and hiding it in prose is what four generations did.
+///
+/// **Nothing in the report bounds it, and this test says so by asserting the
+/// three numbers a reader might reach for.** `widest_gap` is zero by
+/// construction. `passes_armed` equals `passes_completed`. And `serviced` is at
+/// the full rate of the pool: this host is busy for every tick it is excused
+/// over, which is the same sentence as "the service floor certifies it". The
+/// previous generation of this comment said the floor "refuses to certify" this
+/// run, and CONTRACT.md sent a reader wanting a bound to go and read it. It is
+/// not a bound in either direction — it rises with the evasion.
+///
+/// `a_plan_wider_than_the_pool_is_excused_from_its_arming_instant` is the same
+/// row without even the long turn.
 #[test]
 fn a_pass_the_host_cannot_finish_excuses_the_availability_it_spans() {
     const PASSES: u64 = 12;
@@ -765,7 +773,7 @@ fn a_pass_the_host_cannot_finish_excuses_the_availability_it_spans() {
     let replay = history.replay(single_worker);
     let report = replay
         .fairness
-        .expect("a pass the host cannot finish excuses the availability it spans");
+        .expect("a saturated pool excuses the availability it spans");
     let view = replay
         .view
         .groups
@@ -774,16 +782,32 @@ fn a_pass_the_host_cannot_finish_excuses_the_availability_it_spans() {
         .copied()
         .expect("the starved group exists");
     println!(
-        "unfinishable pass: passes_completed={} serviced={} widest_gap={}; \
-         starved group holds {} items and received nothing",
-        report.passes_completed, report.serviced, report.widest_gap, view.queued
+        "saturated pool: passes_armed={} passes_completed={} serviced={} \
+         widest_gap={}; starved group holds {} items and received nothing",
+        report.passes_armed,
+        report.passes_completed,
+        report.serviced,
+        report.widest_gap,
+        view.queued
     );
     assert_eq!(report.widest_gap, 0, "this is the limit, stated not hidden");
     assert_eq!(view.queued, 1, "and the starved group still holds its item");
+    // The three numbers a reader might reach for, each asserted at the value
+    // that makes it useless here. None of them is a bound on this row.
+    assert_eq!(
+        report.passes_completed, PASSES,
+        "every pass the host armed it also retired"
+    );
+    assert_eq!(
+        report.passes_armed, report.passes_completed,
+        "so the progress difference is zero as well"
+    );
     assert_eq!(
         report.serviced,
         2 * PASSES,
-        "the host was busy for every tick it was excused over"
+        "and the service floor certifies it: the host serviced at the full rate \
+         of its one-worker pool for every tick it was excused over, because \
+         booking that worker is what bought the excuse"
     );
 }
 
@@ -846,6 +870,263 @@ fn a_pass_held_open_with_a_worker_to_spare_excuses_nothing() {
             group: starved,
             from_pass: pass(2),
             denied_passes: u32::try_from(PASSES - 1).expect("six passes fit in u32"),
+        }
+    );
+}
+
+/// How little the third boundary costs, stated as a test rather than left to
+/// the reader: the excuse holds from the arming instant, with the pool idle.
+///
+/// `open_pass_outruns_the_pool` is `pending.len() > free`. At the instant a plan
+/// is armed `pending` is the whole plan and `workers_held` is zero, so any plan
+/// naming more groups than the pool has workers satisfies it before the host has
+/// done anything at all — and a host with more shards than workers arms exactly
+/// such a plan every pass, and *must*, because a plan omitting a ready group
+/// would be an `OpportunityGap`.
+///
+/// So the escape needs no dispatch, no wait, and no worker held. The prose this
+/// test replaced said it was not "a fact the scheduler can manufacture by
+/// dispatching one group and waiting". It needs neither the group nor the wait:
+///
+/// ```text
+/// arming-only escape: passes_armed=12 passes_completed=12 serviced=36
+///   widest_gap=0; starved group holds 1 items and received nothing across 12 passes
+/// ```
+///
+/// Nothing about this history is exotic. Every pending entry is offered inside
+/// the same pass, every pass retires owing nothing, and the host services three
+/// items a pass — the full rate of its two-worker pool. It is three ready groups
+/// on two workers, and the audit certifies it. This test asserts that
+/// acceptance so the price of the qualification is on the record.
+#[test]
+fn a_plan_wider_than_the_pool_is_excused_from_its_arming_instant() {
+    const PASSES: u64 = 12;
+    // Armed at `b`, last entry offered and the pass retired at `b + 1`, its
+    // worker back at `b + 2`.
+    const SPAN: u64 = 3;
+    let two_workers = config(8, 2, 2, 64, 512);
+    let busy = [group(0), group(1), group(2)];
+    let starved = group(3);
+
+    let mut history = History::new();
+    for id in busy {
+        history.open_group(id, 1);
+    }
+    history.open_group(starved, 1);
+    for id in busy {
+        for _ in 0..PASSES {
+            history.submit(id, system(SystemClass::Bulk, 1));
+        }
+    }
+    history.submit(starved, system(SystemClass::Bulk, 1));
+    history.reported(1, starved, GroupAvailability::Stalled);
+
+    for index in 0..PASSES {
+        let pass = index + 1;
+        let base = index * SPAN + 1;
+        history.armed(pass, base, busy.to_vec());
+
+        // Not one turn has been handed out. The pool is whole, every worker is
+        // free, and the plan being wider than the pool says nothing about that.
+        history.reported(base, starved, GroupAvailability::Available);
+        history.reported(base, starved, GroupAvailability::Stalled);
+
+        // And the pass finishes, normally, inside its own span.
+        history.dispatched(pass, base, busy[0], 1, 1);
+        history.serviced(pass, busy[0], index + 1);
+        history.dispatched(pass, base, busy[1], 1, 1);
+        history.serviced(pass, busy[1], PASSES + index + 1);
+        history.released(base + 1, busy[0]);
+        history.released(base + 1, busy[1]);
+        history.dispatched(pass, base + 1, busy[2], 1, 1);
+        history.serviced(pass, busy[2], 2 * PASSES + index + 1);
+        history.retired(pass, base + 1);
+        history.released(base + 2, busy[2]);
+    }
+
+    let replay = history.replay(two_workers);
+    let report = replay
+        .fairness
+        .expect("the audit accepts this history without complaint");
+    let view = replay
+        .view
+        .groups
+        .iter()
+        .find(|view| view.group == starved)
+        .copied()
+        .expect("the starved group exists");
+    println!(
+        "arming-only escape: passes_armed={} passes_completed={} serviced={} \
+         widest_gap={}; starved group holds {} items and received nothing across \
+         {PASSES} passes",
+        report.passes_armed,
+        report.passes_completed,
+        report.serviced,
+        report.widest_gap,
+        view.queued,
+    );
+
+    assert_eq!(
+        report.widest_gap, 0,
+        "no gap is charged, though a ready group was denied every plan"
+    );
+    assert_eq!(view.queued, 1, "the starved group still holds its item");
+    assert_eq!(
+        report.passes_completed, PASSES,
+        "every pass the host armed it also retired, owing nothing"
+    );
+    assert_eq!(
+        report.serviced,
+        3 * PASSES,
+        "and the service floor certifies it too: three items per pass, the full \
+         rate of a two-worker pool. The floor is not a bound on this row — it \
+         rises with the evasion, because a host in this state is servicing."
+    );
+}
+
+/// And what the excuse actually turns on, isolated from the fairness verdict.
+///
+/// One event stream — same plan, same turns, same releases, one worker held at
+/// a time and never more — folded under two configs that differ in nothing but
+/// the `workers` field. A pool of three holds the plan, so the restoration
+/// opens the debt and the next plan owes the group a turn. A pool of two does
+/// not, so the same restoration is excused:
+///
+/// ```text
+/// workers=3: OpportunityGap { group: GroupId(3), from_pass: PassIndex(2), denied_passes: 1 }
+/// workers=2: accepted, widest_gap=0 serviced=3
+/// ```
+///
+/// No recorded decision distinguishes the two runs. So the third boundary is
+/// not a fact about the host's load — it is a fact about how wide its plan is
+/// relative to a pool size the history never mentions. This test pins that,
+/// because a qualification whose trigger a reader cannot see in the history is
+/// worth knowing about even when it is not going to be removed.
+#[test]
+fn the_excuse_turns_on_a_pool_size_no_decision_records() {
+    fn history() -> History {
+        let busy = [group(0), group(1), group(2)];
+        let starved = group(3);
+
+        let mut history = History::new();
+        for id in busy {
+            history.open_group(id, 1);
+        }
+        history.open_group(starved, 1);
+        for id in busy {
+            history.submit(id, system(SystemClass::Bulk, 1));
+        }
+        history.submit(starved, system(SystemClass::Bulk, 1));
+        history.reported(1, starved, GroupAvailability::Stalled);
+
+        history.armed(1, 2, busy.to_vec());
+        // Nothing dispatched, nothing held, nothing waited for.
+        history.reported(2, starved, GroupAvailability::Available);
+        history.reported(2, starved, GroupAvailability::Stalled);
+        // One turn at a time, so the pool size never constrains a decision.
+        for (offset, id) in busy.iter().enumerate() {
+            let at = 2 + offset as u64;
+            history.dispatched(1, at, *id, 1, 1);
+            history.serviced(1, *id, offset as u64 + 1);
+            if offset + 1 < busy.len() {
+                history.released(at + 1, *id);
+            }
+        }
+        history.retired(1, 4);
+        history.released(5, busy[2]);
+        // A second plan, armed while the starved group is stalled. If the
+        // restoration above opened a debt, this plan owes the group a turn.
+        history.armed(2, 5, Vec::new());
+        history.retired(2, 5);
+        history
+    }
+
+    fn debt_survived(workers: u32) -> bool {
+        let verdict = history().audit(config(8, workers, 2, 64, 512));
+        match verdict {
+            Err(violation) => {
+                println!("workers={workers}: {violation:?}");
+                true
+            }
+            Ok(report) => {
+                println!(
+                    "workers={workers}: accepted, widest_gap={} serviced={}",
+                    report.widest_gap, report.serviced
+                );
+                false
+            }
+        }
+    }
+
+    // Pool of three: the plan fits, `pending (3) > free (3)` is false, and the
+    // restoration opens the debt the next plan must honour.
+    assert!(
+        debt_survived(3),
+        "a plan the pool can hold opens the debt, which is the rule itself"
+    );
+    // Pool of two: identical decisions, one worker fewer in the config, and the
+    // same restoration is excused.
+    assert!(
+        !debt_survived(2),
+        "one worker fewer in the config, and the same restoration is excused"
+    );
+}
+
+/// The comparison is strict, and this is what turns on that.
+///
+/// `a_pass_held_open_with_a_worker_to_spare_excuses_nothing` pins the
+/// free-worker side at one pending and one free. This pins the other end of the
+/// same strictness: a pass whose plan is *fully traversed* — nothing pending at
+/// all — while the pool's only worker is booked out for three more ticks.
+/// `0 > 0` is false, so it excuses nothing.
+///
+/// Relaxing the comparison to `>=` would excuse both. That matters because a
+/// pass with nothing pending has finished traversing and is merely being *held*
+/// open: it is not a pass the host could not finish, it is one it has not
+/// retired, and the remedy at that instant was to retire it and arm a plan
+/// naming the group.
+#[test]
+fn a_pass_held_open_past_its_last_entry_excuses_nothing() {
+    const PASSES: u64 = 6;
+    // Armed at `b`, its one entry offered there, worker back at `b + 3`.
+    const SPAN: u64 = 4;
+    let single_worker = config(4, 1, 2, 64, 512);
+    let favored = group(0);
+    let starved = group(2);
+
+    let mut history = History::new();
+    history.open_group(favored, 1);
+    history.open_group(starved, 1);
+    for _ in 0..PASSES {
+        history.submit(favored, system(SystemClass::Bulk, 3));
+    }
+    history.submit(starved, system(SystemClass::Bulk, 1));
+    history.reported(1, starved, GroupAvailability::Stalled);
+
+    for index in 0..PASSES {
+        let pass = index + 1;
+        let base = index * SPAN + 1;
+        history.armed(pass, base, vec![favored]);
+        // The plan's only entry is offered immediately, so nothing is pending
+        // while the sole worker is booked out for three ticks.
+        history.dispatched(pass, base, favored, 1, 3);
+        history.serviced(pass, favored, pass);
+        history.reported(base + 1, starved, GroupAvailability::Available);
+        history.reported(base + 2, starved, GroupAvailability::Stalled);
+        history.released(base + 3, favored);
+        history.retired(pass, base + 3);
+    }
+
+    let violation = history
+        .audit(single_worker)
+        .expect_err("a fully traversed pass is one the host could have retired");
+    println!("pass held open past its last entry: {violation:?}");
+    assert_eq!(
+        violation,
+        SchedulingViolation::OpportunityGap {
+            group: starved,
+            from_pass: pass(2),
+            denied_passes: u32::try_from(PASSES - 1).expect("five passes fit in u32"),
         }
     );
 }

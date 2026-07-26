@@ -439,6 +439,36 @@ impl Driver {
 /// The oracle folds the whole history at each checkpoint rather than after
 /// every tick. Folding is the price of deriving instead of tracking, and paying
 /// it fifty thousand times would say nothing that paying it six times does not.
+///
+/// # What this run's `widest_gap == 0` does and does not cover
+///
+/// It covers agreement between the two models, and the gap rule against every
+/// group whose readiness the workload does not report. It does **not** cover the
+/// restored-availability debt for `stalling`, and saying so is the point:
+///
+/// ```text
+/// seed 0: 3000 groups, 900 ticks, 241356 events, 9 passes, widest plan 2999, gap 0
+/// ```
+///
+/// Nine passes over nine hundred ticks is about a hundred ticks a pass, on a
+/// plan naming very nearly the whole host out of thirty-two workers. So
+/// `pending.len() > free` holds for essentially every tick of every pass, and
+/// every `Available` report this workload sends lands inside the fourth row of
+/// CONTRACT.md's "What falls outside that scope" — no debt is opened, and the
+/// zero gap is silent about the rule rather than evidence for it.
+///
+/// That is not inferred. Narrowing the row to genuine saturation is exactly what
+/// made this test fail, on the restoration this paragraph is about:
+///
+/// ```text
+/// scheduling violation after (0, 299): OpportunityGap {
+///   group: GroupId(11), from_pass: PassIndex(3), denied_passes: 1 }
+/// ```
+///
+/// The rule itself is exercised by `redteam_occupancy`, on histories written by
+/// hand. `ManagedScheduler` plans exactly its ready set, so no workload this
+/// recorder can drive would distinguish the rule from its absence anyway — the
+/// same reason `redteam_controls.rs` exists.
 #[test]
 fn independent_models_agree_across_thousands_of_groups() {
     for seed in 0..2_u64 {

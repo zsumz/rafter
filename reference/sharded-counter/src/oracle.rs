@@ -511,6 +511,11 @@ pub struct FairnessReport {
     /// floor on plans certifies it. A floor on the work that moved cannot be
     /// met by a host that moved none. See CONTRACT.md, "What the audit does
     /// not claim".
+    ///
+    /// It is a floor against *vacuity*, and it is not a bound on anything else.
+    /// In particular it says nothing about the fourth row of that section: a
+    /// host inside that row services at the full rate of its pool, so this
+    /// number rises with the evasion.
     pub serviced: u64,
     /// Largest plan armed.
     pub widest_plan: u32,
@@ -1062,19 +1067,17 @@ impl Fold {
     /// boundaries, so it chose the window: available for the whole interior of
     /// every pass, stalled for each arming, never sampled ready, never owed,
     /// and starved at a `widest_gap` of zero over twenty passes. What replaces
-    /// it is not "a pass was open" but [`Self::exhausted_mid_traversal`] — a
-    /// pass with more of its plan left than the pool has workers to reach it
-    /// with — which is the bound's own "absent global resource exhaustion"
-    /// precondition rather than a fact the scheduler can manufacture by
-    /// dispatching one group and waiting.
+    /// it is not "a pass was open" but [`Self::open_pass_outruns_the_pool`] — a
+    /// narrower condition, and one that is honest about being a condition on
+    /// the plan and the pool rather than on the host's load.
     ///
     /// # Outside this scope
     ///
     /// Three qualifications remain. The first two deny a group at most one
     /// window each, because a scheduler cannot re-establish either without
-    /// giving the group up or serving it; the third is unbounded and is the
-    /// known limit of the rule rather than a claim about it. Each has a
-    /// boundary test in `tests/redteam_occupancy.rs`.
+    /// giving the group up or serving it; the third is unbounded, costs the
+    /// host nothing, and is the known limit of the rule rather than a claim
+    /// about it. Each has a boundary test in `tests/redteam_occupancy.rs`.
     ///
     /// - **Restored while the group holds a worker.** No debt: the worker was
     ///   what kept it out, and that worker's price is work the group actually
@@ -1086,21 +1089,42 @@ impl Fold {
     ///   out. To repeat the dodge the queue must empty again, which takes
     ///   service. See
     ///   `restoring_availability_with_an_empty_queue_denies_one_window_and_no_more`.
-    /// - **Restored while the open pass cannot be finished.** No debt, and this
-    ///   one repeats: a host that keeps more plan entries pending than it has
-    ///   workers, and lets a group's availability appear only there, is owed
-    ///   nothing however long that runs. It is not distinguishable at the level
-    ///   of recorded decisions from a host that is simply busy, and the entries
-    ///   it holds pending are ready groups it must still offer. See
-    ///   `a_pass_the_host_cannot_finish_excuses_the_availability_it_spans`, and
-    ///   CONTRACT.md, "What the audit does not claim".
+    /// - **Restored while the open pass has more plan left than the pool has
+    ///   free workers.** No debt. **This one is unbounded, costs the host
+    ///   nothing to arrange, and the fold offers no bound on it — not in this
+    ///   comment, and not in any number it reports.**
+    ///
+    ///   It costs nothing because the condition holds from the arming tick of
+    ///   any plan wider than the pool, with every worker idle and nothing
+    ///   dispatched. A host with more shards than workers is in it continuously
+    ///   and cannot leave it: a plan omitting a ready group would be an
+    ///   [`SchedulingViolation::OpportunityGap`]. So it is not "a host that is
+    ///   simply busy" — it is the ordinary shape of a host whose shard count
+    ///   exceeds its pool, busy or idle. See
+    ///   `a_plan_wider_than_the_pool_is_excused_from_its_arming_instant`.
+    ///
+    ///   No number in the report bounds it. `widest_gap` is zero by
+    ///   construction. `passes_armed - passes_completed` is zero: every pass
+    ///   retires normally. And `serviced` is not a bound either, in either
+    ///   direction — a host in this state services at the full rate of its
+    ///   pool, so the floor rises alongside the evasion rather than against it.
+    ///   Earlier rounds of this comment, of `redteam_occupancy.rs` and of
+    ///   CONTRACT.md each said the service floor was what refused to certify
+    ///   such a run. It certifies it.
+    ///
+    ///   A reader who needs this case excluded has to exclude it from outside
+    ///   the audit — by not letting one party author both the availability
+    ///   reports and the pass boundaries. See
+    ///   `a_pass_the_host_cannot_finish_excuses_the_availability_it_spans` and
+    ///   `the_excuse_turns_on_a_pool_size_no_decision_records`, and CONTRACT.md,
+    ///   "What the audit does not claim".
     ///
     /// What the rule does not touch at all is a stall that holds: a group
     /// reported `Stalled` and never reported available again is owed nothing,
     /// however long it holds work. See
     /// `a_stall_held_unbroken_is_the_one_legitimate_way_a_group_receives_nothing`.
     fn report_availability(&mut self, group: GroupId, availability: GroupAvailability) {
-        let restorable = !self.exhausted_mid_traversal()
+        let restorable = !self.open_pass_outruns_the_pool()
             && !self.occupied(group)
             && self
                 .groups
@@ -1119,35 +1143,76 @@ impl Fold {
     }
 
     /// Returns whether the open pass has more of its plan left to traverse than
-    /// the pool has free workers to traverse it with.
+    /// the pool has free workers to start this tick.
     ///
-    /// This is the one state in which the scheduler could not have reached an
-    /// arming, and it is the required bound's own precondition — "**absent
-    /// global resource exhaustion**, every continuously ready group receives a
-    /// scheduling opportunity within one complete pass" — made checkable from
-    /// facts the fold derives rather than reads. No plan may be armed while one
-    /// is open, and a plan may not retire owing a turn, so a pass it cannot
-    /// finish is a pass that stands between the scheduler and the next arming.
+    /// # This is not a proof of resource exhaustion, and does not claim to be
     ///
-    /// Both terms are load bearing:
+    /// It is named for what it measures and nothing more. Four generations of
+    /// this comment called it the bound's own "**absent global resource
+    /// exhaustion**" precondition "made checkable", and that was false. What
+    /// the comparison prices is the width of the plan against the size of the
+    /// pool. Both are things the host brings to the tick; neither is a load.
     ///
-    /// - **Entries still pending.** A pass with nothing pending has finished
-    ///   traversing and is merely being *held* open. The bound's proof — "a
-    ///   group that becomes ready part way through a pass is in the next one,
-    ///   so it waits at most one complete pass" — assumes a traversal in
-    ///   progress, and knows no such pass. Retiring it and arming one that
-    ///   names the group was available at that instant.
-    /// - **More pending than free workers.** Arming is free even under
-    ///   exhaustion — a plan armed with no workers simply suspends — so
-    ///   exhaustion excuses nothing on its own; what it excuses is the *pass*
-    ///   it is holding open. A pass whose remaining entries all have a worker
-    ///   waiting for them could have been finished, retired, and replaced.
-    ///   Counting free workers rather than held ones matters: a host is at its
-    ///   emptiest at the instant a report lands, because every occupancy that
-    ///   came due has already been called in and the tick's dispatches have not
-    ///   yet been taken. `workers_held` alone reads zero there for a host with
-    ///   thousands of groups pending on thirty-two workers.
-    fn exhausted_mid_traversal(&self) -> bool {
+    /// At the instant a plan is armed, `pending` is the whole plan and
+    /// `workers_held` is zero, so **any plan naming more groups than the pool
+    /// has workers satisfies this from its arming tick onward**, before the
+    /// host has dispatched anything. A host with more shards than workers arms
+    /// exactly such a plan every pass — and must, because a plan that omitted a
+    /// ready group would be an [`SchedulingViolation::OpportunityGap`]. Twelve
+    /// passes, every one retired owing nothing, every pending entry offered
+    /// inside its own pass, three items serviced per pass out of a two-worker
+    /// pool, and a ready group denied every plan:
+    ///
+    /// ```text
+    /// arming-only escape: passes_armed=12 passes_completed=12 serviced=36
+    ///   widest_gap=0; starved group holds 1 items and received nothing across 12 passes
+    /// ```
+    ///
+    /// It also makes the verdict depend on a number no recorded decision
+    /// mentions. Two event streams identical decision for decision, never more
+    /// than one worker held, differing only in the `workers` field of the
+    /// config they are folded under, are judged differently:
+    ///
+    /// ```text
+    /// workers=3: OpportunityGap { group: GroupId(3), from_pass: PassIndex(2), denied_passes: 1 }
+    /// workers=2: accepted, widest_gap=0 serviced=3
+    /// ```
+    ///
+    /// Both are pinned, as acceptances rather than faults, by
+    /// `redteam_occupancy::a_plan_wider_than_the_pool_is_excused_from_its_arming_instant`
+    /// and `redteam_occupancy::the_excuse_turns_on_a_pool_size_no_decision_records`.
+    ///
+    /// # Why it is still this comparison
+    ///
+    /// Because the obvious tightening is refuted by this crate's own scale
+    /// workload, and refuted harder. Requiring genuine saturation — not one
+    /// worker free, `free == 0` — reads as saturated almost never: an occupancy
+    /// is due at the tick its cost is paid, [`Self::workers_held`] counts only
+    /// occupancies due *after* the current tick, and a report is folded before
+    /// that tick's releases and dispatches. A host running unit-cost work on
+    /// every worker it has therefore reads `workers_held == 0` at exactly the
+    /// instants this predicate is asked.
+    ///
+    /// Run against `differential::independent_models_agree_across_thousands_of_groups`
+    /// — four thousand groups on thirty-two workers, plans over half the host,
+    /// passes spanning about a hundred ticks — that tightening convicted the
+    /// honest model of starving group 11 over an availability window eighteen
+    /// ticks wide:
+    ///
+    /// ```text
+    /// scheduling violation after (0, 299): OpportunityGap {
+    ///   group: GroupId(11), from_pass: PassIndex(3), denied_passes: 1 }
+    /// ```
+    ///
+    /// No plan may be armed while one is open, and that pass had some eighty
+    /// ticks left to run, so there was no arming for the host to have named the
+    /// group in. That is a host with no choice, convicted.
+    ///
+    /// So the two candidate predicates fail in opposite directions — one is
+    /// free to manufacture, the other convicts a host that could not have acted
+    /// — and the fold has no third. See [`Self::report_availability`], which
+    /// states the residual plainly rather than bounding it.
+    fn open_pass_outruns_the_pool(&self) -> bool {
         let free = usize::try_from(self.config.workers().saturating_sub(self.workers_held()))
             .unwrap_or(usize::MAX);
         self.open
