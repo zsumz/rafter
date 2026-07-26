@@ -85,8 +85,8 @@ use rafter::{LogIndex, NodeId};
 use rafter_reference_fenced_lock::{
     store::{raw_slot, SlotIndex, SLOT_HEADER_LEN, SLOT_TRAILER_LEN},
     ApplyDisposition, Command, FencingToken, GuardedRejection, GuardedResource, GuardedWrite,
-    HistoryEvent, LockConfig, LockResponse, Operation, OperationResult, RequestRejection,
-    ResourceName,
+    HistoryEvent, LockConfig, LockRejection, LockResponse, Operation, OperationResult,
+    RequestRejection, ResourceName,
 };
 
 use process::{ProcessCluster, SubmitOutcome};
@@ -338,6 +338,21 @@ fn three_processes_elect_a_leader_and_serve_the_lock() {
     assert_eq!(
         view.logical_time, 0,
         "nothing has advanced replicated logical time, because nothing expired"
+    );
+
+    // A second client cannot take a held lock, and the refusal names the
+    // holder. This is also the only place a lock-level rejection crosses the
+    // process boundary, so it is what pairs the binary's rendering of one
+    // against this suite's independent parsing of it.
+    cluster.submit_to_leader(open_session(1, 1));
+    let contended = cluster.submit_to_leader(submit(1, 1, 1, acquire("vault", 10)));
+    assert_operation(
+        &contended,
+        OperationResult::Rejected(LockRejection::LockHeld {
+            owner: support::client(0),
+            token,
+            expiry: support::time(10),
+        }),
     );
 
     // Renewal extends a tenure without issuing a token.
