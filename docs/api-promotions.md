@@ -7694,11 +7694,534 @@ And the two hosts' identical group-identity checks moved into one private
 checks duplicated is how the mirrored `tick_all` defect came to exist twice in
 the first place.
 
+## Local Reads and Addressed Operations on the Transport Driver
+
+### Origin
+
+Both findings come from the fenced lock's process-composition slice
+(`f45da279`), which is the first time a deployment rather than a test harness
+drove `TransportRaftDriver`. They are recorded together because the second one's
+signature is decided by the first; see [Coupled designs](#coupled-designs).
+
+#### 1. The driver refuses `ReadConsistency::Local`
+
+```rust
+if !matches!(consistency, ReadConsistency::Linearizable) {
+    return Err(ReadError::UnsupportedConsistency { consistency });
+}
+```
+
+([`crates/rafter-service/src/driver/transport/waiters.rs:405-407`](../crates/rafter-service/src/driver/transport/waiters.rs))
+
+The refusal is documented as a decision rather than an omission
+([`transport.rs:153-158`](../crates/rafter-service/src/driver/transport.rs)):
+
+> Reads are `ReadConsistency::Linearizable` only. Any other level is refused
+> with `ReadError::UnsupportedConsistency` rather than served at a weaker one,
+> because this driver owns a single replica: a local read here would answer from
+> one node's state machine with nothing to say how far behind it is, and the
+> caller asked a managed API precisely so it would not have to reason about that.
+
+A deployment that wants to ask its own replica what it currently holds therefore
+cannot use the read path. The lock's process binary went around it
+([`reference/fenced-lock/src/bin/lock-node/replica.rs:570-574`](../reference/fenced-lock/src/bin/lock-node/replica.rs)):
+
+```rust
+pub fn local_lock(&self, resource: ResourceName) -> Result<ResourceStatus, String> {
+    self.driver
+        .with_group(|group| group.state_machine().service().status(resource))
+        .map_err(|error| error.to_string())
+}
+```
+
+and wrote the refusal into its own contract
+([`reference/fenced-lock/CONTRACT.md:992-998`](../reference/fenced-lock/CONTRACT.md)):
+"`LOCAL` is not a weaker read on the same path, because there is no such path".
+
+So the crate offers two different APIs for two consistency levels of the same
+operation, and the second one is a closure over the group.
+
+#### 2. No way to learn the ID the driver just allocated
+
+`DriverCommandSender::write` and `read` return a future and nothing else, so a
+caller that wants to abandon its own operation on a deadline cannot name it.
+Two independent consumers wrote the identical helper — the in-process cluster
+driver
+([`reference/fenced-lock/tests/support/cluster.rs:949-966`](../reference/fenced-lock/tests/support/cluster.rs))
+and the process binary
+([`replica.rs:818-835`](../reference/fenced-lock/src/bin/lock-node/replica.rs)) —
+down to the doc comment:
+
+```rust
+/// Returns the ID of the write a driver most recently admitted.
+///
+/// Local proposal IDs are strictly increasing for a driver's lifetime, so the
+/// highest unresolved one is the write that was just started. `None` means the
+/// write resolved inside its first poll and has no waiter left to name.
+fn newest_pending_write(driver: &NodeDriver) -> Option<LocalProposalId> {
+    driver
+        .pending_writes()
+        .into_iter()
+        .map(|write| write.local_proposal_id)
+        .max()
+}
+
+/// Returns the ID of the barrier a driver most recently admitted, on the same
+/// monotonicity as [`newest_pending_write`].
+fn newest_pending_read(driver: &NodeDriver) -> Option<ReadId> {
+    driver.pending_reads().into_iter().max()
+}
+```
+
+That is the promotion rule's second-consumer threshold, and the helper is worse
+than repeated: its stated premise is false for the type it is called on.
+"The highest unresolved one is the write that was just started" holds only while
+no other write is admitted in between, and `TransportRaftDriver` is
+`Clone + Send + Sync` and documented as shared. Both consumers are
+single-threaded, so both are correct today by a property of their callers rather
+than of the API they call.
+
+The call site pays for it twice
+([`replica.rs:522-539`](../reference/fenced-lock/src/bin/lock-node/replica.rs)):
+the handle's methods are `async fn`s, so the driver's `write` does not run until
+the first poll, and the consumer must poll once, check for early completion, and
+only then ask which waiter it created.
+
+### Classification
+
+Both are **Raft or durable-lifecycle mechanism**, and neither carries lock,
+ledger, or counter vocabulary. Neither is a test observation: the process binary
+that reported them is the lock's production composition, and the surfaces it
+needs are a deployment's — "what does my own replica hold" and "which request of
+mine is this".
+
+The promotion rule's "usable by at least one other plausible consumer" test is
+met differently for each. The addressed operations have two consumers already.
+Local reads have one, and do not need a second, because the rule's other branch
+applies: it follows directly from a documented contract this crate already
+publishes. Three public `rafter-service` doc sites describe managed local reads
+as an ordinary outcome of the managed read path —
+
+- `RaftHandle::read`: "Managed local reads do not allocate a Raft read-index ID"
+  ([`crates/rafter-service/src/handle.rs:96-97`](../crates/rafter-service/src/handle.rs));
+- `QueryReceipt::proof`: "`None` for a local read, which submits no read-index
+  round and therefore proves nothing about other replicas — the absence is the
+  honest answer, not a missing value"
+  ([`crates/rafter-service/src/driver/options.rs:132-143`](../crates/rafter-service/src/driver/options.rs));
+- the root re-export of `ReadConsistency`, whose `Local` variant is public
+  vocabulary of this crate
+  ([`crates/rafter-service/src/lib.rs:52`](../crates/rafter-service/src/lib.rs))
+
+— and `InMemoryRaftDriver` serves the level
+([`crates/rafter-service/src/driver/read.rs:203,231-235`](../crates/rafter-service/src/driver/read.rs)).
+
+**The gap-1 decision: the refusal is wrong, not the documentation.** The
+alternative reading — that the refusal is right and the sibling driver plus the
+re-export are the inconsistency — was taken seriously and fails on the code.
+Six findings, in the order they change the conclusion:
+
+1. **The stated reason is false.** "Nothing to say how far behind it is" is
+   contradicted by the layer below.
+   `RaftGroup::read_local` honors `ReadOptions::min_applied_index` verbatim and
+   answers a floor it cannot meet with
+   `ReadOutcome::LocalFreshnessUnavailable { required_applied_index, local_applied_index }`
+   ([`crates/rafter-app/src/group/read.rs:352-386`](../crates/rafter-app/src/group/read.rs)),
+   which says exactly how far behind it is, in both directions. The same driver
+   answers it a second way through `committed_application_index`.
+2. **The refusal removes no capability.** `with_group` is public on the same
+   driver and hands out `&RaftGroup`, from which `state_machine()` is a shared
+   borrow of the application. Anything a local read could answer is already
+   answerable, with strictly fewer bounds.
+3. **And the door it leaves open is the less safe one.** `RaftGroup::read` runs
+   `reject_if_poisoned` and `reject_if_below_snapshot_boundary` before every
+   branch including the local one, and the app layer says why the second matters:
+   such a state machine "is missing acknowledged entries that no longer exist in
+   any form this composition can reach, so serving a query from it is the loss
+   rather than a stale answer, and no freshness argument makes it fresh"
+   ([`group/read.rs:170-177`](../crates/rafter-app/src/group/read.rs)). The
+   consumer's `with_group` projection runs neither guard, and honors no floor. A
+   refusal whose effect is to move callers from the guarded path to the
+   unguarded one is not a safety refusal.
+4. **`ReadConsistency` is an argument of the call.** "The caller asked a managed
+   API precisely so it would not have to reason about that" describes a caller
+   who did not pass `Local`. One who did has said, in the call, that this is the
+   answer they want.
+5. **The driver already contains the mapping.**
+   `TransportDriverState::handle_read_outcome` has a
+   `ReadOutcome::LocalFreshnessUnavailable` arm that resolves its waiter as
+   `ReadError::FreshnessUnavailable`
+   ([`crates/rafter-service/src/driver/transport/state.rs:799-809`](../crates/rafter-service/src/driver/transport/state.rs)).
+   The guard is the only reason it is unreachable — the driver was written to
+   serve this and then told not to.
+6. **`QueryReceipt::proof`'s documented `None` case is unreachable here.** A
+   public type in this crate documents a variant that this crate's own
+   production driver can never produce.
+
+So the two drivers are made to agree by construction, and the agreement is
+reached by deleting the guard rather than by deleting the sibling's support: the
+other direction would remove a working, tested, documented capability from
+`InMemoryRaftDriver`, make `QueryReceipt::proof`'s `None` unreachable
+everywhere, contradict `RaftHandle::read`, and still leave `with_group` as the
+local-read path. It fixes the disagreement by making both halves wrong.
+
+**Scope, in the direction the code uses it.** This entry serves
+`ReadConsistency::Local` and nothing else. `ReadConsistency::LeaseRead` stays
+refused, because the refusal there is real: `RaftGroup::read` returns
+`GroupError::UnsupportedReadConsistency` for every `ReadRequest::Lease`
+([`group/read.rs:212-223`](../crates/rafter-app/src/group/read.rs)) and the
+variant is `#[doc(hidden)]` for that reason
+([`crates/rafter-app/src/read.rs:26-32`](../crates/rafter-app/src/read.rs)).
+Both drivers already refuse it — one at the driver, one by forwarding to a
+layer that refuses — so after this entry the two agree at all three levels, and
+`ReadConsistency` is `#[non_exhaustive]`, so a level neither has heard of is
+refused rather than guessed at. Each of those three boundaries gets a test.
+
+### Design
+
+#### 1. `TransportRaftDriver` serves `ReadConsistency::Local`
+
+The refusal in `begin_read` becomes a branch. The type's own doc loses the
+paragraph that is no longer true and states the bound that is:
+
+```rust
+/// Reads are [`ReadConsistency::Linearizable`] and [`ReadConsistency::Local`],
+/// which are the two levels [`rafter_app::group::RaftGroup::read`] implements.
+/// Any other level is refused with [`ReadError::UnsupportedConsistency`] rather
+/// than served at a weaker one — including [`ReadConsistency::LeaseRead`], which
+/// is refused because the app layer refuses it and not because this driver chose
+/// to.
+///
+/// A local read answers from this replica's own applied state. It submits no
+/// read-index round, reserves no barrier, allocates no [`rafter::ReadId`], and
+/// its [`QueryReceipt::proof`] is `None`, which is the honest report that it
+/// proved nothing about any other replica. What bounds it is
+/// [`ReadOptions::min_applied_index`], honored verbatim: a floor this replica
+/// has not reached is reported as [`ReadError::FreshnessUnavailable`] carrying
+/// both the required and the local applied index, rather than answered from
+/// behind it. A caller that states no floor is asking for this replica's applied
+/// state and gets it.
+```
+
+Inside `begin_read`, after the existing shutdown, group-ID, and `NoGroup`
+checks and before the waiter-limit check:
+
+```rust
+match consistency {
+    ReadConsistency::Local => return self.read_local(query, options),
+    ReadConsistency::Linearizable => {}
+    _ => return Err(ReadError::UnsupportedConsistency { consistency }),
+}
+```
+
+A local read resolves inside the call, so `begin_read` no longer always names a
+waiter. Its private return type says so:
+
+```rust
+/// What starting a read produced: a barrier to wait on, or an answer.
+pub(super) enum StartedRead<G, QR> {
+    /// A barrier was reserved under this ID; its waiter is registered.
+    Barrier(ReadId),
+    /// The read was answered inside the call that started it. No waiter exists,
+    /// no ID was allocated, and there is nothing to abandon.
+    Answered(Result<QueryReceipt<G, QR>, ReadError>),
+}
+```
+
+and `DriverCommandSender::read` hands an `Answered` straight back as a ready
+future, exactly as it already does for a `begin_read` that failed.
+
+The local branch itself is the app layer's call and its mapping, with no
+machinery of its own:
+
+```rust
+fn read_local(&mut self, query: A::Query, options: ReadOptions) -> Result<StartedRead<..>, ReadError> {
+    let request = ReadRequest::Local {
+        group_id: self.group_id.clone(),
+        query,
+        min_applied_index: options.min_applied_index,
+    };
+    // `RaftGroup::read` is the whole implementation. It refuses a poisoned
+    // group and a state machine below the runtime's snapshot boundary before it
+    // reads anything, and a local read never steps the runtime, so the report it
+    // returns is empty for this group.
+    let answered = match self.group_mut() { .. };
+    ..
+}
+```
+
+`route_report` is still called on the returned report and `publish_metrics`
+still runs, so the local path makes no exception to the driver's routing
+discipline — it routes an empty report, which is a no-op, rather than being the
+one path that skips routing.
+
+#### 2. `begin_write` and `begin_read` name what they started
+
+```rust
+/// A write this driver admitted, named and awaited separately.
+pub type AddressedWrite<R> = (
+    LocalProposalId,
+    DriverFuture<Result<WriteReceipt<R>, WriteError>>,
+);
+
+/// A read barrier this driver reserved, named and awaited separately.
+pub type AddressedRead<G, QR> = (ReadId, DriverFuture<Result<QueryReceipt<G, QR>, ReadError>>);
+
+impl<G, A, R, T, V> TransportRaftDriver<G, A, R, T, V> {
+    /// Proposes `command` and returns the ID this driver allocated for it
+    /// alongside the future that resolves it.
+    ///
+    /// [`DriverCommandSender::write`] returns the future alone, so the only name
+    /// for the waiter it created arrives when the future resolves — which is
+    /// after the point a caller would have used it, because the one thing that
+    /// name is for is [`TransportRaftDriver::abandon_write`].
+    ///
+    /// This is not what [`TransportRaftDriver::pending_writes`] answers. That
+    /// answers "what is this driver still holding", which is a supervisor's
+    /// question; this answers "which one is mine", which is a caller's. A caller
+    /// that used the first to answer the second was taking the highest
+    /// unresolved ID and relying on no other write being admitted in between —
+    /// true only while nothing else uses the driver, and this driver is `Sync`.
+    ///
+    /// The future is the one `write` returns, from the same call:
+    /// [`DriverCommandSender::write`] is this method with the ID dropped, so the
+    /// two cannot answer differently.
+    ///
+    /// # Errors
+    ///
+    /// As [`DriverCommandSender::write`], except that a refusal that allocated
+    /// no ID is returned here rather than delivered through the future.
+    pub fn begin_write(
+        &self,
+        command: A::Command,
+        options: WriteOptions,
+    ) -> Result<AddressedWrite<A::CommandResult>, WriteError>;
+
+    /// Begins a linearizable read and returns the ID of the barrier it reserved
+    /// alongside the future that resolves it.
+    ///
+    /// The read counterpart of [`TransportRaftDriver::begin_write`], and
+    /// linearizable-only for a reason a consistency parameter would hide: this
+    /// exists to name a waiter so that [`TransportRaftDriver::abandon_read`] can
+    /// retire it, and a [`ReadConsistency::Local`] read reserves no barrier,
+    /// registers no waiter, and is answered inside the call that starts it.
+    /// There would be nothing to return and nothing to abandon. Run one through
+    /// [`DriverCommandSender::read`], which serves both levels.
+    ///
+    /// # Errors
+    ///
+    /// As [`DriverCommandSender::read`], except that a refusal that reserved no
+    /// barrier is returned here rather than delivered through the future.
+    pub fn begin_read(
+        &self,
+        query: A::Query,
+        options: ReadOptions,
+    ) -> Result<AddressedRead<G, A::QueryResult>, ReadError>;
+}
+```
+
+Neither takes a group ID. A driver names one group for its whole life — the
+trait's parameter exists for implementors that do not — so the inherent form
+uses its own and cannot be handed the wrong one.
+
+**Inherent, not a trait method, and the constraint that decides it.**
+`DriverCommandSender` is shared with `InMemoryRaftDriver`, which drives every
+replica of its group inside the call that starts an operation and resolves the
+client future before returning
+([`crates/rafter-service/src/driver/read.rs:26-85`](../crates/rafter-service/src/driver/read.rs)).
+There is never a window in which one of its IDs names something a caller could
+act on, and for `Local` and `LeaseRead` it allocates no `ReadId` at all
+([`read.rs:194-208`](../crates/rafter-service/src/driver/read.rs)). A trait
+method would force that driver to return a name for a waiter that does not
+exist. This is the same reasoning that produced `pending_writes` and
+`pending_reads` on the concrete driver rather than on the trait
+([Revision after adoption](#revision-after-adoption)); what is new is that
+reading the unresolved table is the wrong way to answer a caller's question, not
+that the trait was the wrong place.
+
+**One body, two entry points.** The private `start_write` and `start_read` are
+the implementation; `begin_write` calls it with the driver's own group ID and
+keeps the ID, and `DriverCommandSender::write` calls it with the caller's group
+ID and drops the ID. There is no second registration path that could drift from
+the first.
+
+**`pending_writes` and `pending_reads` stay, unchanged.** They answer the
+supervisor's question, they have in-tree callers that ask exactly that
+([`crates/rafter-service/tests/transport_waiters.rs:708-724`](../crates/rafter-service/tests/transport_waiters.rs)
+drains a driver by iterating both), and nothing about them was wrong. What was
+wrong was using them for a question they do not answer.
+
+### Semantics and edge cases
+
+- **A local read holds nothing, so nothing bounds it.**
+  `max_pending_waiters` counts unresolved waiters, and a local read never
+  registers one, so it is not refused by that bound and does not consume a slot.
+  A driver at its waiter limit still answers local reads, which is the correct
+  behavior for the one read that cannot contribute to the condition.
+- **A local read still refuses on a released group.** The `NoGroup` check
+  precedes the consistency branch and stays there: there is no state machine to
+  read.
+- **A local read still refuses on a poisoned group and below the snapshot
+  boundary,** because it goes through `RaftGroup::read`. That is a strict gain
+  over the `with_group` route it replaces, which checks neither.
+- **`ReadId`s are not consumed by local reads,** so a driver's barrier IDs stay
+  dense and `abandon_read` keeps naming only barriers. This is the same property
+  `InMemoryRaftDriver` already has and the same one
+  `in_memory_driver_local_reads_do_not_consume_read_ids` already pins there.
+- **`QueryReceipt::proof` is `None` for a local read**, which is what its
+  documentation already says and what this entry makes reachable.
+- **`begin_write` returns a refusal rather than a future.** A write refused
+  before any ID was allocated — shutting down, wrong group, waiter limit,
+  exhausted ID space — has no waiter, so there is no pair to return. The plain
+  `write` keeps delivering these through the future, because its signature has
+  nowhere else to put them; the addressed form has somewhere better, and the two
+  carry the same `WriteError` either way.
+- **Abandonment is unchanged and stays terminal.** `begin_write` hands back an ID
+  that `abandon_write` accepts, and abandonment resolves the client with
+  `WriteError::UnknownOutcome { reason: DriveBoundReached }` exactly as it does
+  today. Nothing about what a caller may conclude from an abandoned write
+  changes; only how it learns which write to abandon.
+- **Dropping the future still reclaims the waiter.** Holding an ID does not
+  change ownership: a caller that drops the future without abandoning gets the
+  same reclamation `WaiterGuard` already performs, and a later `abandon_*` under
+  that ID returns `false`.
+- **`LeaseRead` is refused at the driver, not forwarded.** The app layer would
+  refuse it too, and forwarding would spend a step to reach the same answer with
+  a `GroupError` in the middle. The two drivers already differ in where they
+  refuse it; this entry does not unify that, because the observable result is the
+  same `ReadError::UnsupportedConsistency { consistency: LeaseRead }` and
+  changing it would be motion without a consumer.
+
+### Blast radius
+
+Additive. Nothing that compiles today stops compiling: the refusal becoming a
+service is a widening, and both `begin_*` methods are new.
+
+| File | Change |
+| --- | --- |
+| [`crates/rafter-service/src/driver/transport.rs`](../crates/rafter-service/src/driver/transport.rs) | The type doc's read paragraph; `AddressedWrite`, `AddressedRead`, `begin_write`, `begin_read`; `write` and `read` forward to the shared bodies |
+| [`crates/rafter-service/src/driver/transport/waiters.rs`](../crates/rafter-service/src/driver/transport/waiters.rs) | `begin_read` branches on consistency and returns `StartedRead`; the local branch |
+| [`crates/rafter-service/src/driver/transport/state.rs`](../crates/rafter-service/src/driver/transport/state.rs) | `StartedRead`; the `LocalFreshnessUnavailable` arm stops being dead |
+| [`crates/rafter-service/src/lib.rs`](../crates/rafter-service/src/lib.rs) | Re-export `AddressedRead` and `AddressedWrite` under the rule in [Driver Boundary Re-exports](#driver-boundary-re-exports) |
+| [`crates/rafter-service/src/driver/trait.rs:49-54`](../crates/rafter-service/src/driver/trait.rs) | The sentence naming which driver serves which levels |
+| `crates/rafter-service/tests/transport_reads.rs` | New; the local-read and boundary tests |
+| [`crates/rafter-service/tests/transport_waiters.rs`](../crates/rafter-service/tests/transport_waiters.rs) | The addressed-operation tests |
+| [`reference/fenced-lock/`](../reference/fenced-lock) | Adoption; see [Adoption order](#adoption-order) |
+
+`bench-compare` names neither surface and needs no source change, which is a
+claim to check by building it rather than assume.
+
+### Focused-test plan
+
+Local reads, in a new `crates/rafter-service/tests/transport_reads.rs`. The
+first is the entry; the three after it are the scope boundary, one test per
+boundary:
+
+- `a_local_read_answers_from_this_replica_without_a_barrier` — read a follower
+  that has applied a committed entry, assert the value, assert `proof` is `None`,
+  and assert `reserved_reads` and `pending_reads()` are untouched. This is the
+  test that does not compile against the refusal.
+- `a_local_read_below_its_floor_reports_both_indices` — pass a
+  `min_applied_index` above this replica's applied index and assert
+  `ReadError::FreshnessUnavailable { read_id: None, required_applied_index,
+  local_applied_index }` with both values, which is the claim the old doc
+  paragraph denied was possible.
+- `a_local_read_is_served_at_the_waiter_limit` — fill `max_pending_waiters` with
+  barriers, then assert a local read still answers. Pins that a read holding no
+  waiter is not bounded by the waiter count.
+- `a_local_read_is_refused_below_the_snapshot_boundary` — the guard the
+  `with_group` route did not have. Drive a state machine below the runtime's
+  snapshot boundary and assert the read is refused rather than answered from a
+  state machine missing acknowledged entries.
+- `a_local_read_is_refused_after_release` — `NoGroup`, asserting the ordering
+  between that check and the consistency branch.
+- `a_lease_read_is_still_refused` — boundary one:
+  `UnsupportedConsistency { consistency: LeaseRead }`, so widening to `Local` is
+  pinned as a widening to `Local`.
+- `both_drivers_answer_a_local_read_the_same_way` — boundary two, and the
+  agreement this entry claims: the same query at the same level against
+  `InMemoryRaftDriver` and `TransportRaftDriver`, asserting both produce a
+  receipt with `proof: None`. A single test is what makes "the two drivers agree"
+  checkable instead of asserted in prose.
+
+Addressed operations, in `crates/rafter-service/tests/transport_waiters.rs`
+beside the existing waiter tests:
+
+- `a_begun_write_is_named_before_it_resolves` — `begin_write` returns an ID that
+  `pending_writes` also reports, and the future then resolves to the applied
+  receipt.
+- `a_begun_write_can_be_abandoned_under_its_own_name` — abandon the returned ID
+  and assert the returned future resolves to
+  `UnknownOutcome { reason: DriveBoundReached }`. This is the whole point of the
+  ID, tested end to end without a `pending_writes` lookup anywhere.
+- `two_concurrent_writes_are_each_named_correctly` — begin two writes, abandon
+  the *first* by its returned ID, assert the first future resolves unknown and
+  the second still commits. This fails under the `max()` helper the consumers
+  wrote, which is the finding.
+- `a_begun_read_is_named_before_it_resolves` — the read counterpart, with the
+  barrier abandoned under its returned ID and `reserved_reads` back to its prior
+  value.
+- `a_refused_write_returns_its_error_rather_than_a_future` — at the waiter limit,
+  `begin_write` is `Err`, and no waiter was created.
+- `the_addressed_and_plain_write_paths_agree` — the same command through
+  `begin_write` and through `DriverCommandSender::write`, asserting identical
+  receipts. Cheap, and it is the only executable form of "one body, two entry
+  points".
+
+### Rejected alternatives
+
+- **Remove `Local` from `InMemoryRaftDriver` and correct the docs.** The other
+  way to make the two drivers agree, and the one the smaller-surface rule
+  suggests. It loses on the merits: it deletes a working, tested capability,
+  makes `QueryReceipt::proof`'s documented `None` unreachable in the whole
+  crate, contradicts `RaftHandle::read`, and leaves `with_group` as the local
+  read path — so the capability survives, in its unguarded form, and only the
+  typed spelling of it dies.
+- **Keep the refusal and document `with_group` as the local-read route.** This is
+  what the consumer did, and reading its result is what produced this entry. It
+  makes the crate's answer to "read my own replica" a closure that runs under the
+  driver's lock with a documented deadlock hazard, bypasses the app layer's
+  poison and snapshot-boundary guards, and drops `min_applied_index` on the
+  floor.
+- **Serve `LeaseRead` as well, for symmetry.** The app layer does not implement
+  lease reads and says so by hiding the variant. Serving it would mean inventing
+  a lease at the service layer, which is a kernel-adjacent correctness claim with
+  no consumer asking for it.
+- **`begin_read(consistency)` returning `(Option<ReadId>, future)`.** One method
+  for both levels, at the cost of an `Option` that is `None` exactly when the
+  caller passed `Local` — a value every caller must unwrap to learn something it
+  already knew. The split signature says the same thing in the type.
+- **Promote the consumers' helper verbatim as `newest_pending_write`.** The
+  smallest possible change, two one-line methods, and it would take a claim that
+  is false for a `Sync` driver and make it Rafter's. The duplication is evidence
+  of a missing API, not a specification of it.
+- **Add `client_request_id` to `ReadOptions` and correlate through
+  `pending_reads`.** Race-free, symmetric with `WriteOptions`, and more
+  machinery: a new option field, a changed public return type, an identity the
+  caller must mint, and a linear scan at every call site — to deliver a value the
+  driver already computed and threw away.
+- **A trait method on `DriverCommandSender`.** Rejected by the
+  `InMemoryRaftDriver` constraint above, and stated here because it is the shape
+  a reader will reach for first.
+
+### After-state
+
+`rafter-service` has one read path. A caller that wants its own replica's
+applied state asks for it in the same call, with the same options type, the same
+receipt type, and the same guards as a linearizable read, and the difference
+shows up where it belongs — in an absent proof. The claim that the two drivers
+agree is a test rather than a sentence.
+
+A caller that starts an operation knows its name. `pending_writes` and
+`pending_reads` go back to answering the question they were designed for, and
+the question they were being used for has its own answer, which is correct for a
+shared driver rather than for a single-threaded one.
+
 ## Coupled designs
 
 The eleven promotions form seven surfaces, not eleven independent additions.
 The first six form four; the service-layer cluster adds three more, one of
-which reaches back into the app layer.
+which reaches back into the app layer. The entries that arrived after those
+eleven add two further couplings, recorded in the last two paragraphs below.
 
 **Step reporting — the read report and the rejection hint.** Both establish the
 same rule: *a step report is the complete record of its step, and every event in
@@ -7780,6 +8303,20 @@ retirement is what makes the pass's fairness promise recoverable rather than
 merely observable. Fixing any one of the three and stopping leaves the host
 still unable to survive a poisoned group. They land in three steps for
 bisectability, not because they are separable.
+
+**The transport driver's local reads and its addressed operations meet in one
+signature.** They read as two unrelated findings — a refused consistency level
+and an unreachable ID — and
+[Local Reads and Addressed Operations on the Transport Driver](#local-reads-and-addressed-operations-on-the-transport-driver)
+keeps them together because the first decides the second's return type. Serving
+`ReadConsistency::Local` means a read can resolve without reserving a barrier,
+so `begin_read` can no longer promise a `ReadId` for every read it starts; it
+either narrows to the linearizable form or hands every caller an `Option` that
+is `None` exactly when they asked for `Local`. Designing the addressed form
+first would have produced a signature the local-read work then had to widen, and
+the narrowing is the better answer only once both are on the table. The coupling
+is one-directional — local reads need nothing from the addressed form — so they
+land in two commits, in that order.
 
 ## Adoption order
 
@@ -7980,3 +8517,30 @@ Step 17 is documentation. Steps 18, 19, and 20 are all breaking, all confined
 to one crate, and `bench-compare` must be built for each of them even though it
 needs no source change — it is outside the root workspace, and "needs no
 change" is a claim to check rather than assume.
+
+The transport driver's two findings are a fourth wave, and they move the way the
+first two did: the design first, then the change the second one's signature
+depends on, then the second, then the consumer.
+
+21. **The design, alone.**
+    [Local Reads and Addressed Operations on the Transport Driver](#local-reads-and-addressed-operations-on-the-transport-driver),
+    with no code. The gap-1 argument is a decision about whether a shipped
+    refusal is right, and it is longer than the branch that implements the
+    answer.
+22. **`ReadConsistency::Local` on `TransportRaftDriver`.** The consistency branch
+    in `begin_read`, `StartedRead`, the local read path, the type doc's read
+    paragraph, the `DriverCommandSender::read` sentence naming which driver
+    serves which levels, and `tests/transport_reads.rs`. First, because step 23's
+    `begin_read` signature is the narrowing this step forces.
+23. **`begin_write` and `begin_read`.** The two type aliases, the two inherent
+    methods, the shared bodies the trait methods now call, the two root
+    re-exports, and the tests in `tests/transport_waiters.rs`.
+24. **Reference-consumer adoption.** `Replica::local_lock` stops borrowing the
+    group, both copies of `newest_pending_write` and `newest_pending_read` are
+    deleted, and `CONTRACT.md`'s "there is no such path" paragraph is rewritten
+    to describe the path that now exists. Then source mode, package mode, and the
+    lock's own process suite.
+
+Steps 22 and 23 are additive: the refusal becoming a service is a widening, and
+both `begin_*` methods are new. `reference/` and `bench-compare/` are outside the
+root workspace and must be built explicitly for both, and for step 24.
