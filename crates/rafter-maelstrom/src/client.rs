@@ -104,8 +104,9 @@
 //!
 //! # Why a request is acted on once
 //!
-//! The section above is the *at least once* half. This is the at most once
-//! half, and it is the one with teeth for linearizability:
+//! "Why every accepted request is answered", above, is the *at least once*
+//! half. This is the at most once half, and it is the one with teeth for
+//! linearizability:
 //! [`InitializedNode::has_accepted`] refuses a request this node has already
 //! taken responsibility for, before anything is proposed or relayed. Without
 //! it two copies of one `cas` commit as two entries and the state machine runs
@@ -141,9 +142,9 @@
 //! replaying an entry it originated re-sends that client's answer, because
 //! `completed_replies` did not survive either. That is the conservative
 //! direction — an extra answer to a client this node genuinely served, which
-//! Maelstrom discards as a stale `in_reply_to` — and it is unchanged from
-//! before. The remote arm's re-mail was not: it spoke for a request this node
-//! never accepted.
+//! Maelstrom discards as a stale `in_reply_to` — and it is left as it is
+//! deliberately. What is not tolerable, and is what the obligation record
+//! rules out, is a node re-sending an answer for a request it never accepted.
 //!
 //! # Why a granted read is answered regardless of the current role
 //!

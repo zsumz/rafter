@@ -8,6 +8,10 @@
 //! directions: a node holding the obligation answers though it does not lead, a
 //! node holding none stays silent though it applied. The `client` module header
 //! carries the argument, and `read_tests` pins the other rule, for reads.
+//!
+//! The [`obligation`] submodule holds the other half of the story: that
+//! somebody answers at all, however far the request travelled and whatever
+//! became of the entry behind it.
 
 use std::{
     path::{Path, PathBuf},
@@ -30,11 +34,11 @@ static TEST_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
 /// A node that only replicated somebody else's write does not answer for it.
 ///
-/// `apply_command` runs `deliver_result` on every node that applies a committed
-/// entry. Nothing in the payload distinguishes this node — which never saw the
-/// client or the forward — from the one that accepted the request, so without a
-/// local record of the obligation a plain follower mails an answer on another
-/// node's behalf.
+/// `apply_command` reaches the reply path on every node that applies a
+/// committed entry, and only the local obligation record stops it sending.
+/// Nothing in the payload distinguishes this node — which never saw the client
+/// or the forward — from the one that accepted the request, so without that
+/// record a plain follower mails an answer on another node's behalf.
 #[test]
 fn a_replicating_follower_does_not_answer_for_the_node_that_accepted_the_request() {
     let root = test_root("reply-follower-apply");
@@ -254,8 +258,8 @@ fn a_committed_write_is_answered_even_when_the_checkpoint_cannot_be_written() {
 ///
 /// `flush_reads` retires unconditionally, which is sound only because
 /// `deliver_result` discharges the obligation on every call. Its one
-/// non-sending arm is `reply_to_client`'s dedupe, and this pins that arm's
-/// reading: it is reached with a real prior emit behind it, and leaves the
+/// non-sending arm is its own `completed_replies` dedupe, and this pins that
+/// arm's reading: it is reached with a real prior emit behind it, and leaves the
 /// client holding an answer rather than none. If the arm ever becomes a genuine
 /// drop, the retirement above it has to become conditional in the same change.
 #[test]

@@ -4,11 +4,15 @@
 //! somebody does — that every request this node accepts is answered, whatever
 //! becomes of the entry behind it, and that it is answered once.
 //!
-//! Each test here began as a red-team probe against an enumeration the reply
-//! path had argued in prose: a list of the ways an answer could fail to arrive,
-//! proved in the easy direction and relied on in the hard one. They are kept as
-//! regression tests because the argument that replaced those lists is
-//! mechanical, and these are what fail when the mechanism is removed.
+//! Three groups, in file order. The first bounds how far a request travels and
+//! which leader a forward targets, and came from a probe that bounced one
+//! request between two peers that each believed in the other. The second and
+//! third are the obligation proper: most of their tests began as a red-team
+//! probe against an enumeration the reply path had argued in prose — a list of
+//! the ways an answer could fail to arrive, proved in the easy direction and
+//! relied on in the hard one. They are kept as regression tests because the
+//! argument that replaced those lists is mechanical, and these are what fail
+//! when the mechanism is removed.
 
 use std::collections::BTreeMap;
 
@@ -32,7 +36,7 @@ use super::{
 // A forward travels one hop.
 // ---------------------------------------------------------------------------
 
-/// A forward is not bounced between two peers forever.
+/// A forward travels exactly one hop, not merely finitely many.
 ///
 /// `known_leader` is set from any leader-bearing message and never cleared, so
 /// two nodes each holding the other as their last-seen leader is an ordinary
@@ -48,7 +52,7 @@ use super::{
 /// request is the first one again, which now refuses it — and a threshold loose
 /// enough to pass on that alone would stop testing the hop cap at all.
 #[test]
-fn a_forward_is_not_bounced_between_two_peers_forever() {
+fn a_forward_travels_exactly_one_hop_between_two_peers_that_believe_in_each_other() {
     let root_one = test_root("obligation-forward-pingpong-n1");
     let root_two = test_root("obligation-forward-pingpong-n2");
     let mut first = fresh_cluster_member(&root_one, "n1", &["n1", "n2", "n3"]);
@@ -145,15 +149,19 @@ fn a_forwarded_request_this_node_cannot_serve_is_refused_rather_than_relayed() {
     remove_test_root(root);
 }
 
-/// A leader announcement from a term this node has left does not become the
-/// target of its next forward.
+/// A leader announcement from a term this node has left does not replace the
+/// leader it would forward to.
+///
+/// The memory is what is pinned here, one step short of a forward: `known_leader`
+/// is the input every forward target is read from, so holding it correct is the
+/// property, and a forwarding test would only re-derive it.
 ///
 /// `observe_leader` runs before the step, so it can compare the announcement
 /// against the term this node already holds. A strictly older term names a
 /// leader the cluster has replaced; recording it spends this request's one hop
 /// on a node that can only refuse it.
 #[test]
-fn a_stale_leader_announcement_does_not_become_the_next_forward_target() {
+fn a_stale_leader_announcement_does_not_replace_the_known_leader() {
     let root = test_root("obligation-stale-leader");
     let mut process = fresh_cluster_member(&root, "n2", &["n1", "n2", "n3"]);
     let node = process.initialized.as_mut().expect("node initializes");
@@ -299,11 +307,12 @@ fn control_a_relaying_peer_that_applies_the_entry_answers_its_client_at_once() {
 
 /// A proposal the kernel refuses is answered to the peer that relayed it.
 ///
-/// `propose` recorded the obligation before stepping, and `Output::RejectProposal`
-/// printed and returned. No entry is appended, so no apply ever runs, so nothing
-/// pays or clears the record — and the peer that relayed the request, and the
-/// client behind it, are told nothing. This is the shape the checkpoint-failure
-/// fix called the bug it repaired, surviving one arm over in the same match.
+/// The defect this pins: `propose` recorded the obligation before stepping, and
+/// `Output::RejectProposal` printed and returned. No entry was appended, so no
+/// apply ever ran, so nothing paid or cleared the record — and the peer that
+/// relayed the request, and the client behind it, were told nothing. It was the
+/// shape the checkpoint-failure fix called the bug it repaired, surviving one
+/// arm over in the same match. The rejection now answers the relaying peer.
 #[test]
 fn a_rejected_proposal_answers_the_peer_that_relayed_it() {
     let root = test_root("obligation-rejected-proposal-answer");
@@ -333,8 +342,8 @@ fn a_rejected_proposal_answers_the_peer_that_relayed_it() {
 
 /// The same refusal leaves no obligation behind.
 ///
-/// A record now exists exactly when the kernel appended an entry for the
-/// request, because both are decided from the same step's outputs. Here the
+/// A record now exists unless the kernel refused the proposal, because both are
+/// decided from the same step's outputs. Here the
 /// entry does not exist on this node or any other, no snapshot is involved, and
 /// nothing may survive to be swept later.
 #[test]
@@ -491,7 +500,7 @@ fn one_request_puts_one_answer_on_the_wire_however_many_copies_carry_it() {
 /// to reach the second delivery now that `has_accepted` stops a repeated
 /// request before it can produce one.
 #[test]
-fn one_requests_answer_leaves_this_node_once_whichever_arm_sends_it() {
+fn an_answer_leaves_this_node_once_whichever_arm_sends_it() {
     let root = test_root("obligation-deliver-once");
     let mut process = fresh_cluster_member(&root, "n1", &["n1", "n2", "n3"]);
     let node = process.initialized.as_mut().expect("node initializes");

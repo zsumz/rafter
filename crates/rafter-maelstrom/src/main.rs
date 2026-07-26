@@ -12,8 +12,10 @@
 //!
 //! The obligations the harness exists to hold are stated where they live:
 //! [`client`] argues who owes a client an answer and why a node's role does not
-//! change that; [`app`] holds the durability boundary and the crash points that
-//! test it. Run it through `scripts/maelstrom-lin-kv*` rather than directly.
+//! change that; [`answers`] is the ledger of those obligations and the deadline
+//! that makes paying them total; [`app`] holds the durability boundary and the
+//! crash points that test it. Run it through `scripts/maelstrom-lin-kv*` rather
+//! than directly.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
