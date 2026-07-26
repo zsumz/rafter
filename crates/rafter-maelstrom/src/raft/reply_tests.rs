@@ -24,6 +24,7 @@ use crate::{
 };
 
 mod obligation;
+mod scope;
 
 static TEST_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
@@ -302,6 +303,23 @@ fn make_read_only(root: &Path, read_only: bool) {
     let mode = if read_only { 0o555 } else { 0o755 };
     std::fs::set_permissions(root, std::fs::Permissions::from_mode(mode))
         .expect("test root permissions change");
+}
+
+/// A client's `write` arriving straight at `dest`.
+fn client_write(dest: &str, client: &str, msg_id: u64, key: &str, value: u64) -> Envelope {
+    Envelope {
+        src: client.to_owned(),
+        dest: dest.to_owned(),
+        body: json!({ "type": "write", "msg_id": msg_id, "key": key, "value": value }),
+    }
+}
+
+/// How many `client_forward` envelopes this node put on the wire.
+fn client_forwards(node: &InitializedNode) -> usize {
+    node.emitted
+        .iter()
+        .filter(|envelope| body_type(&envelope.body) == Some("client_forward"))
+        .count()
 }
 
 /// One committed application entry for a write `origin` accepted from `client`.

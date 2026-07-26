@@ -71,12 +71,13 @@ struct InitializedNode {
     /// each answer is addressed to, and the tick by which it goes out.
     ///
     /// This is the record that makes this node the answerer, and it is written
-    /// at both ends of a forward — by the node that took the request from the
-    /// client and handed it to the leader, and by the leader that took that
-    /// forward and proposed it. Either one may end up the only party left who
-    /// can answer, so neither may rely on the other. See the `answers` module
-    /// for why every record carries a deadline, and the `client` module header
-    /// for who is owed what.
+    /// in one place — the funnel every client request passes through — for
+    /// every request of every kind, whether this node forwards it, proposes it
+    /// or opens a read barrier for it. A forward writes one at both ends, and
+    /// either end may turn out to be the only party left who can answer, so
+    /// neither may rely on the other. See the `answers` module for why every
+    /// record carries a deadline and why acting on a request requires one, and
+    /// the `client` module header for who is owed what.
     ///
     /// A request the client sent here directly leaves a second mark, in the
     /// command itself: `origin == self.name`, which every replica applies but
@@ -138,7 +139,7 @@ impl InitializedNode {
             Some("raft") => self.handle_raft(&envelope),
             Some("client_forward") => self.handle_forward(envelope),
             Some("client_result") => self.handle_client_result(&envelope),
-            Some("read" | "write" | "cas") => self.handle_client(envelope),
+            Some("read" | "write" | "cas") => self.handle_client(&envelope),
             Some(other) => eprintln!("ignoring unsupported Maelstrom message type {other:?}"),
             None => eprintln!("ignoring Maelstrom message without body.type"),
         }

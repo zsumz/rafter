@@ -9,15 +9,33 @@
 //! keep rather than a reader's to verify, which is the point of the module
 //! boundary.
 //!
+//! # What the ledger is total over
+//!
+//! Over the client requests this process acts on, not over its own contents.
+//! That distinction is the whole of the fourth defect found here. The previous
+//! round proved *record outstanding implies answer outstanding* — true, and
+//! checkable from the two functions above — and then wrote a sentence assuming
+//! its converse, that a request acted on always has a record. It did not: a
+//! read the leader served itself created a waiter and no record at all, so
+//! whether the deadline covered a client request depended on which node the
+//! client happened to reach.
+//!
+//! [`Accepted`] is what closes that. It is minted only by
+//! [`OwedAnswers::accept`], its fields are unreachable outside this module, and
+//! every function in `client` that acts on a client request takes one. So
+//! *acted on implies recorded* is rustc's to keep too, in the direction the
+//! sweep needs, rather than a list of accepting paths a reader has to certify.
+//!
 //! # Why every record carries a deadline
 //!
 //! Because the fast paths cannot be trusted to be exhaustive, and the harness
 //! has three times been wrong about which they were. An apply on this node pays
 //! a record; a `client_result` relayed back from the leader pays one; a
-//! proposal the kernel refuses pays one. None of that is a proof that some path
-//! always fires. A request can also be stranded by an entry truncated under the
-//! next leader, by an applied index a snapshot install jumped past, by a leader
-//! that answered a process which no longer exists, or by a partition that
+//! proposal the kernel refuses pays one; a granted barrier pays one. None of
+//! that is a proof that some path always fires. A request can also be stranded
+//! by an entry truncated under the next leader, by an applied index a snapshot
+//! install jumped past, by a leader that answered a process which no longer
+//! exists, by a barrier that neither grants nor cancels, or by a partition that
 //! outlives the client. Enumerating those was the error each time — the list
 //! was checked in the direction that was easy to check, and relied on in the
 //! direction that mattered.
@@ -32,6 +50,50 @@ use std::collections::BTreeMap;
 /// One client request, named the way both this node and the peer that relayed
 /// it can name it: the client, and the message id it is waiting on.
 pub(crate) type RequestKey = (String, u64);
+
+/// One client request this node has accepted, carried as the proof that the
+/// ledger holds a record for it.
+///
+/// Minted in exactly one place — [`OwedAnswers::accept`] — out of fields no
+/// other module can name or fill. A value of this type in hand is therefore the
+/// same fact as a record in the ledger, and rustc keeps it that way.
+///
+/// This exists to be *required*. Every function in `client` that acts on a
+/// client request — relays it, proposes it, or opens a read barrier for it —
+/// takes one of these, so a fourth kind of request cannot be acted on without
+/// first entering the ledger. That makes the set of accepting paths a thing the
+/// compiler checks rather than a list a header asserts.
+///
+/// Read in one direction only: *this request is recorded*. It says nothing
+/// about the record still being there — [`OwedAnswers::retire`] may already
+/// have run, and after an answer goes out it has. A token is a receipt for the
+/// accept, never a licence to assume the record survives.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Accepted {
+    /// The node the answer for this request is addressed to: whoever the ledger
+    /// will actually pay, which for a repeated accept is the recipient the
+    /// first one named rather than this one's.
+    answer_to: String,
+    client: String,
+    in_reply_to: u64,
+}
+
+impl Accepted {
+    /// The node this request's answer is addressed to.
+    pub(crate) fn answer_to(&self) -> &str {
+        &self.answer_to
+    }
+
+    /// The client waiting on this request.
+    pub(crate) fn client(&self) -> &str {
+        &self.client
+    }
+
+    /// The message id the client is waiting on.
+    pub(crate) fn in_reply_to(&self) -> u64 {
+        self.in_reply_to
+    }
+}
 
 /// One answer this node accepted responsibility for and has not yet sent.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -59,16 +121,25 @@ impl OwedAnswers {
     /// Records that this node owes `answer_to` an answer for `key`, and will
     /// send one by `deadline` whatever becomes of the entry behind it.
     ///
-    /// The only way a record comes into being. A second accept for a key
-    /// already held keeps the first: the copy this node acted on is the one
-    /// whose deadline governs, and a repeat must not be able to push that
-    /// deadline out — which is what would let a stream of duplicates hold one
-    /// client waiting indefinitely.
-    pub(crate) fn accept(&mut self, key: RequestKey, answer_to: String, deadline: u64) {
-        self.owed.entry(key).or_insert(OwedAnswer {
+    /// The only way a record comes into being, and the only way an [`Accepted`]
+    /// does. A second accept for a key already held keeps the first: the copy
+    /// this node acted on is the one whose deadline governs, and a repeat must
+    /// not be able to push that deadline out — which is what would let a stream
+    /// of duplicates hold one client waiting indefinitely.
+    ///
+    /// The token names the recipient the ledger *kept*, not the one this call
+    /// offered, so a caller acting on the token cannot address its answer to a
+    /// node the sweep would not have paid.
+    pub(crate) fn accept(&mut self, key: RequestKey, answer_to: String, deadline: u64) -> Accepted {
+        let held = self.owed.entry(key.clone()).or_insert(OwedAnswer {
             answer_to,
             deadline,
         });
+        Accepted {
+            answer_to: held.answer_to.clone(),
+            client: key.0,
+            in_reply_to: key.1,
+        }
     }
 
     /// The node this request's answer is addressed to, if this node owes one.
@@ -153,6 +224,30 @@ mod tests {
             vec![(key("c1", 5), "n2".to_owned())],
             "the first accept's deadline and recipient both stand"
         );
+    }
+
+    /// The token an accept hands back names the recipient the ledger kept.
+    ///
+    /// The token is what its holder addresses the answer to, and a repeat that
+    /// offers a different recipient must not be able to aim it. Handing back
+    /// the offered `answer_to` rather than the held one would mail this
+    /// request's answer to `n3` while the sweep, firing on the same record,
+    /// mails it to `n2` — one request, two recipients, from one ledger.
+    #[test]
+    fn a_repeated_accept_hands_back_the_recipient_the_ledger_kept() {
+        let mut owed = OwedAnswers::default();
+        let first = owed.accept(key("c1", 5), "n2".to_owned(), 7);
+        let repeat = owed.accept(key("c1", 5), "n3".to_owned(), 99);
+
+        assert_eq!(first.answer_to(), "n2");
+        assert_eq!(
+            repeat.answer_to(),
+            "n2",
+            "the repeat's token names whoever the sweep would pay, not the \
+             recipient this accept offered"
+        );
+        assert_eq!(repeat.client(), "c1");
+        assert_eq!(repeat.in_reply_to(), 5);
     }
 
     /// Retiring a record is what makes it stop falling due.

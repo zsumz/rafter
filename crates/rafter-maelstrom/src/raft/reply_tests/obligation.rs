@@ -24,8 +24,8 @@ use crate::{
 };
 
 use super::{
-    direct_answer, direct_answers, elected_single_node_process, forwarded_write,
-    fresh_cluster_member, remove_test_root, replicate, test_root,
+    client_forwards, client_write, direct_answer, direct_answers, elected_single_node_process,
+    forwarded_write, fresh_cluster_member, remove_test_root, replicate, test_root,
 };
 
 // ---------------------------------------------------------------------------
@@ -570,15 +570,6 @@ fn a_repeated_request_does_not_reapply_its_mutation() {
 // Helpers.
 // ---------------------------------------------------------------------------
 
-/// A client's `write` arriving straight at `dest`.
-fn client_write(dest: &str, client: &str, msg_id: u64, key: &str, value: u64) -> Envelope {
-    Envelope {
-        src: client.to_owned(),
-        dest: dest.to_owned(),
-        body: json!({ "type": "write", "msg_id": msg_id, "key": key, "value": value }),
-    }
-}
-
 /// A client's `cas` arriving straight at `dest`.
 fn client_cas(dest: &str, client: &str, msg_id: u64, key: &str, from: u64, to: u64) -> Envelope {
     Envelope {
@@ -669,13 +660,5 @@ fn forwarded_answers(node: &InitializedNode, origin: &str, in_reply_to: u64) -> 
                 && body_type(&envelope.body) == Some("client_result")
                 && envelope.body.get("in_reply_to").and_then(Value::as_u64) == Some(in_reply_to)
         })
-        .count()
-}
-
-/// How many `client_forward` envelopes this node put on the wire.
-fn client_forwards(node: &InitializedNode) -> usize {
-    node.emitted
-        .iter()
-        .filter(|envelope| body_type(&envelope.body) == Some("client_forward"))
         .count()
 }
