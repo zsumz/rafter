@@ -284,7 +284,6 @@ fn snapshot_header_round_trips_multi_gigabyte_payload_length() {
         SnapshotEnvelopeHeader {
             metadata,
             payload_len,
-            payload_crc32: 0,
             header_len: header.len() as u64,
         }
     );

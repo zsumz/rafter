@@ -110,9 +110,12 @@ impl FileRaftSnapshotStore {
         };
 
         let snapshot_path = snapshot_path(&directory, &manifest.file_name);
-        let header = verify_snapshot_envelope(&snapshot_path)?;
-        let descriptor =
-            RaftSnapshot::new(header.metadata, header.payload_len, header.payload_crc32);
+        let verified = verify_snapshot_envelope(&snapshot_path)?;
+        let descriptor = RaftSnapshot::new(
+            verified.header.metadata,
+            verified.header.payload_len,
+            verified.payload_crc32,
+        );
         let next_sequence = manifest.sequence.checked_add(1);
         let (pending, pending_transfer_recovery) = read_staged_transfer(&directory)?;
         Ok(OpenedFileRaftSnapshotStore::new(
@@ -121,7 +124,7 @@ impl FileRaftSnapshotStore {
                 current: Some(CurrentSnapshot {
                     file_name: manifest.file_name,
                     descriptor,
-                    payload_offset: header.header_len,
+                    payload_offset: verified.header.header_len,
                 }),
                 pending,
                 next_sequence,
@@ -141,12 +144,25 @@ enum CreationSync<'a> {
     Batched(&'a mut ParentDirectorySyncBatch),
 }
 
-/// Parses and fully verifies the envelope at `path` in one streaming pass,
-/// returning its header. The envelope checksum is checked before the payload
-/// checksum, mirroring whole-buffer decoding.
+/// A snapshot envelope whose payload and envelope checksums have both been
+/// recomputed over the real file bytes and matched.
+///
+/// `payload_crc32` exists on this type and nowhere else: it is the checksum
+/// this verification observed, so a value of this type cannot carry a checksum
+/// that was never checked. That matters because the checksum is one of the
+/// inputs to `RaftSnapshot::transfer_id()`, where a placeholder would silently
+/// derive the wrong transfer identity.
+struct VerifiedSnapshotEnvelope {
+    header: SnapshotEnvelopeHeader,
+    payload_crc32: u32,
+}
+
+/// Parses and fully verifies the envelope at `path` in one streaming pass. The
+/// envelope checksum is checked before the payload checksum, mirroring
+/// whole-buffer decoding.
 fn verify_snapshot_envelope(
     path: &Path,
-) -> Result<SnapshotEnvelopeHeader, OpenRaftSnapshotStoreError> {
+) -> Result<VerifiedSnapshotEnvelope, OpenRaftSnapshotStoreError> {
     let io_error = |operation: &'static str| {
         let path = path.to_path_buf();
         move |error: std::io::Error| OpenRaftSnapshotStoreError::Io {
@@ -165,7 +181,7 @@ fn verify_snapshot_envelope(
         .take(SNAPSHOT_HEADER_PREFIX_BYTES.min(file_len))
         .read_to_end(&mut prefix)
         .map_err(io_error("read raft snapshot"))?;
-    let mut header = decode_raft_snapshot_header(&prefix).map_err(corrupt)?;
+    let header = decode_raft_snapshot_header(&prefix).map_err(corrupt)?;
 
     let expected_len = header
         .header_len
@@ -249,8 +265,10 @@ fn verify_snapshot_envelope(
             actual: payload_crc.value(),
         }));
     }
-    header.payload_crc32 = expected_payload_crc;
-    Ok(header)
+    Ok(VerifiedSnapshotEnvelope {
+        header,
+        payload_crc32: expected_payload_crc,
+    })
 }
 
 fn snapshot_file_len(path: &Path) -> Result<u64, OpenRaftSnapshotStoreError> {

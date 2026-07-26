@@ -51,6 +51,43 @@ fn file_snapshot_store_reopens_manifest_selected_snapshot() {
     remove_test_dir(directory);
 }
 
+/// The reopened descriptor's identity must come from the payload checksum this
+/// store actually verified, never from a placeholder.
+///
+/// `decode_raft_snapshot_header` parses a bounded prefix that stops before the
+/// trailer, so it cannot know the payload checksum; it used to report a
+/// permanent zero that its one caller silently overwrote after verification.
+/// `transfer_id()` hashes that checksum, so any second caller trusting the
+/// header would have derived a wrong transfer identity without a symptom. The
+/// header no longer carries the field at all — this pins the consequence.
+#[test]
+fn file_snapshot_store_derives_its_identity_from_the_verified_payload_checksum() {
+    let directory = test_store_dir("verified-identity");
+    let expected = snapshot(3, 2, b"application snapshot");
+    let payload_len = expected.application_payload.len() as u64;
+    {
+        let mut store = FileRaftSnapshotStore::open(&directory).expect("store opens");
+        store
+            .write_snapshot(expected.clone())
+            .expect("snapshot writes");
+    }
+
+    let reopened = FileRaftSnapshotStore::open(&directory).expect("store reopens");
+    let current = reopened.current_snapshot().expect("a snapshot is current");
+    let payload_checksum = crc32(&expected.application_payload);
+
+    oracle_assert_eq!(current.application_payload_crc32, payload_checksum);
+    oracle_assert_eq!(
+        current.transfer_id(),
+        RaftSnapshot::new(expected.metadata.clone(), payload_len, payload_checksum).transfer_id()
+    );
+    oracle_assert!(
+        current.transfer_id() != RaftSnapshot::new(expected.metadata, payload_len, 0).transfer_id(),
+        "a placeholder checksum would have produced a different transfer identity"
+    );
+    remove_test_dir(directory);
+}
+
 #[test]
 fn file_snapshot_store_retains_previous_complete_snapshots() {
     let directory = test_store_dir("retains-previous");
