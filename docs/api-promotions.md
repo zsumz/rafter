@@ -6759,6 +6759,14 @@ store it empties.
 
 ### Revision after implementation (2026-07-26)
 
+A seventh adversarial hunt attacked the guard this subsection designs and
+reproduced seven probes against its placement. They are answered in
+[Second revision after implementation (2026-07-26)](#second-revision-after-implementation-2026-07-26),
+which is current truth wherever the two disagree; the two places they disagree
+are the call this subsection routes the refusal through —
+`RaftGroup::apply_raft_outputs`, which now takes no verdict — and the
+`ApplySnapshot` skip it introduces, which is withdrawn rather than repaired.
+
 **The refusal is right and the kernel is the wrong layer for it.** The design
 above was implemented as written, and `rafter-maelstrom`'s production recovery
 path falsified its central claim within one test run:
@@ -6840,6 +6848,140 @@ scripted a runtime that compacts to boundary 4 while its state machine sits at
 produce that shape — `build_snapshot` requires the state machine's own applied
 index as the boundary — so the fixture now compacts to 2, which exercises the
 same reshape without scripting a composition the group refuses to run.
+
+### Second revision after implementation (2026-07-26)
+
+**The refusal is right, the layer is right, and the placement was wrong in both
+directions.** The subsection above moved the check out of the kernel because the
+kernel cannot see whether a caller is about to repair the gap. It then put the
+check on `RaftGroup::apply_raft_outputs` — the one call a recovering caller
+makes *before* it repairs anything — and left it off `RaftGroup::read`, the one
+call that hands a truncated state machine's contents to a client. A seventh
+adversarial hunt reproduced both.
+
+**The severe direction: the accommodation does not fire.** The skip written to
+let a recovering replica through tests whether the batch contains an
+`Output::ApplySnapshot`. A recovery batch is
+`RecoveredDurableRaftNode::into_parts`' `recovery_outputs`, which comes from
+`drain_committed_outputs` → `apply_committed_into`
+([`crates/rafter/src/node/commit/apply.rs:58-92`](../crates/rafter/src/node/commit/apply.rs)),
+and that function pushes an `Output::Apply` per committed application entry and,
+if the committed configuration removed this leader, whatever stepping down
+emits. It never pushes an `Output::ApplySnapshot`: the kernel holds a snapshot
+descriptor rather than payload bytes, which is the same fact that put this
+refusal in the app layer to begin with. A recovery batch therefore *cannot*
+carry an install, so
+the skip written for it can never fire for it, and the crash-window replica the
+subsection above exists to accommodate is poisoned by the very call both
+reference drivers make one line after construction:
+
+```
+AppliedIndexBelowSnapshotBoundary { app_applied_index: LogIndex(3), snapshot_index: LogIndex(5) }, group poisoned
+```
+
+A recoverable crash window became an unopenable replica. Both consumers declare
+`SnapshotSupport::Supported`, so both are reachable.
+
+Two further shape faults sat in the same skip. It was **presence-keyed rather
+than effect-keyed** — `apply_raft_outputs([ApplySnapshot@4])` against a boundary
+of 5 returned `Ok` and left the group `Healthy`, because the variant was present
+and not because the install cleared anything. And it was **not composable**: the
+same runtime state passed or poisoned depending only on how the caller chunked
+one runtime step's outputs into calls, so an empty leading chunk poisoned a
+group whose install was in the next one. Neither is a fact about the replica.
+
+**The other direction: reads were never covered.** `RaftGroup::read` with a
+`ReadRequest::Local` never reached the guard at all — the group served the
+truncated state machine and stayed `Healthy` — and `read_linearizable`'s
+proof-consuming and pending-retry branches returned unstepped reports past it
+too. Only a *fresh* linearizable read was covered, and only incidentally,
+because it routes through `step`. The local path is the one reached in
+production, at
+[`reference/ledger/src/bin/ledger-node/replica.rs:477`](../reference/ledger/src/bin/ledger-node/replica.rs).
+The regression test's own doc comment claimed the group "refuses rather than
+answering later applies **and reads**" — wider than the code, which is the
+programme's recurring shape and is why the sentence is part of the fix.
+
+**The invariant, stated once.** *At every moment the group would let its state
+machine answer for this replica, that state machine is at or above its own Raft
+snapshot boundary.* The subject is a moment, not a vector. Being below the
+boundary is a fault when the group would let the state machine speak for the
+replica, and a legitimate transient otherwise — which is exactly the
+recovering-versus-settled distinction the subsection above found the kernel
+could not draw, applied one level finer. The group can draw it, because it is
+the caller of both.
+
+**What changes.** `reject_if_below_snapshot_boundary` is unchanged. Its two call
+sites become:
+
+| Call | Verdict | Why |
+| --- | --- | --- |
+| `step_with_options` | taken | A step advances the protocol on this replica's behalf — voting, acknowledging replication, granting read indexes — for state it does not hold. Unchanged from the subsection above. `step` and `begin_read_barrier` inherit it. |
+| `begin_proposal`, `begin_proposal_batch` | taken (new) | They step the runtime *without* routing through `step_with_options`, so they inherited nothing. A proposal is how a state machine's contents are extended. |
+| `read` | taken (new) | Every consistency, every branch, before the group-id check. Serving a query hands out the contents of a state machine short of acknowledged entries; that is the damage, not a stale answer. |
+| `apply_raft_outputs` | withdrawn | The pump a recovering caller drains before restoring. A verdict here refuses the recovery rather than the fault, and would depend on the caller's chunking. |
+| `metrics` | never had one | `applied_index` beside `snapshot_index` is the supported way to *see* a raised declaration. An observability call that poisoned the group would destroy the evidence it was called for. |
+
+That is every public method of `RaftGroup` that reaches the runtime's `step*`
+family or the state machine's `read`, which is the closure claim the scope
+statement in `reject_if_below_snapshot_boundary`'s rustdoc now makes.
+
+The two proposal entry points were not in the hunt's report. They were found by
+checking the scope sentence this revision wanted to write against the code
+rather than against the one entry point that spells the word "step", and the
+probe that found them returned `ProposalDidNotStart` from a runtime that had
+already been stepped. Writing "every step is refused" while `begin_proposal`
+was not would have repeated the exact fault this revision exists to correct — a
+doc sentence wider than the code beneath it.
+
+Placing the verdict on `read` rather than on `read_local` and the two unstepped
+branches of `read_linearizable` is deliberate: one entry covers every branch by
+construction, including branches added later, and there is nothing for a future
+reader to keep in sync. The proposal pair cannot be collapsed the same way
+without changing their error semantics, so they are listed by name and tested by
+name.
+
+Nothing is given up by deferring past the pump. A replica that drains its
+recovery outputs and never restores must step, propose, or read before it can do
+anything observable, and all three refuse. The severe direction is closed
+because the *only* call that now accepts a below-boundary state machine is the
+one that cannot produce an effect on its own.
+
+**What was deliberately not added.** No new guard, no new checked-closure
+mechanism, no source-text scan, no gate. The `ApplySnapshot` skip is withdrawn
+rather than made effect-keyed, because with no verdict at that seam there is
+nothing left to key. No contiguity check on `apply_raft_outputs` — that a batch
+may apply entry 6 onto a state machine at 3 is a different invariant, owned by
+`validate_apply_floor`, and this entry does not touch it. `metrics` keeps
+`unwrap_or(self.last_applied_index)`: a `#[must_use]` observability call cannot
+return a `Result`, and the fallback only matters when the state machine itself
+is failing, which is not this entry's subject.
+
+**Blast radius.**
+
+- `RaftGroup::apply_raft_outputs` stops returning
+  `GroupError::AppliedIndexBelowSnapshotBoundary`. A caller matching on it there
+  now never matches; the same error arrives from the next `step` or `read`.
+- `RaftGroup::read` starts returning it, and poisons. This is a new failure mode
+  for a method that previously could not fail this way — and it is the point.
+- Neither reference store's *code* changes. Both regression suites move the call
+  they observe the refusal on, and the ledger's gains the read that would have
+  reported the short balance.
+- `GroupError::AppliedIndexBelowSnapshotBoundary`'s own rustdoc, `read`'s,
+  `apply_raft_outputs`', and the regression test's doc comment are corrected to
+  the code beneath them.
+
+**Focused-test plan.**
+[`crates/rafter-app/tests/gen7_boundary_probe.rs`](../crates/rafter-app/tests/gen7_boundary_probe.rs)
+adopts all seven probes, each converted to assert the intended behaviour, plus
+one test per scope boundary: the two unstepped `read_linearizable` branches, the
+two proposal entry points, the install that does and does not clear the
+boundary, the chunking equivalence, `metrics` reporting the gap without taking a
+verdict, and the crash-window replica that restores and the one that does not.
+Nine of its thirteen tests fail against the pre-fix code. Mutation: with the
+guard's remaining call sites removed, the fenced lock reissues token 1 over a
+downstream that accepted 2 and the ledger reads back a balance short of the
+acknowledged one — the same two symptoms, verbatim.
 
 ## Two Kernel Contract Corrections
 
