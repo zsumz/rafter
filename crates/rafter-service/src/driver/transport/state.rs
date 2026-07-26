@@ -416,17 +416,16 @@ where
         }
     }
 
-    /// Publishes one membership to the transport as a peer set.
+    /// Publishes one membership to the transport, and fences what a committed
+    /// removal took out of it.
     ///
-    /// All or nothing. A membership the validator cannot fully name is not
-    /// published at all: a partial peer set authorizes fewer replicas than the
-    /// cluster has, which is a quorum-splitting configuration change made by
-    /// accident, while leaving the previous set in place is merely stale. Both
-    /// that and a transport refusal are counted, because a peer set that never
-    /// updated does not repair itself the way a dropped frame does.
-    ///
-    /// The local replica is not in its own peer set: a `PeerSet` names who may
-    /// speak *to* this node, and a node is not a peer of itself.
+    /// Two decisions, taken in order and independently. Publishing the peer set
+    /// is all or nothing; fencing is per replica. Neither may be skipped
+    /// because the other could not be made, which is the whole shape of this
+    /// method: a membership event that both narrows the set and licenses a fence
+    /// installs two admission controls, and a driver that dropped one of them
+    /// because the other failed would leave a committed-removed replica able to
+    /// speak with nothing reporting why.
     pub(super) fn publish_membership(&mut self, members: BTreeSet<NodeId>, fencing: Fencing) {
         let removed = match fencing {
             Fencing::FenceRemoved => self
@@ -437,7 +436,32 @@ where
                 .collect::<Vec<_>>(),
             Fencing::Withhold => Vec::new(),
         };
+        // Advanced before either half runs, and kept even when publishing is
+        // refused: this is the driver's record of what the group says rather
+        // than of what the link layer accepted, so the next committed removal is
+        // computed against the membership the cluster had.
         self.known_members = members;
+        self.update_transport_peers();
+        self.fence_removed_peers(removed);
+    }
+
+    /// Publishes the current membership as a peer set, or publishes nothing.
+    ///
+    /// All or nothing. A membership the validator cannot fully name is not
+    /// published at all: a partial peer set authorizes fewer replicas than the
+    /// cluster has, which is a quorum-splitting configuration change made by
+    /// accident, while leaving the previous set in place is merely stale. That
+    /// last clause is true of the peer set and only of the peer set — a fence
+    /// the same event licensed is not stale when it is withheld, it is absent,
+    /// which is why fencing is not part of this decision.
+    ///
+    /// Both a principal that cannot be named and a transport refusal are
+    /// counted, because a peer set that never updated does not repair itself the
+    /// way a dropped frame does.
+    ///
+    /// The local replica is not in its own peer set: a `PeerSet` names who may
+    /// speak *to* this node, and a node is not a peer of itself.
+    fn update_transport_peers(&mut self) {
         let mut principals = Vec::new();
         for node_id in self
             .known_members
@@ -458,6 +482,18 @@ where
         {
             self.refused_peer_updates = self.refused_peer_updates.saturating_add(1);
         }
+    }
+
+    /// Fences every principal a committed removal took out of the peer set.
+    ///
+    /// Per replica rather than all or nothing, because the two statements have
+    /// different shapes. A peer set is one statement about a whole cluster, and
+    /// a partial one authorizes a quorum-splitting subset of it. A fence is one
+    /// statement about one replica, and fencing three of four removed replicas
+    /// is strictly better than fencing none of them. A replica this deployment
+    /// cannot name is counted like any other peer-set fault: the link layer is
+    /// behind the group, and the count is what says so.
+    fn fence_removed_peers(&mut self, removed: Vec<NodeId>) {
         for node_id in removed {
             let Some(principal) = self.validator.principal_for_node(&self.group_id, node_id) else {
                 self.refused_peer_updates = self.refused_peer_updates.saturating_add(1);
@@ -624,3 +660,7 @@ where
         }
     }
 }
+
+#[cfg(test)]
+#[path = "state/tests.rs"]
+mod tests;
