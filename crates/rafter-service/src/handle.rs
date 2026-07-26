@@ -99,7 +99,7 @@ where
     /// local state before returning a terminal [`ReadError`].
     ///
     /// Which levels are served is the driver's choice, not this handle's; see
-    /// [`ManagedRaftDriver::read`](crate::ManagedRaftDriver::read).
+    /// [`DriverCommandSender::read`].
     ///
     /// # Errors
     ///
