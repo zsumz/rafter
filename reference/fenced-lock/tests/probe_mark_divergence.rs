@@ -21,6 +21,20 @@
 //! lock store had no repair entry point at all, so *every* refusal was the end
 //! of the road. It has one now, and the tests below pin both halves — that it
 //! clears damage, and that it deliberately does not clear a version.
+//!
+//! "Not terminal" needed a second entry point to stay true, and for a while it
+//! was not. The repair refuses a discard the adopted image cannot dominate, and
+//! an ordinary crash mid-acquisition is that shape every time, so a store in
+//! that state was refused by both readers with nothing beyond them.
+//! `LockStore::discard_and_reseed` is what closes it, and `gen5_repair_deadlock.rs`
+//! is that boundary.
+//!
+//! It does not weaken the version gate below, because it is not a remedy for
+//! damage: it deletes whatever it finds and never claims to have read it. The
+//! rule the tests here pin is about the *remedy* — a caller asking to repair
+//! damage did not ask to discard a newer build's committed work — and a caller
+//! asking to delete the store did. `a_reseed_deletes_a_version_this_build_
+//! cannot_read` is the third entry point on the same bytes.
 
 #[allow(dead_code)]
 mod support;

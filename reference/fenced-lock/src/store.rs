@@ -406,6 +406,28 @@
 //! reports what it costs. The sibling ledger reached the same shape from the
 //! same argument.
 //!
+//! ## Three entry points, because there are three decisions
+//!
+//! [`LockStore::open_and_repair`] does not reach all of that crash, and the
+//! half it leaves is the load-bearing one. The mark rule above refuses a
+//! discard the adopted image cannot dominate, and an interrupted **acquisition**
+//! is exactly that shape: it raises a mark, the interrupted image is the newer
+//! one, and no older partner carries a mark that image was the first to hold.
+//! So a crash mid-acquisition — the operation a fencing lock exists to perform
+//! — is refused by `open` *and* by the repair, with no byte moved either way.
+//!
+//! [`LockStore::discard_and_reseed`] is the third decision and the only one
+//! that opens that directory: it deletes both slot files and lets the
+//! replicated log refill the store. It is sound because this store publishes
+//! only what the log has already committed, so nothing it deletes is a mark the
+//! log cannot return; the argument, what it costs, and the premise about the
+//! group that nothing here can check are all on the entry point.
+//!
+//! Reading them as a ladder: `open` reads, the repair chooses between two
+//! readings, and the re-seed keeps neither. Each gives up more than the one
+//! before it and each is a separate call, so no caller reaches a later rung by
+//! retrying an earlier one.
+//!
 //! Recovery also refuses when **both** slots are damaged, whatever the damage,
 //! rather than starting empty. A lock service that cannot read any image cannot
 //! know its high-water marks, and one that started empty would hand out token 1
@@ -449,7 +471,7 @@ use std::{
     error::Error,
     fmt,
     fs::{self, File, OpenOptions},
-    io::{Read, Seek, SeekFrom, Write},
+    io::{self, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
@@ -748,6 +770,11 @@ pub enum LockStoreError {
     /// The argument for refusing rather than repairing-and-reporting is on
     /// `verify_discard_preserves_marks`, with what it costs and what it
     /// deliberately does not cover.
+    ///
+    /// An ordinary crash during an acquisition raises this every time, so it is
+    /// not a corner: a store in this state is refused by both entry points that
+    /// read it, and [`LockStore::discard_and_reseed`] is the only call that
+    /// opens the directory afterwards.
     DiscardWouldRegressMark {
         /// Slot whose image would have been given up or set aside.
         slot: SlotIndex,
@@ -1441,6 +1468,80 @@ pub struct RecoveryReport {
     live_slot: Option<SlotIndex>,
     cross_checked_marks: bool,
     repair: Option<Repair>,
+    reseed: Option<Reseed>,
+}
+
+/// What [`LockStore::discard_and_reseed`] deleted.
+///
+/// A re-seed is the one thing this store does that discards state it *could*
+/// read, so what it found is recorded before it goes. This is the whole of what
+/// the deletion can be held to: nothing here is a promise that the log will
+/// refill it, which is a fact about the composition and not about this
+/// directory.
+///
+/// It is deliberately not a [`Repair`]. A repair chooses between two readings
+/// of a store and can say the adopted one dominates the discarded one's marks;
+/// a re-seed keeps neither reading and can say no such thing.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Reseed {
+    slots: [SlotState; 2],
+    discarded_bytes: u64,
+    discarded_applied_index: Option<LogIndex>,
+}
+
+impl Reseed {
+    /// What each slot held when the re-seed found it, indexed by [`SlotIndex`].
+    #[must_use]
+    pub const fn slots(&self) -> [SlotState; 2] {
+        self.slots
+    }
+
+    /// Bytes removed from the two slot files.
+    #[must_use]
+    pub const fn discarded_bytes(&self) -> u64 {
+        self.discarded_bytes
+    }
+
+    /// The applied Raft index the deleted store had reached, when a whole image
+    /// could name one.
+    ///
+    /// This is the number that says how far the replay has to go, so it is
+    /// reported rather than left to a byte count. It reads a whole image whose
+    /// mark is unsealed as well as a sealed one, because that damage is a whole
+    /// image and refusing to name its index would leave the wedged store — the
+    /// case this entry point exists for — reporting nothing.
+    ///
+    /// `None` means neither slot held an image this build could decode, which
+    /// is where nobody can say how far it had got.
+    #[must_use]
+    pub const fn discarded_applied_index(&self) -> Option<LogIndex> {
+        self.discarded_applied_index
+    }
+}
+
+impl fmt::Display for Reseed {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "discarded {} bytes over {} and {}, which held {} and {}",
+            self.discarded_bytes,
+            SlotIndex::Zero,
+            SlotIndex::One,
+            self.slots[0],
+            self.slots[1]
+        )?;
+        match self.discarded_applied_index {
+            Some(applied_index) => write!(
+                formatter,
+                "; the deleted store had applied through {applied_index} and the replicated \
+                 log must carry it back"
+            ),
+            None => formatter.write_str(
+                "; no slot held an image this build could decode, so how far it had applied \
+                 is unknown",
+            ),
+        }
+    }
 }
 
 /// What [`LockStore::open_and_repair`] gave up, when it gave anything up.
@@ -1609,6 +1710,12 @@ impl RecoveryReport {
     /// reopening a store after a crash should have to look at rather than step
     /// over.
     ///
+    /// A re-seed is never clean, and does not need its own term here: it
+    /// deletes both slot files and the opening that follows creates them, so
+    /// `created` is already true. What [`RecoveryReport::reseed`] adds is
+    /// *which* creation this was, which is the distinction the paragraph below
+    /// says this store cannot make on its own.
+    ///
     /// Creation counts deliberately. This store cannot tell a genuinely fresh
     /// replica from one whose directory was emptied, because both arrive here
     /// as an absent pair of files; only the caller knows which it is. Leaving
@@ -1648,6 +1755,19 @@ impl RecoveryReport {
     #[must_use]
     pub const fn repair(&self) -> Option<Repair> {
         self.repair
+    }
+
+    /// What a re-seed deleted, when this opening was a
+    /// [`LockStore::discard_and_reseed`].
+    ///
+    /// Always `None` for the other two entry points, which have no branch that
+    /// reaches it. Unlike [`RecoveryReport::repair`] it is `Some` on **every**
+    /// re-seed, including one over a store with nothing wrong with it, because
+    /// a re-seed over a healthy store still deletes it. There is no being
+    /// willing to re-seed.
+    #[must_use]
+    pub const fn reseed(&self) -> Option<Reseed> {
+        self.reseed
     }
 }
 
@@ -1708,16 +1828,32 @@ impl LockStore {
     /// argument for adding it is not symmetry: it is that
     /// [`SlotDamage::UnsealedCompleteImage`] turns an ordinary crash — a
     /// publication interrupted between its barrier and its seal — into a
-    /// refusal, and a store whose ordinary crash residue needs an operator with
-    /// no documented way forward is worse than one that names the way forward
-    /// and reports what it costs.
+    /// refusal, and that refusal needs somewhere to go.
     ///
-    /// It gives up exactly the refusal [`LockStoreError::UnreadableSlot`] names,
-    /// and nothing else — and not even all of that. A repair whose adopted image
-    /// does not carry every fencing high-water mark the discarded one held is
-    /// [`LockStoreError::DiscardWouldRegressMark`] and is refused here too;
-    /// `verify_discard_preserves_marks` argues why, and says what the refusal
-    /// costs. It does **not** clear:
+    /// **How much of that crash this reaches, stated in the direction the code
+    /// decides it.** It reaches an interrupted publication whose image the
+    /// stale partner still dominates — which, for this store, means a
+    /// publication that raised no fencing high-water mark. A release is one. So
+    /// is an expiry, a renewal, and a session open. An **acquisition** is not:
+    /// it raises a mark by construction, the interrupted image is the newer one,
+    /// and no older partner can dominate a mark that image was the first to
+    /// hold. That discard is [`LockStoreError::DiscardWouldRegressMark`] and is
+    /// refused here as well as in [`LockStore::open`];
+    /// `verify_discard_preserves_marks` argues why, and the refusal stands.
+    ///
+    /// Acquisition is the operation a fencing lock exists to perform, so this
+    /// entry point does **not** cover the ordinary crash in general, and it is
+    /// worth saying which half it leaves: a store crashed mid-acquisition is
+    /// refused by every entry point that tries to read it.
+    /// [`LockStore::discard_and_reseed`] is where that store goes, and it is a
+    /// third decision rather than a flag on this one.
+    /// `gen5_the_ordinary_crash_on_a_release_is_repairable` and
+    /// `gen5_the_ordinary_crash_on_an_acquisition_has_no_way_forward` run the
+    /// same crash on either side of that line.
+    ///
+    /// Beyond the mark rule it gives up exactly the refusal
+    /// [`LockStoreError::UnreadableSlot`] names, and nothing else. It does
+    /// **not** clear:
     ///
     /// - a damaged slot whose partner is not intact, which stays
     ///   [`LockStoreError::UnreadableSlot`]. There is nothing to fall back to,
@@ -1748,6 +1884,108 @@ impl LockStore {
     /// [`SlotDamage::UnsupportedFormatVersion`].
     pub fn open_and_repair(directory: &Path, config: LockConfig) -> Result<Self, LockStoreError> {
         Self::open_inner(directory, config, FaultPlan::none(), OnUnreadableSlot::Give)
+    }
+
+    /// Deletes this replica's durable lock state and opens an empty store for
+    /// the replicated log to fill.
+    ///
+    /// This is not a third way of reading the directory. It reads nothing it
+    /// keeps: both slot files are removed and recreated empty, **whatever they
+    /// held**, including a store with nothing wrong with it. A caller reaching
+    /// for it has decided that this replica's local state is to be abandoned,
+    /// not recovered.
+    ///
+    /// # Why the store needs one at all
+    ///
+    /// [`LockStoreError::DiscardWouldRegressMark`] is refused by both
+    /// [`LockStore::open`] and [`LockStore::open_and_repair`], deliberately and
+    /// with no override, and one power cut during an acquisition produces it —
+    /// see [`LockStore::open_and_repair`] for why that is the common case
+    /// rather than a corner. Neither entry point moves a byte, so every later
+    /// attempt lands in the same place: without this call the directory has no
+    /// entry point that opens it, and the way forward begins with an operator
+    /// deleting files by hand. `gen5_a_wedged_store_has_exactly_one_way_forward`
+    /// is that state and this way out of it.
+    ///
+    /// # Why deleting it is the right answer, and what is checked
+    ///
+    /// This store is one replica's projection of a replicated log, and it
+    /// publishes only what that log has already committed: a state machine
+    /// applies an entry after the entry commits, and this store publishes
+    /// during the apply. So every fencing high-water mark this directory has
+    /// ever held came from an entry a quorum had already accepted, under
+    /// **both** readings of the damage — the interrupted publication and the
+    /// rotted mark alike. Deleting the projection cannot lose a mark the log
+    /// does not still hold.
+    ///
+    /// What refills it is mostly this replica's own retained log rather than
+    /// the group: this call empties the application store and touches nothing
+    /// else, so the Raft log and snapshot beside it survive, the reopened store
+    /// reports [`LogIndex::ZERO`], and the entries replay. The group supplies
+    /// only what local compaction has dropped, as a snapshot.
+    /// `a_reseeded_replica_recovers_its_marks_from_the_group` runs that end to
+    /// end and checks the mark comes back at or above the quorum's.
+    ///
+    /// # What it costs, and the premise nothing here can check
+    ///
+    /// Until the replay has run, this store holds no acknowledged marks, so the
+    /// two checks that defend them — `verify_marks_dominate` on a publication
+    /// and on recovery — have nothing to compare against and will accept any
+    /// state offered. Re-seeding gives up this replica's ability to refuse a
+    /// mark regression, in exchange for the log's authority over the same fact.
+    ///
+    /// And the premise: that the group still holds those entries. Re-seeding
+    /// one replica of three is recoverable. Re-seeding a quorum destroys the
+    /// marks outright, and a guarded resource downstream may then accept two
+    /// independent tenures under one token. Nothing in this call can tell those
+    /// two situations apart — it sees one directory — so it does not try, and
+    /// it is not the place that decides.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LockStoreError::Io`] when a slot file cannot be removed or the
+    /// emptied directory cannot be made durable, and afterwards the same errors
+    /// as [`LockStore::open`] over the store it created — which, over a
+    /// directory this call has just emptied, is a fresh store.
+    pub fn discard_and_reseed(
+        directory: &Path,
+        config: LockConfig,
+    ) -> Result<Self, LockStoreError> {
+        fs::create_dir_all(directory).map_err(|source| LockStoreError::Io {
+            operation: "create the lock store directory",
+            path: directory.to_path_buf(),
+            source,
+        })?;
+
+        let reseed = survey_for_reseed(directory)?;
+        for slot in [SlotIndex::Zero, SlotIndex::One] {
+            let path = slot_path(directory, slot);
+            match fs::remove_file(&path) {
+                Ok(()) => {}
+                Err(source) if source.kind() == io::ErrorKind::NotFound => {}
+                Err(source) => {
+                    return Err(LockStoreError::Io {
+                        operation: "remove a lock store slot to re-seed it",
+                        path,
+                        source,
+                    })
+                }
+            }
+        }
+        // Both names are gone before anything recreates them, so a crash here
+        // leaves the directory in the one shape `establish_slot_files` treats
+        // as a store that has never published. Re-running this call from there
+        // reaches the same place, which is what makes it repeatable.
+        sync_directory(directory)?;
+
+        let mut store = Self::open_inner(
+            directory,
+            config,
+            FaultPlan::none(),
+            OnUnreadableSlot::Refuse,
+        )?;
+        store.recovery.reseed = Some(reseed);
+        Ok(store)
     }
 
     /// Opens the store with a deterministic fault schedule.
@@ -1889,6 +2127,10 @@ impl LockStore {
                 live_slot,
                 cross_checked_marks,
                 repair,
+                // Set by `discard_and_reseed` after this returns. No branch
+                // inside the opening path can reach one: a re-seed happens
+                // before the opening, to the directory rather than in it.
+                reseed: None,
             },
         })
     }
@@ -2842,12 +3084,31 @@ fn verify_session_cache_dominates(
 /// independent tenures under one token — on request, with a report.
 ///
 /// So it refuses, in **both** entry points, and names the resource and both
-/// marks rather than the generations: that is precisely the fact an operator
-/// must go and check downstream. There is deliberately no override, because an
-/// override is the boolean this paragraph rejects. The way forward is the one a
-/// replicated state machine already has — this store is one replica, and a
-/// replica that cannot prove its high-water marks is re-seeded from the group.
-/// Losing this replica's store is recoverable; losing a fencing mark is not.
+/// marks rather than the generations, because the marks are the loss and the
+/// generations are not. There is deliberately no override, because an override
+/// is the boolean this paragraph rejects.
+///
+/// ## What that refusal costs, and where the store it wedges goes
+///
+/// The cost is not small and is not hedged here: an ordinary crash during an
+/// **acquisition** produces this every time — the interrupted image is the
+/// newer one and it is the first to hold the mark it raised, so no partner can
+/// dominate it — and acquisition is the operation a fencing lock exists to
+/// perform. Both entry points then refuse, neither moves a byte, and the
+/// directory has no entry point that reads it.
+///
+/// That state used to be the end of the road, under a sentence saying a replica
+/// which cannot prove its marks "is re-seeded from the group". That was a claim
+/// about the cluster with nothing behind it: no call in this crate would open
+/// the directory, so the way forward began with deleting files by hand.
+/// [`LockStore::discard_and_reseed`] is that way forward as a named entry point
+/// with its own argument, its own report, and its own tests, and the reason
+/// discarding is sound rather than merely available is on it.
+///
+/// The asymmetry the whole rule rests on stays what it was. This replica's
+/// store is a projection of a committed log and the log can rebuild it. A
+/// fencing token that has left the cluster is not in any log, and nothing
+/// rebuilds the guarded resource that accepted it.
 ///
 /// ## What this does not check, and why
 ///
@@ -3048,6 +3309,70 @@ fn create_slot(directory: &Path, slot: SlotIndex) -> Result<(), LockStoreError> 
 }
 
 /// Summarizes one slot's bytes without decoding its payload.
+/// Records what a re-seed is about to delete, without letting any of it refuse.
+///
+/// Every refusal the opening path can raise is a refusal *about* state this
+/// call is about to remove, so raising one here would make the entry point that
+/// exists for an unreadable store unreachable on exactly the stores it was
+/// added for. So nothing below returns an error except a read that fails for a
+/// reason unrelated to the bytes, and a slot file that is not there is not one
+/// of those: a re-seed over a half-created store is still a re-seed.
+///
+/// The one thing it reads past the slot state is the applied index of a whole
+/// image whose mark is unsealed, which `slot_state` reports only as damage.
+/// That is the wedged store's newest image, so leaving it unread would mean the
+/// report said least about the case this exists for.
+fn survey_for_reseed(directory: &Path) -> Result<Reseed, LockStoreError> {
+    let mut slots = [SlotState::Empty; 2];
+    let mut discarded_bytes = 0_u64;
+    let mut discarded_applied_index = None;
+
+    for slot in [SlotIndex::Zero, SlotIndex::One] {
+        let path = slot_path(directory, slot);
+        let bytes = match fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(source) if source.kind() == io::ErrorKind::NotFound => continue,
+            Err(source) => {
+                return Err(LockStoreError::Io {
+                    operation: "read a lock store slot before re-seeding it",
+                    path,
+                    source,
+                })
+            }
+        };
+        discarded_bytes += as_u64(bytes.len());
+        slots[slot.position()] = slot_state(&bytes);
+        if let Some(applied_index) = surveyed_applied_index(&bytes) {
+            discarded_applied_index = Some(
+                discarded_applied_index
+                    .map_or(applied_index, |held: LogIndex| held.max(applied_index)),
+            );
+        }
+    }
+
+    Ok(Reseed {
+        slots,
+        discarded_bytes,
+        discarded_applied_index,
+    })
+}
+
+/// Returns the applied index a slot's bytes declare, when they are a whole
+/// image under either mark.
+fn surveyed_applied_index(bytes: &[u8]) -> Option<LogIndex> {
+    match verify_slot(bytes) {
+        Ok(Some(sealed)) => Some(sealed.applied_index),
+        Err(SlotDamage::UnsealedCompleteImage { .. }) => {
+            let mut restored = bytes.to_vec();
+            restored[0] = SEALED_MARK;
+            verify_sealed_slot(&restored)
+                .ok()
+                .map(|sealed| sealed.applied_index)
+        }
+        _ => None,
+    }
+}
+
 fn slot_state(bytes: &[u8]) -> SlotState {
     match verify_slot(bytes) {
         Ok(None) => SlotState::Empty,

@@ -41,6 +41,15 @@ pub struct DurableLockApps {
     /// which is a rollback with nothing reported — so the report has to be able
     /// to say "created", and something has to read it.
     opened: BTreeSet<NodeId>,
+    /// Replicas whose next opening discards the store instead of reading it.
+    ///
+    /// This is the second creation the set above exists to catch, made
+    /// legitimate by having been asked for: a re-seed deletes both slot files,
+    /// so the opening that follows reports `created`. Recording the request is
+    /// what keeps that assertion working rather than switching it off — an
+    /// unasked-for creation on a restart is still a rollback with nothing
+    /// reported.
+    reseeding: BTreeSet<NodeId>,
 }
 
 impl DurableLockApps {
@@ -52,7 +61,18 @@ impl DurableLockApps {
             armed: BTreeMap::new(),
             interrupted: BTreeSet::new(),
             opened: BTreeSet::new(),
+            reseeding: BTreeSet::new(),
         }
+    }
+
+    /// Makes `node_id`'s next opening a [`LockStore::discard_and_reseed`].
+    ///
+    /// This is the operator decision, taken by a scenario that has looked at
+    /// what the crash left and found a store no reader will open. It applies to
+    /// one opening: the replica that comes back after it reads its slot files
+    /// like any other.
+    pub fn reseed_next_open(&mut self, node_id: NodeId) {
+        self.reseeding.insert(node_id);
     }
 
     /// Arms `node_id`'s next store with `plan`.
@@ -72,14 +92,26 @@ impl DurableLockApps {
     fn open_store(&mut self, node_id: NodeId) -> DurableLockStateMachine {
         let plan = self.armed.remove(&node_id).unwrap_or_else(FaultPlan::none);
         let directory = self.directory(node_id);
-        let store = LockStore::open_with_faults(&directory, self.config, plan.clone())
-            .unwrap_or_else(|error| {
+        let reseeding = self.reseeding.remove(&node_id);
+        let store = if reseeding {
+            LockStore::discard_and_reseed(&directory, self.config).unwrap_or_else(|error| {
                 panic!(
-                    "replica {} could not open its lock store at {} under {plan}: {error}",
+                    "replica {} could not re-seed its lock store at {}: {error}",
                     node_id.0,
                     directory.display()
                 )
-            });
+            })
+        } else {
+            LockStore::open_with_faults(&directory, self.config, plan.clone()).unwrap_or_else(
+                |error| {
+                    panic!(
+                        "replica {} could not open its lock store at {} under {plan}: {error}",
+                        node_id.0,
+                        directory.display()
+                    )
+                },
+            )
+        };
 
         // The recovery report is asserted on rather than dropped. A replica no
         // scenario ever interrupted has no business finding a damaged slot, and
@@ -89,14 +121,20 @@ impl DurableLockApps {
         let recovery = *store.recovery();
         let first_open = self.opened.insert(node_id);
         assert_eq!(
+            recovery.reseed().is_some(),
+            reseeding,
+            "replica {}'s report disagrees with the entry point that produced it",
+            node_id.0
+        );
+        assert_eq!(
             recovery.created(),
-            first_open,
+            first_open || reseeding,
             "replica {} created its slot files on the wrong opening: a restart that creates them \
              found an empty directory where a store was supposed to be",
             node_id.0
         );
         assert!(
-            recovery.is_clean() || first_open || self.interrupted.contains(&node_id),
+            recovery.is_clean() || first_open || reseeding || self.interrupted.contains(&node_id),
             "replica {} recovered from a damaged slot no scenario put there: {recovery:?}",
             node_id.0
         );

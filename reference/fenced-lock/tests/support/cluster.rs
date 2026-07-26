@@ -343,6 +343,17 @@ impl<A: LockApps> LockCluster<A> {
         self.config
     }
 
+    /// Returns the factory, so a scenario can arm the next opening of a
+    /// replica it has already handed over.
+    ///
+    /// A scenario that must reach the factory *after* the cluster exists is one
+    /// that decides how a replica reopens on the strength of what the crash
+    /// actually left, which is the only order a durable re-seed can be
+    /// scheduled in: nothing knows a store is wedged until it is.
+    pub fn apps_mut(&mut self) -> &mut A {
+        &mut self.apps
+    }
+
     /// Returns the replicas whose durable application failed, with what each
     /// one reported.
     ///

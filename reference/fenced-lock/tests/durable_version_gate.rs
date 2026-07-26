@@ -235,3 +235,61 @@ fn a_future_slot_version_is_not_given_up_by_the_documented_remedy() {
         }
     }
 }
+
+/// The third entry point on the same bytes, and why it answers differently.
+///
+/// The rule the test above pins is about a *remedy for damage*: a caller asking
+/// to repair damage did not ask to discard a newer build's committed work, so
+/// `open_and_repair` refuses. `discard_and_reseed` is not a remedy for damage
+/// and does not read what it deletes — a caller running it asked to delete the
+/// store — so the version gate has nothing to protect there, and the slot goes
+/// with everything else.
+///
+/// This is pinned rather than left implicit because the difference is a decision
+/// and not an oversight. Re-seeding after a binary downgrade rebuilds this
+/// replica in the older build's format from the same committed log, which is
+/// what a fresh replica of that build would hold. Whether that build should own
+/// this replica at all is a question about the deployment, and no entry point
+/// here answers it.
+#[test]
+fn a_reseed_deletes_a_version_this_build_cannot_read() {
+    let scratch = ScratchDir::new("version-gate-reseed");
+    let app = commit_workload(scratch.path());
+    let live = app.store().live_slot().expect("the workload committed");
+    drop(app);
+
+    let mut bytes = raw_slot::read(scratch.path(), live).expect("the live slot reads");
+    bytes[4] = 2;
+    raw_slot::write(scratch.path(), live, &bytes).expect("the live slot rewrites");
+
+    assert!(
+        matches!(
+            LockStore::open_and_repair(scratch.path(), config(2, 4)),
+            Err(LockStoreError::UnreadableSlot {
+                damage: SlotDamage::UnsupportedFormatVersion { version: 2 },
+                ..
+            })
+        ),
+        "the remedy for damage must still refuse it"
+    );
+
+    let reseeded = LockStore::discard_and_reseed(scratch.path(), config(2, 4))
+        .expect("the re-seed deletes whatever it finds");
+    let reseed = reseeded
+        .recovery()
+        .reseed()
+        .expect("a re-seed reports what it deleted");
+    assert_eq!(reseeded.live_slot(), None, "{reseed}");
+    assert_eq!(
+        reseeded.applied_index(),
+        LogIndex::ZERO,
+        "a re-seeded store starts at the floor the log has to lift it from"
+    );
+    assert!(
+        reseed.slots().iter().any(|state| matches!(
+            state.damage(),
+            Some(SlotDamage::UnsupportedFormatVersion { version: 2 })
+        )),
+        "the report has to name the version it deleted rather than only counting bytes: {reseed}"
+    );
+}

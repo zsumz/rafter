@@ -55,8 +55,8 @@ use rafter_reference_fenced_lock::{
         WriteFault, SLOT_HEADER_LEN, SLOT_TRAILER_LEN,
     },
     ApplyDisposition, ApplyOutcome, Command, DurableLockError, DurableLockStateMachine,
-    FencingToken, GuardedResource, GuardedWrite, LockResponse, LockService, OperationResult,
-    ReferenceLockService, ServiceView,
+    FencingToken, GuardedResource, GuardedWrite, LockConfig, LockResponse, LockService,
+    OperationResult, ReferenceLockService, ServiceView,
 };
 
 use cluster::LockCluster;
@@ -1728,9 +1728,187 @@ fn a_replica_that_crashed_mid_transaction_recovers_and_rejoins() {
     );
 }
 
+/// The other half of the mark rule: the store no reader will open comes back
+/// from the log.
+///
+/// `verify_discard_preserves_marks` refuses to discard an image whose marks the
+/// partner cannot dominate, in both entry points, with no override — and an
+/// ordinary crash during an *acquisition* is that shape every time, because the
+/// interrupted image is the newer one and is the first to hold the mark it
+/// raised. The refusal is right. What it needs is somewhere to go, and this is
+/// the proof that `LockStore::discard_and_reseed` is somewhere rather than
+/// nowhere.
+///
+/// The claim under test is the entry point's own: that deleting this replica's
+/// projection cannot lose a mark, because the store publishes only what the log
+/// has already committed. So the assertion is not that the re-seed succeeded —
+/// deleting files always succeeds — but that the mark the store gave up is
+/// carried back, at or above what the surviving quorum established, by nothing
+/// but replication.
+#[test]
+fn a_reseeded_replica_recovers_its_marks_from_the_group() {
+    let scratch = ScratchDir::new("cluster-reseed");
+    let lock_config = config(2, 4);
+    let mut apps = DurableLockApps::new(scratch.path(), lock_config);
+
+    // Publication 4 is `acquire(RESOURCE)` raising the mark from 1 to 2 — see
+    // `workload`. `BeforeSeal` puts every byte of that image on the medium and
+    // withholds the byte that seals it, which is the ordinary crash the repair
+    // entry point was added for and the one it cannot reach.
+    let plan = FaultPlan::at(4, WriteFault::BeforeSeal);
+    apps.arm(NodeId(3), plan.clone());
+    let node_three = apps.directory(NodeId(3));
+
+    let mut cluster = LockCluster::with_apps(lock_config, apps);
+    let leader = cluster.elect_leader();
+    assert_eq!(leader, NodeId(1), "the lowest election timeout wins");
+
+    for command in &workload() {
+        cluster.submit(leader, *command);
+    }
+    assert_eq!(
+        cluster
+            .crashed()
+            .into_iter()
+            .map(|(node_id, _)| node_id)
+            .collect::<Vec<_>>(),
+        vec![NodeId(3)],
+        "the armed replica must be the one that died, and the only one (`{plan}`)"
+    );
+
+    // The wedge itself, asserted before anything clears it: this is a real
+    // directory left by a real replicated crash, not a hand-built one, and
+    // neither reading entry point opens it.
+    assert_no_reader_opens(&node_three, lock_config);
+
+    cluster.settle();
+    let quorum_mark = cluster
+        .lock_status(NodeId(2), resource(RESOURCE))
+        .token_floor
+        .expect("the surviving quorum acquired this resource");
+    let quorum_view = cluster.service_view(NodeId(2));
+
+    // The decision, taken with the refusals above in hand.
+    cluster.apps_mut().reseed_next_open(NodeId(3));
+    cluster.restart(NodeId(3));
+    assert!(
+        cluster.crashed().is_empty(),
+        "the re-seeded replica is alive again"
+    );
+
+    // What the store this replica opened actually held, read from the report of
+    // that one opening rather than from the replica's state now — the report
+    // describes an opening and never changes, so it still says what the replay
+    // started from. This is the half that makes the assertion below evidence:
+    // the store kept nothing, so anything it holds afterwards arrived.
+    let discarded_floor = cluster.with_state_machine(NodeId(3), |app| {
+        let recovery = app.store().recovery();
+        let reseed = recovery
+            .reseed()
+            .expect("the opening that came back was a re-seed");
+        assert_eq!(
+            recovery.live_slot(),
+            None,
+            "a re-seeded store adopts no image: {reseed}"
+        );
+        assert!(recovery.created(), "a re-seed recreates both slot files");
+        reseed
+            .discarded_applied_index()
+            .expect("the deleted store held a whole image and its applied floor is readable")
+    });
+    assert!(
+        discarded_floor > LogIndex::ZERO,
+        "the deleted store had applied something, and the report has to say how far"
+    );
+
+    cluster.run_rounds(8);
+    cluster.settle();
+
+    // The report named a target and the replay met it. That pairing is what
+    // makes `discarded_applied_index` a number a caller can act on rather than
+    // a byte count with a nicer name.
+    assert!(
+        cluster.applied_index(NodeId(3)) >= discarded_floor,
+        "the replay must carry the re-seeded replica back to the floor it deleted"
+    );
+
+    // The whole claim, in one assertion: a mark this replica deleted is back,
+    // and it is back because the log carried it rather than because anything
+    // here kept a copy.
+    assert!(
+        cluster
+            .lock_status(NodeId(3), resource(RESOURCE))
+            .token_floor
+            .is_some_and(|mark| mark >= quorum_mark),
+        "the re-seeded replica must recover at least the mark the quorum established"
+    );
+    let converged = cluster.service_view(leader);
+    assert_eq!(
+        converged, quorum_view,
+        "nothing was submitted after the crash, so the re-seed must not have moved the cluster"
+    );
+    for node_id in cluster.node_ids() {
+        assert_eq!(
+            cluster.service_view(node_id),
+            converged,
+            "replica {} did not converge after the re-seed (`{plan}`)",
+            node_id.0
+        );
+    }
+    assert!(
+        cluster.crashed().is_empty(),
+        "no replica died during the catch-up (`{plan}`)"
+    );
+
+    // And the cluster keeps moving afterwards, which is what makes the re-seeded
+    // replica a member rather than a spectator that happens to hold the right
+    // bytes.
+    cluster.submit(leader, submit(1, 4, 3, acquire("reports/daily", 4)));
+    cluster.run_rounds(8);
+    cluster.settle();
+    let moved_on = cluster.service_view(leader);
+    assert_ne!(moved_on, converged, "the post-re-seed command must commit");
+    assert_eq!(
+        cluster.service_view(NodeId(3)),
+        moved_on,
+        "the re-seeded replica kept replicating"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Scenario support
 // ---------------------------------------------------------------------------
+
+/// Asserts that neither entry point which *reads* a store will open this one,
+/// and for the two different reasons each has.
+///
+/// Both are asserted rather than only the second, because the pair is the
+/// finding: `open` cannot tell an interrupted publication from a rotted mark,
+/// and the repair can but may not adopt a partner that drops a mark. Either one
+/// alone would leave the other looking like the way out.
+fn assert_no_reader_opens(directory: &Path, lock_config: LockConfig) {
+    let refused_read = LockStore::open(directory, lock_config)
+        .expect_err("a whole unsealed image is not residue `open` may skip");
+    assert!(
+        matches!(
+            refused_read,
+            LockStoreError::UnreadableSlot {
+                damage: SlotDamage::UnsealedCompleteImage { .. },
+                ..
+            }
+        ),
+        "{refused_read}"
+    );
+    let refused_repair = LockStore::open_and_repair(directory, lock_config)
+        .expect_err("the partner cannot dominate a mark the interrupted image raised");
+    assert!(
+        matches!(
+            refused_repair,
+            LockStoreError::DiscardWouldRegressMark { .. }
+        ),
+        "{refused_repair}"
+    );
+}
 
 /// The command sequence these scenarios replicate, at indexes 1 upward.
 ///

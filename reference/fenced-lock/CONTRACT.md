@@ -661,6 +661,32 @@ ordinary crash between a publication's barrier and its seal is now a refusal, an
 a store whose ordinary crash residue needs an operator with no documented way
 forward is worse than one that names the way forward and reports what it costs.
 
+That entry point covers an interrupted publication that raised no fencing
+high-water mark — a release, an expiry, a renewal, a session open. It does not
+cover an interrupted **acquisition**, and that half is named here rather than
+left to be discovered: an acquisition raises a mark, the interrupted copy is the
+newer one, and no older partner carries a mark that copy was the first to hold,
+so the discard rule below refuses it in both entry points. Acquisition is the
+operation a fencing lock exists to perform, so a store crashed mid-acquisition
+is a store no reading entry point opens.
+
+**There is a third entry point for exactly that store, and it is a third
+decision rather than a flag on the second.** It deletes both copies and opens an
+empty store for the replicated log to refill, reporting what it deleted and how
+far that store had applied. It is sound because this store publishes only what
+the log has already committed — a state machine applies an entry after the entry
+commits, and the publication happens during the apply — so no mark it deletes is
+one the log cannot return. Two things it costs are stated rather than softened.
+Until the replay has run the store holds no acknowledged marks, so the two
+checks that defend them have nothing to compare against and will accept any
+state offered. And the premise it rests on is about the group, not this
+directory: re-seeding one replica of three is recoverable, re-seeding a quorum
+destroys the marks outright, and nothing in the call can tell those apart.
+
+The three read progressively less: opening reads, repairing chooses between two
+readings, re-seeding keeps neither. Each is a separate call, so no caller
+reaches a later one by retrying an earlier one.
+
 **Wherever a copy is discarded or set aside, its fencing high-water marks are
 compared against the copy adopted in its place, and a discard the adopted copy
 cannot dominate is refused by both entry points.** This section used to say
@@ -683,10 +709,11 @@ to protect; nothing in the bytes decides which holds, and neither can the caller
 because the deciding evidence is in the guarded downstream this store cannot
 read. Proceeding on the strength of having been called by name would be consent
 in place of information. So it refuses and names the resource and both marks
-rather than the two generations, which is exactly the fact an operator must check
-downstream — and the way forward is the one a replicated state machine already
-has: a replica that cannot prove its high-water marks is re-seeded from the
-group. Losing this replica's copies is recoverable; losing a fencing mark is not.
+rather than the two generations, because the marks are the loss and the
+generations are not. The way forward is the re-seed entry point above: this
+replica's copies are a projection of a committed log and the log rebuilds them,
+while a fencing token that has left the cluster is in no log and nothing rebuilds
+the guarded resource that accepted it.
 
 Two boundaries of that rule are stated rather than left to be found, and each is
 tested on both sides. The **session cache** is deliberately not required to
