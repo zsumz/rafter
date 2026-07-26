@@ -1,5 +1,55 @@
 //! Client requests: forwarding, read barriers, and the reply path.
 //!
+//! # Who answers
+//!
+//! [`InitializedNode::deliver_result`] is the mechanism that puts an answer in
+//! flight. It does not decide *whether* one is owed. That decision belongs to
+//! each caller, because each caller is the one holding the record of the
+//! obligation, and the two kinds of request record it differently:
+//!
+//! - **A granted read is answered by the node holding the waiter, whatever its
+//!   role.** The record is the `PendingRead` in `pending_reads`, and
+//!   [`InitializedNode::flush_reads`] answers exactly what it holds. A read is
+//!   served out of one node's own applied state; no other node has a copy of
+//!   the obligation, so if this one declines the read is lost. The rest of this
+//!   header is the argument that answering is not merely necessary but correct.
+//! - **A committed write is answered by the node that accepted the client's
+//!   request, whatever its role.** The record is either `origin == self.name`,
+//!   carried in the command itself, for a client that reached this node
+//!   directly; or an entry in `pending_forwards`, for a peer's forward this
+//!   node accepted and proposed. Every node in the cluster applies the entry
+//!   and computes the identical result, so unlike a read the answer is not
+//!   scarce — it is the *obligation* that is scarce, and a replica holding no
+//!   obligation must stay silent.
+//!
+//! # Why the two rules differ
+//!
+//! A read exists on one node. A committed write exists on all of them. A read's
+//! waiter lives only where the barrier was granted, so `flush_reads` answering
+//! everything it holds is both safe and required. But `Output::Apply` reaches
+//! every replica with the same `origin` string in the payload, so an
+//! `origin`-only rule cannot tell the node that accepted the client's request
+//! from the ones that merely replicated it. Delivering on all of them mails
+//! `N - 1` redundant `client_result` envelopes per write, and — because the
+//! dedupe set is volatile — makes a restart replaying committed entries re-mail
+//! answers for requests this node never accepted and nobody is waiting on.
+//!
+//! Role is not the axis that separates them. Consider a node that accepted a
+//! peer's forward, proposed it, and was demoted before the entry committed
+//! under the next leader. It is the only node that owes that peer an answer,
+//! and it is not the leader; the new leader owes nothing and is. A role gate
+//! gets both backwards. It also silences the demoted node that granted a read
+//! barrier, which is the bug f3028041 fixed. The axis is the obligation, and
+//! both rules key off it.
+//!
+//! Nothing here bounds the *direct* arm across a restart: a recovered node
+//! replaying an entry it originated re-sends that client's answer, because
+//! `completed_replies` did not survive either. That is the conservative
+//! direction — an extra answer to a client this node genuinely served, which
+//! Maelstrom discards as a stale `in_reply_to` — and it is unchanged from
+//! before. The remote arm's re-mail was not: it spoke for a request this node
+//! never accepted.
+//!
 //! # Why a granted read is answered regardless of the current role
 //!
 //! [`InitializedNode::deliver_result`] does not consult `role()`. A read whose
@@ -199,6 +249,15 @@ impl InitializedNode {
         });
     }
 
+    /// Proposes a mutation, recording first that this node now owes an answer
+    /// for it.
+    ///
+    /// Reached only on the leader. When `origin` is a peer, accepting that
+    /// peer's forward is what makes this node the answerer for the committed
+    /// write, and `pending_forwards` is the only place that is written down —
+    /// the command payload's `origin` names the peer, not this node. A request
+    /// the client sent here directly needs no entry: `origin == self.name`
+    /// already says it, on this node and nowhere else.
     fn propose(
         &mut self,
         origin: String,
@@ -206,6 +265,9 @@ impl InitializedNode {
         in_reply_to: u64,
         request: ClientMutation,
     ) {
+        if origin != self.name {
+            self.pending_forwards.insert((client.clone(), in_reply_to));
+        }
         let command = Command {
             origin,
             client,
@@ -229,10 +291,18 @@ impl InitializedNode {
     /// [`Self::deliver_result`], never before. The waiter is this node's only
     /// record that an answer is owed, so retiring it first and *then* letting
     /// the reply path decide whether it could send loses the read outright —
-    /// silently, and with nothing left to retry from. Retiring is sound here
-    /// only because `deliver_result` is total; should it ever grow a case where
-    /// no answer leaves the node, this retirement has to become conditional on
-    /// that case in the same change.
+    /// silently, and with nothing left to retry from.
+    ///
+    /// Retiring unconditionally is sound because `deliver_result` discharges
+    /// the obligation on every call. Its one non-sending arm is
+    /// [`Self::reply_to_client`]'s dedupe, which fires exactly when this node
+    /// already sent that client an answer for that request — so the waiter has
+    /// nothing left to pay. Conditioning retirement on a fresh send instead
+    /// would strand precisely that waiter for good: nothing would ever make the
+    /// duplicate go out, so every later flush would re-examine it and decline
+    /// again, forever. Should `deliver_result` ever grow an arm that leaves the
+    /// request genuinely unanswered, that arm must record the outstanding
+    /// obligation somewhere in the same change; it cannot be dropped here.
     pub(crate) fn flush_reads(&mut self) {
         let ready = self
             .pending_reads
@@ -255,13 +325,38 @@ impl InitializedNode {
         }
     }
 
+    /// Whether this node is the one that owes `command`'s client an answer,
+    /// consuming the record if it is.
+    ///
+    /// Two ways to be that node, and no third: the client reached this node
+    /// directly, so the command carries this node's name as its `origin`; or a
+    /// peer forwarded the request here and this node proposed it, leaving the
+    /// entry in `pending_forwards` that this consumes. A replica that only
+    /// replicated the entry matches neither and stays silent. See this module's
+    /// header for why role is not one of the ways.
+    ///
+    /// The record is consumed rather than read so that the answer is mailed at
+    /// most once per accepted request, however many times the entry is applied.
+    pub(crate) fn claim_answer_for(&mut self, command: &Command) -> bool {
+        command.origin == self.name
+            || self
+                .pending_forwards
+                .remove(&(command.client.clone(), command.in_reply_to))
+    }
+
     /// Puts one request's answer in flight, either as a direct reply or as a
     /// `client_result` handed back to the node that forwarded the request.
     ///
-    /// Total: every call leaves the origin holding an answer. In particular it
-    /// does not consult the current role — see this module's header for why a
-    /// granted read stays answerable after leadership is lost, and why the
-    /// rejection and cancellation replies need the same freedom.
+    /// Total, in the sense its callers rest on: every call discharges the
+    /// origin's answer obligation. Either this call puts an answer on the wire,
+    /// or [`Self::reply_to_client`] finds that this node already put one there
+    /// for the same `(client, in_reply_to)` and declines to send a second — a
+    /// suppressed duplicate, not a drop. No arm leaves the request unanswered.
+    ///
+    /// It does not consult the current role, and it does not decide whether an
+    /// answer is owed at all; that is [`Self::claim_answer_for`] and
+    /// [`Self::flush_reads`], each of which holds the record. See this module's
+    /// header for both rules.
     pub(crate) fn deliver_result(
         &mut self,
         origin: &str,
@@ -284,6 +379,15 @@ impl InitializedNode {
         }
     }
 
+    /// Sends one answer straight to `client`, at most once per request for the
+    /// life of this process.
+    ///
+    /// `completed_replies` gains `(client, in_reply_to)` immediately before the
+    /// emit and in no other place, so a member of that set is exactly a request
+    /// this node has already put an answer on the wire for. The early return is
+    /// therefore an *already delivered* case, not a dropped one — which is what
+    /// keeps [`Self::deliver_result`] total and lets [`Self::flush_reads`]
+    /// retire a waiter without checking.
     fn reply_to_client(&mut self, client: &str, in_reply_to: u64, result: ClientResult) {
         if !self
             .completed_replies

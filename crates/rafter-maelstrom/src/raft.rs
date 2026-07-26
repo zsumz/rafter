@@ -13,6 +13,8 @@ use crate::{
 
 #[cfg(test)]
 mod read_tests;
+#[cfg(test)]
+mod reply_tests;
 pub(crate) mod snapshots;
 
 impl InitializedNode {
@@ -145,6 +147,12 @@ impl InitializedNode {
         }
     }
 
+    /// Applies one committed command on this node and, if this node is the one
+    /// that owes the client an answer, mails it.
+    ///
+    /// Every replica reaches here for every committed command, with the same
+    /// `command.origin` in hand, so the payload alone cannot say who answers.
+    /// `claim_answer_for` is that decision; see the `client` module header.
     fn apply_command(&mut self, index: LogIndex, payload: &[u8]) {
         let command: Command = match serde_json::from_slice(payload) {
             Ok(command) => command,
@@ -165,12 +173,14 @@ impl InitializedNode {
                 return;
             }
         };
-        self.deliver_result(
-            &command.origin,
-            &command.client,
-            command.in_reply_to,
-            result,
-        );
+        if self.claim_answer_for(&command) {
+            self.deliver_result(
+                &command.origin,
+                &command.client,
+                command.in_reply_to,
+                result,
+            );
+        }
         self.flush_reads();
         self.maybe_compact_snapshot();
     }

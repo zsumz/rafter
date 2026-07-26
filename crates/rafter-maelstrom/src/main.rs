@@ -48,6 +48,31 @@ struct InitializedNode {
     membership_reported_complete: bool,
     known_leader: Option<NodeId>,
     pending_reads: BTreeMap<u64, PendingRead>,
+    /// Client requests a peer forwarded here that this node proposed on that
+    /// peer's behalf and still owes it an answer for, keyed the way
+    /// `completed_replies` is: `(client, in_reply_to)`.
+    ///
+    /// This is the record that makes this node the answerer for a committed
+    /// write. A request the client sent here directly needs no record — the
+    /// command carries `origin`, and `origin == self.name` says it. A forward
+    /// leaves no such mark: `origin` names the peer, and reads identically on
+    /// the node that accepted the forward and on every node that merely
+    /// replicated the entry. Without this set those two are indistinguishable
+    /// at apply. See the `client` module header for both rules.
+    ///
+    /// Deliberately volatile, and not part of the command payload. The
+    /// obligation is to a peer waiting on this process; a restart ends that
+    /// wait, so a recovered node replaying the entry owes nothing and must stay
+    /// silent. A `origin`-side field in the payload would survive recovery and
+    /// re-mail the answer instead.
+    ///
+    /// An entry is consumed by the apply that pays it. One survives only when
+    /// this node never applies that entry — a snapshot install jumped the
+    /// applied index past it — and then the answer was never this node's to
+    /// give: the forwarding peer applies the same entry with its own name as
+    /// `origin` and answers its client directly. The residue is bounded by
+    /// request volume, as `completed_replies` already is.
+    pending_forwards: BTreeSet<(String, u64)>,
     completed_replies: BTreeSet<(String, u64)>,
     next_msg_id: u64,
     next_read_id: u64,

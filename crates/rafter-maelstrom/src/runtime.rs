@@ -203,6 +203,7 @@ impl MaelstromNode {
             membership_reported_complete: false,
             known_leader: None,
             pending_reads: BTreeMap::new(),
+            pending_forwards: BTreeSet::new(),
             completed_replies: BTreeSet::new(),
             next_msg_id: 1,
             next_read_id: 1,
