@@ -237,6 +237,142 @@ fn a_written_but_uncommitted_transaction_is_not_a_transaction() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// The write-ahead window itself, which the format documents and no test armed.
+//
+// `WriteFault::BeforeSeal` is the boundary where the whole frame is on the
+// medium and the byte that seals it is not. Until the mark carried a
+// completeness test beside it, the store answered by truncating, and the answer
+// was never asserted — so the byte-for-byte identical case of a committed frame
+// whose mark byte rotted was truncated too, silently.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_whole_frame_that_was_never_sealed_is_not_resolved_by_a_read() {
+    let commands = workload();
+    let scratch = ScratchDir::new("unsealed-whole-frame");
+    let (before, image_len) = state_and_image_len(&commands, commands.len());
+    let frame_len = as_u64(BEGIN_LEN) + image_len + as_u64(COMMIT_LEN);
+
+    let plan = FaultPlan::at(as_u64(commands.len()), WriteFault::BeforeSeal);
+    let mut app = open(scratch.path(), plan.clone());
+    apply_all(&mut app, &commands[..commands.len() - 1]);
+    apply_one(
+        &mut app,
+        index_of(commands.len()),
+        commands[commands.len() - 1].clone(),
+    )
+    .expect_err("a frame that was not sealed is not a transaction");
+    assert_eq!(app.store().fired_fault(), Some(WriteFault::BeforeSeal));
+    drop(app);
+
+    let length_before = raw_journal::read(scratch.path())
+        .expect("the journal reads")
+        .len();
+
+    // These bytes are a whole frame. The only thing wrong with them is the one
+    // byte that says whether they count, and a committed frame whose mark rotted
+    // to zero is the same bytes, so `open` refuses instead of choosing between
+    // two histories it cannot see.
+    let refused = LedgerStore::open(scratch.path(), config(2, 4))
+        .expect_err("a whole unsealed frame is not residue `open` may truncate");
+    let LedgerStoreError::UnreadableFrame { corruption, .. } = refused else {
+        panic!("unexpected refusal under `{plan}`: {refused}");
+    };
+    assert_eq!(
+        corruption,
+        TornTail::UnsealedCompleteFrame { len: frame_len },
+        "under `{plan}` the tail must be named a whole unsealed frame"
+    );
+    assert!(
+        !corruption.is_interrupted_append(),
+        "a whole unsealed frame is not an interrupted append (`{plan}`)"
+    );
+
+    // Nothing was shortened by the refusal, which is the property that makes
+    // refusing recoverable under both readings and truncating recoverable under
+    // only one.
+    assert_eq!(
+        raw_journal::read(scratch.path())
+            .expect("the journal reads back")
+            .len(),
+        length_before,
+        "a refusal must not shorten the journal (`{plan}`)"
+    );
+
+    let repaired = LedgerStore::open_and_repair(scratch.path(), config(2, 4))
+        .expect("the repair entry point resolves it");
+    let repair = repaired
+        .recovery()
+        .repair()
+        .expect("a repair that discarded a frame reports it");
+    assert_eq!(repair.discarded_bytes(), frame_len, "under `{plan}`");
+    assert_eq!(
+        durable_state(&DurableLedgerStateMachine::new(repaired)),
+        before,
+        "the repair resolves the write-ahead window to the pre-transaction state (`{plan}`)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The boundary just past the seal. The seal byte is written and its barrier
+// fails, so the caller is told the outcome is unknown and either side is legal.
+// What is *not* legal is the third answer: shortening the journal.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_failed_seal_barrier_never_shortens_the_journal() {
+    let commands = workload();
+    let scratch = ScratchDir::new("failed-seal-sync");
+    let (before, _) = state_and_image_len(&commands, commands.len());
+    let after = uninterrupted_state(&commands);
+
+    let plan = FaultPlan::at(as_u64(commands.len()), WriteFault::AtSealSync);
+    let mut app = open(scratch.path(), plan.clone());
+    apply_all(&mut app, &commands[..commands.len() - 1]);
+    apply_one(
+        &mut app,
+        index_of(commands.len()),
+        commands[commands.len() - 1].clone(),
+    )
+    .expect_err("a failed barrier is a failed transaction");
+    assert_eq!(app.store().fired_fault(), Some(WriteFault::AtSealSync));
+    drop(app);
+
+    let length_before = raw_journal::read(scratch.path())
+        .expect("the journal reads")
+        .len();
+    match LedgerStore::open(scratch.path(), config(2, 4)) {
+        Ok(store) => {
+            assert_eq!(
+                store.recovery().discarded_bytes(),
+                0,
+                "a frame whose seal reached the file is not residue (`{plan}`)"
+            );
+            let state = durable_state(&DurableLedgerStateMachine::new(store));
+            assert!(
+                state == before || state == after,
+                "a failed seal barrier recovered to neither side (`{plan}`)"
+            );
+        }
+        Err(LedgerStoreError::UnreadableFrame { corruption, .. }) => {
+            assert!(
+                matches!(corruption, TornTail::UnsealedCompleteFrame { .. }),
+                "if the seal did not land, the tail is the whole-frame ambiguity and nothing \
+                 else (`{plan}`): {corruption:?}"
+            );
+        }
+        Err(other) => panic!("unexpected refusal under `{plan}`: {other}"),
+    }
+    assert_eq!(
+        raw_journal::read(scratch.path())
+            .expect("the journal reads back")
+            .len(),
+        length_before,
+        "neither outcome of a failed seal barrier may shorten the journal (`{plan}`)"
+    );
+}
+
 #[test]
 fn a_torn_commit_record_does_not_commit() {
     let commands = workload();
@@ -293,13 +429,48 @@ fn a_failed_durability_barrier_leaves_the_outcome_to_recovery() {
     );
     drop(app);
 
-    // The contract does not promise which side a failed barrier lands on. It
-    // promises the answer is one of the two, and that recovery is what decides.
-    let recovered = open(scratch.path(), FaultPlan::none());
-    let state = durable_state(&recovered);
+    // `AtFileSync` fires after the whole unsealed frame is emitted, so the
+    // journal ends in a frame that verifies in every respect except its mark.
+    // That is the one boundary `open` will not resolve, and the reason is that
+    // the same bytes are also what a committed frame whose mark byte rotted
+    // leaves: truncating is right under the first reading and deletes an
+    // acknowledged transaction under the second. This test used to assert that
+    // recovery picked a side; it pinned a choice recovery had no grounds to
+    // make.
+    let refused = LedgerStore::open(scratch.path(), config(2, 4))
+        .expect_err("a whole unsealed frame is not something `open` may resolve");
+    let LedgerStoreError::UnreadableFrame { corruption, .. } = refused else {
+        panic!("unexpected refusal under `{plan}`: {refused}");
+    };
     assert!(
-        state == before || state == after,
-        "a failed barrier recovered to a state that is neither side of the transaction (`{plan}`)"
+        matches!(corruption, TornTail::UnsealedCompleteFrame { .. }),
+        "a failed barrier must be named as the whole unsealed frame it is, not as an interrupted \
+         append (`{plan}`): {corruption:?}"
+    );
+
+    // The contract still promises the answer is one of the two sides. What
+    // changed is who says so: a caller that has decided the frame was never
+    // committed asks for the repair by name, and gets exactly the
+    // pre-transaction state.
+    let repaired = LedgerStore::open_and_repair(scratch.path(), config(2, 4))
+        .expect("the repair entry point resolves it");
+    let repair = repaired
+        .recovery()
+        .repair()
+        .expect("the repair reports what it discarded");
+    assert!(
+        matches!(repair.corruption(), TornTail::UnsealedCompleteFrame { .. }),
+        "the repair names the ambiguity it resolved (`{plan}`): {repair}"
+    );
+    let recovered = DurableLedgerStateMachine::new(repaired);
+    let state = durable_state(&recovered);
+    assert_eq!(
+        state, before,
+        "the repair resolves a failed barrier to the pre-transaction state (`{plan}`)"
+    );
+    assert_ne!(
+        state, after,
+        "the repair discarded the frame, so the post-transaction state is not what it produces"
     );
 }
 

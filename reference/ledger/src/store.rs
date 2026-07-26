@@ -199,15 +199,20 @@
 //!
 //! - Before the first byte of a frame, the journal is unchanged, so recovery
 //!   sees the pre-transaction state with a clean tail.
-//! - From that first byte to the last, the tail carries the unsealed append
-//!   mark. Recovery stops at the last committed frame — the pre-transaction
-//!   state — and reports [`TornTail::UnsealedAppend`].
+//! - From that first byte to the *second to last*, the tail carries the unsealed
+//!   append mark and is not a whole frame. Recovery stops at the last committed
+//!   frame — the pre-transaction state — and reports
+//!   [`TornTail::UnsealedAppend`].
 //! - With the whole frame durable and the seal not yet written, the transaction
-//!   is written but not committed, which is the same pre-transaction state.
-//!   This is the window a write-ahead journal exists to make representable, and
-//!   it reports as the same unsealed tail as every earlier point: the mark's
-//!   whole purpose is that a nearly finished frame is not treated differently
-//!   from a barely started one.
+//!   is written but not committed, which is the same pre-transaction state — and
+//!   this is the one boundary `open` will not resolve on its own. These bytes
+//!   are also exactly what a committed frame whose mark byte rotted looks like,
+//!   so recovery refuses rather than guessing which it is, reporting
+//!   [`TornTail::UnsealedCompleteFrame`] through
+//!   [`LedgerStoreError::UnreadableFrame`].
+//!   [`LedgerStore::open_and_repair`] resolves it to the pre-transaction state
+//!   for a caller who has decided. The narrower promise this bullet makes, and
+//!   why it is narrower, is argued under "Which residue `open` may truncate".
 //! - After the seal's sync returns, the frame is committed, so recovery sees
 //!   the post-transaction state.
 //!
@@ -268,30 +273,72 @@
 //! is durable. An append writes the unsealed mark before any other byte of the
 //! frame, makes the whole frame durable, and only then writes the one byte that
 //! seals it. Since a crash leaves a prefix of what was written, the mark is
-//! written first and *every* interrupted append leaves it unsealed.
-//! Contrapositively, a sealed mark proves no append was interrupted there, so
-//! those bytes are exactly what some completed append sealed, and any damage to
-//! them happened after the seal. Zeros are the unsealed mark, so the ordinary
-//! residue of a delayed allocation reads as exactly what it is, at every
-//! length.
+//! written first and *every* interrupted append leaves it unsealed. Zeros are
+//! the unsealed mark, so the ordinary residue of a delayed allocation reads as
+//! exactly what it is, at every length.
 //!
-//! That is [`TornTail::is_interrupted_append`], and it now holds in the
-//! direction it is used. Every other shape — a sealed frame cut short, a begin
-//! record that does not verify, an image that does not match its checksum, a
-//! commit record that seals nothing, a byte that is neither mark — proves
-//! nothing of the kind. Such a frame may sit at or below the last commit point,
-//! and it makes everything after it unreadable regardless. `open` refuses with
-//! [`LedgerStoreError::UnreadableFrame`] rather than treating it as a tail,
-//! because treating it as a tail means deleting acknowledged history from the
-//! medium during what the caller asked for as a *read*.
+//! ## The mark is half the rule, not the rule
+//!
+//! An earlier shape of this store took that paragraph and read it backwards: it
+//! proved `interrupted ⇒ unsealed`, took the contrapositive `sealed ⇒ not
+//! interrupted`, and then truncated on an unsealed mark — which needs `unsealed
+//! ⇒ was being written`, a third statement neither of the first two implies. It
+//! is also false, and one byte shows it. `b'R'` is `0x52`. Rot it to `0x00` in a
+//! committed frame and that frame reads as an interrupted append; `open`
+//! truncated from there to the end of the file, returned `Ok`, and reported the
+//! deleted transactions as "bytes no commit point ever covered". Every *other*
+//! byte of the same begin record is protected by a checksum and refuses the
+//! store. The mark byte was the one byte no checksum was ever consulted for,
+//! because the mark test returned first.
+//!
+//! So the mark is asked a narrower question now, and a second question is asked
+//! beside it. **Truncating requires the unsealed mark *and* positive evidence
+//! that the bytes are not a whole frame.** Recovery reads the tail a second time
+//! with the mark restored to its sealed value — the value every checksum in the
+//! frame was computed over — and only the bytes that still fail to be a whole
+//! frame are residue. That is [`TornTail::is_interrupted_append`], whose
+//! documentation states the proof in the direction the truncation actually uses
+//! it, and names the single-fault assumption it rests on rather than leaving it
+//! implicit.
+//!
+//! Three shapes come out of that second reading, and they are three different
+//! facts:
+//!
+//! - **Not a whole frame**, at a step this build can read: too short for a begin
+//!   record, a begin record that does not verify, a partial or mismatched image,
+//!   a missing or partial commit record. With the unsealed mark, this is
+//!   [`TornTail::UnsealedAppend`] and it is truncated.
+//! - **A whole frame that verifies**, with only the mark reading unsealed. Two
+//!   histories leave exactly these bytes — the write-ahead window, and a
+//!   committed frame whose mark rotted — and nothing in the bytes tells them
+//!   apart. Truncating is right under one and deletes acknowledged history under
+//!   the other, so recovery refuses:
+//!   [`TornTail::UnsealedCompleteFrame`]. Refusing is recoverable under both
+//!   readings, and truncating is recoverable under only one.
+//! - **A version this build cannot read**, which stops the second reading before
+//!   it can say anything: this build does not know the layout, so it cannot
+//!   produce the evidence truncating requires.
+//!
+//! Every shape with a *sealed* mark is what some completed append sealed, and
+//! any damage to it happened afterwards. Such a frame may sit at or below the
+//! last commit point, and it makes everything after it unreachable regardless.
+//! `open` refuses with [`LedgerStoreError::UnreadableFrame`] rather than
+//! treating it as a tail, because treating it as a tail means deleting
+//! acknowledged history from the medium during what the caller asked for as a
+//! *read*.
 //!
 //! One shape is refused by *both* entry points rather than being damage a
-//! repair may clear: a frame declaring a format version this build cannot read.
-//! That needs no corruption at all — a newer build appending over a header this
-//! one still reads produces it from healthy bytes — so it is a newer build's
-//! committed work, and the remedy for damage must not delete it. It is
+//! repair may clear: a frame declaring a format version this build cannot read,
+//! whether its mark is sealed or not. That needs no corruption at all — a newer
+//! build appending over a header this one still reads produces it from healthy
+//! bytes — so it is a newer build's committed work, and the remedy for damage
+//! must not delete it. It is
 //! [`LedgerStoreError::UnsupportedFrameVersion`], separate from the corruption
-//! it used to be folded into.
+//! it used to be folded into. The version byte is therefore one place where a
+//! single altered byte can make a journal unopenable by either entry point; that
+//! is a refusal rather than a loss, and the order is kept deliberately, because
+//! the alternative trades an unopenable file for a repair that can delete a
+//! newer build's work.
 //!
 //! # Repairing, as a separate act
 //!
@@ -821,19 +868,56 @@ impl fmt::Display for FaultPlan {
 /// crash test prove that its injection bit where it aimed.
 ///
 /// Exactly one of these variants is residue an interrupted append can leave;
-/// see [`TornTail::is_interrupted_append`]. The rest name damage to a frame that
-/// was sealed, and reaching one refuses the store rather than truncating.
+/// see [`TornTail::is_interrupted_append`]. The rest name either damage to a
+/// frame that was sealed or a whole frame this store cannot claim was never
+/// committed, and reaching one refuses the store rather than truncating.
+///
+/// "Exactly one" is a closure claim, so it is checked rather than asserted:
+/// `exactly_one_torn_tail_is_residue_an_interrupted_append_leaves` matches on
+/// every variant by name, so a variant added later does not compile until
+/// somebody has decided which side of the rule it falls on.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum TornTail {
-    /// An append wrote these bytes and never sealed the frame.
+    /// An append wrote part of a frame and never sealed it.
     ///
-    /// The frame still carries [`UNSEALED_FRAME_MARK`] in its first byte. This
-    /// is the write-ahead window and every earlier point inside it: the
-    /// transaction was written, wholly or partly, and never committed.
-    /// `present` is how many bytes past the last committed frame it reached.
+    /// Both halves of that sentence are checked. The frame carries
+    /// [`UNSEALED_FRAME_MARK`] in its first byte, *and* the bytes present are
+    /// not a whole frame: with the mark restored to its sealed value they still
+    /// fail to verify, at a step this build can read. `present` is how many
+    /// bytes past the last committed frame it reached.
+    ///
+    /// This is the only variant recovery may truncate. The mark alone would not
+    /// earn that, and used to be asked to.
     UnsealedAppend {
         /// Bytes present past the last committed frame.
         present: u64,
+    },
+    /// A whole frame that verifies, whose mark says it was never sealed.
+    ///
+    /// Two histories produce these exact bytes and nothing in them tells the
+    /// two apart:
+    ///
+    /// - an append that wrote the whole frame, reached its durability barrier,
+    ///   and died before the one byte that seals it — the write-ahead window;
+    ///   or
+    /// - a committed, acknowledged frame whose one mark byte later rotted from
+    ///   `b'R'` to `0x00`.
+    ///
+    /// They are the same bytes because the mark is the only difference between
+    /// the two states on the medium, and a single byte cannot record which of
+    /// them it is. Truncating is right under the first reading and deletes an
+    /// acknowledged transaction under the second, so recovery refuses and says
+    /// so: [`LedgerStoreError::UnreadableFrame`] names it, and
+    /// [`LedgerStore::open_and_repair`] is where a caller who has decided which
+    /// reading applies says so by name. Refusing is recoverable under both
+    /// readings; truncating is recoverable under only one.
+    ///
+    /// It is a separate variant from [`TornTail::UnsealedAppend`] because the
+    /// two are separate facts, and a report that called this one an interrupted
+    /// append would be claiming to know which history happened.
+    UnsealedCompleteFrame {
+        /// Length of the whole frame that verified.
+        len: u64,
     },
     /// The tail begins with a byte that is neither frame mark.
     ForeignFrameMark {
@@ -871,28 +955,47 @@ impl TornTail {
     /// Whether an interrupted append of *this* build left this.
     ///
     /// This is used in one direction only — a tail may be truncated **because**
-    /// it is an interrupted append — so it is the converse that has to hold:
-    /// this returning `true` must prove no commit point covered those bytes.
-    /// One variant carries that proof, and it carries it because an append puts
-    /// the proof in the bytes rather than leaving recovery to infer it from how
-    /// far the scan got.
+    /// it is an interrupted append — so the implication that has to hold is the
+    /// one the caller relies on, written here in that direction:
     ///
-    /// An append writes [`UNSEALED_FRAME_MARK`] into the frame's first byte
-    /// before any other byte of the frame, and replaces it with
-    /// [`SEALED_FRAME_MARK`] only after every other byte has passed a
-    /// durability barrier. A crash leaves a prefix of what was written, so
-    /// every interrupted append leaves the unsealed mark behind.
-    /// Contrapositively, a frame whose first byte is sealed holds exactly the
-    /// bytes some completed append sealed there, and any damage to it happened
-    /// *after* that seal.
+    /// > **If this returns `true`, no commit point covered those bytes.**
     ///
-    /// So [`TornTail::UnsealedAppend`] proves the bytes past the last committed
-    /// frame were never committed, and discarding them discards nothing. Every
-    /// other shape proves nothing of the kind — a sealed frame that has merely
-    /// lost its last byte is a strict prefix of a frame this build wrote and
-    /// would have passed a shape test — and the frames past it are unreachable
-    /// regardless, so `open` refuses rather than shortening the journal on a
-    /// caller's behalf.
+    /// The proof, stated forwards rather than as somebody else's
+    /// contrapositive. Suppose this returns `true`. Then the tail is
+    /// [`TornTail::UnsealedAppend`], and [`classify_unsealed`] produces that
+    /// variant only when **both** of these hold of the bytes past the last
+    /// committed frame:
+    ///
+    /// 1. the first byte is [`UNSEALED_FRAME_MARK`]; and
+    /// 2. read again with that byte restored to [`SEALED_FRAME_MARK`] — the
+    ///    value every checksum in a frame is computed over — the bytes still do
+    ///    not verify as a whole frame, and they fail at a step whose meaning
+    ///    this build knows.
+    ///
+    /// Now suppose, for contradiction, that some commit point *did* cover them.
+    /// A commit point is the promotion of a frame's mark after the whole frame
+    /// is durable, so those bytes began as a whole frame that verified with a
+    /// sealed mark. By (2) they no longer verify with a sealed mark, so at least
+    /// one byte other than the mark has been lost or altered since. By (1) the
+    /// mark byte has *also* changed, from `b'R'` to `0x00`. That is two
+    /// independent alterations. The crash contract this store rests on admits
+    /// exactly one failure — a crash leaves a prefix of what was written — and a
+    /// prefix cannot alter a byte it never reached. So no commit point covered
+    /// them. ∎
+    ///
+    /// The assumption in that last step is the honest limit, and it is stated
+    /// rather than hidden: a medium that alters the mark byte *and* corrupts the
+    /// frame beside it defeats this rule, as it defeats every checksum-based
+    /// rule with a single check. What is now excluded is the single-fault case,
+    /// which is what a one-byte rot is, and
+    /// `no_single_byte_change_to_a_sealed_frame_is_ever_interrupted_append`
+    /// checks that exhaustively rather than asserting it here.
+    ///
+    /// The two things this deliberately does **not** cover are
+    /// [`TornTail::UnsealedCompleteFrame`] — a whole frame with an unsealed
+    /// mark, where step (2) fails and the answer is a refusal — and every shape
+    /// with a sealed mark, where the bytes are what some completed append sealed
+    /// and any damage to them happened afterwards.
     #[must_use]
     pub const fn is_interrupted_append(self) -> bool {
         matches!(self, Self::UnsealedAppend { .. })
@@ -904,6 +1007,12 @@ impl fmt::Display for TornTail {
         match self {
             Self::UnsealedAppend { present } => {
                 return write!(formatter, "{present} bytes of an unsealed append")
+            }
+            Self::UnsealedCompleteFrame { len } => {
+                return write!(
+                    formatter,
+                    "a whole {len} byte frame whose append mark reads unsealed"
+                )
             }
             Self::ForeignFrameMark { mark } => {
                 return write!(formatter, "a foreign frame mark {mark:#04x}")
@@ -922,6 +1031,7 @@ impl fmt::Display for TornTail {
             Self::PartialCommitRecord => "a sealed frame cut inside its commit record",
             Self::CommitRecordCorrupt => "a sealed frame whose commit record seals nothing",
             Self::UnsealedAppend { .. }
+            | Self::UnsealedCompleteFrame { .. }
             | Self::ForeignFrameMark { .. }
             | Self::UnsupportedFrameVersion { .. } => unreachable!("handled above"),
         })
@@ -1833,21 +1943,84 @@ struct Frame<'a> {
 /// The frame mark is read first, before anything classifies these bytes by how
 /// many of them there are. That ordering is what makes the answer a statement
 /// about whether the bytes were committed rather than about where the scan
-/// happened to stop: an unsealed mark says this frame's append never finished,
-/// and a sealed mark says it did, whatever the length turns out to be.
+/// happened to stop.
+///
+/// What the mark decides is narrower than it used to be, and the narrowing is
+/// the point. An unsealed mark is one byte, and one byte is not evidence: `b'R'`
+/// rots to `0x00` as easily as any other byte rots to any other value. So an
+/// unsealed mark no longer settles anything by itself — it sends these bytes to
+/// [`classify_unsealed`], which asks the question the truncation rule actually
+/// needs answered: are these bytes a whole frame, or are they not? A sealed mark
+/// settles the question the other way, and it may, because the checksums cover
+/// the sealed value: a frame whose mark reads sealed is one whose mark byte is
+/// under the same checksum as every other byte of its begin record.
 ///
 /// `bytes` is never empty — the scan stops before calling this on nothing.
 fn read_frame(bytes: &[u8]) -> Result<Frame<'_>, TornTail> {
     match bytes[0] {
-        UNSEALED_FRAME_MARK => {
-            return Err(TornTail::UnsealedAppend {
-                present: bytes.len() as u64,
-            })
-        }
+        UNSEALED_FRAME_MARK => return Err(classify_unsealed(bytes)),
         SEALED_FRAME_MARK => {}
         mark => return Err(TornTail::ForeignFrameMark { mark }),
     }
 
+    read_sealed_frame(bytes)
+}
+
+/// Says what an unsealed tail is, by asking whether it is a whole frame.
+///
+/// This is the half of the truncation rule the mark cannot supply on its own.
+/// The mark says "these bytes were not sealed"; that is compatible with an
+/// append that never finished *and* with a finished append whose one mark byte
+/// later rotted to zero, and those two are the same bytes. What separates them
+/// is not the mark but the rest of the frame: an append that never finished left
+/// a **prefix**, and a prefix is not a whole frame.
+///
+/// So the bytes are read again with the mark restored to its sealed value — the
+/// value every checksum in the frame was computed over. Three answers, and each
+/// is a different fact:
+///
+/// - The bytes are a whole frame that verifies. Then nothing about them is
+///   incomplete, and the only thing wrong is the mark. That is
+///   [`TornTail::UnsealedCompleteFrame`], which is not residue: see its
+///   documentation for why this store refuses rather than choosing.
+/// - The bytes declare a format version this build cannot read. Then this build
+///   cannot tell a whole frame from a prefix at all, because it does not know
+///   the layout, so it cannot produce the evidence truncating requires.
+///   [`TornTail::UnsupportedFrameVersion`] is refused by both entry points, and
+///   for the same reason as a sealed frame carrying it: the remedy for damage
+///   must not delete a newer build's committed work.
+/// - The bytes fail to be a whole frame in some way this build *can* read: too
+///   short for a begin record, a begin record that does not verify, an image
+///   that is not all there, a missing or partial commit record. That is positive
+///   evidence of incompleteness, and with the unsealed mark beside it, it is
+///   [`TornTail::UnsealedAppend`].
+///
+/// The copy is deliberate rather than clever. Recovery has already read the
+/// whole journal into memory, this runs at most once per scan — the scan stops
+/// at the first frame it cannot read — and a byte-substituting checksum would
+/// buy nothing but a second implementation of the fold to keep honest.
+fn classify_unsealed(bytes: &[u8]) -> TornTail {
+    let mut sealed = bytes.to_vec();
+    sealed[0] = SEALED_FRAME_MARK;
+    match read_sealed_frame(&sealed) {
+        Ok(frame) => TornTail::UnsealedCompleteFrame {
+            len: frame.len as u64,
+        },
+        Err(TornTail::UnsupportedFrameVersion { version }) => {
+            TornTail::UnsupportedFrameVersion { version }
+        }
+        Err(_) => TornTail::UnsealedAppend {
+            present: bytes.len() as u64,
+        },
+    }
+}
+
+/// Reads one frame whose first byte is the sealed mark.
+///
+/// Every check below runs over bytes the frame's own checksums cover, mark
+/// included, so reaching any of these answers means the bytes present are not
+/// what a completed append left.
+fn read_sealed_frame(bytes: &[u8]) -> Result<Frame<'_>, TornTail> {
     let Some(begin) = bytes.get(..BEGIN_LEN) else {
         return Err(TornTail::PartialBeginRecord);
     };
@@ -2171,7 +2344,194 @@ pub mod raw_journal {
 
 #[cfg(test)]
 mod tests {
-    use super::{crc32, CRC32_POLYNOMIAL};
+    use super::{
+        crc32, encode_frame, read_frame, TornTail, CRC32_POLYNOMIAL, SEALED_FRAME_MARK,
+        UNSEALED_FRAME_MARK,
+    };
+    use crate::{
+        AccountId, Amount, ClientId, Command, Ledger, LedgerConfig, Mutation, RequestIdentity,
+        Sequence, SessionEpoch,
+    };
+    use rafter::LogIndex;
+
+    /// One sealed frame over a ledger that actually holds something.
+    ///
+    /// An empty ledger would exercise the framing and almost none of the image,
+    /// and the invariants below are about *every* byte of a frame.
+    fn sealed_frame() -> Vec<u8> {
+        let config = LedgerConfig::new(2, 4).expect("bounds are non-zero");
+        let mut ledger = Ledger::new(config);
+        let client_id = ClientId::new(0);
+        let session_epoch = SessionEpoch::new(1).expect("epoch one is valid");
+        ledger.apply(Command::OpenSession {
+            client_id,
+            session_epoch,
+        });
+        let mut execute = |sequence: u64, mutation: Mutation| {
+            ledger.apply(Command::Execute {
+                request: RequestIdentity {
+                    client_id,
+                    session_epoch,
+                    sequence: Sequence::new(sequence).expect("sequences start at one"),
+                },
+                mutation,
+            });
+        };
+        let alpha = AccountId::new(11);
+        let beta = AccountId::new(12);
+        execute(1, Mutation::OpenAccount { account_id: alpha });
+        execute(2, Mutation::OpenAccount { account_id: beta });
+        execute(
+            3,
+            Mutation::Deposit {
+                account_id: alpha,
+                amount: Amount::new(40).expect("a deposit is non-zero"),
+            },
+        );
+        encode_frame(&ledger, LogIndex(4)).expect("the frame encodes")
+    }
+
+    /// The closure claim on [`TornTail`], as a check rather than a paragraph.
+    ///
+    /// The `match` names every variant, so adding one to the enum stops this
+    /// compiling until somebody has decided which side of the truncation rule it
+    /// falls on. That is the whole point: "exactly one of these is residue" is
+    /// the sentence the destructive branch reads, and a new variant silently
+    /// defaulting to either answer is how that sentence goes stale.
+    #[test]
+    fn exactly_one_torn_tail_is_residue_an_interrupted_append_leaves() {
+        let every = [
+            TornTail::UnsealedAppend { present: 8 },
+            TornTail::UnsealedCompleteFrame { len: 64 },
+            TornTail::ForeignFrameMark { mark: 0xAD },
+            TornTail::PartialBeginRecord,
+            TornTail::BeginRecordCorrupt,
+            TornTail::UnsupportedFrameVersion { version: 2 },
+            TornTail::PartialImage,
+            TornTail::ImageCorrupt,
+            TornTail::MissingCommitRecord,
+            TornTail::PartialCommitRecord,
+            TornTail::CommitRecordCorrupt,
+        ];
+        for tail in every {
+            // Exhaustive by name. A variant added later has to be added here.
+            let expected = match tail {
+                TornTail::UnsealedAppend { .. } => true,
+                TornTail::UnsealedCompleteFrame { .. }
+                | TornTail::ForeignFrameMark { .. }
+                | TornTail::PartialBeginRecord
+                | TornTail::BeginRecordCorrupt
+                | TornTail::UnsupportedFrameVersion { .. }
+                | TornTail::PartialImage
+                | TornTail::ImageCorrupt
+                | TornTail::MissingCommitRecord
+                | TornTail::PartialCommitRecord
+                | TornTail::CommitRecordCorrupt => false,
+            };
+            assert_eq!(
+                tail.is_interrupted_append(),
+                expected,
+                "{tail:?} changed sides of the truncation rule"
+            );
+        }
+        assert_eq!(
+            every
+                .iter()
+                .filter(|tail| tail.is_interrupted_append())
+                .count(),
+            1,
+            "exactly one torn tail may be truncated"
+        );
+    }
+
+    /// The invariant that closes the mark byte's hole, checked exhaustively.
+    ///
+    /// Every byte of a sealed frame, set to every other value it could take:
+    /// none of them may produce residue. Before the mark carried a completeness
+    /// test beside it, one of these 33,000-odd mutants did — byte zero to
+    /// `0x00`, and only that one — and `open` answered it by deleting the frame
+    /// and everything after it from the medium.
+    ///
+    /// This is the single-fault assumption in
+    /// [`TornTail::is_interrupted_append`]'s proof, checked rather than
+    /// asserted.
+    #[test]
+    fn no_single_byte_change_to_a_sealed_frame_is_ever_interrupted_append() {
+        let frame = sealed_frame();
+        for offset in 0..frame.len() {
+            let original = frame[offset];
+            for value in 0..=u8::MAX {
+                if value == original {
+                    continue;
+                }
+                let mut mutant = frame.clone();
+                mutant[offset] = value;
+                if let Err(tail) = read_frame(&mutant) {
+                    assert!(
+                        !tail.is_interrupted_append(),
+                        "byte {offset} of a sealed frame changed from {original:#04x} to \
+                         {value:#04x} reads as {tail:?}, which recovery would truncate"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The byte-zero mutant on its own, named, so a regression says which byte.
+    #[test]
+    fn a_sealed_frames_mark_byte_rotting_to_zero_is_a_whole_frame_not_residue() {
+        let mut mutant = sealed_frame();
+        let len = mutant.len() as u64;
+        assert_eq!(mutant[0], SEALED_FRAME_MARK, "the fixture is sealed");
+        mutant[0] = UNSEALED_FRAME_MARK;
+        assert_eq!(
+            read_frame(&mutant).err(),
+            Some(TornTail::UnsealedCompleteFrame { len }),
+            "a committed frame whose mark byte rotted must be named a whole frame, not an \
+             interrupted append"
+        );
+    }
+
+    /// The other direction, so the fix cannot be "refuse everything".
+    ///
+    /// Ordinary crash residue — a strict prefix of a frame carrying the unsealed
+    /// mark — must still be residue at every length, or a crash in the middle of
+    /// an append would need an operator.
+    #[test]
+    fn every_strict_prefix_of_an_unsealed_frame_is_an_interrupted_append() {
+        let frame = sealed_frame();
+        for present in 1..frame.len() {
+            let mut residue = frame[..present].to_vec();
+            residue[0] = UNSEALED_FRAME_MARK;
+            assert_eq!(
+                read_frame(&residue).err(),
+                Some(TornTail::UnsealedAppend {
+                    present: present as u64
+                }),
+                "a {present} byte prefix of an unsealed append must stay truncatable"
+            );
+        }
+    }
+
+    /// A zero-filled tail is residue at every length, which is what a crash on a
+    /// delayed-allocation filesystem actually leaves.
+    ///
+    /// `durable_zero_tail.rs` proves this through the store; this proves the
+    /// classifier underneath it still says so once the mark has a completeness
+    /// test beside it, at lengths that suite does not enumerate.
+    #[test]
+    fn a_zero_filled_tail_is_an_interrupted_append_at_every_length() {
+        for present in 1..96_usize {
+            let zeros = vec![0_u8; present];
+            assert_eq!(
+                read_frame(&zeros).err(),
+                Some(TornTail::UnsealedAppend {
+                    present: present as u64
+                }),
+                "{present} zero bytes must read as an interrupted append"
+            );
+        }
+    }
 
     /// A second implementation, deliberately written a different way.
     ///

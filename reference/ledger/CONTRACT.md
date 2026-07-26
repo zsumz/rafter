@@ -242,9 +242,11 @@ pre-transaction or the post-transaction state, never between:
 - part-way through its begin record, its image, or its commit record;
 - with the whole frame durable and its append mark not yet promoted — the
   write-ahead window, which is the pre-transaction state because a transaction
-  is committed by the promotion of that mark and by nothing else, and which
-  recovery reports as the same unsealed tail as every earlier point inside the
-  frame;
+  is committed by the promotion of that mark and by nothing else, and which is
+  the one boundary opening will not resolve on its own: those bytes are also
+  exactly what a committed frame whose mark byte later rotted leaves, so opening
+  refuses and the named repair entry point resolves it to the pre-transaction
+  state for a caller who has decided which happened;
 - after the commit point but before the reply is released; and
 - during a snapshot install, which publishes by rewriting the journal and
   therefore commits at its rename.
@@ -297,14 +299,51 @@ byte written only after every other byte of that frame is durable. A crash
 leaves a prefix of what was written and that byte goes out first, so every
 interrupted append leaves the mark unsealed — and the unsealed value is zero, so
 the ordinary residue of a delayed allocation reads as exactly what it is, at
-every length. The contrapositive is what recovery uses: a sealed mark proves no
-append was interrupted there, so those bytes are exactly what a completed append
-sealed, and any damage to them happened afterwards.
+every length.
 
-Every other shape — a sealed frame cut short, a begin record that does not
-verify, an image that does not match its checksum, a commit record that seals
-nothing, a first byte that is neither mark — may sit at or below the last commit
-point and refuses the store.
+**The mark is half of the rule and not the rule.** Reading it as the whole rule
+is how this section was wrong the second time. `interrupted ⇒ unsealed` is what
+the paragraph above proves; its contrapositive is `sealed ⇒ not interrupted`;
+and truncating on an unsealed mark needs neither of those but `unsealed ⇒ was
+being written`, which is a third statement, and false. One byte shows it: the
+sealed mark is `0x52`, the unsealed value is `0x00`, and a committed frame whose
+first byte rots between them reads as an interrupted append. Opening truncated
+from there to the end of the file, returned success, and reported the deleted
+transactions as bytes no commit point ever covered — while every *other* byte of
+the same begin record, being under a checksum, refused the store. The mark byte
+was the only byte no checksum was ever consulted for, because the mark test
+returned first.
+
+So truncating now requires the unsealed mark **and** positive evidence that the
+bytes are not a whole frame. Opening reads the tail a second time with the mark
+restored to its sealed value — the value every checksum in a frame is computed
+over — and truncates only what still fails to be a whole frame at a step this
+build can read. Three outcomes, three different facts:
+
+- **not a whole frame**: too short for a begin record, a begin record that does
+  not verify, a partial or mismatched image, a missing or partial commit record.
+  With the unsealed mark, that is residue, and it is truncated. This is the
+  ordinary crash residue, including a zero-filled tail at every length.
+- **a whole frame that verifies**, with only the mark reading unsealed. Two
+  histories leave exactly these bytes — the write-ahead window, and a committed
+  frame whose mark rotted — and nothing in the bytes separates them. Opening
+  refuses. Refusing is recoverable under both readings and truncating is
+  recoverable under only one, and the choice is made on that asymmetry rather
+  than on a guess about which history is likelier.
+- **a version this build cannot read**, which stops the second reading before it
+  can say anything at all.
+
+Every shape with a *sealed* mark is what some completed append sealed, and any
+damage to it happened afterwards — a sealed frame cut short, a begin record that
+does not verify, an image that does not match its checksum, a commit record that
+seals nothing, a first byte that is neither mark. Each may sit at or below the
+last commit point and refuses the store.
+
+That the mark byte is now no weaker than its neighbours is a claim about every
+byte of a frame, so it is checked as one: a unit test alters every byte of a
+sealed frame to every other value it could take and requires that none of the
+results is residue. A rule this narrow is exactly the kind that decays quietly,
+and a paragraph would not have noticed.
 
 Destructive recovery remains available and is a separate, named entry point. It
 discards from the unreadable frame to the end of the file and reports the
@@ -314,12 +353,19 @@ counted — and that unknowable number is exactly why discarding them has to be
 something a caller asks for rather than something a read does quietly.
 
 One refusal is deliberately outside its reach: a frame declaring a format
-version this build cannot read. That needs no corruption at all — a newer build
-appending over a header this one still reads produces it from healthy bytes — so
-it is a newer build's committed work rather than damage, and it is refused by
-both entry points under its own name. Letting the remedy for damage also clear
-it would make the documented answer to "this will not open" a way to delete
-committed work.
+version this build cannot read, whether its mark is sealed or not. That needs no
+corruption at all — a newer build appending over a header this one still reads
+produces it from healthy bytes — so it is a newer build's committed work rather
+than damage, and it is refused by both entry points under its own name. Letting
+the remedy for damage also clear it would make the documented answer to "this
+will not open" a way to delete committed work.
+
+That order has a cost, and the cost is named rather than left to be discovered.
+The version byte is read before the checksum that covers it, so a single altered
+version byte makes a journal unopenable by either entry point. That is a refusal
+and not a loss — every byte is still on the medium — and the alternative trades
+it for a repair that can delete a newer build's committed work, which is the
+worse of the two. The same is true of the journal header's own version byte.
 
 The same principle covers a journal too short to hold its header. Creation is a
 rename, so an interrupted creation leaves a staging file and never a headerless
@@ -367,8 +413,12 @@ valid.
 
 A frame's magic carries the append mark in its first byte, so the mark costs no
 extra field: a sealed frame is byte-for-byte what it would be without it, and
-every checksum is computed over the sealed form, which is also why an unsealed
-frame cannot accidentally verify.
+every checksum is computed over the sealed form. That last detail is what makes
+the mark checkable rather than merely present. Restoring the mark to its sealed
+value and re-reading is a well-defined question with a checksum behind it, which
+is how recovery tells a whole frame with a rotted mark from a frame an append
+never finished, and it is why the mark needed no format change to stop being the
+one unprotected byte.
 
 A frame carries three checksums, and each answers a different question: the
 begin record's own checksum makes the image length safe to trust, the image
