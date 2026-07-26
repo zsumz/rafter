@@ -966,8 +966,14 @@ fn read_barrier_floor_is_fixed_at_grant() {
     runtime.commit_index = LogIndex(6);
     runtime.application_entries = Some([LogIndex(3)].into_iter().collect());
     // The barrier step consumes the first shape unchanged; the tick after it
-    // commits an application entry at 5 and compacts to a boundary at 4, which
-    // is exactly the reshape that would move a re-derived floor from 3 to 5.
+    // commits an application entry at 5 and compacts, which is exactly the
+    // reshape that would move a re-derived floor from 3 to 5.
+    //
+    // The boundary stays at this state machine's own applied index. Compacting
+    // above it would script a composition no embedder can produce —
+    // `build_snapshot` requires the state machine's applied index as its
+    // boundary — and the group now refuses to run on one, so the fixture would
+    // be testing the refusal rather than the barrier.
     runtime.step_log_shapes = [
         ScriptedLogShape {
             application_entries: Some([LogIndex(3)].into_iter().collect()),
@@ -977,7 +983,7 @@ fn read_barrier_floor_is_fixed_at_grant() {
         ScriptedLogShape {
             application_entries: Some([LogIndex(3), LogIndex(5)].into_iter().collect()),
             commit_index: LogIndex(8),
-            snapshot_index: LogIndex(4),
+            snapshot_index: LogIndex(2),
         },
     ]
     .into_iter()

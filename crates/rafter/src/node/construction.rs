@@ -68,14 +68,48 @@ impl Node {
     /// [`Node::drain_committed_outputs`] after construction to replay
     /// committed entries above the floor immediately, without waiting for a
     /// later commit-index advance. Use this when the state machine persists
-    /// its own state; without a floor, every committed entry above the
-    /// snapshot boundary replays and the application must deduplicate.
+    /// its own state.
+    ///
+    /// # A floor below the snapshot boundary is raised, and the caller owns
+    /// what that costs
+    ///
+    /// The effective floor is `max(snapshot_index, applied_through)`, and the
+    /// asymmetry with the two errors below is deliberate rather than an
+    /// oversight: a floor that is too high is refused, and a floor that is too
+    /// low is raised. The kernel cannot do better in either direction. It
+    /// retains no entry at or below its snapshot boundary and holds a snapshot
+    /// *descriptor* rather than payload bytes, so it can neither emit the
+    /// entries a lower floor asks for nor restore the state machine from the
+    /// snapshot that covers them.
+    ///
+    /// Nor can it refuse, because a correct recovery reaches this state. An
+    /// inbound snapshot is promoted durably before the application installs
+    /// it, so a crash between those two writes leaves an application short of
+    /// a boundary its Raft state already carries — and the repair is for the
+    /// composition to restore the application from that snapshot, which is
+    /// exactly what a caller holding the snapshot store can do and this
+    /// constructor cannot.
+    ///
+    /// So the obligation is the caller's, and it is total: **before serving
+    /// anything, the state machine must hold the effective floor**, either
+    /// because it already applied through it or because the caller restored it
+    /// from the snapshot the boundary names. The entries between a lower
+    /// declaration and the boundary are never emitted, in any form, and
+    /// nothing later reports that they were skipped. Compare
+    /// [`Node::applied_index`] against [`Node::snapshot_index`] after
+    /// construction to see whether a declaration was raised.
+    ///
+    /// A composition that owns both halves should enforce this rather than
+    /// assume it; `rafter-app`'s `RaftGroup` does, and refuses to run a group
+    /// whose state machine is below the boundary.
     ///
     /// # Errors
     ///
-    /// Returns [`BootstrapValidationError`] as [`Node::from_bootstrap`]
-    /// does, or [`BootstrapValidationError::AppliedFloorBeyondLog`] when the
-    /// floor lies beyond the persisted log.
+    /// Returns [`BootstrapValidationError`] as [`Node::from_bootstrap`] does,
+    /// plus [`BootstrapValidationError::AppliedFloorBeyondLog`] when the floor
+    /// lies beyond the persisted log and
+    /// [`BootstrapValidationError::AppliedFloorBeyondCommit`] when it lies
+    /// beyond the recovered committed prefix.
     pub fn from_bootstrap_applied_through(
         config: NodeConfig,
         bootstrap: BootstrapState,
@@ -94,6 +128,8 @@ impl Node {
                 commit_index: node.commit_index(),
             });
         }
+        // `from_bootstrap` starts the applied index at the snapshot boundary,
+        // which is the lowest floor the retained log can serve.
         let floor = node.volatile.applied_index.max(applied_through);
         node.volatile.applied_index = floor;
         Ok(node)

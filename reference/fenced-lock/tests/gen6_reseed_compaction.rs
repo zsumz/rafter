@@ -1,0 +1,368 @@
+//! Regression suite, adopted from the gen-6 hunt: `discard_and_reseed` over a
+//! replica whose Raft log has been compacted.
+//!
+//! `LockStore::discard_and_reseed` used to justify deleting durable state with:
+//!
+//! > What refills it is mostly this replica's own retained log rather than the
+//! > group: this call empties the application store and touches nothing else, so
+//! > the Raft log and snapshot beside it survive, the reopened store reports
+//! > `LogIndex::ZERO`, and the entries replay. The group supplies only what local
+//! > compaction has dropped, as a snapshot.
+//!
+//! The first half is true and `a_reseeded_replica_recovers_its_marks_from_the_group`
+//! proves it — over a log that has never been compacted, so every entry is still
+//! there to replay. The second sentence was false: a re-seeded store's honest
+//! `LogIndex::ZERO` used to be raised to the snapshot boundary, and nothing ever
+//! supplied the dropped prefix, because a follower whose log matches the leader's
+//! is never sent a snapshot. The replica then reissued a fencing token its
+//! guarded downstream had already accepted — the exact outcome the same method
+//! gives as its reason for refusing to repair a `NoReadableImage`.
+//!
+//! The composition now refuses instead. These tests pin the refusal, pin that
+//! the damage is unreachable behind it, and pin the control that the refusal is
+//! scoped to compaction rather than to re-seeding.
+
+#[allow(dead_code)]
+mod support;
+
+#[path = "support/scratch.rs"]
+mod scratch;
+
+use rafter::{
+    ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion,
+    LocalProposalId, LogIndex, NodeConfig, NodeId, RaftSnapshotMetadata, Role, SnapshotGroupId,
+};
+use rafter_app::{
+    group::{GroupInput, RaftGroup, RaftGroupParts},
+    proposal::{Proposal, ProposalEvent},
+    state_machine::ReplicatedStateMachine,
+};
+use rafter_reference_fenced_lock::{
+    store::LockStore, ApplyOutcome, Command, DurableLockStateMachine, LockConfig,
+};
+use rafter_runtime::{DurableRaftNode, DurableRaftNodeStorage, RaftRuntimeError};
+use rafter_storage::{
+    InMemoryRaftHardStateStore, InMemoryRaftLogSegment, InMemoryRaftSnapshotStore,
+    PersistedRaftSnapshot,
+};
+
+use scratch::ScratchDir;
+use support::{acquire, config, open_session, release, resource, submit};
+
+const RESOURCE: &str = "orders/shard-0";
+const GROUP_ID: u64 = 1;
+
+type Storage = DurableRaftNodeStorage<
+    InMemoryRaftHardStateStore,
+    InMemoryRaftLogSegment,
+    InMemoryRaftSnapshotStore,
+>;
+type Runtime =
+    DurableRaftNode<InMemoryRaftHardStateStore, InMemoryRaftLogSegment, InMemoryRaftSnapshotStore>;
+type LockGroup = RaftGroup<u64, DurableLockStateMachine, Runtime>;
+type LockGroupError = rafter_app::error::GroupError<
+    <DurableLockStateMachine as ReplicatedStateMachine>::Error,
+    RaftRuntimeError,
+>;
+
+fn empty_storage() -> Storage {
+    DurableRaftNodeStorage {
+        hard_state_store: InMemoryRaftHardStateStore::default(),
+        log_segment: InMemoryRaftLogSegment::default(),
+        snapshot_store: InMemoryRaftSnapshotStore::new(),
+    }
+}
+
+/// Opens a one-voter group over `app` and `storage`, exactly as the three-node
+/// driver's `open_group` does: the application's own durable applied index is
+/// the floor handed to the runtime and to the group.
+fn try_open_group(
+    app: DurableLockStateMachine,
+    storage: Storage,
+) -> Result<LockGroup, LockGroupError> {
+    let node_config = NodeConfig::new(NodeId(1), Vec::new(), 3).expect("single-voter config");
+    let applied_index = app
+        .applied_index()
+        .expect("lock state machines always report an applied index");
+    // The Raft node itself still opens. It raises the declared floor to its
+    // snapshot boundary and documents that it does; the composition is where
+    // the gap that raise leaves is answerable.
+    let recovered = DurableRaftNode::recover_with_storage_and_snapshot_store_applied_through(
+        node_config,
+        storage.hard_state_store,
+        storage.log_segment,
+        storage.snapshot_store,
+        applied_index,
+    )
+    .expect("the kernel accepts any floor at or below its commit index");
+    let (runtime, recovery_outputs) = recovered.into_parts();
+    let mut group = RaftGroup::with_applied_index(GROUP_ID, NodeId(1), runtime, app, applied_index);
+    // The driver routes the recovery outputs rather than dropping them; so does
+    // this, or the replay would never reach the state machine at all. This is
+    // the same call `TransportRaftDriver::apply_recovery_outputs` makes.
+    group.apply_raft_outputs(recovery_outputs)?;
+    Ok(group)
+}
+
+fn open_group(app: DurableLockStateMachine, storage: Storage) -> LockGroup {
+    try_open_group(app, storage).expect("retained durable state reopens")
+}
+
+fn tick(group: &mut LockGroup) {
+    let report = group.step(GroupInput::Tick).expect("tick succeeds");
+    // One voter: nothing leaves the node.
+    assert!(report.peer_messages.is_empty(), "a lone voter has no peers");
+}
+
+fn become_leader(group: &mut LockGroup) {
+    for _ in 0..16 {
+        if group.metrics().role == Role::Leader {
+            return;
+        }
+        tick(group);
+    }
+    panic!("the lone voter never became leader");
+}
+
+fn commit(group: &mut LockGroup, id: u64, command: Command) -> Option<ApplyOutcome> {
+    let mut outcome = None;
+    let report = group
+        .step(GroupInput::Proposal {
+            proposal: Proposal {
+                local_proposal_id: LocalProposalId(id),
+                client_request_id: None,
+                command,
+            },
+        })
+        .expect("the leader accepts the proposal");
+    for event in &report.proposal_events {
+        if let ProposalEvent::Applied { result, .. } = event {
+            outcome = Some(*result);
+        }
+    }
+    for _ in 0..8 {
+        let report = group.step(GroupInput::Tick).expect("tick succeeds");
+        assert!(report.peer_messages.is_empty(), "a lone voter has no peers");
+        for event in &report.proposal_events {
+            if let ProposalEvent::Applied { result, .. } = event {
+                outcome = Some(*result);
+            }
+        }
+    }
+    outcome
+}
+
+fn workload() -> Vec<Command> {
+    vec![
+        open_session(1, 1),
+        // Acquire, release, acquire on the same resource, so the fencing
+        // high-water mark is raised twice and lands strictly above the token a
+        // fresh store hands out.
+        submit(1, 1, 1, acquire(RESOURCE, 4)),
+        submit(1, 1, 2, release(RESOURCE, 1)),
+        submit(1, 1, 3, acquire(RESOURCE, 4)),
+    ]
+}
+
+fn mark(group: &LockGroup) -> Option<u64> {
+    group
+        .state_machine()
+        .service()
+        .status(resource(RESOURCE))
+        .token_floor
+        .map(rafter_reference_fenced_lock::FencingToken::get)
+}
+
+/// Compacts the replica's Raft log through its applied index, carrying the
+/// application's own snapshot payload — the documented compaction recipe from
+/// `ReplicatedStateMachine::build_snapshot`.
+fn compact_through_applied(
+    state_machine: &mut DurableLockStateMachine,
+    runtime: &mut Runtime,
+    boundary: LogIndex,
+) {
+    let application_snapshot = state_machine
+        .build_snapshot(boundary)
+        .expect("the state machine snapshots at its own applied index");
+    let term = runtime.current_term();
+    let metadata = RaftSnapshotMetadata::new(
+        SnapshotGroupId::new("gen6-lock").expect("valid group id"),
+        NodeId(1),
+        boundary,
+        term,
+        term,
+        ApplicationSnapshotMetadata::new(
+            ApplicationSnapshotKind::new("fenced_lock").expect("valid kind"),
+            ApplicationSnapshotVersion::new(1).expect("valid version"),
+        ),
+    )
+    .expect("valid snapshot metadata");
+    runtime
+        .compact_log_with_snapshot(PersistedRaftSnapshot {
+            metadata,
+            application_payload: application_snapshot.payload,
+        })
+        .expect("the replica compacts through its own applied index");
+}
+
+/// Runs the workload on a fresh replica and returns the mark it established,
+/// the applied index it reached, and its Raft storage.
+struct Established {
+    mark: u64,
+    applied: LogIndex,
+    storage: Storage,
+}
+
+fn establish(
+    scratch: &ScratchDir,
+    lock_config: LockConfig,
+    base_id: u64,
+    compact: bool,
+) -> Established {
+    let store = LockStore::open(scratch.path(), lock_config).expect("a fresh store opens");
+    let mut group = open_group(DurableLockStateMachine::new(store), empty_storage());
+    become_leader(&mut group);
+    for (offset, command) in workload().into_iter().enumerate() {
+        commit(&mut group, base_id + offset as u64, command);
+    }
+
+    let established = mark(&group).expect("the workload acquired this resource");
+    assert!(
+        established > 1,
+        "the workload must raise the mark above the token a fresh store issues, got {established}"
+    );
+    let applied = group
+        .state_machine()
+        .applied_index()
+        .expect("the state machine reports its applied index");
+    assert!(
+        applied > LogIndex::ZERO,
+        "the workload must have been applied"
+    );
+
+    let RaftGroupParts {
+        mut state_machine,
+        mut runtime,
+        ..
+    } = group.into_parts();
+    if compact {
+        compact_through_applied(&mut state_machine, &mut runtime, applied);
+        assert_eq!(
+            runtime.snapshot_index(),
+            applied,
+            "the log is compacted through the applied index"
+        );
+    }
+    let storage = runtime.into_storage();
+    // Reading and rewriting the store's directory needs it closed.
+    drop(state_machine);
+
+    Established {
+        mark: established,
+        applied,
+        storage,
+    }
+}
+
+/// The re-seed itself still succeeds — it is a decision about the application
+/// store — and still reports the floor it deleted. What is refused is the
+/// composition: reopening a Raft node whose snapshot boundary is above the
+/// floor the emptied store can honestly declare.
+#[test]
+fn gen6_a_reseed_over_a_compacted_log_is_refused_at_the_composition_seam() {
+    let scratch = ScratchDir::new("gen6-reseed-compaction");
+    let lock_config: LockConfig = config(2, 4);
+    let established = establish(&scratch, lock_config, 100, true);
+
+    let reseeded = LockStore::discard_and_reseed(scratch.path(), lock_config)
+        .expect("the re-seed empties the directory and opens it");
+    assert_eq!(
+        reseeded.applied_index(),
+        LogIndex::ZERO,
+        "a re-seeded store reports a zero applied floor"
+    );
+    let reported_floor = reseeded
+        .recovery()
+        .reseed()
+        .expect("the opening that came back was a re-seed")
+        .discarded_applied_index()
+        .expect("the deleted store held a whole image");
+    assert_eq!(reported_floor, established.applied);
+
+    let error = try_open_group(DurableLockStateMachine::new(reseeded), established.storage)
+        .expect_err("the composition must refuse a state machine below the snapshot boundary");
+    assert!(
+        matches!(
+            &error,
+            rafter_app::error::GroupError::AppliedIndexBelowSnapshotBoundary {
+                app_applied_index: LogIndex(0),
+                snapshot_index,
+            } if *snapshot_index == established.applied
+        ),
+        "the refusal must name both indexes so an operator can act on it, got {error}"
+    );
+}
+
+/// The consequence, in the vocabulary the lock exists to serve. Pre-fix this
+/// replica handed out token 1 for a resource whose guarded downstream had
+/// already accepted 2. It cannot: the group never opens, so no session is ever
+/// established and no token is ever minted.
+#[test]
+fn gen6_a_reseed_over_a_compacted_log_cannot_reissue_a_spent_fencing_token() {
+    let scratch = ScratchDir::new("gen6-reseed-token");
+    let lock_config: LockConfig = config(2, 4);
+    let established = establish(&scratch, lock_config, 300, true);
+
+    let reseeded = LockStore::discard_and_reseed(scratch.path(), lock_config)
+        .expect("the re-seed empties the directory and opens it");
+    let Err(error) = try_open_group(DurableLockStateMachine::new(reseeded), established.storage)
+    else {
+        panic!(
+            "a fencing token must never be reissued, and this replica would hand out 1 for a \
+             resource whose guarded downstream has already accepted {}",
+            established.mark
+        );
+    };
+    // Nothing here can proceed to mint a token: there is no group to propose
+    // into, which is the only state in which the reissue is unreachable rather
+    // than merely unlikely.
+    assert!(matches!(
+        error,
+        rafter_app::error::GroupError::AppliedIndexBelowSnapshotBoundary { .. }
+    ));
+}
+
+/// The control, and the boundary the refusal is scoped to. The same re-seed
+/// over a replica that never compacted still replays from its own retained log
+/// and recovers the mark it deleted — which is the half of
+/// `discard_and_reseed`'s premise that was always true.
+#[test]
+fn gen6_a_reseed_over_an_uncompacted_log_still_recovers_its_marks() {
+    let scratch = ScratchDir::new("gen6-reseed-uncompacted");
+    let lock_config: LockConfig = config(2, 4);
+    let established = establish(&scratch, lock_config, 500, false);
+
+    let reseeded = LockStore::discard_and_reseed(scratch.path(), lock_config)
+        .expect("the re-seed empties the directory and opens it");
+    assert_eq!(reseeded.applied_index(), LogIndex::ZERO);
+
+    let mut group = open_group(DurableLockStateMachine::new(reseeded), established.storage);
+    become_leader(&mut group);
+    for _ in 0..32 {
+        tick(&mut group);
+    }
+
+    assert_eq!(
+        group
+            .state_machine()
+            .applied_index()
+            .expect("the state machine reports its applied index"),
+        established.applied,
+        "the retained log carries the re-seeded replica back to the floor it deleted"
+    );
+    assert_eq!(
+        mark(&group),
+        Some(established.mark),
+        "and the fencing high-water mark comes back with it"
+    );
+}

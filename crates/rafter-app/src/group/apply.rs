@@ -169,6 +169,50 @@ where
         Ok(actual)
     }
 
+    /// Refuses to run a group whose state machine sits below the runtime's
+    /// snapshot boundary.
+    ///
+    /// This group is the only object that holds both halves of the
+    /// composition, so it is the only one that can check the invariant they
+    /// share: **a replica's durable application state is never behind its own
+    /// Raft snapshot boundary.** The kernel cannot check it — it raises a low
+    /// declared floor to the boundary and says so, because it retains no
+    /// covered entry and holds a snapshot descriptor rather than payload
+    /// bytes. Neither can a state machine, which cannot see the Raft log.
+    ///
+    /// Below the boundary the missing entries do not exist in any form this
+    /// composition can reach. The group's own log will not replay them, and
+    /// the leader will not send a snapshot to a follower whose log already
+    /// matches its own. Continuing would answer every later apply, read, and
+    /// readiness gate from a state machine missing acknowledged entries.
+    ///
+    /// The comparison is against the state machine's *current* applied index
+    /// rather than the floor this group was constructed with, so a caller that
+    /// restores the state machine from the snapshot after opening the runtime
+    /// — the repair for a crash between promoting an inbound snapshot and
+    /// installing it — passes.
+    pub(super) fn reject_if_below_snapshot_boundary(&mut self) -> GroupResult<A, R, ()> {
+        let snapshot_index = self.raft.snapshot_index();
+        if snapshot_index <= self.last_applied_index {
+            return Ok(());
+        }
+        let app_applied_index = self.app_applied_index()?;
+        self.last_applied_index = self.last_applied_index.max(app_applied_index);
+        if app_applied_index >= snapshot_index {
+            return Ok(());
+        }
+        self.enter_poisoned(
+            format!(
+                "state machine reported applied index {app_applied_index} below the snapshot boundary {snapshot_index}, whose entries are compacted and can never be applied"
+            ),
+            None,
+        );
+        Err(GroupError::AppliedIndexBelowSnapshotBoundary {
+            app_applied_index,
+            snapshot_index,
+        })
+    }
+
     pub(super) fn app_applied_index(&mut self) -> GroupResult<A, R, LogIndex> {
         self.app.applied_index().map_err(|source| {
             self.poison_with_state_machine_error(StateMachineOperation::AppliedIndex, source)

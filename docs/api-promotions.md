@@ -6757,6 +6757,90 @@ both `CONTRACT.md` files stop claiming a repair the layer beneath never promised
 lock's `discard_and_reseed` says what it requires of the Raft state beside the
 store it empties.
 
+### Revision after implementation (2026-07-26)
+
+**The refusal is right and the kernel is the wrong layer for it.** The design
+above was implemented as written, and `rafter-maelstrom`'s production recovery
+path falsified its central claim within one test run:
+
+```
+production reopen restores the promoted application snapshot:
+Bootstrap(AppliedFloorBelowSnapshot { applied_through: LogIndex(0), snapshot_index: LogIndex(3) })
+```
+
+`open_application_node` loads its durable application state, opens the Raft node
+with that state's applied index as the floor, and *then* — if the reopened node
+carries a snapshot the application is behind — reads the payload out of the
+snapshot store and restores the application to the boundary
+([`crates/rafter-maelstrom/src/runtime.rs:45-61`](../crates/rafter-maelstrom/src/runtime.rs)).
+That is not a bug. It is the repair for the crash window an inbound snapshot
+install necessarily has: the snapshot is promoted durably *before* the
+application installs it, so a crash between those two writes leaves an
+application legitimately short of a boundary its Raft state already carries.
+The floor is below the boundary at the moment of construction, and the
+composition fixes it a few lines later.
+
+So the Classification section's ruling — "a replica's durable application floor
+is never below its own snapshot boundary" — is true of a *settled* replica and
+false of a recovering one, and the constructor sees exactly the recovering one.
+The kernel cannot tell the two apart: whether the gap is about to be repaired is
+a fact about what the caller does next.
+
+This is the programme's own failure mode, committed by the fix for it. The
+design verified its invariant against the app layer's **prose**
+(`build_snapshot`'s stated precondition) and did not verify it against the code
+of a layer that composes the kernel differently. The binding rule this
+subsection adds: **an invariant is enforced at the layer that can observe every
+state reaching it, and "every state" is established by reading the callers, not
+the contracts.**
+
+**What changes.** The refusal moves to `rafter-app`'s `RaftGroup`, which is the
+only object in the workspace that holds a runtime and a state machine together
+and therefore the only one that can compare them:
+
+```rust
+AppliedIndexBelowSnapshotBoundary {
+    app_applied_index: LogIndex,
+    snapshot_index: LogIndex,
+},
+```
+
+`reject_if_below_snapshot_boundary` runs at the top of `step_with_options` and
+of `apply_raft_outputs`, poisons the group, and returns that error. It compares
+against the state machine's *current* applied index rather than the floor the
+group was constructed with, which is what lets a maelstrom-shaped caller restore
+after opening and pass. It skips a batch that carries an `ApplySnapshot`, which
+is the one batch whose own contents lift the state machine to the boundary. It
+costs one integer comparison in the common case — the state machine is consulted
+only when the boundary is above the group's own floor.
+
+`BootstrapValidationError::AppliedFloorBelowSnapshot` is withdrawn; the kernel's
+enum is unchanged from before this entry. `Node::from_bootstrap_applied_through`
+keeps `max(snapshot_index, applied_through)` and now documents it as a
+behavior with an owner: the asymmetry against the two errors beside it, why
+neither refusing nor re-feeding is available to the kernel, that the gap is
+never emitted in any form, and that comparing `applied_index()` against
+`snapshot_index()` after construction is the supported way to see that a
+declaration was raised. The runtime constructors are unchanged, and the
+`Option<LogIndex>` split the design proposed for them is withdrawn with the
+refusal that motivated it — with the kernel permissive, "declaring zero" and
+"declaring nothing" have the same meaning again, and a split that changes no
+behavior is churn.
+
+Both consumer symptoms still close, through the same call the consumers already
+make: `RaftGroup::apply_raft_outputs(recovery_outputs)`, one line after
+construction in both drivers. The mutation evidence is unchanged in kind —
+removing the guard reproduces the reissued token and the lost transaction
+verbatim.
+
+**One fixture moved with it.**
+[`crates/rafter-app/tests/group_read.rs:975`](../crates/rafter-app/tests/group_read.rs)
+scripted a runtime that compacts to boundary 4 while its state machine sits at
+2, to exercise a read barrier's floor being fixed at grant. No embedder can
+produce that shape — `build_snapshot` requires the state machine's own applied
+index as the boundary — so the fixture now compacts to 2, which exercises the
+same reshape without scripting a composition the group refuses to run.
+
 ## Two Kernel Contract Corrections
 
 Both come from the same hunt and neither changes a protocol decision; each

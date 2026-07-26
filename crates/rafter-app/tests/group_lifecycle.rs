@@ -636,3 +636,77 @@ fn a_poisoned_group_reports_the_error_that_poisoned_it() {
         Some(&RecordingStateMachineError::Apply)
     );
 }
+
+/// A state machine below the runtime's snapshot boundary is missing entries
+/// that exist nowhere this composition can reach: the group's own log dropped
+/// them, and a leader never sends a snapshot to a follower whose log already
+/// matches its own. The group is the only object holding both halves, so it is
+/// where the invariant is checked, and it refuses rather than answering later
+/// applies and reads from a state machine short of acknowledged entries.
+#[test]
+fn a_state_machine_below_the_snapshot_boundary_refuses_to_run() {
+    let mut runtime = ScriptedRuntime::with_step_outputs([Vec::new()]);
+    runtime.snapshot_index = LogIndex(5);
+    let mut group = RaftGroup::with_applied_index(
+        7,
+        NodeId(1),
+        runtime,
+        RecordingStateMachine {
+            applied_index: LogIndex(3),
+            ..RecordingStateMachine::default()
+        },
+        LogIndex(3),
+    );
+
+    let error = group
+        .step(GroupInput::Tick)
+        .expect_err("a group below its own snapshot boundary must refuse");
+    assert!(
+        matches!(
+            error,
+            GroupError::AppliedIndexBelowSnapshotBoundary {
+                app_applied_index: LogIndex(3),
+                snapshot_index: LogIndex(5),
+            }
+        ),
+        "the refusal names both indexes so an operator can act on it, got {error:?}"
+    );
+
+    // And it is fatal rather than transient: the composition cannot be repaired
+    // by trying again, only by restoring the state machine or discarding the
+    // Raft state beside it.
+    assert!(matches!(
+        group.fatal_state(),
+        GroupFatalState::Poisoned { .. }
+    ));
+    assert!(matches!(
+        group.step(GroupInput::Tick),
+        Err(GroupError::Poisoned { .. })
+    ));
+}
+
+/// The boundary of that refusal, in the direction a correct recovery uses it.
+/// An inbound snapshot is promoted durably before the application installs it,
+/// so a caller that opens the runtime and *then* restores its state machine
+/// passes — the check reads the state machine's current applied index rather
+/// than the floor the group was constructed with.
+#[test]
+fn a_state_machine_restored_after_construction_is_accepted() {
+    let mut runtime = ScriptedRuntime::with_step_outputs([Vec::new()]);
+    runtime.snapshot_index = LogIndex(5);
+    let mut group = RaftGroup::with_applied_index(
+        7,
+        NodeId(1),
+        runtime,
+        RecordingStateMachine {
+            applied_index: LogIndex(5),
+            ..RecordingStateMachine::default()
+        },
+        LogIndex::ZERO,
+    );
+
+    group
+        .step(GroupInput::Tick)
+        .expect("a state machine at the boundary runs, whatever floor it opened with");
+    assert!(matches!(group.fatal_state(), GroupFatalState::Healthy));
+}

@@ -127,6 +127,7 @@ where
         options: StepReportOptions,
     ) -> StepReportResult<G, A, R> {
         self.reject_if_poisoned()?;
+        self.reject_if_below_snapshot_boundary()?;
         let previous_effective = self.raft.membership();
         let previous_committed = self.raft.committed_membership();
         match input {
@@ -282,6 +283,18 @@ where
     /// machine apply/install path fails, or completed reads cannot be served.
     pub fn apply_raft_outputs(&mut self, outputs: Vec<RaftOutput>) -> StepReportResult<G, A, R> {
         self.reject_if_poisoned()?;
+        // A batch that carries an install is the one case where the state
+        // machine is legitimately below the runtime's boundary on entry: the
+        // caller stepped the runtime, which promoted the snapshot, and the
+        // output that lifts the state machine to it is in this very vector.
+        // Every other batch is checked, because for those the boundary is
+        // already settled and a state machine short of it will never be fed.
+        if !outputs
+            .iter()
+            .any(|output| matches!(output, RaftOutput::ApplySnapshot { .. }))
+        {
+            self.reject_if_below_snapshot_boundary()?;
+        }
         self.apply_raft_outputs_with_membership_context(outputs, None)
     }
 

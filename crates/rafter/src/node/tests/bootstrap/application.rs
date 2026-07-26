@@ -1,5 +1,6 @@
 //! Applied-floor recovery and local proposal reincarnation boundaries.
 
+use super::support::snapshot_descriptor;
 use super::*;
 use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 
@@ -173,4 +174,69 @@ fn applied_floor_beyond_commit_is_rejected() {
             commit_index: LogIndex(1),
         }
     ));
+}
+
+fn compacted_bootstrap() -> BootstrapState {
+    BootstrapState {
+        current_term: Term(1),
+        voted_for: None,
+        commit_index: LogIndex(4),
+        committed_configuration: None,
+        snapshot: Some(snapshot_descriptor(3, 1, 1)),
+        log: vec![bootstrap_entry(4, 1, b"above-the-boundary")],
+    }
+}
+
+/// A declared floor below the snapshot boundary is raised to it, and the gap
+/// is never emitted in any form. This is the kernel's documented behavior
+/// rather than a defect it can repair — it retains nothing at or below the
+/// boundary and holds a descriptor rather than payload bytes — but it is also
+/// the reason the composition above must check, because nothing here reports
+/// that entries were skipped.
+///
+/// Both indexes the caller needs for that check are readable afterwards, and
+/// this test is what makes that a supported way to detect the raise rather
+/// than an incidental one.
+#[test]
+fn applied_floor_below_the_snapshot_boundary_is_raised_and_the_gap_is_never_emitted() {
+    for declared in [LogIndex::ZERO, LogIndex(2)] {
+        let mut node = Node::from_bootstrap_applied_through(
+            NodeConfig::new(NodeId(2), vec![NodeId(1), NodeId(3)], 3).expect("valid config"),
+            compacted_bootstrap(),
+            declared,
+        )
+        .expect("the kernel cannot refuse a floor a correct recovery reaches");
+
+        oracle_assert_eq!(node.applied_index(), LogIndex(3));
+        oracle_assert!(
+            node.applied_index() > declared,
+            "the declaration {declared} was raised, and only these two indexes say so"
+        );
+        oracle_assert_eq!(node.snapshot_index(), LogIndex(3));
+        oracle_assert_eq!(
+            node.drain_committed_outputs(),
+            vec![Output::Apply {
+                index: LogIndex(4),
+                term: Term(1),
+                payload: b"above-the-boundary".to_vec().into(),
+                local_proposal_id: None,
+            }],
+            "nothing between {declared} and the boundary is replayed"
+        );
+    }
+}
+
+/// The boundary itself is the lowest floor the retained log can serve, and a
+/// declaration at it is honored exactly.
+#[test]
+fn applied_floor_at_the_snapshot_boundary_is_honored_exactly() {
+    let node = Node::from_bootstrap_applied_through(
+        NodeConfig::new(NodeId(2), vec![NodeId(1), NodeId(3)], 3).expect("valid config"),
+        compacted_bootstrap(),
+        LogIndex(3),
+    )
+    .expect("a floor at the boundary bootstraps");
+
+    oracle_assert_eq!(node.applied_index(), LogIndex(3));
+    oracle_assert_eq!(node.applied_index(), node.snapshot_index());
 }

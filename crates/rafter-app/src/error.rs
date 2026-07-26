@@ -158,6 +158,24 @@ pub enum GroupError<E, R> {
         required: LogIndex,
         actual: LogIndex,
     },
+    /// The state machine is below the runtime's snapshot boundary, so the
+    /// entries it is missing are compacted out of the Raft log and will never
+    /// be delivered to it.
+    ///
+    /// The kernel raises a declared applied floor to its snapshot boundary,
+    /// because it can neither emit the covered entries nor restore a state
+    /// machine from a snapshot whose bytes it does not hold. That raise is
+    /// silent, and this group refuses to run on top of it: every later apply,
+    /// read, and readiness gate would be answered from a state machine
+    /// missing acknowledged entries, with nothing reporting the gap.
+    ///
+    /// The repair is to restore the state machine from the snapshot the
+    /// boundary names before constructing the group, or to discard this
+    /// replica's Raft state so it rejoins empty and is sent one.
+    AppliedIndexBelowSnapshotBoundary {
+        app_applied_index: LogIndex,
+        snapshot_index: LogIndex,
+    },
     MalformedSnapshot {
         reason: String,
     },
@@ -251,6 +269,13 @@ where
                 formatter,
                 "state machine applied index {actual} is behind required index {required}"
             ),
+            Self::AppliedIndexBelowSnapshotBoundary {
+                app_applied_index,
+                snapshot_index,
+            } => write!(
+                formatter,
+                "state machine applied index {app_applied_index} is below the snapshot boundary {snapshot_index}, whose covered entries are compacted and can never be applied"
+            ),
             Self::MalformedSnapshot { reason } => write!(formatter, "malformed snapshot: {reason}"),
             Self::SnapshotsUnsupported { snapshot_index } => write!(
                 formatter,
@@ -316,6 +341,7 @@ where
             | Self::ApplyResultMetadataMismatch { .. }
             | Self::ApplyEntryAlreadyApplied { .. }
             | Self::AppliedIndexBehind { .. }
+            | Self::AppliedIndexBelowSnapshotBoundary { .. }
             | Self::MalformedSnapshot { .. }
             | Self::SnapshotsUnsupported { .. }
             | Self::SnapshotSupportMisdeclared { .. }

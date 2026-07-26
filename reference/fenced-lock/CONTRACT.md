@@ -683,6 +683,20 @@ state offered. And the premise it rests on is about the group, not this
 directory: re-seeding one replica of three is recoverable, re-seeding a quorum
 destroys the marks outright, and nothing in the call can tell those apart.
 
+**What refills the emptied store is the log this replica has *retained*, and
+nothing else.** That is narrower than "the replicated log", and the difference
+is a replica that has compacted. Earlier revisions of this section said the
+group supplies whatever local compaction dropped, as a snapshot; it does not,
+because a follower whose log matches the leader's is never sent one. So a
+re-seed on a compacted replica used to reach exactly the state the paragraphs
+below give as the reason to refuse a repair — a store handing out a token a
+guarded downstream had already accepted — by a route that reported nothing.
+It no longer runs: the emptied store's honest `LogIndex::ZERO` is below the
+Raft snapshot boundary beside it, and the group over the two refuses by name
+with `GroupError::AppliedIndexBelowSnapshotBoundary`. The remedy there is to
+delete the Raft state alongside the store so the replica rejoins empty and is
+sent a snapshot the ordinary way, not to re-seed again.
+
 The three read progressively less: opening reads, repairing chooses between two
 readings, re-seeding keeps neither. Each is a separate call, so no caller
 reaches a later one by retrying an earlier one.

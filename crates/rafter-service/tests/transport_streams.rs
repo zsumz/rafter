@@ -185,7 +185,14 @@ fn snapshot_driver() -> (SnapshotDriver, QueueTransport) {
             GROUP,
             NodeId(1),
             SnapshotEmittingRuntime { emitted: false },
-            KvStateMachine::default(),
+            // The runtime reports a snapshot boundary at 5, so its own state
+            // machine is at 5 too: a leader compacts at its applied index, and
+            // a group whose state machine sits below its boundary now refuses
+            // to run rather than answering from state that is missing entries.
+            KvStateMachine {
+                applied_index: LogIndex(5),
+                ..KvStateMachine::default()
+            },
         ),
         Vec::new(),
         transport.clone(),
@@ -245,7 +252,14 @@ fn an_unservable_snapshot_directive_is_counted_rather_than_propagated() {
             GROUP,
             NodeId(1),
             SnapshotEmittingRuntime { emitted: false },
-            KvStateMachine::default(),
+            // The runtime reports a snapshot boundary at 5, so its own state
+            // machine is at 5 too: a leader compacts at its applied index, and
+            // a group whose state machine sits below its boundary now refuses
+            // to run rather than answering from state that is missing entries.
+            KvStateMachine {
+                applied_index: LogIndex(5),
+                ..KvStateMachine::default()
+            },
         ),
         Vec::new(),
         transport.clone(),

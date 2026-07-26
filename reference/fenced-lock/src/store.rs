@@ -1955,13 +1955,37 @@ impl LockStore {
     /// rotted mark alike. Deleting the projection cannot lose a mark the log
     /// does not still hold.
     ///
-    /// What refills it is mostly this replica's own retained log rather than
-    /// the group: this call empties the application store and touches nothing
-    /// else, so the Raft log and snapshot beside it survive, the reopened store
-    /// reports [`LogIndex::ZERO`], and the entries replay. The group supplies
-    /// only what local compaction has dropped, as a snapshot.
+    /// What refills it is this replica's own **retained** log: this call
+    /// empties the application store and touches nothing else, so the Raft log
+    /// beside it survives, the reopened store reports [`LogIndex::ZERO`], and
+    /// the entries replay.
     /// `a_reseeded_replica_recovers_its_marks_from_the_group` runs that end to
     /// end and checks the mark comes back at or above the quorum's.
+    ///
+    /// # The Raft state beside the store must not be compacted
+    ///
+    /// Retained is the whole of it. Nothing supplies a prefix this replica's
+    /// own log has already dropped — a follower whose log matches the leader's
+    /// is never sent a snapshot, so "the group will fill in what compaction
+    /// removed" is a claim about the layer beneath that the layer beneath does
+    /// not make. Earlier revisions of this paragraph made it anyway.
+    ///
+    /// A replica that has compacted therefore has a snapshot boundary above
+    /// the [`LogIndex::ZERO`] a re-seeded store honestly reports, and the
+    /// composition refuses rather than running: the Raft node still opens —
+    /// it raises the declared floor to its boundary and documents that it
+    /// does — and the group over it fails with
+    /// `GroupError::AppliedIndexBelowSnapshotBoundary` naming both indexes,
+    /// which `gen6_reseed_compaction.rs` pins. That refusal is the
+    /// good outcome. It is what stops this call from reaching, on a compacted
+    /// replica, the state the section below gives as the reason to refuse a
+    /// `NoReadableImage`: a store handing out token 1 for a resource whose
+    /// guarded downstream has already accepted more.
+    ///
+    /// The way forward from that refusal is not another re-seed. Delete the
+    /// Raft log, hard state, and snapshot alongside the application store, so
+    /// the replica rejoins the group empty and is sent a snapshot the ordinary
+    /// way.
     ///
     /// # What it costs, and the premise nothing here can check
     ///

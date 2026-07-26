@@ -344,7 +344,27 @@ more. And the loss is local rather than final: the application journal is a
 projection of the replicated log, its applied index is the join point, and the
 entries above it are re-applied on the next recovery. That second half is a fact
 about the composition, so it is tested end to end rather than asserted, and it
-stops holding exactly when the group can no longer supply the entries.
+stops holding in exactly two places, one remote and one local.
+
+The remote one is the group no longer holding the entries. The local one was
+missed for several revisions and is the more reachable of the two: **this
+replica's own compaction.** A replica that has compacted its Raft log has
+deleted the very frames the tear costs, and the group will not resupply them —
+a follower whose log matches the leader's is never sent a snapshot. There is no
+re-apply to wait for, and "the composition gives it back" was, on that replica,
+a claim about the layer beneath that the layer beneath never made.
+
+What happens there now is a refusal rather than a silent loss. The application
+store still opens — the tail rule is the store's own and is unchanged — and so
+does the Raft node, which raises the declared floor to its snapshot boundary
+and documents that it does. What refuses is the group over the two, which is
+the only object holding both halves: it fails with
+`GroupError::AppliedIndexBelowSnapshotBoundary` naming the index the store
+reached and the boundary it is short of. The acknowledged transaction is not
+quietly missing from a running replica; the replica does not run.
+`durable_zero_tail.rs` covers the uncompacted case where the re-apply does
+happen, and `gen6_zero_tail_compaction.rs` covers both sides of that
+boundary.
 
 Every *other* zero run refuses, and the reason is not the one this paragraph
 used to give. It said such a run is "every zero run with a committed frame
