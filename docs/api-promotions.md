@@ -40,6 +40,16 @@ not nameable from the crate root. The fifth is the state-machine contract
 itself, which requires a snapshot implementation from every application and
 gives none of them a way to decline.
 
+The last three are kernel corrections rather than promotions, and they arrived
+the other way round: a sixth-generation adversarial hunt attacked
+`crates/rafter` — the crate this programme has changed least and therefore
+scrutinized least — and two of the three consumer symptoms it produced were
+already reproducible from the reference stores. They are recorded here because
+the entries above are where this workspace writes down *why* a public shape is
+what it is, and each of these three changes a public kernel shape. None of them
+adds an API a consumer asked for; each removes a promise the kernel was making
+and could not keep.
+
 The couplings are recorded in [Coupled designs](#coupled-designs), and the
 implementation sequence in [Adoption order](#adoption-order).
 
@@ -6234,6 +6244,615 @@ still true with them in it.
 workspace gains a list of six state machines that have been quietly answering a
 question they should have declined — two of them in examples that install a
 snapshot by deleting the data it carries.
+
+## Lease Reads After an Authorized Deposition
+
+### Origin
+
+A leader that has asked another voter to depose it keeps serving leader-lease
+reads after the request stops being visible locally, and answers them at an
+index a newer leader has already committed past. The kernel's own two documents
+state the contradiction between them.
+
+`NodeConfig::with_lease_reads` justifies the lease's safety with a refusal:
+
+> The lease also relies on voters refusing to depose a live leader. The request
+> therefore becomes effective only while pre-vote and check-quorum are both
+> effective.
+
+([`crates/rafter/src/node/config/options.rs:91-95`](../crates/rafter/src/node/config/options.rs))
+
+`Node::handle_timeout_now` documents the waiver of exactly that refusal:
+
+> A `TimeoutNow` from the current leader instructs this node to campaign
+> immediately: the real, term-incrementing election, bypassing pre-vote and
+> leader stickiness — that bypass is the message's entire purpose (thesis 3.10).
+
+([`crates/rafter/src/node/transfer.rs:101-104`](../crates/rafter/src/node/transfer.rs))
+
+The only thing standing between the two is the local transfer record.
+`read_index_batch` rejects barriers while `leader.pending_transfer.is_some()`
+([`crates/rafter/src/node/read_index.rs:47-52`](../crates/rafter/src/node/read_index.rs)),
+and `tick_leadership_transfer` deletes that record after one election timeout so
+an unreachable target cannot wedge the leader
+([`crates/rafter/src/node/transfer.rs:51-59`](../crates/rafter/src/node/transfer.rs)):
+
+```rust
+transfer.ticks_remaining = transfer.ticks_remaining.saturating_sub(1);
+if transfer.ticks_remaining == 0 {
+    self.leader.pending_transfer = None;
+}
+```
+
+The record is local. The authorization is a `TimeoutNow` already on the wire,
+and Raft bounds no message's delay. Deleting the record does not recall the
+message; it only stops the leader from remembering that it sent one. The lease
+fast path then grants at `self.volatile.commit_index`
+([`crates/rafter/src/node/read_index.rs:64-70`](../crates/rafter/src/node/read_index.rs)),
+which is the deposed leader's stale index.
+
+The repro is `crates/rafter/tests/gen6_kernel_lease.rs`. Node 1 authorizes a
+transfer to node 2, the `TimeoutNow` is held on the wire, node 1 heartbeats
+healthily for four election timeouts — renewing its lease on every acknowledged
+round — and then the message is delivered:
+
+```
+STALE LEASE READ: deposed leader NodeId(1) granted read_index [LogIndex(2)]
+while the term-Term(2) leader had already committed through 4
+```
+
+No clock skew is involved. Nodes 2 and 3 receive zero ticks in the repro, which
+is the most favorable direction for the documented bounded-tick-rate assumption:
+the leader's clock runs infinitely fast relative to theirs, and the violation
+still happens. This is not the lease's skew assumption failing. It is the
+lease's *other* assumption — the refusal — having been waived by the leader
+itself.
+
+A second, smaller finding sits on the same surface. `Node::read_lease_active`
+claims
+
+> Whether a read barrier requested right now would grant from the leader lease
+> without a quorum round trip.
+
+and consults neither `pending_transfer` nor the current-term commit rule
+([`crates/rafter/src/node/observe.rs:92-102`](../crates/rafter/src/node/observe.rs)),
+so it answers `true` in states where the barrier is rejected outright:
+
+```
+read_lease_active() promised true but the barrier produced
+[ReadIndexRejected { read_id: ReadId(1),
+                     reason: LeadershipTransferInProgress { target: NodeId(2) } }]
+```
+
+### Classification
+
+Raft mechanism, and a linearizability violation rather than an ergonomics gap.
+The lease is thesis 6.4.2's optimization, and its entire safety argument is that
+no one will take leadership away inside the window. `TimeoutNow` is thesis
+3.10's instrument for taking leadership away *without asking* — and the kernel
+confirms it takes nothing else away with it. Leader stickiness lives only in
+`handle_pre_vote`
+([`crates/rafter/src/node/election.rs:196-205`](../crates/rafter/src/node/election.rs));
+`handle_request_vote` grants on term, membership, log freshness, and vote
+uniqueness alone
+([`crates/rafter/src/node/election.rs:126-159`](../crates/rafter/src/node/election.rs)).
+A `TimeoutNow` recipient skips the poll that stickiness guards and goes straight
+to the vote that has no stickiness at all. Nothing is left in the protocol that
+would make a voter refuse.
+
+So the leader's obligation is not "remember the transfer for a while". It is:
+*a leader that has put a deposition authorization on the wire has spent the
+assumption its lease rests on, and no local event can un-spend it.*
+
+### Design
+
+Two changes, both in `crates/rafter`.
+
+**1. A waiver that only a new term clears.** `LeaderState` gains one field, set
+at the single point where the authorization escapes:
+
+```rust
+/// Whether this leadership has put a `TimeoutNow` on the wire.
+///
+/// A `TimeoutNow` authorizes its recipient to depose this leader by the
+/// path that skips pre-vote and leader stickiness, and the network bounds
+/// no message's delay. The lease's safety argument is that voters refuse
+/// to depose a live leader; emitting the message waives that refusal for
+/// the rest of this term, and no local event can recall it. Abandoning
+/// the transfer record therefore does not restore the lease — only a new
+/// term does, and `LeaderState` is rebuilt per term.
+pub deposition_authorized: bool,
+```
+
+`send_timeout_now` is the only producer of `Message::TimeoutNow`
+([`crates/rafter/src/node/transfer.rs:79-90`](../crates/rafter/src/node/transfer.rs)),
+reached from `transfer_leadership` when the target is already caught up and from
+`maybe_complete_leadership_transfer` when it catches up later. It sets the flag
+in the same statement that marks the transfer as sent. Nothing else sets it, and
+nothing clears it: `become_leader` and `become_follower` both assign
+`LeaderState::default()`
+([`crates/rafter/src/node/lifecycle.rs:24,39`](../crates/rafter/src/node/lifecycle.rs)),
+which is the whole clearing rule.
+
+Arming at emission rather than at request is deliberate and load-bearing. A
+transfer to a target that never catches up sends no `TimeoutNow`, authorizes
+nothing, and times out with the leader's lease intact. Arming at
+`transfer_leadership` would void the lease for a message that was never written.
+
+**2. One predicate, two callers.** The lease fast path and `read_lease_active`
+stop being two independent conditions. A private
+
+```rust
+fn lease_grant_available(&self) -> bool
+```
+
+answers "would a barrier requested right now be granted from the lease, without
+a quorum round trip" — leader role, effective `lease_reads`, no live transfer
+record, no authorized deposition, a current-term commit, and a lease that covers
+the current tick. `read_index_batch` consults it where it consulted
+`lease.holds` alone; `read_lease_active` returns it. The observability method
+cannot disagree with the decision it describes, because it *is* the decision.
+
+The waiver disables the fast path only. It does not reject reads. A leader whose
+transfer was abandoned is fully operational, and the quorum `ReadIndex` round
+trip remains available and remains sound: its evidence is a quorum acknowledging
+a round broadcast *after* the barrier was registered, which is a log-and-term
+argument, not a time argument, and the authorized deposition cannot forge it.
+`pending_transfer` keeps rejecting reads while a transfer is live, which is a
+different rule for a different reason (thesis 3.10: the leader is stepping aside
+and has stopped accepting work).
+
+### Semantics and edge cases
+
+- **The waiver's bound.** The exposure ends with the term, not before and not
+  after. A `TimeoutNow(T)` is inert once its recipient's term exceeds `T`
+  ([`crates/rafter/src/node/transfer.rs:106`](../crates/rafter/src/node/transfer.rs)
+  returns empty for `term < self.current_term()`), and this node can only grant
+  lease reads again in some term `T' > T`, which it can only reach by winning an
+  election that puts a majority at `T'`. A campaign the stale authorization
+  starts proposes `T+1 <= T'`, and cannot collect a majority of voters already
+  at `T'`. So a term-scoped waiver is not merely sufficient — it is exactly
+  co-extensive with the authorization's power.
+- **Abandoned before emission.** Target not caught up, transfer times out: no
+  `TimeoutNow`, no waiver, lease unaffected. Tested.
+- **Transfer completes.** The recipient's higher term reaches this node, it
+  becomes a follower, `LeaderState` is discarded with the waiver in it.
+- **Re-elected in a later term.** Fresh `LeaderState`, fresh lease, no waiver.
+- **Reads after the waiver.** Granted through the quorum round trip, not
+  rejected. Tested, and the repro's control test asserts the round trip is
+  actually taken rather than short-circuited.
+- **`read_lease_active` and the single-voter shortcut.** A single-voter
+  membership grants barriers immediately through `has_quorum_with_self`
+  ([`crates/rafter/src/node/read_index.rs:87-89`](../crates/rafter/src/node/read_index.rs)),
+  which is a quorum grant, not a lease grant — its evidence is "I am the
+  quorum". `read_lease_active` stays `false` there, and its rustdoc says so,
+  because a caller reading it to decide whether the lease is carrying its reads
+  would otherwise attribute a quorum grant to the lease. This is the one place
+  the method deliberately does not predict "granted without a round trip", and
+  it is the direction that under-claims.
+- **Lease active but no current-term commit.** Reachable: the lease confirms on
+  a round *sequence* acknowledgement
+  ([`crates/rafter/src/node/replication/authority.rs:15-43`](../crates/rafter/src/node/replication/authority.rs)),
+  while the commit index advances on `match_index`, so a follower that
+  acknowledges a round while still catching up confirms the lease before the
+  term's `Noop` commits. Pre-fix `read_lease_active` answered `true` and the
+  barrier was rejected `NoCommitInCurrentTerm`. Now both say no.
+
+### Blast radius
+
+`crates/rafter` only, and no wire, storage, or output shape changes.
+
+- `LeaderState` gains a field. It is `pub(in crate::node)` and appears in the
+  kernel's `Clone + Debug + Eq + Hash + PartialEq` derives, so model-checked
+  state equality now distinguishes a leadership that has authorized a deposition
+  from one that has not. That is the intended distinction: the two are not the
+  same state and were previously conflated.
+- `Node::read_lease_active` changes its answer in three situations: while a
+  transfer record is live, after a `TimeoutNow` has been emitted in this term,
+  and before this term's first commit. All three move from `true` to `false`,
+  and in all three the barrier was already not granted from the lease. No caller
+  can observe a `false → true` change.
+- `Node::read_index` / `read_index_batch` change behavior in exactly one
+  situation: a leader that emitted `TimeoutNow` this term takes the quorum round
+  trip instead of granting from the lease. Latency, not semantics — and the
+  semantics it stops offering were wrong.
+- Nothing outside the kernel is edited. `rafter-service`, `rafter-app`, and both
+  reference stores route reads through the same outputs.
+
+### Focused-test plan
+
+Every guard added here is mutation-tested: the guard is removed or inverted, and
+the named test must fail.
+
+1. `crates/rafter/tests/gen6_kernel_lease.rs`, adopted from the hunt, three
+   tests: the pre-existing guard while the record lives; the control showing the
+   quorum path does not short-circuit; and the violation itself, which now
+   asserts no grant is produced.
+2. `crates/rafter/src/node/tests/transfer/lease_waiver.rs`, at the kernel's own
+   granularity — one test per boundary in *Semantics and edge cases*: waiver
+   armed at emission and not at request; abandoned-before-emission leaves the
+   lease intact; reads after the waiver go through the quorum round trip and are
+   granted, not rejected; a new term restores the lease.
+3. `crates/rafter/src/node/tests/read/lease.rs` gains the prediction-agreement
+   tests for `read_lease_active`, one per clause of the predicate.
+
+### Rejected alternatives
+
+**Void the lease until fresh quorum contact re-establishes it.** This is the
+proportionate-sounding option and it is unsound. A quorum acknowledgement proves
+a majority followed this leader at tick *t*; the lease needs "a majority will
+refuse to depose me through *t + window*", and those are different claims that
+coincide only under the refusal assumption. The authorization on the wire is a
+standing waiver of that assumption held by one voter who does not have to ask
+anyone, and — per `handle_request_vote` above — the voter it *does* have to ask
+applies no stickiness either. Contact does not un-send a message. This option
+narrows the window and leaves the violation reachable inside it.
+
+**Hold the lease void for one election timeout (or one lease window) after the
+last `TimeoutNow`.** The same mistake as the code being fixed, with a larger
+constant. The delay on the wire is unbounded by assumption; any finite local
+timer is a guess about the network.
+
+**Make `TimeoutNow` carry an expiry the recipient honors.** This would bound the
+authorization at its source and is the only alternative that attacks the real
+quantity. It is rejected on scope and on cost: it is a wire-format change to a
+protocol message, it requires the recipient's clock to be comparable to the
+sender's — reintroducing exactly the cross-node time assumption the sans-I/O
+kernel refuses to make — and it buys nothing the term scope does not already
+give, because the authorization is already inert past the term.
+
+**Reject reads instead of falling back to the quorum path.** Over-corrects. The
+leader is not stepping aside; it tried to and the attempt was abandoned. Reads
+are still linearizably answerable through the round trip, and a `ReadIndex`
+rejection would push a correctness problem into every caller's availability
+budget for no safety gain.
+
+**Fix only `read_lease_active`.** It is the visible symptom and the smaller
+half; correcting the predictor while the predicted path stays wrong would make
+the observability method faithfully report an unsound grant.
+
+### After-state
+
+`crates/rafter/src/node/state/leader.rs` records the waiver next to the lease it
+constrains, and the two doc comments that contradicted each other now point at
+one another: `with_lease_reads` names the transfer waiver as the second way the
+lease can be suspended, and `handle_timeout_now`'s bypass paragraph says what the
+bypass costs the sender.
+
+`Node::read_lease_active` becomes usable as what its name suggests — a
+precondition check a caller can branch on — instead of a lease-timer readout
+that agrees with the read path by coincidence.
+
+The kernel keeps one lease-suspension rule with two arms, both stated on the
+public configuration method: the window can lapse, and the leader can waive it.
+Nothing else suspends it.
+
+## Declared Applied Floor Below the Snapshot Boundary
+
+### Origin
+
+`Node::from_bootstrap_applied_through` takes the application's own statement of
+what it has durably applied and, when that statement falls below the node's
+snapshot boundary, replaces it
+([`crates/rafter/src/node/construction.rs:97`](../crates/rafter/src/node/construction.rs)):
+
+```rust
+let floor = node.volatile.applied_index.max(applied_through);
+```
+
+`node.volatile.applied_index` is the snapshot boundary at this point
+([`:40-52`](../crates/rafter/src/node/construction.rs)). The method validates a
+floor that is too high — twice, with two typed errors — and silently raises one
+that is too low. The entries between the declared floor and the boundary are
+compacted out of the log, so they are never re-emitted as `Output::Apply`, and
+nothing anywhere reports that they were skipped. The state machine is left
+believing it applied them and the kernel is left believing it delivered them.
+
+Both reference stores reach the state, by unrelated routes, and both are
+documented as recoverable on the strength of a promise this seam does not make.
+
+**Fenced lock.** `LockStore::discard_and_reseed` empties the application
+directory and justifies it with:
+
+> What refills it is mostly this replica's own retained log rather than the
+> group: this call empties the application store and touches nothing else, so
+> the Raft log and snapshot beside it survive, the reopened store reports
+> `LogIndex::ZERO`, and the entries replay. The group supplies only what local
+> compaction has dropped, as a snapshot.
+
+Over a log that has been compacted, the re-seeded store's `LogIndex::ZERO` is
+raised to the snapshot boundary and the dropped prefix is supplied by nobody —
+the follower's log already matches the leader's, so no snapshot is ever sent.
+The outcome is the one that same method gives as its reason for *refusing* to
+repair a `NoReadableImage`:
+
+```
+a fencing token must never be reissued: the store handed out 1 for a resource
+whose guarded downstream has already accepted 2
+the replay must carry the re-seeded replica back to the floor it deleted:
+reported 5, reached 0
+```
+
+**Ledger.** `CONTRACT.md` names one escape from its re-apply claim:
+
+> the entries above it are re-applied on the next recovery. That second half is
+> a fact about the composition, so it is tested end to end rather than asserted,
+> and **it stops holding exactly when the group can no longer supply the
+> entries.**
+
+There is a second escape and it is local. A zero-filled tail — crash rule two,
+on the ordinary `open`, with no operator flag — moves the application's applied
+index below the boundary of a snapshot the replica compacted itself, and one
+acknowledged transaction is gone from that replica for good while the group
+still holds every entry:
+
+```
+the replay stopped at LogIndex(4) anyway
+  left: LogIndex(4)
+ right: LogIndex(5)
+```
+
+One kernel seam, two stores, two symptoms.
+
+### Classification
+
+Raft mechanism, and specifically a *composition* mechanism: who is responsible
+for the gap between an application's durable state and a Raft node's compacted
+prefix. It is not application policy, because neither store can express the
+repair — the entries the state machine needs do not exist in any form either
+store can reach.
+
+The layer above has already made the ruling this seam contradicts.
+`ReplicatedStateMachine::build_snapshot` states
+([`crates/rafter-app/src/state_machine.rs:196-205`](../crates/rafter-app/src/state_machine.rs)):
+
+> `at` must be the state machine's own applied index; compacting above it raises
+> the group's committed application index past a value the state machine will
+> ever report.
+
+and `install_snapshot` states that after `Ok`, the state machine recovers "with
+all snapshot effects and applied-index progress through the installed snapshot
+boundary". Together those say: **a replica's durable application floor is never
+below its own snapshot boundary.** That is an invariant of the composition, not
+a preference. The kernel's `max` does not enforce it, does not check it, and
+hides every violation of it — including the two that the reference stores can
+produce without doing anything the app layer forbids.
+
+This also settles a question that looks like a false-positive risk and is not. A
+snapshot boundary that lands on a `Noop` or a configuration entry does *not* put
+a conforming state machine below its boundary, because the boundary is the state
+machine's own applied index by the contract above; an embedder that compacts at
+the kernel's applied index instead is already violating `build_snapshot`'s
+stated precondition, and now finds out at the next restart instead of silently.
+
+### Design
+
+**The kernel refuses; it does not re-feed.** `from_bootstrap_applied_through`
+gains a third validation, alongside the two it already performs:
+
+```rust
+/// The declared applied floor lies below this node's own snapshot
+/// boundary: the entries between the two are compacted out of the log and
+/// cannot be re-emitted, so the floor cannot be honored.
+AppliedFloorBelowSnapshot {
+    applied_through: LogIndex,
+    snapshot_index: LogIndex,
+},
+```
+
+and the `max` becomes a plain assignment, because after the check the declared
+floor is provably at or above the boundary.
+
+Re-feeding was considered and rejected on a fact about the kernel rather than a
+preference: the kernel holds a snapshot *descriptor*, never payload bytes, and
+`DurableRaftNode::with_storage_and_snapshot` will construct a descriptor over an
+empty payload
+([`crates/rafter-runtime/src/construction.rs:59-72`](../crates/rafter-runtime/src/construction.rs)).
+A kernel that emitted `Output::ApplySnapshot` here would be directing a layer to
+restore from bytes the kernel cannot know exist — the precise shape this review
+programme exists to remove. Worse, the layer it would direct is allowed to
+decline: `SnapshotSupport::Unsupported` is a state a `ReplicatedStateMachine`
+may legally declare
+([`crates/rafter-app/src/state_machine.rs:26-35`](../crates/rafter-app/src/state_machine.rs)),
+and for such a state machine no re-feed exists at any layer. A typed refusal is
+the only answer the kernel can make that is true for every caller.
+
+**"No declaration" stops being spelled `LogIndex::ZERO`.** The check is total
+over the argument, including zero — the fenced lock's re-seeded store reports
+exactly `LogIndex::ZERO` and means it. That is only sound because the kernel
+already has a separate constructor for callers who are *not* declaring:
+`Node::from_bootstrap` takes no floor and starts at the snapshot boundary, which
+is the honest reading of "replay everything you can". The runtime's two
+non-declaring constructors currently reach the declaring one with a zero
+argument
+([`crates/rafter-runtime/src/construction.rs:90-96,117-123`](../crates/rafter-runtime/src/construction.rs)),
+and are rerouted to a private helper that takes `Option<LogIndex>` and calls
+`from_bootstrap` for `None`. Behavior for those two is unchanged; what changes is
+that they stop making a declaration on their caller's behalf.
+
+The runtime's declaring constructors surface the new error as
+`RaftRuntimeError::Bootstrap`, which they already do for the other two floor
+errors, so no new runtime variant is needed.
+
+### Semantics and edge cases
+
+- **No snapshot.** The boundary is `LogIndex::ZERO` and every floor is at or
+  above it; the check is inert, which is the overwhelmingly common case.
+- **Floor exactly at the boundary.** Accepted — the state machine restored from
+  this snapshot, or built it.
+- **Floor above the boundary, at or below commit.** Accepted, unchanged: the
+  entries above the floor are still retained and replay.
+- **Floor above commit, or beyond the log.** Still the two existing errors,
+  checked first, so a floor that is both too high and nonsensical reports the
+  most specific existing reason rather than the new one.
+- **`from_bootstrap` (no declaration).** Unchanged in every case.
+- **The error is not repairable by retrying with a different floor.** The
+  message says which two indexes disagree; the repair is at the layer that owns
+  the application store — restore it from the snapshot, or delete the Raft state
+  beside it so the replica rejoins empty and is sent one.
+
+### Blast radius
+
+- `BootstrapValidationError` gains a variant. It is documented as exhaustive by
+  design ("bootstrap validation is closed over these persisted-state
+  invariants"), so this is a breaking change for anyone matching it
+  exhaustively. Justified: the alternative is an invariant with no name.
+- `crates/rafter/tests/properties.rs:960-1010` models the constructor's outcomes
+  and gains the third arm.
+- `crates/rafter-sim` restarts nodes through the declaring constructor with the
+  simulator's durable application floor. Any place the simulator lets that floor
+  lag a snapshot boundary it installed is now an error rather than a silent
+  raise, and is fixed in the simulator rather than masked in the kernel.
+- Both reference stores stop losing data silently and start failing to open.
+  Neither store's *code* changes; both stores' prose does, because both made a
+  cross-layer claim this seam never supported.
+
+### Focused-test plan
+
+1. `crates/rafter/src/node/tests/bootstrap/application.rs` gains the boundary
+   pair: a floor one below the snapshot boundary is refused with the new error;
+   a floor exactly at the boundary is accepted. Mutation: delete the check, and
+   both the kernel test and both consumer suites fail.
+2. `crates/rafter/tests/properties.rs` extends its outcome model, which is the
+   coverage for "no other input reaches the raise".
+3. `crates/rafter-runtime` gains a test that the non-declaring constructors open
+   a compacted node unchanged, and that the declaring ones report
+   `RaftRuntimeError::Bootstrap` for a low floor — the boundary between the two
+   constructor families, which is the thing the design moved.
+4. `reference/fenced-lock/tests/gen6_reseed_compaction.rs` and
+   `reference/ledger/tests/gen6_zero_tail_compaction.rs`, adopted from the hunt,
+   assert the refusal at the composition seam and that the damage the pre-fix
+   run produced — a reissued token, a lost transaction — is not reachable.
+
+### Rejected alternatives
+
+**Re-feed via `Output::ApplySnapshot`.** Rejected above on two independent
+grounds: the kernel does not know the payload exists, and the state machine is
+allowed to have no snapshot representation at all. Either alone is fatal.
+
+**Accept the floor and report the effective one.** A struct return carrying "you
+asked for 4, you got 5" is the silent raise with a receipt. The caller still
+cannot obtain index 5, and a receipt nobody is obliged to read is how this defect
+survived six generations.
+
+**Refuse only for a non-zero floor.** Keeps `LogIndex::ZERO` as "no declaration"
+and leaves the fenced-lock symptom fully open, since a re-seeded store's honest
+floor is zero. The ambiguity is the defect; preserving it is not a smaller fix.
+
+**Fix it in the reference stores.** Neither store can. The bytes the state
+machine needs are in a snapshot the store cannot address and in log entries that
+no longer exist. A store-level fix would be a refusal to open written twice, in
+two consumers, for a condition the kernel is the only layer that can see.
+
+### After-state
+
+The kernel states one rule about the applied floor and enforces all of it: a
+declared floor must lie in `[snapshot_index, commit_index]`, and each of the
+three ways out of that interval has a typed error naming the two indexes that
+disagree.
+
+`docs/reference-consumers.md`'s composition story gains the missing case, and
+both `CONTRACT.md` files stop claiming a repair the layer beneath never promised
+— the ledger's re-apply escape clause names the local half, and the fenced
+lock's `discard_and_reseed` says what it requires of the Raft state beside the
+store it empties.
+
+## Two Kernel Contract Corrections
+
+Both come from the same hunt and neither changes a protocol decision; each
+removes a sentence the code does not implement.
+
+### 1. `install_local_snapshot` has a precondition and now states it
+
+`Node::install_local_snapshot`'s rustdoc is one line — "Installs a local
+snapshot descriptor and compacts covered log entries"
+([`crates/rafter/src/node/log.rs:177-178`](../crates/rafter/src/node/log.rs)) —
+and the body force-raises both indexes
+([`:206-212`](../crates/rafter/src/node/log.rs)):
+
+```rust
+if self.volatile.commit_index < boundary_index {
+    self.volatile.commit_index = boundary_index;
+}
+```
+
+A follower holding three replicated-but-uncommitted entries jumps from commit 0
+to commit 3 because the application handed it a descriptor:
+
+```
+install_local_snapshot advanced the commit index with no quorum evidence
+  left: LogIndex(3)
+ right: LogIndex(0)
+```
+
+The raise is correct for the *other* caller of the same helper.
+`install_snapshot_state` runs the leader-sent install path, and a leader only
+snapshots committed state, so the boundary carries quorum evidence. A local
+descriptor carries none.
+
+The workspace's own only caller already knows this.
+`DurableRaftNode::compact_log_with_snapshot` validates the boundary against the
+commit index and returns `RaftRuntimeError::SnapshotAheadOfCommit` before it
+reaches the kernel
+([`crates/rafter-runtime/src/lib.rs:644-655`](../crates/rafter-runtime/src/lib.rs)).
+The precondition exists; it is enforced one layer up; the public kernel method
+that needs it says nothing. A caller that uses `rafter` without `rafter-runtime`
+— the sans-I/O audience this crate is published for — gets the unguarded
+version.
+
+**Design.** The signature becomes
+
+```rust
+pub fn install_local_snapshot(
+    &mut self,
+    snapshot: RaftSnapshot,
+) -> Result<Vec<Output>, LocalSnapshotInstallError>
+```
+
+with one variant, `BoundaryAheadOfCommit { snapshot_index, commit_index }`, and
+rustdoc that states the precondition, states that the applied-index raise
+follows from the application having applied through the boundary in order to
+build the snapshot, and points at the runtime's compaction API as the shipped
+caller. `install_snapshot_state` is untouched: the leader-driven path keeps
+raising the commit index, which is what makes an installed snapshot commit
+evidence.
+
+Breaking, pre-1.0, one in-repo call site (`rafter-runtime`, twice), which
+already computes the same check and now propagates the kernel's error instead of
+duplicating the rule.
+
+**Rejected:** documenting the precondition without enforcing it. That is the
+`max` in the entry above, in a different method — a rule stated where it cannot
+be checked, addressed to a caller who is not required to read.
+
+### 2. `leader_replication_progress` reports followers, and says so
+
+The method claims "leader-side replication progress for every effective replica"
+([`crates/rafter/src/node/observe.rs:65-67`](../crates/rafter/src/node/observe.rs))
+and iterates `progress.iter_followers()`, which filters out the leader's own
+slot by construction
+([`crates/rafter/src/node/state/membership/progress.rs:124-136`](../crates/rafter/src/node/state/membership/progress.rs)):
+
+```
+effective replicas [NodeId(1), NodeId(2), NodeId(3)] but progress reported
+[NodeId(2), NodeId(3)]; missing [NodeId(1)]
+```
+
+**Design.** Correct the claim, not the code. The returned rows are
+`ReplicationProgress { follower_id, .. }`; the leader has no `next_index` toward
+itself and no send mode, and the `Probing`/`Replicating`/`Snapshotting` states
+are meaningless for it. Inserting a synthetic self-row so the sentence becomes
+true would put a value into a metrics stream that every existing consumer would
+then have to filter back out.
+
+The rustdoc instead names the scope in the direction the code uses it — every
+effective *follower*, learners included — and states what falls outside it and
+where to get it: the leader's own match index is `last_log_index()` by
+construction, which is the fact a caller doing quorum math needs. A test pins
+both halves.
+
+**Rejected:** including the leader. It changes a published observability shape to
+satisfy a sentence, and the field name would then lie instead of the doc.
 
 ## Coupled designs
 
