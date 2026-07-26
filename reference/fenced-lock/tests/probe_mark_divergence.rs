@@ -209,38 +209,83 @@ fn a_refusal_the_lock_store_can_repair_is_not_terminal() {
 // sealed".
 // ---------------------------------------------------------------------------
 
+/// A workload whose last publication does *not* raise a fencing mark.
+///
+/// A release leaves the resource's high-water mark exactly where the preceding
+/// acquisition put it, so the live image and the stale one carry the same marks.
+/// That is the case where the two readings of `UnsealedCompleteImage` agree on
+/// every mark a client could hold, and it is the case a repair may resolve.
+fn workload_ending_in_a_release() -> Vec<Command> {
+    vec![
+        open_session(0, 1),
+        submit(0, 1, 1, acquire(RESOURCE, 10)),
+        submit(0, 1, 2, release(RESOURCE, 1)),
+        submit(0, 1, 3, acquire(RESOURCE, 10)),
+        submit(0, 1, 4, release(RESOURCE, 2)),
+    ]
+}
+
 #[test]
 fn the_version_byte_decides_the_remedy_rather_than_the_verdict() {
+    // Two axes, because two separate rules gate the repair and one used to be
+    // missing entirely. The version byte decides whether a repair may *ever*
+    // clear this damage. Whether the discarded image's fencing marks survive
+    // the adoption decides whether this particular repair may proceed.
+    //
+    // `workload()` ends in an acquisition, so its live image carries a strictly
+    // higher mark than its stale partner: giving it up regresses an
+    // acknowledged fencing mark, and that is refused by both entry points. The
+    // repair used to perform it, report a generation delta, and leave a guarded
+    // resource accepting two independent tenures under one token.
     let mut transcript = Vec::new();
-    for version in [1_u8, 2] {
-        let scratch = ScratchDir::new(&format!("probe-divergence-version-{version}"));
-        let mut app = open(scratch.path());
-        apply_all(&mut app, &workload());
-        let live = app.store().live_slot().expect("the workload committed");
-        drop(app);
+    for (raises_a_mark, commands) in [(false, workload_ending_in_a_release()), (true, workload())] {
+        for version in [1_u8, 2] {
+            let scratch = ScratchDir::new(&format!(
+                "probe-divergence-version-{version}-mark-{raises_a_mark}"
+            ));
+            let mut app = open(scratch.path());
+            apply_all(&mut app, &commands);
+            let live = app.store().live_slot().expect("the workload committed");
+            drop(app);
 
-        let mut bytes = raw_slot::read(scratch.path(), live).expect("the live slot reads");
-        bytes[0] = 0x00;
-        bytes[4] = version;
-        raw_slot::write(scratch.path(), live, &bytes).expect("the live slot rewrites");
+            let mut bytes = raw_slot::read(scratch.path(), live).expect("the live slot reads");
+            bytes[0] = 0x00;
+            bytes[4] = version;
+            raw_slot::write(scratch.path(), live, &bytes).expect("the live slot rewrites");
 
-        let damage = match LockStore::open(scratch.path(), config(2, 4)) {
-            Err(LockStoreError::UnreadableSlot { damage, .. }) => damage,
-            Err(other) => panic!("unexpected refusal at version {version}: {other}"),
-            Ok(store) => panic!(
-                "an unsealed whole image must not be resolved by a read at version {version}: \
-                 the store opened at generation {}",
-                store.generation()
-            ),
-        };
-        let repairable = LockStore::open_and_repair(scratch.path(), config(2, 4)).is_ok();
-        transcript.push((version, damage, repairable));
+            let damage = match LockStore::open(scratch.path(), config(2, 4)) {
+                Err(LockStoreError::UnreadableSlot { damage, .. }) => damage,
+                Err(other) => panic!("unexpected refusal at version {version}: {other}"),
+                Ok(store) => panic!(
+                    "an unsealed whole image must not be resolved by a read at version \
+                     {version}: the store opened at generation {}",
+                    store.generation()
+                ),
+            };
+            let repaired = LockStore::open_and_repair(scratch.path(), config(2, 4));
+            if raises_a_mark && version == 1 {
+                let refusal = repaired.err().unwrap_or_else(|| {
+                    panic!(
+                        "a repair that discards the only image holding an acknowledged mark \
+                         must refuse rather than report the loss afterwards"
+                    )
+                });
+                assert!(
+                    matches!(refusal, LockStoreError::DiscardWouldRegressMark { .. }),
+                    "the refusal must name the marks rather than the generations: {refusal}"
+                );
+                transcript.push((raises_a_mark, version, damage, false));
+            } else {
+                transcript.push((raises_a_mark, version, damage, repaired.is_ok()));
+            }
+        }
     }
 
     let shapes: Vec<_> = transcript
         .iter()
-        .map(|(version, damage, repairable)| {
+        .map(|(raises_a_mark, version, damage, repairable)| {
             (
+                *raises_a_mark,
                 *version,
                 matches!(damage, SlotDamage::UnsealedCompleteImage { .. }),
                 matches!(damage, SlotDamage::UnsupportedFormatVersion { version: 2 }),
@@ -251,14 +296,24 @@ fn the_version_byte_decides_the_remedy_rather_than_the_verdict() {
     assert_eq!(
         shapes,
         vec![
-            // This build's own version: a whole image whose mark reads unsealed.
+            // This build's own version, and the adopted image carries every mark
+            // the discarded one does: a whole image whose mark reads unsealed.
             // Recovery cannot tell the written-but-not-committed window from a
-            // live slot whose mark rotted, so it refuses — and a caller who has
-            // decided may repair it.
-            (1, true, false, true),
+            // live slot whose mark rotted, and it does not have to — both
+            // readings agree on every mark a client could hold, so a caller who
+            // has decided may repair it and lose nothing observable.
+            (false, 1, true, false, true),
             // A version this build cannot read. Also a refusal, and deliberately
             // not repairable: the bytes may be a newer build's committed image.
-            (2, false, true, false),
+            (false, 2, false, true, false),
+            // Same damage, same version, and the adopted image would drop an
+            // acknowledged fencing mark. Now the two readings disagree about the
+            // one fact this design protects, nothing in the bytes or in the
+            // caller decides which holds, and both entry points refuse.
+            (true, 1, true, false, false),
+            // The version gate is above the mark check and stays there: it names
+            // a different remedy, not a different amount of loss.
+            (true, 2, false, true, false),
         ],
         "the unsealed mark must not be the whole of either verdict: {transcript:?}"
     );

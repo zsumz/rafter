@@ -367,11 +367,37 @@
 //! records what it did in [`RecoveryReport::repair`]: which slot was given up,
 //! what it held, and the generation adopted in its place.
 //!
-//! It cannot say how much was given up, and that is the honest limit rather than
-//! an omission: reading the discarded slot is exactly what failed, so nobody can
-//! say what was in it. The bound is one publication, because generations are
-//! strictly increasing and only two slots exist, and that bound is the whole of
-//! what is known.
+//! ## What a repair may give up
+//!
+//! Not everything, and the limit is checked rather than described. **Wherever an
+//! image is discarded or set aside, its fencing high-water marks are compared
+//! against the image adopted in its place**, and a discard the adopted image
+//! cannot dominate is refused — by *both* entry points.
+//!
+//! That rule closes a hole this section used to describe its way past. The
+//! sentence below said reading the discarded slot is exactly what failed, so
+//! nobody can say what was in it. True of every damage but one, and the
+//! exception is the one the ordinary crash produces:
+//! [`SlotDamage::UnsealedCompleteImage`] is a whole image that *verified* under
+//! the restored mark, decoded far enough to report a generation. The repair
+//! adopted the stale partner anyway, reported a generation delta, and an
+//! acknowledged `FencingToken(3)` became `FencingToken(2)` while a guarded
+//! resource accepted two independent tenures under one token — the failure this
+//! design exists to prevent, reached through the entry point added to give its
+//! refusals a way forward.
+//!
+//! Whether a repair that must discard a higher-marked image is ever legitimate
+//! is argued, and answered no, on [`verify_discard_preserves_marks`], together
+//! with what the refusal costs and the way forward it leaves. Two boundaries of
+//! that rule are stated there and tested on both sides: the session cache is
+//! deliberately *not* required to survive a repair, and an image this build
+//! cannot decode cannot be compared at all.
+//!
+//! For that second case the old sentence is the true one, and
+//! [`Repair::marks_cross_checked`] now says which case a caller is in rather
+//! than leaving the report to imply a check that did not run. The bound in
+//! either case is one publication, because generations are strictly increasing
+//! and only two slots exist.
 //!
 //! The store did without this while its refusals were rarer. What changed is
 //! that [`SlotDamage::UnsealedCompleteImage`] turns an ordinary crash into a
@@ -694,6 +720,39 @@ pub enum LockStoreError {
         /// Mark the offered state carries, if it tracks the resource at all.
         offered: Option<FencingToken>,
     },
+    /// Giving up or setting aside a slot would lower a fencing high-water mark.
+    ///
+    /// This is [`LockStoreError::MarkRegression`] reached from recovery's other
+    /// side. That one refuses a *publication* whose new state would drop a mark;
+    /// this one refuses to discard an image whose marks the image being adopted
+    /// in its place does not carry.
+    ///
+    /// It names the resource and both marks rather than the two generations,
+    /// because the generations are not the loss. A repair used to report that it
+    /// had moved from generation 6 to generation 5 while an acknowledged
+    /// `FencingToken(3)` became `FencingToken(2)`, and a guarded resource then
+    /// accepted two independent tenures under one token — the exact failure this
+    /// design exists to prevent, reached through the entry point added to give
+    /// its refusals a way forward.
+    ///
+    /// Both entry points refuse it, including [`LockStore::open_and_repair`].
+    /// The argument for refusing rather than repairing-and-reporting is on
+    /// [`verify_discard_preserves_marks`], with what it costs and what it
+    /// deliberately does not cover.
+    DiscardWouldRegressMark {
+        /// Slot whose image would have been given up or set aside.
+        slot: SlotIndex,
+        /// Why that slot could not simply be read.
+        damage: SlotDamage,
+        /// Slot that would have been adopted in its place.
+        adopted: SlotIndex,
+        /// Resource whose mark would move backwards.
+        resource: ResourceName,
+        /// Mark the discarded image carries.
+        acknowledged: FencingToken,
+        /// Mark the adopted image carries, if it tracks the resource at all.
+        offered: Option<FencingToken>,
+    },
     /// A republication at an unchanged applied index would move a client slot's
     /// session cache backwards.
     ///
@@ -809,6 +868,7 @@ impl fmt::Display for LockStoreError {
                 acknowledged,
                 offered,
             } => write_mark_regression(formatter, *resource, *acknowledged, *offered),
+            Self::DiscardWouldRegressMark { .. } => write_discard_regression(formatter, self),
             Self::SessionCacheRegression {
                 client,
                 acknowledged,
@@ -826,6 +886,30 @@ impl fmt::Display for LockStoreError {
             }
         }
     }
+}
+
+/// Renders a discard refused for regressing a mark, naming the slots first and
+/// then deferring to the same wording every mark regression uses.
+fn write_discard_regression(
+    formatter: &mut fmt::Formatter<'_>,
+    error: &LockStoreError,
+) -> fmt::Result {
+    let LockStoreError::DiscardWouldRegressMark {
+        slot,
+        damage,
+        adopted,
+        resource,
+        acknowledged,
+        offered,
+    } = error
+    else {
+        unreachable!("only its own variant reaches here");
+    };
+    write!(
+        formatter,
+        "giving up {slot}, which holds {damage}, and adopting {adopted} in its place would "
+    )?;
+    write_mark_regression(formatter, *resource, *acknowledged, *offered)
 }
 
 /// Renders a mark regression, which reads differently when the resource
@@ -889,6 +973,7 @@ impl Error for LockStoreError {
             | Self::AppliedIndexDisagreement { .. }
             | Self::AppliedIndexRegression { .. }
             | Self::MarkRegression { .. }
+            | Self::DiscardWouldRegressMark { .. }
             | Self::SessionCacheRegression { .. }
             | Self::ImageTooLarge { .. }
             | Self::StoreRequiresReopen
@@ -1340,18 +1425,32 @@ pub struct RecoveryReport {
 /// it is recorded rather than implied, and it is unreachable through
 /// [`LockStore::open`] at all.
 ///
-/// What it cannot say is how much was lost, and that is the honest limit rather
-/// than an omission. The discarded slot is the one this build could not read;
-/// if it held a newer image than the one adopted, nobody can say what was in it,
-/// because reading it is exactly what failed. The bound is one publication —
-/// generations are strictly increasing and only two slots exist — and that bound
-/// is the whole of what is known.
+/// What it can say about the loss depends on which damage it gave up, and it now
+/// says which. That distinction used to be missing, and its absence is the shape
+/// of the defect this type was part of.
+///
+/// - When the slot held [`SlotDamage::UnsealedCompleteImage`], the image is
+///   whole and verified under the restored mark, so this build *can* read it.
+///   [`Repair::discarded_generation`] names its generation and
+///   [`Repair::marks_cross_checked`] is `true`, which means the adopted image
+///   was proved to carry every fencing high-water mark the discarded one did.
+///   Where that proof fails the repair does not happen at all:
+///   [`LockStoreError::DiscardWouldRegressMark`].
+/// - For every other damage nothing is decodable, and there the old sentence is
+///   the true one: reading that slot is exactly what failed, so nobody can say
+///   what was in it. Both fields say so — `None` and `false` — instead of the
+///   type implying a check that did not run.
+///
+/// The bound in either case is one publication, because generations are strictly
+/// increasing and only two slots exist.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Repair {
     slot: SlotIndex,
     damage: SlotDamage,
     adopted: SlotIndex,
     adopted_generation: u64,
+    discarded_generation: Option<u64>,
+    marks_cross_checked: bool,
 }
 
 impl Repair {
@@ -1375,11 +1474,38 @@ impl Repair {
 
     /// Publication generation of the image adopted in its place.
     ///
-    /// The discarded slot's generation is unknown by construction. At most one
-    /// publication separates the two.
+    /// At most one publication separates this from
+    /// [`Repair::discarded_generation`].
     #[must_use]
     pub const fn adopted_generation(&self) -> u64 {
         self.adopted_generation
+    }
+
+    /// Publication generation of the discarded image, when it was decodable.
+    ///
+    /// `None` means the slot held damage this build could not read past, which
+    /// is where "nobody can say what was in it" is the true statement rather
+    /// than a stand-in for one.
+    #[must_use]
+    pub const fn discarded_generation(&self) -> Option<u64> {
+        self.discarded_generation
+    }
+
+    /// Whether the discarded image's fencing marks were compared against the
+    /// adopted image's.
+    ///
+    /// `true` is a proof, not a note: the repair happened, so the comparison
+    /// passed, so the adopted image carries every fencing high-water mark the
+    /// discarded one did. A repair where it would have failed is refused with
+    /// [`LockStoreError::DiscardWouldRegressMark`] and produces no `Repair` at
+    /// all.
+    ///
+    /// `false` means there was nothing to compare — see
+    /// [`Repair::discarded_generation`] — and is the one shape in which this
+    /// report cannot bound the loss in the dimension that matters.
+    #[must_use]
+    pub const fn marks_cross_checked(&self) -> bool {
+        self.marks_cross_checked
     }
 }
 
@@ -1389,7 +1515,18 @@ impl fmt::Display for Repair {
             formatter,
             "gave up {}, which held {}, and adopted generation {} from {}",
             self.slot, self.damage, self.adopted_generation, self.adopted
-        )
+        )?;
+        match (self.discarded_generation, self.marks_cross_checked) {
+            (Some(discarded), true) => write!(
+                formatter,
+                "; the discarded generation {discarded} was readable and its fencing \
+                 high-water marks are all carried by the adopted image"
+            ),
+            (_, _) => formatter.write_str(
+                "; the discarded image was not readable, so no fencing high-water mark it \
+                 held could be checked against the one adopted",
+            ),
+        }
     }
 }
 
@@ -1461,8 +1598,19 @@ impl RecoveryReport {
         !self.created && self.damaged_slot().is_none()
     }
 
-    /// Whether recovery found a second intact slot and re-checked the fencing
-    /// high-water marks across the commit boundary between them.
+    /// Whether recovery compared the adopted image's fencing high-water marks
+    /// against a second image it found.
+    ///
+    /// True in all three shapes where a second image exists: two intact slots,
+    /// where the comparison runs across the commit boundary being recovered; a
+    /// whole unsealed image set aside because the partner is strictly newer; and
+    /// a repair that gave one up. It used to be true only in the first, which
+    /// left the other two dropping a decoded image with nothing checked and
+    /// nothing said.
+    ///
+    /// False means there was no second image to compare against — an empty
+    /// partner, or residue holding no whole image — and it is the report saying
+    /// so rather than implying a check ran.
     #[must_use]
     pub const fn cross_checked_marks(&self) -> bool {
         self.cross_checked_marks
@@ -1541,7 +1689,11 @@ impl LockStore {
     /// and reports what it costs.
     ///
     /// It gives up exactly the refusal [`LockStoreError::UnreadableSlot`] names,
-    /// and nothing else. In particular it does **not** clear:
+    /// and nothing else — and not even all of that. A repair whose adopted image
+    /// does not carry every fencing high-water mark the discarded one held is
+    /// [`LockStoreError::DiscardWouldRegressMark`] and is refused here too;
+    /// [`verify_discard_preserves_marks`] argues why, and says what the refusal
+    /// costs. It does **not** clear:
     ///
     /// - [`SlotDamage::UnsupportedFormatVersion`], which needs no corruption at
     ///   all: a binary downgrade produces it from two healthy files, so the slot
@@ -1621,7 +1773,28 @@ impl LockStore {
                     };
                     images[slot.position()] = Some(image);
                 }
-                Err(damage) => states[slot.position()] = SlotState::Damaged(damage),
+                Err(damage) => {
+                    states[slot.position()] = SlotState::Damaged(damage);
+                    // A slot whose *only* fault is its mark still holds a whole
+                    // image that verified under the restored mark, and
+                    // `classify_unsealed` has already decoded enough of it to
+                    // report a generation. Decoding the rest of it here is what
+                    // lets everything that discards or sets aside this slot say
+                    // what it gave up in the dimension that matters — the
+                    // fencing marks — instead of only how many generations
+                    // apart the two slots were.
+                    //
+                    // Every other damage leaves nothing to decode, and there
+                    // the old sentence is the true one: reading the slot is
+                    // exactly what failed, so nobody can say what was in it.
+                    if let SlotDamage::UnsealedCompleteImage { .. } = damage {
+                        let mut restored = bytes.clone();
+                        restored[0] = SEALED_MARK;
+                        if let Ok(sealed) = verify_sealed_slot(&restored) {
+                            images[slot.position()] = Some(decode_image(slot, &sealed, config)?);
+                        }
+                    }
+                }
             }
         }
 
@@ -1646,14 +1819,20 @@ impl LockStore {
                 ),
             };
         let acknowledged_marks = marks_of(&service);
-        let repair = given_up
-            .zip(live_slot)
-            .map(|((slot, damage), adopted)| Repair {
-                slot,
-                damage,
-                adopted,
-                adopted_generation: generation,
-            });
+        let repair =
+            given_up
+                .zip(live_slot)
+                .map(|((slot, damage, marks_cross_checked), adopted)| Repair {
+                    slot,
+                    damage,
+                    adopted,
+                    adopted_generation: generation,
+                    discarded_generation: match damage {
+                        SlotDamage::UnsealedCompleteImage { generation, .. } => Some(generation),
+                        _ => None,
+                    },
+                    marks_cross_checked,
+                });
 
         Ok(Self {
             directory: directory.to_path_buf(),
@@ -2103,8 +2282,9 @@ struct AdoptedImage {
     generation: u64,
     image: DecodedImage,
     cross_checked_marks: bool,
-    /// The slot a repair gave up to reach this one, and what it held.
-    given_up: Option<(SlotIndex, SlotDamage)>,
+    /// The slot a repair gave up to reach this one, what it held, and whether
+    /// its marks could be and were compared against this image's.
+    given_up: Option<(SlotIndex, SlotDamage, bool)>,
 }
 
 /// Returns the four bytes where a slot's magic belongs, zero-padded when the
@@ -2376,6 +2556,7 @@ fn choose_live_slot(
     // the slot being written; anything else could be the live image, and
     // adopting the partner would roll an acknowledged mark back one generation.
     let mut given_up = None;
+    let mut cross_checked = false;
     for slot in [SlotIndex::Zero, SlotIndex::One] {
         let Some(damage) = states[slot.position()].damage() else {
             continue;
@@ -2396,6 +2577,14 @@ fn choose_live_slot(
         // leaves: those bytes are still byte-for-byte the older image's — the
         // magic, the version, and the leading bytes of the generation — so the
         // slot holds the whole older image with its mark overwritten.
+        //
+        // "Correct under both readings" is a claim about what a caller can
+        // observe, and the fencing marks are what a caller observes. So it is
+        // checked here rather than argued: the image being set aside was
+        // decoded by `open_inner`, and the partner must dominate its marks. In
+        // the ordinary case it does — the partner is newer, and marks only
+        // ever rise — and running the check anyway is what makes the sentence
+        // above a property of this store rather than of this paragraph.
         if let SlotDamage::UnsealedCompleteImage { generation, .. } = damage {
             if let SlotState::Intact {
                 generation: sealed_generation,
@@ -2403,6 +2592,13 @@ fn choose_live_slot(
             } = other
             {
                 if sealed_generation > generation {
+                    cross_checked |= verify_discard_preserves_marks(
+                        slot,
+                        damage,
+                        images[slot.position()].as_ref(),
+                        slot.other(),
+                        images[slot.other().position()].as_ref(),
+                    )?;
                     continue;
                 }
             }
@@ -2429,7 +2625,20 @@ fn choose_live_slot(
                 other,
             });
         }
-        given_up = Some((slot, damage));
+        // A fourth way this stays a refusal, and the only one a repair reaches:
+        // the image being given up is readable enough to name its marks, and
+        // the partner does not dominate them. See
+        // `verify_discard_preserves_marks` for why that is refused rather than
+        // repaired-and-reported.
+        let checked = verify_discard_preserves_marks(
+            slot,
+            damage,
+            images[slot.position()].as_ref(),
+            slot.other(),
+            images[slot.other().position()].as_ref(),
+        )?;
+        cross_checked |= checked;
+        given_up = Some((slot, damage, checked));
     }
 
     let generations = [generation_of(states[0]), generation_of(states[1])];
@@ -2469,20 +2678,25 @@ fn choose_live_slot(
         // proof rather than a default: the partner is empty, or it holds
         // residue, and residue means the partner was the slot being written —
         // so whatever it last committed was older than what is adopted here.
-        // There is no second committed image to compare against, and
-        // `cross_checked_marks` says so rather than implying a check ran.
+        //
+        // There is no *second committed* image to compare against. There may
+        // still be an image: a slot whose only fault is its mark holds a whole
+        // one, and it is set aside or given up above, where the comparison does
+        // run. `cross_checked` carries that answer here rather than a constant
+        // `false`, so this flag keeps meaning "an image was compared against
+        // this one" in every shape rather than only in the two-intact one.
         (Some(generation), None, Some(image), _) => Ok(Some(AdoptedImage {
             slot: SlotIndex::Zero,
             generation,
             image,
-            cross_checked_marks: false,
+            cross_checked_marks: cross_checked,
             given_up,
         })),
         (None, Some(generation), _, Some(image)) => Ok(Some(AdoptedImage {
             slot: SlotIndex::One,
             generation,
             image,
-            cross_checked_marks: false,
+            cross_checked_marks: cross_checked,
             given_up,
         })),
         // Neither slot holds a committed image, and neither is unreadable. A
@@ -2548,6 +2762,98 @@ fn verify_session_cache_dominates(
         }
     }
     Ok(())
+}
+
+/// Refuses to drop or set aside an image whose marks the adopted one does not
+/// dominate, and says whether it was able to check.
+///
+/// Returns `true` when the comparison ran. `false` means the discarded slot held
+/// nothing this build could decode, which is the case the old sentence on
+/// [`Repair`] claimed for all of them: reading that slot is exactly what failed,
+/// so nobody can say what was in it. That sentence was true of every damage
+/// except the one that matters. [`SlotDamage::UnsealedCompleteImage`] is a whole
+/// image that verified under the restored mark — [`classify_unsealed`] decoded
+/// it far enough to report a generation — so "nobody can say" was a claim about
+/// the mechanism's scope made one step wider than the mechanism reached.
+///
+/// # Is a repair that must discard a higher-marked image ever legitimate?
+///
+/// No, and this function is that answer.
+///
+/// [`SlotDamage::UnsealedCompleteImage`] has two readings, and they differ in
+/// exactly one observable: whether the discarded image's fencing marks were ever
+/// acknowledged to a client. Under the interrupted-publication reading no
+/// response was returned for the entry that image holds, because a response
+/// follows the commit point, so its marks reached nobody. Under the rotted-mark
+/// reading they reached a client, and a guarded resource downstream has accepted
+/// a token at least that high.
+///
+/// When the adopted image **dominates** those marks, the two readings agree on
+/// every mark a caller could hold. Adopting is then correct under both readings
+/// rather than a choice between them, no decision is required, and the repair is
+/// safe. That is the same asymmetry the set-aside branch above already rests on,
+/// applied one level up.
+///
+/// When it does not, the readings disagree about the one fact a fencing lock
+/// exists to protect. Nothing in the bytes decides which holds, and neither can
+/// the caller: the deciding evidence is not in this store, it is in the guarded
+/// downstream, which this store cannot read. An entry point that proceeded on
+/// the strength of having been called by name would be taking consent in place
+/// of information, and would perform this design's worst failure — two
+/// independent tenures under one token — on request, with a report.
+///
+/// So it refuses, in **both** entry points, and names the resource and both
+/// marks rather than the generations: that is precisely the fact an operator
+/// must go and check downstream. There is deliberately no override, because an
+/// override is the boolean this paragraph rejects. The way forward is the one a
+/// replicated state machine already has — this store is one replica, and a
+/// replica that cannot prove its high-water marks is re-seeded from the group.
+/// Losing this replica's store is recoverable; losing a fencing mark is not.
+///
+/// ## What this does not check, and why
+///
+/// The **session cache** is deliberately not required to dominate here, and the
+/// asymmetry is not an oversight. Session progress advances on every applied
+/// entry, so a discarded image almost always holds more of it than the adopted
+/// one; requiring domination would refuse every repair and leave the ordinary
+/// crash with no way forward at all, which is the state the repair entry point
+/// was added to end. What makes the two different is where the loss can be
+/// recovered from: a session-cache regression is bounded by the applied index
+/// this store reports, and replaying from there re-executes the same entries
+/// through the same deterministic state machine, so a client's retry meets its
+/// cached result again. A fencing token has already left the cluster. No replay
+/// reaches the guarded resource that accepted it.
+///
+/// That boundary is a premise about the composition rather than about this file,
+/// so it is stated here and tested on both sides:
+/// `a_repair_that_regresses_only_session_progress_is_allowed_and_reported` and
+/// `a_repair_that_would_regress_a_mark_is_refused_by_both_entry_points`.
+fn verify_discard_preserves_marks(
+    discarded: SlotIndex,
+    damage: SlotDamage,
+    discarded_image: Option<&DecodedImage>,
+    adopted: SlotIndex,
+    adopted_image: Option<&DecodedImage>,
+) -> Result<bool, LockStoreError> {
+    let (Some(discarded_image), Some(adopted_image)) = (discarded_image, adopted_image) else {
+        return Ok(false);
+    };
+    let acknowledged = marks_of(&discarded_image.service);
+    let offered = marks_of(&adopted_image.service);
+    for (resource, mark) in &acknowledged {
+        let found = offered.get(resource).copied();
+        if found.is_none_or(|offered_mark| offered_mark < *mark) {
+            return Err(LockStoreError::DiscardWouldRegressMark {
+                slot: discarded,
+                damage,
+                adopted,
+                resource: *resource,
+                acknowledged: *mark,
+                offered: found,
+            });
+        }
+    }
+    Ok(true)
 }
 
 /// Refuses a state that would lower or drop any acknowledged mark.

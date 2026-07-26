@@ -520,7 +520,9 @@ the point at which the whole image is durable and its publication mark has not
 yet been promoted. Those bytes are also exactly what a live copy whose mark byte
 later rotted leaves, so opening refuses rather than choosing between two
 histories it cannot see, and a caller who has decided which happened resolves it
-to the pre-transaction state. The argument is under "Recovery guarantees".
+to the pre-transaction state — but only where the two histories agree about every
+fencing mark a client could hold. Where they do not, both entry points refuse.
+The argument is under "Recovery guarantees".
 
 After a failed publication the handle is poisoned and refuses every later
 transaction until it is reopened. A store that failed part way through
@@ -650,24 +652,58 @@ restart from one worth investigating.
 
 Destructive recovery is available and is a separate, named entry point. It
 adopts the readable partner of a copy this build cannot read, and reports which
-copy it gave up, what that copy held, and the generation it adopted instead. It
-cannot report how much was given up — reading the discarded copy is exactly what
-failed — and the bound is one publication, which is the whole of what is known.
-The store did without it while its refusals were rarer; what changed is that an
+copy it gave up, what that copy held, and the generation it adopted instead. The
+store did without it while its refusals were rarer; what changed is that an
 ordinary crash between a publication's barrier and its seal is now a refusal, and
 a store whose ordinary crash residue needs an operator with no documented way
 forward is worse than one that names the way forward and reports what it costs.
 
-Three refusals stay outside its reach, and each is a case where there is no
-second reading to choose between. A version this build cannot read is a newer
-build's committed work rather than damage, so the remedy for damage must not
-discard it — the sibling ledger refuses the same shape from both entry points.
-No readable copy at all leaves nothing to adopt, and opening empty would hand out
-token 1 for a resource whose guarded downstream has already accepted far more; a
-damaged copy whose partner has never held an image is the same fact reached from
-the other side. A missing file is not damage found in an artifact that was read,
-and re-creating it is a different act from choosing between two files that are
-both present.
+**Wherever a copy is discarded or set aside, its fencing high-water marks are
+compared against the copy adopted in its place, and a discard the adopted copy
+cannot dominate is refused by both entry points.** This section used to say
+instead that a repair cannot report how much was given up, because reading the
+discarded copy is exactly what failed. That was true of every damage except the
+one an ordinary crash produces: a whole image whose only fault is its mark
+*verified* under the mark restored, so this build can read it. The repair adopted
+the stale partner anyway and reported a generation delta while an acknowledged
+fencing mark regressed and a guarded resource accepted two independent tenures
+under one token.
+
+A repair that must discard a higher-marked copy is never legitimate here, and the
+argument is the one the rest of this section rests on. The two histories behind
+those bytes differ in exactly one observable: whether the discarded copy's marks
+were ever acknowledged to a client. When the adopted copy carries them all, the
+two readings agree on every mark a client could hold, adopting is correct under
+both rather than a choice between them, and the repair costs nothing observable.
+When it does not, the readings disagree about the one fact a fencing lock exists
+to protect; nothing in the bytes decides which holds, and neither can the caller,
+because the deciding evidence is in the guarded downstream this store cannot
+read. Proceeding on the strength of having been called by name would be consent
+in place of information. So it refuses and names the resource and both marks
+rather than the two generations, which is exactly the fact an operator must check
+downstream — and the way forward is the one a replicated state machine already
+has: a replica that cannot prove its high-water marks is re-seeded from the
+group. Losing this replica's copies is recoverable; losing a fencing mark is not.
+
+Two boundaries of that rule are stated rather than left to be found, and each is
+tested on both sides. The **session cache** is deliberately not required to
+survive a repair: session progress advances on every applied entry, so requiring
+it would refuse every repair, and unlike a token it is bounded by the applied
+index the store reports and is restored by replaying from there. An image this
+build **cannot decode** cannot be compared at all; there the older sentence is
+the true one, the repair proceeds, and the report says the comparison did not run
+rather than implying it did.
+
+Three refusals stay outside the entry point's reach entirely, and each is a case
+where there is no second reading to choose between. A version this build cannot
+read is a newer build's committed work rather than damage, so the remedy for
+damage must not discard it — the sibling ledger refuses the same shape from both
+entry points. No readable copy at all leaves nothing to adopt, and opening empty
+would hand out token 1 for a resource whose guarded downstream has already
+accepted far more; a damaged copy whose partner has never held an image is the
+same fact reached from the other side. A missing file is not damage found in an
+artifact that was read, and re-creating it is a different act from choosing
+between two files that are both present.
 
 Creating a store's files is reported too, and counts against a clean opening.
 Nothing inside a durable store can tell a replica that has never run from one
