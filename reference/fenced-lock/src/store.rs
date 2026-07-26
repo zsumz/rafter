@@ -1787,12 +1787,19 @@ impl LockStore {
                     // Every other damage leaves nothing to decode, and there
                     // the old sentence is the true one: reading the slot is
                     // exactly what failed, so nobody can say what was in it.
+                    //
+                    // A decode that fails here is not an error. This slot is
+                    // damaged and is going to be refused or given up either
+                    // way, and turning "the image this build was about to
+                    // discard is also invalid" into a new refusal would take
+                    // away a repair that used to work. It stays undecoded, and
+                    // `Repair::marks_cross_checked` reports `false`.
                     if let SlotDamage::UnsealedCompleteImage { .. } = damage {
                         let mut restored = bytes.clone();
                         restored[0] = SEALED_MARK;
-                        if let Ok(sealed) = verify_sealed_slot(&restored) {
-                            images[slot.position()] = Some(decode_image(slot, &sealed, config)?);
-                        }
+                        images[slot.position()] = verify_sealed_slot(&restored)
+                            .ok()
+                            .and_then(|sealed| decode_image(slot, &sealed, config).ok());
                     }
                 }
             }
