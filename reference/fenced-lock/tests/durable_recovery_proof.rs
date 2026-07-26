@@ -245,7 +245,7 @@ fn a_short_slot_with_a_foreign_magic_is_not_this_builds_publication_residue() {
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_version_gate_is_length_dependent() {
+fn the_same_version_bytes_are_refused_at_every_length() {
     let scratch = ScratchDir::new("probe-version-gate-length");
     let commands = workload();
 
@@ -255,8 +255,9 @@ fn the_version_gate_is_length_dependent() {
     drop(app);
 
     // The stale slot's own sealed image, with only the version byte moved to a
-    // build this one cannot read, then truncated to 20 bytes. At full length
-    // this is `UnsupportedFormatVersion` and a refusal; short, it is benign.
+    // build this one cannot read, then truncated to 20 bytes. Both lengths must
+    // refuse; the defect was that the short one was waved through as this
+    // build's own residue.
     let mut bytes = raw_slot::read(scratch.path(), stale).expect("the stale slot reads");
     bytes[4] = 2;
     raw_slot::write(scratch.path(), stale, &bytes).expect("the stale slot rewrites");

@@ -413,11 +413,16 @@
 //! token. That is [`LockStoreError::NoReadableImage`].
 //!
 //! A store that has never committed is a different case and is not refused: its
-//! slots carry their creation marks, which is not damage. More generally,
-//! whenever recovery adopts an image it has shown that every slot it did not
-//! adopt holds no sealed image at all — either the creation mark or residue an
-//! interrupted publication left — so the image it adopts is the newest one any
-//! publication ever sealed.
+//! slots carry their creation marks, which is not damage.
+//!
+//! What holds generally is narrower than "the unadopted slot holds nothing
+//! sealed", because two cases break that: a slot holding a whole unsealed image
+//! is set aside when the partner's sealed generation is strictly greater, and
+//! [`LockStore::open_and_repair`] adopts while the unadopted slot still holds
+//! the damage it gave up on. What holds in every case is that the adopted image
+//! is the newest one recovery can show any publication sealed — the set-aside
+//! slot is older by generation, and the given-up slot is one the caller asked
+//! recovery to stop reading.
 //!
 //! [`RecoveryReport::damaged_slot`] names **which** slot was damaged as well as
 //! how. That index is the load-bearing half: it is what tells a caller the
@@ -608,7 +613,7 @@ pub enum LockStoreError {
         /// Underlying filesystem failure.
         source: std::io::Error,
     },
-    /// Neither slot holds a readable image, and at least one is damaged.
+    /// Neither slot holds a readable image, and both are damaged.
     ///
     /// A lock service that cannot read an image cannot know its fencing
     /// high-water marks. Opening empty would hand out token 1 for a resource
@@ -1699,6 +1704,10 @@ impl LockStore {
     /// [`verify_discard_preserves_marks`] argues why, and says what the refusal
     /// costs. It does **not** clear:
     ///
+    /// - a damaged slot whose partner is not intact, which stays
+    ///   [`LockStoreError::UnreadableSlot`]. There is nothing to fall back to,
+    ///   so this is the same refusal `open` gives, reached through the repair.
+    ///
     /// - [`SlotDamage::UnsupportedFormatVersion`], which needs no corruption at
     ///   all: a binary downgrade produces it from two healthy files, so the slot
     ///   holds a newer build's committed work and the remedy for damage must not
@@ -1718,8 +1727,10 @@ impl LockStore {
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`LockStore::open`] except
-    /// [`LockStoreError::UnreadableSlot`], which is what this gives up.
+    /// Returns the same errors as [`LockStore::open`]. It returns
+    /// [`LockStoreError::UnreadableSlot`] in strictly fewer cases: only where
+    /// the damaged slot's partner is not an intact image, or the damage is
+    /// [`SlotDamage::UnsupportedFormatVersion`].
     pub fn open_and_repair(directory: &Path, config: LockConfig) -> Result<Self, LockStoreError> {
         Self::open_inner(directory, config, FaultPlan::none(), OnUnreadableSlot::Give)
     }
@@ -3492,8 +3503,8 @@ mod tests {
         }
     }
 
-    /// The one artifact in this store no checksum can cover, pinned at both
-    /// values it can take.
+    /// The one artifact in this store no checksum can cover, pinned at every
+    /// value a byte can take.
     ///
     /// A slot of one byte is the creation mark, and "nothing has ever been
     /// sealed here" is not damage — recovery adopts the partner and

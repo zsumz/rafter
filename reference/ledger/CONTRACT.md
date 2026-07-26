@@ -269,8 +269,11 @@ acknowledged transactions included — because a frame's offset is only knowable
 through the frame before it.
 
 So opening may discard only residue it can *prove* no commit point covered.
-**That proof is written into the journal by the append, not inferred from it by
-the reader**, and the difference is the whole of this section.
+**That proof rests on a mark the append wrote, and it is not that mark alone**,
+and the difference is the whole of this section. The append writes the half no
+reader could infer — every interrupted append leaves the frame unsealed — and
+the reader supplies the other half by re-reading the tail with the mark restored
+and asking whether these bytes are a whole frame.
 
 An enumeration of what an interrupted append leaves is not that proof. Such a
 list can be complete — fewer bytes than a begin record, a partial image, a whole

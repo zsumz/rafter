@@ -309,7 +309,7 @@ fn a_torn_commit_checksum_does_not_commit() {
 }
 
 #[test]
-fn a_failed_durability_barrier_leaves_the_outcome_to_recovery() {
+fn a_failed_durability_barrier_is_refused_by_open_and_resolved_only_by_the_repair() {
     let commands = workload();
     let scratch = ScratchDir::new("failed-sync");
     let (before, _) = state_and_payload_len(&commands, commands.len());

@@ -547,9 +547,12 @@ open, reported to the caller, who is the only party that can decide what to do
 about it.
 
 Recovery may skip a copy it cannot read only when it can *prove* that copy was
-not the live one. **That proof is written into the artifact by the publication,
-not inferred from it by the reader**, and the difference is the whole of this
-section.
+not the live one. **That proof rests on a mark the publication wrote, and it is
+not that mark alone**, and the difference is the whole of this section. The
+publication writes the half no reader could infer — every interrupted
+publication leaves the slot unsealed — and the reader supplies the other half by
+re-reading the slot with the mark restored and asking whether it holds a whole
+image.
 
 An enumeration of what an interrupted publication leaves is not that proof. Such
 a list can be complete — a short header, a short payload, a payload with no

@@ -907,10 +907,12 @@ impl fmt::Display for FaultPlan {
 
 /// Why recovery stopped before the end of the journal.
 ///
-/// A torn tail is a normal residue of an interrupted transaction, not a fault,
-/// so it is reported here rather than as a [`LedgerStoreError`]. Each variant
-/// names the byte boundary the interrupted write reached, which is what lets a
-/// crash test prove that its injection bit where it aimed.
+/// This is reported here because the report says what recovery *found*, not
+/// because finding one is benign: only [`TornTail::UnsealedAppend`] is ordinary
+/// residue that truncates, and every other variant refuses the store through
+/// [`LedgerStoreError::UnreadableFrame`]. Each variant names the byte boundary
+/// the interrupted write reached, which is what lets a crash test prove that
+/// its injection bit where it aimed.
 ///
 /// Exactly one of these variants is residue an interrupted append can leave;
 /// see [`TornTail::is_interrupted_append`]. The rest name either damage to a

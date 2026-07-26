@@ -407,7 +407,7 @@ fn a_torn_commit_record_does_not_commit() {
 }
 
 #[test]
-fn a_failed_durability_barrier_leaves_the_outcome_to_recovery() {
+fn a_failed_durability_barrier_is_refused_by_open_and_resolved_only_by_the_repair() {
     let commands = workload();
     let scratch = ScratchDir::new("failed-sync");
     let (before, _) = state_and_image_len(&commands, commands.len());
@@ -1239,7 +1239,7 @@ fn a_snapshot_round_trip_preserves_everything_the_contract_lists() {
 }
 
 #[test]
-fn a_crash_during_a_snapshot_install_leaves_the_pre_install_state() {
+fn a_crash_during_a_snapshot_install_leaves_exactly_one_side_of_it() {
     let commands = workload();
     let source = ScratchDir::new("install-crash-source");
     let mut app = open(source.path(), FaultPlan::none());
