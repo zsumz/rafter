@@ -150,8 +150,9 @@
 //!
 //! The magic's first byte doubles as the **append mark**. An append writes it
 //! as `0x00` and promotes it to `b'R'` once the rest of the frame is durable,
-//! so a frame says of itself whether it was ever sealed. That one byte is the
-//! whole of recovery's truncation rule; see the section on it below. A sealed
+//! so a frame says of itself whether it was ever sealed. That one byte is *part*
+//! of recovery's truncation rule and never the whole of it — the three magic
+//! bytes beside it are read first, and see the section on it below. A sealed
 //! frame is byte-for-byte what it would be without the mark, and every checksum
 //! is computed over the sealed form, so an unsealed frame cannot accidentally
 //! verify.
@@ -273,9 +274,47 @@
 //! is durable. An append writes the unsealed mark before any other byte of the
 //! frame, makes the whole frame durable, and only then writes the one byte that
 //! seals it. Since a crash leaves a prefix of what was written, the mark is
-//! written first and *every* interrupted append leaves it unsealed. Zeros are
-//! the unsealed mark, so the ordinary residue of a delayed allocation reads as
-//! exactly what it is, at every length.
+//! written first and *every* interrupted append leaves it unsealed.
+//!
+//! ## The identity is asked before the mark
+//!
+//! The mark is a zero byte, and the sentence that used to stand here — "zeros
+//! are the unsealed mark, so the ordinary residue of a delayed allocation reads
+//! as exactly what it is, at every length" — is the same sentence that made
+//! zeros landing over a *committed* frame read as residue too. It was true of
+//! the residue it was written about and claimed a scope one step wider than the
+//! mechanism reached.
+//!
+//! So the mark is no longer the first thing read. Bytes one through three of the
+//! begin magic are the frame's **identity**, they are not the mark, and no
+//! append this store performs ever leaves them wrong: the append writes the
+//! whole begin record with byte zero held at `0x00`, so the first write that
+//! reaches byte one carries `b'L'`. Recovery asks the identity at every length,
+//! *above* the mark, and a tail that fails it is
+//! [`TornTail::NotALedgerFrame`] — a refusal, never residue.
+//!
+//! That closes the two-byte case the mark alone could not. One zeroed byte is
+//! the mark and is refused as a whole unsealed frame. Two zeroed bytes reach the
+//! identity and are refused as a foreign begin magic. Seventeen — one begin
+//! record, and anything up to a sector — likewise. The sibling lock store has
+//! read its magic above its mark since the generation that fixed it there; this
+//! is that store's `verify_identity`, statement for statement, and
+//! `the_recognition_order_matches_the_sibling_lock_store` in each store's tests
+//! is what keeps the two from drifting apart again on a third byte.
+//!
+//! One residue has to survive the identity test, and it is named rather than
+//! smuggled through: a tail that is **zeros all the way to the end of the file**
+//! is [`TornTail::ZeroFilledToEnd`] and is truncated. That is what a crash on a
+//! delayed-allocation filesystem leaves when the file's size reached the medium
+//! and its data did not, and refusing it would brick a replica on the most
+//! ordinary crash there is. The premise underneath it is a claim about the
+//! physical world rather than about this program, and
+//! [`TornTail::is_truncatable_residue`] states it, states the loss it admits — a
+//! committed *final* frame that a zeroed sector erased is discarded — and states
+//! the bound that makes the trade tolerable: the loss can never reach a byte
+//! that is not itself zero, and never a frame beyond the damage. Every zero run
+//! with a single non-zero byte anywhere after it, which is every zero run that
+//! has a committed frame behind it, fails the identity test and refuses.
 //!
 //! ## The mark is half the rule, not the rule
 //!
@@ -301,8 +340,9 @@
 //! it, and names the single-fault assumption it rests on rather than leaving it
 //! implicit.
 //!
-//! Three shapes come out of that second reading, and they are three different
-//! facts:
+//! The second reading is only reached by bytes that already carry this build's
+//! begin identity, because [`verify_identity`] runs above the mark test. Three
+//! shapes come out of it, and they are three different facts:
 //!
 //! - **Not a whole frame**, at a step this build can read: too short for a begin
 //!   record, a begin record that does not verify, a partial or mismatched image,
@@ -920,10 +960,37 @@ pub enum TornTail {
         /// Length of the whole frame that verified.
         len: u64,
     },
-    /// The tail begins with a byte that is neither frame mark.
-    ForeignFrameMark {
-        /// The byte found where a frame mark belongs.
-        mark: u8,
+    /// Every byte from here to the end of the file is zero.
+    ///
+    /// This is the residue a crash on a delayed-allocation filesystem leaves:
+    /// the file's size reached the medium and its data did not. It is truncated,
+    /// and the argument for truncating it is *not* the one behind
+    /// [`TornTail::UnsealedAppend`] — see [`TornTail::is_truncatable_residue`],
+    /// which states the two separately because they rest on different premises
+    /// and fail in different places.
+    ZeroFilledToEnd {
+        /// Bytes present past the last committed frame, all of them zero.
+        present: u64,
+    },
+    /// The bytes here do not carry this build's begin identity.
+    ///
+    /// Byte zero is neither frame mark, or the magic bytes beside it are not
+    /// this store's — as far as the bytes present go. Neither is something an
+    /// append can produce: an append writes the whole begin magic with byte zero
+    /// held unsealed, so bytes one through three carry the identity from the
+    /// first write that reaches them.
+    ///
+    /// This is the sibling lock store's [`SlotDamage::NotALockImage`], under the
+    /// name this format uses. The two stores are meant to answer the same byte
+    /// pattern the same way, and
+    /// `the_recognition_order_matches_the_sibling_lock_store` is where that is
+    /// checked rather than hoped for.
+    ///
+    /// [`SlotDamage::NotALockImage`]: https://docs.rs/rafter-reference-fenced-lock
+    NotALedgerFrame {
+        /// The four bytes where the begin magic belongs, zero-padded when fewer
+        /// than four are present.
+        magic: [u8; 4],
     },
     /// A sealed frame holds fewer bytes than one begin record needs.
     PartialBeginRecord,
@@ -997,9 +1064,68 @@ impl TornTail {
     /// mark, where step (2) fails and the answer is a refusal — and every shape
     /// with a sealed mark, where the bytes are what some completed append sealed
     /// and any damage to them happened afterwards.
+    ///
+    /// It also does not cover [`TornTail::ZeroFilledToEnd`], which is truncated
+    /// too but earns it a different way. That separation is deliberate: this
+    /// predicate's proof would be false of those bytes, and one predicate
+    /// carrying two proofs is how the scope of a rule drifts past the mechanism
+    /// that implements it. [`TornTail::is_truncatable_residue`] is the
+    /// disjunction the truncating branch actually reads.
     #[must_use]
     pub const fn is_interrupted_append(self) -> bool {
         matches!(self, Self::UnsealedAppend { .. })
+    }
+
+    /// Whether [`LedgerStore::open`] may shorten the file here.
+    ///
+    /// This is the predicate the destructive branch reads, and it is a
+    /// disjunction of **two** rules with two different scopes and two different
+    /// failure boundaries. They are stated apart because a single sentence
+    /// covering both would be true of neither.
+    ///
+    /// **Rule one — [`TornTail::UnsealedAppend`].** Scope: bytes carrying this
+    /// build's begin identity with an unsealed mark that are provably not a
+    /// whole frame. Guarantee: *no commit point covered them*, proved in
+    /// [`TornTail::is_interrupted_append`] from the single-fault assumption.
+    /// Outside that scope, named rather than implied:
+    ///
+    /// - Two independent alterations to one committed frame — its mark byte
+    ///   rotted to zero **and** some other byte of the same frame lost or
+    ///   altered — satisfy both halves and are truncated. One physical event
+    ///   that does this is a torn or zeroed region beginning at the frame's
+    ///   first byte, and that case is caught by rule two's boundary instead,
+    ///   because such a region takes the identity bytes with it. What remains
+    ///   outside is two *disjoint* events, which the crash contract does not
+    ///   admit. `a_zero_run_over_a_committed_frame_is_refused_at_every_length`
+    ///   walks the first case on each side of that line.
+    ///
+    /// **Rule two — [`TornTail::ZeroFilledToEnd`].** Scope: every byte from here
+    /// to the end of the file is zero. Guarantee is weaker and is stated as the
+    /// weaker thing it is: *every byte discarded is a zero, and no byte beyond
+    /// them exists to lose*. It is not "no commit point covered them", and it
+    /// cannot be — a committed final frame that a zeroed sector erased leaves
+    /// exactly these bytes, and nothing distinguishes it from the delayed
+    /// allocation this rule exists for. What is outside this scope:
+    ///
+    /// - A committed frame that is both the *last* frame and entirely zeroed is
+    ///   discarded, and the transactions in it are lost. This is the residual
+    ///   loss of the whole design and it is bounded by the zeroed region: the
+    ///   loss can never reach a byte that is not itself zero, and never a frame
+    ///   beyond the damage. `a_zeroed_final_frame_is_lost_and_the_loss_stops_
+    ///   there` pins it, on both sides of the boundary.
+    /// - The premise underneath rule two is a claim about the physical world,
+    ///   not about this program: that a crash which extends a file without
+    ///   persisting its data leaves zeros, and that such a tail is far more
+    ///   often residue than an erased commit. Refusing instead would brick a
+    ///   replica on the most ordinary crash there is, which is why the trade is
+    ///   made — and why it is written down here rather than left to be
+    ///   rediscovered.
+    #[must_use]
+    pub const fn is_truncatable_residue(self) -> bool {
+        matches!(
+            self,
+            Self::UnsealedAppend { .. } | Self::ZeroFilledToEnd { .. }
+        )
     }
 }
 
@@ -1015,8 +1141,11 @@ impl fmt::Display for TornTail {
                     "a whole {len} byte frame whose append mark reads unsealed"
                 )
             }
-            Self::ForeignFrameMark { mark } => {
-                return write!(formatter, "a foreign frame mark {mark:#04x}")
+            Self::ZeroFilledToEnd { present } => {
+                return write!(formatter, "{present} zero bytes to the end of the file")
+            }
+            Self::NotALedgerFrame { magic } => {
+                return write!(formatter, "foreign begin magic {magic:?}")
             }
             Self::UnsupportedFrameVersion { version } => {
                 return write!(formatter, "a frame of format version {version}")
@@ -1033,7 +1162,8 @@ impl fmt::Display for TornTail {
             Self::CommitRecordCorrupt => "a sealed frame whose commit record seals nothing",
             Self::UnsealedAppend { .. }
             | Self::UnsealedCompleteFrame { .. }
-            | Self::ForeignFrameMark { .. }
+            | Self::ZeroFilledToEnd { .. }
+            | Self::NotALedgerFrame { .. }
             | Self::UnsupportedFrameVersion { .. } => unreachable!("handled above"),
         })
     }
@@ -1130,11 +1260,17 @@ impl RecoveryReport {
 
     /// Bytes truncated from the journal's uncommitted tail.
     ///
-    /// These are bytes no commit point ever covered — a frame whose append
-    /// never sealed it, which [`TornTail::is_interrupted_append`] proves rather
-    /// than assumes — so discarding them discards nothing. Bytes lost to a
-    /// repair are counted separately, by [`Repair::discarded_bytes`], because
-    /// they are a different kind of loss.
+    /// What is promised about them depends on which residue they were, and
+    /// [`RecoveryReport::torn_tail`] says which. Under
+    /// [`TornTail::UnsealedAppend`] these are bytes no commit point ever covered
+    /// and discarding them discards nothing. Under
+    /// [`TornTail::ZeroFilledToEnd`] the weaker statement is the true one: every
+    /// byte discarded was a zero, and there was no byte beyond them.
+    /// [`TornTail::is_truncatable_residue`] carries both arguments and the limit
+    /// of each; this counter is a byte count and settles neither.
+    ///
+    /// Bytes lost to a repair are counted separately, by
+    /// [`Repair::discarded_bytes`], because they are a different kind of loss.
     #[must_use]
     pub const fn discarded_bytes(&self) -> u64 {
         self.discarded_bytes
@@ -1325,12 +1461,12 @@ impl LedgerStore {
         }
 
         // The whole fail-closed rule, in one branch. Truncating is only ever
-        // legal for a frame an append never sealed; anything else may sit at or
-        // below the last commit point, and shortening the file there would
-        // delete acknowledged history during a read.
+        // legal for residue `TornTail::is_truncatable_residue` covers; anything
+        // else may sit at or below the last commit point, and shortening the
+        // file there would delete acknowledged history during a read.
         let unreadable = scan
             .torn_tail
-            .filter(|tail| !tail.is_interrupted_append())
+            .filter(|tail| !tail.is_truncatable_residue())
             .map(|corruption| Repair {
                 offset: scan.committed_len as u64,
                 corruption,
@@ -1939,29 +2075,96 @@ struct Frame<'a> {
     len: usize,
 }
 
+/// Returns the four bytes where a begin magic belongs, zero-padded when fewer
+/// than four are present.
+fn magic_of(bytes: &[u8]) -> [u8; 4] {
+    let mut magic = [0_u8; 4];
+    let present = bytes.len().min(magic.len());
+    magic[..present].copy_from_slice(&bytes[..present]);
+    magic
+}
+
+/// Checks that the bytes present carry this store's begin magic, as far as they
+/// go.
+///
+/// This runs on **every** tail long enough to carry a byte of it, before the
+/// mark decides anything. The ordering is the whole of the fix behind it. The
+/// older shape asked the mark first and reached the magic only underneath it, so
+/// a committed frame whose leading bytes were zeroed came back from
+/// [`classify_unsealed`] as a corrupt begin record, that answer was folded into
+/// [`TornTail::UnsealedAppend`], and `open` deleted the frame and every
+/// committed frame after it. Two adjacent zero bytes were enough — one 16-bit
+/// word, far under a sector — while one was correctly refused.
+///
+/// Byte zero is the append mark and is checked here too, because it is the
+/// magic's leading byte: a tail beginning with neither mark is not a frame this
+/// build ever wrote. *Which* of the two marks it is decides nothing here — that
+/// question belongs to [`read_frame`], and answering it needs more than this
+/// byte.
+///
+/// The version byte is deliberately *not* tested here. It sits behind the seal
+/// test, and [`classify_unsealed`] explains why an unsealed frame's version is
+/// reached through the same path as everything else it declares rather than
+/// ahead of it. It is still consulted at every length that carries it.
+///
+/// This is the sibling lock store's `verify_identity`, statement for statement.
+/// The two stores are one design in two formats, and this is the function the
+/// fourth-generation hunt found them disagreeing on, one commit after they were
+/// aligned on the version byte beside it.
+fn verify_identity(bytes: &[u8]) -> Result<(), TornTail> {
+    if bytes[0] != UNSEALED_FRAME_MARK && bytes[0] != SEALED_FRAME_MARK {
+        return Err(TornTail::NotALedgerFrame {
+            magic: magic_of(bytes),
+        });
+    }
+    let present = bytes.len().min(BEGIN_MAGIC.len());
+    if bytes[1..present] != BEGIN_MAGIC[1..present] {
+        return Err(TornTail::NotALedgerFrame {
+            magic: magic_of(bytes),
+        });
+    }
+    Ok(())
+}
+
 /// Reads one frame from the front of `bytes`, or says why it is not committed.
 ///
-/// The frame mark is read first, before anything classifies these bytes by how
-/// many of them there are. That ordering is what makes the answer a statement
-/// about whether the bytes were committed rather than about where the scan
-/// happened to stop.
+/// Three questions, in this order, and the order is the mechanism:
 ///
-/// What the mark decides is narrower than it used to be, and the narrowing is
-/// the point. An unsealed mark is one byte, and one byte is not evidence: `b'R'`
-/// rots to `0x00` as easily as any other byte rots to any other value. So an
-/// unsealed mark no longer settles anything by itself — it sends these bytes to
-/// [`classify_unsealed`], which asks the question the truncation rule actually
-/// needs answered: are these bytes a whole frame, or are they not? A sealed mark
-/// settles the question the other way, and it may, because the checksums cover
-/// the sealed value: a frame whose mark reads sealed is one whose mark byte is
-/// under the same checksum as every other byte of its begin record.
+/// 1. **Is the rest of the file zeros?** Then it is the one residue a
+///    delayed-allocation crash leaves at every length, and the identity test
+///    below would refuse it. [`TornTail::ZeroFilledToEnd`] says so under its own
+///    name rather than borrowing the interrupted-append verdict, because it is
+///    truncated on a different premise; [`TornTail::is_truncatable_residue`]
+///    holds the two apart.
+/// 2. **Do these bytes carry this build's begin identity?** [`verify_identity`]
+///    asks at every length, before the mark decides anything. A zero run that
+///    reaches byte one has destroyed the identity, and destroying it is not
+///    something an append does.
+/// 3. **Is the mark sealed?** Only now, and what it decides is narrower than it
+///    used to be. An unsealed mark is one byte, and one byte is not evidence:
+///    `b'R'` rots to `0x00` as easily as any other byte rots to any other value.
+///    So an unsealed mark settles nothing by itself — it sends these bytes to
+///    [`classify_unsealed`], which asks whether they are a whole frame. A sealed
+///    mark does settle it, and may, because the checksums cover the sealed
+///    value: a frame whose mark reads sealed is one whose mark byte is under the
+///    same checksum as every other byte of its begin record.
+///
+/// Step 1 above step 2 is the one place this store trades a refusal for a
+/// truncation, and it is the trade named in [`TornTail::is_truncatable_residue`]
+/// rather than an accident of ordering. Every other zero run — any run with a
+/// single non-zero byte anywhere after it, which is every run that has a
+/// committed frame behind it — falls to step 2 and refuses.
 ///
 /// `bytes` is never empty — the scan stops before calling this on nothing.
 fn read_frame(bytes: &[u8]) -> Result<Frame<'_>, TornTail> {
-    match bytes[0] {
-        UNSEALED_FRAME_MARK => return Err(classify_unsealed(bytes)),
-        SEALED_FRAME_MARK => {}
-        mark => return Err(TornTail::ForeignFrameMark { mark }),
+    if bytes.iter().all(|byte| *byte == UNSEALED_FRAME_MARK) {
+        return Err(TornTail::ZeroFilledToEnd {
+            present: bytes.len() as u64,
+        });
+    }
+    verify_identity(bytes)?;
+    if bytes[0] == UNSEALED_FRAME_MARK {
+        return Err(classify_unsealed(bytes));
     }
 
     read_sealed_frame(bytes)
@@ -2021,19 +2224,32 @@ fn classify_unsealed(bytes: &[u8]) -> TornTail {
 /// Every check below runs over bytes the frame's own checksums cover, mark
 /// included, so reaching any of these answers means the bytes present are not
 /// what a completed append left.
+///
+/// There is no magic test here, and its absence is structural rather than an
+/// omission: [`verify_identity`] establishes the magic at every length above
+/// both callers, and neither can be reached without it. Repeating it here would
+/// make the ordering a coincidence of two tests agreeing instead of a property
+/// of the one path.
 fn read_sealed_frame(bytes: &[u8]) -> Result<Frame<'_>, TornTail> {
+    // The version is read wherever the field is present, ahead of anything that
+    // depends on how many bytes there are. The argument for refusing a foreign
+    // version is about the field, so gating it on a full begin record would make
+    // the same byte refused at one length and unreached at another — which is
+    // exactly the disagreement with the sibling lock store that
+    // `the_recognition_order_matches_the_sibling_lock_store` now pins.
+    //
+    // Folding it into the corruption below would also make a downgrade
+    // indistinguishable from a torn write, and the remedy for a torn write
+    // discards the frame.
+    if let Some(version) = bytes.get(4) {
+        if *version != JOURNAL_FORMAT_VERSION {
+            return Err(TornTail::UnsupportedFrameVersion { version: *version });
+        }
+    }
+
     let Some(begin) = bytes.get(..BEGIN_LEN) else {
         return Err(TornTail::PartialBeginRecord);
     };
-    if begin[..4] != BEGIN_MAGIC {
-        return Err(TornTail::BeginRecordCorrupt);
-    }
-    // A version this build cannot read is its own answer. Folding it into the
-    // corruption above would make a downgrade indistinguishable from a torn
-    // write, and the remedy for a torn write discards the frame.
-    if begin[4] != JOURNAL_FORMAT_VERSION {
-        return Err(TornTail::UnsupportedFrameVersion { version: begin[4] });
-    }
     if read_u32(&begin[13..17]) != crc32(&begin[..13]) {
         return Err(TornTail::BeginRecordCorrupt);
     }
@@ -2404,7 +2620,8 @@ mod tests {
         let every = [
             TornTail::UnsealedAppend { present: 8 },
             TornTail::UnsealedCompleteFrame { len: 64 },
-            TornTail::ForeignFrameMark { mark: 0xAD },
+            TornTail::ZeroFilledToEnd { present: 8 },
+            TornTail::NotALedgerFrame { magic: [0xAD; 4] },
             TornTail::PartialBeginRecord,
             TornTail::BeginRecordCorrupt,
             TornTail::UnsupportedFrameVersion { version: 2 },
@@ -2415,11 +2632,16 @@ mod tests {
             TornTail::CommitRecordCorrupt,
         ];
         for tail in every {
-            // Exhaustive by name. A variant added later has to be added here.
-            let expected = match tail {
-                TornTail::UnsealedAppend { .. } => true,
+            // Exhaustive by name, twice, because the two predicates carry two
+            // different proofs. A variant added later has to be placed on both.
+            let (interrupted, truncatable) = match tail {
+                TornTail::UnsealedAppend { .. } => (true, true),
+                // Truncated, but not on the interrupted-append proof: see
+                // `TornTail::is_truncatable_residue` for the premise it does
+                // rest on and the loss that premise admits.
+                TornTail::ZeroFilledToEnd { .. } => (false, true),
                 TornTail::UnsealedCompleteFrame { .. }
-                | TornTail::ForeignFrameMark { .. }
+                | TornTail::NotALedgerFrame { .. }
                 | TornTail::PartialBeginRecord
                 | TornTail::BeginRecordCorrupt
                 | TornTail::UnsupportedFrameVersion { .. }
@@ -2427,11 +2649,16 @@ mod tests {
                 | TornTail::ImageCorrupt
                 | TornTail::MissingCommitRecord
                 | TornTail::PartialCommitRecord
-                | TornTail::CommitRecordCorrupt => false,
+                | TornTail::CommitRecordCorrupt => (false, false),
             };
             assert_eq!(
                 tail.is_interrupted_append(),
-                expected,
+                interrupted,
+                "{tail:?} changed sides of the interrupted-append proof"
+            );
+            assert_eq!(
+                tail.is_truncatable_residue(),
+                truncatable,
                 "{tail:?} changed sides of the truncation rule"
             );
         }
@@ -2441,7 +2668,102 @@ mod tests {
                 .filter(|tail| tail.is_interrupted_append())
                 .count(),
             1,
-            "exactly one torn tail may be truncated"
+            "exactly one torn tail is what an interrupted append leaves"
+        );
+        assert_eq!(
+            every
+                .iter()
+                .filter(|tail| tail.is_truncatable_residue())
+                .count(),
+            2,
+            "exactly two torn tails may be truncated, on two separate arguments"
+        );
+    }
+
+    /// The recognition order, as a table rather than a paragraph.
+    ///
+    /// The sibling fenced-lock store answers the same questions in the same
+    /// order over its own format, and its
+    /// `the_recognition_order_matches_the_sibling_ledger_store` holds the
+    /// mirror of this table. Neither store can depend on the other — they are
+    /// independent acceptance consumers — so the agreement is kept by two
+    /// tables that have to be edited together, and each names the other.
+    ///
+    /// The fourth-generation hunt found the two disagreeing one commit after
+    /// they were aligned on the version byte, because the alignment was argued
+    /// in prose about one byte instead of pinned as an order over all of them.
+    /// Each row below is a question, the byte it is asked about, and the
+    /// verdict class it produces; a store that moves a question past another
+    /// changes a row.
+    #[test]
+    fn the_recognition_order_matches_the_sibling_lock_store() {
+        let frame = sealed_frame();
+        let at = |mutate: &dyn Fn(&mut Vec<u8>)| {
+            let mut bytes = frame.clone();
+            mutate(&mut bytes);
+            read_frame(&bytes).err()
+        };
+
+        // 1. Zeros to the end of the file, ahead of everything, at every length.
+        //    The lock store has no counterpart: its slots are whole files of a
+        //    known shape, so it has no tail whose length is evidence, and its
+        //    row here is the creation mark it recognizes in the same position.
+        assert_eq!(
+            read_frame(&[0_u8; 64]).err(),
+            Some(TornTail::ZeroFilledToEnd { present: 64 }),
+            "zeros to end of file are recognized before anything else"
+        );
+
+        // 2. Identity — byte zero is one of the two marks, and bytes one
+        //    through three are the magic — at every length, above the seal test.
+        for offset in 0..4_usize {
+            let magic = at(&|bytes| bytes[offset] ^= 0xFF);
+            assert!(
+                matches!(magic, Some(TornTail::NotALedgerFrame { .. })),
+                "byte {offset} is identity and must be answered above the seal test, not \
+                 {magic:?}"
+            );
+        }
+        // Identity holds at every length that carries a byte of it, which is
+        // what stops a short tail being attributed to this build.
+        assert!(
+            matches!(
+                read_frame(&[SEALED_FRAME_MARK, 0xFF]).err(),
+                Some(TornTail::NotALedgerFrame { .. })
+            ),
+            "identity must be asked at two bytes, not deferred to a full begin record"
+        );
+
+        // 3. The seal, below identity and above everything length-dependent.
+        assert!(
+            matches!(
+                at(&|bytes| bytes[0] = UNSEALED_FRAME_MARK),
+                Some(TornTail::UnsealedCompleteFrame { .. })
+            ),
+            "the seal test comes after identity and sends an unsealed frame to be re-read"
+        );
+
+        // 4. The version, wherever the field is present — on both sides of the
+        //    seal test, and before any check that depends on how many bytes
+        //    there are. This is the row commit 1dd109b1 aligned and the row the
+        //    ledger had drifted back off, by gating it on a full begin record.
+        assert_eq!(
+            read_frame(&[SEALED_FRAME_MARK, b'L', b'B', b'G', 9]).err(),
+            Some(TornTail::UnsupportedFrameVersion { version: 9 }),
+            "a foreign version must be answered at five bytes, not deferred"
+        );
+        assert_eq!(
+            read_frame(&[UNSEALED_FRAME_MARK, b'L', b'B', b'G', 9]).err(),
+            Some(TornTail::UnsupportedFrameVersion { version: 9 }),
+            "a foreign version must be answered the same way on the unsealed side"
+        );
+
+        // 5. Only now, length. A begin record cut short is a length answer and
+        //    must not be reachable by anything above.
+        assert_eq!(
+            read_frame(&[SEALED_FRAME_MARK, b'L', b'B', b'G']).err(),
+            Some(TornTail::PartialBeginRecord),
+            "length is the last question, not the first"
         );
     }
 
@@ -2455,7 +2777,10 @@ mod tests {
     ///
     /// This is the single-fault assumption in
     /// [`TornTail::is_interrupted_append`]'s proof, checked rather than
-    /// asserted.
+    /// asserted. It asserts on the wider predicate
+    /// [`TornTail::is_truncatable_residue`], because the claim being made is
+    /// about what `open` shortens, not about which of the two arguments it
+    /// shortened on.
     #[test]
     fn no_single_byte_change_to_a_sealed_frame_is_ever_interrupted_append() {
         let frame = sealed_frame();
@@ -2469,7 +2794,7 @@ mod tests {
                 mutant[offset] = value;
                 if let Err(tail) = read_frame(&mutant) {
                     assert!(
-                        !tail.is_interrupted_append(),
+                        !tail.is_truncatable_residue(),
                         "byte {offset} of a sealed frame changed from {original:#04x} to \
                          {value:#04x} reads as {tail:?}, which recovery would truncate"
                     );
@@ -2498,17 +2823,35 @@ mod tests {
     /// Ordinary crash residue — a strict prefix of a frame carrying the unsealed
     /// mark — must still be residue at every length, or a crash in the middle of
     /// an append would need an operator.
+    ///
+    /// The one-byte prefix is the frame's mark and nothing else, so it is zeros
+    /// to the end of the file and it is [`TornTail::ZeroFilledToEnd`] that
+    /// covers it. Every longer prefix carries the identity and is
+    /// [`TornTail::UnsealedAppend`]. Both are truncated; the assertion is on the
+    /// predicate the truncating branch reads, and the variant is named beside it
+    /// so the boundary between the two arguments is visible here rather than
+    /// inferred.
     #[test]
     fn every_strict_prefix_of_an_unsealed_frame_is_an_interrupted_append() {
         let frame = sealed_frame();
         for present in 1..frame.len() {
             let mut residue = frame[..present].to_vec();
             residue[0] = UNSEALED_FRAME_MARK;
+            let expected = if present == 1 {
+                TornTail::ZeroFilledToEnd { present: 1 }
+            } else {
+                TornTail::UnsealedAppend {
+                    present: present as u64,
+                }
+            };
+            let found = read_frame(&residue).err();
             assert_eq!(
-                read_frame(&residue).err(),
-                Some(TornTail::UnsealedAppend {
-                    present: present as u64
-                }),
+                found,
+                Some(expected),
+                "a {present} byte prefix of an unsealed append must stay truncatable"
+            );
+            assert!(
+                found.is_some_and(TornTail::is_truncatable_residue),
                 "a {present} byte prefix of an unsealed append must stay truncatable"
             );
         }
@@ -2520,16 +2863,56 @@ mod tests {
     /// `durable_zero_tail.rs` proves this through the store; this proves the
     /// classifier underneath it still says so once the mark has a completeness
     /// test beside it, at lengths that suite does not enumerate.
+    ///
+    /// It is [`TornTail::ZeroFilledToEnd`] rather than
+    /// [`TornTail::UnsealedAppend`] since the identity test moved above the
+    /// mark, and the rename is the point: these bytes are truncated on a premise
+    /// about the physical world, and the report now says which premise it used.
     #[test]
     fn a_zero_filled_tail_is_an_interrupted_append_at_every_length() {
         for present in 1..96_usize {
             let zeros = vec![0_u8; present];
             assert_eq!(
                 read_frame(&zeros).err(),
-                Some(TornTail::UnsealedAppend {
+                Some(TornTail::ZeroFilledToEnd {
                     present: present as u64
                 }),
-                "{present} zero bytes must read as an interrupted append"
+                "{present} zero bytes must read as truncatable residue"
+            );
+        }
+    }
+
+    /// The boundary of [`TornTail::ZeroFilledToEnd`], on both sides.
+    ///
+    /// Its scope is "zeros all the way to the end of the file". One non-zero
+    /// byte anywhere after them — which is what a committed frame behind the
+    /// damage looks like — takes the bytes out of that scope, and the answer
+    /// flips from truncation to refusal. This is the boundary the fourth
+    /// generation found untested: the rule was right and nothing checked the
+    /// first case on each side of it.
+    #[test]
+    fn one_non_zero_byte_after_a_zero_run_takes_it_out_of_the_zero_fill_rule() {
+        for zeros in [1_usize, 2, 3, 512] {
+            let all_zero = vec![0_u8; zeros];
+            assert_eq!(
+                read_frame(&all_zero).err(),
+                Some(TornTail::ZeroFilledToEnd {
+                    present: zeros as u64
+                }),
+                "{zeros} zeros to end of file are inside the rule"
+            );
+
+            let mut trailed = all_zero.clone();
+            trailed.push(0x01);
+            let found = read_frame(&trailed).err();
+            assert!(
+                matches!(found, Some(TornTail::NotALedgerFrame { .. })),
+                "{zeros} zeros followed by one non-zero byte are outside the rule and must \
+                 refuse, not {found:?}"
+            );
+            assert!(
+                !found.is_some_and(TornTail::is_truncatable_residue),
+                "{zeros} zeros followed by one non-zero byte must not be truncated"
             );
         }
     }

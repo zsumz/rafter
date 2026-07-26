@@ -219,10 +219,15 @@ fn a_zero_filled_tail_is_an_interrupted_append() {
     match LedgerStore::open(scratch.path(), config(2, 4)) {
         Ok(store) => {
             let report = *store.recovery();
+            // `is_truncatable_residue` rather than `is_interrupted_append`: a
+            // zero-filled tail is `TornTail::ZeroFilledToEnd`, which is
+            // truncated on the delayed-allocation premise this test is named
+            // for and not on the interrupted-append proof. The two are separate
+            // predicates precisely so this line has to say which it means.
             assert!(
                 report
                     .torn_tail()
-                    .is_some_and(TornTail::is_interrupted_append),
+                    .is_some_and(TornTail::is_truncatable_residue),
                 "a zero-filled tail classified as {:?}",
                 report.torn_tail()
             );

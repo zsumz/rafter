@@ -366,10 +366,23 @@ fn the_ledger_refuses_the_shape_the_lock_store_refuses() {
 }
 
 // ---------------------------------------------------------------------------
-// The other side of that gate: a foreign version byte in a tail too short to
-// hold a begin record is still ordinary residue, because the bytes are a strict
-// prefix whatever build wrote them. The evidence of incompleteness comes from
-// the length, not from a field this build cannot interpret.
+// The version gate holds wherever the field is present, including in a tail too
+// short to hold one of *this* build's begin records.
+//
+// This test used to assert the opposite, on the reasoning that nine bytes are a
+// strict prefix whatever build wrote them, so the evidence of incompleteness
+// comes from the length rather than from a field this build cannot interpret.
+// That reasoning assumes the layout it has just said it does not know: nine
+// bytes are too short for a frame *this* build writes, and a build whose
+// version byte reads 2 is not writing this build's frames. Truncating on it
+// deletes a newer build's committed tail on the strength of a length taken from
+// the wrong format — the exact harm `UnsupportedFrameVersion` was split out of
+// `BeginRecordCorrupt` to prevent, reached by a route that never consulted it.
+//
+// The rule is the sibling lock store's, word for word: the argument for
+// refusing a version is about the field, so it has to hold wherever the field
+// is present. Gating it on a full begin record made the same byte refused at
+// seventeen bytes and truncated at nine.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -379,26 +392,42 @@ fn a_short_tail_is_residue_whatever_version_byte_it_carries() {
 
     let mut app = open(scratch.path());
     apply_all(&mut app, &commands);
-    let applied = app.store().applied_index();
     drop(app);
 
     let mut bytes = raw_journal::read(scratch.path()).expect("the journal reads");
-    let committed_len = bytes.len();
+    let offset = bytes.len() as u64;
     bytes.extend_from_slice(&[0x00, b'L', b'B', b'G', 2, 0, 0, 0, 8]);
     raw_journal::write(scratch.path(), &bytes).expect("the journal rewrites");
 
-    let store = LedgerStore::open(scratch.path(), config(2, 4))
-        .expect("nine bytes cannot be a whole frame under any layout");
-    assert_eq!(store.applied_index(), applied);
-    assert_eq!(
-        store.recovery().torn_tail(),
-        Some(TornTail::UnsealedAppend { present: 9 })
-    );
-    assert_eq!(
-        raw_journal::read(scratch.path())
-            .expect("the journal reads back")
-            .len(),
-        committed_len,
-        "the residue is truncated off the medium"
-    );
+    for (entry_point, opened) in [
+        ("open", LedgerStore::open(scratch.path(), config(2, 4))),
+        (
+            "open_and_repair",
+            LedgerStore::open_and_repair(scratch.path(), config(2, 4)),
+        ),
+    ] {
+        match opened {
+            Err(LedgerStoreError::UnsupportedFrameVersion {
+                version: 2,
+                offset: at,
+            }) => {
+                assert_eq!(at, offset, "`{entry_point}` named the wrong offset");
+            }
+            Err(other) => panic!("`{entry_point}` refused for the wrong reason: {other}"),
+            Ok(store) => panic!(
+                "`{entry_point}` truncated a nine-byte tail declaring a version it cannot \
+                 read, so how short a newer build's committed frame happens to be decides \
+                 whether a downgrade deletes it: torn tail {:?}, discarded {} bytes",
+                store.recovery().torn_tail(),
+                store.recovery().discarded_bytes(),
+            ),
+        }
+        assert_eq!(
+            raw_journal::read(scratch.path())
+                .expect("the journal reads back")
+                .len(),
+            bytes.len(),
+            "`{entry_point}` must not shorten a journal it refused"
+        );
+    }
 }

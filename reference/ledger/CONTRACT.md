@@ -297,9 +297,40 @@ byte of a frame is its append mark**: held at a value no sealed frame carries
 while the frame is being written, and promoted to the sealed value by a single
 byte written only after every other byte of that frame is durable. A crash
 leaves a prefix of what was written and that byte goes out first, so every
-interrupted append leaves the mark unsealed — and the unsealed value is zero, so
-the ordinary residue of a delayed allocation reads as exactly what it is, at
-every length.
+interrupted append leaves the mark unsealed.
+
+**The identity is asked before the mark.** The sentence that used to stand here
+— the unsealed value is zero, so the ordinary residue of a delayed allocation
+reads as exactly what it is, at every length — was true of the residue it was
+written about, and claimed a scope one step wider than the mechanism reached: it
+made zeros landing over a *committed* frame read as residue too. One zeroed byte
+was the single fault the next rule covers and was refused. **Two** adjacent zero
+bytes — one 16-bit word, far under a sector, one physical event and not two —
+destroyed the begin magic, which was consulted only *below* the mark test, and
+the frame plus every committed frame after it was deleted during a read.
+
+So bytes one through three of the begin magic are read first, at every length,
+above the mark. They are the frame's identity, they are not the mark, and no
+append leaves them wrong: the append writes the whole begin record with byte
+zero held unsealed, so the first write that reaches byte one carries the magic.
+A tail failing that test is refused and never truncated. The sibling fenced-lock
+consumer has read its magic above its mark since the generation that put it
+there; the two stores now ask the same questions in the same order, and a unit
+test in each pins the order as a table naming the other, because arguing it in
+prose about one byte is how they drifted apart on the next one.
+
+One residue has to survive that test, and it is named rather than smuggled
+through: a tail that is **zeros all the way to the end of the file** is
+truncated, because that is what a crash leaves when a file's size reached the
+medium and its data did not, and refusing it would need an operator after the
+most ordinary crash there is. That rule rests on a claim about the physical
+world rather than about this program, so its limit is stated with it: a
+committed frame that is both the *last* frame and entirely zeroed is discarded
+and its transactions are lost. What the rule guarantees instead is the bound —
+the loss can never reach a byte that is not itself zero, and never a frame
+beyond the damage. Every zero run with a single non-zero byte anywhere after it,
+which is every zero run with a committed frame behind it, fails the identity
+test and refuses.
 
 **The mark is half of the rule and not the rule.** Reading it as the whole rule
 is how this section was wrong the second time. `interrupted ⇒ unsealed` is what
@@ -323,7 +354,11 @@ build can read. Three outcomes, three different facts:
 - **not a whole frame**: too short for a begin record, a begin record that does
   not verify, a partial or mismatched image, a missing or partial commit record.
   With the unsealed mark, that is residue, and it is truncated. This is the
-  ordinary crash residue, including a zero-filled tail at every length.
+  ordinary crash residue. A zero-filled tail is truncated too, but by the rule
+  above rather than by this one: the two are separate report variants because
+  they rest on separate premises and fail in separate places, and a single
+  predicate carrying both proofs is how a rule's scope drifts past its
+  mechanism.
 - **a whole frame that verifies**, with only the mark reading unsealed. Two
   histories leave exactly these bytes — the write-ahead window, and a committed
   frame whose mark rotted — and nothing in the bytes separates them. Opening
@@ -336,8 +371,9 @@ build can read. Three outcomes, three different facts:
 Every shape with a *sealed* mark is what some completed append sealed, and any
 damage to it happened afterwards — a sealed frame cut short, a begin record that
 does not verify, an image that does not match its checksum, a commit record that
-seals nothing, a first byte that is neither mark. Each may sit at or below the
-last commit point and refuses the store.
+seals nothing. Each may sit at or below the last commit point and refuses the
+store. So does a tail carrying neither frame mark or a foreign begin magic,
+which is refused above all of this rather than within it.
 
 That the mark byte is now no weaker than its neighbours is a claim about every
 byte of a frame, so it is checked as one: a unit test alters every byte of a

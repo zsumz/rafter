@@ -131,7 +131,7 @@ fn a_crash_at_every_byte_of_a_transaction_recovers_to_exactly_one_side_of_it() {
             "`{plan}` left a residue the format does not describe"
         );
         assert!(
-            expected_tail.is_none_or(TornTail::is_interrupted_append),
+            expected_tail.is_none_or(TornTail::is_truncatable_residue),
             "an interrupted append must leave a tail a later opener may truncate (`{plan}`)"
         );
         observed_tails.insert(stopped_record(stop, image_len, frame_len));
@@ -701,12 +701,28 @@ fn a_corrupted_committed_frame_refuses_the_store_rather_than_truncating_it() {
     // whether it is looking at an interrupted append or at acknowledged history
     // that has rotted, so it refuses instead of shortening the file.
     let cases = [
-        // Byte zero is the frame mark. Flipping it leaves a byte that is
-        // neither mark, which is not something an append can produce: an
-        // append writes the unsealed mark and promotes it to the sealed one,
-        // and there is no third value in between.
-        (0_u64, TornTail::ForeignFrameMark { mark: !b'R' }),
-        (1, TornTail::BeginRecordCorrupt),
+        // Bytes zero through three are the frame's identity. Byte zero is the
+        // mark, and flipping it leaves a byte that is neither mark, which is not
+        // something an append can produce: an append writes the unsealed mark
+        // and promotes it to the sealed one, and there is no third value in
+        // between. Bytes one through three are the magic, which an append never
+        // writes wrong at all. Both are answered above the seal test, at every
+        // length, by `verify_identity`; byte one used to fall through to the
+        // begin record's checksum instead, which is the same refusal reached
+        // two questions later and only because the tail happened to be long
+        // enough to have a checksum.
+        (
+            0_u64,
+            TornTail::NotALedgerFrame {
+                magic: [!b'R', b'L', b'B', b'G'],
+            },
+        ),
+        (
+            1,
+            TornTail::NotALedgerFrame {
+                magic: [b'R', !b'L', b'B', b'G'],
+            },
+        ),
         (as_u64(BEGIN_LEN) + 2, TornTail::ImageCorrupt),
         (
             as_u64(BEGIN_LEN) + image_len + 6,
@@ -1673,6 +1689,13 @@ fn assert_interrupted_append(
 fn expected_tail(stop: u64, frame_len: u64) -> Option<TornTail> {
     if stop == 0 || stop == frame_len {
         None
+    } else if stop == 1 {
+        // One byte written is the unsealed mark and nothing else, so the tail is
+        // zeros to the end of the file. It is truncated on the delayed-allocation
+        // premise rather than on the interrupted-append proof, and the store
+        // names which — see `TornTail::is_truncatable_residue`. The sweep asserts
+        // the boundary here rather than letting one variant cover both.
+        Some(TornTail::ZeroFilledToEnd { present: 1 })
     } else {
         Some(TornTail::UnsealedAppend { present: stop })
     }
