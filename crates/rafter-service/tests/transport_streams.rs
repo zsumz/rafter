@@ -92,6 +92,12 @@ impl PersistedRaftRuntime for SnapshotEmittingRuntime {
                 .expect("scripted membership is valid"),
         )
     }
+    /// This runtime scripts snapshot outputs and no configuration change, so it
+    /// is never mid-change. Asserted rather than inherited: only this fixture
+    /// can make that claim about itself.
+    fn committed_membership(&self) -> MembershipConfig {
+        self.membership()
+    }
     fn replication(&self) -> Vec<ReplicationProgress> {
         Vec::new()
     }

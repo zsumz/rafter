@@ -330,6 +330,13 @@ impl PersistedRaftRuntime for ScriptedReadRuntime {
         )
     }
 
+    /// This runtime proposes no configuration change, so it is never mid-change
+    /// and its effective membership is its committed one. Written out rather
+    /// than inherited, because that is a claim about this fixture.
+    fn committed_membership(&self) -> MembershipConfig {
+        self.membership()
+    }
+
     fn replication(&self) -> Vec<ReplicationProgress> {
         Vec::new()
     }
@@ -459,6 +466,13 @@ impl PersistedRaftRuntime for ScriptedWriteRuntime {
         MembershipConfig::stable(
             MembershipSet::new(vec![NodeId(1)], Vec::new()).expect("scripted membership is valid"),
         )
+    }
+
+    /// This runtime proposes no configuration change, so it is never mid-change
+    /// and its effective membership is its committed one. Written out rather
+    /// than inherited, because that is a claim about this fixture.
+    fn committed_membership(&self) -> MembershipConfig {
+        self.membership()
     }
 
     fn replication(&self) -> Vec<ReplicationProgress> {

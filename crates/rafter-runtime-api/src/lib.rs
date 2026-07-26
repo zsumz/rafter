@@ -110,16 +110,24 @@ pub trait PersistedRaftRuntime {
     /// membership that licenses narrowing a peer set or fencing a replica that
     /// left it.
     ///
-    /// **Any implementation that can be mid-change must override this.** The
-    /// provided body answers with the effective membership, which is correct
-    /// only for a runtime that has no uncommitted configuration to distinguish
-    /// — a fixed-membership test runtime, say. Inheriting it under joint
-    /// consensus reports an appended-but-uncommitted change as committed, and a
-    /// layer above will fence a replica the cluster may still need, on a change
-    /// that may still be reverted.
-    fn committed_membership(&self) -> MembershipConfig {
-        self.membership()
-    }
+    /// There is no default, for the reason `ReplicatedStateMachine`'s
+    /// `SNAPSHOT_SUPPORT` const in `rafter-app` has none: a provided body would
+    /// make a claim on the implementor's behalf, and the claim is one only the
+    /// implementor can make. Answering
+    /// with [`PersistedRaftRuntime::membership`] is correct for a runtime that
+    /// has no uncommitted configuration to distinguish — a fixed-membership
+    /// test runtime, say — and wrong for every runtime that does, because it
+    /// reports an appended-but-uncommitted change as committed. A runtime that
+    /// inherited it silently satisfied the trait and told the layer above to
+    /// fence a replica the cluster may still need, on a change that may still
+    /// be reverted; a runtime that must write the method writes the true answer
+    /// or states the assumption on purpose.
+    ///
+    /// A runtime that genuinely cannot be mid-change says so in one line by
+    /// forwarding to [`PersistedRaftRuntime::membership`]. That is the same
+    /// body the default had, and it now carries a signature: the implementor
+    /// asserted it, rather than receiving it.
+    fn committed_membership(&self) -> MembershipConfig;
 
     /// Returns per-follower replication progress when this node is leader.
     fn replication(&self) -> Vec<ReplicationProgress>;

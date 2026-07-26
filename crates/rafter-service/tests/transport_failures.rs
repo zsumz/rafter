@@ -456,6 +456,11 @@ impl PersistedRaftRuntime for TransferPoisonRuntime {
                 .expect("scripted membership is valid"),
         )
     }
+    /// Never mid-change, so the two memberships are one. Asserted rather than
+    /// inherited: only this fixture can make that claim about itself.
+    fn committed_membership(&self) -> MembershipConfig {
+        self.membership()
+    }
     fn replication(&self) -> Vec<ReplicationProgress> {
         Vec::new()
     }
