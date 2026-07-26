@@ -44,6 +44,11 @@ members plus `rafter-fuzz` and `bench-compare`, which keep their own manifests
 outside the workspace. Every crate in the second list carries `publish = false`;
 no crate in the first list does.
 
+Naming a crate here is not the same as checking it. `rafter-fuzz` and
+`bench-compare` are outside the workspace, so no `--workspace` or `--all`
+command below reaches either one; the Verification section records what does
+reach them and what still does not.
+
 `rafter-sim` stays workspace-only until its dependency on the core crate's
 hidden `internal-test-hooks` feature is either removed or promoted into an
 intentional public simulation hook.
@@ -101,12 +106,54 @@ Before publishing, run:
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
+scripts/rustdoc-check
+cargo fmt --manifest-path fuzz/Cargo.toml --all -- --check
+cargo clippy --manifest-path fuzz/Cargo.toml --all-targets -- -D warnings
+cargo clippy --manifest-path bench-compare/Cargo.toml --locked \
+  --no-default-features --all-targets -- -D warnings
 cargo run --release -p rafter-sim --bin rafter-model-check-fast -- --profile fast
 scripts/tla-model-check
+scripts/reference-source-check
+scripts/reference-package-check
 ```
 
+`scripts/rustdoc-check` is the gate on the HTML that reaches docs.rs. It builds
+the publish list above by name as well as the whole workspace, because
+`rafter-sim` depends on `rafter` with the hidden `internal-test-hooks` feature
+and resolver 2 unifies that feature into every `--workspace` invocation: a
+workspace-only doc build documents `rafter` in a shape no published consumer
+can produce.
+
+`scripts/reference-package-check` needs a newer Cargo than the workspace's 1.88
+`rust-version`. Packaging several interdependent crates in one invocation only
+resolves each versioned sibling dependency against the archive just produced on
+later Cargo; on 1.88 the lane fails in its first phase with `no matching package
+named rafter-crc32 found`, and `--no-verify` does not avoid it. CI runs this
+lane on 1.96.1.
+
+These commands leave three things unchecked, none of which is implied away
+elsewhere in this file:
+
+- **Per-crate `LICENSE` and `NOTICE` copies.** Nothing compares them against
+  the root, as the paragraph above says.
+- **`bench-compare` formatting, and its comparison binaries' lints.**
+  `bench-compare` is not format-checked by any command here or in CI, and it is
+  not currently `rustfmt` clean. Its `raft-rs` and `openraft` binaries sit
+  behind default features that need `protoc`; only `benchmarks.yml` installs
+  that, and it compiles those binaries without linting them. The
+  `--no-default-features` invocation above lints the Rafter-only binaries and
+  the shared library, which is all of `bench-compare` except those two files.
+- **`rafter` in its published feature shape, outside the package lane.** Every
+  `--workspace` invocation resolves `rafter-sim` and therefore builds `rafter`
+  with `internal-test-hooks` on. `scripts/reference-package-check` phase 6 is
+  the only check that the crate composes with that feature off, which is the
+  shape a published consumer gets.
+
 Run `scripts/private-name-scan` with private downstream names supplied through
-`RAFTER_PRIVATE_NAME_PATTERNS` before tagging a public release.
+`RAFTER_PRIVATE_NAME_PATTERNS` before tagging a public release. It reads every
+file a package archive ships and every file a repository visitor reads,
+including each crate's own markdown, `LICENSE`, and `NOTICE`. It is a manual
+step: no workflow supplies the patterns, which live outside this repository.
 
 ### Release Notes
 

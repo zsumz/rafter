@@ -13,6 +13,15 @@ release markdown, manifests, Rust source, scripts, and workflows while
 excluding binary or base64-heavy assets such as SVGs. Use --include-assets only
 for a separate human-reviewed asset pass because encoded image data can produce
 false positives.
+
+"Release-facing" is defined by what a reader outside this project can obtain:
+every file a package archive ships, plus every file a visitor to the repository
+reads. That is why the scan covers each crate's own markdown, LICENSE, and
+NOTICE -- scripts/reference-package-check requires those inside the published
+archives, so a private name in one is published -- as well as RELEASE.md,
+docs/, specs/, reference/, and bench-compare/. Widening this list is cheaper
+than explaining a leak; narrowing it needs an argument about who cannot read
+the file.
 USAGE
 }
 
@@ -59,26 +68,67 @@ if ((${#patterns[@]} == 0)); then
   exit 2
 fi
 
+# The paths below are relative, so the scan must read this checkout rather than
+# whatever directory it was invoked from. Without this, a run from elsewhere
+# finds none of its targets and rg falls back to scanning the caller's tree,
+# which reports a clean result about the wrong repository.
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
 targets=(
   README.md
+  RELEASE.md
+  LICENSE
+  NOTICE
   Cargo.toml
   Cargo.lock
   crates
+  reference
+  docs
+  specs
   fuzz
+  bench-compare
   scripts
   .github
 )
 
 globs=(
   --glob 'README.md'
+  --glob 'RELEASE.md'
+  --glob 'LICENSE'
+  --glob 'NOTICE'
   --glob 'Cargo.toml'
   --glob 'Cargo.lock'
+  # Each publishable crate ships its own README, format documents, LICENSE, and
+  # NOTICE inside its archive; the root copies never reach one.
   --glob 'crates/**/*.rs'
   --glob 'crates/**/Cargo.toml'
+  --glob 'crates/**/*.md'
+  --glob 'crates/**/LICENSE'
+  --glob 'crates/**/NOTICE'
+  --glob 'reference/**/*.rs'
+  --glob 'reference/**/Cargo.toml'
+  --glob 'reference/**/*.md'
+  --glob 'docs/**'
+  --glob 'specs/**'
   --glob 'fuzz/**/*.rs'
   --glob 'fuzz/**/Cargo.toml'
+  --glob 'bench-compare/**/*.rs'
+  --glob 'bench-compare/**/Cargo.toml'
+  --glob 'bench-compare/**/*.md'
   --glob 'scripts/**'
   --glob '.github/**'
+  # A glob given on the command line outranks .gitignore in ripgrep, so the
+  # includes above pull generated output back in -- `Cargo.lock` matches that
+  # basename at any depth, and `reference/**/*.md` matches rustdoc's bundled
+  # font licences. Exclude the build directories by name. Each pattern
+  # contains a slash, which anchors it to this checkout's root, so the
+  # hand-written module at crates/rafter-invariants/src/verification/target/
+  # keeps being scanned.
+  --glob '!target/**'
+  --glob '!crates/*/target/**'
+  --glob '!reference/target/**'
+  --glob '!bench-compare/target/**'
+  --glob '!fuzz/target/**'
 )
 
 if ((include_assets)); then
