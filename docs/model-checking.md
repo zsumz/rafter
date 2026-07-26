@@ -1,5 +1,11 @@
 # Model Checking
 
+Two independent engines carry this name. The bounded simulator
+(`rafter-model-check-fast`) explores deterministic Raft schedules over the real
+implementation; the TLA+ tier ladder runs TLC over `specs/tla/raft/Raft.tla`, a
+design model that does not import rafter. Everything below the
+[TLA+ tier ladder](#tla-tier-ladder) section describes the simulator.
+
 `rafter-model-check-fast` explores bounded, deterministic Raft schedules. The
 profiles differ in bounds and scheduling breadth; all exhaustive checks must
 end with `frontier_exhausted`. A state, time, or memory budget ending the run
@@ -7,6 +13,106 @@ is incomplete coverage, not a pass.
 
 The invariant gate's ownership, dependency rules, and trust boundaries live in
 [Invariant tooling architecture](invariant-tooling-architecture.md).
+
+## TLA+ Tier Ladder
+
+Three tiers are wired, each pinned to one config by
+`verification/raft-invariant-profiles.json` and by the profile contract in
+`crates/rafter-invariants`. A TLA+ tier passes only when TLC drains its queue
+(`states_left = 0`) and clears the shared floors of 120,000,000 generated and
+16,000,000 distinct states. A timeout is incomplete coverage, not a pass.
+
+| Tier | Config | Nodes | Values | MaxTerm | MaxLogLen | ReadRequests | Symmetry |
+| --- | --- | --- | --- | ---: | ---: | --- | --- |
+| PR | `RaftCi.cfg` | `{n1,n2}` | `{v1,v2}` | 2 | 2 | `{r1}` | yes |
+| Nightly | `RaftNightly.cfg` | `{n1,n2,n3}` | `{v1,v2}` | 3 | 3 | `{r1,r2}` | yes |
+| Weekly | `Raft.cfg` | `{n1,n2,n3}` | `{v1,v2}` | 3 | 3 | `{r1,r2}` | no |
+
+### What the ladder does not prove
+
+Nightly and weekly have **identical constants**. Only `SYMMETRY
+ModelPermutations` differs, so the deepest tier is a soundness check on the
+symmetry quotient, not a deeper exploration. No tier exceeds three nodes or log
+length three.
+
+The table below is an exhaustive evaluation of the spec's own quorum predicate
+(`StableQuorum`/`MembershipQuorum`) over every configuration in
+`ConfigurationSet` for each node set. The *quorum core* of a configuration is
+the set of nodes belonging to every one of its quorums. An empty core is
+exactly the condition under which majority overlap does work: no single node
+can decide alone.
+
+| Nodes | Configurations | Empty core | Empty core and joint | Exactly one minimal quorum |
+| --- | ---: | ---: | ---: | --- |
+| `{n1,n2}` (PR) | 7 | 0 | 0 | 7 of 7 |
+| `{n1,n2,n3}` (nightly, weekly) | 25 | 1 | 0 | 24 of 25 |
+| `{n1,n2,n3,n4}` | 71 | 13 | 8 | 58 of 71 |
+
+Read in the direction the ladder uses it:
+
+- **At the PR tier no majority-overlap argument is exercised at all.** Every
+  one of the seven reachable configurations has exactly one minimal quorum, so
+  a quorum rule demanding unanimity would pass `RaftCi.cfg` identically.
+- **Joint-consensus quorum intersection is degenerate at every wired tier,
+  including weekly.** With `|Nodes| <= 3` and `OneVoterChange`, all 18 joint
+  configurations retain a non-empty core, so the two-half conjunction never
+  constrains more than a fixed set of nodes does. The single empty-core
+  configuration any wired tier reaches is `Stable({n1,n2,n3})`, so stable
+  majority overlap is exercised from three nodes up and joint-quorum
+  intersection is exercised nowhere.
+- The scripted `RaftMembershipTraceSample` does not close this gap. Its two
+  joint configurations are `Joint({n1,n2,n3},{n1,n2})` and its inverse, whose
+  core is `{n1,n2}`.
+
+### What the ladder does prove about membership
+
+Two claims about membership coverage are easy to state too strongly; both were
+measured rather than assumed.
+
+- `MaxLogLen = 2` does mean **no committed command can coexist with a completed
+  configuration change** at the PR tier. `EnterJoint` and `LeaveJoint` append
+  one entry each, so a completed change plus a command needs three log slots.
+  This is arithmetic and holds for any two-slot model.
+- A command committed **while a joint configuration is the commit authority**
+  is nevertheless reachable at *every* tier, PR included: it needs only two
+  slots, one joint configuration entry and one command. `ClientAppend` carries
+  no membership guard. TLC witnesses it at `{n1,n2}`/`MaxTerm=2`/`MaxLogLen=2`
+  with `[Joint({n1,n2},{n2})@1, Command(v1)@2]`, both committed.
+- A committed command coexisting with a completed change is reachable at
+  nightly and weekly bounds, witnessed at `{n1,n2,n3}`/`MaxLogLen=3` with
+  `[Joint({n1,n2,n3},{n1,n2})@1, Stable({n1,n2})@2, Command(v1)@3]`.
+
+### Correspondence to the implementation
+
+`Raft.tla` is a design model, not a refinement of rafter, and its header states
+each place the two deliberately differ. Two are worth repeating here because
+they change how a reader should read a green TLA+ tier.
+
+**No no-op entry kind.** `EntrySet` is `Command \cup Configuration`. The
+on-election no-op that rafter appends (`LogEntryKind::Noop`) is unmodelled, and
+that is a deliberate abstraction rather than a missing safety case: the rule the
+no-op exists to make reachable is Raft's current-term commit restriction, and
+`Commit` enforces that rule directly by requiring
+`LogicalEntry(n, i).term = currentTerm[n]`. No leader in the model can count
+replicas of a prior-term entry, so the device that earns that right in the
+implementation is not needed to state the property. The no-op is a progress
+mechanism, and progress belongs to the simulator. The refinement consequence,
+stated in the direction the code uses it: a rafter log carries one extra entry
+per leader term that a model log does not, so index equality between the two is
+never the refinement mapping.
+
+**One dead monitor.** `frozenAppendAuthorityFailed` can never become `TRUE`.
+Its latch needs `senderPendingSelfRemoval` together with
+`receiverWouldAccept /\ ~accepted`, but `accept` differs from
+`receiverWouldAccept` only by `AppendSenderAuthorized(m)`, which holds whenever
+`senderPendingSelfRemoval` holds. The condition is unsatisfiable by
+construction, not merely unreached: TLC confirms an append from a self-removing
+sender is reachable at `{n1,n2,n3}`/`MaxLogLen=2` while the latch still never
+fires. It carries no invariant, and it should not be given one, because
+`~frozenAppendAuthorityFailed` is a predicate that cannot fail. It should be
+deleted; the deletion is blocked only because a mutation fixture in
+`crates/rafter-invariants` pins the literal text of the `UNCHANGED` clause that
+names the variable.
 
 ## State Counts
 

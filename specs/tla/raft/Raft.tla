@@ -5,6 +5,35 @@ EXTENDS Naturals, Sequences, FiniteSets, TLC
 \* intentionally does not import or depend on rafter.
 \* The production specification is safety-only. Fair-schedule liveness evidence
 \* is owned by the bounded simulator, whose scheduler states its timing bounds.
+\*
+\* Correspondence notes. These record where the model deliberately differs from
+\* the implementation, so a reader does not mistake an abstraction for coverage.
+\*
+\* No no-op entry kind. EntrySet is Command \cup Configuration; the leader's
+\* on-election no-op that rafter appends (LogEntryKind::Noop) is unmodelled.
+\* This is a deliberate abstraction, not a missing safety case. The rule the
+\* no-op exists to make reachable is Raft's current-term commit restriction,
+\* and Commit enforces that rule directly: it requires
+\* LogicalEntry(n, i).term = currentTerm[n], so no leader can ever count
+\* replicas of a prior-term entry. The no-op is the implementation's device for
+\* obtaining a current-term entry to commit, which is a progress concern, and
+\* progress is owned by the simulator. The one refinement consequence worth
+\* stating in the direction the code uses it: implementation log indexes carry
+\* one extra entry per leader term that model log indexes do not, so index
+\* equality between a rafter log and a model log is never the refinement
+\* mapping.
+\*
+\* Dead monitor. frozenAppendAuthorityFailed can never become TRUE. Its latch
+\* requires message.senderPendingSelfRemoval together with
+\* receiverWouldAccept /\ ~accepted, but accept differs from receiverWouldAccept
+\* only by AppendSenderAuthorized(m), which holds whenever
+\* m.senderPendingSelfRemoval holds. The latch condition is therefore
+\* unsatisfiable by construction rather than merely unreached: TLC confirms an
+\* append from a self-removing sender is reachable while the latch still never
+\* fires. It carries no invariant because asserting ~frozenAppendAuthorityFailed
+\* would add a predicate that cannot fail. It should be deleted outright; the
+\* deletion is blocked only because a mutation fixture in rafter-invariants
+\* pins the literal text of the UNCHANGED clause naming this variable.
 
 CONSTANTS Nodes, Values, MaxTerm, MaxLogLen, ReadRequests
 

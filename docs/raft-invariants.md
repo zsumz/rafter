@@ -856,7 +856,7 @@ Kind: safety. Tier: feature.
 
 Statement: An entry is considered committed only after the quorum required by the membership effective for that entry stores it; joint configurations require both majorities.
 
-Scope: Commit transitions and storage witnesses for one Raft group under stable or joint membership.
+Scope: Commit transitions and storage witnesses for one Raft group under stable or joint membership. The TLA+ layer encodes the joint two-majority rule but every joint configuration its wired tiers reach retains a non-empty quorum core, so TLC never exercises joint-quorum intersection; the simulator owns that case. See docs/model-checking.md.
 
 Assumptions: Storage witnesses reflect actual durable replicas and use the membership effective for the committed entry.
 

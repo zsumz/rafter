@@ -4272,7 +4272,7 @@ invariants:
     priority: "p0"
     title: "Commit requires the correct quorum"
     statement: "An entry is considered committed only after the quorum required by the membership effective for that entry stores it; joint configurations require both majorities."
-    scope: "Commit transitions and storage witnesses for one Raft group under stable or joint membership."
+    scope: "Commit transitions and storage witnesses for one Raft group under stable or joint membership. The TLA+ layer encodes the joint two-majority rule but every joint configuration its wired tiers reach retains a non-empty quorum core, so TLC never exercises joint-quorum intersection; the simulator owns that case. See docs/model-checking.md."
     assumptions: "Storage witnesses reflect actual durable replicas and use the membership effective for the committed entry."
     current_coverage:
       tla: "D: clause-bound executable evidence; see evidence references"
