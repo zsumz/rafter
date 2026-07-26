@@ -838,22 +838,67 @@ impl Fold {
     /// Records an external availability report, and decides whether it puts the
     /// group back in the fairness question.
     ///
-    /// A stall excuses omission only while it is unbroken. Returning a group to
-    /// availability at an instant when a plan could have been armed to name it
-    /// — no pass is open, and nothing but the stall was keeping it out — makes
-    /// it owed the next plan, and a stall reported before that plan is armed
-    /// does not retract the debt. Without that, the stall bit is a third
-    /// freedom over readiness: flick it off after each plan retires and on
-    /// again before the next is armed, and a group is never *sampled* as ready,
-    /// is owed nothing, and starves at a `widest_gap` of zero.
+    /// # Scope
     ///
-    /// The two qualifications are what keep it from blaming a scheduler that
-    /// had no move to make. A stall raised while a pass was already open
-    /// excuses as it always did, because no plan could have been armed to name
-    /// the group; and a group with no work, or one still holding a worker, was
-    /// not being kept out by the stall in the first place.
+    /// This opens a debt at exactly one kind of instant, and the direction the
+    /// rest of the fold reads it in is [`Self::is_owed`] at each arming:
+    ///
+    /// > For every recorded `Available` report naming a group that is, **at
+    /// > that instant**, stalled, dispatchable but for its availability,
+    /// > holding no worker, and not waiting behind a pass the host cannot
+    /// > finish: the group is owed the next plan armed, and the debt is
+    /// > discharged by a plan naming it and by nothing else. A `Stalled` report
+    /// > arriving first does not retract it.
+    ///
+    /// Where the report falls in the *pass cycle* does not enter that, and it
+    /// used to. `restorable` required `self.open.is_none()`, on the stated
+    /// ground that "a stall raised while a pass was already open still excuses,
+    /// because no plan could have been armed to name the group". That is a
+    /// claim about the instant a stall is *raised*, and it was applied to the
+    /// instant availability is *restored* — a different instant, an open pass
+    /// apart. The scheduler authors both the availability reports and the pass
+    /// boundaries, so it chose the window: available for the whole interior of
+    /// every pass, stalled for each arming, never sampled ready, never owed,
+    /// and starved at a `widest_gap` of zero over twenty passes. What replaces
+    /// it is not "a pass was open" but [`Self::exhausted_mid_traversal`] — a
+    /// pass with more of its plan left than the pool has workers to reach it
+    /// with — which is the bound's own "absent global resource exhaustion"
+    /// precondition rather than a fact the scheduler can manufacture by
+    /// dispatching one group and waiting.
+    ///
+    /// # Outside this scope
+    ///
+    /// Three qualifications remain. The first two deny a group at most one
+    /// window each, because a scheduler cannot re-establish either without
+    /// giving the group up or serving it; the third is unbounded and is the
+    /// known limit of the rule rather than a claim about it. Each has a
+    /// boundary test in `tests/redteam_occupancy.rs`.
+    ///
+    /// - **Restored while the group holds a worker.** No debt: the worker was
+    ///   what kept it out, and that worker's price is work the group actually
+    ///   did. To repeat the dodge the group must be occupied again, which takes
+    ///   a dispatch, which takes a plan naming it. See
+    ///   `restoring_availability_inside_an_occupancy_denies_one_window_and_no_more`.
+    /// - **Restored while the group holds no work, is poisoned, or is not in a
+    ///   serviceable lifecycle state.** No debt: the stall was not what kept it
+    ///   out. To repeat the dodge the queue must empty again, which takes
+    ///   service. See
+    ///   `restoring_availability_with_an_empty_queue_denies_one_window_and_no_more`.
+    /// - **Restored while the open pass cannot be finished.** No debt, and this
+    ///   one repeats: a host that keeps more plan entries pending than it has
+    ///   workers, and lets a group's availability appear only there, is owed
+    ///   nothing however long that runs. It is not distinguishable at the level
+    ///   of recorded decisions from a host that is simply busy, and the entries
+    ///   it holds pending are ready groups it must still offer. See
+    ///   `a_pass_the_host_cannot_finish_excuses_the_availability_it_spans`, and
+    ///   CONTRACT.md, "What the audit does not claim".
+    ///
+    /// What the rule does not touch at all is a stall that holds: a group
+    /// reported `Stalled` and never reported available again is owed nothing,
+    /// however long it holds work. See
+    /// `a_stall_held_unbroken_is_the_one_legitimate_way_a_group_receives_nothing`.
     fn report_availability(&mut self, group: GroupId, availability: GroupAvailability) {
-        let restorable = self.open.is_none()
+        let restorable = !self.exhausted_mid_traversal()
             && !self.occupied(group)
             && self
                 .groups
@@ -869,6 +914,43 @@ impl Fold {
                 state.restored |= restorable;
             }
         }
+    }
+
+    /// Returns whether the open pass has more of its plan left to traverse than
+    /// the pool has free workers to traverse it with.
+    ///
+    /// This is the one state in which the scheduler could not have reached an
+    /// arming, and it is the required bound's own precondition — "**absent
+    /// global resource exhaustion**, every continuously ready group receives a
+    /// scheduling opportunity within one complete pass" — made checkable from
+    /// facts the fold derives rather than reads. No plan may be armed while one
+    /// is open, and a plan may not retire owing a turn, so a pass it cannot
+    /// finish is a pass that stands between the scheduler and the next arming.
+    ///
+    /// Both terms are load bearing:
+    ///
+    /// - **Entries still pending.** A pass with nothing pending has finished
+    ///   traversing and is merely being *held* open. The bound's proof — "a
+    ///   group that becomes ready part way through a pass is in the next one,
+    ///   so it waits at most one complete pass" — assumes a traversal in
+    ///   progress, and knows no such pass. Retiring it and arming one that
+    ///   names the group was available at that instant.
+    /// - **More pending than free workers.** Arming is free even under
+    ///   exhaustion — a plan armed with no workers simply suspends — so
+    ///   exhaustion excuses nothing on its own; what it excuses is the *pass*
+    ///   it is holding open. A pass whose remaining entries all have a worker
+    ///   waiting for them could have been finished, retired, and replaced.
+    ///   Counting free workers rather than held ones matters: a host is at its
+    ///   emptiest at the instant a report lands, because every occupancy that
+    ///   came due has already been called in and the tick's dispatches have not
+    ///   yet been taken. `workers_held` alone reads zero there for a host with
+    ///   thousands of groups pending on thirty-two workers.
+    fn exhausted_mid_traversal(&self) -> bool {
+        let free = usize::try_from(self.config.workers().saturating_sub(self.workers_held()))
+            .unwrap_or(usize::MAX);
+        self.open
+            .as_ref()
+            .is_some_and(|open| open.pending.len() > free)
     }
 
     /// Reports whether a recorded tick may be believed, and faults when it

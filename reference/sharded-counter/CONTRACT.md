@@ -474,7 +474,7 @@ scheduler, so it cannot be derived; but a scheduler that could move it freely
 would define any group out of the fairness question. It is bounded rather than
 derived — see "A stall excuses only while it is unbroken" — and the boundary is
 that a stall which is cleared and re-raised without a plan naming the group in
-between excuses nothing.
+between excuses nothing, wherever in the pass cycle it is cleared.
 
 ### Occupancy is derived, not reported
 
@@ -599,42 +599,81 @@ audit: passes_completed=20 widest_gap=0; starved group stalled=false queued=1
 Twenty completed passes, a group the audit's own final view calls available and
 holding a backlog, and a perfect score.
 
-The rule that closes it:
+The previous generation's rule closed that window and left its dual open. It
+read "a group returned to `Available` at an instant when a plan could have been
+armed to name it — **no pass is open**, and nothing but the stall was keeping it
+out", and the justification offered for the pass qualification was that "a stall
+raised while a pass was already open still excuses, because no plan could have
+been armed to name the group". That sentence is about the instant a stall is
+*raised*; the code applied it to the instant availability is *restored*. Those
+are different instants, an open pass apart, and the scheduler authors both the
+availability reports and the pass boundaries — so it picked the window:
 
-> A group returned to `Available` at an instant when **a plan could have been
-> armed to name it** — no pass is open, and nothing but the stall was keeping it
-> out — is *owed the next plan armed*. A `Stalled` report arriving before that
-> plan is armed does not retract the debt. The debt is discharged by a plan
-> naming the group, and by nothing else.
+```text
+passes_completed = 20   opportunities = 20   serviced = 20 host-wide, 0 for the starved group
+widest_gap       = 0    starved group: queued 1, stalled true, servicing false
+```
+
+A group available for eight of every ten ticks, holding a backlog throughout,
+receiving nothing, and a clean audit. The service floor does not catch it
+either: twenty items moved.
+
+#### The rule, and exactly what it covers
+
+> **Scope.** For every recorded `Available` report naming a group that is, *at
+> that instant*, stalled, dispatchable but for its availability, holding no
+> worker, and not waiting behind a pass the host cannot finish: the group is
+> *owed the next plan armed*. The debt is discharged by a plan naming the
+> group, and by nothing else — not by a `Stalled` report, and not by a second
+> `Available` report saying what the first already said.
 
 A group owed a plan it does not appear in accrues gap. It is still not *ready*,
 so a plan that named it would break plan totality; the only way to settle the
 debt is to stop breaking the stall.
 
-Both qualifications are load bearing, and each is there to keep the rule from
-blaming a scheduler with no move to make:
+Where the report falls in the *pass cycle* is not part of that, and it was. What
+replaced it is not "a pass was open" but **a pass the host cannot finish**: an
+open pass with more entries still pending than the pool has free workers to
+offer them with. No plan may be armed while one is open and no plan may retire
+owing a turn, so such a pass genuinely stands between the scheduler and the next
+arming — and it is the required bound's own precondition, "absent global
+resource exhaustion", rather than a fact a scheduler can manufacture by
+dispatching one group and waiting.
 
-- **No pass open.** A stall raised while a pass was already open excuses exactly
-  as it always did, because no plan could have been armed to name the group. A
-  group that becomes ready part way through a pass waits for the next one, which
-  is what the bound already says, and the availability it held in between buys
-  it nothing it was not already owed.
-- **Nothing else keeping it out.** A group with no queued work, or one still
-  holding a worker, was not being kept out by the stall, so returning it to
-  availability opens no debt.
+#### What falls outside that scope
 
-What this does *not* touch is a stall that holds. A group reported `Stalled` once
-and never reported available again is owed nothing however long it holds work,
-and the audit says so: that is the external input doing its job, and
+Four qualifications remain. The first three deny a group at most **one** window
+each, because a scheduler cannot re-establish any of them without either giving
+the group up or serving it; the fourth is unbounded and is the known limit of
+the rule rather than a claim about it. Each has a test.
+
+| Outside the scope | Why it is kept | Bounded? | Test |
+| --- | --- | --- | --- |
+| Restored while the group holds a worker | The worker was what kept it out, and its price is work the group did | Once: to be occupied again it must be dispatched, which takes a plan naming it | `redteam_occupancy::restoring_availability_inside_an_occupancy_denies_one_window_and_no_more` |
+| Restored while the group holds no work, is poisoned, or is not serviceable | The stall was not what kept it out | Once: to empty the queue again it must be serviced | `redteam_occupancy::restoring_availability_with_an_empty_queue_denies_one_window_and_no_more` |
+| Reported available when it was not stalled | Not a transition; ordinary readiness already owes it every plan | Once: the window before a group's first stall | `redteam_occupancy::availability_reported_for_a_group_that_was_never_stalled_opens_no_debt` |
+| Restored while the open pass cannot be finished | The bound's own "absent global resource exhaustion" precondition | **No** — a host can arrange this every pass | `redteam_occupancy::a_pass_the_host_cannot_finish_excuses_the_availability_it_spans` |
+
+The fourth row is the honest statement of what this rule does not reach, and it
+is not glossed as a cost: a host that keeps more plan entries pending than it
+has workers, and lets a group's availability appear only there, is owed nothing
+however long that runs. It is not distinguishable at the level of recorded
+decisions from a host that is simply busy, and the entries it holds pending are
+ready groups it must still offer. What refuses to certify such a run is the
+service floor, not the gap.
+
+The free-worker term is what keeps that row from swallowing the rule above it. A
+pass with an entry pending and a worker free to offer it with is not a pass the
+host *cannot* finish; it is one it chose not to, and
+`redteam_occupancy::a_pass_held_open_with_a_worker_to_spare_excuses_nothing` is
+that history — the same evasion, one qualification later, refused.
+
+What this rule does *not* touch at all is a stall that holds. A group reported
+`Stalled` once and never reported available again is owed nothing however long
+it holds work, and the audit says so: that is the external input doing its job,
+and
 `redteam_occupancy::a_stall_held_unbroken_is_the_one_legitimate_way_a_group_receives_nothing`
 is the assertion.
-
-What it does not *close* is stated rather than glossed: a scheduler willing to
-keep a pass open across every availability oscillation can still arrange for
-every `Available` report to land inside an open pass. That costs it a dispatch
-and a delayed retirement per oscillation, and it is not closed here because the
-rule that would close it — blaming a stall raised during an open pass — blames
-schedulers that had no plan to arm.
 
 **A tick arms at most one plan.** This is the modeling choice named at the end
 of this document, and it is also what stops the derivation from being evaded by
@@ -880,12 +919,15 @@ earlier.
 
 **Stickiness is what the audit charges for.** Being the only readiness input the
 scheduler does not derive makes this signal the one place a scheduler could
-define a group out of the fairness question, and it did: a stall flicked on
-before every arming and off after every retirement kept a group out of twenty
-consecutive plans at a `widest_gap` of zero. So the excuse a stall buys is
-bounded by how long it is held, not by whether it happens to be raised at the
-instant readiness is sampled. "A stall excuses only while it is unbroken" states
-the rule; this section is where the signal it constrains is defined.
+define a group out of the fairness question, and it did — twice, from opposite
+sides of the same pass. A stall flicked on before every arming and off after
+every retirement kept a group out of twenty consecutive plans at a `widest_gap`
+of zero; so did a stall flicked on for each arming and off for the whole
+interior of the pass that followed. So the excuse a stall buys is bounded by how
+long it is held, not by whether it happens to be raised at the instant readiness
+is sampled and not by which side of a pass boundary it is broken on. "A stall
+excuses only while it is unbroken" states the rule and enumerates what falls
+outside it; this section is where the signal it constrains is defined.
 
 A stalled group is a different thing from a slow one. A slow group is modeled by
 work that costs more ticks of worker occupancy: it is dispatchable and takes
@@ -1009,8 +1051,12 @@ The implementation and oracle must establish:
 22. A group's counter is the sum of the deltas serviced for that group, and no
     other's.
 23. An external stall excuses a plan only while it is unbroken. A stall cleared
-    at an instant when a plan could have named the group, and re-raised before
-    that plan was armed, excuses nothing.
+    at an instant when the host could have reached an arming that named the
+    group — anywhere in the pass cycle, and not merely between passes — and
+    re-raised before that plan was armed, excuses nothing. The exception is the
+    bound's own: a pass with more entries pending than the pool has free
+    workers. "A stall excuses only while it is unbroken" states the scope and
+    enumerates what falls outside it.
 24. Every rule this audit enforces has a scheduler in the test suite written to
     break exactly it, and a control that differs from that scheduler by one
     decision and is accepted.
