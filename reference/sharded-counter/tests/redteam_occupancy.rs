@@ -662,11 +662,22 @@ fn restoring_availability_with_an_empty_queue_denies_one_window_and_no_more() {
         excused.retired(index + 1, 4 + index);
     }
 
-    let report = excused
-        .audit(bounds())
+    let replay = excused.replay(bounds());
+    let report = replay
+        .fairness
         .expect("a stall raised at three over an empty queue excuses what follows it");
     println!("restored over an empty queue: {report:?}");
     assert_eq!(report.widest_gap, 0);
+    // Without this the acceptance would be uninteresting: a group holding
+    // nothing is owed nothing for reasons that have no bearing on the stall.
+    assert!(
+        replay
+            .view
+            .groups
+            .iter()
+            .any(|view| view.group == id && view.queued == 1 && view.stalled),
+        "the group the audit excused holds work and is still stalled"
+    );
 
     // The same oscillation once the group holds work is owed every plan.
     let mut owed = History::new();
@@ -861,11 +872,20 @@ fn availability_reported_for_a_group_that_was_never_stalled_opens_no_debt() {
         excused.retired(index + 1, 3 + index);
     }
 
-    let report = excused
-        .audit(bounds())
+    let replay = excused.replay(bounds());
+    let report = replay
+        .fairness
         .expect("a group that was never stalled is owed by readiness, not by a debt");
     println!("redundant availability report: {report:?}");
     assert_eq!(report.widest_gap, 0);
+    assert!(
+        replay
+            .view
+            .groups
+            .iter()
+            .any(|view| view.group == id && view.queued == 1 && view.stalled),
+        "the group the audit excused holds work and is still stalled"
+    );
 
     // And the second oscillation, which *is* a transition, is owed.
     let mut owed = excused.clone();

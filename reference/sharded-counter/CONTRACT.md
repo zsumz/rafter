@@ -1305,25 +1305,40 @@ implementation that serviced it be explained away.
 This is the foundation slice. It contains the contract, bounded command and
 result types, a deterministic ready-set scheduler with a per-group counter
 machine, a structurally independent oracle, the history vocabulary, invariant
-tests, a deliberately-violating scheduler for every rule the audit enforces, and
-seeded differential workloads over thousands of groups.
+tests, a deliberately-violating scheduler for every one of the 29 rules the
+audit decides, and seeded differential workloads over thousands of groups.
 
-The differential workloads cover the dimensions separately and together: an
-exhaustive enumeration of every short history over an alphabet spanning the
-whole lifecycle and both directions of the readiness signal; seeded random
-workloads on roomy and deliberately cramped hosts; thousands of groups with
-classes, costs, a slow group, a stall, and a poisoning; a churn workload that
-removes and reopens groups underneath a running scheduler; and one workload
-that combines all of it at scale, because a dimension that only ever appears
-alone has not been shown to compose.
+The differential workloads cover the dimensions separately and together, and the
+numbers they run at are restated here rather than described:
+
+```text
+exhaustive short histories   14 symbols to depth 4, 41_370 distinct histories
+thousands of groups          3_000 groups, 900 ticks, 241_356 events,
+                             9 passes, widest plan 2_999, gap 0        (2 seeds)
+churn and combination        512 groups, 600 ticks, ~81_500 events,
+                             14-15 passes, widest plan ~437, gap 0,
+                             ~7_775 serviced, ~76 failed, 174-183 reopened,
+                             257 removed, 33-39 tombstoned, 10 poisoned
+seeded random workloads      121 and 219 retired passes on a roomy and a
+                             deliberately cramped host
+```
+
+Those numbers are unchanged by this generation's two fixes, and saying so is the
+point: the model was not touched, and the corrected stall rule accepts every
+history the model produces at every one of those scales. A rule that had needed
+the workloads to move to fit it would have been a rule fitted to the workloads.
 
 **What they cannot cover is stated here rather than assumed away.** Every one of
 those workloads is driven by `ManagedScheduler`, which always services what it
 dispatches, always releases what it takes, and always plans what is ready. No
 history it can produce distinguishes a rule the audit checks from one it
 ignores, so the differential workloads prove agreement and prove nothing about
-the audit's teeth. That is what the red-team schedulers are for, and it is why
-invariant 24 exists.
+the audit's teeth. **Scale is the wrong axis for that question**: 241_356 events
+over 3_000 groups is the same single history shape repeated, and the two
+starvations this generation found are each expressible in twenty passes. That is
+what the red-team schedulers are for, and it is why invariant 24 exists — and
+invariant 24 in turn proves that each rule fires, not that the rules cover. Both
+limits are named where each claim is made.
 
 It intentionally contains no Rafter dependency, no adapter, no transport, no
 disk backend, no shared reference framework, and no new Rafter public API. The
