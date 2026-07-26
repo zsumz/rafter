@@ -876,7 +876,10 @@ impl fmt::Display for LockStoreError {
                 resource,
                 acknowledged,
                 offered,
-            } => write_mark_regression(formatter, *resource, *acknowledged, *offered),
+            } => {
+                formatter.write_str("the state offered would ")?;
+                write_mark_regression_clause(formatter, *resource, *acknowledged, *offered)
+            }
             Self::DiscardWouldRegressMark { .. } => write_discard_regression(formatter, self),
             Self::SessionCacheRegression {
                 client,
@@ -898,7 +901,7 @@ impl fmt::Display for LockStoreError {
 }
 
 /// Renders a discard refused for regressing a mark, naming the slots first and
-/// then deferring to the same wording every mark regression uses.
+/// then completing the clause every mark regression shares.
 fn write_discard_regression(
     formatter: &mut fmt::Formatter<'_>,
     error: &LockStoreError,
@@ -918,12 +921,24 @@ fn write_discard_regression(
         formatter,
         "giving up {slot}, which holds {damage}, and adopting {adopted} in its place would "
     )?;
-    write_mark_regression(formatter, *resource, *acknowledged, *offered)
+    write_mark_regression_clause(formatter, *resource, *acknowledged, *offered)
 }
 
-/// Renders a mark regression, which reads differently when the resource
-/// vanished from the offered state than when its mark merely dropped.
-fn write_mark_regression(
+/// Renders the loss a mark regression is, as a verb phrase its caller completes.
+///
+/// It is a phrase rather than a sentence because two errors name the same loss
+/// after two different subjects, and it used to be a sentence. That produced
+/// `"…adopting lock-state.0 in its place would resource orders/shard-0 would
+/// drop from fencing high-water mark 2 to 1"` — two subjects and two verbs
+/// spliced into one clause, in the one refusal an operator has to act on. A
+/// phrase with no subject cannot be composed that way, because neither caller
+/// can supply one.
+///
+/// It reads differently when the resource vanished from the offered state than
+/// when its mark merely dropped, which is the same distinction the variant's
+/// `offered` field carries. `renders_a_mark_regression_as_one_sentence_after_
+/// either_subject` pins both readings after both subjects.
+fn write_mark_regression_clause(
     formatter: &mut fmt::Formatter<'_>,
     resource: ResourceName,
     acknowledged: FencingToken,
@@ -932,14 +947,14 @@ fn write_mark_regression(
     match offered {
         Some(offered) => write!(
             formatter,
-            "resource {} would drop from fencing high-water mark {} to {}",
+            "drop resource {} from fencing high-water mark {} to {}",
             resource.as_str(),
             acknowledged.get(),
             offered.get()
         ),
         None => write!(
             formatter,
-            "resource {} would lose its fencing high-water mark of {}",
+            "lose resource {}'s fencing high-water mark of {}",
             resource.as_str(),
             acknowledged.get()
         ),
@@ -3205,12 +3220,13 @@ pub mod raw_slot {
 #[cfg(test)]
 mod tests {
     use super::{
-        crc32, encode_image, verify_slot, SlotDamage, CRC32_POLYNOMIAL, CREATION_MARK, SEALED_MARK,
-        SLOT_FORMAT_VERSION, SLOT_HEADER_LEN, SLOT_TRAILER_LEN, UNSEALED_MARK,
+        crc32, encode_image, verify_slot, LockStoreError, SlotDamage, SlotIndex, CRC32_POLYNOMIAL,
+        CREATION_MARK, SEALED_MARK, SLOT_FORMAT_VERSION, SLOT_HEADER_LEN, SLOT_TRAILER_LEN,
+        UNSEALED_MARK,
     };
     use crate::{
-        ClientId, Command, LeaseDuration, LockConfig, LockService, Operation, RequestFingerprint,
-        RequestIdentity, ResourceName, Sequence, SessionEpoch,
+        ClientId, Command, FencingToken, LeaseDuration, LockConfig, LockService, Operation,
+        RequestFingerprint, RequestIdentity, ResourceName, Sequence, SessionEpoch,
     };
     use rafter::LogIndex;
 
@@ -3646,5 +3662,59 @@ mod tests {
                 "the two implementations disagree at length {length}"
             );
         }
+    }
+
+    /// The two errors that name a mark regression must each read as one
+    /// sentence.
+    ///
+    /// They share a clause and supply their own subjects, and the shared part
+    /// used to be a whole sentence — so the composed one read "…adopting
+    /// lock-state.0 in its place would resource orders/shard-0 would drop from
+    /// fencing high-water mark 2 to 1". This is a string comparison rather than
+    /// a variant match because the defect was entirely in the rendering: every
+    /// field was right and the sentence was not.
+    #[test]
+    fn renders_a_mark_regression_as_one_sentence_after_either_subject() {
+        let resource = ResourceName::new("orders/shard-0").expect("the name is admissible");
+        let acknowledged = FencingToken::new(2).expect("token two is non-zero");
+        let offered = FencingToken::new(1).expect("token one is non-zero");
+
+        assert_eq!(
+            LockStoreError::MarkRegression {
+                resource,
+                acknowledged,
+                offered: Some(offered),
+            }
+            .to_string(),
+            "the state offered would drop resource orders/shard-0 from fencing \
+             high-water mark 2 to 1"
+        );
+        assert_eq!(
+            LockStoreError::MarkRegression {
+                resource,
+                acknowledged,
+                offered: None,
+            }
+            .to_string(),
+            "the state offered would lose resource orders/shard-0's fencing \
+             high-water mark of 2"
+        );
+        assert_eq!(
+            LockStoreError::DiscardWouldRegressMark {
+                slot: SlotIndex::One,
+                damage: SlotDamage::UnsealedCompleteImage {
+                    len: 180,
+                    generation: 4,
+                },
+                adopted: SlotIndex::Zero,
+                resource,
+                acknowledged,
+                offered: Some(offered),
+            }
+            .to_string(),
+            "giving up lock-state.1, which holds a whole 180 byte image of generation 4 \
+             whose publication mark reads unsealed, and adopting lock-state.0 in its \
+             place would drop resource orders/shard-0 from fencing high-water mark 2 to 1"
+        );
     }
 }
