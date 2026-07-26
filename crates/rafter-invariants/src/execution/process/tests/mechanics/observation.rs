@@ -12,10 +12,10 @@ use rustix::io::Errno;
 use super::super::super::model::DEFAULT_KILL_CONFIRMATION_TIMEOUT;
 use super::super::super::{
     await_next_internal_completion_exit, bounded_internal_output,
-    bounded_internal_output_with_cleanup, bounded_internal_output_with_reaper,
-    confirm_process_group_absent_with, inject_next_internal_drain_error, parse_peak_rss,
-    parse_process_group_observation, process_observer_path, NoSignalReaper, ProcessAnchorState,
-    ProcessGroupObservation, ProcessGroupState, TargetLeaseState, TargetMemberState,
+    bounded_internal_output_with_reaper, confirm_process_group_absent_with,
+    inject_next_internal_drain_error, parse_peak_rss, parse_process_group_observation,
+    process_observer_path, NoSignalReaper, ProcessAnchorState, ProcessGroupObservation,
+    ProcessGroupState, TargetLeaseState, TargetMemberState,
 };
 #[cfg(unix)]
 use super::super::super::{
@@ -23,15 +23,15 @@ use super::super::super::{
     classify_target_quiescence_for_test, clear_signal_attempts, process_group_state,
     take_signal_attempts, CleanupFailures, SignalDelivery,
 };
+use super::super::support::unique_test_path;
+#[cfg(unix)]
+use super::super::support::{managed_process_fixture, process_observer};
 
 /// How long a descendant would keep the observer waiting if the execution
 /// deadline did not cut it off. Assertions bound themselves by this instead of
 /// by a stopwatch reading, so "the deadline was enforced" stays distinguishable
 /// from "the machine was slow".
 const RUNAWAY_DESCENDANT_LIFETIME: Duration = Duration::from_secs(30);
-use super::super::support::unique_test_path;
-#[cfg(unix)]
-use super::super::support::{managed_process_fixture, process_observer};
 
 #[test]
 fn parses_platform_peak_rss() {
@@ -109,16 +109,18 @@ fn internal_observer_rejects_a_clean_exit_classified_after_its_deadline() {
     // `/bin/sh` needs left a loaded machine killing the child mid-write and
     // asserting on output it never produced.
     await_next_internal_completion_exit();
-    let error = bounded_internal_output_with_cleanup(
-        "/bin/sh",
-        &["-c", "printf late"],
-        Duration::from_millis(10),
-        RUNAWAY_DESCENDANT_LIFETIME,
-    )
-    .expect_err("late clean completion must retain output but classify as timed out");
+    let error =
+        bounded_internal_output("/bin/sh", &["-c", "printf late"], Duration::from_millis(10))
+            .expect_err("late clean completion must retain output but classify as timed out");
     let message = error.to_string();
-    assert!(message.contains("timed out"));
-    assert!(message.contains("stdout: late"));
+    assert!(
+        message.contains("timed out"),
+        "unexpected classification: {message}"
+    );
+    assert!(
+        message.contains("stdout: late"),
+        "output was not retained: {message}"
+    );
     assert!(
         take_signal_attempts().is_empty(),
         "an already-complete child must be reaped without signaling"

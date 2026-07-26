@@ -43,6 +43,14 @@ const CLEANUP_LIFECYCLE_WINDOW: Duration = Duration::from_secs(10);
 #[cfg(unix)]
 const CLEANUP_CONFIRMATION_WINDOW: Duration = Duration::from_millis(20);
 
+/// How long a fixture wrapper keeps running when the test needs it unfinished.
+///
+/// Assertions about "this call did not wait for the wrapper" bound themselves
+/// by this rather than by a stopwatch reading, so a stalled machine cannot look
+/// like a wait that blocked.
+#[cfg(unix)]
+const UNFINISHED_WRAPPER_LIFETIME: Duration = Duration::from_secs(30);
+
 /// The absolute cleanup window that a drop must honour rather than restart.
 ///
 /// It has to be short enough that the budget left at drop is smaller than a
@@ -80,7 +88,7 @@ fn managed_process_drop_kills_and_reaps_an_armed_group() {
 fn managed_process_wrapper_wait_respects_its_deadline() {
     let cleanup_failures = CleanupFailures::default();
     let (mut process, wrapper_group, target_group, _reaper, _deadline) = managed_process_fixture(
-        "sleep 5",
+        &format!("sleep {}", UNFINISHED_WRAPPER_LIFETIME.as_secs()),
         DEFAULT_KILL_CONFIRMATION_TIMEOUT,
         DEFAULT_KILL_CONFIRMATION_TIMEOUT,
         cleanup_failures.clone(),
@@ -92,7 +100,11 @@ fn managed_process_wrapper_wait_respects_its_deadline() {
         .wait_until(Instant::now())
         .expect("probe wrapper")
         .is_none());
-    assert!(started.elapsed() < Duration::from_millis(100));
+    // A wait that ignored its expired deadline would block until the wrapper
+    // finished, so the wrapper's own lifetime is the bound that distinguishes
+    // the two — unlike a stopwatch budget, which a stalled machine can blow
+    // without the wait ever having blocked.
+    assert!(started.elapsed() < UNFINISHED_WRAPPER_LIFETIME);
     drop(process);
 
     assert_eq!(

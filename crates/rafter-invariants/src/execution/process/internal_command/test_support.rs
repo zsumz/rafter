@@ -47,7 +47,7 @@ pub(crate) fn bounded_internal_output(
     bounded_internal_output_with_cleanup(program, arguments, timeout, INTERNAL_CLEANUP_ALLOWANCE)
 }
 
-pub(crate) fn bounded_internal_output_with_cleanup(
+fn bounded_internal_output_with_cleanup(
     program: &str,
     arguments: &[&str],
     execution_timeout: Duration,

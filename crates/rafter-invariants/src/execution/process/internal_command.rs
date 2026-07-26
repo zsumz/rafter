@@ -27,8 +27,7 @@ use super::{
 #[cfg(test)]
 pub(crate) use test_support::{
     await_next_internal_completion_exit, bounded_internal_output,
-    bounded_internal_output_with_cleanup, bounded_internal_output_with_reaper,
-    inject_next_internal_drain_error,
+    bounded_internal_output_with_reaper, inject_next_internal_drain_error,
 };
 
 const INTERNAL_OUTPUT_MAX_BYTES: usize = 16 * 1024 * 1024;
