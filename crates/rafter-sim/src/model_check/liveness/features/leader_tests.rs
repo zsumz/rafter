@@ -14,7 +14,7 @@ use super::{
 use crate::model_check::SoakConfig;
 use rafter_invariant_test::{oracle_assert, oracle_assert_eq, oracle_expect_err};
 
-#[test]
+#[::rafter_invariant_test::detector_test]
 fn quorum_only_leader_monitor_reports_starved_schedule_bound() {
     let config = SoakConfig::new(SimSeed(0xfa17), 0);
     let failure = oracle_expect_err!(

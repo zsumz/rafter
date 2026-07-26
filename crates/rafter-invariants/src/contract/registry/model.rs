@@ -100,6 +100,18 @@ pub struct RegistryEvidence {
     pub negative_fixture_path: Option<String>,
     pub negative_fixture_detector: Option<String>,
     pub negative_fixture_detector_path: Option<String>,
+    /// A function reached from both the detector and the registered `symbol`.
+    ///
+    /// Required when the detector is not the registered checker itself. The
+    /// catalog guard resolves it inside both declaring files, so a row cannot
+    /// name a checker whose negative control exercises something unrelated.
+    pub negative_fixture_detector_bridge: Option<String>,
+    /// What the registered checker does that this negative control never reaches.
+    ///
+    /// Required alongside the bridge. A bridged control drives a part of the
+    /// checker rather than the whole of it, and this field is where that
+    /// residual is stated instead of being implied away.
+    pub negative_fixture_uncovered: Option<String>,
     pub negative_fixture_exemption: Option<String>,
     pub test: Option<TestIdentity>,
     pub simulator: Option<SimulatorIdentity>,

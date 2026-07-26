@@ -44,6 +44,8 @@ pub(super) fn section_fields(section: &str) -> &'static [&'static str] {
             "negative_fixture_path",
             "negative_fixture_detector",
             "negative_fixture_detector_path",
+            "negative_fixture_detector_bridge",
+            "negative_fixture_uncovered",
             "negative_fixture_package",
             "negative_fixture_target_kind",
             "negative_fixture_target",

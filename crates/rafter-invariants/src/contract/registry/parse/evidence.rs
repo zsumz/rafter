@@ -100,6 +100,8 @@ pub(super) fn parse_evidence_record(
         negative_fixture_path: record.get("negative_fixture_path").cloned(),
         negative_fixture_detector: record.get("negative_fixture_detector").cloned(),
         negative_fixture_detector_path,
+        negative_fixture_detector_bridge: record.get("negative_fixture_detector_bridge").cloned(),
+        negative_fixture_uncovered: record.get("negative_fixture_uncovered").cloned(),
         negative_fixture_exemption: record.get("negative_fixture_exemption").cloned(),
         test,
         simulator,

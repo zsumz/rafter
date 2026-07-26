@@ -142,8 +142,8 @@ named temporal or witness-based verdicts.
 | `ST-01` | `ST-01.c` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/applied.rs#check_internal_derived_state`; negative fixture `derived_state_rejects_non_leader_pending_read_round` |
 | `ST-01` | `ST-01.d` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/applied.rs#check_internal_derived_state`; negative fixture `derived_state_rejects_stale_configuration_offsets` |
 | `ST-01` | `ST-01.d` | tests | direct | `crates/rafter/src/node/tests/derived_state.rs#derived_state_is_valid_after_bootstrap` |
-| `EL-01` | `EL-01.b` | simulator | direct | `crates/rafter-sim/src/model_check/application/restart.rs#restart_node_inner`; negative fixture `term_monotonicity_history_detects_regression_from_observation` |
 | `EL-01` | `EL-01.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_higher_term_authority_fencing`; negative fixture `term_monotonicity_history_detects_regression_from_observation` |
+| `EL-01` | `EL-01.b` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `term_monotonicity_history_detects_regression_from_observation` |
 | `EL-01` | `EL-01.a` | tests | direct | `crates/rafter-runtime/src/tests/hard_state/voting.rs#election_persists_term_and_vote_before_vote_requests_escape` |
 | `EL-01` | `EL-01.a` | tests | direct | `crates/rafter/src/node/tests/election/voting.rs#public_transitions_do_not_decrease_current_term` |
 | `EL-02` | `EL-02.a` | simulator | direct | `crates/rafter-sim/src/model_check/invariants/election.rs#check_election_history`; negative fixture `durable_vote_history_rejects_second_vote_in_term` |
@@ -364,7 +364,7 @@ named temporal or witness-based verdicts.
 | `SS-05` | `SS-05.b` | tests | direct | `crates/rafter-sim/src/tests/snapshot_installation/catchup.rs#simulator_discards_divergent_suffix_when_installing_snapshot` |
 | `LV-01` | `LV-01.a` | simulator | direct | `crates/rafter-sim/src/model_check/liveness.rs#run_soak_liveness_check_with_budget_overrides`; negative fixture `post_heal_leader_convergence_monitor_reports_exhausted_bound` |
 | `LV-01` | `LV-01.b` | simulator | direct | `crates/rafter-sim/src/model_check/liveness.rs#run_soak_liveness_check`; negative fixture `post_heal_leader_usability_monitor_reports_exhausted_bound` |
-| `LV-01` | `LV-01.a` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features/leader.rs#run_quorum_only_leader_convergence_check`; negative fixture `bounded_fairness_detector_rejects_positive_bound_tick_starvation` |
+| `LV-01` | `LV-01.a` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features/leader.rs#run_quorum_only_leader_convergence_check`; negative fixture `quorum_only_leader_monitor_reports_starved_schedule_bound` |
 | `LV-01` | `LV-01.b` | simulator | direct | `crates/rafter-sim/src/model_check/liveness/features/leader.rs#run_quorum_only_leader_usability_check`; negative fixture `quorum_only_leader_usability_monitor_reports_exhausted_bound` |
 | `LV-01` | `LV-01.a` | tests | direct | `crates/rafter-sim/src/model_check/liveness/features/leader_tests.rs#quorum_only_leader_monitor_elects_and_serves_with_minority_unavailable` |
 | `LV-01` | `LV-01.b` | tests | direct | `crates/rafter-sim/src/model_check/liveness/features/leader_tests.rs#quorum_only_leader_monitor_elects_and_serves_with_minority_unavailable` |
