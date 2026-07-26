@@ -23,10 +23,11 @@ where
     ///
     /// # Errors
     ///
-    /// Returns a group error when the group is poisoned, command encoding
-    /// fails, the runtime rejects the proposal input, applying a synchronously
-    /// committed entry fails, or the runtime produces no proposal lifecycle
-    /// event for the supplied local proposal ID.
+    /// Returns a group error when the group is poisoned, the state machine is
+    /// below the runtime's snapshot boundary, command encoding fails, the
+    /// runtime rejects the proposal input, applying a synchronously committed
+    /// entry fails, or the runtime produces no proposal lifecycle event for the
+    /// supplied local proposal ID.
     #[allow(clippy::needless_pass_by_value)]
     pub fn begin_proposal_outcome(
         &mut self,
@@ -44,16 +45,20 @@ where
     ///
     /// # Errors
     ///
-    /// Returns a group error when the group is poisoned, command encoding
-    /// fails, the runtime rejects the proposal input, applying a synchronously
-    /// committed entry fails, or the runtime produces no proposal lifecycle
-    /// event for the supplied local proposal ID.
+    /// Returns a group error when the group is poisoned, the state machine is
+    /// below the runtime's snapshot boundary, command encoding fails, the
+    /// runtime rejects the proposal input, applying a synchronously committed
+    /// entry fails, or the runtime produces no proposal lifecycle event for the
+    /// supplied local proposal ID.
     #[allow(clippy::needless_pass_by_value)]
     pub fn begin_proposal(
         &mut self,
         proposal: Proposal<A::Command>,
     ) -> ProposalBeginReportResult<G, A, R> {
         self.reject_if_poisoned()?;
+        // This steps the runtime without routing through `step_with_options`,
+        // so it takes the boundary verdict by name rather than inheriting it.
+        self.reject_if_below_snapshot_boundary()?;
         let previous_effective = self.raft.membership();
         let previous_committed = self.raft.committed_membership();
         let local_proposal_id = proposal.local_proposal_id;
@@ -78,16 +83,19 @@ where
     ///
     /// # Errors
     ///
-    /// Returns a group error when the group is poisoned, the batch violates
-    /// local proposal ID monotonicity, command encoding fails, the runtime
-    /// rejects the batched step, applying synchronously committed entries
-    /// fails, or the runtime produces no proposal lifecycle event for any
-    /// supplied local proposal ID.
+    /// Returns a group error when the group is poisoned, the state machine is
+    /// below the runtime's snapshot boundary, the batch violates local proposal
+    /// ID monotonicity, command encoding fails, the runtime rejects the batched
+    /// step, applying synchronously committed entries fails, or the runtime
+    /// produces no proposal lifecycle event for any supplied local proposal ID.
     pub fn begin_proposal_batch(
         &mut self,
         proposals: Vec<Proposal<A::Command>>,
     ) -> ProposalBatchBeginReportResult<G, A, R> {
         self.reject_if_poisoned()?;
+        // As [`RaftGroup::begin_proposal`]: a stepping entry point that does
+        // not route through `step_with_options`.
+        self.reject_if_below_snapshot_boundary()?;
         let previous_effective = self.raft.membership();
         let previous_committed = self.raft.committed_membership();
         let local_proposal_ids = proposals

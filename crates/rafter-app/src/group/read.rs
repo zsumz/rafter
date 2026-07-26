@@ -167,14 +167,25 @@ where
     /// terminal event arrives in that step's report rather than in one this
     /// method returned.
     ///
+    /// Every branch is refused with
+    /// [`GroupError::AppliedIndexBelowSnapshotBoundary`] while this group's
+    /// state machine sits below the runtime's snapshot boundary, including the
+    /// two that never step the runtime — a retry that consumes an already
+    /// completed proof, and every [`ReadRequest::Local`]. Such a state machine
+    /// is missing acknowledged entries that no longer exist in any form this
+    /// composition can reach, so serving a query from it is the loss rather
+    /// than a stale answer, and no freshness argument makes it fresh.
+    ///
     /// # Errors
     ///
-    /// Returns a group error when the group is poisoned, the request targets a
-    /// different group, the runtime rejects the underlying read-index request, the
-    /// state machine cannot report its applied index, or the state-machine read
+    /// Returns a group error when the group is poisoned, the state machine is
+    /// below the runtime's snapshot boundary, the request targets a different
+    /// group, the runtime rejects the underlying read-index request, the state
+    /// machine cannot report its applied index, or the state-machine read
     /// fails.
     pub fn read(&mut self, request: ReadRequest<G, A::Query>) -> ReadReportResult<G, A, R> {
         self.reject_if_poisoned()?;
+        self.reject_if_below_snapshot_boundary()?;
         match request {
             ReadRequest::Local {
                 group_id,

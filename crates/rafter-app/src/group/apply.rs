@@ -174,8 +174,9 @@ where
     ///
     /// This group is the only object that holds both halves of the
     /// composition, so it is the only one that can check the invariant they
-    /// share: **a replica's durable application state is never behind its own
-    /// Raft snapshot boundary.** The kernel cannot check it — it raises a low
+    /// share: **at every moment the group would let the state machine answer
+    /// for this replica, that state machine is at or above its own Raft
+    /// snapshot boundary.** The kernel cannot check it — it raises a low
     /// declared floor to the boundary and says so, because it retains no
     /// covered entry and holds a snapshot descriptor rather than payload
     /// bytes. Neither can a state machine, which cannot see the Raft log.
@@ -183,14 +184,60 @@ where
     /// Below the boundary the missing entries do not exist in any form this
     /// composition can reach. The group's own log will not replay them, and
     /// the leader will not send a snapshot to a follower whose log already
-    /// matches its own. Continuing would answer every later apply, read, and
-    /// readiness gate from a state machine missing acknowledged entries.
+    /// matches its own.
+    ///
+    /// # Where the verdict is taken, and where it is not
+    ///
+    /// "The state machine is below the boundary" is a fault at the moments
+    /// listed here and a legitimate transient everywhere else, so the scope is
+    /// stated in the direction the code uses it — the public methods that step
+    /// the runtime or serve a state-machine read, each of which takes the
+    /// verdict on entry, before it touches either half:
+    ///
+    /// * [`RaftGroup::step_with_options`], and therefore [`RaftGroup::step`]
+    ///   and [`RaftGroup::begin_read_barrier`]. A step advances the protocol
+    ///   on this replica's behalf — it votes, acknowledges replication, and
+    ///   grants read indexes — for state the replica does not hold.
+    /// * [`RaftGroup::begin_proposal`] and [`RaftGroup::begin_proposal_batch`],
+    ///   by name. They step the runtime without routing through
+    ///   `step_with_options`, so they do not inherit its verdict, and a
+    ///   proposal is how a state machine's contents are extended.
+    /// * [`RaftGroup::read`], at every consistency and on every branch,
+    ///   including the two that never step the runtime: a retry that consumes
+    ///   an already completed proof, and every [`crate::read::ReadRequest::Local`].
+    ///   Serving a query hands the caller the contents of a state machine
+    ///   short of acknowledged entries, which is the damage itself.
+    ///
+    /// That is every public method of this type that steps the runtime or
+    /// serves a state-machine read. The two below reach neither and take no
+    /// verdict, each for a reason of its own. [`RaftGroup::state_machine`] and
+    /// [`RaftGroup::state_machine_mut`] hand out the state machine itself; a
+    /// caller that reads through them is outside anything this group can
+    /// mediate, and restoring through them is the documented repair.
+    ///
+    /// [`RaftGroup::apply_raft_outputs`] deliberately takes no verdict, and
+    /// that is the direction a correct recovery uses. An inbound snapshot is
+    /// promoted durably before the application installs it, so a replica that
+    /// crashed between those two writes opens legitimately below its own
+    /// boundary; the repair is for the caller to restore the state machine
+    /// afterwards. `apply_raft_outputs` is the raw output pump such a caller
+    /// drains first — both reference drivers call it one line after
+    /// construction, leaving no window to restore ahead of it — so refusing
+    /// there refuses the recovery rather than the fault. A verdict there would
+    /// also depend on how the caller chunked one runtime step's outputs into
+    /// calls, which is not a fact about the replica. Nothing escapes in the
+    /// meantime: a replica that never restores cannot step, propose, or read.
+    ///
+    /// [`RaftGroup::metrics`] takes no verdict either. It reports
+    /// `applied_index` and `snapshot_index` side by side, which is the
+    /// supported way to see that a declaration was raised, and an
+    /// observability call that poisoned the group it reports on would destroy
+    /// the evidence an operator called it for.
     ///
     /// The comparison is against the state machine's *current* applied index
     /// rather than the floor this group was constructed with, so a caller that
     /// restores the state machine from the snapshot after opening the runtime
-    /// — the repair for a crash between promoting an inbound snapshot and
-    /// installing it — passes.
+    /// passes.
     pub(super) fn reject_if_below_snapshot_boundary(&mut self) -> GroupResult<A, R, ()> {
         let snapshot_index = self.raft.snapshot_index();
         if snapshot_index <= self.last_applied_index {

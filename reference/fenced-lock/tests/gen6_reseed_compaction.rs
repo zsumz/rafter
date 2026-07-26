@@ -21,6 +21,14 @@
 //! The composition now refuses instead. These tests pin the refusal, pin that
 //! the damage is unreachable behind it, and pin the control that the refusal is
 //! scoped to compaction rather than to re-seeding.
+//!
+//! The refusal falls on the reopened group's first *use* rather than on the
+//! `apply_raft_outputs` call that drains its recovery outputs. That pump is
+//! also what a replica which crashed between promoting an inbound snapshot and
+//! installing it drains before restoring, so refusing there would refuse a
+//! recoverable replica; `crates/rafter-app/tests/gen7_boundary_probe.rs` pins
+//! that direction. Nothing is given up here: minting a fencing token needs a
+//! session, a session needs a committed proposal, and a proposal needs a step.
 
 #[allow(dead_code)]
 mod support;
@@ -266,8 +274,8 @@ fn establish(
 
 /// The re-seed itself still succeeds — it is a decision about the application
 /// store — and still reports the floor it deleted. What is refused is the
-/// composition: reopening a Raft node whose snapshot boundary is above the
-/// floor the emptied store can honestly declare.
+/// composition: a Raft node whose snapshot boundary is above the floor the
+/// emptied store can honestly declare will not run.
 #[test]
 fn gen6_a_reseed_over_a_compacted_log_is_refused_at_the_composition_seam() {
     let scratch = ScratchDir::new("gen6-reseed-compaction");
@@ -289,7 +297,23 @@ fn gen6_a_reseed_over_a_compacted_log_is_refused_at_the_composition_seam() {
         .expect("the deleted store held a whole image");
     assert_eq!(reported_floor, established.applied);
 
-    let error = try_open_group(DurableLockStateMachine::new(reseeded), established.storage)
+    // Draining the recovery outputs is not the seam. It is the pump a replica
+    // that promoted an inbound snapshot and has not yet installed it runs
+    // before restoring, and it supplies nothing here: every entry the emptied
+    // store is short of is below the boundary and compacted away.
+    let mut group = try_open_group(DurableLockStateMachine::new(reseeded), established.storage)
+        .expect("the recovery pump takes no boundary verdict");
+    assert_eq!(
+        group
+            .state_machine()
+            .applied_index()
+            .expect("the state machine reports its applied index"),
+        LogIndex::ZERO,
+        "the recovery outputs carried nothing: the entries are compacted away"
+    );
+
+    let error = group
+        .step(GroupInput::Tick)
         .expect_err("the composition must refuse a state machine below the snapshot boundary");
     assert!(
         matches!(
@@ -305,8 +329,9 @@ fn gen6_a_reseed_over_a_compacted_log_is_refused_at_the_composition_seam() {
 
 /// The consequence, in the vocabulary the lock exists to serve. Pre-fix this
 /// replica handed out token 1 for a resource whose guarded downstream had
-/// already accepted 2. It cannot: the group never opens, so no session is ever
-/// established and no token is ever minted.
+/// already accepted 2. It cannot: the group refuses every step, so it never
+/// wins an election, never commits the session that a token is minted under,
+/// and never mints one.
 #[test]
 fn gen6_a_reseed_over_a_compacted_log_cannot_reissue_a_spent_fencing_token() {
     let scratch = ScratchDir::new("gen6-reseed-token");
@@ -315,21 +340,49 @@ fn gen6_a_reseed_over_a_compacted_log_cannot_reissue_a_spent_fencing_token() {
 
     let reseeded = LockStore::discard_and_reseed(scratch.path(), lock_config)
         .expect("the re-seed empties the directory and opens it");
-    let Err(error) = try_open_group(DurableLockStateMachine::new(reseeded), established.storage)
-    else {
-        panic!(
-            "a fencing token must never be reissued, and this replica would hand out 1 for a \
-             resource whose guarded downstream has already accepted {}",
-            established.mark
-        );
-    };
-    // Nothing here can proceed to mint a token: there is no group to propose
-    // into, which is the only state in which the reissue is unreachable rather
-    // than merely unlikely.
-    assert!(matches!(
-        error,
-        rafter_app::error::GroupError::AppliedIndexBelowSnapshotBoundary { .. }
-    ));
+    let mut group = try_open_group(DurableLockStateMachine::new(reseeded), established.storage)
+        .expect("the recovery pump takes no boundary verdict");
+
+    // Every route to a token is a step, and every step is refused. Driving the
+    // whole workload proves it rather than asserting it of the first one.
+    for (offset, command) in workload().into_iter().enumerate() {
+        let error = group
+            .step(GroupInput::Tick)
+            .expect_err("a lone voter cannot campaign out of this state");
+        assert!(matches!(
+            error,
+            rafter_app::error::GroupError::AppliedIndexBelowSnapshotBoundary { .. }
+                | rafter_app::error::GroupError::Poisoned { .. }
+        ));
+        let error = group
+            .step(GroupInput::Proposal {
+                proposal: Proposal {
+                    local_proposal_id: LocalProposalId(700 + offset as u64),
+                    client_request_id: None,
+                    command,
+                },
+            })
+            .expect_err("and it cannot propose into the group either");
+        assert!(matches!(
+            error,
+            rafter_app::error::GroupError::AppliedIndexBelowSnapshotBoundary { .. }
+                | rafter_app::error::GroupError::Poisoned { .. }
+        ));
+    }
+
+    assert!(
+        mark(&group).is_none(),
+        "a fencing token must never be reissued, and this replica would hand out 1 for a \
+         resource whose guarded downstream has already accepted {}",
+        established.mark
+    );
+    assert!(
+        matches!(
+            group.fatal_state(),
+            rafter_app::group::GroupFatalState::Poisoned { .. }
+        ),
+        "and the refusal is permanent rather than a state to retry out of"
+    );
 }
 
 /// The control, and the boundary the refusal is scoped to. The same re-seed

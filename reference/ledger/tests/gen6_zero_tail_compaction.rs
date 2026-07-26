@@ -21,6 +21,15 @@
 //! The seam now refuses that floor by name. These tests pin the refusal on the
 //! compacted replica and the unchanged recovery on the uncompacted one, which
 //! is the boundary the escape clause now has to state.
+//!
+//! The refusal falls on the reopened group's first *use* — its first step, and
+//! its first read — rather than on the `apply_raft_outputs` call that drains
+//! its recovery outputs. That pump is also what a replica which crashed
+//! between promoting an inbound snapshot and installing it drains before
+//! restoring, so refusing there would refuse a recoverable replica;
+//! `crates/rafter-app/tests/gen7_boundary_probe.rs` pins that direction.
+//! Nothing is given up here: the loss this file exists for is a balance read
+//! back short, and no read gets through.
 
 #[allow(dead_code)]
 mod support;
@@ -35,11 +44,12 @@ use rafter::{
 use rafter_app::{
     group::{GroupInput, RaftGroup, RaftGroupParts},
     proposal::Proposal,
+    read::ReadRequest,
     state_machine::ReplicatedStateMachine,
 };
 use rafter_reference_ledger::{
     store::{raw_journal, LedgerStore, TornTail},
-    AccountId, Command, DurableLedgerStateMachine, LedgerConfig, Mutation,
+    AccountId, Command, DurableLedgerStateMachine, LedgerConfig, LedgerQuery, Mutation,
 };
 use rafter_runtime::{DurableRaftNode, DurableRaftNodeStorage, RaftRuntimeError};
 use rafter_storage::{
@@ -269,14 +279,29 @@ fn torn_replica(
 /// On a compacted replica the frames the tear deleted are below the snapshot
 /// boundary and no longer exist in the log. Pre-fix the composition raised the
 /// floor to the boundary and the acknowledged transaction was gone for good;
-/// now the replica refuses to open and names both indexes.
+/// now the replica refuses to run and names both indexes.
 #[test]
 fn gen6_a_zero_tail_on_a_compacted_replica_is_refused_rather_than_silently_lost() {
     let scratch = ScratchDir::new("gen6-zero-tail-compaction");
     let ledger_config: LedgerConfig = config(2, 4);
     let torn = torn_replica(&scratch, ledger_config, 100, true);
 
-    let error = try_open_group(DurableLedgerStateMachine::new(torn.store), torn.storage)
+    // Draining the recovery outputs is not the seam: it supplies nothing here,
+    // because every frame the tear cost is below the boundary and compacted
+    // away. The seam is the first use of what it left behind.
+    let mut group = try_open_group(DurableLedgerStateMachine::new(torn.store), torn.storage)
+        .expect("the recovery pump takes no boundary verdict");
+    assert_eq!(
+        group
+            .state_machine()
+            .applied_index()
+            .expect("the state machine reports its applied index"),
+        torn.truncated_index,
+        "the recovery outputs carried nothing back"
+    );
+
+    let error = group
+        .step(GroupInput::Tick)
         .expect_err("the composition must refuse a state machine below the snapshot boundary");
     assert!(
         matches!(
@@ -289,6 +314,48 @@ fn gen6_a_zero_tail_on_a_compacted_replica_is_refused_rather_than_silently_lost(
         ),
         "the refusal must name the floor the store reached and the boundary it \
          is short of, got {error}"
+    );
+}
+
+/// The consequence, in the vocabulary the ledger exists to serve. The loss this
+/// file is about is a balance that reads back short of what was acknowledged,
+/// and the group refuses the read that would report it — before any step has
+/// poisoned it, so the refusal is the boundary check rather than an aftershock.
+#[test]
+fn gen6_a_zero_tail_on_a_compacted_replica_cannot_report_the_short_balance() {
+    let scratch = ScratchDir::new("gen6-zero-tail-read");
+    let ledger_config: LedgerConfig = config(2, 4);
+    let torn = torn_replica(&scratch, ledger_config, 400, true);
+    let acknowledged_balance = torn.acknowledged_balance;
+
+    let mut group = try_open_group(DurableLedgerStateMachine::new(torn.store), torn.storage)
+        .expect("the recovery pump takes no boundary verdict");
+    // The truncated store really is short: this is the answer a served read
+    // would have carried.
+    let short_balance = balance(&group);
+    assert!(
+        short_balance < acknowledged_balance,
+        "the tear must have cost this replica an acknowledged deposit, {short_balance} vs \
+         {acknowledged_balance}"
+    );
+
+    let error = group
+        .read(ReadRequest::Local {
+            group_id: GROUP_ID,
+            query: LedgerQuery::GetAccount { account_id: ALPHA },
+            min_applied_index: None,
+        })
+        .expect_err("a truncated replica must not answer a local read");
+    assert!(
+        matches!(
+            &error,
+            rafter_app::error::GroupError::AppliedIndexBelowSnapshotBoundary {
+                app_applied_index,
+                snapshot_index,
+            } if *app_applied_index == torn.truncated_index
+                && *snapshot_index == torn.acknowledged_index
+        ),
+        "the read must refuse by name rather than report the short balance, got {error}"
     );
 }
 

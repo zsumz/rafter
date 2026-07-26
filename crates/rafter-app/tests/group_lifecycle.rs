@@ -641,8 +641,10 @@ fn a_poisoned_group_reports_the_error_that_poisoned_it() {
 /// that exist nowhere this composition can reach: the group's own log dropped
 /// them, and a leader never sends a snapshot to a follower whose log already
 /// matches its own. The group is the only object holding both halves, so it is
-/// where the invariant is checked, and it refuses rather than answering later
-/// applies and reads from a state machine short of acknowledged entries.
+/// where the invariant is checked, and it refuses to step the protocol for a
+/// state machine short of acknowledged entries. `gen7_boundary_probe.rs`
+/// carries the rest of that scope: the reads it also refuses, and the raw
+/// output pump it deliberately does not.
 #[test]
 fn a_state_machine_below_the_snapshot_boundary_refuses_to_run() {
     let mut runtime = ScriptedRuntime::with_step_outputs([Vec::new()]);

@@ -165,13 +165,24 @@ pub enum GroupError<E, R> {
     /// The kernel raises a declared applied floor to its snapshot boundary,
     /// because it can neither emit the covered entries nor restore a state
     /// machine from a snapshot whose bytes it does not hold. That raise is
-    /// silent, and this group refuses to run on top of it: every later apply,
-    /// read, and readiness gate would be answered from a state machine
-    /// missing acknowledged entries, with nothing reporting the gap.
+    /// silent, and this group refuses to run on top of it: every
+    /// [`crate::group::RaftGroup::step`] and every
+    /// [`crate::group::RaftGroup::begin_proposal`] would advance the protocol
+    /// for, and every [`crate::group::RaftGroup::read`] would answer from, a
+    /// state machine missing acknowledged entries, with nothing reporting the
+    /// gap.
+    ///
+    /// [`crate::group::RaftGroup::apply_raft_outputs`] never returns this
+    /// error, and neither does [`crate::group::RaftGroup::metrics`]. A replica
+    /// that crashed between promoting an inbound snapshot and installing it is
+    /// legitimately below its boundary while it drains its recovery outputs,
+    /// and metrics reporting `applied_index` beside `snapshot_index` is how an
+    /// operator sees the gap. The refusal falls on the first step or read
+    /// after a restore that never came.
     ///
     /// The repair is to restore the state machine from the snapshot the
-    /// boundary names before constructing the group, or to discard this
-    /// replica's Raft state so it rejoins empty and is sent one.
+    /// boundary names, before or after constructing the group, or to discard
+    /// this replica's Raft state so it rejoins empty and is sent one.
     AppliedIndexBelowSnapshotBoundary {
         app_applied_index: LogIndex,
         snapshot_index: LogIndex,

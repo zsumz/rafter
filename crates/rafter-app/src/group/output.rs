@@ -276,6 +276,20 @@ where
     /// reorder, drop, or replay raw outputs unless they also own the resulting
     /// protocol and application semantics.
     ///
+    /// This never returns
+    /// [`GroupError::AppliedIndexBelowSnapshotBoundary`]. A state machine
+    /// below the runtime's snapshot boundary is a legitimate transient here:
+    /// an inbound snapshot is promoted durably before the application installs
+    /// it, so a replica that crashed between those two writes opens short of a
+    /// boundary its Raft state already carries, and this pump is what it
+    /// drains before restoring. The verdict is taken instead by
+    /// [`RaftGroup::step`], [`RaftGroup::begin_proposal`],
+    /// [`RaftGroup::begin_proposal_batch`], and [`RaftGroup::read`], which is
+    /// where a state machine that was never restored would first answer for
+    /// the replica, and which no live replica can avoid reaching. Taking it
+    /// here would also make it depend on how a caller split one runtime step's
+    /// outputs across calls.
+    ///
     /// # Errors
     ///
     /// Returns a group error when the group is poisoned, output handling
@@ -283,18 +297,6 @@ where
     /// machine apply/install path fails, or completed reads cannot be served.
     pub fn apply_raft_outputs(&mut self, outputs: Vec<RaftOutput>) -> StepReportResult<G, A, R> {
         self.reject_if_poisoned()?;
-        // A batch that carries an install is the one case where the state
-        // machine is legitimately below the runtime's boundary on entry: the
-        // caller stepped the runtime, which promoted the snapshot, and the
-        // output that lifts the state machine to it is in this very vector.
-        // Every other batch is checked, because for those the boundary is
-        // already settled and a state machine short of it will never be fed.
-        if !outputs
-            .iter()
-            .any(|output| matches!(output, RaftOutput::ApplySnapshot { .. }))
-        {
-            self.reject_if_below_snapshot_boundary()?;
-        }
         self.apply_raft_outputs_with_membership_context(outputs, None)
     }
 
