@@ -69,8 +69,7 @@ pub(super) fn persist_with_interruption(
     let command: Command = serde_json::from_slice(&committed.1).expect("committed command decodes");
     let outcome = apply_committed_command(root, app, committed.0, &command, |_| {
         AfterAppPersist::Interrupt
-    })
-    .expect("application state persists before injected interruption");
+    });
     assert_eq!(
         outcome,
         CommandApplyOutcome::Interrupted,

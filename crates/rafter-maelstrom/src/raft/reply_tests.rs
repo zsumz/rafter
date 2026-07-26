@@ -202,6 +202,51 @@ fn followers_do_not_amplify_client_results_to_the_leader() {
     remove_test_root(root);
 }
 
+/// A committed write is answered even when the application checkpoint cannot be
+/// written.
+///
+/// `apply_committed_command` mutates `app.kv` and advances `app.applied` before
+/// it writes the checkpoint, so a checkpoint failure leaves the command applied
+/// as far as every later reader on this node is concerned. Durability was never
+/// the checkpoint's job — the Raft log holds the committed entry — so the answer
+/// is honest and owed. Discarding it strands the write with nothing on the node
+/// recording that one is still due, which is the failure the `client` module
+/// header rejects for reads.
+#[test]
+fn a_committed_write_is_answered_even_when_the_checkpoint_cannot_be_written() {
+    let root = test_root("reply-persist-error");
+    let mut process = fresh_cluster_member(&root, "n3", &["n1", "n2", "n3"]);
+    let node = process.initialized.as_mut().expect("node initializes");
+
+    // c1 reached n3, which forwarded to the leader; the command carries n3 as
+    // its origin, so n3 owes c1 the answer when the entry comes back committed.
+    let entry = forwarded_write("n3", "c1", 101, "alpha", 1);
+
+    // The entry commits while the application store cannot be written.
+    make_read_only(&root, true);
+    node.step(replicate(&[entry], 1));
+    make_read_only(&root, false);
+
+    // The apply happened: the in-memory state machine carries the mutation and
+    // the applied cursor moved. Only the checkpoint did not.
+    oracle_assert_eq!(
+        node.app.applied,
+        LogIndex(1),
+        "the in-memory applied cursor advanced past the failed checkpoint"
+    );
+    oracle_assert_eq!(
+        node.app.kv.get("\"alpha\""),
+        Some(&json!(1)),
+        "the in-memory state machine carries the mutation"
+    );
+    oracle_assert!(
+        direct_answer(node, "c1", 101).is_some(),
+        "a command applied into the state machine must produce an answer for the \
+         client whose request this node accepted"
+    );
+    remove_test_root(root);
+}
+
 /// A flush retires a waiter only against an answer the client holds.
 ///
 /// `flush_reads` retires unconditionally, which is sound only because
@@ -250,6 +295,13 @@ fn a_flush_retires_a_waiter_only_against_an_answer_the_client_holds() {
     remove_test_root(root);
 }
 
+fn make_read_only(root: &Path, read_only: bool) {
+    use std::os::unix::fs::PermissionsExt;
+    let mode = if read_only { 0o555 } else { 0o755 };
+    std::fs::set_permissions(root, std::fs::Permissions::from_mode(mode))
+        .expect("test root permissions change");
+}
+
 /// One committed application entry for a write `origin` accepted from `client`.
 fn forwarded_write(
     origin: &str,
@@ -295,6 +347,17 @@ fn forwarded_answer(node: &InitializedNode, origin: &str, in_reply_to: u64) -> O
                 && envelope.body.get("in_reply_to").and_then(Value::as_u64) == Some(in_reply_to)
         })
         .and_then(|envelope| envelope.body.get("result").cloned())
+}
+
+/// The reply this node sent straight to `client`.
+fn direct_answer(node: &InitializedNode, client: &str, in_reply_to: u64) -> Option<Value> {
+    node.emitted
+        .iter()
+        .find(|envelope| {
+            envelope.dest == client
+                && envelope.body.get("in_reply_to").and_then(Value::as_u64) == Some(in_reply_to)
+        })
+        .map(|envelope| envelope.body.clone())
 }
 
 /// How many replies this node sent straight to `client` for one request.

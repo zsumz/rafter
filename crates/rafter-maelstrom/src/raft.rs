@@ -166,12 +166,17 @@ impl InitializedNode {
             AfterAppPersist::Continue
         });
         let result = match outcome {
-            Ok(CommandApplyOutcome::Applied(result)) => result,
-            Ok(CommandApplyOutcome::AlreadyApplied | CommandApplyOutcome::Interrupted) => return,
-            Err(error) => {
+            CommandApplyOutcome::Applied(result) => result,
+            // The mutation landed and the Raft log makes it durable; only the
+            // checkpoint that lets recovery skip replay did not. Refusing to
+            // answer would strand a write that every later reader on this node
+            // can already see — the failure the `client` module header rejects
+            // for reads, and there is no reason writes deserve it either.
+            CommandApplyOutcome::AppliedWithoutCheckpoint { result, error } => {
                 eprintln!("failed to persist app state: {error}");
-                return;
+                result
             }
+            CommandApplyOutcome::AlreadyApplied | CommandApplyOutcome::Interrupted => return,
         };
         if self.claim_answer_for(&command) {
             self.deliver_result(

@@ -47,7 +47,24 @@ pub(super) enum AppPersistStage {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum CommandApplyOutcome {
+    /// The command applied and the application checkpoint was written.
     Applied(ClientResult),
+    /// The command applied into the in-memory state machine, but the
+    /// application checkpoint could not be written.
+    ///
+    /// The answer is owed exactly as it is on the `Applied` path, and the
+    /// result is carried out here rather than discarded so the caller can pay
+    /// it. The mutation is real: `app.kv` carries it and `app.applied` has
+    /// moved past `index`, so every later read on this node — and the
+    /// already-applied check on every later command — sees it. And it is
+    /// durable, because durability was never this checkpoint's job: the Raft
+    /// log holds the committed entry, the checkpoint only lets recovery skip
+    /// replaying it. A restart therefore replays the entry and applies it
+    /// again, reaching the same state the answer described.
+    AppliedWithoutCheckpoint {
+        result: ClientResult,
+        error: String,
+    },
     AlreadyApplied,
     Interrupted,
 }
@@ -175,25 +192,39 @@ pub(crate) fn persist_snapshot_application_state(
     persist_app_state(root, app)
 }
 
+/// Applies one committed command into the state machine and reports what the
+/// caller owes for it.
+///
+/// Infallible by construction. The only fallible step is the application
+/// checkpoint, and it runs *after* the mutation has already landed in `app`, so
+/// there is no outcome in which the command did not apply. Reporting a failed
+/// checkpoint as an error would hand the caller a value that carries no result
+/// to answer with while the mutation it answers for has already happened — the
+/// shape that stranded the write. `AppliedWithoutCheckpoint` carries both.
 pub(crate) fn apply_committed_command(
     root: &Path,
     app: &mut AppState,
     index: LogIndex,
     command: &Command,
     after_persist: impl FnOnce(&Path) -> AfterAppPersist,
-) -> Result<CommandApplyOutcome, Box<dyn Error>> {
+) -> CommandApplyOutcome {
     if index <= app.applied {
-        return Ok(CommandApplyOutcome::AlreadyApplied);
+        return CommandApplyOutcome::AlreadyApplied;
     }
 
     let result = apply_mutation(&mut app.kv, &command.request);
     app.applied = index;
-    persist_app_state(root, app)?;
+    if let Err(error) = persist_app_state(root, app) {
+        return CommandApplyOutcome::AppliedWithoutCheckpoint {
+            result,
+            error: error.to_string(),
+        };
+    }
 
     if after_persist(root) == AfterAppPersist::Interrupt {
-        return Ok(CommandApplyOutcome::Interrupted);
+        return CommandApplyOutcome::Interrupted;
     }
-    Ok(CommandApplyOutcome::Applied(result))
+    CommandApplyOutcome::Applied(result)
 }
 
 pub(crate) fn maybe_crash_after_app_persist_before_reply(root: &Path) {
