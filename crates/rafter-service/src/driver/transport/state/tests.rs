@@ -1,6 +1,6 @@
 #![allow(clippy::wildcard_imports)]
 
-//! The one membership branch no public entry point of this driver can reach.
+//! The membership branches no public entry point of this driver can reach.
 //!
 //! [`MembershipEvent::Appended`] is emitted only for a step that carried a
 //! membership *request*, and the only input that carries one is
@@ -8,9 +8,14 @@
 //! method to produce — deliberately, because a membership-change API on this
 //! driver is a promoted mechanism with no consumer behind it. The widening arm
 //! is therefore live code waiting for an entry point rather than dead code, and
-//! the difference is only checkable from inside the crate. Every other
-//! membership clause is pinned by `tests/transport_streams.rs`, over a real
-//! group.
+//! the difference is only checkable from inside the crate.
+//!
+//! The two arms' *composition* is here for the same reason rather than for a
+//! different one. An `Applied` that lands while an `Appended` is still in
+//! flight is the ordering `rafter-app` really emits, but reaching it needs the
+//! append that no public input can request, so it can only be scripted against
+//! the router directly. Every membership clause a public entry point does reach
+//! is pinned by `tests/transport_streams.rs`, over a real group.
 
 use std::{
     error::Error,

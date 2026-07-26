@@ -5,8 +5,11 @@
 //! lifetimes, and different audiences:
 //!
 //! - *What kind of failure was this?* — the variant, projected to a `Copy`
-//!   category through [`WriteError::kind`] and [`ReadError::kind`]. A metric
-//!   label, a map key, or a structured-log field.
+//!   category through [`WriteError::kind`], [`ReadError::kind`],
+//!   [`TransferLeadershipError::kind`], and [`ShutdownError::kind`]. A metric
+//!   label, a map key, or a structured-log field. Every operation surface a
+//!   driver can fail on projects to one, so an operator aggregating driver
+//!   failures never has to key on a rendered string.
 //! - *May the command still take effect?* — a reported [`WriteFate`], never an
 //!   inference from the category.
 //! - *What actually failed?* — the typed [`ErrorCause`], reached through

@@ -513,9 +513,11 @@ where
     ///
     /// The other half is that no caller chooses between them. The set published
     /// is a superset of the committed membership, and the replicas fenced are
-    /// exactly those the driver had published before and this superset no longer
-    /// names — so a fenced replica is always absent from the committed
-    /// membership, which is the only thing that licenses fencing it. Both
+    /// those the driver had published before that this superset no longer names,
+    /// less the local node — so a fenced replica is always absent from the
+    /// committed membership, which is the only thing that licenses fencing it.
+    /// The local exclusion only narrows the fence set, so it cannot reach a
+    /// replica the committed membership still names. Both
     /// properties are consequences of the derivation below rather than
     /// obligations on a caller, and every publisher therefore reaches them by
     /// construction: a caller that supplies

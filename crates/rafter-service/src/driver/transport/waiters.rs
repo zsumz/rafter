@@ -304,7 +304,9 @@ where
     /// Writes are unknown rather than refused: a proposal already appended is
     /// still in the durable log and may commit under the next incarnation.
     /// Reads are terminal, and their barriers are cancelled through the group
-    /// first so the retired group is quiescent.
+    /// first so the retired group is quiescent *in reads*. The group's proposal
+    /// table is left alone, so the released group is not quiescent in the sense
+    /// [`super::TransportRaftDriver::new`] requires.
     pub(super) fn release_waiters(&mut self) {
         let local_proposal_ids = self.write_waiters.keys().copied().collect::<Vec<_>>();
         for local_proposal_id in local_proposal_ids {

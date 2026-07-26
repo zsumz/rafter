@@ -98,11 +98,17 @@ where
     /// abandons a linearizable read before it completes, it cleans up that
     /// local state before returning a terminal [`ReadError`].
     ///
+    /// Which levels are served is the driver's choice, not this handle's; see
+    /// [`ManagedRaftDriver::read`](crate::ManagedRaftDriver::read).
+    ///
     /// # Errors
     ///
-    /// Returns [`ReadError`] when the driver rejects the read, cannot satisfy
-    /// the requested freshness, shuts down, or encounters storage/transport
-    /// failure.
+    /// Returns [`ReadError`] when the driver rejects the read, does not serve
+    /// the requested [`ReadConsistency`], cannot satisfy the requested
+    /// freshness, shuts down, or encounters storage/transport failure. A level
+    /// the driver does not serve is refused with
+    /// [`ReadError::UnsupportedConsistency`] rather than answered at a weaker
+    /// one.
     pub async fn read(
         &self,
         query: Q,
@@ -121,9 +127,12 @@ where
     ///
     /// # Errors
     ///
-    /// Returns [`ReadError`] when the driver rejects the read, cannot satisfy
-    /// the requested freshness, shuts down, or encounters storage/transport
-    /// failure.
+    /// Returns [`ReadError`] when the driver rejects the read, does not serve
+    /// the requested [`ReadConsistency`], cannot satisfy the requested
+    /// freshness, shuts down, or encounters storage/transport failure. A level
+    /// the driver does not serve is refused with
+    /// [`ReadError::UnsupportedConsistency`] rather than answered at a weaker
+    /// one.
     pub async fn read_with_options(
         &self,
         query: Q,

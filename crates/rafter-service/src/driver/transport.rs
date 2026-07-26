@@ -529,7 +529,11 @@ where
     /// appended may still commit and apply under the next incarnation. Reads
     /// resolve as [`ReadError::Abandoned`] with
     /// [`ReadAbandonReason::DriverReleased`], and their barriers are cancelled
-    /// through the group first so the retired group is quiescent.
+    /// through the group first so the retired group is quiescent *in reads*.
+    /// It is deliberately not quiescent in proposals — the appended entry stays
+    /// in the group's table, which is what
+    /// [`TransportRaftDriver::adopt_group`] accepts and
+    /// [`TransportRaftDriver::new`] does not.
     ///
     /// The driver refuses every operation until
     /// [`TransportRaftDriver::adopt_group`] installs a new incarnation. It does
