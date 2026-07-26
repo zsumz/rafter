@@ -3,11 +3,19 @@
 //!
 //! A record is created when this node accepts a client request — from the
 //! client itself, or relayed by a peer — and destroyed when an answer for that
-//! request leaves the node. Those are the only two events that touch it: the
-//! map is private to this module, [`OwedAnswers::accept`] is the only way in,
-//! and [`OwedAnswers::retire`] is the only way out. Both facts are rustc's to
-//! keep rather than a reader's to verify, which is the point of the module
-//! boundary.
+//! request leaves the node. Those are the only two events that decide whether a
+//! record exists: the map is private to this module,
+//! [`OwedAnswers::accept`] is the only way in, and [`OwedAnswers::retire`] is
+//! the only way out. Both facts are rustc's to keep rather than a reader's to
+//! verify, which is the point of the module boundary.
+//!
+//! One further event *amends* a record without creating or destroying one.
+//! [`OwedAnswers::relayed`] writes down which peer this node handed the request
+//! to, once it has handed it to one; it is a no-op on a key the map does not
+//! hold, so it cannot bring a record into being by the back door. The
+//! distinction is stated because the sentence above is load bearing and the
+//! previous revision of it said "the only two events that touch it", which this
+//! would have made false.
 //!
 //! # What the ledger is total over
 //!
@@ -117,6 +125,18 @@ struct OwedAnswer {
     /// same `origin` in it, so the payload can say that *some* node accepted
     /// *some* copy of the request and never that this node accepted this one.
     answer_to: String,
+    /// The peer this node handed the request to, once it has handed it to one.
+    ///
+    /// The other direction of travel, and the only party whose `client_result`
+    /// for this request means anything: it is the node that took the request,
+    /// so it is the node that can say what became of it. `None` is a request
+    /// this node is serving itself — it proposed it, or opened a barrier for it
+    /// — and for those there is nobody who could report, so nobody may.
+    ///
+    /// Kept here rather than compared against `known_leader` at the time a
+    /// result arrives, because `known_leader` is a memory that moves. The
+    /// question is who this request went to, which is a fact about the past.
+    relayed_to: Option<String>,
     /// The tick by which this node answers whether or not it has learned what
     /// became of the request.
     deadline: u64,
@@ -144,6 +164,7 @@ impl OwedAnswers {
     pub(crate) fn accept(&mut self, key: RequestKey, answer_to: String, deadline: u64) -> Accepted {
         let held = self.owed.entry(key.clone()).or_insert(OwedAnswer {
             answer_to,
+            relayed_to: None,
             deadline,
         });
         Accepted {
@@ -151,6 +172,36 @@ impl OwedAnswers {
             client: key.0,
             in_reply_to: key.1,
         }
+    }
+
+    /// Records that this node handed `key` to `peer`, which makes `peer` the
+    /// one party whose `client_result` for it may be acted on.
+    ///
+    /// Written where the relay happens rather than passed to the accept,
+    /// because the accept runs above the decision: the funnel records the
+    /// obligation before it knows whether this node will serve the request or
+    /// hand it on. A record with nothing here is a request this node kept.
+    ///
+    /// Silently does nothing when no record is held. That is the retired case
+    /// — the request was answered between the accept and the relay — and the
+    /// consequence is exactly right: a `client_result` for it finds no record
+    /// either.
+    pub(crate) fn relayed(&mut self, key: &RequestKey, peer: String) {
+        if let Some(owed) = self.owed.get_mut(key) {
+            owed.relayed_to = Some(peer);
+        }
+    }
+
+    /// Whether `peer` is the node this request was handed to.
+    ///
+    /// False for a request this node never relayed, and false for a peer that
+    /// is not the one it went to. Read in one direction: it licenses acting on
+    /// a `client_result`, never declining to answer.
+    pub(crate) fn was_relayed_to(&self, key: &RequestKey, peer: &str) -> bool {
+        self.owed
+            .get(key)
+            .and_then(|owed| owed.relayed_to.as_deref())
+            .is_some_and(|relayed_to| relayed_to == peer)
     }
 
     /// The node this request's answer is addressed to, if this node owes one.

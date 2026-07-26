@@ -137,6 +137,14 @@
 //! rather than a counter on the wire, and it holds however wrong `known_leader`
 //! is on however many nodes.
 //!
+//! One consumer reads it in the other direction, and it is stated here because
+//! that is the direction it is used in: a request this node relayed exists on
+//! exactly one other node, so *the node it was handed to is the only node that
+//! can report what became of it*. That is what makes
+//! [`InitializedNode::handle_client_result`]'s sender check complete rather
+//! than merely careful — a second hop would put a copy somewhere this node
+//! never named, and there is none.
+//!
 //! # Why a request is acted on once
 //!
 //! "Why every accepted request is answered", above, is the *at least once*
@@ -355,14 +363,41 @@ impl InitializedNode {
     /// send anyway. The difference is only that the suppression now happens
     /// before the at-most-once set is written rather than after.
     ///
-    /// The sender is checked as well, and separately. A `client_result` is a
-    /// thing only a cluster peer may say, and the [`Peer`] this takes is that
-    /// check — hoisted into the dispatch, where all three harness arms are now
-    /// gated together, rather than written here where only this one was. It is
-    /// a second-order hole even with the record gate above — a client could
-    /// answer its own outstanding request early, with a result of its choosing,
-    /// and the record would let it. Both gates are kept: neither implies the
-    /// other.
+    /// The sender is checked as well, and separately, and the check is now the
+    /// reason it was always given: **only the node this request was relayed to
+    /// can report what became of it.** The record says which node that was.
+    ///
+    /// It used to be "any node in this cluster", which is one scope wider than
+    /// its own justification — the [`Peer`] the dispatch resolves is that
+    /// wider test, and it is the right test for *routing*: a `client_result` is
+    /// a thing only a peer may say at all. It is not the right test here. Two
+    /// things fall in the gap, and both are cases where the harness would have
+    /// acted on a report nobody was in a position to make:
+    ///
+    /// - a request this node relayed to `n2` could be answered by `n3`, which
+    ///   was never asked and cannot know; and
+    /// - a request this node is serving *itself* — proposed here, or a barrier
+    ///   opened here, with `relayed_to` empty — could be retired early by any
+    ///   peer at all, with a result of its choosing, in place of the answer the
+    ///   apply or the deadline would have paid honestly.
+    ///
+    /// Nothing legitimate is in that gap, and the reason is structural rather
+    /// than a survey of senders. [`Reception`] has two arms and
+    /// [`Self::forward_or_reply`] relays only the first, so a request travels
+    /// at most one hop and the node it was handed to is the only node that ever
+    /// held a copy of it. Every `client_result` this node can legitimately
+    /// receive is that node's — mailed by its apply, its refusal, or its
+    /// deadline sweep, all three of which address the answer to the record's
+    /// `answer_to`, which is this node.
+    ///
+    /// Narrowing costs a fast path in the case it is wrong about, and no more:
+    /// a report this refuses leaves the record standing, and the deadline pays
+    /// it. Widening costs an answer to a client that says whatever a node that
+    /// was not asked chose to say.
+    ///
+    /// Both gates are kept, and the record gate above is still not implied by
+    /// this one: a peer that *was* relayed a request may still report on a key
+    /// no record exists for, and that report must not mint one.
     pub(crate) fn handle_client_result(&mut self, peer: &Peer, envelope: &Envelope) {
         let Some(client) = envelope.body.get("client").and_then(Value::as_str) else {
             return;
@@ -380,10 +415,16 @@ impl InitializedNode {
                 return;
             }
         };
-        let Some(accepted) = self
-            .owed_answers
-            .recorded(&(client.to_owned(), in_reply_to))
-        else {
+        let key = (client.to_owned(), in_reply_to);
+        if !self.owed_answers.was_relayed_to(&key, peer.name()) {
+            eprintln!(
+                "ignoring client_result from a node this request was not relayed to: \
+                 client={client} in_reply_to={in_reply_to} from={}",
+                peer.name()
+            );
+            return;
+        }
+        let Some(accepted) = self.owed_answers.recorded(&key) else {
             eprintln!(
                 "ignoring client_result for a request this node holds no record for: \
                  client={client} in_reply_to={in_reply_to} from={}",
@@ -509,6 +550,10 @@ impl InitializedNode {
     /// commit it at all, and either way this node is the last party still
     /// holding a tie to the client. The [`Accepted`] this takes is the record
     /// that says so, lodged by the funnel before this was reached.
+    ///
+    /// The relay is written back to that record, because this is the one place
+    /// that knows where the request went and
+    /// [`Self::handle_client_result`] is the one place that needs to.
     fn forward_or_reply(&mut self, reception: &Reception, accepted: &Accepted, body: &Value) {
         let relay_to = match reception {
             Reception::FromClient => self.known_leader.filter(|leader| *leader != self.node.id()),
@@ -528,8 +573,18 @@ impl InitializedNode {
             );
             return;
         };
-        self.send_to_node(
-            leader,
+        // A leader this node cannot name is a leader it cannot reach. The
+        // record and its deadline still cover the client, which is the same
+        // outcome the emit below would have had.
+        let Some(leader_name) = self.id_to_name.get(&leader).cloned() else {
+            return;
+        };
+        self.owed_answers.relayed(
+            &(accepted.client().to_owned(), accepted.in_reply_to()),
+            leader_name.clone(),
+        );
+        self.emit(
+            &leader_name,
             json!({
                 "type": "client_forward",
                 "client": accepted.client(),
