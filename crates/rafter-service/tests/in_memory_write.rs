@@ -524,7 +524,7 @@ fn in_memory_driver_maps_post_append_dispatch_error_to_unknown_outcome() {
 /// incarnation. A driver that derived the fate from the category would fail
 /// this, because the category here is a routing failure.
 #[test]
-fn an_apply_failure_after_a_local_append_is_not_reported_as_not_appended() {
+fn a_routing_failure_after_a_local_append_is_not_reported_as_not_appended() {
     let driver = scripted_write_driver(ScriptedWriteMode::AppendThenMissingNode);
     let handle = driver.handle();
 

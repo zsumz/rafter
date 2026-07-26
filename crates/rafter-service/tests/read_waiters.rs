@@ -290,7 +290,8 @@ fn driver_with(shape: GrantShape, options: TransportDriverOptions) -> RefusingDr
 }
 
 // ---------------------------------------------------------------------------
-// Held-under-attack: one step that both grants and cancels the same barrier.
+// Held-under-attack: a barrier's fate within one step, and the waiter-slot
+// accounting that abandon, resolve, and release share.
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -304,9 +305,10 @@ fn held_a_barrier_granted_then_canceled_in_one_step_resolves_as_canceled() {
         driver.tick().expect("the tick succeeds");
         driver
             .drive_pending_reads()
-            .expect("{shape:?}: no barrier is left to collect");
+            .unwrap_or_else(|error| panic!("{shape:?}: no barrier is left to collect: {error:?}"));
 
-        let outcome = poll_once(&mut read).expect("{shape:?}: the client resolves");
+        let outcome =
+            poll_once(&mut read).unwrap_or_else(|| panic!("{shape:?}: the client resolves"));
         assert!(
             matches!(outcome, Err(ReadError::Canceled { .. })),
             "{shape:?}: expected a cancellation, got {outcome:?}"
@@ -537,13 +539,19 @@ fn a_refused_query_is_reported_as_a_state_machine_failure() {
 }
 
 // ---------------------------------------------------------------------------
-// Held-under-attack probes. These PASS: they record orderings that behave.
+// Orderings that behave. The `held_` probes below passed before the round that
+// wrote them and must keep passing; the rest are review findings kept with
+// their fixtures and inverted.
 // ---------------------------------------------------------------------------
 
-/// A grant recorded on a waiter that abandonment already resolved must not
+/// The tick that would have granted an abandoned waiter's barrier must not
 /// resurrect it into `drive_pending_reads`.
+///
+/// No grant actually arrives — cancelling the barrier through the group is what
+/// makes that impossible, and the body records why. What is pinned is that
+/// abandonment stays the client's first and only outcome across the tick.
 #[test]
-fn held_a_grant_arriving_after_abandonment_resolves_nothing() {
+fn held_abandonment_survives_the_tick_that_would_have_granted_the_barrier() {
     let driver = refusing_driver();
     let handle = driver.handle();
     let mut read = Box::pin(handle.read("a".to_owned(), ReadConsistency::Linearizable));
@@ -653,9 +661,10 @@ fn a_write_with_no_lifecycle_event_is_unresolved_rather_than_refused() {
 }
 
 /// Abandonment ordering that does hold: abandoning an already-resolved waiter,
-/// and abandoning one whose future already polled it out, are both no-ops.
+/// abandoning one whose future already polled it out, and abandoning an ID this
+/// driver never issued are all no-ops.
 #[test]
-fn held_abandoning_a_resolved_or_polled_write_is_a_no_op() {
+fn held_abandoning_a_resolved_polled_or_unissued_write_is_a_no_op() {
     let driver = refusing_driver();
     let handle = driver.handle();
     let mut write = Box::pin(handle.write("cmd".to_owned()));

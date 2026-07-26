@@ -382,7 +382,8 @@ fn waiters_are_bounded() {
 }
 
 /// Negative: `release_group` promises every outstanding waiter resolves before
-/// it returns, and that the retired group is quiescent.
+/// it returns, and that the retired group is quiescent *in reads*. It is
+/// deliberately not quiescent in proposals — see the body.
 #[test]
 fn release_resolves_outstanding_waiters_before_returning() {
     let nodes = cluster(&[1, 2]);
