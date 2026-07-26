@@ -20,8 +20,8 @@ use std::os::{
 };
 
 use super::{
-    base_environment, duration_ms, CleanupFailures, ManagedInternalProcess, NoSignalReaper,
-    ProcessLeaseState, ProcessLifetimeLease, RuntimeExecutable,
+    base_environment, duration_ms, spawn_leased_child, CleanupFailures, ManagedInternalProcess,
+    NoSignalReaper, ProcessLeaseState, RuntimeExecutable,
 };
 
 #[cfg(test)]
@@ -283,36 +283,37 @@ fn spawn_internal_process(
     cleanup_failures: CleanupFailures,
     reaper: NoSignalReaper,
 ) -> Result<(ManagedInternalProcess, ChildStdout, ChildStderr), Box<dyn Error>> {
-    let mut command = Command::new(program);
-    command
-        .args(arguments)
-        .env_clear()
-        .envs(base_environment())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    if let Some(current_dir) = current_dir {
-        command.current_dir(current_dir);
-    }
-    let (lifetime, lifetime_writer) = ProcessLifetimeLease::create()?;
-    #[cfg(unix)]
-    {
-        command.process_group(0);
-        let mut mappings = vec![FdMapping {
-            parent_fd: lifetime_writer.as_fd().try_clone_to_owned()?,
-            child_fd: lifetime_writer.as_raw_fd(),
-        }];
-        if let Some(runtime) = runtime {
-            mappings.push(FdMapping {
-                parent_fd: runtime.descriptor.try_clone_to_owned()?,
-                child_fd: runtime.descriptor.as_raw_fd(),
-            });
+    let (child, lifetime) = spawn_leased_child(|lifetime_writer| {
+        let mut command = Command::new(program);
+        command
+            .args(arguments)
+            .env_clear()
+            .envs(base_environment())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if let Some(current_dir) = current_dir {
+            command.current_dir(current_dir);
         }
-        command.fd_mappings(mappings)?;
-    }
-    let child = command
-        .spawn()
-        .map_err(|error| format!("spawn internal command {program}: {error}"))?;
-    drop(lifetime_writer);
+        #[cfg(unix)]
+        {
+            command.process_group(0);
+            let mut mappings = vec![FdMapping {
+                parent_fd: lifetime_writer.as_fd().try_clone_to_owned()?,
+                child_fd: lifetime_writer.as_raw_fd(),
+            }];
+            if let Some(runtime) = runtime {
+                mappings.push(FdMapping {
+                    parent_fd: runtime.descriptor.try_clone_to_owned()?,
+                    child_fd: runtime.descriptor.as_raw_fd(),
+                });
+            }
+            command.fd_mappings(mappings)?;
+        }
+        #[cfg(not(unix))]
+        let _ = lifetime_writer;
+        Ok(command)
+    })
+    .map_err(|error| format!("spawn internal command {program}: {error}"))?;
     let mut process = ManagedInternalProcess::new(
         child,
         lifecycle_deadline,

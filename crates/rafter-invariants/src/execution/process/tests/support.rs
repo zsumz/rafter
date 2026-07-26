@@ -249,21 +249,16 @@ pub(super) fn managed_process_fixture(
     )
     .expect("spawn fixture process-group anchor");
     let target_group = anchor.id();
-    let (target_lifetime, target_lifetime_writer) =
-        super::super::TargetLifetimeLease::create().expect("create fixture target lifetime lease");
-    let mut command = std::process::Command::new("sh");
-    command.args(["-c", wrapper_script]).process_group(0);
-    command
-        .fd_mappings(vec![FdMapping {
-            parent_fd: target_lifetime_writer
-                .as_fd()
-                .try_clone_to_owned()
-                .expect("clone fixture target lifetime writer"),
-            child_fd: std::os::fd::AsRawFd::as_raw_fd(&target_lifetime_writer),
-        }])
-        .expect("inherit fixture target lifetime writer");
-    let child = command.spawn().expect("spawn fixture resource wrapper");
-    drop(target_lifetime_writer);
+    let (child, target_lifetime) = super::super::spawn_leased_child(|target_lifetime_writer| {
+        let mut command = std::process::Command::new("sh");
+        command.args(["-c", wrapper_script]).process_group(0);
+        command.fd_mappings(vec![FdMapping {
+            parent_fd: target_lifetime_writer.as_fd().try_clone_to_owned()?,
+            child_fd: std::os::fd::AsRawFd::as_raw_fd(target_lifetime_writer),
+        }])?;
+        Ok(command)
+    })
+    .expect("spawn fixture resource wrapper");
     let wrapper_group = child.id();
     let cleanup_deadline = std::time::Instant::now() + cleanup_window;
     let process = ManagedProcess::new(

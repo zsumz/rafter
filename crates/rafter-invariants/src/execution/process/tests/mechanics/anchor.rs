@@ -80,8 +80,12 @@ fn anchor_readiness_observed_at_its_absolute_deadline_is_rejected() {
     assert_failed_anchor_disappears();
 }
 
+/// The target lifetime lease is created with the wrapper spawn that carries its
+/// writer, which is after the anchor exists. So the launch owns an anchor when
+/// the lease fails, and the guarantee is that it releases it rather than that it
+/// never had one.
 #[test]
-fn lifetime_lease_preflight_failure_does_not_spawn_an_anchor() {
+fn lifetime_lease_failure_releases_the_anchor_it_would_have_carried() {
     let _ = take_last_spawned_anchor_id();
     fail_next_process_lifetime_lease_creation();
     let error = run_shell(
@@ -91,16 +95,21 @@ fn lifetime_lease_preflight_failure_does_not_spawn_an_anchor() {
         Duration::from_secs(1),
         Duration::from_millis(20),
     )
-    .expect_err("lifetime lease preflight failure must abort launch");
+    .expect_err("lifetime lease failure must abort launch");
     assert!(error
         .to_string()
         .contains("injected process lifetime lease creation failure"));
-    assert_eq!(take_last_spawned_anchor_id(), None);
+    let anchor = take_last_spawned_anchor_id().expect("the aborted launch recorded its anchor");
+    assert_anchor_group_disappears(anchor);
 }
 
 fn assert_failed_anchor_disappears() {
-    let process_group =
-        take_last_failed_anchor_startup_id().expect("failed anchor identity was recorded");
+    assert_anchor_group_disappears(
+        take_last_failed_anchor_startup_id().expect("failed anchor identity was recorded"),
+    );
+}
+
+fn assert_anchor_group_disappears(process_group: u32) {
     let deadline = Instant::now() + Duration::from_secs(2);
     loop {
         if process_group_state(process_group).expect("probe failed anchor group")

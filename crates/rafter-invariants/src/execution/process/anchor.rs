@@ -17,7 +17,7 @@ use std::os::{
 };
 
 use super::{
-    base_environment, DirectChild, NoSignalReaper, ProcessSignal, RuntimeExecutable,
+    base_environment, spawn_child, DirectChild, NoSignalReaper, ProcessSignal, RuntimeExecutable,
     SignalDelivery, TargetLifetimeLease,
 };
 
@@ -87,7 +87,7 @@ impl ProcessGroupAnchor {
                 child_fd: child_control.as_raw_fd(),
             },
         ])?;
-        let child = command.spawn()?;
+        let child = spawn_child(&mut command)?;
         drop(child_control);
         let mut anchor = Self {
             child: DirectChild::new(child, reaper),

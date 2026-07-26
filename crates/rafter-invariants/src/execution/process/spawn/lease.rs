@@ -19,13 +19,18 @@ pub(crate) enum ProcessLeaseState {
 ///
 /// EOF proves that every inherited writer description has closed. Launched code
 /// is required to preserve the writer unchanged across fork and exec.
+///
+/// A writer is only reachable through [`super::spawn_leased_child`], which is
+/// what keeps unrelated forks from inheriting one: `create` is private to the
+/// spawn module, so there is no way to open a lease outside the exclusion that
+/// module holds.
 #[derive(Debug)]
 pub(crate) struct ProcessLifetimeLease {
     reader: PipeReader,
 }
 
 impl ProcessLifetimeLease {
-    pub(crate) fn create() -> Result<(Self, PipeWriter), Box<dyn std::error::Error>> {
+    pub(super) fn create() -> Result<(Self, PipeWriter), Box<dyn std::error::Error>> {
         #[cfg(test)]
         if FAIL_NEXT_CREATION.with(|fail| fail.replace(false)) {
             return Err("injected process lifetime lease creation failure".into());

@@ -17,7 +17,6 @@ mod identity;
 mod internal_command;
 mod internal_process;
 mod launch;
-mod lease;
 mod managed;
 mod model;
 mod output;
@@ -25,6 +24,7 @@ mod process_group;
 mod reaper;
 mod reaping;
 mod signal;
+mod spawn;
 mod telemetry;
 mod termination;
 #[cfg(test)]
@@ -63,9 +63,6 @@ use internal_process::ManagedInternalProcess;
 use launch::expose_next_target_lifetime_lease;
 pub(crate) use launch::run;
 #[cfg(test)]
-use lease::fail_next_process_lifetime_lease_creation;
-use lease::{ProcessLeaseState, ProcessLifetimeLease, TargetLeaseState, TargetLifetimeLease};
-#[cfg(test)]
 use managed::force_next_cleanup_target_alive;
 #[cfg(test)]
 use managed::{before_next_wrapper_exit_observation, classify_target_quiescence_for_test};
@@ -95,6 +92,12 @@ use signal::{
     classify_process_group_probe, classify_signal_delivery, clear_signal_attempts,
     confirm_process_group_absent_with, force_next_signal_group_absent, process_group_state,
     take_signal_attempts,
+};
+#[cfg(test)]
+use spawn::{fail_next_process_lifetime_lease_creation, hold_lease_writer};
+use spawn::{
+    spawn_child, spawn_leased_child, ProcessLeaseState, ProcessLifetimeLease, TargetLeaseState,
+    TargetLifetimeLease,
 };
 #[cfg(test)]
 use telemetry::{

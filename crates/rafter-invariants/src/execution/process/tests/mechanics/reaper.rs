@@ -7,8 +7,8 @@ use std::os::unix::process::CommandExt;
 
 use super::super::super::{
     clear_signal_attempts, fail_next_reaper_adoption, force_next_signal_group_absent,
-    take_signal_attempts, CleanupFailures, DirectChild, ManagedInternalProcess, NoSignalReaper,
-    ProcessLifetimeLease, ProcessSignal, SignalDelivery,
+    hold_lease_writer, spawn_child, take_signal_attempts, CleanupFailures, DirectChild,
+    ManagedInternalProcess, NoSignalReaper, ProcessSignal, SignalDelivery,
 };
 
 #[cfg(unix)]
@@ -17,7 +17,7 @@ fn reaped_identity_cannot_signal_a_replacement_group() {
     let reaper = NoSignalReaper::start().expect("start replacement-identity reaper");
     let mut original_command = std::process::Command::new("sh");
     original_command.args(["-c", "exit 0"]).process_group(0);
-    let original = original_command.spawn().expect("spawn original identity");
+    let original = spawn_child(&mut original_command).expect("spawn original identity");
     let mut owned = DirectChild::new(original, reaper);
     assert!(owned
         .wait_until(Instant::now() + Duration::from_secs(2))
@@ -26,9 +26,8 @@ fn reaped_identity_cannot_signal_a_replacement_group() {
 
     let mut replacement_command = std::process::Command::new("sh");
     replacement_command.args(["-c", "sleep 5"]).process_group(0);
-    let mut replacement = replacement_command
-        .spawn()
-        .expect("spawn replacement identity");
+    let mut replacement =
+        spawn_child(&mut replacement_command).expect("spawn replacement identity");
     owned.replace_numeric_identity_for_test(replacement.id());
     clear_signal_attempts();
 
@@ -55,11 +54,9 @@ fn reaped_identity_cannot_signal_a_replacement_group() {
 #[test]
 fn leased_quarantine_reaps_by_handle_without_observing_replacement_identity() {
     let reaper = NoSignalReaper::start().expect("start leased replacement-identity reaper");
-    let (lifetime, lifetime_writer) =
-        ProcessLifetimeLease::create().expect("create leased-child lifetime");
     let mut original_command = std::process::Command::new("sh");
     original_command.args(["-c", "exit 0"]).process_group(0);
-    let original = original_command.spawn().expect("spawn leased identity");
+    let original = spawn_child(&mut original_command).expect("spawn leased identity");
     let original_id = original.id();
     let mut owned = DirectChild::new(original, reaper.clone());
     let exit_deadline = Instant::now() + Duration::from_secs(2);
@@ -71,12 +68,14 @@ fn leased_quarantine_reaps_by_handle_without_observing_replacement_identity() {
 
     let mut replacement_command = std::process::Command::new("sh");
     replacement_command.args(["-c", "sleep 5"]).process_group(0);
-    let mut replacement = replacement_command
-        .spawn()
-        .expect("spawn leased replacement identity");
+    let mut replacement =
+        spawn_child(&mut replacement_command).expect("spawn leased replacement identity");
     owned.replace_numeric_identity_for_test(replacement.id());
     clear_signal_attempts();
 
+    // Taken after both spawns: the hold excludes process creation for as long
+    // as this fixture keeps the writer, so nothing here may spawn under it.
+    let (lifetime, lifetime_writer) = hold_lease_writer().expect("create leased-child lifetime");
     assert!(owned
         .quarantine_leased(lifetime)
         .expect("transfer child and lease to reaper"));
@@ -109,7 +108,7 @@ fn direct_child_wait_does_not_reap_after_its_deadline() {
     let reaper = NoSignalReaper::start().expect("start late-wait fixture reaper");
     let mut command = std::process::Command::new("sh");
     command.args(["-c", "exit 0"]).process_group(0);
-    let child = command.spawn().expect("spawn late-wait fixture");
+    let child = spawn_child(&mut command).expect("spawn late-wait fixture");
     let mut owned = DirectChild::new(child, reaper);
     let exit_deadline = Instant::now() + Duration::from_secs(2);
     while !owned.exit_observed().expect("observe late-wait child exit")
@@ -132,11 +131,12 @@ fn direct_child_wait_does_not_reap_after_its_deadline() {
 #[test]
 fn failed_leased_adoption_is_retried_before_drop_releases_ownership() {
     let reaper = NoSignalReaper::start().expect("start leased-adoption retry reaper");
-    let (lifetime, lifetime_writer) =
-        ProcessLifetimeLease::create().expect("create retry fixture lifetime");
     let mut command = std::process::Command::new("sh");
     command.args(["-c", "exit 0"]).process_group(0);
-    let child = command.spawn().expect("spawn leased-adoption retry child");
+    let child = spawn_child(&mut command).expect("spawn leased-adoption retry child");
+    // Taken after the spawn: the hold excludes process creation for as long as
+    // this fixture keeps the writer, so nothing below it may spawn.
+    let (lifetime, lifetime_writer) = hold_lease_writer().expect("create retry fixture lifetime");
     let failures = CleanupFailures::default();
     let process = ManagedInternalProcess::new(
         child,
@@ -170,7 +170,7 @@ fn owned_direct_child_rejects_an_absent_process_group() {
     let reaper = NoSignalReaper::start().expect("start absent-group fixture reaper");
     let mut command = std::process::Command::new("sh");
     command.args(["-c", "sleep 5"]).process_group(0);
-    let child = command.spawn().expect("spawn owned process group");
+    let child = spawn_child(&mut command).expect("spawn owned process group");
     let mut owned = DirectChild::new(child, reaper);
 
     force_next_signal_group_absent();
@@ -197,10 +197,9 @@ fn owned_direct_child_rejects_an_absent_process_group() {
 fn no_signal_reaper_retries_a_transient_wait_error() {
     let reaper = NoSignalReaper::start().expect("start transient-error reaper");
     reaper.inject_next_wait_error();
-    let child = std::process::Command::new("sh")
-        .args(["-c", "exit 0"])
-        .spawn()
-        .expect("spawn transient-error fixture");
+    let mut command = std::process::Command::new("sh");
+    command.args(["-c", "exit 0"]);
+    let child = spawn_child(&mut command).expect("spawn transient-error fixture");
     let mut owned = DirectChild::new(child, reaper.clone());
 
     assert!(owned

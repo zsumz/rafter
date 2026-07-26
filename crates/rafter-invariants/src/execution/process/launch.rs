@@ -20,8 +20,9 @@ use std::os::unix::process::CommandExt;
 use super::{
     base_environment,
     output::{collect_process_output, finish_managed_process},
-    retained_error, CleanupFailures, ManagedProcess, NoSignalReaper, PendingProcessOutput,
-    ProcessArtifacts, ProcessGroupAnchor, ProcessObserver, ProcessRequest, TargetLifetimeLease,
+    retained_error, spawn_leased_child, CleanupFailures, ManagedProcess, NoSignalReaper,
+    PendingProcessOutput, ProcessArtifacts, ProcessGroupAnchor, ProcessObserver, ProcessRequest,
+    TargetLifetimeLease,
 };
 #[cfg(test)]
 pub(crate) use program::expose_next_target_lifetime_lease;
@@ -49,8 +50,6 @@ pub(crate) fn run(request: &ProcessRequest<'_>) -> Result<PendingProcessOutput, 
     let anchor_stderr = artifacts
         .stderr_file()
         .map_err(|error| retained_error(error, &stdout_path, &stderr_path, Some(&resource_path)))?;
-    let (target_lifetime_lease, target_lifetime_writer) = TargetLifetimeLease::create()
-        .map_err(|error| retained_error(error, &stdout_path, &stderr_path, Some(&resource_path)))?;
     let mut anchor = ProcessGroupAnchor::spawn(
         request.runtime.perl,
         anchor_readiness_deadline,
@@ -59,14 +58,13 @@ pub(crate) fn run(request: &ProcessRequest<'_>) -> Result<PendingProcessOutput, 
     )
     .map_err(|error| retained_error(error, &stdout_path, &stderr_path, Some(&resource_path)))?;
     let target_group = anchor.id();
-    let child = match spawn_resource_wrapper(
+    let (child, target_lifetime_lease) = match spawn_resource_wrapper(
         request,
         &artifacts,
         &child_target_group_ack,
-        &target_lifetime_writer,
         target_group,
     ) {
-        Ok(child) => child,
+        Ok(spawned) => spawned,
         Err(error) => {
             let release = anchor.release(request.deadlines.cleanup_start);
             let detail = match release {
@@ -87,7 +85,6 @@ pub(crate) fn run(request: &ProcessRequest<'_>) -> Result<PendingProcessOutput, 
             ));
         }
     };
-    drop(target_lifetime_writer);
     drop(child_target_group_ack);
     let mut process = ManagedProcess::new(
         child,
@@ -125,13 +122,35 @@ pub(crate) fn run(request: &ProcessRequest<'_>) -> Result<PendingProcessOutput, 
     )
 }
 
+/// Spawn the resource wrapper and the lease that outlives its target lineage.
+///
+/// The lease is created here, and nowhere earlier, because its writer is
+/// inheritable by any fork this process performs while it is open. Building the
+/// command inside `spawn_leased_child` keeps that window to this one spawn.
 fn spawn_resource_wrapper(
+    request: &ProcessRequest<'_>,
+    artifacts: &ProcessArtifacts,
+    child_target_group_ack: &UnixStream,
+    target_group: u32,
+) -> Result<(Child, TargetLifetimeLease), Box<dyn Error>> {
+    spawn_leased_child(|target_lifetime_writer| {
+        build_resource_wrapper(
+            request,
+            artifacts,
+            child_target_group_ack,
+            target_lifetime_writer,
+            target_group,
+        )
+    })
+}
+
+fn build_resource_wrapper(
     request: &ProcessRequest<'_>,
     artifacts: &ProcessArtifacts,
     child_target_group_ack: &UnixStream,
     target_lifetime_writer: &PipeWriter,
     target_group: u32,
-) -> Result<Child, Box<dyn Error>> {
+) -> Result<Command, Box<dyn Error>> {
     let mut command = Command::new(request.runtime.perl.path);
     command
         .arg("-MPOSIX")
@@ -195,10 +214,8 @@ fn spawn_resource_wrapper(
     command.process_group(0);
     artifacts.verify_path_bindings()?;
     #[cfg(unix)]
-    let child = spawn_with_descriptors(&mut command, &child_descriptors)?;
-    #[cfg(not(unix))]
-    let child = command.spawn()?;
-    Ok(child)
+    bind_child_descriptors(&mut command, &child_descriptors)?;
+    Ok(command)
 }
 
 #[cfg(unix)]
@@ -240,10 +257,10 @@ fn child_descriptors<'a>(
 }
 
 #[cfg(unix)]
-fn spawn_with_descriptors(
+fn bind_child_descriptors(
     command: &mut Command,
     descriptors: &[BorrowedFd<'_>],
-) -> Result<Child, Box<dyn Error>> {
+) -> Result<(), Box<dyn Error>> {
     let mappings = descriptors
         .iter()
         .map(|descriptor| {
@@ -254,5 +271,5 @@ fn spawn_with_descriptors(
         })
         .collect::<Result<Vec<_>, std::io::Error>>()?;
     command.fd_mappings(mappings)?;
-    Ok(command.spawn()?)
+    Ok(())
 }
