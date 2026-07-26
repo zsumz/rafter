@@ -55,6 +55,13 @@ struct InitializedNode {
     last_snapshot_index: LogIndex,
     last_reported_role: Role,
     last_reported_lease_active: bool,
+    /// Test-only tap on everything this node put on the wire.
+    ///
+    /// The reply path's whole job is to make an answer leave the node, so a
+    /// test that cannot see the wire cannot tell a read that was answered from
+    /// one that was consumed in silence.
+    #[cfg(test)]
+    emitted: Vec<Envelope>,
 }
 
 #[derive(Debug, Default)]
@@ -125,12 +132,14 @@ impl InitializedNode {
         }
     }
 
-    fn emit(&self, dest: &str, body: Value) {
+    fn emit(&mut self, dest: &str, body: Value) {
         let envelope = Envelope {
             src: self.name.clone(),
             dest: dest.to_string(),
             body,
         };
+        #[cfg(test)]
+        self.emitted.push(envelope.clone());
         println!(
             "{}",
             serde_json::to_string(&envelope).expect("envelope serializes")

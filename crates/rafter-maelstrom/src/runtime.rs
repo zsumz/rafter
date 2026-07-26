@@ -210,6 +210,8 @@ impl MaelstromNode {
             last_snapshot_index,
             last_reported_role,
             last_reported_lease_active,
+            #[cfg(test)]
+            emitted: Vec::new(),
         };
         initialized.emit(
             &envelope.src,
