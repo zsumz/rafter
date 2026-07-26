@@ -843,8 +843,8 @@ jobs:
     # runs on every pull request, in the reference-source job above. That split
     # is deliberate: a gate whose failures are invisible on the pull request
     # that causes them reports too late to be a gate, and this one proved it --
-    # the reviewed count went stale under a commit that added a ninth test,
-    # and the lane sat red on main because no PR could ever see it.
+    # the reviewed count was left at seven when an eighth test landed, and the
+    # lane sat red on main because no pull request could ever reach it.
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
