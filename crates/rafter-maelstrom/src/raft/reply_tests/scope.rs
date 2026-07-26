@@ -293,6 +293,88 @@ fn a_second_copy_of_a_read_lodges_no_second_record() {
 }
 
 // ---------------------------------------------------------------------------
+// What bounds the one collection that is never pruned.
+// ---------------------------------------------------------------------------
+
+/// The dedupe set grows with distinct answered requests and with nothing else.
+///
+/// `completed_replies` is the one collection here that is never pruned, and the
+/// decision to leave it that way rests on a claim about *what* makes it grow
+/// rather than on a claim about how big it gets. Every pruning rule would be an
+/// assumption about how late a duplicate can arrive, and forgetting a request
+/// one tick early re-applies its mutation — so the honest alternative is to
+/// state the growth law and check it. This is the check: one entry per distinct
+/// `(client, msg_id)` answered, none for repeats, and none for the passage of
+/// time.
+#[test]
+fn the_dedupe_set_grows_with_distinct_answered_requests_and_nothing_else() {
+    let root = test_root("obligation-dedupe-growth");
+    let mut process = elected_single_node_process(&root);
+    let node = process.initialized.as_mut().expect("node initializes");
+    oracle_assert!(node.completed_replies.is_empty(), "nothing answered yet");
+
+    // Distinct requests: one entry each.
+    for msg_id in 1..=5 {
+        node.handle_envelope(client_write("n1", "c1", msg_id, "counter", msg_id));
+    }
+    oracle_assert_eq!(
+        node.completed_replies.len(),
+        5,
+        "five distinct requests answered leave five entries"
+    );
+
+    // Repeats of one already-answered request: no growth, and no second answer.
+    for _ in 0..4 {
+        node.handle_envelope(client_write("n1", "c1", 3, "counter", 3));
+    }
+    oracle_assert_eq!(
+        node.completed_replies.len(),
+        5,
+        "a duplicate delivery is refused above the accept, so it adds nothing"
+    );
+    oracle_assert_eq!(
+        direct_answers(node, "c1", 3),
+        1,
+        "and is answered no second time"
+    );
+
+    // Time alone: no growth. The sweep adds an entry for a request it answers,
+    // never one per tick.
+    let ticks = node.answer_deadline_ticks + 8;
+    for _ in 0..ticks {
+        process.tick();
+    }
+    let node = process
+        .initialized
+        .as_mut()
+        .expect("node stays initialized");
+    oracle_assert_eq!(
+        node.completed_replies.len(),
+        5,
+        "{ticks} ticks with no client traffic add nothing: the set is bounded by \
+         the requests this process answered, not by how long it ran"
+    );
+
+    // And the other side of leaving it unpruned: a duplicate that arrives long
+    // after its answer went out is still refused. Any pruning rule is a bound on
+    // how late the network may be, and this is what it would buy the memory
+    // with — c1's third write re-applying over the two that linearized after it.
+    node.handle_envelope(client_write("n1", "c1", 3, "counter", 3));
+
+    oracle_assert_eq!(
+        node.app.kv.get("\"counter\""),
+        Some(&json!(5)),
+        "a duplicate delivered {ticks} ticks after its answer must not re-apply \
+         its mutation over the writes that linearized after it"
+    );
+    oracle_assert_eq!(
+        direct_answers(node, "c1", 3),
+        1,
+        "and must not draw a second answer"
+    );
+    remove_test_root(root);
+}
+// ---------------------------------------------------------------------------
 // Helpers.
 // ---------------------------------------------------------------------------
 

@@ -97,6 +97,29 @@ struct InitializedNode {
     /// suppression in `deliver_result` an already-delivered case rather than a
     /// dropped one, which is what lets `flush_reads` retire a waiter without
     /// checking and what stops one request being answered twice.
+    ///
+    /// # Why this one is not pruned
+    ///
+    /// Unlike `owed_answers`, nothing takes entries out of this set, and that is
+    /// deliberate rather than overlooked. It holds two properties that the
+    /// `client` module header calls the at-most-once half: a duplicate delivery
+    /// of an already-answered request is refused before it can be proposed a
+    /// second time, and a second answer for one request is suppressed. Both are
+    /// questions about a request that arrived *late*, so every pruning rule is
+    /// an assumption about how late the network can be — and paying for memory
+    /// with an unproved bound on delay is the exact shape of reasoning this
+    /// reply path has now had to undo four times. Forgetting a request one tick
+    /// too early re-applies a `cas` and can roll back another client's committed
+    /// write, which is a linearizability failure; keeping it costs bytes.
+    ///
+    /// What bounds it in practice is the workload, not time. One entry appears
+    /// per *distinct* `(client, msg_id)` this node answers: repeats add nothing,
+    /// idle ticks add nothing, and a swept deadline adds the one entry for the
+    /// request it answered. A Maelstrom run is a fixed op budget — the default
+    /// `scripts/maelstrom-lin-kv` is `--rate 100 --time-limit 20`, so about two
+    /// thousand client operations across the cluster — and the set dies with the
+    /// process, which is also what makes it volatile in the first place.
+    /// `reply_tests::obligation` pins that growth law.
     completed_replies: BTreeSet<(String, u64)>,
     /// Ticks of Raft time this process has driven.
     ///
