@@ -223,11 +223,54 @@ version deliberately replaces it.
 ## Receive limits and transport responsibility
 
 The codec imposes no receive limit. A transport must enforce its limit before
-allocating a frame. The limit must accommodate the largest application entry
-the embedding permits, append-frame overhead, and snapshot-chunk metadata plus
-up to 64 KiB of chunk data. `NodeConfig::max_append_entries_bytes` is a
-batching target, not a universal maximum frame size, because a single valid
-entry may exceed the target.
+allocating a frame. Call `max_receive_frame_bytes(max_append_entries_bytes)`
+rather than deriving a limit from this prose; it returns the largest frame a
+conforming v1 leader can emit, and `tests::receive_limits` enumerates the tag
+registry to check that claim frame kind by frame kind.
+
+At the default 512 KiB append budget that limit is **2,163,036 bytes**. Three
+frame shapes set it, and only the first scales with the append budget:
+
+| Frame | Maximum bytes | Set by |
+| --- | --- | --- |
+| `AppendEntries`, one maximum application entry | 524,299 | `max_append_entries_bytes` |
+| `AppendEntries`, one joint configuration entry | 2,097,207 | the `u16` membership counts |
+| `InstallSnapshotChunk`, maximum joint committed configuration | 2,163,036 | the `u16` membership counts |
+
+`NodeConfig::max_append_entries_bytes` is a batching target, not a maximum
+frame size. Sizing a receive limit against the append term alone under-sizes it
+by 4.1x, because two things escape that budget:
+
+- **Configuration entries are exempt from the batch budget in both
+  directions.** A leader checks only application payloads against it
+  (`node/replication/proposal.rs`), and batch assembly always includes the
+  first entry whatever its size (`node/log.rs`) so an oversized entry cannot
+  stall replication. A leader will therefore emit a 2 MB configuration frame
+  under a 512 KiB budget.
+- **Membership size is bounded only by this format.** `MembershipSet::new`
+  imposes no size limit, so the ceiling is the `u16` voter and learner counts
+  in this format: 65,535 each, in each of the four halves of a joint
+  configuration. Snapshot-chunk metadata embeds a committed configuration and
+  so inherits the same term — "metadata plus 64 KiB of chunk data" is
+  dominated by the metadata, not the chunk.
+
+### What the append term depends on
+
+The append term is exact — 524,299 bytes at the default budget, to the byte —
+but it is exact because of an over-charge in another crate, so record the
+dependency rather than rediscover it. `LogEntry::replication_bytes` charges
+every entry kind more than it costs on this wire: 64 bytes charged against 13
+encoded for an application entry, 16 against 9 for a noop. A leader admits a
+proposal on the charged figure, so a bound derived from the charged budget is
+never exceeded by the encoding. If `replication_bytes` were ever brought down
+to the true wire cost, this bound would become an under-estimate.
+`tests::receive_limits::the_append_bound_rests_on_replication_bytes_over_charging_the_wire`
+fails if that direction reverses.
+
+The snapshot term likewise assumes a sender that caps one chunk at 64 KiB
+(`rafter`'s private `INSTALL_SNAPSHOT_CHUNK_BYTES`). The codec accepts any
+chunk length and cannot check that cap from here, so a transport that must
+tolerate peers built from different source should size against its own maximum.
 
 Transports crossing an untrusted boundary must authenticate the channel or the
 outer frame. The v1 checksum is only an accidental-corruption check.

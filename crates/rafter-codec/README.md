@@ -14,12 +14,21 @@ Use `encode_message` and `decode_message` when building a custom peer
 transport.
 
 The codec imposes no receive limit. A transport must enforce one before
-allocating a frame. Its limit must accommodate the largest application entry
-the embedding permits, append-frame overhead, and snapshot-chunk metadata plus
-up to 64 KiB of chunk data. `NodeConfig::max_append_entries_bytes` is a
-batching target, not a universal maximum frame size. Stream transports must
-also provide outer framing, such as a length prefix; that prefix is not part of
-the codec frame.
+allocating a frame, and should size it with
+`max_receive_frame_bytes(config.max_append_entries_bytes())` rather than by
+hand. At the default 512 KiB append budget that is 2,163,036 bytes.
+
+`NodeConfig::max_append_entries_bytes` is a batching target, not a maximum
+frame size, and sizing against it alone under-sizes a receive limit by 4.1x. A
+leader can emit a 2 MB `AppendEntries` frame carrying a single joint
+configuration entry, and a similarly large `InstallSnapshotChunk`, because
+configuration entries are exempt from the batch budget and membership size is
+bounded only by the wire format's `u16` member counts. See
+[`WIRE_FORMAT_V1.md`](WIRE_FORMAT_V1.md) for the per-frame table and for the
+cross-crate dependencies the bound rests on.
+
+Stream transports must also provide outer framing, such as a length prefix;
+that prefix is not part of the codec frame.
 
 This pre-release crate supports exactly one peer wire format. Frames still
 carry a version byte, and `decode_message` rejects every version other than the

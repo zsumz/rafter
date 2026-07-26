@@ -12,11 +12,16 @@
 
 mod error;
 mod frame;
+mod limits;
 mod v1;
 mod wire;
 
 pub use error::{DecodePeerMessageError, EncodePeerMessageError};
 pub use frame::{decode_message, encode_message, encode_message_into, MAGIC, VERSION};
+pub use limits::{
+    max_receive_frame_bytes, MAX_CONFIGURATION_APPEND_FRAME_BYTES,
+    MAX_INSTALL_SNAPSHOT_CHUNK_FRAME_BYTES,
+};
 
 #[cfg(test)]
 mod tests;

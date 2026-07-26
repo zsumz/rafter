@@ -127,6 +127,24 @@ impl MembershipSet {
     /// validation. Learners are represented for replication/catch-up planning
     /// but never count toward quorum.
     ///
+    /// # Size
+    ///
+    /// Deliberately unbounded here. A membership set is capped only by the
+    /// wire format that carries it — `u16` voter and learner counts, so 65,535
+    /// of each — which is why one configuration entry can reach 2 MB on the
+    /// peer wire and why transports must size receive limits with the peer
+    /// codec's `max_receive_frame_bytes` rather than against the
+    /// append-entries budget. See `rafter-codec/WIRE_FORMAT_V1.md`.
+    ///
+    /// Adding a limit here was considered and rejected. It would be a
+    /// protocol-visible tightening: `rafter-codec/WIRE_FORMAT_V1.md` treats
+    /// tightening a model constructor as a v1 compatibility change, and a
+    /// configuration already durably persisted or already replicated to a peer
+    /// would stop decoding — a durability regression traded for a bound that
+    /// the wire format already supplies. How many voters an embedding wants is
+    /// also policy, and policy belongs in `NodeConfig`, not in the type every
+    /// persisted configuration must round-trip through.
+    ///
     /// # Errors
     ///
     /// Returns [`MembershipValidationError`] when the voter set is empty, a
@@ -141,8 +159,13 @@ impl MembershipSet {
         }
 
         let learners = validate_unique(learners, DuplicateKind::Learner)?;
+        // `validate_unique` sorts, so the overlap check binary-searches rather
+        // than scanning. At the wire maximum both halves hold 65,535 ids, and
+        // the linear scan made one `MembershipSet` take ~12 s to build in a
+        // debug build — enough that the wire-maximum configuration frame was
+        // never exercised by a test.
         for learner in &learners {
-            if voters.contains(learner) {
+            if voters.binary_search(learner).is_ok() {
                 return Err(MembershipValidationError::LearnerVoterOverlap { node_id: *learner });
             }
         }
