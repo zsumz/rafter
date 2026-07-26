@@ -3188,8 +3188,8 @@ pub mod raw_slot {
 #[cfg(test)]
 mod tests {
     use super::{
-        crc32, encode_image, verify_slot, SlotDamage, CRC32_POLYNOMIAL, SEALED_MARK,
-        SLOT_HEADER_LEN, SLOT_TRAILER_LEN, UNSEALED_MARK,
+        crc32, encode_image, verify_slot, SlotDamage, CRC32_POLYNOMIAL, CREATION_MARK, SEALED_MARK,
+        SLOT_FORMAT_VERSION, SLOT_HEADER_LEN, SLOT_TRAILER_LEN, UNSEALED_MARK,
     };
     use crate::{
         ClientId, Command, LeaseDuration, LockConfig, LockService, Operation, RequestFingerprint,
@@ -3354,6 +3354,109 @@ mod tests {
             Some(SlotDamage::UnsealedCompleteImage { len, generation: 1 }),
             "a live slot whose mark byte rotted must be named a whole image, not an interrupted \
              publication"
+        );
+    }
+
+    /// The recognition order, as a table rather than a paragraph.
+    ///
+    /// The sibling ledger consumer answers the same questions in the same order
+    /// over its own format, and its
+    /// `the_recognition_order_matches_the_sibling_lock_store` holds the mirror
+    /// of this table. Neither store can depend on the other — they are
+    /// independent acceptance consumers — so the agreement is kept by two tables
+    /// that have to be edited together, and each names the other.
+    ///
+    /// The fourth-generation hunt found the two disagreeing one commit after
+    /// they were aligned on the version byte, because the alignment was argued
+    /// in prose about one byte instead of pinned as an order over all of them.
+    /// This store was the one that had it right; the table is here so that stays
+    /// a property rather than a coincidence.
+    #[test]
+    fn the_recognition_order_matches_the_sibling_ledger_store() {
+        let image = sealed_image();
+        let at = |mutate: &dyn Fn(&mut Vec<u8>)| {
+            let mut bytes = image.clone();
+            mutate(&mut bytes);
+            verify_slot(&bytes).err()
+        };
+
+        // 1. The creation mark, ahead of everything. This is the row the ledger
+        //    fills with its zeros-to-end-of-file rule: each store's one shape
+        //    that must be recognized before identity can refuse it, and each
+        //    store's is different because a slot is a whole file of a known
+        //    shape while a journal has a tail whose length is evidence.
+        assert_eq!(
+            verify_slot(&CREATION_MARK).err(),
+            None,
+            "the creation mark is recognized before anything else"
+        );
+
+        // 2. Identity — byte zero is one of the two marks, and bytes one through
+        //    three are the magic — at every length, above the seal test.
+        for offset in 0..4_usize {
+            let magic = at(&|bytes| bytes[offset] ^= 0xFF);
+            assert!(
+                matches!(magic, Some(SlotDamage::NotALockImage { .. })),
+                "byte {offset} is identity and must be answered above the seal test, not \
+                 {magic:?}"
+            );
+        }
+        assert!(
+            matches!(
+                verify_slot(&[SEALED_MARK, 0xFF]).err(),
+                Some(SlotDamage::NotALockImage { .. })
+            ),
+            "identity must be asked at two bytes, not deferred to a full header"
+        );
+        // The load-bearing row, and the one the ledger had wrong: identity is
+        // asked above the mark, so a slot whose mark reads unsealed *and* whose
+        // magic is broken is a foreign image and not residue. Asking the mark
+        // first sends these bytes to `classify_unsealed`, which folds a broken
+        // magic into `UnsealedPublication` — the one verdict recovery may skip
+        // on. Two zeroed bytes are enough to produce it.
+        for offset in 1..4_usize {
+            let unsealed = at(&|bytes| {
+                bytes[0] = UNSEALED_MARK;
+                bytes[offset] = 0x00;
+            });
+            assert!(
+                matches!(unsealed, Some(SlotDamage::NotALockImage { .. })),
+                "an unsealed mark beside a broken magic byte {offset} must be foreign, not \
+                 {unsealed:?}"
+            );
+        }
+
+        // 3. The seal, below identity and above everything length-dependent.
+        assert!(
+            matches!(
+                at(&|bytes| bytes[0] = UNSEALED_MARK),
+                Some(SlotDamage::UnsealedCompleteImage { .. })
+            ),
+            "the seal test comes after identity and sends an unsealed slot to be re-read"
+        );
+
+        // 4. The version, wherever the field is present — on both sides of the
+        //    seal test, and before any check that depends on how many bytes
+        //    there are. This is the row the ledger had drifted off, by gating it
+        //    on a full begin record.
+        assert_eq!(
+            verify_slot(&[SEALED_MARK, b'F', b'L', b'K', 9]).err(),
+            Some(SlotDamage::UnsupportedFormatVersion { version: 9 }),
+            "a foreign version must be answered at five bytes, not deferred"
+        );
+        assert_eq!(
+            verify_slot(&[UNSEALED_MARK, b'F', b'L', b'K', 9]).err(),
+            Some(SlotDamage::UnsupportedFormatVersion { version: 9 }),
+            "a foreign version must be answered the same way on the unsealed side"
+        );
+
+        // 5. Only now, length.
+        assert!(
+            matches!(
+                verify_slot(&[SEALED_MARK, b'F', b'L', b'K', SLOT_FORMAT_VERSION]).err(),
+                Some(SlotDamage::HeaderIncomplete { .. })
+            ),
+            "length is the last question, not the first"
         );
     }
 

@@ -2733,6 +2733,27 @@ mod tests {
             ),
             "identity must be asked at two bytes, not deferred to a full begin record"
         );
+        // The load-bearing row, and the one this store had wrong: identity is
+        // asked above the mark, so a tail whose mark reads unsealed *and* whose
+        // magic is broken is foreign and not residue. Asking the mark first
+        // sends these bytes to `classify_unsealed`, whose re-read fails at
+        // `BeginRecordCorrupt` and is folded into `UnsealedAppend` — the one
+        // verdict `open` may truncate on. Two zeroed bytes were enough.
+        for offset in 1..4_usize {
+            let unsealed = at(&|bytes| {
+                bytes[0] = UNSEALED_FRAME_MARK;
+                bytes[offset] = 0x00;
+            });
+            assert!(
+                matches!(unsealed, Some(TornTail::NotALedgerFrame { .. })),
+                "an unsealed mark beside a broken magic byte {offset} must be foreign, not \
+                 {unsealed:?}"
+            );
+            assert!(
+                !unsealed.is_some_and(TornTail::is_truncatable_residue),
+                "byte {offset} zeroed beside an unsealed mark must never be truncated"
+            );
+        }
 
         // 3. The seal, below identity and above everything length-dependent.
         assert!(
