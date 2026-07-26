@@ -16,7 +16,7 @@ use crate::error::StateMachineOperation;
 use crate::transport::{AuthenticatedPeerValidator, RaftTransport};
 
 use super::super::*;
-use super::state::{StepFailure, TransportDriverState, WaiterId};
+use super::state::{StartedRead, StepFailure, TransportDriverState, WaiterId};
 
 pub(super) struct WriteWaiter<R> {
     pub(super) options: WriteOptions,
@@ -387,7 +387,30 @@ where
         query: A::Query,
         consistency: ReadConsistency,
         options: ReadOptions,
-    ) -> Result<ReadId, ReadError> {
+    ) -> Result<StartedRead<G, A::QueryResult>, ReadError> {
+        self.reject_read_before_start(group_id)?;
+        match consistency {
+            // Answered here rather than through a waiter, and before the waiter
+            // limit is consulted: a local read registers nothing, so it cannot
+            // contribute to the condition that bound would be refusing for.
+            ReadConsistency::Local => Ok(StartedRead::Answered(self.read_local(query, options))),
+            ReadConsistency::Linearizable => {
+                self.begin_barrier(query, options).map(StartedRead::Barrier)
+            }
+            // Every remaining level, including `LeaseRead`, which the app layer
+            // itself refuses. Forwarding it would spend a group step to reach
+            // the same answer with a `GroupError` in the middle.
+            _ => Err(ReadError::UnsupportedConsistency { consistency }),
+        }
+    }
+
+    /// The refusals that precede every read, whatever level it asked for.
+    ///
+    /// The `NoGroup` refusal is here rather than inside the linearizable branch
+    /// for the reason the write side gives: no barrier was reserved, so there is
+    /// no `ReadId` to abandon and `ReadId(0)` named one that never existed. It
+    /// covers a local read too, which has no state machine to read either.
+    fn reject_read_before_start(&self, group_id: &G) -> Result<(), ReadError> {
         if self.shutting_down {
             return Err(ReadError::ShuttingDown);
         }
@@ -395,16 +418,18 @@ where
             return Err(ReadError::WrongGroup);
         }
         if self.group.is_none() {
-            // A refusal, for the reason the write side gives: no barrier was
-            // reserved, so there is no `ReadId` to abandon and `ReadId(0)` named
-            // one that never existed.
             return Err(ReadError::Transport {
                 cause: ErrorCause::new(DriverRoutingError::NoGroup),
             });
         }
-        if !matches!(consistency, ReadConsistency::Linearizable) {
-            return Err(ReadError::UnsupportedConsistency { consistency });
-        }
+        Ok(())
+    }
+
+    fn begin_barrier(
+        &mut self,
+        query: A::Query,
+        options: ReadOptions,
+    ) -> Result<ReadId, ReadError> {
         let unresolved = self
             .read_waiters
             .values()
@@ -451,6 +476,47 @@ where
         }
         self.publish_metrics();
         Ok(read_id)
+    }
+
+    /// Answers one read from this replica's own applied state.
+    ///
+    /// [`RaftGroup::read`] is the whole implementation, and going through it
+    /// rather than around it is the point: it refuses a poisoned group and a
+    /// state machine below the runtime's snapshot boundary before it reads
+    /// anything, and it honors the caller's `min_applied_index` verbatim. A
+    /// projection taken through [`TransportRaftDriver::with_group`] gets none of
+    /// those.
+    ///
+    /// The report is routed even though a local read never steps the runtime and
+    /// the report is therefore empty for this group. Routing it unconditionally
+    /// keeps this path from being the one exception to the driver's discipline,
+    /// and an empty report costs a walk over four empty lists.
+    fn read_local(
+        &mut self,
+        query: A::Query,
+        options: ReadOptions,
+    ) -> Result<QueryReceipt<G, A::QueryResult>, ReadError> {
+        let request = ReadRequest::Local {
+            group_id: self.group_id.clone(),
+            query,
+            min_applied_index: options.min_applied_index,
+        };
+        let read = self.group_mut().map_err(|_| ReadError::Transport {
+            cause: ErrorCause::new(DriverRoutingError::NoGroup),
+        })?;
+        let answered = match read.read(request) {
+            Ok(read) => {
+                self.route_report(read.report);
+                local_read_outcome(read.outcome)
+            }
+            Err(error) => Err(read_error_from_group(error)),
+        };
+        // The drain runs whichever way the read went, for the reason
+        // `attempt_read` gives: a poison captured during the call hands this
+        // driver waiters it must resolve, and this read owns none of them.
+        self.drain_poisoned_waiters();
+        self.publish_metrics();
+        answered
     }
 
     pub(super) fn poll_write(
@@ -570,5 +636,32 @@ fn pre_proposal_fate<E, RE>(error: &GroupError<E, RE>) -> WriteFate {
             ..
         } => WriteFate::NotAppended,
         _ => WriteFate::Unresolved,
+    }
+}
+
+/// Maps the two outcomes a local read can produce.
+///
+/// It produces exactly two. `RaftGroup::read_local` returns `Ready` or
+/// `LocalFreshnessUnavailable` and reaches no other arm, because it reserves no
+/// barrier: there is nothing to leave pending, reject, or cancel. The catch-all
+/// is therefore an invariant violation rather than a case, and it says so in the
+/// same vocabulary the barrier path uses.
+fn local_read_outcome<G, QR>(
+    outcome: ReadOutcome<G, QR>,
+) -> Result<QueryReceipt<G, QR>, ReadError> {
+    match outcome {
+        ReadOutcome::Ready { result, proof } => Ok(QueryReceipt { result, proof }),
+        ReadOutcome::LocalFreshnessUnavailable {
+            required_applied_index,
+            local_applied_index,
+        } => Err(ReadError::FreshnessUnavailable {
+            read_id: None,
+            required_applied_index,
+            local_applied_index,
+        }),
+        _ => Err(ReadError::ManagedInvariantViolation {
+            message: "managed driver received unsupported app-layer read outcome variant"
+                .to_owned(),
+        }),
     }
 }

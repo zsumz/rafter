@@ -24,54 +24,6 @@ use support::*;
 // with its fixture and inverted where the review recorded a defect.
 // ---------------------------------------------------------------------------
 
-/// Builds one group over a state machine the caller chose.
-fn group_with_app(node_id: u64, peers: &[u64], app: KvStateMachine) -> NumberedGroup {
-    let config = NodeConfig::new(
-        NodeId(node_id),
-        peers.iter().copied().map(NodeId).collect(),
-        3,
-    )
-    .expect("static Raft config is valid");
-    let raft = DurableRaftNode::new(config, rafter_storage::InMemoryRaftHardStateStore::new())
-        .expect("in-memory durable node opens");
-    RaftGroup::new(GROUP, NodeId(node_id), raft, app)
-}
-
-fn driver_over_app(node_id: u64, peers: &[u64], app: KvStateMachine) -> (Driver, QueueTransport) {
-    let transport = QueueTransport::default();
-    let validator = Validator {
-        transport: transport.clone(),
-        authorized: peers.iter().copied().map(NodeId).collect(),
-        nameable: None,
-    };
-    let driver = TransportRaftDriver::new(
-        group_with_app(node_id, peers, app),
-        Vec::new(),
-        transport.clone(),
-        validator,
-        TransportDriverOptions::default(),
-    )
-    .expect("a quiescent group is adoptable");
-    (driver, transport)
-}
-
-fn failing_apply() -> KvStateMachine {
-    KvStateMachine {
-        fail_apply: true,
-        ..KvStateMachine::default()
-    }
-}
-
-fn elect_single_voter(driver: &Driver) {
-    for _ in 0..16 {
-        if driver.handle().metrics().expect("metrics").current().role == Role::Leader {
-            return;
-        }
-        driver.tick().expect("a tick advances the protocol");
-    }
-    panic!("the single-voter replica never took leadership");
-}
-
 fn write_fate(error: &WriteError) -> WriteFate {
     error.fate()
 }

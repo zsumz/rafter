@@ -141,6 +141,22 @@ pub(crate) fn numbered_group(
     peers: &[u64],
     election_timeout_ticks: u64,
 ) -> NumberedGroup {
+    numbered_group_with_app(
+        group_id,
+        id,
+        peers,
+        election_timeout_ticks,
+        KvStateMachine::default(),
+    )
+}
+
+pub(crate) fn numbered_group_with_app(
+    group_id: u64,
+    id: u64,
+    peers: &[u64],
+    election_timeout_ticks: u64,
+    app: KvStateMachine,
+) -> NumberedGroup {
     let config = NodeConfig::new(
         NodeId(id),
         peers.iter().copied().map(NodeId).collect(),
@@ -149,7 +165,7 @@ pub(crate) fn numbered_group(
     .expect("static Raft config is valid");
     let raft = DurableRaftNode::new(config, InMemoryRaftHardStateStore::new())
         .expect("in-memory durable node opens");
-    RaftGroup::new(group_id, NodeId(id), raft, KvStateMachine::default())
+    RaftGroup::new(group_id, NodeId(id), raft, app)
 }
 
 /// A failure injected by, or detected in, the service test fake.

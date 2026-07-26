@@ -69,6 +69,22 @@ pub(super) enum WaiterId {
     Read(ReadId),
 }
 
+/// What starting a read produced.
+///
+/// Two shapes because the driver serves two consistency levels and only one of
+/// them waits. A linearizable read reserves a barrier that some later step
+/// resolves, so starting it yields a name; a local read is answered by the call
+/// that starts it, so starting it yields the answer. Collapsing the two into an
+/// `Option<ReadId>` would leave the caller of a local read holding a `None` and
+/// still needing somewhere to put the receipt.
+pub(super) enum StartedRead<G, QR> {
+    /// A barrier was reserved under this ID and its waiter is registered.
+    Barrier(ReadId),
+    /// The read was answered inside the call that started it. No waiter exists,
+    /// no [`ReadId`] was allocated, and there is nothing to abandon.
+    Answered(Result<QueryReceipt<G, QR>, ReadError>),
+}
+
 /// The driver's state, shared by every clone and every client future.
 pub(super) type SharedState<G, A, R, T, V> = Arc<DriverShared<G, A, R, T, V>>;
 

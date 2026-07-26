@@ -21,7 +21,8 @@ use rafter_service::{
 };
 
 use super::{
-    numbered_group, poll_once, KvStateMachine, Message, NodeId, NumberedGroup, RaftGroup, Role,
+    numbered_group, numbered_group_with_app, poll_once, KvStateMachine, Message, NodeId,
+    NumberedGroup, Role,
 };
 
 pub(crate) const GROUP: u64 = 7;
@@ -217,21 +218,58 @@ pub(crate) fn driver_with_options(
     peers: &[u64],
     options: TransportDriverOptions,
 ) -> (Driver, QueueTransport) {
+    driver_over(numbered_group(GROUP, node_id, peers, 3), peers, options)
+}
+
+/// A driver over one replica whose state machine the test chose.
+pub(crate) fn driver_over_app(
+    node_id: u64,
+    peers: &[u64],
+    app: KvStateMachine,
+) -> (Driver, QueueTransport) {
+    driver_over(
+        numbered_group_with_app(GROUP, node_id, peers, 3, app),
+        peers,
+        TransportDriverOptions::default(),
+    )
+}
+
+/// The state machine every poison fixture wants: one that refuses to apply.
+pub(crate) fn failing_apply() -> KvStateMachine {
+    KvStateMachine {
+        fail_apply: true,
+        ..KvStateMachine::default()
+    }
+}
+
+fn driver_over(
+    group: NumberedGroup,
+    peers: &[u64],
+    options: TransportDriverOptions,
+) -> (Driver, QueueTransport) {
     let transport = QueueTransport::default();
     let validator = Validator {
         transport: transport.clone(),
         authorized: peers.iter().copied().map(NodeId).collect(),
         nameable: None,
     };
-    let driver = TransportRaftDriver::new(
-        numbered_group(GROUP, node_id, peers, 3),
-        Vec::new(),
-        transport.clone(),
-        validator,
-        options,
-    )
-    .expect("a quiescent group is adoptable");
+    let driver = TransportRaftDriver::new(group, Vec::new(), transport.clone(), validator, options)
+        .expect("a quiescent group is adoptable");
     (driver, transport)
+}
+
+/// Ticks one replica until it takes leadership on its own.
+///
+/// Only a single-voter replica reaches this without an exchange; a test with
+/// peers uses [`elect`].
+pub(crate) fn elect_single_voter(driver: &Driver) {
+    for _ in 0..16 {
+        if driver.handle().metrics().expect("metrics").current().role == Role::Leader {
+            return;
+        }
+        driver.tick().expect("a tick advances the protocol");
+    }
+    panic!("the single-voter replica never took leadership");
 }
 
 /// Ticks past the election timeout this fixture configures.

@@ -131,7 +131,7 @@ impl Error for InboundEnvelopeError {
 mod state;
 mod waiters;
 
-use state::{DriverShared, SharedState, StepFailure, TransportDriverState, WaiterId};
+use state::{DriverShared, SharedState, StartedRead, StepFailure, TransportDriverState, WaiterId};
 
 /// Managed driver for one local Raft group over an attached transport.
 ///
@@ -150,12 +150,22 @@ use state::{DriverShared, SharedState, StepFailure, TransportDriverState, Waiter
 /// re-adoption, because a handle names a service rather than a node
 /// incarnation.
 ///
-/// Reads are [`ReadConsistency::Linearizable`] only. Any other level is refused
-/// with [`ReadError::UnsupportedConsistency`] rather than served at a weaker
-/// one, because this driver owns a single replica: a local read here would
-/// answer from one node's state machine with nothing to say how far behind it
-/// is, and the caller asked a managed API precisely so it would not have to
-/// reason about that.
+/// Reads are [`ReadConsistency::Linearizable`] and [`ReadConsistency::Local`],
+/// which are the two levels [`rafter_app::group::RaftGroup::read`] implements.
+/// Any other level is refused with [`ReadError::UnsupportedConsistency`] rather
+/// than served at a weaker one — including [`ReadConsistency::LeaseRead`], which
+/// is refused because the app layer refuses it and not because this driver chose
+/// to.
+///
+/// A local read answers from this replica's own applied state. It submits no
+/// read-index round, reserves no barrier, allocates no [`ReadId`], and its
+/// [`QueryReceipt::proof`] is `None`, which is the honest report that it proved
+/// nothing about any other replica. What bounds it is
+/// [`ReadOptions::min_applied_index`], honored verbatim: a floor this replica
+/// has not reached is reported as [`ReadError::FreshnessUnavailable`] carrying
+/// both the required and the local applied index, rather than answered from
+/// behind it. A caller that states no floor is asking for this replica's applied
+/// state and gets it.
 pub struct TransportRaftDriver<G, A, R, T, V>
 where
     A: ReplicatedStateMachine,
@@ -821,10 +831,10 @@ where
         command: A::Command,
         options: WriteOptions,
     ) -> DriverFuture<Result<WriteReceipt<A::CommandResult>, WriteError>> {
-        let inner = self.inner.clone();
         // Registered synchronously, polled later: the waiter exists before the
         // group is stepped, so a terminal event emitted inside that very step
         // resolves it rather than arriving before anything is listening.
+        let inner = self.inner.clone();
         let started = inner.lock().begin_write(&group_id, command, options);
         match started {
             Ok(local_proposal_id) => {
@@ -853,7 +863,7 @@ where
             .lock()
             .begin_read(&group_id, query, consistency, options);
         match started {
-            Ok(read_id) => {
+            Ok(StartedRead::Barrier(read_id)) => {
                 let mut guard = WaiterGuard::new(inner, WaiterId::Read(read_id));
                 Box::pin(poll_fn(move |context| {
                     let polled = guard.state().lock().poll_read(read_id, context);
@@ -863,6 +873,9 @@ where
                     polled
                 }))
             }
+            // A local read is already finished. No waiter was registered, so
+            // there is no guard to hold and nothing to poll.
+            Ok(StartedRead::Answered(answered)) => Box::pin(ready(answered)),
             Err(error) => Box::pin(ready(Err(error))),
         }
     }

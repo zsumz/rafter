@@ -49,9 +49,11 @@ pub trait DriverCommandSender<G, C, Q, R, QR>: Clone + Send + Sync + 'static {
     /// Which [`ReadConsistency`] levels an implementation serves is its own
     /// choice, and a level it does not serve must be refused with
     /// [`crate::ReadError::UnsupportedConsistency`] rather than silently
-    /// answered at a weaker one. [`crate::TransportRaftDriver`] serves
-    /// [`ReadConsistency::Linearizable`] only; [`crate::InMemoryRaftDriver`]
-    /// also serves the lease and local levels.
+    /// answered at a weaker one. Both shipped drivers serve
+    /// [`ReadConsistency::Linearizable`] and [`ReadConsistency::Local`], which
+    /// are the two levels the app layer implements, and both refuse
+    /// [`ReadConsistency::LeaseRead`] — [`crate::TransportRaftDriver`] here,
+    /// [`crate::InMemoryRaftDriver`] by forwarding to a layer that refuses it.
     fn read(
         &self,
         group_id: G,
