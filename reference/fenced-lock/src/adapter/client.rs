@@ -159,9 +159,9 @@ where
     /// differ from its original in a way the session cache would then reject as
     /// a conflict.
     pub async fn submit_command(&self, command: Command) -> SubmitOutcome {
-        let options = WriteOptions {
-            client_request_id: request_metadata(&command),
-        };
+        let options = request_metadata(&command).map_or_else(WriteOptions::default, |id| {
+            WriteOptions::default().with_client_request_id(id)
+        });
         match self.handle.write_with_options(command, options).await {
             Ok(receipt) => SubmitOutcome::Completed {
                 index: receipt.index,

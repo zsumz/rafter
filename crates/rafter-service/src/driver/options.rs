@@ -4,17 +4,11 @@ use rafter_app::{proposal::ClientRequestId, read::ReadProof};
 /// Options for a managed write.
 ///
 /// [`WriteOptions::with_client_request_id`] is the way to build one, matching
-/// [`ReadOptions`], its documented pair. **This type is not yet
-/// `#[non_exhaustive]` and its pair is**, which means the next field added here
-/// is still a breaking change to every caller that used a struct literal. That
-/// is a known gap rather than a decision; it is closed by making this type
-/// `#[non_exhaustive]` too, which is itself breaking and is scheduled with the
-/// one consumer call site it invalidates. See the fourth revision of the
-/// Transport-Attached Group Driver entry in `docs/api-promotions.md`.
-///
-/// Prefer the setter over a struct literal, so that closing the gap costs
-/// nothing.
+/// [`ReadOptions`], its documented pair. Both are `#[non_exhaustive]`, so a
+/// field added here is additive for every caller that builds through the
+/// setter.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
 pub struct WriteOptions {
     /// The caller's own name for this command, carried through unchanged.
     ///
