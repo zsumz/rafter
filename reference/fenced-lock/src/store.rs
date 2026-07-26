@@ -21,16 +21,23 @@
 //! currently authoritative. A slot is a whole image with a trailing checksum,
 //! and the newest slot whose checksum verifies wins. This buys three things:
 //!
-//! 1. **The commit point is one `sync_data`, and there is only one write
-//!    path.** A publication never renames, never stages a third file, never
-//!    appends after earlier bytes, and never truncates a tail it has to reason
-//!    about. Applying a batch and installing a snapshot are the same
-//!    publication with different applied-index rules, so there is one crash
-//!    argument to audit instead of two.
-//! 2. **The authoritative image is never the one being written.** That single
-//!    sentence is the whole atomicity argument: a crash at any byte of a
-//!    publication leaves the previous image untouched and readable, because the
-//!    file holding it was not open for writing.
+//! 1. **There is only one write path.** A publication never renames, never
+//!    stages a third file, never appends after earlier bytes, and never
+//!    truncates a tail it has to reason about. Applying a batch and installing
+//!    a snapshot are the same publication with different applied-index rules,
+//!    so there is one crash argument to audit instead of two.
+//! 2. **The authoritative image is never the one being written.** That is this
+//!    store's own atomicity argument: a crash at any byte of a publication
+//!    leaves the previous image untouched and readable, because the file
+//!    holding it was not open for writing.
+//!
+//!    It is an argument about what *this store* does to the files, and it is
+//!    worth being precise about what it therefore does not cover. It does not
+//!    say the authoritative image is intact — a medium can lose bytes from a
+//!    file nobody has open — and recovery must not read it as though it did.
+//!    Distinguishing "this slot was being written" from "this slot was whole
+//!    and then lost bytes" needs evidence in the bytes, not this sentence; the
+//!    publication mark below is that evidence.
 //! 3. **The previous image survives the commit that replaces it**, which is
 //!    what lets recovery *prove* rather than assume that marks did not regress
 //!    across the transaction it is recovering. A design that discarded history
@@ -376,9 +383,10 @@ const SLOT_FILE_NAMES: [&str; 2] = ["lock-state.0", "lock-state.1"];
 
 /// Which of the two slots a value names.
 ///
-/// There are exactly two, forever: the design's whole atomicity argument is
-/// that the live image is never the one being written, and one spare slot is
-/// all that takes.
+/// There are exactly two, forever: this store's atomicity argument is that the
+/// live image is never the one being written, and one spare slot is all that
+/// takes. Which of the two a later opener may skip is decided by the
+/// publication mark rather than by that argument.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum SlotIndex {
     /// `lock-state.0`.

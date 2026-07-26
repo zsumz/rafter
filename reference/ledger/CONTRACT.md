@@ -219,8 +219,10 @@ One transaction carries the whole application state at one applied index. The
 four facts the contract lists are not assembled from separate writes: they are
 encoded into one image, and that image is the unit the journal commits.
 
-The transaction's commit point is the durability barrier that follows its
-commit record. Applying a batch commits once, then returns its results, so the
+The transaction's commit point is the durability barrier that follows the
+promotion of its append mark — the one byte written after the whole frame,
+including its commit record, is already durable. Applying a batch commits once,
+then returns its results, so the
 results a caller replies with have already survived the crash they describe.
 The interval between that commit point and the reply is a real window, and the
 contract's answer to it is the deduplication cache: the caller retries the same
