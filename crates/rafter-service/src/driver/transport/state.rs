@@ -672,6 +672,13 @@ where
         });
     }
 
+    /// Publishes the group's metrics, and discards the one thing publishing can
+    /// report.
+    ///
+    /// This driver owns the publisher and is the only thing that closes it, in
+    /// `shutdown`. A refusal here therefore means the driver is already down,
+    /// and a metrics snapshot from a driver that is already down is exactly the
+    /// one nobody is waiting for.
     pub(super) fn publish_metrics(&self) {
         if let Some(group) = self.group.as_ref() {
             let _ = self.metrics.publish(group.metrics());

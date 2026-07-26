@@ -45,7 +45,22 @@ impl<G> MetricsPublisher<G> {
 
     /// Publishes a new metrics snapshot and wakes watchers.
     ///
-    /// Returns `false` when the publisher has already been closed.
+    /// Returns `false` when the publisher has already been closed, which means
+    /// the snapshot was *dropped*: no watcher will see it, and none ever will.
+    ///
+    /// `#[must_use]` rather than a `()` return, and the asymmetry with
+    /// [`MetricsPublisher::close`] is the argument. `close` returning early
+    /// leaves the publisher closed, so its caller's intent is satisfied either
+    /// way and there is nothing to report. This one returning early leaves the
+    /// caller's intent unmet, and a method that can silently fail to do what it
+    /// was asked should say so where the compiler can see it. The type is
+    /// `Clone`, so "did I close it?" is not always answerable locally: one
+    /// clone can close while another publishes.
+    ///
+    /// Discarding it with `let _ =` is correct wherever the caller closed the
+    /// publisher itself and `false` therefore only means "already stopped" —
+    /// which is what both of this crate's own call sites do, and both say so.
+    #[must_use = "a closed publisher drops the snapshot instead of publishing it"]
     pub fn publish(&self, metrics: RaftGroupMetrics<G>) -> bool {
         let wakers = {
             let mut state = lock_state(&self.shared);
