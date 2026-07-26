@@ -387,12 +387,70 @@ The rest of this section makes that decidable.
    `Serving`, or `Draining`;
 2. it is not poisoned;
 3. it is not stalled by an external readiness report;
-4. it is not currently occupying a worker; and
+4. it is not occupying a worker whose cost is unpaid; and
 5. its queue holds at least one item.
 
 Condition 4 is not an exclusion from service. A group occupying a worker is not
 starved; it is being served, and offering it a second concurrent turn would let
 one group hold two workers while another holds none.
+
+**Every one of the five is derivable from the history, and condition 4 is
+derivable on purpose.** The other four follow from what callers asked for.
+Condition 4 follows from what the scheduler decided, and that is exactly why it
+may not be *reported*: a condition the audited party defines for itself is not a
+condition. See "Occupancy is derived, not reported" below.
+
+### Occupancy is derived, not reported
+
+A dispatch opens a worker occupancy. The occupancy is fully determined by the
+dispatch, so an observer computes it rather than being told it:
+
+```text
+cost(turn) = sum of ServiceCost over the items the turn serviced
+due(turn)  = tick of the dispatch + cost(turn)
+```
+
+Both inputs are recorded — the serviced items, and the tick the turn was taken
+at — so the deadline is a fact about the history rather than a claim inside it.
+Four rules follow, and all four are checked:
+
+- **A dispatch is priced by its work.** A turn that reports any cost other than
+  the sum of the `ServiceCost`s of the items it serviced is refused. Otherwise
+  a scheduler could name its own occupancy, and every rule below would be
+  measured against a number it chose.
+- **An occupancy ends at `due`, and ends only there.** A release recorded after
+  `due` held a worker past its cost; one recorded before `due` returned a
+  worker that was still busy, which lets the host run more dispatches at once
+  than it has workers. Both are refused.
+- **A release pairs with a dispatch or it is refused.** A release naming a
+  group that holds no worker is a fault, not a no-op. Absorbing it would let a
+  scheduler clear an occupancy it never opened.
+- **An occupancy past `due` stops excluding its group from the ready set.**
+  This is the load-bearing one. A group inside an occupancy is owed no turn — it
+  is being served. A group inside an occupancy that has outlived its cost is
+  being served by nobody, so it is ready, is owed every plan armed from that
+  instant, and accrues gap for each one that omits it.
+
+The fourth rule is what makes the bound hold against a scheduler that controls
+only what it legitimately controls. Before it, `servicing` was a bit the
+scheduler set on dispatch and cleared on release, and neither was checked: one
+omitted release put a group permanently outside the ready set, permanently owed
+nothing, and permanently invisible to a `widest_gap` of zero. The starved group
+did not appear in the report because, by the report's own definition, it was
+never starved.
+
+The scheduler retains exactly two freedoms over readiness, and both are
+legitimate: which items it services in a turn — bounded by quota and class
+order — and when it arms the next plan. It has none over how long the resulting
+occupancy lasts.
+
+**A tick arms at most one plan.** This is the modeling choice named at the end
+of this document, and it is also what stops the derivation from being evaded by
+standing still. Deadlines are measured in ticks; a scheduler that could arm an
+unbounded number of plans at one tick could deny a group all of them while no
+occupancy it held ever came due. Arming twice within a tick, retiring twice
+within a tick, and recording a tick earlier than one already recorded are each
+refused.
 
 **Plan and pass.** A *plan* is an ordered snapshot of the ready set, taken when
 the scheduler *arms* it. A *pass* is one traversal of one plan. Each pass has a
@@ -642,6 +700,13 @@ The implementation and oracle must establish:
 5. Worker exhaustion suspends a pass and never restarts it.
 6. One turn services `min(quota, pending)` items, or fewer only when the group
    poisoned itself part way through.
+6a. A turn's worker occupancy is the sum of the `ServiceCost`s of the items it
+    serviced, and it ends at the tick that dispatched it plus that sum —
+    neither earlier, nor later, nor never.
+6b. No more groups occupy workers at once than the configuration has workers,
+    and no group occupies two.
+6c. A group whose occupancy has outlived its cost is ready again, whether or
+    not its release was ever recorded.
 7. A turn services its own classes in priority order, and within a class in
    arrival order.
 8. Class priority never changes plan membership or plan order.
@@ -705,11 +770,19 @@ is the same size as one that has just started.
 
 `ReferenceScheduler` keeps a history and no books. It schedules nothing. It
 answers every question by folding its log: the counters, the lifecycles, the
-queue contents, the ready set at each arming, and the per-group opportunity
-gaps are all consequences of the recorded events rather than state kept beside
-them. Its groups live in an ordered map, its queue is one flat list in arrival
-order whose priority head is found by scanning, and it holds no ready set at all
-— at each arming it recomputes readiness from first principles and compares.
+queue contents, the ready set at each arming, the worker occupancies and their
+deadlines, and the per-group opportunity gaps are all consequences of the
+recorded events rather than state kept beside them. Its groups live in an
+ordered map, its queue is one flat list in arrival order whose priority head is
+found by scanning, and it holds no ready set at all — at each arming it
+recomputes readiness from first principles and compares.
+
+The occupancy table is where the two shapes differ most sharply. The model
+holds a fixed array of worker slots and a per-group flag saying that one of
+them is taken; the oracle holds none of either, and instead keeps a deadline
+per group that it computed from a dispatch it read. Neither can borrow the
+other's answer, which is the point: the model's flag is what the oracle is
+checking.
 
 A bookkeeping mistake in either has nothing to hide behind in the other. A
 scheduler that dropped a group from its ready set produces a plan the oracle's
@@ -740,10 +813,17 @@ NotAdmitted(operation_id)                              a provable refusal
 AvailabilityReported(tick, group, availability)        an external input
 WorkerReleased(tick, group)                            a scheduler decision
 PassArmed(pass, tick, plan)                            a scheduler decision
-GroupOffered(pass, group, outcome)                     a scheduler decision
+GroupOffered(pass, tick, group, outcome)               a scheduler decision
 WorkServiced(pass, group, work)                        a scheduler decision
 PassCompleted(pass, tick)                              a scheduler decision
 ```
+
+Every scheduler decision that happens at an instant records that instant, and
+`GroupOffered` is one of them because a dispatch opens a worker occupancy that
+comes due at its own tick plus its own cost. An offer that did not say when it
+happened would leave that occupancy with no deadline anyone could compute, and
+an occupancy nobody can time out is a group nobody can prove was starved.
+`WorkServiced` carries none, because it happens within the turn that does.
 
 Deterministic rejections are ordinary `Completed` observations. Every invocation
 carries its full operation, so retries under one request identity are
@@ -801,11 +881,19 @@ Named consequences, so they are not discovered later:
 - **Ticks and costs are not durations.** A tick is the scheduler's unit of
   attention and a cost is worker occupancy. Nothing in this document may be read
   as a wall-clock or timeout guarantee, and the fairness bound in particular
-  makes no latency claim of any kind.
+  makes no latency claim of any kind. A turn's occupancy is nonetheless an
+  exact quantity: it accumulates in 64 bits because a turn services at most
+  `WorkQuota` items of at most `ServiceCost` each, both 32-bit, so the widest
+  turn any configuration admits fits and cannot saturate. A saturating
+  accumulator under-charged the worker and reported the shortfall as an
+  ordinary cost, which is the one arithmetic failure this crate's own principle
+  forbids everywhere else.
 - **Work is applied at dispatch.** A worker's occupancy models what the work
   cost, not a window during which the work is half-done. The unit of application
   is one item, so there is no partially applied state to represent.
 - **A pass boundary is one per tick.** A tick arms at most one plan and retires
-  at most one. This is a modeling choice that keeps the pass-to-tick
+  at most one. This began as a modeling choice that keeps the pass-to-tick
   relationship crisp; it costs a tick of capacity at each pass boundary and
-  changes nothing the bound asserts.
+  changes nothing the bound asserts. It is now also enforced, because every
+  occupancy deadline is measured in ticks and a scheduler free to arm plans at
+  a standstill clock could deny a group all of them without one falling due.

@@ -121,6 +121,11 @@ impl Group {
 }
 
 /// One worker holding a group's opportunity until its cost is paid.
+///
+/// `busy_until` is the dispatch tick plus the turn's cost, and the worker is
+/// released at exactly that tick. Nothing about the release is a policy the
+/// scheduler chooses: an observer that recorded the dispatch knows when the
+/// release is due and can say so when it does not arrive.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Dispatch {
     group: GroupId,
@@ -608,12 +613,18 @@ impl ManagedScheduler {
 
         let quota = state.quota.get();
         let mut serviced = 0_u32;
-        let mut cost = 0_u32;
+        // Occupancy accumulates in `u64` because a turn services at most
+        // `quota` items of at most `ServiceCost::MAX` each, and both are `u32`:
+        // the widest turn any configuration admits costs `(2^32 - 1)^2`, which
+        // is below `u64::MAX`, so this sum cannot overflow. A `u32`
+        // accumulator saturated instead, which charged a worker less than the
+        // work it did and reported the shortfall as an ordinary cost.
+        let mut cost = 0_u64;
         while serviced < quota {
             let Some(item) = self.take_next(group) else {
                 break;
             };
-            cost = cost.saturating_add(item.work.cost().get());
+            cost += u64::from(item.work.cost().get());
             serviced += 1;
             let result = self.apply_work(group, item);
             report.serviced.push(result);
@@ -630,7 +641,12 @@ impl ManagedScheduler {
 
         self.workers[worker] = Some(Dispatch {
             group,
-            busy_until: TickIndex::new(self.tick.get().saturating_add(u64::from(cost))),
+            busy_until: TickIndex::new(
+                self.tick
+                    .get()
+                    .checked_add(cost)
+                    .expect("a tick reached by stepping cannot be within one turn's cost of u64"),
+            ),
         });
         if let Some(state) = self.slot_mut(group) {
             state.servicing = true;

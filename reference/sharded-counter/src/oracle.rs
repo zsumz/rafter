@@ -8,8 +8,8 @@ use crate::{
     CounterResult, FailureRecord, GroupAvailability, GroupId, GroupIncarnation, GroupLifecycle,
     GroupView, HistoryEvent, LifecycleOutcome, LifecycleRejection, LifecycleRequest, OfferOutcome,
     Operation, OperationOutcome, PassIndex, RequestFingerprint, RequestIdentity, SchedulerConfig,
-    SchedulerSummary, SchedulerView, Sequence, ServiceRecord, SessionEpoch, SessionOutcome,
-    SkipReason, Work, WorkClass, WorkFailure, WorkId, WorkQuota,
+    SchedulerSummary, SchedulerView, Sequence, ServiceCost, ServiceRecord, SessionEpoch,
+    SessionOutcome, SkipReason, TickIndex, Work, WorkClass, WorkFailure, WorkId, WorkQuota,
 };
 
 /// A scheduling rule the recorded decisions did not keep.
@@ -134,6 +134,104 @@ pub enum SchedulingViolation {
         expected: u32,
         /// Items it reported.
         observed: u32,
+    },
+    /// An opportunity charged its worker something other than its work cost.
+    ///
+    /// The cost of a turn is the sum of the [`crate::ServiceCost`]s of the
+    /// items it serviced, and the fold knows those items. A dispatch that
+    /// reports any other number is either under-charging a worker it is
+    /// holding or over-charging one it is not.
+    DispatchCostMismatch {
+        /// Pass in which it happened.
+        pass: PassIndex,
+        /// Group whose turn it was.
+        group: GroupId,
+        /// Occupancy the serviced items add up to.
+        expected: u64,
+        /// Occupancy the dispatch claimed.
+        observed: u64,
+    },
+    /// A worker occupancy outlived the cost that opened it.
+    ///
+    /// This is the starvation the fairness bound could not otherwise see. A
+    /// group held in an occupancy that never ends is never ready, is therefore
+    /// owed no turn, and accrues no gap — so the audit stays green while the
+    /// group receives nothing. The occupancy's end is derived instead: it is
+    /// due at the dispatch tick plus the dispatch's derived cost, and a
+    /// history that runs past that instant with the occupancy still open has
+    /// broken the contract, whether or not a release ever arrives.
+    WorkerHeldPastCost {
+        /// Pass whose dispatch opened the occupancy.
+        pass: PassIndex,
+        /// Group still holding the worker.
+        group: GroupId,
+        /// Tick the release was due at.
+        due: TickIndex,
+        /// Tick the history had reached.
+        observed: TickIndex,
+    },
+    /// A worker occupancy ended before the cost that opened it was paid.
+    ///
+    /// The mirror of [`Self::WorkerHeldPastCost`], and not a harmless
+    /// generosity: an early release returns a worker that is still busy to the
+    /// pool, so the host can hold more dispatches at once than it has workers,
+    /// and returns its group to the ready set having paid less than its work
+    /// cost.
+    WorkerReleasedEarly {
+        /// Pass whose dispatch opened the occupancy.
+        pass: PassIndex,
+        /// Group released early.
+        group: GroupId,
+        /// Tick the release was due at.
+        due: TickIndex,
+        /// Tick the release arrived at.
+        observed: TickIndex,
+    },
+    /// A worker was released for a group that was holding none.
+    ///
+    /// There is no pass to name, which is the whole complaint: the release
+    /// belongs to no dispatch. Absorbing it silently would let a scheduler
+    /// clear an occupancy it never opened, and the readiness that occupancy
+    /// governs with it.
+    SpuriousWorkerRelease {
+        /// Tick the release claimed.
+        tick: TickIndex,
+        /// Group it named.
+        group: GroupId,
+    },
+    /// More groups held workers at once than the configuration has workers.
+    WorkerCountExceeded {
+        /// Pass whose dispatch overran the pool.
+        pass: PassIndex,
+        /// Group that took the worker there was not.
+        group: GroupId,
+        /// Workers the configuration provides.
+        workers: u32,
+    },
+    /// A recorded decision claimed a tick earlier than one already recorded.
+    ///
+    /// Ticks are the fold's only clock. A history that walks one backwards
+    /// could park an occupancy's deadline permanently in the future, so the
+    /// clock is checked rather than trusted. This names no group because the
+    /// fault is the history's shape rather than any one group's treatment.
+    TickWentBackwards {
+        /// Tick the fold had already reached.
+        current: TickIndex,
+        /// Tick the event claimed.
+        observed: TickIndex,
+    },
+    /// Two plans were armed, or two retired, within one tick.
+    ///
+    /// A tick arms at most one plan and retires at most one. The rule keeps
+    /// the pass-to-tick relationship crisp, and it is what stops a scheduler
+    /// from arming an unbounded number of plans — starving a group across
+    /// every one of them — while its clock, and therefore every occupancy
+    /// deadline it owes, stands still.
+    PassBoundaryReused {
+        /// Pass that reused the boundary.
+        pass: PassIndex,
+        /// Tick it reused.
+        tick: TickIndex,
     },
     /// Work was serviced outside any dispatch.
     ServiceOutsideDispatch {
@@ -307,13 +405,18 @@ struct DerivedSession {
 ///
 /// The queue is one flat list in arrival order. The priority head is found by
 /// scanning it, never by keeping a structure that already knows the answer.
+///
+/// There is deliberately no occupancy field here. Whether a group is holding a
+/// worker is not a property of the group at all — it is a consequence of a
+/// dispatch and the cost that dispatch derived — so it lives in [`Fold`]'s
+/// occupancy table, keyed by group ID, where it survives the slot being
+/// removed and reopened exactly as the physical worker does.
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct DerivedGroup {
     incarnation: GroupIncarnation,
     state: GroupLifecycle,
     poisoned: bool,
     stalled: bool,
-    servicing: bool,
     counter: i64,
     quota: WorkQuota,
     queue: Vec<(WorkId, Work)>,
@@ -327,7 +430,6 @@ impl DerivedGroup {
             state: GroupLifecycle::Creating,
             poisoned: false,
             stalled: false,
-            servicing: false,
             counter: 0,
             quota,
             queue: Vec::new(),
@@ -337,10 +439,11 @@ impl DerivedGroup {
 
     /// Drops everything a removed slot must not keep.
     ///
-    /// `servicing` survives on purpose: it stands for a worker the departing
-    /// incarnation is still occupying, and a slot reopened before that
-    /// occupancy ends must not be dispatched into a busy worker. The release
-    /// event is what clears it.
+    /// A worker the departing incarnation is still occupying is not among
+    /// them, and it is not cleared here because it was never held here: an
+    /// occupancy belongs to the group ID in [`Fold`], so a slot reopened
+    /// before its predecessor's cost is paid stays out of the ready set until
+    /// that cost is paid.
     fn clear(&mut self) {
         self.counter = 0;
         self.sessions.clear();
@@ -349,13 +452,17 @@ impl DerivedGroup {
         self.stalled = false;
     }
 
-    fn is_ready(&self) -> bool {
+    /// Returns whether everything about the group *itself* admits a turn.
+    ///
+    /// This is readiness minus the one condition a group does not own: the
+    /// worker it may be occupying. [`Fold::is_ready`] adds that condition, and
+    /// derives it rather than reading it off a reported flag.
+    fn is_dispatchable(&self) -> bool {
         matches!(
             self.state,
             GroupLifecycle::Recovering | GroupLifecycle::Serving | GroupLifecycle::Draining
         ) && !self.poisoned
             && !self.stalled
-            && !self.servicing
             && !self.queue.is_empty()
     }
 
@@ -381,17 +488,24 @@ impl DerivedGroup {
             .map(|(index, _)| index)
     }
 
-    /// Returns the exact items an opportunity should service, in order.
-    fn expected_dispatch(&self) -> Vec<WorkId> {
+    /// Returns the exact items an opportunity should service, in order, each
+    /// with the worker occupancy servicing it costs.
+    ///
+    /// The costs travel with the identifiers because the fold prices the turn
+    /// from them. A dispatch reports what it serviced and what it charged, and
+    /// only one of those two numbers may be believed — so neither is: both are
+    /// recomputed here from the queue the group actually held.
+    fn expected_dispatch(&self) -> Vec<(WorkId, ServiceCost)> {
         let mut taken: Vec<usize> = Vec::new();
-        let mut expected: Vec<WorkId> = Vec::new();
+        let mut expected: Vec<(WorkId, ServiceCost)> = Vec::new();
         for _ in 0..self.quota.get() {
             let Some(index) = self.head(&taken) else {
                 break;
             };
             taken.push(index);
-            expected.push(self.queue[index].0);
-            if matches!(self.queue[index].1, Work::Faulty { .. }) {
+            let (id, work) = self.queue[index];
+            expected.push((id, work.cost()));
+            if matches!(work, Work::Faulty { .. }) {
                 break;
             }
         }
@@ -423,6 +537,18 @@ impl OpenPass {
     fn planned(&self, group: GroupId) -> bool {
         self.pending.contains(&group) || self.offered.contains(&group)
     }
+}
+
+/// One worker a dispatch is holding, and the instant it is due back.
+///
+/// The oracle keeps this instead of believing a reported occupancy flag. A
+/// dispatch opens an occupancy of exactly the cost its serviced items add up
+/// to; the release is due at `dispatch tick + that cost`; and the scheduler
+/// authors neither number, because the fold recomputes both from the queue.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct Occupancy {
+    pass: PassIndex,
+    due: TickIndex,
 }
 
 /// How long one group has gone without a turn it was owed.
@@ -483,6 +609,13 @@ struct Fold {
     opportunities: u64,
     widest_plan: u32,
     gaps: BTreeMap<GroupId, Gap>,
+    /// Workers held right now, and the tick each is due back at.
+    occupancies: BTreeMap<GroupId, Occupancy>,
+    /// Highest tick any recorded decision has claimed.
+    tick: TickIndex,
+    /// Ticks the last plan was armed at and the last plan retired at.
+    last_armed: Option<TickIndex>,
+    last_retired: Option<TickIndex>,
     violation: Option<SchedulingViolation>,
 }
 
@@ -506,6 +639,10 @@ impl Fold {
             opportunities: 0,
             widest_plan: 0,
             gaps: BTreeMap::new(),
+            occupancies: BTreeMap::new(),
+            tick: TickIndex::ZERO,
+            last_armed: None,
+            last_retired: None,
             violation: None,
         }
     }
@@ -517,32 +654,134 @@ impl Fold {
                 self.outcomes.push(outcome);
             }
             HistoryEvent::AvailabilityReported {
+                tick,
                 group,
                 availability,
-                ..
             } => {
+                self.reach(*tick);
                 if let Some(state) = self.groups.get_mut(group) {
                     state.stalled = matches!(availability, GroupAvailability::Stalled);
                 }
             }
-            HistoryEvent::WorkerReleased { group, .. } => {
-                if let Some(state) = self.groups.get_mut(group) {
-                    state.servicing = false;
+            // The release is judged against the occupancy it claims to end
+            // before the clock moves on, so a release that arrives exactly when
+            // it is due is not first mistaken for one that never came.
+            HistoryEvent::WorkerReleased { tick, group } => {
+                if self.monotone(*tick) {
+                    self.release(*tick, *group);
+                    self.reach(*tick);
                 }
             }
-            HistoryEvent::PassArmed { pass, plan, .. } => self.arm(*pass, plan),
+            HistoryEvent::PassArmed { pass, tick, plan } => {
+                self.reach(*tick);
+                self.arm(*pass, *tick, plan);
+            }
             HistoryEvent::GroupOffered {
                 pass,
+                tick,
                 group,
                 outcome,
-            } => self.offer(*pass, *group, *outcome),
+            } => {
+                self.reach(*tick);
+                self.offer(*pass, *tick, *group, *outcome);
+            }
             HistoryEvent::WorkServiced { pass, group, work } => self.service(*pass, *group, *work),
-            HistoryEvent::PassCompleted { pass, .. } => self.complete(*pass),
+            HistoryEvent::PassCompleted { pass, tick } => {
+                self.reach(*tick);
+                self.complete(*pass, *tick);
+            }
             // Conclusions a caller drew are deliberately not folded.
             HistoryEvent::Completed { .. }
             | HistoryEvent::Unknown { .. }
             | HistoryEvent::NotAdmitted { .. } => {}
         }
+    }
+
+    /// Reports whether a recorded tick may be believed, and faults when it
+    /// walks the fold's clock backwards.
+    fn monotone(&mut self, tick: TickIndex) -> bool {
+        if tick < self.tick {
+            self.fault(SchedulingViolation::TickWentBackwards {
+                current: self.tick,
+                observed: tick,
+            });
+            return false;
+        }
+        true
+    }
+
+    /// Advances the fold's clock to a recorded tick and calls in every worker
+    /// occupancy whose cost was paid before it.
+    ///
+    /// An occupancy due at exactly this tick is not overdue: that is the tick
+    /// its release belongs to. One due earlier has outlived its cost, and the
+    /// fold stops counting it as an occupancy at that point — so the group it
+    /// was holding rejoins the ready set and starts accruing gap, rather than
+    /// disappearing from the fairness question entirely.
+    fn reach(&mut self, tick: TickIndex) {
+        if !self.monotone(tick) {
+            return;
+        }
+        self.tick = tick;
+        let overdue: Vec<(GroupId, Occupancy)> = self
+            .occupancies
+            .iter()
+            .filter(|(_, occupancy)| occupancy.due < tick)
+            .map(|(group, occupancy)| (*group, *occupancy))
+            .collect();
+        for (group, occupancy) in overdue {
+            self.occupancies.remove(&group);
+            self.fault(SchedulingViolation::WorkerHeldPastCost {
+                pass: occupancy.pass,
+                group,
+                due: occupancy.due,
+                observed: tick,
+            });
+        }
+    }
+
+    /// Ends one worker occupancy, and judges the release against the cost that
+    /// opened it.
+    fn release(&mut self, tick: TickIndex, group: GroupId) {
+        let Some(occupancy) = self.occupancies.remove(&group) else {
+            self.fault(SchedulingViolation::SpuriousWorkerRelease { tick, group });
+            return;
+        };
+        match tick.cmp(&occupancy.due) {
+            Ordering::Less => self.fault(SchedulingViolation::WorkerReleasedEarly {
+                pass: occupancy.pass,
+                group,
+                due: occupancy.due,
+                observed: tick,
+            }),
+            Ordering::Greater => self.fault(SchedulingViolation::WorkerHeldPastCost {
+                pass: occupancy.pass,
+                group,
+                due: occupancy.due,
+                observed: tick,
+            }),
+            Ordering::Equal => {}
+        }
+    }
+
+    /// Returns whether a group is holding a worker whose cost is unpaid.
+    fn occupied(&self, group: GroupId) -> bool {
+        self.occupancies
+            .get(&group)
+            .is_some_and(|occupancy| occupancy.due > self.tick)
+    }
+
+    /// Returns whether a group would take a turn if it were offered one.
+    ///
+    /// Every one of the five conditions is derived. Four are the group's own
+    /// state, and the fifth — that it is not occupying a worker — is the one
+    /// the scheduler used to assert and the fold now computes, because a
+    /// condition the audited party defines is not a condition.
+    fn is_ready(&self, group: GroupId) -> bool {
+        self.groups
+            .get(&group)
+            .is_some_and(DerivedGroup::is_dispatchable)
+            && !self.occupied(group)
     }
 
     fn invoke(&mut self, operation: Operation) -> OperationOutcome {
@@ -882,7 +1121,7 @@ impl Fold {
 
     /// Recomputes the ready set from first principles and judges the plan
     /// against it.
-    fn arm(&mut self, pass: PassIndex, plan: &[GroupId]) {
+    fn arm(&mut self, pass: PassIndex, tick: TickIndex, plan: &[GroupId]) {
         if let Some(open) = self.open.as_ref().map(|open| open.pass) {
             self.fault(SchedulingViolation::PassArmedWhileOpen { open, armed: pass });
         }
@@ -892,6 +1131,13 @@ impl Fold {
                 observed: pass,
             });
         }
+        // A tick arms at most one plan. Without this, a scheduler could arm
+        // plans without limit at a standstill clock, denying a group every one
+        // of them while no occupancy it holds ever came due.
+        if self.last_armed.is_some_and(|last| tick <= last) {
+            self.fault(SchedulingViolation::PassBoundaryReused { pass, tick });
+        }
+        self.last_armed = Some(tick);
         self.next_pass = pass.successor().unwrap_or(pass);
         self.passes_armed += 1;
         self.widest_plan = self
@@ -906,7 +1152,7 @@ impl Fold {
                     group: *group,
                 });
             }
-            if !self.groups.get(group).is_some_and(DerivedGroup::is_ready) {
+            if !self.is_ready(*group) {
                 self.fault(SchedulingViolation::PlanIncludedUnreadyGroup {
                     pass,
                     group: *group,
@@ -918,12 +1164,19 @@ impl Fold {
         // denied an opportunity, and the run of consecutive denials is the gap
         // the bound forbids. A group that is not ready is owed nothing, so its
         // run resets rather than accumulating while it has no work to do.
-        for (group, state) in &self.groups {
-            let gap = self.gaps.entry(*group).or_default();
-            if !state.is_ready() || seen.contains(group) {
-                gap.satisfy();
-            } else {
+        //
+        // Readiness here is the derived kind, so a group whose worker
+        // occupancy has outlived its cost is ready again and is owed this
+        // plan's turn like any other. That is what stops an unreported release
+        // from converting starvation into silence.
+        let groups: Vec<GroupId> = self.groups.keys().copied().collect();
+        for group in groups {
+            let owed = self.is_ready(group) && !seen.contains(&group);
+            let gap = self.gaps.entry(group).or_default();
+            if owed {
                 gap.deny(pass);
+            } else {
+                gap.satisfy();
             }
         }
 
@@ -935,7 +1188,7 @@ impl Fold {
         });
     }
 
-    fn offer(&mut self, pass: PassIndex, group: GroupId, outcome: OfferOutcome) {
+    fn offer(&mut self, pass: PassIndex, tick: TickIndex, group: GroupId, outcome: OfferOutcome) {
         self.opportunities += 1;
         let planned = self
             .open
@@ -963,9 +1216,9 @@ impl Fold {
             return;
         };
         let stalled = state.stalled;
-        let ready = state.is_ready();
         let quota = state.quota.get();
         let expected = state.expected_dispatch();
+        let ready = self.is_ready(group);
 
         match outcome {
             OfferOutcome::Skipped(SkipReason::Stalled) => {
@@ -973,7 +1226,7 @@ impl Fold {
                     self.fault(SchedulingViolation::SkippedAvailableGroup { pass, group });
                 }
             }
-            OfferOutcome::Dispatched { serviced, .. } => {
+            OfferOutcome::Dispatched { serviced, cost } => {
                 if !ready {
                     self.fault(SchedulingViolation::DispatchedUnreadyGroup { pass, group });
                     return;
@@ -995,13 +1248,50 @@ impl Fold {
                         observed: serviced,
                     });
                 }
-                if let Some(state) = self.groups.get_mut(&group) {
-                    state.servicing = true;
+                // The turn's price is the sum of what it had to service, not
+                // what it says it charged. The occupancy below is opened at the
+                // derived figure, so a dispatch that misreports its cost is
+                // still held for exactly as long as its work was worth.
+                let derived: u64 = expected.iter().map(|(_, item)| u64::from(item.get())).sum();
+                if derived != cost {
+                    self.fault(SchedulingViolation::DispatchCostMismatch {
+                        pass,
+                        group,
+                        expected: derived,
+                        observed: cost,
+                    });
                 }
+                self.occupy(pass, tick, group, derived);
                 if let Some(open) = self.open.as_mut() {
-                    open.dispatch = Some((group, expected.into_iter().collect()));
+                    open.dispatch = Some((group, expected.into_iter().map(|(id, _)| id).collect()));
                 }
             }
+        }
+    }
+
+    /// Opens the worker occupancy a dispatch is owed, and checks the pool it
+    /// came out of.
+    ///
+    /// A deadline beyond the tick ceiling saturates rather than wrapping. The
+    /// oracle judges histories it did not produce, so an arithmetic edge in an
+    /// adversarial one must never be the thing that manufactures a fault.
+    fn occupy(&mut self, pass: PassIndex, tick: TickIndex, group: GroupId, cost: u64) {
+        let due = TickIndex::new(tick.get().saturating_add(cost));
+        self.occupancies.insert(group, Occupancy { pass, due });
+
+        let held = u32::try_from(
+            self.occupancies
+                .values()
+                .filter(|occupancy| occupancy.due > self.tick)
+                .count(),
+        )
+        .unwrap_or(u32::MAX);
+        if held > self.config.workers() {
+            self.fault(SchedulingViolation::WorkerCountExceeded {
+                pass,
+                group,
+                workers: self.config.workers(),
+            });
         }
     }
 
@@ -1098,7 +1388,13 @@ impl Fold {
         });
     }
 
-    fn complete(&mut self, pass: PassIndex) {
+    fn complete(&mut self, pass: PassIndex, tick: TickIndex) {
+        // A tick retires at most one plan, the counterpart of the rule that it
+        // arms at most one.
+        if self.last_retired.is_some_and(|last| tick <= last) {
+            self.fault(SchedulingViolation::PassBoundaryReused { pass, tick });
+        }
+        self.last_retired = Some(tick);
         let Some(open) = self.open.take() else {
             self.fault(SchedulingViolation::PassOutOfOrder {
                 expected: self.next_pass,
@@ -1162,7 +1458,7 @@ impl Fold {
                 counter: state.counter,
                 queued: queue_len(state),
                 quota: state.quota,
-                servicing: state.servicing,
+                servicing: self.occupied(*group),
             })
             .collect::<Vec<_>>();
         let live_groups = groups
@@ -1177,8 +1473,8 @@ impl Fold {
         let poisoned_groups = groups.iter().filter(|view| view.poisoned).count();
         let ready_groups = self
             .groups
-            .values()
-            .filter(|state| state.is_ready())
+            .keys()
+            .filter(|group| self.is_ready(**group))
             .count();
 
         Replay {

@@ -161,6 +161,11 @@ pub enum HistoryEvent {
         availability: GroupAvailability,
     },
     /// A worker's occupancy ended and its group may be dispatched again.
+    ///
+    /// This is a report of an instant, never a grant of one. The instant a
+    /// dispatch's occupancy ends is `dispatch tick + dispatch cost`, and both
+    /// are recorded, so an observer decides for itself whether this event
+    /// arrived when it was due, early, or at all.
     WorkerReleased {
         /// Tick the worker came free at.
         tick: TickIndex,
@@ -180,9 +185,17 @@ pub enum HistoryEvent {
         plan: Vec<GroupId>,
     },
     /// A group in the armed plan took its turn.
+    ///
+    /// The tick is what makes a dispatch's worker occupancy derivable: an
+    /// occupancy opens here and is due to end at `tick + cost`. Without the
+    /// instant the turn was taken there is no deadline to hold the scheduler
+    /// to, and an occupancy nobody can time out is a group nobody can prove
+    /// was starved.
     GroupOffered {
         /// Pass the turn belonged to.
         pass: PassIndex,
+        /// Tick the turn was taken at.
+        tick: TickIndex,
         /// Group whose turn it was.
         group: GroupId,
         /// What the group did with it.
@@ -244,6 +257,11 @@ impl HistoryEvent {
     }
 
     /// Returns the pass a scheduling event belongs to.
+    ///
+    /// The match is exhaustive rather than defaulted. A catch-all would answer
+    /// `None` for a future scheduling event that does belong to a pass, and it
+    /// would do so silently; naming every variant makes adding one a decision
+    /// the compiler insists on.
     #[must_use]
     pub const fn pass(&self) -> Option<PassIndex> {
         match *self {
@@ -251,7 +269,34 @@ impl HistoryEvent {
             | Self::GroupOffered { pass, .. }
             | Self::WorkServiced { pass, .. }
             | Self::PassCompleted { pass, .. } => Some(pass),
-            _ => None,
+            Self::Invoked { .. }
+            | Self::Completed { .. }
+            | Self::Unknown { .. }
+            | Self::NotAdmitted { .. }
+            | Self::AvailabilityReported { .. }
+            | Self::WorkerReleased { .. } => None,
+        }
+    }
+
+    /// Returns the tick a scheduling event was recorded at.
+    ///
+    /// Only the scheduler's own decisions carry a tick, because only they
+    /// happen at one. An observer folds these to keep a tick reference of its
+    /// own, which is what lets it decide whether a worker occupancy has run
+    /// past the cost that opened it.
+    #[must_use]
+    pub const fn tick(&self) -> Option<TickIndex> {
+        match *self {
+            Self::AvailabilityReported { tick, .. }
+            | Self::WorkerReleased { tick, .. }
+            | Self::PassArmed { tick, .. }
+            | Self::GroupOffered { tick, .. }
+            | Self::PassCompleted { tick, .. } => Some(tick),
+            Self::Invoked { .. }
+            | Self::Completed { .. }
+            | Self::Unknown { .. }
+            | Self::NotAdmitted { .. }
+            | Self::WorkServiced { .. } => None,
         }
     }
 }

@@ -218,6 +218,7 @@ fn rearming_a_plan_that_still_owes_a_turn_is_a_violation() {
     });
     events.push(HistoryEvent::GroupOffered {
         pass: pass(1),
+        tick: support::tick(1),
         group: group(0),
         outcome: OfferOutcome::Dispatched {
             serviced: 1,

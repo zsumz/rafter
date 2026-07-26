@@ -14,12 +14,13 @@
 use std::{collections::BTreeMap, fmt};
 
 use rafter_reference_sharded_counter::{
-    AdmissionOutcome, ClientId, CounterCommand, Delta, FailureRecord, GroupId, GroupIncarnation,
-    HistoryEvent, LifecycleRequest, LifecycleTransition, ManagedScheduler, Offer, OfferOutcome,
-    Operation, OperationId, OperationOutcome, PassIndex, PassProgress, ReadinessSignal,
-    ReferenceScheduler, RequestFingerprint, RequestIdentity, SchedulerConfig, SchedulingViolation,
-    Sequence, ServiceCost, ServiceRecord, SessionEpoch, SessionOutcome, SystemClass, TickIndex,
-    TickReport, Work, WorkId, WorkQuota,
+    AdmissionOutcome, ClientId, CounterCommand, Delta, FailureRecord, FairnessReport,
+    GroupAvailability, GroupId, GroupIncarnation, HistoryEvent, LifecycleRequest,
+    LifecycleTransition, ManagedScheduler, Offer, OfferOutcome, Operation, OperationId,
+    OperationOutcome, PassIndex, PassProgress, ReadinessSignal, ReferenceScheduler, Replay,
+    RequestFingerprint, RequestIdentity, SchedulerConfig, SchedulingViolation, Sequence,
+    ServiceCost, ServiceRecord, SessionEpoch, SessionOutcome, SystemClass, TickIndex, TickReport,
+    Work, WorkId, WorkQuota,
 };
 
 /// Builds a scheduler configuration, panicking on inadmissible bounds.
@@ -378,6 +379,7 @@ impl Recorder {
         for Offer { group: id, outcome } in report.offers.clone() {
             self.record(HistoryEvent::GroupOffered {
                 pass: current,
+                tick: report.tick,
                 group: id,
                 outcome,
             });
@@ -467,6 +469,149 @@ impl Recorder {
     }
 }
 
+/// A history written by hand, decision by decision.
+///
+/// [`Recorder`] can only produce histories the model produces, which is
+/// precisely why it cannot express the ones worth auditing: a scheduler that
+/// omits a release, prices a turn wrongly, or arms two plans in one tick. This
+/// builder writes those down directly, so the oracle can be asked what it makes
+/// of decisions no correct scheduler would take.
+///
+/// It decides nothing. Every method appends the event it names, exactly as
+/// named — a builder that corrected its caller would be unable to state the
+/// case under test.
+#[derive(Clone, Default)]
+pub struct History {
+    events: Vec<HistoryEvent>,
+    next_operation: u64,
+}
+
+impl fmt::Debug for History {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("History")
+            .field("events", &self.events.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl History {
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    #[must_use]
+    pub fn events(&self) -> &[HistoryEvent] {
+        &self.events
+    }
+
+    /// Folds the history under `bounds` and returns the audit's verdict.
+    pub fn audit(&self, bounds: SchedulerConfig) -> Result<FairnessReport, SchedulingViolation> {
+        self.replay(bounds).fairness
+    }
+
+    /// Folds the history under `bounds` and returns everything it implies.
+    #[must_use]
+    pub fn replay(&self, bounds: SchedulerConfig) -> Replay {
+        let mut oracle = ReferenceScheduler::new(bounds);
+        oracle.observe_all(self.events.iter().cloned());
+        oracle.replay()
+    }
+
+    pub fn invoke(&mut self, operation: Operation) -> &mut Self {
+        self.next_operation += 1;
+        self.events.push(HistoryEvent::Invoked {
+            operation_id: OperationId::new(self.next_operation),
+            operation,
+        });
+        self
+    }
+
+    /// Creates, recovers, and serves a group.
+    pub fn open_group(&mut self, id: GroupId, work_quota: u32) -> &mut Self {
+        for request in [
+            create(work_quota),
+            LifecycleRequest::Recover,
+            LifecycleRequest::Serve,
+        ] {
+            self.invoke(Operation::Lifecycle { group: id, request });
+        }
+        self
+    }
+
+    pub fn submit(&mut self, id: GroupId, item: Work) -> &mut Self {
+        self.invoke(Operation::Submit {
+            group: id,
+            incarnation: GroupIncarnation::first(),
+            work: item,
+        })
+    }
+
+    pub fn armed(&mut self, index: u64, at: u64, plan: Vec<GroupId>) -> &mut Self {
+        self.events.push(HistoryEvent::PassArmed {
+            pass: pass(index),
+            tick: TickIndex::new(at),
+            plan,
+        });
+        self
+    }
+
+    pub fn dispatched(
+        &mut self,
+        index: u64,
+        at: u64,
+        id: GroupId,
+        serviced: u32,
+        turn_cost: u64,
+    ) -> &mut Self {
+        self.events.push(HistoryEvent::GroupOffered {
+            pass: pass(index),
+            tick: TickIndex::new(at),
+            group: id,
+            outcome: OfferOutcome::Dispatched {
+                serviced,
+                cost: turn_cost,
+            },
+        });
+        self
+    }
+
+    pub fn serviced(&mut self, index: u64, id: GroupId, item: u64) -> &mut Self {
+        self.events.push(HistoryEvent::WorkServiced {
+            pass: pass(index),
+            group: id,
+            work: work(item),
+        });
+        self
+    }
+
+    pub fn reported(&mut self, at: u64, id: GroupId, availability: GroupAvailability) -> &mut Self {
+        self.events.push(HistoryEvent::AvailabilityReported {
+            tick: TickIndex::new(at),
+            group: id,
+            availability,
+        });
+        self
+    }
+
+    pub fn released(&mut self, at: u64, id: GroupId) -> &mut Self {
+        self.events.push(HistoryEvent::WorkerReleased {
+            tick: TickIndex::new(at),
+            group: id,
+        });
+        self
+    }
+
+    pub fn retired(&mut self, index: u64, at: u64) -> &mut Self {
+        self.events.push(HistoryEvent::PassCompleted {
+            pass: pass(index),
+            tick: TickIndex::new(at),
+        });
+        self
+    }
+}
+
 /// A deliberately unfair scheduler, written down as the decisions it makes.
 ///
 /// This variant always plans the group with the most queued work and nothing
@@ -476,9 +621,11 @@ impl Recorder {
 /// decisions, and a history is exactly a record of decisions.
 ///
 /// Everything else it does is correct: its passes are ordered, its turns are
-/// taken once, its quota is respected, and its work is serviced in priority and
-/// arrival order. That is deliberate. A negative control that broke several
-/// rules at once would not show which rule the audit caught.
+/// taken once, its quota is respected, its work is serviced in priority and
+/// arrival order, and every worker it takes is released at exactly the tick
+/// its cost comes due. That is deliberate, and the last of those is the point:
+/// a negative control that also mishandled its occupancies would be caught by
+/// the occupancy derivation instead, and would prove nothing about the gap.
 pub struct UnfairScheduler {
     favored: GroupId,
     starved: GroupId,
@@ -573,9 +720,14 @@ impl UnfairScheduler {
             work: system(SystemClass::Bulk, 1),
         });
 
+        // Every item costs one tick, so a turn that fills the quota occupies a
+        // worker for `quota` ticks and the release falls on the next pass's
+        // tick. Spacing the passes by that cost is what keeps this variant
+        // unfair in exactly one way.
+        let turn_cost = u64::from(self.quota.get());
         let mut next_work = 1_u64;
         for index in 0..self.passes {
-            self.now += 1;
+            self.now += turn_cost;
             let current = pass(u64::from(index) + 1);
             if index > 0 {
                 self.events.push(HistoryEvent::WorkerReleased {
@@ -590,10 +742,11 @@ impl UnfairScheduler {
             });
             self.events.push(HistoryEvent::GroupOffered {
                 pass: current,
+                tick: TickIndex::new(self.now),
                 group: self.favored,
                 outcome: OfferOutcome::Dispatched {
                     serviced: self.quota.get(),
-                    cost: self.quota.get(),
+                    cost: turn_cost,
                 },
             });
             for _ in 0..self.quota.get() {

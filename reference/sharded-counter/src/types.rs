@@ -1015,7 +1015,20 @@ pub enum OfferOutcome {
         /// Items serviced in this opportunity.
         serviced: u32,
         /// Worker occupancy the opportunity consumed, in ticks.
-        cost: u32,
+        ///
+        /// This is the sum of the [`ServiceCost`]s of the items the turn
+        /// serviced, and it is *derivable*: an observer that knows the group's
+        /// queue knows what the turn had to cost. The reference oracle derives
+        /// it and rejects a dispatch that claims anything else, so this number
+        /// is a report rather than a self-certification.
+        ///
+        /// The width is the reason it cannot silently under-charge. A turn
+        /// services at most [`WorkQuota`] items, each costing at most
+        /// [`ServiceCost`]; both are `u32`, so the largest turn any
+        /// configuration admits costs `(2^32 - 1)^2`, which is below `u64::MAX`.
+        /// A `u32` accumulator saturated instead, and a saturated occupancy is
+        /// an under-charge that nothing downstream could detect.
+        cost: u64,
     },
     /// The group was offered its turn and had nothing to take.
     Skipped(SkipReason),
@@ -1027,6 +1040,15 @@ impl OfferOutcome {
     pub const fn serviced(self) -> u32 {
         match self {
             Self::Dispatched { serviced, .. } => serviced,
+            Self::Skipped(_) => 0,
+        }
+    }
+
+    /// Returns the worker occupancy the opportunity consumed, in ticks.
+    #[must_use]
+    pub const fn cost(self) -> u64 {
+        match self {
+            Self::Dispatched { cost, .. } => cost,
             Self::Skipped(_) => 0,
         }
     }
@@ -1140,7 +1162,14 @@ pub struct GroupView {
     pub queued: u32,
     /// Work quota for this incarnation.
     pub quota: WorkQuota,
-    /// Whether the group is currently occupying a worker.
+    /// Whether the group is occupying a worker whose cost is not yet paid.
+    ///
+    /// This is a derived fact, not a scheduler-authored flag. An occupancy
+    /// opens when a turn dispatches and ends exactly `cost` ticks later, where
+    /// `cost` is the sum of the serviced items' [`ServiceCost`]s. A scheduler
+    /// that simply stopped reporting the end of an occupancy would hold its
+    /// group out of every future plan, which is why the end is derived rather
+    /// than believed.
     pub servicing: bool,
 }
 
