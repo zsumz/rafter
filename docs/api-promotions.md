@@ -3809,6 +3809,13 @@ is a defect the previous subsection's own fix 1 introduced, which is recorded
 here rather than corrected in place because a design block is immutable as
 approved.
 
+A second adversarial hunt attacked these fixes and reproduced five more, four of
+them a fix below failing on its own written terms. They are designed in
+[Third revision after adoption (2026-07-25)](#third-revision-after-adoption-2026-07-25),
+which is current truth wherever the two disagree; the three places they disagree
+are fix 3's all-or-nothing justification, fix 2's list of drained call sites, and
+fix 6's claim that a drop-vs-poll race cannot exist, and each is named there.
+
 Nothing below reopens the entry's shape. The driver still owns one replica, one
 movable slot, and two waiter tables. What changes is that every statement the
 driver makes about a client's operation is now one it observed, and every
@@ -4539,6 +4546,380 @@ file:
 - The review's seven held-under-attack probes are kept as written; they pass
   before and after, and their job is to fail if a fix moves something it was
   not meant to move.
+
+### Third revision after adoption (2026-07-25)
+
+A second adversarial hunt attacked the subsection above and reproduced five
+findings. Four of them are one of those fixes failing on its own written terms —
+a fence the fix exists to apply, dropped; a call site the fix enumerated by
+name, missed; a sentence the fix wrote into a doc comment, made false by the
+fix's own mechanism; a rule the fix stated, applied to one of the three
+situations that satisfy it. The fifth is the same fate rule read one step
+further. Nothing here reopens the entry's shape either.
+
+The rule the second revision stated still governs — *a driver reports what it
+observed, and says "unknown" for everything else* — and this subsection adds the
+one the hunt makes unavoidable: **a promise in a doc comment is a claim about
+the code under it, so the test that carries the fix's name covers every branch
+the claim covers.** Three of the five findings were reachable because a named
+test covered a fraction of its stated scope, and each fix below says which
+branches its test now exercises.
+
+#### 1. A committed removal is fenced whether or not the peer set could be published
+
+`publish_membership` decides two things and had one exit. It computes the
+principals for the new peer set, and on the first replica the validator cannot
+name it counts a refusal and returns — before the fencing loop, which is the
+other half of the method. So a membership event that both narrows the set and
+licenses a fence applies neither, and the replica the cluster committed the
+removal of is fenced by nothing.
+
+The second revision justified the refusal like this: "refusing to publish leaves
+the previous set in place, which is merely stale." Both halves are false as the
+code implements them. The previous set is *not* left in place — `known_members`
+is assigned before the loop that refuses, so the driver's own record has already
+advanced past the removal, and no later `Applied` can re-derive it because the
+difference it would be derived from is gone. And the consequence is not
+staleness. `update_peers` is the admission boundary in the consumer that adopted
+this driver, so both of the controls a committed removal is supposed to install
+— a peer set that no longer lists the replica, and a fence against it — are
+missed at once, permanently, by a driver that reports its group healthy. That is
+the exact hazard the fix exists to close, reached through the fix.
+
+**The sentence is true of the peer set and false of the fence, so the two
+separate.**
+
+```rust
+/// Publishes the current membership as a peer set, or publishes nothing.
+///
+/// All or nothing, for the reason the second revision gives: a partial peer
+/// set authorizes fewer replicas than the cluster has.
+fn update_transport_peers(&mut self);
+
+/// Fences every principal a committed removal took out of the set.
+///
+/// Per principal rather than all-or-nothing, because the two statements have
+/// different shapes. A peer set is one statement about a whole cluster, and a
+/// partial one is a quorum-splitting configuration change made by accident. A
+/// fence is one statement about one replica, and fencing three of four removed
+/// replicas is strictly better than fencing none of them.
+fn fence_removed_peers(&mut self, removed: Vec<NodeId>);
+```
+
+`publish_membership` calls both, in that order, on every path. A replica the
+validator cannot name is still counted — `refused_peer_updates` already
+documents itself as covering "either the transport refused the update or the
+validator could not name a principal", and an unfenceable removal is the second
+of those.
+
+`known_members` still advances when publication was refused, and that is not the
+defect. Its own doc comment gives the reason and the reason is right: it is the
+driver's record of what the group says, not of what the link layer accepted, so
+a later committed removal is computed against the membership the cluster had.
+Once the fence runs unconditionally, advancing it is what makes the next removal
+correct too.
+
+**The named test covered a quarter of its stated scope.** The second revision
+asked `membership_reaches_the_transports_peer_set` to "assert the peer set is
+published at construction, widened on `Appended`, narrowed on `Applied`, and
+that a removed replica is fenced". What shipped was
+`membership_is_published_to_the_transport_at_construction`, which asserts the
+first clause; `fence_peer` had no caller in any test in the workspace, which is
+how a fix whose whole subject is fencing shipped without fencing anything. The
+test returns to its name and its four clauses.
+
+One of the four cannot be reached the way the others can, and the honest place
+to say so is here. `MembershipEvent::Appended` is emitted only when the step
+carried a membership *request*
+([`crates/rafter-app/src/group/membership.rs:60-63`](../crates/rafter-app/src/group/membership.rs)),
+which means `GroupInput::Membership` — an input `TransportRaftDriver` has no
+public method that produces, and deliberately: a membership-change API on this
+driver is a promoted mechanism with no consumer behind it. So the widening arm
+is live code with no public route to it today, and it is pinned by an in-crate
+test that hands the router the event directly. Recording that is the point: the
+arm is not dead, it is waiting for the entry point, and a test that quietly
+skipped it is how this finding was possible.
+
+#### 2. The drain runs on the leadership-transfer step, which fix 2 named
+
+Fix 2 chose its call sites by "can this poison" and listed four: "`step` (tick,
+delivery, and the proposing step), `apply_recovery_outputs`, `attempt_read`, and
+the leadership-transfer step." The first three route through the state's
+`step_group`, which drains on both paths. The fourth calls
+`group_mut().step_with_options(...)` directly and drains on neither.
+
+The reproduction poisons on the transfer step: a tracked proposal is appended
+and pending, the transfer step commits and applies it, the state machine refuses
+the apply, and the group poisons — capturing the proposal on the way down. When
+`transfer_leadership` returns, the client is unresolved and the group is still
+holding what it captured.
+
+The strand is a deferral rather than a permanent loss, because any later call
+through `step_group` drains on its error path. Naming that is what keeps the
+severity honest, and it is also what makes the fix worth making rather than
+merely tidy: the rescue is incidental, and the one supervisor behaviour the
+entry actually documents does not produce it. A supervisor whose reaction to a
+failed transfer is `release_group` gets `DriverReleased` — the driver retired
+the incarnation — for a client whose group had already poisoned under it. Two
+different facts, and the driver reports the one it did not observe first.
+
+The transfer step needs one thing out of its report before the report is routed,
+which is why it stepped the group itself: whether the target was rejected. That
+is a reason to have a second entry point, not a reason to bypass the drain, so
+the state grows one:
+
+```rust
+/// Steps the group with a leadership transfer, reporting the rejection it saw.
+///
+/// Everything else is [`TransportDriverState::step_group`], the poison drain on
+/// both paths included. The only difference is the return value: a transfer has
+/// no waiter table, so the one fact its caller needs is read out of the report
+/// before the report is routed and consumed.
+fn step_transfer(
+    &mut self,
+    target: NodeId,
+) -> Result<Option<TransferLeadershipError>, StepFailure<A::Error, R::Error>>;
+```
+
+**Ordering, which is fix 2's own.** The drain runs before the step error becomes
+the transfer's error, and `resolve_write` keeps the first outcome, so a proposal
+the poison captured answers `GroupPoisoned` and the transfer's own failure
+reaches only the transfer's caller. The transfer future is unaffected: it still
+resolves from the rejection event or from `transfer_error_from_group`.
+
+#### 3. A dropped client future reclaims its waiter without re-entering the lock
+
+Fix 6 made a future's `Drop` the reclamation, and reclamation takes the driver's
+lock. `with_group` documents the rule the other way round:
+
+```rust
+/// The closure runs with the driver locked, so it must not call back into
+/// this driver. A shared borrow of the group offers no way to.
+```
+
+The second sentence is now false, and not because a closure found a way to call:
+dropping a value the closure already owns is not a call, needs no borrow of
+anything, and reaches `discard_write`/`discard_read` through `Drop`.
+`std::sync::Mutex` is not reentrant, so the thread stops there. The reproduction
+hangs on both sides — a write future and a read future — and needs a watchdog to
+report rather than to hang the suite.
+
+`with_group` is only the *documented* place a caller's code runs under this
+lock. The driver runs an embedder's code under it in four more:
+`RaftTransport::send` and `send_snapshot_chunk` and `update_peers` and
+`fence_peer` from `route_report`, `ReplicatedStateMachine::apply` and `read`
+from inside a group step, and `Waker::wake` from `resolve_write` and
+`resolve_read` — the last of which reaches an arbitrary executor. Any of them
+may own a client future: a transport that kept one to retry, a task a waker
+resumes inline. Each is the same deadlock, and each is invisible until it
+happens.
+
+**Chosen: reclamation never blocks.** `Drop` asks for the lock and does not wait
+for it. A guard that cannot have it puts its waiter on a side queue that the
+next lock acquisition drains, so the reclamation is deferred rather than lost
+and nothing on the drop path can block.
+
+```rust
+/// One driver's shared state, and the reclamations that could not run yet.
+///
+/// Two locks rather than one, because the second exists to be takeable when the
+/// first is not. A client future's `Drop` may run on a thread that already
+/// holds `state` — inside `with_group`, inside a transport call, inside a state
+/// machine apply, inside a waker — and a `Drop` that waited for `state` there
+/// would stop that thread forever.
+pub(super) struct DriverShared<G, A, R, T, V> {
+    state: Mutex<TransportDriverState<G, A, R, T, V>>,
+    /// Waiters whose client futures were dropped while `state` was held.
+    ///
+    /// Locked only across a push and a take. No group method, no transport
+    /// call, and no embedder code ever runs under it, so it is a leaf and
+    /// cannot be the next revision's version of this finding.
+    deferred: Mutex<Vec<WaiterId>>,
+}
+
+impl<G, A, R, T, V> DriverShared<G, A, R, T, V> {
+    /// Locks the driver, reclaiming anything a drop had to defer first.
+    fn lock(&self) -> MutexGuard<'_, TransportDriverState<G, A, R, T, V>>;
+
+    /// Reclaims one dropped future's waiter now, or leaves it for the next
+    /// acquisition.
+    fn reclaim(&self, waiter: WaiterId);
+}
+```
+
+**Why `try_lock` decides it, and why it cannot decide wrongly.** `try_lock`
+hands out a `MutexGuard`, so it cannot succeed on a thread that already holds
+one: the two guards would alias the same `&mut`. A re-entrant drop therefore
+always takes the deferred path, by the type system rather than by a platform
+detail. The converse mistake costs nothing — deferring because another thread
+happened to hold the lock reclaims at the next acquisition, and every public
+method of the driver acquires.
+
+**The drain takes batches until the queue is empty.** Reclaiming a read
+publishes metrics, publishing metrics wakes watchers under the lock, and a woken
+task may drop another future, which defers onto the queue the current holder is
+already draining. So the drain loops. It terminates for the reason the table is
+bounded at all: each entry comes from one guard, and a guard reclaims once.
+
+**What `with_group` can promise now.** The rule stays — the closure must not
+call into this driver, because a second `lock` on the same thread is a deadlock
+and `with_group` cannot prevent one: the closure is an `impl FnOnce` and may
+capture a driver clone, which the deleted sentence was wrong about too. What
+replaces that sentence is the guarantee a caller needs and can rely on:
+**dropping a value is not calling in.** A client future of either kind, resolved
+or not, may be dropped inside the closure — and inside a transport call, a state
+machine apply, or a waker — and its waiter is reclaimed with no lock taken on
+the dropping thread. Polling one is still a call, and still forbidden.
+
+**Corrects fix 6's "no window" claim, without weakening it.** That fix argued
+the late poll is safe "because the entry is still there. There is no window:
+only the future's own `Drop` removes it, and a future cannot be dropped and
+polled." Both sentences hold, and a deferred entry opens no window, because a
+deferred entry belongs to a future that has already been dropped and can
+therefore never be polled. What the argument did not say is the thing this fix
+supplies: `Drop` must be able to *run* everywhere a future can be dropped.
+
+**Rejected: remove the waiter without the lock.** The tables are `BTreeMap`s
+inside the state. Making them concurrent maps would move the waiter tables
+outside the invariant that everything one step observes is decided under one
+lock, to buy a removal path for a case the deferral already handles.
+
+**Rejected: a reentrant lock.** It would let a `with_group` closure call `tick`
+and step the group from inside a `route_report`, which is the aliasing the
+`&RaftGroup` borrow exists to prevent. The defect is not that the lock refuses
+re-entry; it is that `Drop` asked for it.
+
+#### 4. A refusal the group made before it proposed is `NotAppended`
+
+The second revision's fate table ends with "any other group error from the
+proposing step → `Unresolved`, because the driver asked a group to propose and
+did not learn what happened." That row is right for a group error that is
+genuinely opaque, and two of the errors falling into it are not opaque at all.
+They are the same shape as the row above them —
+`GroupError::NonMonotonicLocalProposalId`, which the table already recognises as
+"the group refuses before it proposes" — so the rule does not change; two more
+situations are recognised as satisfying it.
+
+| Group error | Fate | Why the refusal is the whole event |
+| --- | --- | --- |
+| `GroupError::Poisoned` | `NotAppended` | `reject_if_poisoned()` is `step_with_options`'s first statement and the only producer of the variant ([`crates/rafter-app/src/group/poison.rs:14-21`](../crates/rafter-app/src/group/poison.rs)). A step that *becomes* poisoned reports `StateMachine` or `MalformedSnapshot` instead, so this variant means the group refused before it looked at the proposal. |
+| `GroupError::StateMachine { operation: EncodeCommand }` | `NotAppended` | `step_proposal` encodes before it inserts into `pending_proposals` and before it calls `raft.step` ([`group/proposal.rs:230-242`](../crates/rafter-app/src/group/proposal.rs)), and the service layer's own mapping comment already says encoding touches no storage. |
+
+Every other `StateMachine` operation stays `Unresolved`. `Apply` and
+`ApplyBatch` run after the append, on an entry the log already holds, and that
+is precisely the case fix 1 exists for.
+
+The poisoned row is worth naming separately because of how common it is: it is
+the fate of *every write after the first* on a poisoned replica, which is the
+most-travelled failing-write path the driver has. Telling those callers
+`Unresolved` says their request identity may be spent and forecloses the retry
+under a fresh identity that is, here, exactly the safe thing to do.
+
+#### 5. Two statements the public surface makes that the code stopped honoring
+
+**`drive_pending_reads` still describes the driver it replaced.** Its doc opens
+"Retries every unresolved read barrier. A granted barrier is consumed by a later
+read call rather than announced by an event, so a driver that only ticks and
+delivers leaves granted proofs uncollected." The first revision's fix 1 made
+grants announced and its fix 5 made the retry grant-gated: the method now
+attempts exactly the barriers a routed `ReadEvent::Granted` named, and is a
+no-op for the rest. Its error clause is stale for the same reason one level
+down — the second revision's fix 4 narrowed what can leave this method to
+`ManagedDriverError::NoGroup`, and said so ("the doc comment's error clause
+narrows to that, and becomes true rather than aspirational"), and the doc
+comment was not narrowed. Both are corrected against the private
+`drive_pending_reads` beneath them, which already says the true thing.
+
+**`refused_sends` counts one thing it does not name, and that is the right
+place for it.** It reads "how many outbound frames the attached transport
+refused", and since the second revision it also counts a refused
+`send_snapshot_chunk` — which is a directive, not a frame, as that same
+subsection is at pains to establish.
+
+The question the split of `refused_peer_updates` raises is whether the chunk
+directive deserves its own counter too, and that subsection states the criterion
+that answers it: the two counters are separate "because a dropped frame is
+routine and Raft re-sends, while a peer set that never updated does not repair
+itself". A refused chunk directive repairs itself, and the kernel says so in the
+contract the driver routes it under — "the transfer resumes from the follower's
+acknowledged offset once the source and the kernel agree on the current snapshot
+again". So a refused directive belongs with the refused frames by the criterion
+already written down, and `refused_sends` is corrected to name both producers
+rather than split. A third counter would assert a distinction the contract
+denies.
+
+#### Blast radius of the third revision
+
+| File | Change |
+| --- | --- |
+| [`crates/rafter-service/src/driver/transport/state.rs`](../crates/rafter-service/src/driver/transport/state.rs) | Membership publication splits into peer-set and fence halves; `step_transfer`; `DriverShared` |
+| `crates/rafter-service/src/driver/transport/state/tests.rs` | New: the membership branch with no public entry point. Split out rather than inlined because the file-size guard's hard limit is a thousand lines and `state.rs` was at 1,023 with the module in it |
+| [`crates/rafter-service/src/driver/transport.rs`](../crates/rafter-service/src/driver/transport.rs) | The shared state becomes `DriverShared`; the guard reclaims through it; the transfer routes through `step_transfer`; `with_group`, `drive_pending_reads`, and `refused_sends` doc comments |
+| [`crates/rafter-service/src/driver/transport/waiters.rs`](../crates/rafter-service/src/driver/transport/waiters.rs) | Two more `NotAppended` situations in `write_failure` |
+| [`crates/rafter-service/tests/transport_streams.rs`](../crates/rafter-service/tests/transport_streams.rs) | `membership_reaches_the_transports_peer_set` at its stated scope, plus the fence reproductions |
+| [`crates/rafter-service/tests/transport_waiters.rs`](../crates/rafter-service/tests/transport_waiters.rs) | The re-entrancy reproductions and the concurrency probes |
+| [`crates/rafter-service/tests/transport_failures.rs`](../crates/rafter-service/tests/transport_failures.rs) | The two fate reproductions and the transfer-drain reproductions |
+
+Entirely internal. No public signature, variant, or trait method changes, and
+the three behavioural changes a correct caller can see are: a committed removal
+now fences even when the peer set could not be published, a write refused by an
+already-poisoned group or by a failing encoder now reports `NotAppended` where
+it reported `Unresolved`, and dropping a client future under the driver's lock
+now returns instead of hanging.
+
+#### Focused-test plan for the third revision
+
+Every reproduction becomes a regression test with its assertion inverted,
+keeping its fixture and keeping its name wherever the name still describes the
+scenario rather than the defect.
+
+In `crates/rafter-service/tests/transport_streams.rs`:
+
+- `membership_reaches_the_transports_peer_set` — the named test at its stated
+  scope: published at construction, widened on `Appended` and never narrowed
+  there, narrowed on `Applied`, and the removed replica fenced. The widening
+  clause is the one with no public route, so it is pinned in-crate; the other
+  three run against a scripted runtime whose committed membership shrinks.
+- `a_committed_removal_is_fenced_even_when_the_peer_set_cannot_be_published` —
+  the reproduction. One replica unnameable, the removed replica nameable;
+  assert the fence, and assert `refused_peer_updates` still counts the
+  publication that did not happen.
+- `a_removed_replica_cannot_speak_after_the_publication_was_refused` — the
+  consequence, at the boundary a consumer sees: `deliver` refuses the frame.
+- `an_unfenceable_removal_is_counted_rather_than_silent` — the removed
+  replica is the one the validator cannot name; nothing is fenced, and
+  `refused_peer_updates` says so.
+
+In `crates/rafter-service/tests/transport_failures.rs`:
+
+- `a_poison_on_the_leadership_transfer_step_resolves_its_client` and
+  `the_leadership_transfer_step_drains_the_groups_poisoned_waiters` — the two
+  halves of the transfer reproduction, on the `Err` path.
+- `releasing_after_a_transfer_poison_reports_the_poison` — the supervisor
+  reaction the entry documents, asserting `GroupPoisoned` rather than
+  `DriverReleased`.
+- `a_transfer_that_is_rejected_still_resolves_its_own_future` — the `Ok` path
+  through the new entry point, so routing the rejection is not lost to the
+  drain.
+- `a_write_to_an_already_poisoned_group_is_not_appended` and
+  `an_encode_failure_is_not_appended` — the two fate reproductions, each
+  asserting the evidence that makes the fate provable rather than the fate
+  alone: no proposal tracked, and the log index unmoved.
+
+In `crates/rafter-service/tests/transport_waiters.rs`:
+
+- `dropping_an_unresolved_write_future_inside_with_group_reclaims_it` and its
+  read counterpart — the re-entrancy reproductions, keeping their watchdog so a
+  regression reports a deadlock instead of hanging the suite.
+- `dropping_a_future_inside_a_transport_call_reclaims_it` — the same hazard at
+  the site an embedder reaches without reading `with_group`'s doc at all.
+- `a_deferred_reclamation_is_taken_by_the_next_lock_acquisition` — the deferral
+  itself, asserted rather than inferred: drop under the lock, then observe the
+  waiter and its barrier gone after the next driver call.
+- The hunt's five concurrency probes and its four ordering probes are kept as
+  written, for the reason the second revision kept its own: they pass before and
+  after, and their job is to fail if a fix moves something it was not meant to
+  move.
 
 ## Terminal Driver Vocabulary
 
