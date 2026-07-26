@@ -22,6 +22,15 @@
 //!   scarce — it is the *obligation* that is scarce, and a replica holding no
 //!   obligation must stay silent.
 //!
+//! # How far a request travels
+//!
+//! A node that cannot serve a request hands it to the leader it knows — once.
+//! [`Reception`] records where the request came from, and
+//! [`InitializedNode::forward_or_reply`] relays only what came from a client,
+//! so a `client_forward` is never itself forwarded. The bound is structural
+//! rather than a counter on the wire, and it holds however wrong `known_leader`
+//! is on however many nodes.
+//!
 //! # Why the two rules differ
 //!
 //! A read exists on one node. A committed write exists on all of them. A read's
@@ -115,6 +124,24 @@ use crate::{
     InitializedNode, PendingRead,
 };
 
+/// Where a client request reached this node from, and therefore what a node
+/// that does not lead may do with it.
+///
+/// These two arms are the whole of the forwarding policy. Nothing else may
+/// decide it: [`InitializedNode::forward_or_reply`] matches on this value
+/// exhaustively, so a third way for a request to arrive cannot be added
+/// without saying there whether it may be relayed onward.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum Reception {
+    /// Straight from the client, which knows no better than to ask whichever
+    /// node it can reach. A node that does not lead may hand the request to
+    /// the leader it last heard from: that is the one hop.
+    FromClient,
+    /// Relayed here by a peer that did not lead either, and that is waiting on
+    /// this node for the answer. The request has already spent its hop.
+    FromPeer(String),
+}
+
 impl InitializedNode {
     pub(crate) fn handle_forward(&mut self, envelope: Envelope) {
         let origin = envelope.src;
@@ -127,7 +154,12 @@ impl InitializedNode {
         let Some(request) = envelope.body.get("request").cloned() else {
             return;
         };
-        self.handle_client_request(origin, client.to_string(), in_reply_to, &request);
+        self.handle_client_request(
+            &Reception::FromPeer(origin),
+            client.to_string(),
+            in_reply_to,
+            &request,
+        );
     }
 
     pub(crate) fn handle_client_result(&mut self, envelope: &Envelope) {
@@ -154,16 +186,28 @@ impl InitializedNode {
         let Some(in_reply_to) = envelope.body.get("msg_id").and_then(Value::as_u64) else {
             return;
         };
-        self.handle_client_request(self.name.clone(), envelope.src, in_reply_to, &envelope.body);
+        self.handle_client_request(
+            &Reception::FromClient,
+            envelope.src,
+            in_reply_to,
+            &envelope.body,
+        );
     }
 
     fn handle_client_request(
         &mut self,
-        origin: String,
+        reception: &Reception,
         client: String,
         in_reply_to: u64,
         body: &Value,
     ) {
+        // Derived, never passed alongside: the node an answer is addressed to
+        // is a function of where the request came from, and two carriers of
+        // that one fact could disagree.
+        let origin = match reception {
+            Reception::FromClient => self.name.clone(),
+            Reception::FromPeer(peer) => peer.clone(),
+        };
         let request = match parse_client_request(body) {
             Ok(request) => request,
             Err(result) => {
@@ -172,7 +216,7 @@ impl InitializedNode {
             }
         };
         if self.node.role() != Role::Leader {
-            self.forward_or_reply(&origin, &client, in_reply_to, body);
+            self.forward_or_reply(reception, &origin, &client, in_reply_to, body);
             return;
         }
         self.known_leader = Some(self.node.id());
@@ -207,28 +251,59 @@ impl InitializedNode {
         }
     }
 
-    fn forward_or_reply(&mut self, origin: &str, client: &str, in_reply_to: u64, body: &Value) {
-        if let Some(leader) = self.known_leader.filter(|leader| *leader != self.node.id()) {
-            self.send_to_node(
-                leader,
-                json!({
-                    "type": "client_forward",
-                    "client": client,
-                    "in_reply_to": in_reply_to,
-                    "request": body,
-                }),
-            );
-        } else {
+    /// Hands a request this node cannot serve to the leader it knows, or says
+    /// that it cannot serve it.
+    ///
+    /// A request is relayed at most once, and this match is what bounds it.
+    /// `known_leader` is a memory, not a fact: [`Self::observe_leader`] records
+    /// whoever last led, and two nodes each holding the other bounce one
+    /// request between them for as long as neither hears from the real leader
+    /// — one `client_forward` per hop, without bound. Refusing to relay a
+    /// request that has already been relayed caps that chain at a single hop
+    /// no matter how stale either memory is.
+    ///
+    /// The cost is a request that would have reached the leader on its second
+    /// hop and now does not. That is the right way to lose: the peer is told
+    /// immediately, `ERROR_TEMPORARILY_UNAVAILABLE` is definite — this node
+    /// appended nothing — and the client reissues. Circulating instead trades
+    /// a bounded retry for an unbounded storm.
+    fn forward_or_reply(
+        &mut self,
+        reception: &Reception,
+        origin: &str,
+        client: &str,
+        in_reply_to: u64,
+        body: &Value,
+    ) {
+        let relay_to = match reception {
+            Reception::FromClient => self.known_leader.filter(|leader| *leader != self.node.id()),
+            Reception::FromPeer(_) => None,
+        };
+        let Some(leader) = relay_to else {
+            let text = match reception {
+                Reception::FromClient => "no Raft leader known yet",
+                Reception::FromPeer(_) => "forwarded request reached a node that does not lead",
+            };
             self.deliver_result(
                 origin,
                 client,
                 in_reply_to,
                 ClientResult::Error {
                     code: ERROR_TEMPORARILY_UNAVAILABLE,
-                    text: "no Raft leader known yet".to_string(),
+                    text: text.to_string(),
                 },
             );
-        }
+            return;
+        };
+        self.send_to_node(
+            leader,
+            json!({
+                "type": "client_forward",
+                "client": client,
+                "in_reply_to": in_reply_to,
+                "request": body,
+            }),
+        );
     }
 
     fn start_read(&mut self, origin: String, client: String, in_reply_to: u64, key: Value) {

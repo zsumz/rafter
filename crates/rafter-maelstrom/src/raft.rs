@@ -214,18 +214,39 @@ impl InitializedNode {
         self.send_to_node(to, json!({ "type": "raft", "frame": frame }));
     }
 
+    /// Remembers which node last spoke here as leader, ignoring a message from
+    /// a term this node has already left behind.
+    ///
+    /// This runs before the step, so `current_term()` is this node's term as
+    /// of just before the message is applied. A leader-bearing message from a
+    /// strictly older term names a leader the cluster has already replaced;
+    /// recording it aims this node's next forward at a node that can only
+    /// refuse it. Accepting an equal term is required, not merely allowed —
+    /// that is the ordinary case of the current leader's own heartbeats.
+    ///
+    /// `known_leader` stays a memory even so, and a stale one is still
+    /// reachable: this node can hold a leader that was current when it last
+    /// heard from it and has since been deposed silently. What bounds the
+    /// damage is [`Self::forward_or_reply`] relaying at most once, not this.
     fn observe_leader(&mut self, message: &Message) {
-        match message {
-            Message::AppendEntries(request) => self.known_leader = Some(request.leader_id),
-            Message::InstallSnapshot(request) => self.known_leader = Some(request.leader_id),
-            Message::InstallSnapshotChunk(request) => self.known_leader = Some(request.leader_id),
-            Message::TimeoutNow(request) => self.known_leader = Some(request.leader_id),
+        let announced = match message {
+            Message::AppendEntries(request) => Some((request.term, request.leader_id)),
+            Message::InstallSnapshot(request) => Some((request.term, request.leader_id)),
+            Message::InstallSnapshotChunk(request) => Some((request.term, request.leader_id)),
+            Message::TimeoutNow(request) => Some((request.term, request.leader_id)),
             Message::RequestVote(_)
             | Message::RequestVoteResponse(_)
             | Message::PreVote(_)
             | Message::PreVoteResponse(_)
             | Message::AppendEntriesResponse(_)
-            | Message::InstallSnapshotResponse(_) => {}
+            | Message::InstallSnapshotResponse(_) => None,
+        };
+        let Some((term, leader_id)) = announced else {
+            return;
+        };
+        if term < self.node.current_term() {
+            return;
         }
+        self.known_leader = Some(leader_id);
     }
 }

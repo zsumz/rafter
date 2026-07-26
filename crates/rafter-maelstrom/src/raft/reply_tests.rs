@@ -23,6 +23,8 @@ use crate::{
     InitializedNode, MaelstromNode, PendingRead,
 };
 
+mod obligation;
+
 static TEST_DIRECTORY_ID: AtomicU64 = AtomicU64::new(0);
 
 /// A node that only replicated somebody else's write does not answer for it.
