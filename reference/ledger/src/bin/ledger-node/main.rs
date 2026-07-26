@@ -36,8 +36,11 @@
 //! work, and it is the only one anybody chooses. The application store refuses
 //! to open when it meets a region this build cannot read, because the
 //! transactions in that region may be ones this replica already answered a
-//! client with; setting this discards the region and reports what it cost. It
-//! is off by default and a restart never turns it on.
+//! client with; setting this discards the region and reports the offset and
+//! byte count it discarded. That is an upper bound on the loss rather than a
+//! count of transactions: frames past an unreadable one cannot be located, let
+//! alone decoded, so nothing computes how many were in them. It is off by
+//! default and a restart never turns it on.
 //!
 //! It is **not** the only way this process can lose acknowledged work, and the
 //! documentation here said for several revisions that it was. A plain restart
@@ -115,11 +118,19 @@
 //! exits `0`. There is no signal handler, and that is a deliberate consequence
 //! of the reference workspace's zero-external-dependency rule — installing one
 //! from `std` alone is not possible. `SIGTERM` and `SIGKILL` therefore both
-//! terminate the process abruptly, which is exactly the crash the store's
-//! contract already covers: the journal is recoverable to the pre- or
-//! post-transaction state and to nothing in between. The process suite uses
-//! `SIGKILL` for that reason — it is the harsher of the two, and no cleanup
-//! path can flatter it.
+//! terminate the process abruptly, which is the crash the store's contract
+//! covers: the journal is recoverable to the pre- or post-transaction state and
+//! to nothing in between. The process suite uses `SIGKILL` for that reason — it
+//! is the harsher of the two, and no cleanup path can flatter it.
+//!
+//! "Exactly the crash" is what this used to say, and a killed process is a
+//! weaker fault than the store's contract admits. The kernel still holds the
+//! page cache, so a `SIGKILL` here loses nothing that reached a `write`, while
+//! the contract also has to survive a power cut that loses a sector or reorders
+//! a writeback. Those are the cases `TornTail::ZeroFilledToEnd` and
+//! `TornTail::NotALedgerFrame` exist for, and killing a process reaches neither
+//! of them. The store's own crash suites inject at byte boundaries to cover
+//! what a signal cannot.
 
 mod peer_codec;
 mod peer_link;

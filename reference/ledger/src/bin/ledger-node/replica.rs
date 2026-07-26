@@ -115,7 +115,10 @@ impl fmt::Display for OpenError {
                 formatter,
                 "the application journal needs an operator decision and this replica will not \
                  serve until it gets one: {detail}. Restarting will not change it. Running with \
-                 --repair-app-store true discards the unreadable region and reports what it cost"
+                 --repair-app-store true discards the unreadable region and reports the offset \
+                 and byte count it discarded, which is an upper bound on the loss and not a \
+                 count of transactions — frames past an unreadable one cannot be located, so \
+                 nothing can count them"
             ),
             Self::Runtime { detail } => write!(formatter, "raft recovery failed: {detail}"),
             Self::Io {

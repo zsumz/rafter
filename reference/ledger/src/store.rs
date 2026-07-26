@@ -1120,6 +1120,22 @@ impl TornTail {
     /// `no_single_byte_change_to_a_sealed_frame_is_ever_truncatable`
     /// checks that exhaustively rather than asserting it here.
     ///
+    /// There is a second thing to say about that assumption, and it is the one
+    /// this store went longest without saying. "A crash leaves a prefix of what
+    /// was written" is a *stronger* model than the one
+    /// [`TornTail::is_truncatable_residue`]'s rule two rests on, which exists
+    /// precisely because a crash can leave a file extended with its data
+    /// missing. The two are not the same physics, and this predicate does not
+    /// get to borrow rule two's model or lend it this proof.
+    ///
+    /// Where they come apart is visible: an append whose *leading* bytes did not
+    /// reach the medium is not a prefix of what was written, and this proof says
+    /// nothing about it. It is `verify_identity`'s answer instead — a foreign
+    /// begin magic, refused — which is fail-closed and costs nothing this
+    /// predicate promised. That case is enumerated on
+    /// [`TornTail::is_truncatable_residue`] rather than left to be met, and the
+    /// proof above is stated for the model it holds under and no wider.
+    ///
     /// The two things this deliberately does **not** cover are
     /// [`TornTail::UnsealedCompleteFrame`] — a whole frame with an unsealed
     /// mark, where step (2) fails and the answer is a refusal — and every shape
@@ -2637,13 +2653,21 @@ fn staged_path(directory: &Path) -> PathBuf {
 /// nothing else in the directory is touched. Leaking is the smaller failure:
 /// residue this store did not create is somebody's evidence.
 ///
-/// Removing this file is safe because there is no other writer. The directory
-/// ownership discipline is what supplies that: a replica takes
-/// `rafter-storage`'s operating-system lock over its Raft store directory
-/// before it opens this journal and holds it for the process's life, so a
-/// second process is refused before it reaches this directory at all. At the
-/// moment this runs there is exactly one live writer, and a staging file
-/// present was abandoned by an incarnation that is gone.
+/// Removing this file is safe when there is no other writer, and this store
+/// does not establish that — it inherits it, or it does not get it at all.
+///
+/// Where it holds: `ledger-node` takes `rafter-storage`'s operating-system lock
+/// over its Raft store directory before it opens this journal and holds it for
+/// the process's life, so a second process is refused before it reaches this
+/// directory. Under that composition a staging file present at this point was
+/// abandoned by an incarnation that is gone, and deleting it loses nothing.
+///
+/// Where it does not: the lock is taken by a different crate, over a different
+/// directory, by a binary this store does not require. Anything that embeds
+/// [`LedgerStore`] directly — including every test in this crate — gets none of
+/// it, and two live stores over one directory would sweep each other's staging
+/// files with nothing raised. That is the embedder's obligation, stated as an
+/// obligation rather than as a fact about this function.
 fn sweep_staged_file(directory: &Path) -> Result<Option<u64>, LedgerStoreError> {
     let path = staged_path(directory);
     let length = match fs::metadata(&path) {

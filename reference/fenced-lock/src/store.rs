@@ -115,7 +115,15 @@
 //! Ownership of that directory is assumed rather than enforced. Two live stores
 //! over one directory would publish into the same slots and destroy each
 //! other's images, and nothing here stops them. A durable process composition
-//! needs a real exclusive lock; that arrives with the process slice.
+//! needs a real exclusive lock.
+//!
+//! This consumer does not have one. It has no binary — the sibling ledger's
+//! `ledger-node` is where a process takes `rafter-storage`'s operating-system
+//! lock over its Raft directory before opening its application store — so for
+//! anything built on this crate the exclusion is the embedder's to supply, and
+//! nothing here will notice its absence. That is a gap in what this crate
+//! demonstrates, not a property of the format, and it is stated in that
+//! direction rather than deferred to a slice this crate does not have.
 //!
 //! Unless a record says otherwise:
 //!
@@ -353,10 +361,15 @@
 //! [`LockStore::open_and_repair`] will not clear either. That order has a cost,
 //! and the cost is named rather than left to be discovered: the version byte is
 //! read before the checksum that covers it, so a single altered version byte
-//! makes a slot unreadable by both entry points. That is a refusal and not a
-//! loss — every byte is still on the medium — and the alternative trades it for
-//! a repair that can discard a newer build's committed work, which is the worse
-//! of the two.
+//! makes a slot unreadable by both entry points. The alternative trades that for
+//! a repair that can discard a newer build's committed work, which is worse.
+//!
+//! "A refusal and not a loss" is what this used to add, on the strength of every
+//! byte still being on the medium. That is true of the bytes and says nothing
+//! about the store, which no reading entry point will open. The way forward is
+//! the real one or none: run the build whose version that is, or
+//! [`LockStore::discard_and_reseed`] and let the log refill the replica.
+//! Nothing here reads a version it does not know, and nothing here repairs one.
 //!
 //! # Repairing, as a separate act
 //!
@@ -1732,16 +1745,32 @@ impl RecoveryReport {
     /// Whether recovery compared the adopted image's fencing high-water marks
     /// against a second image it found.
     ///
-    /// True in all three shapes where a second image exists: two intact slots,
-    /// where the comparison runs across the commit boundary being recovered; a
-    /// whole unsealed image set aside because the partner is strictly newer; and
-    /// a repair that gave one up. It used to be true only in the first, which
-    /// left the other two dropping a decoded image with nothing checked and
-    /// nothing said.
+    /// True in three shapes, each with a test naming it:
+    ///
+    /// - two intact slots, where the comparison runs across the commit boundary
+    ///   being recovered —
+    ///   `recovery_re_checks_the_marks_across_the_commit_boundary_it_recovers`;
+    /// - a whole unsealed image set aside because the partner is strictly newer
+    ///   — `setting_a_whole_image_aside_cross_checks_its_marks`;
+    /// - a repair that gave one up —
+    ///   `a_repair_that_regresses_only_session_progress_is_allowed_and_reported`.
+    ///
+    /// It used to be true only in the first, which left the other two dropping a
+    /// decoded image with nothing checked and nothing said.
+    ///
+    /// That those are *all* the shapes where a second image exists is a reading
+    /// of `choose_live_slot`, not something checked: there is no type here whose
+    /// variants a fourth one would have to be added to, so nothing fails to
+    /// compile if a later branch adopts an image without comparing. The three
+    /// tests pin the three arms; the closure over them is the part a reviewer
+    /// still has to supply, and saying so is cheaper than a count that reads as
+    /// though something counted.
     ///
     /// False means there was no second image to compare against — an empty
-    /// partner, or residue holding no whole image — and it is the report saying
-    /// so rather than implying a check ran.
+    /// partner, residue holding no whole image, or a re-seeded store, which
+    /// keeps no image at all. It is the report saying so rather than implying a
+    /// check ran; `a_repair_that_cannot_read_the_discarded_image_says_so` is
+    /// that side.
     #[must_use]
     pub const fn cross_checked_marks(&self) -> bool {
         self.cross_checked_marks
@@ -1878,10 +1907,18 @@ impl LockStore {
     ///
     /// # Errors
     ///
-    /// Returns the same errors as [`LockStore::open`]. It returns
-    /// [`LockStoreError::UnreadableSlot`] in strictly fewer cases: only where
-    /// the damaged slot's partner is not an intact image, or the damage is
-    /// [`SlotDamage::UnsupportedFormatVersion`].
+    /// Returns the same errors as [`LockStore::open`], with one narrowed and one
+    /// widened — it is not uniformly more permissive, and reading it that way is
+    /// how the deadlock above went unnoticed.
+    ///
+    /// - [`LockStoreError::UnreadableSlot`] in strictly fewer cases: only where
+    ///   the damaged slot's partner is not an intact image, or the damage is
+    ///   [`SlotDamage::UnsupportedFormatVersion`].
+    /// - [`LockStoreError::DiscardWouldRegressMark`] in strictly *more*, because
+    ///   the mark comparison on the slot being given up is only reached once a
+    ///   caller has asked to give one up. A store `open` refuses with
+    ///   `UnreadableSlot` can refuse here with this instead, which is a
+    ///   different refusal and not a resolution.
     pub fn open_and_repair(directory: &Path, config: LockConfig) -> Result<Self, LockStoreError> {
         Self::open_inner(directory, config, FaultPlan::none(), OnUnreadableSlot::Give)
     }
@@ -2008,11 +2045,22 @@ impl LockStore {
     /// The one opening path, parameterized by what it does with a slot it cannot
     /// read.
     ///
-    /// Both entry points read the same bytes and run the same classification.
-    /// They differ in exactly one branch, which is the point: a reader auditing
-    /// this can see that refusing and repairing agree about everything except
-    /// whether a slot that may have held the newest committed state is allowed
-    /// to be given up.
+    /// Both entry points read the same bytes and run the same classification,
+    /// and exactly one branch reads `on_unreadable` — the composite refusal in
+    /// `choose_live_slot`. That is the point: a reader auditing this can see
+    /// that refusing and repairing agree about everything except whether a slot
+    /// which may have held the newest committed state is allowed to be given up.
+    ///
+    /// One consequence is worth naming rather than leaving to be inferred. The
+    /// repair runs a check the refusal never reaches — `verify_discard_preserves_marks`
+    /// on the slot it is about to give up — so the repair can fail with an error
+    /// `open` cannot produce. "Strictly fewer refusals" is therefore false of
+    /// the variants and true only of `LockStoreError::UnreadableSlot`; the
+    /// [`LockStore::open_and_repair`] errors section says which.
+    ///
+    /// [`LockStore::discard_and_reseed`] is not this function's caller at all.
+    /// It empties the directory first and then opens it, so it reaches here with
+    /// nothing to classify.
     fn open_inner(
         directory: &Path,
         config: LockConfig,
@@ -3124,8 +3172,16 @@ fn verify_session_cache_dominates(
 /// cached result again. A fencing token has already left the cluster. No replay
 /// reaches the guarded resource that accepted it.
 ///
-/// That boundary is a premise about the composition rather than about this file,
-/// so it is stated here and tested on both sides:
+/// "Replaying from there" is the load-bearing half, and it is a claim about the
+/// composition rather than about this file — so it is checked in the
+/// composition. `a_reseeded_replica_recovers_its_marks_from_the_group` empties
+/// a replica's store outright, which discards strictly more session cache than
+/// any repair can, and the three-node driver re-applies it back. What is left
+/// unchecked is only what that test also cannot show: that the group still
+/// holds the entries. It does whenever they committed, and it does not if a
+/// quorum lost them together.
+///
+/// The two sides of the rule itself are pinned by
 /// `a_repair_that_regresses_only_session_progress_is_allowed_and_reported` and
 /// `a_repair_that_would_regress_a_mark_is_refused_by_both_entry_points`.
 fn verify_discard_preserves_marks(
