@@ -11,6 +11,7 @@ use rafter_app::{
 };
 
 use super::*;
+use crate::error::MultiRaftErrorKind;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum TestCommand {
@@ -44,7 +45,7 @@ impl TypedGroupDriver<u64> for RecordingTypedDriver {
     fn step(
         &mut self,
         input: GroupInput<u64, Self::Command>,
-    ) -> Result<GroupStepReport<u64, Self::CommandResult>, String> {
+    ) -> Result<GroupStepReport<u64, Self::CommandResult>, DriverError> {
         match input {
             GroupInput::Tick
             | GroupInput::PeerMessage { .. }
@@ -108,7 +109,7 @@ impl TypedGroupDriver<u64> for FixedTypedReportDriver {
     fn step(
         &mut self,
         _input: GroupInput<u64, Self::Command>,
-    ) -> Result<GroupStepReport<u64, Self::CommandResult>, String> {
+    ) -> Result<GroupStepReport<u64, Self::CommandResult>, DriverError> {
         Ok(self.report.clone())
     }
 
@@ -141,7 +142,7 @@ impl TypedGroupDriver<u64> for FlippingTypedMetricsDriver {
     fn step(
         &mut self,
         _input: GroupInput<u64, Self::Command>,
-    ) -> Result<GroupStepReport<u64, Self::CommandResult>, String> {
+    ) -> Result<GroupStepReport<u64, Self::CommandResult>, DriverError> {
         Ok(report(self.first_group_id))
     }
 
@@ -253,12 +254,16 @@ fn typed_host_rejects_wrong_group_envelope() {
         )
         .expect_err("wrong group rejected");
 
-    assert_eq!(
-        error,
-        MultiRaftError::WrongGroup {
-            expected: 1,
-            actual: 2
-        }
+    assert_eq!(error.kind(), MultiRaftErrorKind::WrongGroup);
+    assert!(
+        matches!(
+            error,
+            MultiRaftError::WrongGroup {
+                expected: 1,
+                actual: 2
+            }
+        ),
+        "an input naming another group is refused before the driver steps: {error:?}"
     );
 }
 
@@ -270,12 +275,16 @@ fn typed_open_group_rejects_driver_metrics_group_mismatch() {
         .open_group(1, RecordingTypedDriver::new(2))
         .expect_err("driver group mismatch is rejected");
 
-    assert_eq!(
-        error,
-        MultiRaftError::WrongGroup {
-            expected: 1,
-            actual: 2
-        }
+    assert_eq!(error.kind(), MultiRaftErrorKind::WrongGroup);
+    assert!(
+        matches!(
+            error,
+            MultiRaftError::WrongGroup {
+                expected: 1,
+                actual: 2
+            }
+        ),
+        "a driver whose metrics disown the key is refused at open, nothing stepped: {error:?}"
     );
 }
 
@@ -289,12 +298,16 @@ fn typed_metrics_rejects_driver_that_later_reports_another_group() {
         .metrics()
         .expect_err("changed metrics group is rejected");
 
-    assert_eq!(
-        error,
-        MultiRaftError::WrongGroup {
-            expected: 1,
-            actual: 2
-        }
+    assert_eq!(error.kind(), MultiRaftErrorKind::WrongGroup);
+    assert!(
+        matches!(
+            error,
+            MultiRaftError::WrongGroup {
+                expected: 1,
+                actual: 2
+            }
+        ),
+        "a driver that changes the group its metrics claim is refused, nothing stepped: {error:?}"
     );
 }
 
@@ -308,12 +321,17 @@ fn typed_step_group_rejects_mismatched_report_group_id() {
         .step_group(&1, GroupInput::Tick)
         .expect_err("mismatched report group is rejected");
 
-    assert_eq!(
-        error,
-        MultiRaftError::WrongGroup {
-            expected: 1,
-            actual: 2
-        }
+    assert_eq!(error.kind(), MultiRaftErrorKind::InvalidReport);
+    assert!(
+        matches!(
+            error,
+            MultiRaftError::InvalidReport {
+                group_id: 1,
+                field: "group_id",
+                reported: 2
+            }
+        ),
+        "the driver stepped, then stamped its report with another group: {error:?}"
     );
 }
 
@@ -336,12 +354,17 @@ fn typed_step_group_rejects_membership_events_for_another_group() {
         .step_group(&1, GroupInput::Tick)
         .expect_err("mismatched membership event is rejected");
 
-    assert_eq!(
-        error,
-        MultiRaftError::WrongGroup {
-            expected: 1,
-            actual: 2
-        }
+    assert_eq!(error.kind(), MultiRaftErrorKind::InvalidReport);
+    assert!(
+        matches!(
+            error,
+            MultiRaftError::InvalidReport {
+                group_id: 1,
+                field: "membership_events",
+                reported: 2
+            }
+        ),
+        "the driver stepped, then reported a membership change for another group: {error:?}"
     );
 }
 

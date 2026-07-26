@@ -22,7 +22,10 @@ use rafter_app::{
     state_machine::ApplyResult,
     transport::PeerEnvelope,
 };
-use rafter_multiraft::{MultiRaftError, MultiRaftMetrics, TypedGroupDriver, TypedMultiRaftHost};
+use rafter_multiraft::{
+    DriverError, DriverErrorKind, ErrorCause, MultiRaftError, MultiRaftMetrics, TypedGroupDriver,
+    TypedMultiRaftHost,
+};
 
 fn main() {
     let mut host = TypedMultiRaftHost::<ShardId, KvCommand, KvResult>::new();
@@ -132,7 +135,7 @@ impl TypedGroupDriver<ShardId> for TypedKvShardDriver {
     fn step(
         &mut self,
         input: GroupInput<ShardId, Self::Command>,
-    ) -> Result<GroupStepReport<ShardId, Self::CommandResult>, String> {
+    ) -> Result<GroupStepReport<ShardId, Self::CommandResult>, DriverError> {
         match input {
             GroupInput::Proposal { proposal } => {
                 let apply_result = self.apply_command(proposal);
@@ -180,7 +183,13 @@ impl TypedGroupDriver<ShardId> for TypedKvShardDriver {
             }
             GroupInput::PeerMessage { envelope } => {
                 if envelope.group_id != self.group_id {
-                    return Err("wrong group".to_owned());
+                    return Err(DriverError::new(
+                        DriverErrorKind::Transient,
+                        ErrorCause::new(KvShardError {
+                            shard: self.group_id,
+                            detail: "wrong group",
+                        }),
+                    ));
                 }
                 Ok(self.report())
             }
@@ -256,3 +265,21 @@ fn vote_message(candidate_id: NodeId) -> Message {
         last_log_term: Term::default(),
     })
 }
+
+/// A driver-owned error type.
+///
+/// A driver reports the permanence it observed and preserves its own typed
+/// error as the cause; the host never renders it into a string.
+#[derive(Debug)]
+struct KvShardError {
+    shard: ShardId,
+    detail: &'static str,
+}
+
+impl std::fmt::Display for KvShardError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "shard {:?}: {}", self.shard, self.detail)
+    }
+}
+
+impl std::error::Error for KvShardError {}

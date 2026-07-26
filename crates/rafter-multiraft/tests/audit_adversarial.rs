@@ -13,9 +13,12 @@ use rafter_app::{
     metrics::RaftGroupMetrics,
     state_machine::ApplyResult,
 };
-use rafter_multiraft::{MultiRaftError, MultiRaftHost, TypedGroupDriver, TypedMultiRaftHost};
+use rafter_multiraft::{
+    DriverError, DriverErrorKind, ErrorCause, MultiRaftError, MultiRaftErrorKind, MultiRaftHost,
+    TypedGroupDriver, TypedMultiRaftHost,
+};
 
-use support::{metrics, ApplyingDriver, FailingDriver, StepCounter};
+use support::{metrics, ApplyingDriver, FailingDriver, ShardFailure, StepCounter};
 
 // ---------------------------------------------------------------------------
 // M1 -- `tick_all` destroyed the committed apply results of every earlier group
@@ -213,14 +216,19 @@ fn traffic_for_a_retired_group_is_unknown_rather_than_reopening_it() {
     // retired key and a key that never existed are the same answer, because
     // the retention horizon that would separate them is not this host's to
     // pick. A caller that must fence late traffic holds that tombstone itself.
-    assert_eq!(error, MultiRaftError::UnknownGroup { group_id: 1 });
+    assert!(
+        matches!(error, MultiRaftError::UnknownGroup { group_id: 1 }),
+        "late traffic names the retired key: {error:?}"
+    );
     let never_existed = host
         .step_group(&404, GroupInput::Tick)
         .expect_err("a key that never existed answers identically");
     assert_eq!(
-        never_existed,
-        MultiRaftError::UnknownGroup { group_id: 404 }
+        error.kind(),
+        never_existed.kind(),
+        "a retired key and a key that never existed project to one category"
     );
+    assert_eq!(error.kind(), MultiRaftErrorKind::UnknownGroup);
     assert!(host.is_empty(), "the refused input opened nothing");
 }
 
@@ -270,6 +278,107 @@ fn group_ids_are_the_order_a_pass_visits() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// M3 -- the host error implemented neither `Display` nor `Error`, and the
+// driver surface collapsed every typed failure into a `Debug` string
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_driver_failure_keeps_its_permanence_and_its_typed_cause() {
+    let mut host = MultiRaftHost::new();
+    host.open_group(1, FailingDriver::new(1, "log fsync lost its device"))
+        .expect("open group 1");
+    host.open_group(2, FailingDriver::transient(2, "peer connection reset"))
+        .expect("open group 2");
+
+    let pass = host.tick_all();
+    let kinds = pass
+        .failures()
+        .map(|(_, error)| error.kind())
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        kinds,
+        vec![
+            MultiRaftErrorKind::DriverPoisoned,
+            MultiRaftErrorKind::DriverTransient
+        ],
+        "a permanent failure and a transient one are different facts: one says retire the group"
+    );
+
+    let (_, poisoned) = pass.failures().next().expect("group 1 failed");
+    let MultiRaftError::Driver { kind, cause, .. } = poisoned else {
+        panic!("expected a driver failure, got {poisoned:?}");
+    };
+    assert!(kind.is_permanent());
+    let recovered = cause
+        .downcast_ref::<ShardFailure>()
+        .expect("the driver's own error type survives the host boundary");
+    assert_eq!(
+        recovered,
+        &ShardFailure {
+            shard: 1,
+            detail: "log fsync lost its device",
+        }
+    );
+}
+
+#[test]
+fn the_host_error_renders_and_chains_to_the_preserved_cause() {
+    let mut host = MultiRaftHost::new();
+    host.open_group(1, FailingDriver::new(1, "log fsync lost its device"))
+        .expect("open group 1");
+
+    let error = host
+        .step_group(&1, GroupInput::Tick)
+        .expect_err("the driver refuses");
+
+    // `Display`, which this type had no implementation of at all.
+    let rendered = render(&error);
+    assert!(rendered.contains('1'), "renders the group: {rendered}");
+    assert!(
+        rendered.contains("log fsync lost its device"),
+        "renders the preserved cause: {rendered}"
+    );
+
+    // `source()`, one link per real failure rather than one per boundary.
+    let source = std::error::Error::source(&error).expect("the cause is reachable");
+    assert!(
+        source.downcast_ref::<ShardFailure>().is_some(),
+        "the chain reaches the driver's own error, not a wrapper"
+    );
+
+    // Every variant renders, including the ones with no cause to chain to.
+    for variant in [
+        MultiRaftError::GroupAlreadyOpen { group_id: 1_u64 },
+        MultiRaftError::UnknownGroup { group_id: 1 },
+        MultiRaftError::WrongGroup {
+            expected: 1,
+            actual: 2,
+        },
+        MultiRaftError::InvalidReport {
+            group_id: 1,
+            field: "peer_messages",
+            reported: 2,
+        },
+        MultiRaftError::UnrecognizedEvent {
+            group_id: 1,
+            field: "read_events",
+        },
+    ] {
+        assert!(!render(&variant).is_empty(), "{variant:?} renders");
+        assert!(
+            std::error::Error::source(&variant).is_none(),
+            "{variant:?} has no cause to chain to"
+        );
+    }
+}
+
+/// Requires `E: Error`, which `MultiRaftError` did not implement.
+fn render<E: std::error::Error>(error: &E) -> String {
+    error.to_string()
+}
+
 // --------------------------------------------------------------- typed fixtures
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -300,7 +409,7 @@ impl TypedGroupDriver<u64> for TypedApplyingDriver {
     fn step(
         &mut self,
         _input: GroupInput<u64, Self::Command>,
-    ) -> Result<GroupStepReport<u64, Self::CommandResult>, String> {
+    ) -> Result<GroupStepReport<u64, Self::CommandResult>, DriverError> {
         self.applied += 1;
         let mut report = typed_report(self.group_id);
         report.applied.push(ApplyResult {
@@ -335,8 +444,14 @@ impl TypedGroupDriver<u64> for TypedFailingDriver {
     fn step(
         &mut self,
         _input: GroupInput<u64, Self::Command>,
-    ) -> Result<GroupStepReport<u64, Self::CommandResult>, String> {
-        Err("shard driver failed".to_owned())
+    ) -> Result<GroupStepReport<u64, Self::CommandResult>, DriverError> {
+        Err(DriverError::new(
+            DriverErrorKind::Poisoned,
+            ErrorCause::new(ShardFailure {
+                shard: self.group_id,
+                detail: "typed shard driver failed",
+            }),
+        ))
     }
 
     fn metrics(&self) -> RaftGroupMetrics<u64> {

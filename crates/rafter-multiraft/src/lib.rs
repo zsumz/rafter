@@ -31,10 +31,16 @@ pub mod metrics;
 pub mod pass;
 /// Typed many-group host and driver traits.
 pub mod typed;
+mod validate;
 
-pub use driver::GroupDriver;
-pub use error::MultiRaftError;
+pub use driver::{DriverError, DriverErrorKind, GroupDriver};
+pub use error::{MultiRaftError, MultiRaftErrorKind, OpenGroupRejected};
 pub use host::MultiRaftHost;
 pub use metrics::MultiRaftMetrics;
 pub use pass::{GroupOutcome, TickPass};
 pub use typed::{TypedGroupDriver, TypedMultiRaftHost};
+
+/// Re-exported rather than redeclared: a caller must be able to compare the
+/// cause it receives here with the one `rafter-app` produced, so there can be
+/// only one such type.
+pub use rafter_app::error::ErrorCause;

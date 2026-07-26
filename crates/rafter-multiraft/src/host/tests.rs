@@ -13,6 +13,7 @@ use rafter_app::{
 };
 
 use super::*;
+use crate::{driver::DriverError, error::MultiRaftErrorKind};
 
 #[derive(Debug)]
 struct RecordingDriver {
@@ -35,7 +36,7 @@ impl GroupDriver<u64> for RecordingDriver {
     fn step(
         &mut self,
         input: GroupInput<u64, Vec<u8>>,
-    ) -> Result<GroupStepReport<u64, Vec<u8>>, String> {
+    ) -> Result<GroupStepReport<u64, Vec<u8>>, DriverError> {
         match &input {
             GroupInput::Proposal { .. } => {
                 self.applied_count += 1;
@@ -77,7 +78,7 @@ impl GroupDriver<u64> for FixedReportDriver {
     fn step(
         &mut self,
         _input: GroupInput<u64, Vec<u8>>,
-    ) -> Result<GroupStepReport<u64, Vec<u8>>, String> {
+    ) -> Result<GroupStepReport<u64, Vec<u8>>, DriverError> {
         Ok(self.report.clone())
     }
 
@@ -107,7 +108,7 @@ impl GroupDriver<u64> for FlippingMetricsDriver {
     fn step(
         &mut self,
         _input: GroupInput<u64, Vec<u8>>,
-    ) -> Result<GroupStepReport<u64, Vec<u8>>, String> {
+    ) -> Result<GroupStepReport<u64, Vec<u8>>, DriverError> {
         Ok(report(self.first_group_id))
     }
 
@@ -185,12 +186,16 @@ fn wrong_group_message_is_rejected_before_driver_step() {
         )
         .expect_err("wrong group is rejected");
 
-    assert_eq!(
-        error,
-        MultiRaftError::WrongGroup {
-            expected: 1,
-            actual: 2,
-        }
+    assert_eq!(error.kind(), MultiRaftErrorKind::WrongGroup);
+    assert!(
+        matches!(
+            error,
+            MultiRaftError::WrongGroup {
+                expected: 1,
+                actual: 2
+            }
+        ),
+        "an input naming another group is refused before the driver steps: {error:?}"
     );
     assert_eq!(
         host.metrics().expect("metrics").groups[0].commit_index,
@@ -206,7 +211,11 @@ fn unknown_group_is_rejected() {
         .step_group(&99, GroupInput::Tick)
         .expect_err("unknown group is rejected");
 
-    assert_eq!(error, MultiRaftError::UnknownGroup { group_id: 99 });
+    assert_eq!(error.kind(), MultiRaftErrorKind::UnknownGroup);
+    assert!(
+        matches!(error, MultiRaftError::UnknownGroup { group_id: 99 }),
+        "the refusal names the key it could not find: {error:?}"
+    );
 }
 
 #[test]
@@ -289,7 +298,11 @@ fn duplicate_group_open_is_rejected() {
         .open_group(1, RecordingDriver::new(1))
         .expect_err("duplicate is rejected");
 
-    assert_eq!(error, MultiRaftError::GroupAlreadyOpen { group_id: 1 });
+    assert_eq!(error.kind(), MultiRaftErrorKind::GroupAlreadyOpen);
+    assert!(
+        matches!(error, MultiRaftError::GroupAlreadyOpen { group_id: 1 }),
+        "the refusal names the key that is already taken: {error:?}"
+    );
 }
 
 #[test]
@@ -300,12 +313,16 @@ fn open_group_rejects_driver_metrics_group_mismatch() {
         .open_group(1, RecordingDriver::new(2))
         .expect_err("driver group mismatch is rejected");
 
-    assert_eq!(
-        error,
-        MultiRaftError::WrongGroup {
-            expected: 1,
-            actual: 2,
-        }
+    assert_eq!(error.kind(), MultiRaftErrorKind::WrongGroup);
+    assert!(
+        matches!(
+            error,
+            MultiRaftError::WrongGroup {
+                expected: 1,
+                actual: 2
+            }
+        ),
+        "a driver whose metrics disown the key is refused at open, nothing stepped: {error:?}"
     );
 }
 
@@ -319,12 +336,16 @@ fn metrics_rejects_driver_that_later_reports_another_group() {
         .metrics()
         .expect_err("changed metrics group is rejected");
 
-    assert_eq!(
-        error,
-        MultiRaftError::WrongGroup {
-            expected: 1,
-            actual: 2,
-        }
+    assert_eq!(error.kind(), MultiRaftErrorKind::WrongGroup);
+    assert!(
+        matches!(
+            error,
+            MultiRaftError::WrongGroup {
+                expected: 1,
+                actual: 2
+            }
+        ),
+        "a driver that changes the group its metrics claim is refused, nothing stepped: {error:?}"
     );
 }
 
@@ -338,12 +359,17 @@ fn step_group_rejects_mismatched_report_group_id() {
         .step_group(&1, GroupInput::Tick)
         .expect_err("mismatched report group is rejected");
 
-    assert_eq!(
-        error,
-        MultiRaftError::WrongGroup {
-            expected: 1,
-            actual: 2,
-        }
+    assert_eq!(error.kind(), MultiRaftErrorKind::InvalidReport);
+    assert!(
+        matches!(
+            error,
+            MultiRaftError::InvalidReport {
+                group_id: 1,
+                field: "group_id",
+                reported: 2
+            }
+        ),
+        "the driver stepped, then stamped its report with another group: {error:?}"
     );
 }
 
@@ -359,12 +385,17 @@ fn step_group_rejects_peer_messages_for_another_group() {
         .step_group(&1, GroupInput::Tick)
         .expect_err("mismatched peer message is rejected");
 
-    assert_eq!(
-        error,
-        MultiRaftError::WrongGroup {
-            expected: 1,
-            actual: 2,
-        }
+    assert_eq!(error.kind(), MultiRaftErrorKind::InvalidReport);
+    assert!(
+        matches!(
+            error,
+            MultiRaftError::InvalidReport {
+                group_id: 1,
+                field: "peer_messages",
+                reported: 2
+            }
+        ),
+        "the driver stepped, then addressed a peer message to another group: {error:?}"
     );
 }
 
@@ -390,12 +421,17 @@ fn step_group_rejects_read_events_for_another_group() {
         .step_group(&1, GroupInput::Tick)
         .expect_err("mismatched read event is rejected");
 
-    assert_eq!(
-        error,
-        MultiRaftError::WrongGroup {
-            expected: 1,
-            actual: 2,
-        }
+    assert_eq!(error.kind(), MultiRaftErrorKind::InvalidReport);
+    assert!(
+        matches!(
+            error,
+            MultiRaftError::InvalidReport {
+                group_id: 1,
+                field: "read_events",
+                reported: 2
+            }
+        ),
+        "the driver stepped, then proved a read for another group: {error:?}"
     );
 }
 

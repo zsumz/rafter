@@ -4,7 +4,7 @@
 //! a scheduler over things it does not control, so its guards are only worth
 //! what its worst driver proves.
 
-use std::{cell::Cell, rc::Rc};
+use std::{cell::Cell, error::Error, fmt, rc::Rc};
 
 use rafter::{
     LocalProposalId, LogIndex, MembershipConfig, MembershipSet, Message, NodeId, RequestVote, Role,
@@ -16,10 +16,28 @@ use rafter_app::{
     state_machine::ApplyResult,
     transport::PeerEnvelope,
 };
-use rafter_multiraft::GroupDriver;
+use rafter_multiraft::{DriverError, DriverErrorKind, ErrorCause, GroupDriver};
 
 /// A shared step counter, so a test can prove which groups a pass reached.
 pub type StepCounter = Rc<Cell<usize>>;
+
+/// A driver-owned error type, so a test can prove the typed cause survives the
+/// host boundary rather than being rendered into a string.
+#[derive(Debug, Eq, PartialEq)]
+pub struct ShardFailure {
+    /// Which shard failed.
+    pub shard: u64,
+    /// What went wrong, in the driver's own vocabulary.
+    pub detail: &'static str,
+}
+
+impl fmt::Display for ShardFailure {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "shard {} failed: {}", self.shard, self.detail)
+    }
+}
+
+impl Error for ShardFailure {}
 
 /// Applies one entry per step and reports it, like a group whose tick
 /// advanced the commit index.
@@ -50,7 +68,7 @@ impl GroupDriver<u64> for ApplyingDriver {
     fn step(
         &mut self,
         _input: GroupInput<u64, Vec<u8>>,
-    ) -> Result<GroupStepReport<u64, Vec<u8>>, String> {
+    ) -> Result<GroupStepReport<u64, Vec<u8>>, DriverError> {
         self.steps.set(self.steps.get() + 1);
         self.applied += 1;
         let mut report = report(self.group_id);
@@ -68,26 +86,40 @@ impl GroupDriver<u64> for ApplyingDriver {
     }
 }
 
-/// Refuses every step, like a group `rafter-app` has poisoned.
+/// Refuses every step, reporting the permanence it was built with.
 #[derive(Debug)]
 pub struct FailingDriver {
     group_id: u64,
-    message: &'static str,
+    kind: DriverErrorKind,
+    detail: &'static str,
     steps: StepCounter,
 }
 
 impl FailingDriver {
+    /// A driver that has poisoned permanently.
     #[must_use]
-    pub fn new(group_id: u64, message: &'static str) -> Self {
-        Self::with_counter(group_id, message, StepCounter::default())
+    pub fn new(group_id: u64, detail: &'static str) -> Self {
+        Self::with_counter(group_id, detail, StepCounter::default())
     }
 
     #[must_use]
-    pub fn with_counter(group_id: u64, message: &'static str, steps: StepCounter) -> Self {
+    pub fn with_counter(group_id: u64, detail: &'static str, steps: StepCounter) -> Self {
         Self {
             group_id,
-            message,
+            kind: DriverErrorKind::Poisoned,
+            detail,
             steps,
+        }
+    }
+
+    /// A driver whose failure has not retired it.
+    #[must_use]
+    pub fn transient(group_id: u64, detail: &'static str) -> Self {
+        Self {
+            group_id,
+            kind: DriverErrorKind::Transient,
+            detail,
+            steps: StepCounter::default(),
         }
     }
 }
@@ -96,9 +128,15 @@ impl GroupDriver<u64> for FailingDriver {
     fn step(
         &mut self,
         _input: GroupInput<u64, Vec<u8>>,
-    ) -> Result<GroupStepReport<u64, Vec<u8>>, String> {
+    ) -> Result<GroupStepReport<u64, Vec<u8>>, DriverError> {
         self.steps.set(self.steps.get() + 1);
-        Err(self.message.to_owned())
+        Err(DriverError::new(
+            self.kind,
+            ErrorCause::new(ShardFailure {
+                shard: self.group_id,
+                detail: self.detail,
+            }),
+        ))
     }
 
     fn metrics(&self) -> RaftGroupMetrics<u64> {

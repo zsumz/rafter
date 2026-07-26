@@ -23,7 +23,9 @@ use rafter_app::{
     state_machine::ApplyResult,
     transport::PeerEnvelope,
 };
-use rafter_multiraft::{GroupDriver, MultiRaftHost, MultiRaftMetrics};
+use rafter_multiraft::{
+    DriverError, DriverErrorKind, ErrorCause, GroupDriver, MultiRaftHost, MultiRaftMetrics,
+};
 
 fn main() {
     let mut host = MultiRaftHost::new();
@@ -124,7 +126,7 @@ impl GroupDriver<ShardId> for KvShardDriver {
     fn step(
         &mut self,
         input: GroupInput<ShardId, Vec<u8>>,
-    ) -> Result<GroupStepReport<ShardId, Vec<u8>>, String> {
+    ) -> Result<GroupStepReport<ShardId, Vec<u8>>, DriverError> {
         match input {
             GroupInput::Proposal { proposal } => {
                 let apply_result = self.apply_put(&proposal)?;
@@ -172,7 +174,7 @@ impl GroupDriver<ShardId> for KvShardDriver {
             }
             GroupInput::PeerMessage { envelope } => {
                 if envelope.group_id != self.group_id {
-                    return Err("wrong group".to_owned());
+                    return Err(KvShardError::transient(self.group_id, "wrong group"));
                 }
                 Ok(self.report())
             }
@@ -210,8 +212,12 @@ impl GroupDriver<ShardId> for KvShardDriver {
 }
 
 impl KvShardDriver {
-    fn apply_put(&mut self, proposal: &Proposal<Vec<u8>>) -> Result<ApplyResult<Vec<u8>>, String> {
-        let (key, value) = decode_put(&proposal.command)?;
+    fn apply_put(
+        &mut self,
+        proposal: &Proposal<Vec<u8>>,
+    ) -> Result<ApplyResult<Vec<u8>>, DriverError> {
+        let (key, value) = decode_put(&proposal.command)
+            .map_err(|detail| KvShardError::transient(self.group_id, detail))?;
         self.applied_index = LogIndex(self.applied_index.0 + 1);
         self.values.insert(key, value);
         Ok(ApplyResult {
@@ -255,3 +261,33 @@ fn vote_message(candidate_id: NodeId) -> Message {
         last_log_term: Term::default(),
     })
 }
+
+/// A driver-owned error type.
+///
+/// A driver reports the permanence it observed and preserves its own typed
+/// error as the cause; the host never renders it into a string.
+#[derive(Debug)]
+struct KvShardError {
+    shard: ShardId,
+    detail: String,
+}
+
+impl KvShardError {
+    fn transient(shard: ShardId, detail: impl Into<String>) -> DriverError {
+        DriverError::new(
+            DriverErrorKind::Transient,
+            ErrorCause::new(Self {
+                shard,
+                detail: detail.into(),
+            }),
+        )
+    }
+}
+
+impl std::fmt::Display for KvShardError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "shard {:?}: {}", self.shard, self.detail)
+    }
+}
+
+impl std::error::Error for KvShardError {}

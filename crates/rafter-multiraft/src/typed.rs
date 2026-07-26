@@ -8,19 +8,19 @@
 use std::{collections::BTreeMap, fmt::Debug, marker::PhantomData};
 
 use rafter_app::{
-    group::{GroupInput, GroupStepReport, RaftGroup},
-    membership::MembershipEvent,
+    error::ErrorCause,
+    group::{GroupFatalState, GroupInput, GroupStepReport, RaftGroup},
     metrics::RaftGroupMetrics,
-    read::ReadEvent,
-    snapshot::SnapshotEvent,
     state_machine::ReplicatedStateMachine,
 };
 use rafter_runtime_api::PersistedRaftRuntime;
 
 use crate::{
+    driver::{DriverError, DriverErrorKind},
     error::MultiRaftError,
     metrics::MultiRaftMetrics,
     pass::{GroupOutcome, TickPass},
+    validate,
 };
 
 /// Typed driver surface for groups that share command and result types.
@@ -32,12 +32,14 @@ pub trait TypedGroupDriver<G>: Debug {
     ///
     /// # Errors
     ///
-    /// Returns an implementation-defined message when the group driver cannot
-    /// process the input.
+    /// Returns a [`DriverError`] carrying the permanence the driver observed
+    /// and the typed error that caused it. An implementation reports
+    /// [`DriverErrorKind::Poisoned`] only when it observed that the group is
+    /// finished — never because a category implies it.
     fn step(
         &mut self,
         input: GroupInput<G, Self::Command>,
-    ) -> Result<GroupStepReport<G, Self::CommandResult>, String>;
+    ) -> Result<GroupStepReport<G, Self::CommandResult>, DriverError>;
 
     fn metrics(&self) -> RaftGroupMetrics<G>;
 }
@@ -47,17 +49,34 @@ where
     G: Clone + Ord + Debug + Send + Sync + 'static,
     A: ReplicatedStateMachine + Debug,
     A::CommandResult: Clone,
-    A::Error: Debug,
     R: PersistedRaftRuntime + Debug,
 {
     type Command = A::Command;
     type CommandResult = A::CommandResult;
 
+    /// Steps the group and preserves its typed error.
+    ///
+    /// The permanence is read from [`RaftGroup::fatal_state`] *after* the
+    /// step rather than inferred from the error variant, because the two
+    /// disagree exactly where it matters: a failure that *causes* a poison
+    /// does not return `GroupError::Poisoned` — it returns the underlying
+    /// fault, and the group is poisoned afterwards. Classifying by variant
+    /// would call the first poisoning failure transient and only the second
+    /// one permanent.
     fn step(
         &mut self,
         input: GroupInput<G, Self::Command>,
-    ) -> Result<GroupStepReport<G, Self::CommandResult>, String> {
-        RaftGroup::step(self, input).map_err(|error| format!("{error:?}"))
+    ) -> Result<GroupStepReport<G, Self::CommandResult>, DriverError> {
+        match RaftGroup::step(self, input) {
+            Ok(report) => Ok(report),
+            Err(error) => {
+                let kind = match RaftGroup::fatal_state(self) {
+                    GroupFatalState::Poisoned { .. } => DriverErrorKind::Poisoned,
+                    GroupFatalState::Healthy => DriverErrorKind::Transient,
+                };
+                Err(DriverError::new(kind, ErrorCause::new(error)))
+            }
+        }
     }
 
     fn metrics(&self) -> RaftGroupMetrics<G> {
@@ -199,28 +218,43 @@ where
     /// # Errors
     ///
     /// Returns [`MultiRaftError::UnknownGroup`] when the group is not open,
-    /// [`MultiRaftError::WrongGroup`] when the input or returned report carries
-    /// a different group ID, or [`MultiRaftError::Driver`] when the group
-    /// driver rejects the input.
+    /// [`MultiRaftError::WrongGroup`] when the caller's input names another
+    /// group — in which case nothing was stepped —
+    /// [`MultiRaftError::Driver`] when the group driver refuses the input, or
+    /// [`MultiRaftError::InvalidReport`] / [`MultiRaftError::UnrecognizedEvent`]
+    /// when the driver returns a report this host cannot trust.
+    ///
+    /// The last two arrive **after** the driver has stepped: a report cannot
+    /// be checked before it exists, so whatever it described has happened and
+    /// its effects are not recoverable through this host. That is why they are
+    /// not `WrongGroup` — the two say opposite things about whether an effect
+    /// occurred, and a caller has to be able to tell them apart. `open_group`
+    /// checks a driver's claimed identity up front to keep this case rare; the
+    /// repair when it happens is to retire the group.
+    ///
+    /// Only `PeerMessage` and `ReadBarrier` inputs are checked against
+    /// `group_id`, because they are the only two that carry a group ID. A
+    /// `Tick`, `Proposal`, `ProposalBatch`, `Membership`, or
+    /// `TransferLeadership` routed to the wrong group by a caller's shard map
+    /// is accepted, and this host cannot detect it.
     pub fn step_group(
         &mut self,
         group_id: &G,
         input: GroupInput<G, C>,
     ) -> Result<GroupStepReport<G, R>, MultiRaftError<G>> {
-        Self::validate_input_group(group_id, &input)?;
+        validate::input_group(group_id, &input)?;
         let driver = self
             .groups
             .get_mut(group_id)
             .ok_or_else(|| MultiRaftError::UnknownGroup {
                 group_id: group_id.clone(),
             })?;
-        let report = driver
-            .step(input)
-            .map_err(|message| MultiRaftError::Driver {
-                group_id: group_id.clone(),
-                message,
-            })?;
-        Self::validate_report_group(group_id, &report)?;
+        let report = driver.step(input).map_err(|error| MultiRaftError::Driver {
+            group_id: group_id.clone(),
+            kind: error.kind(),
+            cause: error.into_cause(),
+        })?;
+        validate::report_group(group_id, &report)?;
         Ok(report)
     }
 
@@ -259,132 +293,10 @@ where
         let mut groups = Vec::with_capacity(self.groups.len());
         for (group_id, driver) in &self.groups {
             let metrics = driver.metrics();
-            Self::validate_group_id(group_id, &metrics.group_id)?;
+            validate::metrics_group(group_id, &metrics.group_id)?;
             groups.push(metrics);
         }
         Ok(MultiRaftMetrics { groups })
-    }
-
-    fn validate_input_group(
-        expected: &G,
-        input: &GroupInput<G, C>,
-    ) -> Result<(), MultiRaftError<G>> {
-        let actual = match input {
-            GroupInput::PeerMessage { envelope } => Some(&envelope.group_id),
-            GroupInput::ReadBarrier { request } => Some(&request.group_id),
-            GroupInput::Tick
-            | GroupInput::Proposal { .. }
-            | GroupInput::ProposalBatch { .. }
-            | GroupInput::Membership { .. }
-            | GroupInput::TransferLeadership { .. } => None,
-        };
-        if let Some(actual) = actual {
-            if actual != expected {
-                return Err(MultiRaftError::WrongGroup {
-                    expected: expected.clone(),
-                    actual: actual.clone(),
-                });
-            }
-        }
-        Ok(())
-    }
-
-    fn validate_report_group(
-        expected: &G,
-        report: &GroupStepReport<G, R>,
-    ) -> Result<(), MultiRaftError<G>> {
-        Self::validate_group_id(expected, &report.group_id)?;
-        for envelope in &report.peer_messages {
-            Self::validate_group_id(expected, &envelope.group_id)?;
-        }
-        for event in &report.read_events {
-            Self::validate_read_event_group(expected, event)?;
-        }
-        for event in &report.snapshot_events {
-            Self::validate_snapshot_event_group(expected, event)?;
-        }
-        for event in &report.membership_events {
-            Self::validate_membership_event_group(expected, event)?;
-        }
-        if let Some(metrics) = &report.metrics {
-            Self::validate_group_id(expected, &metrics.group_id)?;
-        }
-        Ok(())
-    }
-
-    fn validate_read_event_group(
-        expected: &G,
-        event: &ReadEvent<G>,
-    ) -> Result<(), MultiRaftError<G>> {
-        match event {
-            ReadEvent::Granted { proof, .. } => {
-                Self::validate_group_id(expected, &proof.group_id)?;
-            }
-            ReadEvent::Rejected { .. }
-            | ReadEvent::Canceled { .. }
-            | ReadEvent::FreshnessUnavailable { .. } => {}
-            _ => {
-                return Err(MultiRaftError::Driver {
-                    group_id: expected.clone(),
-                    message: "unsupported non-exhaustive read event variant".to_owned(),
-                });
-            }
-        }
-        Ok(())
-    }
-
-    fn validate_snapshot_event_group(
-        expected: &G,
-        event: &SnapshotEvent<G>,
-    ) -> Result<(), MultiRaftError<G>> {
-        let (SnapshotEvent::Apply {
-            group_id: actual, ..
-        }
-        | SnapshotEvent::StageChunk {
-            group_id: actual, ..
-        }
-        | SnapshotEvent::SendChunk {
-            group_id: actual, ..
-        }) = event
-        else {
-            return Err(MultiRaftError::Driver {
-                group_id: expected.clone(),
-                message: "unsupported non-exhaustive snapshot event variant".to_owned(),
-            });
-        };
-        Self::validate_group_id(expected, actual)
-    }
-
-    fn validate_membership_event_group(
-        expected: &G,
-        event: &MembershipEvent<G>,
-    ) -> Result<(), MultiRaftError<G>> {
-        let (MembershipEvent::Appended {
-            group_id: actual, ..
-        }
-        | MembershipEvent::Applied {
-            group_id: actual, ..
-        }
-        | MembershipEvent::Rejected {
-            group_id: actual, ..
-        }) = event
-        else {
-            return Err(MultiRaftError::Driver {
-                group_id: expected.clone(),
-                message: "unsupported non-exhaustive membership event variant".to_owned(),
-            });
-        };
-        Self::validate_group_id(expected, actual)
-    }
-
-    fn validate_group_id(expected: &G, actual: &G) -> Result<(), MultiRaftError<G>> {
-        if actual != expected {
-            return Err(MultiRaftError::WrongGroup {
-                expected: expected.clone(),
-                actual: actual.clone(),
-            });
-        }
-        Ok(())
     }
 }
 

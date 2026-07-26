@@ -7180,7 +7180,7 @@ impl — the one on the path of every real embedder — throws the typed error a
 RaftGroup::step(self, input).map_err(|error| format!("{error:?}"))
 ```
 
-`GroupError` has twenty `#[non_exhaustive]` variants, a `Display`, a `source()`
+`GroupError` has nineteen `#[non_exhaustive]` variants, a `Display`, a `source()`
 chain, and an `ErrorCause` a caller can `downcast_ref`. All of it becomes a
 `Debug` string, so a caller cannot tell `Poisoned` — permanent, retire the group
 — from `Runtime` — which may not recur. And because `MultiRaftError` derives
@@ -7211,15 +7211,15 @@ consumer cannot evict a group from a map it has no handle to.
 Typed failure behavior is required of every promoted API
 ([`docs/reference-consumers.md:462`](./reference-consumers.md)), and the 1.0
 production composition requires "structured metrics and failure diagnostics"
-([`:311`](./reference-consumers.md)). Neither is reachable from a `String`: a
+([`:392`](./reference-consumers.md)). Neither is reachable from a `String`: a
 metrics label taken from a rendered `GroupError` has unbounded cardinality,
 because those messages embed node IDs, log indices, and proposal IDs.
 
 **The consumer, and the honesty about it.** The sharded counter is the stated
 acceptance workload for the managed multi-Raft scheduler
-([`docs/reference-consumers.md:300-317`](./reference-consumers.md)), and it
+([`docs/reference-consumers.md:326-350`](./reference-consumers.md)), and it
 declares no Rafter dependency yet
-([`:390`](./reference-consumers.md)). So this entry has no workaround to cite
+([`:416`](./reference-consumers.md)). So this entry has no workaround to cite
 and no line count to delete — the promotion rule's usual evidence. What it has
 instead is a written contract the current code demonstrably fails, and the
 audit's repros are that failure made executable. Where a shape below follows
@@ -7305,7 +7305,7 @@ pub struct GroupOutcome<G, R> {
 The named type rather than a bare `Vec<GroupOutcome<_, _>>` earns its place on
 one argument: the fairness bound "must remain a deterministic assertion rather
 than a latency impression from benchmarks"
-([`docs/reference-consumers.md:355-356`](./reference-consumers.md)), and
+([`docs/reference-consumers.md:359-360`](./reference-consumers.md)), and
 `visited()` is where that assertion is written down and checked. A `Vec` can
 carry the same data and cannot carry the promise.
 
