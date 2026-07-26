@@ -260,16 +260,27 @@ impl Replica {
         // interrupted transaction is ordinary after a kill and is announced so
         // an operator can see it; a repair is announced because it is the one
         // thing this process does that can lose acknowledged work.
+        //
+        // Creating the journal gets its own line rather than sharing one. It is
+        // the ordinary first act of a replica that has never run, and it is
+        // also exactly what a replica whose journal was deleted does — it opens
+        // at applied index zero and serves an empty ledger. Nothing inside this
+        // store can tell those apart, because both arrive as an absent file, so
+        // the announcement is where the difference becomes visible to the only
+        // party that can judge it: creation on a first boot is expected, and
+        // creation on a restart means the durable state is gone.
         let recovery = *store.recovery();
         if let Some(repair) = recovery.repair() {
             crate::emit(&format!("REPAIRED {} {repair}", node_id.0));
+        } else if recovery.created() {
+            crate::emit(&format!("CREATED {} {}", node_id.0, app_dir.display()));
         } else if !recovery.is_clean() {
             crate::emit(&format!(
                 "RECOVERED {} frames={} discarded={} swept={}",
                 node_id.0,
                 recovery.committed_frames(),
                 recovery.discarded_bytes(),
-                recovery.removed_staged_file()
+                recovery.removed_staged_bytes().unwrap_or(0)
             ));
         }
 

@@ -50,6 +50,7 @@
 //! ```text
 //! LISTENING <id> <client_addr>     the client port is open; service is refused
 //! WAITING_FOR_OWNERSHIP <id>       another process still owns this directory
+//! CREATED <id> <app_dir>           there was no journal here, so one was made
 //! RECOVERED <id> frames=<n> ...    the journal held residue from a crash
 //! REPAIRED <id> <what was lost>    a repair discarded part of the journal
 //! NEEDS_REPAIR <id> <detail>       the journal will not open without a decision
@@ -60,10 +61,18 @@
 //! FATAL <detail>                   followed by a nonzero exit
 //! ```
 //!
-//! `RECOVERED`, `REPAIRED`, and `NEEDS_REPAIR` are the durable store's recovery
-//! report reaching somebody who can act on it. A report nothing reads is a
-//! report that costs nothing to be wrong, so the process announces what opening
-//! found and refuses to serve on the one report that needs a human.
+//! `CREATED`, `RECOVERED`, `REPAIRED`, and `NEEDS_REPAIR` are the durable
+//! store's recovery report reaching somebody who can act on it. A report
+//! nothing reads is a report that costs nothing to be wrong, so the process
+//! announces what opening found and refuses to serve on the one report that
+//! needs a human.
+//!
+//! `CREATED` is the one that needs reading with the supervisor's own knowledge
+//! beside it. On a replica's first boot it is expected; on a restart it means
+//! the journal that was there is gone, and the replica is about to serve an
+//! empty ledger from applied index zero. The store cannot tell those apart —
+//! both are an absent file — so it reports the fact and leaves the judgement to
+//! whoever knows whether this replica has run before.
 //!
 //! `LINK` is emitted once during shutdown and is diagnostic rather than
 //! protocol: a nonzero drop count is normal under load, while a nonzero encode
