@@ -300,6 +300,199 @@ pub enum SchedulingViolation {
     },
 }
 
+/// One place in the fold where a rule is decided.
+///
+/// [`SchedulingViolation`] names the rule that broke. This names the *check
+/// that caught it*, and the two are deliberately not in bijection: there are
+/// more checks than variants, because five checks reuse a variant another check
+/// already reports. A red-team suite that gave every variant a deliberate
+/// violator therefore left three checks with none — the two retire-side
+/// pass-ordering checks, the retire-side tick-reuse check, and the release-side
+/// held-past-cost check — while claiming, in an exhaustive match over
+/// `SchedulingViolation`, that the compiler had ruled that out. The claim was
+/// one scope wider than the mechanism: exhaustive matching closes *variants*,
+/// and a rule is a site.
+///
+/// So the site is what the audit reports alongside the violation, and what
+/// `tests/redteam_controls.rs` matches exhaustively. Adding a rule now means
+/// adding a site, and adding a site without a scheduler that provokes it stops
+/// that suite compiling — including when the rule reuses a variant that already
+/// had a control.
+///
+/// # What this does not close
+///
+/// It closes *omission*: a check with no site, or a site with no control, does
+/// not compile. It does not close a false statement — an author who adds a
+/// second `fault` call passing a site that already belongs to another check has
+/// said something untrue about their own code, and no arrangement of Rust
+/// enums detects that without variant reflection this crate has no dependency
+/// to obtain. `every_fault_site_is_raised_by_exactly_one_check` scans this
+/// file's own source for the remaining case.
+#[allow(
+    clippy::manual_non_exhaustive,
+    reason = "the marker's discriminant is the site count, which `#[non_exhaustive]` \
+              does not provide — and `#[non_exhaustive]` would force a wildcard arm on \
+              every match over this type, which is the exact guarantee it exists to give"
+)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum FaultSite {
+    /// The clock check, in `Fold::monotone`.
+    ClockWalkedBackwards,
+    /// Calling in an overdue occupancy as the clock advances, in `Fold::reach`.
+    OccupancyOutlivedItsCost,
+    /// A release naming a group holding no worker, in `Fold::release`.
+    ReleaseWithoutOccupancy,
+    /// A release before its occupancy's deadline, in `Fold::release`.
+    ReleaseBeforeDue,
+    /// A release after its occupancy's deadline, in `Fold::release`.
+    ///
+    /// Distinct from [`Self::OccupancyOutlivedItsCost`], which reports the same
+    /// variant for an occupancy no release ever came for.
+    ReleaseAfterDue,
+    /// Arming while a plan is still open, in `Fold::arm`.
+    ArmedOverAnOpenPass,
+    /// Arming a pass index that does not follow its predecessor, in `Fold::arm`.
+    ArmedOutOfOrder,
+    /// Arming twice within one tick, in `Fold::arm`.
+    ArmedTickReused,
+    /// A plan naming one group twice, in `Fold::arm`.
+    PlanRepeatedAGroup,
+    /// A plan naming a group that was not ready, in `Fold::arm`.
+    PlanNamedAnUnreadyGroup,
+    /// A turn taken outside the open plan, in `Fold::offer`.
+    OfferOutsideThePlan,
+    /// A second turn for a group within one pass, in `Fold::offer`.
+    OfferedTwiceInOnePass,
+    /// A turn offered to a group that was never created, in `Fold::offer`.
+    OfferedAnUnknownGroup,
+    /// A skip claimed for a group nothing reported stalled, in `Fold::offer`.
+    SkippedWhileAvailable,
+    /// A dispatch of a group that was not ready, in `Fold::offer`.
+    DispatchedWhileUnready,
+    /// A turn servicing more than the group's quota, in `Fold::offer`.
+    DispatchOverQuota,
+    /// More concurrent turns than the pool has workers, in `Fold::offer`.
+    DispatchOverWorkerPool,
+    /// A turn ending with the work it was offered against still queued, in
+    /// `Fold::settle`.
+    TurnLeftWorkQueued,
+    /// A turn claiming a different count than it recorded, in `Fold::settle`.
+    TurnMiscountedItsWork,
+    /// A turn claiming a different cost than its work was worth, in
+    /// `Fold::settle`.
+    TurnMispricedItsWork,
+    /// Work serviced with no turn open to service it, in `Fold::service`.
+    ServiceOutsideATurn,
+    /// Work serviced past the end of a turn's offered items, in
+    /// `Fold::service`.
+    ServicePastTheTurnsWork,
+    /// Work serviced out of priority or arrival order, in `Fold::service`.
+    ServiceOutOfOrder,
+    /// Retiring twice within one tick, in `Fold::complete`.
+    ///
+    /// Distinct from [`Self::ArmedTickReused`], which reports the same variant
+    /// for the arming half of the same rule.
+    RetiredTickReused,
+    /// Retiring when no plan is open, in `Fold::complete`.
+    RetiredWithNoPassOpen,
+    /// Retiring a pass other than the open one, in `Fold::complete`.
+    RetiredADifferentPass,
+    /// Retiring a plan that still owes a group its turn, in `Fold::complete`.
+    RetiredWithATurnOwing,
+    /// The conservation self-check, in `Fold::finish`.
+    WorkUnaccountedFor,
+    /// The fairness bound itself, in `Fold::widest_gap`.
+    ///
+    /// The only site that is not a `Fold::fault` call, and it is here because
+    /// the registry covers every place the audit produces a violation rather
+    /// than every place it calls one particular method.
+    WidestOpportunityGap,
+    /// **Not a site.** The end marker, and the only thing that makes
+    /// [`Self::ALL`] closed under adding one.
+    ///
+    /// Its discriminant *is* the number of sites, so a variant added above it
+    /// changes `ALL`'s length and fails the const check below unless it is also
+    /// threaded onto [`Self::next`]. It must stay last, and `ALL` never
+    /// contains it. A variant declared *after* it escapes — which is a
+    /// statement that this marker is not the end, not an omission.
+    #[doc(hidden)]
+    EndOfSites,
+}
+
+impl FaultSite {
+    /// The number of sites, taken from the end marker's discriminant.
+    pub const COUNT: usize = Self::EndOfSites as usize;
+
+    /// Every site, in declaration order.
+    pub const ALL: [Self; Self::COUNT] = Self::all();
+
+    /// The next site in declaration order, or `None` past the last.
+    ///
+    /// Exhaustive, with no catch-all: a site added without an arm here does not
+    /// compile.
+    const fn next(self) -> Option<Self> {
+        Some(match self {
+            Self::ClockWalkedBackwards => Self::OccupancyOutlivedItsCost,
+            Self::OccupancyOutlivedItsCost => Self::ReleaseWithoutOccupancy,
+            Self::ReleaseWithoutOccupancy => Self::ReleaseBeforeDue,
+            Self::ReleaseBeforeDue => Self::ReleaseAfterDue,
+            Self::ReleaseAfterDue => Self::ArmedOverAnOpenPass,
+            Self::ArmedOverAnOpenPass => Self::ArmedOutOfOrder,
+            Self::ArmedOutOfOrder => Self::ArmedTickReused,
+            Self::ArmedTickReused => Self::PlanRepeatedAGroup,
+            Self::PlanRepeatedAGroup => Self::PlanNamedAnUnreadyGroup,
+            Self::PlanNamedAnUnreadyGroup => Self::OfferOutsideThePlan,
+            Self::OfferOutsideThePlan => Self::OfferedTwiceInOnePass,
+            Self::OfferedTwiceInOnePass => Self::OfferedAnUnknownGroup,
+            Self::OfferedAnUnknownGroup => Self::SkippedWhileAvailable,
+            Self::SkippedWhileAvailable => Self::DispatchedWhileUnready,
+            Self::DispatchedWhileUnready => Self::DispatchOverQuota,
+            Self::DispatchOverQuota => Self::DispatchOverWorkerPool,
+            Self::DispatchOverWorkerPool => Self::TurnLeftWorkQueued,
+            Self::TurnLeftWorkQueued => Self::TurnMiscountedItsWork,
+            Self::TurnMiscountedItsWork => Self::TurnMispricedItsWork,
+            Self::TurnMispricedItsWork => Self::ServiceOutsideATurn,
+            Self::ServiceOutsideATurn => Self::ServicePastTheTurnsWork,
+            Self::ServicePastTheTurnsWork => Self::ServiceOutOfOrder,
+            Self::ServiceOutOfOrder => Self::RetiredTickReused,
+            Self::RetiredTickReused => Self::RetiredWithNoPassOpen,
+            Self::RetiredWithNoPassOpen => Self::RetiredADifferentPass,
+            Self::RetiredADifferentPass => Self::RetiredWithATurnOwing,
+            Self::RetiredWithATurnOwing => Self::WorkUnaccountedFor,
+            Self::WorkUnaccountedFor => Self::WidestOpportunityGap,
+            Self::WidestOpportunityGap | Self::EndOfSites => return None,
+        })
+    }
+
+    const fn all() -> [Self; Self::COUNT] {
+        let mut sites = [Self::ClockWalkedBackwards; Self::COUNT];
+        let mut index = 0;
+        let mut current = Some(Self::ClockWalkedBackwards);
+        while index < Self::COUNT {
+            let Some(site) = current else { break };
+            sites[index] = site;
+            current = site.next();
+            index += 1;
+        }
+        sites
+    }
+}
+
+// `ALL` walks `next` from the first variant, and this is what makes that walk a
+// closure claim rather than a hope: every entry must sit at its own declaration
+// index, so a chain that stops early, repeats itself, or skips a variant leaves
+// a slot holding the wrong site and fails to compile.
+const _: () = {
+    let mut index = 0;
+    while index < FaultSite::COUNT {
+        assert!(
+            FaultSite::ALL[index] as usize == index,
+            "FaultSite::next must visit every site once, in declaration order"
+        );
+        index += 1;
+    }
+};
+
 /// Evidence that the recorded decisions kept the scheduling contract.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct FairnessReport {
@@ -349,6 +542,15 @@ pub struct Replay {
     pub failures: Vec<FailureRecord>,
     /// Whether the recorded decisions kept the scheduling contract.
     pub fairness: Result<FairnessReport, SchedulingViolation>,
+    /// The check that reported `fairness`'s violation, when there is one.
+    ///
+    /// A violation names the rule that broke; this names the rule that *caught*
+    /// it, which is not the same question wherever two checks report one
+    /// variant. `tests/redteam_controls.rs` is the reason it is carried:
+    /// without it, a suite can only claim a control for every variant, and
+    /// three of this fold's checks had none while that claim was being made by
+    /// an exhaustive match.
+    pub fault: Option<FaultSite>,
 }
 
 /// Structurally independent executable specification for the managed
@@ -726,7 +928,7 @@ struct Fold {
     /// Ticks the last plan was armed at and the last plan retired at.
     last_armed: Option<TickIndex>,
     last_retired: Option<TickIndex>,
-    violation: Option<SchedulingViolation>,
+    violation: Option<(FaultSite, SchedulingViolation)>,
 }
 
 impl Fold {
@@ -957,10 +1159,13 @@ impl Fold {
     /// walks the fold's clock backwards.
     fn monotone(&mut self, tick: TickIndex) -> bool {
         if tick < self.tick {
-            self.fault(SchedulingViolation::TickWentBackwards {
-                current: self.tick,
-                observed: tick,
-            });
+            self.fault(
+                FaultSite::ClockWalkedBackwards,
+                SchedulingViolation::TickWentBackwards {
+                    current: self.tick,
+                    observed: tick,
+                },
+            );
             return false;
         }
         true
@@ -987,12 +1192,15 @@ impl Fold {
             .collect();
         for (group, occupancy) in overdue {
             self.occupancies.remove(&group);
-            self.fault(SchedulingViolation::WorkerHeldPastCost {
-                pass: occupancy.pass,
-                group,
-                due: occupancy.due,
-                observed: tick,
-            });
+            self.fault(
+                FaultSite::OccupancyOutlivedItsCost,
+                SchedulingViolation::WorkerHeldPastCost {
+                    pass: occupancy.pass,
+                    group,
+                    due: occupancy.due,
+                    observed: tick,
+                },
+            );
         }
     }
 
@@ -1000,22 +1208,31 @@ impl Fold {
     /// opened it.
     fn release(&mut self, tick: TickIndex, group: GroupId) {
         let Some(occupancy) = self.occupancies.remove(&group) else {
-            self.fault(SchedulingViolation::SpuriousWorkerRelease { tick, group });
+            self.fault(
+                FaultSite::ReleaseWithoutOccupancy,
+                SchedulingViolation::SpuriousWorkerRelease { tick, group },
+            );
             return;
         };
         match tick.cmp(&occupancy.due) {
-            Ordering::Less => self.fault(SchedulingViolation::WorkerReleasedEarly {
-                pass: occupancy.pass,
-                group,
-                due: occupancy.due,
-                observed: tick,
-            }),
-            Ordering::Greater => self.fault(SchedulingViolation::WorkerHeldPastCost {
-                pass: occupancy.pass,
-                group,
-                due: occupancy.due,
-                observed: tick,
-            }),
+            Ordering::Less => self.fault(
+                FaultSite::ReleaseBeforeDue,
+                SchedulingViolation::WorkerReleasedEarly {
+                    pass: occupancy.pass,
+                    group,
+                    due: occupancy.due,
+                    observed: tick,
+                },
+            ),
+            Ordering::Greater => self.fault(
+                FaultSite::ReleaseAfterDue,
+                SchedulingViolation::WorkerHeldPastCost {
+                    pass: occupancy.pass,
+                    group,
+                    due: occupancy.due,
+                    observed: tick,
+                },
+            ),
             Ordering::Equal => {}
         }
     }
@@ -1410,9 +1627,15 @@ impl Fold {
         Ok(())
     }
 
-    fn fault(&mut self, violation: SchedulingViolation) {
+    /// Records the first structural fault, with the check that caught it.
+    ///
+    /// `site` is not derived from `violation` and could not be: five checks
+    /// report a variant another check already reports, so the variant does not
+    /// determine the check. It is passed in because the caller is the only
+    /// party that knows which rule it is deciding.
+    fn fault(&mut self, site: FaultSite, violation: SchedulingViolation) {
         if self.violation.is_none() {
-            self.violation = Some(violation);
+            self.violation = Some((site, violation));
         }
     }
 
@@ -1420,19 +1643,28 @@ impl Fold {
     /// against it.
     fn arm(&mut self, pass: PassIndex, tick: TickIndex, plan: &[GroupId]) {
         if let Some(open) = self.open.as_ref().map(|open| open.pass) {
-            self.fault(SchedulingViolation::PassArmedWhileOpen { open, armed: pass });
+            self.fault(
+                FaultSite::ArmedOverAnOpenPass,
+                SchedulingViolation::PassArmedWhileOpen { open, armed: pass },
+            );
         }
         if pass != self.next_pass {
-            self.fault(SchedulingViolation::PassOutOfOrder {
-                expected: self.next_pass,
-                observed: pass,
-            });
+            self.fault(
+                FaultSite::ArmedOutOfOrder,
+                SchedulingViolation::PassOutOfOrder {
+                    expected: self.next_pass,
+                    observed: pass,
+                },
+            );
         }
         // A tick arms at most one plan. Without this, a scheduler could arm
         // plans without limit at a standstill clock, denying a group every one
         // of them while no occupancy it holds ever came due.
         if self.last_armed.is_some_and(|last| tick <= last) {
-            self.fault(SchedulingViolation::PassBoundaryReused { pass, tick });
+            self.fault(
+                FaultSite::ArmedTickReused,
+                SchedulingViolation::PassBoundaryReused { pass, tick },
+            );
         }
         self.last_armed = Some(tick);
         self.next_pass = pass.successor().unwrap_or(pass);
@@ -1444,16 +1676,22 @@ impl Fold {
         let mut seen: BTreeSet<GroupId> = BTreeSet::new();
         for group in plan {
             if !seen.insert(*group) {
-                self.fault(SchedulingViolation::PlanRepeatedGroup {
-                    pass,
-                    group: *group,
-                });
+                self.fault(
+                    FaultSite::PlanRepeatedAGroup,
+                    SchedulingViolation::PlanRepeatedGroup {
+                        pass,
+                        group: *group,
+                    },
+                );
             }
             if !self.is_ready(*group) {
-                self.fault(SchedulingViolation::PlanIncludedUnreadyGroup {
-                    pass,
-                    group: *group,
-                });
+                self.fault(
+                    FaultSite::PlanNamedAnUnreadyGroup,
+                    SchedulingViolation::PlanIncludedUnreadyGroup {
+                        pass,
+                        group: *group,
+                    },
+                );
             }
         }
 
@@ -1497,7 +1735,10 @@ impl Fold {
             .as_ref()
             .is_some_and(|open| open.pass == pass && open.planned(group));
         if !planned {
-            self.fault(SchedulingViolation::OfferOutsidePlan { pass, group });
+            self.fault(
+                FaultSite::OfferOutsideThePlan,
+                SchedulingViolation::OfferOutsidePlan { pass, group },
+            );
             return;
         }
         if self
@@ -1505,7 +1746,10 @@ impl Fold {
             .as_ref()
             .is_some_and(|open| open.offered.contains(&group))
         {
-            self.fault(SchedulingViolation::GroupOfferedTwice { pass, group });
+            self.fault(
+                FaultSite::OfferedTwiceInOnePass,
+                SchedulingViolation::GroupOfferedTwice { pass, group },
+            );
             return;
         }
         if let Some(open) = self.open.as_mut() {
@@ -1514,7 +1758,10 @@ impl Fold {
         }
 
         let Some(state) = self.groups.get(&group) else {
-            self.fault(SchedulingViolation::DispatchedUnreadyGroup { pass, group });
+            self.fault(
+                FaultSite::OfferedAnUnknownGroup,
+                SchedulingViolation::DispatchedUnreadyGroup { pass, group },
+            );
             return;
         };
         let stalled = state.stalled;
@@ -1525,21 +1772,30 @@ impl Fold {
         match outcome {
             OfferOutcome::Skipped(SkipReason::Stalled) => {
                 if !stalled {
-                    self.fault(SchedulingViolation::SkippedAvailableGroup { pass, group });
+                    self.fault(
+                        FaultSite::SkippedWhileAvailable,
+                        SchedulingViolation::SkippedAvailableGroup { pass, group },
+                    );
                 }
             }
             OfferOutcome::Dispatched { serviced, cost } => {
                 if !ready {
-                    self.fault(SchedulingViolation::DispatchedUnreadyGroup { pass, group });
+                    self.fault(
+                        FaultSite::DispatchedWhileUnready,
+                        SchedulingViolation::DispatchedUnreadyGroup { pass, group },
+                    );
                     return;
                 }
                 if serviced > quota {
-                    self.fault(SchedulingViolation::QuotaExceeded {
-                        pass,
-                        group,
-                        serviced,
-                        quota,
-                    });
+                    self.fault(
+                        FaultSite::DispatchOverQuota,
+                        SchedulingViolation::QuotaExceeded {
+                            pass,
+                            group,
+                            serviced,
+                            quota,
+                        },
+                    );
                 }
                 // Nothing about the turn's price is decided here. The dispatch
                 // has only made a claim; the work that backs it arrives next,
@@ -1557,11 +1813,14 @@ impl Fold {
                 // A turn in progress holds a worker, so the pool is checked the
                 // instant the turn opens rather than when it is priced.
                 if self.workers_held() > self.config.workers() {
-                    self.fault(SchedulingViolation::WorkerCountExceeded {
-                        pass,
-                        group,
-                        workers: self.config.workers(),
-                    });
+                    self.fault(
+                        FaultSite::DispatchOverWorkerPool,
+                        SchedulingViolation::WorkerCountExceeded {
+                            pass,
+                            group,
+                            workers: self.config.workers(),
+                        },
+                    );
                 }
             }
         }
@@ -1587,29 +1846,38 @@ impl Fold {
         // it with any of them still queued means the worker was held for work
         // that never moved.
         if !turn.owed.is_empty() {
-            self.fault(SchedulingViolation::DispatchLeftWorkUnserviced {
-                pass: turn.pass,
-                group: turn.group,
-                owed: turn.owed_total,
-                serviced,
-            });
+            self.fault(
+                FaultSite::TurnLeftWorkQueued,
+                SchedulingViolation::DispatchLeftWorkUnserviced {
+                    pass: turn.pass,
+                    group: turn.group,
+                    owed: turn.owed_total,
+                    serviced,
+                },
+            );
         }
         if serviced != turn.reported_serviced {
-            self.fault(SchedulingViolation::ServiceCountMismatch {
-                pass: turn.pass,
-                group: turn.group,
-                expected: serviced,
-                observed: turn.reported_serviced,
-            });
+            self.fault(
+                FaultSite::TurnMiscountedItsWork,
+                SchedulingViolation::ServiceCountMismatch {
+                    pass: turn.pass,
+                    group: turn.group,
+                    expected: serviced,
+                    observed: turn.reported_serviced,
+                },
+            );
         }
         let price: u64 = turn.serviced.iter().map(|(_, cost)| *cost).sum();
         if price != turn.reported_cost {
-            self.fault(SchedulingViolation::DispatchCostMismatch {
-                pass: turn.pass,
-                group: turn.group,
-                expected: price,
-                observed: turn.reported_cost,
-            });
+            self.fault(
+                FaultSite::TurnMispricedItsWork,
+                SchedulingViolation::DispatchCostMismatch {
+                    pass: turn.pass,
+                    group: turn.group,
+                    expected: price,
+                    observed: turn.reported_cost,
+                },
+            );
         }
         let due = TickIndex::new(turn.tick.get().saturating_add(price));
         self.occupancies.insert(
@@ -1631,7 +1899,10 @@ impl Fold {
             .as_ref()
             .is_some_and(|turn| turn.group == group && turn.pass == pass);
         if !matches_turn {
-            self.fault(SchedulingViolation::ServiceOutsideDispatch { pass, group });
+            self.fault(
+                FaultSite::ServiceOutsideATurn,
+                SchedulingViolation::ServiceOutsideDispatch { pass, group },
+            );
             return;
         }
         let owed = self
@@ -1640,21 +1911,27 @@ impl Fold {
             .and_then(|turn| turn.owed.pop_front());
         let Some(owed) = owed else {
             let owed_total = self.recording.as_ref().map_or(0, |turn| turn.owed_total);
-            self.fault(SchedulingViolation::DispatchServicedBeyondItsWork {
-                pass,
-                group,
-                owed: owed_total,
-                work,
-            });
+            self.fault(
+                FaultSite::ServicePastTheTurnsWork,
+                SchedulingViolation::DispatchServicedBeyondItsWork {
+                    pass,
+                    group,
+                    owed: owed_total,
+                    work,
+                },
+            );
             return;
         };
         if owed != work {
-            self.fault(SchedulingViolation::ServiceOrderViolation {
-                pass,
-                group,
-                expected: owed,
-                observed: work,
-            });
+            self.fault(
+                FaultSite::ServiceOutOfOrder,
+                SchedulingViolation::ServiceOrderViolation {
+                    pass,
+                    group,
+                    expected: owed,
+                    observed: work,
+                },
+            );
         }
         // The turn is priced by what it moved, so the price is read off the
         // item the service actually named. An item the group never held is
@@ -1741,27 +2018,39 @@ impl Fold {
         // A tick retires at most one plan, the counterpart of the rule that it
         // arms at most one.
         if self.last_retired.is_some_and(|last| tick <= last) {
-            self.fault(SchedulingViolation::PassBoundaryReused { pass, tick });
+            self.fault(
+                FaultSite::RetiredTickReused,
+                SchedulingViolation::PassBoundaryReused { pass, tick },
+            );
         }
         self.last_retired = Some(tick);
         let Some(open) = self.open.take() else {
-            self.fault(SchedulingViolation::PassOutOfOrder {
-                expected: self.next_pass,
-                observed: pass,
-            });
+            self.fault(
+                FaultSite::RetiredWithNoPassOpen,
+                SchedulingViolation::PassOutOfOrder {
+                    expected: self.next_pass,
+                    observed: pass,
+                },
+            );
             return;
         };
         if open.pass != pass {
-            self.fault(SchedulingViolation::PassOutOfOrder {
-                expected: open.pass,
-                observed: pass,
-            });
+            self.fault(
+                FaultSite::RetiredADifferentPass,
+                SchedulingViolation::PassOutOfOrder {
+                    expected: open.pass,
+                    observed: pass,
+                },
+            );
         }
         for group in &open.pending {
-            self.fault(SchedulingViolation::PassCompletedWithUnofferedGroup {
-                pass,
-                group: *group,
-            });
+            self.fault(
+                FaultSite::RetiredWithATurnOwing,
+                SchedulingViolation::PassCompletedWithUnofferedGroup {
+                    pass,
+                    group: *group,
+                },
+            );
         }
         self.passes_completed += 1;
     }
@@ -1771,32 +2060,38 @@ impl Fold {
         // the record is as much a settlement point as any event in it.
         self.settle();
         if u64::from(self.queued) + self.serviced + self.failed != self.admitted {
-            self.fault(SchedulingViolation::WorkNotConserved {
-                admitted: self.admitted,
-                serviced: self.serviced,
-                failed: self.failed,
-                queued: self.queued,
-            });
+            self.fault(
+                FaultSite::WorkUnaccountedFor,
+                SchedulingViolation::WorkNotConserved {
+                    admitted: self.admitted,
+                    serviced: self.serviced,
+                    failed: self.failed,
+                    queued: self.queued,
+                },
+            );
         }
 
         // Structural faults outrank the gap: decisions that were not a pass at
         // all cannot be judged for the fairness of a pass.
-        let fairness = match self.violation {
-            Some(violation) => Err(violation),
-            None => match self.widest_gap() {
-                Some(violation) => Err(violation),
-                None => Ok(FairnessReport {
-                    passes_armed: self.passes_armed,
-                    passes_completed: self.passes_completed,
-                    opportunities: self.opportunities,
-                    serviced: self.serviced,
-                    widest_plan: self.widest_plan,
-                    // Measured rather than assumed to be zero. A green run
-                    // should report the number it proved, not a constant that
-                    // happens to be right.
-                    widest_gap: self.gaps.values().map(|gap| gap.worst).max().unwrap_or(0),
-                }),
-            },
+        let fault = match self.violation {
+            Some(pair) => Some(pair),
+            None => self
+                .widest_gap()
+                .map(|violation| (FaultSite::WidestOpportunityGap, violation)),
+        };
+        let fairness = match fault {
+            Some((_, violation)) => Err(violation),
+            None => Ok(FairnessReport {
+                passes_armed: self.passes_armed,
+                passes_completed: self.passes_completed,
+                opportunities: self.opportunities,
+                serviced: self.serviced,
+                widest_plan: self.widest_plan,
+                // Measured rather than assumed to be zero. A green run
+                // should report the number it proved, not a constant that
+                // happens to be right.
+                widest_gap: self.gaps.values().map(|gap| gap.worst).max().unwrap_or(0),
+            }),
         };
 
         let groups = self
@@ -1848,6 +2143,7 @@ impl Fold {
             services: self.services,
             failures: self.failures,
             fairness,
+            fault: fault.map(|(site, _)| site),
         }
     }
 
@@ -1930,5 +2226,52 @@ fn session_verdict(
         }
         _ if request.sequence == expected => None,
         _ => rejected(AdmissionRejection::SequenceGap { expected }),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Aliased on purpose: this module scans the file it lives in, so a literal
+    // `FaultSite::Something` written here would be one of the occurrences it is
+    // counting.
+    use super::FaultSite as Site;
+
+    /// This file's own source, so the check below is over the code it is about.
+    const SOURCE: &str = include_str!("oracle.rs");
+
+    /// Every site names exactly one check, and every check names a site.
+    ///
+    /// The exhaustive match in `tests/redteam_controls.rs` closes the other
+    /// direction — a site with no control does not compile — and the const
+    /// check above closes a third: a site that `ALL` does not reach. Neither
+    /// closes this one. Two checks passing the same site would leave one of
+    /// them with no deliberate violator while every compile-time mechanism
+    /// stayed satisfied, and detecting it from the type system needs variant
+    /// reflection that a crate with no dependencies has no way to obtain. So it
+    /// is decided from the text instead, which is the honest form of "this part
+    /// is not the compiler's".
+    #[test]
+    fn every_fault_site_is_raised_by_exactly_one_check() {
+        let calls = concat!("self.", "fault(");
+        assert_eq!(
+            SOURCE.matches(calls).count(),
+            Site::COUNT - 1,
+            "every site but the fairness bound is one fault call, and every \
+             fault call is a site"
+        );
+        for site in Site::ALL {
+            let needle = format!("FaultSite::{site:?}");
+            assert_eq!(
+                SOURCE.matches(needle.as_str()).count(),
+                1,
+                "{site:?} must be named by exactly one check"
+            );
+        }
+        let marker = format!("FaultSite::{:?}", Site::EndOfSites);
+        assert_eq!(
+            SOURCE.matches(marker.as_str()).count(),
+            0,
+            "the end marker is not a site, and no check may raise it"
+        );
     }
 }

@@ -27,7 +27,7 @@ mod types;
 
 pub use history::{HistoryEvent, Operation, OperationId, OperationOutcome};
 pub use model::ManagedScheduler;
-pub use oracle::{FairnessReport, ReferenceScheduler, Replay, SchedulingViolation};
+pub use oracle::{FairnessReport, FaultSite, ReferenceScheduler, Replay, SchedulingViolation};
 pub use types::{
     AdmissionOutcome, AdmissionRejection, ClientId, CounterCommand, CounterRejection,
     CounterResult, Delta, FailureRecord, GroupAvailability, GroupId, GroupIncarnation,

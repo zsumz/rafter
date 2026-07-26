@@ -14,7 +14,7 @@
 use std::{collections::BTreeMap, fmt};
 
 use rafter_reference_sharded_counter::{
-    AdmissionOutcome, ClientId, CounterCommand, Delta, FailureRecord, FairnessReport,
+    AdmissionOutcome, ClientId, CounterCommand, Delta, FailureRecord, FairnessReport, FaultSite,
     GroupAvailability, GroupId, GroupIncarnation, HistoryEvent, LifecycleRequest,
     LifecycleTransition, ManagedScheduler, Offer, OfferOutcome, Operation, OperationId,
     OperationOutcome, PassIndex, PassProgress, ReadinessSignal, ReferenceScheduler, Replay,
@@ -634,6 +634,12 @@ impl History {
 /// deliberate violator is a check whose positive control is its own vacuity, and
 /// that is how a whole generation of "the audit derives the occupancy" survived
 /// while the audit derived it from work that was never done.
+#[allow(
+    clippy::manual_non_exhaustive,
+    reason = "the marker's discriminant is the family size, which `#[non_exhaustive]` \
+              does not provide — and `#[non_exhaustive]` would force a wildcard arm on \
+              every match over this type, which is the exact guarantee it exists to give"
+)]
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
 pub enum Cheat {
     /// Plan the busy group and leave a ready one out.
@@ -682,36 +688,143 @@ pub enum Cheat {
     ArmTwoPlansInOneTick,
     /// Record work serviced when no turn was open to service it.
     ServiceWorkOutsideAnyDispatch,
+    /// Report a worker free a tick after its turn's cost came due.
+    ///
+    /// Produces the same [`SchedulingViolation`] value as
+    /// [`Self::HoldAWorkerPastItsCost`] from a different check, which is the
+    /// whole reason controls are indexed by site rather than by variant.
+    ReleaseAWorkerAfterItsCostIsPaid,
+    /// Retire a second plan within one tick.
+    RetireTwoPlansInOneTick,
+    /// Retire a plan when none is open.
+    RetireAPassWithNoPlanOpen,
+    /// Retire a plan other than the one that is open.
+    RetireAPassOtherThanTheOpenOne,
+    /// **Not a cheat.** The end marker, and the only thing that makes
+    /// [`Self::ALL`] closed under adding one.
+    ///
+    /// Its discriminant *is* the size of the family, so a cheat added above it
+    /// changes `ALL`'s length and fails the const check below unless it is also
+    /// threaded onto [`Self::next`]. It must stay last, and `ALL` never
+    /// contains it. A variant declared *after* it escapes — a statement that
+    /// this marker is not the end, rather than an omission.
+    ///
+    /// The literal array this replaced was closed by nothing: a twenty-fourth
+    /// variant left out of `[Self; 23]` compiled, ran, and was never exercised,
+    /// while the suite above it asserted the family covered what it claimed to.
+    #[doc(hidden)]
+    EndOfFamily,
 }
 
 impl Cheat {
+    /// The number of cheats, taken from the end marker's discriminant.
+    pub const COUNT: usize = Self::EndOfFamily as usize;
+
     /// Every cheat, so a suite can run the whole family rather than a sample.
-    pub const ALL: [Self; 23] = [
-        Self::StarveAReadyGroup,
-        Self::ArmOverAnOpenPlan,
-        Self::SkipAPassIndex,
-        Self::PlanAGroupThatIsNotReady,
-        Self::NameAGroupTwiceInOnePlan,
-        Self::OfferAGroupThePlanDidNotName,
-        Self::OfferAGroupTwiceInOnePass,
-        Self::RetireAPlanWithATurnOwing,
-        Self::DispatchAGroupThatIsNotReady,
-        Self::SkipAGroupThatIsAvailable,
-        Self::ServiceMoreThanTheQuota,
-        Self::ServiceOutOfArrivalOrder,
-        Self::MiscountTheWorkATurnDid,
-        Self::LeaveOwedWorkUnserviced,
-        Self::ServicePastTheEndOfATurn,
-        Self::MisreportTheTurnsCost,
-        Self::HoldAWorkerPastItsCost,
-        Self::ReleaseAWorkerBeforeItsCostIsPaid,
-        Self::ReleaseAWorkerNobodyTook,
-        Self::TakeMoreWorkersThanThePoolHas,
-        Self::WalkTheClockBackwards,
-        Self::ArmTwoPlansInOneTick,
-        Self::ServiceWorkOutsideAnyDispatch,
-    ];
+    pub const ALL: [Self; Self::COUNT] = Self::all();
+
+    /// The next cheat in declaration order, or `None` past the last.
+    ///
+    /// Exhaustive, with no catch-all: a cheat added without an arm here does
+    /// not compile.
+    const fn next(self) -> Option<Self> {
+        Some(match self {
+            Self::StarveAReadyGroup => Self::ArmOverAnOpenPlan,
+            Self::ArmOverAnOpenPlan => Self::SkipAPassIndex,
+            Self::SkipAPassIndex => Self::PlanAGroupThatIsNotReady,
+            Self::PlanAGroupThatIsNotReady => Self::NameAGroupTwiceInOnePlan,
+            Self::NameAGroupTwiceInOnePlan => Self::OfferAGroupThePlanDidNotName,
+            Self::OfferAGroupThePlanDidNotName => Self::OfferAGroupTwiceInOnePass,
+            Self::OfferAGroupTwiceInOnePass => Self::RetireAPlanWithATurnOwing,
+            Self::RetireAPlanWithATurnOwing => Self::DispatchAGroupThatIsNotReady,
+            Self::DispatchAGroupThatIsNotReady => Self::SkipAGroupThatIsAvailable,
+            Self::SkipAGroupThatIsAvailable => Self::ServiceMoreThanTheQuota,
+            Self::ServiceMoreThanTheQuota => Self::ServiceOutOfArrivalOrder,
+            Self::ServiceOutOfArrivalOrder => Self::MiscountTheWorkATurnDid,
+            Self::MiscountTheWorkATurnDid => Self::LeaveOwedWorkUnserviced,
+            Self::LeaveOwedWorkUnserviced => Self::ServicePastTheEndOfATurn,
+            Self::ServicePastTheEndOfATurn => Self::MisreportTheTurnsCost,
+            Self::MisreportTheTurnsCost => Self::HoldAWorkerPastItsCost,
+            Self::HoldAWorkerPastItsCost => Self::ReleaseAWorkerBeforeItsCostIsPaid,
+            Self::ReleaseAWorkerBeforeItsCostIsPaid => Self::ReleaseAWorkerNobodyTook,
+            Self::ReleaseAWorkerNobodyTook => Self::TakeMoreWorkersThanThePoolHas,
+            Self::TakeMoreWorkersThanThePoolHas => Self::WalkTheClockBackwards,
+            Self::WalkTheClockBackwards => Self::ArmTwoPlansInOneTick,
+            Self::ArmTwoPlansInOneTick => Self::ServiceWorkOutsideAnyDispatch,
+            Self::ServiceWorkOutsideAnyDispatch => Self::ReleaseAWorkerAfterItsCostIsPaid,
+            Self::ReleaseAWorkerAfterItsCostIsPaid => Self::RetireTwoPlansInOneTick,
+            Self::RetireTwoPlansInOneTick => Self::RetireAPassWithNoPlanOpen,
+            Self::RetireAPassWithNoPlanOpen => Self::RetireAPassOtherThanTheOpenOne,
+            Self::RetireAPassOtherThanTheOpenOne | Self::EndOfFamily => return None,
+        })
+    }
+
+    const fn all() -> [Self; Self::COUNT] {
+        let mut cheats = [Self::StarveAReadyGroup; Self::COUNT];
+        let mut index = 0;
+        let mut current = Some(Self::StarveAReadyGroup);
+        while index < Self::COUNT {
+            let Some(cheat) = current else { break };
+            cheats[index] = cheat;
+            current = cheat.next();
+            index += 1;
+        }
+        cheats
+    }
+
+    /// The check in the fold that this cheat's one decision must trip.
+    ///
+    /// Exhaustive with no catch-all, so a cheat added without a site does not
+    /// compile — the other half of the closure `control_for` provides.
+    #[must_use]
+    pub const fn site(self) -> FaultSite {
+        match self {
+            Self::StarveAReadyGroup => FaultSite::WidestOpportunityGap,
+            Self::ArmOverAnOpenPlan => FaultSite::ArmedOverAnOpenPass,
+            Self::SkipAPassIndex => FaultSite::ArmedOutOfOrder,
+            Self::PlanAGroupThatIsNotReady => FaultSite::PlanNamedAnUnreadyGroup,
+            Self::NameAGroupTwiceInOnePlan => FaultSite::PlanRepeatedAGroup,
+            Self::OfferAGroupThePlanDidNotName => FaultSite::OfferOutsideThePlan,
+            Self::OfferAGroupTwiceInOnePass => FaultSite::OfferedTwiceInOnePass,
+            Self::RetireAPlanWithATurnOwing => FaultSite::RetiredWithATurnOwing,
+            Self::DispatchAGroupThatIsNotReady => FaultSite::DispatchedWhileUnready,
+            Self::SkipAGroupThatIsAvailable => FaultSite::SkippedWhileAvailable,
+            Self::ServiceMoreThanTheQuota => FaultSite::DispatchOverQuota,
+            Self::ServiceOutOfArrivalOrder => FaultSite::ServiceOutOfOrder,
+            Self::MiscountTheWorkATurnDid => FaultSite::TurnMiscountedItsWork,
+            Self::LeaveOwedWorkUnserviced => FaultSite::TurnLeftWorkQueued,
+            Self::ServicePastTheEndOfATurn => FaultSite::ServicePastTheTurnsWork,
+            Self::MisreportTheTurnsCost => FaultSite::TurnMispricedItsWork,
+            Self::HoldAWorkerPastItsCost => FaultSite::OccupancyOutlivedItsCost,
+            Self::ReleaseAWorkerBeforeItsCostIsPaid => FaultSite::ReleaseBeforeDue,
+            Self::ReleaseAWorkerNobodyTook => FaultSite::ReleaseWithoutOccupancy,
+            Self::TakeMoreWorkersThanThePoolHas => FaultSite::DispatchOverWorkerPool,
+            Self::WalkTheClockBackwards => FaultSite::ClockWalkedBackwards,
+            Self::ArmTwoPlansInOneTick => FaultSite::ArmedTickReused,
+            Self::ServiceWorkOutsideAnyDispatch => FaultSite::ServiceOutsideATurn,
+            Self::ReleaseAWorkerAfterItsCostIsPaid => FaultSite::ReleaseAfterDue,
+            Self::RetireTwoPlansInOneTick => FaultSite::RetiredTickReused,
+            Self::RetireAPassWithNoPlanOpen => FaultSite::RetiredWithNoPassOpen,
+            Self::RetireAPassOtherThanTheOpenOne => FaultSite::RetiredADifferentPass,
+            Self::EndOfFamily => panic!("the end marker is not a cheat and is never run"),
+        }
+    }
 }
+
+// `ALL` walks `next` from the first variant, and this is what makes that walk a
+// closure claim rather than a hope: every entry must sit at its own declaration
+// index, so a chain that stops early, repeats itself, or skips a variant leaves
+// a slot holding the wrong cheat and fails to compile.
+const _: () = {
+    let mut index = 0;
+    while index < Cheat::COUNT {
+        assert!(
+            Cheat::ALL[index] as usize == index,
+            "Cheat::next must visit every cheat once, in declaration order"
+        );
+        index += 1;
+    }
+};
 
 /// Groups the red-team base history drives.
 const RED_TEAM_GROUPS: [u32; 3] = [0, 1, 2];
@@ -795,6 +908,24 @@ impl RedTeam {
         self.history.audit(self.bounds)
     }
 
+    /// Folds the history and returns everything it implies, including which
+    /// check reported the fault.
+    #[must_use]
+    pub fn replay(&self) -> Replay {
+        self.history.replay(self.bounds)
+    }
+
+    /// Returns the check this history must trip, or `None` for a control.
+    ///
+    /// A cheat names a site rather than only a violation because five of the
+    /// fold's checks report a variant another check already reports. Asserting
+    /// the variant alone cannot tell a control for one from a control for the
+    /// other, which is how three checks came to have none.
+    #[must_use]
+    pub fn expected_site(&self) -> Option<FaultSite> {
+        self.cheat.map(Cheat::site)
+    }
+
     /// Returns the fault this history must produce, or `None` for a control.
     #[must_use]
     pub fn expected_violation(&self) -> Option<SchedulingViolation> {
@@ -819,7 +950,11 @@ impl RedTeam {
                 open: pass(1),
                 armed: pass(2),
             },
-            Cheat::SkipAPassIndex => SchedulingViolation::PassOutOfOrder {
+            // Three checks report pass ordering — one at the arming and two at
+            // the retirement — and all three answer with these exact fields.
+            Cheat::SkipAPassIndex
+            | Cheat::RetireAPassWithNoPlanOpen
+            | Cheat::RetireAPassOtherThanTheOpenOne => SchedulingViolation::PassOutOfOrder {
                 expected: pass(2),
                 observed: pass(3),
             },
@@ -853,10 +988,17 @@ impl RedTeam {
                 pass: pass(2),
                 group: third,
             },
-            Cheat::ArmTwoPlansInOneTick => SchedulingViolation::PassBoundaryReused {
-                pass: pass(2),
-                tick: tick(1),
-            },
+            // The arm-side and retire-side halves of "a tick arms at most one
+            // plan and retires at most one". Two checks, one variant, and
+            // field-for-field the same answer: before controls were indexed by
+            // site, the second of them had no scheduler at all and an
+            // exhaustive match over `SchedulingViolation` said otherwise.
+            Cheat::ArmTwoPlansInOneTick | Cheat::RetireTwoPlansInOneTick => {
+                SchedulingViolation::PassBoundaryReused {
+                    pass: pass(2),
+                    tick: tick(1),
+                }
+            }
             Cheat::WalkTheClockBackwards => SchedulingViolation::TickWentBackwards {
                 current: tick(1 + u64::from(RED_TEAM_QUOTA)),
                 observed: tick(2),
@@ -906,12 +1048,18 @@ impl RedTeam {
                 expected: turn,
                 observed: turn + MISREPORTED_COST,
             },
-            Cheat::HoldAWorkerPastItsCost => SchedulingViolation::WorkerHeldPastCost {
-                pass: pass(1),
-                group: first,
-                due: tick(1 + turn),
-                observed: tick(2 + turn),
-            },
+            // The deadline sweep and the release check, byte for byte the same
+            // answer from two different rules. `HoldAWorkerPastItsCost` records
+            // no release at all and lets the clock carry past the deadline;
+            // `ReleaseAWorkerAfterItsCostIsPaid` records one, a tick late.
+            Cheat::HoldAWorkerPastItsCost | Cheat::ReleaseAWorkerAfterItsCostIsPaid => {
+                SchedulingViolation::WorkerHeldPastCost {
+                    pass: pass(1),
+                    group: first,
+                    due: tick(1 + turn),
+                    observed: tick(2 + turn),
+                }
+            }
             Cheat::ReleaseAWorkerBeforeItsCostIsPaid => SchedulingViolation::WorkerReleasedEarly {
                 pass: pass(1),
                 group: first,
@@ -1015,6 +1163,19 @@ impl RedTeam {
             history.armed(2, 1, Vec::new());
             return false;
         }
+        // The retire-side counterparts of the two rules above. Each has its own
+        // check in the fold, and each reports a variant the arm-side check
+        // already reports — so before controls were indexed by site, neither
+        // had a scheduler that provoked it and the exhaustive match over
+        // `SchedulingViolation` said otherwise.
+        if taken(Cheat::RetireTwoPlansInOneTick) {
+            history.retired(2, 1);
+            return false;
+        }
+        if taken(Cheat::RetireAPassWithNoPlanOpen) {
+            history.retired(3, 2);
+            return false;
+        }
         if taken(Cheat::ReleaseAWorkerBeforeItsCostIsPaid) {
             history.released(2, ids[0]);
         }
@@ -1040,6 +1201,22 @@ impl RedTeam {
         let turn = u64::from(RED_TEAM_QUOTA);
         let at = if taken(Cheat::HoldAWorkerPastItsCost) {
             // No releases, and the clock carried one tick past the deadline.
+            2 + turn
+        } else if carries(Cheat::ReleaseAWorkerAfterItsCostIsPaid) {
+            // Every worker is due back at `1 + turn`. The cheat reports the
+            // head group's one tick late and the control reports it on time;
+            // both arm the next plan at the same tick, so the difference stays
+            // one decision wide. The fault this produces is byte-for-byte the
+            // one `HoldAWorkerPastItsCost` produces, from the other check.
+            for id in &ids[1..] {
+                history.released(1 + turn, *id);
+            }
+            let head_at = if taken(Cheat::ReleaseAWorkerAfterItsCostIsPaid) {
+                2 + turn
+            } else {
+                1 + turn
+            };
+            history.released(head_at, ids[0]);
             2 + turn
         } else {
             for id in ids {
@@ -1118,7 +1295,12 @@ impl RedTeam {
         if taken(Cheat::OfferAGroupThePlanDidNotName) {
             history.dispatched(index_of, at, ids[2], RED_TEAM_QUOTA, turn);
         }
-        history.retired(index_of, last_at);
+        let retired_as = if taken(Cheat::RetireAPassOtherThanTheOpenOne) {
+            index_of + 1
+        } else {
+            index_of
+        };
+        history.retired(retired_as, last_at);
     }
 }
 

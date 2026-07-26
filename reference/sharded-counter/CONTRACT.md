@@ -819,6 +819,17 @@ basis to pick, and this document has already said that a tick is not a duration
 — so a numeric ceiling on cost would be a duration claim wearing a bound's
 clothes. The honest fix was to stop letting the pass counter stand in for work.
 
+**A green audit says no rule the audit names was broken. It does not say the
+rule set is complete.** Every rule below has a deliberate violator and a control
+— see "Invariant 24 is the one that keeps the rest honest" — and that
+demonstrates the rules fire, not that they cover. Two starvations have now been
+found that broke no rule this document had written, both of them in the one
+readiness condition the history reports rather than implies. One further
+starvation is *known* and left open, because closing it would blame a host that
+is merely busy: see the fourth row of "What falls outside that scope", under "A
+stall excuses only while it is unbroken". A reader who wants a bound on that
+case has to read the `serviced` floor, not `widest_gap`.
+
 **Liveness is deliberately not claimed, in either of its two forms.** That
 plans continue to be armed, and that an armed plan eventually retires, are both
 statements about progress over time. A pass legitimately spans many ticks —
@@ -1059,7 +1070,10 @@ The implementation and oracle must establish:
     enumerates what falls outside it.
 24. Every rule this audit enforces has a scheduler in the test suite written to
     break exactly it, and a control that differs from that scheduler by one
-    decision and is accepted.
+    decision and is accepted. A *rule* is a place the fold decides one, not a
+    variant it answers with: the two differ, five times over. What this
+    invariant does not claim is that the rule set is complete — see "Invariant
+    24 is the one that keeps the rest honest".
 
 Aggregate invariants do not imply linearizability. The later adapter will record
 invocation, completion, rejection, unknown outcome, provable refusal, and
@@ -1081,20 +1095,77 @@ done, because the derivation was never asked a question whose answer it could
 get wrong. The positive control was the vacuity.
 
 So `tests/redteam_controls.rs` holds a deliberately-violating scheduler for
-every `SchedulingViolation` the audit can report, each asserted as a pair: the
-cheating history must produce the named fault, and the same history with that
-one decision taken correctly must be accepted and must have moved real work. The
-mapping from fault to control is an exhaustive match with no catch-all, so a
-fault added to the audit without a scheduler that provokes it stops the suite
-compiling — the claim is checked by the compiler rather than stated here.
+every rule the audit decides, each asserted as a pair: the cheating history must
+trip the named check and produce the named fault, and the same history with that
+one decision taken correctly must be accepted and must have moved real work.
 
-One variant declares itself unreachable instead of claiming a control.
-`WorkNotConserved` is arithmetic the fold performs over four counters it moves
-itself and in step, so no recorded history can separate them; invariant 10 is
-asserted over the model's summary instead, where it is observable. That
-declaration has to survive this document's own standard for an unreachable
-answer, stated twice in "Result Taxonomy": a promise about behavior no test
-could observe is not made.
+#### A rule is a site, and exhaustive matching closes variants
+
+The previous generation of that file matched `SchedulingViolation` exhaustively
+and concluded that no rule could exist without a control. **That conclusion is
+one scope wider than the mechanism reaches**, which is the failure mode this
+document has now hit four times. The fold decides **29 rules at 29 places** and
+reports them through **24 variants**: five checks report a variant another check
+already reports. A rule added by reusing a variant needed no new match arm, and
+three had arrived that way and were exercised by nothing at all — the two
+retire-side pass-ordering checks, the retire-side tick-reuse check, and the
+release-side held-past-cost check. The compiler had been asked a question about
+variants and answered it correctly; the claim written above it was about rules.
+
+`FaultSite` is the registry that closes the gap: one variant per place the fold
+decides a rule, carried on `Replay::fault` beside the violation, and matched
+exhaustively by `control_for`. Four mechanisms hold it, and each is stated with
+what it does and does not close:
+
+| Mechanism | Closes | Verified by |
+| --- | --- | --- |
+| `control_for` matches `FaultSite` with no catch-all | a rule with no control | compile error `E0004` |
+| `FaultSite::ALL` walks an exhaustive `next` chain, const-checked against declaration order | a site the chain does not reach, including the laziest possible arm | compile error `E0080` |
+| `FaultSite::EndOfSites`, whose discriminant is the site count | a site appended and otherwise forgotten | compile error, via the length of `ALL` |
+| `oracle::tests::every_fault_site_is_raised_by_exactly_one_check` scans the fold's own source | two checks passing one site | test failure |
+
+The last row is a test rather than a compile error, and that is stated rather
+than glossed: detecting that two checks name one site needs variant reflection a
+crate with no dependencies has no way to obtain. What *no* mechanism here closes
+is a site declared after the end marker — which is a statement that the marker
+is not the end, rather than an omission. `Cheat::ALL` is closed the same way and
+for the same reason: it was `[Self; 23]`, a literal a twenty-fourth variant could
+be left out of without anything complaining, under a test asserting the family
+covered what it claimed to.
+
+Two sites declare themselves unreachable instead of claiming a control, and each
+has to survive this document's own standard for an unreachable answer, stated
+twice in "Result Taxonomy": a promise about behavior no test could observe is
+not made.
+
+- `WorkUnaccountedFor` is arithmetic the fold performs over four counters it
+  moves itself and in step, so no recorded history can separate them; invariant
+  10 is asserted over the model's summary instead, where it is observable.
+- `OfferedAnUnknownGroup` is *shadowed* rather than unreachable: an offer
+  reaches it only for a group the open plan named, and a plan naming a group
+  that was never created is refused at the arming. That argument is worth
+  exactly what the arm-side check is worth, so it is asserted rather than
+  asserted about, in
+  `redteam_controls::an_offer_to_a_group_that_never_existed_is_caught_when_the_plan_named_it`.
+
+#### What invariant 24 does not claim
+
+It says every rule the audit *names* fires on a history that breaks it, and that
+the near-miss beside it is accepted. **It says nothing about whether the rule
+set is complete**, and the remainder is not small. The starvation this generation
+closed broke no rule the audit named:
+
+```text
+passes_completed = 20   opportunities = 20   serviced = 20 host-wide, 0 for the starved group
+widest_gap       = 0    starved group: queued 1, stalled true, servicing false
+```
+
+Twenty passes, twenty items moved, a group available for eight ticks in ten
+holding a backlog throughout, every control in `redteam_controls.rs` green, and
+the audit correct by its own rules. A total mapping from rules to controls says
+nothing about a rule nobody wrote. The `serviced` floor is the only thing in the
+report that even declines to certify such a run, and here it did not: work
+moved, for somebody else.
 
 ## Independent Oracle Rule
 
