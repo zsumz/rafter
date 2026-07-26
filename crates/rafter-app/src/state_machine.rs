@@ -91,9 +91,21 @@ where
 /// effects and applied-index progress together strongly enough for that
 /// guarantee should not be used with the higher-level group or service APIs.
 pub trait ReplicatedStateMachine {
+    /// A mutation, before it becomes a log payload.
+    ///
+    /// This is the type a client proposes. It is encoded once, on the proposing
+    /// node, and every replica decodes the same bytes — so the encoding must be
+    /// deterministic and stable across versions of the application, or replicas
+    /// built at different times will apply different commands from one log.
     type Command;
+    /// What applying one command returns to the client that proposed it.
+    ///
+    /// Produced on every replica but delivered only where the proposal
+    /// originated; the others discard it.
     type CommandResult;
+    /// A question answered from applied state, which never enters the log.
     type Query;
+    /// What answering one query returns.
     type QueryResult;
     /// Error returned when this state machine cannot encode, decode, apply,
     /// read, or snapshot.

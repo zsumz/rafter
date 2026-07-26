@@ -17,9 +17,23 @@ pub enum GroupFatalState {
 }
 
 /// Proposal and read waiters drained when a group enters a fatal poison state.
+///
+/// A poison is not an event stream: the group moves every pending waiter here
+/// and emits nothing further for them. A driver that routes reports and does
+/// not drain this leaves those clients waiting forever, which is why every
+/// stepping path drains it.
+///
+/// Writes here must be reported as an unknown outcome, not a refusal: the entry
+/// may already be in the durable log and may commit under a later incarnation.
+/// Reads are terminal — a barrier the group dropped will never produce an
+/// answer.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct PoisonedWaiters {
+    /// Each dropped proposal's local ID, paired with the caller's own request
+    /// ID when one was supplied, so a driver can name the write to its client.
     pub proposals: Vec<(LocalProposalId, Option<ClientRequestId>)>,
+    /// Each dropped barrier's read ID. Those IDs are spent; a retry issues a
+    /// new read.
     pub reads: Vec<ReadId>,
 }
 
@@ -172,16 +186,61 @@ impl Default for StepReportOptions {
 }
 
 /// Explicit side effects from one group step.
+///
+/// This is the sans-IO boundary made concrete: the group performs no IO, so
+/// everything a step needs the outside world to do arrives here, and a caller
+/// that drops a report drops protocol progress. Everything in it is already
+/// durable — the runtime discharges its persistence obligation before releasing
+/// any output, so a report exists only for effects that are safe to release.
+///
+/// The lists are in the order the step produced them, and that order is
+/// load-bearing across `snapshot_events` and `peer_messages` in particular; do
+/// not reorder them.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct GroupStepReport<G, R> {
+    /// The group these effects belong to.
     pub group_id: G,
+    /// Frames to hand to the transport.
+    ///
+    /// Dropping one is safe — Raft re-sends — but dropping all of them stalls
+    /// the protocol: elections, replication, and read-index rounds all travel
+    /// here. Send them; do not answer a client with them.
     pub peer_messages: Vec<PeerEnvelope<G>>,
+    /// Results the state machine returned from applying committed entries.
+    ///
+    /// An entry reaching this list has committed and applied. This is the only
+    /// list that proves a write took effect.
     pub applied: Vec<ApplyResult<R>>,
+    /// Lifecycle transitions for locally submitted proposals.
+    ///
+    /// A caller correlating client futures matches on `local_proposal_id`.
+    /// `Appended` is not success: it says the entry reached the local log, not
+    /// that it committed.
     pub proposal_events: Vec<ProposalEvent<R>>,
+    /// Lifecycle transitions for read barriers.
+    ///
+    /// A barrier ends in whichever step observes its cause, which is often a
+    /// tick or a peer message rather than the read call that started it — so a
+    /// caller that watches only its own read calls will wait forever.
     pub read_events: Vec<ReadEvent<G>>,
+    /// Lifecycle transitions for leadership transfer.
     pub leadership_transfer_events: Vec<LeadershipTransferEvent>,
+    /// Snapshot work, of which only `SendChunk` is the caller's to perform.
+    ///
+    /// `StageChunk` and `Apply` are already discharged when the event is
+    /// emitted; see [`crate::snapshot::SnapshotEvent`].
     pub snapshot_events: Vec<SnapshotEvent<G>>,
+    /// Membership transitions, which a transport must track to keep its peer
+    /// set current.
+    ///
+    /// An `Appended` change is uncommitted and may only widen a peer set; only
+    /// an `Applied` change licenses narrowing it or fencing what left.
     pub membership_events: Vec<MembershipEvent<G>>,
+    /// A metrics snapshot, present only when the step was asked for one.
+    ///
+    /// `None` means [`StepReportOptions::without_metrics`] was used, never that
+    /// metrics were unavailable — a caller publishing at a coarser boundary
+    /// takes its own snapshot from [`RaftGroup::metrics`].
     pub metrics: Option<RaftGroupMetrics<G>>,
 }
 
@@ -209,16 +268,31 @@ pub struct ReadBarrierBeginReport<G, R> {
 /// The reusable pieces of a decomposed [`RaftGroup`].
 #[derive(Debug)]
 pub struct RaftGroupParts<G, A, R> {
+    /// The group ID the retired group served.
     pub group_id: G,
+    /// The local node ID the retired group owned.
     pub node_id: NodeId,
+    /// The persisted runtime, still live: nothing was closed or flushed.
     pub runtime: R,
+    /// The application state machine, at whatever applied index it reached.
     pub state_machine: A,
+    /// The highest local proposal ID the retired group consumed, if any.
+    ///
+    /// Load-bearing when `runtime` is carried into a new group: the new group
+    /// must be given IDs strictly above this, or a reused ID silently completes
+    /// the new waiter with the older proposal's result. `None` when the group
+    /// never proposed.
     pub local_proposal_id_watermark: Option<LocalProposalId>,
+    /// The highest read ID the retired group consumed, if any, with the same
+    /// obligation [`RaftGroupParts::local_proposal_id_watermark`] carries.
     pub read_id_watermark: Option<ReadId>,
+    /// Whether the retired group was healthy or poisoned.
     pub fatal_state: GroupFatalState,
     /// The error that poisoned the group, when the poison came from a typed
     /// failure. Carried so decomposition stays lossless.
     pub poison_cause: Option<ErrorCause>,
+    /// Waiters the poison captured, so decomposition can resolve clients the
+    /// retired group would never have answered. Empty for a healthy group.
     pub poisoned_waiters: PoisonedWaiters,
 }
 
@@ -295,6 +369,7 @@ impl<G, A, R> RaftGroup<G, A, R> {
     /// Restart paths should prefer [`RaftGroup::with_applied_index`] and pass
     /// the state machine's durable applied index alongside a runtime recovered
     /// with the same applied-through floor.
+    #[must_use]
     pub fn new(group_id: G, node_id: NodeId, raft: R, app: A) -> Self {
         Self::with_applied_index(group_id, node_id, raft, app, LogIndex::ZERO)
     }
@@ -306,6 +381,7 @@ impl<G, A, R> RaftGroup<G, A, R> {
     /// state. The group still validates the state machine's reported applied
     /// index before every apply batch and poisons itself rather than replaying
     /// entries that the application already says are durable.
+    #[must_use]
     pub fn with_applied_index(
         group_id: G,
         node_id: NodeId,

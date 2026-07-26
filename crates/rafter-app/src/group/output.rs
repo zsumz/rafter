@@ -481,6 +481,7 @@ where
         }
         Ok(())
     }
+
     pub(super) fn record_peer_message(
         &self,
         to: NodeId,
