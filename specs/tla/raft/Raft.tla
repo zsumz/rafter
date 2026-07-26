@@ -23,19 +23,22 @@ EXTENDS Naturals, Sequences, FiniteSets, TLC
 \* equality between a rafter log and a model log is never the refinement
 \* mapping.
 \*
-\* Dead monitor. frozenAppendAuthorityFailed can never become TRUE. Its latch
-\* requires message.senderPendingSelfRemoval together with
-\* receiverWouldAccept /\ ~accepted, but accept differs from receiverWouldAccept
-\* only by AppendSenderAuthorized(m), which holds whenever
-\* m.senderPendingSelfRemoval holds. The latch condition is therefore
-\* unsatisfiable by construction rather than merely unreached. TLC corroborates
-\* the half that could otherwise have been vacuous: an append from a
-\* self-removing sender really is reachable, so the latch's first conjunct is
-\* live and the latch still cannot fire.
-\* It carries no invariant because asserting ~frozenAppendAuthorityFailed
-\* would add a predicate that cannot fail. It should be deleted outright; the
-\* deletion is blocked only because a mutation fixture in rafter-invariants
-\* pins the literal text of the UNCHANGED clause naming this variable.
+\* Mutation-sensitive monitor. frozenAppendAuthorityFailed stays FALSE under
+\* this spec as written, and that is its specified resting state rather than
+\* evidence that it is dead. Its latch needs message.senderPendingSelfRemoval
+\* together with receiverWouldAccept /\ ~accepted; accept differs from
+\* receiverWouldAccept only by AppendSenderAuthorized(m), which holds whenever
+\* m.senderPendingSelfRemoval holds. So the latch is unsatisfiable for exactly
+\* as long as DeliverAppend judges sender authority by the membership frozen
+\* into the message at send time, and failing when that stops being true is the
+\* whole job. RafterInvariantDetectorNegative does assert it, through
+\* FrozenAppendAuthorityInvariant, and the rafter-invariants mutation suite
+\* swaps the guard for a live-membership test and requires TLC to exit 12
+\* naming that invariant. It is the only predicate in that fixture that catches
+\* the swap: drop the ~frozenAppendAuthorityFailed conjunct and TypeOK,
+\* ElectionSafety, LogMatching, LeaderCompleteness and CommittedPrefixStability
+\* all pass on the mutated spec. A tier config is the one place it does not
+\* belong, since there it could only ever hold.
 
 CONSTANTS Nodes, Values, MaxTerm, MaxLogLen, ReadRequests
 

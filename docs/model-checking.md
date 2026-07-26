@@ -149,21 +149,28 @@ stated in the direction the code uses it: a rafter log carries one extra entry
 per leader term that a model log does not, so index equality between the two is
 never the refinement mapping.
 
-**One dead monitor.** `frozenAppendAuthorityFailed` can never become `TRUE`.
-Its latch needs `senderPendingSelfRemoval` together with
-`receiverWouldAccept /\ ~accepted`, but `accept` differs from
+**One monitor no tier asserts.** `frozenAppendAuthorityFailed` stays `FALSE`
+under the spec as written, and no wired tier config names it — `TypeOK` only
+gives it a type. The algebra is three definitions wide and needs no model: the
+latch needs `senderPendingSelfRemoval` together with
+`receiverWouldAccept /\ ~accepted`, and `accept` differs from
 `receiverWouldAccept` only by `AppendSenderAuthorized(m)`, which holds whenever
-`senderPendingSelfRemoval` holds. The condition is unsatisfiable by
-construction rather than merely unreached, and that proof is three definitions
-wide and needs no model. TLC corroborates the half that could otherwise have
-been vacuous: an append from a self-removing sender is reachable at
-`{n1,n2,n3}`/`MaxTerm=1`/`MaxLogLen=2`, so the latch's first conjunct is live
-and the latch still cannot fire. It carries no invariant, and it should not be
-given one, because
-`~frozenAppendAuthorityFailed` is a predicate that cannot fail. It should be
-deleted; the deletion is blocked only because a mutation fixture in
-`crates/rafter-invariants` pins the literal text of the `UNCHANGED` clause that
-names the variable.
+`senderPendingSelfRemoval` holds.
+
+That resting state is the monitor's specification, not a defect. The latch is
+unsatisfiable for exactly as long as `DeliverAppend` judges sender authority by
+the membership frozen into the message at send time, and it exists to fail if
+that ever changes. `RafterInvariantDetectorNegative` does assert it, through
+`FrozenAppendAuthorityInvariant`, and
+`delayed_append_uses_frozen_sender_authority_after_self_removal` in
+`crates/rafter-invariants` runs that fixture twice: the unmutated spec passes,
+and a mutation that re-derives sender authority from the sender's live
+membership exits 12 naming that invariant. It is the only predicate in the
+fixture that catches the mutation — with the `~frozenAppendAuthorityFailed`
+conjunct removed, `TypeOK`, `ElectionSafety`, `LogMatching`,
+`LeaderCompleteness` and `CommittedPrefixStability` all pass on the mutated
+spec. So the reading a green tier supports is narrow but real: the wired tiers
+do not check this property, and the mutation suite does.
 
 ## State Counts
 
