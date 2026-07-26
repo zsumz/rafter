@@ -5,10 +5,12 @@
 //! did, and [`UnfairScheduler`] is the negative control that proves the audit
 //! has teeth.
 
-// Two suites declare this module — `model_contract` and `differential` — and
-// each compiles its own copy of the whole thing while using a different subset.
+// Five suites declare this module — `model_contract`, `differential`,
+// `derived_occupancy`, `redteam_controls`, and `redteam_occupancy` — and each
+// compiles its own copy of the whole thing while using a different subset.
 // `dependency_boundary` reads manifests only and does not declare it at all.
-// The unused half of each copy is the cost of that arrangement, not dead code.
+// The unused part of each copy is the cost of that arrangement, not dead code:
+// every item here has a caller in at least one of the five.
 #![allow(dead_code)]
 
 use std::{collections::BTreeMap, fmt};

@@ -122,10 +122,12 @@ impl Group {
 
 /// One worker holding a group's opportunity until its cost is paid.
 ///
-/// `busy_until` is the dispatch tick plus the turn's cost, and the worker is
-/// released at exactly that tick. Nothing about the release is a policy the
-/// scheduler chooses: an observer that recorded the dispatch knows when the
-/// release is due and can say so when it does not arrive.
+/// `busy_until` is the dispatch tick plus what the turn's services were worth,
+/// and the worker is released at exactly that tick. Nothing about the release
+/// is a policy the scheduler chooses: an observer that read the turn's services
+/// knows when the release is due and can say so when it does not arrive. The
+/// dispatch alone is not enough — it carries a *claim* about its price, and the
+/// items backing the claim arrive after it.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Dispatch {
     group: GroupId,

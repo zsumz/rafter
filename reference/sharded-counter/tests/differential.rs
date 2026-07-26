@@ -198,7 +198,16 @@ fn independent_models_agree_under_saturated_bounds() {
 /// The count is returned rather than discarded because an agreement check is
 /// silent about a scheduler that scheduled nothing: two models that both did
 /// nothing agree perfectly, and the fairness audit certifies the emptiness. The
-/// caller asserts a floor, which is what turns agreement into evidence.
+/// caller asserts a floor on this count, which is what keeps agreement from
+/// being vacuous here.
+///
+/// **This is the weaker of the two floors the crate knows about.** Arming a
+/// plan is free, so a floor on plans retired is not by itself proof that any
+/// work moved — see `FairnessReport::serviced` and CONTRACT.md's "the floor is
+/// on service, and not on plans". These two workloads drive `ManagedScheduler`,
+/// which services what it dispatches, so passes retired does track work done
+/// *for this driver*; the floor is sound here and would not be against an
+/// arbitrary host. Moving it to `serviced` is the open item.
 fn run_workload(
     seed: u64,
     bounds: SchedulerConfig,

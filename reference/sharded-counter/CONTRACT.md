@@ -1259,9 +1259,10 @@ PassCompleted(pass, tick)                              a scheduler decision
 
 Every scheduler decision that happens at an instant records that instant, and
 `GroupOffered` is one of them because a dispatch opens a worker occupancy that
-comes due at its own tick plus its own cost. An offer that did not say when it
-happened would leave that occupancy with no deadline anyone could compute, and
-an occupancy nobody can time out is a group nobody can prove was starved.
+comes due at its own tick plus what its services were worth. An offer that did
+not say when it happened would leave that occupancy with no deadline anyone
+could compute, and an occupancy nobody can time out is a group nobody can prove
+was starved.
 
 `WorkServiced` carries no tick, because it happens within the turn that does,
 and that is now a rule rather than an economy. **A turn's services follow its

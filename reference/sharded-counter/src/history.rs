@@ -163,9 +163,10 @@ pub enum HistoryEvent {
     /// A worker's occupancy ended and its group may be dispatched again.
     ///
     /// This is a report of an instant, never a grant of one. The instant a
-    /// dispatch's occupancy ends is `dispatch tick + dispatch cost`, and both
-    /// are recorded, so an observer decides for itself whether this event
-    /// arrived when it was due, early, or at all.
+    /// dispatch's occupancy ends is its tick plus what the turn's services were
+    /// worth — priced from the [`Self::WorkServiced`] stream, never from the
+    /// cost the dispatch reported about itself — so an observer decides for
+    /// itself whether this event arrived when it was due, early, or at all.
     WorkerReleased {
         /// Tick the worker came free at.
         tick: TickIndex,
@@ -187,10 +188,10 @@ pub enum HistoryEvent {
     /// A group in the armed plan took its turn.
     ///
     /// The tick is what makes a dispatch's worker occupancy derivable: an
-    /// occupancy opens here and is due to end at `tick + cost`. Without the
-    /// instant the turn was taken there is no deadline to hold the scheduler
-    /// to, and an occupancy nobody can time out is a group nobody can prove
-    /// was starved.
+    /// occupancy opens here and is due to end at `tick` plus what the turn's
+    /// services were worth. Without the instant the turn was taken there is no
+    /// deadline to hold the scheduler to, and an occupancy nobody can time out
+    /// is a group nobody can prove was starved.
     GroupOffered {
         /// Pass the turn belonged to.
         pass: PassIndex,

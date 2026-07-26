@@ -1,9 +1,12 @@
 //! Red-team probes against the derived-occupancy rule and the freedoms it
 //! leaves the scheduler.
 //!
-//! Each test states what CONTRACT.md promises and lets the audit answer. Every
-//! one of them was written as a *hole* — a schedule the contract says it forbids
-//! and the audit accepted — and each now names the fault that catches it.
+//! Each test states what CONTRACT.md promises and lets the audit answer. Most
+//! were written as a *hole* — a schedule the contract says it forbids and the
+//! audit accepted — and each of those now names the fault that catches it. The
+//! rest are the acceptance cases those holes are bounded by: a schedule the
+//! contract permits, which the audit must go on accepting for the faults above
+//! to mean anything narrower than "refuses everything".
 //!
 //! The generation this file closed derived a turn's occupancy from the items the
 //! group *owed*, read off its queue when the turn was offered, and never checked
