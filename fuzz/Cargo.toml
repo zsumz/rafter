@@ -17,6 +17,11 @@ path = "../crates/rafter"
 [dependencies.rafter-codec]
 path = "../crates/rafter-codec"
 
+# storage_snapshot_decode reseals mutated envelope bodies so mutations reach
+# the parser instead of dying at the whole-envelope checksum.
+[dependencies.rafter-crc32]
+path = "../crates/rafter-crc32"
+
 [dependencies.rafter-sim]
 path = "../crates/rafter-sim"
 

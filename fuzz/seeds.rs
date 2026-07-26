@@ -166,43 +166,52 @@ fn storage_seeds() {
         bytes
     };
 
-    write_seed(
-        target,
-        "seed-minimal",
-        &encode(&PersistedRaftSnapshot {
+    // The target decodes each input twice: once as a complete envelope (path
+    // A, which exercises the envelope checksum gate) and once as an envelope
+    // *body* that the harness reseals (path B, which reaches the parser). Each
+    // snapshot is therefore committed in both shapes, so both paths start from
+    // material that decodes cleanly rather than from material that only one
+    // path can use.
+    let write_pair = |name: &str, snapshot: &PersistedRaftSnapshot| {
+        let envelope = encode(snapshot);
+        let body = &envelope[..envelope.len() - 4];
+        write_seed(target, &format!("seed-{name}"), &envelope);
+        write_seed(target, &format!("seed-body-{name}"), body);
+    };
+
+    write_pair(
+        "minimal",
+        &PersistedRaftSnapshot {
             metadata: snapshot_metadata(false),
             application_payload: Vec::new(),
-        }),
+        },
     );
 
-    write_seed(
-        target,
-        "seed-payload",
-        &encode(&PersistedRaftSnapshot {
+    write_pair(
+        "payload",
+        &PersistedRaftSnapshot {
             metadata: snapshot_metadata(false),
             application_payload: b"hello rafter".to_vec(),
-        }),
+        },
     );
 
-    write_seed(
-        target,
-        "seed-stable-membership",
-        &encode(&PersistedRaftSnapshot {
+    write_pair(
+        "stable-membership",
+        &PersistedRaftSnapshot {
             metadata: snapshot_metadata(true),
             application_payload: b"kv".to_vec(),
-        }),
+        },
     );
 
-    write_seed(
-        target,
-        "seed-joint-membership",
-        &encode(&PersistedRaftSnapshot {
+    write_pair(
+        "joint-membership",
+        &PersistedRaftSnapshot {
             metadata: snapshot_metadata(false).with_committed_membership(MembershipConfig::joint(
                 voters_123_learner_4(),
                 voters_235(),
             )),
             application_payload: b"joint".to_vec(),
-        }),
+        },
     );
 }
 
