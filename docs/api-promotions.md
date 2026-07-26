@@ -3250,6 +3250,14 @@ The one implementor in the tree already satisfies it
   that owns its own loop. Promoting an async driver before a consumer has
   demonstrated one would be exactly the generalization the promotion rule
   defers.
+
+  The trait itself did not survive: still no driver, still no implementor, and
+  still no consumer a release later, so
+  [Fourth revision after adoption](#fourth-revision-after-adoption-2026-07-26)
+  removes `AsyncRaftTransport`, `InboundEnvelopeFuture`, and `TransportFuture`
+  rather than publishing them. The reasoning above is what removal follows from
+  — the argument for deferring the driver was always an argument against
+  shipping the trait ahead of one.
 - **Group identity stays caller-defined.** The driver serves one group and
   refuses every other group ID with `WriteError::WrongGroup`. A many-group host
   owns one driver per group and demultiplexes inbound frames by
@@ -4619,6 +4627,14 @@ a later committed removal is computed against the membership the cluster had.
 Once the fence runs unconditionally, advancing it is what makes the next removal
 correct too.
 
+**This fix was applied to the two publishers it reached through an event and
+not to the third.** `publish_adopted_membership` derives no membership from an
+event, and neither half of the split above visits it; it read the effective
+configuration and withheld the fence, which is both of the hazards this
+subsection names, at a call site reachable from two public constructors. The
+correction, and the caller enumeration that would have caught it, are
+[Fourth revision after adoption](#fourth-revision-after-adoption-2026-07-26).
+
 **The named test covered a quarter of its stated scope.** The second revision
 asked `membership_reaches_the_transports_peer_set` to "assert the peer set is
 published at construction, widened on `Appended`, narrowed on `Applied`, and
@@ -4920,6 +4936,357 @@ In `crates/rafter-service/tests/transport_waiters.rs`:
   written, for the reason the second revision kept its own: they pass before and
   after, and their job is to fail if a fix moves something it was not meant to
   move.
+
+### Fourth revision after adoption (2026-07-26)
+
+A third adversarial hunt attacked the subsection above and reproduced two
+findings, and a craft pass over the same surface found five more. Both of the
+correctness findings are the third revision's fix 1 failing on its own written
+terms — at a call site the fix did not visit. The fix split membership
+publication into a peer-set half and a fence half, argued that "a driver that
+dropped one of them because the other failed would leave a committed-removed
+replica able to speak with nothing reporting why", and then left the one
+publisher that reaches neither half through an event doing exactly that.
+
+The third revision's own rule was *a promise in a doc comment is a claim about
+the code under it, so the test that carries the fix's name covers every branch
+the claim covers*. It held; the named test does now cover its four clauses. The
+rule this subsection adds is the one it was missing, and it is about scope
+rather than depth: **a fix that establishes a rule enumerates the rule's
+callers, and the enumeration is written down.** Both findings below are the same
+caller — reachable from two public constructors — and neither the fix nor its
+tests named it.
+
+#### 1. The membership authority is one fact, and one derivation reads it
+
+`publish_adopted_membership` got both of its two decisions wrong, in opposite
+directions, and for one reason: it took them.
+
+It read `group.runtime().membership()` — the *effective* configuration — and
+published it as the peer set. An appended-but-uncommitted removal makes that
+narrower than the committed membership, so adoption took transport
+authorization away for a change that had not committed and could still be
+reverted. That is precisely what the `Appended` arm four lines above exists to
+refuse: "an uncommitted change can still be reverted, so nothing may be taken
+away for it." And nothing repairs it if the change does revert. No `Applied`
+fires, because the committed membership never moved. No `Appended` fires,
+because this driver has no input that carries a membership request. The replica
+is cut off for as long as the incarnation runs.
+
+It also passed `Fencing::Withhold`. The supervisor pattern this entry documents
+is release, rebuild the runtime from durable storage, adopt, and a rebuilt
+runtime's committed membership can have advanced past a removal while the driver
+held no group. The driver still holds `known_members` from before the release,
+so the difference is computed — and then discarded, with nothing counting what
+was withheld. One committed removal, two ways of observing it, two answers: a
+routed `Applied` event narrowed *and* fenced; the same removal across an
+adoption narrowed and did not.
+
+**The two mistakes are one mistake.** `publish_membership(members, fencing)`
+took a set and a flag as independent arguments, so a caller could answer "what
+may the link layer authorize" and "what must it fence" inconsistently, and this
+one did. The fix removes the choice rather than correcting it. Callers supply
+the *fact* they have, and the publisher derives both answers:
+
+```rust
+/// The membership fact one publication is derived from.
+pub(super) enum MembershipFact {
+    /// A configuration that is effective and may still be uncommitted.
+    ///
+    /// It may only widen.
+    Effective(BTreeSet<NodeId>),
+    /// A committed configuration, and the effective one beside it.
+    ///
+    /// `committed` is the only fact that licenses narrowing the set and fencing
+    /// what left it. `effective` is what keeps an in-flight change's joiner
+    /// able to speak across the same publication.
+    Committed {
+        committed: BTreeSet<NodeId>,
+        effective: BTreeSet<NodeId>,
+    },
+}
+```
+
+`Effective` publishes the union of what is already known and what is effective,
+and fences nothing — the union is a superset of `known_members`, so the fence
+set it computes is empty by construction rather than by a flag. `Committed`
+publishes the union of the committed and effective sets and fences
+`known_members` minus that union. The two properties that make this safe are
+consequences of the derivation rather than obligations on a caller:
+
+- **The published set always contains the committed membership**, so no
+  publication narrows past what the cluster committed.
+- **Every fenced replica is absent from the committed membership**, because the
+  fence set is the complement of a superset of it.
+
+The effective half of `Committed` is load-bearing and not symmetry. A replica
+that rebuilt its runtime from durable storage can hold an appended-uncommitted
+*addition*, and publishing the committed set alone would take the joiner's
+authorization away and stall the change that needs it — the mirror of the first
+finding, reachable through the obvious over-correction. It is also what makes
+one report's two events compose: `rafter-app` emits an `Appended` for a newly
+appended change *before* the `Applied` for the one that just committed, so an
+`Applied` arm that replaced the set with the committed configuration alone would
+undo the widening two lines earlier and fence the replica it had just
+authorized.
+
+**The full caller list, which is the part the third revision did not write
+down.** Every site that publishes a membership to the transport, and the
+authority each derives from:
+
+| Publisher | Fact supplied | Source of the fact | Verdict before |
+| --- | --- | --- | --- |
+| `route_membership_event`, `Appended` arm | `Effective` | the event's `membership`, which `rafter-app` builds from `raft.membership()` ([`crates/rafter-app/src/group/membership.rs:57,70`](../crates/rafter-app/src/group/membership.rs)) | correct |
+| `route_membership_event`, `Applied` arm | `Committed` | the event's `membership`, which `rafter-app` builds from `raft.committed_membership()` (`:58,89`), plus the runtime's effective membership | correct on the fence, missing the widening half |
+| `publish_adopted_membership` | `Committed` | the runtime's `committed_membership()` and `membership()` | **both halves wrong** |
+
+`publish_adopted_membership` has exactly two callers, and both are public
+constructors: `TransportRaftDriver::new`
+([`driver/transport.rs:259`](../crates/rafter-service/src/driver/transport.rs))
+and `TransportRaftDriver::adopt_group` (`:612`). Below the three publishers,
+`update_transport_peers` and `fence_removed_peers` are the only callers of
+`RaftTransport::update_peers` and `RaftTransport::fence_peer` in the crate, and
+`publish_membership` is the only caller of either. The list is closed at both
+ends.
+
+**Test scope.** `membership_reaches_the_transports_peer_set` grows from four
+clauses to five — published at adoption, widened on `Appended` and never
+narrowed there, narrowed on `Applied`, the removed replica fenced, and no
+replica the committed membership still names fenced with it. The two findings
+get four tests of their own, and the fourth is the one the third revision
+needed: `a_committed_removal_fences_the_same_way_on_both_publication_paths`
+asserts the two paths *agree*, rather than asserting each separately and
+leaving a divergence to be discovered adversarially.
+
+#### 2. `PersistedRaftRuntime::committed_membership` becomes required
+
+Fix 1 fences on `committed_membership`. The trait shipped it with a provided
+body that returns the effective membership, so an implementor that inherited it
+reported an appended-but-uncommitted change as committed — and the layer above
+now fences on that answer. The default is the first finding again, one crate
+down, available to every runtime that does not write the method.
+
+The last revision's response was a warning in the doc comment: "**Any
+implementation that can be mid-change must override this.**" A warning is not a
+mechanism. `ReplicatedStateMachine::SNAPSHOT_SUPPORT` set the precedent and
+states the general rule this is an instance of: there is no default because "a
+default would make the claim on their behalf, and it would be wrong for
+whichever of the two they meant." The two claims here are "my effective and
+committed memberships are always the same" and "I have not thought about it",
+and only the implementor can tell them apart.
+
+```rust
+/// Returns the latest committed Raft membership.
+///
+/// There is no default ... A runtime that genuinely cannot be mid-change says
+/// so in one line by forwarding to [`PersistedRaftRuntime::membership`]. That
+/// is the same body the default had, and it now carries a signature: the
+/// implementor asserted it, rather than receiving it.
+fn committed_membership(&self) -> MembershipConfig;
+```
+
+Breaking, and the cost is proportionate: twelve implementors exist workspace-
+wide and six of them already write the method, including the one that matters
+(`DurableRaftNode`, which forwards to the kernel's real committed view) and both
+`bench-compare` binaries. The six that inherited it are all fixed-membership
+test fakes in `crates/rafter-service/tests`, and each now says so in a line of
+prose above a one-line body. No `reference/` consumer implements this trait, so
+the break costs the reference consumers nothing.
+
+#### 3. `AsyncRaftTransport` is removed rather than published
+
+`AsyncRaftTransport` and `InboundEnvelopeFuture` have zero implementors and zero
+consumers workspace-wide. Their only mentions outside their own module are the
+crate-root re-export. The entry's own Design subsection already recorded the
+gap — "**`AsyncRaftTransport` gets no driver in this entry.** Its `recv` returns
+a future the driver would have to own a receive loop for" — and one release
+later there is still no driver, no implementor, and no consumer asking for one.
+
+Publishing it converts an unvalidated design sketch into a compatibility
+obligation. Every one of its five methods states delivery semantics this crate
+has never executed: what a resolved send future means, how `recv` interacts with
+cancellation, whether `update_peers` may be reordered against `send`. A
+synchronous trait with a real driver behind it earns those sentences; an async
+twin with nothing behind it is a specification whose only evidence is that it
+compiles.
+
+Removal is also the smaller claim, because the seam it would occupy is already
+covered. `RaftTransport::send` means "accepted or enqueued", not "delivered", so
+an embedder whose link layer is async owns the queue and the task that drains
+it and hands this crate a handle to the queue — which is what
+`reference/fenced-lock`'s test transport does and what any real deployment would
+do. Rafter opens no sockets and spawns no tasks, which leaves it nothing to say
+about how the frames get there. Adding the trait back when an implementor exists
+is additive; removing it after a release is not.
+
+`TransportFuture` goes with them. It is the return type of the four methods
+being removed and of `InboundEnvelopeFuture`, and nothing else in the workspace
+names it, so leaving it behind would keep exactly the defect this fix is about.
+
+#### 4. `WriteOptions` and `ReadOptions` are a pair, and now behave like one
+
+`ReadOptions` is `#[non_exhaustive]` with a `with_min_applied_index` setter, and
+says why: "an embedder outside this crate cannot name every field, and a later
+field must not break their construction." `WriteOptions` — which the same
+module documents as its counterpart, "the read counterpart of [`WriteOptions`]"
+— has neither. Any field added to it is a breaking change today, to every caller
+that built one with a struct literal.
+
+The asymmetry is an accident of order: reads gained their options later, under a
+rule that writes predate. The correction is `#[non_exhaustive]` plus a
+`with_client_request_id` setter, and **only the setter lands in this revision.**
+
+The reason is worth recording, because it is the one place this pass left a
+finding half-closed. `#[non_exhaustive]` invalidates struct literals, and there
+is exactly one outside this crate:
+[`reference/fenced-lock/src/adapter/client.rs:162`](../reference/fenced-lock/src/adapter/client.rs),
+which builds `WriteOptions { client_request_id: request_metadata(&command) }`.
+Converting it is a two-line change — `request_metadata` returns an `Option`, so
+it becomes a `map_or_else` over `WriteOptions::default` — and it belongs in the
+same slice as the attribute, not ahead of it. So the setter ships first and
+alone: it is purely additive, it gives every caller a construction that survives
+the attribute, and it makes closing the gap a one-file change with no consumer
+edit left in it.
+
+Until then the type's own doc comment states the gap in the imperative rather
+than implying the pair is level, because a `WriteOptions` that documents itself
+as `ReadOptions`' equal while a field addition still breaks it is the failure
+mode this document keeps naming: prose ahead of the code. The remaining work is
+one attribute and one consumer call site.
+
+#### 5. `TransferLeadershipError` and `ShutdownError` project a category
+
+The error module's header makes category projection one of the three questions a
+failed operation answers: "*What kind of failure was this?* — the variant,
+projected to a `Copy` category through [`WriteError::kind`] and
+[`ReadError::kind`]. A metric label, a map key, or a structured-log field." Four
+operations on this driver can fail. Two of them cannot answer the question, so
+an operator aggregating driver failures gets two buckets and two rendered
+strings.
+
+`TransferLeadershipErrorKind` and `ShutdownErrorKind` are the same
+low-cardinality, `#[non_exhaustive]`, `Ord + Hash` projections the other two
+carry, with the same rule for unrecognized values. Additive. The property test
+the other two already have — every variant maps to a distinct kind — extends to
+them, and one more asserts what the projections are *for*: all four surfaces
+aggregate by the same shape of key.
+
+#### 6. `MetricsPublisher::publish` keeps its `bool`, with `#[must_use]`
+
+Both production call sites discard the result with `let _ =`, which is the
+finding: a returned value that every caller drops is either the wrong return
+type or a missing `#[must_use]`.
+
+It is the second. The tempting argument for `()` is symmetry with
+`MetricsPublisher::close`, which has the identical already-closed early return
+and returns nothing — and that argument is what settles it the other way.
+`close` returning early leaves the publisher closed, so its caller's intent is
+satisfied either way and there is nothing to report. `publish` returning `false`
+leaves the caller's intent *unmet*: the snapshot is dropped, no watcher sees it,
+and none ever will. A method that can silently fail to do what it was asked
+should say so where the compiler can see it. `MetricsPublisher` is `Clone`, so
+"did I close it?" is not always answerable locally — one clone can close while
+another publishes.
+
+Both of this crate's call sites keep their `let _ =` and gain the sentence that
+makes discarding correct there: this driver owns its publisher and is the only
+thing that closes it, so `false` means the driver is already down, and a metrics
+snapshot from a driver that is already down is the one nobody is waiting for.
+
+#### Blast radius of the fourth revision
+
+| File | Change |
+| --- | --- |
+| [`crates/rafter-runtime-api/src/lib.rs`](../crates/rafter-runtime-api/src/lib.rs) | `committed_membership` loses its provided body |
+| [`crates/rafter-service/src/driver/transport/state.rs`](../crates/rafter-service/src/driver/transport/state.rs) | `Fencing` becomes `MembershipFact`; `publish_membership` derives both answers; `publish_adopted_membership` reads the committed membership; `effective_members` |
+| `crates/rafter-service/src/driver/transport/state/tests.rs` | The `Applied` arm's composition with a live `Appended` |
+| [`crates/rafter-service/src/transport.rs`](../crates/rafter-service/src/transport.rs) | `AsyncRaftTransport`, `InboundEnvelopeFuture`, and `TransportFuture` removed |
+| [`crates/rafter-service/src/driver/options.rs`](../crates/rafter-service/src/driver/options.rs) | `WriteOptions` gains `with_client_request_id`; the `#[non_exhaustive]` half is deferred with its one consumer call site |
+| [`crates/rafter-service/src/error.rs`](../crates/rafter-service/src/error.rs) | `TransferLeadershipErrorKind`, `ShutdownErrorKind`, and the two `kind()` methods |
+| [`crates/rafter-service/src/watch.rs`](../crates/rafter-service/src/watch.rs) | `publish` gains `#[must_use]` |
+| [`crates/rafter-service/src/lib.rs`](../crates/rafter-service/src/lib.rs) | Re-export list: two kinds added, three transport names removed |
+| `crates/rafter-service/src/driver/state.rs`, `driver/transport/state.rs` | The two `let _ = publish(...)` sites say why |
+| `crates/rafter-service/tests/{support/mod,read_waiters,in_memory_write,transport_failures,transport_streams}.rs` | Six fakes write `committed_membership`; the membership fixture separates effective from committed |
+| `crates/rafter-service/tests/transport_streams.rs` | The named test at five clauses, plus the four adoption reproductions |
+| `crates/rafter-service/tests/{public_surface,transport_driver}.rs` | The new kinds and the options builders |
+
+Breaking two ways, both argued above and both one release old:
+`PersistedRaftRuntime::committed_membership` becomes required, and
+`AsyncRaftTransport` with its two future aliases is removed. The third break
+this pass designed — `WriteOptions` becoming `#[non_exhaustive]` — is deferred
+for the reason fix 4 gives, and is the only piece of the revision that does not
+land with it.
+
+`bench-compare` is outside the root workspace and must be built explicitly; it
+needs no source change for either break, since both of its runtimes already
+write `committed_membership` and neither names the async trait — but it must be
+built to prove it. `reference/` needs no change for either break: no consumer
+implements `PersistedRaftRuntime` and none names `AsyncRaftTransport`. Holding
+`#[non_exhaustive]` back is what keeps that true, and it is why the deferral is
+a scheduling decision rather than a retreat.
+
+The behavioural change a correct caller can see is one: a driver's adoption now
+publishes the committed membership widened by the effective one, and fences what
+neither names, where it previously published the effective membership and fenced
+nothing.
+
+#### Focused-test plan for the fourth revision
+
+Every reproduction becomes a regression test with its assertion inverted.
+
+In `crates/rafter-service/tests/transport_streams.rs`, over a scripted runtime
+whose effective and committed memberships move independently — the fixture the
+old one could not be, because it had a single membership:
+
+- `membership_reaches_the_transports_peer_set` — the named test at its stated
+  scope, now five clauses, with the fifth being the one fix 1 could have broken:
+  no replica the committed membership still names is fenced.
+- `an_uncommitted_removal_does_not_narrow_the_peer_set_at_adoption` — the first
+  reproduction.
+- `an_uncommitted_addition_widens_the_peer_set_at_adoption` — the mirror, and
+  the test that fails if the fix is over-corrected into "publish the committed
+  set". Without it, "read `committed_membership` instead of `membership`" passes
+  every other test here and stalls every join across a restart.
+- `a_committed_removal_across_release_and_adopt_narrows_and_fences` — the second
+  reproduction, at the supervisor pattern the entry documents.
+- `a_committed_removal_fences_the_same_way_on_both_publication_paths` — the
+  control, and the shape the third revision's test plan lacked: it asserts the
+  two paths agree rather than asserting each alone.
+
+In `crates/rafter-service/src/driver/transport/state/tests.rs`, which stays the
+home of the branch with no public entry point:
+
+- `an_appended_membership_widens_the_published_peer_set` and
+  `an_appended_membership_never_narrows_and_never_fences` — kept as written.
+- `a_committed_change_does_not_narrow_past_the_membership_in_effect` — replaces
+  the old composition test, which scripted an `Applied` the fixture's own
+  runtime contradicted. This is the one-report ordering case: `Appended` widens,
+  `Applied` commits an older configuration, and the replica the append
+  authorized keeps speaking.
+
+In `crates/rafter-service/src/error/tests.rs`:
+
+- `every_transfer_leadership_error_kind_is_distinct_from_every_other` and its
+  shutdown counterpart — the property the other two surfaces already carry.
+- `all_four_operation_surfaces_project_to_a_category` — the point of the
+  projection rather than the mechanism: four surfaces, four complete
+  projections, asserted together so a fifth surface added without one is
+  visible.
+
+In `crates/rafter-service/tests/public_surface.rs`, where compilation is the
+assertion:
+
+- `every_operation_surface_projects_to_a_category_nameable_from_the_root` — the
+  two new kinds on the re-export list, pinned by type annotations rather than by
+  a list.
+- `both_option_types_are_buildable_from_outside_the_crate` — the options pair
+  through its setters. It passes today and its job is the deferral: it pins the
+  construction that must keep working when `WriteOptions` becomes
+  `#[non_exhaustive]`, so the attribute lands against a test that already
+  requires the shape it enforces.
+
+`AsyncRaftTransport` needs no test. Its removal is asserted by the workspace
+compiling without it, which is the same evidence that made it removable.
 
 ## Terminal Driver Vocabulary
 
