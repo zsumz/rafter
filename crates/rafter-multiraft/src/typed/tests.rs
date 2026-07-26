@@ -165,10 +165,11 @@ fn typed_groups_run_independently() {
     host.open_group(2, RecordingTypedDriver::new(2))
         .expect("open group 2");
 
-    let reports = host.tick_all().expect("tick groups");
+    let pass = host.tick_all();
+    assert!(pass.is_complete(), "both groups stepped");
+    assert_eq!(pass.visited(), host.len(), "the pass visited every group");
     assert_eq!(
-        reports
-            .iter()
+        pass.reports()
             .map(|report| report.group_id)
             .collect::<Vec<_>>(),
         vec![1, 2]

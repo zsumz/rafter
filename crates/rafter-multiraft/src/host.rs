@@ -9,12 +9,35 @@ use rafter_app::{
     snapshot::SnapshotEvent,
 };
 
-use crate::{driver::GroupDriver, error::MultiRaftError, metrics::MultiRaftMetrics};
+use crate::{
+    driver::GroupDriver,
+    error::MultiRaftError,
+    metrics::MultiRaftMetrics,
+    pass::{GroupOutcome, TickPass},
+};
 
 /// Manual host for many Raft groups in one process.
-#[derive(Debug, Default)]
+///
+/// This host steps what it is told to step. It does no scheduling, no
+/// fairness enforcement, no admission control, and no queueing; see the crate
+/// documentation for the list of what a managed scheduler would add.
+#[derive(Debug)]
 pub struct MultiRaftHost<G> {
     groups: BTreeMap<G, Box<dyn GroupDriver<G>>>,
+}
+
+impl<G> Default for MultiRaftHost<G>
+where
+    G: Clone + Ord + Debug,
+{
+    /// Creates an empty many-group host.
+    ///
+    /// Hand-written rather than derived: the derive bounds every type
+    /// parameter on `Default`, which would demand it of a group key that this
+    /// host only ever compares and clones.
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl<G> MultiRaftHost<G>
@@ -27,6 +50,35 @@ where
         Self {
             groups: BTreeMap::new(),
         }
+    }
+
+    /// The number of groups currently open.
+    ///
+    /// This is the size of one complete tick pass; see [`TickPass::visited`].
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.groups.len()
+    }
+
+    /// Whether no group is open.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.groups.is_empty()
+    }
+
+    /// Whether `group_id` is open.
+    ///
+    /// False for a key that was retired and false for a key that never
+    /// existed; this host does not distinguish them. See
+    /// [`MultiRaftHost::remove_group`].
+    #[must_use]
+    pub fn contains_group(&self, group_id: &G) -> bool {
+        self.groups.contains_key(group_id)
+    }
+
+    /// The open group keys, in the order a tick pass visits them.
+    pub fn group_ids(&self) -> impl Iterator<Item = &G> {
+        self.groups.keys()
     }
 
     /// Opens a group under `group_id`.
@@ -52,6 +104,33 @@ where
         }
         self.groups.insert(group_id, Box::new(driver));
         Ok(())
+    }
+
+    /// Retires `group_id`, returning its driver.
+    ///
+    /// The driver is returned rather than dropped so a caller can drain it —
+    /// step it to quiescence, read its final metrics, close what it owns —
+    /// after the host has stopped scheduling it. Retiring is how a group that
+    /// can no longer make progress stops consuming a scheduling opportunity in
+    /// every later [`MultiRaftHost::tick_all`].
+    ///
+    /// Idempotent: retiring a key that is not open returns `None`.
+    ///
+    /// This host never retires a group on its own, not even one whose driver
+    /// reports a permanent failure. A driver owns a runtime, a state machine,
+    /// and open storage; deciding it is finished is the caller's, and the
+    /// party whose judgement is in question when a driver misbehaves is the
+    /// driver.
+    ///
+    /// **No tombstone is kept.** A later input for a retired key is
+    /// [`MultiRaftError::UnknownGroup`], indistinguishable from a key that
+    /// never existed, and [`MultiRaftHost::open_group`] will reopen it. How
+    /// long after a removal its traffic may still arrive is a deployment
+    /// property this host cannot see, and retaining every retired key forever
+    /// would grow without bound in service of it — so a caller that must fence
+    /// late traffic against a removed group holds that tombstone itself.
+    pub fn remove_group(&mut self, group_id: &G) -> Option<Box<dyn GroupDriver<G>>> {
+        self.groups.remove(group_id)
     }
 
     /// Steps one group by explicit group identity.
@@ -86,19 +165,27 @@ where
 
     /// Ticks every open group in deterministic key order.
     ///
-    /// # Errors
+    /// Every open group is stepped and gets an outcome, whatever any other
+    /// group did. A failing group consumes its own opportunity and nobody
+    /// else's: it neither ends the pass nor deprives a later key of its tick,
+    /// and — the reason this returns a pass rather than a `Result` — it does
+    /// not take an earlier group's report down with it. A report's `applied`
+    /// list is the only proof a write took effect and nothing re-emits it, so
+    /// a pass that dropped the reports it had already collected would lose
+    /// committed writes with no recovery path.
     ///
-    /// Returns [`MultiRaftError::Driver`] if any group driver rejects its tick,
-    /// or [`MultiRaftError::WrongGroup`] if a driver returns a report,
-    /// envelope, event, or metrics snapshot for a group other than the host key
-    /// being ticked. `WrongGroup` can therefore come from report validation, not
-    /// only from caller-supplied group IDs.
-    pub fn tick_all(&mut self) -> Result<Vec<GroupStepReport<G, Vec<u8>>>, MultiRaftError<G>> {
+    /// Failures are per group, in [`TickPass::failures`]. There is no
+    /// pass-level error.
+    pub fn tick_all(&mut self) -> TickPass<G, Vec<u8>> {
         let group_ids = self.groups.keys().cloned().collect::<Vec<_>>();
-        group_ids
+        let outcomes = group_ids
             .into_iter()
-            .map(|group_id| self.step_group(&group_id, GroupInput::Tick))
-            .collect()
+            .map(|group_id| {
+                let result = self.step_group(&group_id, GroupInput::Tick);
+                GroupOutcome { group_id, result }
+            })
+            .collect();
+        TickPass::new(outcomes)
     }
 
     /// Returns metrics for every open group in deterministic key order.

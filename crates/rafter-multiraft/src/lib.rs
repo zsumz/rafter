@@ -27,6 +27,8 @@ pub mod error;
 pub mod host;
 /// Aggregate metrics for many-group hosts.
 pub mod metrics;
+/// One complete pass over every group a host holds.
+pub mod pass;
 /// Typed many-group host and driver traits.
 pub mod typed;
 
@@ -34,4 +36,5 @@ pub use driver::GroupDriver;
 pub use error::MultiRaftError;
 pub use host::MultiRaftHost;
 pub use metrics::MultiRaftMetrics;
+pub use pass::{GroupOutcome, TickPass};
 pub use typed::{TypedGroupDriver, TypedMultiRaftHost};

@@ -32,10 +32,11 @@ fn main() {
     host.open_group(ShardId(2), KvShardDriver::new(ShardId(2)))
         .expect("open shard 2");
 
-    let tick_reports = host.tick_all().expect("tick all groups");
+    let pass = host.tick_all();
+    assert!(pass.is_complete(), "every shard ticked");
+    assert_eq!(pass.visited(), host.len(), "the pass visited every shard");
     assert_eq!(
-        tick_reports
-            .iter()
+        pass.reports()
             .map(|report| report.group_id)
             .collect::<Vec<_>>(),
         vec![ShardId(1), ShardId(2)]
