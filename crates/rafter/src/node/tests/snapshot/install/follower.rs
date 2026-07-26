@@ -62,8 +62,20 @@ fn local_snapshot_covering_tracked_proposal_emits_dropped_event() {
     });
     assert!(node.volatile.local_proposals.contains_key(LogIndex(2)));
 
-    let snapshot = test_snapshot(2, 1, 1, b"covered snapshot");
-    let outputs = node.install_local_snapshot(snapshot);
+    // Commit the leader's own no-op so a boundary at index 1 is installable at
+    // all: a local descriptor carries no quorum evidence, so the boundary must
+    // lie at or below the committed prefix.
+    acknowledge_match(&mut node, LogIndex(1));
+    assert_eq!(node.commit_index(), LogIndex(1));
+
+    // The descriptor's boundary term contradicts the retained entry at that
+    // index, so the suffix above it cannot be proven to belong to the same
+    // history and is discarded with the snapshot. The tracked proposal in that
+    // suffix is reported rather than forgotten.
+    let snapshot = test_snapshot(1, 2, 2, b"covered snapshot");
+    let outputs = node
+        .install_local_snapshot(snapshot)
+        .expect("a boundary at the committed index installs");
 
     assert!(node.volatile.local_proposals.is_empty());
     assert_eq!(
@@ -75,6 +87,64 @@ fn local_snapshot_covering_tracked_proposal_emits_dropped_event() {
             reason: LocalProposalDropReason::SnapshotCovered,
         }]
     );
+}
+
+/// `install_local_snapshot` is the application-driven compaction path, and a
+/// descriptor handed to it proves nothing about what a quorum accepted. A
+/// boundary beyond the committed prefix is refused rather than manufacturing
+/// commitment out of a local call — which is what the leader-sent install path
+/// is allowed to do, because a leader only snapshots committed state.
+#[test]
+fn local_snapshot_beyond_the_commit_index_is_refused() {
+    let mut follower = node(2, &[1, 3]);
+    let entries: Vec<crate::LogEntry> = (1u8..=3)
+        .map(|index| crate::LogEntry::application(Term(1), vec![index]))
+        .collect();
+    let _ = follower.step(Input::Message {
+        from: NodeId(1),
+        message: Message::AppendEntries(crate::AppendEntries {
+            term: Term(1),
+            leader_id: NodeId(1),
+            prev_log_index: LogIndex::ZERO,
+            prev_log_term: Term::default(),
+            entries: entries.into(),
+            leader_commit: LogIndex::ZERO,
+            sequence: 1,
+        }),
+    });
+    assert_eq!(follower.last_log_index(), LogIndex(3));
+    assert_eq!(follower.commit_index(), LogIndex::ZERO);
+
+    let error = follower
+        .install_local_snapshot(test_snapshot(3, 1, 1, b"uncommitted"))
+        .expect_err("a boundary beyond the committed prefix must be refused");
+
+    assert_eq!(
+        error,
+        crate::LocalSnapshotInstallError::BoundaryAheadOfCommit {
+            snapshot_index: LogIndex(3),
+            commit_index: LogIndex::ZERO,
+        }
+    );
+    // Nothing moved: no manufactured commitment, and no entry compacted away.
+    assert_eq!(follower.commit_index(), LogIndex::ZERO);
+    assert_eq!(follower.applied_index(), LogIndex::ZERO);
+    assert_eq!(follower.snapshot_index(), LogIndex::ZERO);
+    assert_eq!(follower.last_log_index(), LogIndex(3));
+}
+
+fn acknowledge_match(leader: &mut Node, match_index: LogIndex) {
+    let term = leader.current_term();
+    let _ = leader.step(Input::Message {
+        from: NodeId(2),
+        message: Message::AppendEntriesResponse(crate::AppendEntriesResponse {
+            term,
+            follower_id: NodeId(2),
+            success: true,
+            match_index,
+            sequence: 1,
+        }),
+    });
 }
 #[test]
 fn follower_installs_snapshot_committed_configuration_identity_and_next_id_advances() {

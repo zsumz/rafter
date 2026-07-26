@@ -31,6 +31,7 @@ pub use event::{
     LocalProposalDropReason, Output, ProposalRejection, ReadIndexCancelReason, ReadIndexRejection,
     Role,
 };
+pub use log::LocalSnapshotInstallError;
 pub use replication::PendingSnapshotTransferResumeError;
 use state::{DerivedState, ElectionState, LeaderState, PersistentState, VolatileState};
 

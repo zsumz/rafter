@@ -62,7 +62,21 @@ impl Node {
         LogIndex(self.snapshot_index().0 + self.persistent.log.len() as u64)
     }
 
-    /// Returns leader-side replication progress for every effective replica.
+    /// Returns leader-side replication progress for every effective
+    /// *follower*, learners included.
+    ///
+    /// The leader's own slot is not a row here, and cannot be: the returned
+    /// `next_index` and [`ReplicationState`] describe a stream toward a
+    /// follower, and a leader has none toward itself. Its own match index is
+    /// [`Node::last_log_index`] by construction, which is the value a caller
+    /// doing quorum arithmetic over these rows has to add back.
+    ///
+    /// Empty on any node that is not the leader, for two independent reasons:
+    /// the role guard below, and `LeaderState` being rebuilt on every entry to
+    /// and exit from leadership, which leaves a non-leader with no progress
+    /// set to report from. The guard is therefore defensive rather than
+    /// behaviourally distinguishable, and is kept so the claim survives a
+    /// future change to either.
     #[must_use]
     pub fn leader_replication_progress(&self) -> Vec<ReplicationProgress> {
         if self.role() != Role::Leader {

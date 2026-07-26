@@ -3,10 +3,48 @@
 //! Every log mutation updates [`DerivedState`](super::state::DerivedState) in
 //! the same transition so membership lookups never observe a stale index.
 
+use std::{error::Error, fmt};
+
 use crate::{LogEntry, LogIndex, SharedEntries, Term};
 
 use super::state::LocalProposalTracker;
 use super::{LocalProposalDropReason, Node, Output};
+
+/// Why a caller-supplied local snapshot descriptor was not installed.
+///
+/// This enum is exhaustive because a local install is closed over the single
+/// precondition it cannot verify from the descriptor alone.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LocalSnapshotInstallError {
+    /// The descriptor's boundary lies beyond this node's committed prefix.
+    ///
+    /// Installing it would compact away entries no quorum has accepted and
+    /// raise this node's commit index on the strength of a local call.
+    BoundaryAheadOfCommit {
+        snapshot_index: LogIndex,
+        commit_index: LogIndex,
+    },
+}
+
+impl fmt::Display for LocalSnapshotInstallError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let Self::BoundaryAheadOfCommit {
+            snapshot_index,
+            commit_index,
+        } = self;
+        write!(
+            formatter,
+            concat!(
+                "local snapshot boundary {snapshot_index} lies beyond the committed ",
+                "index {commit_index}"
+            ),
+            snapshot_index = snapshot_index,
+            commit_index = commit_index,
+        )
+    }
+}
+
+impl Error for LocalSnapshotInstallError {}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct LogBatch {
@@ -175,10 +213,49 @@ impl Node {
     }
 
     /// Installs a local snapshot descriptor and compacts covered log entries.
-    pub fn install_local_snapshot(&mut self, snapshot: crate::RaftSnapshot) -> Vec<super::Output> {
-        let committed_configuration =
-            self.committed_configuration_state_at(snapshot.metadata.last_included_index);
-        self.install_snapshot_state_with_committed_configuration(snapshot, committed_configuration)
+    ///
+    /// This is the application-driven compaction path: an embedder that has
+    /// built an application snapshot at its own applied index records the
+    /// matching Raft descriptor here.
+    /// `DurableRaftNode::compact_log_with_snapshot` in the `rafter-runtime`
+    /// crate is the shipped caller, and persists the payload as well.
+    ///
+    /// # Precondition
+    ///
+    /// The boundary must lie at or below this node's commit index. A local
+    /// descriptor carries no quorum evidence, so a boundary beyond the
+    /// committed prefix would compact away entries that may still be
+    /// overwritten, and this call would be manufacturing commitment from a
+    /// local decision. The leader-sent install path is different in exactly
+    /// that respect — a leader only snapshots committed state, so the
+    /// descriptor it sends *is* commit evidence — and it keeps raising the
+    /// commit index.
+    ///
+    /// Within the precondition the applied index is raised to the boundary
+    /// too. That is not an extra assumption: the caller reached this method by
+    /// building an application snapshot at the boundary, so the state machine
+    /// has applied through it by construction.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LocalSnapshotInstallError::BoundaryAheadOfCommit`] when the
+    /// descriptor's boundary lies beyond this node's committed prefix. Nothing
+    /// is installed and no log entry is compacted.
+    pub fn install_local_snapshot(
+        &mut self,
+        snapshot: crate::RaftSnapshot,
+    ) -> Result<Vec<super::Output>, LocalSnapshotInstallError> {
+        let snapshot_index = snapshot.metadata.last_included_index;
+        let commit_index = self.volatile.commit_index;
+        if snapshot_index > commit_index {
+            return Err(LocalSnapshotInstallError::BoundaryAheadOfCommit {
+                snapshot_index,
+                commit_index,
+            });
+        }
+        let committed_configuration = self.committed_configuration_state_at(snapshot_index);
+        Ok(self
+            .install_snapshot_state_with_committed_configuration(snapshot, committed_configuration))
     }
 
     pub(super) fn install_snapshot_state(

@@ -142,7 +142,9 @@ fn derived_state_is_valid_after_snapshot_install() {
     )
     .expect("bootstrap state is valid");
 
-    let _ = follower.install_local_snapshot(snapshot_descriptor(2, 2, 3));
+    follower
+        .install_local_snapshot(snapshot_descriptor(2, 2, 3))
+        .expect("a boundary below the committed index installs");
 
     follower
         .validate_derived_state()

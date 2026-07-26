@@ -557,7 +557,12 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
             return Err(self.poison(error));
         }
         let mut staged_node = self.node.clone();
-        staged_node.install_local_snapshot(descriptor);
+        // `validate_local_snapshot_boundary` above proved the kernel's
+        // precondition, so this cannot refuse; mapping rather than unwrapping
+        // keeps the two statements of one rule from drifting apart.
+        staged_node
+            .install_local_snapshot(descriptor)
+            .map_err(local_snapshot_install_error)?;
         self.node = staged_node;
         Ok(())
     }
@@ -602,7 +607,9 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
             return Err(self.poison(error));
         }
         let mut staged_node = self.node.clone();
-        staged_node.install_local_snapshot(snapshot);
+        staged_node
+            .install_local_snapshot(snapshot)
+            .map_err(local_snapshot_install_error)?;
         self.node = staged_node;
         Ok(())
     }
@@ -905,6 +912,22 @@ fn hard_state_for_node_capped_at(node: &RaftNode, durable_commit_index: LogIndex
 
 fn durable_last_log_index<L: RaftLogSegment>(log_segment: &L) -> LogIndex {
     LogIndex(log_segment.next_index().0.saturating_sub(1))
+}
+
+/// Renders the kernel's local-install refusal in this crate's vocabulary.
+///
+/// The runtime checks the same boundary before it writes anything, so this is
+/// unreachable in practice; it exists so the kernel's rule stays the one that
+/// decides, rather than being duplicated and then diverging.
+fn local_snapshot_install_error(error: rafter::LocalSnapshotInstallError) -> RaftRuntimeError {
+    let rafter::LocalSnapshotInstallError::BoundaryAheadOfCommit {
+        snapshot_index,
+        commit_index,
+    } = error;
+    RaftRuntimeError::SnapshotAheadOfCommit {
+        snapshot_index,
+        commit_index,
+    }
 }
 
 #[cfg(test)]

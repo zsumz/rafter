@@ -117,3 +117,48 @@ fn leader_rejects_append_response_when_sender_disagrees_with_follower_id() {
     assert!(outputs.is_empty());
     assert_eq!(leader.commit_index(), LogIndex::ZERO);
 }
+
+/// The scope the method documents, in the direction a caller uses it: every
+/// effective follower has a row, the leader has none, and the value a caller
+/// doing quorum arithmetic needs in place of that row is `last_log_index`.
+///
+/// Stepping down empties it, which is the other half of the documented scope.
+#[test]
+fn leader_replication_progress_reports_followers_and_never_the_leader_itself() {
+    let mut leader = node(1, &[2, 3]);
+    let _ = elect_leader(&mut leader);
+
+    let reported: Vec<NodeId> = leader
+        .leader_replication_progress()
+        .into_iter()
+        .map(|progress| progress.follower_id)
+        .collect();
+    assert_eq!(reported, vec![NodeId(2), NodeId(3)]);
+    assert!(
+        !reported.contains(&leader.id()),
+        "a leader has no replication stream toward itself"
+    );
+    assert_eq!(
+        leader.last_log_index(),
+        LogIndex(1),
+        "its own match index is its last log index by construction"
+    );
+
+    let _ = leader.step(Input::Message {
+        from: NodeId(3),
+        message: Message::AppendEntries(crate::AppendEntries {
+            term: leader.current_term().next(),
+            leader_id: NodeId(3),
+            prev_log_index: LogIndex::ZERO,
+            prev_log_term: Term::default(),
+            entries: Vec::new().into(),
+            leader_commit: LogIndex::ZERO,
+            sequence: 1,
+        }),
+    });
+    assert_eq!(leader.role(), Role::Follower);
+    assert!(
+        leader.leader_replication_progress().is_empty(),
+        "a node that is not the leader reports no replication streams"
+    );
+}

@@ -73,8 +73,9 @@ pub use message::{
 pub use node::{
     BootstrapLogEntry, BootstrapState, BootstrapValidationError, ClientProposalInput,
     ConfigurationProposalRejection, Input, LeadershipTransferRejection, LocalProposalDropReason,
-    Node, NodeConfig, NodeConfigError, Output, PendingSnapshotTransferResumeError,
-    ProposalRejection, ReadIndexCancelReason, ReadIndexRejection, Role,
+    LocalSnapshotInstallError, Node, NodeConfig, NodeConfigError, Output,
+    PendingSnapshotTransferResumeError, ProposalRejection, ReadIndexCancelReason,
+    ReadIndexRejection, Role,
 };
 pub use types::{
     ApplicationSnapshotKind, ApplicationSnapshotMetadata, ApplicationSnapshotVersion,

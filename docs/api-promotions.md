@@ -6905,9 +6905,24 @@ Breaking, pre-1.0, one in-repo call site (`rafter-runtime`, twice), which
 already computes the same check and now propagates the kernel's error instead of
 duplicating the rule.
 
-**Rejected:** documenting the precondition without enforcing it. That is the
-`max` in the entry above, in a different method — a rule stated where it cannot
-be checked, addressed to a caller who is not required to read.
+**Rejected:** documenting the precondition without enforcing it. Unlike the
+`max` in the entry above, there is no legitimate caller on the other side of
+this one: a boundary beyond the committed prefix is a misuse under every
+composition, so the kernel can refuse for all of them.
+
+**One consequence, recorded rather than smoothed over.** With the precondition
+enforced, a tracked local proposal can no longer be covered by a *local*
+install: the boundary is at or below the commit index, everything at or below
+the commit index has been applied in the same step that committed it, and apply
+clears the tracker. `LocalProposalDropReason::SnapshotCovered` therefore
+survives on one narrower path — a local descriptor whose boundary term
+contradicts the retained entry at that index, which discards the suffix above
+it along with the proposals tracked there. That path is reachable only for
+callers using `rafter` without `rafter-runtime`, which validates the boundary
+term first, and it is what
+`local_snapshot_covering_tracked_proposal_emits_dropped_event` now exercises.
+The variant keeps its coverage; the shape that covers it is narrower and is
+written down here rather than discovered later.
 
 ### 2. `leader_replication_progress` reports followers, and says so
 
