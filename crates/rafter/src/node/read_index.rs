@@ -61,12 +61,7 @@ impl Node {
         // window: the barrier grants immediately, no round trip (thesis
         // 6.4.2; the tick-skew assumption is documented on
         // `NodeConfig::with_lease_reads`).
-        if self.config.lease_reads()
-            && self
-                .leader
-                .lease
-                .holds(self.leader.ticks, self.config.read_lease_ticks())
-        {
+        if self.lease_grant_available() {
             return grant_reads(read_ids, self.volatile.commit_index);
         }
 
@@ -143,6 +138,39 @@ impl Node {
             !confirmed
         });
         outputs
+    }
+
+    /// Whether a barrier requested right now would be granted from the leader
+    /// lease, with no quorum round trip.
+    ///
+    /// This is the lease fast path's own condition, factored out so the
+    /// observability method that describes the decision cannot drift from the
+    /// decision. Every clause is a reason the fast path does not fire:
+    ///
+    /// - not the leader, or the lease is not effective, so there is no lease;
+    /// - a leadership transfer is live, so barriers are refused outright
+    ///   (thesis 3.10);
+    /// - this leadership has already authorized a deposition, so the refusal
+    ///   the lease rests on has been waived for the rest of the term (see
+    ///   `LeaderState::deposition_authorized`);
+    /// - nothing has committed in this term, so the barrier is refused
+    ///   because leader completeness does not yet bound this commit index;
+    /// - the lease window has lapsed since the last quorum-confirmed round.
+    ///
+    /// It deliberately does not cover the single-voter shortcut below, which
+    /// also grants without a round trip: that grant's evidence is "this node
+    /// is the whole quorum", not the lease, and reporting it as a lease grant
+    /// would credit the lease with a read it did not carry.
+    pub(in crate::node) fn lease_grant_available(&self) -> bool {
+        self.role() == Role::Leader
+            && self.config.lease_reads()
+            && self.leader.pending_transfer.is_none()
+            && !self.leader.deposition_authorized
+            && self.has_committed_in_current_term()
+            && self
+                .leader
+                .lease
+                .holds(self.leader.ticks, self.config.read_lease_ticks())
     }
 
     fn has_committed_in_current_term(&self) -> bool {

@@ -93,6 +93,15 @@ impl NodeConfig {
     /// check-quorum are both effective. Disabling either foundation suspends
     /// lease behavior without erasing the request; restoring both makes it
     /// effective again.
+    ///
+    /// The same refusal is what a leader waives when it initiates a
+    /// leadership transfer that reaches its target: `TimeoutNow` instructs one
+    /// voter to campaign without a pre-vote poll, and the network bounds no
+    /// message's delay. A leader that has emitted one therefore grants no
+    /// further lease reads for the remainder of that term, and falls back to
+    /// the quorum `ReadIndex` round trip, whose evidence does not depend on
+    /// the refusal. Abandoning the transfer locally does not restore the
+    /// lease; only a new term does.
     #[must_use]
     pub fn with_lease_reads(mut self, lease_reads: bool) -> Self {
         self.requested_features.request_lease_reads(lease_reads);

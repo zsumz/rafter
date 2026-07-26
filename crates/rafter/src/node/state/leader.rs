@@ -21,6 +21,16 @@ pub(in crate::node) struct LeaderState {
     /// The read-lease checkpoint machine (thesis 6.4.2).
     pub lease: LeaderLease,
     pub pending_transfer: Option<PendingLeadershipTransfer>,
+    /// Whether this leadership has put a `TimeoutNow` on the wire.
+    ///
+    /// A `TimeoutNow` authorizes its recipient to depose this leader by the
+    /// path that skips pre-vote and leader stickiness, and the network bounds
+    /// no message's delay. The lease's safety argument is that voters refuse
+    /// to depose a live leader; emitting the message waives that refusal for
+    /// the rest of this term, and no local event can recall it. Abandoning
+    /// the transfer record therefore does not restore the lease — only a new
+    /// term does, and this whole struct is rebuilt per term.
+    pub deposition_authorized: bool,
     /// Monotonic heartbeat round counter; every append carries the current
     /// value and responses echo it, so acknowledgements can be ordered
     /// relative to read-index registrations (thesis 6.4).

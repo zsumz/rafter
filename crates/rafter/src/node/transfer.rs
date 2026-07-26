@@ -76,7 +76,16 @@ impl Node {
         self.send_timeout_now(follower_id)
     }
 
+    /// Emits the deposition authorization, and records that this leadership
+    /// has emitted one.
+    ///
+    /// The flag is armed here rather than in `transfer_leadership` because
+    /// this is where the authorization stops being local: a transfer whose
+    /// target never catches up writes no `TimeoutNow`, waives nothing, and
+    /// leaves the lease intact when it times out. Once the message exists the
+    /// waiver is permanent for this term — see `LeaderState`.
     fn send_timeout_now(&mut self, target: NodeId) -> Vec<Output> {
+        self.leader.deposition_authorized = true;
         if let Some(transfer) = self.leader.pending_transfer.as_mut() {
             transfer.timeout_now_sent = true;
         }
@@ -102,6 +111,12 @@ impl Node {
     /// immediately: the real, term-incrementing election, bypassing pre-vote
     /// and leader stickiness — that bypass is the message's entire purpose
     /// (thesis 3.10).
+    ///
+    /// What the bypass costs the *sender* is recorded on `LeaderState`: the
+    /// leader-lease safety argument is that voters refuse to depose a live
+    /// leader, and this message is the standing waiver of that refusal. It is
+    /// honored here for as long as it names a term this node has not passed,
+    /// which is why the sender's waiver is term-scoped too.
     pub(super) fn handle_timeout_now(&mut self, term: Term) -> Vec<Output> {
         if term < self.current_term() || !self.is_effective_voter(self.id()) {
             return Vec::new();

@@ -238,6 +238,110 @@ fn acknowledgements_of_rounds_before_the_checkpoint_do_not_confirm_it() {
     );
 }
 
+/// `read_lease_active` claims to predict whether a barrier requested right now
+/// grants from the lease. Every clause of that predicate gets its own state,
+/// and in each the prediction is checked against the barrier's real outcome —
+/// so the method cannot drift from the decision it describes.
+#[test]
+fn read_lease_active_agrees_with_every_barrier_it_predicts() {
+    fn check(leader: &mut Node, read_id: u64, expectation: &str) {
+        let predicted = leader.read_lease_active();
+        let outputs = leader.step(read_index(read_id));
+        let granted_without_a_round_trip =
+            outputs.len() == 1 && matches!(outputs[0], Output::ReadIndexGranted { .. });
+        oracle_assert_eq!(
+            predicted,
+            granted_without_a_round_trip,
+            "{expectation}: predicted {predicted} but the barrier produced {outputs:?}"
+        );
+    }
+
+    // The lease is held and every other clause is satisfied.
+    let mut leader = leader_with_commit_and_confirmed_lease();
+    check(&mut leader, 50, "a held lease grants");
+
+    // A live transfer refuses the barrier outright.
+    let _ = leader.step(Input::TransferLeadership { target: NodeId(2) });
+    check(&mut leader, 51, "a live transfer refuses");
+
+    // The transfer record ages out; the emitted authorization does not.
+    for _ in 0..ELECTION_TIMEOUT_TICKS {
+        let _ = leader.step(Input::Tick);
+    }
+    let sequence = tick_round(&mut leader);
+    ack(&mut leader, 2, sequence);
+    check(&mut leader, 52, "an authorized deposition waives the lease");
+
+    // No commit in the current term. The lease confirms on the round
+    // *sequence*, while the commit index advances on `match_index`, so a
+    // follower that acknowledges the round while still catching up leaves the
+    // lease held over an uncommitted term. Pre-fix this was the state where
+    // the method said "granted" and the barrier said "refused".
+    let mut fresh = lease_node(1, &[2, 3]);
+    elect_with_pre_vote(&mut fresh);
+    let sequence = tick_round(&mut fresh);
+    let term = fresh.current_term();
+    let _ = fresh.step(Input::Message {
+        from: NodeId(2),
+        message: Message::AppendEntriesResponse(AppendEntriesResponse {
+            term,
+            follower_id: NodeId(2),
+            success: true,
+            match_index: LogIndex::ZERO,
+            sequence,
+        }),
+    });
+    oracle_assert_eq!(fresh.commit_index(), LogIndex::ZERO);
+    oracle_assert!(
+        fresh
+            .leader
+            .lease
+            .holds(fresh.leader.ticks, fresh.config.read_lease_ticks()),
+        "the lease timer holds, so only the commit clause can refuse"
+    );
+    check(&mut fresh, 53, "no current-term commit refuses");
+
+    // The window lapses: the barrier takes the round trip.
+    let mut lapsing = leader_with_commit_and_confirmed_lease();
+    for _ in 0..LEASE_WINDOW_TICKS {
+        let _ = lapsing.step(Input::Tick);
+    }
+    check(&mut lapsing, 54, "a lapsed window takes the round trip");
+
+    // Not the leader at all.
+    let follower = lease_node(2, &[1, 3]);
+    oracle_assert!(!follower.read_lease_active());
+}
+
+/// The one case the method deliberately under-claims: a single voter grants
+/// with no round trip on quorum evidence, which is not the lease.
+#[test]
+fn a_single_voter_grant_is_not_reported_as_a_lease_grant() {
+    let mut solo = Node::new(
+        NodeConfig::new(NodeId(1), Vec::new(), ELECTION_TIMEOUT_TICKS)
+            .expect("test Raft node config is valid")
+            .with_lease_reads(true),
+    );
+    for _ in 0..ELECTION_TIMEOUT_TICKS {
+        let _ = solo.step(Input::Tick);
+    }
+    oracle_assert_eq!(solo.role(), Role::Leader);
+    oracle_assert_eq!(solo.commit_index(), LogIndex(1));
+
+    oracle_assert!(
+        !solo.read_lease_active(),
+        "no follower ever acknowledged a round, so no lease was ever confirmed"
+    );
+    oracle_assert_eq!(
+        solo.step(read_index(55)),
+        vec![Output::ReadIndexGranted {
+            read_id: ReadId(55),
+            read_index: LogIndex(1),
+        }],
+        "the grant's evidence is that this node is the whole quorum"
+    );
+}
+
 #[test]
 fn the_lease_opt_in_is_inert_without_its_safety_foundation() {
     let config = NodeConfig::new(NodeId(1), vec![NodeId(2), NodeId(3)], 3)

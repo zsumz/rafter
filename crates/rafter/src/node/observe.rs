@@ -91,14 +91,22 @@ impl Node {
 
     /// Whether a read barrier requested right now would grant from the
     /// leader lease without a quorum round trip.
+    ///
+    /// This is the lease fast path's own condition rather than a reading of
+    /// the lease timer, so it is `false` whenever the barrier would instead be
+    /// refused or take the round trip: while a leadership transfer is in
+    /// progress, for the rest of a term in which this leader authorized a
+    /// deposition with `TimeoutNow`, before this term's first commit, and
+    /// outside the lease window.
+    ///
+    /// It is also `false` on a single-voter membership, which grants barriers
+    /// with no round trip on quorum evidence rather than on the lease. A
+    /// caller asking "is the lease carrying my reads" gets a truthful no; a
+    /// caller asking "will this read cost a round trip" must also consider
+    /// that case.
     #[must_use]
     pub fn read_lease_active(&self) -> bool {
-        self.role() == Role::Leader
-            && self.config.lease_reads()
-            && self
-                .leader
-                .lease
-                .holds(self.leader.ticks, self.config.read_lease_ticks())
+        self.lease_grant_available()
     }
 
     /// Returns snapshot transfer observability for this node.
