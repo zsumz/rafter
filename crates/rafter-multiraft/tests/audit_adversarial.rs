@@ -7,18 +7,23 @@
 
 mod support;
 
-use rafter::{LocalProposalId, LogIndex, Term};
+use rafter::{LocalProposalId, LogIndex, ReadId, Term};
 use rafter_app::{
     group::{GroupInput, GroupStepReport},
     metrics::RaftGroupMetrics,
+    proposal::Proposal,
+    read::ReadBarrierRequest,
     state_machine::ApplyResult,
 };
 use rafter_multiraft::{
-    DriverError, DriverErrorKind, ErrorCause, MultiRaftError, MultiRaftErrorKind, MultiRaftHost,
-    TypedGroupDriver, TypedMultiRaftHost,
+    DriverError, DriverErrorKind, ErrorCause, GroupDriver, MultiRaftError, MultiRaftErrorKind,
+    MultiRaftHost, TypedGroupDriver, TypedMultiRaftHost,
 };
 
-use support::{metrics, ApplyingDriver, FailingDriver, ShardFailure, StepCounter};
+use support::{
+    metrics, ApplyingDriver, DropFlag, DropWatch, FailingDriver, NotDefault, ShardFailure,
+    StepCounter, WatchedDriver,
+};
 
 // ---------------------------------------------------------------------------
 // M1 -- `tick_all` destroyed the committed apply results of every earlier group
@@ -35,7 +40,7 @@ fn a_tick_pass_carries_the_apply_results_of_groups_before_a_failing_one() {
     let pass = host.tick_all();
 
     assert_eq!(
-        host.metrics().expect("metrics").groups[0].applied_index,
+        host.metrics().groups[0].applied_index,
         LogIndex(1),
         "group 1 committed and applied one entry"
     );
@@ -72,7 +77,7 @@ fn a_typed_tick_pass_carries_the_apply_results_of_groups_before_a_failing_one() 
     let pass = host.tick_all();
 
     assert_eq!(
-        host.metrics().expect("metrics").groups[0].applied_index,
+        host.metrics().groups[0].applied_index,
         LogIndex(1),
         "group 1 committed and applied one entry"
     );
@@ -377,6 +382,150 @@ fn the_host_error_renders_and_chains_to_the_preserved_cause() {
 /// Requires `E: Error`, which `MultiRaftError` did not implement.
 fn render<E: std::error::Error>(error: &E) -> String {
     error.to_string()
+}
+
+// ---------------------------------------------------------------------------
+// M4 -- the remaining corrections, and the two boundaries this host cannot
+// close, asserted in the direction the code behaves
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_refused_open_hands_the_callers_driver_back() {
+    let dropped = DropFlag::default();
+    let mut host = MultiRaftHost::new();
+    host.open_group(1, ApplyingDriver::new(1)).expect("open");
+
+    let rejected = host
+        .open_group(
+            1,
+            WatchedDriver {
+                group_id: 1,
+                _watch: DropWatch(DropFlag::clone(&dropped)),
+            },
+        )
+        .expect_err("duplicate open is refused");
+
+    assert_eq!(rejected.kind(), MultiRaftErrorKind::GroupAlreadyOpen);
+    assert!(
+        !dropped.get(),
+        "a driver owns a runtime and open storage; a refusal must not destroy it"
+    );
+    let returned = rejected.into_driver();
+    assert_eq!(returned.metrics().group_id, 1);
+    drop(returned);
+    assert!(dropped.get(), "the caller decides when it goes");
+}
+
+#[test]
+fn a_default_host_needs_nothing_of_its_command_and_result_types() {
+    // Derived `Default` bounded every parameter on `Default`, including the
+    // command and result types this host never stores by value, so this line
+    // did not compile for any real command type.
+    let host = TypedMultiRaftHost::<u64, NotDefault, NotDefault>::default();
+    assert!(host.is_empty());
+    assert_eq!(host.len(), 0);
+
+    let untyped = MultiRaftHost::<u64>::default();
+    assert!(untyped.is_empty());
+}
+
+#[test]
+fn an_input_carrying_a_group_id_is_checked_against_the_host_key() {
+    let mut host = MultiRaftHost::new();
+    host.open_group(1, ApplyingDriver::new(1)).expect("open");
+
+    let error = host
+        .step_group(
+            &1,
+            GroupInput::PeerMessage {
+                envelope: support::envelope(2),
+            },
+        )
+        .expect_err("a peer message for another group is refused");
+
+    assert_eq!(error.kind(), MultiRaftErrorKind::WrongGroup);
+    assert_eq!(
+        host.metrics().groups[0].applied_index,
+        LogIndex::ZERO,
+        "nothing was stepped"
+    );
+}
+
+#[test]
+fn a_read_barrier_is_the_other_input_that_can_be_checked() {
+    // `PeerMessage` and `ReadBarrier` are the only two `GroupInput` variants
+    // carrying a group ID, so they are the only two this host can cross-check.
+    // Both halves of that claim are asserted, not just the convenient one.
+    let mut host = MultiRaftHost::new();
+    host.open_group(1, ApplyingDriver::new(1)).expect("open");
+
+    let error = host
+        .step_group(
+            &1,
+            GroupInput::ReadBarrier {
+                request: ReadBarrierRequest {
+                    group_id: 2,
+                    read_id: ReadId(1),
+                    min_applied_index: None,
+                    context: Vec::new(),
+                },
+            },
+        )
+        .expect_err("a read barrier for another group is refused");
+
+    assert_eq!(error.kind(), MultiRaftErrorKind::WrongGroup);
+    assert_eq!(
+        host.metrics().groups[0].applied_index,
+        LogIndex::ZERO,
+        "nothing was stepped"
+    );
+
+    host.step_group(
+        &1,
+        GroupInput::ReadBarrier {
+            request: ReadBarrierRequest {
+                group_id: 1,
+                read_id: ReadId(2),
+                min_applied_index: None,
+                context: Vec::new(),
+            },
+        },
+    )
+    .expect("a read barrier for this group is accepted");
+}
+
+#[test]
+fn an_input_carrying_no_group_id_is_accepted_wherever_the_caller_routes_it() {
+    // The uncomfortable half of the boundary, pinned deliberately. Five of the
+    // seven `GroupInput` variants carry no group ID, so a caller's shard-map
+    // bug writes into the wrong shard and this host cannot detect it: the
+    // information required to detect it is not in the input. The rustdoc says
+    // so rather than describing a check that sounds total.
+    let mut host = MultiRaftHost::new();
+    host.open_group(1, ApplyingDriver::new(1)).expect("open 1");
+    host.open_group(2, ApplyingDriver::new(2)).expect("open 2");
+
+    let report = host
+        .step_group(
+            &2,
+            GroupInput::Proposal {
+                proposal: Proposal {
+                    local_proposal_id: LocalProposalId(1),
+                    client_request_id: None,
+                    command: b"meant-for-shard-1".to_vec(),
+                },
+            },
+        )
+        .expect("a proposal carries no group ID, so it cannot be checked");
+
+    assert_eq!(report.group_id, 2, "it went where the caller sent it");
+    let metrics = host.metrics();
+    assert_eq!(metrics.groups[0].applied_index, LogIndex::ZERO);
+    assert_eq!(
+        metrics.groups[1].applied_index,
+        LogIndex(1),
+        "the write landed in the wrong shard, silently, and nothing here can tell"
+    );
 }
 
 // --------------------------------------------------------------- typed fixtures

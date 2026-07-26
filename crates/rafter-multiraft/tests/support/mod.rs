@@ -144,6 +144,44 @@ impl GroupDriver<u64> for FailingDriver {
     }
 }
 
+/// A shared flag set when the driver holding it is dropped.
+pub type DropFlag = Rc<Cell<bool>>;
+
+/// Sets its flag on drop, so a test can prove a refusal did not destroy a
+/// driver the caller still owns.
+#[derive(Debug)]
+pub struct DropWatch(pub DropFlag);
+
+impl Drop for DropWatch {
+    fn drop(&mut self) {
+        self.0.set(true);
+    }
+}
+
+/// A driver that exists to be refused, and to notice if it is destroyed.
+#[derive(Debug)]
+pub struct WatchedDriver {
+    pub group_id: u64,
+    pub _watch: DropWatch,
+}
+
+impl GroupDriver<u64> for WatchedDriver {
+    fn step(
+        &mut self,
+        _input: GroupInput<u64, Vec<u8>>,
+    ) -> Result<GroupStepReport<u64, Vec<u8>>, DriverError> {
+        Ok(report(self.group_id))
+    }
+
+    fn metrics(&self) -> RaftGroupMetrics<u64> {
+        metrics(self.group_id, 0)
+    }
+}
+
+/// A command and result type that is deliberately not `Default`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NotDefault(pub u64);
+
 /// An empty report with no effects, for a group whose step did nothing.
 #[must_use]
 pub fn report(group_id: u64) -> GroupStepReport<u64, Vec<u8>> {

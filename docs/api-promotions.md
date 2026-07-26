@@ -7684,6 +7684,16 @@ group on its own; and it keeps no tombstones. `TickPass::visited` is a fairness
 group, which is the weakest of the properties the scheduler contract lists and
 the only one a manual host can offer.
 
+Four things the implementation added that the design above does not show, all
+of them consequences rather than decisions. `DriverError::into_cause` exists so
+the host can move a preserved cause into the flat `Driver` variant without
+cloning it. `OpenGroupRejected::kind` and `MultiRaftMetrics::is_complete`
+forward to what they wrap, and exist because every call site wanted them.
+And the two hosts' identical group-identity checks moved into one private
+`validate` module: the design treats the hosts as mirrors, and leaving the
+checks duplicated is how the mirrored `tick_all` defect came to exist twice in
+the first place.
+
 ## Coupled designs
 
 The eleven promotions form seven surfaces, not eleven independent additions.

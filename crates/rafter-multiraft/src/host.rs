@@ -6,7 +6,7 @@ use rafter_app::group::{GroupInput, GroupStepReport};
 
 use crate::{
     driver::GroupDriver,
-    error::MultiRaftError,
+    error::{MultiRaftError, OpenGroupRejected},
     metrics::MultiRaftMetrics,
     pass::{GroupOutcome, TickPass},
     validate,
@@ -83,19 +83,29 @@ where
     ///
     /// Returns [`MultiRaftError::GroupAlreadyOpen`] when a driver is already
     /// registered for `group_id`, or [`MultiRaftError::WrongGroup`] when the
-    /// driver's metrics report a different group ID.
-    pub fn open_group<D>(&mut self, group_id: G, driver: D) -> Result<(), MultiRaftError<G>>
+    /// driver's metrics report a different group ID. Either way the refusal
+    /// carries the caller's driver back: a driver owns a runtime, a state
+    /// machine, and open storage handles, and destroying one because the
+    /// caller passed the wrong key would be a data loss wearing a validation
+    /// error's clothes.
+    pub fn open_group<D>(&mut self, group_id: G, driver: D) -> Result<(), OpenGroupRejected<G, D>>
     where
         D: GroupDriver<G> + 'static,
     {
         if self.groups.contains_key(&group_id) {
-            return Err(MultiRaftError::GroupAlreadyOpen { group_id });
+            return Err(OpenGroupRejected {
+                error: MultiRaftError::GroupAlreadyOpen { group_id },
+                driver,
+            });
         }
         let actual = driver.metrics().group_id;
         if actual != group_id {
-            return Err(MultiRaftError::WrongGroup {
-                expected: group_id,
-                actual,
+            return Err(OpenGroupRejected {
+                error: MultiRaftError::WrongGroup {
+                    expected: group_id,
+                    actual,
+                },
+                driver,
             });
         }
         self.groups.insert(group_id, Box::new(driver));
@@ -201,18 +211,23 @@ where
 
     /// Returns metrics for every open group in deterministic key order.
     ///
-    /// # Errors
-    ///
-    /// Returns [`MultiRaftError::WrongGroup`] if a driver reports metrics for a
-    /// different group than the host key it is registered under.
-    pub fn metrics(&self) -> Result<MultiRaftMetrics<G>, MultiRaftError<G>> {
+    /// Never fails as a whole. A driver that reports another group's identity
+    /// is excluded from [`MultiRaftMetrics::groups`] and named in
+    /// [`MultiRaftMetrics::failures`]; every other group is still published.
+    /// One lying driver must not blind an operator to every healthy group in
+    /// the process at the moment they most need to see them.
+    #[must_use]
+    pub fn metrics(&self) -> MultiRaftMetrics<G> {
         let mut groups = Vec::with_capacity(self.groups.len());
+        let mut failures = Vec::new();
         for (group_id, driver) in &self.groups {
             let metrics = driver.metrics();
-            validate::metrics_group(group_id, &metrics.group_id)?;
-            groups.push(metrics);
+            match validate::metrics_group(group_id, &metrics.group_id) {
+                Ok(()) => groups.push(metrics),
+                Err(error) => failures.push(error),
+            }
         }
-        Ok(MultiRaftMetrics { groups })
+        MultiRaftMetrics { groups, failures }
     }
 }
 

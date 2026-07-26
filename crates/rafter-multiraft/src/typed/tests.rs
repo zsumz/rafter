@@ -218,7 +218,7 @@ fn typed_groups_run_independently() {
         vec![TestResult::Stored(100), TestResult::Stored(101)]
     );
 
-    let metrics = host.metrics().expect("metrics");
+    let metrics = host.metrics();
     assert_eq!(
         metrics
             .groups
@@ -271,33 +271,50 @@ fn typed_host_rejects_wrong_group_envelope() {
 fn typed_open_group_rejects_driver_metrics_group_mismatch() {
     let mut host = TypedMultiRaftHost::<u64, TestCommand, TestResult>::new();
 
-    let error = host
+    let rejected = host
         .open_group(1, RecordingTypedDriver::new(2))
         .expect_err("driver group mismatch is rejected");
 
-    assert_eq!(error.kind(), MultiRaftErrorKind::WrongGroup);
+    assert_eq!(rejected.kind(), MultiRaftErrorKind::WrongGroup);
     assert!(
         matches!(
-            error,
+            rejected.error(),
             MultiRaftError::WrongGroup {
                 expected: 1,
                 actual: 2
             }
         ),
-        "a driver whose metrics disown the key is refused at open, nothing stepped: {error:?}"
+        "a driver whose metrics disown the key is refused at open, nothing stepped: {rejected:?}"
+    );
+    assert_eq!(
+        rejected.into_driver().metrics().group_id,
+        2,
+        "the refusal hands the caller's driver back rather than destroying it"
     );
 }
 
 #[test]
-fn typed_metrics_rejects_driver_that_later_reports_another_group() {
+fn typed_metrics_excludes_a_misreporting_driver_and_keeps_every_other_group() {
     let mut host = TypedMultiRaftHost::<u64, TestCommand, TestResult>::new();
     host.open_group(1, FlippingTypedMetricsDriver::new(1, 2))
         .expect("initial metrics group matches");
+    host.open_group(3, RecordingTypedDriver::new(3))
+        .expect("open group 3");
 
-    let error = host
-        .metrics()
-        .expect_err("changed metrics group is rejected");
+    let metrics = host.metrics();
 
+    assert!(!metrics.is_complete());
+    assert_eq!(
+        metrics
+            .groups
+            .iter()
+            .map(|metrics| metrics.group_id)
+            .collect::<Vec<_>>(),
+        vec![3],
+        "one lying driver must not blind the operator to every healthy group"
+    );
+    assert_eq!(metrics.failures.len(), 1);
+    let error = &metrics.failures[0];
     assert_eq!(error.kind(), MultiRaftErrorKind::WrongGroup);
     assert!(
         matches!(

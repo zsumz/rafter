@@ -61,7 +61,7 @@ fn main() {
     assert_eq!(routed.len(), 1);
     assert_eq!(routed[0].group_id, ShardId(1));
 
-    let metrics = host.metrics().expect("host metrics");
+    let metrics = host.metrics();
     assert_group_indexes(
         &metrics,
         &[(ShardId(1), LogIndex(1)), (ShardId(2), LogIndex::ZERO)],

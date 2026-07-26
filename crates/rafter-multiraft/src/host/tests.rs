@@ -142,7 +142,7 @@ fn two_groups_tick_independently() {
             .collect::<Vec<_>>(),
         vec![1, 2]
     );
-    let metrics = host.metrics().expect("metrics");
+    let metrics = host.metrics();
     assert_eq!(
         metrics
             .groups
@@ -197,10 +197,7 @@ fn wrong_group_message_is_rejected_before_driver_step() {
         ),
         "an input naming another group is refused before the driver steps: {error:?}"
     );
-    assert_eq!(
-        host.metrics().expect("metrics").groups[0].commit_index,
-        LogIndex::ZERO
-    );
+    assert_eq!(host.metrics().groups[0].commit_index, LogIndex::ZERO);
 }
 
 #[test]
@@ -257,7 +254,7 @@ fn writes_in_one_group_do_not_affect_another() {
     )
     .expect("proposal batch routes");
 
-    let metrics = host.metrics().expect("metrics");
+    let metrics = host.metrics();
     assert_eq!(
         metrics
             .groups
@@ -276,7 +273,7 @@ fn metrics_expose_all_groups() {
     host.open_group(1, RecordingDriver::new(1))
         .expect("open group 1");
 
-    let metrics = host.metrics().expect("metrics");
+    let metrics = host.metrics();
 
     assert_eq!(
         metrics
@@ -294,14 +291,22 @@ fn duplicate_group_open_is_rejected() {
     host.open_group(1, RecordingDriver::new(1))
         .expect("open group");
 
-    let error = host
+    let rejected = host
         .open_group(1, RecordingDriver::new(1))
         .expect_err("duplicate is rejected");
 
-    assert_eq!(error.kind(), MultiRaftErrorKind::GroupAlreadyOpen);
+    assert_eq!(rejected.kind(), MultiRaftErrorKind::GroupAlreadyOpen);
     assert!(
-        matches!(error, MultiRaftError::GroupAlreadyOpen { group_id: 1 }),
-        "the refusal names the key that is already taken: {error:?}"
+        matches!(
+            rejected.error(),
+            MultiRaftError::GroupAlreadyOpen { group_id: 1 }
+        ),
+        "the refusal names the key that is already taken: {rejected:?}"
+    );
+    assert_eq!(
+        rejected.into_driver().metrics().group_id,
+        1,
+        "the refusal hands the caller's driver back intact"
     );
 }
 
@@ -309,33 +314,50 @@ fn duplicate_group_open_is_rejected() {
 fn open_group_rejects_driver_metrics_group_mismatch() {
     let mut host = MultiRaftHost::new();
 
-    let error = host
+    let rejected = host
         .open_group(1, RecordingDriver::new(2))
         .expect_err("driver group mismatch is rejected");
 
-    assert_eq!(error.kind(), MultiRaftErrorKind::WrongGroup);
+    assert_eq!(rejected.kind(), MultiRaftErrorKind::WrongGroup);
     assert!(
         matches!(
-            error,
+            rejected.error(),
             MultiRaftError::WrongGroup {
                 expected: 1,
                 actual: 2
             }
         ),
-        "a driver whose metrics disown the key is refused at open, nothing stepped: {error:?}"
+        "a driver whose metrics disown the key is refused at open, nothing stepped: {rejected:?}"
+    );
+    assert_eq!(
+        rejected.into_driver().metrics().group_id,
+        2,
+        "the refusal hands the caller's driver back rather than destroying it"
     );
 }
 
 #[test]
-fn metrics_rejects_driver_that_later_reports_another_group() {
+fn metrics_excludes_a_misreporting_driver_and_keeps_every_other_group() {
     let mut host = MultiRaftHost::new();
     host.open_group(1, FlippingMetricsDriver::new(1, 2))
         .expect("initial metrics group matches");
+    host.open_group(3, RecordingDriver::new(3))
+        .expect("open group 3");
 
-    let error = host
-        .metrics()
-        .expect_err("changed metrics group is rejected");
+    let metrics = host.metrics();
 
+    assert!(!metrics.is_complete());
+    assert_eq!(
+        metrics
+            .groups
+            .iter()
+            .map(|metrics| metrics.group_id)
+            .collect::<Vec<_>>(),
+        vec![3],
+        "one lying driver must not blind the operator to every healthy group"
+    );
+    assert_eq!(metrics.failures.len(), 1);
+    let error = &metrics.failures[0];
     assert_eq!(error.kind(), MultiRaftErrorKind::WrongGroup);
     assert!(
         matches!(

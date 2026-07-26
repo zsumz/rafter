@@ -84,7 +84,7 @@ fn main() {
         }
     )));
 
-    let metrics = host.metrics().expect("host metrics");
+    let metrics = host.metrics();
     let shard_1 = metrics
         .groups
         .iter()

@@ -159,7 +159,6 @@ fn elect(host: &mut Host) {
             .expect("a single-voter group elects itself");
         if host
             .metrics()
-            .expect("metrics")
             .groups
             .iter()
             .any(|metrics| metrics.role == Role::Leader)

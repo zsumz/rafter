@@ -75,9 +75,10 @@ impl<G, R> TickPass<G, R> {
 
     /// The groups that failed, each with the host key it failed under.
     ///
-    /// Only driver failures and report-validation failures can appear here.
-    /// The keys come from the host's own map, so no group is unknown, and a
-    /// tick carries no group ID to mismatch, so no input is misrouted.
+    /// Only [`MultiRaftError::Driver`], [`MultiRaftError::InvalidReport`], and
+    /// [`MultiRaftError::UnrecognizedEvent`] can appear here. The keys come
+    /// from the host's own map, so no group is unknown, and a tick carries no
+    /// group ID to mismatch, so no input is misrouted.
     pub fn failures(&self) -> impl Iterator<Item = (&G, &MultiRaftError<G>)> {
         self.outcomes.iter().filter_map(|outcome| {
             outcome
