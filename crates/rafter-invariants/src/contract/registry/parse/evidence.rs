@@ -241,19 +241,14 @@ fn validate_negative_fixture_shape(
             index + 1
         )));
     }
-    if record.contains_key("negative_fixture_detector")
-        && (!fixture || layer != "simulator" || strength != "direct")
-    {
+    if record.contains_key("negative_fixture_detector") && (!fixture || !direct_simulator) {
         return Err(RegistryParseError(format!(
             "evidence record {} has a misplaced negative_fixture_detector",
             index + 1
         )));
     }
     if record.contains_key("negative_fixture_detector_path")
-        && (!fixture
-            || !record.contains_key("negative_fixture_detector")
-            || layer != "simulator"
-            || strength != "direct")
+        && (!fixture || !record.contains_key("negative_fixture_detector") || !direct_simulator)
     {
         return Err(RegistryParseError(format!(
             "evidence record {} has a misplaced negative_fixture_detector_path",
