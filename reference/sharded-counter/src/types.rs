@@ -853,6 +853,17 @@ pub enum AdmissionRejection {
         /// Class that was refused.
         class: WorkClass,
     },
+    /// The slot's lifecycle state does not admit session establishment.
+    ///
+    /// Distinct from [`Self::GroupNotAcceptingWork`], and not for tidiness. The
+    /// two gates disagree: a `Recovering` slot opens sessions and refuses
+    /// `Command` work, so reporting a refused session as a refused `Command`
+    /// would name a class the session gate never consulted and a state that
+    /// admits the class it named.
+    GroupNotAcceptingSessions {
+        /// State the slot is in.
+        state: GroupLifecycle,
+    },
     /// The slot is poisoned and can service nothing until it is drained.
     GroupPoisoned,
     /// The slot's queue is full.
@@ -898,11 +909,6 @@ pub enum AdmissionRejection {
     },
     /// A completed or outstanding identity was reused with another command.
     ConflictingRetry,
-    /// The session's sequence space is exhausted.
-    ///
-    /// The client must open a greater session epoch before submitting again.
-    /// Wrapping would let a fresh request land on a cached completion.
-    SequenceExhausted,
     /// The supplied fingerprint does not describe the supplied command.
     FingerprintMismatch {
         /// Digest of the command that was actually supplied.
@@ -913,6 +919,14 @@ pub enum AdmissionRejection {
     // every request that could have overflowed it, and a second refusal for a
     // state that cannot be reached would be a promise about behavior no test
     // could ever observe.
+    //
+    // There is deliberately no sequence-exhaustion refusal either, for the same
+    // reason. A session's highest completed sequence starts at one and advances
+    // by one, so reaching the numeric ceiling takes `u64::MAX` completions; and
+    // at the ceiling every request a client can construct is either below it,
+    // which is [`Self::StaleSequence`], or equal to it, which replays or
+    // conflicts. No request can ask for the successor that does not exist, so
+    // no refusal can answer one. See CONTRACT.md's "The sequence ceiling".
 }
 
 /// Stable result of opening a session.

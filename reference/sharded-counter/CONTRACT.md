@@ -47,13 +47,38 @@ Every bound is nonzero, and `max_global_queue` is at least `max_group_queue`. A
 global bound below a group's would make the group bound unreachable and hide
 which limit a workload is actually hitting.
 
-A group slot's state is allocated when the slot is first created, so a
-configuration that permits a million groups costs nothing until the groups
-exist. Arming a pass costs one traversal of the *ready* set rather than of the
-configured range, so a host with thousands of idle slots pays nothing for the
-handful that have work. Both are properties the deterministic workload leans
-on: it drives thousands of groups, and a scheduler that scanned its whole
-address space every tick could not.
+### What the bounds cost
+
+`max_groups` costs nothing on its own. No slot exists until one is created, so
+a configuration that permits a million groups and holds none is the same size
+as one that permits four.
+
+**The slot table is dense, and that is the cost this document owes.** Slots are
+indexed by group ID, so the table spans one past the highest ID ever created —
+not the number of live groups, and not the configured bound. Creating a single
+group at ID 999_999 spans a million slots to hold it, and the slots below stay
+empty for as long as the scheduler runs. `slot_span` reports the number, and the
+distance between it and the count of live groups *is* the cost. A host that
+addresses groups sparsely at the top of a wide range pays for the range below;
+this crate's workloads allocate dense IDs from zero, which is the shape the
+contract expects, and a sparse addressing scheme is a change to this document
+first.
+
+The density is deliberate twice over. It buys constant-time slot lookup, and it
+keeps the implementation structurally unlike the oracle, whose groups live in an
+ordered map. A differential between two halves that agreed on the structure most
+likely to hide a bookkeeping mistake would be worth much less than one between
+two halves that do not — which is why the honest fix here was to state the cost
+rather than to adopt the oracle's shape and lose the disagreement.
+
+Nothing in the tick loop pays it. Arming a pass costs one traversal of the
+*ready* set rather than of the configured range, and ready-set membership is
+maintained exactly and in constant time per change, so a host with thousands of
+idle slots pays nothing for the handful that have work. That is the property the
+deterministic workload leans on: it drives thousands of groups, and a scheduler
+that scanned its whole address space every tick could not. The two methods that
+do traverse the table — the state view and the aggregate summary — are
+checkpoint tools, not something the scheduler runs.
 
 ## Group Identity
 
@@ -132,14 +157,34 @@ cache left to recognize it as a retry, so executing it would apply an
 acknowledged command a second time. The tombstone and incarnation rules below
 are what make the refusal decidable.
 
-Session epochs and request sequences are nonzero. `OpenSession` behaves as
-follows:
+Session epochs and request sequences are nonzero. `OpenSession` is an admission
+gate and answers the same refusals work submission does, in this order:
+
+1. the group must exist, be in range, not be tombstoned, and be the incarnation
+   named — `GroupOutOfRange`, `GroupUnknown`, `GroupTombstoned`,
+   `StaleIncarnation`, `FutureIncarnation`;
+2. the group's lifecycle state must establish sessions — `Recovering` and
+   `Serving` do, and every other state is refused with
+   `GroupNotAcceptingSessions(state)`;
+3. the group must not be poisoned — `GroupPoisoned`;
+4. the client ID must be within the group's configured slot range —
+   `ClientOutOfRange`.
+
+**Rule 2 is not rule 2 of a submission, and it does not borrow its refusal.** A
+`Recovering` slot establishes sessions and refuses `Command` work. Admitting the
+session early is the point: a client that has its session in place can submit
+the instant the slot serves, instead of discovering during the first command
+that it also has a session to negotiate. Reporting that refusal as
+`GroupNotAcceptingWork(state, Command)` would have named a class the session
+gate never consulted, and would have said `Command` was refused by a state that
+admits sessions precisely so that `Command` work can follow.
+
+Past the gates:
 
 - an unused client slot accepts its first epoch;
 - the current epoch is idempotent and preserves its cached completion;
 - a greater epoch replaces the session and clears its sequence and cache;
-- a lower epoch is rejected as stale;
-- a client ID outside the group's configured slot range is rejected.
+- a lower epoch is rejected as stale.
 
 The session table needs no capacity refusal of its own. The addressable client
 range *is* its bound: a client outside the range is refused before it can take a
@@ -193,8 +238,28 @@ Sequence admission, with `highest` the highest completed sequence:
   retry;
 - `highest + 1` is the only new sequence that may be admitted; anything above it
   is a gap, including the sequence after one that is still outstanding — the
-  expected sequence does not move until the outstanding request completes; and
-- a session whose sequence space is exhausted must open a greater epoch.
+  expected sequence does not move until the outstanding request completes.
+
+#### The sequence ceiling
+
+There is no exhaustion refusal, and the reason is worth stating rather than
+leaving as an absence.
+
+A session's highest completed sequence starts at one and advances by exactly
+one, because `highest + 1` is the only new sequence admitted. Reaching the
+numeric ceiling therefore takes `u64::MAX` completed requests. And *at* the
+ceiling, every request a client can construct is already answered: one below it
+is `StaleSequence(highest)`, and one equal to it replays if the command matches
+and is a `ConflictingRetry` if it does not. Nothing exceeds the maximum, so no
+request can ask for the successor that does not exist.
+
+The vocabulary carried a `SequenceExhausted` refusal for that successor. No
+input produced it — it sat behind a comparison nothing satisfies — and this
+document has already argued, about the absent session-table capacity refusal,
+that a refusal for a state that cannot be reached is a promise about behavior no
+test could observe. The same argument retires this one. What remains is the type
+guard: the sequence successor is `None` at the ceiling and fails closed rather
+than wrapping onto a cached completion, and that is asserted directly.
 
 **The queue bounds are consulted last, and that ordering is load bearing.** An
 acknowledged request has to stay confirmable while the queue is full, or a
@@ -647,6 +712,7 @@ GroupTombstoned
 StaleIncarnation(current)
 FutureIncarnation(current)
 GroupNotAcceptingWork(state, class)
+GroupNotAcceptingSessions(state)
 GroupPoisoned
 GroupQueueFull(limit)
 GlobalQueueFull(limit)
@@ -657,9 +723,15 @@ FutureSession(current)
 StaleSequence(highest)
 SequenceGap(expected)
 ConflictingRetry
-SequenceExhausted
 FingerprintMismatch(expected)
 ```
+
+Two refusals are deliberately absent, and both for one reason: a refusal for a
+state that cannot be reached is a promise about behavior no test could observe.
+There is no session-table capacity refusal, because the addressable client range
+is the table's bound. There is no sequence-exhaustion refusal, because no
+request can name a sequence above the ceiling. Every rejection listed above is
+produced by some input, and that is the standard this vocabulary is held to.
 
 Counter results, produced when the work is serviced:
 

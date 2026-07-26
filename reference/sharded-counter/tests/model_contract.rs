@@ -1257,6 +1257,105 @@ fn a_greater_session_epoch_clears_the_cache_and_never_cancels_accepted_work() {
     recorder.assert_agreement(&"epoch replacement");
 }
 
+/// Opening a session is its own gate, and its refusals are the ones the
+/// contract lists for it. A recovering slot establishes sessions while refusing
+/// the `Command` work they exist for, which is why the refusal cannot be the
+/// work refusal wearing a `Command` label.
+#[test]
+fn opening_a_session_is_refused_by_the_states_that_establish_none() {
+    let bounds = config(4, 1, 2, 16, 64);
+
+    // A draining slot is serviceable and establishes nothing.
+    let mut recorder = Recorder::new(bounds);
+    let draining = group(0);
+    let live = recorder.open_group(draining, 1);
+    recorder.lifecycle(draining, LifecycleRequest::Drain);
+    assert_eq!(
+        recorder.open_session(draining, live, client(0), epoch(1)),
+        SessionOutcome::Rejected(AdmissionRejection::GroupNotAcceptingSessions {
+            state: GroupLifecycle::Draining,
+        })
+    );
+
+    // A poisoned slot is refused by health rather than by lifecycle.
+    let mut recorder = Recorder::new(bounds);
+    let broken = group(1);
+    let live = recorder.open_group(broken, 1);
+    recorder.submit(broken, live, faulty(SystemClass::Bulk, 1));
+    recorder.run(2);
+    assert_eq!(
+        recorder.open_session(broken, live, client(0), epoch(1)),
+        SessionOutcome::Rejected(AdmissionRejection::GroupPoisoned)
+    );
+
+    // And a recovering slot opens the session it will not yet accept commands
+    // under, so the client is ready the instant the slot serves.
+    let mut recorder = Recorder::new(bounds);
+    let recovering = group(2);
+    recorder.lifecycle(recovering, create(1));
+    recorder.lifecycle(recovering, LifecycleRequest::Recover);
+    assert_eq!(
+        recorder.open_session(recovering, first(), client(0), epoch(1)),
+        SessionOutcome::Opened {
+            session_epoch: epoch(1)
+        }
+    );
+    assert_eq!(
+        recorder.submit(recovering, first(), add(0, 1, 1, 3, 1)),
+        AdmissionOutcome::Rejected(AdmissionRejection::GroupNotAcceptingWork {
+            state: GroupLifecycle::Recovering,
+            class: WorkClass::Command,
+        }),
+        "the two gates disagree, which is why they answer with two refusals"
+    );
+    recorder.assert_agreement(&"session gates");
+}
+
+/// The sequence ceiling is described rather than answered. A session's highest
+/// completed sequence advances by one from one, so the ceiling takes `u64::MAX`
+/// completions to reach; and at the ceiling every request a client can build is
+/// already stale or a repeat. There is no successor to refuse, so there is no
+/// exhaustion refusal — only the type guard that fails closed.
+#[test]
+fn the_sequence_ceiling_is_described_rather_than_answered() {
+    let ceiling = sequence(u64::MAX);
+    assert_eq!(
+        ceiling.successor(),
+        None,
+        "the type fails closed at the ceiling rather than wrapping"
+    );
+    for candidate in [1_u64, 2, u64::MAX / 2, u64::MAX - 1, u64::MAX] {
+        assert!(
+            sequence(candidate) <= ceiling,
+            "no sequence outranks the maximum, so none can ask for its successor"
+        );
+    }
+
+    // The reachable answers around the ceiling are the ordinary ones: the
+    // expected sequence advances by one and never jumps to meet a client.
+    let mut recorder = Recorder::new(config(2, 1, 2, 8, 16));
+    let id = group(0);
+    let live = recorder.open_group(id, 1);
+    recorder.open_session(id, live, client(0), epoch(1));
+    assert_eq!(
+        recorder.submit(id, live, add(0, 1, u64::MAX, 5, 1)),
+        AdmissionOutcome::Rejected(AdmissionRejection::SequenceGap {
+            expected: sequence(1)
+        }),
+        "a fresh session admits one, whatever the client reaches for"
+    );
+    recorder.submit(id, live, add(0, 1, 1, 5, 1));
+    recorder.run(2);
+    assert_eq!(
+        recorder.submit(id, live, add(0, 1, u64::MAX, 5, 1)),
+        AdmissionOutcome::Rejected(AdmissionRejection::SequenceGap {
+            expected: sequence(2)
+        }),
+        "and after one completion it admits two: the ceiling is 2^64 - 1 steps away"
+    );
+    recorder.assert_agreement(&"sequence ceiling");
+}
+
 /// Submitting under an epoch the slot has not opened is refused rather than
 /// treated as an implicit open.
 #[test]
@@ -1417,24 +1516,74 @@ fn configuration_bounds_reject_the_states_they_would_make_unreachable() {
     );
 }
 
-/// A configuration that permits a large number of groups costs nothing until
-/// the groups exist, and an idle host does no work proportional to its bound.
+/// A configuration that permits a large number of groups costs nothing on its
+/// own, and an idle host does no work proportional to its bound.
 #[test]
-fn a_large_group_bound_costs_nothing_until_the_groups_exist() {
+fn a_large_group_bound_costs_nothing_until_a_slot_is_created() {
     let mut scheduler = ManagedScheduler::new(config(1_000_000, 4, 2, 16, 4096));
+    assert_eq!(
+        scheduler.slot_span(),
+        0,
+        "a bound of a million allocates no slot table"
+    );
     assert_eq!(scheduler.summary().live_groups, 0);
     assert_eq!(scheduler.view().groups.len(), 0);
 
     let report = scheduler.step(&[]);
     assert_eq!(report.progress, PassProgress::Idle);
     assert!(report.pass.is_none(), "an idle tick arms nothing");
-
-    scheduler.lifecycle(group(999_999), create(1));
-    assert_eq!(scheduler.view().groups.len(), 1);
     assert_eq!(
         scheduler.lifecycle(group(1_000_000), create(1)).outcome,
         LifecycleOutcome::Rejected(LifecycleRejection::GroupOutOfRange)
     );
+    assert_eq!(
+        scheduler.slot_span(),
+        0,
+        "a refused creation allocates none"
+    );
+}
+
+/// What the bound does not cost, the addressing does. The slot table is dense
+/// and indexed by group ID, so one group created at a high ID spans the whole
+/// range below it — and the distance between the span and the number of live
+/// groups is exactly the price.
+///
+/// This is asserted rather than described because the contract now names the
+/// cost, and a stated cost no test could observe is the kind of promise this
+/// crate refuses to make. The table stays dense on purpose: the oracle's groups
+/// live in an ordered map, and a differential whose two halves shared the
+/// structure most likely to hide a bookkeeping mistake would be worth much less
+/// than one whose halves do not.
+#[test]
+fn the_dense_slot_table_spans_the_highest_group_id_ever_created() {
+    let mut scheduler = ManagedScheduler::new(config(1_000_000, 4, 2, 16, 4096));
+    scheduler.lifecycle(group(0), create(1));
+    assert_eq!(scheduler.slot_span(), 1, "one low group spans one slot");
+
+    scheduler.lifecycle(group(999_999), create(1));
+    assert_eq!(
+        scheduler.slot_span(),
+        1_000_000,
+        "one high group spans the whole range below it"
+    );
+    assert_eq!(
+        scheduler.summary().live_groups,
+        2,
+        "while only two groups exist"
+    );
+    assert_eq!(scheduler.view().groups.len(), 2);
+
+    // Removing the high group does not give the range back. A slot table only
+    // ever grows, which is the half of the cost a live-group count hides.
+    scheduler.lifecycle(group(999_999), LifecycleRequest::Drain);
+    scheduler.lifecycle(group(999_999), LifecycleRequest::Remove);
+    assert_eq!(scheduler.summary().live_groups, 1);
+    assert_eq!(scheduler.slot_span(), 1_000_000);
+
+    // None of it reaches the tick loop, which traverses the ready set alone.
+    let report = scheduler.step(&[]);
+    assert_eq!(report.progress, PassProgress::Idle);
+    assert!(scheduler.ready_groups().is_empty());
 }
 
 // ---------------------------------------------------------------------------

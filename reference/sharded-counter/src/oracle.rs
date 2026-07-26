@@ -954,13 +954,15 @@ impl Fold {
         let Some(state) = self.groups.get_mut(&group) else {
             return SessionOutcome::Rejected(AdmissionRejection::GroupUnknown);
         };
+        // Recomputed against the states that establish sessions, which are not
+        // the states that admit `Command` work: recovery does the first and
+        // refuses the second.
         if !matches!(
             state.state,
             GroupLifecycle::Recovering | GroupLifecycle::Serving
         ) {
-            return SessionOutcome::Rejected(AdmissionRejection::GroupNotAcceptingWork {
+            return SessionOutcome::Rejected(AdmissionRejection::GroupNotAcceptingSessions {
                 state: state.state,
-                class: WorkClass::Command,
             });
         }
         if state.poisoned {
@@ -1557,10 +1559,13 @@ fn session_verdict(
                 return Some(AdmissionOutcome::Replayed { result })
             }
             Ordering::Equal => return rejected(AdmissionRejection::ConflictingRetry),
-            Ordering::Greater => match completed.successor() {
-                Some(successor) => successor,
-                None => return rejected(AdmissionRejection::SequenceExhausted),
-            },
+            // The `Greater` arm names a sequence above the completed one, so
+            // the completed one cannot be the numeric maximum and its successor
+            // exists. An exhaustion refusal here would describe a request no
+            // client can construct.
+            Ordering::Greater => completed
+                .successor()
+                .expect("nothing outranks the maximum, so a greater sequence proves a successor"),
         },
     };
 

@@ -6,8 +6,8 @@ use crate::{
     GroupView, LifecycleOutcome, LifecycleRejection, LifecycleRequest, LifecycleTransition, Offer,
     OfferOutcome, PassIndex, PassProgress, PassSuspension, ReadinessSignal, RequestFingerprint,
     RequestIdentity, SchedulerConfig, SchedulerSummary, SchedulerView, Sequence, ServiceRecord,
-    SessionEpoch, SessionOutcome, SkipReason, TickIndex, TickReport, Work, WorkClass, WorkFailure,
-    WorkId, WorkQuota, WORK_CLASS_ORDER,
+    SessionEpoch, SessionOutcome, SkipReason, TickIndex, TickReport, Work, WorkFailure, WorkId,
+    WorkQuota, WORK_CLASS_ORDER,
 };
 
 /// One admitted item waiting for its group's turn.
@@ -152,10 +152,22 @@ struct Plan {
 /// [`TickReport`] is emitted once and forgotten, so a scheduler that has run for
 /// a billion ticks is the same size as one that has just started.
 ///
-/// Group state is allocated when a slot is first created, so a configuration
-/// that permits a large number of groups costs nothing until the groups exist,
-/// and arming a pass costs one traversal of the *ready* set rather than of every
-/// configured slot.
+/// The slot table is dense and indexed by group ID. A configuration that
+/// permits a large number of groups costs nothing on its own — no slot exists
+/// until one is created — but the table spans the highest ID ever created, so
+/// a host that addresses groups sparsely at the top of a wide range pays for
+/// the range below. [`Self::slot_span`] reports that span, and CONTRACT.md's
+/// resource model states the consequence rather than leaving it to be
+/// discovered.
+///
+/// Nothing in the tick loop pays it. Arming a pass costs one traversal of the
+/// *ready* set rather than of every configured slot, and ready-set membership
+/// is maintained in constant time per change.
+///
+/// The density is also what keeps this half structurally unlike the oracle,
+/// whose groups live in an ordered map. A differential between two halves that
+/// agreed on the structure most likely to hide a bookkeeping mistake would be
+/// worth much less than one between two halves that do not.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ManagedScheduler {
     config: SchedulerConfig,
@@ -210,6 +222,24 @@ impl ManagedScheduler {
     #[must_use]
     pub fn open_pass(&self) -> Option<PassIndex> {
         self.plan.as_ref().map(|plan| plan.pass)
+    }
+
+    /// Returns the number of slots the dense slot table spans.
+    ///
+    /// This is one past the highest group ID ever created, not the number of
+    /// live groups and not the configured bound. The table is indexed by group
+    /// ID, so creating one group at ID `999_999` spans a million slots to hold
+    /// it, and the slots below stay empty for as long as the scheduler runs.
+    ///
+    /// It is reported because the contract states the cost, and a stated cost
+    /// no test could observe would be exactly the kind of promise this crate
+    /// refuses to make. Nothing in the tick loop is proportional to it:
+    /// arming traverses the ready set, and readiness is maintained in constant
+    /// time per change. [`Self::view`] and [`Self::summary`] do traverse it,
+    /// and are checkpoint tools rather than something the scheduler runs.
+    #[must_use]
+    pub fn slot_span(&self) -> u32 {
+        count(self.groups.len())
     }
 
     /// Returns the ready set in group order.
@@ -344,13 +374,16 @@ impl ManagedScheduler {
             return SessionOutcome::Rejected(AdmissionRejection::GroupUnknown);
         };
 
+        // A recovering slot opens sessions although it refuses `Command` work,
+        // so this gate is not the work gate and does not borrow its refusal. A
+        // client that establishes its session during recovery can submit the
+        // instant the slot serves, which is the point of admitting it early.
         if !matches!(
             state.state,
             GroupLifecycle::Recovering | GroupLifecycle::Serving
         ) {
-            return SessionOutcome::Rejected(AdmissionRejection::GroupNotAcceptingWork {
+            return SessionOutcome::Rejected(AdmissionRejection::GroupNotAcceptingSessions {
                 state: state.state,
-                class: WorkClass::Command,
             });
         }
         if state.poisoned {
@@ -1013,12 +1046,14 @@ fn admit_under_session(
                 AdmissionOutcome::Rejected(AdmissionRejection::ConflictingRetry)
             });
         }
-        let Some(successor) = completed.successor() else {
-            return Err(AdmissionOutcome::Rejected(
-                AdmissionRejection::SequenceExhausted,
-            ));
-        };
-        expected = successor;
+        // Control reaches here only when the request's sequence is strictly
+        // greater than the completed one, which is itself the proof that the
+        // completed one is below the numeric ceiling and has a successor. There
+        // is no exhaustion refusal to give, because there is no request that
+        // could ask for one.
+        expected = completed
+            .successor()
+            .expect("a strictly greater sequence exists, so the completed one is not the ceiling");
     }
 
     if let Some((outstanding, queued_command, queued_id)) = session.outstanding {
