@@ -38,8 +38,12 @@ where
                     return Err(error.into());
                 }
             };
-            // Every other driver path routes its step report; the read path
-            // could not, because the old signature never handed one back.
+            // The report is routed, never dropped: it carries the read-index
+            // frames the barrier's quorum round needs, and a barrier whose
+            // round was never sent can only wait until the drive bound.
+            // `ReadOutcome::Pending` duplicates the same frames, so exactly one
+            // of the two lists is routed — routing both sends every frame
+            // twice.
             self.route_report(read.report);
             if let Some(receipt) = self.handle_read_outcome(read.outcome, read_id)? {
                 return Ok(receipt);

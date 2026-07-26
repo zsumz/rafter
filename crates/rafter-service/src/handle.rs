@@ -20,7 +20,16 @@ pub struct RaftHandle<G, C, Q, R = (), QR = (), S = UnavailableDriver> {
     _types: PhantomData<(C, Q, R, QR)>,
 }
 
-/// Placeholder sender type used only as a default type parameter.
+/// The default sender type parameter, which implements no driver at all.
+///
+/// It exists so `RaftHandle`'s sender parameter can have a default and a
+/// caller can name the type without naming a driver. It deliberately does not
+/// implement [`DriverCommandSender`], so a handle left with this parameter
+/// carries no operations: the write, read, transfer, metrics, and shutdown
+/// methods live in an impl block bounded on that trait and are simply absent.
+/// Connect a handle by building it from a driver — [`crate::InMemoryRaftDriver::handle`]
+/// or [`crate::TransportRaftDriver::handle`] — rather than from
+/// [`RaftHandle::new`] with this type.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct UnavailableDriver;
 
@@ -159,6 +168,14 @@ where
         self.tx.metrics(self.group_id.clone())
     }
 
+    /// Shuts this handle's group down and resolves every waiter the driver
+    /// still holds.
+    ///
+    /// Shutdown is terminal for the driver: it refuses every later operation,
+    /// and a second call reports [`ShutdownError::AlreadyShutDown`] rather than
+    /// succeeding. Outstanding writes and reads are resolved rather than left
+    /// pending, so a caller awaiting one is never stranded by this call.
+    ///
     /// # Errors
     ///
     /// Returns [`ShutdownError`] if shutdown cannot complete or was already

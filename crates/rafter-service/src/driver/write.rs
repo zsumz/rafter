@@ -449,6 +449,15 @@ pub(super) fn managed_unknown_reason_from_app(
     }
 }
 
+/// The reason reported for an app-layer unknown-outcome variant this build does
+/// not recognize.
+///
+/// `ProposalUnknownOutcomeReason` is `#[non_exhaustive]`, so a newer app layer
+/// can name a cause this driver has never heard of. Reporting it as a dropped
+/// proposal is the safe direction and the honest one: the app or runtime layer
+/// declared the outcome lost, which is exactly what this variant says, and it
+/// keeps the write [`WriteFate::Unresolved`] so a caller does not conclude its
+/// request identity is still unused.
 pub(super) fn unknown_future_app_reason() -> UnknownOutcomeReason {
     UnknownOutcomeReason::RuntimeDroppedProposal
 }

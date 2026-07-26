@@ -149,6 +149,13 @@ use state::{DriverShared, SharedState, StepFailure, TransportDriverState, Waiter
 /// [`TransportRaftDriver::handle`] stay valid across a group release and
 /// re-adoption, because a handle names a service rather than a node
 /// incarnation.
+///
+/// Reads are [`ReadConsistency::Linearizable`] only. Any other level is refused
+/// with [`ReadError::UnsupportedConsistency`] rather than served at a weaker
+/// one, because this driver owns a single replica: a local read here would
+/// answer from one node's state machine with nothing to say how far behind it
+/// is, and the caller asked a managed API precisely so it would not have to
+/// reason about that.
 pub struct TransportRaftDriver<G, A, R, T, V>
 where
     A: ReplicatedStateMachine,

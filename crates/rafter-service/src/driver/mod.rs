@@ -1,4 +1,11 @@
 //! Managed service driver loop.
+//!
+//! The driver is split across several files, and each of them opens with
+//! `use super::*` over the import list and type aliases declared here. That is
+//! why every one of them allows `clippy::wildcard_imports`: the alternative is
+//! the same twenty-line import block repeated in each file, kept in sync by
+//! hand. The files are parts of one module rather than independent units, and
+//! the wildcard is what says so.
 
 use std::{
     collections::{BTreeMap, BTreeSet, VecDeque},

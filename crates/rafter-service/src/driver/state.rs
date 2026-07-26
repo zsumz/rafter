@@ -177,6 +177,18 @@ where
     }
 }
 
+/// Locks driver state, taking the contents of a poisoned mutex rather than
+/// propagating the poison.
+///
+/// A `PoisonError` says a thread panicked while holding the lock, not that this
+/// driver's state is invalid. Every mutation here is a whole-value assignment or
+/// a map insert/remove, so an interrupted one leaves the state consistent even
+/// when it leaves the operation unfinished — and the failure a client should
+/// hear about is the group's own poison, which
+/// [`rafter_app::group::RaftGroup`] reports as a typed error with its cause.
+/// Propagating the mutex poison instead would replace that answer with a panic
+/// on every later call, including the calls a supervisor makes to release the
+/// group and read what happened.
 pub(super) fn lock_state<T>(state: &Mutex<T>) -> MutexGuard<'_, T> {
     state
         .lock()

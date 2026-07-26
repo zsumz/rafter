@@ -2,13 +2,20 @@
 
 use super::*;
 
-/// Concrete managed driver over real `rafter-app::RaftGroup`s.
+/// Managed driver that owns every replica of one group and moves frames
+/// between them itself.
 ///
-/// This driver is intentionally in-memory: it is useful for tests, examples,
-/// and embedding a fully managed service in a process that does not need an
-/// external transport. Production transports can implement
-/// [`DriverCommandSender`] directly or wrap the same group-driving logic around
-/// an authenticated network boundary.
+/// That makes it a complete cluster and an unusable node: it is the driver for
+/// tests, examples, and a fully managed service inside a single process, and it
+/// is not the driver for a deployment where frames leave the process. Use
+/// [`TransportRaftDriver`] there — it owns exactly one replica and hands its
+/// outbound frames to a [`crate::RaftTransport`].
+///
+/// This driver resolves each client future inside the call that created it,
+/// driving the in-memory network until the operation reaches a terminal
+/// outcome or the configured drive bound. There is no separate tick loop and
+/// no re-adoption: the constructor builds a whole cluster rather than
+/// installing one node.
 pub struct InMemoryRaftDriver<G, A, R> {
     pub(super) inner: Arc<Mutex<InMemoryRaftState<G, A, R>>>,
 }

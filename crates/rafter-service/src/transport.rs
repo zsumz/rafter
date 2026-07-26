@@ -3,8 +3,12 @@
 //! Production transports must authenticate peers before constructing an
 //! authenticated envelope, keep group peer sets current, fence removed peers,
 //! and use the current `rafter-codec` peer wire format. This crate
-//! intentionally provides traits only; any future unauthenticated demo
-//! transport must be clearly named and documented as insecure/demo-only.
+//! intentionally provides traits only, so that no transport ships as the
+//! default by being the one that is here.
+//!
+//! An unauthenticated transport must say so in its own name, not only in its
+//! documentation: `rafter-transport-tcp-insecure` is the shipped example of the
+//! rule, and it is a demo rather than a deployment target.
 
 use std::error::Error;
 
@@ -27,9 +31,17 @@ pub use rafter_app::transport::{
 /// application's snapshot store to the network without entering kernel state.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SnapshotChunkEnvelope<G> {
+    /// The group whose snapshot is being transferred.
     pub group_id: G,
+    /// The leader sending the chunk.
     pub from: NodeId,
+    /// The follower being caught up.
     pub to: NodeId,
+    /// Which bytes to send, named by transfer, offset, and length.
+    ///
+    /// Resolve it against the local snapshot store with
+    /// [`SnapshotChunkSend::resolve`]; the bytes themselves never pass through
+    /// kernel state.
     pub chunk: SnapshotChunkSend,
 }
 
@@ -89,6 +101,14 @@ impl<P> PeerSet<P> {
 /// pre-release crate supports only the current peer wire format; future public
 /// wire-format bumps need an explicit compatibility or migration plan.
 pub trait RaftTransport<G>: Send + Sync + 'static {
+    /// The transport's own authenticated identity for a peer.
+    ///
+    /// This is what the link layer proved, not what Raft believes: a
+    /// certificate subject, a mutual-TLS identity, a signed token. Rafter never
+    /// derives one from a [`NodeId`], because a node ID travels inside frames
+    /// and proves nothing. An [`AuthenticatedPeerValidator`] maps between the
+    /// two in both directions, and the mapping is the trust boundary — a
+    /// principal that maps to the wrong node authorizes that node's votes.
     type PeerPrincipal;
     /// Error returned when the transport cannot send or update peer metadata.
     ///
@@ -168,15 +188,24 @@ pub trait RaftTransport<G>: Send + Sync + 'static {
 /// "delivered/committed/applied." Snapshot chunk and message-size expectations
 /// are also the same as the synchronous trait.
 pub trait AsyncRaftTransport<G>: Send + Sync + 'static {
+    /// The transport's own authenticated identity for a peer; see
+    /// [`RaftTransport::PeerPrincipal`], which this mirrors exactly.
     type PeerPrincipal: Send + 'static;
     /// Error returned when the transport cannot send, receive, or update peer
     /// metadata. Bounded for the same reason [`RaftTransport::Error`] is.
+    ///
+    /// Every method here reports failure by resolving its returned future to
+    /// `Err(Self::Error)` rather than by returning a `Result` directly, so the
+    /// failure conditions are stated on each method instead of in an `# Errors`
+    /// section.
     type Error: Error + Send + Sync + 'static;
 
     /// Sends one validated outbound Raft peer envelope.
     ///
     /// The returned future resolves after the transport accepts or enqueues the
-    /// message, not after remote delivery or commit.
+    /// message, not after remote delivery or commit. It resolves `Err` when the
+    /// frame cannot be accepted; a driver counts that refusal rather than
+    /// failing a client's write, because Raft re-sends.
     fn send(&self, envelope: PeerEnvelope<G>) -> TransportFuture<(), Self::Error>;
 
     /// Resolves one leader snapshot chunk directive and sends it.
@@ -193,12 +222,20 @@ pub trait AsyncRaftTransport<G>: Send + Sync + 'static {
 
     /// Receives one authenticated inbound envelope.
     ///
-    /// Implementations should validate peer identity before constructing
-    /// [`AuthenticatedPeerEnvelope`]; this crate validates group membership,
-    /// fencing, recipient, and embedded Raft sender before delivery to a group.
+    /// Implementations must authenticate the peer before constructing
+    /// [`AuthenticatedPeerEnvelope`] — the type's name is the claim, and
+    /// nothing downstream re-checks it. This crate then validates group
+    /// membership, fencing, recipient, and embedded Raft sender before the
+    /// frame reaches a group. The returned future resolves `Err` when the
+    /// transport cannot receive.
     fn recv(&self) -> InboundEnvelopeFuture<G, Self::PeerPrincipal, Self::Error>;
 
     /// Replaces the authorized transport principals for `group_id`.
+    ///
+    /// The set replaces rather than merges, so a principal absent from `peers`
+    /// is no longer authorized. The returned future resolves `Err` when peer
+    /// metadata cannot be updated, which leaves the link layer's set behind the
+    /// group's until the next membership change.
     fn update_peers(
         &self,
         group_id: G,
@@ -206,6 +243,10 @@ pub trait AsyncRaftTransport<G>: Send + Sync + 'static {
     ) -> TransportFuture<(), Self::Error>;
 
     /// Fences `peer` for `group_id` so later frames from it are rejected.
+    ///
+    /// Only a committed removal licenses a fence; fencing a replica an
+    /// uncommitted change merely proposed can cut off a voter the cluster still
+    /// needs. The returned future resolves `Err` when the peer cannot be fenced.
     fn fence_peer(
         &self,
         group_id: G,

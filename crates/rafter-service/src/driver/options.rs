@@ -4,6 +4,17 @@ use rafter_app::{proposal::ClientRequestId, read::ReadProof};
 /// Options for a managed write.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct WriteOptions {
+    /// The caller's own name for this command, carried through unchanged.
+    ///
+    /// Rafter neither generates these nor deduplicates on them: the ID travels
+    /// with the proposal and comes back on
+    /// [`crate::WriteError::UnknownOutcome`], which is what makes an unresolved
+    /// write retryable under the same identity. Idempotency itself is the state
+    /// machine's obligation — a command retried under the same ID may be applied
+    /// twice unless the state machine refuses the duplicate.
+    ///
+    /// `None` means the caller has nothing to correlate, so an unknown outcome
+    /// reports the driver's `LocalProposalId` and nothing else.
     pub client_request_id: Option<ClientRequestId>,
 }
 
@@ -42,9 +53,16 @@ impl ReadOptions {
 }
 
 /// One command in an explicit managed write batch.
+///
+/// Each entry carries its own options and receives its own result, because a
+/// batch shares one proposing step but not one fate: the entries land at
+/// different indices, and a failure part-way through leaves earlier entries
+/// appended and later ones not.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WriteBatchEntry<C> {
+    /// The command to propose.
     pub command: C,
+    /// This entry's own write options; see [`WriteOptions`].
     pub options: WriteOptions,
 }
 
@@ -66,16 +84,41 @@ impl<C> WriteBatchEntry<C> {
 }
 
 /// Receipt returned only after the proposed command has committed and applied.
+///
+/// Holding one is the proof that the command is durable and visible: the
+/// managed layer builds it from an apply event, never from a local append.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WriteReceipt<R = ()> {
+    /// The log index the command committed at.
+    ///
+    /// It names an application entry, which makes it the one index safe to feed
+    /// back as [`ReadOptions::min_applied_index`] for a read-your-writes read.
     pub index: LogIndex,
+    /// The term the command committed in.
+    ///
+    /// Together with [`WriteReceipt::index`] this identifies the entry
+    /// uniquely; an index alone does not, because an uncommitted entry at that
+    /// index may be overwritten by a later leader.
     pub term: Term,
+    /// Whatever the state machine returned from applying the command.
     pub result: R,
 }
 
 /// Receipt returned by a managed read.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct QueryReceipt<G, R = ()> {
+    /// Whatever the state machine returned from running the query.
     pub result: R,
+    /// The freshness proof, when the read consistency produced one.
+    ///
+    /// `Some` for a linearizable read: the barrier's quorum round certified a
+    /// read index, and the proof reports it alongside the applied floor the
+    /// state machine had to reach. `None` for a local read, which submits no
+    /// read-index round and therefore proves nothing about other replicas — the
+    /// absence is the honest answer, not a missing value.
+    ///
+    /// A caller that requires linearizability must ask for it through
+    /// [`rafter_app::read::ReadConsistency`] rather than inspecting this field
+    /// afterwards; a `None` here means the read it already ran was local.
     pub proof: Option<ReadProof<G>>,
 }

@@ -490,6 +490,12 @@ pub enum ReadError {
         cause: Option<ErrorCause>,
     },
     ReadIdExhausted,
+    /// The driver violated one of its own documented invariants.
+    ///
+    /// As on [`WriteError::ManagedInvariantViolation`], this is the one variant
+    /// whose message is authored rather than rendered: a driver reporting its
+    /// own bug has no underlying error to preserve. There is no fate here
+    /// because a read takes no effect.
     ManagedInvariantViolation {
         message: String,
     },
@@ -613,26 +619,37 @@ impl Error for ReadError {
 }
 
 /// Errors returned by managed leadership transfer.
+///
+/// A transfer is a request, not an outcome: `Ok(())` from the driver means the
+/// request was accepted and its immediate effects were routed, so every variant
+/// here reports a refusal to start rather than a transfer that failed part-way.
+/// There is no [`WriteFate`] and no unknown outcome, because a transfer commits
+/// no entry of its own.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum TransferLeadershipError {
+    /// Only a leader can hand leadership over, and this node is not one.
     NotLeader {
         leader_hint: Option<NodeId>,
         term: Term,
     },
+    /// The leader refused the transfer; `reason` names which precondition failed.
     Rejected {
         reason: LeadershipTransferRejection,
         leader_hint: Option<NodeId>,
     },
     /// The request named a group this driver does not own.
     WrongGroup,
-    Storage {
-        cause: ErrorCause,
-    },
-    Transport {
-        cause: ErrorCause,
-    },
+    /// The Raft runtime failed to persist or query local durable state.
+    Storage { cause: ErrorCause },
+    /// The driver could not route or deliver the work this transfer required.
+    Transport { cause: ErrorCause },
+    /// The service is shutting down and started no transfer.
     ShuttingDown,
+    /// The group is permanently poisoned.
+    ///
+    /// `cause` is the error that poisoned the group, when the poison came from
+    /// a typed failure.
     Poisoned {
         reason: String,
         cause: Option<ErrorCause>,
@@ -689,9 +706,10 @@ impl Error for TransferLeadershipError {
 
 /// Errors returned while opening a managed metrics watch.
 ///
-/// This one keeps `Copy` and equality: after the deletion of an unconstructed
-/// transport variant it carries no cause, and there is nothing dishonest left
-/// to compare.
+/// This one keeps `Copy` and equality, unlike its siblings: it carries no
+/// cause, so there is nothing whose equality would be dishonest. Opening a
+/// watch reads driver-local state and cannot fail for any reason outside the
+/// driver, which is why the type stays this small.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum MetricsError {
@@ -709,14 +727,22 @@ impl fmt::Display for MetricsError {
 impl Error for MetricsError {}
 
 /// Errors returned by managed service shutdown.
+///
+/// None of these leaves a waiter pending. A driver that refuses shutdown either
+/// never owned the group or had already released its waiters, so a caller that
+/// sees one of these has nothing left to drain.
 #[derive(Clone, Debug)]
 #[non_exhaustive]
 pub enum ShutdownError {
     /// The request named a group this driver does not own.
     WrongGroup,
-    Transport {
-        cause: ErrorCause,
-    },
+    /// The driver could not route or deliver the work shutdown required.
+    Transport { cause: ErrorCause },
+    /// Shutdown had already completed.
+    ///
+    /// Reported rather than succeeding again so a supervisor can tell "I
+    /// stopped this" from "it was already stopped". Shutdown is terminal: a
+    /// driver that has shut down refuses every operation, including adoption.
     AlreadyShutDown,
 }
 

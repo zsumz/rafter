@@ -20,6 +20,17 @@ pub type DriverFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 /// Shutdown must resolve or reject outstanding waiters instead of leaving them
 /// pending forever.
 pub trait DriverCommandSender<G, C, Q, R, QR>: Clone + Send + Sync + 'static {
+    /// Proposes `command` and resolves only after it has committed and applied.
+    ///
+    /// The returned future must not resolve `Ok` on a local append. An entry in
+    /// the local log is not a committed entry, and a client told otherwise
+    /// would treat an uncommitted write as durable.
+    ///
+    /// A failure must report the [`crate::WriteFate`] this implementation
+    /// observed rather than one inferred from the failure's category, because
+    /// the same fault on either side of the local append proves different
+    /// things about the command. An implementation that cannot prove the
+    /// command was refused reports [`crate::WriteFate::Unresolved`].
     fn write(
         &self,
         group_id: G,
@@ -34,6 +45,13 @@ pub trait DriverCommandSender<G, C, Q, R, QR>: Clone + Send + Sync + 'static {
     /// `ReadRequest` they build rather than substituting one of their own: a
     /// floor a driver lowered is a read-your-writes guarantee silently
     /// weakened.
+    ///
+    /// Which [`ReadConsistency`] levels an implementation serves is its own
+    /// choice, and a level it does not serve must be refused with
+    /// [`crate::ReadError::UnsupportedConsistency`] rather than silently
+    /// answered at a weaker one. [`crate::TransportRaftDriver`] serves
+    /// [`ReadConsistency::Linearizable`] only; [`crate::InMemoryRaftDriver`]
+    /// also serves the lease and local levels.
     fn read(
         &self,
         group_id: G,
@@ -66,5 +84,16 @@ pub trait DriverCommandSender<G, C, Q, R, QR>: Clone + Send + Sync + 'static {
     /// the driver cannot open a metrics watch.
     fn metrics(&self, group_id: G) -> Result<MetricsWatch<G>, MetricsError>;
 
+    /// Shuts `group_id` down, resolving or rejecting every waiter it holds.
+    ///
+    /// Shutdown is terminal. An implementation refuses every later operation
+    /// and reports [`ShutdownError::AlreadyShutDown`] for a second call rather
+    /// than succeeding again, so a supervisor can tell "I stopped this" from "it
+    /// was already stopped".
+    ///
+    /// No waiter may be left pending. A write that cannot be resolved with a
+    /// known outcome resolves as [`crate::WriteError::UnknownOutcome`], because
+    /// an appended proposal may still commit under a later incarnation; a read
+    /// resolves terminally, because a read takes no effect.
     fn shutdown(&self, group_id: G) -> DriverFuture<Result<(), ShutdownError>>;
 }

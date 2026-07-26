@@ -6,40 +6,83 @@ use super::*;
 
 /// Error returned while constructing or manually driving a managed service
 /// driver.
+///
+/// Both shipped drivers report through this type, and they do not reach the
+/// same variants. The cluster-shaped ones — [`ManagedDriverError::EmptyCluster`],
+/// [`ManagedDriverError::MissingPrimary`], [`ManagedDriverError::MissingNode`],
+/// [`ManagedDriverError::DuplicateNode`], [`ManagedDriverError::MixedGroups`],
+/// and [`ManagedDriverError::Stalled`] — describe a set of replicas and can only
+/// come from [`crate::InMemoryRaftDriver`], which owns one. The
+/// incarnation-shaped ones — [`ManagedDriverError::NoGroup`],
+/// [`ManagedDriverError::GroupAlreadyAdopted`], and
+/// [`ManagedDriverError::InvalidOptions`] — describe a single replica's slot and
+/// can only come from [`crate::TransportRaftDriver`], which has one. The rest
+/// are adoption and stepping faults that either driver reports.
 #[non_exhaustive]
 #[derive(Clone, Debug)]
 pub enum ManagedDriverError {
+    /// No groups were supplied, so there is no cluster to drive.
     EmptyCluster,
-    MissingPrimary {
-        node_id: NodeId,
-    },
-    MissingNode {
-        node_id: NodeId,
-    },
-    DuplicateNode {
-        node_id: NodeId,
-    },
-    PoisonedGroup {
-        node_id: NodeId,
-        reason: String,
-    },
+    /// The node named as primary is not among the supplied groups.
+    ///
+    /// The primary is the replica the in-memory driver proposes through, so a
+    /// driver without one cannot serve a write at all.
+    MissingPrimary { node_id: NodeId },
+    /// A frame was addressed to a node this driver does not own.
+    ///
+    /// The in-memory network routes by node ID, so this is a routing fault
+    /// rather than a cluster-membership one.
+    MissingNode { node_id: NodeId },
+    /// Two supplied groups claim the same node ID.
+    ///
+    /// Refused rather than deduplicated: the driver correlates outcomes by node,
+    /// and two replicas answering to one ID make that correspondence undefined.
+    DuplicateNode { node_id: NodeId },
+    /// A group offered for adoption is poisoned, or still holds waiters a poison
+    /// captured.
+    ///
+    /// A poisoned group emits no further events for those waiters, so adopting
+    /// one would install clients that can never be resolved.
+    PoisonedGroup { node_id: NodeId, reason: String },
+    /// A group offered for adoption still tracks proposals or reads.
+    ///
+    /// A driver resolves only the waiters it created, so a waiter arriving with
+    /// the group could never be resolved. [`crate::TransportRaftDriver::adopt_group`]
+    /// is the one exception, and only for proposals: a released group's writes
+    /// were already answered, and its entries are durable.
     NonQuiescentGroup {
         node_id: NodeId,
         pending_proposals: usize,
         reserved_reads: usize,
     },
+    /// The adopted local proposal ID watermark cannot be advanced.
+    ///
+    /// Generated IDs must stay strictly above every ID the group has seen, and
+    /// there is no ID above this one.
     LocalProposalIdExhausted {
         node_id: NodeId,
         last_seen_local_proposal_id: LocalProposalId,
     },
+    /// The adopted read ID watermark cannot be advanced, for the reason
+    /// [`ManagedDriverError::LocalProposalIdExhausted`] gives.
     ReadIdExhausted {
         node_id: NodeId,
         last_seen_read_id: ReadId,
     },
+    /// The supplied groups do not all belong to one group ID.
+    ///
+    /// A driver serves exactly one group; a mixed set would give its handles a
+    /// group ID that names only some of the replicas.
     MixedGroups,
-    Stalled {
-        max_steps: usize,
-    },
+    /// The driver made no progress within its drive bound.
+    ///
+    /// A refusal rather than an unbounded wait, so a protocol that cannot
+    /// advance surfaces as a typed error instead of a hang.
+    Stalled { max_steps: usize },
+    /// The driver has shut down, which is terminal.
+    ///
+    /// A supervisor that wants to serve again builds a driver; adopting a group
+    /// into a shut-down one is refused.
     ShuttingDown,
     /// The driver released its group and has not adopted a new one.
     ///
@@ -58,9 +101,7 @@ pub enum ManagedDriverError {
     /// The category is the variant and the detail is the preserved cause; there
     /// is no free-text message field, so nothing downstream can be tempted to
     /// match on rendered text.
-    Group {
-        cause: ErrorCause,
-    },
+    Group { cause: ErrorCause },
 }
 
 impl fmt::Display for ManagedDriverError {
@@ -166,15 +207,15 @@ pub(super) enum ManagedOperationError<E, RE> {
 /// layer authors an error object rather than preserving somebody else's.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum DriverRoutingError {
-    MissingNode {
-        node_id: NodeId,
-    },
-    DriveBoundReached {
-        max_steps: usize,
-    },
-    PendingWaiterLimit {
-        max_pending_waiters: usize,
-    },
+    /// A frame was addressed to a node this driver does not own.
+    MissingNode { node_id: NodeId },
+    /// The driver stopped routing at its own bound rather than looping forever.
+    DriveBoundReached { max_steps: usize },
+    /// The driver already holds its configured maximum of unresolved waiters.
+    ///
+    /// Failing closed rather than growing: the operation was refused before
+    /// anything was proposed, so nothing is in flight to be uncertain about.
+    PendingWaiterLimit { max_pending_waiters: usize },
     /// The driver released its group, so the operation was never started.
     ///
     /// This is a refusal rather than a lost outcome, and it is here rather
