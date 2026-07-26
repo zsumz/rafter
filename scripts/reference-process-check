@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
-# Run the ledger durable process suite against the patched checkout.
+# Run every reference consumer's durable process suite against the patched checkout.
 #
 # Usage:
-#   scripts/reference-process-check             # verify the selection, then run it
-#   scripts/reference-process-check --list-only # verify the selection only
+#   scripts/reference-process-check             # verify each selection, then run it
+#   scripts/reference-process-check --list-only # verify each selection only
 #
-# The suite is `#[ignore]`d, so `--ignored` on its own reports success over zero
-# tests the moment those attributes change. The reviewed inventory in
-# verification/ pins which tests the selection contains, and the expected count
+# Each suite is `#[ignore]`d, so `--ignored` on its own reports success over zero
+# tests the moment those attributes change. A reviewed inventory in
+# verification/ pins which tests each selection contains, and the expected count
 # is derived from that same file so the two can never disagree.
 set -euo pipefail
 
@@ -35,13 +35,19 @@ while [[ $# -gt 0 ]]; do
 done
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-inventory="${repo_root}/verification/reference-process-test-inventory.txt"
 
-if [[ ! -s "$inventory" ]]; then
-    echo "error: reviewed process-test inventory is missing or empty: $inventory" >&2
-    exit 1
-fi
-expected="$(grep -c . "$inventory")"
+# One entry per consumer that has a durable process suite, as
+# `<package>:<test target>:<reviewed inventory>`. Each pair is checked and run
+# independently, because `cargo-test-exact` compares one selection against one
+# inventory; a shared list could not say which suite a missing name belonged to.
+#
+# A consumer without a process suite is absent rather than listed with an empty
+# inventory: an empty inventory is refused below, and it should be, since a
+# selection over zero tests is what this script exists to catch.
+suites=(
+    "rafter-reference-ledger:process_cluster:reference-process-test-inventory.txt"
+    "rafter-reference-fenced-lock:process_cluster:reference-process-test-inventory.fenced-lock.txt"
+)
 
 # A process substitution's exit status is not the command's, so the previous
 # `while read < <(... --print-args)` form discarded a failing patch table and
@@ -61,12 +67,25 @@ while IFS= read -r argument; do
 done < "$patch_file"
 
 if (( ${#patch[@]} == 0 )); then
-    echo "error: empty dependency patch table; the suite would resolve Rafter from crates.io" >&2
+    echo "error: empty dependency patch table; the suites would resolve Rafter from crates.io" >&2
     exit 1
 fi
 
 cd "${repo_root}/reference"
-"${repo_root}/scripts/cargo-test-exact" "$expected" - \
-    --inventory "$inventory" "${list_only[@]+"${list_only[@]}"}" \
-    "${patch[@]}" -p rafter-reference-ledger \
-    --test process_cluster -- --ignored
+
+for suite in "${suites[@]}"; do
+    IFS=: read -r package target inventory_name <<< "$suite"
+    inventory="${repo_root}/verification/${inventory_name}"
+
+    if [[ ! -s "$inventory" ]]; then
+        echo "error: reviewed process-test inventory is missing or empty: $inventory" >&2
+        exit 1
+    fi
+    expected="$(grep -c . "$inventory")"
+
+    echo "reference process suite: ${package} --test ${target}"
+    "${repo_root}/scripts/cargo-test-exact" "$expected" - \
+        --inventory "$inventory" "${list_only[@]+"${list_only[@]}"}" \
+        "${patch[@]}" -p "$package" \
+        --test "$target" -- --ignored
+done
