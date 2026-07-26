@@ -118,14 +118,15 @@
 //!   never quietly skipped in favour of the other slot;
 //! - checksums are CRC-32/IEEE, an accidental-corruption check and not an
 //!   authentication tag; and
-//! - a slot file of zero bytes has never been published to.
+//! - a slot file of zero bytes is damage: creation writes a mark into each
+//!   slot, so an empty slot is not a state this store ever leaves behind.
 //!
 //! ## Slot header (`RFLK`)
 //!
 //! The header has a fixed size of [`SLOT_HEADER_LEN`] bytes at offset zero.
 //!
 //! ```text
-//! magic          [4]   "RFLK"
+//! magic          [4]   "RFLK", with byte 0 held at 0x00 until the image seals
 //! version        u8    1
 //! generation     u64
 //! applied_index  u64
@@ -134,6 +135,14 @@
 //! payload_len    u32
 //! crc32          u32
 //! ```
+//!
+//! The magic's first byte doubles as the **publication mark**. A publication
+//! writes it as `0x00` and promotes it to `b'R'` once the rest of the image is
+//! durable, so a slot says of itself whether it was ever sealed. That one byte
+//! is the whole of recovery's skip rule; see the section on it below. A sealed
+//! slot is byte-for-byte what it would be without the mark, and both checksums
+//! are computed over the sealed form, so an unsealed image cannot accidentally
+//! verify either.
 //!
 //! `generation` is what orders the two slots, and it is why the header carries
 //! its own checksum: recovery must not choose between two images using bytes it
@@ -164,37 +173,43 @@
 //! crc32          u32
 //! ```
 //!
-//! [`SLOT_TRAILER_LEN`] bytes covering the header and the payload together.
-//! **The trailer is the commit marker.** A slot counts only when its header
-//! verifies, its payload is entirely present, and this checksum matches
-//! everything before it. Covering the header as well as the payload is what
-//! stops a payload from one generation being read under a header from another.
+//! [`SLOT_TRAILER_LEN`] bytes covering the header and the payload together. A
+//! slot's image counts only when its header verifies, its payload is entirely
+//! present, and this checksum matches everything before it. Covering the header
+//! as well as the payload is what stops a payload from one generation being
+//! read under a header from another.
+//!
+//! The trailer is not the commit marker, and the difference matters: a trailer
+//! is at the end, so losing bytes destroys it, and an artifact whose only proof
+//! of completeness sits where truncation lands cannot tell "never finished"
+//! from "finished and then cut". The publication mark in byte zero is what says
+//! an image was sealed; the trailer is what says the sealed bytes are intact.
 //!
 //! # Crash contract
 //!
 //! The authoritative artifact is the pair of slot files. The logical commit
-//! point of a publication is the return of the `sync_data` that follows its
-//! last byte. `Ok` means the new state is what a fresh opener sees. `Err` means
-//! the outcome is unknown, and reopening is the oracle that decides it — never
-//! an inference that `Err` left no bytes changed.
+//! point of a publication is the return of the second `sync_data`: the one that
+//! follows the single byte sealing an image already made durable by the first.
+//! `Ok` means the new state is what a fresh opener sees. `Err` means the
+//! outcome is unknown, and reopening is the oracle that decides it — never an
+//! inference that `Err` left no bytes changed.
 //!
 //! A crash at any byte boundary leaves the store recoverable to exactly the
 //! pre-transaction or the post-transaction state, never between:
 //!
 //! - Before the stale slot is opened, both files are unchanged.
-//! - After the stale slot is truncated and before its header is complete, that
-//!   slot is empty or is a [`SlotDamage::HeaderIncomplete`] fragment. Either
-//!   way it cannot be chosen, and the live slot still holds the pre-transaction
-//!   state.
-//! - Part-way through the payload, the slot is
-//!   [`SlotDamage::PayloadIncomplete`].
-//! - With the payload complete and no trailer, the image is written but not
-//!   committed: [`SlotDamage::MissingCommitChecksum`]. This is the window a
-//!   write-ahead design makes explicit in its layout and this one makes
-//!   explicit in its trailer.
-//! - Part-way through the trailer, [`SlotDamage::PartialCommitChecksum`].
-//! - After the trailer's sync returns, the new slot is committed, outranks the
-//!   old one by generation, and is what recovery adopts.
+//! - From the first byte of the new image to the last, that slot carries the
+//!   unsealed mark and is [`SlotDamage::UnsealedPublication`], whatever mixture
+//!   of new prefix and older tail it holds. It cannot be chosen, and the live
+//!   slot still holds the pre-transaction state.
+//! - With the whole image durable and the seal not yet written, the image is
+//!   written but not committed. This is the window a write-ahead design makes
+//!   explicit in its layout and this one makes explicit in its mark, and it is
+//!   still [`SlotDamage::UnsealedPublication`] — the point of the mark is that
+//!   this window looks like every earlier one rather than like a nearly
+//!   finished image.
+//! - After the seal's sync returns, the new slot is committed, outranks the old
+//!   one by generation, and is what recovery adopts.
 //!
 //! Nothing is truncated or repaired at open. The next publication overwrites
 //! the slot it does not adopt, so the store heals itself without a repair path
@@ -203,37 +218,72 @@
 //! # Which unreadable slots recovery may skip
 //!
 //! Recovery is allowed to skip a slot it cannot read only when it can *prove*
-//! that slot was not the live image. There is exactly one proof available, and
-//! it comes from the shape of the write path.
+//! that slot was not the live image. This section is that proof, and it is
+//! written in the direction the proof is used.
 //!
-//! A publication truncates the stale slot to nothing and writes one image
-//! forward. Every state it can be interrupted in is therefore a strict prefix
-//! of that image, and a prefix has four possible shapes: a short header, a
-//! short payload, a payload with no trailer, and a torn trailer. Those four —
-//! [`SlotDamage::is_publication_residue`] — are the only damage an interrupted
-//! publication of this build can leave. A prefix always carries this store's
-//! magic and this build's version byte; every byte it does carry is a byte that
-//! was written, so it cannot fail a checksum computed over bytes that are all
-//! present; and it cannot run past the seal.
+//! An earlier shape of this store argued the other direction and got away with
+//! it for a while. It enumerated what an interrupted publication leaves — a
+//! short header, a short payload, a payload with no trailer, a torn trailer —
+//! showed the list was exhaustive, and then treated finding one of those shapes
+//! as proof that a publication had been interrupted. That converse is false,
+//! and one byte is enough to show it. A sealed image that loses its last byte
+//! is a torn trailer. It is a strict prefix of an image this build wrote; it
+//! carries this store's magic and this build's version; every byte present was
+//! written and no checksum over present bytes fails. It satisfies the
+//! enumeration exactly, and it is the live image. Skipping it adopts the stale
+//! partner, drops an acknowledged fencing high-water mark, and reissues a token
+//! a guarded resource has already accepted — the exact failure this design
+//! exists to prevent, reached through the rule that was supposed to prevent it.
 //!
-//! Residue therefore *proves* the slot was the one being written, which proves
-//! it was not the live image, which is what makes skipping it safe. **Every
-//! other damage refuses the whole store.** A foreign magic, a format version
-//! this build does not write, a header or commit checksum over bytes that are
-//! all present, bytes beyond the seal: none of those is a prefix of anything
-//! this build wrote, so recovery has no argument that the slot was the stale
-//! one, and adopting its partner would silently roll the store back one
-//! generation. A rollback drops an acknowledged fencing high-water mark and the
-//! next acquisition reissues a token a guarded resource has already accepted,
-//! which is the exact failure this whole design exists to prevent. That is
-//! [`LockStoreError::UnreadableSlot`], and it is a refusal to open rather than
-//! damage to skip.
+//! No test on the bytes can separate those two cases, because they *are* the
+//! same bytes: "a slot holding a prefix of the image with generation g, beside
+//! a sealed image with generation g-1" describes both an interrupted
+//! publication and a torn-off live image, and the generations differ by one
+//! either way. So the write path puts the distinction into the artifact instead
+//! of asking recovery to infer it.
 //!
-//! A format-version mismatch is the sharpest case and is worth naming on its
-//! own, because it needs no corruption at all: a binary downgrade produces it
-//! from two entirely healthy files. The version byte is the fifth byte a
-//! publication writes and is always this build's, so a slot declaring another
-//! version was written whole by another build. It is always a refusal.
+//! **A slot's first byte is its publication mark.** It is `0x00` while an image
+//! is being written and `b'R'` — the magic's leading byte — once that image is
+//! sealed. A publication writes the unsealed mark before any other byte of the
+//! image, makes the whole image durable, and only then writes the one byte that
+//! seals it. Since a crash leaves a prefix of what was written, byte zero is
+//! written first and *every* interrupted publication leaves the unsealed mark.
+//! Contrapositively, a sealed mark proves no publication was interrupted in
+//! that slot, so its bytes are exactly what some completed publication sealed
+//! there, and any damage to them happened after the seal.
+//!
+//! That is [`SlotDamage::is_publication_residue`], and it now holds in the
+//! direction it is used: residue proves the slot was the one being written,
+//! which proves it was never the live image, which is what makes skipping it
+//! safe. **Every other damage refuses the whole store.** A foreign magic, a
+//! version this build does not write, a checksum over bytes that are all
+//! present, bytes beyond the seal, a sealed image cut short, an emptied file:
+//! none of them carries the unsealed mark, so recovery has no argument that the
+//! slot was the stale one, and adopting its partner would silently roll the
+//! store back one generation. That is [`LockStoreError::UnreadableSlot`], and
+//! it is a refusal to open rather than damage to skip.
+//!
+//! Two consequences of that ordering are worth stating on their own, because
+//! both were wrong when the shapes were doing the work:
+//!
+//! - **The magic and the version are tested at every length**, before anything
+//!   classifies a slot by how many bytes it has. The old order put both behind
+//!   a full-header slice, so twenty bytes of a foreign format were read as this
+//!   build's own residue, and the same version byte was refused at one length
+//!   and ignored at another. The argument for refusing a version is about the
+//!   field, so it has to hold wherever the field is present.
+//! - **A slot file of zero bytes is damage.** Creation writes the unsealed mark
+//!   into each slot, and no publication ever shortens a slot to nothing, so an
+//!   empty slot file is not a state this store leaves behind at any point in
+//!   its life. A pair of them is not a store that has never committed; it is a
+//!   store whose files were emptied, and opening a fresh service over them
+//!   would discard every fencing high-water mark with nothing reported.
+//!   Likewise a slot file that should exist and does not:
+//!   [`LockStoreError::MissingSlot`].
+//!
+//! A format-version mismatch is still worth naming on its own, because it needs
+//! no corruption at all: a binary downgrade produces it from two entirely
+//! healthy files. It is always a refusal.
 //!
 //! Recovery also refuses when **both** slots are damaged, whatever the damage,
 //! rather than starting empty. A lock service that cannot read any image cannot
@@ -242,10 +292,11 @@
 //! token. That is [`LockStoreError::NoReadableImage`].
 //!
 //! A store that has never committed is a different case and is not refused: its
-//! slots are empty, not damaged. One slot holding residue beside an *empty*
-//! partner is that case — a publication only ever writes the stale slot, so an
-//! empty partner means no publication has ever committed and there was never a
-//! mark to lose.
+//! slots carry their creation marks, which is not damage. More generally,
+//! whenever recovery adopts an image it has shown that every slot it did not
+//! adopt holds no sealed image at all — either the creation mark or residue an
+//! interrupted publication left — so the image it adopts is the newest one any
+//! publication ever sealed.
 //!
 //! [`RecoveryReport::damaged_slot`] names **which** slot was damaged as well as
 //! how. That index is the load-bearing half: it is what tells a caller the
@@ -272,7 +323,7 @@ use std::{
     error::Error,
     fmt,
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
@@ -295,6 +346,27 @@ const HEADER_CHECKSUM_OFFSET: usize = SLOT_HEADER_LEN - 4;
 const HEADER_APPLIED_INDEX_OFFSET: usize = 13;
 
 const SLOT_MAGIC: [u8; 4] = *b"RFLK";
+
+/// First byte of a slot whose image is sealed: the magic's leading byte.
+///
+/// See [`UNSEALED_MARK`] for what the same byte says while an image is being
+/// written, and the module's recovery section for why the whole argument rests
+/// on this one byte.
+const SEALED_MARK: u8 = SLOT_MAGIC[0];
+
+/// First byte of a slot whose image is being written.
+///
+/// A publication writes this value before any other byte of the image and
+/// replaces it with [`SEALED_MARK`] only after every other byte is durable, so
+/// a slot still carrying it is a slot no publication ever sealed.
+const UNSEALED_MARK: u8 = 0x00;
+
+/// Content of a slot file the moment it is created.
+///
+/// One unsealed mark and nothing else. A created slot is therefore not an empty
+/// file, which is what lets a slot file of zero bytes be damage rather than the
+/// ordinary state of a store that has never committed.
+const CREATION_MARK: [u8; 1] = [UNSEALED_MARK];
 
 /// Version byte of every slot this build writes.
 const SLOT_FORMAT_VERSION: u8 = 1;
@@ -439,6 +511,21 @@ pub enum LockStoreError {
         /// its place.
         other: SlotState,
     },
+    /// A slot file that should exist does not.
+    ///
+    /// Every store this build creates has both slot files from its first
+    /// instant, so a directory holding one of them lost the other. Recreating
+    /// it and adopting the survivor would open the store one generation back —
+    /// an acknowledged fencing high-water mark dropped, with `is_clean()` true
+    /// and nothing reported. A slot that should exist and does not is
+    /// unreadable rather than absent.
+    MissingSlot {
+        /// Slot whose file is gone.
+        slot: SlotIndex,
+        /// What the surviving partner held — the image recovery declined to
+        /// adopt in its place.
+        other: SlotState,
+    },
     /// Both slots claim the same generation.
     ///
     /// Publications assign strictly increasing generations, so this is
@@ -581,6 +668,12 @@ impl fmt::Display for LockStoreError {
                  the live image; {} holds {other} and is not adopted in its place",
                 slot.other()
             ),
+            Self::MissingSlot { slot, other } => write!(
+                formatter,
+                "{slot} is missing, so it may have been the live image; {} holds {other} and is not \
+                 adopted in its place",
+                slot.other()
+            ),
             Self::AmbiguousGeneration { generation } => write!(
                 formatter,
                 "both slots claim generation {generation}, so neither outranks the other"
@@ -692,6 +785,7 @@ impl Error for LockStoreError {
             Self::Image { source, .. } => Some(source),
             Self::NoReadableImage { .. }
             | Self::UnreadableSlot { .. }
+            | Self::MissingSlot { .. }
             | Self::AmbiguousGeneration { .. }
             | Self::ConfigMismatch { .. }
             | Self::Snapshot { .. }
@@ -718,17 +812,27 @@ pub enum WriteFault {
     /// The stale slot keeps whatever earlier image it held, which is the case
     /// that proves recovery orders by generation rather than by recency.
     BeforeFirstByte,
-    /// Truncate the stale slot, emit the first `bytes` bytes, make them
-    /// durable, then fail.
+    /// Emit the first `bytes` bytes of the unsealed image, make them durable,
+    /// then fail.
     ///
     /// The emitted prefix is synced deliberately. The interesting recovery case
     /// is the one where a partial write did reach the medium, and a test that
     /// left the prefix in a write-back cache would be proving something weaker
-    /// than it claims. `AfterBytes(0)` is the truncate-then-die case, which
-    /// leaves the stale slot empty rather than damaged.
+    /// than it claims. `AfterBytes(0)` writes nothing, so the stale slot keeps
+    /// the earlier image it held.
     AfterBytes(u64),
-    /// Emit every byte of the image, then fail its durability barrier.
+    /// Emit every byte of the unsealed image, then fail its durability barrier.
     AtSlotSync,
+    /// Make the whole unsealed image durable, then fail before it is sealed.
+    ///
+    /// This is the window the seal exists to make representable: every byte of
+    /// the new image is on the medium and none of it counts.
+    BeforeSeal,
+    /// Seal the image, then fail the barrier that makes the seal durable.
+    ///
+    /// Either outcome is legal — the seal may or may not have reached the
+    /// medium — which is exactly why the caller is told the result is unknown.
+    AtSealSync,
 }
 
 impl fmt::Display for WriteFault {
@@ -737,6 +841,8 @@ impl fmt::Display for WriteFault {
             Self::BeforeFirstByte => formatter.write_str("failure before the first byte"),
             Self::AfterBytes(bytes) => write!(formatter, "failure after {bytes} bytes"),
             Self::AtSlotSync => formatter.write_str("failure at the slot sync"),
+            Self::BeforeSeal => formatter.write_str("failure before the seal"),
+            Self::AtSealSync => formatter.write_str("failure at the seal sync"),
         }
     }
 }
@@ -843,20 +949,43 @@ impl fmt::Display for SessionProgress {
 /// write reached, which is what lets a crash test prove that its injection bit
 /// where it aimed.
 ///
-/// Only four of these variants are residue an interrupted publication can
-/// actually leave; see [`SlotDamage::is_publication_residue`]. The rest are
-/// reported here because the report says what recovery *found*, but finding one
-/// refuses the store rather than skipping the slot.
+/// Exactly one of these variants is residue an interrupted publication can
+/// leave; see [`SlotDamage::is_publication_residue`]. The rest are reported here
+/// because the report says what recovery *found*, but finding one refuses the
+/// store rather than skipping the slot.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum SlotDamage {
-    /// Fewer bytes are present than one slot header needs.
+    /// The slot file holds no bytes at all.
+    ///
+    /// Not even the mark creation writes, which every slot this store creates
+    /// carries from its first instant. A slot of zero bytes was therefore
+    /// emptied by something that is not this store, and an emptied slot is
+    /// unreadable rather than absent: nothing about it says whether it once
+    /// held the newest committed image.
+    SlotEmptied,
+    /// A publication wrote these bytes and never sealed them.
+    ///
+    /// The slot still carries [`UNSEALED_MARK`] in its first byte, which a
+    /// publication writes before any other byte and replaces only after every
+    /// other byte is durable. This is the only damage recovery may skip, and
+    /// `present` is the byte boundary the interrupted write reached.
+    UnsealedPublication {
+        /// Bytes present in the slot.
+        present: u64,
+    },
+    /// A sealed slot holds fewer bytes than one slot header needs.
     HeaderIncomplete {
         /// Bytes present in the slot.
         present: u64,
     },
     /// The slot does not begin with this store's magic.
+    ///
+    /// The mark this store writes into byte zero is part of that magic, so this
+    /// also covers a slot whose first byte is neither [`SEALED_MARK`] nor
+    /// [`UNSEALED_MARK`].
     NotALockImage {
-        /// The four bytes found where the magic belongs.
+        /// The four bytes found where the magic belongs, zero-padded when the
+        /// slot is shorter than four bytes.
         magic: [u8; 4],
     },
     /// The slot declares a format this build cannot read.
@@ -902,41 +1031,45 @@ pub enum SlotDamage {
 }
 
 impl SlotDamage {
-    /// Whether an interrupted publication of *this* build could have left this.
+    /// Whether an interrupted publication of *this* build left this.
     ///
-    /// A publication truncates the stale slot to nothing and writes one image
-    /// forward, so every state it can be interrupted in is a strict prefix of
-    /// that image. The four shapes below are exactly those prefixes: a short
-    /// header, a short payload, a payload with no trailer, and a torn trailer.
+    /// This is used in one direction only — a slot may be skipped **because**
+    /// it is residue — so it is the converse that has to hold: this returning
+    /// `true` must prove the slot was never the live image. One variant carries
+    /// that proof, and it carries it because a publication puts the proof in
+    /// the bytes rather than leaving recovery to infer it.
     ///
-    /// Nothing else is a prefix of anything this build writes. A prefix always
-    /// carries this store's magic and this build's version byte; every byte it
-    /// does carry is a byte that was written, so it cannot fail a checksum
-    /// computed over bytes that are all present; and it cannot run past the
-    /// seal.
+    /// A publication writes [`UNSEALED_MARK`] into byte zero before any other
+    /// byte of the image, and replaces it with [`SEALED_MARK`] only after every
+    /// other byte has passed a durability barrier. A crash leaves a prefix of
+    /// what was written — that is the crash contract this whole file rests on —
+    /// so byte zero is written first and every interrupted publication leaves
+    /// the unsealed mark behind. Contrapositively, a slot whose first byte is
+    /// sealed holds exactly the bytes some completed publication sealed there,
+    /// and any damage to it happened *after* that seal.
     ///
-    /// That asymmetry is the whole recovery argument. Residue proves the slot
-    /// was the one being written, and therefore that it was not the live image,
-    /// which is what makes skipping it safe. Damage outside this set proves
-    /// nothing of the kind, so recovery cannot rule out that the slot it cannot
-    /// read held the newest committed state, and it refuses to open instead.
+    /// So [`SlotDamage::UnsealedPublication`] proves the slot was the one being
+    /// written and was never adopted by any opener, which is what makes
+    /// skipping it safe. Every other damage — including a sealed image that has
+    /// merely lost its last byte, which is a strict prefix of an image this
+    /// build wrote and would have passed a shape test — proves nothing of the
+    /// kind. Recovery cannot rule out that such a slot held the newest
+    /// committed state, so it refuses to open instead.
     #[must_use]
     pub const fn is_publication_residue(self) -> bool {
-        matches!(
-            self,
-            Self::HeaderIncomplete { .. }
-                | Self::PayloadIncomplete { .. }
-                | Self::MissingCommitChecksum
-                | Self::PartialCommitChecksum { .. }
-        )
+        matches!(self, Self::UnsealedPublication { .. })
     }
 }
 
 impl fmt::Display for SlotDamage {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::SlotEmptied => formatter.write_str("an emptied slot file"),
+            Self::UnsealedPublication { present } => {
+                write!(formatter, "{present} bytes of an unsealed publication")
+            }
             Self::HeaderIncomplete { present } => {
-                write!(formatter, "an incomplete header of {present} bytes")
+                write!(formatter, "a sealed image cut to {present} bytes")
             }
             Self::NotALockImage { magic } => write!(formatter, "foreign magic {magic:?}"),
             Self::UnsupportedFormatVersion { version } => {
@@ -962,7 +1095,11 @@ impl fmt::Display for SlotDamage {
 /// What one slot held when the store was opened.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SlotState {
-    /// The slot has never been published to.
+    /// The slot carries its creation mark and nothing more.
+    ///
+    /// Nothing has ever been sealed into it. A publication that emitted only
+    /// its first byte before dying leaves the same thing, and says the same
+    /// thing, so the two are not distinguished.
     Empty,
     /// An interrupted or corrupted publication left the slot unusable.
     Damaged(SlotDamage),
@@ -1068,13 +1205,23 @@ impl RecoveryReport {
 
     /// Whether this opening found nothing to report.
     ///
-    /// A clean opening adopted an image with no damaged slot beside it, or
-    /// created the store. Anything else — residue from an interrupted
-    /// publication — is a fact a caller reopening a store after a crash should
-    /// have to look at rather than step over.
+    /// A clean opening adopted an image with no damaged slot beside it, in a
+    /// directory that already held a store. Anything else — residue from an
+    /// interrupted publication, or creating the slot files — is a fact a caller
+    /// reopening a store after a crash should have to look at rather than step
+    /// over.
+    ///
+    /// Creation counts deliberately. This store cannot tell a genuinely fresh
+    /// replica from one whose directory was emptied, because both arrive here
+    /// as an absent pair of files; only the caller knows which it is. Leaving
+    /// creation out of this predicate made the difference invisible to the one
+    /// party that could see it — and made `created()` a report nothing read,
+    /// which is a report that costs nothing to be wrong. A caller that expects
+    /// to be creating a store looks at [`RecoveryReport::created`] and carries
+    /// on.
     #[must_use]
     pub const fn is_clean(&self) -> bool {
-        self.damaged_slot().is_none()
+        !self.created && self.damaged_slot().is_none()
     }
 
     /// Whether recovery found a second intact slot and re-checked the fencing
@@ -1148,16 +1295,7 @@ impl LockStore {
             source,
         })?;
 
-        // Both slots are created up front and the directory entry is made
-        // durable once. Every later publication is a pure content rewrite, so
-        // no publication ever has a directory-entry crash window.
-        let mut created = false;
-        for slot in [SlotIndex::Zero, SlotIndex::One] {
-            created |= create_slot_if_absent(directory, slot)?;
-        }
-        if created {
-            sync_directory(directory)?;
-        }
+        let created = establish_slot_files(directory)?;
 
         let mut states = [SlotState::Empty; 2];
         let mut images: [Option<DecodedImage>; 2] = [None, None];
@@ -1437,11 +1575,30 @@ impl LockStore {
         Some(LockStoreError::InjectedFault { fault, publication })
     }
 
-    /// Truncates the stale slot, writes `image` into it, and makes it durable.
+    /// Writes `image` into the stale slot unsealed, makes it durable, and only
+    /// then seals it.
     ///
     /// The slot being written is never the authoritative one, so every failure
     /// below leaves the live image whole. The directory entry was made durable
     /// at open, so nothing here touches the directory.
+    ///
+    /// Two things about the order are load bearing, and both exist to make
+    /// recovery's skip rule provable rather than plausible:
+    ///
+    /// 1. **Byte zero goes out first, and goes out unsealed.** A crash leaves a
+    ///    prefix of what was written, so every interrupted publication leaves
+    ///    [`UNSEALED_MARK`] in the slot's first byte. That is what a later
+    ///    opener reads as proof that this image was never the live one.
+    /// 2. **The seal is one byte, written after the barrier below returned.**
+    ///    Nothing that follows the barrier can reach the medium before the
+    ///    image it seals, and a single byte cannot be half written, so a slot
+    ///    is either sealed or not.
+    ///
+    /// The slot is cut back to the new image's length before the barrier rather
+    /// than truncated to nothing before the first byte. Truncating first would
+    /// leave an empty file in the crash window, and an empty file is the one
+    /// artifact this store must be able to call damage — see
+    /// [`SlotDamage::SlotEmptied`].
     fn write_slot(
         &mut self,
         slot: SlotIndex,
@@ -1453,11 +1610,7 @@ impl LockStore {
         }
 
         let path = slot_path(&self.directory, slot);
-        // Truncating is what keeps a shorter image from inheriting a longer
-        // one's tail. It is safe precisely because this slot is the stale one.
         let mut file = OpenOptions::new()
-            .create(true)
-            .truncate(true)
             .write(true)
             .open(&path)
             .map_err(|source| {
@@ -1468,7 +1621,9 @@ impl LockStore {
                 })
             })?;
 
-        let emitted = self.emit(&mut file, image, publication, &path)?;
+        let mut unsealed = image.to_vec();
+        unsealed[0] = UNSEALED_MARK;
+        let emitted = self.emit(&mut file, &unsealed, publication, &path)?;
         if emitted < image.len() {
             let error = self
                 .take_fault(publication, WriteFaultSite::AfterBytes)
@@ -1476,13 +1631,62 @@ impl LockStore {
             return Err(self.publication_failed(error));
         }
 
+        // Cutting back is what keeps a shorter image from inheriting a longer
+        // one's tail. It is safe precisely because this slot is the stale one,
+        // and it happens while the slot is still marked unsealed.
+        file.set_len(as_u64(image.len())).map_err(|source| {
+            self.publication_failed(LockStoreError::Io {
+                operation: "resize a lock store slot for publication",
+                path: path.clone(),
+                source,
+            })
+        })?;
+
         if let Some(error) = self.take_fault(publication, WriteFaultSite::AtSlotSync) {
             return Err(self.publication_failed(error));
         }
         file.sync_data().map_err(|source| {
             self.publication_failed(LockStoreError::Io {
                 operation: "sync a published lock store slot",
-                path,
+                path: path.clone(),
+                source,
+            })
+        })?;
+
+        self.seal_slot(&mut file, publication, &path)
+    }
+
+    /// Replaces a written slot's unsealed mark with the sealed one.
+    ///
+    /// This is the commit point. Everything before it is a slot a later opener
+    /// may skip; everything after it is a slot a later opener must be able to
+    /// read or refuse over.
+    fn seal_slot(
+        &mut self,
+        file: &mut File,
+        publication: u64,
+        path: &Path,
+    ) -> Result<(), LockStoreError> {
+        if let Some(error) = self.take_fault(publication, WriteFaultSite::BeforeSeal) {
+            return Err(self.publication_failed(error));
+        }
+        file.seek(SeekFrom::Start(0))
+            .and_then(|_| file.write_all(&[SEALED_MARK]))
+            .map_err(|source| {
+                self.publication_failed(LockStoreError::Io {
+                    operation: "seal a published lock store slot",
+                    path: path.to_path_buf(),
+                    source,
+                })
+            })?;
+
+        if let Some(error) = self.take_fault(publication, WriteFaultSite::AtSealSync) {
+            return Err(self.publication_failed(error));
+        }
+        file.sync_data().map_err(|source| {
+            self.publication_failed(LockStoreError::Io {
+                operation: "sync a sealed lock store slot",
+                path: path.to_path_buf(),
                 source,
             })
         })
@@ -1533,6 +1737,8 @@ enum WriteFaultSite {
     BeforeFirstByte,
     AfterBytes,
     AtSlotSync,
+    BeforeSeal,
+    AtSealSync,
 }
 
 impl WriteFaultSite {
@@ -1542,6 +1748,8 @@ impl WriteFaultSite {
             (Self::BeforeFirstByte, WriteFault::BeforeFirstByte)
                 | (Self::AfterBytes, WriteFault::AfterBytes(_))
                 | (Self::AtSlotSync, WriteFault::AtSlotSync)
+                | (Self::BeforeSeal, WriteFault::BeforeSeal)
+                | (Self::AtSealSync, WriteFault::AtSealSync)
         )
     }
 }
@@ -1569,26 +1777,75 @@ struct AdoptedImage {
     cross_checked_marks: bool,
 }
 
+/// Returns the four bytes where a slot's magic belongs, zero-padded when the
+/// slot is shorter than that.
+fn magic_of(bytes: &[u8]) -> [u8; 4] {
+    let mut magic = [0_u8; 4];
+    let present = bytes.len().min(magic.len());
+    magic[..present].copy_from_slice(&bytes[..present]);
+    magic
+}
+
+/// Checks that the bytes present are ones this store and this build wrote, as
+/// far as they go.
+///
+/// This runs on **every** slot long enough to carry a field, before anything
+/// classifies the slot by its length. That ordering is the point: the older
+/// shape put the magic and version tests behind a full-header slice, so a short
+/// slot was attributed to this build rather than shown to belong to it, and
+/// twenty bytes of a foreign format were read as this build's own residue.
+///
+/// Byte zero is the publication mark and is checked here too, because it is the
+/// magic's leading byte: a slot that begins with neither mark is not a slot
+/// this build ever wrote.
+fn verify_identity(bytes: &[u8]) -> Result<(), SlotDamage> {
+    if bytes[0] != UNSEALED_MARK && bytes[0] != SEALED_MARK {
+        return Err(SlotDamage::NotALockImage {
+            magic: magic_of(bytes),
+        });
+    }
+    let present = bytes.len().min(SLOT_MAGIC.len());
+    if bytes[1..present] != SLOT_MAGIC[1..present] {
+        return Err(SlotDamage::NotALockImage {
+            magic: magic_of(bytes),
+        });
+    }
+    if let Some(version) = bytes.get(4) {
+        if *version != SLOT_FORMAT_VERSION {
+            return Err(SlotDamage::UnsupportedFormatVersion { version: *version });
+        }
+    }
+    Ok(())
+}
+
 /// Verifies one slot's bytes, returning its sealed image or the damage found.
 ///
-/// An empty slot has never been published to, which is not damage.
+/// `Ok(None)` means the slot carries its creation mark and nothing has ever
+/// been sealed into it, which is not damage. A slot of zero bytes is not that
+/// case: creation writes the mark, so an empty file is something else's doing.
 fn verify_slot(bytes: &[u8]) -> Result<Option<SealedImage<'_>>, SlotDamage> {
     if bytes.is_empty() {
+        return Err(SlotDamage::SlotEmptied);
+    }
+    if bytes == CREATION_MARK {
         return Ok(None);
     }
+    // Identity first, at every length, then the seal, and only then anything
+    // that depends on how many bytes are present.
+    verify_identity(bytes)?;
+    if bytes[0] == UNSEALED_MARK {
+        return Err(SlotDamage::UnsealedPublication {
+            present: as_u64(bytes.len()),
+        });
+    }
+
+    // Sealed from here down. Every failure below is damage to bytes some
+    // completed publication sealed, so none of it is residue to skip.
     let Some(header) = bytes.get(..SLOT_HEADER_LEN) else {
         return Err(SlotDamage::HeaderIncomplete {
             present: as_u64(bytes.len()),
         });
     };
-    if header[..4] != SLOT_MAGIC {
-        let mut magic = [0_u8; 4];
-        magic.copy_from_slice(&header[..4]);
-        return Err(SlotDamage::NotALockImage { magic });
-    }
-    if header[4] != SLOT_FORMAT_VERSION {
-        return Err(SlotDamage::UnsupportedFormatVersion { version: header[4] });
-    }
     let declared_header_crc = read_u32(&header[HEADER_CHECKSUM_OFFSET..SLOT_HEADER_LEN]);
     let computed_header_crc = crc32(&header[..HEADER_CHECKSUM_OFFSET]);
     if declared_header_crc != computed_header_crc {
@@ -1886,20 +2143,111 @@ fn encode_image(
     Ok(image)
 }
 
-/// Creates one slot file if it does not exist, returning whether it did.
-fn create_slot_if_absent(directory: &Path, slot: SlotIndex) -> Result<bool, LockStoreError> {
-    let path = slot_path(directory, slot);
-    match OpenOptions::new().create_new(true).write(true).open(&path) {
-        Ok(file) => {
-            drop(file);
-            Ok(true)
+/// Brings both slot files into existence, or refuses, and says whether this
+/// open created them.
+///
+/// Creating a store is not the same act as opening one, and the difference is
+/// invisible from inside a directory that has lost a file. So creation is
+/// allowed in exactly two shapes, and both are provable:
+///
+/// - **Neither slot exists.** There is no store here, and making one loses
+///   nothing.
+/// - **Slot zero exists, carries only its creation mark, and slot one does
+///   not exist.** A creation was interrupted between its two files, and
+///   finishing it loses nothing.
+///
+/// The second shape is narrower than "one slot is missing and the other has
+/// never been published to", and the difference is the whole point. Creation
+/// writes slot zero first and publications write slot zero first, so slot zero
+/// carrying only its creation mark proves no publication ever committed
+/// *anywhere*. The mirror statement is false: slot one carrying only its
+/// creation mark proves only that generation two never landed, and slot zero —
+/// the one that is missing — is exactly where generation one would have been.
+/// Accepting that shape would recreate the store's first committed generation
+/// as an empty file and report a clean opening.
+///
+/// Anything else is [`LockStoreError::MissingSlot`]. A slot that should exist
+/// and does not is unreadable rather than absent, and re-creating it would open
+/// the store one generation back with nothing reported.
+fn establish_slot_files(directory: &Path) -> Result<bool, LockStoreError> {
+    let present = [
+        slot_path(directory, SlotIndex::Zero).exists(),
+        slot_path(directory, SlotIndex::One).exists(),
+    ];
+
+    match present {
+        [true, true] => return Ok(false),
+        [false, false] => {}
+        // Slot zero survives, so the interrupted-creation reading is available
+        // if its bytes support it.
+        [true, false] => {
+            let bytes = read_slot(directory, SlotIndex::Zero)?;
+            if !matches!(verify_slot(&bytes), Ok(None)) {
+                return Err(LockStoreError::MissingSlot {
+                    slot: SlotIndex::One,
+                    other: slot_state(&bytes),
+                });
+            }
         }
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(false),
-        Err(source) => Err(LockStoreError::Io {
+        // Slot zero is the one that is gone, and it is the slot the first
+        // publication writes. Whatever slot one holds, it cannot speak for it.
+        [false, true] => {
+            let bytes = read_slot(directory, SlotIndex::One)?;
+            return Err(LockStoreError::MissingSlot {
+                slot: SlotIndex::Zero,
+                other: slot_state(&bytes),
+            });
+        }
+    }
+
+    // Slot zero is created first, so the only state an interrupted creation can
+    // leave is the one accepted above. Both entries are made durable with one
+    // directory sync, and every later publication is a pure content rewrite, so
+    // no publication ever has a directory-entry crash window.
+    for slot in [SlotIndex::Zero, SlotIndex::One] {
+        if !present[slot.position()] {
+            create_slot(directory, slot)?;
+        }
+    }
+    sync_directory(directory)?;
+    Ok(true)
+}
+
+/// Creates one slot file carrying its creation mark.
+///
+/// The mark is what separates a created slot from an emptied one. A file of
+/// zero bytes is not a state this store leaves behind at any point in its life,
+/// so meeting one is damage rather than the ordinary state of a store that has
+/// never committed.
+fn create_slot(directory: &Path, slot: SlotIndex) -> Result<(), LockStoreError> {
+    let path = slot_path(directory, slot);
+    let mut file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(&path)
+        .map_err(|source| LockStoreError::Io {
             operation: "create a lock store slot",
+            path: path.clone(),
+            source,
+        })?;
+    file.write_all(&CREATION_MARK)
+        .and_then(|()| file.sync_data())
+        .map_err(|source| LockStoreError::Io {
+            operation: "mark a created lock store slot",
             path,
             source,
-        }),
+        })
+}
+
+/// Summarizes one slot's bytes without decoding its payload.
+fn slot_state(bytes: &[u8]) -> SlotState {
+    match verify_slot(bytes) {
+        Ok(None) => SlotState::Empty,
+        Ok(Some(sealed)) => SlotState::Intact {
+            generation: sealed.generation,
+            applied_index: sealed.applied_index,
+        },
+        Err(damage) => SlotState::Damaged(damage),
     }
 }
 

@@ -33,6 +33,14 @@ pub struct DurableLockApps {
     /// were armed is what makes that assertion possible without also failing
     /// the crash tests, whose whole purpose is to produce residue.
     interrupted: BTreeSet<NodeId>,
+    /// Replicas whose store this factory has already opened once.
+    ///
+    /// Creating a replica's slot files is legitimate exactly once, on the
+    /// opening that brings the replica into existence. A later opening that
+    /// creates them found an empty directory where a store was supposed to be,
+    /// which is a rollback with nothing reported — so the report has to be able
+    /// to say "created", and something has to read it.
+    opened: BTreeSet<NodeId>,
 }
 
 impl DurableLockApps {
@@ -43,6 +51,7 @@ impl DurableLockApps {
             config,
             armed: BTreeMap::new(),
             interrupted: BTreeSet::new(),
+            opened: BTreeSet::new(),
         }
     }
 
@@ -78,8 +87,16 @@ impl DurableLockApps {
         // report exists to expose — including a one-generation rollback, which
         // costs a fencing high-water mark.
         let recovery = *store.recovery();
+        let first_open = self.opened.insert(node_id);
+        assert_eq!(
+            recovery.created(),
+            first_open,
+            "replica {} created its slot files on the wrong opening: a restart that creates them \
+             found an empty directory where a store was supposed to be",
+            node_id.0
+        );
         assert!(
-            recovery.is_clean() || self.interrupted.contains(&node_id),
+            recovery.is_clean() || first_open || self.interrupted.contains(&node_id),
             "replica {} recovered from a damaged slot no scenario put there: {recovery:?}",
             node_id.0
         );

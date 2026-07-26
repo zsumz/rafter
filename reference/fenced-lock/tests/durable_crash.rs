@@ -101,6 +101,18 @@ fn a_crash_at_every_byte_of_a_publication_recovers_to_exactly_one_side_of_it() {
     let before = durable_state(&app);
     let live_before = app.store().live_slot().expect("the prefix committed");
     let stale_before = app.store().next_slot();
+    // A publication no longer empties the slot before writing it, because an
+    // emptied slot is damage this store must be able to name. So an interrupted
+    // publication leaves the new prefix over the tail of the image that was
+    // already there, and the slot's byte length is whichever of the two is
+    // longer. The seal is what makes those bytes skippable; their length says
+    // nothing, and the residue reports the length rather than pretending to
+    // know where the write stopped.
+    let stale_len_before = as_u64(
+        raw_slot::read(reference.path(), stale_before)
+            .expect("the stale slot reads")
+            .len(),
+    );
     apply_one(&mut app, index_of(interrupted), commands[interrupted - 1])
         .expect("an uninterrupted transaction commits");
     let after = durable_state(&app);
@@ -132,10 +144,16 @@ fn a_crash_at_every_byte_of_a_publication_recovers_to_exactly_one_side_of_it() {
         let report = recovered.store().recovery();
         assert_eq!(
             report.damaged_slot(),
-            expected_damage(stop, payload_len, image_len).map(|damage| (stale_before, damage)),
+            expected_damage(stop, image_len, stale_len_before).map(|damage| (stale_before, damage)),
             "`{plan}` left a residue the format does not describe, or left it in the wrong slot"
         );
-        observed.insert(damage_kind(report.damaged_slot().map(|(_, damage)| damage)));
+        if let Some((_, damage)) = report.damaged_slot() {
+            assert!(
+                damage.is_publication_residue(),
+                "an interrupted publication must leave residue a later opener may skip (`{plan}`)"
+            );
+        }
+        observed.insert(stopped_region(stop, payload_len, image_len));
 
         if committed {
             assert_eq!(
@@ -153,10 +171,10 @@ fn a_crash_at_every_byte_of_a_publication_recovers_to_exactly_one_side_of_it() {
                 "recovery must order slots by generation, not by recency (`{plan}`)"
             );
             if stop == 0 {
-                assert_eq!(
-                    report.slot(stale_before),
-                    SlotState::Empty,
-                    "a publication that truncated and died leaves an empty slot (`{plan}`)"
+                assert!(
+                    matches!(report.slot(stale_before), SlotState::Intact { .. }),
+                    "a publication that emitted no byte leaves the slot's earlier image \
+                     untouched (`{plan}`)"
                 );
             }
         }
@@ -171,18 +189,20 @@ fn a_crash_at_every_byte_of_a_publication_recovers_to_exactly_one_side_of_it() {
         );
     }
 
-    // The sweep is only evidence if it actually produced every shape the format
-    // can leave behind.
+    // The sweep is only evidence if it actually stopped in every region of the
+    // image, including the one where the whole image is on the medium and the
+    // seal is not.
     assert_eq!(
         observed,
         BTreeSet::from([
-            "sealed or empty",
-            "header incomplete",
-            "payload incomplete",
-            "missing commit checksum",
-            "partial commit checksum",
+            "before the first byte",
+            "inside the header",
+            "inside the payload",
+            "a whole image with no seal",
+            "inside the trailer",
+            "sealed",
         ]),
-        "the sweep missed a slot-damage shape"
+        "the sweep missed a region of the image"
     );
 }
 
@@ -235,6 +255,7 @@ fn a_written_but_uncommitted_image_is_not_a_transaction() {
     let mut app = open(scratch.path(), plan.clone());
     apply_all(&mut app, &commands[..commands.len() - 1]);
     let stale = app.store().next_slot();
+    let present = stale_residue_len(scratch.path(), stale, stop);
     apply_one(
         &mut app,
         index_of(commands.len()),
@@ -250,8 +271,8 @@ fn a_written_but_uncommitted_image_is_not_a_transaction() {
     let recovered = open(scratch.path(), FaultPlan::none());
     assert_eq!(
         recovered.store().recovery().damaged_slot(),
-        Some((stale, SlotDamage::MissingCommitChecksum)),
-        "the residue is a written image with no commit checksum, in the slot that was being written (`{plan}`)"
+        Some((stale, SlotDamage::UnsealedPublication { present })),
+        "the residue is a written image that was never sealed, in the slot that was being written (`{plan}`)"
     );
     assert_eq!(
         durable_state(&recovered),
@@ -273,6 +294,7 @@ fn a_torn_commit_checksum_does_not_commit() {
     let mut app = open(scratch.path(), plan.clone());
     apply_all(&mut app, &commands[..commands.len() - 1]);
     let stale = app.store().next_slot();
+    let present = stale_residue_len(scratch.path(), stale, stop);
     apply_one(
         &mut app,
         index_of(commands.len()),
@@ -284,7 +306,7 @@ fn a_torn_commit_checksum_does_not_commit() {
     let recovered = open(scratch.path(), FaultPlan::none());
     assert_eq!(
         recovered.store().recovery().damaged_slot(),
-        Some((stale, SlotDamage::PartialCommitChecksum { present: 3 })),
+        Some((stale, SlotDamage::UnsealedPublication { present })),
         "under `{plan}`"
     );
     assert_eq!(
@@ -748,7 +770,7 @@ fn a_store_that_never_committed_opens_empty_even_with_a_damaged_slot() {
         recovered.store().recovery().damaged_slot(),
         Some((
             SlotIndex::Zero,
-            SlotDamage::HeaderIncomplete { present: 20 }
+            SlotDamage::UnsealedPublication { present: 20 }
         )),
         "under `{plan}`"
     );
@@ -1891,40 +1913,65 @@ type DamageTest = fn(SlotDamage) -> bool;
 type ImageMutation = fn(&mut Vec<u8>);
 
 /// Returns the slot damage a stop after `stop` bytes of an image must leave.
-fn expected_damage(stop: u64, payload_len: u64, image_len: u64) -> Option<SlotDamage> {
-    let header = as_u64(SLOT_HEADER_LEN);
+///
+/// An interrupted publication leaves one damage whatever byte it stopped on,
+/// because the answer recovery needs is not "which part of the image is missing"
+/// but "was this image ever sealed". The byte count is still pinned, and pinning
+/// it is strictly sharper than pinning a shape: it says the residue records
+/// exactly where the write stopped.
+///
+/// `stop == 0` writes nothing, so the slot keeps whatever it already held.
+/// Anywhere else the slot holds the new prefix over the old image's tail, so
+/// `present` is the longer of the two.
+fn expected_damage(stop: u64, image_len: u64, previous_len: u64) -> Option<SlotDamage> {
     if stop == 0 || stop == image_len {
         None
-    } else if stop < header {
-        Some(SlotDamage::HeaderIncomplete { present: stop })
-    } else if stop < header + payload_len {
-        Some(SlotDamage::PayloadIncomplete {
-            declared: payload_len,
-            present: stop - header,
-        })
-    } else if stop == header + payload_len {
-        Some(SlotDamage::MissingCommitChecksum)
     } else {
-        Some(SlotDamage::PartialCommitChecksum {
-            present: stop - header - payload_len,
+        Some(SlotDamage::UnsealedPublication {
+            present: stop.max(previous_len),
         })
     }
 }
 
-/// Names the shape of a damage without its byte counts, so a sweep can assert
-/// it produced every one of them.
-fn damage_kind(damage: Option<SlotDamage>) -> &'static str {
-    match damage {
-        None => "sealed or empty",
-        Some(SlotDamage::HeaderIncomplete { .. }) => "header incomplete",
-        Some(SlotDamage::NotALockImage { .. }) => "foreign magic",
-        Some(SlotDamage::UnsupportedFormatVersion { .. }) => "unreadable version",
-        Some(SlotDamage::HeaderChecksumMismatch { .. }) => "corrupt header",
-        Some(SlotDamage::PayloadIncomplete { .. }) => "payload incomplete",
-        Some(SlotDamage::MissingCommitChecksum) => "missing commit checksum",
-        Some(SlotDamage::PartialCommitChecksum { .. }) => "partial commit checksum",
-        Some(SlotDamage::CommitChecksumMismatch { .. }) => "unsealed image",
-        Some(SlotDamage::TrailingBytes { .. }) => "bytes beyond the seal",
+/// Returns how many bytes a slot will hold after a publication into it stops
+/// at `stop`.
+///
+/// A publication writes over the image already in the slot and cuts the slot
+/// back to length only once every byte is out, so an interrupted one leaves the
+/// longer of the two. That is safe because the seal, not the length, is what
+/// says these bytes were never adopted — but it does mean a residue's byte
+/// count is the slot's length rather than the write's frontier, and a test that
+/// assumed otherwise would be asserting a fact the store never claimed.
+fn stale_residue_len(directory: &Path, stale: SlotIndex, stop: u64) -> u64 {
+    let present = as_u64(
+        raw_slot::read(directory, stale)
+            .expect("the stale slot reads")
+            .len(),
+    );
+    stop.max(present)
+}
+
+/// Names the region of the image a stop landed in, so a sweep can assert it
+/// crossed every one of them.
+///
+/// The store no longer classifies by region — the seal decides — so this is
+/// the *sweep's* own bookkeeping rather than a projection of the store's
+/// answer. It is what keeps the sweep honest about having actually visited the
+/// header, the payload, the seal boundary, and the trailer.
+fn stopped_region(stop: u64, payload_len: u64, image_len: u64) -> &'static str {
+    let header = as_u64(SLOT_HEADER_LEN);
+    if stop == 0 {
+        "before the first byte"
+    } else if stop == image_len {
+        "sealed"
+    } else if stop < header {
+        "inside the header"
+    } else if stop < header + payload_len {
+        "inside the payload"
+    } else if stop == header + payload_len {
+        "a whole image with no seal"
+    } else {
+        "inside the trailer"
     }
 }
 

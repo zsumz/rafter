@@ -463,8 +463,16 @@ any fencing token inside it — can only follow the commit point.
 The on-disk representation is versioned, self-describing, and checksummed. Every
 record declares a magic and a format version, and a build that does not
 recognize either refuses **the store**, rather than reinterpreting the artifact
-or quietly falling back to another copy of the state. Checksums are
-accidental-corruption checks, not authentication tags.
+or quietly falling back to another copy of the state. That refusal applies
+wherever the field is present and whatever else is missing; a check that runs
+only once enough other bytes have arrived is a check about length rather than
+about the field. Checksums are accidental-corruption checks, not authentication
+tags.
+
+A magic's first byte doubles as the publication mark described under recovery,
+so the mark costs no extra field: a sealed copy is byte-for-byte what it would
+be without it, and both checksums are computed over the sealed form, which is
+also why an unsealed image cannot accidentally verify.
 
 A format version this build does not write deserves naming on its own, because
 it needs no corruption to occur: a binary downgrade produces it from entirely
@@ -518,36 +526,78 @@ open, reported to the caller, who is the only party that can decide what to do
 about it.
 
 Recovery may skip a copy it cannot read only when it can *prove* that copy was
-not the live one, and there is exactly one proof available. A publication writes
-one image forward into the copy that is not authoritative, so every state it can
-be interrupted in is a strict prefix of that image, and the shapes a prefix can
-take are enumerable: a short header, a short payload, a payload with no seal, a
-torn seal. Finding one of those proves the copy was the one being written, and
-therefore that it was not the live image.
+not the live one. **That proof is written into the artifact by the publication,
+not inferred from it by the reader**, and the difference is the whole of this
+section.
 
-Every other damage refuses the store. A foreign magic, an unreadable version, a
-checksum failing over bytes that are all present, bytes past the seal: none is a
-prefix of anything this build writes, so recovery has no argument about which
-copy the damage landed in. Skipping such a copy is a silent one-generation
-rollback — an acknowledged high-water mark drops, and the next acquisition
-reissues a token a guarded resource has already accepted.
+An enumeration of what an interrupted publication leaves is not that proof. Such
+a list can be complete — a short header, a short payload, a payload with no
+seal, a torn seal really are all an interrupted publication can leave — and
+still be useless in the direction a reader needs it, because the reader is
+asking the converse: does *this* shape mean a publication was interrupted? It
+does not. A sealed image that has lost its last byte is a torn seal. It is a
+strict prefix of an image this build wrote, it carries this store's magic and
+version, and no checksum over the bytes present fails. It matches the
+enumeration exactly and it is the live image; skipping it drops an acknowledged
+high-water mark and reissues a token a guarded resource has already accepted.
+Nor can any test on the bytes separate the two, because the two are the same
+bytes.
+
+So a publication marks its work as unfinished while it is unfinished. **The
+first byte of a copy is its publication mark**: held at a value no sealed image
+carries while the image is being written, and promoted to the sealed value by a
+single byte written only after every other byte of that image is durable. A
+crash leaves a prefix of what was written and that byte goes out first, so every
+interrupted publication leaves the mark unsealed. The contrapositive is what
+recovery uses: a sealed mark proves no publication was interrupted in that copy,
+so its bytes are exactly what a completed publication sealed there, and any
+damage to them happened afterwards.
+
+Every damage but an unsealed one refuses the store. A foreign magic, an
+unreadable version, a checksum failing over bytes that are all present, bytes
+past the seal, a sealed image cut short, a file emptied, a file missing: none
+carries the unsealed mark, so recovery has no argument about which copy the
+damage landed in. Skipping such a copy is a silent one-generation rollback.
+
+Two rules follow from putting the mark first, and both were wrong while the
+shapes were doing the work:
+
+- **The magic and the version are read at every length that carries them**,
+  before anything classifies a copy by how many bytes it has. The argument for
+  refusing a foreign version is about the field, so it holds wherever the field
+  is present; gating it on a full header made the same bytes refused at one
+  length and adopted as this build's own residue at another.
+- **A durable file of zero bytes, or a missing one, is damage.** Creation writes
+  the mark into both copies and no publication ever shortens one to nothing, so
+  neither state is one this store leaves behind. A pair of emptied files is not
+  a store that has never committed; it is a store whose files were emptied, and
+  opening a fresh service over them discards every high-water mark with nothing
+  reported.
 
 Recovery also fails closed, rather than starting empty, when no copy is readable
 at all. A lock service that opened empty would hand out token 1 for a resource
 whose guarded downstream has already accepted a far higher token, which is worse
 than not starting at all. A store that has never committed is a different case
-and opens normally: its copies are empty, not damaged.
+and opens normally: its copies carry their creation marks, which is not damage.
 
 The recovery report names **which** copy was damaged as well as how. That index
 is what distinguishes benign crash residue from anything else, and a report that
 could not draw the distinction would leave a caller unable to tell a clean
 restart from one worth investigating.
 
+Creating a store's files is reported too, and counts against a clean opening.
+Nothing inside a durable store can tell a replica that has never run from one
+whose directory was emptied — both arrive as absent files — so the store states
+the fact and the caller, which knows whether this replica has run before, judges
+it. A creation report that no caller reads is a creation report that costs
+nothing to be wrong.
+
 Reports are consumed rather than produced. The driver that reopens a replica's
 store across a restart asserts that a replica no scenario interrupted came back
-with nothing to report, so a rollback or a stray damaged slot fails a test
-rather than passing quietly. A report nothing reads is a report that costs
-nothing to be wrong.
+with nothing to report, and that a replica creates its files on its first
+opening and no other, so a rollback, a stray damaged copy, or a directory that
+lost its store fails a test rather than passing quietly. A report nothing reads
+is a report that costs nothing to be wrong.
 
 ### Mark durability
 
