@@ -132,6 +132,81 @@ fn raft_trace_renders_tla_tlc_checkable_sample_spec() {
     );
 }
 
+/// Extracts the names inside a `name == << a, b, c >>` tuple definition.
+fn tla_tuple_members(source: &str, name: &str) -> Vec<String> {
+    let definition = format!("{name} == <<");
+    let start = source
+        .find(&definition)
+        .unwrap_or_else(|| panic!("{name} must be defined as a tuple"))
+        + definition.len();
+    let length = source[start..]
+        .find(">>")
+        .unwrap_or_else(|| panic!("{name} tuple must be closed"));
+    source[start..start + length]
+        .split(',')
+        .map(|member| member.trim().to_owned())
+        .filter(|member| !member.is_empty())
+        .collect()
+}
+
+/// The rendered `traceVars` must name every `Raft.tla` state variable.
+///
+/// The assertion above compares the renderer to a golden file that the renderer
+/// produced, so the two agreed while both omitted `frozenAppendAuthorityFailed`
+/// and every rendered module was rejected by TLC with "the following variable is
+/// not defined". This one compares against `Raft.tla`'s own `vars` tuple, which
+/// is not derived from the renderer, so adding a state variable to the
+/// specification fails here until the renderer names it too.
+#[test]
+fn raft_trace_vars_name_every_raft_tla_state_variable() {
+    let raft_tla = include_str!("../../../../../specs/tla/raft/Raft.tla");
+    let mut expected = tla_tuple_members(raft_tla, "vars");
+    assert!(
+        expected.len() > 20,
+        "parsed Raft.tla vars tuple looks wrong: {expected:?}"
+    );
+    // The trace wrapper adds its own program counter to the end of the tuple.
+    expected.push("traceStep".to_owned());
+
+    let spec = render_tla_trace_spec("RaftTraceSample", &[Action::Tick(NodeId(1))])
+        .expect("single-tick trace fits the abstract TLA+ action subset");
+    let rendered = tla_tuple_members(spec.module(), "traceVars");
+
+    assert_eq!(
+        rendered, expected,
+        "rendered traceVars must be Raft.tla's vars tuple plus traceStep",
+    );
+}
+
+/// The rendered config must actually check the completion property.
+///
+/// `TraceComplete` was defined and never bound, so TLC verified nothing about
+/// whether the projected trace ran to its end.
+#[test]
+fn raft_trace_config_binds_the_completion_property() {
+    let spec = render_tla_trace_spec("RaftTraceSample", &[Action::Tick(NodeId(1))])
+        .expect("single-tick trace fits the abstract TLA+ action subset");
+
+    assert!(
+        spec.module()
+            .lines()
+            .any(|line| line.trim() == "TraceCompletes == <>TraceComplete"),
+        "module must define the completion property it is checked against",
+    );
+    assert!(
+        spec.module()
+            .lines()
+            .any(|line| line.trim() == "/\\ WF_traceVars(TraceNext)"),
+        "completion is only provable under weak fairness",
+    );
+    assert!(
+        spec.config()
+            .lines()
+            .any(|line| line.trim() == "PROPERTY TraceCompletes"),
+        "config must bind TraceCompletes, or the definition is dead",
+    );
+}
+
 #[test]
 fn raft_trace_tla_render_rejects_node_outside_config_bound() {
     let trace = vec![Action::Tick(NodeId(4))];

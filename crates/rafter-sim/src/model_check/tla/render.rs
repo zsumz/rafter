@@ -41,6 +41,13 @@ fn render_tla_trace_module(module_name: &str, actions: &[TlaRenderedAction]) -> 
     module.push_str("EXTENDS Raft\n\n");
     module.push_str("CONSTANTS n1, n2, n3, v1, v2, r1, r2\n\n");
     module.push_str("VARIABLE traceStep\n\n");
+    // This tuple must name every variable `Raft.tla` declares. `UNCHANGED
+    // traceVars` is what the final stuttering step asserts, so a variable
+    // missing here is a variable TLC finds unassigned, and the rendered module
+    // does not run at all. `frozenAppendAuthorityFailed` was missing, which
+    // made every exported counterexample unexecutable.
+    // `raft_trace_vars_name_every_raft_tla_state_variable` holds this against
+    // Raft.tla itself rather than against a golden copy of this function.
     module.push_str("traceVars == << currentTerm, votedFor, role, log, commitIndex,\n");
     module.push_str(
         "               snapshotIndex, snapshotPrefix, compactionPending, snapshotTransfer,\n",
@@ -50,7 +57,9 @@ fn render_tla_trace_module(module_name: &str, actions: &[TlaRenderedAction]) -> 
     module.push_str("               electedLeaders, logicalPrefixLedger, committedLedger,\n");
     module.push_str("               commitWitnesses,\n");
     module.push_str("               higherTermStepDownFailed,\n");
-    module.push_str("               staleAuthorityAccepted, traceStep >>\n\n");
+    module.push_str(
+        "               staleAuthorityAccepted, frozenAppendAuthorityFailed, traceStep >>\n\n",
+    );
     module.push_str("TraceInit == Init /\\ traceStep = 0\n\n");
 
     for (index, action) in actions.iter().copied().enumerate() {
@@ -81,10 +90,23 @@ fn render_tla_trace_module(module_name: &str, actions: &[TlaRenderedAction]) -> 
         module.push('\n');
         module.push_str("     /\\ UNCHANGED traceVars\n\n");
     }
-    module.push_str("TraceSpec == TraceInit /\\ [][TraceNext]_traceVars\n\n");
+    // Weak fairness is what makes the completion property provable: without it
+    // a behaviour may stutter before reaching the last step, and `<>TraceComplete`
+    // fails for a trace that is otherwise fine. RaftMembershipTraceSample.tla
+    // carries the same conjunct for the same reason.
+    module.push_str("TraceSpec ==\n");
+    module.push_str("  /\\ TraceInit\n");
+    module.push_str("  /\\ [][TraceNext]_traceVars\n");
+    module.push_str("  /\\ WF_traceVars(TraceNext)\n\n");
     module.push_str("TraceComplete == traceStep = ");
     module.push_str(&actions.len().to_string());
-    module.push_str("\n\n====\n");
+    module.push_str("\n\n");
+    // TraceComplete alone is only a definition. The config below binds
+    // TraceCompletes as a PROPERTY so TLC actually checks that the projected
+    // trace runs to its end; without that binding the definition was dead and
+    // a trace that deadlocked early still reported success.
+    module.push_str("TraceCompletes == <>TraceComplete\n\n");
+    module.push_str("====\n");
     module
 }
 
@@ -113,6 +135,7 @@ fn render_tla_trace_config() -> String {
     config.push_str("  StateMachineSafety\n");
     config.push_str("  StaleLeaderFencing\n");
     config.push_str("  CommittedEntriesHaveQuorum\n");
-    config.push_str("  ReadBarrierLinearizability\n");
+    config.push_str("  ReadBarrierLinearizability\n\n");
+    config.push_str("PROPERTY TraceCompletes\n");
     config
 }

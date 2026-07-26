@@ -12,7 +12,7 @@ traceVars == << currentTerm, votedFor, role, log, commitIndex,
                electedLeaders, logicalPrefixLedger, committedLedger,
                commitWitnesses,
                higherTermStepDownFailed,
-               staleAuthorityAccepted, traceStep >>
+               staleAuthorityAccepted, frozenAppendAuthorityFailed, traceStep >>
 
 TraceInit == Init /\ traceStep = 0
 
@@ -38,8 +38,13 @@ TraceNext ==
   \/ /\ traceStep = 3
      /\ UNCHANGED traceVars
 
-TraceSpec == TraceInit /\ [][TraceNext]_traceVars
+TraceSpec ==
+  /\ TraceInit
+  /\ [][TraceNext]_traceVars
+  /\ WF_traceVars(TraceNext)
 
 TraceComplete == traceStep = 3
+
+TraceCompletes == <>TraceComplete
 
 ====
