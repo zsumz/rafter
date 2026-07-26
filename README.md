@@ -96,11 +96,13 @@ for output in node.step(Input::Tick) {
 ## Reference Consumers
 
 Rafter's 1.0 plan includes three independent acceptance systems: a replicated
-ledger, a fenced lock service, and a sharded counter service. They prove
-application durability, linearizable authority, and managed multi-group
-scheduling without moving product policy into Rafter. Their contracts,
-isolation rules, verification lanes, and delivery order live in
-[`docs/reference-consumers.md`](./docs/reference-consumers.md).
+ledger, a fenced lock service, and a sharded counter service. They exist to
+prove application durability, linearizable authority, and managed multi-group
+scheduling without moving product policy into Rafter. The ledger and the lock
+do so against real Rafter APIs today; the sharded counter declares no
+dependency yet, because the managed scheduler it specifies is not a public
+surface. Their contracts, isolation rules, verification lanes, and delivery
+order live in [`docs/reference-consumers.md`](./docs/reference-consumers.md).
 
 ## Testing
 
@@ -110,7 +112,14 @@ cargo test -p rafter-sim
 cargo run --release -p rafter-sim --bin rafter-model-check-fast
 cargo run --locked -p rafter-invariants -- run-all --profile pr
 scripts/maelstrom-lin-kv
+scripts/reference-source-check
+scripts/reference-package-check
 ```
+
+The reference consumers live in their own Cargo workspace, which the root
+`Cargo.toml` excludes, so `cargo test --workspace` above does not reach them.
+The two `reference-*` commands are the only way to build or run them; CI runs
+both on every pull request.
 
 The repository also carries fuzz seeds, TLA+ specs, Maelstrom workloads, and a
 simulation harness that can replay and explore bounded failure schedules.

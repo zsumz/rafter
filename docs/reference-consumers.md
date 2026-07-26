@@ -3,9 +3,13 @@
 Status: active API-discovery and acceptance program for Rafter 1.0. Two of the
 three systems are built: the ledger through all eight of its slices, and the
 fenced lock through its durable backend and crash points, with process
-composition still outstanding. The sharded counter has not started. Eleven APIs
-have been promoted under the rule below and are recorded in
-[`docs/api-promotions.md`](./api-promotions.md).
+composition still outstanding. The sharded counter has started and is the
+furthest from Rafter: its contract, its implementation model, its independent
+oracle, and its deterministic suites exist, but it declares no dependency at
+all — not even a Rafter one — because the managed scheduler it specifies does
+not exist yet, so the crate is that scheduler's design input rather than an
+integration against it. Eleven APIs have been promoted under the rule below and
+are recorded in [`docs/api-promotions.md`](./api-promotions.md).
 
 Sequencing: the reference consumers are built before the 1.0 public surface is
 frozen. They reveal which mechanisms belong in Rafter and prove that each
@@ -94,10 +98,14 @@ development command, not in the canonical consumer manifests.
 [`scripts/reference-source-check`](../scripts/reference-source-check) is that
 command. It patches every publishable Rafter crate — the whole set, not only
 the ones a consumer reaches today — then runs the reference workspace's format
-check, `clippy --all-targets -D warnings`, and tests. A partially patched graph
-would link checkout code against published code from the same workspace, and a
-list derived from what the consumers currently reach goes stale the moment one
-of them takes a new dependency, so the override list is the publishable set.
+check, `clippy --all-targets -D warnings`, the tests, and
+`cargo doc --no-deps` under `RUSTDOCFLAGS=-D warnings`. A partially patched
+graph would link checkout code against published code from the same workspace,
+and a list derived from what the consumers currently reach goes stale the
+moment one of them takes a new dependency, so the override list is the
+publishable set. The rustdoc build is there because these consumers are read as
+exemplars: a doc comment that cannot build is a defect in the artifact they
+exist to be.
 
 `reference/Cargo.lock` is deliberately untracked. Source mode resolves the
 patched crates to checkout paths, and package-consumer mode resolves the same
@@ -109,20 +117,34 @@ here; the root workspace lockfile remains the pinned build.
 
 ### Package-consumer mode
 
-The acceptance job will:
+The acceptance job:
 
-1. package every public Rafter crate;
-2. inspect and unpack the exact package archives into a temporary directory;
-3. patch the consumer workspace to those unpacked archives, never to source
+1. packages every public Rafter crate;
+2. inspects and unpacks the exact package archives into a temporary directory;
+3. patches the consumer workspace to those unpacked archives, never to source
    directories in the checkout;
-4. generate a fresh lockfile;
-5. build and run the reference tests;
-6. reject path dependencies that resolve back into the checkout;
-7. reject internal test hooks and unpublished private crates; and
-8. verify required package contents, including README and format documents.
+4. generates a fresh lockfile;
+5. builds and runs the reference tests;
+6. rejects path dependencies that resolve back into the checkout;
+7. rejects internal test hooks and unpublished private crates; and
+8. verifies required package contents, including README and format documents.
 
 `scripts/reference-package-check` runs that job and reports every boundary it
 finds violated.
+
+Step 7 is the only check anywhere that builds `rafter` in its published feature
+shape. `rafter-sim` depends on `rafter` with the hidden `internal-test-hooks`
+feature, and resolver 2 unifies features across every package one invocation
+selects, so every `--workspace` command over the root workspace compiles
+`rafter` with that hook on. Only this lane resolves a graph in which it is off.
+
+The lane needs a newer Cargo than the workspace's 1.88 `rust-version`. Packaging
+several interdependent crates in one invocation only resolves each versioned
+sibling dependency against the archive just produced on later Cargo; on 1.88 the
+first phase fails with `no matching package named rafter-crc32 found`, because
+it searches crates.io for a version that is not live there, and `--no-verify`
+does not avoid it. Fast source mode is what holds the consumers to the 1.88
+compatibility floor.
 
 This mode tests the artifact users receive, not merely the source tree that
 produced it.
@@ -374,12 +396,33 @@ criterion.
 
 ## Verification Lanes
 
-| Lane | Required work |
-| --- | --- |
-| Every PR | Package build, pure implementation and reference-model tests, codec vectors, short deterministic simulations, and small history checks |
-| Main/nightly | Durable process tests, restart, partitions, duplication, snapshots, and application crash points |
-| Weekly | Long randomized histories, storage faults, snapshot pressure, and hot/cold multi-group scheduling |
-| Release | Exact package archives, full process suite, mixed-version tests, long scheduler and recovery canaries, and the pinned downstream product canary |
+| Lane | Required work | Executed by |
+| --- | --- | --- |
+| Every PR | Package build, pure implementation and reference-model tests, codec vectors, short deterministic simulations, and small history checks | `reference-source` and `reference-package` in `ci.yml` |
+| Main/nightly | Durable process tests, restart, partitions, duplication, snapshots, and application crash points | `reference-process` in `ci.yml` on pushes to main, and `reference-process-nightly` in `nightly.yml` |
+| Weekly | Long randomized histories, storage faults, snapshot pressure, and hot/cold multi-group scheduling | Nothing. `weekly.yml` has no reference-consumer job |
+| Release | Exact package archives, full process suite, mixed-version tests, long scheduler and recovery canaries, and the pinned downstream product canary | Partly. `RELEASE.md`'s pre-publish block runs both lanes by hand; there is no release workflow, no mixed-version coverage, and no pinned downstream canary |
+
+The third column is the whole point of the table. Until the two lanes were
+wired, the "required work" column described work that nothing performed:
+`reference/` is excluded from the root workspace, so no `cargo` command in
+`ci.yml` compiled a consumer, and neither lane script had a caller anywhere in
+`.github/`. A row here is a claim about a job that exists, or it says which
+jobs do not exist yet.
+
+The two rows without a workflow job follow the delivery plan rather than
+contradicting it. Weekly wants long randomized histories and hot/cold
+multi-group scheduling; the sharded counter that would supply the multi-group
+half declares no Rafter dependency yet. Release integration is its own set of
+slices below, and only the first of them is partly done.
+
+Both process rows run the same seven `#[ignore]`d tests through
+`scripts/cargo-test-exact` with an exact expected count. That count is not
+decoration: the suite is selected by `--ignored`, and a selection expressed
+only by `--ignored` reports success over zero tests the moment those attributes
+change. `reference-process` is deliberately not a required status check,
+because it is skipped on pull requests and a required check that never reports
+blocks every merge.
 
 Randomized jobs must always print and retain their seed and minimized failing
 history. A sampled green run supplements deterministic proofs; it does not
@@ -475,12 +518,31 @@ if any, will first be visible.
 5. Add bounded process composition and package-mode tests.
 6. Add long nightly, weekly, and release scheduling profiles.
 
+Slices 1 and 2 are complete: `CONTRACT.md` states the lifecycle, queue, quota,
+and fairness rules, and `ManagedScheduler` and `ReferenceScheduler` are
+structurally separate implementations of them, checked against each other by
+deterministic suites that both CI reference lanes now run. Slices 3 and 4 are
+under way in those suites rather than finished; read the tests for what is
+covered, not this paragraph.
+
+Slices 5 and 6 are not reached, and slice 5 cannot be reached yet. The crate
+declares no dependency at all — not even a Rafter one — because the managed
+scheduler it specifies is not a public Rafter surface. Package mode therefore
+compiles and tests this consumer without proving anything about Rafter through
+it, and that stays true until the scheduler exists.
+
 ### Release integration
 
 1. Add all three consumers to the documented verification lanes.
 2. Add mixed-version package-consumer coverage.
 3. Pin the downstream product canary revision and Rafter dependency.
 4. Make the release lane mandatory for a 1.0 tag.
+
+Slice 1 is done for the every-PR and main/nightly rows of the lane table above
+and not for the weekly or release rows; the table names the job behind each row
+and says plainly where there is none. Slices 2 through 4 are not started: there
+is no mixed-version coverage, no pinned downstream canary, and no release
+workflow for a tag to be gated on.
 
 ## First Implementation Milestone
 
