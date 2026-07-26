@@ -131,7 +131,7 @@ impl Error for InboundEnvelopeError {
 mod state;
 mod waiters;
 
-use state::{SharedState, TransportDriverState};
+use state::{DriverShared, SharedState, TransportDriverState, WaiterId};
 
 /// Managed driver for one local Raft group over an attached transport.
 ///
@@ -226,7 +226,7 @@ where
             adopted_watermarks(&group, PendingProposals::Refuse)?;
         let metrics = MetricsPublisher::new(group.metrics());
         let driver = Self {
-            inner: Arc::new(Mutex::new(TransportDriverState {
+            inner: Arc::new(DriverShared::new(TransportDriverState {
                 group_id,
                 node_id,
                 group: Some(group),
@@ -249,9 +249,12 @@ where
         // undefined until the first membership change. A group that never
         // changes membership would otherwise never tell its link layer anything,
         // and a recovery report carries no membership event to stand in.
-        lock_state(&driver.inner).publish_adopted_membership();
+        driver.inner.lock().publish_adopted_membership();
         if !recovery_outputs.is_empty() {
-            lock_state(&driver.inner).apply_recovery_outputs(recovery_outputs)?;
+            driver
+                .inner
+                .lock()
+                .apply_recovery_outputs(recovery_outputs)?;
         }
         Ok(driver)
     }
@@ -270,8 +273,19 @@ where
     /// resolves every outstanding waiter to do so, which makes it a way to
     /// retire a replica rather than a way to look at one.
     ///
-    /// The closure runs with the driver locked, so it must not call back into
-    /// this driver. A shared borrow of the group offers no way to.
+    /// The closure runs with the driver locked, so it must not *call* back into
+    /// this driver: the lock is not reentrant, and a second acquisition on the
+    /// same thread stops it. That includes polling a client future, which is a
+    /// call like any other.
+    ///
+    /// **Dropping a value is not calling in.** A client future of either kind,
+    /// resolved or not, may be dropped inside the closure. Dropping one
+    /// reclaims its waiter, and reclamation never waits for this lock — it
+    /// leaves the waiter for the next acquisition instead. The same guarantee
+    /// holds wherever else this driver runs an embedder's code under its lock: a
+    /// [`crate::RaftTransport`] call, a
+    /// [`rafter_app::state_machine::ReplicatedStateMachine`] apply or read, and
+    /// a `Waker` woken while a waiter resolves.
     ///
     /// # Errors
     ///
@@ -281,7 +295,7 @@ where
         &self,
         read: impl FnOnce(&RaftGroup<G, A, R>) -> U,
     ) -> Result<U, ManagedDriverError> {
-        let state = lock_state(&self.inner);
+        let state = self.inner.lock();
         let group = state.group.as_ref().ok_or(ManagedDriverError::NoGroup)?;
         Ok(read(group))
     }
@@ -326,7 +340,7 @@ where
     /// resolves a client, so there is nothing to do for one that left.
     #[must_use]
     pub fn abandon_write(&self, local_proposal_id: LocalProposalId) -> bool {
-        lock_state(&self.inner).abandon_write(local_proposal_id)
+        self.inner.lock().abandon_write(local_proposal_id)
     }
 
     /// Stops waiting for one read and resolves its client.
@@ -343,7 +357,7 @@ where
     /// reclaims the waiter on its own.
     #[must_use]
     pub fn abandon_read(&self, read_id: ReadId) -> bool {
-        lock_state(&self.inner).abandon_read(read_id)
+        self.inner.lock().abandon_read(read_id)
     }
 
     /// Returns every write this driver has not resolved.
@@ -355,13 +369,13 @@ where
     /// supervisor draining one asks.
     #[must_use]
     pub fn pending_writes(&self) -> Vec<PendingWrite> {
-        lock_state(&self.inner).pending_writes()
+        self.inner.lock().pending_writes()
     }
 
     /// Returns the read IDs of every barrier this driver has not resolved.
     #[must_use]
     pub fn pending_reads(&self) -> Vec<ReadId> {
-        lock_state(&self.inner).pending_reads()
+        self.inner.lock().pending_reads()
     }
 
     /// Returns a cloneable handle connected to this driver.
@@ -369,7 +383,7 @@ where
     pub fn handle(
         &self,
     ) -> RaftHandle<G, A::Command, A::Query, A::CommandResult, A::QueryResult, Self> {
-        let group_id = lock_state(&self.inner).group_id.clone();
+        let group_id = self.inner.lock().group_id.clone();
         RaftHandle::new(group_id, self.clone())
     }
 
@@ -391,7 +405,7 @@ where
     /// Returns [`ManagedDriverError`] when the driver has released its group,
     /// is shutting down, or the group step fails.
     pub fn tick(&self) -> Result<(), ManagedDriverError> {
-        let mut state = lock_state(&self.inner);
+        let mut state = self.inner.lock();
         state.reject_if_shutting_down()?;
         state.step(GroupInput::Tick)
     }
@@ -415,7 +429,7 @@ where
         &self,
         envelope: AuthenticatedPeerEnvelope<G, T::PeerPrincipal>,
     ) -> Result<(), InboundEnvelopeError> {
-        let mut state = lock_state(&self.inner);
+        let mut state = self.inner.lock();
         state
             .reject_if_shutting_down()
             .map_err(|source| InboundEnvelopeError::Driver { source })?;
@@ -442,7 +456,7 @@ where
     /// Returns [`ManagedDriverError`] when the driver has released its group or
     /// a read step fails for a reason that is not attributable to one barrier.
     pub fn drive_pending_reads(&self) -> Result<(), ManagedDriverError> {
-        let mut state = lock_state(&self.inner);
+        let mut state = self.inner.lock();
         state.drive_pending_reads()
     }
 
@@ -455,7 +469,7 @@ where
     /// driver that discarded it would leave nothing to tell them apart.
     #[must_use]
     pub fn refused_sends(&self) -> u64 {
-        lock_state(&self.inner).refused_sends
+        self.inner.lock().refused_sends
     }
 
     /// Returns how many membership updates this driver could not publish.
@@ -472,7 +486,7 @@ where
     /// membership. Both leave the link layer's peer set behind the group's.
     #[must_use]
     pub fn refused_peer_updates(&self) -> u64 {
-        lock_state(&self.inner).refused_peer_updates
+        self.inner.lock().refused_peer_updates
     }
 
     /// Retires the running incarnation and returns its group.
@@ -511,7 +525,7 @@ where
     /// Returns [`ManagedDriverError::NoGroup`] when the driver has already
     /// released its group.
     pub fn release_group(&self) -> Result<RaftGroup<G, A, R>, ManagedDriverError> {
-        let mut state = lock_state(&self.inner);
+        let mut state = self.inner.lock();
         if state.group.is_none() {
             return Err(ManagedDriverError::NoGroup);
         }
@@ -554,7 +568,7 @@ where
         group: RaftGroup<G, A, R>,
         recovery_outputs: Vec<RaftOutput>,
     ) -> Result<(), ManagedDriverError> {
-        let mut state = lock_state(&self.inner);
+        let mut state = self.inner.lock();
         // Shutdown is terminal, and `shutdown` itself says so by refusing a
         // second call. A driver that could be re-armed by adopting a group would
         // make the entry's own distinction — a supervisor restarting a replica
@@ -578,13 +592,6 @@ where
     }
 }
 
-/// Which waiter a [`WaiterGuard`] reclaims.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum WaiterId {
-    Write(LocalProposalId),
-    Read(ReadId),
-}
-
 /// Reclaims one waiter when its client future is dropped.
 ///
 /// Every client future owns one of these. A future polled to completion
@@ -595,6 +602,13 @@ enum WaiterId {
 /// The guard is the only remover other than a completing poll. Abandonment
 /// deliberately resolves without removing, so an abandoned waiter still answers
 /// a late poll from a future its caller kept.
+///
+/// Reclamation goes through [`DriverShared::reclaim`] rather than taking the
+/// driver's lock here, and that indirection is the whole point of it: a future
+/// may be dropped by code this driver is running under its own lock — an
+/// embedder's transport, state machine, or waker, or a
+/// [`TransportRaftDriver::with_group`] closure — and a `Drop` that waited for
+/// that lock would stop the thread it ran on.
 struct WaiterGuard<G, A, R, T, V>
 where
     G: Clone + Ord + Debug + Send + Sync + 'static,
@@ -656,11 +670,7 @@ where
         let Some(waiter) = self.waiter.take() else {
             return;
         };
-        let mut state = lock_state(&self.inner);
-        match waiter {
-            WaiterId::Write(local_proposal_id) => state.discard_write(local_proposal_id),
-            WaiterId::Read(read_id) => state.discard_read(read_id),
-        }
+        self.inner.reclaim(waiter);
     }
 }
 
@@ -765,12 +775,12 @@ where
         // Registered synchronously, polled later: the waiter exists before the
         // group is stepped, so a terminal event emitted inside that very step
         // resolves it rather than arriving before anything is listening.
-        let started = lock_state(&inner).begin_write(&group_id, command, options);
+        let started = inner.lock().begin_write(&group_id, command, options);
         match started {
             Ok(local_proposal_id) => {
                 let mut guard = WaiterGuard::new(inner, WaiterId::Write(local_proposal_id));
                 Box::pin(poll_fn(move |context| {
-                    let polled = lock_state(guard.state()).poll_write(local_proposal_id, context);
+                    let polled = guard.state().lock().poll_write(local_proposal_id, context);
                     if polled.is_ready() {
                         guard.release();
                     }
@@ -789,12 +799,14 @@ where
         options: ReadOptions,
     ) -> DriverFuture<Result<QueryReceipt<G, A::QueryResult>, ReadError>> {
         let inner = self.inner.clone();
-        let started = lock_state(&inner).begin_read(&group_id, query, consistency, options);
+        let started = inner
+            .lock()
+            .begin_read(&group_id, query, consistency, options);
         match started {
             Ok(read_id) => {
                 let mut guard = WaiterGuard::new(inner, WaiterId::Read(read_id));
                 Box::pin(poll_fn(move |context| {
-                    let polled = lock_state(guard.state()).poll_read(read_id, context);
+                    let polled = guard.state().lock().poll_read(read_id, context);
                     if polled.is_ready() {
                         guard.release();
                     }
@@ -812,7 +824,7 @@ where
     ) -> DriverFuture<Result<(), TransferLeadershipError>> {
         let inner = self.inner.clone();
         Box::pin(async move {
-            let mut state = lock_state(&inner);
+            let mut state = inner.lock();
             if state.shutting_down {
                 return Err(TransferLeadershipError::ShuttingDown);
             }
@@ -851,7 +863,7 @@ where
     }
 
     fn metrics(&self, group_id: G) -> Result<MetricsWatch<G>, MetricsError> {
-        let state = lock_state(&self.inner);
+        let state = self.inner.lock();
         if group_id != state.group_id {
             return Err(MetricsError::WrongGroup);
         }
@@ -861,7 +873,7 @@ where
     fn shutdown(&self, group_id: G) -> DriverFuture<Result<(), ShutdownError>> {
         let inner = self.inner.clone();
         Box::pin(async move {
-            let mut state = lock_state(&inner);
+            let mut state = inner.lock();
             if group_id != state.group_id {
                 return Err(ShutdownError::WrongGroup);
             }

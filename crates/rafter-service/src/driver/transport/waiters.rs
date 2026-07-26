@@ -15,7 +15,7 @@ use std::{
 use crate::transport::{AuthenticatedPeerValidator, RaftTransport};
 
 use super::super::*;
-use super::state::{StepFailure, TransportDriverState};
+use super::state::{StepFailure, TransportDriverState, WaiterId};
 
 pub(super) struct WriteWaiter<R> {
     pub(super) options: WriteOptions,
@@ -230,6 +230,17 @@ where
             }),
         );
         true
+    }
+
+    /// Removes one dropped client future's waiter, whichever kind it is.
+    ///
+    /// The entry point the reclamation path uses, so that a deferred waiter and
+    /// an immediately reclaimed one take exactly the same route.
+    pub(super) fn discard(&mut self, waiter: WaiterId) {
+        match waiter {
+            WaiterId::Write(local_proposal_id) => self.discard_write(local_proposal_id),
+            WaiterId::Read(read_id) => self.discard_read(read_id),
+        }
     }
 
     /// Removes a waiter whose client future was dropped.
