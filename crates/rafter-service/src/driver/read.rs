@@ -24,6 +24,14 @@ where
         self.reject_for_operation(group_id)?;
         let read_id = self.read_id_for_consistency(consistency)?;
         for _ in 0..self.max_drive_steps {
+            // Routing may have ended this barrier since the last attempt — a
+            // leadership change is observed by a delivered frame, not by the
+            // read call. That answer is the whole answer, and asking the group
+            // again would submit a spent `ReadId`.
+            if let Some(error) = self.take_routed_read_outcome(read_id) {
+                self.publish_primary_metrics();
+                return Err(ManagedOperationError::Read(error));
+            }
             let request = self.read_request(query, consistency, read_id, options)?;
             let read = match self.primary_group_mut()?.read(request) {
                 Ok(read) => read,

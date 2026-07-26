@@ -414,6 +414,50 @@ where
     }
 }
 
+/// The client answer a routed [`ReadEvent`] carries, when it ends the barrier.
+///
+/// Both shipped drivers route read events, so both need the same reading of
+/// one. `Rejected` and `Canceled` are terminal: the app layer cleared the
+/// barrier's local waiter state before emitting them, so the event is the whole
+/// answer and nothing may ask the group again — a retry against a spent
+/// `ReadId` gets [`GroupError::NonMonotonicReadId`], which a driver can only
+/// report as an invariant violation of its own.
+///
+/// The rest are `None` because they are not answers. `Granted` leaves the proof
+/// cached for a read call to consume, `FreshnessUnavailable` leaves the barrier
+/// reserved until the applied index catches up, and a variant neither driver
+/// knows is not something to resolve a client with. In all three the caller
+/// keeps waiting.
+pub(super) fn terminal_read_error<G>(event: &ReadEvent<G>) -> Option<(ReadId, ReadError)> {
+    match event {
+        ReadEvent::Rejected {
+            read_id,
+            reason,
+            leader_hint,
+        } => Some((
+            *read_id,
+            ReadError::Rejected {
+                read_id: Some(*read_id),
+                reason: *reason,
+                leader_hint: *leader_hint,
+            },
+        )),
+        ReadEvent::Canceled {
+            read_id,
+            reason,
+            leader_hint,
+        } => Some((
+            *read_id,
+            ReadError::Canceled {
+                read_id: *read_id,
+                reason: *reason,
+                leader_hint: *leader_hint,
+            },
+        )),
+        _ => None,
+    }
+}
+
 pub(super) fn read_error_from_group<E, RE>(error: GroupError<E, RE>) -> ReadError
 where
     E: Error + Send + Sync + 'static,

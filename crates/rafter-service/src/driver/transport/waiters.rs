@@ -51,52 +51,27 @@ where
 {
     /// Resolves a barrier the group itself ended, and records one it granted.
     ///
-    /// The terminal mapping is the one
-    /// [`TransportDriverState::handle_read_outcome`] uses, so a barrier resolves
-    /// identically whichever step observed its end. Neither terminal arm touches
-    /// the group again: the event carries the whole answer, and the group has
-    /// already dropped that barrier's state.
+    /// The terminal mapping is [`terminal_read_error`], which
+    /// [`InMemoryRaftState::route_report`] also uses, so a barrier the group
+    /// ended reads the same on either driver. The mapping agrees with
+    /// [`TransportDriverState::handle_read_outcome`] too, so a barrier resolves
+    /// identically whichever step observed its end. The terminal arm never
+    /// touches the group again: the event carries the whole answer, and the
+    /// group has already dropped that barrier's state.
+    ///
+    /// `Granted` is the one event this driver reads further. It is not terminal
+    /// — the proof is cached in the group and a later read call consumes it —
+    /// and recording it is what lets `drive_pending_reads` attempt exactly the
+    /// barriers whose answer can have changed.
     pub(super) fn observe_read_event(&mut self, event: &ReadEvent<G>) {
-        match event {
-            // Not terminal. The proof is cached in the group and a later read
-            // call consumes it; recording the grant is what lets
-            // `drive_pending_reads` attempt exactly the barriers whose answer
-            // can have changed.
-            ReadEvent::Granted { read_id, .. } => {
-                if let Some(waiter) = self.read_waiters.get_mut(read_id) {
-                    waiter.proof_ready = true;
-                }
+        if let ReadEvent::Granted { read_id, .. } = event {
+            if let Some(waiter) = self.read_waiters.get_mut(read_id) {
+                waiter.proof_ready = true;
             }
-            ReadEvent::Rejected {
-                read_id,
-                reason,
-                leader_hint,
-            } => self.resolve_read(
-                *read_id,
-                Err(ReadError::Rejected {
-                    read_id: Some(*read_id),
-                    reason: *reason,
-                    leader_hint: *leader_hint,
-                }),
-            ),
-            ReadEvent::Canceled {
-                read_id,
-                reason,
-                leader_hint,
-            } => self.resolve_read(
-                *read_id,
-                Err(ReadError::Canceled {
-                    read_id: *read_id,
-                    reason: *reason,
-                    leader_hint: *leader_hint,
-                }),
-            ),
-            // `FreshnessUnavailable` is not terminal either: the barrier stays
-            // reserved, and the same app-layer path emits `Granted` once the
-            // applied index catches up. A variant this driver does not know
-            // falls here for the same reason — it is not an answer, so the
-            // waiter keeps waiting for one.
-            _ => {}
+            return;
+        }
+        if let Some((read_id, error)) = terminal_read_error(event) {
+            self.resolve_read(read_id, Err(error));
         }
     }
 

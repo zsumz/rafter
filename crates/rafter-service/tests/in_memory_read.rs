@@ -2,6 +2,11 @@
 
 mod support;
 
+use std::{cell::Cell, collections::VecDeque};
+
+use rafter_runtime::RaftRuntimeError;
+use rafter_runtime_api::PersistedRaftRuntime;
+
 use support::*;
 
 #[test]
@@ -363,5 +368,249 @@ fn in_memory_driver_publishes_metrics_for_canceled_reads() {
         handle.metrics().expect("metrics").current().commit_index,
         LogIndex(1),
         "canceled read publishes the scripted metrics transition"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Barriers the group ends during routing, rather than in the read call.
+//
+// Adopted from the gen-7 reproduction: `InMemoryRaftState::route_report` used
+// to extend the network with the report's peer messages and drop the rest, read
+// events included. The test above covers the other half — a cancellation the
+// read call itself observes and returns as `ReadOutcome::Canceled`.
+// ---------------------------------------------------------------------------
+
+/// How a [`LateEndRuntime`] ends the barrier it started.
+///
+/// Both ways exist because they are separate arms of the driver's reading of a
+/// routed event, and a barrier can end either way while a frame is in flight.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum LateEnd {
+    Cancel,
+    Reject,
+}
+
+/// A leader that starts a quorum round for a read barrier and then loses
+/// leadership when the round's own frame comes back.
+#[derive(Debug)]
+struct LateEndRuntime {
+    end: LateEnd,
+    read_id: Cell<Option<ReadId>>,
+}
+
+impl PersistedRaftRuntime for LateEndRuntime {
+    type Error = RaftRuntimeError;
+
+    fn id(&self) -> NodeId {
+        NodeId(1)
+    }
+
+    fn leader_hint(&self) -> Option<NodeId> {
+        Some(NodeId(1))
+    }
+
+    fn role(&self) -> Role {
+        Role::Leader
+    }
+
+    fn current_term(&self) -> Term {
+        Term(1)
+    }
+
+    fn commit_index(&self) -> LogIndex {
+        LogIndex::ZERO
+    }
+
+    fn last_log_index(&self) -> LogIndex {
+        LogIndex::ZERO
+    }
+
+    fn snapshot_index(&self) -> LogIndex {
+        LogIndex::ZERO
+    }
+
+    fn committed_application_index_through(&self, _index: LogIndex) -> LogIndex {
+        LogIndex::ZERO
+    }
+
+    fn membership(&self) -> MembershipConfig {
+        MembershipConfig::stable(
+            MembershipSet::new(vec![NodeId(1)], Vec::new()).expect("scripted membership is valid"),
+        )
+    }
+
+    fn committed_membership(&self) -> MembershipConfig {
+        self.membership()
+    }
+
+    fn replication(&self) -> Vec<ReplicationProgress> {
+        Vec::new()
+    }
+
+    fn step(&mut self, input: RaftInput) -> Result<Vec<RaftOutput>, Self::Error> {
+        match input {
+            // Start the round: one frame goes out, no grant yet.
+            RaftInput::ReadIndex { read_id } => {
+                self.read_id.set(Some(read_id));
+                Ok(vec![RaftOutput::Send {
+                    to: NodeId(1),
+                    message: Message::RequestVote(RequestVote {
+                        term: Term(1),
+                        candidate_id: NodeId(1),
+                        last_log_index: LogIndex::ZERO,
+                        last_log_term: Term(0),
+                    }),
+                }])
+            }
+            // The frame comes back to a node that is no longer leader, so the
+            // kernel ends every barrier it was holding.
+            RaftInput::Message { .. } => Ok(self
+                .read_id
+                .get()
+                .map(|read_id| match self.end {
+                    LateEnd::Cancel => vec![RaftOutput::ReadIndexCanceled {
+                        read_id,
+                        reason: ReadIndexCancelReason::LeaderStateReset,
+                    }],
+                    LateEnd::Reject => vec![RaftOutput::ReadIndexRejected {
+                        read_id,
+                        reason: ReadIndexRejection::NotLeader {
+                            role: Role::Follower,
+                            term: Term(1),
+                        },
+                    }],
+                })
+                .unwrap_or_default()),
+            _ => Ok(Vec::new()),
+        }
+    }
+
+    fn step_proposal_batch(
+        &mut self,
+        _proposals: Vec<ClientProposalInput>,
+    ) -> Result<Vec<RaftOutput>, Self::Error> {
+        Ok(Vec::new())
+    }
+
+    fn step_batch(&mut self, inputs: Vec<RaftInput>) -> Result<Vec<RaftOutput>, Self::Error> {
+        let mut outputs = VecDeque::new();
+        for input in inputs {
+            outputs.extend(self.step(input)?);
+        }
+        Ok(outputs.into())
+    }
+
+    fn term_at_index(&self, _index: LogIndex) -> Option<Term> {
+        Some(Term(1))
+    }
+}
+
+fn late_end_driver(end: LateEnd) -> InMemoryRaftDriver<(), KvStateMachine, LateEndRuntime> {
+    InMemoryRaftDriver::new(
+        NodeId(1),
+        vec![RaftGroup::new(
+            (),
+            NodeId(1),
+            LateEndRuntime {
+                end,
+                read_id: Cell::new(None),
+            },
+            KvStateMachine::default(),
+        )],
+    )
+    .expect("a quiescent group is adoptable")
+}
+
+/// A barrier the group cancelled during routing must reach the client as the
+/// cancellation it was, not as a driver invariant violation.
+#[test]
+fn a_barrier_cancelled_during_routing_is_reported_as_a_cancellation() {
+    let driver = late_end_driver(LateEnd::Cancel);
+    let handle = driver.handle();
+
+    let error = block_on(handle.read("alpha".to_owned(), ReadConsistency::Linearizable))
+        .expect_err("the barrier was cancelled");
+
+    assert!(
+        matches!(
+            error,
+            ReadError::Canceled {
+                reason: ReadIndexCancelReason::LeaderStateReset,
+                ..
+            }
+        ),
+        "a leadership loss during routing reached the client as {error:?}"
+    );
+    assert_ne!(
+        error.kind(),
+        ReadErrorKind::ManagedInvariantViolation,
+        "an ordinary cluster event was reported as a driver invariant violation"
+    );
+}
+
+/// The other terminal event, on the same routing path. Rejection and
+/// cancellation are separate arms of the driver's reading of a routed event, so
+/// a rejection observed during routing gets its own test rather than riding on
+/// the cancellation one.
+#[test]
+fn a_barrier_rejected_during_routing_is_reported_as_a_rejection() {
+    let driver = late_end_driver(LateEnd::Reject);
+    let handle = driver.handle();
+
+    let error = block_on(handle.read("alpha".to_owned(), ReadConsistency::Linearizable))
+        .expect_err("the barrier was rejected");
+
+    assert!(
+        matches!(
+            error,
+            ReadError::Rejected {
+                read_id: Some(ReadId(1)),
+                reason: ReadIndexRejection::NotLeader {
+                    role: Role::Follower,
+                    term: Term(1),
+                },
+                ..
+            }
+        ),
+        "a rejection during routing reached the client as {error:?}"
+    );
+}
+
+/// A routed answer answers the barrier it names and no other.
+///
+/// `ScriptedReadMode::Cancel` ends the barrier inside the read call's own step,
+/// and `RaftGroup` derives that outcome *from* the report's read events — so
+/// the call returns its answer with the same event still sitting in the
+/// driver's routed slot. The next read must run its own round rather than take
+/// that leftover, which is only true because the slot is matched by read ID.
+#[test]
+fn a_routed_answer_is_not_reused_by_a_later_barrier() {
+    let driver = scripted_read_driver(ScriptedReadMode::Cancel);
+    let handle = driver.handle();
+
+    let first = block_on(handle.read("alpha".to_owned(), ReadConsistency::Linearizable))
+        .expect_err("the first barrier was cancelled");
+    let second = block_on(handle.read("alpha".to_owned(), ReadConsistency::Linearizable))
+        .expect_err("the second barrier is cancelled on its own account");
+
+    assert!(
+        matches!(
+            first,
+            ReadError::Canceled {
+                read_id: ReadId(1),
+                ..
+            }
+        ),
+        "got {first:?}"
+    );
+    assert!(
+        matches!(
+            second,
+            ReadError::Canceled {
+                read_id: ReadId(2),
+                ..
+            }
+        ),
+        "the second read answered with the first read's barrier: {second:?}"
     );
 }

@@ -10,6 +10,15 @@ pub(super) struct InMemoryRaftState<G, A, R> {
     pub(super) metrics: MetricsPublisher<G>,
     pub(super) next_proposal_id: Option<u64>,
     pub(super) next_read_id: Option<u64>,
+    /// The answer a routed [`ReadEvent`] carried for a barrier the group ended
+    /// during routing, waiting for the read loop that owns it.
+    ///
+    /// One slot rather than a table: this driver resolves each client future
+    /// inside the call that created it and holds its state lock for the whole
+    /// call, so at most one barrier is outstanding at a time. A leftover from
+    /// an operation that already returned is discarded by the next read's first
+    /// look, because generated read IDs strictly increase and cannot match one.
+    pub(super) routed_read_outcome: Option<(ReadId, ReadError)>,
     pub(super) max_drive_steps: usize,
     pub(super) shutting_down: bool,
 }
@@ -84,8 +93,40 @@ where
             })
     }
 
+    /// Puts the report's peer messages on the in-memory network and keeps the
+    /// answer of any barrier the group ended in that step.
+    ///
+    /// Read events are kept for the reason
+    /// [`TransportDriverState::route_report`] keeps them: the app layer ends a
+    /// barrier in whichever step observes the cause, and for a leadership change
+    /// that step is a delivery rather than the read call. A driver that dropped
+    /// them would go around its loop and ask the group to re-reserve a spent
+    /// `ReadId`, which `RaftGroup` answers with `NonMonotonicReadId` — reported
+    /// to the client as a driver invariant violation, in place of the ordinary
+    /// cancellation that actually happened.
+    ///
+    /// [`terminal_read_error`] decides what is terminal, and the transport
+    /// driver reads its events through the same function.
     pub(super) fn route_report(&mut self, report: GroupStepReport<G, A::CommandResult>) {
         self.network.extend(report.peer_messages);
+        for event in &report.read_events {
+            if let Some(resolved) = terminal_read_error(event) {
+                self.routed_read_outcome = Some(resolved);
+            }
+        }
+    }
+
+    /// Takes the routed answer for `read_id`, if routing produced one.
+    ///
+    /// The slot is cleared either way: an answer that is not this read's belongs
+    /// to an operation that already returned, and keeping it would only let it
+    /// be mistaken for a later one.
+    pub(super) fn take_routed_read_outcome(
+        &mut self,
+        read_id: Option<ReadId>,
+    ) -> Option<ReadError> {
+        let (resolved, error) = self.routed_read_outcome.take()?;
+        (Some(resolved) == read_id).then_some(error)
     }
 
     pub(super) fn poisoned_read_error_from_primary(

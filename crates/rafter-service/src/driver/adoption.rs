@@ -124,6 +124,7 @@ where
                 metrics: MetricsPublisher::new(metrics),
                 next_proposal_id,
                 next_read_id,
+                routed_read_outcome: None,
                 max_drive_steps: 1024,
                 shutting_down: false,
             })),
