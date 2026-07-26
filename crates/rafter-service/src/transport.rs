@@ -1,10 +1,18 @@
-//! Managed service transport traits and validation glue.
+//! The managed service transport trait and its validation glue.
 //!
 //! Production transports must authenticate peers before constructing an
 //! authenticated envelope, keep group peer sets current, fence removed peers,
 //! and use the current `rafter-codec` peer wire format. This crate
-//! intentionally provides traits only, so that no transport ships as the
+//! intentionally provides a trait only, so that no transport ships as the
 //! default by being the one that is here.
+//!
+//! One trait, and it is synchronous. [`RaftTransport::send`] means "accepted or
+//! enqueued", which is the seam an async link layer already needs: the embedder
+//! owns the queue and the task that drains it, and this crate hands frames to
+//! the queue. An async twin of this trait would describe how that task is
+//! spawned and awaited, which is a design this crate has never run and cannot
+//! validate — see the fourth revision of the Transport-Attached Group Driver
+//! entry in `docs/api-promotions.md`.
 //!
 //! An unauthenticated transport must say so in its own name, not only in its
 //! documentation: `rafter-transport-tcp-insecure` is the shipped example of the
@@ -13,8 +21,6 @@
 use std::error::Error;
 
 use rafter::{NodeId, SnapshotChunkSend};
-
-use crate::driver::DriverFuture;
 
 pub use rafter_app::transport::{
     message_sender, AuthenticatedPeerEnvelope, AuthenticatedPeerEnvelopeError,
@@ -50,12 +56,6 @@ pub struct SnapshotChunkEnvelope<G> {
 pub struct PeerSet<P> {
     peers: Vec<P>,
 }
-
-/// Future returned by async transport operations.
-pub type TransportFuture<T, E> = DriverFuture<Result<T, E>>;
-
-/// Future returned by async transport receives.
-pub type InboundEnvelopeFuture<G, P, E> = TransportFuture<AuthenticatedPeerEnvelope<G, P>, E>;
 
 impl<P> PeerSet<P> {
     /// Creates a peer set from the currently authorized principals.
@@ -174,84 +174,6 @@ pub trait RaftTransport<G>: Send + Sync + 'static {
     /// Returns the transport implementation's error when the peer cannot be
     /// fenced.
     fn fence_peer(&self, group_id: &G, peer: Self::PeerPrincipal) -> Result<(), Self::Error>;
-}
-
-/// Asynchronous service transport boundary.
-///
-/// # Delivery semantics
-///
-/// The async boundary has the same safety and liveness contract as
-/// [`RaftTransport`]: drops, duplicates, reconnects, reordering, and non-FIFO
-/// delivery are safety-tolerated, while bounded buffering and eventual delivery
-/// between healthy authorized peers are required for practical liveness.
-/// Completing the returned send future means "accepted/enqueued", not
-/// "delivered/committed/applied." Snapshot chunk and message-size expectations
-/// are also the same as the synchronous trait.
-pub trait AsyncRaftTransport<G>: Send + Sync + 'static {
-    /// The transport's own authenticated identity for a peer; see
-    /// [`RaftTransport::PeerPrincipal`], which this mirrors exactly.
-    type PeerPrincipal: Send + 'static;
-    /// Error returned when the transport cannot send, receive, or update peer
-    /// metadata. Bounded for the same reason [`RaftTransport::Error`] is.
-    ///
-    /// Every method here reports failure by resolving its returned future to
-    /// `Err(Self::Error)` rather than by returning a `Result` directly, so the
-    /// failure conditions are stated on each method instead of in an `# Errors`
-    /// section.
-    type Error: Error + Send + Sync + 'static;
-
-    /// Sends one validated outbound Raft peer envelope.
-    ///
-    /// The returned future resolves after the transport accepts or enqueues the
-    /// message, not after remote delivery or commit. It resolves `Err` when the
-    /// frame cannot be accepted; a driver counts that refusal rather than
-    /// failing a client's write, because Raft re-sends.
-    fn send(&self, envelope: PeerEnvelope<G>) -> TransportFuture<(), Self::Error>;
-
-    /// Resolves one leader snapshot chunk directive and sends it.
-    ///
-    /// The asynchronous twin of [`RaftTransport::send_snapshot_chunk`], with
-    /// the same contract. It is here rather than omitted because this trait's
-    /// delivery semantics already claim parity with the synchronous one on
-    /// snapshot chunk expectations, and a trait that made the claim without the
-    /// method would make the sentence false.
-    fn send_snapshot_chunk(
-        &self,
-        envelope: SnapshotChunkEnvelope<G>,
-    ) -> TransportFuture<(), Self::Error>;
-
-    /// Receives one authenticated inbound envelope.
-    ///
-    /// Implementations must authenticate the peer before constructing
-    /// [`AuthenticatedPeerEnvelope`] — the type's name is the claim, and
-    /// nothing downstream re-checks it. This crate then validates group
-    /// membership, fencing, recipient, and embedded Raft sender before the
-    /// frame reaches a group. The returned future resolves `Err` when the
-    /// transport cannot receive.
-    fn recv(&self) -> InboundEnvelopeFuture<G, Self::PeerPrincipal, Self::Error>;
-
-    /// Replaces the authorized transport principals for `group_id`.
-    ///
-    /// The set replaces rather than merges, so a principal absent from `peers`
-    /// is no longer authorized. The returned future resolves `Err` when peer
-    /// metadata cannot be updated, which leaves the link layer's set behind the
-    /// group's until the next membership change.
-    fn update_peers(
-        &self,
-        group_id: G,
-        peers: PeerSet<Self::PeerPrincipal>,
-    ) -> TransportFuture<(), Self::Error>;
-
-    /// Fences `peer` for `group_id` so later frames from it are rejected.
-    ///
-    /// Only a committed removal licenses a fence; fencing a replica an
-    /// uncommitted change merely proposed can cut off a voter the cluster still
-    /// needs. The returned future resolves `Err` when the peer cannot be fenced.
-    fn fence_peer(
-        &self,
-        group_id: G,
-        peer: Self::PeerPrincipal,
-    ) -> TransportFuture<(), Self::Error>;
 }
 
 /// Validates and converts one authenticated inbound envelope before it enters
