@@ -8,6 +8,13 @@
 //! store that opened `Healthy`, reported `next_index() == LogIndex(0)`, and then
 //! accepted and `sync_data`-ed an entry at the zero sentinel.
 //!
+//! The gen-7 reproduction is adopted here too. The gen-6 fix bounded the
+//! *encoder*, which bounded `FileRaftLogSegment` because it encodes and left
+//! `InMemoryRaftLogSegment` — the default log for `DurableRaftNode`, which
+//! encodes nothing — able to append at `u64::MAX` and wrap `next_index()` to
+//! `LogIndex(0)` in release builds. The bound is now stated on the
+//! `RaftLogSegment` trait and applied by both implementations.
+//!
 //! Every test here must hold under `cargo test` *and* `cargo test --release`.
 //! The release profile is the dangerous one: a debug-only test would have seen
 //! only the panic and missed the silent wrap entirely.
@@ -20,9 +27,9 @@ use std::{
 
 use rafter::{LogIndex, Term};
 use rafter_storage::{
-    crc32, encode_raft_log_entry, EncodeRaftLogEntryError, FileRaftLogSegment, FileRaftNodeStores,
-    InMemoryRaftLogSegment, OpenRaftLogSegmentError, PersistedRaftLogEntry, RaftLogSegment,
-    RaftLogSegmentCompactError,
+    crc32, encode_raft_log_entry, BorrowedPersistedRaftLogEntry, EncodeRaftLogEntryError,
+    FileRaftLogSegment, FileRaftNodeStores, InMemoryRaftLogSegment, OpenRaftLogSegmentError,
+    PersistedRaftLogEntry, RaftLogSegment, RaftLogSegmentAppendError, RaftLogSegmentCompactError,
 };
 
 struct Scratch {
@@ -308,6 +315,64 @@ fn an_append_at_the_maximum_index_fails_loudly_rather_than_wrapping() {
     );
 }
 
+/// The append bound belongs to the trait, so both shipped implementations
+/// answer with the same typed error.
+///
+/// Adopted from the gen-7 reproduction: the append guard used to live only in
+/// `encode_raft_log_entry`, so `FileRaftLogSegment` was bounded because it
+/// encodes and `InMemoryRaftLogSegment`, which encodes nothing, was not bounded
+/// at all.
+#[test]
+fn an_append_at_the_maximum_index_is_refused_by_both_segments() {
+    let scratch = Scratch::new("append-max-both");
+    let log = scratch.join("log");
+    write_file(&log, &[]);
+    write_file(
+        &scratch.join("log.compact"),
+        &compaction_marker(u64::MAX - 1),
+    );
+
+    let mut file_segment = FileRaftLogSegment::open(&log).expect("opens at the boundary");
+    assert_eq!(
+        file_segment.append_entries(&[PersistedRaftLogEntry::noop(LogIndex(u64::MAX), Term(1))]),
+        Err(RaftLogSegmentAppendError::IndexAtMaximum)
+    );
+
+    let mut memory_segment = segment_at_the_append_boundary();
+    assert_eq!(
+        memory_segment.append_entries(&[PersistedRaftLogEntry::noop(LogIndex(u64::MAX), Term(1))]),
+        Err(RaftLogSegmentAppendError::IndexAtMaximum)
+    );
+}
+
+/// The borrowed entry point is a separate implementation on both segments, so
+/// it carries the bound separately too.
+#[test]
+fn a_borrowed_append_at_the_maximum_index_is_refused_by_both_segments() {
+    let scratch = Scratch::new("append-max-borrowed");
+    let log = scratch.join("log");
+    write_file(&log, &[]);
+    write_file(
+        &scratch.join("log.compact"),
+        &compaction_marker(u64::MAX - 1),
+    );
+    let entry = PersistedRaftLogEntry::noop(LogIndex(u64::MAX), Term(1));
+
+    let mut file_segment = FileRaftLogSegment::open(&log).expect("opens at the boundary");
+    assert_eq!(
+        file_segment
+            .append_entries_borrowed([BorrowedPersistedRaftLogEntry::from(&entry)].into_iter()),
+        Err(RaftLogSegmentAppendError::IndexAtMaximum)
+    );
+
+    let mut memory_segment = segment_at_the_append_boundary();
+    assert_eq!(
+        memory_segment
+            .append_entries_borrowed([BorrowedPersistedRaftLogEntry::from(&entry)].into_iter()),
+        Err(RaftLogSegmentAppendError::IndexAtMaximum)
+    );
+}
+
 /// Compaction is the other way a marker gets written. Both implementations
 /// refuse the boundary the RFLC decoder would refuse to read back.
 #[test]
@@ -331,6 +396,84 @@ fn compaction_through_the_maximum_index_is_refused_by_both_segments() {
         memory_segment.compact_prefix_through(LogIndex(u64::MAX)),
         Err(RaftLogSegmentCompactError::ThroughIndexAtMaximum)
     );
+}
+
+// ---------------------------------------------------------------------------
+// The gen-7 reproduction, adopted: the in-memory segment on its own.
+// ---------------------------------------------------------------------------
+
+/// The boundary is legally reachable: `u64::MAX - 1` is an accepted compaction
+/// boundary on both segments (the shipped
+/// `the_bound_rejects_exactly_one_value_on_every_read_path` asserts exactly
+/// that), and it places `next_index()` at `u64::MAX`.
+fn segment_at_the_append_boundary() -> InMemoryRaftLogSegment {
+    let mut segment = InMemoryRaftLogSegment::new();
+    segment
+        .compact_prefix_through(LogIndex(u64::MAX - 1))
+        .expect("u64::MAX - 1 is an accepted compaction boundary");
+    assert_eq!(segment.next_index(), LogIndex(u64::MAX));
+    segment
+}
+
+/// The file segment's behaviour, restated so the asymmetry is visible in one
+/// place: an append at `u64::MAX` is a typed error there.
+#[test]
+fn gen7_the_in_memory_segment_refuses_the_index_the_file_segment_refuses() {
+    let mut segment = segment_at_the_append_boundary();
+
+    let appended =
+        segment.append_entries(&[PersistedRaftLogEntry::noop(LogIndex(u64::MAX), Term(1))]);
+
+    assert!(
+        appended.is_err(),
+        "an append at the maximum index must be refused by every RaftLogSegment \
+         implementation, not only the one that happens to encode: got {appended:?}"
+    );
+    assert_eq!(
+        segment.next_index(),
+        LogIndex(u64::MAX),
+        "a refused append must not move the boundary"
+    );
+}
+
+/// The release-profile half, which is the one the fix's commit message calls
+/// the dangerous one: a wrapped `next_index()` reports `LogIndex(0)`, the
+/// sentinel meaning "before the first entry" — the exact signature quoted in
+/// `6cc9be23` ("the store opened Healthy, reported `next_index()` ==
+/// `LogIndex(0)`").
+///
+/// In debug this panicked inside `validate_contiguous`, which does
+/// `expected = expected.next()` after matching the last entry.
+#[test]
+fn gen7_the_in_memory_segment_never_reports_a_wrapped_next_index() {
+    let mut segment = segment_at_the_append_boundary();
+    let _ = segment.append_entries(&[PersistedRaftLogEntry::noop(LogIndex(u64::MAX), Term(1))]);
+
+    assert!(
+        segment.next_index() > segment.compacted_through(),
+        "next_index {:?} must stay above compacted_through {:?}",
+        segment.next_index(),
+        segment.compacted_through(),
+    );
+    assert_ne!(
+        segment.next_index(),
+        LogIndex::ZERO,
+        "next_index must never wrap to the zero sentinel"
+    );
+}
+
+/// Baseline: one below the bound is ordinary state on the in-memory segment,
+/// so the two tests above are about `u64::MAX` and nothing else.
+#[test]
+fn gen7_the_in_memory_segment_accepts_the_largest_advanceable_index() {
+    let mut segment = InMemoryRaftLogSegment::new();
+    segment
+        .compact_prefix_through(LogIndex(u64::MAX - 2))
+        .expect("accepted boundary");
+    segment
+        .append_entries(&[PersistedRaftLogEntry::noop(LogIndex(u64::MAX - 1), Term(1))])
+        .expect("the largest advanceable index appends");
+    assert_eq!(segment.next_index(), LogIndex(u64::MAX));
 }
 
 // ---------------------------------------------------------------------------

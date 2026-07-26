@@ -8,8 +8,9 @@ use rafter::LogIndex;
 use crate::{BorrowedPersistedRaftLogEntry, PersistedRaftLogEntry};
 
 use super::{
-    reject_compact_bounds, reject_truncate_bounds, ContiguousLogEntries, RaftLogSegment,
-    RaftLogSegmentAppendError, RaftLogSegmentCompactError, RaftLogSegmentTruncateError,
+    reject_append_bounds, reject_compact_bounds, reject_truncate_bounds, ContiguousLogEntries,
+    RaftLogSegment, RaftLogSegmentAppendError, RaftLogSegmentCompactError,
+    RaftLogSegmentTruncateError,
 };
 
 /// In-memory [`RaftLogSegment`] implementation for tests and volatile
@@ -33,6 +34,12 @@ impl RaftLogSegment for InMemoryRaftLogSegment {
         &mut self,
         entries: &[PersistedRaftLogEntry],
     ) -> Result<(), RaftLogSegmentAppendError> {
+        // Before the contiguity walk, which is what takes the successor that
+        // cannot exist. This segment encodes nothing, so the bound has to be
+        // applied here rather than inherited from a codec.
+        for entry in entries {
+            reject_append_bounds(entry.index)?;
+        }
         self.entries.append(entries).map_err(
             |super::NonContiguousRaftEntry { expected, actual }| {
                 RaftLogSegmentAppendError::NonContiguous { expected, actual }
@@ -52,6 +59,9 @@ impl RaftLogSegment for InMemoryRaftLogSegment {
             .into_iter()
             .map(PersistedRaftLogEntry::from)
             .collect::<Vec<_>>();
+        for entry in &entries {
+            reject_append_bounds(entry.index)?;
+        }
         self.entries.append_owned(entries).map_err(
             |super::NonContiguousRaftEntry { expected, actual }| {
                 RaftLogSegmentAppendError::NonContiguous { expected, actual }

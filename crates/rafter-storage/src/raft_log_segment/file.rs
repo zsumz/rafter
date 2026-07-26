@@ -11,9 +11,10 @@ use rafter::LogIndex;
 use crate::{BorrowedPersistedRaftLogEntry, PersistedRaftLogEntry};
 
 use super::{
-    append_borrowed_raft_log_frame, prepare_log_rewrite, reject_compact_bounds,
-    reject_truncate_bounds, FileRaftLogSegment, PrepareLogRewriteError, RaftLogSegment,
-    RaftLogSegmentAppendError, RaftLogSegmentCompactError, RaftLogSegmentTruncateError,
+    append_borrowed_raft_log_frame, prepare_log_rewrite, reject_append_bounds,
+    reject_compact_bounds, reject_truncate_bounds, FileRaftLogSegment, PrepareLogRewriteError,
+    RaftLogSegment, RaftLogSegmentAppendError, RaftLogSegmentCompactError,
+    RaftLogSegmentTruncateError,
 };
 
 impl RaftLogSegment for FileRaftLogSegment {
@@ -39,6 +40,11 @@ impl RaftLogSegment for FileRaftLogSegment {
         let mut owned_entries = Vec::new();
         let mut expected_index = self.next_index();
         for entry in entries {
+            // The segment's own bound, applied before encoding. The encoder
+            // refuses this index too, but that refusal is the RFLE format's
+            // read/write symmetry; a segment that reached it only by encoding
+            // would leave a segment that encodes nothing unbounded.
+            reject_append_bounds(entry.index)?;
             if entry.index != expected_index {
                 return Err(RaftLogSegmentAppendError::NonContiguous {
                     expected: expected_index,

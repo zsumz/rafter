@@ -20,6 +20,10 @@ pub enum RaftLogSegmentAppendError {
         expected: LogIndex,
         actual: LogIndex,
     },
+    /// An append naming `u64::MAX` was requested. `next_index()` is the stored
+    /// index plus one, so storing that entry would leave the segment with no
+    /// representable next index.
+    IndexAtMaximum,
     Encode(EncodeRaftLogEntryError),
     /// The append may have changed the file. Reopen before another mutation.
     Io {
@@ -36,6 +40,9 @@ impl fmt::Display for RaftLogSegmentAppendError {
             Self::NonContiguous { expected, actual } => write!(
                 formatter,
                 "Raft log append at index {actual} is not contiguous with expected next index {expected}"
+            ),
+            Self::IndexAtMaximum => formatter.write_str(
+                "Raft log append at the maximum log index would leave no next index for the segment to advance to",
             ),
             Self::Encode(error) => {
                 write!(formatter, "Raft log entry could not be encoded: {error}")
@@ -55,7 +62,7 @@ impl Error for RaftLogSegmentAppendError {
         match self {
             Self::Encode(error) => Some(error),
             Self::Io { source, .. } => Some(source.as_io_error()),
-            Self::NonContiguous { .. } | Self::StoreRequiresReopen => None,
+            Self::NonContiguous { .. } | Self::IndexAtMaximum | Self::StoreRequiresReopen => None,
         }
     }
 }

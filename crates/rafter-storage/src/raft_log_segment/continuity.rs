@@ -8,7 +8,7 @@ use rafter::LogIndex;
 
 use crate::{format::advanceable_log_index, PersistedRaftLogEntry};
 
-use super::{RaftLogSegmentCompactError, RaftLogSegmentTruncateError};
+use super::{RaftLogSegmentAppendError, RaftLogSegmentCompactError, RaftLogSegmentTruncateError};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct NonContiguousRaftEntry {
@@ -135,6 +135,27 @@ pub(super) fn validate_contiguous(
             });
         }
         expected = expected.next();
+    }
+    Ok(())
+}
+
+/// Rejects an append at a log index the segment could not advance past.
+///
+/// `next_index()` is the last stored index plus one, and the contiguity walk
+/// takes the same successor, so a stored entry at `u64::MAX` leaves the segment
+/// with no representable next index: it panics in debug builds and wraps to
+/// [`LogIndex::ZERO`] in release builds, which re-enters the index space at the
+/// sentinel meaning "before the first entry".
+///
+/// This is the append half of the same successor bound
+/// [`reject_compact_bounds`] applies to a compaction boundary. Both shipped
+/// segments call it, so the refusal belongs to the
+/// [`RaftLogSegment`](super::RaftLogSegment) contract rather than to whichever
+/// implementation happens to encode: the in-memory segment encodes nothing, and
+/// before this it inherited no bound at all.
+pub(super) fn reject_append_bounds(index: LogIndex) -> Result<(), RaftLogSegmentAppendError> {
+    if advanceable_log_index(index.0).is_none() {
+        return Err(RaftLogSegmentAppendError::IndexAtMaximum);
     }
     Ok(())
 }
