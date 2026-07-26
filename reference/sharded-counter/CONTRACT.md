@@ -471,10 +471,30 @@ turn recorded.
 **Condition 3 is the only one the history reports rather than implies**, and
 that is what makes it the delicate one. It models an input from outside the
 scheduler, so it cannot be derived; but a scheduler that could move it freely
-would define any group out of the fairness question. It is bounded rather than
-derived — see "A stall excuses only while it is unbroken" — and the boundary is
-that a stall which is cleared and re-raised without a plan naming the group in
-between excuses nothing, wherever in the pass cycle it is cleared.
+would define any group out of the fairness question. It is *constrained* rather
+than derived — see "A stall excuses only while it is unbroken" — and the
+constraint is that a stall cleared and re-raised without a plan naming the group
+in between excuses nothing, at any point in the pass cycle **but one**: while
+the open pass has more entries pending than the pool has free workers. Inside
+that one it excuses everything, for as long as the host keeps it up.
+
+Constrained is deliberately weaker than bounded, and the difference is the
+fourth row of "What falls outside that scope", which is marked **No** under
+"Bounded?". Three of that rule's four qualifications deny a group one window
+each and cost the host something to re-establish; the fourth costs nothing,
+holds from the arming tick of any plan wider than the pool, and is the known
+limit of the rule rather than a qualification on it.
+
+A sentence here that reads wider than that row is a claim this document cannot
+keep, and the previous revision of this paragraph made both of the available
+mistakes: it called condition 3 bounded, and it claimed the constraint held at
+every point in the pass cycle without exception. The escape's own row already
+said No to the first and *was* an exception to the second, and two audits that
+hunted for exactly this shape read past it — a universal in prose has nothing
+that fails when it stops being true. So it has one now:
+`gen6_contract_stall_boundary::every_statement_of_the_stall_boundary_names_its_exception`
+requires each place this document states the boundary to name the escape in the
+same breath, and refuses the retired wordings by name.
 
 ### Occupancy is derived, not reported
 
@@ -578,7 +598,7 @@ it rather than by this paragraph:
 | Which items a turn services | no | Fully determined by quota, class order, and arrival order. Every deviation is named: `DispatchLeftWorkUnserviced`, `DispatchServicedBeyondItsWork`, `ServiceOrderViolation`, `ServiceCountMismatch`, `QuotaExceeded`. |
 | How long the resulting occupancy lasts | no | `DispatchCostMismatch`, `WorkerHeldPastCost`, `WorkerReleasedEarly`, `SpuriousWorkerRelease`, `WorkerCountExceeded`. |
 | Which groups a plan names | no | `PlanIncludedUnreadyGroup`, `PlanRepeatedGroup`, `OpportunityGap`, `PassArmedWhileOpen`, `PassCompletedWithUnofferedGroup`. |
-| Whether a group is stalled | bounded | An external input, but not an unlimited one: see "A stall excuses only while it is unbroken". |
+| Whether a group is stalled | **partly** | An external input. Breaking a stall to dodge a plan is refused at every instant but one, and that one — an open pass with more entries pending than the pool has free workers — is unbounded: see "A stall excuses only while it is unbroken", and the fourth row of "What falls outside that scope". |
 
 "Which items it services in a turn" was a freedom only in its degenerate form —
 the scheduler could decline to service them — and that form is now
@@ -588,9 +608,12 @@ the scheduler could decline to service them — and that form is now
 
 Readiness condition 3 is the one condition the history *reports* rather than
 implies, and it was a third freedom over readiness for exactly as long as it was
-sampled only at arm instants. A group reported `Stalled` immediately before every
-arming and `Available` immediately after every retirement is never sampled as
-ready, so it is owed no plan and accrues no gap:
+sampled only at arm instants. What replaced that sampling takes the freedom back
+at every instant but one — while the open pass has more entries pending than the
+pool has free workers — and inside that one the freedom remains, entire and
+unbounded. A group reported `Stalled` immediately before every arming and
+`Available` immediately after every retirement is never sampled as ready, so it
+is owed no plan and accrues no gap:
 
 ```text
 audit: passes_completed=20 widest_gap=0; starved group stalled=false queued=1
@@ -632,11 +655,13 @@ A group owed a plan it does not appear in accrues gap. It is still not *ready*,
 so a plan that named it would break plan totality; the only way to settle the
 debt is to stop breaking the stall.
 
-Where the report falls in the *pass cycle* is not part of that, and it was. What
-replaced it is narrower — an open pass with more entries still pending than the
-pool has free workers to offer them with. No plan may be armed while one is open
-and no plan may retire owing a turn, so such a pass does stand between the
-scheduler and the next arming.
+Where the report falls in the *pass cycle* is not by itself part of that, and it
+was. What replaced it is narrower — an open pass with more entries still pending
+than the pool has free workers to offer them with. No plan may be armed while
+one is open and no plan may retire owing a turn, so such a pass does stand
+between the scheduler and the next arming. Narrower is not absent: the
+replacement is still a condition on the open pass, so a sentence saying the pass
+cycle does not enter at all reads wider than the rule.
 
 It is **not** the required bound's own "absent global resource exhaustion"
 precondition, and earlier revisions of this section called it that. What the
@@ -986,11 +1011,14 @@ define a group out of the fairness question, and it did — twice, from opposite
 sides of the same pass. A stall flicked on before every arming and off after
 every retirement kept a group out of twenty consecutive plans at a `widest_gap`
 of zero; so did a stall flicked on for each arming and off for the whole
-interior of the pass that followed. So the excuse a stall buys is bounded by how
-long it is held, not by whether it happens to be raised at the instant readiness
-is sampled and not by which side of a pass boundary it is broken on. "A stall
-excuses only while it is unbroken" states the rule and enumerates what falls
-outside it; this section is where the signal it constrains is defined.
+interior of the pass that followed. So the excuse a stall buys is charged
+against how long it is held rather than against whether it happens to be raised
+at the instant readiness is sampled — with one exception, and the exception *is*
+a fact about where in the pass the stall is broken: an open pass with more
+entries pending than the pool has free workers excuses the whole of it, from the
+arming tick, unbounded. "A stall excuses only while it is unbroken" states the
+rule and enumerates what falls outside it, the fourth row being that exception;
+this section is where the signal it constrains is defined.
 
 A stalled group is a different thing from a slow one. A slow group is modeled by
 work that costs more ticks of worker occupancy: it is dispatchable and takes
@@ -1116,9 +1144,11 @@ The implementation and oracle must establish:
 23. An external stall excuses a plan only while it is unbroken. A stall cleared
     at an instant when the host could have reached an arming that named the
     group — anywhere in the pass cycle, and not merely between passes — and
-    re-raised before that plan was armed, excuses nothing. The exception is the
-    bound's own: a pass with more entries pending than the pool has free
-    workers. "A stall excuses only while it is unbroken" states the scope and
+    re-raised before that plan was armed, excuses nothing. One exception
+    remains, and it is not a precondition of the bound but an unbounded limit
+    on this invariant: an open pass with more entries pending than the pool has
+    free workers, which holds from the arming tick of any plan wider than the
+    pool. "A stall excuses only while it is unbroken" states the scope and
     enumerates what falls outside it.
 24. Every rule this audit enforces has a scheduler in the test suite written to
     break exactly it, and a control that differs from that scheduler by one
