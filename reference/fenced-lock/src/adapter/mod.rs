@@ -23,7 +23,9 @@ use crate::{
     ApplyOutcome, Command, LockConfig, LockService, ResourceName, ResourceStatus, SnapshotError,
 };
 
-pub use client::{unknown_outcome_reason, LockClient, LockHandle, QueryOutcome, SubmitOutcome};
+pub use client::{
+    unknown_outcome_reason, write_options, LockClient, LockHandle, QueryOutcome, SubmitOutcome,
+};
 pub use codec::{
     decode_command, decode_result, decode_snapshot, encode_command, encode_result, encode_snapshot,
     LockCodecError, NonZeroField,

@@ -989,13 +989,22 @@ nowhere at all.
 `QUERY` is a linearizable read behind an ordinary barrier, which is the only
 consistency this application offers a client.
 
-`LOCAL` is not a weaker read on the same path, because there is no such path:
-`rafter-service`'s transport driver is linearizable-only by documented design
-and refuses every other level. `LOCAL` borrows the replica's group and reads its
-applied state directly. It answers with no barrier, no freshness claim, and no
-read proof, and it exists so an operator — or a test watching a rejoining
-replica — can ask what *this* replica holds. Nothing routing on correctness may
-use it.
+`LOCAL` is a weaker read on the same path. `rafter-service`'s transport driver
+serves `ReadConsistency::Local` as well as `ReadConsistency::Linearizable`, so
+this verb reaches the replica's state machine through the read path a query
+uses, with the same options type, the same receipt, and the same refusals — a
+poisoned group and a state machine below its runtime's snapshot boundary are
+refused here exactly as they are for a query. What it gives up is real, and is
+why it stays a separate verb rather than an argument to `QUERY`: there is no
+barrier, no quorum round, and no read proof, so it answers a plain status rather
+than the application's query outcome. It exists so an operator — or a test
+watching a rejoining replica — can ask what *this* replica holds. Nothing
+routing on correctness may use it.
+
+An earlier revision of this document said there was no such path, because the
+driver refused every level but linearizable and this verb borrowed the group
+instead. That borrow ran none of the refusals above, which is what the refusal
+cost rather than saved.
 
 ### What the process suite establishes
 

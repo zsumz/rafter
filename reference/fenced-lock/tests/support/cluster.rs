@@ -55,14 +55,15 @@ use rafter_app::{
     state_machine::ReplicatedStateMachine,
 };
 use rafter_reference_fenced_lock::{
-    unknown_outcome_reason, ApplyOutcome, Command, DurableLockStateMachine, HistoryEvent,
-    LockClient, LockConfig, LockQuery, LockQueryResult, LockService, LockStateMachine, LogicalTime,
-    OperationId, QueryOutcome, ResourceName, ResourceStatus, ServiceView, SubmitOutcome,
+    unknown_outcome_reason, write_options, ApplyOutcome, Command, DurableLockStateMachine,
+    HistoryEvent, LockClient, LockConfig, LockQuery, LockQueryResult, LockService,
+    LockStateMachine, LogicalTime, OperationId, QueryOutcome, ResourceName, ResourceStatus,
+    ServiceView, SubmitOutcome,
 };
 use rafter_runtime::{DurableRaftNode, DurableRaftNodeStorage};
 use rafter_service::{
-    InboundEnvelopeError, ManagedDriverError, MetricsWatch, TransportDriverOptions,
-    TransportRaftDriver, UnknownOutcomeReason,
+    DriverFuture, InboundEnvelopeError, ManagedDriverError, MetricsWatch, ReadOptions,
+    TransportDriverOptions, TransportRaftDriver, UnknownOutcomeReason,
 };
 use rafter_storage::{
     InMemoryRaftHardStateStore, InMemoryRaftLogSegment, InMemoryRaftSnapshotStore,
@@ -721,19 +722,26 @@ impl<A: LockApps> LockCluster<A> {
     /// must repeat.
     pub fn begin_submit(&mut self, node_id: NodeId, command: Command) -> PendingSubmit {
         let operation_id = self.record_invocation(command);
-        let client = self.node(node_id).client.clone();
-        let mut future: SubmitFuture =
-            Box::pin(async move { client.submit_command(command).await });
-        // The handle's methods are `async fn`s, so the driver's `write` — and
-        // with it the waiter registration — does not run until this first poll.
-        if let Poll::Ready(outcome) = poll_once(&mut future) {
-            future = Box::pin(std::future::ready(outcome));
-        }
+        // Started through the driver rather than the client, so this caller
+        // holds the ID the driver allocated from the moment it is allocated.
+        // The identity and the outcome mapping are still the client's, so a
+        // write begun here is the same write `submit_command` would have made.
+        let started = self
+            .node(node_id)
+            .driver
+            .begin_write(command, write_options(&command));
+        let (local_proposal_id, future) = match started {
+            Ok((local_proposal_id, future)) => (Some(local_proposal_id), future),
+            Err(error) => (
+                None,
+                Box::pin(std::future::ready(Err(error))) as DriverFuture<_>,
+            ),
+        };
         PendingSubmit {
             operation_id,
             node_id,
-            local_proposal_id: newest_pending_write(&self.node(node_id).driver),
-            future,
+            local_proposal_id,
+            future: Box::pin(async move { SubmitOutcome::from_write_result(future.await) }),
         }
     }
 
@@ -780,16 +788,21 @@ impl<A: LockApps> LockCluster<A> {
 
     /// Starts one linearizable `GetLock` against `node_id` without waiting.
     pub fn begin_query(&mut self, node_id: NodeId, resource: ResourceName) -> PendingQuery {
-        let client = self.node(node_id).client.clone();
-        let mut future: Pin<Box<dyn Future<Output = QueryOutcome<LockGroupId>>>> =
-            Box::pin(async move { client.get_lock(resource).await });
-        if let Poll::Ready(outcome) = poll_once(&mut future) {
-            future = Box::pin(std::future::ready(outcome));
-        }
+        let started = self
+            .node(node_id)
+            .driver
+            .begin_read(LockQuery::GetLock { resource }, ReadOptions::default());
+        let (read_id, future) = match started {
+            Ok((read_id, future)) => (Some(read_id), future),
+            Err(error) => (
+                None,
+                Box::pin(std::future::ready(Err(error))) as DriverFuture<_>,
+            ),
+        };
         PendingQuery {
             node_id,
-            read_id: newest_pending_read(&self.node(node_id).driver),
-            future,
+            read_id,
+            future: Box::pin(async move { QueryOutcome::from_read_result(future.await) }),
         }
     }
 
@@ -944,25 +957,6 @@ fn outcome_lost_its_proposal(outcome: &SubmitOutcome) -> bool {
         return false;
     };
     unknown_outcome_reason(error) == Some(UnknownOutcomeReason::RuntimeDroppedProposal)
-}
-
-/// Returns the ID of the write a driver most recently admitted.
-///
-/// Local proposal IDs are strictly increasing for a driver's lifetime, so the
-/// highest unresolved one is the write that was just started. `None` means the
-/// write resolved inside its first poll and has no waiter left to name.
-fn newest_pending_write<A: LockApp>(driver: &NodeDriver<A>) -> Option<LocalProposalId> {
-    driver
-        .pending_writes()
-        .into_iter()
-        .map(|write| write.local_proposal_id)
-        .max()
-}
-
-/// Returns the ID of the barrier a driver most recently admitted, on the same
-/// monotonicity as [`newest_pending_write`].
-fn newest_pending_read<A: LockApp>(driver: &NodeDriver<A>) -> Option<ReadId> {
-    driver.pending_reads().into_iter().max()
 }
 
 fn poll_once<T>(future: &mut Pin<Box<dyn Future<Output = T>>>) -> Poll<T> {

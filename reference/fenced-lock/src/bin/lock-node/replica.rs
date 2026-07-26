@@ -86,12 +86,12 @@ use rafter::{LocalProposalId, LogIndex, NodeConfig, NodeId, ReadId, Role};
 use rafter_app::state_machine::ReplicatedStateMachine;
 use rafter_reference_fenced_lock::{
     store::{LockStore, LockStoreError, RecoveryReport, SlotIndex},
-    DurableLockStateMachine, LockClient, LockConfig, QueryOutcome, ResourceName, ResourceStatus,
-    SubmitOutcome,
+    write_options, DurableLockStateMachine, LockClient, LockConfig, LockQuery, QueryOutcome,
+    ResourceName, ResourceStatus, SubmitOutcome,
 };
 use rafter_runtime::DurableRaftNode;
 use rafter_service::{
-    InboundEnvelopeError, MetricsWatch, TransportDriverOptions, TransportRaftDriver,
+    InboundEnvelopeError, MetricsWatch, ReadOptions, TransportDriverOptions, TransportRaftDriver,
 };
 use rafter_storage::{
     FileRaftHardStateStore, FileRaftLogSegment, FileRaftNodeStores, FileRaftSnapshotStore,
@@ -245,16 +245,16 @@ enum Pending {
     Submit {
         ticket: u64,
         deadline: Instant,
-        /// The ID the driver allocated for this write, learned before the
-        /// future resolved so this replica can retire exactly its own waiter.
-        local_proposal_id: Option<LocalProposalId>,
+        /// The ID the driver allocated for this write, returned by the call
+        /// that started it so this replica can retire exactly its own waiter.
+        local_proposal_id: LocalProposalId,
         future: SubmitFuture,
     },
     Query {
         ticket: u64,
         deadline: Instant,
         /// The ID the driver allocated for this barrier, on the same reasoning.
-        read_id: Option<ReadId>,
+        read_id: ReadId,
         future: QueryFuture,
     },
 }
@@ -512,22 +512,35 @@ impl Replica {
     }
 
     /// Starts one replicated command on behalf of a client.
+    ///
+    /// Started through the driver rather than the client, so this replica holds
+    /// the ID the driver allocated from the moment it is allocated rather than
+    /// after a poll. The request identity and the outcome classification are
+    /// still the application's, so this is the same write
+    /// [`LockClient::submit_command`] would have made.
     pub fn submit(
         &mut self,
         ticket: u64,
         command: rafter_reference_fenced_lock::Command,
         deadline: Instant,
     ) {
-        let client = self.client.clone();
-        // The handle's methods are `async fn`s, so the driver's `write` — and
-        // with it the waiter registration — does not run until this first poll.
+        let started = self.driver.begin_write(command, write_options(&command));
+        let (local_proposal_id, future) = match started {
+            Ok(started) => started,
+            Err(error) => {
+                self.answers.push(Answer::Submit {
+                    ticket,
+                    outcome: SubmitOutcome::from_write_error(error),
+                });
+                return;
+            }
+        };
         let mut future: SubmitFuture =
-            Box::pin(async move { client.submit_command(command).await });
+            Box::pin(async move { SubmitOutcome::from_write_result(future.await) });
         if let Poll::Ready(outcome) = poll_once(&mut future) {
             self.answers.push(Answer::Submit { ticket, outcome });
             return;
         }
-        let local_proposal_id = newest_pending_write(&self.driver);
         self.pending.insert(
             ticket,
             Pending::Submit {
@@ -540,45 +553,60 @@ impl Replica {
     }
 
     /// Starts one linearizable `GetLock` on behalf of a client.
+    ///
+    /// Through the driver, for the reason [`Replica::submit`] gives.
     pub fn query(&mut self, ticket: u64, resource: ResourceName, deadline: Instant) {
-        let client = self.client.clone();
-        let future: QueryFuture = Box::pin(async move { client.get_lock(resource).await });
-        self.start_query(ticket, deadline, future);
+        let started = self
+            .driver
+            .begin_read(LockQuery::GetLock { resource }, ReadOptions::default());
+        let (read_id, future) = match started {
+            Ok(started) => started,
+            Err(error) => {
+                self.answers.push(Answer::Query {
+                    ticket,
+                    outcome: QueryOutcome::Unavailable { error },
+                });
+                return;
+            }
+        };
+        let future: QueryFuture =
+            Box::pin(async move { QueryOutcome::from_read_result(future.await) });
+        self.start_query(ticket, deadline, read_id, future);
     }
 
     /// Answers one `GetLock` from this replica's own applied state.
     ///
-    /// Not a read through the managed read path, and it cannot be.
-    /// [`TransportRaftDriver`] documents itself as
-    /// [`ReadConsistency::Linearizable`](rafter_service::ReadConsistency) only
-    /// and refuses every other level with `ReadError::UnsupportedConsistency`,
-    /// because it owns a single replica and a local answer through a managed
-    /// API would say nothing about how far behind that replica is.
-    /// [`LockClient::get_lock`] narrows the same way for the lock's own reason:
-    /// offering the choice would let a caller weaken the guarantee the fencing
-    /// proof rests on.
+    /// [`LockClient::local_lock`] is a weaker level on the *same* read path as a
+    /// query rather than a way around it, so this replica keeps the app-layer
+    /// refusals that guard a query and gives up only what a local read gives up:
+    /// there is no barrier, no quorum round, and no proof. That is why the
+    /// protocol keeps it under a separate verb.
     ///
-    /// So a deployment that wants to know what *its own* replica holds borrows
-    /// the group instead. [`TransportRaftDriver::with_group`] lends it under the
-    /// driver's own lock, which is public API and is what the in-process suites
-    /// already observe replicas through. What is given up by taking this route
-    /// is real and is why the protocol keeps it under a separate verb: there is
-    /// no barrier, no freshness claim, and no read proof. The answer is this
-    /// replica's applied state and nothing more.
-    ///
-    /// It is synchronous because there is nothing to wait for.
+    /// Synchronous because `TransportRaftDriver` answers a local read inside the
+    /// call that starts it — no barrier is reserved, so there is nothing this
+    /// replica could be waiting for. The client is `async` because that promise
+    /// belongs to this driver rather than to every `DriverCommandSender`.
     pub fn local_lock(&self, resource: ResourceName) -> Result<ResourceStatus, String> {
-        self.driver
-            .with_group(|group| group.state_machine().service().status(resource))
-            .map_err(|error| error.to_string())
+        let client = self.client.clone();
+        let mut future: Pin<Box<dyn Future<Output = _>>> =
+            Box::pin(async move { client.local_lock(resource).await });
+        let Poll::Ready(answered) = poll_once(&mut future) else {
+            unreachable!("this driver answers a local read in the call that starts it")
+        };
+        answered.map_err(|error| error.to_string())
     }
 
-    fn start_query(&mut self, ticket: u64, deadline: Instant, mut future: QueryFuture) {
+    fn start_query(
+        &mut self,
+        ticket: u64,
+        deadline: Instant,
+        read_id: ReadId,
+        mut future: QueryFuture,
+    ) {
         if let Poll::Ready(outcome) = poll_once(&mut future) {
             self.answers.push(Answer::Query { ticket, outcome });
             return;
         }
-        let read_id = newest_pending_read(&self.driver);
         self.pending.insert(
             ticket,
             Pending::Query {
@@ -631,22 +659,16 @@ impl Replica {
                 }
                 // `false` means the write resolved between the poll above and
                 // this call, which the poll below then observes. Either way the
-                // driver, not this replica, decides the terminal outcome.
-                if let Some(id) = *local_proposal_id {
-                    let _ = self.driver.abandon_write(id);
-                }
-                Some(match poll_once(future) {
-                    Poll::Ready(outcome) => Answer::Submit {
-                        ticket: *ticket,
-                        outcome,
-                    },
-                    // The driver named no waiter for this write, so there was
-                    // nothing to retire. The outcome is still unknown, and
-                    // nothing weaker than that is honest.
-                    Poll::Pending => Answer::Unknown {
-                        ticket: *ticket,
-                        detail: String::from("deadline"),
-                    },
+                // driver, not this replica, decides the terminal outcome, and
+                // either way the next poll is ready: an abandoned waiter is a
+                // resolved one, and a waiter this driver named is one it holds.
+                let _ = self.driver.abandon_write(*local_proposal_id);
+                let Poll::Ready(outcome) = poll_once(future) else {
+                    unreachable!("an abandoned write resolves its client before this returns")
+                };
+                Some(Answer::Submit {
+                    ticket: *ticket,
+                    outcome,
                 })
             }
             Pending::Query {
@@ -664,18 +686,13 @@ impl Replica {
                 if now < *deadline {
                     return None;
                 }
-                if let Some(id) = *read_id {
-                    let _ = self.driver.abandon_read(id);
-                }
-                Some(match poll_once(future) {
-                    Poll::Ready(outcome) => Answer::Query {
-                        ticket: *ticket,
-                        outcome,
-                    },
-                    Poll::Pending => Answer::Abandoned {
-                        ticket: *ticket,
-                        detail: String::from("deadline"),
-                    },
+                let _ = self.driver.abandon_read(*read_id);
+                let Poll::Ready(outcome) = poll_once(future) else {
+                    unreachable!("an abandoned barrier resolves its client before this returns")
+                };
+                Some(Answer::Query {
+                    ticket: *ticket,
+                    outcome,
                 })
             }
         }
@@ -813,25 +830,6 @@ fn classify_store_error(error: &LockStoreError, mode: RecoveryMode) -> OpenError
             detail: error.to_string(),
         },
     }
-}
-
-/// Returns the ID of the write a driver most recently admitted.
-///
-/// Local proposal IDs are strictly increasing for a driver's lifetime, so the
-/// highest unresolved one is the write that was just started. `None` means the
-/// write resolved inside its first poll and has no waiter left to name.
-fn newest_pending_write(driver: &NodeDriver) -> Option<LocalProposalId> {
-    driver
-        .pending_writes()
-        .into_iter()
-        .map(|write| write.local_proposal_id)
-        .max()
-}
-
-/// Returns the ID of the barrier a driver most recently admitted, on the same
-/// monotonicity as [`newest_pending_write`].
-fn newest_pending_read(driver: &NodeDriver) -> Option<ReadId> {
-    driver.pending_reads().into_iter().max()
 }
 
 fn poll_once<T>(future: &mut Pin<Box<dyn Future<Output = T>>>) -> Poll<T> {

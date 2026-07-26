@@ -3,17 +3,23 @@
 //! This is the only path the lock application offers its callers. It exists to
 //! keep two promises that a bare handle cannot keep on its own:
 //!
-//! 1. every query runs under [`ReadConsistency::Linearizable`], because the
+//! 1. every *query* runs under [`ReadConsistency::Linearizable`], because the
 //!    contract forbids this application from making a lease-read claim; and
 //! 2. every write outcome is classified into "committed", "provably not
 //!    replicated", or "unknown", because a retry under the same request
 //!    identity is only safe once the caller knows which of the three it holds.
+//!
+//! [`LockClient::local_lock`] is not an exception to the first. It is a
+//! different operation with a different return type, so a caller cannot reach a
+//! stale answer by passing an argument to the one that promises freshness — and
+//! nothing that a fencing decision rests on can be handed one by mistake,
+//! because a local read does not produce a [`QueryOutcome`] at all.
 
 use rafter::{LogIndex, Term};
 use rafter_app::{proposal::ClientRequestId, read::ReadProof};
 use rafter_service::{
-    DriverCommandSender, RaftHandle, ReadConsistency, ReadError, UnknownOutcomeReason, WriteError,
-    WriteOptions,
+    DriverCommandSender, QueryReceipt, RaftHandle, ReadConsistency, ReadError,
+    UnknownOutcomeReason, WriteError, WriteOptions, WriteReceipt,
 };
 
 use crate::{
@@ -57,6 +63,25 @@ impl SubmitOutcome {
             Self::Unknown { error }
         } else {
             Self::Refused { error }
+        }
+    }
+
+    /// Turns one resolved managed write into this application's outcome.
+    ///
+    /// The whole mapping, so a caller that started its write through
+    /// `TransportRaftDriver::begin_write` — in order to hold the ID the driver
+    /// allocated — reaches the same three shapes as one that awaited
+    /// [`LockClient::submit_command`]. Two mappings would be two chances for the
+    /// history to be told a refusal the cluster never proved.
+    #[must_use]
+    pub fn from_write_result(result: Result<WriteReceipt<ApplyOutcome>, WriteError>) -> Self {
+        match result {
+            Ok(receipt) => Self::Completed {
+                index: receipt.index,
+                term: receipt.term,
+                outcome: receipt.result,
+            },
+            Err(error) => Self::from_write_error(error),
         }
     }
 
@@ -124,6 +149,23 @@ impl<G> QueryOutcome<G> {
             Self::Unavailable { .. } => None,
         }
     }
+
+    /// Turns one resolved managed read into this application's outcome.
+    ///
+    /// The query counterpart of [`SubmitOutcome::from_write_result`], and it
+    /// exists for the same reason: a caller that started its barrier through
+    /// `TransportRaftDriver::begin_read` reaches the same two shapes as one that
+    /// awaited [`LockClient::get_lock`].
+    #[must_use]
+    pub fn from_read_result(result: Result<QueryReceipt<G, LockQueryResult>, ReadError>) -> Self {
+        match result {
+            Ok(receipt) => Self::Answered {
+                status: receipt.result.status(),
+                proof: receipt.proof,
+            },
+            Err(error) => Self::Unavailable { error },
+        }
+    }
 }
 
 /// Application-facing lock client over one managed group handle.
@@ -159,17 +201,8 @@ where
     /// differ from its original in a way the session cache would then reject as
     /// a conflict.
     pub async fn submit_command(&self, command: Command) -> SubmitOutcome {
-        let options = request_metadata(&command).map_or_else(WriteOptions::default, |id| {
-            WriteOptions::default().with_client_request_id(id)
-        });
-        match self.handle.write_with_options(command, options).await {
-            Ok(receipt) => SubmitOutcome::Completed {
-                index: receipt.index,
-                term: receipt.term,
-                outcome: receipt.result,
-            },
-            Err(error) => SubmitOutcome::from_write_error(error),
-        }
+        let options = write_options(&command);
+        SubmitOutcome::from_write_result(self.handle.write_with_options(command, options).await)
     }
 
     /// Runs `GetLock` behind an ordinary linearizable read barrier.
@@ -178,21 +211,52 @@ where
     /// application makes no lease-read claim, so offering the choice would let
     /// a caller weaken the guarantee the fencing proof depends on.
     pub async fn get_lock(&self, resource: ResourceName) -> QueryOutcome<G> {
-        match self
-            .handle
-            .read(
-                LockQuery::GetLock { resource },
-                ReadConsistency::Linearizable,
-            )
-            .await
-        {
-            Ok(receipt) => QueryOutcome::Answered {
-                status: receipt.result.status(),
-                proof: receipt.proof,
-            },
-            Err(error) => QueryOutcome::Unavailable { error },
-        }
+        QueryOutcome::from_read_result(
+            self.handle
+                .read(
+                    LockQuery::GetLock { resource },
+                    ReadConsistency::Linearizable,
+                )
+                .await,
+        )
     }
+
+    /// Runs `GetLock` against this replica's own applied state.
+    ///
+    /// A separate operation rather than a consistency argument on
+    /// [`LockClient::get_lock`], and the return type is why: [`QueryOutcome`]
+    /// means "an answer a granted barrier proved fresh, or no answer", and a
+    /// local read proves nothing. It answers a plain status instead, so nothing
+    /// routing on authority can mistake one for the other — the fencing proof
+    /// rests on the barrier, and this call does not have one.
+    ///
+    /// It exists because an operator, or a test watching a rejoining replica,
+    /// needs to ask what *this* replica holds. `rafter-service` serves it on the
+    /// same read path as a linearizable read, so the app-layer refusals that
+    /// guard a query — a poisoned group, a state machine below its runtime's
+    /// snapshot boundary — guard this one too.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ReadError`] when the driver cannot answer from local state.
+    pub async fn local_lock(&self, resource: ResourceName) -> Result<ResourceStatus, ReadError> {
+        self.handle
+            .read(LockQuery::GetLock { resource }, ReadConsistency::Local)
+            .await
+            .map(|receipt| receipt.result.status())
+    }
+}
+
+/// Returns the write options this application submits `command` under.
+///
+/// Public because a caller that starts its write through the driver — to hold
+/// the ID the driver allocated — must submit it under the same identity this
+/// client would have. The derivation is here rather than duplicated there.
+#[must_use]
+pub fn write_options(command: &Command) -> WriteOptions {
+    request_metadata(command).map_or_else(WriteOptions::default, |id| {
+        WriteOptions::default().with_client_request_id(id)
+    })
 }
 
 /// Maps the contract's request identity into the service's optional write

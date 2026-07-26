@@ -28,9 +28,9 @@ mod types;
 
 pub use adapter::{
     decode_command, decode_result, decode_snapshot, encode_command, encode_result, encode_snapshot,
-    unknown_outcome_reason, DurableLockError, DurableLockStateMachine, LockAdapterError,
-    LockClient, LockCodecError, LockHandle, LockQuery, LockQueryResult, LockStateMachine,
-    NonZeroField, QueryOutcome, SubmitOutcome,
+    unknown_outcome_reason, write_options, DurableLockError, DurableLockStateMachine,
+    LockAdapterError, LockClient, LockCodecError, LockHandle, LockQuery, LockQueryResult,
+    LockStateMachine, NonZeroField, QueryOutcome, SubmitOutcome,
 };
 pub use guarded::{GuardedRejection, GuardedResource, GuardedWrite};
 pub use history::{HistoryEvent, OperationId};
