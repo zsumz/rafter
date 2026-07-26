@@ -205,22 +205,28 @@
 //! pre-transaction or the post-transaction state, never between:
 //!
 //! - Before the stale slot is opened, both files are unchanged.
-//! - From the first byte of the new image to the last, that slot carries the
-//!   unsealed mark and is [`SlotDamage::UnsealedPublication`], whatever mixture
-//!   of new prefix and older tail it holds. It cannot be chosen, and the live
-//!   slot still holds the pre-transaction state.
+//! - From the first byte of the new image to the *second to last*, that slot
+//!   carries the unsealed mark and holds no whole image, whatever mixture of new
+//!   prefix and older tail it is. That is
+//!   [`SlotDamage::UnsealedPublication`]: it cannot be chosen, and the live slot
+//!   still holds the pre-transaction state.
 //! - With the whole image durable and the seal not yet written, the image is
-//!   written but not committed. This is the window a write-ahead design makes
-//!   explicit in its layout and this one makes explicit in its mark, and it is
-//!   still [`SlotDamage::UnsealedPublication`] — the point of the mark is that
-//!   this window looks like every earlier one rather than like a nearly
-//!   finished image.
+//!   written but not committed — and this is the one boundary
+//!   [`LockStore::open`] will not resolve on its own. These bytes are also
+//!   exactly what a committed slot whose mark byte rotted leaves, so recovery
+//!   refuses rather than guessing which it is, reporting
+//!   [`SlotDamage::UnsealedCompleteImage`] through
+//!   [`LockStoreError::UnreadableSlot`]. [`LockStore::open_and_repair`] resolves
+//!   it to the pre-transaction state for a caller who has decided. The narrower
+//!   promise this bullet makes, and why it is narrower, is argued in the section
+//!   below.
 //! - After the seal's sync returns, the new slot is committed, outranks the old
 //!   one by generation, and is what recovery adopts.
 //!
-//! Nothing is truncated or repaired at open. The next publication overwrites
-//! the slot it does not adopt, so the store heals itself without a repair path
-//! that could run at the wrong moment.
+//! Nothing is truncated or rewritten at open. The next publication overwrites
+//! the slot it does not adopt, so the store heals itself; the repair entry point
+//! chooses which of two readings of a store to open under, and writes nothing
+//! itself.
 //!
 //! # Which unreadable slots recovery may skip
 //!
@@ -255,20 +261,62 @@
 //! image, makes the whole image durable, and only then writes the one byte that
 //! seals it. Since a crash leaves a prefix of what was written, byte zero is
 //! written first and *every* interrupted publication leaves the unsealed mark.
-//! Contrapositively, a sealed mark proves no publication was interrupted in
-//! that slot, so its bytes are exactly what some completed publication sealed
-//! there, and any damage to them happened after the seal.
 //!
-//! That is [`SlotDamage::is_publication_residue`], and it now holds in the
-//! direction it is used: residue proves the slot was the one being written,
-//! which proves it was never the live image, which is what makes skipping it
-//! safe. **Every other damage refuses the whole store.** A foreign magic, a
-//! version this build does not write, a checksum over bytes that are all
-//! present, bytes beyond the seal, a sealed image cut short, an emptied file:
-//! none of them carries the unsealed mark, so recovery has no argument that the
-//! slot was the stale one, and adopting its partner would silently roll the
-//! store back one generation. That is [`LockStoreError::UnreadableSlot`], and
-//! it is a refusal to open rather than damage to skip.
+//! ## The mark is half the rule, not the rule
+//!
+//! Reading it as the whole rule is how this section was wrong the second time.
+//! `interrupted ⇒ unsealed` is what the paragraph above proves; its
+//! contrapositive is `sealed ⇒ not interrupted`; and *skipping* on an unsealed
+//! mark needs neither of those but `unsealed ⇒ was being written`, which is a
+//! third statement, and false. One byte shows it. The sealed mark is `0x52` and
+//! the unsealed value is `0x00`, so a live slot whose first byte rots between
+//! them reads as residue. Recovery then adopted the stale partner: an
+//! acknowledged fencing high-water mark regressed by a generation, the token it
+//! had reached was reissued to a fresh tenure, and a guarded resource accepted
+//! two independent tenures under one token — the exact failure this design
+//! exists to prevent, reached through the rule that was supposed to prevent it.
+//! Every *other* byte of the same header is under a checksum and refuses the
+//! store. The mark byte was the only header byte no checksum was ever consulted
+//! for, because the mark test returned first.
+//!
+//! So skipping now requires the unsealed mark **and** positive evidence that the
+//! bytes are not a whole image. Recovery reads the slot a second time with the
+//! mark restored to the value both checksums were computed over, and skips only
+//! what still fails to verify at a step this build can read. Three outcomes,
+//! three different facts:
+//!
+//! - **Not a whole image**: a header cut short, a header checksum over bytes
+//!   that are all present, a payload that is not all there, no trailer, a torn
+//!   trailer, a trailer that seals nothing, bytes past the seal. With the
+//!   unsealed mark, that is [`SlotDamage::UnsealedPublication`] and it is
+//!   skipped. This is the ordinary residue of an interrupted publication.
+//! - **A whole image that verifies**, with only the mark reading unsealed. Two
+//!   histories leave exactly these bytes — the written-but-not-committed window,
+//!   and a live slot whose mark rotted — and nothing in them separates the two,
+//!   the generations included: the slot being written carries the live slot's
+//!   generation plus one under both readings. That is
+//!   [`SlotDamage::UnsealedCompleteImage`] and recovery refuses. Refusing is
+//!   recoverable under both readings and skipping is recoverable under only one,
+//!   and the choice is made on that asymmetry rather than on a guess about which
+//!   history is likelier.
+//! - **A version this build cannot read**, which stops the second reading before
+//!   it can say anything at all.
+//!
+//! [`SlotDamage::is_publication_residue`] states the proof in the direction it
+//! is used and names the single-fault assumption it rests on. **Every other
+//! damage refuses the whole store.** A foreign magic, a version this build does
+//! not write, a checksum over bytes that are all present, bytes beyond the seal,
+//! a sealed image cut short, an emptied file: none of them can be shown to be
+//! the slot that was being written, so adopting its partner would silently roll
+//! the store back one generation. That is [`LockStoreError::UnreadableSlot`],
+//! and it is a refusal to open rather than damage to skip.
+//!
+//! That the mark byte is now no weaker than its neighbours is a claim about
+//! every byte of an image, so it is checked as one:
+//! `no_single_byte_change_to_a_sealed_image_is_ever_publication_residue` alters
+//! every byte of a sealed image to every other value it could take and requires
+//! that none of the results is residue. A rule this narrow is exactly the kind
+//! that decays quietly, and a paragraph would not have noticed.
 //!
 //! Two consequences of that ordering are worth stating on their own, because
 //! both were wrong when the shapes were doing the work:
@@ -278,7 +326,9 @@
 //!   a full-header slice, so twenty bytes of a foreign format were read as this
 //!   build's own residue, and the same version byte was refused at one length
 //!   and ignored at another. The argument for refusing a version is about the
-//!   field, so it has to hold wherever the field is present.
+//!   field, so it has to hold wherever the field is present — and it does, on
+//!   both sides of the seal test, because the second reading of an unsealed slot
+//!   goes through the same version gate.
 //! - **A slot file of zero bytes is damage.** Creation writes the unsealed mark
 //!   into each slot, and no publication ever shortens a slot to nothing, so an
 //!   empty slot file is not a state this store leaves behind at any point in
@@ -290,7 +340,36 @@
 //!
 //! A format-version mismatch is still worth naming on its own, because it needs
 //! no corruption at all: a binary downgrade produces it from two entirely
-//! healthy files. It is always a refusal.
+//! healthy files. It is always a refusal, and it is the one refusal
+//! [`LockStore::open_and_repair`] will not clear either. That order has a cost,
+//! and the cost is named rather than left to be discovered: the version byte is
+//! read before the checksum that covers it, so a single altered version byte
+//! makes a slot unreadable by both entry points. That is a refusal and not a
+//! loss — every byte is still on the medium — and the alternative trades it for
+//! a repair that can discard a newer build's committed work, which is the worse
+//! of the two.
+//!
+//! # Repairing, as a separate act
+//!
+//! Giving up a slot that may have held the newest committed state is sometimes
+//! the only way forward, so it is available — as
+//! [`LockStore::open_and_repair`], never as a side effect of opening. That entry
+//! point adopts the readable partner of a slot this build cannot read and
+//! records what it did in [`RecoveryReport::repair`]: which slot was given up,
+//! what it held, and the generation adopted in its place.
+//!
+//! It cannot say how much was given up, and that is the honest limit rather than
+//! an omission: reading the discarded slot is exactly what failed, so nobody can
+//! say what was in it. The bound is one publication, because generations are
+//! strictly increasing and only two slots exist, and that bound is the whole of
+//! what is known.
+//!
+//! The store did without this while its refusals were rarer. What changed is
+//! that [`SlotDamage::UnsealedCompleteImage`] turns an ordinary crash into a
+//! refusal, and a store whose ordinary crash residue needs an operator with no
+//! documented way forward is worse than one that names the way forward and
+//! reports what it costs. The sibling ledger reached the same shape from the
+//! same argument.
 //!
 //! Recovery also refuses when **both** slots are damaged, whatever the damage,
 //! rather than starting empty. A lock service that cannot read any image cannot
@@ -500,7 +579,7 @@ pub enum LockStoreError {
         /// What each slot looked like, indexed by [`SlotIndex`].
         slots: [SlotState; 2],
     },
-    /// One slot holds bytes no interrupted publication could have left behind.
+    /// One slot holds bytes recovery cannot show an interrupted publication left.
     ///
     /// Recovery cannot rule out that this slot was the live image, so adopting
     /// its partner would silently roll the store back one generation: an
@@ -672,8 +751,9 @@ impl fmt::Display for LockStoreError {
                 other,
             } => write!(
                 formatter,
-                "{slot} holds {damage}, which no interrupted publication leaves, so it may have been \
-                 the live image; {} holds {other} and is not adopted in its place",
+                "{slot} holds {damage}, which recovery cannot show an interrupted publication \
+                 left, so it may have been the live image; {} holds {other} and is not adopted in \
+                 its place",
                 slot.other()
             ),
             Self::MissingSlot { slot, other } => write!(
@@ -961,6 +1041,11 @@ impl fmt::Display for SessionProgress {
 /// leave; see [`SlotDamage::is_publication_residue`]. The rest are reported here
 /// because the report says what recovery *found*, but finding one refuses the
 /// store rather than skipping the slot.
+///
+/// "Exactly one" is a closure claim, so it is checked rather than asserted:
+/// `exactly_one_slot_damage_is_residue_an_interrupted_publication_leaves`
+/// matches on every variant by name, so a variant added later does not compile
+/// until somebody has decided which side of the skip rule it falls on.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum SlotDamage {
     /// The slot file holds no bytes at all.
@@ -971,15 +1056,63 @@ pub enum SlotDamage {
     /// unreadable rather than absent: nothing about it says whether it once
     /// held the newest committed image.
     SlotEmptied,
-    /// A publication wrote these bytes and never sealed them.
+    /// A publication wrote part of an image and never sealed it.
     ///
-    /// The slot still carries [`UNSEALED_MARK`] in its first byte, which a
-    /// publication writes before any other byte and replaces only after every
-    /// other byte is durable. This is the only damage recovery may skip, and
-    /// `present` is the byte boundary the interrupted write reached.
+    /// Both halves of that sentence are checked. The slot carries
+    /// [`UNSEALED_MARK`] in its first byte, *and* the bytes present are not a
+    /// whole image: read again with that byte restored to [`SEALED_MARK`] they
+    /// still fail to verify, at a step this build can read. `present` is the
+    /// byte boundary the interrupted write reached.
+    ///
+    /// This is the only damage recovery may skip. The mark alone would not earn
+    /// that, and used to be asked to.
     UnsealedPublication {
         /// Bytes present in the slot.
         present: u64,
+    },
+    /// A whole image that verifies, whose mark says it was never sealed.
+    ///
+    /// Two histories leave these exact bytes and nothing in them tells the two
+    /// apart:
+    ///
+    /// - a publication that wrote the whole image, reached its durability
+    ///   barrier, and died before the one byte that seals it — the
+    ///   written-but-not-committed window; or
+    /// - a committed, adopted, acknowledged image whose one mark byte later
+    ///   rotted from [`SEALED_MARK`] to [`UNSEALED_MARK`].
+    ///
+    /// They are the same bytes because the mark is the only difference between
+    /// those two states on the medium, and one byte cannot record which of them
+    /// it is. The generations do not separate them either: the slot being
+    /// written carries the live slot's generation plus one, and so does a live
+    /// slot whose partner is the stale one, so the pair looks identical under
+    /// both readings.
+    ///
+    /// Skipping is right under the first reading and drops an acknowledged
+    /// fencing high-water mark under the second — the exact failure this design
+    /// exists to prevent. So recovery refuses and says which it found:
+    /// [`LockStoreError::UnreadableSlot`] names it, and
+    /// [`LockStore::open_and_repair`] is where a caller who has decided which
+    /// reading applies says so by name. Refusing is recoverable under both
+    /// readings; skipping is recoverable under only one.
+    ///
+    /// It is a separate variant from [`SlotDamage::UnsealedPublication`] because
+    /// the two are separate facts, and a report that called this one an
+    /// interrupted publication would be claiming to know which history happened.
+    ///
+    /// `generation` is what lets recovery answer the question without an
+    /// operator whenever it can be answered. The ambiguity above only matters if
+    /// this slot could be the newest image; when the partner holds a *sealed*
+    /// image of a strictly greater generation it cannot be, under either
+    /// reading, and recovery sets it aside and adopts the partner. That is the
+    /// ordinary shape of a publication interrupted in its first bytes, where the
+    /// new image's leading bytes are still byte-for-byte the old image's and the
+    /// slot therefore still holds the whole older image.
+    UnsealedCompleteImage {
+        /// Length of the whole image that verified.
+        len: u64,
+        /// Publication generation that image declares.
+        generation: u64,
     },
     /// A sealed slot holds fewer bytes than one slot header needs.
     HeaderIncomplete {
@@ -1042,27 +1175,49 @@ impl SlotDamage {
     /// Whether an interrupted publication of *this* build left this.
     ///
     /// This is used in one direction only — a slot may be skipped **because**
-    /// it is residue — so it is the converse that has to hold: this returning
-    /// `true` must prove the slot was never the live image. One variant carries
-    /// that proof, and it carries it because a publication puts the proof in
-    /// the bytes rather than leaving recovery to infer it.
+    /// it is residue — so the implication that has to hold is the one the
+    /// caller relies on, written here in that direction:
     ///
-    /// A publication writes [`UNSEALED_MARK`] into byte zero before any other
-    /// byte of the image, and replaces it with [`SEALED_MARK`] only after every
-    /// other byte has passed a durability barrier. A crash leaves a prefix of
-    /// what was written — that is the crash contract this whole file rests on —
-    /// so byte zero is written first and every interrupted publication leaves
-    /// the unsealed mark behind. Contrapositively, a slot whose first byte is
-    /// sealed holds exactly the bytes some completed publication sealed there,
-    /// and any damage to it happened *after* that seal.
+    /// > **If this returns `true`, the slot was never the live image.**
     ///
-    /// So [`SlotDamage::UnsealedPublication`] proves the slot was the one being
-    /// written and was never adopted by any opener, which is what makes
-    /// skipping it safe. Every other damage — including a sealed image that has
-    /// merely lost its last byte, which is a strict prefix of an image this
-    /// build wrote and would have passed a shape test — proves nothing of the
-    /// kind. Recovery cannot rule out that such a slot held the newest
-    /// committed state, so it refuses to open instead.
+    /// The proof, stated forwards rather than as somebody else's
+    /// contrapositive. Suppose this returns `true`. Then the damage is
+    /// [`SlotDamage::UnsealedPublication`], and [`classify_unsealed`] produces
+    /// that variant only when **both** of these hold of the slot's bytes:
+    ///
+    /// 1. byte zero is [`UNSEALED_MARK`]; and
+    /// 2. read again with byte zero restored to [`SEALED_MARK`] — the value both
+    ///    of the slot's checksums are computed over — the bytes still fail to
+    ///    verify as a whole image, at a step whose meaning this build knows.
+    ///
+    /// Now suppose, for contradiction, that the slot *was* the live image. Then
+    /// some publication sealed it, which it does by writing byte zero last, only
+    /// after every other byte of a whole image has passed a durability barrier.
+    /// So the slot's bytes began as a whole image that verified with a sealed
+    /// mark. By (2) they no longer verify with a sealed mark, so at least one
+    /// byte other than the mark has been lost or altered since. By (1) the mark
+    /// byte has *also* changed, from `b'R'` to `0x00`. That is two independent
+    /// alterations. The crash contract this file rests on admits exactly one
+    /// failure — a crash leaves a prefix of what was written — and a prefix
+    /// cannot alter a byte it never reached. So the slot was never the live
+    /// image. ∎
+    ///
+    /// The assumption in the last step is the honest limit, and it is stated
+    /// rather than hidden: a medium that alters the mark byte *and* damages the
+    /// image beside it defeats this rule, as it defeats every rule with a single
+    /// checksum behind it. What is now excluded is the single-fault case, which
+    /// is what a one-byte rot is, and
+    /// `no_single_byte_change_to_a_sealed_image_is_ever_publication_residue`
+    /// checks that exhaustively rather than asserting it here.
+    ///
+    /// The two things this deliberately does **not** cover are
+    /// [`SlotDamage::UnsealedCompleteImage`] — a whole image with an unsealed
+    /// mark, where step (2) fails and the answer is a refusal — and every damage
+    /// with a sealed mark, where the bytes are what some completed publication
+    /// sealed and any damage to them happened afterwards. A sealed image that
+    /// has merely lost its last byte is in the second group: it is a strict
+    /// prefix of an image this build wrote and would have passed a shape test,
+    /// and recovery cannot rule out that it held the newest committed state.
     #[must_use]
     pub const fn is_publication_residue(self) -> bool {
         matches!(self, Self::UnsealedPublication { .. })
@@ -1076,6 +1231,11 @@ impl fmt::Display for SlotDamage {
             Self::UnsealedPublication { present } => {
                 write!(formatter, "{present} bytes of an unsealed publication")
             }
+            Self::UnsealedCompleteImage { len, generation } => write!(
+                formatter,
+                "a whole {len} byte image of generation {generation} whose publication mark reads \
+                 unsealed"
+            ),
             Self::HeaderIncomplete { present } => {
                 write!(formatter, "a sealed image cut to {present} bytes")
             }
@@ -1162,6 +1322,66 @@ pub struct RecoveryReport {
     slots: [SlotState; 2],
     live_slot: Option<SlotIndex>,
     cross_checked_marks: bool,
+    repair: Option<Repair>,
+}
+
+/// What [`LockStore::open_and_repair`] gave up, when it gave anything up.
+///
+/// A repair is the one thing this store does that can lose committed state, so
+/// it is recorded rather than implied, and it is unreachable through
+/// [`LockStore::open`] at all.
+///
+/// What it cannot say is how much was lost, and that is the honest limit rather
+/// than an omission. The discarded slot is the one this build could not read;
+/// if it held a newer image than the one adopted, nobody can say what was in it,
+/// because reading it is exactly what failed. The bound is one publication —
+/// generations are strictly increasing and only two slots exist — and that bound
+/// is the whole of what is known.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct Repair {
+    slot: SlotIndex,
+    damage: SlotDamage,
+    adopted: SlotIndex,
+    adopted_generation: u64,
+}
+
+impl Repair {
+    /// The slot whose contents were given up.
+    #[must_use]
+    pub const fn slot(&self) -> SlotIndex {
+        self.slot
+    }
+
+    /// Why that slot could not be read.
+    #[must_use]
+    pub const fn damage(&self) -> SlotDamage {
+        self.damage
+    }
+
+    /// The slot adopted in its place.
+    #[must_use]
+    pub const fn adopted(&self) -> SlotIndex {
+        self.adopted
+    }
+
+    /// Publication generation of the image adopted in its place.
+    ///
+    /// The discarded slot's generation is unknown by construction. At most one
+    /// publication separates the two.
+    #[must_use]
+    pub const fn adopted_generation(&self) -> u64 {
+        self.adopted_generation
+    }
+}
+
+impl fmt::Display for Repair {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            formatter,
+            "gave up {}, which held {}, and adopted generation {} from {}",
+            self.slot, self.damage, self.adopted_generation, self.adopted
+        )
+    }
 }
 
 impl RecoveryReport {
@@ -1238,6 +1458,16 @@ impl RecoveryReport {
     pub const fn cross_checked_marks(&self) -> bool {
         self.cross_checked_marks
     }
+
+    /// What a repair gave up, when this opening was a repair that found work.
+    ///
+    /// Always `None` for [`LockStore::open`], which has no branch that reaches
+    /// it. A [`LockStore::open_and_repair`] over a healthy store reports `None`
+    /// too: repairing is not the same as being willing to repair.
+    #[must_use]
+    pub const fn repair(&self) -> Option<Repair> {
+        self.repair
+    }
 }
 
 /// Whether this handle may still publish.
@@ -1283,6 +1513,52 @@ impl LockStore {
         Self::open_with_faults(directory, config, FaultPlan::none())
     }
 
+    /// Opens the store, giving up a slot this build cannot read.
+    ///
+    /// This is the destructive half of [`LockStore::open`], and it is a separate
+    /// entry point because it is a separate decision. Opening a store is a read;
+    /// a caller that runs this one has decided that a store it cannot fully read
+    /// is better opened one generation back than left alone, and
+    /// [`RecoveryReport::repair`] tells it exactly which slot was given up and
+    /// what it held.
+    ///
+    /// The store had no such entry point while its refusals were rarer, and the
+    /// sibling ledger has had one for as long as it has refused anything. The
+    /// argument for adding it is not symmetry: it is that
+    /// [`SlotDamage::UnsealedCompleteImage`] turns an ordinary crash — a
+    /// publication interrupted between its barrier and its seal — into a
+    /// refusal, and a store whose ordinary crash residue needs an operator with
+    /// no documented way forward is worse than one that names the way forward
+    /// and reports what it costs.
+    ///
+    /// It gives up exactly the refusal [`LockStoreError::UnreadableSlot`] names,
+    /// and nothing else. In particular it does **not** clear:
+    ///
+    /// - [`SlotDamage::UnsupportedFormatVersion`], which needs no corruption at
+    ///   all: a binary downgrade produces it from two healthy files, so the slot
+    ///   holds a newer build's committed work and the remedy for damage must not
+    ///   delete it. The ledger's repair refuses the same shape for the same
+    ///   reason.
+    /// - [`LockStoreError::NoReadableImage`]. There is no image to adopt in the
+    ///   damaged slot's place, and opening empty would hand out token 1 for a
+    ///   resource whose guarded downstream has already accepted far more. A
+    ///   repair chooses between two readings of a store; it does not invent one.
+    /// - [`LockStoreError::MissingSlot`]. A file that is gone is not damage this
+    ///   build found in an artifact it read, and re-creating it is a different
+    ///   act from choosing between two files that are both present.
+    ///
+    /// A store with nothing wrong is opened exactly as [`LockStore::open`] opens
+    /// it, and reports no repair. Repairing is not the same as being willing to
+    /// repair.
+    ///
+    /// # Errors
+    ///
+    /// Returns the same errors as [`LockStore::open`] except
+    /// [`LockStoreError::UnreadableSlot`], which is what this gives up.
+    pub fn open_and_repair(directory: &Path, config: LockConfig) -> Result<Self, LockStoreError> {
+        Self::open_inner(directory, config, FaultPlan::none(), OnUnreadableSlot::Give)
+    }
+
     /// Opens the store with a deterministic fault schedule.
     ///
     /// This is the crash-test construction described on [`FaultPlan`]. A store
@@ -1296,6 +1572,23 @@ impl LockStore {
         directory: &Path,
         config: LockConfig,
         faults: FaultPlan,
+    ) -> Result<Self, LockStoreError> {
+        Self::open_inner(directory, config, faults, OnUnreadableSlot::Refuse)
+    }
+
+    /// The one opening path, parameterized by what it does with a slot it cannot
+    /// read.
+    ///
+    /// Both entry points read the same bytes and run the same classification.
+    /// They differ in exactly one branch, which is the point: a reader auditing
+    /// this can see that refusing and repairing agree about everything except
+    /// whether a slot that may have held the newest committed state is allowed
+    /// to be given up.
+    fn open_inner(
+        directory: &Path,
+        config: LockConfig,
+        faults: FaultPlan,
+        on_unreadable: OnUnreadableSlot,
     ) -> Result<Self, LockStoreError> {
         fs::create_dir_all(directory).map_err(|source| LockStoreError::Io {
             operation: "create the lock store directory",
@@ -1323,18 +1616,35 @@ impl LockStore {
             }
         }
 
-        let adopted = choose_live_slot(&states, images)?;
-        let (service, applied_index, generation, live_slot, cross_checked_marks) = match adopted {
-            Some(adopted) => (
-                adopted.image.service,
-                adopted.image.applied_index,
-                adopted.generation,
-                Some(adopted.slot),
-                adopted.cross_checked_marks,
-            ),
-            None => (LockService::new(config), LogIndex::ZERO, 0, None, false),
-        };
+        let adopted = choose_live_slot(&states, images, on_unreadable)?;
+        let (service, applied_index, generation, live_slot, cross_checked_marks, given_up) =
+            match adopted {
+                Some(adopted) => (
+                    adopted.image.service,
+                    adopted.image.applied_index,
+                    adopted.generation,
+                    Some(adopted.slot),
+                    adopted.cross_checked_marks,
+                    adopted.given_up,
+                ),
+                None => (
+                    LockService::new(config),
+                    LogIndex::ZERO,
+                    0,
+                    None,
+                    false,
+                    None,
+                ),
+            };
         let acknowledged_marks = marks_of(&service);
+        let repair = given_up
+            .zip(live_slot)
+            .map(|((slot, damage), adopted)| Repair {
+                slot,
+                damage,
+                adopted,
+                adopted_generation: generation,
+            });
 
         Ok(Self {
             directory: directory.to_path_buf(),
@@ -1353,6 +1663,7 @@ impl LockStore {
                 slots: states,
                 live_slot,
                 cross_checked_marks,
+                repair,
             },
         })
     }
@@ -1783,6 +2094,8 @@ struct AdoptedImage {
     generation: u64,
     image: DecodedImage,
     cross_checked_marks: bool,
+    /// The slot a repair gave up to reach this one, and what it held.
+    given_up: Option<(SlotIndex, SlotDamage)>,
 }
 
 /// Returns the four bytes where a slot's magic belongs, zero-padded when the
@@ -1794,18 +2107,24 @@ fn magic_of(bytes: &[u8]) -> [u8; 4] {
     magic
 }
 
-/// Checks that the bytes present are ones this store and this build wrote, as
-/// far as they go.
+/// Checks that the bytes present carry this store's magic, as far as they go.
 ///
-/// This runs on **every** slot long enough to carry a field, before anything
-/// classifies the slot by its length. That ordering is the point: the older
-/// shape put the magic and version tests behind a full-header slice, so a short
-/// slot was attributed to this build rather than shown to belong to it, and
-/// twenty bytes of a foreign format were read as this build's own residue.
+/// This runs on **every** slot long enough to carry a byte of it, before
+/// anything classifies the slot by its length. That ordering is the point: the
+/// older shape put the magic test behind a full-header slice, so a short slot
+/// was attributed to this build rather than shown to belong to it, and twenty
+/// bytes of a foreign format were read as this build's own residue.
 ///
 /// Byte zero is the publication mark and is checked here too, because it is the
 /// magic's leading byte: a slot that begins with neither mark is not a slot
-/// this build ever wrote.
+/// this build ever wrote. Which of the two marks it is decides nothing here —
+/// that question belongs to [`verify_slot`], and answering it needs more than
+/// this byte.
+///
+/// The version byte is deliberately *not* tested here. It sits behind the seal
+/// test now, and [`classify_unsealed`] explains why an unsealed slot's version
+/// is reached through the same path as everything else it declares rather than
+/// ahead of it. It is still consulted at every length that carries it.
 fn verify_identity(bytes: &[u8]) -> Result<(), SlotDamage> {
     if bytes[0] != UNSEALED_MARK && bytes[0] != SEALED_MARK {
         return Err(SlotDamage::NotALockImage {
@@ -1818,11 +2137,6 @@ fn verify_identity(bytes: &[u8]) -> Result<(), SlotDamage> {
             magic: magic_of(bytes),
         });
     }
-    if let Some(version) = bytes.get(4) {
-        if *version != SLOT_FORMAT_VERSION {
-            return Err(SlotDamage::UnsupportedFormatVersion { version: *version });
-        }
-    }
     Ok(())
 }
 
@@ -1831,6 +2145,15 @@ fn verify_identity(bytes: &[u8]) -> Result<(), SlotDamage> {
 /// `Ok(None)` means the slot carries its creation mark and nothing has ever
 /// been sealed into it, which is not damage. A slot of zero bytes is not that
 /// case: creation writes the mark, so an empty file is something else's doing.
+///
+/// The mark decides less here than it used to, and the narrowing is the whole
+/// of the fix behind it. An unsealed mark is one byte, and `b'R'` rots to `0x00`
+/// as readily as any other byte rots to any other value, so an unsealed mark no
+/// longer settles anything on its own: it sends the slot to
+/// [`classify_unsealed`], which asks whether these bytes are a whole image. A
+/// sealed mark does settle it, and may, because both checksums are computed over
+/// the sealed form — a slot whose mark reads sealed is a slot whose mark byte is
+/// covered by the same checksum as every other byte of its header.
 fn verify_slot(bytes: &[u8]) -> Result<Option<SealedImage<'_>>, SlotDamage> {
     if bytes.is_empty() {
         return Err(SlotDamage::SlotEmptied);
@@ -1838,17 +2161,81 @@ fn verify_slot(bytes: &[u8]) -> Result<Option<SealedImage<'_>>, SlotDamage> {
     if bytes == CREATION_MARK {
         return Ok(None);
     }
-    // Identity first, at every length, then the seal, and only then anything
-    // that depends on how many bytes are present.
+    // Magic first, at every length, then the seal, and only then anything that
+    // depends on how many bytes are present.
     verify_identity(bytes)?;
     if bytes[0] == UNSEALED_MARK {
-        return Err(SlotDamage::UnsealedPublication {
+        return Err(classify_unsealed(bytes));
+    }
+    verify_sealed_slot(bytes).map(Some)
+}
+
+/// Says what an unsealed slot is, by asking whether it is a whole image.
+///
+/// This is the half of the skip rule the mark cannot supply by itself. The mark
+/// says "these bytes were not sealed", which is true of a publication that never
+/// finished *and* of a finished publication whose one mark byte later rotted to
+/// zero — and those two are the same bytes. What separates them is not the mark
+/// but the rest of the slot: a publication that never finished left a
+/// **prefix**, and a prefix is not a whole image.
+///
+/// So the bytes are read again with the mark restored to the value both
+/// checksums were computed over. Three answers, three different facts:
+///
+/// - The bytes are a whole image that verifies. Nothing about them is
+///   incomplete, and the only thing wrong is the mark. That is
+///   [`SlotDamage::UnsealedCompleteImage`], which is not residue; its
+///   documentation gives the argument for refusing rather than choosing.
+/// - The bytes declare a format version this build cannot read. Then this build
+///   does not know the layout and cannot tell a whole image from a prefix at
+///   all, so it cannot produce the evidence skipping requires.
+///   [`SlotDamage::UnsupportedFormatVersion`] is a refusal, and it is one that
+///   even [`LockStore::open_and_repair`] will not clear: a downgrade meeting a
+///   newer build's committed image must not be answered by discarding it.
+/// - The bytes fail to be a whole image in some way this build *can* read: a
+///   header cut short, a header checksum over bytes that are all present, a
+///   payload that is not all there, no trailer, a torn trailer, a trailer that
+///   seals nothing, bytes beyond the seal. That is positive evidence of
+///   incompleteness, and with the unsealed mark beside it, it is
+///   [`SlotDamage::UnsealedPublication`].
+///
+/// The copy is deliberate rather than clever. Opening has already read the slot
+/// into memory, this runs at most twice per open, and a byte-substituting
+/// checksum would buy nothing but a second implementation of the fold to keep
+/// honest.
+fn classify_unsealed(bytes: &[u8]) -> SlotDamage {
+    let mut sealed = bytes.to_vec();
+    sealed[0] = SEALED_MARK;
+    match verify_sealed_slot(&sealed) {
+        Ok(image) => SlotDamage::UnsealedCompleteImage {
+            len: as_u64(bytes.len()),
+            generation: image.generation,
+        },
+        Err(SlotDamage::UnsupportedFormatVersion { version }) => {
+            SlotDamage::UnsupportedFormatVersion { version }
+        }
+        Err(_) => SlotDamage::UnsealedPublication {
             present: as_u64(bytes.len()),
-        });
+        },
+    }
+}
+
+/// Verifies one slot whose first byte is the sealed mark.
+///
+/// Every check below runs over bytes both of the slot's checksums cover, mark
+/// included, so reaching any of these answers means the bytes present are not
+/// what a completed publication sealed.
+fn verify_sealed_slot(bytes: &[u8]) -> Result<SealedImage<'_>, SlotDamage> {
+    // The version is read wherever the field is present, ahead of anything that
+    // depends on how many bytes there are. The argument for refusing a foreign
+    // version is about the field, so gating it on a full header would make the
+    // same bytes refused at one length and adopted at another.
+    if let Some(version) = bytes.get(4) {
+        if *version != SLOT_FORMAT_VERSION {
+            return Err(SlotDamage::UnsupportedFormatVersion { version: *version });
+        }
     }
 
-    // Sealed from here down. Every failure below is damage to bytes some
-    // completed publication sealed, so none of it is residue to skip.
     let Some(header) = bytes.get(..SLOT_HEADER_LEN) else {
         return Err(SlotDamage::HeaderIncomplete {
             present: as_u64(bytes.len()),
@@ -1897,7 +2284,7 @@ fn verify_slot(bytes: &[u8]) -> Result<Option<SealedImage<'_>>, SlotDamage> {
         });
     }
 
-    Ok(Some(SealedImage {
+    Ok(SealedImage {
         generation: read_u64(&header[5..13]),
         applied_index: LogIndex(read_u64(
             &header[HEADER_APPLIED_INDEX_OFFSET..HEADER_APPLIED_INDEX_OFFSET + 8],
@@ -1905,7 +2292,7 @@ fn verify_slot(bytes: &[u8]) -> Result<Option<SealedImage<'_>>, SlotDamage> {
         max_clients: read_u32(&header[21..25]),
         max_resources: read_u32(&header[25..29]),
         payload,
-    }))
+    })
 }
 
 /// Restores a sealed slot's payload through the model's own validating path.
@@ -1947,6 +2334,15 @@ fn decode_image(
     })
 }
 
+/// Whether a slot this build cannot read refuses the store or is given up.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum OnUnreadableSlot {
+    /// [`LockStore::open`]: refuse, and let the caller decide.
+    Refuse,
+    /// [`LockStore::open_and_repair`]: adopt the partner and report the cost.
+    Give,
+}
+
 /// Picks the slot recovery adopts, refusing any slot it cannot read.
 ///
 /// Unreadability is settled *before* anything is chosen, because the question
@@ -1955,29 +2351,76 @@ fn decode_image(
 fn choose_live_slot(
     states: &[SlotState; 2],
     images: [Option<DecodedImage>; 2],
+    on_unreadable: OnUnreadableSlot,
 ) -> Result<Option<AdoptedImage>, LockStoreError> {
     // Both damaged is reported as the stronger fact it is: there is no image at
     // all, whatever each slot's damage happened to be. A lock service that
     // cannot read any image cannot know its high-water marks, and opening empty
     // would reissue token 1 for a resource whose guarded downstream has already
-    // accepted far more.
+    // accepted far more. This is above the repair branch rather than inside it:
+    // a repair chooses between two readings of a store, and there is no second
+    // reading here to choose.
     if states.iter().all(|state| state.damage().is_some()) {
         return Err(LockStoreError::NoReadableImage { slots: *states });
     }
     // One damaged slot. Skipping it is safe only when its damage proves it was
     // the slot being written; anything else could be the live image, and
     // adopting the partner would roll an acknowledged mark back one generation.
+    let mut given_up = None;
     for slot in [SlotIndex::Zero, SlotIndex::One] {
         let Some(damage) = states[slot.position()].damage() else {
             continue;
         };
-        if !damage.is_publication_residue() {
+        if damage.is_publication_residue() {
+            continue;
+        }
+        let other = states[slot.other().position()];
+        // A whole image whose mark reads unsealed is ambiguous only if it could
+        // be the newest one. When the partner holds a *sealed* image of a
+        // strictly greater generation it cannot be: generations are strictly
+        // increasing, and a sealed image is one some publication finished, so
+        // the partner is the newer committed image whichever history left this
+        // slot's bytes. Adopting the partner is then correct under both readings
+        // rather than a choice between them, and no operator is needed.
+        //
+        // This is what an ordinary publication interrupted in its first bytes
+        // leaves: those bytes are still byte-for-byte the older image's — the
+        // magic, the version, and the leading bytes of the generation — so the
+        // slot holds the whole older image with its mark overwritten.
+        if let SlotDamage::UnsealedCompleteImage { generation, .. } = damage {
+            if let SlotState::Intact {
+                generation: sealed_generation,
+                ..
+            } = other
+            {
+                if sealed_generation > generation {
+                    continue;
+                }
+            }
+        }
+        // Three ways this stays a refusal even under a repair:
+        //
+        // - A version this build cannot read is not damage, so it is not
+        //   something a repair may clear. Giving it up would delete a newer
+        //   build's committed work on the strength of one byte.
+        // - The partner holds no image. A repair chooses between two readings of
+        //   a store, and an empty partner is not a second reading: adopting it
+        //   would open a fresh lock service over a store that has committed, and
+        //   hand out token 1 for a resource whose guarded downstream has already
+        //   accepted far more. That is the same fail-closed rule as
+        //   `NoReadableImage`, reached from the other side.
+        // - The caller asked to open rather than to repair.
+        if matches!(damage, SlotDamage::UnsupportedFormatVersion { .. })
+            || !matches!(other, SlotState::Intact { .. })
+            || on_unreadable == OnUnreadableSlot::Refuse
+        {
             return Err(LockStoreError::UnreadableSlot {
                 slot,
                 damage,
-                other: states[slot.other().position()],
+                other,
             });
         }
+        given_up = Some((slot, damage));
     }
 
     let generations = [generation_of(states[0]), generation_of(states[1])];
@@ -2010,6 +2453,7 @@ fn choose_live_slot(
                 generation: left.max(right),
                 image: newer,
                 cross_checked_marks: true,
+                given_up,
             }))
         }
         // One committed image beside a slot holding none. Reaching here is a
@@ -2023,12 +2467,14 @@ fn choose_live_slot(
             generation,
             image,
             cross_checked_marks: false,
+            given_up,
         })),
         (None, Some(generation), _, Some(image)) => Ok(Some(AdoptedImage {
             slot: SlotIndex::One,
             generation,
             image,
             cross_checked_marks: false,
+            given_up,
         })),
         // Neither slot holds a committed image, and neither is unreadable. A
         // publication only ever writes the stale slot, so an empty partner
@@ -2419,7 +2865,254 @@ pub mod raw_slot {
 
 #[cfg(test)]
 mod tests {
-    use super::{crc32, CRC32_POLYNOMIAL};
+    use super::{
+        crc32, encode_image, verify_slot, SlotDamage, CRC32_POLYNOMIAL, SEALED_MARK,
+        SLOT_HEADER_LEN, SLOT_TRAILER_LEN, UNSEALED_MARK,
+    };
+    use crate::{
+        ClientId, Command, LeaseDuration, LockConfig, LockService, Operation, RequestFingerprint,
+        RequestIdentity, ResourceName, Sequence, SessionEpoch,
+    };
+    use rafter::LogIndex;
+
+    /// One sealed image over a lock service holding `resources` tenures.
+    ///
+    /// An empty service would exercise the header and almost none of the
+    /// payload, and the invariants below are about *every* byte of an image.
+    /// The resource count is a parameter so a test can build two images of
+    /// different lengths, which is the shape a shorter publication over a longer
+    /// one leaves behind.
+    fn sealed_image_of(resources: u32, generation: u64) -> Vec<u8> {
+        let config = LockConfig::new(2, 8).expect("bounds are non-zero");
+        let mut service = LockService::new(config);
+        let client_id = ClientId::new(0);
+        let session_epoch = SessionEpoch::new(1).expect("epoch one is valid");
+        service.apply(Command::OpenSession {
+            client_id,
+            session_epoch,
+        });
+        for index in 0..resources {
+            let operation = Operation::Acquire {
+                resource: ResourceName::new(&format!("orders/shard-{index}"))
+                    .expect("the name is legal"),
+                lease: LeaseDuration::new(10).expect("a lease is non-zero"),
+            };
+            service.apply(Command::Submit {
+                request: RequestIdentity {
+                    client_id,
+                    session_epoch,
+                    sequence: Sequence::new(u64::from(index) + 1).expect("sequences start at one"),
+                    fingerprint: RequestFingerprint::of(&operation),
+                },
+                operation,
+            });
+        }
+        encode_image(
+            config,
+            &service,
+            LogIndex(u64::from(resources) + 1),
+            generation,
+        )
+        .expect("the image encodes")
+    }
+
+    fn sealed_image() -> Vec<u8> {
+        sealed_image_of(1, 1)
+    }
+
+    /// The closure claim on [`SlotDamage`], as a check rather than a paragraph.
+    ///
+    /// The `match` names every variant, so adding one to the enum stops this
+    /// compiling until somebody has decided which side of the skip rule it falls
+    /// on. That is the whole point: "exactly one of these is residue" is the
+    /// sentence the skip branch reads, and a new variant silently defaulting to
+    /// either answer is how that sentence goes stale.
+    #[test]
+    fn exactly_one_slot_damage_is_residue_an_interrupted_publication_leaves() {
+        let every = [
+            SlotDamage::SlotEmptied,
+            SlotDamage::UnsealedPublication { present: 20 },
+            SlotDamage::UnsealedCompleteImage {
+                len: 180,
+                generation: 6,
+            },
+            SlotDamage::HeaderIncomplete { present: 12 },
+            SlotDamage::NotALockImage { magic: [b'Z'; 4] },
+            SlotDamage::UnsupportedFormatVersion { version: 2 },
+            SlotDamage::HeaderChecksumMismatch {
+                declared: 1,
+                computed: 2,
+            },
+            SlotDamage::PayloadIncomplete {
+                declared: 9,
+                present: 3,
+            },
+            SlotDamage::MissingCommitChecksum,
+            SlotDamage::PartialCommitChecksum { present: 2 },
+            SlotDamage::CommitChecksumMismatch {
+                declared: 1,
+                computed: 2,
+            },
+            SlotDamage::TrailingBytes { extra: 4 },
+        ];
+        for damage in every {
+            // Exhaustive by name. A variant added later has to be added here.
+            let expected = match damage {
+                SlotDamage::UnsealedPublication { .. } => true,
+                SlotDamage::SlotEmptied
+                | SlotDamage::UnsealedCompleteImage { .. }
+                | SlotDamage::HeaderIncomplete { .. }
+                | SlotDamage::NotALockImage { .. }
+                | SlotDamage::UnsupportedFormatVersion { .. }
+                | SlotDamage::HeaderChecksumMismatch { .. }
+                | SlotDamage::PayloadIncomplete { .. }
+                | SlotDamage::MissingCommitChecksum
+                | SlotDamage::PartialCommitChecksum { .. }
+                | SlotDamage::CommitChecksumMismatch { .. }
+                | SlotDamage::TrailingBytes { .. } => false,
+            };
+            assert_eq!(
+                damage.is_publication_residue(),
+                expected,
+                "{damage:?} changed sides of the skip rule"
+            );
+        }
+        assert_eq!(
+            every
+                .iter()
+                .filter(|damage| damage.is_publication_residue())
+                .count(),
+            1,
+            "exactly one damage may be skipped"
+        );
+    }
+
+    /// The invariant that closes the mark byte's hole, checked exhaustively.
+    ///
+    /// Every byte of a sealed image, set to every other value it could take:
+    /// none of them may produce residue. Before the mark carried a completeness
+    /// test beside it, one of these 45,000-odd mutants did — byte zero to
+    /// `0x00`, and only that one — and recovery answered it by adopting the
+    /// stale partner and regressing an acknowledged fencing high-water mark.
+    ///
+    /// This is the single-fault assumption in
+    /// [`SlotDamage::is_publication_residue`]'s proof, checked rather than
+    /// asserted.
+    #[test]
+    fn no_single_byte_change_to_a_sealed_image_is_ever_publication_residue() {
+        let image = sealed_image();
+        for offset in 0..image.len() {
+            let original = image[offset];
+            for value in 0..=u8::MAX {
+                if value == original {
+                    continue;
+                }
+                let mut mutant = image.clone();
+                mutant[offset] = value;
+                if let Err(damage) = verify_slot(&mutant) {
+                    assert!(
+                        !damage.is_publication_residue(),
+                        "byte {offset} of a sealed image changed from {original:#04x} to \
+                         {value:#04x} reads as {damage:?}, which recovery would skip"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The byte-zero mutant on its own, named, so a regression says which byte.
+    #[test]
+    fn a_sealed_images_mark_byte_rotting_to_zero_is_a_whole_image_not_residue() {
+        let mut mutant = sealed_image();
+        let len = mutant.len() as u64;
+        assert_eq!(mutant[0], SEALED_MARK, "the fixture is sealed");
+        mutant[0] = UNSEALED_MARK;
+        assert_eq!(
+            verify_slot(&mutant).err(),
+            Some(SlotDamage::UnsealedCompleteImage { len, generation: 1 }),
+            "a live slot whose mark byte rotted must be named a whole image, not an interrupted \
+             publication"
+        );
+    }
+
+    /// The other direction, so the fix cannot be "refuse everything".
+    ///
+    /// Ordinary crash residue — a strict prefix of an image carrying the
+    /// unsealed mark — must still be residue at every length, or a crash in the
+    /// middle of a publication would need an operator.
+    #[test]
+    fn every_strict_prefix_of_an_unsealed_image_is_publication_residue() {
+        let image = sealed_image();
+        assert!(
+            image.len() > SLOT_HEADER_LEN + SLOT_TRAILER_LEN,
+            "the fixture carries a payload"
+        );
+        // A one-byte slot is the creation mark, which is not damage at all.
+        for present in 2..image.len() {
+            let mut residue = image[..present].to_vec();
+            residue[0] = UNSEALED_MARK;
+            assert_eq!(
+                verify_slot(&residue).err(),
+                Some(SlotDamage::UnsealedPublication {
+                    present: present as u64
+                }),
+                "a {present} byte prefix of an unsealed publication must stay skippable"
+            );
+        }
+    }
+
+    /// A shorter image published over a longer one, interrupted before the slot
+    /// is cut back, leaves a new prefix followed by the older image's tail.
+    ///
+    /// That mixture is what a real interrupted publication looks like on the
+    /// medium — the store cuts the slot back to the new length only after the
+    /// bytes are out — and recovery must be able to set it aside at every
+    /// boundary without an operator. It is the case the completeness test is
+    /// most likely to get wrong, because both halves are images this build wrote
+    /// and carry its magic and version.
+    ///
+    /// Two shapes come out of it and both are answerable. Until the two images
+    /// first differ, the slot still holds the *whole older image* with its mark
+    /// overwritten, and its generation is the older one, which the sealed
+    /// partner outranks. From the first differing byte on, the mixture verifies
+    /// as nothing and is ordinary residue. What must never appear is a whole
+    /// image carrying the *newer* generation, because that is the one shape
+    /// recovery cannot resolve on its own.
+    #[test]
+    fn a_new_prefix_over_an_older_tail_is_never_the_newer_generation() {
+        let older = sealed_image_of(4, 7);
+        let newer = sealed_image_of(1, 8);
+        assert!(
+            newer.len() < older.len(),
+            "the newer image has to be the shorter one for a tail to survive"
+        );
+        let mut whole_older = 0_usize;
+        for boundary in 1..newer.len() {
+            let mut mixture = newer[..boundary].to_vec();
+            mixture.extend_from_slice(&older[boundary..]);
+            mixture[0] = UNSEALED_MARK;
+            let damage = verify_slot(&mixture)
+                .err()
+                .expect("an unsealed slot never verifies as a sealed image");
+            match damage {
+                SlotDamage::UnsealedPublication { .. } => {}
+                SlotDamage::UnsealedCompleteImage { generation, .. } => {
+                    assert_eq!(
+                        generation, 7,
+                        "the whole image still in the slot at byte {boundary} is the older one; \
+                         a newer generation here would be unresolvable"
+                    );
+                    whole_older += 1;
+                }
+                other => panic!("a publication interrupted at byte {boundary} left {other:?}"),
+            }
+        }
+        assert!(
+            whole_older > 0,
+            "the sweep never reached the boundaries where the older image survives whole, so it \
+             proved nothing about them"
+        );
+    }
 
     /// A second implementation, deliberately written a different way.
     ///

@@ -170,3 +170,68 @@ fn the_version_byte_is_consulted_at_every_length_a_slot_can_have() {
          rather than adopted as this build's residue: {consulted:?}"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The version refusal is the one the repair entry point must not clear.
+//
+// The lock store gained `open_and_repair` because an ordinary crash can leave a
+// whole image whose mark reads unsealed, and refusing that with no way forward
+// would be worse than the refusal. A version this build cannot read is a
+// different fact: it needs no corruption at all, so those bytes are a newer
+// build's committed work, and the documented remedy for damage must not be a way
+// to discard one. The sibling ledger refuses the same shape from both entry
+// points for the same reason.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_future_slot_version_is_not_given_up_by_the_documented_remedy() {
+    for mark in [b'R', 0x00] {
+        let scratch = ScratchDir::new(&format!("version-gate-repair-{mark:#04x}"));
+        let app = commit_workload(scratch.path());
+        let live = app.store().live_slot().expect("the workload committed");
+        drop(app);
+
+        let mut bytes = raw_slot::read(scratch.path(), live).expect("the live slot reads");
+        bytes[0] = mark;
+        bytes[4] = 2;
+        raw_slot::write(scratch.path(), live, &bytes).expect("the live slot rewrites");
+        let length_before = bytes.len();
+
+        for (entry_point, opened) in [
+            ("open", LockStore::open(scratch.path(), config(2, 4))),
+            (
+                "open_and_repair",
+                LockStore::open_and_repair(scratch.path(), config(2, 4)),
+            ),
+        ] {
+            match opened {
+                Err(LockStoreError::UnreadableSlot {
+                    slot,
+                    damage: SlotDamage::UnsupportedFormatVersion { version: 2 },
+                    ..
+                }) => assert_eq!(
+                    slot, live,
+                    "`{entry_point}` named the wrong slot at mark {mark:#04x}"
+                ),
+                Err(other) => panic!(
+                    "`{entry_point}` refused a version-2 slot at mark {mark:#04x} for the wrong \
+                     reason: {other}"
+                ),
+                Ok(store) => panic!(
+                    "`{entry_point}` resolved a version-2 slot at mark {mark:#04x}, so the \
+                     documented remedy for damage became a way to discard a newer build's \
+                     committed work: live slot {:?}, generation {}",
+                    store.live_slot(),
+                    store.generation()
+                ),
+            }
+            assert_eq!(
+                raw_slot::read(scratch.path(), live)
+                    .expect("the slot reads back")
+                    .len(),
+                length_before,
+                "`{entry_point}` must not rewrite a slot it refused"
+            );
+        }
+    }
+}

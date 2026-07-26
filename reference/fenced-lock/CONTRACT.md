@@ -471,12 +471,22 @@ tags.
 
 A magic's first byte doubles as the publication mark described under recovery,
 so the mark costs no extra field: a sealed copy is byte-for-byte what it would
-be without it, and both checksums are computed over the sealed form, which is
-also why an unsealed image cannot accidentally verify.
+be without it, and both checksums are computed over the sealed form. That last
+detail is what makes the mark checkable rather than merely present. Restoring the
+mark to its sealed value and reading the copy again is a well-defined question
+with a checksum behind it, which is how recovery tells a whole image with a
+rotted mark from an image a publication never finished, and it is why the mark
+needed no format change to stop being the one unprotected byte.
 
 A format version this build does not write deserves naming on its own, because
 it needs no corruption to occur: a binary downgrade produces it from entirely
-healthy files. It is always a refusal.
+healthy files. It is always a refusal, and the one refusal the repair entry point
+will not clear either. That order has a cost, and the cost is named rather than
+left to be discovered: the version byte is read before the checksum that covers
+it, so a single altered version byte makes a copy unreadable by both entry
+points. That is a refusal and not a loss — every byte is still on the medium —
+and the alternative trades it for a repair that can discard a newer build's
+committed work, which is the worse of the two.
 
 A durable artifact records the `LockConfig` it was written under. Opening it
 under different bounds is refused, because the bounds decide which states are
@@ -505,6 +515,13 @@ pre-transaction or the post-transaction state, never between. A failure reported
 by the store means the outcome is unknown; reopening is the only thing that
 decides it, and no caller may infer from an error that no bytes changed.
 
+One boundary is resolved by the named repair entry point rather than by opening:
+the point at which the whole image is durable and its publication mark has not
+yet been promoted. Those bytes are also exactly what a live copy whose mark byte
+later rotted leaves, so opening refuses rather than choosing between two
+histories it cannot see, and a caller who has decided which happened resolves it
+to the pre-transaction state. The argument is under "Recovery guarantees".
+
 After a failed publication the handle is poisoned and refuses every later
 transaction until it is reopened. A store that failed part way through
 publishing cannot describe its own artifact.
@@ -516,7 +533,9 @@ found, and its report is evidence a test asserts on rather than a diagnostic:
 a crash test that could not show which window it reproduced would prove only
 that an uninterrupted store works.
 
-Recovery never repairs and never guesses. An unreadable artifact is not adopted.
+Opening never rewrites an artifact and never guesses. An unreadable artifact is
+not adopted. Discarding one is a separate, named entry point, described at the
+end of this section.
 
 **An artifact this build cannot read is never treated as absent.** That is the
 principle the rest of this section is an application of. Unreadable committed
@@ -548,16 +567,58 @@ first byte of a copy is its publication mark**: held at a value no sealed image
 carries while the image is being written, and promoted to the sealed value by a
 single byte written only after every other byte of that image is durable. A
 crash leaves a prefix of what was written and that byte goes out first, so every
-interrupted publication leaves the mark unsealed. The contrapositive is what
-recovery uses: a sealed mark proves no publication was interrupted in that copy,
-so its bytes are exactly what a completed publication sealed there, and any
-damage to them happened afterwards.
+interrupted publication leaves the mark unsealed.
 
-Every damage but an unsealed one refuses the store. A foreign magic, an
+**The mark is half of the rule and not the rule.** Reading it as the whole rule
+is how this section was wrong the second time. `interrupted ⇒ unsealed` is what
+the paragraph above proves; its contrapositive is `sealed ⇒ not interrupted`;
+and *skipping* on an unsealed mark needs neither of those but `unsealed ⇒ was
+being written`, which is a third statement, and false. One byte shows it: the
+sealed mark is `0x52`, the unsealed value is `0x00`, and a live copy whose first
+byte rots between them reads as residue. Recovery adopted the stale partner, an
+acknowledged fencing high-water mark regressed by a generation, the token it had
+reached was reissued to a fresh tenure, and a guarded resource accepted two
+independent tenures under one token — reached through the rule that exists to
+prevent exactly that. Every *other* byte of the same header is under a checksum
+and refuses the store. The mark byte was the only header byte no checksum was
+ever consulted for, because the mark test returned first.
+
+So skipping now requires the unsealed mark **and** positive evidence that the
+bytes are not a whole image. Recovery reads the copy a second time with the mark
+restored to the value both checksums were computed over — which is what makes
+the question well defined — and skips only what still fails to verify at a step
+this build can read. Three outcomes, three different facts:
+
+- **Not a whole image**: a header cut short, a header checksum over bytes that
+  are all present, a payload that is not all there, no trailer, a torn trailer,
+  a trailer that seals nothing, bytes past the seal. With the unsealed mark that
+  is ordinary residue, and it is skipped.
+- **A whole image that verifies**, with only the mark reading unsealed. Two
+  histories leave exactly these bytes — the written-but-not-committed window,
+  and a live copy whose mark rotted — and nothing separates them, the
+  generations included: the copy being written carries the live copy's
+  generation plus one under both readings. Recovery refuses. Refusing is
+  recoverable under both readings and skipping is recoverable under only one,
+  and the choice is made on that asymmetry rather than on a guess about which
+  history is likelier. Where the generations *do* settle it — a whole unsealed
+  image the other copy's sealed image outranks, which is what a publication
+  interrupted in its first bytes leaves — recovery resolves it with no operator
+  at all.
+- **A version this build cannot read**, which stops the second reading before it
+  can say anything at all.
+
+Every damage with a *sealed* mark refuses the store. A foreign magic, an
 unreadable version, a checksum failing over bytes that are all present, bytes
-past the seal, a sealed image cut short, a file emptied, a file missing: none
-carries the unsealed mark, so recovery has no argument about which copy the
-damage landed in. Skipping such a copy is a silent one-generation rollback.
+past the seal, a sealed image cut short, a file emptied, a file missing: none of
+them can be shown to be the copy that was being written, so recovery has no
+argument about which copy the damage landed in. Skipping such a copy is a silent
+one-generation rollback.
+
+That the mark byte is now no weaker than its neighbours is a claim about every
+byte of an image, so it is checked as one: a unit test alters every byte of a
+sealed image to every other value it could take and requires that none of the
+results is residue. A rule this narrow is exactly the kind that decays quietly,
+and a paragraph would not have noticed.
 
 Two rules follow from putting the mark first, and both were wrong while the
 shapes were doing the work:
@@ -566,7 +627,9 @@ shapes were doing the work:
   before anything classifies a copy by how many bytes it has. The argument for
   refusing a foreign version is about the field, so it holds wherever the field
   is present; gating it on a full header made the same bytes refused at one
-  length and adopted as this build's own residue at another.
+  length and adopted as this build's own residue at another. It holds on both
+  sides of the seal test, because the second reading of an unsealed copy goes
+  through the same version gate.
 - **A durable file of zero bytes, or a missing one, is damage.** Creation writes
   the mark into both copies and no publication ever shortens one to nothing, so
   neither state is one this store leaves behind. A pair of emptied files is not
@@ -584,6 +647,27 @@ The recovery report names **which** copy was damaged as well as how. That index
 is what distinguishes benign crash residue from anything else, and a report that
 could not draw the distinction would leave a caller unable to tell a clean
 restart from one worth investigating.
+
+Destructive recovery is available and is a separate, named entry point. It
+adopts the readable partner of a copy this build cannot read, and reports which
+copy it gave up, what that copy held, and the generation it adopted instead. It
+cannot report how much was given up — reading the discarded copy is exactly what
+failed — and the bound is one publication, which is the whole of what is known.
+The store did without it while its refusals were rarer; what changed is that an
+ordinary crash between a publication's barrier and its seal is now a refusal, and
+a store whose ordinary crash residue needs an operator with no documented way
+forward is worse than one that names the way forward and reports what it costs.
+
+Three refusals stay outside its reach, and each is a case where there is no
+second reading to choose between. A version this build cannot read is a newer
+build's committed work rather than damage, so the remedy for damage must not
+discard it — the sibling ledger refuses the same shape from both entry points.
+No readable copy at all leaves nothing to adopt, and opening empty would hand out
+token 1 for a resource whose guarded downstream has already accepted far more; a
+damaged copy whose partner has never held an image is the same fact reached from
+the other side. A missing file is not damage found in an artifact that was read,
+and re-creating it is a different act from choosing between two files that are
+both present.
 
 Creating a store's files is reported too, and counts against a clean opening.
 Nothing inside a durable store can tell a replica that has never run from one

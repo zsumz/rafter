@@ -547,3 +547,101 @@ fn creating_a_stores_slot_files_is_not_a_clean_opening() {
         "a second opening of the same directory creates nothing and reports nothing"
     );
 }
+
+// ---------------------------------------------------------------------------
+// What the repair entry point must refuse.
+//
+// A repair chooses between two readings of a store that holds two files. Every
+// guard below is a case where there is no second reading to choose, and letting
+// the repair proceed would turn "I have decided which of these two images is
+// live" into "start over with no fencing high-water marks at all", or into a way
+// to discard a newer build's committed work. These are the reasons `open` and
+// `open_and_repair` are one function with one branch rather than two paths.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_repair_refuses_a_store_with_no_readable_image() {
+    let scratch = ScratchDir::new("repair-refuses-no-image");
+    let mut app = open(scratch.path());
+    apply_all(&mut app, &workload());
+    let acknowledged = mark(app.store()).expect("the resource has a mark");
+    drop(app);
+
+    for slot in [SlotIndex::Zero, SlotIndex::One] {
+        let mut bytes = raw_slot::read(scratch.path(), slot).expect("the slot reads");
+        let last = bytes.len() - 1;
+        bytes[last] ^= 0xFF;
+        raw_slot::write(scratch.path(), slot, &bytes).expect("the slot rewrites");
+    }
+
+    match LockStore::open_and_repair(scratch.path(), config(2, 4)) {
+        Err(LockStoreError::NoReadableImage { .. }) => {}
+        Err(other) => panic!("unexpected refusal: {other}"),
+        Ok(store) => panic!(
+            "a repair opened a store with no readable image at all, discarding the acknowledged \
+             mark {acknowledged:?}: live slot {:?}, generation {}. The next acquisition would \
+             mint token 1 for a resource whose guarded downstream has already accepted \
+             {acknowledged:?}.",
+            store.live_slot(),
+            store.generation()
+        ),
+    }
+}
+
+#[test]
+fn a_repair_refuses_a_damaged_slot_whose_partner_holds_no_image() {
+    let scratch = ScratchDir::new("repair-refuses-empty-partner");
+    // One committed publication, so slot zero holds an image and slot one still
+    // carries its creation mark.
+    let mut app = open(scratch.path());
+    apply_all(&mut app, &workload()[..1]);
+    let live = app
+        .store()
+        .live_slot()
+        .expect("the first publication committed");
+    let stale = app.store().next_slot();
+    let acknowledged = app.store().applied_index();
+    drop(app);
+
+    // Damage the slot that holds the only image. Its partner has never held one,
+    // so there is nothing to adopt in its place.
+    let mut bytes = raw_slot::read(scratch.path(), live).expect("the live slot reads");
+    let last = bytes.len() - 1;
+    bytes[last] ^= 0xFF;
+    raw_slot::write(scratch.path(), live, &bytes).expect("the live slot rewrites");
+
+    match LockStore::open_and_repair(scratch.path(), config(2, 4)) {
+        Err(LockStoreError::UnreadableSlot { slot, .. }) => {
+            assert_eq!(slot, live, "the refusal names the damaged slot");
+        }
+        Err(other) => panic!("unexpected refusal: {other}"),
+        Ok(store) => panic!(
+            "a repair adopted {stale}, which has never held an image, in place of the only slot \
+             that ever committed. The store opened at applied index {} where it had reached {}, \
+             with live slot {:?}.",
+            store.applied_index(),
+            acknowledged,
+            store.live_slot(),
+        ),
+    }
+}
+
+#[test]
+fn a_repair_over_a_healthy_store_reports_no_repair() {
+    let scratch = ScratchDir::new("repair-is-not-repairing");
+    let mut app = open(scratch.path());
+    apply_all(&mut app, &workload());
+    let live = app.store().live_slot().expect("the workload committed");
+    let applied = app.store().applied_index();
+    drop(app);
+
+    let store =
+        LockStore::open_and_repair(scratch.path(), config(2, 4)).expect("a healthy store opens");
+    assert_eq!(store.recovery().repair(), None, "nothing was given up");
+    assert_eq!(store.live_slot(), Some(live));
+    assert_eq!(store.applied_index(), applied);
+    assert!(
+        store.recovery().is_clean(),
+        "being willing to repair is not repairing"
+    );
+}

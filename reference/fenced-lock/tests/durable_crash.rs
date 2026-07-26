@@ -93,33 +93,21 @@ fn a_crash_at_every_byte_of_a_publication_recovers_to_exactly_one_side_of_it() {
     let interrupted = commands.len();
     let prefix = &commands[..interrupted - 1];
 
-    // Establish the two legal answers, and the exact image the interrupted
-    // store would have written, by running the same workload uninterrupted.
-    let reference = ScratchDir::new("sweep-reference");
-    let mut app = open(reference.path(), FaultPlan::none());
-    apply_all(&mut app, prefix);
-    let before = durable_state(&app);
-    let live_before = app.store().live_slot().expect("the prefix committed");
-    let stale_before = app.store().next_slot();
-    // A publication no longer empties the slot before writing it, because an
-    // emptied slot is damage this store must be able to name. So an interrupted
-    // publication leaves the new prefix over the tail of the image that was
-    // already there, and the slot's byte length is whichever of the two is
-    // longer. The seal is what makes those bytes skippable; their length says
-    // nothing, and the residue reports the length rather than pretending to
-    // know where the write stopped.
-    let stale_len_before = as_u64(
-        raw_slot::read(reference.path(), stale_before)
-            .expect("the stale slot reads")
-            .len(),
+    let SweepOracle {
+        before,
+        after,
+        live_before,
+        stale_before,
+        stale_len_before,
+        stale_generation_before,
+        image_len,
+        crossover,
+    } = sweep_oracle(&commands);
+    assert!(
+        crossover > 0 && crossover < image_len,
+        "the two images must share a leading run and then differ, or the sweep only visits one \
+         of the two residues (crossover {crossover}, image {image_len} bytes)"
     );
-    apply_one(&mut app, index_of(interrupted), commands[interrupted - 1])
-        .expect("an uninterrupted transaction commits");
-    let after = durable_state(&app);
-    let image_len = LockStore::planned_image_len(config(2, 4), app.service(), after.applied_index)
-        .expect("the image the sweep interrupts is encodable");
-    drop(app);
-
     assert_ne!(
         before, after,
         "a sweep whose two answers were equal would prove nothing"
@@ -144,14 +132,18 @@ fn a_crash_at_every_byte_of_a_publication_recovers_to_exactly_one_side_of_it() {
         let report = recovered.store().recovery();
         assert_eq!(
             report.damaged_slot(),
-            expected_damage(stop, image_len, stale_len_before).map(|damage| (stale_before, damage)),
+            expected_damage(
+                stop,
+                image_len,
+                stale_len_before,
+                crossover,
+                stale_generation_before
+            )
+            .map(|damage| (stale_before, damage)),
             "`{plan}` left a residue the format does not describe, or left it in the wrong slot"
         );
         if let Some((_, damage)) = report.damaged_slot() {
-            assert!(
-                damage.is_publication_residue(),
-                "an interrupted publication must leave residue a later opener may skip (`{plan}`)"
-            );
+            assert_recovery_can_set_aside(damage, recovered.store().generation(), &plan);
         }
         observed.insert(stopped_region(stop, payload_len, image_len));
 
@@ -326,6 +318,7 @@ fn a_failed_durability_barrier_leaves_the_outcome_to_recovery() {
     let plan = FaultPlan::at(as_u64(commands.len()), WriteFault::AtSlotSync);
     let mut app = open(scratch.path(), plan.clone());
     apply_all(&mut app, &commands[..commands.len() - 1]);
+    let stale = app.store().next_slot();
     apply_one(
         &mut app,
         index_of(commands.len()),
@@ -339,13 +332,121 @@ fn a_failed_durability_barrier_leaves_the_outcome_to_recovery() {
     );
     drop(app);
 
-    // The contract does not promise which side a failed barrier lands on. It
-    // promises the answer is one of the two, and that recovery is what decides.
-    let recovered = open(scratch.path(), FaultPlan::none());
-    let state = durable_state(&recovered);
+    // `AtSlotSync` fires after every byte of the new image is out and the slot
+    // has been cut back to length, so the stale slot holds an image that
+    // verifies in every respect except its mark, at a generation the live slot
+    // does not outrank. That is the one boundary `open` will not resolve, and
+    // the reason is that the same bytes are also what a live slot whose mark
+    // byte rotted leaves: skipping it is right under the first reading and drops
+    // an acknowledged fencing high-water mark under the second. This test used
+    // to assert that recovery picked a side; it pinned a choice recovery had no
+    // grounds to make.
+    let refused = LockStore::open(scratch.path(), config(2, 4))
+        .expect_err("a whole unsealed image is not something `open` may resolve");
+    let LockStoreError::UnreadableSlot { slot, damage, .. } = refused else {
+        panic!("unexpected refusal under `{plan}`: {refused}");
+    };
+    assert_eq!(slot, stale, "the refusal names the slot being written");
     assert!(
-        state == before || state == after,
-        "a failed barrier recovered to a state that is neither side of the transaction (`{plan}`)"
+        matches!(damage, SlotDamage::UnsealedCompleteImage { .. }),
+        "a failed barrier must be named as the whole unsealed image it is, not as an interrupted \
+         publication (`{plan}`): {damage:?}"
+    );
+
+    // The contract still promises the answer is one of the two sides. What
+    // changed is who says so: a caller that has decided the image was never
+    // committed asks for the repair by name, and gets exactly the
+    // pre-transaction state.
+    let repaired = LockStore::open_and_repair(scratch.path(), config(2, 4))
+        .expect("the repair entry point resolves it");
+    let repair = repaired
+        .recovery()
+        .repair()
+        .expect("the repair reports what it gave up");
+    assert_eq!(repair.slot(), stale, "under `{plan}`");
+    assert_eq!(repair.adopted(), stale.other(), "under `{plan}`");
+    let recovered = durable_state(&DurableLockStateMachine::new(repaired));
+    assert_eq!(
+        recovered, before,
+        "the repair resolves a failed barrier to the pre-transaction state (`{plan}`)"
+    );
+    assert_ne!(
+        recovered, after,
+        "the repair gave up the slot, so the post-transaction state is not what it produces"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// The written-but-not-committed window itself, which the format documents and
+// no test armed. `WriteFault::BeforeSeal` is the boundary where the whole image
+// is on the medium and the byte that seals it is not; until the mark carried a
+// completeness test beside it, recovery answered by skipping, and the answer was
+// never asserted — so the byte-for-byte identical case of a live slot whose mark
+// rotted was skipped too, silently, dropping an acknowledged fencing mark.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn a_whole_image_that_was_never_sealed_is_not_resolved_by_a_read() {
+    let commands = workload();
+    let scratch = ScratchDir::new("unsealed-whole-image");
+    let (before, _) = state_and_payload_len(&commands, commands.len());
+
+    let plan = FaultPlan::at(as_u64(commands.len()), WriteFault::BeforeSeal);
+    let mut app = open(scratch.path(), plan.clone());
+    apply_all(&mut app, &commands[..commands.len() - 1]);
+    let stale = app.store().next_slot();
+    let live = app.store().live_slot().expect("the prefix committed");
+    apply_one(
+        &mut app,
+        index_of(commands.len()),
+        commands[commands.len() - 1],
+    )
+    .expect_err("an image that was not sealed is not a transaction");
+    assert_eq!(app.store().fired_fault(), Some(WriteFault::BeforeSeal));
+    drop(app);
+
+    let lengths_before = [
+        raw_slot::read(scratch.path(), SlotIndex::Zero).expect("slot zero reads"),
+        raw_slot::read(scratch.path(), SlotIndex::One).expect("slot one reads"),
+    ]
+    .map(|bytes| bytes.len());
+
+    let refused = LockStore::open(scratch.path(), config(2, 4))
+        .expect_err("a whole unsealed image is not residue `open` may skip");
+    let LockStoreError::UnreadableSlot { slot, damage, .. } = refused else {
+        panic!("unexpected refusal under `{plan}`: {refused}");
+    };
+    assert_eq!(slot, stale, "under `{plan}`");
+    assert!(
+        matches!(damage, SlotDamage::UnsealedCompleteImage { .. }),
+        "under `{plan}` the slot must be named a whole unsealed image: {damage:?}"
+    );
+    assert!(
+        !damage.is_publication_residue(),
+        "a whole unsealed image is not an interrupted publication (`{plan}`)"
+    );
+
+    // Nothing was rewritten by the refusal, which is the property that makes
+    // refusing recoverable under both readings and skipping recoverable under
+    // only one.
+    let lengths_after = [
+        raw_slot::read(scratch.path(), SlotIndex::Zero).expect("slot zero reads back"),
+        raw_slot::read(scratch.path(), SlotIndex::One).expect("slot one reads back"),
+    ]
+    .map(|bytes| bytes.len());
+    assert_eq!(
+        lengths_after, lengths_before,
+        "a refusal must not rewrite either slot (`{plan}`)"
+    );
+
+    let repaired = LockStore::open_and_repair(scratch.path(), config(2, 4))
+        .expect("the repair entry point resolves it");
+    assert_eq!(repaired.live_slot(), Some(live), "under `{plan}`");
+    assert_eq!(
+        durable_state(&DurableLockStateMachine::new(repaired)),
+        before,
+        "the repair resolves the written-but-not-committed window to the pre-transaction state \
+         (`{plan}`)"
     );
 }
 
@@ -1912,25 +2013,144 @@ type DamageTest = fn(SlotDamage) -> bool;
 /// A byte-level corruption applied to one slot image.
 type ImageMutation = fn(&mut Vec<u8>);
 
-/// Returns the slot damage a stop after `stop` bytes of an image must leave.
+/// What the slot being written holds after a publication stopped at `stop`.
 ///
-/// An interrupted publication leaves one damage whatever byte it stopped on,
-/// because the answer recovery needs is not "which part of the image is missing"
-/// but "was this image ever sealed". The byte count is still pinned, and pinning
-/// it is strictly sharper than pinning a shape: it says the residue records
-/// exactly where the write stopped.
+/// `stop == 0` writes nothing, so the slot keeps whatever it already held, and
+/// `stop == image_len` is a committed publication. In between the slot holds the
+/// new prefix over the old image's tail, and there are exactly two shapes,
+/// separated by the byte at which the two images first differ:
 ///
-/// `stop == 0` writes nothing, so the slot keeps whatever it already held.
-/// Anywhere else the slot holds the new prefix over the old image's tail, so
-/// `present` is the longer of the two.
-fn expected_damage(stop: u64, image_len: u64, previous_len: u64) -> Option<SlotDamage> {
+/// - **Below it** every byte written so far is a byte the old image already had
+///   — the magic, the version, the leading zeros of the generation — so the slot
+///   still holds the *whole old image*, with only its mark overwritten. Recovery
+///   names it as that, carrying the old generation, and sets it aside because
+///   the live slot's sealed image outranks it.
+/// - **At or above it** the mixture verifies as nothing, and it is ordinary
+///   residue whose `present` is the longer of the two images.
+///
+/// Splitting on the crossover rather than accepting either shape is deliberate.
+/// The whole-image shape carrying the *newer* generation is the one recovery
+/// cannot resolve, so a test that accepted "either shape" would pass while the
+/// store lost the ability to tell them apart.
+fn expected_damage(
+    stop: u64,
+    image_len: u64,
+    previous_len: u64,
+    crossover: u64,
+    previous_generation: u64,
+) -> Option<SlotDamage> {
     if stop == 0 || stop == image_len {
         None
+    } else if stop <= crossover {
+        Some(SlotDamage::UnsealedCompleteImage {
+            len: previous_len,
+            generation: previous_generation,
+        })
     } else {
         Some(SlotDamage::UnsealedPublication {
             present: stop.max(previous_len),
         })
     }
+}
+
+/// Everything the byte sweep needs to know before it interrupts anything.
+struct SweepOracle {
+    before: DurableState,
+    after: DurableState,
+    live_before: SlotIndex,
+    stale_before: SlotIndex,
+    stale_len_before: u64,
+    stale_generation_before: u64,
+    image_len: u64,
+    crossover: u64,
+}
+
+/// Runs the sweep's workload uninterrupted, to establish its two legal answers
+/// and the exact bytes an interrupted run would be writing over.
+///
+/// A publication no longer empties the slot before writing it, because an
+/// emptied slot is damage this store must be able to name. So an interrupted
+/// publication leaves the new prefix over the tail of the image that was already
+/// there, and the slot's byte length is whichever of the two is longer. Which of
+/// the two residues that mixture is depends on `crossover`: the byte at which
+/// the image being written stops being invisible to a reader of the slot it
+/// overwrites, below which the old image is still there whole.
+fn sweep_oracle(commands: &[Command]) -> SweepOracle {
+    let interrupted = commands.len();
+    let reference = ScratchDir::new("sweep-reference");
+    let mut app = open(reference.path(), FaultPlan::none());
+    apply_all(&mut app, &commands[..interrupted - 1]);
+    let before = durable_state(&app);
+    let live_before = app.store().live_slot().expect("the prefix committed");
+    let stale_before = app.store().next_slot();
+    let stale_bytes_before =
+        raw_slot::read(reference.path(), stale_before).expect("the stale slot reads");
+
+    apply_one(&mut app, index_of(interrupted), commands[interrupted - 1])
+        .expect("an uninterrupted transaction commits");
+    let after = durable_state(&app);
+    let image_len = LockStore::planned_image_len(config(2, 4), app.service(), after.applied_index)
+        .expect("the image the sweep interrupts is encodable");
+    drop(app);
+
+    let published =
+        raw_slot::read(reference.path(), stale_before).expect("the committed slot reads");
+    SweepOracle {
+        before,
+        after,
+        live_before,
+        stale_before,
+        stale_len_before: as_u64(stale_bytes_before.len()),
+        stale_generation_before: image_generation(&stale_bytes_before),
+        image_len,
+        crossover: shared_prefix(&stale_bytes_before, &published),
+    }
+}
+
+/// Asserts that recovery could set this damage aside without an operator.
+///
+/// There are two ways it can. Either the damage is residue an opener may skip,
+/// or it is the whole *older* image, which the live slot's sealed image
+/// outranks. What must never appear after an interrupted publication is a whole
+/// image carrying a generation the live slot does not outrank: that is the one
+/// shape recovery cannot resolve on its own, and reaching it from an ordinary
+/// crash would mean an ordinary crash needed an operator.
+fn assert_recovery_can_set_aside(damage: SlotDamage, live_generation: u64, plan: &FaultPlan) {
+    match damage {
+        SlotDamage::UnsealedPublication { .. } => {}
+        SlotDamage::UnsealedCompleteImage { generation, .. } => assert!(
+            generation < live_generation,
+            "`{plan}` left a whole image of generation {generation} the live slot does not \
+             outrank"
+        ),
+        other => panic!("an interrupted publication left {other:?} (`{plan}`)"),
+    }
+}
+
+/// Reads the publication generation out of a slot image's header.
+///
+/// The sweep needs the stale slot's own generation to say which whole image a
+/// half-written slot still holds, and the store reports a slot's generation only
+/// for a slot it adopted or classified as intact.
+fn image_generation(bytes: &[u8]) -> u64 {
+    let field: [u8; 8] = bytes[5..13]
+        .try_into()
+        .expect("a slot image carries its generation at bytes 5..13");
+    u64::from_be_bytes(field)
+}
+
+/// Returns how many leading bytes two images share.
+///
+/// This is where a publication stops being invisible to a reader of the slot it
+/// is overwriting, and the sweep needs it to say which of the two residues each
+/// stop must produce.
+fn shared_prefix(left: &[u8], right: &[u8]) -> u64 {
+    as_u64(
+        left.iter()
+            .zip(right.iter())
+            .take_while(|(left, right)| left == right)
+            .count(),
+    )
 }
 
 /// Returns how many bytes a slot will hold after a publication into it stops
