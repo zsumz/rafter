@@ -12,11 +12,28 @@ publish = false
 [dependencies]
 rafter = "0.0.1"
 rafter-app = "0.0.1"
-rafter-service = "0.0.1"
-
-[dev-dependencies]
 rafter-runtime = "0.0.1"
+rafter-service = "0.0.1"
 rafter-storage = "0.0.1"
+rafter-transport-tcp-insecure = "0.0.1"
 
 [lints]
 workspace = true
+
+# The `lock-node` binary is one OS process per replica. It is discovered from
+# `src/bin/lock-node/main.rs` rather than declared here, because the
+# dependency-boundary test scans this manifest for the substring a checkout
+# dependency would introduce and a declared target location is spelled the same
+# way. It is a binary rather than an example so that the process suite can find
+# a built copy through `CARGO_BIN_EXE_lock-node` in both dependency modes.
+#
+# `rafter-runtime` and `rafter-storage` moved out of `dev-dependencies` for it:
+# a binary under `src/bin/` links the ordinary dependency graph, and this
+# replica needs the durable runtime and the file-backed Raft stores.
+#
+# `rafter-transport-tcp-insecure` supplies the peer frame encoding and nothing
+# else. It is named here rather than hand-rolled because it is inside the set
+# of crates `scripts/reference-source-check` patches — the whole publishable
+# set, which it has not always been — so naming it resolves from the checkout
+# like every other Rafter dependency rather than splitting the graph. It is
+# insecure by name and by contract, and `CONTRACT.md` says what that costs.

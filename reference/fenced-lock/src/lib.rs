@@ -9,6 +9,12 @@
 //! `rafter-app` replicated state machine, versioned command and result frames,
 //! and a `rafter-service` client whose queries are always linearizable. It
 //! adapts and never re-decides; the oracle stays out of its reach entirely.
+//!
+//! The `lock-node` binary beside this library runs one replica as an operating
+//! system process, over file-backed Raft stores and a TCP link. It is
+//! integration composition and nothing more — the link authenticates nothing
+//! and the client protocol authenticates nothing — and `CONTRACT.md` says
+//! exactly what that establishes.
 
 #![forbid(unsafe_code)]
 
