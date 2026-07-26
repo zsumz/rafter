@@ -78,8 +78,8 @@ fn every_continuously_ready_group_is_offered_a_turn_in_every_pass() {
         .expect("a fair scheduler keeps the bound");
     assert_eq!(report.widest_gap, 0);
     assert!(
-        report.passes_completed >= 8,
-        "the workload must complete enough passes to mean something: {report:?}"
+        report.serviced >= 8,
+        "the workload must move enough work to mean something: {report:?}"
     );
 
     // Every group but the poisoned one made progress, and the poisoned one made
@@ -191,9 +191,17 @@ fn a_deliberately_unfair_scheduler_is_caught_with_the_exact_gap() {
 /// question a reader assumes it asked.
 ///
 /// The consequence is a rule for this suite rather than a change to the audit:
-/// every test that asserts fairness also asserts a floor on `passes_completed`,
-/// because agreement between two models that both did nothing is perfect and
-/// worthless. See CONTRACT.md's "What the audit does not claim".
+/// every test that asserts fairness also asserts a floor on the work the
+/// history *serviced*, because agreement between two models that both did
+/// nothing is perfect and worthless.
+///
+/// The floor is on service rather than on plans, and that is a correction. A
+/// floor on `passes_completed` is met by a host doing nothing at all: an empty
+/// plan names exactly the ready set when nothing is ready, so a scheduler
+/// wedged behind one expensive item can arm and retire plans forever and clear
+/// any threshold on them. `redteam_occupancy::the_vacuity_floor_is_on_service_because_arming_is_free`
+/// is that case, and it is why this rule moved. See CONTRACT.md's "What the
+/// audit does not claim".
 #[test]
 fn a_scheduler_that_never_arms_a_plan_is_not_certified_fair_by_silence() {
     let bounds = config(4, 1, 2, 16, 64);
@@ -212,11 +220,13 @@ fn a_scheduler_that_never_arms_a_plan_is_not_certified_fair_by_silence() {
     println!("three permanently ready groups, never scheduled: {report:?}");
     assert_eq!(report.widest_gap, 0, "the bound holds over no decisions");
     assert_eq!(report.passes_armed, 0);
-    assert_eq!(
-        report.passes_completed, 0,
-        "and this is the number that says the run proved nothing"
-    );
+    assert_eq!(report.passes_completed, 0);
     assert_eq!(report.opportunities, 0);
+    assert_eq!(
+        report.serviced, 0,
+        "and this is the number that says the run proved nothing, because it is \
+         the only one an empty plan cannot inflate"
+    );
     assert_eq!(
         replay.summary.ready_groups, 3,
         "all three were ready the whole time and were offered nothing"

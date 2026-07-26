@@ -495,8 +495,8 @@ fn independent_models_agree_across_thousands_of_groups() {
             .unwrap_or_else(|violation| panic!("seed {seed} broke the bound: {violation:?}"));
         assert_eq!(report.widest_gap, 0, "seed {seed}");
         assert!(
-            report.passes_completed >= 8,
-            "seed {seed} completed too few passes to mean anything: {report:?}"
+            report.serviced >= 8,
+            "seed {seed} moved too little work to mean anything: {report:?}"
         );
         assert!(
             report.widest_plan > MANY_GROUPS / 2,
@@ -689,8 +689,8 @@ fn independent_models_agree_when_every_dimension_combines_at_scale() {
         // over a workload that only looked combined.
         assert_eq!(report.widest_gap, 0, "seed {seed}");
         assert!(
-            report.passes_completed >= 8,
-            "seed {seed} retired too few passes to mean anything: {report:?}"
+            report.serviced >= 8,
+            "seed {seed} moved too little work to mean anything: {report:?}"
         );
         assert!(
             report.widest_plan >= 16,
@@ -859,8 +859,8 @@ fn independent_models_agree_while_groups_are_removed_and_reopened() {
             .audit()
             .unwrap_or_else(|violation| panic!("seed {seed} broke the bound: {violation:?}"));
         assert!(
-            report.passes_completed >= 8,
-            "seed {seed} retired too few passes to mean anything: {report:?}"
+            report.serviced >= 8,
+            "seed {seed} moved too little work to mean anything: {report:?}"
         );
     }
 }

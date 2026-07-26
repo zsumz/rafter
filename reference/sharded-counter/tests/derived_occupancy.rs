@@ -589,13 +589,13 @@ fn a_correct_scheduler_keeps_every_occupancy_it_opens() {
         .audit()
         .expect("a correct scheduler keeps the bound");
     println!(
-        "{dispatches} dispatches over {} passes, widest plan {}, gap {}",
-        report.passes_completed, report.widest_plan, report.widest_gap
+        "{dispatches} dispatches over {} passes, {} items serviced, widest plan {}, gap {}",
+        report.passes_completed, report.serviced, report.widest_plan, report.widest_gap
     );
     assert!(dispatches > 0);
     assert!(
-        report.passes_completed >= 8,
-        "the workload must complete enough passes to mean something: {report:?}"
+        report.serviced >= 8,
+        "the workload must move enough work to mean something: {report:?}"
     );
 }
 

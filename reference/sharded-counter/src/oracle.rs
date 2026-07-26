@@ -8,8 +8,8 @@ use crate::{
     CounterResult, FailureRecord, GroupAvailability, GroupId, GroupIncarnation, GroupLifecycle,
     GroupView, HistoryEvent, LifecycleOutcome, LifecycleRejection, LifecycleRequest, OfferOutcome,
     Operation, OperationOutcome, PassIndex, RequestFingerprint, RequestIdentity, SchedulerConfig,
-    SchedulerSummary, SchedulerView, Sequence, ServiceCost, ServiceRecord, SessionEpoch,
-    SessionOutcome, SkipReason, TickIndex, Work, WorkClass, WorkFailure, WorkId, WorkQuota,
+    SchedulerSummary, SchedulerView, Sequence, ServiceRecord, SessionEpoch, SessionOutcome,
+    SkipReason, TickIndex, Work, WorkClass, WorkFailure, WorkId, WorkQuota,
 };
 
 /// A scheduling rule the recorded decisions did not keep.
@@ -125,20 +125,64 @@ pub enum SchedulingViolation {
         observed: WorkId,
     },
     /// An opportunity serviced fewer or more items than it claimed.
+    ///
+    /// `expected` is the number of [`crate::HistoryEvent::WorkServiced`]
+    /// events the turn actually recorded, and `observed` is the number its
+    /// dispatch claimed. The two are compared rather than either being
+    /// believed, because a turn that reports work it did not do is exactly how
+    /// an occupancy gets bought with nothing.
     ServiceCountMismatch {
         /// Pass in which it happened.
         pass: PassIndex,
         /// Group that miscounted.
         group: GroupId,
-        /// Items the group should have serviced.
+        /// Items the turn recorded as serviced.
         expected: u32,
-        /// Items it reported.
+        /// Items its dispatch claimed.
         observed: u32,
+    },
+    /// A turn ended owing work it never serviced.
+    ///
+    /// A dispatch is offered against a queue, and the items at the head of that
+    /// queue are what the turn is for. Ending the turn with any of them still
+    /// queued means the worker was held for work that never moved — which,
+    /// before this was checked, bought a full occupancy with nothing and kept
+    /// the group out of the ready set for the whole of it.
+    ///
+    /// A turn ends at the first recorded event that is not one of its own
+    /// services: another dispatch, a release, a plan retiring, or the end of
+    /// the history. Work is applied at dispatch, so a turn's services are the
+    /// dispatch itself and nothing may fall between them.
+    DispatchLeftWorkUnserviced {
+        /// Pass in which it happened.
+        pass: PassIndex,
+        /// Group that kept its queue.
+        group: GroupId,
+        /// Items the turn was offered against.
+        owed: u32,
+        /// Items it serviced.
+        serviced: u32,
+    },
+    /// A turn serviced more items than the queue it was offered against held.
+    ///
+    /// The mirror of [`Self::DispatchLeftWorkUnserviced`], and not a harmless
+    /// generosity either: a turn that runs past its own quota is a group taking
+    /// throughput share the pass never granted it.
+    DispatchServicedBeyondItsWork {
+        /// Pass in which it happened.
+        pass: PassIndex,
+        /// Group that overran its turn.
+        group: GroupId,
+        /// Items the turn was offered against.
+        owed: u32,
+        /// Item it serviced beyond them.
+        work: WorkId,
     },
     /// An opportunity charged its worker something other than its work cost.
     ///
     /// The cost of a turn is the sum of the [`crate::ServiceCost`]s of the
-    /// items it serviced, and the fold knows those items. A dispatch that
+    /// items it serviced, and the fold knows those items because it read every
+    /// [`crate::HistoryEvent::WorkServiced`] the turn recorded. A dispatch that
     /// reports any other number is either under-charging a worker it is
     /// holding or over-charging one it is not.
     DispatchCostMismatch {
@@ -265,6 +309,16 @@ pub struct FairnessReport {
     pub passes_completed: u64,
     /// Turns handed out.
     pub opportunities: u64,
+    /// Items the recorded turns serviced.
+    ///
+    /// This is the floor a fairness assertion needs, and it is deliberately
+    /// not `passes_completed`. Arming a plan is free — an empty plan names
+    /// exactly the ready set when nothing is ready — so a host wedged behind
+    /// one expensive item can retire plans forever while doing nothing, and a
+    /// floor on plans certifies it. A floor on the work that moved cannot be
+    /// met by a host that moved none. See CONTRACT.md, "What the audit does
+    /// not claim".
+    pub serviced: u64,
     /// Largest plan armed.
     pub widest_plan: u32,
     /// Largest run of armed plans any ready group went without a turn.
@@ -417,6 +471,13 @@ struct DerivedGroup {
     state: GroupLifecycle,
     poisoned: bool,
     stalled: bool,
+    /// Whether an availability report returned the group to the ready set at
+    /// an instant when a plan could have named it, and no plan has named it
+    /// since.
+    ///
+    /// This is what stops a stall from being revoked at exactly the instants
+    /// readiness is sampled. See [`Fold::is_owed`].
+    restored: bool,
     counter: i64,
     quota: WorkQuota,
     queue: Vec<(WorkId, Work)>,
@@ -430,6 +491,7 @@ impl DerivedGroup {
             state: GroupLifecycle::Creating,
             poisoned: false,
             stalled: false,
+            restored: false,
             counter: 0,
             quota,
             queue: Vec::new(),
@@ -450,6 +512,21 @@ impl DerivedGroup {
         self.queue.clear();
         self.poisoned = false;
         self.stalled = false;
+        self.restored = false;
+    }
+
+    /// Returns whether everything the group owns *except* its reported
+    /// availability admits a turn.
+    ///
+    /// The split exists because the stall bit is the one readiness condition
+    /// the history reports rather than implies, so the audit has to be able to
+    /// ask what would be true without it.
+    fn is_dispatchable_but_for_availability(&self) -> bool {
+        matches!(
+            self.state,
+            GroupLifecycle::Recovering | GroupLifecycle::Serving | GroupLifecycle::Draining
+        ) && !self.poisoned
+            && !self.queue.is_empty()
     }
 
     /// Returns whether everything about the group *itself* admits a turn.
@@ -458,12 +535,7 @@ impl DerivedGroup {
     /// worker it may be occupying. [`Fold::is_ready`] adds that condition, and
     /// derives it rather than reading it off a reported flag.
     fn is_dispatchable(&self) -> bool {
-        matches!(
-            self.state,
-            GroupLifecycle::Recovering | GroupLifecycle::Serving | GroupLifecycle::Draining
-        ) && !self.poisoned
-            && !self.stalled
-            && !self.queue.is_empty()
+        self.is_dispatchable_but_for_availability() && !self.stalled
     }
 
     fn admits(&self, class: WorkClass) -> bool {
@@ -488,23 +560,24 @@ impl DerivedGroup {
             .map(|(index, _)| index)
     }
 
-    /// Returns the exact items an opportunity should service, in order, each
-    /// with the worker occupancy servicing it costs.
+    /// Returns the exact items an opportunity is offered against, in order.
     ///
-    /// The costs travel with the identifiers because the fold prices the turn
-    /// from them. A dispatch reports what it serviced and what it charged, and
-    /// only one of those two numbers may be believed — so neither is: both are
-    /// recomputed here from the queue the group actually held.
-    fn expected_dispatch(&self) -> Vec<(WorkId, ServiceCost)> {
+    /// These are the items a correct turn services, and they carry no prices,
+    /// because the fold does not price a turn from them. A turn is priced by
+    /// the services it actually recorded — see [`Fold::settle`] — and this list
+    /// is what those services are checked against. Pricing the turn from here
+    /// instead is exactly the mistake that let a dispatch buy a full occupancy
+    /// while servicing nothing.
+    fn expected_dispatch(&self) -> Vec<WorkId> {
         let mut taken: Vec<usize> = Vec::new();
-        let mut expected: Vec<(WorkId, ServiceCost)> = Vec::new();
+        let mut expected: Vec<WorkId> = Vec::new();
         for _ in 0..self.quota.get() {
             let Some(index) = self.head(&taken) else {
                 break;
             };
             taken.push(index);
             let (id, work) = self.queue[index];
-            expected.push((id, work.cost()));
+            expected.push(id);
             if matches!(work, Work::Faulty { .. }) {
                 break;
             }
@@ -530,7 +603,6 @@ struct OpenPass {
     pass: PassIndex,
     pending: BTreeSet<GroupId>,
     offered: BTreeSet<GroupId>,
-    dispatch: Option<(GroupId, VecDeque<WorkId>)>,
 }
 
 impl OpenPass {
@@ -539,12 +611,48 @@ impl OpenPass {
     }
 }
 
+/// One turn while its work is still being recorded.
+///
+/// A dispatch does not carry its own price. It carries a *claim* about one,
+/// and the items that back the claim arrive afterwards as
+/// [`HistoryEvent::WorkServiced`] events. So a turn stays open until the
+/// history moves on to something else, and only then can it be priced.
+///
+/// `owed` is what the turn was offered against — the head of the group's queue,
+/// recomputed here — and `serviced` is what the recorded services actually
+/// moved. Nothing forces the two to match, which is the whole point: the fold
+/// compares them and reports the difference rather than assuming it away.
+///
+/// **A turn ends at the first recorded event that is not one of its own
+/// services.** CONTRACT.md's "work is applied at dispatch" is what makes that
+/// exact: a turn is one indivisible act, so its services follow its dispatch
+/// with nothing between them, and anything else settles it. Without a
+/// settlement point a turn could be left open forever and never priced at all
+/// — which is what the single dispatch slot this replaced did to every turn but
+/// the last in each pass.
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct Turn {
+    pass: PassIndex,
+    tick: TickIndex,
+    group: GroupId,
+    owed: VecDeque<WorkId>,
+    owed_total: u32,
+    serviced: Vec<(WorkId, u64)>,
+    reported_serviced: u32,
+    reported_cost: u64,
+}
+
 /// One worker a dispatch is holding, and the instant it is due back.
 ///
-/// The oracle keeps this instead of believing a reported occupancy flag. A
-/// dispatch opens an occupancy of exactly the cost its serviced items add up
-/// to; the release is due at `dispatch tick + that cost`; and the scheduler
-/// authors neither number, because the fold recomputes both from the queue.
+/// The oracle keeps this instead of believing a reported occupancy flag. An
+/// occupancy is opened by a turn that has been *settled*, priced at exactly
+/// what that turn's recorded services were worth; the release is due at
+/// `dispatch tick + that price`; and the scheduler authors neither number.
+///
+/// There is one entry per group and there are as many entries as there are
+/// live occupancies, because the pool is many workers rather than one. A turn
+/// still being recorded holds a worker too, and [`Fold::occupied`] counts it —
+/// it just has no deadline yet, because its price is not yet known.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct Occupancy {
     pass: PassIndex,
@@ -609,8 +717,10 @@ struct Fold {
     opportunities: u64,
     widest_plan: u32,
     gaps: BTreeMap<GroupId, Gap>,
-    /// Workers held right now, and the tick each is due back at.
+    /// Workers held by settled turns, and the tick each is due back at.
     occupancies: BTreeMap<GroupId, Occupancy>,
+    /// The turn whose services are still arriving, if any.
+    recording: Option<Turn>,
     /// Highest tick any recorded decision has claimed.
     tick: TickIndex,
     /// Ticks the last plan was armed at and the last plan retired at.
@@ -640,6 +750,7 @@ impl Fold {
             widest_plan: 0,
             gaps: BTreeMap::new(),
             occupancies: BTreeMap::new(),
+            recording: None,
             tick: TickIndex::ZERO,
             last_armed: None,
             last_retired: None,
@@ -648,6 +759,11 @@ impl Fold {
     }
 
     fn absorb(&mut self, event: &HistoryEvent) {
+        // Work is applied at dispatch, so a turn and its services are one act.
+        // Anything else ends the turn and is the instant it can be priced.
+        if !self.continues_recorded_turn(event) {
+            self.settle();
+        }
         match event {
             HistoryEvent::Invoked { operation, .. } => {
                 let outcome = self.invoke(*operation);
@@ -659,9 +775,7 @@ impl Fold {
                 availability,
             } => {
                 self.reach(*tick);
-                if let Some(state) = self.groups.get_mut(group) {
-                    state.stalled = matches!(availability, GroupAvailability::Stalled);
-                }
+                self.report_availability(*group, *availability);
             }
             // The release is judged against the occupancy it claims to end
             // before the clock moves on, so a release that arrives exactly when
@@ -694,6 +808,66 @@ impl Fold {
             HistoryEvent::Completed { .. }
             | HistoryEvent::Unknown { .. }
             | HistoryEvent::NotAdmitted { .. } => {}
+        }
+    }
+
+    /// Returns whether an event is part of the turn currently being recorded.
+    ///
+    /// Only that turn's own services are, and observations — which the fold
+    /// never folds — cannot end anything because they are not decisions. A
+    /// service naming another group belongs to another turn, so it settles this
+    /// one first and is then judged against a turn that is no longer open.
+    fn continues_recorded_turn(&self, event: &HistoryEvent) -> bool {
+        match event {
+            HistoryEvent::WorkServiced { group, .. } => self
+                .recording
+                .as_ref()
+                .is_some_and(|turn| turn.group == *group),
+            HistoryEvent::Completed { .. }
+            | HistoryEvent::Unknown { .. }
+            | HistoryEvent::NotAdmitted { .. } => true,
+            HistoryEvent::Invoked { .. }
+            | HistoryEvent::AvailabilityReported { .. }
+            | HistoryEvent::WorkerReleased { .. }
+            | HistoryEvent::PassArmed { .. }
+            | HistoryEvent::GroupOffered { .. }
+            | HistoryEvent::PassCompleted { .. } => false,
+        }
+    }
+
+    /// Records an external availability report, and decides whether it puts the
+    /// group back in the fairness question.
+    ///
+    /// A stall excuses omission only while it is unbroken. Returning a group to
+    /// availability at an instant when a plan could have been armed to name it
+    /// — no pass is open, and nothing but the stall was keeping it out — makes
+    /// it owed the next plan, and a stall reported before that plan is armed
+    /// does not retract the debt. Without that, the stall bit is a third
+    /// freedom over readiness: flick it off after each plan retires and on
+    /// again before the next is armed, and a group is never *sampled* as ready,
+    /// is owed nothing, and starves at a `widest_gap` of zero.
+    ///
+    /// The two qualifications are what keep it from blaming a scheduler that
+    /// had no move to make. A stall raised while a pass was already open
+    /// excuses as it always did, because no plan could have been armed to name
+    /// the group; and a group with no work, or one still holding a worker, was
+    /// not being kept out by the stall in the first place.
+    fn report_availability(&mut self, group: GroupId, availability: GroupAvailability) {
+        let restorable = self.open.is_none()
+            && !self.occupied(group)
+            && self
+                .groups
+                .get(&group)
+                .is_some_and(|state| state.stalled && state.is_dispatchable_but_for_availability());
+        let Some(state) = self.groups.get_mut(&group) else {
+            return;
+        };
+        match availability {
+            GroupAvailability::Stalled => state.stalled = true,
+            GroupAvailability::Available => {
+                state.stalled = false;
+                state.restored |= restorable;
+            }
         }
     }
 
@@ -765,10 +939,30 @@ impl Fold {
     }
 
     /// Returns whether a group is holding a worker whose cost is unpaid.
+    ///
+    /// A worker is held either by a turn still being recorded — which holds one
+    /// by definition, and whose price is not yet known — or by a settled
+    /// occupancy that has not reached its deadline.
     fn occupied(&self, group: GroupId) -> bool {
-        self.occupancies
-            .get(&group)
-            .is_some_and(|occupancy| occupancy.due > self.tick)
+        self.recording
+            .as_ref()
+            .is_some_and(|turn| turn.group == group)
+            || self
+                .occupancies
+                .get(&group)
+                .is_some_and(|occupancy| occupancy.due > self.tick)
+    }
+
+    /// Returns how many workers of the pool are held right now.
+    fn workers_held(&self) -> u32 {
+        // A group cannot appear in both terms: a group with a live occupancy is
+        // not ready, so it cannot have been dispatched into a turn.
+        let settled = self
+            .occupancies
+            .values()
+            .filter(|occupancy| occupancy.due > self.tick)
+            .count();
+        u32::try_from(settled + usize::from(self.recording.is_some())).unwrap_or(u32::MAX)
     }
 
     /// Returns whether a group would take a turn if it were offered one.
@@ -782,6 +976,25 @@ impl Fold {
             .get(&group)
             .is_some_and(DerivedGroup::is_dispatchable)
             && !self.occupied(group)
+    }
+
+    /// Returns whether a plan armed now owes this group a turn.
+    ///
+    /// This is [`Self::is_ready`] with one deliberate difference, and it is the
+    /// difference between a stall that held and a stall that moved. A group
+    /// whose stall was broken at an instant when a plan could have named it is
+    /// owed the next plan whatever its availability by the time that plan is
+    /// armed, because a signal that revokes readiness only at the instants
+    /// readiness is sampled has not kept the group out of anything — it has
+    /// merely kept it out of the question.
+    ///
+    /// A group owed a plan it does not appear in accrues gap. It is still not
+    /// *ready*, so a plan that named it would break plan totality; the only way
+    /// to settle the debt is to stop breaking the stall.
+    fn is_owed(&self, group: GroupId) -> bool {
+        self.groups.get(&group).is_some_and(|state| {
+            state.is_dispatchable_but_for_availability() && (!state.stalled || state.restored)
+        }) && !self.occupied(group)
     }
 
     fn invoke(&mut self, operation: Operation) -> OperationOutcome {
@@ -1162,23 +1375,29 @@ impl Fold {
             }
         }
 
-        // Every ready group is owed this plan's turn. A group left out has been
-        // denied an opportunity, and the run of consecutive denials is the gap
-        // the bound forbids. A group that is not ready is owed nothing, so its
-        // run resets rather than accumulating while it has no work to do.
+        // Every group this plan owes a turn and did not name has been denied an
+        // opportunity, and the run of consecutive denials is the gap the bound
+        // forbids. A group that is owed nothing resets its run rather than
+        // accumulating while it has no work to do.
         //
-        // Readiness here is the derived kind, so a group whose worker
+        // Being owed is the derived thing, twice over. A group whose worker
         // occupancy has outlived its cost is ready again and is owed this
-        // plan's turn like any other. That is what stops an unreported release
-        // from converting starvation into silence.
+        // plan's turn like any other, which is what stops an unreported release
+        // from converting starvation into silence; and a group whose stall was
+        // broken since a plan could last have named it is owed this one too,
+        // which is what stops the stall bit from doing the same.
         let groups: Vec<GroupId> = self.groups.keys().copied().collect();
         for group in groups {
-            let owed = self.is_ready(group) && !seen.contains(&group);
-            let gap = self.gaps.entry(group).or_default();
-            if owed {
-                gap.deny(pass);
-            } else {
-                gap.satisfy();
+            let denied = self.is_owed(group) && !seen.contains(&group);
+            if denied {
+                self.gaps.entry(group).or_default().deny(pass);
+                continue;
+            }
+            self.gaps.entry(group).or_default().satisfy();
+            // The debt a broken stall opened is settled by this plan: either it
+            // named the group, or the group was owed nothing anyway.
+            if let Some(state) = self.groups.get_mut(&group) {
+                state.restored = false;
             }
         }
 
@@ -1186,7 +1405,6 @@ impl Fold {
             pass,
             pending: seen,
             offered: BTreeSet::new(),
-            dispatch: None,
         });
     }
 
@@ -1219,7 +1437,7 @@ impl Fold {
         };
         let stalled = state.stalled;
         let quota = state.quota.get();
-        let expected = state.expected_dispatch();
+        let owed = state.expected_dispatch();
         let ready = self.is_ready(group);
 
         match outcome {
@@ -1241,90 +1459,131 @@ impl Fold {
                         quota,
                     });
                 }
-                let expected_count = u32::try_from(expected.len()).unwrap_or(u32::MAX);
-                if expected_count != serviced {
-                    self.fault(SchedulingViolation::ServiceCountMismatch {
+                // Nothing about the turn's price is decided here. The dispatch
+                // has only made a claim; the work that backs it arrives next,
+                // and the turn is judged and priced when it ends.
+                self.recording = Some(Turn {
+                    pass,
+                    tick,
+                    group,
+                    owed_total: u32::try_from(owed.len()).unwrap_or(u32::MAX),
+                    owed: owed.into_iter().collect(),
+                    serviced: Vec::new(),
+                    reported_serviced: serviced,
+                    reported_cost: cost,
+                });
+                // A turn in progress holds a worker, so the pool is checked the
+                // instant the turn opens rather than when it is priced.
+                if self.workers_held() > self.config.workers() {
+                    self.fault(SchedulingViolation::WorkerCountExceeded {
                         pass,
                         group,
-                        expected: expected_count,
-                        observed: serviced,
+                        workers: self.config.workers(),
                     });
-                }
-                // The turn's price is the sum of what it had to service, not
-                // what it says it charged. The occupancy below is opened at the
-                // derived figure, so a dispatch that misreports its cost is
-                // still held for exactly as long as its work was worth.
-                let derived: u64 = expected.iter().map(|(_, item)| u64::from(item.get())).sum();
-                if derived != cost {
-                    self.fault(SchedulingViolation::DispatchCostMismatch {
-                        pass,
-                        group,
-                        expected: derived,
-                        observed: cost,
-                    });
-                }
-                self.occupy(pass, tick, group, derived);
-                if let Some(open) = self.open.as_mut() {
-                    open.dispatch = Some((group, expected.into_iter().map(|(id, _)| id).collect()));
                 }
             }
         }
     }
 
-    /// Opens the worker occupancy a dispatch is owed, and checks the pool it
-    /// came out of.
+    /// Ends the turn whose services were still arriving, and prices it.
+    ///
+    /// This is where occupancy stops being a claim and becomes a derivation.
+    /// The turn is compared against the queue it was offered against and
+    /// against the count and cost its dispatch reported, and the occupancy it
+    /// bought is opened at what its *recorded services* were worth — not at
+    /// what it was offered, and not at what it said.
     ///
     /// A deadline beyond the tick ceiling saturates rather than wrapping. The
     /// oracle judges histories it did not produce, so an arithmetic edge in an
     /// adversarial one must never be the thing that manufactures a fault.
-    fn occupy(&mut self, pass: PassIndex, tick: TickIndex, group: GroupId, cost: u64) {
-        let due = TickIndex::new(tick.get().saturating_add(cost));
-        self.occupancies.insert(group, Occupancy { pass, due });
-
-        let held = u32::try_from(
-            self.occupancies
-                .values()
-                .filter(|occupancy| occupancy.due > self.tick)
-                .count(),
-        )
-        .unwrap_or(u32::MAX);
-        if held > self.config.workers() {
-            self.fault(SchedulingViolation::WorkerCountExceeded {
-                pass,
-                group,
-                workers: self.config.workers(),
+    fn settle(&mut self) {
+        let Some(turn) = self.recording.take() else {
+            return;
+        };
+        let serviced = u32::try_from(turn.serviced.len()).unwrap_or(u32::MAX);
+        // The items at the head of the queue are what the turn was for. Ending
+        // it with any of them still queued means the worker was held for work
+        // that never moved.
+        if !turn.owed.is_empty() {
+            self.fault(SchedulingViolation::DispatchLeftWorkUnserviced {
+                pass: turn.pass,
+                group: turn.group,
+                owed: turn.owed_total,
+                serviced,
             });
         }
+        if serviced != turn.reported_serviced {
+            self.fault(SchedulingViolation::ServiceCountMismatch {
+                pass: turn.pass,
+                group: turn.group,
+                expected: serviced,
+                observed: turn.reported_serviced,
+            });
+        }
+        let price: u64 = turn.serviced.iter().map(|(_, cost)| *cost).sum();
+        if price != turn.reported_cost {
+            self.fault(SchedulingViolation::DispatchCostMismatch {
+                pass: turn.pass,
+                group: turn.group,
+                expected: price,
+                observed: turn.reported_cost,
+            });
+        }
+        let due = TickIndex::new(turn.tick.get().saturating_add(price));
+        self.occupancies.insert(
+            turn.group,
+            Occupancy {
+                pass: turn.pass,
+                due,
+            },
+        );
     }
 
     fn service(&mut self, pass: PassIndex, group: GroupId, work: WorkId) {
-        let dispatched = self.open.as_ref().is_some_and(|open| {
-            open.pass == pass
-                && open
-                    .dispatch
-                    .as_ref()
-                    .is_some_and(|(holder, _)| *holder == group)
-        });
-        if !dispatched {
+        // A service that belongs to no open turn — or to one in another pass —
+        // is work the history claims outside any dispatch that could have done
+        // it. The group check is already spent: a service naming another group
+        // settled this turn before reaching here.
+        let matches_turn = self
+            .recording
+            .as_ref()
+            .is_some_and(|turn| turn.group == group && turn.pass == pass);
+        if !matches_turn {
             self.fault(SchedulingViolation::ServiceOutsideDispatch { pass, group });
             return;
         }
-        let expected = self
-            .open
+        let owed = self
+            .recording
             .as_mut()
-            .and_then(|open| open.dispatch.as_mut())
-            .and_then(|(_, pending)| pending.pop_front());
-        let Some(expected) = expected else {
-            self.fault(SchedulingViolation::ServiceOutsideDispatch { pass, group });
+            .and_then(|turn| turn.owed.pop_front());
+        let Some(owed) = owed else {
+            let owed_total = self.recording.as_ref().map_or(0, |turn| turn.owed_total);
+            self.fault(SchedulingViolation::DispatchServicedBeyondItsWork {
+                pass,
+                group,
+                owed: owed_total,
+                work,
+            });
             return;
         };
-        if expected != work {
+        if owed != work {
             self.fault(SchedulingViolation::ServiceOrderViolation {
                 pass,
                 group,
-                expected,
+                expected: owed,
                 observed: work,
             });
+        }
+        // The turn is priced by what it moved, so the price is read off the
+        // item the service actually named. An item the group never held is
+        // worth nothing, and has already been reported as the wrong item.
+        let price = self
+            .groups
+            .get(&group)
+            .and_then(|state| state.queue.iter().find(|(id, _)| *id == work))
+            .map_or(0, |(_, item)| u64::from(item.cost().get()));
+        if let Some(turn) = self.recording.as_mut() {
+            turn.serviced.push((work, price));
         }
         self.apply(group, work);
     }
@@ -1390,6 +1649,12 @@ impl Fold {
         });
     }
 
+    /// Retires a plan.
+    ///
+    /// The turn a pass was still recording is already settled: [`Self::absorb`]
+    /// ends it at the first event that is not one of its own services, and this
+    /// is one. So there is no owed queue left here to drop, which is what this
+    /// method used to do to every turn in every pass.
     fn complete(&mut self, pass: PassIndex, tick: TickIndex) {
         // A tick retires at most one plan, the counterpart of the rule that it
         // arms at most one.
@@ -1420,6 +1685,9 @@ impl Fold {
     }
 
     fn finish(mut self) -> Replay {
+        // A history that ends inside a turn still has to price it: the end of
+        // the record is as much a settlement point as any event in it.
+        self.settle();
         if u64::from(self.queued) + self.serviced + self.failed != self.admitted {
             self.fault(SchedulingViolation::WorkNotConserved {
                 admitted: self.admitted,
@@ -1439,6 +1707,7 @@ impl Fold {
                     passes_armed: self.passes_armed,
                     passes_completed: self.passes_completed,
                     opportunities: self.opportunities,
+                    serviced: self.serviced,
                     widest_plan: self.widest_plan,
                     // Measured rather than assumed to be zero. A green run
                     // should report the number it proved, not a constant that
