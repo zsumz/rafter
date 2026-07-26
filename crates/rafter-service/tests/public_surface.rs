@@ -16,6 +16,7 @@
 use std::future::ready;
 
 use rafter::{LogIndex, NodeId, Term};
+use rafter_app::proposal::ClientRequestId;
 use rafter_service::{
     DriverCommandSender, DriverFuture, ErrorCause, MetricsError, MetricsWatch, QueryReceipt,
     ReadConsistency, ReadError, ReadOptions, ShutdownError, StateMachineOperation,
@@ -102,4 +103,25 @@ fn a_service_error_is_matchable_from_the_crate_root() {
 
     let cause: ErrorCause = app_cause();
     assert!(cause.downcast_ref::<MetricsError>().is_some());
+}
+
+/// The options pair is constructible from outside the crate, which for two
+/// `#[non_exhaustive]` structs means through their setters and only through
+/// them. A field added to either must not break this function.
+#[test]
+fn both_option_types_are_buildable_from_outside_the_crate() {
+    let write = WriteOptions::default().with_client_request_id(ClientRequestId {
+        client_id: 7,
+        sequence: 3,
+    });
+    let read = ReadOptions::default().with_min_applied_index(LogIndex(9));
+
+    assert_eq!(
+        write.client_request_id,
+        Some(ClientRequestId {
+            client_id: 7,
+            sequence: 3
+        })
+    );
+    assert_eq!(read.min_applied_index, Some(LogIndex(9)));
 }

@@ -710,12 +710,14 @@ fn a_pending_write_is_addressable_before_it_resolves() {
     let (driver, _transport) = &nodes[&NodeId(1)];
     let handle = driver.handle();
 
-    let options = WriteOptions {
-        client_request_id: Some(ClientRequestId {
-            client_id: 7,
-            sequence: 3,
-        }),
-    };
+    // Built through the setter rather than a struct literal, which is the only
+    // way an embedder outside this crate can build one: `WriteOptions` is
+    // `#[non_exhaustive]`, so this call is also the check that the pair stayed
+    // constructible from outside.
+    let options = WriteOptions::default().with_client_request_id(ClientRequestId {
+        client_id: 7,
+        sequence: 3,
+    });
     let mut write =
         Box::pin(handle.write_with_options(("alpha".to_owned(), "one".to_owned()), options));
     assert!(start(&mut write).is_none());

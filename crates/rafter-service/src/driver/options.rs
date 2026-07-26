@@ -2,6 +2,18 @@ use rafter::{LogIndex, Term};
 use rafter_app::{proposal::ClientRequestId, read::ReadProof};
 
 /// Options for a managed write.
+///
+/// [`WriteOptions::with_client_request_id`] is the way to build one, matching
+/// [`ReadOptions`], its documented pair. **This type is not yet
+/// `#[non_exhaustive]` and its pair is**, which means the next field added here
+/// is still a breaking change to every caller that used a struct literal. That
+/// is a known gap rather than a decision; it is closed by making this type
+/// `#[non_exhaustive]` too, which is itself breaking and is scheduled with the
+/// one consumer call site it invalidates. See the fourth revision of the
+/// Transport-Attached Group Driver entry in `docs/api-promotions.md`.
+///
+/// Prefer the setter over a struct literal, so that closing the gap costs
+/// nothing.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct WriteOptions {
     /// The caller's own name for this command, carried through unchanged.
@@ -16,6 +28,21 @@ pub struct WriteOptions {
     /// `None` means the caller has nothing to correlate, so an unknown outcome
     /// reports the driver's `LocalProposalId` and nothing else.
     pub client_request_id: Option<ClientRequestId>,
+}
+
+impl WriteOptions {
+    /// Carries the caller's own name for this command through the write.
+    ///
+    /// A setter rather than struct-update syntax, for the reason
+    /// [`ReadOptions::with_min_applied_index`] is one: a later field must not
+    /// break an embedder's construction. It is here ahead of the
+    /// `#[non_exhaustive]` that would enforce it, so that callers can move off
+    /// struct literals before the enforcement lands rather than with it.
+    #[must_use]
+    pub const fn with_client_request_id(mut self, client_request_id: ClientRequestId) -> Self {
+        self.client_request_id = Some(client_request_id);
+        self
+    }
 }
 
 /// Options for a managed read.
