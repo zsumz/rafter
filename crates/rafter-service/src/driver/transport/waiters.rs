@@ -12,6 +12,7 @@ use std::{
     task::{Context, Poll, Waker},
 };
 
+use crate::error::StateMachineOperation;
 use crate::transport::{AuthenticatedPeerValidator, RaftTransport};
 
 use super::super::*;
@@ -530,16 +531,13 @@ where
 
 /// Maps one failed proposing step onto the fate the driver can prove.
 ///
-/// The three arms are `InMemoryRaftDriver::finish_failed_write_batch`'s, in its
-/// order and for its reasons. What changed here is the last one: the driver no
-/// longer infers `NotAppended` from the absence of an observed append. A step
-/// that failed after the group was asked to propose is unresolved, because the
-/// entry may be on disk and a node reopened over the same durable log can still
-/// replicate and commit it. `NotAppended` survives only where the refusal is
-/// itself the event — a pre-proposal driver refusal, a `ProposalEvent::Rejected`
-/// whose mapped variants carry no fate at all, and
-/// `GroupError::NonMonotonicLocalProposalId`, which `write_error_from_group`
-/// stamps itself because the group refuses before it proposes.
+/// The arms are `InMemoryRaftDriver::finish_failed_write_batch`'s, in its order
+/// and for its reasons, with one change: the driver no longer infers
+/// `NotAppended` from the absence of an observed append. A step that failed
+/// after the group was asked to propose is unresolved, because the entry may be
+/// on disk and a node reopened over the same durable log can still replicate and
+/// commit it. `NotAppended` survives only where the refusal is itself the whole
+/// event, and [`pre_proposal_fate`] is the list of group errors that are.
 fn write_failure<E, RE>(failure: StepFailure<E, RE>, options: WriteOptions) -> WriteError
 where
     E: Error + Send + Sync + 'static,
@@ -560,6 +558,40 @@ where
                 reason: UnknownOutcomeReason::RuntimeDroppedProposal,
             }
         }
-        StepFailure::Group(error) => write_error_from_group(error, WriteFate::Unresolved),
+        StepFailure::Group(error) => {
+            let fate = pre_proposal_fate(&error);
+            write_error_from_group(error, fate)
+        }
+    }
+}
+
+/// Whether one group error proves the proposal never reached the log.
+///
+/// The rule is the entry's own — `NotAppended` is reported only where the
+/// refusal is the thing that happened — and these are the two group errors that
+/// satisfy it beside `NonMonotonicLocalProposalId`, which
+/// `write_error_from_group` stamps itself:
+///
+/// - [`GroupError::Poisoned`] is produced by `reject_if_poisoned`, which is
+///   `RaftGroup::step_with_options`'s first statement and the variant's only
+///   producer. A step that *becomes* poisoned reports the state-machine or
+///   malformed-snapshot error that poisoned it instead, so this variant means
+///   the group refused before it looked at the proposal. It is also the most
+///   travelled failing-write path a poisoned replica has — every write after
+///   the first — and `Unresolved` there tells a caller its request identity may
+///   be spent, foreclosing the retry that is in fact the safe thing to do.
+/// - [`StateMachineOperation::EncodeCommand`] runs before the group records the
+///   proposal and before it hands anything to the runtime. Every other
+///   state-machine operation reachable from a proposing step runs after the
+///   append, on an entry the log already holds, which is the case this driver
+///   reports `Unresolved` for.
+fn pre_proposal_fate<E, RE>(error: &GroupError<E, RE>) -> WriteFate {
+    match error {
+        GroupError::Poisoned { .. }
+        | GroupError::StateMachine {
+            operation: StateMachineOperation::EncodeCommand,
+            ..
+        } => WriteFate::NotAppended,
+        _ => WriteFate::Unresolved,
     }
 }

@@ -131,7 +131,7 @@ impl Error for InboundEnvelopeError {
 mod state;
 mod waiters;
 
-use state::{DriverShared, SharedState, TransportDriverState, WaiterId};
+use state::{DriverShared, SharedState, StepFailure, TransportDriverState, WaiterId};
 
 /// Managed driver for one local Raft group over an attached transport.
 ///
@@ -831,33 +831,17 @@ where
             if group_id != state.group_id {
                 return Err(TransferLeadershipError::WrongGroup);
             }
-            let report = state
-                .group_mut()
-                .map_err(|error| TransferLeadershipError::Transport {
-                    cause: ErrorCause::new(error),
-                })?
-                .step_with_options(
-                    GroupInput::TransferLeadership { target },
-                    StepReportOptions::without_metrics(),
-                )
-                .map_err(transfer_error_from_group)?;
-            let rejection =
-                report
-                    .leadership_transfer_events
-                    .iter()
-                    .find_map(|event| match event {
-                        LeadershipTransferEvent::Rejected {
-                            target: event_target,
-                            reason,
-                            leader_hint,
-                        } if *event_target == target => Some(TransferLeadershipError::Rejected {
-                            reason: *reason,
-                            leader_hint: *leader_hint,
-                        }),
-                        _ => None,
-                    });
-            state.route_report(report);
-            state.publish_metrics();
+            // Through the state's own stepping path, not around it: a transfer
+            // step can commit, apply, and poison, and the drain that resolves
+            // what a poison captured runs there on both paths.
+            let rejection = state
+                .step_transfer(target)
+                .map_err(|failure| match failure {
+                    StepFailure::NoGroup => TransferLeadershipError::Transport {
+                        cause: ErrorCause::new(ManagedDriverError::NoGroup),
+                    },
+                    StepFailure::Group(error) => transfer_error_from_group(error),
+                })?;
             rejection.map_or(Ok(()), Err)
         })
     }

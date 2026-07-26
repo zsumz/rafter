@@ -237,6 +237,61 @@ where
         result
     }
 
+    /// Steps the group with a leadership transfer, reporting the rejection it
+    /// saw.
+    ///
+    /// Everything else is [`TransportDriverState::step_group`], the poison drain
+    /// on both paths included. The only difference is the return value: a
+    /// transfer has no waiter table, because it is created and resolved inside
+    /// one call, so the one fact its caller needs has to be read out of the
+    /// report before `route_report` consumes it.
+    ///
+    /// That need is why the transfer used to step the group itself, and stepping
+    /// it directly is what left this — a call site the poison drain's own design
+    /// listed by name — undrained on both paths. A proposal a transfer step
+    /// poisoned over stayed unresolved until some unrelated later call rescued
+    /// it, and a supervisor that reacted to the failed transfer by releasing
+    /// told its client `DriverReleased` for a group that had poisoned under it.
+    pub(super) fn step_transfer(
+        &mut self,
+        target: NodeId,
+    ) -> Result<Option<TransferLeadershipError>, StepFailure<A::Error, R::Error>> {
+        let Some(group) = self.group.as_mut() else {
+            return Err(StepFailure::NoGroup);
+        };
+        let stepped = group.step_with_options(
+            GroupInput::TransferLeadership { target },
+            StepReportOptions::without_metrics(),
+        );
+        let result = match stepped {
+            Ok(report) => {
+                let rejection =
+                    report
+                        .leadership_transfer_events
+                        .iter()
+                        .find_map(|event| match event {
+                            LeadershipTransferEvent::Rejected {
+                                target: event_target,
+                                reason,
+                                leader_hint,
+                            } if *event_target == target => {
+                                Some(TransferLeadershipError::Rejected {
+                                    reason: *reason,
+                                    leader_hint: *leader_hint,
+                                })
+                            }
+                            _ => None,
+                        });
+                self.route_report(report);
+                Ok(rejection)
+            }
+            Err(error) => Err(StepFailure::Group(error)),
+        };
+        self.drain_poisoned_waiters();
+        self.publish_metrics();
+        result
+    }
+
     pub(super) fn step(
         &mut self,
         input: GroupInput<G, A::Command>,
