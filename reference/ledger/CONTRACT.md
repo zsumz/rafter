@@ -238,9 +238,11 @@ pre-transaction or the post-transaction state, never between:
 
 - before the transaction emits a byte;
 - part-way through its begin record, its image, or its commit record;
-- with the image whole and the commit record absent — the write-ahead window,
-  which is the pre-transaction state because a transaction is committed by its
-  commit record and by nothing else;
+- with the whole frame durable and its append mark not yet promoted — the
+  write-ahead window, which is the pre-transaction state because a transaction
+  is committed by the promotion of that mark and by nothing else, and which
+  recovery reports as the same unsealed tail as every earlier point inside the
+  frame;
 - after the commit point but before the reply is released; and
 - during a snapshot install, which publishes by rewriting the journal and
   therefore commits at its rename.
@@ -262,19 +264,45 @@ every frame after it is then unreachable too — whole, correctly sealed,
 acknowledged transactions included — because a frame's offset is only knowable
 through the frame before it.
 
-So opening may discard only residue it can *prove* no commit point covered, and
-there is one proof available. An append writes one frame forward at the end of
-the file, so every state it can be interrupted in is a strict prefix of that
-frame: fewer bytes than a begin record, a partial image, a whole image with no
-commit record, a partial commit record. A prefix carries this store's magic and
-this build's version, and every byte it does carry is a byte that was written,
-so it can never fail a checksum computed over bytes that are all present.
+So opening may discard only residue it can *prove* no commit point covered.
+**That proof is written into the journal by the append, not inferred from it by
+the reader**, and the difference is the whole of this section.
 
-The other three shapes — a whole begin record that does not verify, a whole
-image that does not match its checksum, a whole commit record that seals nothing
-— are corruption, may sit at or below the last commit point, and refuse the
-store. Discarding them would mean deleting acknowledged history from the medium
-during an operation the caller asked for as a read.
+An enumeration of what an interrupted append leaves is not that proof. Such a
+list can be complete — fewer bytes than a begin record, a partial image, a whole
+image with no commit record, a partial commit record really are all an
+interrupted append can leave — and still be useless in the direction a reader
+needs it, because the reader is asking the converse: does *this* shape mean an
+append was interrupted? It does not. A journal that has lost its last byte ends
+in a partial commit record. It is a strict prefix of a frame this build wrote,
+it carries this store's magic and version, and no checksum over the bytes
+present fails. It matches the enumeration exactly, and the frame it ends in was
+committed and acknowledged; truncating it deletes a whole transaction during an
+operation the caller asked for as a read. Nor can any test on the bytes separate
+the two, because the two are the same bytes.
+
+The same argument ran backwards at the other end. A tail of zero bytes — what a
+crash leaves when a file's size reached the medium and its data did not — was
+benign below a begin record's length and corruption at or above it, because that
+is where the zeros began failing a magic test. One kind of residue, two opposite
+verdicts, decided by how many bytes happened to land, and neither verdict a
+statement about whether the bytes were committed.
+
+So an append marks its frame as unfinished while it is unfinished. **The first
+byte of a frame is its append mark**: held at a value no sealed frame carries
+while the frame is being written, and promoted to the sealed value by a single
+byte written only after every other byte of that frame is durable. A crash
+leaves a prefix of what was written and that byte goes out first, so every
+interrupted append leaves the mark unsealed — and the unsealed value is zero, so
+the ordinary residue of a delayed allocation reads as exactly what it is, at
+every length. The contrapositive is what recovery uses: a sealed mark proves no
+append was interrupted there, so those bytes are exactly what a completed append
+sealed, and any damage to them happened afterwards.
+
+Every other shape — a sealed frame cut short, a begin record that does not
+verify, an image that does not match its checksum, a commit record that seals
+nothing, a first byte that is neither mark — may sit at or below the last commit
+point and refuses the store.
 
 Destructive recovery remains available and is a separate, named entry point. It
 discards from the unreadable frame to the end of the file and reports the
@@ -283,33 +311,62 @@ transactions were lost — frames past a corrupt one cannot be located, let alon
 counted — and that unknowable number is exactly why discarding them has to be
 something a caller asks for rather than something a read does quietly.
 
+One refusal is deliberately outside its reach: a frame declaring a format
+version this build cannot read. That needs no corruption at all — a newer build
+appending over a header this one still reads produces it from healthy bytes — so
+it is a newer build's committed work rather than damage, and it is refused by
+both entry points under its own name. Letting the remedy for damage also clear
+it would make the documented answer to "this will not open" a way to delete
+committed work.
+
 The same principle covers a journal too short to hold its header. Creation is a
 rename, so an interrupted creation leaves a staging file and never a headerless
 journal; a headerless journal is therefore something else's doing, it is
 unreadable rather than absent, and it is refused rather than re-created.
 
+Creating the journal is reported too, and counts against a clean opening.
+Nothing inside a durable store can tell a replica that has never run from one
+whose journal was deleted — both arrive as an absent file — so the store states
+the fact and the caller, which knows whether this replica has run before, judges
+it. A creation report that no caller reads is a creation report that costs
+nothing to be wrong.
+
 ### Directory residue
 
-Anything beside the journal whose name begins with the journal's name is residue
-of an interrupted rewrite or creation, and opening removes it, whoever wrote it.
-The sweep is deliberately not scoped to the current process: the only crash that
-produces a staging file is one that kills the process holding it, so the process
-that finds one is never the process that wrote it, and a name only its author
-could recognize is a name nobody ever removes.
+Opening removes the one staging name this store writes, and nothing else beside
+the journal.
 
-Removing another writer's file is safe because there is no other writer. That
-comes from the ownership discipline below — the Raft store's lock, taken before
-the journal is opened and held for the life of the process — and not from the
-staging name, which defends nothing on its own.
+The rule used to be wider: anything whose name began with the journal's name and
+a dot, on the reasoning that a staging file is always some dead process's work
+and the widest rule leaks the least. That had the direction of its own proof
+backwards in the same way the tail classifier did. Every staging file this store
+writes matches the prefix; matching the prefix does not make a file one. When
+the journal will not open, the process tells an operator to run a repair, the
+obvious first move is to copy the journal aside, and the obvious name for the
+copy begins with the journal's name and a dot — so opening the store deleted the
+backup its own instructions invited, and reported it as one boolean. Leaking is
+the smaller failure: a file this store cannot have written is somebody's
+evidence. What was removed is now reported by size as well as by fact.
+
+Removing this store's own staging file is safe because there is no other writer.
+That comes from the ownership discipline below — the Raft store's lock, taken
+before the journal is opened and held for the life of the process — and not from
+the staging name, which defends nothing on its own.
 
 ### Versioning and integrity
 
 Every record carries a four-byte magic, a version byte, and a trailing
 CRC-32/IEEE over its own preceding bytes; integers are unsigned and big-endian
 and nothing is padded. A version this build cannot read is refused rather than
-reinterpreted, and the journal header records the resource bounds it was
-created under, so a journal cannot be reopened under bounds that would change
-which images are valid.
+reinterpreted, wherever the field is present and whatever else is missing, and
+the journal header records the resource bounds it was created under, so a
+journal cannot be reopened under bounds that would change which images are
+valid.
+
+A frame's magic carries the append mark in its first byte, so the mark costs no
+extra field: a sealed frame is byte-for-byte what it would be without it, and
+every checksum is computed over the sealed form, which is also why an unsealed
+frame cannot accidentally verify.
 
 A frame carries three checksums, and each answers a different question: the
 begin record's own checksum makes the image length safe to trust, the image
@@ -325,9 +382,9 @@ a resource or supply invariant.
 
 A recovery report is evidence a caller asserts on rather than a diagnostic. It
 records what opening found and did — the frames it replayed, the residue it
-truncated, the staging file it swept, and, for a repair, exactly what was
-discarded — and a reopen that reports any of those is a fact to be looked at
-rather than stepped over.
+truncated, the journal it created, the staging file it swept and how large that
+was, and, for a repair, exactly what was discarded — and a reopen that reports
+any of those is a fact to be looked at rather than stepped over.
 
 ### What the crash tests establish
 
@@ -417,10 +474,17 @@ never clears it. Discarding the region takes an explicit option, and the replica
 announces what the discard cost.
 
 Recovery reports are consumed rather than produced. A replica announces residue
-it recovered from and refuses on the report that needs a human, and the drivers
-that reopen a store in the test suites assert that a replica no scenario
-interrupted came back with nothing to report. A report nothing reads is a report
-that costs nothing to be wrong.
+it recovered from, announces separately that it had to create the journal, and
+refuses on the report that needs a human; the drivers that reopen a store in the
+test suites assert that a replica no scenario interrupted came back with nothing
+to report, and that a replica creates its journal on its first opening and no
+other. A report nothing reads is a report that costs nothing to be wrong.
+
+The creation announcement is the one that needs the supervisor's own knowledge
+beside it. On a replica's first boot it is expected; on a restart it means the
+journal is gone and the replica is about to serve an empty ledger from applied
+index zero. The store cannot distinguish those, so it reports and the supervisor
+judges.
 
 ### The link between replicas
 

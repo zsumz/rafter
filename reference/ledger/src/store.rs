@@ -43,24 +43,31 @@
 //! The store owns one directory containing the journal `ledger.journal`.
 //! Anything that does not extend the journal — a rewrite, and the creation of
 //! the journal itself — stages `ledger.journal.tmp` beside it and renames it
-//! into place. No other file is durable state, and every staging file present
-//! at open is removed.
+//! into place. No other file is durable state, and a staging file present at
+//! open is removed.
 //!
-//! "Every staging file" is meant literally: the sweep removes anything beside
-//! the journal whose name begins with the journal's name and a dot, whoever
-//! wrote it. That is a deliberate widening. A staging file is left behind by a
-//! process that *died*, so the process that finds one is never the process that
-//! wrote it, and a name only its author could recognize — a process ID, say —
-//! is a name nobody ever removes. An earlier shape of this store carried the
-//! process ID and could therefore clean up after every crash except the one
-//! kind of crash that produces staging files, leaking a whole image per
-//! interrupted rewrite.
+//! The sweep removes exactly that one name and nothing else. An earlier shape
+//! of it removed anything beside the journal whose name began with the
+//! journal's name and a dot, on the reasoning that a staging file is always
+//! somebody's abandoned work and the widest rule leaks the least. That
+//! reasoning had the direction of its own proof backwards, in the same way the
+//! tail classifier did: every staging file this store writes matches the
+//! prefix, and matching the prefix was then taken as proof that a file was one.
+//! It is not. When the journal will not open, the process tells an operator to
+//! run a repair; the obvious first move is to copy the journal aside, and the
+//! obvious name for the copy begins with the journal's name and a dot. Opening
+//! the store deleted the backup the store's own instructions invited, and
+//! reported it as one boolean.
 //!
-//! Removing another writer's file is safe because there is no other writer.
-//! Ownership of the directory is assumed rather than enforced here — two live
-//! stores over one directory would interleave appends and corrupt each other,
-//! and nothing in this file stops them — but the composition supplies it, and
-//! the sweep leans on that rather than on a name.
+//! Leaking is the smaller failure. A file this store cannot have written is
+//! somebody's evidence, and a name only its author could recognize is a name
+//! only its author should remove.
+//!
+//! Removing this store's own staging file is safe because there is no other
+//! writer. Ownership of the directory is assumed rather than enforced here —
+//! two live stores over one directory would interleave appends and corrupt each
+//! other, and nothing in this file stops them — but the composition supplies
+//! it, and the sweep leans on that rather than on a name.
 //!
 //! The process composition supplies the missing exclusion without changing this
 //! file. A replica process takes `rafter-storage`'s operating-system lock over
@@ -134,12 +141,20 @@
 //! The begin record has a fixed size of 17 bytes.
 //!
 //! ```text
-//! magic          [4]   "RLBG"
+//! magic          [4]   "RLBG", with byte 0 held at 0x00 until the frame seals
 //! version        u8    1
 //! image_len      u32
 //! image_crc32    u32
 //! crc32          u32
 //! ```
+//!
+//! The magic's first byte doubles as the **append mark**. An append writes it
+//! as `0x00` and promotes it to `b'R'` once the rest of the frame is durable,
+//! so a frame says of itself whether it was ever sealed. That one byte is the
+//! whole of recovery's truncation rule; see the section on it below. A sealed
+//! frame is byte-for-byte what it would be without the mark, and every checksum
+//! is computed over the sealed form, so an unsealed frame cannot accidentally
+//! verify.
 //!
 //! `image_crc32` covers the image bytes that follow this record. The record's
 //! own `crc32` covers the preceding 13 bytes, which is what makes `image_len`
@@ -172,26 +187,29 @@
 //! # Crash contract
 //!
 //! The authoritative artifact is the journal. The logical commit point of a
-//! transaction is the return of the `sync_data` that follows its commit record;
-//! the logical commit point of a rewrite is the return of the directory sync
-//! that follows its rename. `Ok` means the new state is visible to a fresh
-//! opener. `Err` means the outcome is unknown, and reopening is the oracle that
-//! decides it — never an inference that `Err` left no bytes changed.
+//! transaction is the return of the second `sync_data`: the one that follows
+//! the single byte sealing a frame already made durable by the first. The
+//! logical commit point of a rewrite is the return of the directory sync that
+//! follows its rename. `Ok` means the new state is visible to a fresh opener.
+//! `Err` means the outcome is unknown, and reopening is the oracle that decides
+//! it — never an inference that `Err` left no bytes changed.
 //!
 //! A crash at any byte boundary leaves the store recoverable to exactly the
 //! pre-transaction or the post-transaction state, never between:
 //!
 //! - Before the first byte of a frame, the journal is unchanged, so recovery
 //!   sees the pre-transaction state with a clean tail.
-//! - Part-way through the begin record, the image, or the commit record, the
-//!   trailing bytes fail one of the checks above. Recovery stops at the last
-//!   committed frame — the pre-transaction state — and reports the residue as
-//!   a [`TornTail`].
-//! - With the image complete and no commit record, the transaction is written
-//!   but not committed, which is the same pre-transaction state. This is the
-//!   window a write-ahead journal exists to make representable.
-//! - After the commit record's sync returns, the frame is committed, so
-//!   recovery sees the post-transaction state.
+//! - From that first byte to the last, the tail carries the unsealed append
+//!   mark. Recovery stops at the last committed frame — the pre-transaction
+//!   state — and reports [`TornTail::UnsealedAppend`].
+//! - With the whole frame durable and the seal not yet written, the transaction
+//!   is written but not committed, which is the same pre-transaction state.
+//!   This is the window a write-ahead journal exists to make representable, and
+//!   it reports as the same unsealed tail as every earlier point: the mark's
+//!   whole purpose is that a nearly finished frame is not treated differently
+//!   from a barely started one.
+//! - After the seal's sync returns, the frame is committed, so recovery sees
+//!   the post-transaction state.
 //!
 //! An interrupted rewrite leaves either the original journal or the staged
 //! file, never a partial journal, because the staged file is only named
@@ -215,24 +233,65 @@
 //! sealed, acknowledged transactions — is then unreachable too, because the
 //! next frame's offset is only knowable through the one that cannot be read.
 //!
-//! So `open` may truncate only residue it can *prove* no commit point covered,
-//! and there is exactly one proof available. An append writes one frame forward
-//! at the end of the file, so every state it can be interrupted in is a strict
-//! prefix of that frame, and a prefix has four possible shapes: fewer bytes
-//! than a begin record, a partial image, a whole image with no commit record,
-//! and a partial commit record. [`TornTail::is_interrupted_append`] names those
-//! four. A prefix carries this store's magic and this build's version byte, and
-//! every byte it does carry is a byte that was written, so it can never fail a
-//! checksum computed over bytes that are all present.
+//! So `open` may truncate only residue it can *prove* no commit point covered.
+//! This section is that proof, and it is written in the direction the proof is
+//! used.
 //!
-//! The other three shapes — a whole begin record that does not verify, a whole
-//! image that does not match its checksum, a whole commit record that seals
-//! nothing — are therefore not prefixes of anything this build wrote. They are
-//! corruption, they may sit at or below the last commit point, and they make
-//! everything after them unreadable. `open` refuses with
-//! [`LedgerStoreError::UnreadableFrame`] rather than treating them as a tail,
-//! because treating them as a tail means deleting acknowledged history from the
+//! An earlier shape of this store argued the other direction. It enumerated
+//! what an interrupted append leaves — fewer bytes than a begin record, a
+//! partial image, a whole image with no commit record, a partial commit record
+//! — showed the list was exhaustive, and then treated finding one of those
+//! shapes as proof that an append had been interrupted. That converse is false,
+//! and one byte is enough to show it. A journal that loses its last byte ends
+//! in a partial commit record. It is a strict prefix of a frame this build
+//! wrote; it carries this store's magic and this build's version; every byte
+//! present was written and no checksum over present bytes fails. It satisfies
+//! the enumeration exactly, and the frame it ends in was committed and
+//! acknowledged. Truncating it deleted a whole transaction from the medium
+//! during an operation the caller asked for as a read, and reported the loss as
+//! "bytes no commit point ever covered".
+//!
+//! The same argument ran backwards at the other end. A tail of zero bytes —
+//! what a crash on a delayed-allocation filesystem actually leaves, when the
+//! file's size reached the medium and its data did not — was benign below a
+//! begin record's length and corruption at or above it, because that is where
+//! the zeros started failing a magic test. One kind of residue, two opposite
+//! verdicts, decided by how many bytes happened to land.
+//!
+//! No test on the bytes can separate a truncated committed frame from an
+//! interrupted append, because they *are* the same bytes. So the write path
+//! puts the distinction into the artifact instead of asking recovery to infer
+//! it from where the scan got to.
+//!
+//! **A frame's first byte is its append mark.** It is `0x00` while the frame is
+//! being appended and `b'R'` — the begin magic's leading byte — once the frame
+//! is durable. An append writes the unsealed mark before any other byte of the
+//! frame, makes the whole frame durable, and only then writes the one byte that
+//! seals it. Since a crash leaves a prefix of what was written, the mark is
+//! written first and *every* interrupted append leaves it unsealed.
+//! Contrapositively, a sealed mark proves no append was interrupted there, so
+//! those bytes are exactly what some completed append sealed, and any damage to
+//! them happened after the seal. Zeros are the unsealed mark, so the ordinary
+//! residue of a delayed allocation reads as exactly what it is, at every
+//! length.
+//!
+//! That is [`TornTail::is_interrupted_append`], and it now holds in the
+//! direction it is used. Every other shape — a sealed frame cut short, a begin
+//! record that does not verify, an image that does not match its checksum, a
+//! commit record that seals nothing, a byte that is neither mark — proves
+//! nothing of the kind. Such a frame may sit at or below the last commit point,
+//! and it makes everything after it unreadable regardless. `open` refuses with
+//! [`LedgerStoreError::UnreadableFrame`] rather than treating it as a tail,
+//! because treating it as a tail means deleting acknowledged history from the
 //! medium during what the caller asked for as a *read*.
+//!
+//! One shape is refused by *both* entry points rather than being damage a
+//! repair may clear: a frame declaring a format version this build cannot read.
+//! That needs no corruption at all — a newer build appending over a header this
+//! one still reads produces it from healthy bytes — so it is a newer build's
+//! committed work, and the remedy for damage must not delete it. It is
+//! [`LedgerStoreError::UnsupportedFrameVersion`], separate from the corruption
+//! it used to be folded into.
 //!
 //! # Repairing, as a separate act
 //!
@@ -268,7 +327,7 @@ use std::{
     error::Error,
     fmt,
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::{Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 
@@ -289,6 +348,20 @@ pub const COMMIT_LEN: usize = 13;
 const JOURNAL_MAGIC: [u8; 4] = *b"RLDG";
 const BEGIN_MAGIC: [u8; 4] = *b"RLBG";
 const COMMIT_MAGIC: [u8; 4] = *b"RLCM";
+
+/// First byte of a frame whose transaction is sealed: the begin magic's leading
+/// byte.
+const SEALED_FRAME_MARK: u8 = BEGIN_MAGIC[0];
+
+/// First byte of a frame that is still being appended.
+///
+/// An append writes this value before any other byte of the frame and replaces
+/// it with [`SEALED_FRAME_MARK`] only after every other byte is durable, so a
+/// tail still carrying it is a tail no commit point ever covered. It is zero
+/// because that is also what a filesystem leaves when a crash extended a file
+/// without persisting its data: the ordinary residue of a delayed allocation
+/// reads as exactly what it is.
+const UNSEALED_FRAME_MARK: u8 = 0x00;
 
 /// Version byte of every record this build writes.
 const JOURNAL_FORMAT_VERSION: u8 = 1;
@@ -403,6 +476,19 @@ pub enum LedgerStoreError {
         /// repair would discard.
         unreadable_bytes: u64,
     },
+    /// A frame declares a format version this build cannot read.
+    ///
+    /// This needs no corruption: a newer build appending over a header this one
+    /// still reads produces it from entirely healthy bytes. It is separate from
+    /// [`LedgerStoreError::UnreadableFrame`] because it is refused by *both*
+    /// entry points — a downgrade is not damage, so the repair that discards
+    /// damage must not discard it either.
+    UnsupportedFrameVersion {
+        /// Byte offset the frame begins at.
+        offset: u64,
+        /// Version byte found in its begin record.
+        version: u8,
+    },
     /// A committed frame's image is not a decodable application snapshot.
     Image(LedgerCodecError),
     /// A committed frame's image violates a model resource or supply
@@ -507,6 +593,11 @@ impl fmt::Display for LedgerStoreError {
                  {committed_frames} frames were readable before it and the {unreadable_bytes} bytes \
                  from there on may hold committed transactions"
             ),
+            Self::UnsupportedFrameVersion { offset, version } => write!(
+                formatter,
+                "the frame at byte {offset} declares format version {version}, which this build \
+                 cannot read; it is a newer build's committed work, not damage to discard"
+            ),
             Self::Image(error) => write!(formatter, "malformed committed image: {error}"),
             Self::Snapshot(error) => write!(formatter, "invalid committed image: {error:?}"),
             Self::NonMonotonicAppliedIndex { previous, found } => write!(
@@ -564,6 +655,7 @@ impl Error for LedgerStoreError {
             | Self::HeaderChecksumMismatch { .. }
             | Self::ConfigMismatch { .. }
             | Self::UnreadableFrame { .. }
+            | Self::UnsupportedFrameVersion { .. }
             | Self::Snapshot(_)
             | Self::NonMonotonicAppliedIndex { .. }
             | Self::DeduplicationRegression { .. }
@@ -629,6 +721,18 @@ pub enum WriteFault {
     AfterBytes(u64),
     /// Emit every byte of the plan, then fail its file durability barrier.
     AtFileSync,
+    /// Make the whole unsealed frame durable, then fail before it is sealed.
+    ///
+    /// This is the write-ahead window the journal exists to make
+    /// representable: every byte of the transaction is on the medium and none
+    /// of it counts. Only an append seals, so this never fires on a rewrite.
+    BeforeSeal,
+    /// Seal the frame, then fail the barrier that makes the seal durable.
+    ///
+    /// Either outcome is legal — the seal may or may not have reached the
+    /// medium — which is exactly why the caller is told the result is unknown.
+    /// Only an append seals, so this never fires on a rewrite.
+    AtSealSync,
     /// Emit and sync the staged file, then fail before the rename publishes it.
     ///
     /// Only a rewrite renames, so this never fires on an append.
@@ -645,6 +749,8 @@ impl fmt::Display for WriteFault {
             Self::BeforeFirstByte => formatter.write_str("failure before the first byte"),
             Self::AfterBytes(bytes) => write!(formatter, "failure after {bytes} bytes"),
             Self::AtFileSync => formatter.write_str("failure at the file sync"),
+            Self::BeforeSeal => formatter.write_str("failure before the seal"),
+            Self::AtSealSync => formatter.write_str("failure at the seal sync"),
             Self::BeforeRename => formatter.write_str("failure before the rename"),
             Self::AfterRename => formatter.write_str("failure after the rename"),
         }
@@ -714,72 +820,110 @@ impl fmt::Display for FaultPlan {
 /// names the byte boundary the interrupted write reached, which is what lets a
 /// crash test prove that its injection bit where it aimed.
 ///
-/// Only four of these variants are residue an interrupted append can actually
-/// leave; see [`TornTail::is_interrupted_append`]. The other three name
-/// corruption, and reaching one refuses the store rather than truncating.
+/// Exactly one of these variants is residue an interrupted append can leave;
+/// see [`TornTail::is_interrupted_append`]. The rest name damage to a frame that
+/// was sealed, and reaching one refuses the store rather than truncating.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum TornTail {
-    /// Fewer bytes remain than one begin record needs.
-    PartialBeginRecord,
-    /// The begin record's magic, version, or own checksum does not verify.
-    BeginRecordCorrupt,
-    /// The image the begin record declares is not fully present.
-    PartialImage,
-    /// The image is complete but does not match its declared checksum.
-    ImageCorrupt,
-    /// The image is complete and no commit record follows it.
+    /// An append wrote these bytes and never sealed the frame.
     ///
-    /// This is the write-ahead window: the transaction was written and never
-    /// committed.
+    /// The frame still carries [`UNSEALED_FRAME_MARK`] in its first byte. This
+    /// is the write-ahead window and every earlier point inside it: the
+    /// transaction was written, wholly or partly, and never committed.
+    /// `present` is how many bytes past the last committed frame it reached.
+    UnsealedAppend {
+        /// Bytes present past the last committed frame.
+        present: u64,
+    },
+    /// The tail begins with a byte that is neither frame mark.
+    ForeignFrameMark {
+        /// The byte found where a frame mark belongs.
+        mark: u8,
+    },
+    /// A sealed frame holds fewer bytes than one begin record needs.
+    PartialBeginRecord,
+    /// A sealed frame's begin record magic or own checksum does not verify.
+    BeginRecordCorrupt,
+    /// A sealed frame declares a format version this build cannot read.
+    ///
+    /// This needs no corruption at all: a newer build appending a frame over a
+    /// header this one still reads produces it from entirely healthy bytes. It
+    /// is separated from [`TornTail::BeginRecordCorrupt`] so that a downgrade
+    /// cannot be mistaken for a torn write and answered with a repair that
+    /// discards a newer build's committed work.
+    UnsupportedFrameVersion {
+        /// Version byte found in the begin record.
+        version: u8,
+    },
+    /// A sealed frame's image is not fully present.
+    PartialImage,
+    /// A sealed frame's image is complete but does not match its checksum.
+    ImageCorrupt,
+    /// A sealed frame's image is complete and no commit record follows it.
     MissingCommitRecord,
-    /// Fewer bytes remain than one commit record needs.
+    /// A sealed frame holds fewer bytes than one commit record needs.
     PartialCommitRecord,
-    /// The commit record is complete but does not seal this frame.
+    /// A sealed frame's commit record is complete but does not seal it.
     CommitRecordCorrupt,
 }
 
 impl TornTail {
-    /// Whether an interrupted append of *this* build could have left this.
+    /// Whether an interrupted append of *this* build left this.
     ///
-    /// An append writes one frame forward at the end of the journal, so every
-    /// state it can be interrupted in is a strict prefix of that frame. The
-    /// four shapes below are exactly those prefixes: fewer bytes than a begin
-    /// record, a partial image, a whole image with no commit record, and a
-    /// partial commit record.
+    /// This is used in one direction only — a tail may be truncated **because**
+    /// it is an interrupted append — so it is the converse that has to hold:
+    /// this returning `true` must prove no commit point covered those bytes.
+    /// One variant carries that proof, and it carries it because an append puts
+    /// the proof in the bytes rather than leaving recovery to infer it from how
+    /// far the scan got.
     ///
-    /// Nothing else is a prefix of anything this build writes. A prefix carries
-    /// this store's magic and this build's version byte, and every byte it does
-    /// carry is a byte that was written, so it cannot fail a checksum computed
-    /// over bytes that are all present.
+    /// An append writes [`UNSEALED_FRAME_MARK`] into the frame's first byte
+    /// before any other byte of the frame, and replaces it with
+    /// [`SEALED_FRAME_MARK`] only after every other byte has passed a
+    /// durability barrier. A crash leaves a prefix of what was written, so
+    /// every interrupted append leaves the unsealed mark behind.
+    /// Contrapositively, a frame whose first byte is sealed holds exactly the
+    /// bytes some completed append sealed there, and any damage to it happened
+    /// *after* that seal.
     ///
-    /// That asymmetry is what makes truncation safe. Residue proves the bytes
-    /// beyond the last committed frame were never committed, so discarding them
-    /// discards nothing. The other three shapes prove nothing of the kind: the
-    /// unreadable frame may itself have been committed, and every frame after
-    /// it is unreachable regardless, so `open` refuses rather than shortening
-    /// the journal on a caller's behalf.
+    /// So [`TornTail::UnsealedAppend`] proves the bytes past the last committed
+    /// frame were never committed, and discarding them discards nothing. Every
+    /// other shape proves nothing of the kind — a sealed frame that has merely
+    /// lost its last byte is a strict prefix of a frame this build wrote and
+    /// would have passed a shape test — and the frames past it are unreachable
+    /// regardless, so `open` refuses rather than shortening the journal on a
+    /// caller's behalf.
     #[must_use]
     pub const fn is_interrupted_append(self) -> bool {
-        matches!(
-            self,
-            Self::PartialBeginRecord
-                | Self::PartialImage
-                | Self::MissingCommitRecord
-                | Self::PartialCommitRecord
-        )
+        matches!(self, Self::UnsealedAppend { .. })
     }
 }
 
 impl fmt::Display for TornTail {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnsealedAppend { present } => {
+                return write!(formatter, "{present} bytes of an unsealed append")
+            }
+            Self::ForeignFrameMark { mark } => {
+                return write!(formatter, "a foreign frame mark {mark:#04x}")
+            }
+            Self::UnsupportedFrameVersion { version } => {
+                return write!(formatter, "a frame of format version {version}")
+            }
+            _ => {}
+        }
         formatter.write_str(match self {
-            Self::PartialBeginRecord => "a partial begin record",
-            Self::BeginRecordCorrupt => "a corrupt begin record",
-            Self::PartialImage => "a partial image",
-            Self::ImageCorrupt => "a corrupt image",
-            Self::MissingCommitRecord => "a written but uncommitted transaction",
-            Self::PartialCommitRecord => "a partial commit record",
-            Self::CommitRecordCorrupt => "a corrupt commit record",
+            Self::PartialBeginRecord => "a sealed frame cut inside its begin record",
+            Self::BeginRecordCorrupt => "a sealed frame with a corrupt begin record",
+            Self::PartialImage => "a sealed frame cut inside its image",
+            Self::ImageCorrupt => "a sealed frame with a corrupt image",
+            Self::MissingCommitRecord => "a sealed frame with no commit record",
+            Self::PartialCommitRecord => "a sealed frame cut inside its commit record",
+            Self::CommitRecordCorrupt => "a sealed frame whose commit record seals nothing",
+            Self::UnsealedAppend { .. }
+            | Self::ForeignFrameMark { .. }
+            | Self::UnsupportedFrameVersion { .. } => unreachable!("handled above"),
         })
     }
 }
@@ -801,7 +945,7 @@ pub struct RecoveryReport {
     committed_frames: u64,
     torn_tail: Option<TornTail>,
     discarded_bytes: u64,
-    removed_staged_file: bool,
+    removed_staged_bytes: Option<u64>,
     repair: Option<Repair>,
 }
 
@@ -875,9 +1019,10 @@ impl RecoveryReport {
 
     /// Bytes truncated from the journal's uncommitted tail.
     ///
-    /// These are bytes no commit point ever covered — a strict prefix of one
-    /// interrupted append — so discarding them discards nothing. Bytes lost to
-    /// a repair are counted separately, by [`Repair::discarded_bytes`], because
+    /// These are bytes no commit point ever covered — a frame whose append
+    /// never sealed it, which [`TornTail::is_interrupted_append`] proves rather
+    /// than assumes — so discarding them discards nothing. Bytes lost to a
+    /// repair are counted separately, by [`Repair::discarded_bytes`], because
     /// they are a different kind of loss.
     #[must_use]
     pub const fn discarded_bytes(&self) -> u64 {
@@ -887,7 +1032,17 @@ impl RecoveryReport {
     /// Whether an abandoned staging file was removed.
     #[must_use]
     pub const fn removed_staged_file(&self) -> bool {
-        self.removed_staged_file
+        self.removed_staged_bytes.is_some()
+    }
+
+    /// How large the removed staging file was, when one was removed.
+    ///
+    /// Deleting a file is worth more than a bit in a report. The sweep now
+    /// removes exactly one name, so the name is known from the format, and this
+    /// is the rest of what was lost.
+    #[must_use]
+    pub const fn removed_staged_bytes(&self) -> Option<u64> {
+        self.removed_staged_bytes
     }
 
     /// What a repair discarded, when this opening was a repair that found work.
@@ -901,14 +1056,26 @@ impl RecoveryReport {
 
     /// Whether this opening found nothing that needs a decision.
     ///
-    /// A clean opening created the journal or read it whole. Anything else —
-    /// residue from an interrupted transaction, a staging file an earlier
-    /// incarnation abandoned, a repair that discarded a region — is a fact a
-    /// caller reopening a store after a crash should have to look at rather
-    /// than step over.
+    /// A clean opening read a journal that was already there, whole. Anything
+    /// else — residue from an interrupted transaction, a staging file an
+    /// earlier incarnation abandoned, a repair that discarded a region, or
+    /// creating the journal — is a fact a caller reopening a store after a
+    /// crash should have to look at rather than step over.
+    ///
+    /// Creation counts deliberately. This store cannot tell a genuinely fresh
+    /// replica from one whose journal was deleted, because both arrive here as
+    /// an absent file; only the caller knows which it is. Leaving creation out
+    /// of this predicate made the difference invisible to the one party that
+    /// could see it — a vanished journal opened at applied index zero and
+    /// reported a clean start — and made `created()` a report nothing read. A
+    /// caller that expects to be creating a journal looks at
+    /// [`RecoveryReport::created`] and carries on.
     #[must_use]
     pub const fn is_clean(&self) -> bool {
-        self.torn_tail.is_none() && !self.removed_staged_file && self.repair.is_none()
+        !self.created
+            && self.torn_tail.is_none()
+            && self.removed_staged_bytes.is_none()
+            && self.repair.is_none()
     }
 }
 
@@ -1021,7 +1188,7 @@ impl LedgerStore {
         let journal_path = directory.join(JOURNAL_FILE_NAME);
         // Before anything looks at the journal, so an interrupted creation's
         // staging file is gone by the time `exists` decides whether to create.
-        let removed_staged_file = sweep_staged_files(directory)?;
+        let removed_staged_bytes = sweep_staged_file(directory)?;
 
         let created = !journal_path.exists();
         if created {
@@ -1035,10 +1202,21 @@ impl LedgerStore {
         })?;
         let scan = scan_journal(&bytes, config)?;
 
+        // A frame this build cannot read is not damage, so it is not something
+        // a repair may clear. Discarding it would delete a newer build's
+        // committed work on the strength of a version byte, so both entry
+        // points refuse it, above the repair branch rather than inside it.
+        if let Some(TornTail::UnsupportedFrameVersion { version }) = scan.torn_tail {
+            return Err(LedgerStoreError::UnsupportedFrameVersion {
+                offset: scan.committed_len as u64,
+                version,
+            });
+        }
+
         // The whole fail-closed rule, in one branch. Truncating is only ever
-        // legal for a strict prefix of one interrupted append; anything else
-        // may sit at or below the last commit point, and shortening the file
-        // there would delete acknowledged history during a read.
+        // legal for a frame an append never sealed; anything else may sit at or
+        // below the last commit point, and shortening the file there would
+        // delete acknowledged history during a read.
         let unreadable = scan
             .torn_tail
             .filter(|tail| !tail.is_interrupted_append())
@@ -1091,7 +1269,7 @@ impl LedgerStore {
                 } else {
                     (bytes.len() - scan.committed_len) as u64
                 },
-                removed_staged_file,
+                removed_staged_bytes,
                 repair,
             },
         })
@@ -1300,17 +1478,36 @@ impl LedgerStore {
         Some(LedgerStoreError::InjectedFault { fault, plan })
     }
 
-    /// Appends `frame` to the journal and makes it durable.
+    /// Appends `frame` to the journal unsealed, makes it durable, and only then
+    /// seals it.
     ///
     /// The journal's directory entry was made durable when the file was
-    /// created, so an append needs only the file's own barrier.
+    /// created, so an append touches only the file.
+    ///
+    /// Two things about the order are load bearing, and both exist to make
+    /// recovery's truncation rule provable rather than plausible:
+    ///
+    /// 1. **The frame's first byte goes out first, and goes out unsealed.** A
+    ///    crash leaves a prefix of what was written, so every interrupted
+    ///    append leaves [`UNSEALED_FRAME_MARK`] where the next frame begins.
+    ///    That is what a later opener reads as proof that no commit point
+    ///    covered these bytes.
+    /// 2. **The seal is one byte, written after the barrier below returned.**
+    ///    Nothing that follows the barrier can reach the medium before the
+    ///    frame it seals, and a single byte cannot be half written, so a frame
+    ///    is either committed or not.
+    ///
+    /// The file is opened for writing at an explicit offset rather than in
+    /// append mode, because the seal goes back to the frame's own first byte.
+    /// Recovery leaves the journal exactly its committed length, so that offset
+    /// is the end of the file.
     fn append(&mut self, frame: &[u8], plan: u64) -> Result<(), LedgerStoreError> {
         if let Some(error) = self.take_fault(plan, WriteFaultSite::BeforeFirstByte) {
             return Err(self.publication_failed(error));
         }
 
         let mut file = OpenOptions::new()
-            .append(true)
+            .write(true)
             .open(&self.journal_path)
             .map_err(|source| LedgerStoreError::Io {
                 operation: "open the ledger journal for append",
@@ -1319,7 +1516,12 @@ impl LedgerStore {
             })?;
 
         let journal_path = self.journal_path.clone();
-        let emitted = self.emit(&mut file, frame, plan, &journal_path)?;
+        let offset = self.journal_len;
+        self.seek(&mut file, offset, &journal_path)?;
+
+        let mut unsealed = frame.to_vec();
+        unsealed[0] = UNSEALED_FRAME_MARK;
+        let emitted = self.emit(&mut file, &unsealed, plan, &journal_path)?;
         if emitted < frame.len() {
             let error = self
                 .take_fault(plan, WriteFaultSite::AfterBytes)
@@ -1333,10 +1535,60 @@ impl LedgerStore {
         file.sync_data().map_err(|source| {
             self.publication_failed(LedgerStoreError::Io {
                 operation: "sync the appended ledger transaction",
-                path: self.journal_path.clone(),
+                path: journal_path.clone(),
+                source,
+            })
+        })?;
+
+        self.seal_frame(&mut file, offset, plan, &journal_path)
+    }
+
+    /// Replaces an appended frame's unsealed mark with the sealed one.
+    ///
+    /// This is the commit point. Everything before it is a tail a later opener
+    /// may truncate; everything after it is a frame a later opener must be able
+    /// to read or refuse over.
+    fn seal_frame(
+        &mut self,
+        file: &mut File,
+        offset: u64,
+        plan: u64,
+        path: &Path,
+    ) -> Result<(), LedgerStoreError> {
+        if let Some(error) = self.take_fault(plan, WriteFaultSite::BeforeSeal) {
+            return Err(self.publication_failed(error));
+        }
+        self.seek(file, offset, path)?;
+        file.write_all(&[SEALED_FRAME_MARK]).map_err(|source| {
+            self.publication_failed(LedgerStoreError::Io {
+                operation: "seal the appended ledger transaction",
+                path: path.to_path_buf(),
+                source,
+            })
+        })?;
+
+        if let Some(error) = self.take_fault(plan, WriteFaultSite::AtSealSync) {
+            return Err(self.publication_failed(error));
+        }
+        file.sync_data().map_err(|source| {
+            self.publication_failed(LedgerStoreError::Io {
+                operation: "sync the sealed ledger transaction",
+                path: path.to_path_buf(),
                 source,
             })
         })
+    }
+
+    fn seek(&mut self, file: &mut File, offset: u64, path: &Path) -> Result<(), LedgerStoreError> {
+        file.seek(SeekFrom::Start(offset))
+            .map(|_| ())
+            .map_err(|source| {
+                self.publication_failed(LedgerStoreError::Io {
+                    operation: "seek within the ledger journal",
+                    path: path.to_path_buf(),
+                    source,
+                })
+            })
     }
 
     /// Stages `contents`, syncs it, renames it over the journal, and syncs the
@@ -1491,6 +1743,8 @@ enum WriteFaultSite {
     BeforeFirstByte,
     AfterBytes,
     AtFileSync,
+    BeforeSeal,
+    AtSealSync,
     BeforeRename,
     AfterRename,
 }
@@ -1502,6 +1756,8 @@ impl WriteFaultSite {
             (Self::BeforeFirstByte, WriteFault::BeforeFirstByte)
                 | (Self::AfterBytes, WriteFault::AfterBytes(_))
                 | (Self::AtFileSync, WriteFault::AtFileSync)
+                | (Self::BeforeSeal, WriteFault::BeforeSeal)
+                | (Self::AtSealSync, WriteFault::AtSealSync)
                 | (Self::BeforeRename, WriteFault::BeforeRename)
                 | (Self::AfterRename, WriteFault::AfterRename)
         )
@@ -1573,14 +1829,38 @@ struct Frame<'a> {
 }
 
 /// Reads one frame from the front of `bytes`, or says why it is not committed.
+///
+/// The frame mark is read first, before anything classifies these bytes by how
+/// many of them there are. That ordering is what makes the answer a statement
+/// about whether the bytes were committed rather than about where the scan
+/// happened to stop: an unsealed mark says this frame's append never finished,
+/// and a sealed mark says it did, whatever the length turns out to be.
+///
+/// `bytes` is never empty — the scan stops before calling this on nothing.
 fn read_frame(bytes: &[u8]) -> Result<Frame<'_>, TornTail> {
+    match bytes[0] {
+        UNSEALED_FRAME_MARK => {
+            return Err(TornTail::UnsealedAppend {
+                present: bytes.len() as u64,
+            })
+        }
+        SEALED_FRAME_MARK => {}
+        mark => return Err(TornTail::ForeignFrameMark { mark }),
+    }
+
     let Some(begin) = bytes.get(..BEGIN_LEN) else {
         return Err(TornTail::PartialBeginRecord);
     };
-    if begin[..4] != BEGIN_MAGIC
-        || begin[4] != JOURNAL_FORMAT_VERSION
-        || read_u32(&begin[13..17]) != crc32(&begin[..13])
-    {
+    if begin[..4] != BEGIN_MAGIC {
+        return Err(TornTail::BeginRecordCorrupt);
+    }
+    // A version this build cannot read is its own answer. Folding it into the
+    // corruption above would make a downgrade indistinguishable from a torn
+    // write, and the remedy for a torn write discards the frame.
+    if begin[4] != JOURNAL_FORMAT_VERSION {
+        return Err(TornTail::UnsupportedFrameVersion { version: begin[4] });
+    }
+    if read_u32(&begin[13..17]) != crc32(&begin[..13]) {
         return Err(TornTail::BeginRecordCorrupt);
     }
 
@@ -1765,57 +2045,53 @@ fn staged_path(directory: &Path) -> PathBuf {
     directory.join(STAGED_FILE_NAME)
 }
 
-/// Removes every file this store could have staged, returning whether it
-/// removed any.
+/// Removes the one file this store stages, returning how large it was.
 ///
-/// The rule is wide on purpose: anything beside the journal whose name begins
-/// with the journal's name and a dot is residue, whoever wrote it. That covers
-/// the staging name, and it covers the process-scoped names an earlier shape of
-/// this store used — names the process that finds them can never have written,
-/// and so could never remove.
+/// The rule is exactly one name — [`STAGED_FILE_NAME`] — and not a prefix
+/// match. An earlier shape of this sweep removed anything beside the journal
+/// whose name began with the journal's name and a dot, on the reasoning that a
+/// staging file is always somebody else's abandoned work and the widest rule
+/// leaks the least. That reasoning had the direction of its own proof backwards
+/// in the same way the tail classifier did: it proved every staging file this
+/// store writes matches the prefix, and then used matching the prefix as proof
+/// that a file was one. It is not. The process tells an operator to run a
+/// repair, the obvious first move is to copy the journal aside, and the obvious
+/// name for the copy begins with the journal's name and a dot. Opening the
+/// store deleted the backup the store's own instructions invited.
 ///
-/// Removing a file this incarnation did not write is safe because there is no
-/// other writer. The directory ownership discipline is what supplies that: a
-/// replica takes `rafter-storage`'s operating-system lock over its Raft store
-/// directory before it opens this journal and holds it for the process's life,
-/// so a second process is refused before it reaches this directory at all. At
-/// the moment this runs there is exactly one live writer, and every staging
-/// file present was abandoned by an incarnation that is gone.
-fn sweep_staged_files(directory: &Path) -> Result<bool, LedgerStoreError> {
-    let prefix = format!("{JOURNAL_FILE_NAME}.");
-    let entries = fs::read_dir(directory).map_err(|source| LedgerStoreError::Io {
-        operation: "read the ledger store directory",
-        path: directory.to_path_buf(),
-        source,
-    })?;
-
-    let mut removed = false;
-    for entry in entries {
-        let entry = entry.map_err(|source| LedgerStoreError::Io {
-            operation: "read a ledger store directory entry",
-            path: directory.to_path_buf(),
+/// So the sweep removes only a name this store could have written itself, and
+/// nothing else in the directory is touched. Leaking is the smaller failure:
+/// residue this store did not create is somebody's evidence.
+///
+/// Removing this file is safe because there is no other writer. The directory
+/// ownership discipline is what supplies that: a replica takes
+/// `rafter-storage`'s operating-system lock over its Raft store directory
+/// before it opens this journal and holds it for the process's life, so a
+/// second process is refused before it reaches this directory at all. At the
+/// moment this runs there is exactly one live writer, and a staging file
+/// present was abandoned by an incarnation that is gone.
+fn sweep_staged_file(directory: &Path) -> Result<Option<u64>, LedgerStoreError> {
+    let path = staged_path(directory);
+    let length = match fs::metadata(&path) {
+        Ok(metadata) => metadata.len(),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(source) => {
+            return Err(LedgerStoreError::Io {
+                operation: "inspect an abandoned staging file",
+                path,
+                source,
+            })
+        }
+    };
+    match fs::remove_file(&path) {
+        Ok(()) => Ok(Some(length)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(source) => Err(LedgerStoreError::Io {
+            operation: "remove an abandoned staging file",
+            path,
             source,
-        })?;
-        // A name this store cannot have written is left alone, which includes
-        // any name that is not valid UTF-8.
-        let name = entry.file_name();
-        if !name.to_str().is_some_and(|name| name.starts_with(&prefix)) {
-            continue;
-        }
-        let path = entry.path();
-        match fs::remove_file(&path) {
-            Ok(()) => removed = true,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(source) => {
-                return Err(LedgerStoreError::Io {
-                    operation: "remove an abandoned staging file",
-                    path,
-                    source,
-                })
-            }
-        }
+        }),
     }
-    Ok(removed)
 }
 
 fn read_u32(bytes: &[u8]) -> u32 {

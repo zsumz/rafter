@@ -118,57 +118,23 @@ fn a_crash_at_every_byte_of_a_transaction_recovers_to_exactly_one_side_of_it() {
         );
 
         let committed = stop == frame_len;
-        if committed {
-            outcome.unwrap_or_else(|error| {
-                panic!("a whole frame commits under `{plan}`: {error}");
-            });
-            assert_eq!(
-                app.store().fired_fault(),
-                None,
-                "a fault that stops after the last byte stops nothing (`{plan}`)"
-            );
-        } else {
-            let error = outcome.expect_err(&format!("`{plan}` must interrupt the transaction"));
-            assert!(
-                matches!(
-                    error,
-                    DurableLedgerError::Store(LedgerStoreError::InjectedFault { .. })
-                ),
-                "`{plan}` failed for the wrong reason: {error}"
-            );
-            assert_eq!(
-                app.store().fired_fault(),
-                Some(WriteFault::AfterBytes(stop)),
-                "`{plan}` never reached its boundary"
-            );
-            assert!(
-                app.store().requires_reopen(),
-                "a store that failed mid-publication cannot say where its file ends (`{plan}`)"
-            );
-            // The machine reports a *durable* applied index, so a transaction
-            // that did not commit must not have moved it — nor the ledger
-            // beside it. A machine that adopted state before publishing it
-            // would report a floor above what recovery can reach, and an
-            // in-process restart from that floor would skip an entry that
-            // never committed.
-            assert_eq!(
-                durable_state(&app),
-                before,
-                "a failed transaction moved the reported state (`{plan}`)"
-            );
-        }
+        assert_interrupted_append(&app, outcome, stop, committed, &before, &plan);
         // Dropping the handle is the crash: everything below is what a fresh
         // process can read back.
         drop(app);
 
         let recovered = open(scratch.path(), FaultPlan::none());
-        let expected_tail = expected_tail(stop, image_len, frame_len);
+        let expected_tail = expected_tail(stop, frame_len);
         assert_eq!(
             recovered.store().recovery().torn_tail(),
             expected_tail,
             "`{plan}` left a residue the format does not describe"
         );
-        observed_tails.insert(expected_tail);
+        assert!(
+            expected_tail.is_none_or(TornTail::is_interrupted_append),
+            "an interrupted append must leave a tail a later opener may truncate (`{plan}`)"
+        );
+        observed_tails.insert(stopped_record(stop, image_len, frame_len));
         assert_eq!(
             durable_state(&recovered),
             if committed {
@@ -180,18 +146,20 @@ fn a_crash_at_every_byte_of_a_transaction_recovers_to_exactly_one_side_of_it() {
         );
     }
 
-    // The sweep is only evidence if it actually produced every shape the
-    // format can leave behind.
+    // The sweep is only evidence if it actually stopped in every record of the
+    // frame, including the write-ahead window where the whole image is on the
+    // medium and the commit record is not.
     assert_eq!(
         observed_tails,
         BTreeSet::from([
-            None,
-            Some(TornTail::PartialBeginRecord),
-            Some(TornTail::PartialImage),
-            Some(TornTail::MissingCommitRecord),
-            Some(TornTail::PartialCommitRecord),
+            "before the first byte",
+            "inside the begin record",
+            "inside the image",
+            "a whole image with no commit record",
+            "inside the commit record",
+            "sealed",
         ]),
-        "the sweep missed a torn-tail shape"
+        "the sweep missed a record of the frame"
     );
 }
 
@@ -254,8 +222,8 @@ fn a_written_but_uncommitted_transaction_is_not_a_transaction() {
     let recovered = open(scratch.path(), FaultPlan::none());
     assert_eq!(
         recovered.store().recovery().torn_tail(),
-        Some(TornTail::MissingCommitRecord),
-        "the residue is a written transaction with no commit record (`{plan}`)"
+        Some(TornTail::UnsealedAppend { present: stop }),
+        "the residue is a written transaction the append never sealed (`{plan}`)"
     );
     assert_eq!(
         recovered.store().recovery().discarded_bytes(),
@@ -292,7 +260,7 @@ fn a_torn_commit_record_does_not_commit() {
     let recovered = open(scratch.path(), FaultPlan::none());
     assert_eq!(
         recovered.store().recovery().torn_tail(),
-        Some(TornTail::PartialCommitRecord),
+        Some(TornTail::UnsealedAppend { present: stop }),
         "under `{plan}`"
     );
     assert_eq!(
@@ -562,7 +530,12 @@ fn a_corrupted_committed_frame_refuses_the_store_rather_than_truncating_it() {
     // whether it is looking at an interrupted append or at acknowledged history
     // that has rotted, so it refuses instead of shortening the file.
     let cases = [
-        (0_u64, TornTail::BeginRecordCorrupt),
+        // Byte zero is the frame mark. Flipping it leaves a byte that is
+        // neither mark, which is not something an append can produce: an
+        // append writes the unsealed mark and promotes it to the sealed one,
+        // and there is no third value in between.
+        (0_u64, TornTail::ForeignFrameMark { mark: !b'R' }),
+        (1, TornTail::BeginRecordCorrupt),
         (as_u64(BEGIN_LEN) + 2, TornTail::ImageCorrupt),
         (
             as_u64(BEGIN_LEN) + image_len + 6,
@@ -827,12 +800,14 @@ fn creating_the_journal_survives_a_crash_at_every_stage() {
 }
 
 #[test]
-fn a_staging_file_another_process_abandoned_is_removed_at_open() {
-    // The only crash that produces a staging file is one that kills the process
-    // holding it, so the process that finds one is never the process that wrote
-    // it. A staging name only its author could recognize is a name nobody ever
-    // removes, and the directory would grow one whole image per interrupted
-    // rewrite, forever.
+fn the_sweep_removes_this_stores_staging_name_and_nothing_else() {
+    // The sweep used to remove anything whose name began with the journal's
+    // name and a dot, reasoning that a staging file is always somebody's
+    // abandoned work. That had the direction of its own proof backwards: every
+    // file this store stages matches the prefix, but matching the prefix does
+    // not make a file one. The process tells an operator to run a repair, the
+    // obvious first move is to copy the journal aside, and the obvious name for
+    // the copy is exactly what the old rule deleted.
     let ledger_config = config(2, 4);
     let scratch = ScratchDir::new("foreign-staging");
     let mut app = open(scratch.path(), FaultPlan::none());
@@ -840,21 +815,26 @@ fn a_staging_file_another_process_abandoned_is_removed_at_open() {
     let before = durable_state(&app);
     drop(app);
 
-    let foreign = format!("ledger.journal.{}.tmp", std::process::id().wrapping_add(1));
-    for name in [foreign.as_str(), "ledger.journal.tmp"] {
-        std::fs::write(scratch.path().join(name), vec![0_u8; 4096])
-            .expect("an abandoned staging file writes");
-    }
+    let backup = "ledger.journal.backup-2026-07-25";
+    std::fs::copy(
+        scratch.path().join("ledger.journal"),
+        scratch.path().join(backup),
+    )
+    .expect("an operator copies the journal aside");
+    std::fs::write(scratch.path().join("ledger.journal.tmp"), vec![0_u8; 4096])
+        .expect("an abandoned staging file writes");
 
     let recovered = LedgerStore::open(scratch.path(), ledger_config).expect("the store reopens");
-    assert!(
-        recovered.recovery().removed_staged_file(),
-        "an abandoned staging file must be removed at open"
+    assert_eq!(
+        recovered.recovery().removed_staged_bytes(),
+        Some(4096),
+        "the abandoned staging file must be removed at open, and its size reported: deleting a \
+         file is worth more than a bit in a report"
     );
     assert_eq!(
         names_in(scratch.path()),
-        vec![String::from("ledger.journal")],
-        "the directory holds nothing but the journal after a sweep"
+        vec![String::from("ledger.journal"), String::from(backup)],
+        "the sweep removed a name this store could not have written"
     );
     assert_eq!(
         DurableState {
@@ -1254,7 +1234,7 @@ fn a_replica_that_crashed_mid_transaction_recovers_and_rejoins() {
     let recovered = cluster.state_machine(NodeId(3));
     assert_eq!(
         recovered.store().recovery().torn_tail(),
-        Some(TornTail::PartialImage),
+        Some(TornTail::UnsealedAppend { present: stop }),
         "the restarted replica recovered across the transaction it died in (`{plan}`)"
     );
     assert!(
@@ -1463,19 +1443,91 @@ fn names_in(directory: &Path) -> Vec<String> {
     names
 }
 
+/// Asserts what one boundary of the sweep did to the live handle, before the
+/// handle is dropped and a fresh opener decides what reached the medium.
+fn assert_interrupted_append(
+    app: &DurableLedgerStateMachine,
+    outcome: Result<ApplyOutcome, DurableLedgerError>,
+    stop: u64,
+    committed: bool,
+    before: &DurableState,
+    plan: &FaultPlan,
+) {
+    if committed {
+        outcome.unwrap_or_else(|error| panic!("a whole frame commits under `{plan}`: {error}"));
+        assert_eq!(
+            app.store().fired_fault(),
+            None,
+            "a fault that stops after the last byte stops nothing (`{plan}`)"
+        );
+        return;
+    }
+
+    let error = outcome.expect_err(&format!("`{plan}` must interrupt the transaction"));
+    assert!(
+        matches!(
+            error,
+            DurableLedgerError::Store(LedgerStoreError::InjectedFault { .. })
+        ),
+        "`{plan}` failed for the wrong reason: {error}"
+    );
+    assert_eq!(
+        app.store().fired_fault(),
+        Some(WriteFault::AfterBytes(stop)),
+        "`{plan}` never reached its boundary"
+    );
+    assert!(
+        app.store().requires_reopen(),
+        "a store that failed mid-publication cannot say where its file ends (`{plan}`)"
+    );
+    // The machine reports a *durable* applied index, so a transaction that did
+    // not commit must not have moved it — nor the ledger beside it. A machine
+    // that adopted state before publishing it would report a floor above what
+    // recovery can reach, and an in-process restart from that floor would skip
+    // an entry that never committed.
+    assert_eq!(
+        durable_state(app),
+        *before,
+        "a failed transaction moved the reported state (`{plan}`)"
+    );
+}
+
 /// Returns the torn tail a stop after `stop` bytes of a frame must leave.
-fn expected_tail(stop: u64, image_len: u64, frame_len: u64) -> Option<TornTail> {
-    let begin = as_u64(BEGIN_LEN);
+///
+/// An interrupted append leaves one tail whatever byte it stopped on, because
+/// the answer recovery needs is not "which record is missing" but "did this
+/// frame's append ever seal it". An append extends the file, so the byte count
+/// here really is the write's frontier, and pinning it is sharper than pinning
+/// a record shape.
+fn expected_tail(stop: u64, frame_len: u64) -> Option<TornTail> {
     if stop == 0 || stop == frame_len {
         None
-    } else if stop < begin {
-        Some(TornTail::PartialBeginRecord)
-    } else if stop < begin + image_len {
-        Some(TornTail::PartialImage)
-    } else if stop == begin + image_len {
-        Some(TornTail::MissingCommitRecord)
     } else {
-        Some(TornTail::PartialCommitRecord)
+        Some(TornTail::UnsealedAppend { present: stop })
+    }
+}
+
+/// Names the record a stop landed in, so a sweep can assert it crossed every
+/// one of them.
+///
+/// The store no longer classifies a tail by record — the frame mark decides —
+/// so this is the sweep's own bookkeeping rather than a projection of the
+/// store's answer, and it is what keeps the sweep honest about having visited
+/// the begin record, the image, the write-ahead window, and the commit record.
+fn stopped_record(stop: u64, image_len: u64, frame_len: u64) -> &'static str {
+    let begin = as_u64(BEGIN_LEN);
+    if stop == 0 {
+        "before the first byte"
+    } else if stop == frame_len {
+        "sealed"
+    } else if stop < begin {
+        "inside the begin record"
+    } else if stop < begin + image_len {
+        "inside the image"
+    } else if stop == begin + image_len {
+        "a whole image with no commit record"
+    } else {
+        "inside the commit record"
     }
 }
 

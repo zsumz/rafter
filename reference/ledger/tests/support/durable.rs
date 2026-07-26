@@ -33,6 +33,14 @@ pub struct DurableLedgerApps {
     /// were armed is what makes that assertion possible without also failing
     /// the crash tests, whose whole purpose is to produce residue.
     interrupted: BTreeSet<NodeId>,
+    /// Replicas whose journal this factory has already opened once.
+    ///
+    /// Creating a replica's journal is legitimate exactly once, on the opening
+    /// that brings the replica into existence. A later opening that creates it
+    /// found no journal where one was supposed to be, which is a silent rewind
+    /// to applied index zero — so the report has to be able to say "created",
+    /// and something has to read it.
+    opened: BTreeSet<NodeId>,
 }
 
 impl DurableLedgerApps {
@@ -43,6 +51,7 @@ impl DurableLedgerApps {
             config,
             armed: BTreeMap::new(),
             interrupted: BTreeSet::new(),
+            opened: BTreeSet::new(),
         }
     }
 
@@ -82,8 +91,16 @@ impl DurableLedgerApps {
             "replica {} repaired its journal, which `open_with_faults` must never do: {recovery:?}",
             node_id.0
         );
+        let first_open = self.opened.insert(node_id);
+        assert_eq!(
+            recovery.created(),
+            first_open,
+            "replica {} created its journal on the wrong opening: a restart that creates one \
+             found no journal where a store was supposed to be",
+            node_id.0
+        );
         assert!(
-            recovery.is_clean() || self.interrupted.contains(&node_id),
+            recovery.is_clean() || first_open || self.interrupted.contains(&node_id),
             "replica {} recovered from residue no scenario put there: {recovery:?}",
             node_id.0
         );
