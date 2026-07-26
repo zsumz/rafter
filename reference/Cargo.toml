@@ -1,5 +1,5 @@
 [workspace]
-members = ["fenced-lock", "ledger"]
+members = ["fenced-lock", "ledger", "sharded-counter"]
 resolver = "2"
 
 [workspace.package]
