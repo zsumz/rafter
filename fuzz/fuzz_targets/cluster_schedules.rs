@@ -12,6 +12,9 @@
 
 #![no_main]
 
+use std::collections::btree_map::Entry;
+use std::collections::BTreeMap;
+
 use arbitrary::Unstructured;
 use libfuzzer_sys::fuzz_target;
 use rafter::{LogEntry, LogIndex, NodeConfig, NodeId};
@@ -125,7 +128,42 @@ fn entry_at(cluster: &Cluster, node_id: NodeId, index: LogIndex) -> Option<LogEn
     cluster.log_entries_from(node_id, index).first().cloned()
 }
 
-fn check_cluster_invariants(cluster: &Cluster) {
+/// Every leader this run has ever observed, keyed by the term it led.
+///
+/// Election Safety is a property of a *term*, not of the present moment.
+/// `Cluster::leaders_in_term` can only report nodes that are leaders **right
+/// now** at the term they hold **right now**, so checking it against the three
+/// currently-held terms sees at most three terms out of every term the run
+/// visits. This fuzzer ticks and restarts constantly, so nodes leave a term
+/// within a few steps; a two-leaders-in-term-N violation would become
+/// permanently unobservable as soon as all three nodes advanced past N.
+///
+/// Recording each observation instead makes a violation permanent: once node A
+/// is witnessed leading term N, any later sighting of a different leader in
+/// term N fails, however far the cluster has moved on.
+type ElectionSafetyWitness = BTreeMap<u64, NodeId>;
+
+fn check_election_safety(cluster: &Cluster, witness: &mut ElectionSafetyWitness) {
+    for node_id in NODE_IDS {
+        let term = cluster.current_term(node_id);
+        for leader in cluster.leaders_in_term(term) {
+            match witness.entry(term.0) {
+                Entry::Vacant(slot) => {
+                    slot.insert(leader);
+                }
+                Entry::Occupied(slot) => assert_eq!(
+                    *slot.get(),
+                    leader,
+                    "election safety: term {term} was led by node {:?} and later by node \
+                     {leader:?}",
+                    slot.get()
+                ),
+            }
+        }
+    }
+}
+
+fn check_cluster_invariants(cluster: &Cluster, witness: &mut ElectionSafetyWitness) {
     for node_id in NODE_IDS {
         let commit_index = cluster.commit_index(node_id);
         let last_log_index = cluster.last_log_index(node_id);
@@ -135,13 +173,7 @@ fn check_cluster_invariants(cluster: &Cluster) {
         );
     }
 
-    for term in NODE_IDS.map(|node_id| cluster.current_term(node_id)) {
-        let leaders = cluster.leaders_in_term(term);
-        assert!(
-            leaders.len() <= 1,
-            "multiple leaders in term {term}: {leaders:?}"
-        );
-    }
+    check_election_safety(cluster, witness);
 
     let max_commit = NODE_IDS
         .iter()
@@ -200,12 +232,16 @@ fuzz_target!(|data: &[u8]| {
     let minimal_posture = u.arbitrary::<bool>().unwrap_or(false);
     let mut cluster = cluster(seed, minimal_posture);
 
-    check_cluster_invariants(&cluster);
+    // Carried across the whole run so an election-safety violation stays
+    // observable after every node has advanced past the offending term.
+    let mut witness = ElectionSafetyWitness::new();
+
+    check_cluster_invariants(&cluster, &mut witness);
     for step in 0..MAX_STEPS {
         if u.is_empty() {
             break;
         }
         apply_action(&mut cluster, &mut u, step);
-        check_cluster_invariants(&cluster);
+        check_cluster_invariants(&cluster, &mut witness);
     }
 });

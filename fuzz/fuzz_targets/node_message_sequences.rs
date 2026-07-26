@@ -19,6 +19,21 @@
 //! Snapshot metadata and membership sets are built through the kernel's
 //! validating constructors; when a constructor rejects the fuzzed values the
 //! step is skipped rather than forced.
+//!
+//! # What `corpus/node_message_sequences/` guarantees
+//!
+//! `cargo fuzz run node_message_sequences` executes every file in that
+//! directory against the invariants above before it begins mutating, so a
+//! committed entry is checked by both CI tiers on every run. That is the whole
+//! guarantee, and it is worth stating precisely: these bytes are consumed
+//! *positionally* by `Unstructured` through the `input` grammar below. Change
+//! the grammar — reorder a match arm, add a message variant, widen a range —
+//! and the same bytes decode to a different step sequence. A corpus entry is
+//! therefore an input that is always executed, not a pinned reproduction of
+//! the sequence that first found a bug. `seed-commit-index-regression` is the
+//! input that once drove a commit-index regression; it is kept because running
+//! it is cheap and it costs nothing to keep executing, not because its meaning
+//! is frozen.
 
 #![no_main]
 
