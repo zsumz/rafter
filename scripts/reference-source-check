@@ -64,6 +64,30 @@ patched_crates=(
     rafter-transport-tcp-insecure
 )
 
+# The list above is a closure claim -- "every publishable Rafter crate" -- and a
+# hand-maintained list cannot keep one. Derive the same set from the manifests
+# and refuse to run when they disagree, so adding a publishable crate fails here
+# instead of silently resolving that crate from the registry in every consumer
+# lane. A crate is publishable unless its manifest opts out with `publish =
+# false`; that is the same predicate `cargo publish` applies.
+publishable_crates=()
+for manifest in "${repo_root}"/crates/*/Cargo.toml; do
+    if grep -Eq '^publish[[:space:]]*=[[:space:]]*false' "$manifest"; then
+        continue
+    fi
+    crate_dir="$(dirname "$manifest")"
+    publishable_crates+=("$(basename "$crate_dir")")
+done
+
+declared="$(printf '%s\n' "${patched_crates[@]}" | LC_ALL=C sort)"
+discovered="$(printf '%s\n' "${publishable_crates[@]}" | LC_ALL=C sort)"
+if [[ "$declared" != "$discovered" ]]; then
+    echo "error: patched_crates is not the publishable set" >&2
+    echo "       fix the list in $0, or mark the new crate publish = false" >&2
+    diff -u <(printf '%s\n' "$declared") <(printf '%s\n' "$discovered") >&2 || true
+    exit 1
+fi
+
 config_args=()
 for crate in "${patched_crates[@]}"; do
     crate_dir="${repo_root}/crates/${crate}"

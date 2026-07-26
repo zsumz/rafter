@@ -629,16 +629,9 @@ jobs:
       - name: Ledger durable process suite
         # The suite is #[ignore]d, so `--ignored` on its own would report
         # success over zero tests the moment those attributes changed. The
-        # exact count is what makes running it evidence.
-        run: |
-          patch=()
-          while IFS= read -r argument; do
-            patch+=("$argument")
-          done < <(scripts/reference-source-check --print-args)
-          exact="$PWD/scripts/cargo-test-exact"
-          cd reference
-          "$exact" 7 - "${patch[@]}" -p rafter-reference-ledger \
-            --test process_cluster -- --ignored
+        # reviewed inventory in verification/ pins which tests run, not just
+        # how many: a right count over a different set is rejected.
+        run: scripts/reference-process-check
 
   multi-gigabyte-test:
     name: multi-gigabyte-test

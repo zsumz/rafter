@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+# Run the ledger durable process suite against the patched checkout.
+#
+# Usage:
+#   scripts/reference-process-check             # verify the selection, then run it
+#   scripts/reference-process-check --list-only # verify the selection only
+#
+# The suite is `#[ignore]`d, so `--ignored` on its own reports success over zero
+# tests the moment those attributes change. The reviewed inventory in
+# verification/ pins which tests the selection contains, and the expected count
+# is derived from that same file so the two can never disagree.
+set -euo pipefail
+
+usage() {
+    sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'
+}
+
+list_only=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --list-only)
+            list_only=(--list-only)
+            ;;
+        -h | --help)
+            usage
+            exit 0
+            ;;
+        *)
+            echo "error: unknown option: $1" >&2
+            usage >&2
+            exit 2
+            ;;
+    esac
+    shift
+done
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+inventory="${repo_root}/verification/reference-process-test-inventory.txt"
+
+if [[ ! -s "$inventory" ]]; then
+    echo "error: reviewed process-test inventory is missing or empty: $inventory" >&2
+    exit 1
+fi
+expected="$(grep -c . "$inventory")"
+
+# A process substitution's exit status is not the command's, so the previous
+# `while read < <(... --print-args)` form discarded a failing patch table and
+# left `patch` empty. An empty patch table does not fail the run: it resolves
+# every Rafter dependency from crates.io instead of from this checkout, which
+# fails closed only for as long as the versions here are unpublished. Redirect
+# to a file instead, so `set -e` sees the real status, and require the result to
+# be non-empty.
+patch_file="$(mktemp "${TMPDIR:-/tmp}/rafter-reference-patch.XXXXXX")"
+trap 'rm -f "$patch_file"' EXIT
+"${repo_root}/scripts/reference-source-check" --print-args > "$patch_file"
+
+patch=()
+while IFS= read -r argument; do
+    [[ -n "$argument" ]] || continue
+    patch+=("$argument")
+done < "$patch_file"
+
+if (( ${#patch[@]} == 0 )); then
+    echo "error: empty dependency patch table; the suite would resolve Rafter from crates.io" >&2
+    exit 1
+fi
+
+cd "${repo_root}/reference"
+"${repo_root}/scripts/cargo-test-exact" "$expected" - \
+    --inventory "$inventory" "${list_only[@]+"${list_only[@]}"}" \
+    "${patch[@]}" -p rafter-reference-ledger \
+    --test process_cluster -- --ignored

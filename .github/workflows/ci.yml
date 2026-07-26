@@ -783,6 +783,18 @@ jobs:
         # all against the checkout through the patched publishable set.
         run: scripts/reference-source-check
 
+      - name: Durable process suite membership
+        # The suite itself runs on the main/nightly tier, but its *selection*
+        # is checked here, on every pull request. Splitting the gate this way
+        # is the whole point: the failure mode is a test being added to or
+        # removed from an `#[ignore]`d selection, and that is visible in the
+        # listing. Leaving the check on the push tier meant the pull request
+        # that changed the membership could never see it -- the count went
+        # stale for exactly that reason, and the lane was red at HEAD.
+        # The step is close to free: the job above already compiled
+        # tests/process_cluster.rs, so this is a cached `--list`.
+        run: scripts/reference-process-check --list-only
+
   reference-package:
     name: reference-package
     runs-on: ubuntu-24.04
@@ -821,11 +833,18 @@ jobs:
 
   reference-process:
     name: reference-process
-    # docs/reference-consumers.md puts durable process tests on the
+    # docs/reference-consumers.md puts durable process *execution* on the
     # main/nightly tier rather than on every PR. This is the "main" half,
     # reached through this workflow's push trigger; nightly.yml carries the
     # other. A pull request skips this job, which is why it must not be a
     # required status check.
+    #
+    # Only execution is deferred. The selection check that guards this suite
+    # runs on every pull request, in the reference-source job above. That split
+    # is deliberate: a gate whose failures are invisible on the pull request
+    # that causes them reports too late to be a gate, and this one proved it --
+    # the reviewed count went stale under a commit that added a ninth test,
+    # and the lane sat red on main because no PR could ever see it.
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -840,16 +859,6 @@ jobs:
       - name: Ledger durable process suite
         # The suite is #[ignore]d, so `--ignored` on its own would report
         # success over zero tests the moment those attributes changed. The
-        # exact count is what makes running it evidence. --print-args is the
-        # source-mode patch table; the suite is run directly rather than
-        # through reference-source-check so that this job runs the process
-        # tests and not a second copy of the every-PR lane.
-        run: |
-          patch=()
-          while IFS= read -r argument; do
-            patch+=("$argument")
-          done < <(scripts/reference-source-check --print-args)
-          exact="$PWD/scripts/cargo-test-exact"
-          cd reference
-          "$exact" 7 - "${patch[@]}" -p rafter-reference-ledger \
-            --test process_cluster -- --ignored
+        # reviewed inventory in verification/ pins which tests run, not just
+        # how many: a right count over a different set is rejected.
+        run: scripts/reference-process-check

@@ -398,8 +398,8 @@ criterion.
 
 | Lane | Required work | Executed by |
 | --- | --- | --- |
-| Every PR | Package build, pure implementation and reference-model tests, codec vectors, short deterministic simulations, and small history checks | `reference-source` and `reference-package` in `ci.yml` |
-| Main/nightly | Durable process tests, restart, partitions, duplication, snapshots, and application crash points | `reference-process` in `ci.yml` on pushes to main, and `reference-process-nightly` in `nightly.yml` |
+| Every PR | Package build, pure implementation and reference-model tests, codec vectors, short deterministic simulations, small history checks, and the durable process suite's membership | `reference-source` and `reference-package` in `ci.yml` |
+| Main/nightly | Durable process tests executed: restart, partitions, duplication, snapshots, and application crash points | `reference-process` in `ci.yml` on pushes to main, and `reference-process-nightly` in `nightly.yml` |
 | Weekly | Long randomized histories, storage faults, snapshot pressure, and hot/cold multi-group scheduling | Nothing. `weekly.yml` has no reference-consumer job |
 | Release | Exact package archives, full process suite, mixed-version tests, long scheduler and recovery canaries, and the pinned downstream product canary | Partly. `RELEASE.md`'s pre-publish block runs both lanes by hand; there is no release workflow, no mixed-version coverage, and no pinned downstream canary |
 
@@ -416,13 +416,29 @@ multi-group scheduling; the sharded counter that would supply the multi-group
 half declares no Rafter dependency yet. Release integration is its own set of
 slices below, and only the first of them is partly done.
 
-Both process rows run the same seven `#[ignore]`d tests through
-`scripts/cargo-test-exact` with an exact expected count. That count is not
-decoration: the suite is selected by `--ignored`, and a selection expressed
-only by `--ignored` reports success over zero tests the moment those attributes
-change. `reference-process` is deliberately not a required status check,
-because it is skipped on pull requests and a required check that never reports
-blocks every merge.
+Both process rows run the same `#[ignore]`d suite through
+`scripts/reference-process-check`, which drives `scripts/cargo-test-exact`
+against the reviewed inventory at
+`verification/reference-process-test-inventory.txt`. The expected count is read
+from that file, so the count and the names cannot disagree. Neither is
+decoration: the suite is selected by `--ignored`, so a selection expressed only
+by `--ignored` reports success over zero tests the moment those attributes
+change, and a count alone accepts a right number of entirely different tests.
+The inventory rejects both.
+
+The membership check and the execution sit on different tiers on purpose.
+`reference-process` runs the suite, and it is skipped on pull requests --
+which is why it is deliberately not a required status check, since a required
+check that never reports blocks every merge. But a gate that only fails after
+merge is a gate that reports too late, and this one demonstrated it: the
+reviewed count was left at seven when an eighth test landed, and the lane sat
+red on main because no pull request could reach it. So `reference-source`, which
+runs on every pull request, now also runs `scripts/reference-process-check
+--list-only`: it compiles nothing extra -- that job already builds
+`tests/process_cluster.rs` -- lists the selection, and compares it to the
+inventory without running it. Adding, removing, or renaming a process test now
+fails on the pull request that does it. What still only happens after merge is
+the suite actually passing, which is the part that genuinely costs half an hour.
 
 Randomized jobs must always print and retain their seed and minimized failing
 history. A sampled green run supplements deterministic proofs; it does not

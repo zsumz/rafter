@@ -2,15 +2,22 @@
 # Run a Cargo test selection only when it contains the reviewed number of tests.
 #
 # Usage:
-#   scripts/cargo-test-exact EXPECTED FILTER [--inventory PATH] [CARGO_ARGS...] [-- LIBTEST_ARGS...]
+#   scripts/cargo-test-exact EXPECTED FILTER [--inventory PATH] [--list-only] \
+#       [CARGO_ARGS...] [-- LIBTEST_ARGS...]
 #
 # Use `-` for FILTER when the selection is expressed entirely by Cargo or
 # libtest arguments. The inventory and execution commands are otherwise
 # identical, apart from the inventory command adding `--list`.
+#
+# `--list-only` stops after the count and inventory comparison. It exists so a
+# selection whose execution is assigned to a slower tier can still have its
+# membership checked on every pull request: the drift that silently empties or
+# repopulates a selection is visible in the listing, and catching it there costs
+# a listing rather than a run.
 set -euo pipefail
 
 usage() {
-    sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,15p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 if [[ $# -lt 2 ]]; then
@@ -23,14 +30,26 @@ filter="$2"
 shift 2
 
 reviewed_inventory=""
-if [[ "${1:-}" == "--inventory" ]]; then
-    if [[ $# -lt 2 ]]; then
-        echo "error: --inventory requires a path" >&2
-        exit 2
-    fi
-    reviewed_inventory="$2"
-    shift 2
-fi
+list_only=false
+while true; do
+    case "${1:-}" in
+        --inventory)
+            if [[ $# -lt 2 ]]; then
+                echo "error: --inventory requires a path" >&2
+                exit 2
+            fi
+            reviewed_inventory="$2"
+            shift 2
+            ;;
+        --list-only)
+            list_only=true
+            shift
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
 
 case "$expected" in
     '' | *[!0-9]*)
@@ -95,6 +114,15 @@ if [[ -n "$reviewed_inventory" ]]; then
         diff -u "$reviewed_inventory" "$observed_names" >&2 || true
         exit 1
     fi
+fi
+
+if [[ "$list_only" == true ]]; then
+    if [[ -n "$reviewed_inventory" ]]; then
+        echo "selection matches $expected reviewed test names in $reviewed_inventory; not running (--list-only)"
+    else
+        echo "selection matches $expected tests; not running (--list-only)"
+    fi
+    exit 0
 fi
 
 test_command=(cargo test "${cargo_args[@]}")
