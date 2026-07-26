@@ -8216,6 +8216,72 @@ A caller that starts an operation knows its name. `pending_writes` and
 the question they were being used for has its own answer, which is correct for a
 shared driver rather than for a single-threaded one.
 
+### Revision after implementation and adoption (2026-07-26)
+
+Three things came out differently from the design above, which stands as
+approved. None changes a public shape; two change where a claim is checked, and
+one is a consumer-side consequence the design did not anticipate.
+
+**One boundary test is the poison refusal rather than the snapshot-boundary
+refusal.** The plan named `a_local_read_is_refused_below_the_snapshot_boundary`.
+What shipped is `a_local_read_is_refused_on_a_poisoned_group`, and the reason is
+that the two pin the same claim while one of them costs a fixture. The claim
+this layer needs is that its local read goes *through* `RaftGroup::read` rather
+than around it; both refusals are raised by that method, two lines apart, before
+any branch. The app layer already pins the boundary half exhaustively for local
+reads in particular —
+[`crates/rafter-app/tests/gen7_boundary_probe.rs`](../crates/rafter-app/tests/gen7_boundary_probe.rs)
+has three probes on it, one of which exists precisely because "a `Local` read is
+served straight off the state machine without touching Raft" — whereas reaching
+that state at the service layer needs a runtime that compacts past a state
+machine, and `KvStateMachine` declares `SnapshotSupport::Unsupported`. The
+poison refusal needs a state machine that fails to apply, which the suite
+already has, and it is the *sharper* inversion of the workaround besides: the
+consumer's own comment on the route this entry replaces says borrowing the group
+"never checks poison, which is what lets a test ask a failed replica what it
+durably holds"
+([`reference/fenced-lock/tests/support/cluster.rs:388-392`](../reference/fenced-lock/tests/support/cluster.rs)).
+
+**The consumer's local read went onto its client, not onto its replica.** The
+design assumed `Replica::local_lock` would call the managed read directly.
+Written that way, the process binary stopped using `LockClient` at all — the
+compiler said so — which would have made the acceptance evidence a consumer that
+had abandoned its own declared surface. So `LockClient::local_lock` is the
+adopter, and it returns `Result<ResourceStatus, ReadError>` rather than the
+application's `QueryOutcome`, because that type documents itself as "an answer
+that a granted read barrier proved fresh, or no answer at all" and a local read
+proves nothing. A consumer type whose meaning the promotion would have falsified
+is a consumer type the promotion must not return.
+
+**Adopting the addressed operations required the consumer to name three things
+it had inline.** `SubmitOutcome::from_write_result`, `QueryOutcome::from_read_result`,
+and `write_options` are new in `reference/fenced-lock`, and they are not
+incidental: starting a write through the driver rather than through
+`LockClient::submit_command` would otherwise have moved the write-outcome
+classification out of the one place the lock's contract requires it to be made,
+which is the defect that entry's own doc comment warns about. This is the shape
+of cost an inherent driver method imposes on a consumer that wraps its handle in
+a typed client, and it is worth recording for the next such promotion: the
+client keeps the mapping, and the mapping gains a name so two entry points can
+share it. The net line count in the consumer is roughly flat. What it deleted is
+two copies of a helper whose stated premise was false, the process binary's two
+`Option` unwraps around abandonment, the two synthesized deadline answers behind
+them — which existed only because the caller could not be sure the driver had
+named its waiter — and one paragraph of contract asserting a path did not exist.
+The in-process driver's own pending types keep their `Option`, because
+`begin_submit` hands back a pending value rather than an outcome, so a refusal
+that allocated no ID still travels as a resolved future with no ID beside it.
+
+**One file in the blast radius split rather than grew.** The two additions took
+`crates/rafter-service/src/driver/transport.rs` over the thousand-line hard
+limit that `crates/rafter/tests/file_size_guard.rs` enforces, so the guard that
+a client future owns and the watermark check a group must pass to be adopted
+moved into `crates/rafter-service/src/driver/transport/adoption.rs`. That is the
+same rule the two files already under `transport/` follow — the parent file is
+the driver's public contract, and what an embedder never names lives beside it —
+so the split is where it would have gone anyway. It is recorded because the
+design's blast radius named the file and not the module that came out of it.
+
 ## Coupled designs
 
 The eleven promotions form seven surfaces, not eleven independent additions.
