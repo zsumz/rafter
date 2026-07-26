@@ -404,6 +404,21 @@ where
         }
     }
 
+    /// Starts a barrier for a caller that will hold its [`ReadId`].
+    ///
+    /// The same body [`TransportDriverState::begin_read`] runs for
+    /// [`ReadConsistency::Linearizable`], reached without a consistency argument
+    /// because a caller that wants the ID wants the level that has one.
+    pub(super) fn begin_linearizable_read(
+        &mut self,
+        group_id: &G,
+        query: A::Query,
+        options: ReadOptions,
+    ) -> Result<ReadId, ReadError> {
+        self.reject_read_before_start(group_id)?;
+        self.begin_barrier(query, options)
+    }
+
     /// The refusals that precede every read, whatever level it asked for.
     ///
     /// The `NoGroup` refusal is here rather than inside the linearizable branch
@@ -490,7 +505,7 @@ where
     /// The report is routed even though a local read never steps the runtime and
     /// the report is therefore empty for this group. Routing it unconditionally
     /// keeps this path from being the one exception to the driver's discipline,
-    /// and an empty report costs a walk over four empty lists.
+    /// and an empty report costs a walk over five empty lists.
     fn read_local(
         &mut self,
         query: A::Query,
@@ -501,6 +516,10 @@ where
             query,
             min_applied_index: options.min_applied_index,
         };
+        // `reject_read_before_start` already refused a released driver, so this
+        // holds a group. Mapped rather than unwrapped because the caller gets a
+        // typed refusal either way and a panic here would be the driver's own
+        // invariant, not the caller's fault.
         let read = self.group_mut().map_err(|_| ReadError::Transport {
             cause: ErrorCause::new(DriverRoutingError::NoGroup),
         })?;

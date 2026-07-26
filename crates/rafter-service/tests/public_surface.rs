@@ -15,13 +15,13 @@
 
 use std::future::ready;
 
-use rafter::{LogIndex, NodeId, Term};
+use rafter::{LocalProposalId, LogIndex, NodeId, ReadId, Term};
 use rafter_app::proposal::ClientRequestId;
 use rafter_service::{
-    DriverCommandSender, DriverFuture, ErrorCause, MetricsError, MetricsWatch, QueryReceipt,
-    ReadConsistency, ReadError, ReadErrorKind, ReadOptions, ShutdownError, ShutdownErrorKind,
-    StateMachineOperation, TransferLeadershipError, TransferLeadershipErrorKind, WriteError,
-    WriteErrorKind, WriteOptions, WriteReceipt,
+    AddressedRead, AddressedWrite, DriverCommandSender, DriverFuture, ErrorCause, MetricsError,
+    MetricsWatch, QueryReceipt, ReadConsistency, ReadError, ReadErrorKind, ReadOptions,
+    ShutdownError, ShutdownErrorKind, StateMachineOperation, TransferLeadershipError,
+    TransferLeadershipErrorKind, WriteError, WriteErrorKind, WriteOptions, WriteReceipt,
 };
 
 /// A driver that refuses everything, written the way an external embedder would
@@ -144,4 +144,21 @@ fn both_option_types_are_buildable_from_outside_the_crate() {
         })
     );
     assert_eq!(read.min_applied_index, Some(LogIndex(9)));
+}
+
+/// The addressed-operation pair is nameable from the root, which the re-export
+/// rule requires because both appear in a public `TransportRaftDriver`
+/// signature. Naming them in a type position is the whole assertion: an alias
+/// that falls off the re-export list stops this file compiling rather than the
+/// next embedder's.
+#[test]
+fn the_addressed_operation_aliases_are_nameable_from_the_crate_root() {
+    let write: AddressedWrite<()> = (
+        LocalProposalId(1),
+        Box::pin(ready(Err(WriteError::ShuttingDown))),
+    );
+    let read: AddressedRead<u64, ()> = (ReadId(2), Box::pin(ready(Err(ReadError::ShuttingDown))));
+
+    assert_eq!(write.0, LocalProposalId(1));
+    assert_eq!(read.0, ReadId(2));
 }

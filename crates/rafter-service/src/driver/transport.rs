@@ -93,6 +93,22 @@ pub struct PendingWrite {
     pub client_request_id: Option<ClientRequestId>,
 }
 
+/// A write this driver admitted, named and awaited separately.
+///
+/// Returned by [`TransportRaftDriver::begin_write`]. The ID is what
+/// [`TransportRaftDriver::abandon_write`] takes; the future is what
+/// [`DriverCommandSender::write`] would have returned alone.
+pub type AddressedWrite<R> = (
+    LocalProposalId,
+    DriverFuture<Result<WriteReceipt<R>, WriteError>>,
+);
+
+/// A read barrier this driver reserved, named and awaited separately.
+///
+/// The read counterpart of [`AddressedWrite`], returned by
+/// [`TransportRaftDriver::begin_read`].
+pub type AddressedRead<G, QR> = (ReadId, DriverFuture<Result<QueryReceipt<G, QR>, ReadError>>);
+
 /// Why an inbound peer envelope did not reach a group.
 #[derive(Debug)]
 #[non_exhaustive]
@@ -128,9 +144,11 @@ impl Error for InboundEnvelopeError {
     }
 }
 
+mod adoption;
 mod state;
 mod waiters;
 
+use adoption::{adopted_watermarks, highest, PendingProposals, WaiterGuard};
 use state::{DriverShared, SharedState, StartedRead, StepFailure, TransportDriverState, WaiterId};
 
 /// Managed driver for one local Raft group over an attached transport.
@@ -379,20 +397,127 @@ where
 
     /// Returns every write this driver has not resolved.
     ///
-    /// [`DriverCommandSender::write`] returns a future and nothing else, so the
-    /// ID it allocated is otherwise unreachable until the future resolves —
-    /// which is too late for a caller that wants to stop waiting. This answers
-    /// "what is this driver still holding", which is also the question a
-    /// supervisor draining one asks.
+    /// This answers "what is this driver still holding", which is the question a
+    /// supervisor draining one asks. It is not how a caller finds its *own*
+    /// write: use [`TransportRaftDriver::begin_write`], which returns the ID it
+    /// allocated. A caller that answered the second question with this one was
+    /// taking the highest unresolved ID and relying on no other write being
+    /// admitted in between, which holds only while nothing else uses a driver
+    /// that is [`Sync`].
     #[must_use]
     pub fn pending_writes(&self) -> Vec<PendingWrite> {
         self.inner.lock().pending_writes()
     }
 
     /// Returns the read IDs of every barrier this driver has not resolved.
+    ///
+    /// The read counterpart of [`TransportRaftDriver::pending_writes`], and the
+    /// same distinction applies: a caller looking for the barrier it just
+    /// started wants [`TransportRaftDriver::begin_read`].
     #[must_use]
     pub fn pending_reads(&self) -> Vec<ReadId> {
         self.inner.lock().pending_reads()
+    }
+
+    /// Proposes `command` and returns the ID this driver allocated for it
+    /// beside the future that resolves it.
+    ///
+    /// [`DriverCommandSender::write`] returns the future alone, so the only name
+    /// for the waiter it created arrives when that future resolves — which is
+    /// after the point a caller would have used it, because the one thing the
+    /// name is for is [`TransportRaftDriver::abandon_write`].
+    ///
+    /// No group ID: this driver names one group for its whole life, so it
+    /// supplies its own and cannot be handed the wrong one. The future is the
+    /// one `write` returns, built by the same call, so the two cannot answer
+    /// differently.
+    ///
+    /// # Errors
+    ///
+    /// As [`DriverCommandSender::write`], except that a refusal which allocated
+    /// no ID is returned here rather than delivered through the future: there is
+    /// no waiter to name, so there is no pair to return.
+    pub fn begin_write(
+        &self,
+        command: A::Command,
+        options: WriteOptions,
+    ) -> Result<AddressedWrite<A::CommandResult>, WriteError> {
+        // One acquisition: the shared body takes the group ID this driver was
+        // built with, and reading it under the same lock that registers the
+        // waiter leaves nothing to argue about. `write_future` takes no lock —
+        // the guard is a handle and the poll closure is lazy — so the lock is
+        // released before the pair is built.
+        let local_proposal_id = {
+            let mut state = self.inner.lock();
+            let group_id = state.group_id.clone();
+            state.begin_write(&group_id, command, options)?
+        };
+        Ok((local_proposal_id, self.write_future(local_proposal_id)))
+    }
+
+    /// Begins a linearizable read and returns the ID of the barrier it reserved
+    /// beside the future that resolves it.
+    ///
+    /// The read counterpart of [`TransportRaftDriver::begin_write`], and
+    /// linearizable-only for a reason a consistency parameter would hide: this
+    /// exists to name a waiter so that [`TransportRaftDriver::abandon_read`] can
+    /// retire it, and a [`ReadConsistency::Local`] read reserves no barrier,
+    /// registers no waiter, and is answered inside the call that starts it.
+    /// There would be no ID to return and nothing to abandon. Run one through
+    /// [`DriverCommandSender::read`], which serves both levels.
+    ///
+    /// # Errors
+    ///
+    /// As [`DriverCommandSender::read`], except that a refusal which reserved no
+    /// barrier is returned here rather than delivered through the future.
+    pub fn begin_read(
+        &self,
+        query: A::Query,
+        options: ReadOptions,
+    ) -> Result<AddressedRead<G, A::QueryResult>, ReadError> {
+        // One acquisition, for the reason [`TransportRaftDriver::begin_write`]
+        // gives.
+        let read_id = {
+            let mut state = self.inner.lock();
+            let group_id = state.group_id.clone();
+            state.begin_linearizable_read(&group_id, query, options)?
+        };
+        Ok((read_id, self.barrier_future(read_id)))
+    }
+
+    /// Builds the client future for one registered write waiter.
+    ///
+    /// Shared by [`TransportRaftDriver::begin_write`] and
+    /// [`DriverCommandSender::write`] so there is one polling path rather than
+    /// two that could drift.
+    fn write_future(
+        &self,
+        local_proposal_id: LocalProposalId,
+    ) -> DriverFuture<Result<WriteReceipt<A::CommandResult>, WriteError>> {
+        let mut guard = WaiterGuard::new(self.inner.clone(), WaiterId::Write(local_proposal_id));
+        Box::pin(poll_fn(move |context| {
+            let polled = guard.state().lock().poll_write(local_proposal_id, context);
+            if polled.is_ready() {
+                guard.release();
+            }
+            polled
+        }))
+    }
+
+    /// Builds the client future for one reserved barrier, shared the same way
+    /// [`TransportRaftDriver::write_future`] is.
+    fn barrier_future(
+        &self,
+        read_id: ReadId,
+    ) -> DriverFuture<Result<QueryReceipt<G, A::QueryResult>, ReadError>> {
+        let mut guard = WaiterGuard::new(self.inner.clone(), WaiterId::Read(read_id));
+        Box::pin(poll_fn(move |context| {
+            let polled = guard.state().lock().poll_read(read_id, context);
+            if polled.is_ready() {
+                guard.release();
+            }
+            polled
+        }))
     }
 
     /// Returns a cloneable handle connected to this driver.
@@ -652,166 +777,6 @@ where
     }
 }
 
-/// Reclaims one waiter when its client future is dropped.
-///
-/// Every client future owns one of these. A future polled to completion
-/// releases it, because `poll_write` and `poll_read` already removed the entry
-/// they answered from; a future dropped before that reclaims the entry itself,
-/// which is what keeps the tables bounded for a driver whose clients time out.
-///
-/// The guard is the only remover other than a completing poll. Abandonment
-/// deliberately resolves without removing, so an abandoned waiter still answers
-/// a late poll from a future its caller kept.
-///
-/// Reclamation goes through [`DriverShared::reclaim`] rather than taking the
-/// driver's lock here, and that indirection is the whole point of it: a future
-/// may be dropped by code this driver is running under its own lock — an
-/// embedder's transport, state machine, or waker, or a
-/// [`TransportRaftDriver::with_group`] closure — and a `Drop` that waited for
-/// that lock would stop the thread it ran on.
-struct WaiterGuard<G, A, R, T, V>
-where
-    G: Clone + Ord + Debug + Send + Sync + 'static,
-    A: ReplicatedStateMachine + Send + 'static,
-    A::Command: Send + 'static,
-    A::CommandResult: Clone + Send + 'static,
-    A::Query: Clone + Send + 'static,
-    A::QueryResult: Send + 'static,
-    R: PersistedRaftRuntime + Send + 'static,
-    T: RaftTransport<G>,
-    V: AuthenticatedPeerValidator<G, T::PeerPrincipal> + Send + Sync + 'static,
-{
-    inner: SharedState<G, A, R, T, V>,
-    waiter: Option<WaiterId>,
-}
-
-impl<G, A, R, T, V> WaiterGuard<G, A, R, T, V>
-where
-    G: Clone + Ord + Debug + Send + Sync + 'static,
-    A: ReplicatedStateMachine + Send + 'static,
-    A::Command: Send + 'static,
-    A::CommandResult: Clone + Send + 'static,
-    A::Query: Clone + Send + 'static,
-    A::QueryResult: Send + 'static,
-    R: PersistedRaftRuntime + Send + 'static,
-    T: RaftTransport<G>,
-    V: AuthenticatedPeerValidator<G, T::PeerPrincipal> + Send + Sync + 'static,
-{
-    fn new(inner: SharedState<G, A, R, T, V>, waiter: WaiterId) -> Self {
-        Self {
-            inner,
-            waiter: Some(waiter),
-        }
-    }
-
-    fn state(&self) -> &SharedState<G, A, R, T, V> {
-        &self.inner
-    }
-
-    /// Marks the waiter as already consumed by a completed poll.
-    fn release(&mut self) {
-        self.waiter = None;
-    }
-}
-
-impl<G, A, R, T, V> Drop for WaiterGuard<G, A, R, T, V>
-where
-    G: Clone + Ord + Debug + Send + Sync + 'static,
-    A: ReplicatedStateMachine + Send + 'static,
-    A::Command: Send + 'static,
-    A::CommandResult: Clone + Send + 'static,
-    A::Query: Clone + Send + 'static,
-    A::QueryResult: Send + 'static,
-    R: PersistedRaftRuntime + Send + 'static,
-    T: RaftTransport<G>,
-    V: AuthenticatedPeerValidator<G, T::PeerPrincipal> + Send + Sync + 'static,
-{
-    fn drop(&mut self) {
-        let Some(waiter) = self.waiter.take() else {
-            return;
-        };
-        self.inner.reclaim(waiter);
-    }
-}
-
-fn highest(current: Option<u64>, adopted: Option<u64>) -> Option<u64> {
-    match (current, adopted) {
-        (Some(current), Some(adopted)) => Some(current.max(adopted)),
-        (value, None) | (None, value) => value,
-    }
-}
-
-/// Whether appended proposals may travel into a driver with the group.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum PendingProposals {
-    /// A group from outside: a waiter this driver did not create can never be
-    /// resolved, so pending proposals are refused.
-    Refuse,
-    /// A group this driver released: it already resolved those waiters as
-    /// unknown outcomes, and the entries themselves are durable.
-    Carry,
-}
-
-/// Validates one group for adoption and returns the ID floors above it.
-fn adopted_watermarks<G, A, R>(
-    group: &RaftGroup<G, A, R>,
-    pending_proposals: PendingProposals,
-) -> Result<(Option<u64>, Option<u64>), ManagedDriverError>
-where
-    G: Clone + Ord + Debug + Send + Sync + 'static,
-    A: ReplicatedStateMachine,
-    A::CommandResult: Clone,
-    R: PersistedRaftRuntime,
-{
-    let node_id = group.node_id();
-    match group.fatal_state() {
-        GroupFatalState::Poisoned { reason } => {
-            return Err(ManagedDriverError::PoisonedGroup {
-                node_id,
-                reason: reason.clone(),
-            });
-        }
-        GroupFatalState::Healthy if !group.poisoned_waiters().is_empty() => {
-            return Err(ManagedDriverError::PoisonedGroup {
-                node_id,
-                reason: "group has undrained poisoned waiters".to_owned(),
-            });
-        }
-        GroupFatalState::Healthy => {}
-    }
-    let metrics = group.metrics();
-    let refused_proposals =
-        pending_proposals == PendingProposals::Refuse && metrics.pending_proposals != 0;
-    if refused_proposals || metrics.reserved_reads != 0 {
-        return Err(ManagedDriverError::NonQuiescentGroup {
-            node_id,
-            pending_proposals: metrics.pending_proposals,
-            reserved_reads: metrics.reserved_reads,
-        });
-    }
-    let next_proposal_id = match group.local_proposal_id_watermark() {
-        Some(last_seen_local_proposal_id) => {
-            Some(last_seen_local_proposal_id.0.checked_add(1).ok_or(
-                ManagedDriverError::LocalProposalIdExhausted {
-                    node_id,
-                    last_seen_local_proposal_id,
-                },
-            )?)
-        }
-        None => Some(1),
-    };
-    let next_read_id = match group.read_id_watermark() {
-        Some(last_seen_read_id) => Some(last_seen_read_id.0.checked_add(1).ok_or(
-            ManagedDriverError::ReadIdExhausted {
-                node_id,
-                last_seen_read_id,
-            },
-        )?),
-        None => Some(1),
-    };
-    Ok((next_proposal_id, next_read_id))
-}
-
 impl<G, A, R, T, V> DriverCommandSender<G, A::Command, A::Query, A::CommandResult, A::QueryResult>
     for TransportRaftDriver<G, A, R, T, V>
 where
@@ -834,19 +799,9 @@ where
         // Registered synchronously, polled later: the waiter exists before the
         // group is stepped, so a terminal event emitted inside that very step
         // resolves it rather than arriving before anything is listening.
-        let inner = self.inner.clone();
-        let started = inner.lock().begin_write(&group_id, command, options);
+        let started = self.inner.lock().begin_write(&group_id, command, options);
         match started {
-            Ok(local_proposal_id) => {
-                let mut guard = WaiterGuard::new(inner, WaiterId::Write(local_proposal_id));
-                Box::pin(poll_fn(move |context| {
-                    let polled = guard.state().lock().poll_write(local_proposal_id, context);
-                    if polled.is_ready() {
-                        guard.release();
-                    }
-                    polled
-                }))
-            }
+            Ok(local_proposal_id) => self.write_future(local_proposal_id),
             Err(error) => Box::pin(ready(Err(error))),
         }
     }
@@ -858,21 +813,12 @@ where
         consistency: ReadConsistency,
         options: ReadOptions,
     ) -> DriverFuture<Result<QueryReceipt<G, A::QueryResult>, ReadError>> {
-        let inner = self.inner.clone();
-        let started = inner
+        let started = self
+            .inner
             .lock()
             .begin_read(&group_id, query, consistency, options);
         match started {
-            Ok(StartedRead::Barrier(read_id)) => {
-                let mut guard = WaiterGuard::new(inner, WaiterId::Read(read_id));
-                Box::pin(poll_fn(move |context| {
-                    let polled = guard.state().lock().poll_read(read_id, context);
-                    if polled.is_ready() {
-                        guard.release();
-                    }
-                    polled
-                }))
-            }
+            Ok(StartedRead::Barrier(read_id)) => self.barrier_future(read_id),
             // A local read is already finished. No waiter was registered, so
             // there is no guard to hold and nothing to poll.
             Ok(StartedRead::Answered(answered)) => Box::pin(ready(answered)),

@@ -23,7 +23,7 @@ use std::{
 use rafter::{PreVoteResponse, RequestVoteResponse};
 use rafter_service::{
     AuthenticatedPeerEnvelope, PeerEnvelope, PeerSet, RaftTransport, ReadOptions,
-    SnapshotChunkEnvelope, TransportDriverOptions, TransportRaftDriver,
+    SnapshotChunkEnvelope, TransportDriverOptions, TransportRaftDriver, WriteOptions,
 };
 use support::transport::*;
 use support::*;
@@ -832,5 +832,220 @@ fn probe_dropping_futures_races_ticks() {
             .expect("the driver still holds its group")
             .reserved_reads,
         0
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Addressed operations. `pending_writes` answers "what is this driver still
+// holding"; these answer "which one is mine", and the difference is only
+// visible once two operations are in flight at once.
+// ---------------------------------------------------------------------------
+
+/// The ID is known before the future is polled, which is the whole point: the
+/// only thing it is for is abandoning, and abandoning is something a caller
+/// does *while* waiting.
+#[test]
+fn a_begun_write_is_named_before_it_resolves() {
+    let nodes = cluster(&[1, 2]);
+    elect(&nodes, NodeId(1));
+    let (driver, _transport) = &nodes[&NodeId(1)];
+
+    let (local_proposal_id, mut future) = driver
+        .begin_write(
+            ("alpha".to_owned(), "one".to_owned()),
+            WriteOptions::default(),
+        )
+        .expect("the driver admits the write");
+
+    assert_eq!(
+        driver
+            .pending_writes()
+            .into_iter()
+            .map(|write| write.local_proposal_id)
+            .collect::<Vec<_>>(),
+        vec![local_proposal_id],
+        "the returned ID names the waiter the driver registered"
+    );
+    settle(&nodes);
+    let receipt = poll_once(&mut future)
+        .expect("the write resolves once its entry commits")
+        .expect("the write commits and applies");
+    assert_eq!(receipt.result, None);
+}
+
+/// End to end, with no `pending_writes` lookup anywhere: begin, abandon under
+/// the name it returned, and hear the driver's own terminal vocabulary.
+#[test]
+fn a_begun_write_can_be_abandoned_under_its_own_name() {
+    let driver = leader_with_a_silent_follower();
+
+    let (local_proposal_id, mut future) = driver
+        .begin_write(("a".to_owned(), "1".to_owned()), WriteOptions::default())
+        .expect("the driver admits the write");
+    assert!(poll_once(&mut future).is_none(), "the follower is silent");
+
+    assert!(driver.abandon_write(local_proposal_id));
+
+    let answered = poll_once(&mut future).expect("the abandoned waiter answers in place");
+    assert!(
+        matches!(
+            answered,
+            Err(WriteError::UnknownOutcome {
+                reason: UnknownOutcomeReason::DriveBoundReached,
+                ..
+            })
+        ),
+        "got {answered:?}"
+    );
+}
+
+/// The finding, as a test. Two writes in flight, and the *first* one abandoned:
+/// `pending_writes().max()` names the second, so the helper both consumers
+/// wrote would have retired the wrong waiter and left the caller's own write
+/// waiting.
+#[test]
+fn two_concurrent_writes_are_each_named_correctly() {
+    let nodes = cluster(&[1, 2]);
+    elect(&nodes, NodeId(1));
+    let (driver, _transport) = &nodes[&NodeId(1)];
+
+    let (first_id, mut first) = driver
+        .begin_write(("a".to_owned(), "1".to_owned()), WriteOptions::default())
+        .expect("the driver admits the first write");
+    let (second_id, mut second) = driver
+        .begin_write(("b".to_owned(), "2".to_owned()), WriteOptions::default())
+        .expect("the driver admits the second write");
+    assert_ne!(first_id, second_id);
+    assert_eq!(
+        driver
+            .pending_writes()
+            .into_iter()
+            .map(|write| write.local_proposal_id)
+            .max(),
+        Some(second_id),
+        "the highest unresolved ID is the *second* write, which is why reading it \
+         to find the first one is wrong"
+    );
+
+    assert!(driver.abandon_write(first_id));
+
+    let abandoned = poll_once(&mut first).expect("the abandoned waiter answers in place");
+    assert!(
+        matches!(
+            abandoned,
+            Err(WriteError::UnknownOutcome {
+                reason: UnknownOutcomeReason::DriveBoundReached,
+                ..
+            })
+        ),
+        "got {abandoned:?}"
+    );
+    settle(&nodes);
+    let receipt = poll_once(&mut second)
+        .expect("the second write is untouched and resolves")
+        .expect("it commits and applies");
+    assert_eq!(receipt.result, None);
+}
+
+/// The read counterpart, including the barrier accounting an abandoned read
+/// gives back.
+#[test]
+fn a_begun_read_is_named_before_it_resolves() {
+    let driver = leader_with_a_silent_follower();
+    let reserved_before = driver
+        .with_group(|group| group.metrics().reserved_reads)
+        .expect("the driver holds a group");
+
+    let (read_id, mut future) = driver
+        .begin_read("alpha".to_owned(), ReadOptions::default())
+        .expect("the driver reserves a barrier");
+    assert!(poll_once(&mut future).is_none(), "the round cannot finish");
+    assert_eq!(driver.pending_reads(), vec![read_id]);
+
+    assert!(driver.abandon_read(read_id));
+
+    let answered = poll_once(&mut future).expect("the abandoned barrier answers in place");
+    assert!(
+        matches!(
+            answered,
+            Err(ReadError::Abandoned {
+                reason: ReadAbandonReason::DriveBoundReached,
+                ..
+            })
+        ),
+        "got {answered:?}"
+    );
+    assert_eq!(
+        driver
+            .with_group(|group| group.metrics().reserved_reads)
+            .expect("the driver holds a group"),
+        reserved_before,
+        "the barrier was cancelled through the group before the client resolved"
+    );
+}
+
+/// A refusal that allocated no ID has no pair to return, so it is an `Err`
+/// rather than a future carrying one.
+#[test]
+fn a_refused_write_returns_its_error_rather_than_a_future() {
+    let overrides = BTreeMap::from([(
+        1,
+        TransportDriverOptions::default().with_max_pending_waiters(1),
+    )]);
+    let nodes = cluster_with_options(&[1, 2], &overrides);
+    elect(&nodes, NodeId(1));
+    let (driver, _transport) = &nodes[&NodeId(1)];
+
+    let (_id, _future) = driver
+        .begin_write(("a".to_owned(), "1".to_owned()), WriteOptions::default())
+        .expect("the first write fits the bound");
+
+    let error = driver
+        .begin_write(("b".to_owned(), "2".to_owned()), WriteOptions::default())
+        .err()
+        .expect("the second is over the bound");
+
+    assert!(
+        matches!(error, WriteError::Transport { .. }),
+        "got {error:?}"
+    );
+    assert_eq!(
+        driver.pending_writes().len(),
+        1,
+        "a refused write registers no waiter"
+    );
+}
+
+/// The executable form of "one body, two entry points": the addressed and the
+/// plain write path are the same registration, so they answer the same.
+#[test]
+fn the_addressed_and_plain_write_paths_agree() {
+    let nodes = cluster(&[1, 2]);
+    elect(&nodes, NodeId(1));
+    let (driver, _transport) = &nodes[&NodeId(1)];
+    let handle = driver.handle();
+
+    let (_id, mut addressed) = driver
+        .begin_write(
+            ("k".to_owned(), "first".to_owned()),
+            WriteOptions::default(),
+        )
+        .expect("the driver admits the addressed write");
+    let mut plain = Box::pin(handle.write(("k".to_owned(), "second".to_owned())));
+    assert!(start(&mut plain).is_none());
+    settle(&nodes);
+
+    let addressed = poll_once(&mut addressed)
+        .expect("the addressed write resolves")
+        .expect("it commits and applies");
+    let plain = poll_once(&mut plain)
+        .expect("the plain write resolves")
+        .expect("it commits and applies");
+
+    assert_eq!(addressed.result, None, "nothing was there before it");
+    assert_eq!(
+        plain.result,
+        Some("first".to_owned()),
+        "and the second one saw the first, so both took the same path in order"
     );
 }
