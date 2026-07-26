@@ -2,12 +2,19 @@
 # Run TLC against the Raft TLA+ specification.
 #
 # Usage:
-#   scripts/tla-model-check               # CI-bounded config (RaftCi.cfg, seconds)
+#   scripts/tla-model-check               # PR 2-voter bounds (RaftCi.cfg, hours)
 #   scripts/tla-model-check --nightly     # nightly 3-voter bounds (RaftNightly.cfg)
-#   scripts/tla-model-check --full        # full local bounds (Raft.cfg, hours+)
+#   scripts/tla-model-check --full        # weekly: --nightly bounds, no symmetry
+#   scripts/tla-model-check --joint-quorum # 4-voter joint quorums, manual only
 #   scripts/tla-model-check --trace-sample # TLC-check generated Rust trace sample
 #   scripts/tla-model-check --fetch-tool  # fetch and verify the pinned TLC jar
-#   scripts/tla-model-check --print-config [--nightly|--full]
+#   scripts/tla-model-check --print-config [--nightly|--full|--joint-quorum]
+#
+# --full is not a larger model. Raft.cfg and RaftNightly.cfg carry identical
+# constants; only SYMMETRY differs, so the weekly tier checks the symmetry
+# quotient rather than exploring further. --joint-quorum is the only config
+# here that reaches a joint configuration with an empty quorum core; it is not
+# wired to any profile. See docs/model-checking.md.
 #
 # Downloads the immutable GitHub release asset pinned by tools/tla/ASSET_ID
 # into tools/cache/ and verifies it against tools/tla/SHA256SUMS before running.
@@ -24,7 +31,7 @@ max_heap="8g"
 fp_mem="0.45"
 
 usage() {
-    sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'
 }
 
 while [[ $# -gt 0 ]]; do
@@ -48,6 +55,13 @@ while [[ $# -gt 0 ]]; do
             workers=auto
             seed=2026071103
             max_heap="4g"
+            fp_mem="0.45"
+            ;;
+        --joint-quorum)
+            config="RaftJointQuorum.cfg"
+            workers=4
+            seed=2026071104
+            max_heap="8g"
             fp_mem="0.45"
             ;;
         --trace-sample)

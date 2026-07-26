@@ -28,9 +28,11 @@ EXTENDS Naturals, Sequences, FiniteSets, TLC
 \* receiverWouldAccept /\ ~accepted, but accept differs from receiverWouldAccept
 \* only by AppendSenderAuthorized(m), which holds whenever
 \* m.senderPendingSelfRemoval holds. The latch condition is therefore
-\* unsatisfiable by construction rather than merely unreached: TLC confirms an
-\* append from a self-removing sender is reachable while the latch still never
-\* fires. It carries no invariant because asserting ~frozenAppendAuthorityFailed
+\* unsatisfiable by construction rather than merely unreached. TLC corroborates
+\* the half that could otherwise have been vacuous: an append from a
+\* self-removing sender really is reachable, so the latch's first conjunct is
+\* live and the latch still cannot fire.
+\* It carries no invariant because asserting ~frozenAppendAuthorityFailed
 \* would add a predicate that cannot fail. It should be deleted outright; the
 \* deletion is blocked only because a mutation fixture in rafter-invariants
 \* pins the literal text of the UNCHANGED clause naming this variable.

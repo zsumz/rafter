@@ -82,6 +82,54 @@ measured rather than assumed.
   nightly and weekly bounds, witnessed at `{n1,n2,n3}`/`MaxLogLen=3` with
   `[Joint({n1,n2,n3},{n1,n2})@1, Stable({n1,n2})@2, Command(v1)@3]`.
 
+### The four-voter joint-quorum model
+
+`specs/tla/raft/RaftJointQuorum.cfg` is the smallest model that reaches a joint
+configuration with an empty quorum core. Four voters is the smallest node set
+where one exists at all, and `EnterJoint` from `Stable(Nodes)` reaches four of
+them, `Joint({n1,n2,n3,n4},{n1,n2,n3})` and its three siblings. The spec needs
+no change to get there: the two-voter change one might expect to be required is
+neither required nor supported, because `EnterJoint` guards on
+`OneVoterChange` and `ConfigurationSet` admits only one-voter joint pairs.
+`MaxTerm = 1` and `MaxLogLen = 2` are the smallest bounds that commit that
+configuration and then complete the change with a following stable entry. Run
+it with `scripts/tla-model-check --joint-quorum`.
+
+It is a manual-run artifact and not a fourth tier, for two independent reasons.
+
+**It cannot be registered as a tier.** The profile contract in
+`crates/rafter-invariants` maps exactly three profile names to exactly three
+config filenames and rejects everything else, and the state floors are pinned
+to the same two constants for all three. So a fourth tier cannot be added, and
+neither can an existing tier be repointed, without changing that contract.
+There is also a squeeze inside it: a model small enough to fit alongside an
+existing tier's budget would fail the 120,000,000-generated-state floor, while
+a model large enough to clear that floor needs a budget of its own, which is
+the thing that cannot be added.
+
+**It does not exhaust in a tier's budget.** Measured on a 14-core machine with
+`-workers 4 -Xmx8g`, the same flags `--joint-quorum` uses. State counts are
+independent of machine load; the wall times below were taken while the host was
+heavily contended and should be read as upper bounds.
+
+| Model | Generated | Distinct | Queue | Depth | Wall | Peak RSS | Exhausted |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| 2 voters, `MaxTerm=1`, `MaxLogLen=1` | 137,480 | 35,363 | 0 | 28 | 44 s | 1.71 GiB | yes |
+| 3 voters, `MaxTerm=1`, `MaxLogLen=1` | 2,183,849 | 639,627 | 315,832 | 19 | 10 min | — | no, still expanding |
+| 4 voters, `MaxTerm=1`, `MaxLogLen=2` (this config) | 10,073,549 | 2,551,776 | 1,397,208 | 20 | 45 min | — | no, still expanding |
+
+The two unexhausted rows are readings taken while the runs were still going;
+they were stopped shortly afterwards, at 12.8 and 47.0 minutes, without ever
+reaching a shrinking queue, which is why they report no peak RSS.
+
+Each added voter costs more than an order of magnitude, and the frontier of the
+four-voter model was still growing when measurement stopped. A wired tier
+passes only on `states_left = 0`, so this model would have to drain a queue
+that was still getting longer after ten million generated states.
+
+The honest summary: joint-quorum intersection is checkable, cheaply witnessed,
+and not currently checked by anything that runs on a schedule.
+
 ### Correspondence to the implementation
 
 `Raft.tla` is a design model, not a refinement of rafter, and its header states
@@ -106,9 +154,12 @@ Its latch needs `senderPendingSelfRemoval` together with
 `receiverWouldAccept /\ ~accepted`, but `accept` differs from
 `receiverWouldAccept` only by `AppendSenderAuthorized(m)`, which holds whenever
 `senderPendingSelfRemoval` holds. The condition is unsatisfiable by
-construction, not merely unreached: TLC confirms an append from a self-removing
-sender is reachable at `{n1,n2,n3}`/`MaxLogLen=2` while the latch still never
-fires. It carries no invariant, and it should not be given one, because
+construction rather than merely unreached, and that proof is three definitions
+wide and needs no model. TLC corroborates the half that could otherwise have
+been vacuous: an append from a self-removing sender is reachable at
+`{n1,n2,n3}`/`MaxTerm=1`/`MaxLogLen=2`, so the latch's first conjunct is live
+and the latch still cannot fire. It carries no invariant, and it should not be
+given one, because
 `~frozenAppendAuthorityFailed` is a predicate that cannot fail. It should be
 deleted; the deletion is blocked only because a mutation fixture in
 `crates/rafter-invariants` pins the literal text of the `UNCHANGED` clause that
