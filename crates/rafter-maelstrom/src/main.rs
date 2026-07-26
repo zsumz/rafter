@@ -1,3 +1,20 @@
+//! A Maelstrom node that runs Rafter as a real process under an external
+//! linearizability checker.
+//!
+//! This is the adversarial half of Rafter's verification. The model checker
+//! proves the kernel's transitions in isolation; this binary proves that a
+//! *process* built on the kernel — with a durable log, a real application
+//! checkpoint, restarts, partitions, and a hostile client workload — is
+//! linearizable when an outside judge decides. Nothing here is a library, and
+//! nothing here should be imitated for its shape: the harness cuts corners a
+//! deployment must not, and the reason each corner is safe to cut is written at
+//! the place it is cut.
+//!
+//! The obligations the harness exists to hold are stated where they live:
+//! [`client`] argues who owes a client an answer and why a node's role does not
+//! change that; [`app`] holds the durability boundary and the crash points that
+//! test it. Run it through `scripts/maelstrom-lin-kv*` rather than directly.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::PathBuf;

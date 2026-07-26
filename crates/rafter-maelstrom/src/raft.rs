@@ -1,3 +1,16 @@
+//! Stepping the kernel and routing what a step released.
+//!
+//! Every output here is already durable — the runtime discharges its
+//! persistence obligation before releasing anything — so this module sends,
+//! applies, and answers without adding a fence of its own.
+//!
+//! The read path is where the harness earns its keep. A granted barrier waits
+//! on the highest committed *application* entry at or below the certified read
+//! index, never on the read index itself: a barrier grants at the leader's
+//! commit index, and after an election the entry there is that leader's `Noop`,
+//! which the application is never told about. Waiting for the read index would
+//! hang every read on an idle cluster.
+
 use rafter::{Input, LogIndex, Message, NodeId, Output};
 use rafter_codec::{decode_message, encode_message};
 use serde_json::{json, Value};

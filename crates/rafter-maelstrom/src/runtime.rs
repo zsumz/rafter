@@ -1,3 +1,10 @@
+//! The process loop: stdin frames, the tick timer, and node startup.
+//!
+//! Election and heartbeat timing is measured in ticks rather than wall time, so
+//! this loop chooses the interval and the kernel stays deterministic. That is
+//! the same division a real embedder makes; it is the one thing this harness
+//! does the way a deployment should.
+
 use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::io::BufRead;

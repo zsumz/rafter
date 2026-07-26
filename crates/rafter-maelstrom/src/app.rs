@@ -1,3 +1,16 @@
+//! The replicated key/value state machine and its durability boundary.
+//!
+//! The checkpoint written here is an optimization, not the durability
+//! guarantee. The Raft log holds every committed entry, and recovery replays
+//! from it; the checkpoint only lets recovery skip work it has already done. So
+//! a checkpoint that fails to write does not make an applied command
+//! un-applied, and does not excuse the node from answering for it — the
+//! distinction [`CommandApplyOutcome`] exists to keep.
+//!
+//! The crash points are the point of this module. They fire between the
+//! durable write and the client's reply, which is the window where a node can
+//! acknowledge something it will forget, or forget something it acknowledged.
+
 use std::{
     collections::BTreeMap,
     error::Error,
@@ -32,16 +45,30 @@ pub(crate) struct AppState {
     pub(crate) kv: BTreeMap<String, Value>,
 }
 
+/// What a crash point decided after the checkpoint reached the medium.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum AfterAppPersist {
+    /// No crash point armed; apply the command and answer normally.
     Continue,
+    /// A crash point fired. The checkpoint is durable and the client was never
+    /// answered — the window a restart must survive without losing the write.
     Interrupt,
 }
 
+/// The three durable moments of one checkpoint write.
+///
+/// Writing a temporary file, renaming it over the old one, and syncing the
+/// directory are separately durable, and a crash between any two leaves a
+/// different state on disk. Naming them lets a test place a fault at each.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum AppPersistStage {
+    /// The new contents are durable, but nothing points at them yet; recovery
+    /// still reads the old checkpoint.
     TempFileSynced,
+    /// The directory entry now names the new file, but that rename is not
+    /// itself durable — recovery may still read either one.
     Renamed,
+    /// The rename is durable; recovery reads the new checkpoint.
     DirectorySynced,
 }
 
