@@ -18,6 +18,39 @@ use super::super::super::{
 };
 use super::super::support::{managed_process_fixture, process_observer, unique_test_path};
 
+/// Bound on waits for facts that are going to happen, such as a `sh -c 'exit 0'`
+/// wrapper finishing. Reaching one of these means the machine is broken, not
+/// that the property under test failed, so it is sized to be unreachable rather
+/// than tight.
+#[cfg(unix)]
+const FIXTURE_LIVENESS_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// The deadline cleanup confirmation must *not* bound itself by.
+///
+/// Cleanup that ignored its own confirmation window would poll until this
+/// instant, so "returned before it" is exactly the property and needs no
+/// separate tolerance. Widening it makes the test stricter, never greener.
+#[cfg(unix)]
+const CLEANUP_LIFECYCLE_WINDOW: Duration = Duration::from_secs(10);
+
+/// How long cleanup polls a target that has been forced to stay owned.
+///
+/// This window is meant to expire; the target never quiesces. A machine slow
+/// enough to blow past it before cleanup even signals takes the "no budget
+/// left" branch instead, which records the same ownership failure and
+/// quarantines the same anchor — so neither outcome changes what the callers
+/// below assert.
+#[cfg(unix)]
+const CLEANUP_CONFIRMATION_WINDOW: Duration = Duration::from_millis(20);
+
+/// The absolute cleanup window that a drop must honour rather than restart.
+///
+/// It has to be short enough that the budget left at drop is smaller than a
+/// fresh confirmation timeout — otherwise "restarted" and "honoured" look the
+/// same — and long enough that it has not already expired when the drop runs.
+#[cfg(unix)]
+const LATE_CLEANUP_WINDOW: Duration = Duration::from_secs(2);
+
 #[cfg(unix)]
 #[test]
 fn managed_process_drop_kills_and_reaps_an_armed_group() {
@@ -78,10 +111,18 @@ fn managed_process_wrapper_wait_respects_its_deadline() {
 fn late_cleanup_error_cannot_refresh_the_absolute_deadline() {
     clear_signal_attempts();
     let cleanup_failures = CleanupFailures::default();
+    // The wrapper must still be running when cleanup gives up and still be able
+    // to exit afterwards. A sentinel makes both facts things the test decides,
+    // where a `sleep` made them things the test hoped the clock would arrange.
+    let sentinel = unique_test_path("late-cleanup-wrapper-release");
+    let _ = std::fs::remove_file(&sentinel);
     let (mut process, _wrapper, target, reaper, _deadline) = managed_process_fixture(
-        "sleep 0.6",
-        Duration::from_millis(500),
-        DEFAULT_KILL_CONFIRMATION_TIMEOUT,
+        &format!(
+            "while [ ! -e '{}' ]; do sleep 0.05; done",
+            sentinel.display()
+        ),
+        LATE_CLEANUP_WINDOW,
+        FIXTURE_LIVENESS_TIMEOUT,
         cleanup_failures.clone(),
         Some(process_observer()),
     );
@@ -89,12 +130,15 @@ fn late_cleanup_error_cannot_refresh_the_absolute_deadline() {
         .set_target_group(target)
         .expect("place fixture target in anchor group");
     force_next_cleanup_target_alive();
-    std::thread::sleep(Duration::from_millis(100));
 
     let drop_started = Instant::now();
     drop(process);
+    // Cleanup that restarted its window would have polled for a whole fresh
+    // confirmation timeout instead of stopping at the deadline that was already
+    // running. The bound is that refreshed window itself, so the check keeps its
+    // meaning however long the machine stalls in between.
     assert!(
-        drop_started.elapsed() < Duration::from_secs(1),
+        drop_started.elapsed() < FIXTURE_LIVENESS_TIMEOUT,
         "cleanup refreshed an already-running absolute deadline"
     );
     let failures = cleanup_failures.take();
@@ -108,33 +152,49 @@ fn late_cleanup_error_cannot_refresh_the_absolute_deadline() {
         "the anchor cannot be reaped while the wrapper still holds the target lifetime lease"
     );
     assert_eq!(take_signal_attempts(), vec![(target, ProcessSignal::Kill)]);
-    let reaping_deadline = Instant::now() + Duration::from_secs(2);
+
+    std::fs::create_dir_all(sentinel.parent().expect("sentinel parent"))
+        .expect("create sentinel parent");
+    std::fs::write(&sentinel, b"release").expect("release the quarantined wrapper");
+    let reaping_deadline = Instant::now() + FIXTURE_LIVENESS_TIMEOUT;
     while reaper.snapshot().reaped < 2 && Instant::now() < reaping_deadline {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(reaper.snapshot().reaped, 2);
     assert!(reaper.snapshot().failures.is_empty());
     assert!(take_signal_attempts().is_empty());
+    std::fs::remove_file(&sentinel).expect("remove wrapper release sentinel");
 }
 
 #[cfg(unix)]
 #[test]
 fn failed_cleanup_is_monotonic_and_never_retried() {
     let cleanup_failures = CleanupFailures::default();
-    let (mut process, _wrapper, target, reaper, deadline) = managed_process_fixture(
+    let (mut process, _wrapper, target, reaper, _deadline) = managed_process_fixture(
         "exit 0",
-        Duration::from_millis(20),
-        DEFAULT_KILL_CONFIRMATION_TIMEOUT,
+        FIXTURE_LIVENESS_TIMEOUT,
+        CLEANUP_CONFIRMATION_WINDOW,
         cleanup_failures.clone(),
         Some(process_observer()),
     );
     process
         .set_target_group(target)
         .expect("place fixture target in anchor group");
+    // Only the forced-live anchor may reach the reaper. Waiting for the
+    // wrapper's observed exit — rather than assuming a short script beats the
+    // cleanup deadline — is what makes the adoption count below a fact.
+    process
+        .wait_until(Instant::now() + FIXTURE_LIVENESS_TIMEOUT)
+        .expect("await fixture wrapper exit")
+        .expect("the fixture wrapper script exits on its own");
     force_next_cleanup_target_alive();
 
+    // Read the boundary before the deadline so no scheduling delay between the
+    // two can order them the wrong way round.
+    let cleanup_start = Instant::now();
+    let deadline = Instant::now() + FIXTURE_LIVENESS_TIMEOUT;
     let first = process
-        .cleanup_until(Instant::now(), deadline)
+        .cleanup_until(cleanup_start, deadline)
         .expect_err("forced live target ownership must fail cleanup");
     assert!(first.contains("remained owned after emergency cleanup"));
     let second = process
@@ -150,24 +210,38 @@ fn failed_cleanup_is_monotonic_and_never_retried() {
 #[test]
 fn cleanup_confirmation_has_its_own_deadline_and_never_resignals() {
     let cleanup_failures = CleanupFailures::default();
-    let (mut process, _wrapper, target, reaper, lifecycle_deadline) = managed_process_fixture(
+    let (mut process, _wrapper, target, reaper, _deadline) = managed_process_fixture(
         "exit 0",
-        Duration::from_secs(2),
-        Duration::from_millis(20),
+        FIXTURE_LIVENESS_TIMEOUT,
+        CLEANUP_CONFIRMATION_WINDOW,
         cleanup_failures.clone(),
         Some(process_observer()),
     );
     process
         .set_target_group(target)
         .expect("place fixture target in anchor group");
+    // Only the forced-live anchor may reach the reaper, so establish the
+    // wrapper's exit rather than assuming the cleanup deadline outran it.
+    process
+        .wait_until(Instant::now() + FIXTURE_LIVENESS_TIMEOUT)
+        .expect("await fixture wrapper exit")
+        .expect("the fixture wrapper script exits on its own");
     process.record_target_kill_for_test();
     force_next_cleanup_target_alive();
 
-    let started = Instant::now();
+    let cleanup_start = Instant::now();
+    let lifecycle_deadline = Instant::now() + CLEANUP_LIFECYCLE_WINDOW;
     let error = process
-        .cleanup_until(Instant::now(), lifecycle_deadline)
+        .cleanup_until(cleanup_start, lifecycle_deadline)
         .expect_err("forced live ownership must expire");
-    assert!(started.elapsed() < Duration::from_millis(200));
+    // Cleanup that ignored its own confirmation window would have polled the
+    // forced-live target right up to the lifecycle deadline. Returning before
+    // that instant is the property, and it stays true however slow the machine
+    // is, unlike a fixed elapsed-time budget.
+    assert!(
+        Instant::now() < lifecycle_deadline,
+        "cleanup confirmation ran to the lifecycle deadline instead of its own"
+    );
     assert!(error.contains("remained owned after emergency cleanup"));
     assert!(!error.contains("process group ID exceeds i32"));
     drop(process);

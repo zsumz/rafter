@@ -25,7 +25,7 @@ thread_local! {
     static OMIT_NEXT_ANCHOR_ROW: std::cell::Cell<bool> = const {
         std::cell::Cell::new(false)
     };
-    static OMIT_NEXT_TARGET_ROWS: std::cell::Cell<bool> = const {
+    static OMIT_TARGET_ROWS: std::cell::Cell<bool> = const {
         std::cell::Cell::new(false)
     };
 }
@@ -147,7 +147,7 @@ pub(crate) fn process_group_observation(
             .join("\n");
     }
     #[cfg(test)]
-    if OMIT_NEXT_TARGET_ROWS.with(|omit| omit.replace(false)) {
+    if OMIT_TARGET_ROWS.with(std::cell::Cell::get) {
         source = source
             .lines()
             .filter(|line| {
@@ -172,9 +172,31 @@ pub(crate) fn omit_anchor_from_next_process_group_observation() {
     OMIT_NEXT_ANCHOR_ROW.with(|omit| omit.set(true));
 }
 
+/// Scopes a target-row omission to the run that armed it.
 #[cfg(test)]
-pub(crate) fn omit_target_rows_from_next_process_group_observation() {
-    OMIT_NEXT_TARGET_ROWS.with(|omit| omit.set(true));
+pub(crate) struct TargetRowOmission;
+
+#[cfg(test)]
+impl Drop for TargetRowOmission {
+    fn drop(&mut self) {
+        OMIT_TARGET_ROWS.with(|omit| omit.set(false));
+    }
+}
+
+/// Omit live target-member rows from every process-group observation until the
+/// returned guard is dropped.
+///
+/// A one-shot omission lands on whichever observation happens to run first. On
+/// a loaded machine that is an observation taken before the resource wrapper
+/// has exited, and such an observation cannot reach the harness error the
+/// omission exists to expose — the omission is spent and the run then succeeds.
+/// Staying armed lets the omission land on the first observation that is able
+/// to decide, whenever that turns out to be.
+#[cfg(test)]
+#[must_use]
+pub(crate) fn omit_target_rows_from_process_group_observations() -> TargetRowOmission {
+    OMIT_TARGET_ROWS.with(|omit| omit.set(true));
+    TargetRowOmission
 }
 
 pub(crate) fn parse_process_group_observation(

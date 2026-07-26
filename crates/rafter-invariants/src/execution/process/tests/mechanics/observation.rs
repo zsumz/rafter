@@ -10,19 +10,25 @@ use rustix::io::Errno;
 
 #[cfg(unix)]
 use super::super::super::model::DEFAULT_KILL_CONFIRMATION_TIMEOUT;
+use super::super::super::{
+    await_next_internal_completion_exit, bounded_internal_output,
+    bounded_internal_output_with_cleanup, bounded_internal_output_with_reaper,
+    confirm_process_group_absent_with, inject_next_internal_drain_error, parse_peak_rss,
+    parse_process_group_observation, process_observer_path, NoSignalReaper, ProcessAnchorState,
+    ProcessGroupObservation, ProcessGroupState, TargetLeaseState, TargetMemberState,
+};
 #[cfg(unix)]
 use super::super::super::{
     before_next_wrapper_exit_observation, classify_process_group_probe, classify_signal_delivery,
     classify_target_quiescence_for_test, clear_signal_attempts, process_group_state,
     take_signal_attempts, CleanupFailures, SignalDelivery,
 };
-use super::super::super::{
-    bounded_internal_output, bounded_internal_output_with_cleanup,
-    bounded_internal_output_with_reaper, confirm_process_group_absent_with,
-    delay_next_internal_completion_check, inject_next_internal_drain_error, parse_peak_rss,
-    parse_process_group_observation, process_observer_path, NoSignalReaper, ProcessAnchorState,
-    ProcessGroupObservation, ProcessGroupState, TargetLeaseState, TargetMemberState,
-};
+
+/// How long a descendant would keep the observer waiting if the execution
+/// deadline did not cut it off. Assertions bound themselves by this instead of
+/// by a stopwatch reading, so "the deadline was enforced" stays distinguishable
+/// from "the machine was slow".
+const RUNAWAY_DESCENDANT_LIFETIME: Duration = Duration::from_secs(30);
 use super::super::support::unique_test_path;
 #[cfg(unix)]
 use super::super::support::{managed_process_fixture, process_observer};
@@ -51,33 +57,30 @@ fn process_observer_is_absolute_and_platform_pinned() {
 #[test]
 fn internal_observer_kills_pipe_holding_descendants_within_its_deadline() {
     let started = Instant::now();
-    let error = bounded_internal_output(
-        "/bin/sh",
-        &["-c", "(sleep 5) & exit 0"],
-        Duration::from_millis(50),
-    )
-    .expect_err("pipe-holding descendant must not outlive the observer deadline");
+    let script = format!("(sleep {}) & exit 0", RUNAWAY_DESCENDANT_LIFETIME.as_secs());
+    let error = bounded_internal_output("/bin/sh", &["-c", &script], Duration::from_millis(50))
+        .expect_err("pipe-holding descendant must not outlive the observer deadline");
     assert!(
         error.to_string().contains("timed out"),
         "unexpected pipe-descendant classification: {error}"
     );
-    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(started.elapsed() < RUNAWAY_DESCENDANT_LIFETIME);
 }
 
 #[test]
 fn internal_observer_lifetime_lease_detects_a_silent_descendant() {
     let started = Instant::now();
-    let error = bounded_internal_output(
-        "/bin/sh",
-        &["-c", "(exec >/dev/null 2>/dev/null; sleep 5) & exit 0"],
-        Duration::from_millis(50),
-    )
-    .expect_err("a silent descendant must retain the inherited lifetime lease");
+    let script = format!(
+        "(exec >/dev/null 2>/dev/null; sleep {}) & exit 0",
+        RUNAWAY_DESCENDANT_LIFETIME.as_secs()
+    );
+    let error = bounded_internal_output("/bin/sh", &["-c", &script], Duration::from_millis(50))
+        .expect_err("a silent descendant must retain the inherited lifetime lease");
     assert!(
         error.to_string().contains("timed out"),
         "unexpected silent-descendant classification: {error}"
     );
-    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(started.elapsed() < RUNAWAY_DESCENDANT_LIFETIME);
 }
 
 #[test]
@@ -93,19 +96,24 @@ fn internal_observer_bounds_a_continuously_readable_pipe() {
         error.to_string().contains("timed out") || error.to_string().contains("output limit"),
         "unexpected observer error: {error}"
     );
-    assert!(started.elapsed() < Duration::from_secs(2));
+    assert!(started.elapsed() < RUNAWAY_DESCENDANT_LIFETIME);
 }
 
 #[cfg(unix)]
 #[test]
 fn internal_observer_rejects_a_clean_exit_classified_after_its_deadline() {
     clear_signal_attempts();
-    delay_next_internal_completion_check(Duration::from_millis(50));
+    // The scenario needs the child to have finished before the completion check
+    // runs, so that a clean exit is what gets classified late. Holding the check
+    // until the exit is observed states that; sleeping past a guess at how long
+    // `/bin/sh` needs left a loaded machine killing the child mid-write and
+    // asserting on output it never produced.
+    await_next_internal_completion_exit();
     let error = bounded_internal_output_with_cleanup(
         "/bin/sh",
         &["-c", "printf late"],
         Duration::from_millis(10),
-        Duration::from_secs(1),
+        RUNAWAY_DESCENDANT_LIFETIME,
     )
     .expect_err("late clean completion must retain output but classify as timed out");
     let message = error.to_string();

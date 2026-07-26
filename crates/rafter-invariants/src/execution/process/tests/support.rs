@@ -22,6 +22,27 @@ use super::super::{
 
 static TEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
+/// How long this machine needs, right now, to run one trivial process through
+/// the real launcher chain.
+///
+/// Fixtures that have to let the launcher finish before their own deadlines
+/// bite used to allow a constant picked on an idle machine. A constant is the
+/// wrong shape for that allowance: it says "the launcher is done" when it means
+/// "some milliseconds passed". Measuring says the same thing in terms the
+/// machine can honour, so a contended host widens every derived window in
+/// proportion instead of failing.
+pub(super) fn measured_launch_cost() -> Duration {
+    run_shell(
+        "exit 0",
+        &super::super::base_environment(),
+        Path::new("."),
+        Duration::from_secs(30),
+        Duration::from_millis(20),
+    )
+    .expect("measure the launcher chain with a trivial process")
+    .duration
+}
+
 pub(super) fn run_shell(
     script: &str,
     environment: &BTreeMap<String, String>,

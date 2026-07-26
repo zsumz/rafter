@@ -55,8 +55,8 @@ pub(crate) use finalization::PendingProcessOutput;
 pub(crate) use identity::run_identity_command_in;
 #[cfg(test)]
 use internal_command::{
-    bounded_internal_output, bounded_internal_output_with_cleanup,
-    bounded_internal_output_with_reaper, delay_next_internal_completion_check,
+    await_next_internal_completion_exit, bounded_internal_output,
+    bounded_internal_output_with_cleanup, bounded_internal_output_with_reaper,
     inject_next_internal_drain_error,
 };
 use internal_process::ManagedInternalProcess;
@@ -100,7 +100,7 @@ use signal::{
 #[cfg(test)]
 use telemetry::{
     delay_next_process_group_observation, omit_anchor_from_next_process_group_observation,
-    omit_target_rows_from_next_process_group_observation, parse_process_group_observation,
+    omit_target_rows_from_process_group_observations, parse_process_group_observation,
     process_observer_path,
 };
 use telemetry::{parse_peak_rss, process_group_observation, ProcessObserver};

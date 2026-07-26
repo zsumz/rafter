@@ -10,18 +10,28 @@ use super::{
         base_environment, clear_signal_attempts, confirm_process_group_absent_with,
         delay_next_process_group_observation, delay_next_process_group_receipt,
         delay_next_target_release, omit_anchor_from_next_process_group_observation,
-        omit_target_rows_from_next_process_group_observation, process_group_state,
+        omit_target_rows_from_process_group_observations, process_group_state,
         take_last_delayed_process_group, take_last_unreleased_process_group, take_signal_attempts,
         FinalizationPolicy, ProcessDeadlines, ProcessGroupState, ProcessSignal,
     },
-    support::{run_shell, run_shell_with_deadlines, unique_test_path},
+    support::{measured_launch_cost, run_shell, run_shell_with_deadlines, unique_test_path},
 };
 
-const COLD_MANAGED_PROCESS_STARTUP: Duration = Duration::from_secs(2);
+/// How much launcher startup a fixture allows before its own deadlines bite.
+///
+/// The measurement is what makes this safe on a loaded machine; the multiplier
+/// covers the spread between two consecutive launches on that same machine.
+fn managed_process_startup_allowance() -> Duration {
+    measured_launch_cost() * 4
+}
 
 #[test]
 fn natural_exit_after_the_deadline_cannot_be_reported_as_success() {
-    delay_next_process_group_observation(Duration::from_millis(500));
+    // The observation must not happen until the target has exited on its own,
+    // or the harness sees a live target and signals it. The stall is derived
+    // from a measured launch so it still outlasts the target on a machine where
+    // starting a shell costs more than the stall a fast one needed.
+    delay_next_process_group_observation(managed_process_startup_allowance());
     let output = run_shell(
         "sleep 0.05; exit 0",
         &base_environment(),
@@ -39,14 +49,17 @@ fn natural_exit_after_the_deadline_cannot_be_reported_as_success() {
 
 #[test]
 fn delayed_process_group_publication_cannot_escape_the_lifecycle_deadline() {
-    delay_next_process_group_receipt(Duration::from_secs(5));
+    // The injected receipt delay has to outlast the lifecycle it must not
+    // escape, and the lifecycle has to outlast launcher startup. Deriving both
+    // from a launch measured on this machine keeps that ordering on a host
+    // where starting Perl costs far more than the constants a fast machine
+    // suggested.
+    let startup = managed_process_startup_allowance();
+    let publication_delay = startup * 8;
+    delay_next_process_group_receipt(publication_delay);
     let started = Instant::now();
-    // The first managed process on a cold macOS runner may need more than
-    // 100 ms to start Perl and publish its planned group. Keep the injected
-    // five-second receipt delay beyond this absolute lifecycle while giving
-    // launcher startup a deterministic cross-platform allowance.
-    let execution_window = started + COLD_MANAGED_PROCESS_STARTUP;
-    let lifecycle = started + Duration::from_millis(2_500);
+    let execution_window = started + startup;
+    let lifecycle = started + startup * 2;
     let error = run_shell_with_deadlines(
         "sleep 5",
         &base_environment(),
@@ -55,10 +68,10 @@ fn delayed_process_group_publication_cannot_escape_the_lifecycle_deadline() {
             Duration::from_secs(1),
             execution_window,
             lifecycle
-                .checked_sub(Duration::from_millis(300))
+                .checked_sub(startup / 4)
                 .expect("cleanup boundary"),
             lifecycle
-                .checked_sub(Duration::from_millis(100))
+                .checked_sub(startup / 8)
                 .expect("finalization boundary"),
             lifecycle,
         )
@@ -70,7 +83,10 @@ fn delayed_process_group_publication_cannot_escape_the_lifecycle_deadline() {
     assert!(error
         .to_string()
         .contains("did not publish its process group"));
-    assert!(started.elapsed() < Duration::from_secs(4));
+    assert!(
+        started.elapsed() < publication_delay,
+        "the run outlasted the publication stall it was supposed to cut off"
+    );
     let process_group = take_last_delayed_process_group()
         .expect("the delayed launcher published its planned process group");
     assert_eq!(
@@ -87,10 +103,12 @@ fn target_cannot_execute_before_the_parent_releases_ready_ownership() {
     std::fs::create_dir_all(sentinel.parent().expect("sentinel parent"))
         .expect("create sentinel parent");
     let _ = std::fs::remove_file(&sentinel);
-    delay_next_target_release(Duration::from_secs(5));
+    let startup = managed_process_startup_allowance();
+    let release_delay = startup * 8;
+    delay_next_target_release(release_delay);
     let started = Instant::now();
-    let execution_window = started + COLD_MANAGED_PROCESS_STARTUP;
-    let lifecycle = started + Duration::from_secs(4);
+    let execution_window = started + startup;
+    let lifecycle = started + startup * 2;
     let script = format!("printf executed > '{}'", sentinel.display());
     let error = run_shell_with_deadlines(
         &script,
@@ -100,10 +118,10 @@ fn target_cannot_execute_before_the_parent_releases_ready_ownership() {
             Duration::from_secs(1),
             execution_window,
             lifecycle
-                .checked_sub(Duration::from_secs(1))
+                .checked_sub(startup / 4)
                 .expect("cleanup boundary"),
             lifecycle
-                .checked_sub(Duration::from_millis(200))
+                .checked_sub(startup / 8)
                 .expect("finalization boundary"),
             lifecycle,
         )
@@ -133,10 +151,10 @@ fn target_cannot_execute_before_the_parent_releases_ready_ownership() {
         .collect::<std::collections::BTreeSet<_>>();
     assert_eq!(signaled_groups.len(), 2);
     assert!(signaled_groups.contains(&process_group));
-    confirm_process_group_absent_with(Duration::from_secs(2), || {
-        process_group_state(process_group)
-    })
-    .expect("the no-signal reaper eventually removes the unreleased target process group");
+    // A liveness safety net, not a timing assertion: the reaper will remove the
+    // group, and this only bounds how long the test is willing to wait for it.
+    confirm_process_group_absent_with(release_delay, || process_group_state(process_group))
+        .expect("the no-signal reaper eventually removes the unreleased target process group");
 }
 
 #[test]
@@ -157,8 +175,12 @@ fn observer_omission_of_a_live_anchor_is_a_harness_error() {
 
 #[test]
 fn observer_omission_of_live_target_members_is_a_harness_error() {
-    delay_next_process_group_observation(Duration::from_millis(100));
-    omit_target_rows_from_next_process_group_observation();
+    // The omission can only be diagnosed on an observation taken after the
+    // resource wrapper has exited, because that is what makes a still-held
+    // lifetime lease contradict an empty inventory. Keeping the omission armed
+    // for every observation puts it on the first one that can decide, instead
+    // of guessing with a sleep how long the wrapper needs to get there.
+    let _omission = omit_target_rows_from_process_group_observations();
     let error = run_shell(
         "(trap '' TERM; sleep 5) & exit 0",
         &base_environment(),
@@ -174,22 +196,28 @@ fn observer_omission_of_live_target_members_is_a_harness_error() {
 
 #[test]
 fn stalled_process_observer_cannot_escape_the_lifecycle_deadline() {
-    delay_next_process_group_observation(Duration::from_secs(5));
+    // The observation window has to outlast launcher startup, or the run fails
+    // in an earlier phase and never reaches the stalled observer at all. The
+    // injected stall then has to outlast that window, so that being cut off is
+    // distinguishable from the stall simply finishing.
+    let startup = managed_process_startup_allowance();
+    let observer_stall = startup * 8;
+    delay_next_process_group_observation(observer_stall);
     let started = Instant::now();
-    let execution_window = started + Duration::from_millis(250);
-    let lifecycle = started + Duration::from_millis(500);
+    let execution_window = started + startup;
+    let lifecycle = started + startup * 2;
     let error = run_shell_with_deadlines(
-        "sleep 5",
+        "sleep 30",
         &base_environment(),
         Path::new("."),
         ProcessDeadlines::new(
             Duration::from_secs(1),
             execution_window,
             lifecycle
-                .checked_sub(Duration::from_millis(70))
+                .checked_sub(startup / 4)
                 .expect("cleanup boundary"),
             lifecycle
-                .checked_sub(Duration::from_millis(20))
+                .checked_sub(startup / 8)
                 .expect("finalization boundary"),
             lifecycle,
         )
@@ -198,19 +226,31 @@ fn stalled_process_observer_cannot_escape_the_lifecycle_deadline() {
         FinalizationPolicy::bounded(Duration::from_millis(20)),
     )
     .expect_err("stalled observer must fail closed");
-    assert!(error
-        .to_string()
-        .contains("observer exhausted its absolute deadline"));
-    assert!(started.elapsed() < Duration::from_secs(1));
+    assert!(
+        error
+            .to_string()
+            .contains("observer exhausted its absolute deadline"),
+        "unexpected stalled-observer classification: {error}"
+    );
+    assert!(
+        started.elapsed() < observer_stall,
+        "the run outlasted the observer stall it was supposed to cut off"
+    );
 }
 
 #[test]
 fn late_termination_preserves_the_receipt_finalization_boundary() {
+    // Termination must stop at the cleanup boundary and leave the whole
+    // finalization reserve untouched. Both the reserve and the phases ahead of
+    // it are sized from a measured launch, so the check states "the reserve
+    // survived" rather than "the run fitted inside a fixed budget".
+    let startup = managed_process_startup_allowance();
+    let finalization_reserve = startup * 2;
     let started = Instant::now();
-    let execution_window = started + Duration::from_millis(100);
-    let cleanup_start = started + Duration::from_millis(200);
-    let finalization_start = started + Duration::from_millis(300);
-    let lifecycle = started + Duration::from_secs(2);
+    let execution_window = started + startup;
+    let cleanup_start = started + startup * 2;
+    let finalization_start = started + startup * 4;
+    let lifecycle = finalization_start + finalization_reserve;
     let _result = run_shell_with_deadlines(
         "trap '' TERM; while :; do :; done",
         &base_environment(),
@@ -223,11 +263,11 @@ fn late_termination_preserves_the_receipt_finalization_boundary() {
             lifecycle,
         )
         .expect("valid finalization reserve"),
-        Duration::from_secs(1),
-        FinalizationPolicy::bounded(Duration::from_secs(1)),
+        finalization_reserve,
+        FinalizationPolicy::bounded(finalization_reserve),
     );
     assert!(
-        lifecycle.saturating_duration_since(Instant::now()) > Duration::from_secs(1),
+        lifecycle.saturating_duration_since(Instant::now()) > finalization_reserve,
         "termination consumed the reserved receipt-finalization phase"
     );
 }
