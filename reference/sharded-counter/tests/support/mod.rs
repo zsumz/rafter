@@ -19,8 +19,8 @@ use rafter_reference_sharded_counter::{
     LifecycleTransition, ManagedScheduler, Offer, OfferOutcome, Operation, OperationId,
     OperationOutcome, PassIndex, PassProgress, ReadinessSignal, ReferenceScheduler, Replay,
     RequestFingerprint, RequestIdentity, SchedulerConfig, SchedulingViolation, Sequence,
-    ServiceCost, ServiceRecord, SessionEpoch, SessionOutcome, SystemClass, TickIndex, TickReport,
-    Work, WorkId, WorkQuota,
+    ServiceCost, ServiceRecord, SessionEpoch, SessionOutcome, SkipReason, SystemClass, TickIndex,
+    TickReport, Work, WorkId, WorkQuota,
 };
 
 /// Builds a scheduler configuration, panicking on inadmissible bounds.
@@ -577,6 +577,17 @@ impl History {
         self
     }
 
+    /// Records a turn the group was offered and could not take.
+    pub fn skipped(&mut self, index: u64, at: u64, id: GroupId) -> &mut Self {
+        self.events.push(HistoryEvent::GroupOffered {
+            pass: pass(index),
+            tick: TickIndex::new(at),
+            group: id,
+            outcome: OfferOutcome::Skipped(SkipReason::Stalled),
+        });
+        self
+    }
+
     pub fn serviced(&mut self, index: u64, id: GroupId, item: u64) -> &mut Self {
         self.events.push(HistoryEvent::WorkServiced {
             pass: pass(index),
@@ -612,6 +623,513 @@ impl History {
     }
 }
 
+/// One rule the audit enforces, and the decision that breaks exactly it.
+///
+/// [`RedTeam`] turns each of these into two histories that differ in one
+/// decision: the cheating one, which must produce the named fault, and the
+/// control, which must be accepted. That pairing is the point. `ManagedScheduler`
+/// always services what it dispatches, always releases what it takes, and always
+/// plans what is ready, so **no history the [`Recorder`] can produce
+/// distinguishes a rule the audit checks from one it ignores**. A check with no
+/// deliberate violator is a check whose positive control is its own vacuity, and
+/// that is how a whole generation of "the audit derives the occupancy" survived
+/// while the audit derived it from work that was never done.
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+pub enum Cheat {
+    /// Plan the busy group and leave a ready one out.
+    StarveAReadyGroup,
+    /// Arm a fresh plan while the last one still owes a turn.
+    ArmOverAnOpenPlan,
+    /// Number a pass something other than its predecessor's successor.
+    SkipAPassIndex,
+    /// Name a group in a plan that was not ready when the plan was armed.
+    PlanAGroupThatIsNotReady,
+    /// Name one group twice in one plan.
+    NameAGroupTwiceInOnePlan,
+    /// Hand a turn to a group the plan did not name.
+    OfferAGroupThePlanDidNotName,
+    /// Hand one group two turns in one pass.
+    OfferAGroupTwiceInOnePass,
+    /// Retire a plan that still owes a group its turn.
+    RetireAPlanWithATurnOwing,
+    /// Dispatch a group an external report stalled after the plan was armed.
+    DispatchAGroupThatIsNotReady,
+    /// Skip a group as stalled when nothing reported it stalled.
+    SkipAGroupThatIsAvailable,
+    /// Service more items in one turn than the group's quota allows.
+    ServiceMoreThanTheQuota,
+    /// Service a turn's items out of arrival order.
+    ServiceOutOfArrivalOrder,
+    /// Claim a different number of items than the turn recorded.
+    MiscountTheWorkATurnDid,
+    /// End a turn with the work it was offered against still queued.
+    LeaveOwedWorkUnserviced,
+    /// Service past the end of the work a turn was offered against.
+    ServicePastTheEndOfATurn,
+    /// Charge a worker something other than what the turn's items were worth.
+    MisreportTheTurnsCost,
+    /// Run the history past the tick an occupancy was due back at.
+    HoldAWorkerPastItsCost,
+    /// Report a worker free before the turn holding it was paid for.
+    ReleaseAWorkerBeforeItsCostIsPaid,
+    /// Report a worker free for a group that is holding none.
+    ReleaseAWorkerNobodyTook,
+    /// Run the same decisions out of a pool one worker short of holding them.
+    TakeMoreWorkersThanThePoolHas,
+    /// Record a tick earlier than one already recorded.
+    WalkTheClockBackwards,
+    /// Arm a second plan within one tick.
+    ArmTwoPlansInOneTick,
+    /// Record work serviced when no turn was open to service it.
+    ServiceWorkOutsideAnyDispatch,
+}
+
+impl Cheat {
+    /// Every cheat, so a suite can run the whole family rather than a sample.
+    pub const ALL: [Self; 23] = [
+        Self::StarveAReadyGroup,
+        Self::ArmOverAnOpenPlan,
+        Self::SkipAPassIndex,
+        Self::PlanAGroupThatIsNotReady,
+        Self::NameAGroupTwiceInOnePlan,
+        Self::OfferAGroupThePlanDidNotName,
+        Self::OfferAGroupTwiceInOnePass,
+        Self::RetireAPlanWithATurnOwing,
+        Self::DispatchAGroupThatIsNotReady,
+        Self::SkipAGroupThatIsAvailable,
+        Self::ServiceMoreThanTheQuota,
+        Self::ServiceOutOfArrivalOrder,
+        Self::MiscountTheWorkATurnDid,
+        Self::LeaveOwedWorkUnserviced,
+        Self::ServicePastTheEndOfATurn,
+        Self::MisreportTheTurnsCost,
+        Self::HoldAWorkerPastItsCost,
+        Self::ReleaseAWorkerBeforeItsCostIsPaid,
+        Self::ReleaseAWorkerNobodyTook,
+        Self::TakeMoreWorkersThanThePoolHas,
+        Self::WalkTheClockBackwards,
+        Self::ArmTwoPlansInOneTick,
+        Self::ServiceWorkOutsideAnyDispatch,
+    ];
+}
+
+/// Groups the red-team base history drives.
+const RED_TEAM_GROUPS: [u32; 3] = [0, 1, 2];
+/// Items each of them is given, two per turn over two passes.
+const RED_TEAM_BACKLOG: u64 = 4;
+/// Quota every red-team group is created with.
+const RED_TEAM_QUOTA: u32 = 2;
+/// Workers the base history's three concurrent turns come out of.
+const RED_TEAM_WORKERS: u32 = 3;
+/// A created slot with no work, so a plan can name a group that exists and is
+/// not ready without inventing an unknown one.
+const RED_TEAM_EMPTY_SLOT: GroupId = GroupId::new(3);
+/// Ticks `MisreportTheTurnsCost` overcharges its worker by.
+const MISREPORTED_COST: u64 = 3;
+
+/// A scheduler that breaks exactly one rule, written down as the decisions it
+/// makes.
+///
+/// The base is an honest two-pass history over three groups on a three-worker
+/// host: each pass plans all three, each turn services its full quota in arrival
+/// order, and every worker is released at exactly the tick its cost comes due.
+/// A [`Cheat`] changes one decision in it and nothing else, so the fault the
+/// audit reports is attributable to that decision rather than to the shape of
+/// the history.
+///
+/// [`Self::control`] is the same history with that one decision taken
+/// correctly, and it must be accepted. Without it a "negative control" proves
+/// only that some history somewhere fails; with it, the pair proves that the
+/// rule under test is the one doing the work.
+///
+/// Cheats that need a setup — a stall report, say — carry it in *both*
+/// histories, so the difference between them stays one decision wide.
+pub struct RedTeam {
+    cheat: Option<Cheat>,
+    staged: Option<Cheat>,
+    bounds: SchedulerConfig,
+    history: History,
+}
+
+impl fmt::Debug for RedTeam {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("RedTeam")
+            .field("cheat", &self.cheat)
+            .field("staged", &self.staged)
+            .finish_non_exhaustive()
+    }
+}
+
+impl RedTeam {
+    /// Builds the history in which `cheat` is taken.
+    #[must_use]
+    pub fn run(cheat: Cheat) -> Self {
+        Self::build(Some(cheat), Some(cheat))
+    }
+
+    /// Builds the same history with `cheat`'s one decision taken correctly.
+    #[must_use]
+    pub fn control(cheat: Cheat) -> Self {
+        Self::build(None, Some(cheat))
+    }
+
+    /// Builds the base history, which cheats nothing and stages nothing.
+    #[must_use]
+    pub fn honest() -> Self {
+        Self::build(None, None)
+    }
+
+    #[must_use]
+    pub fn bounds(&self) -> SchedulerConfig {
+        self.bounds
+    }
+
+    #[must_use]
+    pub fn history(&self) -> &[HistoryEvent] {
+        self.history.events()
+    }
+
+    /// Folds the history and returns the audit's verdict.
+    pub fn audit(&self) -> Result<FairnessReport, SchedulingViolation> {
+        self.history.audit(self.bounds)
+    }
+
+    /// Returns the fault this history must produce, or `None` for a control.
+    #[must_use]
+    pub fn expected_violation(&self) -> Option<SchedulingViolation> {
+        let cheat = self.cheat?;
+        Some(
+            Self::planning_fault(cheat)
+                .or_else(|| Self::turn_fault(cheat))
+                .expect("every cheat names the one fault it must produce"),
+        )
+    }
+
+    /// The faults about which groups a pass planned, offered, and retired with.
+    fn planning_fault(cheat: Cheat) -> Option<SchedulingViolation> {
+        let (first, third) = (group(0), group(2));
+        Some(match cheat {
+            Cheat::StarveAReadyGroup => SchedulingViolation::OpportunityGap {
+                group: third,
+                from_pass: pass(2),
+                denied_passes: 1,
+            },
+            Cheat::ArmOverAnOpenPlan => SchedulingViolation::PassArmedWhileOpen {
+                open: pass(1),
+                armed: pass(2),
+            },
+            Cheat::SkipAPassIndex => SchedulingViolation::PassOutOfOrder {
+                expected: pass(2),
+                observed: pass(3),
+            },
+            Cheat::PlanAGroupThatIsNotReady => SchedulingViolation::PlanIncludedUnreadyGroup {
+                pass: pass(2),
+                group: group(3),
+            },
+            Cheat::NameAGroupTwiceInOnePlan => SchedulingViolation::PlanRepeatedGroup {
+                pass: pass(2),
+                group: first,
+            },
+            Cheat::OfferAGroupThePlanDidNotName => SchedulingViolation::OfferOutsidePlan {
+                pass: pass(2),
+                group: third,
+            },
+            Cheat::OfferAGroupTwiceInOnePass => SchedulingViolation::GroupOfferedTwice {
+                pass: pass(2),
+                group: first,
+            },
+            Cheat::RetireAPlanWithATurnOwing => {
+                SchedulingViolation::PassCompletedWithUnofferedGroup {
+                    pass: pass(2),
+                    group: third,
+                }
+            }
+            Cheat::DispatchAGroupThatIsNotReady => SchedulingViolation::DispatchedUnreadyGroup {
+                pass: pass(2),
+                group: third,
+            },
+            Cheat::SkipAGroupThatIsAvailable => SchedulingViolation::SkippedAvailableGroup {
+                pass: pass(2),
+                group: third,
+            },
+            Cheat::ArmTwoPlansInOneTick => SchedulingViolation::PassBoundaryReused {
+                pass: pass(2),
+                tick: tick(1),
+            },
+            Cheat::WalkTheClockBackwards => SchedulingViolation::TickWentBackwards {
+                current: tick(1 + u64::from(RED_TEAM_QUOTA)),
+                observed: tick(2),
+            },
+            _ => return None,
+        })
+    }
+
+    /// The faults about what a turn did with the worker it took.
+    fn turn_fault(cheat: Cheat) -> Option<SchedulingViolation> {
+        let (first, second, third) = (group(0), group(1), group(2));
+        let turn = u64::from(RED_TEAM_QUOTA);
+        Some(match cheat {
+            Cheat::ServiceMoreThanTheQuota => SchedulingViolation::QuotaExceeded {
+                pass: pass(2),
+                group: first,
+                serviced: RED_TEAM_QUOTA + 1,
+                quota: RED_TEAM_QUOTA,
+            },
+            Cheat::ServiceOutOfArrivalOrder => SchedulingViolation::ServiceOrderViolation {
+                pass: pass(1),
+                group: first,
+                expected: work(1),
+                observed: work(2),
+            },
+            Cheat::MiscountTheWorkATurnDid => SchedulingViolation::ServiceCountMismatch {
+                pass: pass(1),
+                group: first,
+                expected: RED_TEAM_QUOTA,
+                observed: 1,
+            },
+            Cheat::LeaveOwedWorkUnserviced => SchedulingViolation::DispatchLeftWorkUnserviced {
+                pass: pass(1),
+                group: first,
+                owed: RED_TEAM_QUOTA,
+                serviced: 0,
+            },
+            Cheat::ServicePastTheEndOfATurn => SchedulingViolation::DispatchServicedBeyondItsWork {
+                pass: pass(1),
+                group: first,
+                owed: RED_TEAM_QUOTA,
+                work: work(3),
+            },
+            Cheat::MisreportTheTurnsCost => SchedulingViolation::DispatchCostMismatch {
+                pass: pass(1),
+                group: first,
+                expected: turn,
+                observed: turn + MISREPORTED_COST,
+            },
+            Cheat::HoldAWorkerPastItsCost => SchedulingViolation::WorkerHeldPastCost {
+                pass: pass(1),
+                group: first,
+                due: tick(1 + turn),
+                observed: tick(2 + turn),
+            },
+            Cheat::ReleaseAWorkerBeforeItsCostIsPaid => SchedulingViolation::WorkerReleasedEarly {
+                pass: pass(1),
+                group: first,
+                due: tick(1 + turn),
+                observed: tick(2),
+            },
+            Cheat::ReleaseAWorkerNobodyTook => SchedulingViolation::SpuriousWorkerRelease {
+                tick: tick(2),
+                group: group(3),
+            },
+            Cheat::TakeMoreWorkersThanThePoolHas => SchedulingViolation::WorkerCountExceeded {
+                pass: pass(1),
+                group: third,
+                workers: RED_TEAM_WORKERS - 1,
+            },
+            Cheat::ServiceWorkOutsideAnyDispatch => SchedulingViolation::ServiceOutsideDispatch {
+                pass: pass(1),
+                group: second,
+            },
+            _ => return None,
+        })
+    }
+
+    fn build(cheat: Option<Cheat>, staged: Option<Cheat>) -> Self {
+        let bounds = if cheat == Some(Cheat::TakeMoreWorkersThanThePoolHas) {
+            // The one cheat that changes no decision: the same history, run out
+            // of a pool one worker short of holding the turns it hands out.
+            config(4, RED_TEAM_WORKERS - 1, 2, 64, 512)
+        } else {
+            config(4, RED_TEAM_WORKERS, 2, 64, 512)
+        };
+
+        let ids: Vec<GroupId> = RED_TEAM_GROUPS.iter().map(|id| group(*id)).collect();
+        let mut history = History::new();
+        for id in &ids {
+            history.open_group(*id, RED_TEAM_QUOTA);
+        }
+        // A fourth slot, created and left empty, so a plan can name a group that
+        // exists and is not ready without inventing an unknown one.
+        history.open_group(RED_TEAM_EMPTY_SLOT, RED_TEAM_QUOTA);
+        for id in &ids {
+            for _ in 0..RED_TEAM_BACKLOG {
+                history.submit(*id, system(SystemClass::Bulk, 1));
+            }
+        }
+
+        if Self::first_pass(&mut history, cheat, &ids) {
+            Self::second_pass(&mut history, cheat, staged, &ids);
+        }
+        Self {
+            cheat,
+            staged,
+            bounds,
+            history,
+        }
+    }
+
+    /// Writes pass one, and reports whether a second pass follows it.
+    ///
+    /// Every group is planned, dispatched, and services its full quota in
+    /// arrival order. The turn faults land here, because pass one is where a
+    /// turn's work is unambiguous: nothing has moved yet.
+    fn first_pass(history: &mut History, cheat: Option<Cheat>, ids: &[GroupId]) -> bool {
+        let taken = |candidate: Cheat| cheat == Some(candidate);
+        let turn = u64::from(RED_TEAM_QUOTA);
+        history.armed(1, 1, ids.to_vec());
+        for (index, id) in ids.iter().enumerate() {
+            let head = index == 0;
+            if head && taken(Cheat::LeaveOwedWorkUnserviced) {
+                history.dispatched(1, 1, *id, RED_TEAM_QUOTA, turn);
+                continue;
+            }
+            if head && taken(Cheat::MiscountTheWorkATurnDid) {
+                history.dispatched(1, 1, *id, 1, turn);
+            } else if head && taken(Cheat::MisreportTheTurnsCost) {
+                history.dispatched(1, 1, *id, RED_TEAM_QUOTA, turn + MISREPORTED_COST);
+            } else {
+                history.dispatched(1, 1, *id, RED_TEAM_QUOTA, turn);
+            }
+            if head && taken(Cheat::ServiceOutOfArrivalOrder) {
+                history.serviced(1, *id, red_team_item(index, 1));
+                history.serviced(1, *id, red_team_item(index, 0));
+                continue;
+            }
+            for slot in 0..turn {
+                history.serviced(1, *id, red_team_item(index, slot));
+            }
+            if head && taken(Cheat::ServicePastTheEndOfATurn) {
+                history.serviced(1, *id, red_team_item(index, turn));
+            }
+        }
+        if taken(Cheat::ServiceWorkOutsideAnyDispatch) {
+            // Group one's turn is over and its worker is still held, so there is
+            // no open turn for this to belong to.
+            history.serviced(1, ids[1], red_team_item(1, turn));
+        }
+        if !taken(Cheat::ArmOverAnOpenPlan) {
+            history.retired(1, 1);
+        }
+        if taken(Cheat::ArmTwoPlansInOneTick) {
+            history.armed(2, 1, Vec::new());
+            return false;
+        }
+        if taken(Cheat::ReleaseAWorkerBeforeItsCostIsPaid) {
+            history.released(2, ids[0]);
+        }
+        if taken(Cheat::ReleaseAWorkerNobodyTook) {
+            history.released(2, RED_TEAM_EMPTY_SLOT);
+        }
+        true
+    }
+
+    /// Writes pass two, at the tick pass one's occupancies come due.
+    ///
+    /// The planning faults land here, because a second pass is what makes a
+    /// plan comparable to the one before it: an omission, a repeat, a rearm, or
+    /// a group offered outside the plan all need a plan to have preceded them.
+    fn second_pass(
+        history: &mut History,
+        cheat: Option<Cheat>,
+        staged: Option<Cheat>,
+        ids: &[GroupId],
+    ) {
+        let taken = |candidate: Cheat| cheat == Some(candidate);
+        let carries = |candidate: Cheat| staged == Some(candidate);
+        let turn = u64::from(RED_TEAM_QUOTA);
+        let at = if taken(Cheat::HoldAWorkerPastItsCost) {
+            // No releases, and the clock carried one tick past the deadline.
+            2 + turn
+        } else {
+            for id in ids {
+                history.released(1 + turn, *id);
+            }
+            if taken(Cheat::WalkTheClockBackwards) {
+                2
+            } else {
+                1 + turn
+            }
+        };
+        let index_of = if taken(Cheat::SkipAPassIndex) { 3 } else { 2 };
+        let plan = if taken(Cheat::StarveAReadyGroup) || taken(Cheat::OfferAGroupThePlanDidNotName)
+        {
+            vec![ids[0], ids[1]]
+        } else if taken(Cheat::PlanAGroupThatIsNotReady) {
+            vec![ids[0], ids[1], ids[2], RED_TEAM_EMPTY_SLOT]
+        } else if taken(Cheat::NameAGroupTwiceInOnePlan) {
+            vec![ids[0], ids[1], ids[2], ids[0]]
+        } else {
+            ids.to_vec()
+        };
+        history.armed(index_of, at, plan);
+        // A plan entry's readiness can only be revoked after the plan is armed,
+        // so the stall lands a tick later and the pass resumes there. Both the
+        // cheat and its control carry it, which keeps the difference between
+        // them one decision wide: dispatch the stalled group, or skip it.
+        let last_at = if carries(Cheat::DispatchAGroupThatIsNotReady) {
+            at + 1
+        } else {
+            at
+        };
+
+        for (index, id) in ids.iter().enumerate() {
+            let tail = index + 1 == ids.len();
+            // Three cheats hinge on the last group's turn: one never offers it,
+            // one offers it outside the plan afterwards, and one retires the
+            // plan while it is still owed.
+            if tail
+                && (taken(Cheat::RetireAPlanWithATurnOwing)
+                    || taken(Cheat::StarveAReadyGroup)
+                    || taken(Cheat::OfferAGroupThePlanDidNotName))
+            {
+                break;
+            }
+            if tail && carries(Cheat::DispatchAGroupThatIsNotReady) {
+                history.reported(last_at, *id, GroupAvailability::Stalled);
+                if taken(Cheat::DispatchAGroupThatIsNotReady) {
+                    history.dispatched(index_of, last_at, *id, RED_TEAM_QUOTA, turn);
+                    for slot in 0..turn {
+                        history.serviced(index_of, *id, red_team_item(index, turn + slot));
+                    }
+                } else {
+                    history.skipped(index_of, last_at, *id);
+                }
+                continue;
+            }
+            if tail && taken(Cheat::SkipAGroupThatIsAvailable) {
+                history.skipped(index_of, at, *id);
+                continue;
+            }
+            if index == 0 && taken(Cheat::ServiceMoreThanTheQuota) {
+                history.dispatched(index_of, at, *id, RED_TEAM_QUOTA + 1, turn);
+            } else {
+                history.dispatched(index_of, at, *id, RED_TEAM_QUOTA, turn);
+            }
+            for slot in 0..turn {
+                history.serviced(index_of, *id, red_team_item(index, turn + slot));
+            }
+            if index == 0 && taken(Cheat::OfferAGroupTwiceInOnePass) {
+                // A second turn for a group that already took one, and no work
+                // left for it to do with it.
+                history.dispatched(index_of, at, *id, RED_TEAM_QUOTA, turn);
+            }
+        }
+        if taken(Cheat::OfferAGroupThePlanDidNotName) {
+            history.dispatched(index_of, at, ids[2], RED_TEAM_QUOTA, turn);
+        }
+        history.retired(index_of, last_at);
+    }
+}
+
+/// Identifier of the `slot`-th item submitted for the `index`-th red-team group.
+///
+/// Work identifiers run in submission order, so group zero holds `1..=4`, group
+/// one `5..=8`, and group two `9..=12`.
+fn red_team_item(index: usize, slot: u64) -> u64 {
+    u64::try_from(index).expect("three groups fit in u64") * RED_TEAM_BACKLOG + slot + 1
+}
+
 /// A deliberately unfair scheduler, written down as the decisions it makes.
 ///
 /// This variant always plans the group with the most queued work and nothing
@@ -619,6 +1137,9 @@ impl History {
 /// the shape the fairness bound exists to forbid. It is expressed as a history
 /// rather than as a second scheduler because the bound is a property of
 /// decisions, and a history is exactly a record of decisions.
+///
+/// It is the template [`RedTeam`] generalizes: one rule broken, everything else
+/// correct, and a control that differs by one decision.
 ///
 /// Everything else it does is correct: its passes are ordered, its turns are
 /// taken once, its quota is respected, its work is serviced in priority and
