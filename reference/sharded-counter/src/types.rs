@@ -1031,10 +1031,13 @@ pub enum OfferOutcome {
         /// Worker occupancy the opportunity consumed, in ticks.
         ///
         /// This is the sum of the [`ServiceCost`]s of the items the turn
-        /// serviced, and it is *derivable*: an observer that knows the group's
-        /// queue knows what the turn had to cost. The reference oracle derives
-        /// it and rejects a dispatch that claims anything else, so this number
-        /// is a report rather than a self-certification.
+        /// serviced, and it is *derivable*: an observer that reads the turn's
+        /// `WorkServiced` events knows what the turn cost. Not what the group's
+        /// queue held when the turn was offered — that is what the turn was
+        /// offered *against*, and a turn may fail to move it. The reference
+        /// oracle prices the turn from the service stream and rejects a
+        /// dispatch that claims anything else, so this number is a report
+        /// rather than a self-certification.
         ///
         /// The width is the reason it cannot silently under-charge. A turn
         /// services at most [`WorkQuota`] items, each costing at most

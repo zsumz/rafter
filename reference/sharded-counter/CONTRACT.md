@@ -457,46 +457,98 @@ The rest of this section makes that decidable.
 
 Condition 4 is not an exclusion from service. A group occupying a worker is not
 starved; it is being served, and offering it a second concurrent turn would let
-one group hold two workers while another holds none.
+one group hold two workers while another holds none. **That sentence is load
+bearing for the whole bound, and it holds only because an occupancy cannot be
+opened by a turn that served nobody** — see rule one of "Occupancy is derived,
+not reported".
 
-**Every one of the five is derivable from the history, and condition 4 is
-derivable on purpose.** The other four follow from what callers asked for.
-Condition 4 follows from what the scheduler decided, and that is exactly why it
-may not be *reported*: a condition the audited party defines for itself is not a
-condition. See "Occupancy is derived, not reported" below.
+Conditions 1, 2, and 5 follow from what callers asked for, and are read off the
+history directly. Condition 4 follows from what the scheduler *decided*, and
+that is exactly why it may not be reported: a condition the audited party
+defines for itself is not a condition. It is derived instead, from the work each
+turn recorded.
+
+**Condition 3 is the only one the history reports rather than implies**, and
+that is what makes it the delicate one. It models an input from outside the
+scheduler, so it cannot be derived; but a scheduler that could move it freely
+would define any group out of the fairness question. It is bounded rather than
+derived — see "A stall excuses only while it is unbroken" — and the boundary is
+that a stall which is cleared and re-raised without a plan naming the group in
+between excuses nothing.
 
 ### Occupancy is derived, not reported
 
 A dispatch opens a worker occupancy. The occupancy is fully determined by the
-dispatch, so an observer computes it rather than being told it:
+work the turn did, so an observer computes it rather than being told it:
 
 ```text
 cost(turn) = sum of ServiceCost over the items the turn serviced
 due(turn)  = tick of the dispatch + cost(turn)
 ```
 
-Both inputs are recorded — the serviced items, and the tick the turn was taken
-at — so the deadline is a fact about the history rather than a claim inside it.
-Four rules follow, and all four are checked:
+Both inputs are recorded — the serviced items, as `WorkServiced` events, and the
+tick the turn was taken at — so the deadline is a fact about the history rather
+than a claim inside it.
 
+**"The items the turn serviced" means the `WorkServiced` events it recorded, and
+nothing else.** The head of the group's queue is what the turn is *offered
+against*; it is not what the turn cost, because a turn may fail to move it. A
+generation of this document said "serviced" while the audit priced the turn from
+the queue, and the difference is the whole of the following, which the audit
+accepted:
+
+```text
+audit: passes_completed=25 opportunities=25 widest_gap=0;
+group queued=1 serviced host-wide=0
+```
+
+Twenty-five turns, each charged for one item, none of which moved.
+
+**A turn ends at the first recorded event that is not one of its own services.**
+That is what makes it priceable: another dispatch, a release, a plan retiring, or
+the end of the record all settle it. The rule is not an extra constraint but
+"work is applied at dispatch" made checkable — a turn is one indivisible act, so
+its services follow its dispatch with nothing between them. A turn is settled
+before the event that ended it is judged, so a release is always weighed against
+an occupancy whose price is already known.
+
+Six rules follow, and every one of them has a scheduler in
+`tests/redteam_controls.rs` written to break it and a control that differs from
+that scheduler by one decision:
+
+- **A turn services exactly the items it was offered against.** Ending a turn
+  with any of them still queued is `DispatchLeftWorkUnserviced`; servicing past
+  them is `DispatchServicedBeyondItsWork`; servicing the wrong one is
+  `ServiceOrderViolation`. Without the first of those, a dispatch buys a full
+  occupancy with nothing.
 - **A dispatch is priced by its work.** A turn that reports any cost other than
-  the sum of the `ServiceCost`s of the items it serviced is refused. Otherwise
-  a scheduler could name its own occupancy, and every rule below would be
+  the sum of the `ServiceCost`s of the items it serviced is refused, and a turn
+  that reports a count other than the number of services it recorded is refused.
+  Otherwise a scheduler names its own occupancy, and every rule below is
   measured against a number it chose.
 - **An occupancy ends at `due`, and ends only there.** A release recorded after
   `due` held a worker past its cost; one recorded before `due` returned a
   worker that was still busy, which lets the host run more dispatches at once
-  than it has workers. Both are refused.
+  than it has workers. Both are refused. This says nothing about a release
+  having to be *recorded*: the deadline is computed, so a history with no
+  `WorkerReleased` events at all is timed exactly like one full of them, and
+  `redteam_occupancy::an_occupancy_ends_at_its_deadline_with_no_release_ever_recorded`
+  is that history.
 - **A release pairs with a dispatch or it is refused.** A release naming a
   group that holds no worker is a fault, not a no-op. Absorbing it would let a
   scheduler clear an occupancy it never opened.
 - **An occupancy past `due` stops excluding its group from the ready set.**
-  This is the load-bearing one. A group inside an occupancy is owed no turn — it
-  is being served. A group inside an occupancy that has outlived its cost is
-  being served by nobody, so it is ready, is owed every plan armed from that
-  instant, and accrues gap for each one that omits it.
+  A group inside an occupancy is owed no turn — it is being served. A group
+  inside an occupancy that has outlived its cost is being served by nobody, so
+  it is ready, is owed every plan armed from that instant, and accrues gap for
+  each one that omits it.
+- **Turns are concurrent, and each keeps its own owed set and its own
+  deadline.** A pool of `W` workers may hold `W` turns at once, within one pass
+  or across passes, and the pool is counted rather than reported. A single
+  dispatch slot for a pool of workers is how the second dispatch in a pass came
+  to discard the first one's work with nothing complaining.
 
-The fourth rule is what makes the bound hold against a scheduler that controls
+The fifth rule is what makes the bound hold against a scheduler that controls
 only what it legitimately controls. Before it, `servicing` was a bit the
 scheduler set on dispatch and cleared on release, and neither was checked: one
 omitted release put a group permanently outside the ready set, permanently owed
@@ -504,10 +556,85 @@ nothing, and permanently invisible to a `widest_gap` of zero. The starved group
 did not appear in the report because, by the report's own definition, it was
 never starved.
 
-The scheduler retains exactly two freedoms over readiness, and both are
-legitimate: which items it services in a turn — bounded by quota and class
-order — and when it arms the next plan. It has none over how long the resulting
-occupancy lasts.
+The first rule is what makes the *fifth* mean anything. "A group inside an
+occupancy is owed no turn — it is being served" is load bearing for the whole
+bound, and it is true only because an occupancy can no longer be opened by a
+turn that served nobody.
+
+### What the scheduler is left free to decide
+
+This document previously read: "The scheduler retains exactly two freedoms over
+readiness, and both are legitimate: which items it services in a turn — bounded
+by quota and class order — and when it arms the next plan." That sentence did
+not enumerate. It named a freedom that is not one, and omitted a freedom that
+was.
+
+There is **one** freedom, and each entry below is backed by the check that holds
+it rather than by this paragraph:
+
+| Decision | Free? | What holds it |
+| --- | --- | --- |
+| When to arm the next plan | **yes** | Bounded only by `PassBoundaryReused`: at most one plan armed and one retired per tick. Liveness is deliberately not claimed; see "What the audit does not claim". |
+| Which items a turn services | no | Fully determined by quota, class order, and arrival order. Every deviation is named: `DispatchLeftWorkUnserviced`, `DispatchServicedBeyondItsWork`, `ServiceOrderViolation`, `ServiceCountMismatch`, `QuotaExceeded`. |
+| How long the resulting occupancy lasts | no | `DispatchCostMismatch`, `WorkerHeldPastCost`, `WorkerReleasedEarly`, `SpuriousWorkerRelease`, `WorkerCountExceeded`. |
+| Which groups a plan names | no | `PlanIncludedUnreadyGroup`, `PlanRepeatedGroup`, `OpportunityGap`, `PassArmedWhileOpen`, `PassCompletedWithUnofferedGroup`. |
+| Whether a group is stalled | bounded | An external input, but not an unlimited one: see "A stall excuses only while it is unbroken". |
+
+"Which items it services in a turn" was a freedom only in its degenerate form —
+the scheduler could decline to service them — and that form is now
+`DispatchLeftWorkUnserviced`.
+
+### A stall excuses only while it is unbroken
+
+Readiness condition 3 is the one condition the history *reports* rather than
+implies, and it was a third freedom over readiness for exactly as long as it was
+sampled only at arm instants. A group reported `Stalled` immediately before every
+arming and `Available` immediately after every retirement is never sampled as
+ready, so it is owed no plan and accrues no gap:
+
+```text
+audit: passes_completed=20 widest_gap=0; starved group stalled=false queued=1
+```
+
+Twenty completed passes, a group the audit's own final view calls available and
+holding a backlog, and a perfect score.
+
+The rule that closes it:
+
+> A group returned to `Available` at an instant when **a plan could have been
+> armed to name it** — no pass is open, and nothing but the stall was keeping it
+> out — is *owed the next plan armed*. A `Stalled` report arriving before that
+> plan is armed does not retract the debt. The debt is discharged by a plan
+> naming the group, and by nothing else.
+
+A group owed a plan it does not appear in accrues gap. It is still not *ready*,
+so a plan that named it would break plan totality; the only way to settle the
+debt is to stop breaking the stall.
+
+Both qualifications are load bearing, and each is there to keep the rule from
+blaming a scheduler with no move to make:
+
+- **No pass open.** A stall raised while a pass was already open excuses exactly
+  as it always did, because no plan could have been armed to name the group. A
+  group that becomes ready part way through a pass waits for the next one, which
+  is what the bound already says, and the availability it held in between buys
+  it nothing it was not already owed.
+- **Nothing else keeping it out.** A group with no queued work, or one still
+  holding a worker, was not being kept out by the stall, so returning it to
+  availability opens no debt.
+
+What this does *not* touch is a stall that holds. A group reported `Stalled` once
+and never reported available again is owed nothing however long it holds work,
+and the audit says so: that is the external input doing its job, and
+`redteam_occupancy::a_stall_held_unbroken_is_the_one_legitimate_way_a_group_receives_nothing`
+is the assertion.
+
+What it does not *close* is stated rather than glossed: a scheduler willing to
+keep a pass open across every availability oscillation can still arrange for
+every `Available` report to land inside an open pass. That costs it a dispatch
+and a delayed retirement per oscillation, and it is not closed here because the
+rule that would close it — blaming a stall raised during an open pass — blames
+schedulers that had no plan to arm.
 
 **A tick arms at most one plan.** This is the modeling choice named at the end
 of this document, and it is also what stops the derivation from being evaded by
@@ -620,12 +747,38 @@ The audit reports `Ok` with `widest_gap == 0` over a host of permanently ready
 groups that received nothing, and that is the correct answer to the question it
 asks.
 
-So the report carries `passes_armed`, `passes_completed`, and `opportunities`
-beside the gap, and **a fairness assertion is incomplete without a floor on
-`passes_completed`**. That is a rule this crate's tests keep, not a nicety: two
+So the report carries `passes_armed`, `passes_completed`, `opportunities`, and
+`serviced` beside the gap, and **a fairness assertion is incomplete without a
+floor on `serviced`**. That is a rule this crate's tests keep, not a nicety: two
 models that both did nothing agree perfectly, and an audit of the emptiness
 certifies it. One test pins the vacuous case directly, so the shape is on the
 record rather than implied.
+
+**The floor is on service, and not on plans, because arming is free.** A floor
+on `passes_completed` was the previous recommendation and it does not hold. An
+empty plan names exactly the ready set when nothing is ready, so a host that has
+stopped can arm and retire plans forever and clear any threshold on them.
+`ServiceCost` is bounded only by `u32`, so a single admitted item can book the
+only worker to tick 4_294_967_296 while the pass counter climbs over a host
+doing nothing:
+
+```text
+audit: passes_completed=40 serviced=1 widest_gap=0; group holds 6 items
+and is servicing=true until tick 4294967296
+```
+
+Nothing in that history lies, the one turn services exactly what it was offered,
+and the audit is right to accept it. `serviced` is the only number in the report
+an empty plan cannot inflate.
+
+**`ServiceCost` is deliberately not bounded by configuration.** That was the
+alternative, and the argument against it is that it does not close anything: any
+ceiling only rescales the wedge, since a host with one worker and a cost just
+under the ceiling is wedged for just under the ceiling. It would also make "a
+group whose storage is slow" unrepresentable past a number this document has no
+basis to pick, and this document has already said that a tick is not a duration
+— so a numeric ceiling on cost would be a duration claim wearing a bound's
+clothes. The honest fix was to stop letting the pass counter stand in for work.
 
 **Liveness is deliberately not claimed, in either of its two forms.** That
 plans continue to be armed, and that an armed plan eventually retires, are both
@@ -652,6 +805,14 @@ still revokes nothing, because the only edge that would is removal, and removal
 is refused while the group holds a queue it has not drained — which is the same
 queue that made it ready. So `Stalled` is the only reason a turn can be skipped,
 and its being the only one is a property rather than an omission.
+
+The enumeration is backed rather than argued. `SkipReason` has one variant, so a
+skip for any other reason is unrepresentable; a skip reported for a group nothing
+stalled is `SkippedAvailableGroup`, and
+`redteam_controls::Cheat::SkipAGroupThatIsAvailable` is the scheduler that takes
+it. A dispatch of a group an external report stalled after the plan was armed is
+`DispatchedUnreadyGroup`, and `Cheat::DispatchAGroupThatIsNotReady` is its
+counterpart.
 
 ### Pass order
 
@@ -716,6 +877,15 @@ available again, however much work it accumulates.
 Reports are applied before a plan is armed, so a stall observed at a tick keeps
 its group out of a plan armed at that tick, and strands it only in a plan armed
 earlier.
+
+**Stickiness is what the audit charges for.** Being the only readiness input the
+scheduler does not derive makes this signal the one place a scheduler could
+define a group out of the fairness question, and it did: a stall flicked on
+before every arming and off after every retirement kept a group out of twenty
+consecutive plans at a `widest_gap` of zero. So the excuse a stall buys is
+bounded by how long it is held, not by whether it happens to be raised at the
+instant readiness is sampled. "A stall excuses only while it is unbroken" states
+the rule; this section is where the signal it constrains is defined.
 
 A stalled group is a different thing from a slow one. A slow group is modeled by
 work that costs more ticks of worker occupancy: it is dispatchable and takes
@@ -804,12 +974,16 @@ The implementation and oracle must establish:
 6. One turn services `min(quota, pending)` items, or fewer only when the group
    poisoned itself part way through.
 6a. A turn's worker occupancy is the sum of the `ServiceCost`s of the items it
-    serviced, and it ends at the tick that dispatched it plus that sum —
+    **serviced** — the `WorkServiced` events it recorded, not the queue it was
+    offered against — and it ends at the tick that dispatched it plus that sum,
     neither earlier, nor later, nor never.
 6b. No more groups occupy workers at once than the configuration has workers,
-    and no group occupies two.
+    and no group occupies two. A turn still being recorded holds one.
 6c. A group whose occupancy has outlived its cost is ready again, whether or
     not its release was ever recorded.
+6d. A turn services exactly the items it was offered against: no fewer, no
+    more, and none in another order. A turn that ends owing work bought its
+    occupancy with nothing.
 7. A turn services its own classes in priority order, and within a class in
    arrival order.
 8. Class priority never changes plan membership or plan order.
@@ -834,10 +1008,47 @@ The implementation and oracle must establish:
 21. A poisoned group stops itself and no other group.
 22. A group's counter is the sum of the deltas serviced for that group, and no
     other's.
+23. An external stall excuses a plan only while it is unbroken. A stall cleared
+    at an instant when a plan could have named the group, and re-raised before
+    that plan was armed, excuses nothing.
+24. Every rule this audit enforces has a scheduler in the test suite written to
+    break exactly it, and a control that differs from that scheduler by one
+    decision and is accepted.
 
 Aggregate invariants do not imply linearizability. The later adapter will record
 invocation, completion, rejection, unknown outcome, provable refusal, and
 real-time ordering for an independent history checker.
+
+### Invariant 24 is the one that keeps the rest honest
+
+Three generations of this crate shipped a rule, a paragraph explaining it, and a
+workload that could not break it. The reason is structural rather than an
+oversight in the workloads:
+
+> `ManagedScheduler` always services what it dispatches, always releases what it
+> takes, and always plans what is ready. **No history the `Recorder` can produce
+> distinguishes a rule the audit checks from one it ignores.**
+
+Scale does not fix that. "Occupancy is derived, not reported" was tested against
+thousands of groups while the audit derived occupancy from work that was never
+done, because the derivation was never asked a question whose answer it could
+get wrong. The positive control was the vacuity.
+
+So `tests/redteam_controls.rs` holds a deliberately-violating scheduler for
+every `SchedulingViolation` the audit can report, each asserted as a pair: the
+cheating history must produce the named fault, and the same history with that
+one decision taken correctly must be accepted and must have moved real work. The
+mapping from fault to control is an exhaustive match with no catch-all, so a
+fault added to the audit without a scheduler that provokes it stops the suite
+compiling — the claim is checked by the compiler rather than stated here.
+
+One variant declares itself unreachable instead of claiming a control.
+`WorkNotConserved` is arithmetic the fold performs over four counters it moves
+itself and in step, so no recorded history can separate them; invariant 10 is
+asserted over the model's summary instead, where it is observable. That
+declaration has to survive this document's own standard for an unreachable
+answer, stated twice in "Result Taxonomy": a promise about behavior no test
+could observe is not made.
 
 ## Independent Oracle Rule
 
@@ -882,10 +1093,18 @@ recomputes readiness from first principles and compares.
 
 The occupancy table is where the two shapes differ most sharply. The model
 holds a fixed array of worker slots and a per-group flag saying that one of
-them is taken; the oracle holds none of either, and instead keeps a deadline
-per group that it computed from a dispatch it read. Neither can borrow the
-other's answer, which is the point: the model's flag is what the oracle is
-checking.
+them is taken; the oracle holds none of either, and instead keeps a deadline per
+group that it computed from the *services* the turn recorded — not from the
+dispatch that claimed them, and not from the queue the turn was offered against.
+Neither can borrow the other's answer, which is the point: the model's flag is
+what the oracle is checking.
+
+The oracle also keeps one turn open at a time while its services arrive, and
+prices it when the history moves on. The model has no counterpart to that at
+all: it applies a turn's work inside one call and never has a half-recorded
+turn to represent. That asymmetry is deliberate too — the oracle has to be able
+to represent a turn that reported work it did not do, because that is the shape
+it exists to catch.
 
 A bookkeeping mistake in either has nothing to hide behind in the other. A
 scheduler that dropped a group from its ready set produces a plan the oracle's
@@ -926,7 +1145,13 @@ Every scheduler decision that happens at an instant records that instant, and
 comes due at its own tick plus its own cost. An offer that did not say when it
 happened would leave that occupancy with no deadline anyone could compute, and
 an occupancy nobody can time out is a group nobody can prove was starved.
-`WorkServiced` carries none, because it happens within the turn that does.
+
+`WorkServiced` carries no tick, because it happens within the turn that does,
+and that is now a rule rather than an economy. **A turn's services follow its
+dispatch with nothing between them**, so the `WorkServiced` events between one
+`GroupOffered` and the next recorded decision are exactly the work that turn
+did — which is what makes the turn priceable at all. It is the same fact as
+"work is applied at dispatch", read from the history's side.
 
 Deterministic rejections are ordinary `Completed` observations. Every invocation
 carries its full operation, so retries under one request identity are
@@ -963,8 +1188,8 @@ implementation that serviced it be explained away.
 This is the foundation slice. It contains the contract, bounded command and
 result types, a deterministic ready-set scheduler with a per-group counter
 machine, a structurally independent oracle, the history vocabulary, invariant
-tests including a negative control for the fairness audit, and seeded
-differential workloads over thousands of groups.
+tests, a deliberately-violating scheduler for every rule the audit enforces, and
+seeded differential workloads over thousands of groups.
 
 The differential workloads cover the dimensions separately and together: an
 exhaustive enumeration of every short history over an alphabet spanning the
@@ -974,6 +1199,14 @@ classes, costs, a slow group, a stall, and a poisoning; a churn workload that
 removes and reopens groups underneath a running scheduler; and one workload
 that combines all of it at scale, because a dimension that only ever appears
 alone has not been shown to compose.
+
+**What they cannot cover is stated here rather than assumed away.** Every one of
+those workloads is driven by `ManagedScheduler`, which always services what it
+dispatches, always releases what it takes, and always plans what is ready. No
+history it can produce distinguishes a rule the audit checks from one it
+ignores, so the differential workloads prove agreement and prove nothing about
+the audit's teeth. That is what the red-team schedulers are for, and it is why
+invariant 24 exists.
 
 It intentionally contains no Rafter dependency, no adapter, no transport, no
 disk backend, no shared reference framework, and no new Rafter public API. The
@@ -1002,7 +1235,20 @@ Named consequences, so they are not discovered later:
   forbids everywhere else.
 - **Work is applied at dispatch.** A worker's occupancy models what the work
   cost, not a window during which the work is half-done. The unit of application
-  is one item, so there is no partially applied state to represent.
+  is one item, so there is no partially applied state to represent. This is also
+  what gives a turn a settlement point in the history: a turn's `WorkServiced`
+  events follow its dispatch with nothing between them, so the first event that
+  is not one of them ends the turn and prices it. A vocabulary that let other
+  decisions fall inside a turn would be a vocabulary in which a turn's cost is
+  not decidable.
+- **A cost has no configured ceiling.** `ServiceCost` is bounded only by `u32`,
+  and `SchedulerConfig` does not bound it further. The consequence is that one
+  admitted item can hold a worker for longer than any run will observe, and the
+  audit will accept the history because nothing in it is false. What that costs
+  is stated where it bites — the vacuity floor is on `serviced` rather than on
+  `passes_completed`, because a wedged host goes on arming plans. Bounding the
+  cost instead would only rescale the wedge and would make a slow group
+  unrepresentable past a number this document cannot justify.
 - **A pass boundary is one per tick.** A tick arms at most one plan and retires
   at most one. This began as a modeling choice that keeps the pass-to-tick
   relationship crisp; it costs a tick of capacity at each pass boundary and

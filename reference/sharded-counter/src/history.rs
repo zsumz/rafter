@@ -202,6 +202,14 @@ pub enum HistoryEvent {
         outcome: OfferOutcome,
     },
     /// One queued item was serviced within a group's turn.
+    ///
+    /// A turn's services follow its [`Self::GroupOffered`] with nothing between
+    /// them, because work is applied at dispatch and a turn is one indivisible
+    /// act. That is what lets an observer price the turn: the services between
+    /// one offer and the next recorded decision are exactly the work that turn
+    /// did, so the first event that is not one of them ends the turn and fixes
+    /// its cost. There is no tick here for the same reason — the turn's tick is
+    /// the one the offer carries.
     WorkServiced {
         /// Pass the turn belonged to.
         pass: PassIndex,
