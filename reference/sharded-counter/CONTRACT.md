@@ -608,6 +608,37 @@ one is a measurement; converting the requirement into "no plan ever omits a
 ready group, and no plan is ever abandoned" makes it a property a fold over a
 history decides exactly, on every run, at any scale.
 
+### What the audit does not claim
+
+Being a safety property has a price, and it is paid here rather than discovered
+by a reader who assumed otherwise.
+
+**A green audit says no recorded decision broke a rule. It does not say
+decisions were made.** A scheduler that arms no plan at all satisfies F1 and F2
+vacuously: there is no plan omitting a ready group, because there is no plan.
+The audit reports `Ok` with `widest_gap == 0` over a host of permanently ready
+groups that received nothing, and that is the correct answer to the question it
+asks.
+
+So the report carries `passes_armed`, `passes_completed`, and `opportunities`
+beside the gap, and **a fairness assertion is incomplete without a floor on
+`passes_completed`**. That is a rule this crate's tests keep, not a nicety: two
+models that both did nothing agree perfectly, and an audit of the emptiness
+certifies it. One test pins the vacuous case directly, so the shape is on the
+record rather than implied.
+
+**Liveness is deliberately not claimed, in either of its two forms.** That
+plans continue to be armed, and that an armed plan eventually retires, are both
+statements about progress over time. A pass legitimately spans many ticks —
+worker exhaustion suspends it, and the suspension is the exception the bound is
+built to survive — so "armed but not yet retired" is an ordinary state and not
+an auditable fault, at any threshold. Naming a threshold would mean naming a
+tick budget, and a tick is not a duration; a scheduler could satisfy any such
+budget by arming narrower plans. The difference `passes_armed -
+passes_completed` is nevertheless reported, so a caller that wants to say
+something about progress has the number to say it with, and says it under its
+own assumptions rather than this document's.
+
 ### The ready set is exact, and what follows
 
 The scheduler maintains ready-set membership exactly and in constant time per
@@ -934,6 +965,15 @@ result types, a deterministic ready-set scheduler with a per-group counter
 machine, a structurally independent oracle, the history vocabulary, invariant
 tests including a negative control for the fairness audit, and seeded
 differential workloads over thousands of groups.
+
+The differential workloads cover the dimensions separately and together: an
+exhaustive enumeration of every short history over an alphabet spanning the
+whole lifecycle and both directions of the readiness signal; seeded random
+workloads on roomy and deliberately cramped hosts; thousands of groups with
+classes, costs, a slow group, a stall, and a poisoning; a churn workload that
+removes and reopens groups underneath a running scheduler; and one workload
+that combines all of it at scale, because a dimension that only ever appears
+alone has not been shown to compose.
 
 It intentionally contains no Rafter dependency, no adapter, no transport, no
 disk backend, no shared reference framework, and no new Rafter public API. The

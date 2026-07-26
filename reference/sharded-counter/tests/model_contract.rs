@@ -180,6 +180,51 @@ fn a_deliberately_unfair_scheduler_is_caught_with_the_exact_gap() {
     );
 }
 
+/// A green audit is not a fairness certificate on its own, and this is the test
+/// that says so out loud.
+///
+/// F1 and F2 are safety properties: they say that no recorded decision broke a
+/// rule, not that decisions were made. A scheduler that arms nothing satisfies
+/// both vacuously, and the audit reports `Ok` with a `widest_gap` of zero over
+/// three groups that were ready throughout and received nothing. That is the
+/// correct answer to the question the audit asks, and the wrong answer to the
+/// question a reader assumes it asked.
+///
+/// The consequence is a rule for this suite rather than a change to the audit:
+/// every test that asserts fairness also asserts a floor on `passes_completed`,
+/// because agreement between two models that both did nothing is perfect and
+/// worthless. See CONTRACT.md's "What the audit does not claim".
+#[test]
+fn a_scheduler_that_never_arms_a_plan_is_not_certified_fair_by_silence() {
+    let bounds = config(4, 1, 2, 16, 64);
+    let mut history = support::History::new();
+    for id in [group(0), group(1), group(2)] {
+        history.open_group(id, 1);
+        for _ in 0..4 {
+            history.submit(id, system(SystemClass::Bulk, 1));
+        }
+    }
+
+    let replay = history.replay(bounds);
+    let report = replay
+        .fairness
+        .expect("nothing was scheduled, so no decision broke a rule");
+    println!("three permanently ready groups, never scheduled: {report:?}");
+    assert_eq!(report.widest_gap, 0, "the bound holds over no decisions");
+    assert_eq!(report.passes_armed, 0);
+    assert_eq!(
+        report.passes_completed, 0,
+        "and this is the number that says the run proved nothing"
+    );
+    assert_eq!(report.opportunities, 0);
+    assert_eq!(
+        replay.summary.ready_groups, 3,
+        "all three were ready the whole time and were offered nothing"
+    );
+    assert_eq!(replay.summary.serviced, 0);
+    assert_eq!(replay.summary.queued, 12, "their work is all still queued");
+}
+
 /// A plan that is abandoned proves nothing about the groups it had not reached,
 /// so rearming over an open plan is a violation in its own right.
 #[test]
@@ -494,6 +539,69 @@ fn an_external_stall_skips_a_planned_turn_without_costing_the_pass() {
     );
     assert_eq!(recorder.scheduler().summary().queued, 0);
     recorder.assert_agreement(&"stall");
+}
+
+/// The contract argues that a plan entry's readiness cannot be revoked between
+/// the plan being armed and its turn arriving, except by an external readiness
+/// report — and that the interesting case is the one with no dispatch in it: an
+/// operator moving a planned group's lifecycle mid-pass.
+///
+/// This is that case. The move applies, the group keeps the queue that made it
+/// ready, and the pass that still owes it a turn stays open throughout. The
+/// argument holds because the only edge that would revoke readiness is removal,
+/// and removal is refused while the group holds a queue it has not drained.
+#[test]
+fn an_operator_may_move_a_planned_groups_lifecycle_without_revoking_its_turn() {
+    let mut recorder = Recorder::new(config(4, 1, 2, 16, 64));
+    let leading = group(0);
+    let planned = group(1);
+    for id in [leading, planned] {
+        recorder.open_group(id, 1);
+        recorder.submit(id, first(), system(SystemClass::Bulk, 4));
+    }
+
+    // One worker, so the plan suspends with `planned` still owed its turn.
+    let armed = recorder.step(&[]);
+    assert_eq!(armed.armed.as_deref(), Some([leading, planned].as_slice()));
+    assert_eq!(
+        armed.progress,
+        PassProgress::Suspended(PassSuspension::NoFreeWorker)
+    );
+    assert_eq!(recorder.scheduler().open_pass(), armed.pass);
+
+    // No dispatch of `planned` has happened. The operator moves it anyway.
+    let transition = recorder.lifecycle(planned, LifecycleRequest::Drain);
+    assert!(matches!(
+        transition.outcome,
+        LifecycleOutcome::Applied {
+            from: GroupLifecycle::Serving,
+            to: GroupLifecycle::Draining,
+            ..
+        }
+    ));
+    assert!(
+        recorder
+            .scheduler()
+            .group(planned)
+            .is_some_and(|view| view.state == GroupLifecycle::Draining && view.queued == 1),
+        "a draining group is serviceable and keeps the queue that made it ready"
+    );
+    assert_eq!(
+        recorder.scheduler().open_pass(),
+        armed.pass,
+        "the pass that owes the group its turn is open throughout"
+    );
+
+    // Removal is refused for exactly the reason the argument relies on, and the
+    // turn arrives on schedule.
+    assert_eq!(
+        lifecycle_outcome(&mut recorder, planned, LifecycleRequest::Remove),
+        LifecycleOutcome::Rejected(LifecycleRejection::QueueNotDrained { pending: 1 })
+    );
+    recorder.run(8);
+    assert_eq!(recorder.scheduler().summary().queued, 0);
+    assert_eq!(recorder.scheduler().summary().serviced, 2);
+    recorder.assert_agreement(&"lifecycle moved mid-pass");
 }
 
 // ---------------------------------------------------------------------------
@@ -845,6 +953,84 @@ fn late_messages_are_rejected_and_never_resurrect_a_removed_group() {
         AdmissionOutcome::Rejected(AdmissionRejection::FutureIncarnation { current: reopened })
     );
     recorder.assert_agreement(&"late messages");
+}
+
+/// The conservation law across the worst path a slot can take: poisoned, then
+/// drained, then removed, then reopened, with a late retry arriving after each
+/// step. `admitted = serviced + failed + queued` holds at every point, and the
+/// work identifiers never restart, so an observer can still pair an admission
+/// with the disposition that retired it.
+#[test]
+fn work_is_conserved_across_a_poisoned_drain_a_removal_and_a_reopening() {
+    let mut recorder = Recorder::new(config(4, 1, 2, 8, 32));
+    let id = group(0);
+    let live = recorder.open_group(id, 1);
+    recorder.open_session(id, live, client(0), epoch(1));
+    recorder.submit(id, live, add(0, 1, 1, 5, 1));
+    recorder.submit(id, live, faulty(SystemClass::Bulk, 1));
+    recorder.submit(id, live, system(SystemClass::Bulk, 1));
+    recorder.run(6);
+
+    let conserved = |recorder: &Recorder, at: &str| {
+        let summary = recorder.scheduler().summary();
+        assert_eq!(
+            u64::from(summary.queued) + summary.serviced + summary.failed,
+            summary.admitted,
+            "conservation broke {at}: {summary:?}"
+        );
+        summary
+    };
+    let poisoned = conserved(&recorder, "after the poisoning");
+    assert_eq!(poisoned.poisoned_groups, 1);
+
+    recorder.lifecycle(id, LifecycleRequest::Drain);
+    recorder.lifecycle(id, LifecycleRequest::Remove);
+    let removed = conserved(&recorder, "after the drain and removal");
+    assert!(
+        removed.failed > 0,
+        "the poisoned queue was reported, not lost"
+    );
+
+    // The slot reopens as a greater incarnation with no session table, so the
+    // late retry is refused twice over: once as stale, once as unrecognized.
+    let reopened = recorder.open_group(id, 1);
+    assert_eq!(reopened, incarnation(2));
+    assert_eq!(
+        recorder.submit(id, live, add(0, 1, 1, 5, 1)),
+        AdmissionOutcome::Rejected(AdmissionRejection::StaleIncarnation { current: reopened }),
+        "a late retry naming the retired generation is refused"
+    );
+    assert_eq!(
+        recorder.submit(id, reopened, add(0, 1, 1, 5, 1)),
+        AdmissionOutcome::Rejected(AdmissionRejection::SessionNotOpen),
+        "and re-addressed to the live one it is refused rather than replayed"
+    );
+    assert_eq!(recorder.scheduler().counter(id), Some(0));
+
+    recorder.run(6);
+    conserved(&recorder, "at the end");
+
+    // Identifiers are issued consecutively and never restart, which is what
+    // makes the conservation law checkable from the outside.
+    let mut serviced: Vec<u64> = recorder
+        .services()
+        .iter()
+        .map(|record| record.work.get())
+        .collect();
+    let retired: Vec<u64> = recorder
+        .failures()
+        .iter()
+        .map(|record| record.work.get())
+        .collect();
+    serviced.extend(retired);
+    serviced.sort_unstable();
+    serviced.dedup();
+    assert_eq!(
+        u64::try_from(serviced.len()).expect("a bounded count fits in u64"),
+        recorder.scheduler().summary().admitted,
+        "every admitted identifier was named exactly once by a service or a failure"
+    );
+    recorder.assert_agreement(&"conservation across a reopening");
 }
 
 /// A tombstone is terminal for the identity, not just for the incarnation.
@@ -1633,6 +1819,34 @@ fn history_vocabulary_represents_completion_rejection_and_lost_outcomes() {
     assert_eq!(scheduling.operation_id(), None);
     assert_eq!(scheduling.pass(), Some(pass(3)));
     assert!(!scheduling.is_request() && !scheduling.is_observation());
+
+    // Only the scheduler's own decisions happen at an instant, and every one
+    // of those records it. An observer keeps its tick reference from exactly
+    // these, which is what lets it decide whether a worker occupancy has run
+    // past the cost that opened it.
+    assert_eq!(scheduling.tick(), Some(support::tick(9)));
+    let dispatch = HistoryEvent::GroupOffered {
+        pass: pass(3),
+        tick: support::tick(9),
+        group: group(2),
+        outcome: OfferOutcome::Dispatched {
+            serviced: 1,
+            cost: 4,
+        },
+    };
+    assert_eq!(dispatch.tick(), Some(support::tick(9)));
+    assert_eq!(dispatch.pass(), Some(pass(3)));
+    // A turn's work happens within the turn that carries the instant, and a
+    // caller's request or conclusion happens at no scheduling instant at all.
+    let within = HistoryEvent::WorkServiced {
+        pass: pass(3),
+        group: group(2),
+        work: work(1),
+    };
+    assert_eq!(within.tick(), None);
+    assert_eq!(within.pass(), Some(pass(3)));
+    assert_eq!(events[0].tick(), None);
+    assert_eq!(events[1].tick(), None);
 }
 
 /// The oracle folds requests and decisions and ignores conclusions, so a

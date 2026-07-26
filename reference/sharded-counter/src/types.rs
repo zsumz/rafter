@@ -1050,19 +1050,16 @@ pub enum OfferOutcome {
 
 impl OfferOutcome {
     /// Returns the number of items the opportunity serviced.
+    ///
+    /// There is deliberately no companion returning the cost. A skip has no
+    /// cost to report rather than a cost of zero — it took no worker — and an
+    /// accessor that answered zero for both would invite exactly the sum that
+    /// silently under-counts occupancy. Callers that want a cost match on
+    /// `Dispatched` and get one that is always real.
     #[must_use]
     pub const fn serviced(self) -> u32 {
         match self {
             Self::Dispatched { serviced, .. } => serviced,
-            Self::Skipped(_) => 0,
-        }
-    }
-
-    /// Returns the worker occupancy the opportunity consumed, in ticks.
-    #[must_use]
-    pub const fn cost(self) -> u64 {
-        match self {
-            Self::Dispatched { cost, .. } => cost,
             Self::Skipped(_) => 0,
         }
     }
