@@ -15,6 +15,99 @@ pub(crate) fn body_type(body: &Value) -> Option<&str> {
     body.get("type").and_then(Value::as_str)
 }
 
+/// The harness's own message types: the whole of the vocabulary this binary
+/// speaks above Maelstrom's client protocol.
+///
+/// One list, in one place, read in both directions by the one match that routes
+/// an envelope. There used to be no list at all — three string patterns in the
+/// dispatch, each carrying its own sender rule or forgetting to — and "which
+/// senders may say this?" was answered three times, correctly twice.
+///
+/// It is an enum rather than a `&str` predicate so the routing match is
+/// exhaustive over it. A fourth harness message cannot be added without rustc
+/// demanding a row for it beside the three below, and the only rows available
+/// are rows for a sender this node's membership recognized: everything else is
+/// already spoken for. That is what makes "every arm decides which senders it
+/// hears from" a thing the compiler keeps rather than a sentence in a doc
+/// comment.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum HarnessMessage {
+    /// A framed Raft message between peers.
+    Raft,
+    /// A client request one peer could not serve and relayed here.
+    ClientForward,
+    /// What became of a request this node relayed to a peer.
+    ClientResult,
+}
+
+impl HarnessMessage {
+    /// Classifies one `body.type`, or reports that it is not one of ours.
+    ///
+    /// `None` is the client protocol: Maelstrom's own operations, and anything
+    /// a build of this harness does not implement. Both are a client's to send
+    /// and neither is a peer's, which is the other half of the same list.
+    pub(crate) fn of(body_type: &str) -> Option<Self> {
+        match body_type {
+            "raft" => Some(Self::Raft),
+            "client_forward" => Some(Self::ClientForward),
+            "client_result" => Some(Self::ClientResult),
+            _ => None,
+        }
+    }
+}
+
+/// One envelope's `src`, resolved against this node's membership: a sender this
+/// cluster knows as a node.
+///
+/// Minted only by [`Self::recognized`], out of a field no other module can name
+/// or fill, and that constructor is the membership lookup itself. So a value of
+/// this type in hand is the same fact as `src` being in `name_to_id` — not a
+/// claim that somebody checked, but the check — and no caller anywhere can
+/// produce one for a name the map does not hold.
+///
+/// It exists to be *required*. Every handler for a [`HarnessMessage`] takes one,
+/// so a harness message from a client, a Maelstrom service, or a name this
+/// cluster has never heard of cannot reach a handler at all. That was three
+/// separate lookups written into three handlers, two of which had one; the arm
+/// that did not took `envelope.src` as the node a client's answer would be
+/// addressed to, unchecked.
+///
+/// Both names for the sender ride along, because they are one lookup. The
+/// kernel knows a peer by its [`NodeId`] and the wire knows it by its Maelstrom
+/// name, and a handler that resolved one while the dispatch resolved the other
+/// would be two reads of one map that can disagree. Every handler takes what it
+/// needs from the token, so none of them reads `envelope.src` for an identity
+/// again.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct Peer {
+    name: String,
+    id: NodeId,
+}
+
+impl Peer {
+    /// This sender as a peer, if this node's membership knows the name.
+    ///
+    /// The only constructor, deliberately: the gate is inside it, so calling it
+    /// with a client's name yields `None` rather than a token, wherever it is
+    /// called from.
+    pub(crate) fn recognized(name_to_id: &BTreeMap<String, NodeId>, src: &str) -> Option<Self> {
+        name_to_id.get(src).copied().map(|id| Self {
+            name: src.to_owned(),
+            id,
+        })
+    }
+
+    /// This peer's Maelstrom name, as the membership map holds it.
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The kernel's identity for this peer.
+    pub(crate) fn id(&self) -> NodeId {
+        self.id
+    }
+}
+
 pub(crate) fn required_str<'a>(body: &'a Value, field: &str) -> Result<&'a str, Box<dyn Error>> {
     body.get(field)
         .and_then(Value::as_str)

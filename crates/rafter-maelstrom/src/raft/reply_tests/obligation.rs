@@ -28,7 +28,7 @@ use crate::{
 };
 
 use super::{
-    client_forwards, client_write, direct_answer, direct_answers, elected_single_node_process,
+    client_forwards, client_write, direct_answer, direct_answers, elected_cluster_leader,
     forwarded_write, fresh_cluster_member, remove_test_root, replicate, test_root,
 };
 
@@ -316,7 +316,7 @@ fn control_a_relaying_peer_that_applies_the_entry_answers_its_client_at_once() {
 #[test]
 fn a_rejected_proposal_answers_the_peer_that_relayed_it() {
     let root = test_root("obligation-rejected-proposal-answer");
-    let mut process = elected_single_node_process(&root);
+    let (mut process, _peers) = elected_cluster_leader(&root);
     let node = process.initialized.as_mut().expect("node initializes");
 
     // A value larger than one AppendEntries may carry. `step_client_proposal`
@@ -349,7 +349,7 @@ fn a_rejected_proposal_answers_the_peer_that_relayed_it() {
 #[test]
 fn a_rejected_proposal_leaves_no_obligation_behind() {
     let root = test_root("obligation-rejected-proposal-leak");
-    let mut process = elected_single_node_process(&root);
+    let (mut process, _peers) = elected_cluster_leader(&root);
     let node = process.initialized.as_mut().expect("node initializes");
 
     let oversized = "x".repeat(600 * 1024);
@@ -361,6 +361,12 @@ fn a_rejected_proposal_leaves_no_obligation_behind() {
         &json!({ "type": "write", "key": "counter", "value": oversized }),
     ));
 
+    oracle_assert!(
+        forwarded_answers(node, "n2", 5) == 1,
+        "the refusal was answered, so an empty ledger below means paid rather \
+         than never accepted; emitted = {:#?}",
+        node.emitted
+    );
     oracle_assert!(
         node.owed_answers.is_empty(),
         "an obligation for an entry that will never exist must not survive"
@@ -463,21 +469,38 @@ fn an_accepted_request_with_no_outcome_is_answered_indefinitely_at_its_deadline(
 /// `propose` and nothing consulted it before proposing, so two copies of one
 /// request put two `client_result` envelopes on the wire for it. The direct arm
 /// had `completed_replies` behind it; the remote arm had nothing.
+///
+/// A copy arrives at each of the two positions that suppress it, because they
+/// are different suppressions: the second lands while the record is outstanding
+/// and is refused by `has_accepted`'s ledger half, the third lands after the
+/// answer has gone out and is refused by its `completed_replies` half. On a
+/// single-node cluster the commit was synchronous, so both copies of the
+/// original landed in the second position and the first was never driven.
 #[test]
 fn one_request_puts_one_answer_on_the_wire_however_many_copies_carry_it() {
     let root = test_root("obligation-duplicate-answers");
-    let mut process = elected_single_node_process(&root);
-    let node = process.initialized.as_mut().expect("node initializes");
+    let (mut process, mut peers) = elected_cluster_leader(&root);
+    let write = json!({ "type": "write", "key": "counter", "value": 7 });
 
+    // Two copies before anything commits: the second finds the record.
+    let node = process.initialized.as_mut().expect("node initializes");
     for _ in 0..2 {
-        node.handle_envelope(forward_envelope(
-            "n2",
-            "n1",
-            "c1",
-            5,
-            &json!({ "type": "write", "key": "counter", "value": 7 }),
-        ));
+        node.handle_envelope(forward_envelope("n2", "n1", "c1", 5, &write));
     }
+    let answered = peers.settle(&mut process, |node| forwarded_answers(node, "n2", 5) > 0);
+    oracle_assert!(answered, "the accepted copy commits and is answered");
+
+    // A third copy after the answer went out: it finds the dedupe set.
+    let node = process
+        .initialized
+        .as_mut()
+        .expect("node stays initialized");
+    node.handle_envelope(forward_envelope("n2", "n1", "c1", 5, &write));
+    peers.exchange(&mut process, 8);
+    let node = process
+        .initialized
+        .as_mut()
+        .expect("node stays initialized");
 
     oracle_assert_eq!(
         forwarded_answers(node, "n2", 5),
@@ -541,30 +564,52 @@ fn an_answer_leaves_this_node_once_whichever_arm_sends_it() {
 #[test]
 fn a_repeated_request_does_not_reapply_its_mutation() {
     let root = test_root("obligation-duplicate-apply");
-    let mut process = elected_single_node_process(&root);
-    let node = process.initialized.as_mut().expect("node initializes");
+    let (mut process, mut peers) = elected_cluster_leader(&root);
+    let c1_cas = json!({ "type": "cas", "key": "counter", "from": 1, "to": 2 });
 
+    let node = process.initialized.as_mut().expect("node initializes");
     node.handle_envelope(client_write("n1", "c0", 1, "counter", 1));
+    oracle_assert!(
+        peers.settle(&mut process, |node| node.app.kv.get("\"counter\"")
+            == Some(&json!(1))),
+        "the seed write commits"
+    );
 
     // c1's cas, relayed by n2, commits and is answered.
-    let c1_cas = json!({ "type": "cas", "key": "counter", "from": 1, "to": 2 });
+    let node = process
+        .initialized
+        .as_mut()
+        .expect("node stays initialized");
     node.handle_envelope(forward_envelope("n2", "n1", "c1", 5, &c1_cas));
-    oracle_assert_eq!(
-        node.app.kv.get("\"counter\""),
-        Some(&json!(2)),
+    oracle_assert!(
+        peers.settle(&mut process, |node| node.app.kv.get("\"counter\"")
+            == Some(&json!(2))),
         "c1's cas applied"
     );
 
     // c2's cas commits after it, and is answered.
+    let node = process
+        .initialized
+        .as_mut()
+        .expect("node stays initialized");
     node.handle_envelope(client_cas("n1", "c2", 9, "counter", 2, 1));
-    oracle_assert_eq!(
-        node.app.kv.get("\"counter\""),
-        Some(&json!(1)),
+    oracle_assert!(
+        peers.settle(&mut process, |node| node.app.kv.get("\"counter\"")
+            == Some(&json!(1))),
         "c2's cas applied on top of it"
     );
 
     // A second copy of c1's one request arrives.
+    let node = process
+        .initialized
+        .as_mut()
+        .expect("node stays initialized");
     node.handle_envelope(forward_envelope("n2", "n1", "c1", 5, &c1_cas));
+    peers.exchange(&mut process, 8);
+    let node = process
+        .initialized
+        .as_mut()
+        .expect("node stays initialized");
 
     oracle_assert_eq!(
         node.app.kv.get("\"counter\""),

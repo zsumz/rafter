@@ -261,7 +261,7 @@ use crate::{
         parse_client_request, read_value, ClientMutation, ClientRequest, ClientResult, Command,
         ERROR_TEMPORARILY_UNAVAILABLE, ERROR_TIMEOUT,
     },
-    protocol::Envelope,
+    protocol::{Envelope, Peer},
     InitializedNode, PendingRead,
 };
 
@@ -297,19 +297,37 @@ pub(crate) enum Reception {
 }
 
 impl InitializedNode {
-    pub(crate) fn handle_forward(&mut self, envelope: Envelope) {
-        let origin = envelope.src;
-        let Some(client) = envelope.body.get("client").and_then(Value::as_str) else {
+    /// Accepts a client request one peer could not serve and relayed here.
+    ///
+    /// The node this request's answer is addressed to is the [`Peer`] the
+    /// dispatch resolved, not the `src` string on the envelope. They agree — the
+    /// token is that lookup — but only one of them is a name this cluster is
+    /// known to hold, and the record is what the deadline will eventually mail
+    /// an answer to.
+    ///
+    /// Reading it off the envelope instead was the whole defect. This arm sat
+    /// *above* the dispatch's catch-all, so the membership test that kept peer
+    /// traffic out of the client funnel never ran on it, and the sender gate
+    /// written for [`Self::handle_client_result`] one arm over did not reach it
+    /// either. A `client_forward` forged by any non-node therefore lodged a
+    /// record addressed to the forger: the write was executed on the named
+    /// client's behalf, the answer was mailed to whoever asked, and
+    /// `completed_replies` gained the key — after which [`Self::has_accepted`]
+    /// refused that client's genuine request above the accept, leaving it with
+    /// no record, no deadline and no answer.
+    pub(crate) fn handle_forward(&mut self, peer: &Peer, envelope: Envelope) {
+        let reception = Reception::FromPeer(peer.name().to_owned());
+        let body = envelope.body;
+        let Some(client) = body.get("client").and_then(Value::as_str) else {
             return;
         };
-        let Some(in_reply_to) = envelope.body.get("in_reply_to").and_then(Value::as_u64) else {
+        let Some(in_reply_to) = body.get("in_reply_to").and_then(Value::as_u64) else {
             return;
         };
-        let Some(request) = envelope.body.get("request").cloned() else {
+        let Some(request) = body.get("request") else {
             return;
         };
-        let client = client.to_owned();
-        self.handle_client_request(&Reception::FromPeer(origin), &client, in_reply_to, &request);
+        self.handle_client_request(&reception, client, in_reply_to, request);
     }
 
     /// Pays a request this node relayed, out of the answer the leader sent back.
@@ -337,22 +355,15 @@ impl InitializedNode {
     /// send anyway. The difference is only that the suppression now happens
     /// before the at-most-once set is written rather than after.
     ///
-    /// The sender is checked as well, and separately. Only the node this
-    /// request was relayed *to* can report what became of it, so a
-    /// `client_result` is a thing only a cluster peer may say; the dispatch
-    /// routed it on its `type` alone, so a client could say it too. That is a
-    /// second-order hole even with the record gate above — a client could
+    /// The sender is checked as well, and separately. A `client_result` is a
+    /// thing only a cluster peer may say, and the [`Peer`] this takes is that
+    /// check — hoisted into the dispatch, where all three harness arms are now
+    /// gated together, rather than written here where only this one was. It is
+    /// a second-order hole even with the record gate above — a client could
     /// answer its own outstanding request early, with a result of its choosing,
-    /// and the record would let it — and it costs one lookup to close. Both
-    /// gates are kept: neither implies the other.
-    pub(crate) fn handle_client_result(&mut self, envelope: &Envelope) {
-        if !self.name_to_id.contains_key(&envelope.src) {
-            eprintln!(
-                "ignoring client_result from {}, which is not a node in this cluster",
-                envelope.src
-            );
-            return;
-        }
+    /// and the record would let it. Both gates are kept: neither implies the
+    /// other.
+    pub(crate) fn handle_client_result(&mut self, peer: &Peer, envelope: &Envelope) {
         let Some(client) = envelope.body.get("client").and_then(Value::as_str) else {
             return;
         };
@@ -376,7 +387,7 @@ impl InitializedNode {
             eprintln!(
                 "ignoring client_result for a request this node holds no record for: \
                  client={client} in_reply_to={in_reply_to} from={}",
-                envelope.src
+                peer.name()
             );
             return;
         };

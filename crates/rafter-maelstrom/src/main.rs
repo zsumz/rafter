@@ -36,7 +36,7 @@ mod runtime;
 use answers::OwedAnswers;
 use app::AppState;
 use membership::{membership_drive_action, MembershipDriveAction, MembershipPlan};
-use protocol::{body_type, Envelope};
+use protocol::{body_type, Envelope, HarnessMessage, Peer};
 use raft_node::FileNode;
 
 #[derive(Clone, Debug)]
@@ -159,14 +159,42 @@ fn main() {
 }
 
 impl InitializedNode {
-    /// Routes one message: three harness-internal types, and a client request.
+    /// Routes one message, on two facts: what the harness calls it, and whether
+    /// the sender is a node this cluster knows.
     ///
-    /// The three named arms are the whole of the harness's own vocabulary, and
-    /// each decides for itself which senders it will hear from —
-    /// [`Self::handle_raft`] and [`Self::handle_client_result`] both require a
-    /// node this cluster knows, for reasons written where each gate is.
+    /// Both are settled once, above the match, and the match is exhaustive over
+    /// the pair. That shape is the fix for the defect this routing has now had
+    /// twice, in the same place: the arms used to carry their own sender rules,
+    /// each written where the handler was, and the question "which senders may
+    /// say this?" was therefore asked three times and answered twice. The doc
+    /// here said so out loud — "each decides for itself which senders it will
+    /// hear from" — and then named two of the three. The third,
+    /// `client_forward`, was matched *above* the catch-all, so the catch-all's
+    /// membership test never saw it and [`Self::handle_forward`] took
+    /// `envelope.src` as the node a client's answer would be addressed to with
+    /// no test of what that src was. A forged `client_forward` from any
+    /// non-node executed a write on another client's behalf, mailed the answer
+    /// to the forger, and poisoned `completed_replies` so the client's genuine
+    /// request was refused above the accept — which is verbatim the defect the
+    /// gate one arm over had just been written to close.
     ///
-    /// The last arm is deliberately a catch-all rather than a list of client
+    /// So no arm decides for itself any more. [`Peer`] is the membership lookup,
+    /// minted here and nowhere else, and every handler for a [`HarnessMessage`]
+    /// requires one; [`HarnessMessage`] is the single list of what this harness
+    /// says to itself. Together they make the enumeration rustc's rather than a
+    /// reader's, in both directions:
+    ///
+    /// - a harness message reaches its handler only with a resolved peer, and
+    ///   the three variants are matched individually, so a fourth cannot be
+    ///   added without a row saying who may send it;
+    /// - a harness message from a non-peer is refused by one row that names no
+    ///   variant, so a fourth is refused from non-peers before anyone writes
+    ///   anything;
+    /// - and a peer sending something that is not in the list is refused too —
+    ///   it is a harness message this build does not know, not a client
+    ///   request, and treating it as one would accept an obligation to a node.
+    ///
+    /// The client arm is deliberately a catch-all rather than a list of client
     /// operation types. There were two such lists — `"read" | "write" | "cas"`
     /// here and the match in [`app::parse_client_request`] — with nothing
     /// checking them against each other, so a fifth operation added to one and
@@ -175,24 +203,30 @@ impl InitializedNode {
     /// everything a non-peer sends to the funnel leaves `parse_client_request`
     /// as the single list of client operations, and one it does not know
     /// becomes an error *answer* from a funnel that recorded the request first.
-    ///
-    /// The sender test on that arm is what keeps the catch-all from swallowing
-    /// peer traffic: a message from a cluster node that is none of the three
-    /// above is a harness message this build does not know, not a client
-    /// request, and treating it as one would accept an obligation to a node.
     fn handle_envelope(&mut self, envelope: Envelope) {
-        match body_type(&envelope.body) {
-            Some("raft") => self.handle_raft(&envelope),
-            Some("client_forward") => self.handle_forward(envelope),
-            Some("client_result") => self.handle_client_result(&envelope),
-            Some(_) if !self.name_to_id.contains_key(&envelope.src) => {
-                self.handle_client(&envelope);
+        let Some(wire_type) = body_type(&envelope.body) else {
+            eprintln!("ignoring Maelstrom message without body.type");
+            return;
+        };
+        let harness = HarnessMessage::of(wire_type);
+        let sender = Peer::recognized(&self.name_to_id, &envelope.src);
+        match (harness, sender) {
+            (Some(HarnessMessage::Raft), Some(peer)) => self.handle_raft(&peer, &envelope),
+            (Some(HarnessMessage::ClientForward), Some(peer)) => {
+                self.handle_forward(&peer, envelope);
             }
-            Some(other) => eprintln!(
-                "ignoring unsupported peer message type {other:?} from {}",
+            (Some(HarnessMessage::ClientResult), Some(peer)) => {
+                self.handle_client_result(&peer, &envelope);
+            }
+            (Some(_), None) => eprintln!(
+                "ignoring {wire_type} from {}, which is not a node in this cluster",
                 envelope.src
             ),
-            None => eprintln!("ignoring Maelstrom message without body.type"),
+            (None, None) => self.handle_client(&envelope),
+            (None, Some(_)) => eprintln!(
+                "ignoring unsupported peer message type {wire_type:?} from {}",
+                envelope.src
+            ),
         }
     }
 

@@ -18,15 +18,20 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use rafter::{AppendEntries, Input, LogEntry, LogIndex, Message, NodeId, Role, Term};
+use rafter::{
+    AppendEntries, AppendEntriesResponse, Input, LogEntry, LogIndex, Message, NodeId,
+    PreVoteResponse, RequestVoteResponse, Role, Term,
+};
+use rafter_codec::{decode_message, encode_message};
 use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 use serde_json::{json, Value};
 
 use crate::{
-    protocol::{body_type, Envelope},
+    protocol::{body_type, decode_hex, encode_hex, Envelope},
     InitializedNode, MaelstromNode, PendingRead,
 };
 
+mod dispatch;
 mod funnel;
 mod obligation;
 mod scope;
@@ -114,13 +119,18 @@ fn a_node_that_accepted_a_forward_answers_it_though_it_does_not_lead() {
 
 /// A restart does not re-mail answers for the entries recovery replays.
 ///
-/// Recovery replays committed-but-unapplied entries through `handle_outputs` ->
-/// `apply_command`, and the reply-dedupe set does not survive a restart, so
-/// nothing downstream suppresses a second answer. Nothing is owed: the peer that
-/// was waiting on this process is not waiting on the one that replaced it.
-/// Keeping the obligation out of the command payload is what makes the
-/// distinction survivable — a proposer field would replay right along with the
-/// entry.
+/// The reply-dedupe set does not survive a restart, so nothing downstream
+/// suppresses a second answer for an entry this process applies again. Nothing
+/// is owed: the peer that was waiting on this process is not waiting on the one
+/// that replaced it. Keeping the obligation out of the command payload is what
+/// makes the distinction survivable — a proposer field would replay right along
+/// with the entry.
+///
+/// The relaying peer is `n2` of a three-node cluster rather than a name a
+/// single-node cluster has never heard of. That was the shape of this test
+/// until the dispatch gated `client_forward`, and under the gate it would have
+/// been a test of the forgery path: the entry whose origin the restart must not
+/// answer for was lodged by a message no peer sent.
 #[test]
 fn a_restart_does_not_remail_answers_for_replayed_entries() {
     let root = test_root("reply-recovery-replay");
@@ -128,7 +138,7 @@ fn a_restart_does_not_remail_answers_for_replayed_entries() {
     // Phase 1, the production path in: a leader accepts a real forward,
     // proposes it, and answers the node that forwarded it exactly once.
     {
-        let mut process = elected_single_node_process(&root);
+        let (mut process, mut peers) = elected_cluster_leader(&root);
         let node = process.initialized.as_mut().expect("node initializes");
         node.handle_envelope(Envelope {
             src: "n2".to_owned(),
@@ -140,10 +150,23 @@ fn a_restart_does_not_remail_answers_for_replayed_entries() {
                 "request": { "type": "write", "key": "counter", "value": 7 },
             }),
         });
+        let answered = peers.settle(&mut process, |node| {
+            forwarded_answer(node, "n2", 5).is_some()
+        });
+        let node = process
+            .initialized
+            .as_mut()
+            .expect("node stays initialized");
+        oracle_assert!(
+            answered,
+            "the leader that accepted the forward answers the forwarding node; \
+             emitted = {:#?}",
+            node.emitted
+        );
         oracle_assert_eq!(
             forwarded_answer(node, "n2", 5),
             Some(json!({ "kind": "write_ok" })),
-            "the leader that accepted the forward answers the forwarding node"
+            "and answers it with the committed outcome"
         );
         oracle_assert_eq!(node.app.applied, LogIndex(2));
     }
@@ -162,13 +185,24 @@ fn a_restart_does_not_remail_answers_for_replayed_entries() {
     )
     .expect("app state rewrites");
 
-    // Phase 2: restart. Recovery replays index 2.
+    // Phase 2: restart, and the recovered process applies index 2 again — here
+    // by winning the next election, which commits everything below its own
+    // term's noop. The volatile ledger did not survive, so nothing on this node
+    // records that n2 was ever waiting.
     let mut process = MaelstromNode::default();
     process
-        .initialize_at_root(&init_envelope("n1", &["n1"]), root.clone())
+        .initialize_at_root(&init_envelope("n1", &["n1", "n2", "n3"]), root.clone())
         .expect("production Maelstrom initialization reopens the node");
+    let mut peers = PeerCluster { answered: 0 };
+    let replayed = peers.settle(&mut process, |node| node.app.applied >= LogIndex(2));
     let node = process.initialized.as_mut().expect("node reinitializes");
+    oracle_assert!(replayed, "the recovered process applied the entry again");
     oracle_assert_eq!(node.app.applied, LogIndex(2), "recovery replayed the entry");
+    oracle_assert_eq!(
+        node.app.kv.get("\"counter\""),
+        Some(&json!(7)),
+        "and the mutation reached the state machine a second time"
+    );
     oracle_assert_eq!(
         forwarded_answer(node, "n2", 5),
         None,
@@ -402,6 +436,165 @@ fn fresh_cluster_member(root: &Path, node_name: &str, node_names: &[&str]) -> Ma
         .initialize_at_root(&init_envelope(node_name, node_names), root.to_path_buf())
         .expect("production Maelstrom initialization opens a fresh node");
     process
+}
+
+/// The other two members of a three-node cluster, standing in for the network.
+///
+/// Every test that needs a *peer* needs one of these, and until the dispatch
+/// gated `client_forward` none of them had one. They used
+/// [`elected_single_node_process`] — whose membership holds exactly `n1` — and
+/// sent their forwards from `"n2"`, a name that cluster has never heard of. So
+/// the peer path was being read while a non-peer's message was being sent, and
+/// the tests passed because nothing looked. Widening the gate and leaving them
+/// alone would have meant keeping four tests that assert the peer contract
+/// through the forgery path.
+///
+/// This answers what the node under test says to its peers, in the terms the
+/// wire carries: the frames are decoded, replied to, and handed back through
+/// [`InitializedNode::handle_envelope`], so the responses go through the same
+/// dispatch and the same membership gate as production traffic. Peers grant
+/// votes and acknowledge appends; nothing here models a peer that disagrees,
+/// because these tests are about the reply path and not about consensus.
+struct PeerCluster {
+    /// How far into `emitted` this cluster has already answered. A single
+    /// cursor, because answering a frame produces more frames and the next
+    /// round has to start after them rather than at the top.
+    answered: usize,
+}
+
+impl PeerCluster {
+    /// Runs rounds of "answer everything outstanding, then tick" until `settled`
+    /// holds, and reports whether it did.
+    ///
+    /// Bounded rather than looping until quiet: a leader heartbeats forever, so
+    /// "no traffic left" is not a state this reaches. Callers assert on the
+    /// return value, which keeps a fixture that stopped converging from reading
+    /// as a passing test.
+    fn settle(
+        &mut self,
+        process: &mut MaelstromNode,
+        settled: impl Fn(&InitializedNode) -> bool,
+    ) -> bool {
+        const ROUNDS: usize = 64;
+        for _ in 0..ROUNDS {
+            if settled(
+                process
+                    .initialized
+                    .as_ref()
+                    .expect("node stays initialized"),
+            ) {
+                return true;
+            }
+            self.answer(
+                process
+                    .initialized
+                    .as_mut()
+                    .expect("node stays initialized"),
+            );
+            process.tick();
+        }
+        settled(
+            process
+                .initialized
+                .as_ref()
+                .expect("node stays initialized"),
+        )
+    }
+
+    /// Runs a fixed number of rounds, for a caller checking that something does
+    /// *not* happen.
+    ///
+    /// A predicate would have to be the negation, and [`Self::settle`] returning
+    /// early on a negation is exactly the reading that makes "nothing happened"
+    /// mean "we did not wait".
+    fn exchange(&mut self, process: &mut MaelstromNode, rounds: usize) {
+        for _ in 0..rounds {
+            self.answer(
+                process
+                    .initialized
+                    .as_mut()
+                    .expect("node stays initialized"),
+            );
+            process.tick();
+        }
+    }
+
+    /// Answers every framed message this node has sent a peer since the last
+    /// round.
+    fn answer(&mut self, node: &mut InitializedNode) {
+        let outstanding = node
+            .emitted
+            .iter()
+            .skip(self.answered)
+            .cloned()
+            .collect::<Vec<_>>();
+        self.answered = node.emitted.len();
+        for envelope in outstanding {
+            let Some(reply) = peer_reply(node, &envelope) else {
+                continue;
+            };
+            node.handle_envelope(reply);
+        }
+    }
+}
+
+/// One peer's answer to one framed message, as an envelope from that peer.
+fn peer_reply(node: &InitializedNode, envelope: &Envelope) -> Option<Envelope> {
+    if body_type(&envelope.body) != Some("raft") {
+        return None;
+    }
+    let frame = envelope.body.get("frame").and_then(Value::as_str)?;
+    let bytes = decode_hex(frame).expect("this node frames valid hex");
+    let message = decode_message(&bytes).expect("this node frames a valid message");
+    let peer = *node
+        .name_to_id
+        .get(&envelope.dest)
+        .expect("a raft frame is addressed to a node of this cluster");
+    let answer = match message {
+        Message::PreVote(poll) => Message::PreVoteResponse(PreVoteResponse {
+            term: poll.term,
+            voter_id: peer,
+            vote_granted: true,
+        }),
+        Message::RequestVote(request) => Message::RequestVoteResponse(RequestVoteResponse {
+            term: request.term,
+            voter_id: peer,
+            vote_granted: true,
+        }),
+        Message::AppendEntries(append) => Message::AppendEntriesResponse(AppendEntriesResponse {
+            term: append.term,
+            follower_id: peer,
+            success: true,
+            match_index: LogIndex(
+                append.prev_log_index.0
+                    + u64::try_from(append.entries.len()).expect("entry count fits u64"),
+            ),
+            sequence: append.sequence,
+        }),
+        _ => return None,
+    };
+    let frame = encode_message(&answer).expect("response encodes");
+    Some(Envelope {
+        src: envelope.dest.clone(),
+        dest: node.name.clone(),
+        body: json!({ "type": "raft", "frame": encode_hex(&frame) }),
+    })
+}
+
+/// A leader of a three-node cluster, elected by peers that answered it.
+///
+/// The fixture for anything involving a relaying peer, and the reason it is
+/// worth its weight: `n2` is a node of this cluster here, so a `client_forward`
+/// from `n2` is the message a peer sends rather than the forgery the dispatch
+/// now refuses.
+fn elected_cluster_leader(root: &Path) -> (MaelstromNode, PeerCluster) {
+    let mut process = fresh_cluster_member(root, "n1", &["n1", "n2", "n3"]);
+    let mut peers = PeerCluster { answered: 0 };
+    let elected = peers.settle(&mut process, |node| {
+        node.node.role() == Role::Leader && node.node.commit_index() > LogIndex::ZERO
+    });
+    oracle_assert!(elected, "n1 stands for election and its two peers elect it");
+    (process, peers)
 }
 
 fn elected_single_node_process(root: &Path) -> MaelstromNode {

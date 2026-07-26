@@ -19,8 +19,8 @@ use serde_json::{json, Value};
 use crate::{protocol::Envelope, InitializedNode};
 
 use super::{
-    client_forwards, client_write, direct_answer, direct_answers, elected_single_node_process,
-    fresh_cluster_member, remove_test_root, test_root,
+    client_forwards, client_write, direct_answer, direct_answers, elected_cluster_leader,
+    elected_single_node_process, fresh_cluster_member, remove_test_root, test_root,
 };
 
 // ---------------------------------------------------------------------------
@@ -200,10 +200,15 @@ fn a_read_the_deadline_answered_is_not_answered_again_when_its_floor_arrives() {
 /// recording an obligation to nobody, which the sweep would then mail into the
 /// void; dropping it is the only honest outcome, and this is what pins that the
 /// boundary is the one described rather than one step further in.
+///
+/// The forwards come from a peer of a real cluster. Sent from a name the
+/// membership does not hold they would be refused by the dispatch instead, and
+/// this test would pass while checking nothing about the field tests it names —
+/// the vacuous form of exactly the boundary it exists to pin.
 #[test]
 fn an_envelope_that_never_names_a_request_leaves_no_obligation() {
     let root = test_root("obligation-unnamed-envelope");
-    let mut process = elected_single_node_process(&root);
+    let (mut process, _peers) = elected_cluster_leader(&root);
     let node = process.initialized.as_mut().expect("node initializes");
     let emitted_before = node.emitted.len();
 

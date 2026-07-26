@@ -20,7 +20,7 @@ use crate::{
         apply_committed_command, maybe_crash_after_app_persist_before_reply, AfterAppPersist,
         ClientResult, Command, CommandApplyOutcome, ERROR_TEMPORARILY_UNAVAILABLE,
     },
-    protocol::{decode_hex, encode_hex, Envelope},
+    protocol::{decode_hex, encode_hex, Envelope, Peer},
     InitializedNode,
 };
 
@@ -31,11 +31,16 @@ mod reply_tests;
 pub(crate) mod snapshots;
 
 impl InitializedNode {
-    pub(crate) fn handle_raft(&mut self, envelope: &Envelope) {
-        let Some(from) = self.name_to_id.get(&envelope.src).copied() else {
-            eprintln!("ignoring raft message from unknown node {}", envelope.src);
-            return;
-        };
+    /// Steps the kernel with one framed message from a peer.
+    ///
+    /// The [`Peer`] is the membership lookup this used to perform for itself,
+    /// hoisted into the dispatch so that all three harness arms are gated in
+    /// one place rather than two of three being gated where each happened to
+    /// be written. It carries the id because it *is* the same lookup: the
+    /// sender being a node and which node it is were two reads of one map, and
+    /// only one of them was a gate.
+    pub(crate) fn handle_raft(&mut self, peer: &Peer, envelope: &Envelope) {
+        let from = peer.id();
         let Some(frame) = envelope.body.get("frame").and_then(Value::as_str) else {
             eprintln!("ignoring raft message without frame");
             return;
