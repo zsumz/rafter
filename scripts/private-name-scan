@@ -3,35 +3,52 @@ set -euo pipefail
 
 usage() {
   cat <<'USAGE'
-Usage: scripts/private-name-scan [--include-assets] PATTERN...
+Usage: scripts/private-name-scan [--include-assets] [--skip-archive-coverage] PATTERN...
        : "${RAFTER_PRIVATE_NAME_PATTERNS:?set patterns outside the repo}"
        scripts/private-name-scan
 
 Scans release-facing text surfaces for private downstream names or other
 private patterns. The default scan is intentionally text-aware: it covers
-release markdown, manifests, Rust source, scripts, and workflows while
-excluding binary or base64-heavy assets such as SVGs. Use --include-assets only
-for a separate human-reviewed asset pass because encoded image data can produce
-false positives.
+release markdown, manifests, Rust source, test vectors, scripts, and workflows
+while excluding binary or base64-heavy assets such as SVGs. Use --include-assets
+only for a separate human-reviewed asset pass because encoded image data can
+produce false positives.
 
 "Release-facing" is defined by what a reader outside this project can obtain:
 every file a package archive ships, plus every file a visitor to the repository
 reads. That is why the scan covers each crate's own markdown, LICENSE, and
 NOTICE -- scripts/reference-package-check requires those inside the published
 archives, so a private name in one is published -- as well as RELEASE.md,
-docs/, specs/, reference/, and bench-compare/. Widening this list is cheaper
-than explaining a leak; narrowing it needs an argument about who cannot read
-the file.
+docs/, specs/, reference/, verification/, and bench-compare/. Widening this list
+is cheaper than explaining a leak; narrowing it needs an argument about who
+cannot read the file.
+
+The archive half of that sentence is a closure claim, and a hand-written glob
+list cannot keep one: the .hex codec and storage vectors are plaintext, ship
+inside the archives, carry comments, and went unscanned for as long as the list
+was maintained by hand. So the claim is now checked rather than asserted. Before
+scanning, the script asks Cargo which files each publishable crate actually
+ships and fails if any of them falls outside the scan's own include globs. Add a
+new kind of shipped file and this fails until the globs cover it.
+
+--skip-archive-coverage turns that proof off for a run outside a Cargo
+workspace. It prints a warning and it means the claim above is not being
+checked; a release scan must not use it.
 USAGE
 }
 
 include_assets=0
+skip_archive_coverage=0
 patterns=()
 
 while (($#)); do
   case "$1" in
     --include-assets)
       include_assets=1
+      shift
+      ;;
+    --skip-archive-coverage)
+      skip_archive_coverage=1
       shift
       ;;
     -h|--help)
@@ -74,6 +91,18 @@ fi
 # which reports a clean result about the wrong repository.
 cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# A missing ripgrep used to be indistinguishable from a clean tree. `rg` exiting
+# 127 is falsy to `if`, `set -e` is suppressed inside an `if` condition, and the
+# loop below then fell through to "found no matches" with status 0 -- a release
+# gate reporting success because its only instrument was absent. Require the
+# tool up front, and below, treat every rg status other than 0 (matched) and 1
+# (no match) as the failure it is.
+if ! command -v rg >/dev/null 2>&1; then
+  echo "error: ripgrep (rg) is not on PATH; this scan cannot run" >&2
+  echo "       refusing to report a clean tree without having searched it" >&2
+  exit 2
+fi
+
 targets=(
   README.md
   RELEASE.md
@@ -88,6 +117,7 @@ targets=(
   fuzz
   bench-compare
   scripts
+  verification
   .github
 )
 
@@ -105,6 +135,13 @@ globs=(
   --glob 'crates/**/*.md'
   --glob 'crates/**/LICENSE'
   --glob 'crates/**/NOTICE'
+  # The codec and storage conformance vectors. These are plaintext, they carry
+  # `#` comments, and `cargo package` ships every one of them.
+  --glob 'crates/**/*.hex'
+  --glob 'crates/**/*.inc'
+  # The catalogs and lockfiles the invariant machinery reads. Not shipped in an
+  # archive, but a repository visitor reads them.
+  --glob 'verification/**'
   --glob 'reference/**/*.rs'
   --glob 'reference/**/Cargo.toml'
   --glob 'reference/**/*.md'
@@ -153,11 +190,91 @@ for target in "${targets[@]}"; do
   fi
 done
 
+# Prove the archive half of the "release-facing" claim before relying on it:
+# every path Cargo would ship must be a path these globs visit.
+verify_archive_coverage() {
+  local crate manifest crate_dir shipped scanned uncovered failures=0
+
+  if ! command -v cargo >/dev/null 2>&1; then
+    echo "error: cargo is not on PATH; cannot verify archive coverage" >&2
+    echo "       pass --skip-archive-coverage to scan without that proof" >&2
+    exit 2
+  fi
+
+  for manifest in crates/*/Cargo.toml; do
+    if grep -Eq '^publish[[:space:]]*=[[:space:]]*false' "$manifest"; then
+      continue
+    fi
+    crate_dir="$(dirname "$manifest")"
+    crate="$(basename "$crate_dir")"
+
+    # Cargo emits archive-relative paths. Drop the three entries it synthesizes
+    # at package time, which have no counterpart in the checkout for rg to read:
+    #   Cargo.toml.orig       -- a copy of the manifest, which is scanned
+    #   .cargo_vcs_info.json  -- the commit hash of this checkout
+    #   Cargo.lock            -- generated from the workspace Cargo.lock, which
+    #                            is scanned at the root; a private name can only
+    #                            reach the per-crate copy by way of that file
+    # Each is covered by scanning its source, not by scanning the archive entry.
+    shipped="$(
+      cargo package --list --allow-dirty --quiet -p "$crate" 2>/dev/null |
+        grep -Ev '^(Cargo\.toml\.orig|\.cargo_vcs_info\.json|Cargo\.lock)$' |
+        LC_ALL=C sort
+    )"
+    if [[ -z "$shipped" ]]; then
+      echo "error: could not list the archive contents of $crate" >&2
+      exit 2
+    fi
+
+    # Ask ripgrep, with the very globs this scan uses, which of those files it
+    # would visit. Reusing the same matcher is the point: a coverage proof that
+    # reimplemented the glob semantics could agree with itself and still be
+    # wrong about what the scan does.
+    scanned="$(
+      rg --files "${globs[@]}" "$crate_dir" 2>/dev/null |
+        sed "s|^$crate_dir/||" |
+        LC_ALL=C sort
+    )"
+
+    uncovered="$(LC_ALL=C comm -23 <(printf '%s\n' "$shipped") <(printf '%s\n' "$scanned"))"
+    if [[ -n "$uncovered" ]]; then
+      failures=1
+      echo "error: $crate ships files this scan never reads:" >&2
+      while IFS= read -r path; do
+        [[ -n "$path" ]] || continue
+        echo "  $crate_dir/$path" >&2
+      done <<<"$uncovered"
+    fi
+  done
+
+  if ((failures)); then
+    echo >&2
+    echo "The usage text claims this scan covers every file a package archive" >&2
+    echo "ships. Widen the globs above until that is true again." >&2
+    exit 1
+  fi
+  echo "archive coverage verified: every shipped file is inside the scan globs"
+}
+
+if ((skip_archive_coverage)); then
+  echo "warning: archive-coverage proof skipped; the 'every shipped file' claim is unchecked" >&2
+else
+  verify_archive_coverage
+fi
+
 matched=0
 for pattern in "${patterns[@]}"; do
-  if rg --fixed-strings --line-number --color never "${globs[@]}" -- "$pattern" "${existing_targets[@]}"; then
-    matched=1
-  fi
+  status=0
+  rg --fixed-strings --line-number --color never "${globs[@]}" -- "$pattern" "${existing_targets[@]}" || status=$?
+  case "$status" in
+    0) matched=1 ;;
+    1) ;;
+    *)
+      echo "error: ripgrep exited with status $status while scanning for a pattern" >&2
+      echo "       treating an unusable search as a failure, not as a clean tree" >&2
+      exit 2
+      ;;
+  esac
 done
 
 if ((matched)); then

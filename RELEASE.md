@@ -152,8 +152,23 @@ elsewhere in this file:
 Run `scripts/private-name-scan` with private downstream names supplied through
 `RAFTER_PRIVATE_NAME_PATTERNS` before tagging a public release. It reads every
 file a package archive ships and every file a repository visitor reads,
-including each crate's own markdown, `LICENSE`, and `NOTICE`. It is a manual
-step: no workflow supplies the patterns, which live outside this repository.
+including each crate's own markdown, `LICENSE`, `NOTICE`, and the plaintext
+`.hex` codec and storage vectors. It is a manual step: no workflow supplies the
+patterns, which live outside this repository.
+
+The first of those two claims is checked rather than trusted. Before scanning,
+the script asks Cargo which files each publishable crate actually ships and
+fails if any of them falls outside its own include globs, so a new kind of
+shipped file fails the gate until the globs cover it. Three archive entries are
+exempt because Cargo synthesizes them at package time and each is covered by
+scanning its source instead: `Cargo.toml.orig`, `.cargo_vcs_info.json`, and the
+per-crate `Cargo.lock` generated from the workspace lockfile at the root.
+
+Two things this scan does not do. It does not read binary or base64-heavy
+assets — `--include-assets` is a separate, human-reviewed pass. And the second
+claim, "every file a repository visitor reads", has no equivalent proof behind
+it: that target list is still maintained by hand, and nothing fails when a new
+top-level directory appears. Treat it as a reviewed list, not a closed one.
 
 ### Release Notes
 
