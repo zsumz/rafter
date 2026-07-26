@@ -1,25 +1,115 @@
 #!/usr/bin/env bash
+# Verify every pinned GitHub Action revision is a commit of the repository it
+# claims to come from.
+#
+# This used to ask the API whether the object existed:
+#
+#   GET /repos/OWNER/REPO/git/commits/REVISION
+#
+# That question has the wrong answer. Repositories in a GitHub fork network
+# share one object store, so a commit authored in *any* fork of OWNER/REPO
+# answers 200 from OWNER/REPO's own URL. Measured against
+# dtolnay/rust-toolchain with a SHA that exists only in a fork:
+#
+#   /repos/dtolnay/rust-toolchain/git/commits/6ad57c2c...  -> HTTP 200
+#   /repos/dtolnay/rust-toolchain/commits/6ad57c2c...      -> HTTP 200
+#
+# The second line is why this is not fixed by switching endpoints: the
+# history-aware-looking `commits` endpoint is shared too. Anyone who can open a
+# pull request against an action's repository can push a commit into that
+# network, and the old check would have accepted its SHA as a pin.
+#
+# Object existence is not the property worth checking. Reachability is: a
+# genuine pin is an ancestor of some branch or tag of that repository. So fetch
+# the repository's own refs and ask git. `--filter=tree:0` keeps this to the
+# commit graph rather than whole checkouts. It also needs no token and has no
+# rate limit, which the API check did.
 set -euo pipefail
 
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 lock="$root/verification/github-actions.lock"
+
+if [[ ! -s "$lock" ]]; then
+    echo "error: action pin lock is missing or empty: $lock" >&2
+    exit 2
+fi
+
+workdir="$(mktemp -d "${TMPDIR:-/tmp}/rafter-action-pins.XXXXXX")"
+trap 'rm -rf "$workdir"' EXIT
+
+failures=0
+verified=0
+
 while IFS= read -r specification; do
-  [[ -n "$specification" ]] || continue
-  action="${specification%@*}"
-  revision="${specification##*@}"
-  IFS=/ read -r owner repository _ <<< "$action"
-  printf 'verify %s/%s@%s\n' "$owner" "$repository" "$revision"
-  url="https://api.github.com/repos/$owner/$repository/git/commits/$revision"
-  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-    curl --fail --silent --show-error \
-      -H "Accept: application/vnd.github+json" \
-      -H "X-GitHub-Api-Version: 2022-11-28" \
-      -H "Authorization: Bearer $GITHUB_TOKEN" \
-      "$url" >/dev/null
-  else
-    curl --fail --silent --show-error \
-      -H "Accept: application/vnd.github+json" \
-      -H "X-GitHub-Api-Version: 2022-11-28" \
-      "$url" >/dev/null
-  fi
+    [[ -n "$specification" ]] || continue
+    action="${specification%@*}"
+    revision="${specification##*@}"
+    IFS=/ read -r owner repository _ <<< "$action"
+
+    if [[ -z "$owner" || -z "$repository" || -z "$revision" ]]; then
+        echo "error: unparsable pin: $specification" >&2
+        failures=1
+        continue
+    fi
+    case "$revision" in
+        [0-9a-f][0-9a-f][0-9a-f][0-9a-f]*) ;;
+        *)
+            echo "error: $action is not pinned to a commit SHA: $revision" >&2
+            failures=1
+            continue
+            ;;
+    esac
+
+    printf 'verify %s/%s@%s\n' "$owner" "$repository" "$revision"
+
+    # One clone per repository, shared by every pin that names it -- the lock
+    # carries actions/cache, actions/cache/restore and actions/cache/save.
+    repository_dir="$workdir/$owner-$repository"
+    if [[ ! -d "$repository_dir" ]]; then
+        git init -q "$repository_dir"
+        git -C "$repository_dir" remote add origin \
+            "https://github.com/$owner/$repository"
+        if ! git -C "$repository_dir" fetch -q --filter=tree:0 --no-tags origin \
+            '+refs/heads/*:refs/remotes/origin/*'; then
+            echo "error: could not fetch branches of $owner/$repository" >&2
+            failures=1
+            continue
+        fi
+        # Tags are fetched separately: most action pins name a release tag's
+        # commit, and --no-tags above deliberately skips them.
+        if ! git -C "$repository_dir" fetch -q --filter=tree:0 origin \
+            '+refs/tags/*:refs/tags/*'; then
+            echo "error: could not fetch tags of $owner/$repository" >&2
+            failures=1
+            continue
+        fi
+    fi
+
+    if ! git -C "$repository_dir" cat-file -e "${revision}^{commit}" 2>/dev/null; then
+        echo "error: $action@$revision is not a commit of $owner/$repository" >&2
+        failures=1
+        continue
+    fi
+
+    # The discriminator. A fork-authored object can be present -- the network
+    # serves it -- but it is an ancestor of no ref of this repository.
+    container="$(
+        git -C "$repository_dir" for-each-ref --contains "$revision" --count=1 \
+            --format='%(refname)' 2>/dev/null || true
+    )"
+    if [[ -z "$container" ]]; then
+        echo "error: $action@$revision is not reachable from any branch or tag of $owner/$repository" >&2
+        echo "       the object may exist in the fork network; that is not a pin" >&2
+        failures=1
+        continue
+    fi
+    printf '  reachable from %s\n' "$container"
+    verified=$((verified + 1))
 done < "$lock"
+
+if ((failures)); then
+    echo "action pin verification failed" >&2
+    exit 1
+fi
+
+echo "verified $verified pinned action revisions against their own repository history"
