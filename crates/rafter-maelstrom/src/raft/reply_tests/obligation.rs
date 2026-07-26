@@ -10,17 +10,23 @@
 //! regression tests because the argument that replaced those lists is
 //! mechanical, and these are what fail when the mechanism is removed.
 
+use std::collections::BTreeMap;
+
 use rafter::{AppendEntries, LogIndex, Message, NodeId, Term};
 use rafter_codec::encode_message;
 use rafter_invariant_test::{oracle_assert, oracle_assert_eq};
 use serde_json::{json, Value};
 
 use crate::{
+    app::{encode_snapshot_payload, persist_snapshot_application_state},
     protocol::{body_type, encode_hex, Envelope},
     InitializedNode,
 };
 
-use super::{fresh_cluster_member, remove_test_root, test_root};
+use super::{
+    direct_answer, elected_single_node_process, forwarded_write, fresh_cluster_member,
+    remove_test_root, replicate, test_root,
+};
 
 // ---------------------------------------------------------------------------
 // A forward travels one hop.
@@ -164,6 +170,273 @@ fn a_stale_leader_announcement_does_not_become_the_next_forward_target() {
 }
 
 // ---------------------------------------------------------------------------
+// Every accepted request is answered.
+// ---------------------------------------------------------------------------
+
+/// The node that took the request from the client answers it when the node that
+/// took the forward does not.
+///
+/// The reply path once licensed a volatile record, and a residue left behind by
+/// a snapshot install, on an unconditional claim about a *different* process:
+/// "the forwarding peer applies the same entry with its own name as `origin`
+/// and answers its client directly". Nothing enforced it, and the very
+/// mechanism the sentence invoked is what removes the forwarding peer's route
+/// to its own client — `apply_command` returns on `AlreadyApplied` before it
+/// ever reaches the claim, and an applied index jumped past the entry means no
+/// apply arrives for it again at all.
+///
+/// The interleaving is ordinary: a follower relays a write, falls behind or is
+/// partitioned, the leader's `client_result` is lost or the leader restarts,
+/// and the follower rejoins behind a compacted log and takes an
+/// `InstallSnapshot`. The write is in this node's own state machine and nobody
+/// is left who will say so.
+#[test]
+fn a_relaying_peer_answers_its_client_when_the_accepting_node_does_not() {
+    let root = test_root("obligation-forwarder-snapshot-jump");
+    let mut process = fresh_cluster_member(&root, "n2", &["n1", "n2", "n3"]);
+    let node = process.initialized.as_mut().expect("node initializes");
+
+    // n1 leads and n2 has heard from it. That is all `forward_or_reply` needs.
+    node.known_leader = Some(NodeId(1));
+
+    // c1's write reaches n2, which relays it to n1 and records what it now owes.
+    node.handle_envelope(client_write("n2", "c1", 5, "counter", 7));
+    oracle_assert!(
+        forwarded_request(node, "n1", "c1", 5).is_some(),
+        "n2 relays the write to the leader it knows; emitted = {:#?}",
+        node.emitted
+    );
+    oracle_assert_eq!(
+        node.owed_answers.answer_to(&("c1".to_owned(), 5)),
+        Some(node.name.as_str()),
+        "and holds a record naming itself as the node that answers this client"
+    );
+
+    // The leader accepted the forward, proposed it with origin = "n2", and it
+    // committed at index 1. Its `client_result` never reaches n2 — n2 was
+    // partitioned, or the leader restarted and its volatile record went with
+    // it. n2 rejoins behind the compacted log and takes an InstallSnapshot
+    // covering index 1: precisely what `apply_snapshot` does to `app`.
+    let mut kv = BTreeMap::new();
+    kv.insert("\"counter\"".to_owned(), json!(7));
+    persist_snapshot_application_state(
+        &root,
+        &mut node.app,
+        LogIndex(1),
+        &encode_snapshot_payload(&kv).expect("snapshot payload encodes"),
+    )
+    .expect("snapshot application state persists");
+    node.flush_reads();
+
+    // No `Output::Apply` for that index can ever reach `apply_command` again,
+    // so no event other than the deadline is coming.
+    for _ in 0..10 {
+        process.tick();
+    }
+    let node = process
+        .initialized
+        .as_mut()
+        .expect("node stays initialized");
+
+    oracle_assert_eq!(
+        node.app.kv.get("\"counter\""),
+        Some(&json!(7)),
+        "the write committed and this node's state machine carries it"
+    );
+    oracle_assert!(
+        direct_answer(node, "c1", 5).is_some(),
+        "the node that took the request from the client must answer it; \
+         emitted = {:#?}",
+        node.emitted
+    );
+    oracle_assert!(
+        node.owed_answers.is_empty(),
+        "and the record that said so is retired by the answer going out"
+    );
+    remove_test_root(root);
+}
+
+/// Control for the probe above: it isolates the snapshot jump as the cause
+/// rather than the setup.
+///
+/// Same node, same relay, same lost `client_result`. The one difference is that
+/// this time n2 applies the entry itself, so the fast path answers immediately
+/// and the deadline is never reached. That is what the deadline is a backstop
+/// *for*, and the control is what keeps it from being the only path in use.
+#[test]
+fn control_a_relaying_peer_that_applies_the_entry_answers_its_client_at_once() {
+    let root = test_root("obligation-forwarder-applies");
+    let mut process = fresh_cluster_member(&root, "n2", &["n1", "n2", "n3"]);
+    let node = process.initialized.as_mut().expect("node initializes");
+    node.known_leader = Some(NodeId(1));
+    node.handle_envelope(client_write("n2", "c1", 5, "counter", 7));
+
+    // No snapshot jump: the entry the leader proposed for n2 replicates here and
+    // applies normally. No tick is driven, so nothing here can be the deadline.
+    node.step(replicate(
+        &[forwarded_write("n2", "c1", 5, "counter", 7)],
+        1,
+    ));
+
+    oracle_assert!(
+        direct_answer(node, "c1", 5).is_some(),
+        "a relaying peer that applies the entry answers its client from the apply"
+    );
+    oracle_assert!(
+        node.owed_answers.is_empty(),
+        "and that answer retires the record just the same"
+    );
+    remove_test_root(root);
+}
+
+/// A proposal the kernel refuses is answered to the peer that relayed it.
+///
+/// `propose` recorded the obligation before stepping, and `Output::RejectProposal`
+/// printed and returned. No entry is appended, so no apply ever runs, so nothing
+/// pays or clears the record — and the peer that relayed the request, and the
+/// client behind it, are told nothing. This is the shape the checkpoint-failure
+/// fix called the bug it repaired, surviving one arm over in the same match.
+#[test]
+fn a_rejected_proposal_answers_the_peer_that_relayed_it() {
+    let root = test_root("obligation-rejected-proposal-answer");
+    let mut process = elected_single_node_process(&root);
+    let node = process.initialized.as_mut().expect("node initializes");
+
+    // A value larger than one AppendEntries may carry. `step_client_proposal`
+    // answers `ProposalRejection::PayloadTooLarge` and appends nothing.
+    let oversized = "x".repeat(600 * 1024);
+    node.handle_envelope(forward_envelope(
+        "n2",
+        "n1",
+        "c1",
+        5,
+        &json!({ "type": "write", "key": "counter", "value": oversized }),
+    ));
+
+    oracle_assert!(
+        forwarded_answer_body(node, "n2", 5).is_some(),
+        "a request this node accepted and then refused to log must still be \
+         answered — nothing else in the cluster holds a record of it; \
+         emitted = {:#?}",
+        node.emitted
+    );
+    remove_test_root(root);
+}
+
+/// The same refusal leaves no obligation behind.
+///
+/// A record now exists exactly when the kernel appended an entry for the
+/// request, because both are decided from the same step's outputs. Here the
+/// entry does not exist on this node or any other, no snapshot is involved, and
+/// nothing may survive to be swept later.
+#[test]
+fn a_rejected_proposal_leaves_no_obligation_behind() {
+    let root = test_root("obligation-rejected-proposal-leak");
+    let mut process = elected_single_node_process(&root);
+    let node = process.initialized.as_mut().expect("node initializes");
+
+    let oversized = "x".repeat(600 * 1024);
+    node.handle_envelope(forward_envelope(
+        "n2",
+        "n1",
+        "c1",
+        5,
+        &json!({ "type": "write", "key": "counter", "value": oversized }),
+    ));
+
+    oracle_assert!(
+        node.owed_answers.is_empty(),
+        "an obligation for an entry that will never exist must not survive"
+    );
+    remove_test_root(root);
+}
+
+/// An obligation is paid to the peer that lodged it, not to whichever origin a
+/// committed entry happens to name.
+///
+/// The record was once a bare set of request keys with no origin in it, while
+/// the answer's recipient was read out of `command.origin` — the payload, which
+/// every replica sees identically. So the record could not say who it owed, and
+/// the answer went to whichever origin the first matching commit carried. Here
+/// a record lodged for n2's forward would pay n3, a node that relayed nothing,
+/// while n2 gets silence.
+#[test]
+fn an_obligation_is_paid_to_the_peer_that_lodged_it() {
+    let root = test_root("obligation-misdelivery");
+    let mut process = fresh_cluster_member(&root, "n1", &["n1", "n2", "n3"]);
+    let node = process.initialized.as_mut().expect("node initializes");
+
+    // The state `propose` leaves behind for a forward n2 sent here.
+    node.accept_answer_obligation("n2", "c1", 5);
+
+    // The entry that commits for (c1, 5) carries a different origin.
+    node.step(replicate(
+        &[forwarded_write("n3", "c1", 5, "counter", 7)],
+        1,
+    ));
+
+    oracle_assert_eq!(
+        forwarded_answer_body(node, "n3", 5),
+        None,
+        "a node that relayed nothing here must not be handed an answer"
+    );
+    oracle_assert!(
+        forwarded_answer_body(node, "n2", 5).is_some(),
+        "and the peer whose forward this node actually accepted must be"
+    );
+    remove_test_root(root);
+}
+
+/// A request stranded with no local event to notice it is still answered.
+///
+/// The general statement of the property, driven without a snapshot, a
+/// rejection or a relay: a leader accepts a forward, the entry never commits,
+/// and nothing on this node will ever fire for it again. That covers the case
+/// argued but not reproducible in-crate — a leader deposed before its entry
+/// replicates, whose entry the next leader truncates — because the sweep does
+/// not ask which of those happened.
+///
+/// The answer is indefinite, and that is the load-bearing part. The entry may
+/// yet commit under another leader, so any code asserting the write did not
+/// happen would be a statement this node cannot make.
+#[test]
+fn an_accepted_request_with_no_outcome_is_answered_indefinitely_at_its_deadline() {
+    let root = test_root("obligation-deadline-sweep");
+    let mut process = fresh_cluster_member(&root, "n1", &["n1", "n2", "n3"]);
+    let node = process.initialized.as_mut().expect("node initializes");
+
+    // The state `propose` leaves behind for a forward n2 sent here. No entry
+    // for it ever commits on this node.
+    node.accept_answer_obligation("n2", "c1", 5);
+    oracle_assert_eq!(
+        forwarded_answer_body(node, "n2", 5),
+        None,
+        "nothing is owed yet — the request may still commit"
+    );
+
+    for _ in 0..10 {
+        process.tick();
+    }
+    let node = process
+        .initialized
+        .as_mut()
+        .expect("node stays initialized");
+
+    let answer = forwarded_answer_body(node, "n2", 5).expect("the deadline answers the peer");
+    oracle_assert_eq!(
+        answer.pointer("/result/code").and_then(Value::as_u64),
+        Some(0),
+        "and answers with Maelstrom's indefinite `timeout`, because this node \
+         cannot say whether the write took effect; answer = {answer:#?}"
+    );
+    oracle_assert!(
+        node.owed_answers.is_empty(),
+        "the swept record is retired by the answer, not merely dropped"
+    );
+    remove_test_root(root);
+}
+
+// ---------------------------------------------------------------------------
 // Helpers.
 // ---------------------------------------------------------------------------
 
@@ -223,6 +496,24 @@ fn forwarded_answer_body(node: &InitializedNode, origin: &str, in_reply_to: u64)
         .find(|envelope| {
             envelope.dest == origin
                 && body_type(&envelope.body) == Some("client_result")
+                && envelope.body.get("in_reply_to").and_then(Value::as_u64) == Some(in_reply_to)
+        })
+        .map(|envelope| envelope.body.clone())
+}
+
+/// The `client_forward` this node handed to `leader` for one client request.
+fn forwarded_request(
+    node: &InitializedNode,
+    leader: &str,
+    client: &str,
+    in_reply_to: u64,
+) -> Option<Value> {
+    node.emitted
+        .iter()
+        .find(|envelope| {
+            envelope.dest == leader
+                && body_type(&envelope.body) == Some("client_forward")
+                && envelope.body.get("client").and_then(Value::as_str) == Some(client)
                 && envelope.body.get("in_reply_to").and_then(Value::as_u64) == Some(in_reply_to)
         })
         .map(|envelope| envelope.body.clone())

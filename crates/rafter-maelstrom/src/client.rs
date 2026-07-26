@@ -14,13 +14,41 @@
 //!   the obligation, so if this one declines the read is lost. The rest of this
 //!   header is the argument that answering is not merely necessary but correct.
 //! - **A committed write is answered by the node that accepted the client's
-//!   request, whatever its role.** The record is either `origin == self.name`,
-//!   carried in the command itself, for a client that reached this node
-//!   directly; or an entry in `pending_forwards`, for a peer's forward this
-//!   node accepted and proposed. Every node in the cluster applies the entry
-//!   and computes the identical result, so unlike a read the answer is not
-//!   scarce — it is the *obligation* that is scarce, and a replica holding no
-//!   obligation must stay silent.
+//!   request, whatever its role.** The record is an entry in `owed_answers`,
+//!   naming the node the answer goes to, plus — for a client that reached this
+//!   node directly — `origin == self.name` carried in the command itself.
+//!   Every node in the cluster applies the entry and computes the identical
+//!   result, so unlike a read the answer is not scarce — it is the *obligation*
+//!   that is scarce, and a replica holding no obligation must stay silent.
+//!
+//! # Why every accepted request is answered
+//!
+//! Not because the paths that can answer one have been enumerated. Three
+//! rounds of this reply path enumerated them and were wrong each time, in the
+//! same way: a list checked in the direction that was easy and relied on in the
+//! direction that mattered.
+//!
+//! The argument runs on two facts instead, each of which is one place in the
+//! code rather than a claim about several.
+//!
+//! 1. **A record is created when this node accepts a request, and destroyed
+//!    only when an answer for it leaves.** [`OwedAnswers`](crate::answers)
+//!    keeps its map private and exposes one way in and one way out;
+//!    [`InitializedNode::accept_answer_obligation`] is the only wrapper over
+//!    the first, and [`InitializedNode::deliver_result`] the only caller of the
+//!    second — and it is also the only place a client answer is emitted. So a
+//!    record outstanding means an answer outstanding, in both directions.
+//! 2. **Every record carries a deadline, and the tick sweep pays every record
+//!    that reaches one.** [`InitializedNode::expire_owed_answers`] does not ask
+//!    why a request is still outstanding. It cannot be wrong about a list it
+//!    does not consult.
+//!
+//! Together: every accepted request is answered within its deadline, whatever
+//! became of the entry — refused by the kernel, truncated under the next
+//! leader, jumped by a snapshot install, or committed on a leader that answered
+//! a process which has since restarted. The faster paths remain, because an
+//! answer that says what actually happened is worth more than one that says
+//! "unknown"; but nothing depends on them firing.
 //!
 //! # How far a request travels
 //!
@@ -112,17 +140,30 @@
 
 use std::fmt::Write as _;
 
-use rafter::{Input, ReadId, Role};
+use rafter::{Input, Output, ReadId, Role};
 use serde_json::{json, Value};
 
 use crate::{
     app::{
         parse_client_request, read_value, ClientMutation, ClientRequest, ClientResult, Command,
-        ERROR_TEMPORARILY_UNAVAILABLE,
+        ERROR_TEMPORARILY_UNAVAILABLE, ERROR_TIMEOUT,
     },
     protocol::Envelope,
     InitializedNode, PendingRead,
 };
+
+/// The reason the kernel refused this step's proposal, if it refused one.
+///
+/// `Output::RejectProposal` means the entry was not appended. Nothing later in
+/// the cluster will ever speak for that request — there is no commit to apply,
+/// no truncation to notice, and no other node holding a record of it — so the
+/// caller must answer it here.
+fn proposal_rejection(outputs: &[Output]) -> Option<String> {
+    outputs.iter().find_map(|output| match output {
+        Output::RejectProposal { reason, .. } => Some(reason.to_string()),
+        _ => None,
+    })
+}
 
 /// Where a client request reached this node from, and therefore what a node
 /// that does not lead may do with it.
@@ -179,7 +220,14 @@ impl InitializedNode {
                 return;
             }
         };
-        self.reply_to_client(client, in_reply_to, result);
+        // The leader answered a request this node relayed. Delivering it with
+        // this node as the origin is the same statement the record makes: this
+        // node accepted the request from the client, and the answer goes to the
+        // client. Routing it through `deliver_result` rather than straight to
+        // the client is what retires that record.
+        let origin = self.name.clone();
+        let client = client.to_owned();
+        self.deliver_result(&origin, &client, in_reply_to, result);
     }
 
     pub(crate) fn handle_client(&mut self, envelope: Envelope) {
@@ -295,6 +343,12 @@ impl InitializedNode {
             );
             return;
         };
+        // Handing the request on does not hand the obligation on. The leader
+        // may commit the entry and answer a process that has restarted, or
+        // never commit it at all, and either way this node is the last party
+        // still holding a tie to the client. Recording it here is what the
+        // deadline later fires on.
+        self.accept_answer_obligation(origin, client, in_reply_to);
         self.send_to_node(
             leader,
             json!({
@@ -324,15 +378,20 @@ impl InitializedNode {
         });
     }
 
-    /// Proposes a mutation, recording first that this node now owes an answer
-    /// for it.
+    /// Proposes a mutation, and records that this node owes an answer for it
+    /// exactly when the kernel accepted the proposal.
     ///
-    /// Reached only on the leader. When `origin` is a peer, accepting that
-    /// peer's forward is what makes this node the answerer for the committed
-    /// write, and `pending_forwards` is the only place that is written down —
-    /// the command payload's `origin` names the peer, not this node. A request
-    /// the client sent here directly needs no entry: `origin == self.name`
-    /// already says it, on this node and nowhere else.
+    /// Reached only on the leader. Recording *before* the step and leaving it
+    /// at that is what stranded a refused request: `Output::RejectProposal`
+    /// appends no entry, so no apply, no commit and no truncation notice will
+    /// ever follow, the record had nothing left that could consume it, and the
+    /// peer that relayed the request was never told anything. The answer for a
+    /// refusal is owed here or nowhere.
+    ///
+    /// The outputs are examined before they are routed rather than after,
+    /// because on a single-node cluster the proposal commits inside this very
+    /// step: [`Self::handle_outputs`] can reach `apply_command` for this
+    /// command, and the record has to already exist when it does.
     fn propose(
         &mut self,
         origin: String,
@@ -340,9 +399,6 @@ impl InitializedNode {
         in_reply_to: u64,
         request: ClientMutation,
     ) {
-        if origin != self.name {
-            self.pending_forwards.insert((client.clone(), in_reply_to));
-        }
         let command = Command {
             origin,
             client,
@@ -350,7 +406,77 @@ impl InitializedNode {
             request,
         };
         let payload = serde_json::to_vec(&command).expect("command serializes");
-        self.step(Input::ClientProposal { payload });
+        let outputs = self.step_unrouted(Input::ClientProposal { payload });
+        if let Some(reason) = proposal_rejection(&outputs) {
+            self.deliver_result(
+                &command.origin,
+                &command.client,
+                command.in_reply_to,
+                ClientResult::Error {
+                    code: ERROR_TEMPORARILY_UNAVAILABLE,
+                    text: reason,
+                },
+            );
+        } else {
+            self.accept_answer_obligation(&command.origin, &command.client, command.in_reply_to);
+        }
+        self.handle_outputs(outputs);
+    }
+
+    /// Records that this node owes `origin` an answer for one request it has
+    /// accepted, and the tick by which that answer goes out regardless.
+    ///
+    /// The only wrapper over the ledger's `accept`, which is in turn the only
+    /// way a record comes into being. Its two production callers are the two
+    /// ways this node can accept a request: [`Self::propose`], for one the
+    /// kernel agreed to log, and [`Self::forward_or_reply`], for one this node
+    /// handed to the leader.
+    pub(crate) fn accept_answer_obligation(
+        &mut self,
+        origin: &str,
+        client: &str,
+        in_reply_to: u64,
+    ) {
+        self.owed_answers.accept(
+            (client.to_owned(), in_reply_to),
+            origin.to_owned(),
+            self.ticks + self.answer_deadline_ticks,
+        );
+    }
+
+    /// Answers every request whose deadline has passed, and retires it.
+    ///
+    /// This is what makes the obligation total, and it is deliberately not a
+    /// list of the ways an answer can fail to arrive. The fast paths — an apply
+    /// here, a `client_result` relayed back, a proposal the kernel refused —
+    /// answer sooner and say something more useful, but nothing rests on their
+    /// being exhaustive. That reasoning is what failed each time it was tried:
+    /// an entry truncated under the next leader, an applied index a snapshot
+    /// install jumped past, a leader that answered a process which has since
+    /// restarted. This sweep fires on whatever is still owed without asking
+    /// which of those happened, or whether the list is complete.
+    ///
+    /// The error is [`ERROR_TIMEOUT`], the one indefinite code this harness
+    /// sends, because indefinite is the honest reading: the request may well
+    /// have committed and this node simply cannot say. Every other code asserts
+    /// that it did not.
+    pub(crate) fn expire_owed_answers(&mut self) {
+        for (key, answer_to) in self.owed_answers.due(self.ticks) {
+            self.deliver_result(
+                &answer_to,
+                &key.0,
+                key.1,
+                ClientResult::Error {
+                    code: ERROR_TIMEOUT,
+                    text: "no committed outcome for this request before its deadline".to_owned(),
+                },
+            );
+        }
+        debug_assert!(
+            self.owed_answers.due(self.ticks).is_empty(),
+            "a sweep must leave nothing due: `deliver_result` is what retires a \
+             record, so a survivor here means an answer went out without one"
+        );
     }
 
     /// Answers every pending read whose application floor the applied state has
@@ -369,9 +495,9 @@ impl InitializedNode {
     /// silently, and with nothing left to retry from.
     ///
     /// Retiring unconditionally is sound because `deliver_result` discharges
-    /// the obligation on every call. Its one non-sending arm is
-    /// [`Self::reply_to_client`]'s dedupe, which fires exactly when this node
-    /// already sent that client an answer for that request — so the waiter has
+    /// the obligation on every call. Its one non-sending arm is its
+    /// `completed_replies` dedupe, which fires exactly when this node already
+    /// sent that client an answer for that request — so the waiter has
     /// nothing left to pay. Conditioning retirement on a fresh send instead
     /// would strand precisely that waiter for good: nothing would ever make the
     /// duplicate go out, so every later flush would re-examine it and decline
@@ -400,33 +526,55 @@ impl InitializedNode {
         }
     }
 
-    /// Whether this node is the one that owes `command`'s client an answer,
-    /// consuming the record if it is.
+    /// The node this command's answer is addressed to, if this node owes one.
     ///
-    /// Two ways to be that node, and no third: the client reached this node
-    /// directly, so the command carries this node's name as its `origin`; or a
-    /// peer forwarded the request here and this node proposed it, leaving the
-    /// entry in `pending_forwards` that this consumes. A replica that only
-    /// replicated the entry matches neither and stays silent. See this module's
-    /// header for why role is not one of the ways.
+    /// Read in the direction the caller uses it. The record comes first and the
+    /// payload second, and that order is the point: `command.origin` is in the
+    /// replicated entry, so every replica reads the same string, and it can say
+    /// that *some* node accepted *some* copy of this request — never that this
+    /// node accepted this one. A record lodged for `n2`'s forward therefore
+    /// pays `n2` even when the entry that carried the request to commit was
+    /// proposed for `n3`'s. Reading the payload first hands the answer to
+    /// whichever origin the first matching commit happens to name, which is a
+    /// node that may have forwarded nothing here at all.
     ///
-    /// The record is consumed rather than read so that the answer is mailed at
-    /// most once per accepted request, however many times the entry is applied.
-    pub(crate) fn claim_answer_for(&mut self, command: &Command) -> bool {
-        command.origin == self.name
-            || self
-                .pending_forwards
-                .remove(&(command.client.clone(), command.in_reply_to))
+    /// The `origin == self.name` fallback is the record for a request the
+    /// client sent to this node directly: the command carries this node's name,
+    /// that mark is in the log, and it is what still speaks after a restart has
+    /// taken the volatile ledger with it. A replica that only replicated the
+    /// entry matches neither and stays silent. See this module's header for why
+    /// role is not one of the ways.
+    ///
+    /// It reads the record and does not retire it. Retirement belongs to
+    /// [`Self::deliver_result`], the one place an answer leaves this node, so
+    /// that "a record is destroyed only by an answer going out" needs no second
+    /// proof and no second site to keep in step.
+    pub(crate) fn claim_answer_for(&self, command: &Command) -> Option<String> {
+        if let Some(answer_to) = self
+            .owed_answers
+            .answer_to(&(command.client.clone(), command.in_reply_to))
+        {
+            return Some(answer_to.to_owned());
+        }
+        (command.origin == self.name).then(|| self.name.clone())
     }
 
-    /// Puts one request's answer in flight, either as a direct reply or as a
-    /// `client_result` handed back to the node that forwarded the request.
+    /// Puts one request's answer in flight and retires the record that said one
+    /// was owed.
     ///
     /// Total, in the sense its callers rest on: every call discharges the
-    /// origin's answer obligation. Either this call puts an answer on the wire,
-    /// or [`Self::reply_to_client`] finds that this node already put one there
-    /// for the same `(client, in_reply_to)` and declines to send a second — a
-    /// suppressed duplicate, not a drop. No arm leaves the request unanswered.
+    /// obligation. Either this call puts an answer on the wire, or this node
+    /// already put one there for the same `(client, in_reply_to)` and declines
+    /// to send a second — a suppressed duplicate, not a drop. No arm leaves the
+    /// request unanswered and no arm leaves a record behind.
+    ///
+    /// This is the only place a client answer leaves this node and the only
+    /// place a record is retired, and those two facts being one fact is what
+    /// makes the obligation checkable rather than argued: a record is born when
+    /// the request is accepted and dies only here, so "every accepted request
+    /// is answered" follows from the deadline alone. `completed_replies` gains
+    /// the request immediately before the emit and nowhere else, so membership
+    /// is exactly "an answer for this has already gone out".
     ///
     /// It does not consult the current role, and it does not decide whether an
     /// answer is owed at all; that is [`Self::claim_answer_for`] and
@@ -439,8 +587,14 @@ impl InitializedNode {
         in_reply_to: u64,
         result: ClientResult,
     ) {
+        let key = (client.to_owned(), in_reply_to);
+        self.owed_answers.retire(&key);
+        if !self.completed_replies.insert(key) {
+            return;
+        }
         if origin == self.name {
-            self.reply_to_client(client, in_reply_to, result);
+            let body = self.result_body(client, in_reply_to, result);
+            self.emit(client, body);
         } else {
             self.emit(
                 origin,
@@ -452,26 +606,6 @@ impl InitializedNode {
                 }),
             );
         }
-    }
-
-    /// Sends one answer straight to `client`, at most once per request for the
-    /// life of this process.
-    ///
-    /// `completed_replies` gains `(client, in_reply_to)` immediately before the
-    /// emit and in no other place, so a member of that set is exactly a request
-    /// this node has already put an answer on the wire for. The early return is
-    /// therefore an *already delivered* case, not a dropped one — which is what
-    /// keeps [`Self::deliver_result`] total and lets [`Self::flush_reads`]
-    /// retire a waiter without checking.
-    fn reply_to_client(&mut self, client: &str, in_reply_to: u64, result: ClientResult) {
-        if !self
-            .completed_replies
-            .insert((client.to_string(), in_reply_to))
-        {
-            return;
-        }
-        let body = self.result_body(client, in_reply_to, result);
-        self.emit(client, body);
     }
 
     fn result_body(&mut self, client: &str, in_reply_to: u64, result: ClientResult) -> Value {

@@ -79,10 +79,10 @@ fn a_node_that_accepted_a_forward_answers_it_though_it_does_not_lead() {
     let node = process.initialized.as_mut().expect("node initializes");
     oracle_assert!(node.node.role() != Role::Leader, "n3 does not lead");
 
-    // The state `propose` leaves behind on a node that accepted n2's forward.
-    // The restart test below drives this same record in through the production
-    // path, from a real `client_forward` on a real leader.
-    node.pending_forwards.insert(("c1".to_owned(), 5));
+    // The state `propose` leaves behind on a node that accepted n2's forward,
+    // written through the same call `propose` makes. The restart test below
+    // drives it in end to end, from a real `client_forward` on a real leader.
+    node.accept_answer_obligation("n2", "c1", 5);
 
     // The entry commits under whoever leads now, and reaches n3 by replication.
     node.step(replicate(
@@ -100,7 +100,7 @@ fn a_node_that_accepted_a_forward_answers_it_though_it_does_not_lead() {
         "the node that accepted the forward owes that peer the answer and mails it"
     );
     oracle_assert!(
-        node.pending_forwards.is_empty(),
+        node.owed_answers.is_empty(),
         "the obligation is discharged, so a second apply cannot mail it again"
     );
     remove_test_root(root);

@@ -25,6 +25,15 @@ use serde_json::Value;
 
 use crate::protocol::body_type;
 
+/// Maelstrom's `timeout`, and the only *indefinite* error this harness sends.
+///
+/// An indefinite error tells the checker that the operation may or may not
+/// have taken effect, so it is free to order the request either way. Every
+/// other code below is definite — it asserts the operation did not happen —
+/// which is why none of them can answer a request whose fate this node does
+/// not know. Sending a definite code for a write that may have committed is
+/// not caution; it is a false statement the checker will hold this node to.
+pub(crate) const ERROR_TIMEOUT: u64 = 0;
 pub(crate) const ERROR_TEMPORARILY_UNAVAILABLE: u64 = 11;
 pub(crate) const ERROR_KEY_DOES_NOT_EXIST: u64 = 20;
 pub(crate) const ERROR_PRECONDITION_FAILED: u64 = 22;

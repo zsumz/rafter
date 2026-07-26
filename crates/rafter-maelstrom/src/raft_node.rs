@@ -84,6 +84,27 @@ fn timing_value(name: &str, value: Option<&str>, default: u64) -> Result<u64, St
         .ok_or_else(|| format!("{name} must be a positive u64"))
 }
 
+/// How many ticks a request this node accepted waits for a committed outcome
+/// before it is answered with an indefinite error anyway.
+///
+/// One election timeout by default, and it tracks the configured one rather
+/// than a constant of its own. That is the interval after which the cluster has
+/// replaced whichever leader this node was waiting on, so past it this node
+/// knows no more about the request's fate than the client does — and saying so
+/// is strictly better than silence, because an indefinite answer is one the
+/// checker can order either way while a missing one is a client that never
+/// returns.
+///
+/// Raising it trades a longer client wait for fewer indefinite answers; the
+/// harness scripts may do so when a run's latencies warrant it.
+pub(crate) fn answer_deadline_ticks_from_env() -> Result<u64, Box<dyn Error>> {
+    let election = timing_from_env(
+        "RAFTER_MAELSTROM_ELECTION_TIMEOUT_TICKS",
+        ELECTION_TIMEOUT_TICKS,
+    )?;
+    timing_from_env("RAFTER_MAELSTROM_ANSWER_DEADLINE_TICKS", election)
+}
+
 pub(crate) fn node_root(node_name: &str) -> PathBuf {
     std::env::var_os("RAFTER_MAELSTROM_ROOT").map_or_else(
         || {

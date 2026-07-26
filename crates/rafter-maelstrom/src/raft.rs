@@ -57,16 +57,30 @@ impl InitializedNode {
     }
 
     pub(crate) fn step(&mut self, input: Input) {
+        let outputs = self.step_unrouted(input);
+        self.handle_outputs(outputs);
+    }
+
+    /// Steps the kernel and reports any role or lease transition, handing the
+    /// outputs back unrouted.
+    ///
+    /// [`Self::step`] routes them immediately, which is right wherever the
+    /// caller has nothing to write down first. A client proposal is the
+    /// exception: the outputs are what say whether the kernel accepted it, and
+    /// on a single-node cluster the same outputs can already carry the apply
+    /// that pays it. The record has to be written between the step and the
+    /// routing, so the two have to be separable.
+    pub(crate) fn step_unrouted(&mut self, input: Input) -> Vec<Output> {
         let outputs = match self.node.step(input) {
             Ok(outputs) => outputs,
             Err(error) => {
                 eprintln!("runtime step failed: {error}");
-                return;
+                Vec::new()
             }
         };
         self.report_role_transition();
         self.report_lease_transition();
-        self.handle_outputs(outputs);
+        outputs
     }
 
     fn report_lease_transition(&mut self) {
@@ -160,12 +174,13 @@ impl InitializedNode {
         }
     }
 
-    /// Applies one committed command on this node and, if this node is the one
-    /// that owes the client an answer, mails it.
+    /// Applies one committed command on this node and, if this node owes an
+    /// answer for it, mails it to whoever the record names.
     ///
     /// Every replica reaches here for every committed command, with the same
-    /// `command.origin` in hand, so the payload alone cannot say who answers.
-    /// `claim_answer_for` is that decision; see the `client` module header.
+    /// `command.origin` in hand, so the payload alone cannot say who answers —
+    /// nor, on the node that does answer, *whom*. `claim_answer_for` is both
+    /// decisions; see the `client` module header.
     fn apply_command(&mut self, index: LogIndex, payload: &[u8]) {
         let command: Command = match serde_json::from_slice(payload) {
             Ok(command) => command,
@@ -191,13 +206,8 @@ impl InitializedNode {
             }
             CommandApplyOutcome::AlreadyApplied | CommandApplyOutcome::Interrupted => return,
         };
-        if self.claim_answer_for(&command) {
-            self.deliver_result(
-                &command.origin,
-                &command.client,
-                command.in_reply_to,
-                result,
-            );
+        if let Some(answer_to) = self.claim_answer_for(&command) {
+            self.deliver_result(&answer_to, &command.client, command.in_reply_to, result);
         }
         self.flush_reads();
         self.maybe_compact_snapshot();

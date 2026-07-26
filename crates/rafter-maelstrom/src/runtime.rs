@@ -17,11 +17,15 @@ use rafter::{Input, NodeId, Output};
 use serde_json::json;
 
 use crate::{
+    answers::OwedAnswers,
     app::{load_app_state, persist_snapshot_application_state, AppState},
     membership::{membership_plan_from_env, membership_target_for_plan},
     protocol::{body_type, node_id_map, required_array, required_str, required_u64, Envelope},
     raft::snapshots::validate_application_snapshot_metadata,
-    raft_node::{node_root, open_node, read_snapshot_payload, snapshot_every_from_env, FileNode},
+    raft_node::{
+        answer_deadline_ticks_from_env, node_root, open_node, read_snapshot_payload,
+        snapshot_every_from_env, FileNode,
+    },
     InitializedNode, MaelstromNode,
 };
 
@@ -123,17 +127,24 @@ impl MaelstromNode {
         self.initialized.is_some()
     }
 
-    /// Drives one tick of Raft time and re-examines the reads waiting on it.
+    /// Drives one tick of Raft time and re-examines everything waiting on it.
     ///
     /// Without the flush a stalled read is only ever reconsidered by an apply
     /// or a snapshot install, so a read that becomes answerable through any
     /// other path — including one that lands between the grant and this node's
     /// next committed command — waits for unrelated traffic to arrive and
     /// trigger a pass. The tick is the one event this node always produces.
+    ///
+    /// Which is also why the answer deadlines are swept here. A request whose
+    /// entry was truncated, jumped by a snapshot, or committed on a leader that
+    /// has since restarted produces no local event at all, so a sweep hung off
+    /// any *other* event would never run for exactly the requests that need it.
     pub(crate) fn tick(&mut self) {
         if let Some(node) = self.initialized.as_mut() {
+            node.ticks += 1;
             node.step(Input::Tick);
             node.drive_membership();
+            node.expire_owed_answers();
             node.flush_reads();
         }
     }
@@ -197,6 +208,7 @@ impl MaelstromNode {
         let last_reported_lease_active = node.read_lease_active();
         let last_snapshot_index = node.snapshot_index();
         let snapshot_every = snapshot_every_from_env()?;
+        let answer_deadline_ticks = answer_deadline_ticks_from_env()?;
 
         let mut initialized = InitializedNode {
             name: node_name,
@@ -210,8 +222,10 @@ impl MaelstromNode {
             membership_reported_complete: false,
             known_leader: None,
             pending_reads: BTreeMap::new(),
-            pending_forwards: BTreeSet::new(),
+            owed_answers: OwedAnswers::default(),
             completed_replies: BTreeSet::new(),
+            ticks: 0,
+            answer_deadline_ticks,
             next_msg_id: 1,
             next_read_id: 1,
             snapshot_every,

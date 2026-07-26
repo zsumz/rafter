@@ -22,6 +22,7 @@ use std::path::PathBuf;
 use rafter::{Input, LogIndex, MembershipSet, NodeId, Role};
 use serde_json::Value;
 
+mod answers;
 mod app;
 mod client;
 mod membership;
@@ -30,6 +31,7 @@ mod raft;
 mod raft_node;
 mod runtime;
 
+use answers::OwedAnswers;
 use app::AppState;
 use membership::{membership_drive_action, MembershipDriveAction, MembershipPlan};
 use protocol::{body_type, Envelope};
@@ -65,32 +67,44 @@ struct InitializedNode {
     membership_reported_complete: bool,
     known_leader: Option<NodeId>,
     pending_reads: BTreeMap<u64, PendingRead>,
-    /// Client requests a peer forwarded here that this node proposed on that
-    /// peer's behalf and still owes it an answer for, keyed the way
-    /// `completed_replies` is: `(client, in_reply_to)`.
+    /// Every client request this node has accepted and not yet answered: who
+    /// each answer is addressed to, and the tick by which it goes out.
     ///
-    /// This is the record that makes this node the answerer for a committed
-    /// write. A request the client sent here directly needs no record — the
-    /// command carries `origin`, and `origin == self.name` says it. A forward
-    /// leaves no such mark: `origin` names the peer, and reads identically on
-    /// the node that accepted the forward and on every node that merely
-    /// replicated the entry. Without this set those two are indistinguishable
-    /// at apply. See the `client` module header for both rules.
+    /// This is the record that makes this node the answerer, and it is written
+    /// at both ends of a forward — by the node that took the request from the
+    /// client and handed it to the leader, and by the leader that took that
+    /// forward and proposed it. Either one may end up the only party left who
+    /// can answer, so neither may rely on the other. See the `answers` module
+    /// for why every record carries a deadline, and the `client` module header
+    /// for who is owed what.
     ///
-    /// Deliberately volatile, and not part of the command payload. The
-    /// obligation is to a peer waiting on this process; a restart ends that
-    /// wait, so a recovered node replaying the entry owes nothing and must stay
-    /// silent. A `origin`-side field in the payload would survive recovery and
+    /// A request the client sent here directly leaves a second mark, in the
+    /// command itself: `origin == self.name`, which every replica applies but
+    /// only this node matches. That mark is the one that survives a restart.
+    ///
+    /// This ledger deliberately does not. Every obligation in it is to somebody
+    /// waiting on *this process* — a peer, or a client — and a restart ends
+    /// both waits, so a recovered node replaying the entry owes nothing and
+    /// stays silent. A proposer field in the payload would survive recovery and
     /// re-mail the answer instead.
+    owed_answers: OwedAnswers,
+    /// Every request this node has already put an answer on the wire for, by
+    /// either arm: a reply to the client or a `client_result` to a peer.
     ///
-    /// An entry is consumed by the apply that pays it. One survives only when
-    /// this node never applies that entry — a snapshot install jumped the
-    /// applied index past it — and then the answer was never this node's to
-    /// give: the forwarding peer applies the same entry with its own name as
-    /// `origin` and answers its client directly. The residue is bounded by
-    /// request volume, as `completed_replies` already is.
-    pending_forwards: BTreeSet<(String, u64)>,
+    /// Written in one place, immediately before the emit, so membership is
+    /// exactly "an answer for this request has left this node". That makes the
+    /// suppression in `deliver_result` an already-delivered case rather than a
+    /// dropped one, which is what lets `flush_reads` retire a waiter without
+    /// checking and what stops one request being answered twice.
     completed_replies: BTreeSet<(String, u64)>,
+    /// Ticks of Raft time this process has driven.
+    ///
+    /// The only clock the harness has below `runtime`, which chooses the
+    /// interval, and the one the answer deadlines are measured against.
+    ticks: u64,
+    /// How long a request this node accepted waits for a committed outcome
+    /// before it is answered with an indefinite error anyway.
+    answer_deadline_ticks: u64,
     next_msg_id: u64,
     next_read_id: u64,
     snapshot_every: u64,
