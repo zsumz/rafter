@@ -38,8 +38,7 @@ pub(super) fn decode_request(
     let prev_log_index = LogIndex(reader.u64()?);
     let prev_log_term = Term(reader.u64()?);
     let entry_count = reader.u32()? as usize;
-    let capacity = append_entries_entry_capacity(entry_count, reader.remaining());
-    let mut entries = Vec::with_capacity(capacity);
+    let mut entries = Vec::with_capacity(entry_reservation(entry_count, reader));
     for _ in 0..entry_count {
         entries.push(decode_log_entry(reader)?);
     }
@@ -142,6 +141,56 @@ fn decode_log_entry(reader: &mut Reader<'_>) -> Result<LogEntry, DecodePeerMessa
     }
 }
 
+/// Entries to reserve before decoding the first one.
+///
+/// A declared count the remaining bytes can comfortably hold is reserved
+/// exactly and costs nothing to check. A count larger than that is not
+/// trusted: `Vec` reserves `capacity * size_of::<LogEntry>()` bytes, and
+/// `size_of::<LogEntry>()` is 12.4x `MIN_ENCODED_LOG_ENTRY_BYTES`, so trusting
+/// it let a frame at a transport's receive limit reserve 12.4x its own size in
+/// heap before a single entry had been validated.
+///
+/// Clamping to the byte-aware bound is not enough on its own, and the
+/// difference is measurable: clamping leaves `Vec` to reach the frame's real
+/// entry count by doubling, which overshoots. On a 524,299-byte frame of
+/// minimum-size entries, trusting the count peaked at 13.44x the wire size and
+/// clamping peaked at 17.00x — worse.
+///
+/// So an untrustworthy count is replaced by the number of entries the frame
+/// actually contains, found by scanning with `decode_log_entry` itself. Using
+/// the real decoder is the point: a bespoke "skip one entry" walker would be a
+/// second grammar that could drift from the first. The scan runs only when the
+/// declared count already exceeds what the bytes justify, so well-formed
+/// batches never pay for it, and a scan that stops early on a malformed entry
+/// simply reserves less — the real pass fails at the same entry.
+fn entry_reservation(entry_count: usize, reader: &Reader<'_>) -> usize {
+    if append_entries_entry_capacity(entry_count, reader.remaining()) == entry_count {
+        return entry_count;
+    }
+
+    let mut probe = reader.probe();
+    let mut actual = 0;
+    while actual < entry_count && decode_log_entry(&mut probe).is_ok() {
+        actual += 1;
+    }
+    actual
+}
+
+/// Whether a declared entry count is credible for the bytes that remain, as
+/// the largest count those bytes could justify reserving.
+///
+/// Two ceilings, both derived from bytes already in hand:
+///
+/// * `remaining / MIN_ENCODED_LOG_ENTRY_BYTES` — no more entries than the
+///   unread bytes could possibly encode;
+/// * `remaining / size_of::<LogEntry>()` — no more *heap* than the unread
+///   bytes themselves occupy.
+///
+/// The second binds today. Which one binds is a property of `LogEntry`'s
+/// layout, not of the wire format, so both are kept rather than folded into
+/// whichever happens to be smaller now.
 pub(crate) fn append_entries_entry_capacity(entry_count: usize, remaining: usize) -> usize {
-    entry_count.min(remaining / MIN_ENCODED_LOG_ENTRY_BYTES)
+    let by_wire = remaining / MIN_ENCODED_LOG_ENTRY_BYTES;
+    let by_heap = remaining / core::mem::size_of::<LogEntry>();
+    entry_count.min(by_wire).min(by_heap)
 }

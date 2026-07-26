@@ -49,14 +49,45 @@ fn configuration_entry_size_accounting_is_upper_bound_of_encoding() {
 }
 
 #[test]
-fn append_entries_reservation_is_bounded_by_encoded_entry_size() {
-    let hostile_count = u32::MAX as usize;
-    let remaining = 256;
-    assert_eq!(
-        append_entries_entry_capacity(hostile_count, remaining),
-        remaining / MIN_ENCODED_LOG_ENTRY_BYTES
+fn append_entries_reservation_never_exceeds_the_bytes_that_justify_it() {
+    // The bound that matters is heap *bytes*, not element count. `Vec`
+    // reserves `capacity * size_of::<LogEntry>()`, and `size_of::<LogEntry>()`
+    // is 12.4x `MIN_ENCODED_LOG_ENTRY_BYTES`; asserting only the element bound
+    // hides that amplification entirely, which is how a hostile frame at a
+    // transport's receive limit came to reserve 12.4x its own size before a
+    // single entry was validated.
+    let entry_size = core::mem::size_of::<LogEntry>();
+    assert!(
+        entry_size > MIN_ENCODED_LOG_ENTRY_BYTES,
+        "an in-memory entry is larger than its minimum encoding; if this ever \
+         stops holding, the element bound alone would suffice"
     );
-    assert_eq!(append_entries_entry_capacity(3, remaining), 3);
+
+    for remaining in [0, 1, 8, 9, 111, 112, 256, 4_096, 65_536, 524_299, 2_097_207] {
+        for entry_count in [0, 1, 3, 1_000, u32::MAX as usize] {
+            let reserved_bytes = append_entries_entry_capacity(entry_count, remaining) * entry_size;
+            assert!(
+                reserved_bytes <= remaining,
+                "decoding a frame with {remaining} bytes left and a declared count of \
+                 {entry_count} reserves {reserved_bytes} bytes of heap before validating \
+                 any entry"
+            );
+        }
+    }
+}
+
+#[test]
+fn append_entries_reservation_still_preallocates_a_plausible_batch() {
+    // The byte bound above is satisfied by returning zero always, so pin the
+    // other direction: a frame whose declared count is credible for the bytes
+    // it carries is still reserved exactly, with no growth.
+    assert_eq!(append_entries_entry_capacity(3, 4_096), 3);
+    assert_eq!(append_entries_entry_capacity(0, 4_096), 0);
+    // A hostile count is clamped to what the remaining bytes can hold in heap.
+    assert_eq!(
+        append_entries_entry_capacity(u32::MAX as usize, 4_096),
+        4_096 / core::mem::size_of::<LogEntry>()
+    );
 }
 
 #[test]

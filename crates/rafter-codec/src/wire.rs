@@ -163,6 +163,20 @@ impl<'a> Reader<'a> {
         self.payload.len() - self.position
     }
 
+    /// An independent reader over the same bytes from this position.
+    ///
+    /// Used to pre-scan a repeated field with the real decoder — so the scan
+    /// can never drift from what the decoder accepts — without consuming this
+    /// reader. It deliberately starts with no shared frame buffer: anything a
+    /// discarded probe allocates is freed with the probe.
+    pub(super) fn probe(&self) -> Reader<'a> {
+        Reader {
+            payload: self.payload,
+            position: self.position,
+            shared_payload: None,
+        }
+    }
+
     pub(super) fn array_4(&mut self) -> Result<[u8; 4], DecodePeerMessageError> {
         let bytes = self.take(4)?;
         Ok([bytes[0], bytes[1], bytes[2], bytes[3]])
