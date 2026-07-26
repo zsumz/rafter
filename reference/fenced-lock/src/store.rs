@@ -146,7 +146,7 @@
 //! The magic's first byte doubles as the **publication mark**. A publication
 //! writes it as `0x00` and promotes it to `b'R'` once the rest of the image is
 //! durable, so a slot says of itself whether it was ever sealed. That one byte
-//! is the whole of recovery's skip rule; see the section on it below. A sealed
+//! is half of recovery's skip rule; see the section on it below. A sealed
 //! slot is byte-for-byte what it would be without the mark, and both checksums
 //! are computed over the sealed form, so an unsealed image cannot accidentally
 //! verify either.
@@ -471,15 +471,19 @@ const SLOT_MAGIC: [u8; 4] = *b"RFLK";
 /// First byte of a slot whose image is sealed: the magic's leading byte.
 ///
 /// See [`UNSEALED_MARK`] for what the same byte says while an image is being
-/// written, and the module's recovery section for why the whole argument rests
-/// on this one byte.
+/// written, and the module's recovery section for why this byte is half of the
+/// skip rule rather than the whole of it.
 const SEALED_MARK: u8 = SLOT_MAGIC[0];
 
 /// First byte of a slot whose image is being written.
 ///
 /// A publication writes this value before any other byte of the image and
 /// replaces it with [`SEALED_MARK`] only after every other byte is durable, so
-/// a slot still carrying it is a slot no publication ever sealed.
+/// every interrupted publication leaves it behind. The converse does not hold,
+/// and assuming it was the defect this store was corrected for: a slot carrying
+/// this value may equally hold a sealed image whose mark byte rotted to zero.
+/// Skipping needs [`SlotDamage::is_publication_residue`], which asks a second
+/// question beside this byte, not this byte alone.
 const UNSEALED_MARK: u8 = 0x00;
 
 /// Content of a slot file the moment it is created.
@@ -2101,8 +2105,10 @@ impl LockStore {
     ///
     /// 1. **Byte zero goes out first, and goes out unsealed.** A crash leaves a
     ///    prefix of what was written, so every interrupted publication leaves
-    ///    [`UNSEALED_MARK`] in the slot's first byte. That is what a later
-    ///    opener reads as proof that this image was never the live one.
+    ///    [`UNSEALED_MARK`] in the slot's first byte. That is the half of
+    ///    recovery's proof the write path is responsible for; the opener
+    ///    supplies the other half by re-reading the slot with the mark
+    ///    restored.
     /// 2. **The seal is one byte, written after the barrier below returned.**
     ///    Nothing that follows the barrier can reach the medium before the
     ///    image it seals, and a single byte cannot be half written, so a slot

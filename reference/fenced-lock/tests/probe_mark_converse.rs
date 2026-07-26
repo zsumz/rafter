@@ -1,20 +1,22 @@
-//! Third-generation probe: the publication mark's converse.
+//! Regression: the publication mark's converse.
 //!
-//! `SlotDamage::is_publication_residue` states its own obligation exactly:
+//! `SlotDamage::is_publication_residue` is used in one direction only — a slot
+//! may be skipped **because** it is residue — so the implication that has to
+//! hold is the one the caller relies on:
 //!
-//! > This is used in one direction only — a slot may be skipped **because** it
-//! > is residue — so it is the converse that has to hold: this returning `true`
-//! > must prove the slot was never the live image.
+//! > If it returns `true`, the slot was never the live image.
 //!
-//! The proof it then gives is `interrupted => unsealed`, whose contrapositive
-//! is `sealed => not interrupted`. Neither is the converse it says it needs.
-//! The missing direction's counterexample is one byte: a slot that *was*
-//! sealed, adopted, and acknowledged, whose byte zero later reads `0x00`.
+//! An earlier shape of this store proved `interrupted => unsealed`, took the
+//! contrapositive `sealed => not interrupted`, and skipped on an unsealed mark,
+//! which follows from neither. The counterexample is one byte: a slot that
+//! *was* sealed, adopted, and acknowledged, whose byte zero later reads `0x00`.
 //!
 //! This is the same fixture as
 //! `a_live_slot_that_lost_its_tail_must_not_be_mistaken_for_publication_residue`
 //! in `durable_recovery_proof.rs`, moved from the image's last byte to its
-//! first. That test passes. This one is its converse and it does not.
+//! first. Both pass now: `classify_unsealed` re-reads the slot with the mark
+//! restored, finds a whole image, and the store refuses rather than rolling
+//! back to the partner.
 
 #[allow(dead_code)]
 mod support;
@@ -180,13 +182,16 @@ fn a_live_slot_whose_mark_byte_was_lost_must_not_be_mistaken_for_publication_res
 }
 
 // ---------------------------------------------------------------------------
-// The control: which byte of a sealed image is lost decides the verdict, and
-// the byte the design concentrated the whole rule into is the one byte no
-// checksum is ever consulted for.
+// The uniformity sweep. Under the corrected rule every byte of a sealed image's
+// head refuses the store, so losing one decides nothing on its own.
+//
+// This was a control while the defect stood: byte zero — the one byte no
+// checksum was ever consulted for — opened, and its neighbours refused. The fix
+// collapsed the contrast, which is what makes the sweep worth keeping.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_verdict_depends_only_on_which_byte_of_the_live_image_was_lost() {
+fn no_single_byte_loss_in_the_live_images_head_lets_the_store_open() {
     let mut verdicts = Vec::new();
     for byte in 0..5_usize {
         let scratch = ScratchDir::new(&format!("probe-mark-neighbour-{byte}"));

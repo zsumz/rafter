@@ -443,8 +443,12 @@ const SEALED_FRAME_MARK: u8 = BEGIN_MAGIC[0];
 /// First byte of a frame that is still being appended.
 ///
 /// An append writes this value before any other byte of the frame and replaces
-/// it with [`SEALED_FRAME_MARK`] only after every other byte is durable, so a
-/// tail still carrying it is a tail no commit point ever covered. It is zero
+/// it with [`SEALED_FRAME_MARK`] only after every other byte is durable, so
+/// every interrupted append leaves it behind. The converse does not hold, and
+/// assuming it was the defect this store was corrected for: a tail carrying
+/// this value may equally be a committed frame whose mark byte rotted to zero.
+/// Truncating needs [`TornTail::is_interrupted_append`], which asks a second
+/// question beside this byte, not this byte alone. It is zero
 /// because that is also what a filesystem leaves when a crash extended a file
 /// without persisting its data: the ordinary residue of a delayed allocation
 /// reads as exactly what it is.
@@ -1737,8 +1741,9 @@ impl LedgerStore {
     /// 1. **The frame's first byte goes out first, and goes out unsealed.** A
     ///    crash leaves a prefix of what was written, so every interrupted
     ///    append leaves [`UNSEALED_FRAME_MARK`] where the next frame begins.
-    ///    That is what a later opener reads as proof that no commit point
-    ///    covered these bytes.
+    ///    That is the half of recovery's proof the write path is responsible
+    ///    for; the opener supplies the other half by re-reading the tail with
+    ///    the mark restored.
     /// 2. **The seal is one byte, written after the barrier below returned.**
     ///    Nothing that follows the barrier can reach the medium before the
     ///    frame it seals, and a single byte cannot be half written, so a frame

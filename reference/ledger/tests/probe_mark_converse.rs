@@ -1,16 +1,19 @@
-//! Third-generation probe: the append mark's converse.
+//! Regression: the append mark's converse.
 //!
-//! `TornTail::is_interrupted_append` documents its own obligation exactly:
+//! `TornTail::is_interrupted_append` is used in one direction only — a tail may
+//! be truncated **because** it is an interrupted append — so the implication
+//! that has to hold is the one the caller relies on:
 //!
-//! > This is used in one direction only — a tail may be truncated **because**
-//! > it is an interrupted append — so it is the converse that has to hold:
-//! > this returning `true` must prove no commit point covered those bytes.
+//! > If it returns `true`, no commit point covered those bytes.
 //!
-//! The proof it then gives is `interrupted => unsealed`, whose contrapositive
-//! is `sealed => not interrupted`. Neither is the converse it says it needs.
-//! These probes supply the missing direction's counterexample: a frame that
-//! *was* sealed, committed, and acknowledged, whose first byte later reads
-//! `0x00`.
+//! An earlier shape of this store proved `interrupted => unsealed`, took the
+//! contrapositive `sealed => not interrupted`, and truncated on an unsealed
+//! mark, which follows from neither. These tests are the counterexample that
+//! found it: a frame that *was* sealed, committed, and acknowledged, whose
+//! first byte later reads `0x00`. They failed against that shape. They pass
+//! against this one, where truncating asks a second question beside the mark
+//! and this frame answers it — so the store refuses rather than deleting an
+//! acknowledged transaction.
 
 #[allow(dead_code)]
 mod support;
@@ -239,14 +242,17 @@ fn an_interior_frames_lost_mark_byte_must_not_delete_every_frame_after_it() {
 }
 
 // ---------------------------------------------------------------------------
-// The control. Every neighbouring byte of the same frame refuses the store, so
-// the verdict is decided by *which* byte was lost rather than by whether the
-// frame was committed — which is the property the mark was introduced to
-// remove.
+// The uniformity sweep. Under the corrected rule every byte of a committed
+// frame's head refuses the store, so losing one decides nothing on its own.
+//
+// This was a control while the defect stood: byte 0 opened and bytes 1..5
+// refused, and the contrast was the finding. The fix collapsed it, which is
+// what makes the sweep worth keeping — it fails again the moment any byte of
+// the head goes back to being decided by itself.
 // ---------------------------------------------------------------------------
 
 #[test]
-fn the_verdict_depends_only_on_which_byte_of_a_committed_frame_was_lost() {
+fn no_single_byte_loss_in_a_committed_frames_head_lets_the_store_open() {
     let mut verdicts = Vec::new();
     // Bytes 0..5 of the begin record: the mark, the rest of the magic, and the
     // version. Byte 5 onward is a length field whose leading byte is already
