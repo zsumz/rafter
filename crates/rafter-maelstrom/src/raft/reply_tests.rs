@@ -27,6 +27,7 @@ use crate::{
     InitializedNode, MaelstromNode, PendingRead,
 };
 
+mod funnel;
 mod obligation;
 mod scope;
 

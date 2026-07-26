@@ -20,11 +20,20 @@
 //! whether the deadline covered a client request depended on which node the
 //! client happened to reach.
 //!
-//! [`Accepted`] is what closes that. It is minted only by
-//! [`OwedAnswers::accept`], its fields are unreachable outside this module, and
-//! every function in `client` that acts on a client request takes one. So
-//! *acted on implies recorded* is rustc's to keep too, in the direction the
-//! sweep needs, rather than a list of accepting paths a reader has to certify.
+//! [`Accepted`] is what closes that. Its fields are unreachable outside this
+//! module, it is minted only here, and every function in `client` that acts on
+//! a client request takes one. So *acted on implies recorded* is rustc's to
+//! keep too, in the direction the sweep needs, rather than a list of accepting
+//! paths a reader has to certify.
+//!
+//! There are two mints, and the difference between them is the whole of the
+//! fifth defect. [`OwedAnswers::accept`] creates the record; [`OwedAnswers::recorded`]
+//! finds one and creates nothing. A caller acting on a request that *arrived*
+//! takes responsibility for it and uses the first. A caller reacting to another
+//! node's message about a request key — a leader's `client_result` — must be
+//! able to pay an obligation this node already holds and unable to invent one,
+//! and uses the second. One mint would have forced that caller to accept, which
+//! is "acted on implies recorded" made true by the act of acting.
 //!
 //! # Why every record carries a deadline
 //!
@@ -54,15 +63,17 @@ pub(crate) type RequestKey = (String, u64);
 /// One client request this node has accepted, carried as the proof that the
 /// ledger holds a record for it.
 ///
-/// Minted in exactly one place — [`OwedAnswers::accept`] — out of fields no
-/// other module can name or fill. A value of this type in hand is therefore the
-/// same fact as a record in the ledger, and rustc keeps it that way.
+/// Minted only in this module, out of fields no other module can name or fill,
+/// by [`OwedAnswers::accept`] and [`OwedAnswers::recorded`]. A value of this
+/// type in hand is therefore the same fact as a record in the ledger — one this
+/// caller lodged, or one it found — and rustc keeps it that way.
 ///
 /// This exists to be *required*. Every function in `client` that acts on a
-/// client request — relays it, proposes it, or opens a read barrier for it —
-/// takes one of these, so a fourth kind of request cannot be acted on without
-/// first entering the ledger. That makes the set of accepting paths a thing the
-/// compiler checks rather than a list a header asserts.
+/// client request — relays it, proposes it, opens a read barrier for it, or
+/// pays it out of a leader's answer — takes one of these, so a fourth kind of
+/// request cannot be acted on without a record existing first. That makes the
+/// set of acting paths a thing the compiler checks rather than a list a header
+/// asserts, which is what the header had and what was wrong with it.
 ///
 /// Read in one direction only: *this request is recorded*. It says nothing
 /// about the record still being there — [`OwedAnswers::retire`] may already
@@ -145,6 +156,28 @@ impl OwedAnswers {
     /// The node this request's answer is addressed to, if this node owes one.
     pub(crate) fn answer_to(&self, key: &RequestKey) -> Option<&str> {
         self.owed.get(key).map(|owed| owed.answer_to.as_str())
+    }
+
+    /// The token for a request this node already holds a record for.
+    ///
+    /// The second way to obtain an [`Accepted`], and the only one that cannot
+    /// create an obligation: it reads the map and never writes it, so `None`
+    /// means this node never accepted this request or has already answered it.
+    ///
+    /// It exists for callers reacting to somebody *else's* message about a
+    /// request key — a leader's `client_result` for a request this node
+    /// relayed. Such a caller must act only on a request this node already took
+    /// responsibility for, and must not be able to manufacture responsibility
+    /// out of the message it just received. [`Self::accept`] would do exactly
+    /// that: it inserts, so a caller holding a key and no record would mint a
+    /// token for one and the funnel's "acted on implies recorded" would become
+    /// "acted on implies recorded, by the act of acting".
+    pub(crate) fn recorded(&self, key: &RequestKey) -> Option<Accepted> {
+        self.owed.get(key).map(|owed| Accepted {
+            answer_to: owed.answer_to.clone(),
+            client: key.0.clone(),
+            in_reply_to: key.1,
+        })
     }
 
     /// Whether an answer for `key` is still owed.

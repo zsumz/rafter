@@ -159,13 +159,39 @@ fn main() {
 }
 
 impl InitializedNode {
+    /// Routes one message: three harness-internal types, and a client request.
+    ///
+    /// The three named arms are the whole of the harness's own vocabulary, and
+    /// each decides for itself which senders it will hear from —
+    /// [`Self::handle_raft`] and [`Self::handle_client_result`] both require a
+    /// node this cluster knows, for reasons written where each gate is.
+    ///
+    /// The last arm is deliberately a catch-all rather than a list of client
+    /// operation types. There were two such lists — `"read" | "write" | "cas"`
+    /// here and the match in [`app::parse_client_request`] — with nothing
+    /// checking them against each other, so a fifth operation added to one and
+    /// not the other would have been dropped here in silence: no record, no
+    /// answer, and a client waiting on a request this node did read. Handing
+    /// everything a non-peer sends to the funnel leaves `parse_client_request`
+    /// as the single list of client operations, and one it does not know
+    /// becomes an error *answer* from a funnel that recorded the request first.
+    ///
+    /// The sender test on that arm is what keeps the catch-all from swallowing
+    /// peer traffic: a message from a cluster node that is none of the three
+    /// above is a harness message this build does not know, not a client
+    /// request, and treating it as one would accept an obligation to a node.
     fn handle_envelope(&mut self, envelope: Envelope) {
         match body_type(&envelope.body) {
             Some("raft") => self.handle_raft(&envelope),
             Some("client_forward") => self.handle_forward(envelope),
             Some("client_result") => self.handle_client_result(&envelope),
-            Some("read" | "write" | "cas") => self.handle_client(&envelope),
-            Some(other) => eprintln!("ignoring unsupported Maelstrom message type {other:?}"),
+            Some(_) if !self.name_to_id.contains_key(&envelope.src) => {
+                self.handle_client(&envelope);
+            }
+            Some(other) => eprintln!(
+                "ignoring unsupported peer message type {other:?} from {}",
+                envelope.src
+            ),
             None => eprintln!("ignoring Maelstrom message without body.type"),
         }
     }

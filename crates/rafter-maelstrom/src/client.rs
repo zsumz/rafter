@@ -44,16 +44,33 @@
 //! code — or one type — rather than a claim about several.
 //!
 //! 1. **Acting on a client request requires a record for it.**
-//!    [`InitializedNode::handle_client_request`] is the single funnel: both
-//!    entry points, [`InitializedNode::handle_client`] and
-//!    [`InitializedNode::handle_forward`], call it and nothing else acts on a
-//!    request. It accepts the obligation *before* it looks at what kind of
-//!    request this is, and the three things it can then do —
-//!    [`InitializedNode::forward_or_reply`], [`InitializedNode::propose`],
-//!    [`InitializedNode::start_read`] — each take an
-//!    [`Accepted`], which only the ledger's `accept` can mint. So a fourth kind
-//!    of request cannot be acted on without entering the ledger, and that is
-//!    rustc's to keep rather than a reader's to certify.
+//!    Every function that acts on one takes an [`Accepted`], and that token has
+//!    exactly two sources, both inside [`answers`](crate::answers) and both over
+//!    fields no other module can fill: `accept`, which creates the record, and
+//!    `recorded`, which finds one and never creates. So a path acting on a
+//!    request either lodged its record or was handed one that already existed,
+//!    and that much is rustc's to keep rather than a reader's to certify.
+//!
+//!    [`InitializedNode::handle_client_request`] is the funnel for requests
+//!    *arriving*: [`InitializedNode::handle_client`] and
+//!    [`InitializedNode::handle_forward`] both call it, it accepts the
+//!    obligation before it looks at what kind of request this is, and the three
+//!    things it can then do — [`InitializedNode::forward_or_reply`],
+//!    [`InitializedNode::propose`], [`InitializedNode::start_read`] — each take
+//!    the token it minted.
+//!
+//!    The previous round said the funnel was the whole of it: "both entry points
+//!    call it and nothing else acts on a request." That was false, and false the
+//!    same way the round before it was — a list checked in the easy direction.
+//!    [`InitializedNode::handle_client_result`] is a third path to a client
+//!    request key, and it called [`InitializedNode::deliver_result`] directly.
+//!    A `(client, in_reply_to)` this node never accepted therefore got a
+//!    client-addressed answer *and* an entry in `completed_replies`, after which
+//!    [`InitializedNode::has_accepted`] refused the client's genuine request for
+//!    that key above the accept — no record, no waiter, no deadline, no answer,
+//!    and the mutation never reached the state machine. It takes `recorded`'s
+//!    token now, which is what makes it able to pay an obligation and unable to
+//!    invent one.
 //! 2. **A record is destroyed only when an answer for it leaves.**
 //!    [`OwedAnswers`](crate::answers) keeps its map private and exposes one way
 //!    in and one way out; [`InitializedNode::accept_answer_obligation`] is the
@@ -92,6 +109,24 @@
 //! - **Anything the harness never accepted at all** — a request lost in the
 //!   network before it arrived. No node can answer for a request it never saw,
 //!   and the client's own retry is the only thing that covers it.
+//! - **[`InitializedNode::deliver_result`] itself, which takes no token.** The
+//!   token gates every path that acts on a request *before* an answer for it
+//!   exists; it does not gate the emit. `deliver_result` takes plain strings, so
+//!   "nothing reaches it without an obligation" is a claim about its callers —
+//!   a list — and it is stated here rather than dressed up as a compiler
+//!   guarantee.
+//!
+//!   It cannot be closed by requiring a token, and the reason is a decision made
+//!   above rather than an omission: the direct arm after a restart is reached
+//!   through the `origin == self.name` mark in the committed entry, precisely
+//!   when the volatile ledger holds no record and no token can exist. Requiring
+//!   one there would drop the answer this harness deliberately re-sends. What
+//!   *is* checkable is the consequence, and it is checked: a call with no
+//!   obligation behind it can send at most one duplicate answer, because
+//!   `completed_replies` is written in the same call. What made
+//!   `handle_client_result` a defect rather than an instance of this was that
+//!   its keys came from another node's message, so the set could gain a key no
+//!   client request had ever produced.
 //!
 //! # How far a request travels
 //!
@@ -277,7 +312,47 @@ impl InitializedNode {
         self.handle_client_request(&Reception::FromPeer(origin), &client, in_reply_to, &request);
     }
 
+    /// Pays a request this node relayed, out of the answer the leader sent back.
+    ///
+    /// A fast path, and the only one whose input is another node's claim about
+    /// a client request key. So it is the one path that must not be able to act
+    /// on a key it is merely told about: it takes its token from
+    /// [`OwedAnswers::recorded`](crate::answers::OwedAnswers::recorded), which
+    /// reads the ledger and never writes it, and does nothing at all when this
+    /// node holds no record.
+    ///
+    /// That is not a defensive check; it is the funnel's rule applied here. It
+    /// used to call [`Self::deliver_result`] directly with `origin =
+    /// self.name`, which put a client-addressed answer on the wire *and* wrote
+    /// `completed_replies` — the at-most-once set [`Self::has_accepted`] reads
+    /// — for a key no accept had ever seen. The cost was not the stray answer,
+    /// which Maelstrom discards as a stale `in_reply_to`. It was the entry in
+    /// `completed_replies`: the client's genuine request for that key was then
+    /// refused *above* the accept, reached no state machine, lodged no record,
+    /// and no sweep recovered it.
+    ///
+    /// Nothing legitimate is lost. A record gone means this node already
+    /// answered — by an apply, by the deadline, or by an earlier copy of this
+    /// same result — and `deliver_result`'s dedupe would have suppressed the
+    /// send anyway. The difference is only that the suppression now happens
+    /// before the at-most-once set is written rather than after.
+    ///
+    /// The sender is checked as well, and separately. Only the node this
+    /// request was relayed *to* can report what became of it, so a
+    /// `client_result` is a thing only a cluster peer may say; the dispatch
+    /// routed it on its `type` alone, so a client could say it too. That is a
+    /// second-order hole even with the record gate above — a client could
+    /// answer its own outstanding request early, with a result of its choosing,
+    /// and the record would let it — and it costs one lookup to close. Both
+    /// gates are kept: neither implies the other.
     pub(crate) fn handle_client_result(&mut self, envelope: &Envelope) {
+        if !self.name_to_id.contains_key(&envelope.src) {
+            eprintln!(
+                "ignoring client_result from {}, which is not a node in this cluster",
+                envelope.src
+            );
+            return;
+        }
         let Some(client) = envelope.body.get("client").and_then(Value::as_str) else {
             return;
         };
@@ -294,14 +369,22 @@ impl InitializedNode {
                 return;
             }
         };
-        // The leader answered a request this node relayed. Delivering it with
-        // this node as the origin is the same statement the record makes: this
-        // node accepted the request from the client, and the answer goes to the
-        // client. Routing it through `deliver_result` rather than straight to
-        // the client is what retires that record.
-        let origin = self.name.clone();
-        let client = client.to_owned();
-        self.deliver_result(&origin, &client, in_reply_to, result);
+        let Some(accepted) = self
+            .owed_answers
+            .recorded(&(client.to_owned(), in_reply_to))
+        else {
+            eprintln!(
+                "ignoring client_result for a request this node holds no record for: \
+                 client={client} in_reply_to={in_reply_to} from={}",
+                envelope.src
+            );
+            return;
+        };
+        // The leader answered a request this node relayed. The record says who
+        // that answer is addressed to — this node's own name for a client that
+        // reached it directly — and the token carries it, so the recipient is
+        // the ledger's rather than this envelope's.
+        self.answer(&accepted, result);
     }
 
     pub(crate) fn handle_client(&mut self, envelope: &Envelope) {
@@ -319,11 +402,18 @@ impl InitializedNode {
     /// The one funnel every client request passes through, and the one place an
     /// obligation for one is accepted.
     ///
-    /// Both entry points reach here — [`Self::handle_client`] for a request the
-    /// client sent to this node, [`Self::handle_forward`] for one a peer
-    /// relayed — and nothing else in the harness acts on a client request. So
-    /// the scope of the accept below is *every request this node acts on*, in
-    /// the direction the sweep needs it: acted on implies recorded.
+    /// Both entry points for an *arriving* request reach here —
+    /// [`Self::handle_client`] for one the client sent to this node,
+    /// [`Self::handle_forward`] for one a peer relayed. So the scope of the
+    /// accept below is every request this node takes responsibility for, in the
+    /// direction the sweep needs it: acted on implies recorded.
+    ///
+    /// That scope is stated as "arriving" rather than "every request this node
+    /// acts on", which is what it used to say. [`Self::handle_client_result`]
+    /// also acts on a request key and does not come through here: it pays a
+    /// record rather than creating one, and takes its token from
+    /// `OwedAnswers::recorded` instead. Reading this function's scope as the
+    /// wider one is what let that path answer for a request no accept had seen.
     ///
     /// The accept sits above the parse and above the role check deliberately.
     /// Everything below it is a way of acting on the request, every one of them
@@ -504,17 +594,25 @@ impl InitializedNode {
     ///
     /// Two states, and no third — checked rather than argued, in both halves.
     /// *Never in neither*: [`Self::handle_client_request`] accepts before it
-    /// acts, and every way of acting takes the [`Accepted`] that accept mints,
-    /// so a request this node acted on is in the ledger. *Never between them*:
-    /// [`Self::deliver_result`] is the only way out of the ledger, and in the
-    /// same call, before it can return, it puts the request into
-    /// `completed_replies`. So these two together are exactly "this node has
-    /// seen it".
+    /// acts, and every way of acting takes an [`Accepted`], which only the
+    /// ledger mints, so a request this node acted on is in one set or the
+    /// other. *Never between them*: [`Self::deliver_result`] is the only way out
+    /// of the ledger, and in the same call, before it can return, it puts the
+    /// request into `completed_replies`. So these two together are exactly "this
+    /// node has seen it".
     ///
     /// The first half is new. It read as an assertion about a list of accept
     /// sites until the list turned out to be missing [`Self::start_read`] — a
     /// read the leader served sat in neither set, and a second copy of it was
     /// accepted again, opening a second barrier for a request issued once.
+    ///
+    /// It has since been wrong in the other direction too, which is worse,
+    /// because this half is read *above* the accept and a false positive here
+    /// discards a request. [`Self::handle_client_result`] wrote
+    /// `completed_replies` for a key taken from another node's message, so
+    /// "this node has seen it" answered yes for a request this node had never
+    /// seen and the client's own copy was refused. Only paths holding a record
+    /// reach `deliver_result` with a client key now.
     ///
     /// A repeat is a duplicate delivery, never a client retry: Maelstrom gives
     /// every attempt a fresh `msg_id`, so a second `(client, in_reply_to)` is
