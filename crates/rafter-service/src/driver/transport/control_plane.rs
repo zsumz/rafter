@@ -57,6 +57,15 @@ use super::state::TransportDriverState;
 /// not survive — a new process has a new link layer that has accepted nothing,
 /// and starting from "nothing accepted" is what forces the first republication.
 ///
+/// **Bound to one group, and validated against the driver's own at restore.**
+/// Retirement is per `(group_id, NodeId)` pair, so a checkpoint's mark and live
+/// set describe identities in one group and mean nothing in another. A process
+/// that hosts several replicas keeps several of these, and the one thing it must
+/// not do is hand a driver the wrong file — which would raise this group's mark
+/// past identities it never committed and refuse replicas it has. The group
+/// travels *in* the value rather than beside it, so there is no way to persist
+/// the checkpoint and forget to persist what it is a checkpoint of.
+///
 /// **Staleness costs exactly the window it closes.** A crash between a change
 /// and its persistence loses that change and no more, which re-opens this
 /// window for the removals inside it. The deployment's monotonic `NodeId`
@@ -66,9 +75,48 @@ use super::state::TransportDriverState;
 /// [`TransportRaftDriver::control_plane_checkpoint_epoch`] moves, which is on
 /// every committed configuration this driver observes and every fence its link
 /// layer accepts.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+///
+/// **A stale checkpoint is a legal input, and joining one can only ever add
+/// spent-ness.** That is a property of the join rather than of the caller's
+/// discipline: see
+/// the crate-internal `restore_control_plane_checkpoint`, which states the
+/// three properties — symmetric, order-free, monotone — and proves them. A
+/// checkpoint that contradicts the invariants a driver maintains is refused
+/// whole with [`ControlPlaneCheckpointError`] and installs nothing, because
+/// every way it can be wrong lowers a retirement record.
+///
+/// # What a snapshot cannot give back
+///
+/// A replica that catches up by snapshot learns the committed configuration at
+/// the snapshot's boundary and **nothing about the configurations that committed
+/// and were superseded below it** — they are not in the snapshot and the log
+/// that held them is compacted away. So an identity admitted and removed
+/// entirely below a boundary this replica installed is one no local reasoning
+/// can discover was spent.
+///
+/// The boundary itself is still worth what it is worth, and the driver already
+/// takes it: a snapshot install reaches
+/// the crate-internal `observe_committed_members` as an ordinary committed
+/// fact, which raises `committed_id_high_water` to the greatest identity the
+/// boundary configuration names and retires everything the driver had live that
+/// the boundary does not. That is the whole of the cheap improvement available
+/// here, and it is why nothing further is attempted: a mark raised past the
+/// boundary would be a guess, and a guess in this direction refuses live
+/// replicas.
+///
+/// So the answer is three layers and this type is the middle one. **This
+/// checkpoint preserves what this driver itself witnessed**, across a restart,
+/// which is the case a snapshot would otherwise erase. The boundary
+/// configuration covers what the snapshot still carries. The deployment's
+/// monotonic `NodeId` allocator covers what nothing witnessed — a removal that
+/// committed while this process was down and was then compacted below a boundary
+/// it received. Only the third layer can close that one, which is why
+/// [`rafter::NodeId`] states monotonic allocation as a requirement.
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
-pub struct PeerControlPlaneCheckpoint {
+pub struct PeerControlPlaneCheckpoint<G> {
+    /// The group this checkpoint describes.
+    pub group: G,
     /// The greatest `NodeId` this driver has ever seen in a committed
     /// configuration, or `None` before it has seen one.
     ///
@@ -94,6 +142,84 @@ pub struct PeerControlPlaneCheckpoint {
     /// the embedder's, stated at
     /// [`TransportDriverOptions::fence_backlog_service_threshold`].
     pub pending_fences: BTreeSet<NodeId>,
+}
+
+impl<G> PeerControlPlaneCheckpoint<G> {
+    /// The checkpoint a first incarnation over empty storage would have written.
+    ///
+    /// Nothing observed, nothing spent, nothing owed. This is the honest value
+    /// for a process whose durable checkpoint file does not exist yet, and it is
+    /// what [`TransportRaftDriver::new`] and [`TransportRaftDriver::adopt_group`]
+    /// pass on the caller's behalf. It is *not* the right value for a process
+    /// whose file is unreadable: see [`PeerControlPlaneCheckpoint`] for why a
+    /// restart that starts from nothing is precisely the failure this type
+    /// exists to prevent.
+    #[must_use]
+    pub fn empty(group: G) -> Self {
+        Self {
+            group,
+            committed_id_high_water: None,
+            live_committed_members: BTreeSet::new(),
+            pending_fences: BTreeSet::new(),
+        }
+    }
+
+    /// Whether this checkpoint's own record says `node_id` is spent.
+    ///
+    /// The same two reads [`TransportDriverState::is_spent`] makes, against a
+    /// recovered record rather than a live driver, and the primitive the merge
+    /// below is written in terms of. An identity *above* this record's mark is
+    /// not spent by it and not live in it either — this record simply has no
+    /// opinion, which is what lets two records with different marks be joined
+    /// without either overruling the other outside what it saw.
+    fn spends(&self, node_id: NodeId) -> bool {
+        self.committed_id_high_water
+            .is_some_and(|mark| node_id <= mark)
+            && !self.live_committed_members.contains(&node_id)
+    }
+
+    /// Refuses a checkpoint that contradicts the invariants a driver maintains.
+    ///
+    /// Every clause holds by construction for a checkpoint a driver produced, so
+    /// each failure means the durable record was damaged, truncated, or belongs
+    /// to another replica — and each one lowers a retirement record in the
+    /// dangerous direction if it is absorbed instead of refused.
+    ///
+    /// * A live set needs a mark, and every live identity sits at or below it:
+    ///   `observe_committed_members` raises the mark to the greatest identity of
+    ///   the configuration it is assigning as live, in the same call, so the two
+    ///   can never disagree. A lowered mark is how a corrupted record un-retires
+    ///   everything above it.
+    /// * No pending fence names a live member: the fence set is extended with
+    ///   exactly the difference the live assignment removes, so an identity
+    ///   cannot be in both. A record that says otherwise would have the driver
+    ///   permanently fence a replica its own committed configuration still
+    ///   needs, and `fence_peer` has no inverse.
+    fn validate(&self, group: &G) -> Result<(), ControlPlaneCheckpointError>
+    where
+        G: Ord,
+    {
+        if &self.group != group {
+            return Err(ControlPlaneCheckpointError::ForeignGroup);
+        }
+        for node_id in self.live_committed_members.iter().copied() {
+            let Some(mark) = self.committed_id_high_water else {
+                return Err(ControlPlaneCheckpointError::LiveMembersWithoutMark { node_id });
+            };
+            if node_id > mark {
+                return Err(ControlPlaneCheckpointError::LiveMemberAboveMark { node_id, mark });
+            }
+        }
+        if let Some(node_id) = self
+            .pending_fences
+            .intersection(&self.live_committed_members)
+            .copied()
+            .next()
+        {
+            return Err(ControlPlaneCheckpointError::FenceNamesLiveMember { node_id });
+        }
+        Ok(())
+    }
 }
 
 /// The membership fact one publication is derived from.
@@ -331,16 +457,17 @@ where
 
     /// Returns the peer-control-plane state this driver's embedder must make
     /// durable.
-    pub(super) fn control_plane_checkpoint(&self) -> PeerControlPlaneCheckpoint {
+    pub(super) fn control_plane_checkpoint(&self) -> PeerControlPlaneCheckpoint<G> {
         PeerControlPlaneCheckpoint {
+            group: self.group_id.clone(),
             committed_id_high_water: self.committed_id_high_water,
             live_committed_members: self.live_committed_members.clone(),
             pending_fences: self.pending_fences.clone(),
         }
     }
 
-    /// Installs a recovered checkpoint, before any membership fact is derived
-    /// from the adopted group.
+    /// Joins a recovered checkpoint into what this driver holds, before any
+    /// membership fact is derived from the adopted group.
     ///
     /// **Order is the whole contract.** The spent test reads the mark and the
     /// live set together, so both must be in place before
@@ -351,17 +478,75 @@ where
     /// recovered mark of 5 beats a reconstructed committed set of `{1,2}`, and an
     /// identity a removal spent stays spent even if the cluster names it again.
     ///
-    /// Obligations are merged rather than replaced, because a driver can hold
-    /// fences of its own before a checkpoint is restored only through
-    /// re-adoption, and losing either set would be losing a fence. The mark takes
-    /// the higher of the two for the same reason.
+    /// **A lattice join, not three independent merges, and the live set is where
+    /// that matters.** Taking the union of the two live sets was wrong, and
+    /// wrong in the one direction this whole mechanism exists to prevent: a
+    /// stale-but-valid checkpoint holding `{mark 5, live {1,2,5}}` joined into a
+    /// driver holding `{mark 5, live {1,2}}` produced live `{1,2,5}` and
+    /// *un-spent* node 5. Stale checkpoints are explicitly allowed — the public
+    /// contract says so and bounds what staleness costs — so this is reachable
+    /// by a correct embedder that crashed between a removal and its persistence,
+    /// and the identity the cluster consumed became adoptable again.
+    ///
+    /// Write `spent_x(n) = n ≤ mark_x ∧ n ∉ live_x`. Then:
+    ///
+    /// ```text
+    /// mark  = max(mark_a, mark_b)
+    /// fences = fences_a ∪ fences_b
+    /// live  = { n ∈ live_a ∪ live_b : ¬spent_a(n) ∧ ¬spent_b(n) }
+    /// ```
+    ///
+    /// An identity *above* one side's mark is judged only by the side whose mark
+    /// covers it, which is what lets a record that never saw an identity avoid
+    /// overruling one that did.
+    ///
+    /// **The three properties, which are what make it safe to apply in any
+    /// order.** Let `S_x` be the spent set of `x` and `L_x` its live set.
+    ///
+    /// 1. *Symmetric.* Every operator above — `max`, `∪`, and a conjunction —
+    ///    is symmetric in `a` and `b`, so `join(a, b) = join(b, a)`.
+    /// 2. *Order-free.* The key step is that the join's own spent set is exactly
+    ///    the union of the two: `S_join = S_a ∪ S_b`. (⊇ is immediate. For ⊆,
+    ///    take `n ≤ max(mark_a, mark_b)` with `n ∉ L_join`. Either `n ∈ S_a ∪
+    ///    S_b` and we are done, or `n ∉ L_a ∪ L_b`; then `n ≤ mark_a` gives
+    ///    `n ∈ S_a` and `n ≤ mark_b` gives `n ∈ S_b`, and one of the two holds
+    ///    because `n ≤ max`.) Substituting, `L_(a∨b)∨c = (L_a ∪ L_b ∪ L_c) \
+    ///    (S_a ∪ S_b ∪ S_c)`, which is symmetric in all three, so the join is
+    ///    associative as well as commutative — any sequence of restores yields
+    ///    the same state. It is idempotent too: `L_a \ S_a = L_a`, because a
+    ///    validated checkpoint's live and spent sets are disjoint.
+    /// 3. *Monotone in spent-ness.* From `S_join = S_a ∪ S_b`, every identity
+    ///    either side had witnessed spent is spent in the join, and by
+    ///    associativity in every later join as well. **A witnessed removal
+    ///    cannot be undone by any merge order.** That is the property the union
+    ///    lacked and the reason this is a join rather than three merges.
+    ///
+    /// Obligations are still the union, because a driver can hold fences of its
+    /// own before a checkpoint is restored and losing either set would be losing
+    /// a fence. The fence set is idempotent under union by contract: it holds
+    /// committed facts, and nothing but an accepted fence removes one.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`ControlPlaneCheckpointError`] when the checkpoint names another
+    /// group or contradicts the invariants a driver maintains for one. **Nothing
+    /// is mutated on that path** — the checkpoint is validated whole before the
+    /// first field moves — so a caller that refuses to open is left with a driver
+    /// in exactly the state it was.
     pub(super) fn restore_control_plane_checkpoint(
         &mut self,
-        checkpoint: PeerControlPlaneCheckpoint,
-    ) {
+        checkpoint: PeerControlPlaneCheckpoint<G>,
+    ) -> Result<(), ControlPlaneCheckpointError> {
+        checkpoint.validate(&self.group_id)?;
+
+        let held = self.control_plane_checkpoint();
+        self.live_committed_members = held
+            .live_committed_members
+            .union(&checkpoint.live_committed_members)
+            .copied()
+            .filter(|node_id| !held.spends(*node_id) && !checkpoint.spends(*node_id))
+            .collect();
         self.pending_fences.extend(checkpoint.pending_fences);
-        self.live_committed_members
-            .extend(checkpoint.live_committed_members);
         self.committed_id_high_water = match (
             self.committed_id_high_water,
             checkpoint.committed_id_high_water,
@@ -371,6 +556,7 @@ where
             (None, restored) => restored,
         };
         self.advance_checkpoint_epoch();
+        Ok(())
     }
 
     /// Whether a committed removal has already consumed this `(group, NodeId)`.

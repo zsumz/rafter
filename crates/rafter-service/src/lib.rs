@@ -38,10 +38,10 @@ pub mod watch;
 // this crate's public error variants carry. A public signature that names an
 // unreachable type is a defect, and `tests/public_surface.rs` is the check.
 pub use driver::{
-    AddressedRead, AddressedWrite, DriverCommandSender, DriverFuture, DriverServiceState,
-    InMemoryRaftDriver, InboundEnvelopeError, ManagedDriverError, PeerControlPlaneCheckpoint,
-    PendingWrite, QueryReceipt, ReadOptions, TransportDriverOptions, TransportRaftDriver,
-    WriteBatchEntry, WriteOptions, WriteReceipt,
+    AddressedRead, AddressedWrite, ControlPlaneCheckpointError, DriverCommandSender, DriverFuture,
+    DriverServiceState, InMemoryRaftDriver, InboundEnvelopeError, ManagedDriverError,
+    PeerControlPlaneCheckpoint, PendingWrite, QueryReceipt, ReadOptions, TransportDriverOptions,
+    TransportRaftDriver, WriteBatchEntry, WriteOptions, WriteReceipt,
 };
 pub use error::{
     DriverUnavailableReason, ErrorCause, MetricsError, ReadAbandonReason, ReadError, ReadErrorKind,

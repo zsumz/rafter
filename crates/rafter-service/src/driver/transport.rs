@@ -166,13 +166,14 @@ where
         validator: V,
         options: TransportDriverOptions,
     ) -> Result<Self, ManagedDriverError> {
+        let checkpoint = PeerControlPlaneCheckpoint::empty(group.group_id().clone());
         Self::with_control_plane_checkpoint(
             group,
             recovery_outputs,
             transport,
             validator,
             options,
-            PeerControlPlaneCheckpoint::default(),
+            checkpoint,
         )
     }
 
@@ -202,7 +203,7 @@ where
         transport: T,
         validator: V,
         options: TransportDriverOptions,
-        checkpoint: PeerControlPlaneCheckpoint,
+        checkpoint: PeerControlPlaneCheckpoint<G>,
     ) -> Result<Self, ManagedDriverError> {
         let options = options.validate()?;
         let group_id = group.group_id().clone();
@@ -243,7 +244,8 @@ where
         driver
             .inner
             .lock()
-            .restore_control_plane_checkpoint(checkpoint);
+            .restore_control_plane_checkpoint(checkpoint)
+            .map_err(|reason| ManagedDriverError::InvalidControlPlaneCheckpoint { reason })?;
         // Published before the driver serves anything, so the transport's peer
         // set is the group's membership from construction onward rather than
         // undefined until the first membership change. A group that never
@@ -706,11 +708,8 @@ where
         group: RaftGroup<G, A, R>,
         recovery_outputs: Vec<RaftOutput>,
     ) -> Result<(), ManagedDriverError> {
-        self.adopt_group_with_checkpoint(
-            group,
-            recovery_outputs,
-            PeerControlPlaneCheckpoint::default(),
-        )
+        let checkpoint = PeerControlPlaneCheckpoint::empty(group.group_id().clone());
+        self.adopt_group_with_checkpoint(group, recovery_outputs, checkpoint)
     }
 
     /// Installs a new incarnation and merges a recovered control-plane
@@ -735,7 +734,7 @@ where
         &self,
         group: RaftGroup<G, A, R>,
         recovery_outputs: Vec<RaftOutput>,
-        checkpoint: PeerControlPlaneCheckpoint,
+        checkpoint: PeerControlPlaneCheckpoint<G>,
     ) -> Result<(), ManagedDriverError> {
         let mut state = self.inner.lock();
         // Shutdown is terminal, and `shutdown` itself says so by refusing a
@@ -765,11 +764,17 @@ where
         // one is never installed. Nothing above this line has moved state
         // either, so the driver is still holding no group when it raises this.
         //
-        // The checkpoint is merged first so this gate reads the recovered mark
+        // The checkpoint is joined first so this gate reads the recovered mark
         // as well as the held one — a takeover handed a checkpoint that spent
-        // the offered ID must refuse it, and merging afterwards would install
+        // the offered ID must refuse it, and joining afterwards would install
         // the identity and only then learn it was spent.
-        state.restore_control_plane_checkpoint(checkpoint);
+        //
+        // A checkpoint this driver refuses leaves the driver exactly as it was:
+        // `restore_control_plane_checkpoint` validates the whole value before it
+        // moves a field, so this refusal is as clean as the one below it.
+        state
+            .restore_control_plane_checkpoint(checkpoint)
+            .map_err(|reason| ManagedDriverError::InvalidControlPlaneCheckpoint { reason })?;
         if state.is_spent(group.node_id()) {
             return Err(ManagedDriverError::RetiredNodeId {
                 node_id: group.node_id(),

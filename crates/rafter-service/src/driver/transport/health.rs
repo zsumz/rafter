@@ -125,7 +125,7 @@ where
     /// [`TransportRaftDriver::control_plane_checkpoint_epoch`] and take this
     /// when that has moved.
     #[must_use]
-    pub fn control_plane_checkpoint(&self) -> PeerControlPlaneCheckpoint {
+    pub fn control_plane_checkpoint(&self) -> PeerControlPlaneCheckpoint<G> {
         self.inner.lock().control_plane_checkpoint()
     }
 

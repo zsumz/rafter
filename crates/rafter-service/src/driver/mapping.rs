@@ -117,6 +117,16 @@ pub enum ManagedDriverError {
     /// every ID this group has ever committed — and adopt under that. There is
     /// no retry that clears this: see [`rafter::NodeId`].
     RetiredNodeId { node_id: NodeId },
+    /// A recovered peer-control-plane checkpoint was refused, and nothing about
+    /// it was installed.
+    ///
+    /// A checkpoint is durable caller-owned state that a restarted process reads
+    /// back off its own disk, so it is exactly the kind of input that arrives
+    /// corrupted, truncated, or belonging to a different replica. Every way it
+    /// can be wrong lowers a retirement record — a smaller mark, an extra live
+    /// identity, a fence against an active member — so it is refused whole
+    /// rather than absorbed in part. The driver's own state is untouched.
+    InvalidControlPlaneCheckpoint { reason: ControlPlaneCheckpointError },
     /// A group operation failed while the driver was driving it.
     ///
     /// The category is the variant and the detail is the preserved cause; there
@@ -124,6 +134,70 @@ pub enum ManagedDriverError {
     /// match on rendered text.
     Group { cause: ErrorCause },
 }
+
+/// Why a peer-control-plane checkpoint could not be installed.
+///
+/// This enum is exhaustive because it is the closed set of ways a checkpoint can
+/// contradict the invariants a driver maintains for one. Each variant names the
+/// identity that failed, because an operator reading this is looking for which
+/// replica the durable record disagrees about.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ControlPlaneCheckpointError {
+    /// The checkpoint was written for a different group.
+    ///
+    /// A driver serves one group for its whole life and retirement is per
+    /// `(group_id, NodeId)` pair, so a checkpoint from another group carries a
+    /// mark and a live set about identities that mean nothing here — and
+    /// installing it would raise this group's mark past identities it has never
+    /// committed, refusing replicas it has.
+    ForeignGroup,
+    /// The checkpoint names live committed members but no high-water mark.
+    ///
+    /// The two are read together by the spent test, and a live set without a
+    /// mark is a state no driver produces: an observed committed configuration
+    /// always raises the mark to at least its own greatest identity.
+    LiveMembersWithoutMark { node_id: NodeId },
+    /// A live committed member sits above the checkpoint's high-water mark.
+    ///
+    /// Also a state no driver produces, for the same reason, and the dangerous
+    /// direction: an identity above the mark is unjudgeable by the spent test,
+    /// so a lowered mark is how a corrupted record un-retires everything above
+    /// it.
+    LiveMemberAboveMark { node_id: NodeId, mark: NodeId },
+    /// A pending fence names a replica the checkpoint also calls live.
+    ///
+    /// Contradictory by construction: a fence is licensed only by a committed
+    /// removal, and a committed removal is precisely what takes the identity out
+    /// of the live set. Honest checkpoints cannot contain this because the
+    /// driver adds to `pending_fences` from the difference the same assignment
+    /// removes from the live set. Installing it would ask the link layer to
+    /// permanently fence a replica the group still needs.
+    FenceNamesLiveMember { node_id: NodeId },
+}
+
+impl fmt::Display for ControlPlaneCheckpointError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ForeignGroup => {
+                formatter.write_str("the checkpoint was written for a different group")
+            }
+            Self::LiveMembersWithoutMark { node_id } => write!(
+                formatter,
+                "the checkpoint names live member {node_id} with no high-water mark"
+            ),
+            Self::LiveMemberAboveMark { node_id, mark } => write!(
+                formatter,
+                "the checkpoint's live member {node_id} is above its high-water mark {mark}"
+            ),
+            Self::FenceNamesLiveMember { node_id } => write!(
+                formatter,
+                "the checkpoint fences {node_id} and also calls it a live member"
+            ),
+        }
+    }
+}
+
+impl Error for ControlPlaneCheckpointError {}
 
 impl fmt::Display for ManagedDriverError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -183,6 +257,10 @@ impl fmt::Display for ManagedDriverError {
                 formatter,
                 "managed driver cannot adopt {node_id}: a committed removal spent that identity"
             ),
+            Self::InvalidControlPlaneCheckpoint { reason } => write!(
+                formatter,
+                "managed driver refused the peer control plane checkpoint: {reason}"
+            ),
             Self::Group { .. } => formatter.write_str("managed driver group operation failed"),
         }
     }
@@ -192,6 +270,7 @@ impl Error for ManagedDriverError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Group { cause } => Some(cause.as_error()),
+            Self::InvalidControlPlaneCheckpoint { reason } => Some(reason),
             Self::EmptyCluster
             | Self::MissingPrimary { .. }
             | Self::MissingNode { .. }

@@ -264,7 +264,7 @@ pub(crate) fn scripted_driver_with_app(
         authorized,
         options,
         app,
-        PeerControlPlaneCheckpoint::default(),
+        PeerControlPlaneCheckpoint::empty(GROUP),
     )
 }
 
@@ -276,7 +276,7 @@ pub(crate) fn scripted_driver_with_checkpoint(
     nameable: Nameable,
     authorized: &[NodeId],
     options: TransportDriverOptions,
-    checkpoint: PeerControlPlaneCheckpoint,
+    checkpoint: PeerControlPlaneCheckpoint<u64>,
 ) -> (ScriptedDriver, QueueTransport) {
     build_scripted_driver(
         runtime,
@@ -294,7 +294,7 @@ fn build_scripted_driver(
     authorized: &[NodeId],
     options: TransportDriverOptions,
     app: KvStateMachine,
-    checkpoint: PeerControlPlaneCheckpoint,
+    checkpoint: PeerControlPlaneCheckpoint<u64>,
 ) -> (ScriptedDriver, QueueTransport) {
     let transport = QueueTransport::default();
     let validator = Validator {

@@ -374,6 +374,30 @@ impl Node {
     /// The returned outputs report local proposals the retained log no longer
     /// backs, and are ordinarily empty.
     ///
+    /// # A boundary is not a history, and no [`Output::ConfigurationCommitted`]
+    ///
+    /// A snapshot carries the committed configuration **at** its boundary and
+    /// nothing about the configurations that committed and were superseded below
+    /// it. This call therefore emits no
+    /// [`Output::ConfigurationCommitted`](super::Output::ConfigurationCommitted),
+    /// and neither does installing a snapshot received from a leader: those
+    /// outputs come from the commit index crossing a configuration *entry*, and
+    /// compaction is what removes the entries. The same is true of a replica
+    /// that catches up by snapshot rather than by log.
+    ///
+    /// **A consumer that retires identities must not treat this as recoverable
+    /// locally.** It is not: the configurations are gone from every copy this
+    /// node can reach. What survives is the boundary configuration itself, which
+    /// is enough to raise a consumer's high-water mark to the greatest identity
+    /// the cluster had committed as of the boundary — and a managed driver does
+    /// exactly that, because it observes the boundary configuration as an
+    /// ordinary committed fact. What cannot survive is an identity admitted and
+    /// removed entirely below the boundary.
+    ///
+    /// Two mechanisms cover that gap and neither is the kernel's: a consumer's
+    /// own durable record of what *it* witnessed, and the deployment's monotonic
+    /// `NodeId` allocator for what nothing witnessed. See [`crate::NodeId`].
+    ///
     /// # Errors
     ///
     /// Returns the [`LocalSnapshotInstallError`] naming the first violated rule,

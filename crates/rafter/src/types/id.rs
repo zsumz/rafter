@@ -49,6 +49,25 @@ use std::fmt;
 /// so nothing was retired. Reopening durable state under the same ID is the
 /// ordinary restart path and stays that way.
 ///
+/// # A snapshot is a boundary, not a history
+///
+/// A replica that catches up by *snapshot* learns the committed configuration at
+/// the snapshot's boundary and nothing about the configurations that committed
+/// and were superseded below it. Those are not in the snapshot; the log that
+/// held them is compacted away; and no amount of local reasoning reconstructs
+/// them. So an ID that was admitted and removed entirely below a boundary this
+/// replica installed is one it can never learn was spent — its own mark rises to
+/// the boundary configuration's greatest ID, and no further.
+///
+/// This is the one gap monotonic allocation is the *only* answer to, and it is
+/// why the requirement above is a deployment obligation rather than something a
+/// replica could be asked to derive. A layer that witnessed the removal itself
+/// records it — see the managed driver's peer-control-plane checkpoint, which is
+/// caller-owned and durable precisely so that a process keeps what it saw across
+/// a restart — but nothing records what no process was running to see. The
+/// allocator is the cross-process backstop, and for this case it is the whole
+/// backstop.
+///
 /// This is a stated precondition rather than a checked one, and the kernel says
 /// so rather than implying it. A node cannot recognize an ID it has removed
 /// after log compaction has erased the configuration history that named it.

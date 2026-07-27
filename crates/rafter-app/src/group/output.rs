@@ -1,9 +1,9 @@
 use super::{
     report_has_proposal_lifecycle, ApplyEntry, Debug, GrantedReadIndex, GroupError, GroupInput,
-    GroupResult, GroupStepReport, LeadershipTransferEvent, LogIndex, MembershipEvent, Message,
-    NodeId, PeerEnvelope, PersistedRaftRuntime, Proposal, ProposalEvent, RaftGroup,
-    RaftGroupMetrics, RaftInput, RaftOutput, ReadId, ReplicatedStateMachine, SnapshotEvent,
-    StepReportOptions, StepReportResult,
+    GroupResult, GroupStepReport, LeadershipTransferEvent, LocalProposalId, LogIndex,
+    MembershipEvent, Message, NodeId, PeerEnvelope, PersistedRaftRuntime, Proposal, ProposalEvent,
+    RaftGroup, RaftGroupMetrics, RaftInput, RaftOutput, ReadId, ReplicatedStateMachine,
+    SnapshotEvent, StepReportOptions, StepReportResult, Term,
 };
 
 impl<G, A, R> RaftGroup<G, A, R>
@@ -369,15 +369,7 @@ where
                 proposal_id,
                 index,
                 term,
-            } => {
-                if self.pending_proposals.contains_key(&proposal_id) {
-                    report.proposal_events.push(ProposalEvent::Appended {
-                        local_proposal_id: proposal_id,
-                        index,
-                        term,
-                    });
-                }
-            }
+            } => self.record_appended_proposal(proposal_id, index, term, report),
             RaftOutput::LocalProposalDropped {
                 proposal_id,
                 index,
@@ -467,6 +459,28 @@ where
             }
         }
         Ok(())
+    }
+
+    /// Records a local append, but only for a proposal this group is tracking.
+    ///
+    /// The runtime reports every tracked append it made, and a group adopted
+    /// over a live runtime can be handed one for a proposal an earlier
+    /// incarnation submitted. Reporting that would resolve a waiter this group
+    /// never created.
+    fn record_appended_proposal(
+        &self,
+        proposal_id: LocalProposalId,
+        index: LogIndex,
+        term: Term,
+        report: &mut GroupStepReport<G, A::CommandResult>,
+    ) {
+        if self.pending_proposals.contains_key(&proposal_id) {
+            report.proposal_events.push(ProposalEvent::Appended {
+                local_proposal_id: proposal_id,
+                index,
+                term,
+            });
+        }
     }
 
     pub(super) fn record_peer_message(
