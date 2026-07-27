@@ -597,27 +597,22 @@ impl<A: LockApps> LockCluster<A> {
                 // A frame that fails this replica's own authentication policy is
                 // refused inside the driver, before the group is stepped, which
                 // is exactly where a production embedder refuses it.
-                match self.node(node_id).driver.deliver(envelope) {
-                    // Two refusals, and neither is a fault. `Rejected` is the
-                    // validator turning a frame away; `NotInMembership` is the
-                    // driver's own membership doing it, which is what a late
-                    // frame from a replica the cluster has removed looks like
-                    // before the fence lands. This harness used to panic on the
-                    // second, which made an ordinary network event a test
-                    // failure.
-                    Ok(())
-                    | Err(
-                        InboundEnvelopeError::Rejected { .. }
-                        | InboundEnvelopeError::NotInMembership { .. },
-                    ) => {}
-                    // An application that could not make a committed entry
-                    // durable poisons its group. That is a crashed replica, not
-                    // a malformed frame, and the driver reports it here.
-                    Err(InboundEnvelopeError::Driver { source }) => self.crash(node_id, &source),
-                    // A refusal this build does not know left the group
-                    // untouched or it would be `Driver`, so it is dropped like
-                    // the other two rather than failing the run.
-                    Err(_) => {}
+                // Exactly one outcome here is a fault. An application that could
+                // not make a committed entry durable poisons its group, and that
+                // is a crashed replica rather than a malformed frame.
+                //
+                // Every other refusal left the group untouched and is dropped.
+                // `Rejected` is the validator turning a frame away;
+                // `NotInMembership` is the driver's own membership doing it,
+                // which is what a late frame from a replica the cluster has
+                // removed looks like before its fence lands — and this harness
+                // used to panic on it, making an ordinary network event a test
+                // failure. A variant this build does not know joins them for the
+                // same reason: it would be `Driver` if it had touched the group.
+                if let Err(InboundEnvelopeError::Driver { source }) =
+                    self.node(node_id).driver.deliver(envelope)
+                {
+                    self.crash(node_id, &source);
                 }
             }
         }

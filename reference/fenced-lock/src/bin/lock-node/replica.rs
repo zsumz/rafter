@@ -589,18 +589,15 @@ impl Replica {
     pub fn deliver(&mut self, envelope: Inbound) -> Result<(), String> {
         match self.driver.deliver(envelope) {
             Ok(()) => {}
-            Err(InboundEnvelopeError::Rejected { .. }) => {
-                self.refused_frames = self.refused_frames.saturating_add(1);
-            }
             Err(InboundEnvelopeError::NotInMembership { .. }) => {
                 self.non_member_frames = self.non_member_frames.saturating_add(1);
             }
             Err(InboundEnvelopeError::Driver { source }) => return Err(source.to_string()),
-            // A variant this build does not know left the group untouched or it
-            // would be `Driver`, so it is counted with the other refusals rather
-            // than made fatal. `InboundEnvelopeError` is `#[non_exhaustive]`.
-            Err(error) => {
-                let _ = error;
+            // `Rejected`, and any refusal a later version adds. Both left the
+            // group untouched — a variant that had touched it would be `Driver`
+            // — so both are counted as the validator's own work rather than made
+            // fatal. `InboundEnvelopeError` is `#[non_exhaustive]`.
+            Err(_) => {
                 self.refused_frames = self.refused_frames.saturating_add(1);
             }
         }
