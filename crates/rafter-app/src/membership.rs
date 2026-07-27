@@ -94,15 +94,43 @@ pub struct MembershipChangeReport<G> {
 }
 
 /// Membership side effects observed by a manual group driver.
+///
+/// Two facts and a refusal. The two facts are reported separately because a
+/// consumer may do opposite things with them: an effective configuration may
+/// still be uncommitted and may still be taken back, so it may only *widen* a
+/// peer set; a committed one is the only fact that licenses narrowing it or
+/// fencing what left.
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[non_exhaustive]
 pub enum MembershipEvent<G> {
-    Appended {
+    /// The configuration this replica is now operating under changed.
+    ///
+    /// Named for the fact rather than for a cause, because it has several and a
+    /// consumer must not care which: a local membership request, a
+    /// configuration entry that arrived by replication, a new leader truncating
+    /// an uncommitted one back off the log, and a snapshot install all reach
+    /// here. The previous name said `Appended`, which was true of exactly one
+    /// of those and false of the truncation that is the most dangerous to miss.
+    ///
+    /// `index` and `term` are an **observation point**, not the location of a
+    /// configuration entry. They are this replica's last log index and the term
+    /// at it when the change was observed, so for an append they do name the
+    /// entry that carried the configuration, and for a truncation or a snapshot
+    /// install they name where the log now ends. A consumer that needs the
+    /// entry itself must read the log; a consumer keeping a peer set current —
+    /// which is what this event is for — needs only the membership.
+    EffectiveChanged {
         group_id: G,
         index: LogIndex,
         term: Term,
         membership: MembershipConfig,
     },
+    /// The configuration the cluster has committed changed.
+    ///
+    /// `index` and `term` are the commit index and its term, which is the same
+    /// kind of observation point: a commit is observed at the index it reached,
+    /// and that index names a configuration entry only when the commit stopped
+    /// exactly on one.
     Applied {
         group_id: G,
         index: LogIndex,

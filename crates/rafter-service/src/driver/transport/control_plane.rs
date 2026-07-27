@@ -77,7 +77,7 @@ where
     /// committing does not retract a *later* change already appended over it.
     pub(super) fn route_membership_event(&mut self, event: &MembershipEvent<G>) {
         match event {
-            MembershipEvent::Appended { membership, .. } => {
+            MembershipEvent::EffectiveChanged { membership, .. } => {
                 let effective = membership.replica_ids().into_iter().collect();
                 self.publish_membership(MembershipFact::Effective(effective));
             }

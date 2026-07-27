@@ -139,19 +139,26 @@ fn membership_add_learner_reports_applied_membership() {
         })
         .expect("single node membership change commits");
 
-    assert_eq!(report.membership_events.len(), 1);
-    assert!(matches!(
-        &report.membership_events[0],
-        MembershipEvent::Applied {
-            group_id: 7,
-            index,
-            term,
-            membership,
-        } if *index > LogIndex::ZERO
-            && !term.is_zero()
-            && membership.contains_voter(NodeId(1))
-            && membership.contains_learner(NodeId(2))
-    ));
+    // A single-voter leader commits its own change in the step that appends it,
+    // so both facts moved and both are reported; the effective one first. What
+    // this test is about is the committed half, and
+    // `tests/group_membership_stream.rs` owns the ordering contract.
+    assert!(
+        report.membership_events.iter().any(|event| matches!(
+            event,
+            MembershipEvent::Applied {
+                group_id: 7,
+                index,
+                term,
+                membership,
+            } if *index > LogIndex::ZERO
+                && !term.is_zero()
+                && membership.contains_voter(NodeId(1))
+                && membership.contains_learner(NodeId(2))
+        )),
+        "the committed configuration was reported: {:?}",
+        report.membership_events
+    );
     assert_eq!(group.metrics().membership, membership(&[1], &[2]));
 }
 
@@ -185,7 +192,7 @@ fn membership_request_rejection_reports_reason_and_leader_hint() {
 }
 
 #[test]
-fn membership_request_reports_uncommitted_append_event() {
+fn membership_request_reports_the_uncommitted_effective_change() {
     let mut group = scripted_group(RecordingStateMachine::default());
 
     let report = group
@@ -200,7 +207,7 @@ fn membership_request_reports_uncommitted_append_event() {
     assert_eq!(report.membership_events.len(), 1);
     assert!(matches!(
         &report.membership_events[0],
-        MembershipEvent::Appended {
+        MembershipEvent::EffectiveChanged {
             group_id: 7,
             index,
             term: Term(1),

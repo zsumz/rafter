@@ -125,7 +125,7 @@ fn membership_event_group<G>(
 where
     G: Clone + PartialEq,
 {
-    let (MembershipEvent::Appended {
+    let (MembershipEvent::EffectiveChanged {
         group_id: actual, ..
     }
     | MembershipEvent::Applied {

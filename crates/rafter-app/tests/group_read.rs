@@ -96,14 +96,25 @@ fn begin_read_barrier_preserves_coemitted_report_streams() {
             chunk: staged,
         }]
     );
+    // The scripted step moves both facts at once, so both are reported and the
+    // effective one comes first; a read-barrier step carries membership events
+    // like any other, which is the clause under test here.
     assert_eq!(
         full.report.membership_events,
-        vec![MembershipEvent::Applied {
-            group_id: 7,
-            index: LogIndex(5),
-            term: Term(1),
-            membership: updated_membership,
-        }]
+        vec![
+            MembershipEvent::EffectiveChanged {
+                group_id: 7,
+                index: LogIndex::ZERO,
+                term: Term(2),
+                membership: updated_membership.clone(),
+            },
+            MembershipEvent::Applied {
+                group_id: 7,
+                index: LogIndex(5),
+                term: Term(1),
+                membership: updated_membership,
+            }
+        ]
     );
     assert_eq!(
         full.report.leadership_transfer_events,

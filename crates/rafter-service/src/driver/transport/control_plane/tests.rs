@@ -2,7 +2,7 @@
 
 //! The membership branches no public entry point of this driver can reach.
 //!
-//! [`MembershipEvent::Appended`] is emitted only for a step that carried a
+//! [`MembershipEvent::EffectiveChanged`] is emitted only for a step that carried a
 //! membership *request*, and the only input that carries one is
 //! `GroupInput::Membership`, which [`super::super::TransportRaftDriver`] has no
 //! method to produce — deliberately, because a membership-change API on this
@@ -249,7 +249,7 @@ fn membership(voters: &[u64]) -> MembershipConfig {
 }
 
 fn appended(voters: &[u64]) -> MembershipEvent<u64> {
-    MembershipEvent::Appended {
+    MembershipEvent::EffectiveChanged {
         group_id: GROUP,
         index: LogIndex(1),
         term: Term(1),

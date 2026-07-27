@@ -233,8 +233,13 @@ pub struct GroupStepReport<G, R> {
     /// Membership transitions, which a transport must track to keep its peer
     /// set current.
     ///
-    /// An `Appended` change is uncommitted and may only widen a peer set; only
-    /// an `Applied` change licenses narrowing it or fencing what left.
+    /// An `EffectiveChanged` configuration may still be uncommitted and may
+    /// still be taken back, so it may only *widen* a peer set; only an `Applied`
+    /// change licenses narrowing it or fencing what left. Both are reported
+    /// whatever moved them — a local request, replication, a truncation, or a
+    /// snapshot install — so a consumer that follows this list is level with the
+    /// group on every step, and one that follows only its own membership calls
+    /// is not.
     pub membership_events: Vec<MembershipEvent<G>>,
     /// A metrics snapshot, present only when the step was asked for one.
     ///
