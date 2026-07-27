@@ -117,6 +117,25 @@ fn unchanged(effective: &[u64], committed: &[u64]) -> (Vec<u64>, Vec<u64>) {
     (effective.to_vec(), committed.to_vec())
 }
 
+/// A later step that moves nothing, so the only membership it can report is a
+/// delta an earlier step left owed.
+///
+/// **The discriminating half of the failure cases here.** A drain taken
+/// immediately after a failed step is satisfied by a *pre-step snapshot* too:
+/// that snapshot was taken before the runtime moved, so it still differs. What a
+/// snapshot cannot survive is a second step, which re-snapshots from the
+/// configuration the runtime already moved to and has nothing left to compare
+/// against. The clauses below that go through this helper are the ones that say
+/// the comparison is durable rather than merely well timed.
+fn report_after_an_unrelated_step(
+    group: &mut RaftGroup<u64, RecordingStateMachine, ScriptedRuntime>,
+) -> Vec<MembershipEvent<u64>> {
+    group
+        .step(replicated_frame())
+        .expect("a later step the state machine does not refuse")
+        .membership_events
+}
+
 /// A committed removal survives a step that fails after the runtime moved.
 ///
 /// The reviewer's first case, and the one that costs the most: a peer delivery
@@ -162,6 +181,50 @@ fn a_committed_removal_survives_a_step_that_failed_after_it_moved() {
     assert_eq!(voters(&owed[1]), vec![NodeId(1), NodeId(2)]);
     assert!(matches!(owed[0], MembershipEvent::EffectiveChanged { .. }));
     assert!(matches!(owed[1], MembershipEvent::Applied { .. }));
+}
+
+/// The same removal survives an intervening step that reported nothing.
+///
+/// The clause a pre-step snapshot cannot satisfy, and therefore the one that
+/// says the comparison is durable rather than merely well timed. See
+/// [`report_after_an_unrelated_step`].
+#[test]
+fn a_committed_removal_survives_a_later_step_that_moved_nothing() {
+    let mut group = losslessness_group(
+        RecordingStateMachine::default(),
+        &[1, 2, 3],
+        &[1, 2, 3],
+        [
+            unchanged(&[1, 2, 3], &[1, 2, 3]),
+            (vec![1, 2], vec![1, 2]),
+            unchanged(&[1, 2], &[1, 2]),
+        ],
+        [],
+    );
+    arm_granted_read(&mut group);
+    group.state_machine_mut().fail_applied_index = true;
+    let _ = group
+        .step(replicated_frame())
+        .expect_err("the state machine refuses to report its applied index");
+    group.state_machine_mut().fail_applied_index = false;
+
+    let reported = report_after_an_unrelated_step(&mut group);
+
+    assert_eq!(
+        reported.len(),
+        2,
+        "the delta the failed step owed arrives on the next report: {reported:?}"
+    );
+    assert_eq!(voters(&reported[0]), vec![NodeId(1), NodeId(2)]);
+    assert!(matches!(
+        reported[0],
+        MembershipEvent::EffectiveChanged { .. }
+    ));
+    assert!(matches!(reported[1], MembershipEvent::Applied { .. }));
+    assert!(
+        group.drain_membership_events().is_empty(),
+        "and that report advanced the mark, so it is owed once"
+    );
 }
 
 /// An effective rollback survives the same failure.
@@ -390,7 +453,7 @@ fn a_report_discarded_by_a_proposal_verdict_still_owes_its_membership_delta() {
         RecordingStateMachine::default(),
         &[1, 2],
         &[1, 2],
-        [(vec![1, 2, 3], vec![1, 2])],
+        [(vec![1, 2, 3], vec![1, 2]), unchanged(&[1, 2, 3], &[1, 2])],
         // No lifecycle output for the proposal, which is what makes the group
         // discard the report it built.
         [vec![]],
@@ -407,12 +470,15 @@ fn a_report_discarded_by_a_proposal_verdict_still_owes_its_membership_delta() {
         .expect_err("the runtime released no lifecycle event for the proposal");
     assert!(matches!(error, GroupError::ProposalDidNotStart { .. }));
 
-    let owed = group.drain_membership_events();
+    // Through a later step rather than a drain, because the discard has to
+    // survive the *mark* rather than merely the moment: a group that advanced
+    // the mark into the report it threw away has nothing left to report here.
+    let reported = report_after_an_unrelated_step(&mut group);
 
     assert_eq!(
-        owed.len(),
+        reported.len(),
         1,
-        "the discarded report's membership delta is still owed: {owed:?}"
+        "the discarded report's membership delta is still owed: {reported:?}"
     );
-    assert_eq!(voters(&owed[0]), vec![NodeId(1), NodeId(2), NodeId(3)]);
+    assert_eq!(voters(&reported[0]), vec![NodeId(1), NodeId(2), NodeId(3)]);
 }
