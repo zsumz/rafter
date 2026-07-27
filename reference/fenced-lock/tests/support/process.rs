@@ -413,6 +413,13 @@ impl NodeProcess {
         cluster_dir.join(format!("node-{}", node_id.0)).join("app")
     }
 
+    /// Returns one replica's own directory, which is where the process publishes
+    /// the durable state that is neither Raft's nor the application's — its
+    /// peer address, and its peer-control-plane checkpoint.
+    pub fn node_dir(cluster_dir: &Path, node_id: NodeId) -> PathBuf {
+        cluster_dir.join(format!("node-{}", node_id.0))
+    }
+
     /// Waits for this replica to either finish recovery or refuse it.
     ///
     /// Both are terminal, and the refusal is not a failure of this harness: a

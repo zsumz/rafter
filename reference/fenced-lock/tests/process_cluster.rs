@@ -1057,3 +1057,89 @@ fn an_unauthenticated_client_may_claim_any_identity() {
     assert_tokens_never_reissue(&cluster);
     cluster.shutdown();
 }
+
+/// The peer-control-plane checkpoint is durable, and survives a restart.
+///
+/// Rafter opens no files, so the retirement record and the fence obligations a
+/// driver derives are its embedder's to persist — and a process that did not
+/// would come back with no high-water mark, stop retrying a refused fence, and
+/// let an identity a committed removal spent be allocated again. Raft cannot
+/// give either fact back: retirement is the *difference* between two committed
+/// configurations, a restarted process sees only the latest one, and compaction
+/// erases the rest.
+///
+/// **This cluster's membership never changes**, which is what this test can and
+/// cannot show. It cannot produce a removal without violating the contract in
+/// `CONTRACT.md`, so what a removal costs is pinned where a driver can actually
+/// be destroyed and rebuilt — `crates/rafter-service/tests/transport_service_state.rs`.
+/// What it shows here is that the *plumbing is real* in a process that can be
+/// killed: the file is published, it names this cluster's committed
+/// configuration and its high-water mark, and a replica that restarts comes back
+/// with them rather than with nothing.
+#[test]
+#[ignore = "spawns real processes; run with --ignored (see the module docs)"]
+fn the_peer_control_plane_checkpoint_is_durable_across_a_restart() {
+    let mut cluster = ProcessCluster::start("control-plane-checkpoint", process_config());
+    let leader = cluster.wait_for_leader();
+    let victim = *cluster
+        .live_nodes()
+        .iter()
+        .find(|node_id| **node_id != leader)
+        .expect("a three-replica cluster has a follower");
+
+    cluster.submit_to_leader(open_session(0, 1));
+    let token = cluster
+        .submit_to_leader(submit(0, 1, 1, acquire("vault", 10)))
+        .acquired_token();
+
+    let checkpoint_path =
+        process::NodeProcess::node_dir(cluster.root(), victim).join("control-plane");
+    let before = std::fs::read_to_string(&checkpoint_path)
+        .expect("a serving replica has published its control-plane checkpoint");
+    assert!(
+        before.starts_with("rafter-lock-control-plane 1\n"),
+        "the file names its own format so a later shape is a refusal: {before:?}"
+    );
+    assert!(
+        before.contains("high_water 3"),
+        "the mark is the highest id this group has ever committed: {before:?}"
+    );
+    assert!(
+        before.contains("live 1 2 3"),
+        "and the live committed set is this cluster's configuration: {before:?}"
+    );
+    assert!(
+        before.contains("fences\n"),
+        "a cluster that removed nobody owes no fence: {before:?}"
+    );
+
+    cluster.kill(victim);
+    cluster.restart(victim);
+    cluster.wait_applied_through(victim, LogIndex(1));
+
+    let after = std::fs::read_to_string(&checkpoint_path)
+        .expect("the restarted replica republishes what it restored");
+    assert_eq!(
+        after, before,
+        "the restored driver derived the same control plane it was handed, \
+         rather than starting from nothing"
+    );
+
+    // The replica is a full member again, which is the point of restoring the
+    // mark rather than merely storing it: a driver that read its own checkpoint
+    // as a set of retirements would refuse every replica in its own cluster —
+    // the mark names them all — and this write could not reach a quorum.
+    let leader = cluster.wait_for_leader();
+    let renewed = cluster.submit(leader, submit(0, 1, 2, renew("vault", token.get(), 30)));
+    assert_operation(
+        &renewed,
+        OperationResult::Renewed {
+            token,
+            expiry: support::time(30),
+        },
+    );
+    cluster.wait_applied_through(victim, LogIndex(2));
+
+    assert_history_well_formed(&cluster);
+    cluster.shutdown();
+}

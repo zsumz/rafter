@@ -26,7 +26,9 @@ use rafter_reference_fenced_lock::{
     OperationId, OperationResult, QueryOutcome, ReferenceLockService, RequestFingerprint,
     RequestRejection, ResourceStatus, SubmitOutcome,
 };
-use rafter_service::{ReadError, UnknownOutcomeReason, WriteError, WriteErrorKind, WriteFate};
+use rafter_service::{
+    InboundEnvelopeError, ReadError, UnknownOutcomeReason, WriteError, WriteErrorKind, WriteFate,
+};
 
 use cluster::{LockCluster, MAX_ROUNDS};
 use support::{
@@ -829,4 +831,52 @@ fn assert_history_agrees_with_oracle(cluster: &LockCluster, node_id: NodeId) {
         checked += 1;
     }
     assert!(checked > 0, "the history checked no completed operations");
+}
+
+/// A late frame from an identity the membership does not name is dropped, and
+/// the replica keeps serving.
+///
+/// `InboundEnvelopeError::NotInMembership` exists to describe exactly this: a
+/// frame the validator authorized and this driver's own membership refused,
+/// which is what a removed or stale replica's retransmission looks like in the
+/// window before its fence lands. It leaves the group untouched. This process
+/// treated it as fatal — only `Rejected` was counted and dropped — so a healthy
+/// replica would have been taken down by a retired peer that was still talking.
+///
+/// This cluster's contract says its membership never changes, so the
+/// disagreement cannot be produced by reconfiguring it. The validator is
+/// widened instead, which is the same two-stage disagreement seen from the
+/// deployment's side rather than the cluster's.
+#[test]
+fn a_late_frame_from_an_unnamed_identity_is_dropped_and_the_replica_keeps_serving() {
+    let mut cluster = LockCluster::new(config(4, 4));
+    let leader = cluster.elect_leader();
+    committed(&mut cluster, leader, open_session(0, 1));
+
+    let refused = cluster.deliver_late_frame(leader, NodeId(9));
+
+    assert!(
+        matches!(
+            refused,
+            Err(InboundEnvelopeError::NotInMembership { node_id: NodeId(9) })
+        ),
+        "the driver refused the frame on its own membership, got {refused:?}"
+    );
+    assert!(
+        cluster.crashed().is_empty(),
+        "and it is a network event rather than a fault: {:?}",
+        cluster.crashed()
+    );
+
+    // The replica keeps ticking and keeps serving, which is the claim the old
+    // fatal reading destroyed.
+    cluster.settle();
+    let acquired = committed(&mut cluster, leader, submit(0, 1, 1, acquire(RESOURCE, 10)));
+    let (token_after, _) = acquisition(acquired);
+    assert_eq!(
+        token_after,
+        token(1),
+        "the replica still serves client work after the dropped frame"
+    );
+    assert_history_agrees_with_oracle(&cluster, leader);
 }

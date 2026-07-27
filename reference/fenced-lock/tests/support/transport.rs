@@ -324,6 +324,24 @@ impl PeerDirectory {
         state.authorized = peers.into_iter().collect();
     }
 
+    /// Names and authorizes one principal the cluster's membership does not.
+    ///
+    /// The deployment knowing about a replica the cluster does not name is the
+    /// ordinary state of affairs in the window between a committed removal and
+    /// a fence the link layer has accepted — and this lock cluster's membership
+    /// never changes, so the window cannot be produced by reconfiguring it.
+    /// Widening the directory by hand puts the validator and the group in
+    /// exactly the disagreement a late frame from a retired replica creates.
+    ///
+    /// Additive rather than replacing, because `update_peers` owns the
+    /// membership-derived half and a test must not silently take it away.
+    pub fn authorize_beyond_membership(&self, node_id: NodeId) {
+        let principal = PeerPrincipal::for_node(node_id);
+        let mut state = lock(&self.shared);
+        state.known.insert(principal.clone(), node_id);
+        state.authorized.insert(principal);
+    }
+
     fn fence(&self, peer: &PeerPrincipal) {
         lock(&self.shared).fenced.insert(peer.clone());
     }

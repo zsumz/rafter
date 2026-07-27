@@ -175,6 +175,13 @@ pub enum OpenError {
     Runtime { detail: String },
     /// The managed driver refused to adopt the recovered group.
     Driver { detail: String },
+    /// The peer-control-plane checkpoint could not be read or made durable.
+    ///
+    /// Fatal on both sides rather than counted. A checkpoint this process
+    /// cannot read is one it must not silently replace with an empty one — that
+    /// is exactly the forgotten removal the file exists to prevent — and one it
+    /// cannot write leaves the next restart to forget it instead.
+    ControlPlane { detail: String },
     /// The replica directory could not be created.
     Io {
         operation: &'static str,
@@ -205,6 +212,9 @@ impl fmt::Display for OpenError {
             Self::Store { detail } => write!(formatter, "durable store failed: {detail}"),
             Self::Runtime { detail } => write!(formatter, "raft recovery failed: {detail}"),
             Self::Driver { detail } => write!(formatter, "managed driver refused: {detail}"),
+            Self::ControlPlane { detail } => {
+                write!(formatter, "peer control plane checkpoint failed: {detail}")
+            }
             Self::Io {
                 operation,
                 path,
@@ -284,6 +294,21 @@ pub struct Replica {
     pending: BTreeMap<u64, Pending>,
     answers: Vec<Answer>,
     refused_frames: u64,
+    non_member_frames: u64,
+    /// Where this replica's durable state lives, so the control-plane
+    /// checkpoint is published beside the log it belongs to.
+    node_dir: PathBuf,
+    /// The driver epoch this replica last made durable.
+    ///
+    /// The driver's own change signal, held here so a persist is one `u64`
+    /// comparison on the passes where nothing moved.
+    persisted_checkpoint_epoch: u64,
+    /// Whether a checkpoint has been written by *this* incarnation.
+    ///
+    /// The epoch is instance-local and starts at zero, so it cannot by itself
+    /// distinguish "nothing has moved" from "nothing has been written". Without
+    /// this a driver whose epoch never left zero would never publish a file.
+    checkpoint_written: bool,
 }
 
 /// Everything opening one replica needs to know.
@@ -390,16 +415,26 @@ impl Replica {
         })?;
         let (raft, recovery_outputs) = recovered.into_parts();
 
+        // What Raft cannot give back. Read before the driver is built, because
+        // the driver applies it before it derives its first membership fact from
+        // the recovered group — a mark of 5 has to beat a reconstructed
+        // committed set of {1,2} rather than lose to it.
+        let checkpoint =
+            super::control_plane::load(node_dir).map_err(|error| OpenError::ControlPlane {
+                detail: error.to_string(),
+            })?;
+
         // The driver takes the recovery *outputs* rather than an already-applied
         // group, so the recovery report's peer messages and snapshot directives
         // are routed by the driver instead of being dropped outside it.
         let group = RaftGroup::with_applied_index(GROUP_ID, node_id, raft, app, applied_index);
-        let driver = NodeDriver::new(
+        let driver = NodeDriver::with_control_plane_checkpoint(
             group,
             recovery_outputs,
             transport,
             validator,
             TransportDriverOptions::default(),
+            checkpoint,
         )
         .map_err(|error| OpenError::Driver {
             detail: error.to_string(),
@@ -410,6 +445,9 @@ impl Replica {
         })?;
 
         let mut replica = Self {
+            node_dir: node_dir.to_path_buf(),
+            persisted_checkpoint_epoch: driver.control_plane_checkpoint_epoch(),
+            checkpoint_written: false,
             client: LockClient::new(handle),
             driver,
             metrics,
@@ -417,9 +455,49 @@ impl Replica {
             pending: BTreeMap::new(),
             answers: Vec::new(),
             refused_frames: 0,
+            non_member_frames: 0,
         };
+        // The restored checkpoint is written straight back, so the file on disk
+        // always describes a driver that has run rather than one that was about
+        // to. A first boot writes an empty one, which is the honest statement
+        // that nothing has been retired here yet.
+        replica.persist_control_plane()?;
         replica.refresh_readiness();
         Ok(replica)
+    }
+
+    /// Makes the driver's peer control plane durable when it has moved.
+    ///
+    /// Called from every entry point of the process loop, and it costs a `u64`
+    /// comparison on the passes where nothing changed. The driver's epoch moves
+    /// on exactly the facts a restart cannot rebuild — a committed configuration
+    /// that retires an identity, and a fence the link layer finally accepted —
+    /// so writing on that signal writes what must not be lost and nothing else.
+    ///
+    /// **This cluster never reconfigures**, so after the first write the epoch
+    /// stands still for the life of the process. The wiring is here anyway: the
+    /// consumer that does reconfigure writes exactly this, and a plumbing path
+    /// that only exists in the consumer that needs it is a plumbing path nobody
+    /// has run.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the checkpoint cannot be made durable. That is
+    /// fatal by construction — a replica whose control plane it cannot persist
+    /// is one whose next restart forgets a removal — so it is reported rather
+    /// than counted.
+    fn persist_control_plane(&mut self) -> Result<(), OpenError> {
+        let epoch = self.driver.control_plane_checkpoint_epoch();
+        if epoch == self.persisted_checkpoint_epoch && self.checkpoint_written {
+            return Ok(());
+        }
+        super::control_plane::store(&self.node_dir, &self.driver.control_plane_checkpoint())
+            .map_err(|error| OpenError::ControlPlane {
+                detail: error.to_string(),
+            })?;
+        self.persisted_checkpoint_epoch = epoch;
+        self.checkpoint_written = true;
+        Ok(())
     }
 
     /// Whether this replica has applied everything it knows to be committed.
@@ -461,6 +539,20 @@ impl Replica {
         self.refused_frames
     }
 
+    /// Returns how many inbound frames the driver's own membership refused.
+    ///
+    /// Counted apart from [`Replica::refused_frames`] because the two diagnose
+    /// opposite things. A refusal by the validator says the outer admission
+    /// control is working: a principal this deployment does not authorize, or
+    /// one it has fenced, was turned away before Rafter saw it. A refusal by the
+    /// membership says the validator and the group *disagree* — the link layer
+    /// still authorizes a replica the cluster has retired, which is the window
+    /// between a committed removal and a fence the transport has accepted. One
+    /// is a quiet network; the other is a control plane running behind.
+    pub const fn non_member_frames(&self) -> u64 {
+        self.non_member_frames
+    }
+
     /// Advances one tick.
     ///
     /// # Errors
@@ -469,15 +561,27 @@ impl Replica {
     /// application means the durable backend could not commit a transaction.
     pub fn tick(&mut self) -> Result<(), String> {
         self.driver.tick().map_err(|error| error.to_string())?;
+        self.persist_control_plane()
+            .map_err(|error| error.to_string())?;
         self.refresh_readiness();
         Ok(())
     }
 
     /// Delivers one peer envelope.
     ///
-    /// A frame this replica's own validator refuses is counted and dropped —
-    /// that is a network event, not a fault. Anything the driver itself refuses
-    /// is fatal, because a poisoned group serves nothing.
+    /// **Two of the three refusals are network events and one is a fault**, and
+    /// the middle one used to be treated as the fault. `Rejected` is the
+    /// validator turning a frame away and `NotInMembership` is the driver's own
+    /// membership doing the same; neither touches the group, and both exist
+    /// precisely to describe a late frame from a removed or stale identity — the
+    /// ordinary consequence of a link layer that has not caught up with a
+    /// committed removal yet. Killing the process for one would take a healthy
+    /// replica down because a retired peer was still retransmitting.
+    ///
+    /// They are counted apart rather than together because they say opposite
+    /// things about the deployment; see [`Replica::non_member_frames`]. Only
+    /// `Driver` is fatal, and it is fatal for the original reason: the group
+    /// failed the step, and a poisoned group serves nothing.
     ///
     /// # Errors
     ///
@@ -488,8 +592,20 @@ impl Replica {
             Err(InboundEnvelopeError::Rejected { .. }) => {
                 self.refused_frames = self.refused_frames.saturating_add(1);
             }
-            Err(error) => return Err(error.to_string()),
+            Err(InboundEnvelopeError::NotInMembership { .. }) => {
+                self.non_member_frames = self.non_member_frames.saturating_add(1);
+            }
+            Err(InboundEnvelopeError::Driver { source }) => return Err(source.to_string()),
+            // A variant this build does not know left the group untouched or it
+            // would be `Driver`, so it is counted with the other refusals rather
+            // than made fatal. `InboundEnvelopeError` is `#[non_exhaustive]`.
+            Err(error) => {
+                let _ = error;
+                self.refused_frames = self.refused_frames.saturating_add(1);
+            }
         }
+        self.persist_control_plane()
+            .map_err(|error| error.to_string())?;
         self.refresh_readiness();
         Ok(())
     }

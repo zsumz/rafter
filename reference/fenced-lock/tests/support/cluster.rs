@@ -48,7 +48,8 @@ use std::{
 };
 
 use rafter::{
-    LocalProposalId, LogEntryKind, LogIndex, NodeConfig, NodeId, Output as RaftOutput, ReadId, Role,
+    LocalProposalId, LogEntryKind, LogIndex, Message, NodeConfig, NodeId, Output as RaftOutput,
+    ReadId, RequestVote, Role, Term,
 };
 use rafter_app::{
     group::{RaftGroup, RaftGroupParts},
@@ -62,14 +63,14 @@ use rafter_reference_fenced_lock::{
 };
 use rafter_runtime::{DurableRaftNode, DurableRaftNodeStorage};
 use rafter_service::{
-    DriverFuture, InboundEnvelopeError, ManagedDriverError, MetricsWatch, ReadOptions,
-    TransportDriverOptions, TransportRaftDriver, UnknownOutcomeReason,
+    AuthenticatedPeerEnvelope, DriverFuture, InboundEnvelopeError, ManagedDriverError,
+    MetricsWatch, ReadOptions, TransportDriverOptions, TransportRaftDriver, UnknownOutcomeReason,
 };
 use rafter_storage::{
     InMemoryRaftHardStateStore, InMemoryRaftLogSegment, InMemoryRaftSnapshotStore,
 };
 
-use crate::transport::{DeterministicNetwork, NodeTransport, PeerDirectory};
+use crate::transport::{DeterministicNetwork, NodeTransport, PeerDirectory, PeerPrincipal};
 
 /// The application contract every replica in this driver serves.
 ///
@@ -245,6 +246,9 @@ struct ClusterNode<A: LockApp> {
     node_id: NodeId,
     peers: Vec<NodeId>,
     election_timeout_ticks: u64,
+    /// This replica's validator, kept so a test can widen it past the
+    /// membership; see [`LockCluster::deliver_late_frame`].
+    directory: PeerDirectory,
     driver: NodeDriver<A>,
     client: LockClient<LockGroupId, NodeDriver<A>>,
     metrics: MetricsWatch<LockGroupId>,
@@ -315,7 +319,7 @@ impl<A: LockApps> LockCluster<A> {
                     opened.group,
                     opened.recovery_outputs,
                     transport,
-                    directory,
+                    directory.clone(),
                     TransportDriverOptions::default(),
                 )
                 .expect("a quiescent group is adoptable");
@@ -327,6 +331,7 @@ impl<A: LockApps> LockCluster<A> {
                     node_id,
                     peers,
                     election_timeout_ticks,
+                    directory,
                     client: LockClient::new(handle),
                     driver,
                     metrics,
@@ -593,12 +598,26 @@ impl<A: LockApps> LockCluster<A> {
                 // refused inside the driver, before the group is stepped, which
                 // is exactly where a production embedder refuses it.
                 match self.node(node_id).driver.deliver(envelope) {
-                    Ok(()) | Err(InboundEnvelopeError::Rejected { .. }) => {}
+                    // Two refusals, and neither is a fault. `Rejected` is the
+                    // validator turning a frame away; `NotInMembership` is the
+                    // driver's own membership doing it, which is what a late
+                    // frame from a replica the cluster has removed looks like
+                    // before the fence lands. This harness used to panic on the
+                    // second, which made an ordinary network event a test
+                    // failure.
+                    Ok(())
+                    | Err(
+                        InboundEnvelopeError::Rejected { .. }
+                        | InboundEnvelopeError::NotInMembership { .. },
+                    ) => {}
                     // An application that could not make a committed entry
                     // durable poisons its group. That is a crashed replica, not
                     // a malformed frame, and the driver reports it here.
                     Err(InboundEnvelopeError::Driver { source }) => self.crash(node_id, &source),
-                    Err(error) => panic!("a healthy group accepts validated frames: {error}"),
+                    // A refusal this build does not know left the group
+                    // untouched or it would be `Driver`, so it is dropped like
+                    // the other two rather than failing the run.
+                    Err(_) => {}
                 }
             }
         }
@@ -852,6 +871,38 @@ impl<A: LockApps> LockCluster<A> {
     }
 
     /// Returns how many accepted frames the network dropped before delivery.
+    /// Delivers one frame from an identity this replica's validator resolves
+    /// and its membership does not name.
+    ///
+    /// The shape of a late frame from a removed or stale replica, which this
+    /// cluster cannot produce by reconfiguring — its contract says the
+    /// membership never changes. So the disagreement is made directly: the
+    /// validator is widened to name and authorize `from`, the group's membership
+    /// is untouched, and the frame reaches the driver's second admission stage.
+    ///
+    /// Returns what the driver said, so a test can assert the *variant* rather
+    /// than only that nothing exploded.
+    pub fn deliver_late_frame(
+        &mut self,
+        to: NodeId,
+        from: NodeId,
+    ) -> Result<(), InboundEnvelopeError> {
+        let node = self.node(to);
+        node.directory.authorize_beyond_membership(from);
+        node.driver.deliver(AuthenticatedPeerEnvelope {
+            group_id: GROUP_ID,
+            authenticated_peer: PeerPrincipal::for_node(from),
+            raft_from: from,
+            raft_to: to,
+            message: Message::RequestVote(RequestVote {
+                term: Term(1),
+                candidate_id: from,
+                last_log_index: LogIndex(1),
+                last_log_term: Term(1),
+            }),
+        })
+    }
+
     pub fn dropped_inbound(&self) -> u64 {
         self.network.dropped_inbound()
     }

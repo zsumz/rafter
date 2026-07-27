@@ -72,7 +72,7 @@
 //! NEEDS_DECISION <id> <detail>     the store will not open under this mode
 //! PEER_LISTENING <id> <peer_addr>  the peer port is published and dialable
 //! READY <id> <client_addr> <applied_index>
-//! LINK <id> dropped=<n> unencodable=<n> refused_chunks=<n> refused_frames=<n>
+//! LINK <id> dropped=<n> unencodable=<n> refused_chunks=<n> refused_frames=<n> non_member_frames=<n>
 //! STOPPED <id>
 //! FATAL <detail>                   followed by a nonzero exit
 //! ```
@@ -99,7 +99,12 @@
 //! the peer wire format does not carry; `refused_chunks` counts leader snapshot
 //! directives this link declines because the durable runtime already resolved
 //! them; `refused_frames` counts inbound frames this replica's own validator
-//! turned away.
+//! turned away; `non_member_frames` counts frames the validator authorized and
+//! the driver's *membership* did not, which is the window between a committed
+//! removal and a fence the link layer has accepted. The last two are separate
+//! because a non-zero `refused_frames` says the outer admission control is
+//! working, and a non-zero `non_member_frames` says the control plane is
+//! running behind the cluster.
 //!
 //! # Shutdown
 //!
@@ -121,6 +126,7 @@
 //! writeback. The store's own crash suites inject at byte boundaries to cover
 //! what a signal cannot.
 
+mod control_plane;
 mod peer_link;
 mod protocol;
 mod replica;
@@ -483,7 +489,7 @@ fn serve(
         }
     }
 
-    let refused_frames = if let State::Serving(replica) = &mut state {
+    let (refused_frames, non_member_frames) = if let State::Serving(replica) = &mut state {
         replica.abandon_waiters("the replica is shutting down");
         for answer in replica.take_answers() {
             let (ticket, response) = render_answer(answer);
@@ -491,14 +497,15 @@ fn serve(
                 drop(reply.send(response));
             }
         }
-        replica.refused_frames()
+        (replica.refused_frames(), replica.non_member_frames())
     } else {
-        0
+        (0, 0)
     };
     let (dropped, unencodable, refused_chunks) = link.counts();
     emit(&format!(
         "LINK {} dropped={dropped} unencodable={unencodable} \
-         refused_chunks={refused_chunks} refused_frames={refused_frames}",
+         refused_chunks={refused_chunks} refused_frames={refused_frames} \
+         non_member_frames={non_member_frames}",
         config.node_id.0
     ));
     emit(&format!("STOPPED {}", config.node_id.0));
