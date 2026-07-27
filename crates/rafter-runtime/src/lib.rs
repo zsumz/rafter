@@ -550,7 +550,8 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
     ///
     /// Every boundary refusal is the kernel's, rendered through
     /// [`RaftRuntimeError`]: [`RaftRuntimeError::SnapshotBelowInstalledBoundary`]
-    /// when the boundary does not advance past the installed snapshot,
+    /// when the boundary lies below the installed snapshot boundary — equal is
+    /// not refused, it is the idempotent re-record —
     /// [`RaftRuntimeError::SnapshotAheadOfCommit`] when it is ahead of the
     /// committed prefix, [`RaftRuntimeError::SnapshotAheadOfApplied`] when it is
     /// committed but this node has not applied through it,
