@@ -107,6 +107,7 @@ pub type AddressedWrite<R> = (
 pub type AddressedRead<G, QR> = (ReadId, DriverFuture<Result<QueryReceipt<G, QR>, ReadError>>);
 
 mod adoption;
+mod control_plane;
 mod error;
 mod state;
 mod waiters;

@@ -493,7 +493,7 @@ fn shrink_driver(nameable: Nameable) -> (ScriptedDriver, QueueTransport) {
 /// removed is fenced, and no replica the committed membership still names is
 /// fenced with it. The fifth, widening on an uncommitted `Appended`, has no
 /// public entry point on this driver and is pinned in-crate beside the router;
-/// see the test module in `driver/transport/state.rs`.
+/// see the test module in `driver/transport/control_plane.rs`.
 #[test]
 fn membership_reaches_the_transports_peer_set() {
     let (driver, transport) = shrink_driver(Nameable::all());
