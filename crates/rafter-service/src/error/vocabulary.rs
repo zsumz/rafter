@@ -74,8 +74,9 @@ impl fmt::Display for UnknownOutcomeReason {
 ///
 /// Abandonment is the driver's own decision, so every variant names something
 /// the driver did. None of them says anything about the cluster: a read that
-/// was refused reports [`ReadError::Rejected`], and a barrier the cluster
-/// invalidated reports [`ReadError::Canceled`].
+/// was refused reports [`ReadError::Rejected`](super::ReadError::Rejected),
+/// and a barrier the cluster invalidated reports
+/// [`ReadError::Canceled`](super::ReadError::Canceled).
 #[non_exhaustive]
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub enum ReadAbandonReason {
@@ -98,7 +99,8 @@ impl fmt::Display for ReadAbandonReason {
 /// Why a driver refused a client operation on its own standing.
 ///
 /// **A typed cause where there used to be a rendered string.** These refusals
-/// used to ride [`WriteError::Transport`] with a crate-private cause, which was
+/// used to ride [`WriteError::Transport`](super::WriteError::Transport) with a
+/// crate-private cause, which was
 /// wrong twice: no transport operation failed, and an external caller could only
 /// reach the reason by formatting the error and reading it. Both surfaces now
 /// carry this value directly.
@@ -140,7 +142,8 @@ pub enum DriverUnavailableReason {
     ///
     /// Reachable through [`DriverUnavailableReason::from_service_state`], which
     /// is what a consumer rendering [`crate::DriverServiceState`] uses. It does
-    /// not reach a client through [`WriteError`] or [`ReadError`]: both answered
+    /// not reach a client through [`WriteError`](super::WriteError) or
+    /// [`ReadError`](super::ReadError): both answered
     /// shutdown with a dedicated variant before this enum existed, every
     /// consumer already matches on that variant, and one fact with two spellings
     /// on one surface is worse than a projection that stays total.
@@ -226,7 +229,7 @@ impl WriteFate {
     }
 }
 
-/// Stable category of a [`WriteError`].
+/// Stable category of a [`WriteError`](super::WriteError).
 ///
 /// This is the low-cardinality projection of the error: `Copy`, totally
 /// ordered, hashable, and free of payload, so it can be a metric label, a map
@@ -254,7 +257,7 @@ pub enum WriteErrorKind {
     ManagedInvariantViolation,
 }
 
-/// Stable category of a [`TransferLeadershipError`].
+/// Stable category of a [`TransferLeadershipError`](super::TransferLeadershipError).
 ///
 /// The same low-cardinality projection [`WriteErrorKind`] is, for the same
 /// reasons and with the same rule for unrecognized values. This surface is
@@ -274,7 +277,7 @@ pub enum TransferLeadershipErrorKind {
     Poisoned,
 }
 
-/// Stable category of a [`ShutdownError`].
+/// Stable category of a [`ShutdownError`](super::ShutdownError).
 ///
 /// The same projection again, over the smallest of the four surfaces. Three
 /// variants is still three buckets, and a caller that aggregates by kind should
@@ -287,7 +290,7 @@ pub enum ShutdownErrorKind {
     AlreadyShutDown,
 }
 
-/// Stable category of a [`ReadError`].
+/// Stable category of a [`ReadError`](super::ReadError).
 ///
 /// The same low-cardinality projection [`WriteErrorKind`] is, for the same
 /// reasons and with the same rule for unrecognized values.

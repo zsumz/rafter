@@ -19,7 +19,8 @@
 //!
 //! The *vocabulary* those answers are given in — the diagnostic reasons, the
 //! fate, the reason a driver refuses on its own standing, and the four category
-//! projections — lives in [`vocabulary`] and is re-exported from here. The split
+//! projections — lives in the private `vocabulary` module and is re-exported from
+//! here. The split
 //! is the module's own sentence read literally: this file holds the error types,
 //! and that one holds what they say. They are read at different times, too: an
 //! embedder matching on a failure reads the types, and an operator wiring a
