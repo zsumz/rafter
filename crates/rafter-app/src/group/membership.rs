@@ -1,5 +1,5 @@
 use super::{
-    Debug, GroupStepReport, MembershipChange, MembershipEvent, MembershipStepContext,
+    Debug, GroupStepReport, MembershipChange, MembershipEvent, MembershipReportMark,
     PersistedRaftRuntime, ProposalRejection, RaftGroup, RaftInput, ReplicatedStateMachine,
 };
 
@@ -49,7 +49,8 @@ where
         });
     }
 
-    /// Reports every membership fact this step moved.
+    /// Reports every membership fact this group has moved through and not yet
+    /// reported.
     ///
     /// **Two independent diffs, and no third condition on either.** The stream
     /// is what a transport driver follows to keep its peer set current, so a
@@ -71,24 +72,30 @@ where
     /// commits its own change in the step that appends it — leaving a consumer
     /// the committed fact alone, which is exactly the fact it may not widen for.
     ///
+    /// **The comparison is against the last report this group handed back, not
+    /// against a snapshot taken when this step began.** A pre-step snapshot made
+    /// every failing step lose what it had moved through, because the runtime
+    /// moves its configuration before the group finishes the step and everything
+    /// after that can fail. The mark moves here and only here, so a delta stays
+    /// owed until it is carried out of the group in a report a caller receives.
+    ///
     /// **Order is load-bearing and is effective-then-committed.** One step can
     /// commit a configuration while a later one is already in effect, and a
     /// consumer that may only narrow for the committed fact has to have seen the
     /// widening first, or it narrows past a joiner the configuration in effect
     /// still needs.
     ///
-    /// A step that moves neither fact reports nothing, which is what keeps "the
+    /// A report that owes neither fact carries nothing, which is what keeps "the
     /// configuration changed" readable: a consumer republishing an unchanged
     /// peer set every tick cannot tell a real change from noise.
     pub(super) fn record_membership_changes(
-        &self,
-        context: &MembershipStepContext,
+        &mut self,
         report: &mut GroupStepReport<G, A::CommandResult>,
     ) {
         let effective_membership = self.raft.membership();
         let committed_membership = self.raft.committed_membership();
 
-        if effective_membership != context.previous_effective {
+        if effective_membership != self.reported_membership.effective {
             // The observation point rather than the entry that caused the move,
             // because a truncation and a snapshot install have no such entry.
             // `MembershipEvent::EffectiveChanged` says so at the field.
@@ -103,11 +110,12 @@ where
                     group_id: self.group_id.clone(),
                     index,
                     term,
-                    membership: effective_membership,
+                    membership: effective_membership.clone(),
                 });
+            self.reported_membership.effective = effective_membership;
         }
 
-        if committed_membership == context.previous_committed {
+        if committed_membership == self.reported_membership.committed {
             return;
         }
         let index = self.raft.commit_index();
@@ -119,7 +127,27 @@ where
             group_id: self.group_id.clone(),
             index,
             term,
-            membership: committed_membership,
+            membership: committed_membership.clone(),
         });
+        self.reported_membership.committed = committed_membership;
+    }
+
+    /// Takes the mark the membership comparison is currently against.
+    ///
+    /// Paired with [`RaftGroup::restore_membership_report_mark`] at every site
+    /// that builds a report and then decides it cannot return it.
+    pub(super) fn membership_report_mark(&self) -> MembershipReportMark {
+        self.reported_membership.clone()
+    }
+
+    /// Puts back a mark because the report that advanced it is being discarded.
+    ///
+    /// The one operation that makes "the mark advances when a report is
+    /// returned" true rather than approximately true. A report a caller never
+    /// receives reported nothing, so the delta it carried is owed again — and
+    /// restoring the mark taken *before* the report was built restores the whole
+    /// owed delta, including anything an earlier failure had already left owed.
+    pub(super) fn restore_membership_report_mark(&mut self, mark: MembershipReportMark) {
+        self.reported_membership = mark;
     }
 }

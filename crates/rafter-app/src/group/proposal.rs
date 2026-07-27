@@ -4,7 +4,7 @@ use super::{
     Proposal, ProposalBatchBeginReport, ProposalBatchBeginReportResult, ProposalBegin,
     ProposalBeginReport, ProposalBeginReportResult, ProposalBeginResult, ProposalEvent,
     ProposalUnknownOutcomeReason, RaftGroup, RaftInput, RaftOutput, ReplicatedStateMachine,
-    StateMachineOperation, Term,
+    StateMachineOperation, StepReportOptions, Term,
 };
 
 impl<G, A, R> RaftGroup<G, A, R>
@@ -59,17 +59,19 @@ where
         // This steps the runtime without routing through `step_with_options`,
         // so it takes the boundary verdict by name rather than inheriting it.
         self.reject_if_below_snapshot_boundary()?;
-        let previous_effective = self.raft.membership();
-        let previous_committed = self.raft.committed_membership();
         let local_proposal_id = proposal.local_proposal_id;
         let outputs = self.step_proposal(&proposal)?;
-        let report = self.apply_raft_outputs_after_step(
-            outputs,
-            previous_effective,
-            previous_committed,
-            false,
-        )?;
-        let begin = self.proposal_begin_from_report(local_proposal_id, &report)?;
+        // Taken before the report is built: the verdict below can throw it
+        // away, and a report the caller never receives reported nothing.
+        let mark = self.membership_report_mark();
+        let report = self.apply_stepped_outputs(outputs, false, StepReportOptions::default())?;
+        let begin = match self.proposal_begin_from_report(local_proposal_id, &report) {
+            Ok(begin) => begin,
+            Err(error) => {
+                self.restore_membership_report_mark(mark);
+                return Err(error);
+            }
+        };
         Ok(ProposalBeginReport { begin, report })
     }
 
@@ -96,23 +98,28 @@ where
         // As [`RaftGroup::begin_proposal`]: a stepping entry point that does
         // not route through `step_with_options`.
         self.reject_if_below_snapshot_boundary()?;
-        let previous_effective = self.raft.membership();
-        let previous_committed = self.raft.committed_membership();
         let local_proposal_ids = proposals
             .iter()
             .map(|proposal| proposal.local_proposal_id)
             .collect::<Vec<_>>();
         let outputs = self.step_proposals(proposals)?;
-        let report = self.apply_raft_outputs_after_step(
-            outputs,
-            previous_effective,
-            previous_committed,
-            false,
-        )?;
-        self.ensure_proposal_batch_lifecycles(&local_proposal_ids, &report)?;
+        // As [`RaftGroup::begin_proposal`]: two verdicts below can discard this
+        // report, and neither may consume the membership delta it carried.
+        let mark = self.membership_report_mark();
+        let report = self.apply_stepped_outputs(outputs, false, StepReportOptions::default())?;
+        if let Err(error) = self.ensure_proposal_batch_lifecycles(&local_proposal_ids, &report) {
+            self.restore_membership_report_mark(mark);
+            return Err(error);
+        }
         let mut begins = Vec::with_capacity(local_proposal_ids.len());
         for local_proposal_id in local_proposal_ids {
-            begins.push(self.proposal_begin_from_report(local_proposal_id, &report)?);
+            match self.proposal_begin_from_report(local_proposal_id, &report) {
+                Ok(begin) => begins.push(begin),
+                Err(error) => {
+                    self.restore_membership_report_mark(mark);
+                    return Err(error);
+                }
+            }
         }
         Ok(ProposalBatchBeginReport { begins, report })
     }

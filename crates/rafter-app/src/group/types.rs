@@ -70,6 +70,44 @@ pub struct RaftGroup<G, A, R> {
     /// snapshot must stay a plain comparable value.
     pub(super) poison_cause: Option<ErrorCause>,
     pub(super) poisoned_waiters: PoisonedWaiters,
+    /// The two memberships as of the last report this group handed back.
+    ///
+    /// **Durable comparison state, not a per-step snapshot, and the difference
+    /// is the whole contract.** A membership event is derived by comparing the
+    /// runtime's current configuration against this mark, and the mark advances
+    /// only when the report carrying the difference is returned to a caller. A
+    /// step that fails after the runtime moved therefore leaves the delta
+    /// *owed*: the next report — or [`RaftGroup::drain_membership_events`] —
+    /// still carries it.
+    ///
+    /// The previous model compared against a snapshot taken at the top of each
+    /// step, which made every failing step lose whatever it had moved through.
+    /// The runtime appends, truncates, commits, and installs before the group
+    /// finishes the step, and applying entries, completing granted barriers, and
+    /// deciding whether a proposal started can all fail afterwards. On any of
+    /// those the group returned `Err` with no report while the configuration had
+    /// already moved, and the *next* step's snapshot was taken from the moved
+    /// configuration — so the transition was unreportable from then on, and a
+    /// consumer's peer set and fences stayed on the old membership for the life
+    /// of the incarnation.
+    ///
+    /// Initialized at construction from the runtime, because pre-existing state
+    /// is not an event: a replica reopened over a log that already holds a
+    /// three-node configuration has moved through nothing.
+    pub(super) reported_membership: MembershipReportMark,
+}
+
+/// The memberships a group's membership comparison is taken against.
+///
+/// Cloned before a report is built and put back when that report is discarded,
+/// which is what keeps a delta owed rather than reported into a value the
+/// caller never received. Every site that builds a report and then decides it
+/// cannot return it takes one of these first; there is no other way to discard
+/// a report without losing what it carried.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct MembershipReportMark {
+    pub(super) effective: MembershipConfig,
+    pub(super) committed: MembershipConfig,
 }
 
 pub(super) type RuntimeGroupError<A, R> =
@@ -125,13 +163,6 @@ pub(super) struct CompletedQueryRead<G> {
     pub(super) proof: ReadProof<G>,
     pub(super) min_applied_index: Option<LogIndex>,
     pub(super) context: Vec<u8>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct MembershipStepContext {
-    pub(super) previous_effective: MembershipConfig,
-    pub(super) previous_committed: MembershipConfig,
-    pub(super) membership_request: bool,
 }
 
 /// Inputs accepted by the synchronous group driver.
@@ -193,6 +224,11 @@ impl Default for StepReportOptions {
 /// durable — the runtime discharges its persistence obligation before releasing
 /// any output, so a report exists only for effects that are safe to release.
 ///
+/// One list is *stateful* and the rest are per-step: see `membership_events`,
+/// which carries whatever the group has moved through and not yet handed back,
+/// so a failed step's transitions arrive on the next report rather than being
+/// lost with it.
+///
 /// The lists are in the order the step produced them, and that order is
 /// load-bearing across `snapshot_events` and `peer_messages` in particular; do
 /// not reorder them.
@@ -240,6 +276,17 @@ pub struct GroupStepReport<G, R> {
     /// snapshot install — so a consumer that follows this list is level with the
     /// group on every step, and one that follows only its own membership calls
     /// is not.
+    ///
+    /// **This list carries what the group has moved through and not yet
+    /// reported, which is not the same as what *this* step moved.** The
+    /// comparison is against the memberships as of the last report the group
+    /// handed back, and that mark advances only when a report reaches a caller.
+    /// So a step that fails after the runtime moved leaves the transition owed,
+    /// and the next report carries it — including a report from
+    /// [`RaftGroup::apply_raft_outputs`], which used to be unable to report
+    /// membership at all. A caller with no next step to make takes the owed
+    /// delta straight out of [`RaftGroup::drain_membership_events`], which is
+    /// what a driver runs after every step outcome so its loss window is zero.
     pub membership_events: Vec<MembershipEvent<G>>,
     /// A metrics snapshot, present only when the step was asked for one.
     ///
@@ -375,7 +422,10 @@ impl<G, A, R> RaftGroup<G, A, R> {
     /// the state machine's durable applied index alongside a runtime recovered
     /// with the same applied-through floor.
     #[must_use]
-    pub fn new(group_id: G, node_id: NodeId, raft: R, app: A) -> Self {
+    pub fn new(group_id: G, node_id: NodeId, raft: R, app: A) -> Self
+    where
+        R: PersistedRaftRuntime,
+    {
         Self::with_applied_index(group_id, node_id, raft, app, LogIndex::ZERO)
     }
 
@@ -386,6 +436,11 @@ impl<G, A, R> RaftGroup<G, A, R> {
     /// state. The group still validates the state machine's reported applied
     /// index before every apply batch and poisons itself rather than replaying
     /// entries that the application already says are durable.
+    ///
+    /// The runtime's two memberships are read here to seed the group's
+    /// membership comparison. A group reports transitions it *moves through*, so
+    /// the configuration it opens over is never one of them; see
+    /// [`RaftGroup::drain_membership_events`].
     #[must_use]
     pub fn with_applied_index(
         group_id: G,
@@ -393,7 +448,14 @@ impl<G, A, R> RaftGroup<G, A, R> {
         raft: R,
         app: A,
         applied_index: LogIndex,
-    ) -> Self {
+    ) -> Self
+    where
+        R: PersistedRaftRuntime,
+    {
+        let reported_membership = MembershipReportMark {
+            effective: raft.membership(),
+            committed: raft.committed_membership(),
+        };
         Self {
             group_id,
             node_id,
@@ -409,6 +471,7 @@ impl<G, A, R> RaftGroup<G, A, R> {
             fatal_state: GroupFatalState::Healthy,
             poison_cause: None,
             poisoned_waiters: PoisonedWaiters::default(),
+            reported_membership,
         }
     }
 

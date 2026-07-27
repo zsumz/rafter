@@ -19,7 +19,10 @@
 
 mod support;
 
-use rafter_service::{AuthenticatedPeerEnvelope, InboundEnvelopeError};
+use rafter_service::{
+    AuthenticatedPeerEnvelope, AuthenticatedPeerEnvelopeError, InboundEnvelopeError,
+    TransportDriverOptions,
+};
 use support::scripted::*;
 use support::transport::*;
 use support::*;
@@ -367,4 +370,140 @@ fn an_uncommitted_widening_settles_no_fence_and_readmits_no_spent_identity() {
         transport.fence_attempts()
     );
     assert_eq!(driver.pending_peer_fences(), 0, "and nothing is owed now");
+}
+
+/// A step that fails still narrows the peer set and fences what left.
+///
+/// The loss window at this driver's own boundary, closed. The runtime commits
+/// node 3's removal and hands the group an entry the application then refuses,
+/// so the step returns `Err` with no report — and the removal is the one fact
+/// that licenses narrowing a peer set and fencing what left it. A driver that
+/// routed only successful reports would wait for a later successful step to
+/// rescue it, and there is no later step here: the group is poisoned, so the
+/// fence and the peer set would stay wrong for the life of the incarnation.
+#[test]
+fn a_failed_step_still_routes_the_membership_it_moved_through() {
+    let runtime = ScriptedMembershipRuntime::new(&[1, 2, 3], &[1, 2, 3]);
+    let handle = runtime.handle();
+    let (driver, transport) = scripted_driver_with_app(
+        runtime,
+        Nameable::all(),
+        &[NodeId(2), NodeId(3)],
+        TransportDriverOptions::default(),
+        failing_apply(),
+    );
+
+    // The same step commits node 3 out and releases an entry the application
+    // refuses. Both halves are load-bearing: without the failure the report
+    // carries the removal, and without the removal there is nothing to lose.
+    change_on_step(&handle, &[1, 2], &[1, 2]);
+    outputs_on_step(
+        &handle,
+        vec![RaftOutput::Apply {
+            index: LogIndex(6),
+            term: Term(1),
+            payload: SharedPayload::from(&b"key\nvalue"[..]),
+            local_proposal_id: None,
+        }],
+    );
+
+    let delivered = driver.deliver(a_vote(NodeId(2)));
+    assert!(
+        matches!(delivered, Err(InboundEnvelopeError::Driver { .. })),
+        "the step failed applying, so no report reached the driver: {delivered:?}"
+    );
+
+    assert_eq!(
+        transport.peer_sets().last().expect("a set was published"),
+        &principals(&[2]),
+        "the committed removal narrowed the published peer set anyway"
+    );
+    assert!(
+        transport.is_fenced(NodeId(3)),
+        "and the fence it licensed was installed: {:?}",
+        transport.fence_attempts()
+    );
+    assert!(
+        !driver.peer_set_is_stale(),
+        "the link layer holds exactly what the driver requires"
+    );
+    assert_eq!(driver.pending_peer_fences(), 0, "and nothing is left owed");
+
+    let refused = driver.deliver(a_vote(NodeId(3)));
+    assert!(
+        matches!(
+            refused,
+            Err(InboundEnvelopeError::Rejected {
+                source: AuthenticatedPeerEnvelopeError::FencedPeer { node_id: NodeId(3) }
+            })
+        ),
+        "and the removed replica is refused by the fence itself rather than by \
+         this driver's own fail-closed check, got {refused:?}"
+    );
+}
+
+/// A failed step's *effective* rollback reaches the link layer too.
+///
+/// The widening half of the same window, and the one no consumer can re-derive:
+/// a new leader truncates an uncommitted addition back off the log and nothing
+/// commits, so there is no later fact that names what was taken away. The peer
+/// set must narrow back to the committed floor even though the step that
+/// observed the truncation failed.
+#[test]
+fn a_failed_step_still_routes_an_effective_rollback() {
+    let runtime = ScriptedMembershipRuntime::new(&[1, 2], &[1, 2]);
+    let handle = runtime.handle();
+    let (driver, transport) = scripted_driver_with_app(
+        runtime,
+        Nameable::all(),
+        &[NodeId(2), NodeId(3)],
+        TransportDriverOptions::default(),
+        failing_apply(),
+    );
+
+    change_on_step(&handle, &[1, 2, 3], &[1, 2]);
+    driver
+        .deliver(a_vote(NodeId(2)))
+        .expect("node 2 is a member and the step released no work to fail on");
+    assert_eq!(
+        transport.peer_sets().last().expect("a set was published"),
+        &principals(&[2, 3]),
+        "the joiner is authorized while the change is in flight"
+    );
+
+    // A new leader's log never held the addition, and the step that observes
+    // the truncation also releases an entry the application refuses.
+    change_on_step(&handle, &[1, 2], &[1, 2]);
+    outputs_on_step(
+        &handle,
+        vec![RaftOutput::Apply {
+            index: LogIndex(6),
+            term: Term(1),
+            payload: SharedPayload::from(&b"key\nvalue"[..]),
+            local_proposal_id: None,
+        }],
+    );
+    let delivered = driver.deliver(a_vote(NodeId(2)));
+    assert!(
+        matches!(delivered, Err(InboundEnvelopeError::Driver { .. })),
+        "the step failed applying: {delivered:?}"
+    );
+
+    assert_eq!(
+        transport.peer_sets().last().expect("a set was published"),
+        &principals(&[2]),
+        "the rolled-back replica left the published peer set anyway"
+    );
+    assert!(
+        !transport.is_fenced(NodeId(3)),
+        "and nothing was fenced: an addition that never committed retires nothing"
+    );
+    let refused = driver.deliver(a_vote(NodeId(3)));
+    assert!(
+        matches!(
+            refused,
+            Err(InboundEnvelopeError::NotInMembership { node_id: NodeId(3) })
+        ),
+        "the rolled-back replica left the inbound check, got {refused:?}"
+    );
 }

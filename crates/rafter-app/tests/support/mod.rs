@@ -59,6 +59,7 @@ pub(crate) enum RecordingStateMachineError {
     Decode,
     Apply,
     InstallSnapshot,
+    AppliedIndex,
 }
 
 impl fmt::Display for RecordingStateMachineError {
@@ -68,12 +69,17 @@ impl fmt::Display for RecordingStateMachineError {
             Self::Decode => "decode failed",
             Self::Apply => "apply failed",
             Self::InstallSnapshot => "install snapshot failed",
+            Self::AppliedIndex => "applied index query failed",
         })
     }
 }
 
 impl Error for RecordingStateMachineError {}
 
+/// Independent fault switches rather than a fault enum, because a fixture arms
+/// more than one at a time — a snapshot install that fails while the applied
+/// index is also refused is a real shape — and each switch names one callback.
+#[allow(clippy::struct_excessive_bools)]
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub(crate) struct RecordingStateMachine {
     pub(crate) applied_index: LogIndex,
@@ -83,6 +89,12 @@ pub(crate) struct RecordingStateMachine {
     pub(crate) fail_encode: bool,
     pub(crate) fail_decode: bool,
     pub(crate) fail_install_snapshot: bool,
+    /// Makes [`ReplicatedStateMachine::applied_index`] fail, which is the one
+    /// callback a *transient* application fault reaches on a step that did no
+    /// application work of its own. It is what a completing read barrier calls,
+    /// so it is how a fixture fails a step after the runtime has already moved
+    /// its configuration.
+    pub(crate) fail_applied_index: bool,
     pub(crate) reported_applied_index: Option<LogIndex>,
     pub(crate) installed_snapshots: Vec<ApplicationSnapshot>,
 }
@@ -99,6 +111,9 @@ impl ReplicatedStateMachine for RecordingStateMachine {
     const SNAPSHOT_SUPPORT: SnapshotSupport = SnapshotSupport::Supported;
 
     fn applied_index(&self) -> Result<LogIndex, Self::Error> {
+        if self.fail_applied_index {
+            return Err(RecordingStateMachineError::AppliedIndex);
+        }
         Ok(self.reported_applied_index.unwrap_or(self.applied_index))
     }
 

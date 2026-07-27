@@ -1,11 +1,11 @@
 use super::{
     max, Arc, BTreeSet, CompletedQueryRead, Debug, GroupError, GroupInput, GroupResult,
-    GroupStepReport, LogIndex, MembershipConfig, PendingQueryRead, PendingRead,
-    PersistedRaftRuntime, RaftGroup, RaftInput, ReadBarrier, ReadBarrierBeginReport,
-    ReadBarrierBeginReportResult, ReadBarrierRequest, ReadConsistency, ReadEvent, ReadId,
-    ReadIndexCancelReason, ReadIndexRejection, ReadOutcome, ReadOutcomeResult, ReadProof,
-    ReadProofOutcome, ReadReport, ReadReportResult, ReadRequest, ReplicatedStateMachine,
-    StateMachineOperation, StepReportOptions, StepReportResult,
+    GroupStepReport, LogIndex, PendingQueryRead, PendingRead, PersistedRaftRuntime, RaftGroup,
+    RaftInput, ReadBarrier, ReadBarrierBeginReport, ReadBarrierBeginReportResult,
+    ReadBarrierRequest, ReadConsistency, ReadEvent, ReadId, ReadIndexCancelReason,
+    ReadIndexRejection, ReadOutcome, ReadOutcomeResult, ReadProof, ReadProofOutcome, ReadReport,
+    ReadReportResult, ReadRequest, ReplicatedStateMachine, StateMachineOperation,
+    StepReportOptions, StepReportResult,
 };
 
 impl<G, A, R> RaftGroup<G, A, R>
@@ -18,8 +18,6 @@ where
     pub(super) fn step_read_barrier_input(
         &mut self,
         request: &ReadBarrierRequest<G>,
-        previous_effective: MembershipConfig,
-        previous_committed: MembershipConfig,
         options: StepReportOptions,
     ) -> StepReportResult<G, A, R> {
         self.validate_read_barrier_request(request)?;
@@ -43,13 +41,7 @@ where
                 return Err(GroupError::Runtime(error));
             }
         };
-        self.apply_raft_outputs_after_step_with_options(
-            outputs,
-            previous_effective,
-            previous_committed,
-            false,
-            options,
-        )
+        self.apply_stepped_outputs(outputs, false, options)
     }
 
     /// Begins a read-index barrier and returns its immediate proof outcome.
@@ -420,6 +412,9 @@ where
             min_applied_index,
             context: context.clone(),
         };
+        // Taken before the barrier starts, because the state-machine read below
+        // can fail and discard the report the barrier's step produced.
+        let mark = self.membership_report_mark();
         let ReadBarrierBeginReport {
             outcome: proof_outcome,
             report,
@@ -436,7 +431,13 @@ where
                 },
             );
         }
-        let outcome = self.read_outcome_from_proof_outcome(read_id, query, proof_outcome)?;
+        let outcome = match self.read_outcome_from_proof_outcome(read_id, query, proof_outcome) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                self.restore_membership_report_mark(mark);
+                return Err(error);
+            }
+        };
         Ok(ReadReport { outcome, report })
     }
 

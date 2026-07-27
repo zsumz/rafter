@@ -381,9 +381,40 @@ where
             }
             Err(error) => Err(StepFailure::Group(error)),
         };
+        self.reconcile_membership();
         self.drain_poisoned_waiters();
         self.publish_metrics();
         result
+    }
+
+    /// Routes every membership fact the group has moved through and not yet
+    /// handed back.
+    ///
+    /// **Runs after every stepping outcome, `Err` included, and that is the
+    /// point.** A step that fails returns no report while the runtime has
+    /// already appended, truncated, committed, or installed the configuration
+    /// that moved, so a driver that routed only successful reports left the loss
+    /// window open until some later successful step happened to arrive — and for
+    /// a removal that later step is exactly what a stale peer set and an unmade
+    /// fence prevent. `RaftGroup::drain_membership_events` is the app layer's
+    /// error-path companion for that, and this is the driver's use of it.
+    ///
+    /// Empty after a successful step, because the report already carried the
+    /// delta and the group advanced its own mark handing it over. So this costs
+    /// one comparison on the path that works and closes the path that does not.
+    ///
+    /// The events are drained before any of them is routed, because routing
+    /// reaches the transport and the group is borrowed to drain.
+    pub(super) fn reconcile_membership(&mut self) {
+        let events = {
+            let Some(group) = self.group.as_mut() else {
+                return;
+            };
+            group.drain_membership_events()
+        };
+        for event in &events {
+            self.route_membership_event(event);
+        }
     }
 
     /// Steps the group with a leadership transfer, reporting the rejection it
@@ -436,6 +467,7 @@ where
             }
             Err(error) => Err(StepFailure::Group(error)),
         };
+        self.reconcile_membership();
         self.drain_poisoned_waiters();
         self.publish_metrics();
         result
@@ -467,6 +499,7 @@ where
                 cause: ErrorCause::new(error),
             }),
         };
+        self.reconcile_membership();
         self.drain_poisoned_waiters();
         self.publish_metrics();
         result
@@ -661,13 +694,18 @@ where
         match read {
             Ok(read) => {
                 self.route_report(read.report);
+                self.reconcile_membership();
                 self.drain_poisoned_waiters();
                 self.handle_read_outcome(read_id, read.outcome);
             }
             Err(error) => {
-                // The drain runs first so a barrier the group handed over keeps
-                // the poison's own answer; `resolve_read` keeps the first
-                // outcome either way, and both arms say `Poisoned`.
+                // A read that starts a barrier steps the runtime, so it reaches
+                // this driver's membership reconciliation like any other step.
+                self.reconcile_membership();
+                // The drain runs before the resolution so a barrier the group
+                // handed over keeps the poison's own answer; `resolve_read`
+                // keeps the first outcome either way, and both arms say
+                // `Poisoned`.
                 self.drain_poisoned_waiters();
                 self.resolve_read(read_id, Err(read_error_from_group(error)));
             }

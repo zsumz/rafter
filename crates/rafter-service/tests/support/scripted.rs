@@ -36,6 +36,12 @@ pub(crate) struct ScriptedMembership {
     /// Applied from inside `step`, so the group observes the change as a
     /// membership event rather than as a value that was always this way.
     change_on_step: Option<(Vec<u64>, Vec<u64>)>,
+    /// Outputs the next `step` releases beside the change it applies.
+    ///
+    /// What makes a *failing* step scriptable: the runtime moves its
+    /// configuration and hands the group work that the state machine then
+    /// refuses, which is the shape every membership-loss case has.
+    outputs_on_step: Vec<RaftOutput>,
 }
 
 impl ScriptedMembershipRuntime {
@@ -51,6 +57,7 @@ impl ScriptedMembershipRuntime {
                 effective: effective.to_vec(),
                 committed: committed.to_vec(),
                 change_on_step: None,
+                outputs_on_step: Vec::new(),
             })),
             node_id,
         }
@@ -106,6 +113,15 @@ pub(crate) fn change_on_step(
     committed: &[u64],
 ) {
     lock_membership(handle).change_on_step = Some((effective.to_vec(), committed.to_vec()));
+}
+
+/// Arms outputs the runtime releases from its next `step`.
+///
+/// Paired with [`change_on_step`] to script the one shape a per-step membership
+/// comparison could not survive: the configuration moves, and the work the same
+/// step released then fails in the application.
+pub(crate) fn outputs_on_step(handle: &Arc<Mutex<ScriptedMembership>>, outputs: Vec<RaftOutput>) {
+    lock_membership(handle).outputs_on_step = outputs;
 }
 
 /// Pointer equality, because the state is shared: two handles to one scripted
@@ -164,7 +180,7 @@ impl PersistedRaftRuntime for ScriptedMembershipRuntime {
             state.effective = effective;
             state.committed = committed;
         }
-        Ok(Vec::new())
+        Ok(std::mem::take(&mut state.outputs_on_step))
     }
 
     fn step_proposal_batch(
@@ -218,6 +234,27 @@ pub(crate) fn scripted_driver_with_options(
     authorized: &[NodeId],
     options: TransportDriverOptions,
 ) -> (ScriptedDriver, QueueTransport) {
+    scripted_driver_with_app(
+        runtime,
+        nameable,
+        authorized,
+        options,
+        KvStateMachine::default(),
+    )
+}
+
+/// The same driver over a state machine the caller supplies.
+///
+/// The seam a losslessness test needs: every way a step can fail after the
+/// runtime has already moved its configuration runs through the application, so
+/// a fixture that cannot choose the state machine cannot produce one.
+pub(crate) fn scripted_driver_with_app(
+    runtime: ScriptedMembershipRuntime,
+    nameable: Nameable,
+    authorized: &[NodeId],
+    options: TransportDriverOptions,
+    app: KvStateMachine,
+) -> (ScriptedDriver, QueueTransport) {
     let transport = QueueTransport::default();
     let validator = Validator {
         transport: transport.clone(),
@@ -226,7 +263,7 @@ pub(crate) fn scripted_driver_with_options(
     };
     let node_id = runtime.node_id;
     let driver = TransportRaftDriver::new(
-        RaftGroup::new(GROUP, node_id, runtime, KvStateMachine::default()),
+        RaftGroup::new(GROUP, node_id, runtime, app),
         Vec::new(),
         transport.clone(),
         validator,
