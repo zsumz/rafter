@@ -508,8 +508,15 @@ where
     /// The alternative reads a violated precondition as permission, and would
     /// admit exactly the replica whose principal the transport has permanently
     /// fenced.
+    ///
+    /// Asks each fact rather than building their union, because this runs on
+    /// every inbound frame and the union is the same answer with an allocation
+    /// in front of it. [`TransportDriverState::named_members`] is for the
+    /// derivations that need the set itself.
     pub(super) fn is_member(&self, node_id: NodeId) -> bool {
-        !self.is_spent(node_id) && self.named_members().contains(&node_id)
+        !self.is_spent(node_id)
+            && (self.effective_members.contains(&node_id)
+                || self.committed_members.contains(&node_id))
     }
 
     /// Whether a committed removal has spent this driver's own identity.

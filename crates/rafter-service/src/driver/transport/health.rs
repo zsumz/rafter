@@ -93,6 +93,17 @@ where
     /// [`InboundEnvelopeError::NotInMembership`] — so the window is degraded
     /// rather than unsafe, but it is a window that does not close by itself if
     /// the link layer stays refusing.
+    ///
+    /// One entry may be *deferred* rather than owed to a link layer that refused
+    /// it: a committed removal of this driver's own replica licenses a fence for
+    /// its own principal, which it cannot make while it is still that replica.
+    /// That one is discharged by the first adoption under a fresh identity
+    /// rather than by a retry, and [`TransportRaftDriver::service_state`] is
+    /// what distinguishes the two situations.
+    ///
+    /// Past [`crate::TransportDriverOptions::max_pending_fences`] this stops
+    /// being only an alert: the driver refuses new client work until the backlog
+    /// is back within the bound. No obligation is ever discarded for it.
     #[must_use]
     pub fn pending_peer_fences(&self) -> usize {
         self.inner.lock().pending_fences.len()
