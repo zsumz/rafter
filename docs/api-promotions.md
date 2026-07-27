@@ -6591,6 +6591,378 @@ The controls pass under all four: a reported move is still reported once, a
 construction still owes nothing, and a driver without a checkpoint still forgets
 the removal — which is what that control is for.
 
+### Ninth revision after adoption (2026-07-27)
+
+A fifth external review read the eighth revision's model and asked one question
+of it three times: **does membership history survive a boundary?** Three
+boundaries, three answers, all three negative. A batched kernel step reports only
+the configuration it ended on. A checkpoint merge can un-spend an identity a
+removal already consumed. `into_parts` drops the delta a failed step left owed.
+Each was reproduced with a failing test before anything changed, and each is a
+different way of losing the same fact.
+
+The round also hardened the reference process that owns the checkpoint file,
+because a durable record with no seal and an error path that skips the write is
+a checkpoint in name only.
+
+#### 1. One step can cross several committed configurations
+
+The kernel's commit-advance walk (`apply_committed_into` in
+[`crates/rafter/src/node/commit/apply.rs`](../crates/rafter/src/node/commit/apply.rs))
+visited every newly committed entry and, for a configuration entry, evaluated
+leader step-down and emitted **nothing that named the configuration**. So the
+only way an embedder could learn what committed was to sample
+`committed_membership()` after the step — once.
+
+One step can cross several configuration entries. The replication validator
+restricts how many may arrive *above* the proven commit floor, not at or below
+it, so a lagging follower receives several under one leader commit and crosses
+them in a single advance. If an intermediate configuration admitted a replica
+that a later one removed, **the sampled value is identical before and after**:
+committed `{1,2,3}`, the quorum commits `+5` and then `−5`, the replica catches
+up in one append, and `before == after == {1,2,3}`. No event. Node 5 never
+raised the driver's high-water mark, was never spent, got no fence — and a later
+contract-violating readmission of node 5 was accepted as ordinary. The same
+shape appears whenever an intermediate committed configuration held a higher ID
+than the final one names.
+
+**`Output::ConfigurationCommitted { index, term, configuration }`** is emitted
+once per configuration entry the commit index crosses, in index order, before
+the step-down it may cause. It carries the `ConfigurationEntry` itself rather
+than a resolved membership, so two configurations naming the same replicas are
+still distinguishable. It sits behind the ordinary step persistence fence — a
+committed configuration is durable in the entry that carries it and the hard
+state that names the commit, both already written — and
+`persistence_contract::runtime_output_persistence_dependency` classifies it
+there.
+
+**`rafter-app` queues each crossing and reports one `MembershipEvent::Applied`
+per crossing.** The queue lives inside `MembershipReportMark`, beside the two
+memberships, so a crossing is owed on exactly the same terms as they are: a step
+that fails after the kernel named it still owes it, and
+`drain_membership_events` still carries it. The queue is drained after the
+effective event and before the final comparison, so the report stays ordered
+effective-then-committed. The comparison stays as the tail of the derivation
+because two committed moves cross no entry at all — a snapshot install, and a
+group opened over a runtime whose commit index had already moved — and those
+carry the commit index as an observation point instead.
+
+`restore_membership_report_mark` now takes the discarded report as well as the
+mark, and that is forced rather than stylistic: the crossings were queued
+*after* the mark was taken, so putting back the mark alone would drop exactly
+what the step discovered. The report holds one `Applied` per owed transition in
+order, so rebuilding the queue from it reproduces the same event sequence and
+the final comparison then adds nothing.
+
+**The effective half stays a comparison, and the asymmetry is the argument.** A
+committed configuration is a permanent identity fact: it authorized replicas, it
+spent identities, and nothing takes it back — so every one of them must be
+reported even when the endpoints match. An effective configuration is a
+*current* answer to "who may speak", it can be truncated back off the log, and
+an intermediate one that a single step both entered and left **never served an
+admission decision** — no frame was checked against it, because the step that
+produced it had not returned. What a consumer needs from the effective half is
+the configuration in force now, which is what the comparison gives it; reporting
+transient intermediates would ask a link layer to widen for a set that no longer
+exists.
+
+The driver needed no change for this. `route_membership_event` already calls
+`observe_committed_members` once per `Applied`, so per-transition emission
+becomes per-transition observation for free: the intermediate ID raises the mark
+and is spent by its removal even when the final membership equals the initial
+one.
+
+`RaftOutput` is public kernel vocabulary and exhaustive, so every match site in
+the workspace was swept — see the blast radius. The one that mattered was
+`rafter-runtime`'s `persist_snapshot_outputs_for_step`, which carried a `_ => {}`
+arm: a new output with a durability obligation would have got no persistence at
+all and no compile error. It is exhaustive now.
+
+#### 2. A checkpoint merge could un-spend a retired identity
+
+`restore_control_plane_checkpoint` merged its three fields independently — the
+mark by max, the fences by union, and the live committed members by **union** —
+and `adopt_group_with_checkpoint` merged before the spent check. A
+stale-but-valid checkpoint holding `{mark 5, live {1,2,5}}` joined into a driver
+holding `{mark 5, live {1,2}}` produced live `{1,2,5}`, node 5 stopped being
+spent, and a group offered as node 5 passed the adoption gate. **Stale
+checkpoints are explicitly in the public contract**, which is what makes this
+reachable by a correct embedder: a crash between a removal and its persistence
+produces exactly that record.
+
+The live set is now a lattice join, written in terms of each record's own spent
+test:
+
+```text
+spent_x(n) = n <= mark_x and n not in live_x
+
+mark   = max(mark_a, mark_b)
+fences = fences_a union fences_b
+live   = { n in live_a union live_b : not spent_a(n) and not spent_b(n) }
+```
+
+An identity *above* one side's mark is judged only by the side whose mark covers
+it, which is what stops a record that never saw an identity from overruling one
+that did.
+
+The doc-comment proves the three properties. *Symmetric* is immediate — `max`,
+union, and a conjunction are all symmetric. *Order-free* rests on one lemma:
+`S_join = S_a union S_b`, where `S_x` is a record's spent set. (Containment one
+way is immediate; for the other, take `n <= max(mark_a, mark_b)` with `n` not in
+`L_join`. Either `n` is in `S_a union S_b` and we are done, or `n` is in neither
+`L_a` nor `L_b`, and then `n <= mark_a` gives `n` in `S_a` while `n <= mark_b`
+gives `n` in `S_b` — one of which holds because `n <= max`.) Substituting gives
+`L_(a+b)+c = (L_a union L_b union L_c) minus (S_a union S_b union S_c)`, which is
+symmetric in all three, so the join is associative as well as commutative; and
+`L_a minus S_a = L_a` for a validated record, so it is idempotent. *Monotone in
+spent-ness* falls straight out of the lemma: every identity either side had
+witnessed spent is spent in the join and in every later join, so **a witnessed
+removal cannot be undone by any merge order**. That is the property the union
+lacked.
+
+**The checkpoint is validated whole before a field moves, and refused typed.**
+`ControlPlaneCheckpointError` names the four ways a record can contradict the
+invariants a driver maintains: a foreign group, a live set with no mark, a live
+member above the mark, and a fence naming a live member. Each holds by
+construction for a record a driver produced — `observe_committed_members` raises
+the mark to the greatest identity of the configuration it assigns as live in the
+same call, and it extends the fence set with exactly the difference that
+assignment removes — so each failure means the durable bytes were damaged or the
+wrong file was handed over. Each one lowers a retirement record if absorbed in
+part, so nothing is absorbed in part.
+
+**`PeerControlPlaneCheckpoint` is bound to its group**, which is the typed
+option the review named. It is now generic over `G` with a `group` field, and
+`Default` is replaced by `PeerControlPlaneCheckpoint::empty(group)`. The binding
+travels *in* the value rather than beside it, so a process hosting several
+replicas cannot persist the record and forget what it is a record of. The
+adoption gate still evaluates against the joined view, and a refusal leaves the
+driver in exactly the state it was.
+
+#### 3. `into_parts` dropped the owed membership mark
+
+`RaftGroupParts` carried the runtime, the state machine, the ID watermarks, and
+the poison state — and no membership mark. A membership-moving step that failed
+left the delta owed; the caller then did what the decomposition contract tells
+it to do, and the rebuilt group seeded a fresh comparison from the runtime it
+was handed. That runtime had already *moved*, so the new group's first
+comparison read "nothing has changed" and every later one agreed. The
+decomposition contract says no protocol effect is lost by calling `into_parts`;
+that clause made it false.
+
+`RaftGroupParts::membership_report_mark` carries it, and
+**`RaftGroup::from_parts`** seeds the mark from it rather than from the runtime.
+`MembershipReportMark` becomes public with private fields and no public
+constructor: the only way to obtain one is `into_parts` and the only thing to do
+with one is `from_parts`. A caller that could forge one could tell a group it had
+already reported a configuration it never reported, which is the same silent loss
+the whole mechanism exists to prevent. `from_parts` also carries the ID
+watermarks across, which discharges by construction the obligation `into_parts`
+documents for a caller that rebuilds.
+
+**The mark-invariant inconsistency is fixed rather than narrowed.**
+`begin_proposal_outcome`, `begin_read_barrier_outcome`, and — a third site the
+review did not name — `read_outcome` each discard a full report and did not
+restore the mark, which made "every report discarded before reaching a caller
+restores the mark" false and made `drain_membership_events` an escape hatch with
+a hole in it. All three restore now. There is no double-reporting to find: the
+caller never received the report, so it never received the membership events in
+it, and the restore is the same operation the five verdict sites already
+performed. Their docs stop claiming they discard membership events, because they
+no longer do.
+
+#### 4. The snapshot boundary, answered rather than left silent
+
+A snapshot carries the committed configuration **at** its boundary and nothing
+about the configurations that committed and were superseded below it. They are
+not in the snapshot and the log that held them is compacted away, so an identity
+admitted and removed entirely below a boundary a replica installed is one no
+local reasoning can discover was spent. `install_local_snapshot` says so, and
+says that it emits no `ConfigurationCommitted` and cannot.
+
+The cheap improvement the review asked to be evaluated — raising the mark to the
+boundary configuration's greatest ID — was evaluated and **is already the
+behaviour**, arrived at for free: a snapshot install reaches the driver as an
+ordinary committed fact, so `observe_committed_members` raises the mark to that
+maximum and retires everything the driver had live that the boundary does not.
+Nothing further is attempted, because a mark raised past the boundary would be a
+guess and a guess in this direction refuses live replicas.
+
+So the answer is three layers, stated at all three sites. The **boundary
+configuration** covers what the snapshot still carries. The **caller-owned
+checkpoint** preserves what this driver itself witnessed, across a restart,
+which is the case a snapshot would otherwise erase. The **deployment's monotonic
+`NodeId` allocator** covers what nothing witnessed — a removal that committed
+while this process was down and was then compacted below a boundary it received.
+Only the third can close that one, which is why `rafter::NodeId` states monotonic
+allocation as a requirement rather than a suggestion.
+
+#### 5. The reference process: persistence that runs, and a file that is sealed
+
+Four entry points in
+`reference/fenced-lock/src/bin/lock-node/replica.rs` could move the driver's
+checkpoint epoch and then not persist it. `tick` and `deliver` returned on the
+driver's own error — *after* the step had already routed whatever membership the
+runtime moved through; `drive_reads` never persisted at all; `submit` stepped the
+group through `begin_write` and never persisted either.
+
+Every entry point persists in a finally position now, and the two channels
+combine in one order: this call's persist failure, then one carried from an entry
+point with no error channel, then the operation's own failure, then `Ok`.
+Persistence outranks the operation because the step will be retried by the
+protocol and the forgetting will not. `combine_outcomes` is a free function so
+that rule is checkable without three processes. `submit`, `query`,
+`poll_pending`, and `abandon_waiters` answer with a value rather than a `Result`,
+so a failure inside one is recorded and raised by the next entry point that has a
+channel — at most one pass of the loop away, because the loop reaches
+`drive_reads` every pass. The shutdown flush has no successor, so the process
+emits `CONTROL_PLANE_UNPERSISTED`.
+
+The checkpoint file had a version tag and structural parsing and nothing else, so
+a flipped bit inside a number was a syntactically valid file that **lowered the
+mark, added a live identity, or fenced an active member**. At format version 2 it
+gets the lock store's own posture: a CRC-32/IEEE seal over the canonical bytes, a
+`group` line, strict end-of-file so trailing bytes are a refusal rather than a
+truncation, and the same invariant checks the driver applies — made here as well
+so the refusal names the artifact rather than the value. The store's `crc32` is
+public for it, because the replica directory holds more than two slot files and
+everything durable in it should refuse a flipped bit the same way.
+
+**A damaged file is fail-closed, and is neither repairable nor regenerable by
+policy.** The store can refuse one slot and adopt its partner because a second
+copy of the same image exists. This file has one copy, and the state it holds is
+by construction the state no other artifact carries, so there is nothing to
+repair *from*. Regenerating an empty one would succeed, start the replica, and
+silently forget every retirement it witnessed — the exact outcome the file exists
+to prevent, reached by a path an operator did not choose. So refusal is the
+honest default and recovery is an operator decision made against the deployment's
+own record.
+
+#### What was refuted
+
+**`advance_commit_index` is not in `lifecycle.rs`.** The review located the
+commit-advance walk at
+[`crates/rafter/src/node/lifecycle.rs`](../crates/rafter/src/node/lifecycle.rs);
+that file only *calls* it, from `become_leader`. The walk is
+`apply_committed_into` in
+[`crates/rafter/src/node/commit/apply.rs`](../crates/rafter/src/node/commit/apply.rs),
+reached from six sites. The finding itself was exactly as described.
+
+**The mark-restore inconsistency is three sites, not two.** `read_outcome`
+discards a full report on the same terms as the two the review named, and its own
+documentation listed "membership events" among what it threw away. Narrowing the
+invariant's wording would have had to narrow it around three exceptions rather
+than two.
+
+**The improvement the review asked to be evaluated already exists.** Raising the
+mark to the boundary configuration's maximum ID on snapshot install is what the
+driver already does, because it observes the boundary configuration as an
+ordinary committed fact rather than as a special case. The evaluation is recorded
+above; no code changed for it.
+
+#### Blast radius of the ninth revision
+
+| File | Change |
+| --- | --- |
+| [`crates/rafter/src/node/event/output.rs`](../crates/rafter/src/node/event/output.rs) | `Output::ConfigurationCommitted` and its contract |
+| [`crates/rafter/src/node/commit/apply.rs`](../crates/rafter/src/node/commit/apply.rs) | emitted per crossed configuration entry, before the step-down it may cause |
+| [`crates/rafter/src/node/log.rs`](../crates/rafter/src/node/log.rs), [`types/id.rs`](../crates/rafter/src/types/id.rs) | the snapshot-boundary answer at the install contract and the `NodeId` allocation contract |
+| [`crates/rafter-app/src/group/types.rs`](../crates/rafter-app/src/group/types.rs) | `CommittedConfigurationCrossing`; `MembershipReportMark` becomes public and gains the queue; `RaftGroupParts::membership_report_mark`; `RaftGroup::from_parts`; the report-contract text |
+| [`crates/rafter-app/src/group/membership.rs`](../crates/rafter-app/src/group/membership.rs) | the queue is drained between the effective event and the comparison; `record_committed_configuration`; the restore takes the discarded report |
+| [`crates/rafter-app/src/group/output.rs`](../crates/rafter-app/src/group/output.rs) | the new output arm; `record_appended_proposal` split out for the line budget |
+| [`crates/rafter-app/src/group/proposal.rs`](../crates/rafter-app/src/group/proposal.rs), [`read.rs`](../crates/rafter-app/src/group/read.rs) | the three outcome-only helpers restore the mark |
+| [`crates/rafter-app/src/membership.rs`](../crates/rafter-app/src/membership.rs) | `MembershipEvent::Applied` is one per crossing, and says what its index means |
+| [`crates/rafter-service/src/driver/transport/control_plane.rs`](../crates/rafter-service/src/driver/transport/control_plane.rs) | the lattice join and its proof; `validate`; the `group` field; the snapshot-boundary answer |
+| [`crates/rafter-service/src/driver/transport.rs`](../crates/rafter-service/src/driver/transport.rs) | both checkpoint entry points surface the typed refusal; `empty(group)` replaces `default()` |
+| [`crates/rafter-service/src/driver/mapping.rs`](../crates/rafter-service/src/driver/mapping.rs) | `ControlPlaneCheckpointError` and `ManagedDriverError::InvalidControlPlaneCheckpoint` |
+| [`crates/rafter-runtime/src/lib.rs`](../crates/rafter-runtime/src/lib.rs) | `persist_snapshot_outputs_for_step` loses its wildcard arm |
+| `crates/{rafter-sim,rafter-maelstrom}/`, examples, benches | the `RaftOutput` sweep |
+| `reference/fenced-lock/src/bin/lock-node/{replica,main,control_plane}.rs` | finally-style persistence, `combine_outcomes`, and the sealed format |
+| [`reference/fenced-lock/src/store/format.rs`](../reference/fenced-lock/src/store/format.rs) | `crc32` becomes public |
+
+#### Focused-test plan for the ninth revision
+
+New, in `crates/rafter-service/tests/transport_configuration_history.rs` — all
+against a **real kernel** (`DurableRaftNode`), driven through `deliver` with
+frames a leader would send, because a scripted runtime states what the membership
+is before and after a step and the loss lives entirely in between:
+
+- `one_append_crossing_two_configurations_spends_the_intermediate_identity` —
+  the review's case end to end: committed `{1,2,3}`, one append carrying
+  `+5` then `-5` under a commit floor covering both. The mark rises to 5, node 5
+  is spent, the fence lands, the peer set omits it, and its frames are refused.
+- `a_crossed_removal_leaves_its_fence_owed_when_the_link_refuses_it` — the same
+  crossing with a link that refuses the fence: the obligation is recorded, is in
+  the checkpoint, and the driver's own membership is what refuses the frame.
+- `a_multi_configuration_step_is_reported_in_index_order` — three configurations
+  in one step; the removal in the middle is fenced and the addition in the middle
+  is not.
+- Controls: `a_single_crossed_configuration_still_retires_exactly_what_left` and
+  `recommitting_the_same_membership_retires_nothing`.
+
+New, in `crates/rafter-service/tests/transport_checkpoint_merge.rs`:
+
+- `a_stale_checkpoint_cannot_un_spend_a_retired_identity` — the reviewer's exact
+  scenario, and adoption of node 5 stays `RetiredNodeId`.
+- `the_join_is_symmetric_in_the_two_records` — the same two records the other way
+  round.
+- `the_join_is_order_free_across_three_records` — four orders reach one state.
+  The runtime's committed configuration names every identity any record
+  mentions, so each adoption's publication is a no-op and the only thing moving
+  state is the join.
+- `joining_the_same_record_twice_is_the_same_as_once`.
+- `an_identity_above_a_records_mark_is_not_spent_by_that_record` — the clause
+  that keeps the join from over-retiring.
+- `a_checkpoint_from_another_group_is_refused` and
+  `a_contradictory_checkpoint_is_refused_and_installs_nothing` — each typed, and
+  each leaving the driver's state byte-identical.
+- Control: `a_stale_record_still_contributes_the_fence_it_witnessed`.
+
+New, in `crates/rafter-app/tests/group_membership_losslessness.rs`:
+
+- `a_rebuild_from_parts_still_owes_a_failed_steps_membership_delta`, with
+  `a_rebuild_from_parts_owes_nothing_when_nothing_was_owed` as its control.
+- `the_outcome_only_proposal_helper_still_owes_its_membership_delta` and
+  `the_outcome_only_read_barrier_helper_still_owes_its_membership_delta`, both
+  through a *later* step rather than an immediate drain, for the reason
+  `report_after_an_unrelated_step` gives.
+
+New, in `reference/fenced-lock/src/bin/lock-node/control_plane/tests.rs`:
+
+- `a_flipped_bit_in_any_field_is_refused_by_the_checksum` over five field
+  classes — the mark lowered, the live set widened, the fence set emptied, the
+  group moved, the version bumped.
+- `trailing_bytes_after_the_checksum_are_refused` and
+  `a_truncated_file_is_refused` (every prefix).
+- `a_resealed_contradiction_is_refused` — the three invariant clauses, resealed
+  so the checksum cannot be what catches them.
+- `a_resealed_file_for_another_group_is_refused`.
+- Controls: `a_round_trip_preserves_every_fact`,
+  `a_sealed_consistent_record_is_accepted`, `an_empty_checkpoint_round_trips`.
+
+New, in `reference/fenced-lock/src/bin/lock-node/replica.rs`: five cases pinning
+`combine_outcomes`, including that a carried persist failure outranks the
+operation's own and that this call's outranks a carried one.
+
+Updated: `reference/fenced-lock/tests/process_cluster.rs` asserts the format tag,
+the group line, and the seal.
+
+Mutation check, on the committed implementation:
+
+| Neutralized | Fails |
+| --- | --- |
+| the per-crossing emission (the kernel stops pushing `ConfigurationCommitted`) | `one_append_crossing_two_configurations_spends_the_intermediate_identity`, `a_crossed_removal_leaves_its_fence_owed_when_the_link_refuses_it`, `a_multi_configuration_step_is_reported_in_index_order` |
+| the lattice join (restored to the union it replaced) | `a_stale_checkpoint_cannot_un_spend_a_retired_identity`, `the_join_is_symmetric_in_the_two_records`, `the_join_is_order_free_across_three_records` |
+| the parts-carried mark (`from_parts` seeds from the runtime instead) | `a_rebuild_from_parts_still_owes_a_failed_steps_membership_delta` |
+| the outcome-only restores (made no-ops) | `the_outcome_only_proposal_helper_still_owes_its_membership_delta`, `the_outcome_only_read_barrier_helper_still_owes_its_membership_delta` |
+| the file's checksum verification (made trivially true) | `a_flipped_bit_in_any_field_is_refused_by_the_checksum` |
+| the file's invariant checks (made a no-op) | `a_resealed_contradiction_is_refused` |
+
+The controls pass under all six: a single crossed configuration still retires
+exactly what left, recommitting the same membership still retires nothing, a
+rebuild that owed nothing still owes nothing, a stale record still contributes
+its fence, and a sealed consistent file is still accepted.
+
 ## Terminal Driver Vocabulary
 
 ### Origin
