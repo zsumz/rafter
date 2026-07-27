@@ -5622,6 +5622,255 @@ home of the branches no public entry point reaches:
   transport holds is already the set the group requires. Before the accepted set
   was tracked, this case published an identical set a second time.
 
+### Sixth revision after adoption (2026-07-27)
+
+An external re-review of the fifth revision found the one thing it had left
+open, and it is the thing all five revisions were standing on: **the control
+plane tracks replicas by `NodeId` and the transport boundary authorizes and
+fences `PeerPrincipal`, and nothing said what happens when an ID outlives the
+identity it named.** The fifth revision made every statement retriable. It did
+not say how long a statement is true for.
+
+#### 1. The evidence: three ways an ID outlives its identity
+
+**A successfully fenced `NodeId` could be committed back in, and then never
+speak.** The kernel keeps no removed-node tombstones — `add_learner` rejects an
+ID that is a *current* voter or learner and nothing else — so a removed ID can
+be proposed and committed again. `RaftTransport` has no unfence, and
+`fence_peer` is documented as making later frames from that principal rejected.
+The two together mean the membership change commits and the replica is
+permanently silent. The branch's own test transport demonstrated it: its
+`fenced` set is only ever inserted into, and `update_peers` never removes from
+it.
+
+**The pending-fence test codified the dead end.** `an_uncommitted_widening_does_not_settle_a_fence_a_committed_removal_left_owed`
+kept node 3's fence alive across an uncommitted configuration naming node 3
+again, and then asserted the retry discharged it once the link recovered. Read
+forward, that is: a later tick lands the old fence on a node the effective
+membership currently needs. The assertion was right about the obligation and
+silent about the replica.
+
+**Principal changes were invisible or mis-targeted, in opposite directions.**
+`flush_peer_set` compares desired against published as `NodeId` sets, so a
+directory that remapped a live ID from principal A to B left the transport
+authorizing A while `peer_set_is_stale` reported the driver level. Pending
+fences had the inverse problem: the obligation holds a `NodeId` and resolves
+`principal_for_node` at each retry, so a directory that moved the ID would have
+the retry fence the *new* principal.
+
+None of the three is a Raft safety defect. All three are the transport
+boundary's authorization contract, which is the contract the one consumer that
+adopted this driver relies on.
+
+#### 2. The decision: `(group_id, NodeId)` is single-use
+
+Two designs answer all three, and they are not compatible.
+
+**Option A — permanently retired IDs.** A committed removal consumes the
+`(group_id, NodeId)` pair. A replica that returns returns under a fresh ID. A
+principal is stable for the lifetime of its ID, so an ID identifies an identity
+and the `NodeId`-keyed control plane is sound as written.
+
+**Option B — an incarnation-aware `PeerIdentity`.** A public type pairing a
+`NodeId` with an incarnation, threaded through the peer set, the fence, and the
+inbound check, so a returning replica is a new incarnation of a reused ID.
+
+**A, on four grounds.**
+
+1. *Reference practice.* etcd mints a fresh member ID for every added member and
+   never reuses a removed one. A cluster manager that already allocates IDs is
+   being asked for a discipline it has, not a new mechanism.
+2. *An incarnation is a two-part ID where one part suffices.* Option B's
+   `(NodeId, incarnation)` is an identity space; so is a `NodeId` allocated
+   monotonically. B pays a public type, a wire question, and a comparison rule
+   at every boundary to express what a counter already expresses.
+3. *Direction of travel.* A single-use contract can be relaxed compatibly after
+   1.0 — an incarnation-aware identity can be added later and the old contract
+   remains the degenerate case. A shipped identity type cannot be unshipped.
+4. *Where enforcement belongs.* Enforcing single use across process lifetimes
+   needs a durable registry of retired IDs, and how long to keep one is a
+   retention decision — classification 2 in
+   [`docs/reference-consumers.md`](./reference-consumers.md), the same ground on
+   which `rafter-multiraft` declined to tombstone removed group keys. In-lifetime
+   enforcement is mechanism and ships here. The document says which half is
+   which rather than implying the whole is covered.
+
+**The contract, in full.**
+
+- A `NodeId` is retired by a **committed removal**, and only by that.
+- **Crash and restart is not retirement.** A replica killed and reopened from
+  its own durable state keeps its ID and its principal. The reference fenced
+  lock's process suite kills and restarts every replica under the same ID; that
+  is legitimate and stays legitimate.
+- A retired `(group_id, NodeId)` is never validly re-added. A replica returns
+  under a fresh ID. Deployments own durable allocation discipline — monotonic
+  per group is the standard shape — and this is stated, not enforced across
+  restarts.
+- `PeerPrincipal` is the stable logical identity for the lifetime of its
+  `NodeId`: a subject name, not a certificate or token instance. Credentials
+  rotate beneath a principal. The directory must keep a removed ID's mapping
+  resolvable until its fence has been accepted.
+- `fence_peer` is permanent for the principal it names. There is no unfence, by
+  design, and the trait says so.
+
+#### 3. The retraction rule of the fifth revision is wrong and is removed
+
+The fifth revision's rule read: an obligation leaves `pending_fences` on an
+`Ok`, and in one other case — a *committed* membership naming the replica again.
+Its argument was symmetry: "a committed removal is the only fact that licenses a
+fence, so a committed re-admission is the only fact that can take the licence
+back", and "a fact too weak to create the obligation is too weak to retract it".
+
+The symmetry is real and the conclusion does not follow, because the fence is
+not the only thing a committed removal does. It also spends the identity. **A
+fact strong enough to create an obligation is strong enough to retract it, and
+neither strength reaches a `NodeId` that has already been consumed** — retirement
+is not obligation bookkeeping, it is identity consumption, and there is no
+bookkeeping entry to reverse. Worse, the rule's own necessity claim ("fencing a
+replica the cluster has committed back into the membership cuts off a current
+member") describes a state that cannot be repaired: if the fence had already
+landed, retracting the obligation does not un-fence anything. The rule made the
+driver stop *asking* about a replica it had already made unreachable.
+
+So `a_committed_readmission_settles_a_fence_the_removal_left_owed` is deleted
+rather than adjusted. It pinned the forbidden case as the supported one.
+
+#### 4. One set, read fail-closed in two places
+
+```rust
+/// Every replica this driver has seen a committed removal for, forever.
+retired: BTreeSet<NodeId>,
+```
+
+Entered by the same diff that records the fence obligation, in
+`publish_membership`, and never left for the driver's lifetime. It carries
+across release and adoption like `known_members`, `published_peers`, and
+`pending_fences`, because a released driver is a driver between incarnations and
+not a new one. It excludes the local node by the same filter `pending_fences`
+uses: both are statements about *peers*, and a driver that has since become the
+removed replica holds neither about itself.
+
+Two readings, both fail-closed:
+
+| Derivation | Change |
+| --- | --- |
+| `desired_peers` | excludes retired IDs, so a retired replica is never republished into a peer set |
+| `is_member` | refuses retired IDs *regardless of* `known_members`, so retirement outranks any later fact naming the ID |
+
+The consequence is that an illegitimately re-added ID stays excluded, stays
+refused inbound, and keeps owing its fence — the forbidden membership change
+wedges. That is the correct outcome and not a gap: `fence_peer` has no inverse,
+so a driver that admitted the replica would be promising an authorization its
+own link layer cannot give back, and would then report itself level while the
+replica stayed silent. What a wedge must not be is invisible, so it is counted:
+
+| Surface | Answers |
+| --- | --- |
+| `readmitted_retired_peers() -> usize` | how many spent identities the group's membership names again. Zero on every cluster that keeps the contract; non-zero means fix the identity allocator |
+
+An accessor on `TransportRaftDriver`, current state rather than cumulative
+history, beside `pending_peer_fences` and `peer_set_is_stale` — the shape the
+fifth revision established for exactly this reason.
+
+#### 5. Two comparisons that are now correct by contract rather than by luck
+
+Both were already written the way they are. What changed is that the property
+they depend on is stated at the boundary that owes it, so neither is an
+assumption the code makes about a deployment it cannot see.
+
+- **`flush_peer_set` compares `NodeId` sets.** Sound because a principal is
+  stable for the lifetime of its ID. Documented at the comparison, and required
+  at `AuthenticatedPeerValidator::principal_for_node`.
+- **`flush_pending_fences` resolves `principal_for_node` at retry time.** Sound
+  because the directory must keep a removed ID resolvable until its fence has
+  been accepted, and because a retired ID has no later principal to be moved to.
+  Documented at the call site, and required at the same trait method.
+
+#### 6. Where the contract is stated
+
+Six boundaries, each saying the part it owes rather than pointing at one
+paragraph:
+
+| Boundary | Says |
+| --- | --- |
+| `rafter::NodeId` | the single-use rule, why a fence makes it necessary, that restart is not retirement, and that it is a stated precondition rather than a checked one |
+| `Input::AddLearner` | the caller obligation, and that the kernel checks only current membership because compaction is allowed to erase the rest |
+| `Input::EnterJoint` / `Input::ChangeMembership` | the same obligation for every ID a target set adds; these check even less |
+| `Input::RemoveVoter` / `Input::PromoteLearner` | which one retires an ID and which admits no identity at all |
+| `RaftTransport::fence_peer` | permanence, the absent unfence as a design decision, and that a restart is not a removal |
+| `RaftTransport::update_peers` | that a published set never re-authorizes a fenced principal, so the two operations never have to be ordered |
+| `AuthenticatedPeerValidator::principal_for_node` | principal stability for the ID's lifetime, principal-as-subject rather than credential, and retained resolvability of removed IDs until fence acceptance |
+
+The consumer-facing echo lands in two places.
+[`docs/reference-consumers.md`](./reference-consumers.md)'s production
+composition now requires replica identity "allocated so a node ID is used once
+per group", and says which half of the contract is classification 2.
+`reference/fenced-lock/CONTRACT.md` says out loud that its kill-and-restart
+suite reuses IDs deliberately and legitimately, because nothing there is ever
+removed.
+
+#### Blast radius of the sixth revision
+
+| File | Change |
+| --- | --- |
+| [`crates/rafter-service/src/driver/transport/control_plane.rs`](../crates/rafter-service/src/driver/transport/control_plane.rs) | New in the preceding commit: the peer control plane moved out of `state.rs`, which was at 996 lines against a thousand-line hard limit. Then `retired`'s two readings, `readmitted_retired_peers`, the retraction's removal, and the two comparisons' justifications |
+| [`crates/rafter-service/src/driver/transport/state.rs`](../crates/rafter-service/src/driver/transport/state.rs) | The control plane leaves; `retired` is declared beside the fields it belongs with |
+| [`crates/rafter-service/src/driver/transport.rs`](../crates/rafter-service/src/driver/transport.rs) | `readmitted_retired_peers`; `retired` at construction |
+| [`crates/rafter-service/src/transport.rs`](../crates/rafter-service/src/transport.rs) | `fence_peer` permanence and the absent unfence; `update_peers` never re-authorizes a fenced principal |
+| [`crates/rafter-app/src/transport.rs`](../crates/rafter-app/src/transport.rs) | `principal_for_node` gains its stability and retained-resolvability contract |
+| [`crates/rafter/src/types/id.rs`](../crates/rafter/src/types/id.rs) | `NodeId` states the single-use rule |
+| [`crates/rafter/src/node/event/input.rs`](../crates/rafter/src/node/event/input.rs) | the membership inputs state the caller obligation honestly |
+| `crates/rafter/src/node/membership/change.rs` | the admission check says which half of the rule it answers |
+| `crates/rafter-service/src/driver/transport/control_plane/tests.rs` | one test deleted, one rewritten |
+| `crates/rafter-service/tests/{transport_streams,support/transport}.rs` | four new tests; the test link's append-only fenced set is argued rather than assumed |
+| [`docs/reference-consumers.md`](./reference-consumers.md), `reference/fenced-lock/CONTRACT.md` | the consumer-facing echo |
+
+Not breaking. One accessor added; every other public change is documentation.
+`scripts/reference-source-check` passes unmodified, which is the evidence that
+the surface is additive rather than the claim that it is.
+
+The behavioural changes a correct caller can see are none, because a correct
+caller never re-adds a retired ID. The changes an *incorrect* caller sees are
+three: the re-added ID stays out of the published peer set, its frames are
+refused, and any fence owed for it is still owed.
+
+#### Focused-test plan for the sixth revision
+
+In `crates/rafter-service/tests/transport_streams.rs`:
+
+- `a_readmitted_retired_replica_is_refused_and_its_fence_stays_owed` — the
+  driver's own authority, with the link refusing the fence throughout so that
+  check is the only one in play. This is the case the deleted retraction rule
+  turned into an *acceptance*.
+- `a_readmitted_retired_replica_never_asks_for_an_unfence` — the same violation
+  after the fence landed. No republication, no second ask, and no unfence
+  because there is none.
+- `a_retried_fence_resolves_the_retired_mapping_while_a_fresh_id_joins` — both
+  halves of the directory's obligation at once: the retry resolves node 3's
+  retained principal, and node 4 joins under its own and speaks immediately.
+  Asserted on principals rather than replicas, because a fence names a principal.
+- `a_replica_that_restarts_under_its_own_id_is_untouched_by_retirement` — the
+  control, and the clause the lock consumer depends on. No membership change, no
+  fence, no retirement, and the peer set published at adoption is still the only
+  one.
+
+In `crates/rafter-service/src/driver/transport/control_plane/tests.rs`:
+
+- `a_widening_settles_no_fence_and_readmits_no_retired_replica` — replaces
+  `an_uncommitted_widening_does_not_settle_a_fence_a_committed_removal_left_owed`.
+  Same obligation clause, plus the one it was silent about: the retired replica
+  never speaks again. Under the old shape it could speak for the whole window
+  the fence was pending.
+- `a_committed_readmission_settles_nothing_and_is_reported` — replaces
+  `a_committed_readmission_settles_a_fence_the_removal_left_owed`, asserting the
+  opposite of it. The obligation survives, the violation is counted, the replica
+  is refused, and the retry still fences.
+
+Each of the four assertions that carry the rule was checked against an
+implementation with the two `retired` reads removed: two integration tests and
+two in-crate tests fail, and the restart control passes — which is what a
+control is for.
+
 ## Terminal Driver Vocabulary
 
 ### Origin

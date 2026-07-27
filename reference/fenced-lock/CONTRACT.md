@@ -1045,6 +1045,16 @@ suite has no timing in it beyond waiting for elections — an advantage over a
 clock-based lease that is worth stating, because it is why these tests bound
 real time to elections and socket delivery alone.
 
+Every restart above comes back under the *same* node ID, and that is
+deliberate. Rafter's `NodeId` is single-use within its group — a committed
+removal retires it, and a replacement replica joins under a fresh one — but a
+kill and a restart are neither a removal nor a replacement. This cluster's
+membership never changes, no replica is ever removed, and each process reopens
+its own durable store as the replica it already was. Reusing the ID across a
+restart is the ordinary path and stays legitimate; what would not be is
+reopening under an ID some earlier committed removal had retired, which nothing
+here does because nothing here removes anything.
+
 ### What it deliberately does not establish
 
 - **Transport security.** Nothing is authenticated, encrypted, replay

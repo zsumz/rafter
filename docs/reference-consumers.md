@@ -392,7 +392,7 @@ are labeled integration evidence only.
 
 The 1.0 acceptance composition requires:
 
-- persisted replica identity;
+- persisted replica identity, allocated so a node ID is used once per group;
 - a transactional application backend;
 - the selected production Raft storage implementation;
 - bounded frames and queues;
@@ -402,6 +402,22 @@ The 1.0 acceptance composition requires:
 
 No test using intentionally insecure demo plumbing closes this release
 criterion.
+
+The allocation clause is the deployment's half of a contract Rafter states and
+cannot enforce for it. A `NodeId` is single-use within its group: a committed
+removal retires it, and a replacement replica joins under a fresh one, because
+the transport fence that removal installs is permanent for the removed
+replica's principal. Rafter enforces this within one driver's lifetime and says
+so in `rafter::NodeId`'s own documentation; enforcing it across restarts needs
+a durable record of what has been allocated, and how long to keep one is a
+retention decision — classification 2, the same ground on which the counter's
+group tombstones stayed in the consumer. Monotonic per-group allocation is the
+standard shape and costs a counter.
+
+**Restarting a replica is not removing it.** A replica that is killed and
+reopened from its own durable state under the same ID was never removed, so
+nothing retires and nothing changes for it. That is the lock's process suite
+working as intended, not an exception to the rule above.
 
 ## Verification Lanes
 
