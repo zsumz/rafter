@@ -242,31 +242,6 @@ pub(super) enum DriverRoutingError {
     /// Failing closed rather than growing: the operation was refused before
     /// anything was proposed, so nothing is in flight to be uncertain about.
     PendingWaiterLimit { max_pending_waiters: usize },
-    /// The driver released its group, so the operation was never started.
-    ///
-    /// This is a refusal rather than a lost outcome, and it is here rather
-    /// than fabricated into an `UnknownOutcome` or an `Abandoned` because
-    /// those variants carry an ID, and an operation that never started has
-    /// none.
-    NoGroup,
-    /// A committed configuration change removed this driver's own replica, so
-    /// it no longer serves clients.
-    ///
-    /// A refusal like the rest: nothing was proposed. The group stays until the
-    /// supervisor releases it, and the supervisor's move is release, then adopt
-    /// a fresh identity — the removed one is spent.
-    Decommissioned { node_id: NodeId },
-    /// The link layer has left more committed removals unfenced than this
-    /// driver's bound allows.
-    ///
-    /// The obligations are all still held; what is refused is *new* client work.
-    /// A driver past this bound is authorizing replicas the cluster has removed,
-    /// and adding writes to that makes the problem larger rather than smaller.
-    /// It clears itself when the backlog drains.
-    FenceBacklog {
-        pending_fences: usize,
-        max_pending_fences: usize,
-    },
 }
 
 impl fmt::Display for DriverRoutingError {
@@ -284,20 +259,6 @@ impl fmt::Display for DriverRoutingError {
             } => write!(
                 formatter,
                 "managed driver already holds {max_pending_waiters} unresolved waiters"
-            ),
-            Self::NoGroup => {
-                formatter.write_str("managed driver has released its group and holds none")
-            }
-            Self::Decommissioned { node_id } => write!(
-                formatter,
-                "managed driver is decommissioned: a committed change removed {node_id}"
-            ),
-            Self::FenceBacklog {
-                pending_fences,
-                max_pending_fences,
-            } => write!(
-                formatter,
-                "managed driver owes {pending_fences} peer fences, over its bound of {max_pending_fences}"
             ),
         }
     }

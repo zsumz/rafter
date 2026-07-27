@@ -12,8 +12,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use rafter_app::proposal::ClientRequestId;
 use rafter_service::{
-    AuthenticatedPeerEnvelope, AuthenticatedPeerEnvelopeError, InboundEnvelopeError, RaftTransport,
-    TransportDriverOptions, TransportRaftDriver, WriteOptions,
+    AuthenticatedPeerEnvelope, AuthenticatedPeerEnvelopeError, DriverServiceState,
+    DriverUnavailableReason, InboundEnvelopeError, RaftTransport, TransportDriverOptions,
+    TransportRaftDriver, WriteOptions,
 };
 use support::transport::*;
 use support::*;
@@ -176,20 +177,32 @@ fn a_released_driver_refuses_every_operation() {
         Err(ManagedDriverError::NoGroup)
     ));
 
+    assert_eq!(
+        driver.service_state(),
+        DriverServiceState::Released,
+        "and it says so: a released driver used to report itself `Serving` \
+         while refusing everything"
+    );
+
     // A refusal, not a lost outcome: nothing was proposed, so no ID names it.
     // The driver used to answer `UnknownOutcome` with a fabricated
-    // `LocalProposalId(0)`, which a caller can compare against a real one.
+    // `LocalProposalId(0)`, which a caller can compare against a real one — and
+    // then a `Transport` failure, when no transport operation had failed.
     let write = block_on(handle.write(("alpha".to_owned(), "one".to_owned())))
         .expect_err("a released driver serves no writes");
     assert!(
         matches!(
             write,
-            WriteError::Transport {
-                fate: WriteFate::NotAppended,
-                ..
+            WriteError::Unavailable {
+                reason: DriverUnavailableReason::Released
             }
         ),
         "got {write:?}"
+    );
+    assert_eq!(
+        write.fate(),
+        WriteFate::NotAppended,
+        "a refusal that never reached the group cannot commit later"
     );
     assert!(
         !matches!(write, WriteError::UnknownOutcome { .. }),
@@ -198,7 +211,15 @@ fn a_released_driver_refuses_every_operation() {
 
     let read = block_on(handle.read("alpha".to_owned(), ReadConsistency::Linearizable))
         .expect_err("a released driver serves no reads");
-    assert!(matches!(read, ReadError::Transport { .. }), "got {read:?}");
+    assert!(
+        matches!(
+            read,
+            ReadError::Unavailable {
+                reason: DriverUnavailableReason::Released
+            }
+        ),
+        "got {read:?}"
+    );
     assert!(
         !matches!(read, ReadError::Abandoned { .. }),
         "a read that reserved no barrier has no read id to abandon"

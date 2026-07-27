@@ -10,7 +10,7 @@
 
 mod support;
 
-use rafter_service::{ReadOptions, TransportDriverOptions};
+use rafter_service::{DriverUnavailableReason, ReadOptions, TransportDriverOptions};
 use support::transport::*;
 use support::*;
 
@@ -167,7 +167,7 @@ fn a_local_read_is_refused_on_a_poisoned_group() {
     assert!(matches!(error, ReadError::Poisoned { .. }), "got {error:?}");
 }
 
-/// The `NoGroup` check precedes the consistency branch: a local read has no
+/// The service-state check precedes the consistency branch: a local read has no
 /// state machine to read either.
 #[test]
 fn a_local_read_is_refused_after_release() {
@@ -179,7 +179,12 @@ fn a_local_read_is_refused_after_release() {
         .expect_err("a released driver holds no state machine");
 
     assert!(
-        matches!(error, ReadError::Transport { .. }),
+        matches!(
+            error,
+            ReadError::Unavailable {
+                reason: DriverUnavailableReason::Released
+            }
+        ),
         "got {error:?}"
     );
 }

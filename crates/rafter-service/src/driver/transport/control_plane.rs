@@ -31,6 +31,71 @@ use crate::transport::{AuthenticatedPeerValidator, PeerSet, RaftTransport};
 use super::super::*;
 use super::state::TransportDriverState;
 
+/// The peer-control-plane state a restarted process cannot re-derive.
+///
+/// **Caller-owned and durable, like everything else in this repo that has to
+/// survive a crash.** Rafter opens no files, so this is a plain value with
+/// public fields: read it with
+/// [`TransportRaftDriver::control_plane_checkpoint`], write it wherever the
+/// embedder keeps its own small metadata, and hand it back at
+/// [`TransportRaftDriver::with_control_plane_checkpoint`] or
+/// [`TransportRaftDriver::adopt_group_with_checkpoint`].
+///
+/// **Why Raft cannot reconstruct it.** A driver derives retirement from the
+/// *difference* between two committed configurations it observed, and a
+/// restarted process observes only the latest one. Compaction then erases the
+/// configuration history below the snapshot boundary, so the difference is gone
+/// from the log as well. Concretely: committed `{1,2,5}`, node 5 removed, the
+/// link layer refuses `fence_peer(5)`, the process crashes. A new process
+/// reconstructs committed `{1,2}` and a high-water mark of 2 — the fence is
+/// never retried, and node 5 is no longer spent, so the identity the cluster
+/// consumed is allocatable again.
+///
+/// **The three facts.** Nothing else is here, because everything else about the
+/// control plane is re-derived at adoption: the effective and raw committed
+/// memberships come from the runtime, and `published_peers` deliberately does
+/// not survive — a new process has a new link layer that has accepted nothing,
+/// and starting from "nothing accepted" is what forces the first republication.
+///
+/// **Staleness costs exactly the window it closes.** A crash between a change
+/// and its persistence loses that change and no more, which re-opens this
+/// window for the removals inside it. The deployment's monotonic `NodeId`
+/// allocator remains the cross-process backstop for the identity half — see
+/// [`rafter::NodeId`] — and it is the only backstop for a removal committed
+/// while no driver was running at all. Persist when
+/// [`TransportRaftDriver::control_plane_checkpoint_epoch`] moves, which is on
+/// every committed configuration this driver observes and every fence its link
+/// layer accepts.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[non_exhaustive]
+pub struct PeerControlPlaneCheckpoint {
+    /// The greatest `NodeId` this driver has ever seen in a committed
+    /// configuration, or `None` before it has seen one.
+    ///
+    /// Half of the spent test. `None` is not zero: `NodeId(0)` is a legal
+    /// identity, and with no committed configuration observed nothing has been
+    /// spent.
+    pub committed_id_high_water: Option<NodeId>,
+    /// The part of the committed configuration whose identities are unspent.
+    ///
+    /// The other half of the spent test, and the field the two-fact version of
+    /// this checkpoint could not do without. A mark restored beside an empty
+    /// live set spends every identity at or below it — the whole cluster — and a
+    /// live set re-derived from the adopted group's committed configuration
+    /// instead would *un-spend* an identity a violating readmission committed
+    /// while this process was down. Carrying it makes a restore behave exactly
+    /// like the in-process release-and-re-adopt it is standing in for. It is
+    /// bounded by the size of the cluster.
+    pub live_committed_members: BTreeSet<NodeId>,
+    /// Committed removals whose fence the link layer has not accepted.
+    ///
+    /// One entry per unfenced removal, and nothing here ever discards one: a
+    /// committed fact is not a request. Retention across restarts is therefore
+    /// the embedder's, stated at
+    /// [`TransportDriverOptions::fence_backlog_service_threshold`].
+    pub pending_fences: BTreeSet<NodeId>,
+}
+
 /// The membership fact one publication is derived from.
 ///
 /// A fact rather than a set plus a decision, and that is the whole point of the
@@ -225,6 +290,12 @@ where
             .difference(&live)
             .copied()
             .collect::<Vec<_>>();
+        // Read before the three checkpointable fields move, so the epoch below
+        // is advanced for exactly the observations an embedder must persist.
+        // The fence set only grows here, so its length is a faithful witness and
+        // costs no clone.
+        let previous_mark = self.committed_id_high_water;
+        let previous_fences = self.pending_fences.len();
         self.pending_fences.extend(newly_retired);
         // Over the raw fact rather than the live one: an ID the cluster
         // committed is allocated whether or not this driver will honor it, and a
@@ -235,8 +306,71 @@ where
                     .map_or(highest, |mark| mark.max(highest)),
             );
         }
+        let checkpoint_moved = previous_mark != self.committed_id_high_water
+            || previous_fences != self.pending_fences.len()
+            || live != self.live_committed_members;
         self.live_committed_members = live;
         self.committed_members = committed;
+        if checkpoint_moved {
+            self.advance_checkpoint_epoch();
+        }
+    }
+
+    /// Records that the checkpointable control-plane state moved.
+    ///
+    /// Called wherever one of the three checkpoint fields changes and nowhere
+    /// else, so an embedder that persists on every epoch move persists exactly
+    /// the changes it must not lose. Saturating rather than wrapping: an epoch
+    /// that wrapped past a caller's last-persisted value would report "no
+    /// change" for a state that had changed, and a driver that reached `u64::MAX`
+    /// configuration changes has an embedder that should persist unconditionally
+    /// from then on.
+    fn advance_checkpoint_epoch(&mut self) {
+        self.checkpoint_epoch = self.checkpoint_epoch.saturating_add(1);
+    }
+
+    /// Returns the peer-control-plane state this driver's embedder must make
+    /// durable.
+    pub(super) fn control_plane_checkpoint(&self) -> PeerControlPlaneCheckpoint {
+        PeerControlPlaneCheckpoint {
+            committed_id_high_water: self.committed_id_high_water,
+            live_committed_members: self.live_committed_members.clone(),
+            pending_fences: self.pending_fences.clone(),
+        }
+    }
+
+    /// Installs a recovered checkpoint, before any membership fact is derived
+    /// from the adopted group.
+    ///
+    /// **Order is the whole contract.** The spent test reads the mark and the
+    /// live set together, so both must be in place before
+    /// [`TransportDriverState::publish_adopted_membership`] observes the group's
+    /// committed configuration — otherwise a recovered mark of 5 meets an empty
+    /// live set and spends every identity at or below it. With both installed,
+    /// the adoption that follows is the ordinary observation it always was: a
+    /// recovered mark of 5 beats a reconstructed committed set of `{1,2}`, and an
+    /// identity a removal spent stays spent even if the cluster names it again.
+    ///
+    /// Obligations are merged rather than replaced, because a driver can hold
+    /// fences of its own before a checkpoint is restored only through
+    /// re-adoption, and losing either set would be losing a fence. The mark takes
+    /// the higher of the two for the same reason.
+    pub(super) fn restore_control_plane_checkpoint(
+        &mut self,
+        checkpoint: PeerControlPlaneCheckpoint,
+    ) {
+        self.pending_fences.extend(checkpoint.pending_fences);
+        self.live_committed_members
+            .extend(checkpoint.live_committed_members);
+        self.committed_id_high_water = match (
+            self.committed_id_high_water,
+            checkpoint.committed_id_high_water,
+        ) {
+            (Some(held), Some(restored)) => Some(held.max(restored)),
+            (held, None) => held,
+            (None, restored) => restored,
+        };
+        self.advance_checkpoint_epoch();
     }
 
     /// Whether a committed removal has already consumed this `(group, NodeId)`.
@@ -433,6 +567,7 @@ where
                 continue;
             }
             self.pending_fences.remove(&node_id);
+            self.advance_checkpoint_epoch();
         }
     }
 
@@ -528,26 +663,45 @@ where
         self.is_spent(self.node_id)
     }
 
-    /// Whether the link layer has left more fences owed than the bound allows.
-    fn fence_backlog_is_over_bound(&self) -> bool {
-        self.pending_fences.len() > self.options.max_pending_fences
+    /// Whether the link layer has left more fences owed than the service
+    /// threshold allows.
+    fn fence_backlog_is_over_threshold(&self) -> bool {
+        self.pending_fences.len() > self.options.fence_backlog_service_threshold
     }
 
     /// Why this driver is refusing new client work, if it is.
     ///
-    /// Decommissioning is reported ahead of a fence backlog when both hold,
-    /// because the two do not end the same way: a backlog drains and a removal
-    /// does not.
+    /// **Ordered by what a supervisor can still do about it**, most terminal
+    /// first. Shutdown outranks everything because nothing else changes what
+    /// happens next; a released driver is reported before anything derived from
+    /// a group it does not hold; decommissioning outranks the two conditions
+    /// that end, because a backlog drains and a rollback can be re-proposed and
+    /// a spent identity can be neither.
     pub(super) fn service_state(&self) -> DriverServiceState {
+        if self.shutting_down {
+            return DriverServiceState::ShuttingDown;
+        }
+        if self.group.is_none() {
+            return DriverServiceState::Released;
+        }
         if self.is_decommissioned() {
             return DriverServiceState::Decommissioned {
                 node_id: self.node_id,
             };
         }
-        if self.fence_backlog_is_over_bound() {
+        // Not the negation of decommissioning: `is_member` is the union of the
+        // two membership facts *and* the spent test, so a replica that was never
+        // named and one that was removed both fail it, and only the second is a
+        // retirement.
+        if !self.is_member(self.node_id) {
+            return DriverServiceState::NotMember {
+                node_id: self.node_id,
+            };
+        }
+        if self.fence_backlog_is_over_threshold() {
             return DriverServiceState::FenceBacklog {
                 pending_fences: self.pending_fences.len(),
-                max_pending_fences: self.options.max_pending_fences,
+                service_threshold: self.options.fence_backlog_service_threshold,
             };
         }
         DriverServiceState::Serving
@@ -556,23 +710,24 @@ where
     /// Refuses a client operation this driver's own state says it must not
     /// start.
     ///
-    /// Both refusals are `NotAppended`-shaped facts: nothing was proposed, so
-    /// nothing is in flight to be uncertain about. Neither is reported as a
-    /// group failure, because the group is fine — what is wrong is this
-    /// replica's standing in the cluster, or its link layer's.
-    pub(super) fn reject_if_not_serving(&self) -> Result<(), DriverRoutingError> {
+    /// Every refusal is a `NotAppended`-shaped fact: nothing was proposed, so
+    /// nothing is in flight to be uncertain about. None is reported as a group
+    /// failure, because the group is fine — what is wrong is this replica's
+    /// standing in the cluster, its link layer's, or this driver's own.
+    pub(super) fn reject_if_not_serving(&self) -> Result<(), DriverUnavailableReason> {
         match self.service_state() {
             DriverServiceState::Serving => Ok(()),
-            DriverServiceState::Decommissioned { node_id } => {
-                Err(DriverRoutingError::Decommissioned { node_id })
+            DriverServiceState::Decommissioned { .. } => {
+                Err(DriverUnavailableReason::Decommissioned)
             }
-            DriverServiceState::FenceBacklog {
-                pending_fences,
-                max_pending_fences,
-            } => Err(DriverRoutingError::FenceBacklog {
-                pending_fences,
-                max_pending_fences,
-            }),
+            DriverServiceState::NotMember { .. } => Err(DriverUnavailableReason::NotMember),
+            DriverServiceState::FenceBacklog { .. } => Err(DriverUnavailableReason::FenceBacklog),
+            DriverServiceState::Released => Err(DriverUnavailableReason::Released),
+            // Every client surface refuses shutdown ahead of this call with its
+            // own older variant, so this arm is the projection staying total
+            // rather than a path a client reaches; see
+            // [`DriverUnavailableReason::ShuttingDown`].
+            DriverServiceState::ShuttingDown => Err(DriverUnavailableReason::ShuttingDown),
         }
     }
 

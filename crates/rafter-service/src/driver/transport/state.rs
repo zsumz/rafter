@@ -195,29 +195,59 @@ where
     /// under a different identity discharges it like any other.
     ///
     /// The one structure here that still holds exact identities, and therefore
-    /// the one that needs a bound of its own:
-    /// [`TransportDriverOptions::max_pending_fences`].
+    /// the one whose growth an embedder is told about:
+    /// [`TransportDriverOptions::fence_backlog_service_threshold`] decides when
+    /// the driver stops serving, and
+    /// [`super::PeerControlPlaneCheckpoint`] is how the set survives a process
+    /// restart.
     pub(super) pending_fences: BTreeSet<NodeId>,
+    /// How many times the checkpointable control-plane state has changed.
+    ///
+    /// The change signal an embedder persists against. Eq over the checkpoint
+    /// itself would work and costs a set comparison per poll; this costs a
+    /// `u64` load and cannot report equal for two different states. Monotone and
+    /// **instance-local**: a fresh driver starts at zero whatever it restored,
+    /// so a caller records the epoch it last persisted *for this driver* and
+    /// compares against that.
+    pub(super) checkpoint_epoch: u64,
     pub(super) shutting_down: bool,
 }
 
 /// Why a driver is refusing new client work, if it is.
 ///
-/// Two conditions with one shape, because a client asking "may I write" needs
-/// one answer and an operator asking "why not" needs the reason beside it. Both
-/// are states rather than counts, like
-/// [`TransportRaftDriver::pending_peer_fences`] and unlike the refusal counters:
-/// they say what is true now, and both can end.
+/// **A total answer to that question**, which it did not used to be: a released
+/// driver and a shut-down one both reported `Serving` while refusing everything,
+/// so a supervisor polling this could not tell "ready" from "gone". Every state
+/// in which this driver refuses a client operation for a reason of its own is
+/// named here.
 ///
-/// Neither stops the protocol. A driver in either state still ticks, still
-/// delivers, still flushes its peer control plane, and still applies what
-/// commits — what stops is admitting *new* client operations. A replica that
-/// stopped stepping could not finish the catch-up that ends one of these
-/// conditions, and could not stay a useful follower through the other.
+/// One shape, because a client asking "may I write" needs one answer and an
+/// operator asking "why not" needs the reason beside it. These are states rather
+/// than counts, like [`TransportRaftDriver::pending_peer_fences`] and unlike the
+/// refusal counters: they say what is true now.
+///
+/// **Three of them end and two do not.** [`DriverServiceState::FenceBacklog`]
+/// drains, [`DriverServiceState::NotMember`] clears when the cluster names this
+/// replica again, and [`DriverServiceState::Released`] ends at the next
+/// adoption. [`DriverServiceState::Decommissioned`] and
+/// [`DriverServiceState::ShuttingDown`] are terminal.
+///
+/// None of the first four stops the protocol. A driver in any of them still
+/// ticks, still delivers, still flushes its peer control plane, and still
+/// applies what commits — what stops is admitting *new* client operations. A
+/// replica that stopped stepping could not finish the catch-up that ends one of
+/// these conditions, and could not stay a useful follower through the others.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 #[non_exhaustive]
 pub enum DriverServiceState {
     /// The driver is serving clients.
+    ///
+    /// Requires that a committed removal has not spent this replica's identity
+    /// **and** that some configuration this driver knows still names it. The
+    /// second clause is not implied by the first: an addition that appended and
+    /// was then truncated back off the log leaves this replica in no
+    /// configuration at all with nothing spent, which is
+    /// [`DriverServiceState::NotMember`].
     Serving,
     /// A committed configuration change removed this driver's own replica.
     ///
@@ -228,28 +258,62 @@ pub enum DriverServiceState {
     /// supervisor's move is release, then adopt a *fresh* identity. Adopting the
     /// same one back is refused, because the cluster spent it.
     ///
-    /// Outranks [`DriverServiceState::FenceBacklog`] when both hold: a backlog
-    /// can drain, and a removal cannot be undone.
+    /// Outranks every non-terminal state when several hold: a backlog drains and
+    /// a rollback can be re-proposed, and a removal can be neither.
     Decommissioned { node_id: NodeId },
-    /// The link layer has left more fence obligations outstanding than
-    /// [`TransportDriverOptions::max_pending_fences`] allows.
+    /// No configuration this driver knows names this replica, and no committed
+    /// removal spent it either.
     ///
-    /// The bound does not cap the queue, and could not: a committed fact is not
-    /// a request and cannot be refused, so discarding an obligation on overflow
-    /// would be exactly the forgotten fence this control plane exists to
-    /// prevent, with a capacity limit attached as an excuse. What the bound
-    /// decides is when a driver whose link layer has stopped taking admission
-    /// controls should stop taking client work: past it, this driver is
-    /// authorizing replicas the cluster has removed, and adding writes to that
-    /// is making the problem larger.
+    /// Distinct from [`DriverServiceState::Decommissioned`] in both direction and
+    /// permanence, and the difference is the point. A local replica that joined
+    /// effectively and was then rolled back — a new leader truncating the
+    /// uncommitted addition back off the log — is in no configuration, has an
+    /// unspent ID, and is receiving no replication. Reporting it as serving let
+    /// it answer local reads from a replica the cluster is not replicating to,
+    /// which is an unboundedly stale view with nothing to bound it: exactly the
+    /// hazard [`crate::ReadConsistency::Local`] cannot detect on its own. It
+    /// covers construction around an unnamed ID too, which is a legitimate
+    /// starting point for a fresh joiner whose addition has not committed.
+    ///
+    /// **Writes and both read levels are refused; ticks and deliveries are
+    /// not.** The replica must be able to catch up if the change is re-proposed,
+    /// or if it is a joiner whose addition is still in flight, and it cannot do
+    /// that without stepping.
+    ///
+    /// It clears by itself the moment a configuration names the ID again.
+    NotMember { node_id: NodeId },
+    /// The link layer has left more fence obligations outstanding than
+    /// [`TransportDriverOptions::fence_backlog_service_threshold`] allows.
+    ///
+    /// The threshold does not cap the queue, and could not: a committed fact is
+    /// not a request and cannot be refused, so discarding an obligation on
+    /// overflow would be exactly the forgotten fence this control plane exists to
+    /// prevent, with a capacity limit attached as an excuse. What it decides is
+    /// when a driver whose link layer has stopped taking admission controls
+    /// should stop taking client work: past it, this driver is authorizing
+    /// replicas the cluster has removed, and adding writes to that is making the
+    /// problem larger.
     ///
     /// It ends by itself. The driver keeps flushing while degraded, and returns
-    /// to [`DriverServiceState::Serving`] as soon as the backlog is back within
-    /// the bound.
+    /// to [`DriverServiceState::Serving`] as soon as the backlog is back under
+    /// the threshold.
     FenceBacklog {
         pending_fences: usize,
-        max_pending_fences: usize,
+        service_threshold: usize,
     },
+    /// The driver released its group and has not adopted another.
+    ///
+    /// Reported rather than folded into `Serving`, which is what it used to be:
+    /// every client operation was already refused in this state, and the one
+    /// surface a supervisor polls to decide whether to route here said the
+    /// replica was fine. Ends at [`TransportRaftDriver::adopt_group`].
+    Released,
+    /// [`crate::DriverCommandSender::shutdown`] has run, which is terminal.
+    ///
+    /// The driver refuses every operation including adoption; a supervisor that
+    /// wants to serve again builds a driver. Outranks every other state, because
+    /// nothing this driver could otherwise report changes what happens next.
+    ShuttingDown,
 }
 
 impl<G, A, R, T, V> DriverShared<G, A, R, T, V>

@@ -56,6 +56,7 @@ mod state;
 mod waiters;
 
 pub use bounds::TransportDriverOptions;
+pub use control_plane::PeerControlPlaneCheckpoint;
 pub use error::InboundEnvelopeError;
 pub use state::DriverServiceState;
 
@@ -165,6 +166,44 @@ where
         validator: V,
         options: TransportDriverOptions,
     ) -> Result<Self, ManagedDriverError> {
+        Self::with_control_plane_checkpoint(
+            group,
+            recovery_outputs,
+            transport,
+            validator,
+            options,
+            PeerControlPlaneCheckpoint::default(),
+        )
+    }
+
+    /// Builds a driver whose peer control plane resumes from a recovered
+    /// checkpoint.
+    ///
+    /// **The constructor a process that can crash uses.**
+    /// [`TransportRaftDriver::new`] is this with an empty checkpoint, and an
+    /// empty checkpoint is the honest description of a *first* incarnation over
+    /// empty storage — every later one has state the Raft log cannot give back.
+    /// A driver reconstructed after a crash without one starts with no
+    /// high-water mark and no fence obligations: a removal whose fence the link
+    /// layer refused is never retried, and the identity that removal consumed
+    /// becomes allocatable again. See [`PeerControlPlaneCheckpoint`] for why
+    /// neither fact is re-derivable and what a stale checkpoint costs.
+    ///
+    /// The checkpoint is installed before any membership fact is derived from
+    /// `group`, so a recovered mark of 5 beats a reconstructed committed set of
+    /// `{1,2}` rather than losing to it.
+    ///
+    /// # Errors
+    ///
+    /// As [`TransportRaftDriver::new`].
+    pub fn with_control_plane_checkpoint(
+        group: RaftGroup<G, A, R>,
+        recovery_outputs: Vec<RaftOutput>,
+        transport: T,
+        validator: V,
+        options: TransportDriverOptions,
+        checkpoint: PeerControlPlaneCheckpoint,
+    ) -> Result<Self, ManagedDriverError> {
         let options = options.validate()?;
         let group_id = group.group_id().clone();
         let node_id = group.node_id();
@@ -193,9 +232,18 @@ where
                 committed_id_high_water: None,
                 published_peers: None,
                 pending_fences: BTreeSet::new(),
+                checkpoint_epoch: 0,
                 shutting_down: false,
             })),
         };
+        // Before the publication below, and that order is the contract: the
+        // spent test reads the recovered mark and the recovered live set
+        // together, and a membership fact derived ahead of them would be derived
+        // against state the crash erased.
+        driver
+            .inner
+            .lock()
+            .restore_control_plane_checkpoint(checkpoint);
         // Published before the driver serves anything, so the transport's peer
         // set is the group's membership from construction onward rather than
         // undefined until the first membership change. A group that never
@@ -658,6 +706,37 @@ where
         group: RaftGroup<G, A, R>,
         recovery_outputs: Vec<RaftOutput>,
     ) -> Result<(), ManagedDriverError> {
+        self.adopt_group_with_checkpoint(
+            group,
+            recovery_outputs,
+            PeerControlPlaneCheckpoint::default(),
+        )
+    }
+
+    /// Installs a new incarnation and merges a recovered control-plane
+    /// checkpoint into what this driver already holds.
+    ///
+    /// The adoption counterpart of
+    /// [`TransportRaftDriver::with_control_plane_checkpoint`], for a supervisor
+    /// that rebuilds a replica's runtime from durable storage and has a
+    /// checkpoint from *before* this driver existed — a takeover, or a driver
+    /// re-armed from another process's persisted state.
+    ///
+    /// Merged rather than assigned, because this driver may already owe fences
+    /// of its own and a released group does not cancel them: obligations are the
+    /// union and the mark is the higher of the two. An in-process release and
+    /// re-adopt needs none of this and passes an empty checkpoint through
+    /// [`TransportRaftDriver::adopt_group`], because nothing was lost.
+    ///
+    /// # Errors
+    ///
+    /// As [`TransportRaftDriver::adopt_group`].
+    pub fn adopt_group_with_checkpoint(
+        &self,
+        group: RaftGroup<G, A, R>,
+        recovery_outputs: Vec<RaftOutput>,
+        checkpoint: PeerControlPlaneCheckpoint,
+    ) -> Result<(), ManagedDriverError> {
         let mut state = self.inner.lock();
         // Shutdown is terminal, and `shutdown` itself says so by refusing a
         // second call. A driver that could be re-armed by adopting a group would
@@ -685,6 +764,12 @@ where
         // installed identity is an identity, and the whole point is that this
         // one is never installed. Nothing above this line has moved state
         // either, so the driver is still holding no group when it raises this.
+        //
+        // The checkpoint is merged first so this gate reads the recovered mark
+        // as well as the held one — a takeover handed a checkpoint that spent
+        // the offered ID must refuse it, and merging afterwards would install
+        // the identity and only then learn it was spent.
+        state.restore_control_plane_checkpoint(checkpoint);
         if state.is_spent(group.node_id()) {
             return Err(ManagedDriverError::RetiredNodeId {
                 node_id: group.node_id(),

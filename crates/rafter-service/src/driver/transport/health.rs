@@ -18,7 +18,7 @@
 use crate::transport::{AuthenticatedPeerValidator, RaftTransport};
 
 use super::super::*;
-use super::{DriverServiceState, TransportRaftDriver};
+use super::{DriverServiceState, PeerControlPlaneCheckpoint, TransportRaftDriver};
 
 impl<G, A, R, T, V> TransportRaftDriver<G, A, R, T, V>
 where
@@ -101,12 +101,50 @@ where
     /// rather than by a retry, and [`TransportRaftDriver::service_state`] is
     /// what distinguishes the two situations.
     ///
-    /// Past [`crate::TransportDriverOptions::max_pending_fences`] this stops
-    /// being only an alert: the driver refuses new client work until the backlog
-    /// is back within the bound. No obligation is ever discarded for it.
+    /// Past [`crate::TransportDriverOptions::fence_backlog_service_threshold`]
+    /// this stops being only an alert: the driver refuses new client work until
+    /// the backlog is back under the threshold. No obligation is ever discarded
+    /// for it, and [`TransportRaftDriver::control_plane_checkpoint`] is how the
+    /// set survives a process restart.
     #[must_use]
     pub fn pending_peer_fences(&self) -> usize {
         self.inner.lock().pending_fences.len()
+    }
+
+    /// Returns the peer-control-plane state an embedder must make durable.
+    ///
+    /// **Read it, persist it, and hand it back at the next open.** This is the
+    /// part of the control plane a restarted process cannot rebuild from Raft:
+    /// retirement is derived from the difference between two committed
+    /// configurations, a new process sees only the latest, and compaction erases
+    /// the rest. [`PeerControlPlaneCheckpoint`] states the whole contract,
+    /// including what a stale one costs.
+    ///
+    /// Cheap but not free — it clones two `NodeId` sets bounded by the cluster
+    /// size — so poll
+    /// [`TransportRaftDriver::control_plane_checkpoint_epoch`] and take this
+    /// when that has moved.
+    #[must_use]
+    pub fn control_plane_checkpoint(&self) -> PeerControlPlaneCheckpoint {
+        self.inner.lock().control_plane_checkpoint()
+    }
+
+    /// Returns how many times this driver's checkpointable state has changed.
+    ///
+    /// The persist trigger. It advances on every committed configuration that
+    /// moves the retirement record and on every fence the link layer accepts,
+    /// and on nothing else — so an embedder that persists whenever this differs
+    /// from the epoch it last persisted writes exactly the changes it must not
+    /// lose, and writes nothing on a tick that changed nothing.
+    ///
+    /// **Instance-local and monotone within the instance.** A driver built from
+    /// a recovered checkpoint starts at zero and counts from there, so the value
+    /// is meaningful only against an epoch recorded for *this* driver. Comparing
+    /// it with one persisted by a previous process is meaningless; the durable
+    /// artifact is the checkpoint, never the epoch.
+    #[must_use]
+    pub fn control_plane_checkpoint_epoch(&self) -> u64 {
+        self.inner.lock().checkpoint_epoch
     }
 
     /// Returns whether the transport's peer set is behind the group's

@@ -33,8 +33,8 @@ use rafter_runtime_api::PersistedRaftRuntime;
 
 use crate::{
     error::{
-        ErrorCause, MetricsError, ReadAbandonReason, ReadError, ShutdownError,
-        TransferLeadershipError, UnknownOutcomeReason, WriteError, WriteFate,
+        DriverUnavailableReason, ErrorCause, MetricsError, ReadAbandonReason, ReadError,
+        ShutdownError, TransferLeadershipError, UnknownOutcomeReason, WriteError, WriteFate,
     },
     handle::RaftHandle,
     watch::{MetricsPublisher, MetricsWatch},
@@ -57,8 +57,8 @@ pub use in_memory::InMemoryRaftDriver;
 pub use mapping::ManagedDriverError;
 pub use options::{QueryReceipt, ReadOptions, WriteBatchEntry, WriteOptions, WriteReceipt};
 pub use transport::{
-    AddressedRead, AddressedWrite, DriverServiceState, InboundEnvelopeError, PendingWrite,
-    TransportDriverOptions, TransportRaftDriver,
+    AddressedRead, AddressedWrite, DriverServiceState, InboundEnvelopeError,
+    PeerControlPlaneCheckpoint, PendingWrite, TransportDriverOptions, TransportRaftDriver,
 };
 
 use mapping::{

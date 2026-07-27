@@ -325,24 +325,14 @@ where
         if group_id != &self.group_id {
             return Err(WriteError::WrongGroup);
         }
-        if self.group.is_none() {
-            // A refusal, not an unknown outcome: nothing was proposed, so there
-            // is no proposal to be unknown about and no ID that names one. The
-            // fabricated `LocalProposalId(0)` this used to carry was a value a
-            // caller could compare against a real allocation.
-            return Err(WriteError::Transport {
-                fate: WriteFate::NotAppended,
-                cause: ErrorCause::new(DriverRoutingError::NoGroup),
-            });
-        }
-        // After `NoGroup`, because a released driver has no standing to report:
-        // a supervisor holding the group is the more actionable answer. Nothing
-        // has been proposed at this point, so both refusals are `NotAppended`.
-        if let Err(refusal) = self.reject_if_not_serving() {
-            return Err(WriteError::Transport {
-                fate: WriteFate::NotAppended,
-                cause: ErrorCause::new(refusal),
-            });
+        // One gate for every reason this driver refuses on its own standing, a
+        // released group included: nothing was proposed for any of them, so
+        // every one is `NotAppended`, which `WriteError::Unavailable` answers
+        // from the variant alone. This used to be two checks reporting a
+        // *transport* failure with a crate-private cause, and no transport
+        // operation had failed.
+        if let Err(reason) = self.reject_if_not_serving() {
+            return Err(WriteError::Unavailable { reason });
         }
         let unresolved = self
             .write_waiters
@@ -430,18 +420,20 @@ where
 
     /// The refusals that precede every read, whatever level it asked for.
     ///
-    /// The `NoGroup` refusal is here rather than inside the linearizable branch
-    /// for the reason the write side gives: no barrier was reserved, so there is
-    /// no `ReadId` to abandon and `ReadId(0)` named one that never existed. It
-    /// covers a local read too, which has no state machine to read either.
+    /// A released group is refused here rather than inside the linearizable
+    /// branch for the reason the write side gives: no barrier was reserved, so
+    /// there is no `ReadId` to abandon and `ReadId(0)` named one that never
+    /// existed. It covers a local read too, which has no state machine to read
+    /// either.
     ///
     /// The service-state refusal covers both consistency levels for a reason a
     /// local read makes tempting to skip. A local read answers from this
     /// replica's own applied state and proves nothing about any other, so it
-    /// looks harmless — but a decommissioned replica is one the cluster has
-    /// stopped replicating to, and answering from its state is answering from a
-    /// snapshot of the past with no bound on how old. Serving it would be the
-    /// one way a client could not tell a retired replica from a live one.
+    /// looks harmless — but a decommissioned replica, and a rolled-back one that
+    /// no configuration names, are both replicas the cluster has stopped
+    /// replicating to. Answering from either is answering from a snapshot of the
+    /// past with no bound on how old, and serving it would be the one way a
+    /// client could not tell such a replica from a live one.
     fn reject_read_before_start(&self, group_id: &G) -> Result<(), ReadError> {
         if self.shutting_down {
             return Err(ReadError::ShuttingDown);
@@ -449,15 +441,8 @@ where
         if group_id != &self.group_id {
             return Err(ReadError::WrongGroup);
         }
-        if self.group.is_none() {
-            return Err(ReadError::Transport {
-                cause: ErrorCause::new(DriverRoutingError::NoGroup),
-            });
-        }
-        if let Err(refusal) = self.reject_if_not_serving() {
-            return Err(ReadError::Transport {
-                cause: ErrorCause::new(refusal),
-            });
+        if let Err(reason) = self.reject_if_not_serving() {
+            return Err(ReadError::Unavailable { reason });
         }
         Ok(())
     }
@@ -542,8 +527,8 @@ where
         // holds a group. Mapped rather than unwrapped because the caller gets a
         // typed refusal either way and a panic here would be the driver's own
         // invariant, not the caller's fault.
-        let read = self.group_mut().map_err(|_| ReadError::Transport {
-            cause: ErrorCause::new(DriverRoutingError::NoGroup),
+        let read = self.group_mut().map_err(|_| ReadError::Unavailable {
+            reason: DriverUnavailableReason::Released,
         })?;
         let answered = match read.read(request) {
             Ok(read) => {
@@ -628,9 +613,8 @@ where
     RE: Error + Send + Sync + 'static,
 {
     match failure {
-        StepFailure::NoGroup => WriteError::Transport {
-            fate: WriteFate::NotAppended,
-            cause: ErrorCause::new(DriverRoutingError::NoGroup),
+        StepFailure::NoGroup => WriteError::Unavailable {
+            reason: DriverUnavailableReason::Released,
         },
         // The app layer's own name for "the runtime said nothing": it states
         // that the layer below does not know what happened to the proposal,

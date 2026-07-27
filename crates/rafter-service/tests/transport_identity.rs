@@ -17,8 +17,8 @@
 mod support;
 
 use rafter_service::{
-    AuthenticatedPeerEnvelope, DriverServiceState, InboundEnvelopeError, ReadOptions,
-    TransportDriverOptions, TransportRaftDriver, WriteOptions,
+    AuthenticatedPeerEnvelope, DriverServiceState, DriverUnavailableReason, InboundEnvelopeError,
+    ReadOptions, TransportDriverOptions, TransportRaftDriver, WriteOptions,
 };
 use support::scripted::*;
 use support::transport::*;
@@ -26,22 +26,20 @@ use support::*;
 
 /// Whether one write refusal names this driver's own service state.
 ///
-/// Matched on the rendered cause rather than a variant, because
-/// `DriverRoutingError` is crate-private: what a client outside this workspace
-/// can do with a refusal is read its category and its `source()`, and that is
-/// what the assertions here read too.
-fn write_refusal_mentions(error: &WriteError, fragment: &str) -> bool {
-    let WriteError::Transport { fate, cause } = error else {
+/// A typed variant and a typed reason, which is what changed: these refusals
+/// used to ride `WriteError::Transport` with a crate-private cause, so a test —
+/// like any external client — could only read them by rendering the error and
+/// searching the string. Both facts a caller needs are now values: the reason,
+/// and the fate, which is `NotAppended` from the variant alone.
+fn write_refused_for(error: &WriteError, expected: DriverUnavailableReason) -> bool {
+    let WriteError::Unavailable { reason } = error else {
         return false;
     };
-    *fate == WriteFate::NotAppended && cause.as_error().to_string().contains(fragment)
+    *reason == expected && error.fate() == WriteFate::NotAppended
 }
 
-fn read_refusal_mentions(error: &ReadError, fragment: &str) -> bool {
-    let ReadError::Transport { cause } = error else {
-        return false;
-    };
-    cause.as_error().to_string().contains(fragment)
+fn read_refused_for(error: &ReadError, expected: DriverUnavailableReason) -> bool {
+    matches!(error, ReadError::Unavailable { reason } if *reason == expected)
 }
 
 fn a_write(driver: &ScriptedDriver) -> Result<LocalProposalId, WriteError> {
@@ -678,12 +676,12 @@ fn a_committed_removal_of_the_local_replica_decommissions_the_driver() {
 
     let refused_write = a_write(&driver).expect_err("a decommissioned driver takes no writes");
     assert!(
-        write_refusal_mentions(&refused_write, "decommissioned"),
+        write_refused_for(&refused_write, DriverUnavailableReason::Decommissioned),
         "the refusal says why: {refused_write:?}"
     );
     let refused_read = a_read(&driver).expect_err("a decommissioned driver takes no reads");
     assert!(
-        read_refusal_mentions(&refused_read, "decommissioned"),
+        read_refused_for(&refused_read, DriverUnavailableReason::Decommissioned),
         "and a read hears the same thing: {refused_read:?}"
     );
 
@@ -957,7 +955,7 @@ fn a_fence_backlog_over_its_bound_refuses_client_work_and_keeps_every_fence() {
         runtime,
         Nameable::all(),
         &[NodeId(2), NodeId(3), NodeId(4), NodeId(5)],
-        TransportDriverOptions::default().with_max_pending_fences(2),
+        TransportDriverOptions::default().with_fence_backlog_service_threshold(2),
     );
     for node_id in [NodeId(3), NodeId(4), NodeId(5)] {
         transport.refuse_next_fences(node_id, 16);
@@ -979,19 +977,19 @@ fn a_fence_backlog_over_its_bound_refuses_client_work_and_keeps_every_fence() {
         driver.service_state(),
         DriverServiceState::FenceBacklog {
             pending_fences: 3,
-            max_pending_fences: 2,
+            service_threshold: 2,
         },
         "and the driver says it has stopped serving, and why"
     );
 
     let refused_write = a_write(&driver).expect_err("a degraded driver takes no writes");
     assert!(
-        write_refusal_mentions(&refused_write, "fence"),
+        write_refused_for(&refused_write, DriverUnavailableReason::FenceBacklog),
         "the refusal names the backlog: {refused_write:?}"
     );
     let refused_read = a_read(&driver).expect_err("a degraded driver takes no reads");
     assert!(
-        read_refusal_mentions(&refused_read, "fence"),
+        read_refused_for(&refused_read, DriverUnavailableReason::FenceBacklog),
         "and a read hears the same thing: {refused_read:?}"
     );
     assert_eq!(
@@ -1034,14 +1032,14 @@ fn a_zero_fence_bound_is_refused() {
         Vec::new(),
         transport,
         validator,
-        TransportDriverOptions::default().with_max_pending_fences(0),
+        TransportDriverOptions::default().with_fence_backlog_service_threshold(0),
     );
 
     assert!(
         matches!(
             refused,
             Err(ManagedDriverError::InvalidOptions {
-                field: "max_pending_fences",
+                field: "fence_backlog_service_threshold",
                 ..
             })
         ),

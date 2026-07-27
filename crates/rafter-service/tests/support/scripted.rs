@@ -14,7 +14,7 @@
 
 use std::sync::{Arc, Mutex, MutexGuard};
 
-use rafter_service::{TransportDriverOptions, TransportRaftDriver};
+use rafter_service::{PeerControlPlaneCheckpoint, TransportDriverOptions, TransportRaftDriver};
 
 use super::transport::{Nameable, QueueTransport, Validator, GROUP};
 use super::{
@@ -77,6 +77,9 @@ impl ScriptedMembershipRuntime {
         config_of(source)
     }
 }
+
+/// The shared state a test moves while a driver holds the runtime.
+pub(crate) type ScriptedMembershipHandle = Arc<Mutex<ScriptedMembership>>;
 
 pub(crate) fn lock_membership(
     shared: &Arc<Mutex<ScriptedMembership>>,
@@ -255,6 +258,44 @@ pub(crate) fn scripted_driver_with_app(
     options: TransportDriverOptions,
     app: KvStateMachine,
 ) -> (ScriptedDriver, QueueTransport) {
+    build_scripted_driver(
+        runtime,
+        nameable,
+        authorized,
+        options,
+        app,
+        PeerControlPlaneCheckpoint::default(),
+    )
+}
+
+/// A driver rebuilt the way a restarted process rebuilds one: a fresh transport
+/// that has accepted nothing, a runtime recovered from durable Raft state, and
+/// the control-plane checkpoint the previous process persisted.
+pub(crate) fn scripted_driver_with_checkpoint(
+    runtime: ScriptedMembershipRuntime,
+    nameable: Nameable,
+    authorized: &[NodeId],
+    options: TransportDriverOptions,
+    checkpoint: PeerControlPlaneCheckpoint,
+) -> (ScriptedDriver, QueueTransport) {
+    build_scripted_driver(
+        runtime,
+        nameable,
+        authorized,
+        options,
+        KvStateMachine::default(),
+        checkpoint,
+    )
+}
+
+fn build_scripted_driver(
+    runtime: ScriptedMembershipRuntime,
+    nameable: Nameable,
+    authorized: &[NodeId],
+    options: TransportDriverOptions,
+    app: KvStateMachine,
+    checkpoint: PeerControlPlaneCheckpoint,
+) -> (ScriptedDriver, QueueTransport) {
     let transport = QueueTransport::default();
     let validator = Validator {
         transport: transport.clone(),
@@ -262,12 +303,13 @@ pub(crate) fn scripted_driver_with_app(
         nameable,
     };
     let node_id = runtime.node_id;
-    let driver = TransportRaftDriver::new(
+    let driver = TransportRaftDriver::with_control_plane_checkpoint(
         RaftGroup::new(GROUP, node_id, runtime, app),
         Vec::new(),
         transport.clone(),
         validator,
         options,
+        checkpoint,
     )
     .expect("a quiescent group is adoptable");
     (driver, transport)

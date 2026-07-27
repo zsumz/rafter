@@ -39,14 +39,14 @@ pub mod watch;
 // unreachable type is a defect, and `tests/public_surface.rs` is the check.
 pub use driver::{
     AddressedRead, AddressedWrite, DriverCommandSender, DriverFuture, DriverServiceState,
-    InMemoryRaftDriver, InboundEnvelopeError, ManagedDriverError, PendingWrite, QueryReceipt,
-    ReadOptions, TransportDriverOptions, TransportRaftDriver, WriteBatchEntry, WriteOptions,
-    WriteReceipt,
+    InMemoryRaftDriver, InboundEnvelopeError, ManagedDriverError, PeerControlPlaneCheckpoint,
+    PendingWrite, QueryReceipt, ReadOptions, TransportDriverOptions, TransportRaftDriver,
+    WriteBatchEntry, WriteOptions, WriteReceipt,
 };
 pub use error::{
-    ErrorCause, MetricsError, ReadAbandonReason, ReadError, ReadErrorKind, ShutdownError,
-    ShutdownErrorKind, StateMachineOperation, TransferLeadershipError, TransferLeadershipErrorKind,
-    UnknownOutcomeReason, WriteError, WriteErrorKind, WriteFate,
+    DriverUnavailableReason, ErrorCause, MetricsError, ReadAbandonReason, ReadError, ReadErrorKind,
+    ShutdownError, ShutdownErrorKind, StateMachineOperation, TransferLeadershipError,
+    TransferLeadershipErrorKind, UnknownOutcomeReason, WriteError, WriteErrorKind, WriteFate,
 };
 pub use handle::RaftHandle;
 pub use membership::{MembershipController, PlannedMembershipChange};

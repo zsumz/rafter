@@ -110,6 +110,92 @@ impl fmt::Display for ReadAbandonReason {
     }
 }
 
+/// Why a driver refused a client operation on its own standing.
+///
+/// **A typed cause where there used to be a rendered string.** These refusals
+/// used to ride [`WriteError::Transport`] with a crate-private cause, which was
+/// wrong twice: no transport operation failed, and an external caller could only
+/// reach the reason by formatting the error and reading it. Both surfaces now
+/// carry this value directly.
+///
+/// The companion of [`crate::DriverServiceState`] and deliberately not the same
+/// type. That one is an *observation* an operator polls, and carries the detail
+/// an investigation needs — which node, how many fences, against what threshold.
+/// This one is a *cause on a client's error*: `Copy`, payload-free, and
+/// low-cardinality, so it can be a metric label or a map key exactly like
+/// [`WriteErrorKind`]. A client branching on why it was refused needs the
+/// category; an operator needing the numbers reads
+/// [`crate::TransportRaftDriver::service_state`].
+///
+/// Every variant means the same thing about the command: **nothing was
+/// proposed.** The driver refused before touching the group, so a write refused
+/// for one of these reports [`WriteFate::NotAppended`] and its request identity
+/// is still unused.
+#[non_exhaustive]
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+pub enum DriverUnavailableReason {
+    /// A committed configuration change removed this driver's own replica, and
+    /// the identity it served is spent.
+    Decommissioned,
+    /// No configuration this driver knows names its replica, and no committed
+    /// removal spent it either — a rolled-back joiner, or one whose addition has
+    /// not been proposed yet.
+    ///
+    /// Reads are refused as well as writes, and that is the whole reason this
+    /// state exists: the replica receives no replication, so answering a local
+    /// read from it is answering from a view with no bound on how stale it is.
+    NotMember,
+    /// The link layer has left more committed removals unfenced than
+    /// [`crate::TransportDriverOptions::fence_backlog_service_threshold`]
+    /// allows. It clears when the backlog drains.
+    FenceBacklog,
+    /// The driver released its group and has not adopted another.
+    Released,
+    /// The driver has shut down, which is terminal.
+    ///
+    /// Reachable through [`DriverUnavailableReason::from_service_state`], which
+    /// is what a consumer rendering [`crate::DriverServiceState`] uses. It does
+    /// not reach a client through [`WriteError`] or [`ReadError`]: both answered
+    /// shutdown with a dedicated variant before this enum existed, every
+    /// consumer already matches on that variant, and one fact with two spellings
+    /// on one surface is worse than a projection that stays total.
+    ShuttingDown,
+}
+
+impl DriverUnavailableReason {
+    /// Projects a driver's service state to the reason a client would be
+    /// refused for it, or `None` when it would not be refused.
+    ///
+    /// `None` for [`crate::DriverServiceState::Serving`], which is the only
+    /// state that is not a refusal. Both enums are `#[non_exhaustive]` and grow
+    /// together, so a caller outside this crate keeps a bucket for a reason it
+    /// does not recognize rather than dropping it — the rule
+    /// [`WriteErrorKind`] states.
+    #[must_use]
+    pub const fn from_service_state(state: crate::DriverServiceState) -> Option<Self> {
+        match state {
+            crate::DriverServiceState::Serving => None,
+            crate::DriverServiceState::Decommissioned { .. } => Some(Self::Decommissioned),
+            crate::DriverServiceState::NotMember { .. } => Some(Self::NotMember),
+            crate::DriverServiceState::FenceBacklog { .. } => Some(Self::FenceBacklog),
+            crate::DriverServiceState::Released => Some(Self::Released),
+            crate::DriverServiceState::ShuttingDown => Some(Self::ShuttingDown),
+        }
+    }
+}
+
+impl fmt::Display for DriverUnavailableReason {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(match self {
+            Self::Decommissioned => "a committed change removed this replica",
+            Self::NotMember => "no configuration this driver knows names this replica",
+            Self::FenceBacklog => "the link layer owes more peer fences than this driver allows",
+            Self::Released => "the driver released its group and holds none",
+            Self::ShuttingDown => "the driver has shut down",
+        })
+    }
+}
+
 /// What a failed managed write proves about the command's fate.
 ///
 /// This is the retry question, and it is the only part of a write error a
@@ -176,6 +262,7 @@ pub enum WriteErrorKind {
     StateMachine,
     Storage,
     Transport,
+    Unavailable,
     ShuttingDown,
     Poisoned,
     LocalProposalIdExhausted,
@@ -232,6 +319,7 @@ pub enum ReadErrorKind {
     StateMachine,
     Storage,
     Transport,
+    Unavailable,
     ShuttingDown,
     Poisoned,
     ReadIdExhausted,
@@ -293,6 +381,16 @@ pub enum WriteError {
         fate: WriteFate,
         cause: ErrorCause,
     },
+    /// The driver refused the write on its own standing rather than on any
+    /// failure.
+    ///
+    /// Nothing was proposed — the driver never touched the group — so this
+    /// answers [`WriteFate::NotAppended`] from the variant alone and the
+    /// caller's request identity is still unused. `reason` is a typed category,
+    /// not a rendered string; see [`DriverUnavailableReason`].
+    Unavailable {
+        reason: DriverUnavailableReason,
+    },
     ShuttingDown,
     /// The group is permanently poisoned.
     ///
@@ -319,12 +417,17 @@ impl WriteError {
     /// Returns what this error proves about the command's fate.
     ///
     /// Variants that describe a refusal — not leader, rejected, payload too
-    /// large, shutting down, wrong group, exhausted local IDs — answer
-    /// [`WriteFate::NotAppended`] from the variant alone, because reaching them
-    /// is the proof. [`WriteError::UnknownOutcome`] answers
+    /// large, unavailable, shutting down, wrong group, exhausted local IDs —
+    /// answer [`WriteFate::NotAppended`] from the variant alone, because
+    /// reaching them is the proof. [`WriteError::UnknownOutcome`] answers
     /// [`WriteFate::Unresolved`] for the same reason. The remaining variants
     /// carry the fate the driver observed, because the same fault can occur on
     /// either side of the local append.
+    ///
+    /// [`WriteError::Unavailable`] belongs to the first group provably rather
+    /// than by convention: every reason it carries is taken before the driver
+    /// hands anything to the group, so the command reached no log and cannot
+    /// commit later.
     #[must_use]
     pub const fn fate(&self) -> WriteFate {
         match self {
@@ -332,6 +435,7 @@ impl WriteError {
             | Self::Rejected { .. }
             | Self::PayloadTooLarge { .. }
             | Self::WrongGroup
+            | Self::Unavailable { .. }
             | Self::ShuttingDown
             | Self::LocalProposalIdExhausted => WriteFate::NotAppended,
             Self::UnknownOutcome { .. } => WriteFate::Unresolved,
@@ -355,6 +459,7 @@ impl WriteError {
             Self::StateMachine { .. } => WriteErrorKind::StateMachine,
             Self::Storage { .. } => WriteErrorKind::Storage,
             Self::Transport { .. } => WriteErrorKind::Transport,
+            Self::Unavailable { .. } => WriteErrorKind::Unavailable,
             Self::ShuttingDown => WriteErrorKind::ShuttingDown,
             Self::Poisoned { .. } => WriteErrorKind::Poisoned,
             Self::LocalProposalIdExhausted => WriteErrorKind::LocalProposalIdExhausted,
@@ -403,6 +508,10 @@ impl fmt::Display for WriteError {
                 formatter.write_str("write transport failed")?;
                 write_write_fate(formatter, *fate)
             }
+            Self::Unavailable { reason } => {
+                write!(formatter, "write refused by this driver: {reason}")?;
+                write_write_fate(formatter, WriteFate::NotAppended)
+            }
             Self::ShuttingDown => {
                 formatter.write_str("write rejected because the service is shutting down")
             }
@@ -444,6 +553,7 @@ impl Error for WriteError {
             | Self::PayloadTooLarge { .. }
             | Self::UnknownOutcome { .. }
             | Self::WrongGroup
+            | Self::Unavailable { .. }
             | Self::ShuttingDown
             | Self::LocalProposalIdExhausted
             | Self::ManagedInvariantViolation { .. } => None,
@@ -516,6 +626,17 @@ pub enum ReadError {
     Transport {
         cause: ErrorCause,
     },
+    /// The driver refused the read on its own standing rather than on any
+    /// failure.
+    ///
+    /// Both consistency levels are refused for every reason this carries, and
+    /// [`DriverUnavailableReason::NotMember`] is why the read side has this
+    /// variant at all: a replica the cluster is not replicating to answers a
+    /// local read from a view with no bound on how stale it is, and that is the
+    /// one refusal a client could not otherwise tell from a fresh answer.
+    Unavailable {
+        reason: DriverUnavailableReason,
+    },
     ShuttingDown,
     /// The group is permanently poisoned.
     ///
@@ -552,6 +673,7 @@ impl ReadError {
             Self::StateMachine { .. } => ReadErrorKind::StateMachine,
             Self::Storage { .. } => ReadErrorKind::Storage,
             Self::Transport { .. } => ReadErrorKind::Transport,
+            Self::Unavailable { .. } => ReadErrorKind::Unavailable,
             Self::ShuttingDown => ReadErrorKind::ShuttingDown,
             Self::Poisoned { .. } => ReadErrorKind::Poisoned,
             Self::ReadIdExhausted => ReadErrorKind::ReadIdExhausted,
@@ -613,6 +735,9 @@ impl fmt::Display for ReadError {
             }
             Self::Storage { .. } => formatter.write_str("read storage failed"),
             Self::Transport { .. } => formatter.write_str("read transport failed"),
+            Self::Unavailable { reason } => {
+                write!(formatter, "read refused by this driver: {reason}")
+            }
             Self::ShuttingDown => {
                 formatter.write_str("read rejected because the service is shutting down")
             }
@@ -647,6 +772,7 @@ impl Error for ReadError {
             | Self::FreshnessUnavailable { .. }
             | Self::Abandoned { .. }
             | Self::WrongGroup
+            | Self::Unavailable { .. }
             | Self::ShuttingDown
             | Self::ReadIdExhausted
             | Self::ManagedInvariantViolation { .. } => None,
