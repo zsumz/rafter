@@ -216,6 +216,14 @@ pub trait RaftTransport<G>: Send + Sync + 'static {
     /// keeps its principal across the restart. Nothing on this boundary changes
     /// for it.
     ///
+    /// **The local replica is not an exception.** A committed removal of the
+    /// replica a driver currently *is* licenses this call for that replica's own
+    /// principal — every other member of the group is making it — and the driver
+    /// holds the obligation rather than dropping it. It cannot make the call
+    /// while it is still that replica, because fencing itself would refuse its
+    /// own inbound frames, so the statement is deferred until the driver is
+    /// adopted under a fresh identity and then made like any other.
+    ///
     /// # Errors
     ///
     /// Returns the transport implementation's error when the peer cannot be

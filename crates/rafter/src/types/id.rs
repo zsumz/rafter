@@ -10,7 +10,7 @@ use std::fmt;
 /// **committed removal retires it permanently**. A retired ID is never validly
 /// added back to the same group: a replacement replica — even one serving the
 /// same data, on the same host, from the same directory — joins under a fresh
-/// ID. Allocate IDs monotonically per group and never hand one out twice.
+/// ID.
 ///
 /// The reason is that a removal is not only a membership edit. Layers above the
 /// kernel bind durable authorization to the ID: a managed driver fences the
@@ -20,6 +20,30 @@ use std::fmt;
 /// again, so the change appears to commit and the replica silently never
 /// participates.
 ///
+/// # Allocate monotonically per group
+///
+/// **Every newly admitted ID must be greater than every ID the group has ever
+/// committed.** This is a requirement rather than a suggestion, and it is what
+/// makes the rule above enforceable at all.
+///
+/// Enumerating retired IDs needs a set that grows with every removal the group
+/// ever makes — unbounded state under a retention policy nobody can write, which
+/// is exactly why the kernel keeps no tombstones. Under monotonic allocation the
+/// same question is answered by one number: every ID ever committed is at or
+/// below the highest one ever committed, so an ID at or below that mark which
+/// the current configuration does not name is precisely an ID a removal has
+/// spent. That is what the managed service driver keeps, and it is O(1).
+///
+/// The consequence a deployment must plan for is that **allocation gaps below
+/// the mark are unallocatable**. "Fresh" means greater than anything this group
+/// has ever committed, not merely unused: a group that has committed node 5 can
+/// never admit node 3, whether or not node 3 ever existed. A deployment that
+/// allocates non-monotonically has its "fresh" IDs refused as spent, which is
+/// the fail-closed direction and is deliberate — the alternative reads a
+/// violated precondition as permission and admits a replica whose principal the
+/// link layer may already have fenced. A monotonic per-group counter costs one
+/// number and avoids all of it.
+///
 /// **Restarting a replica is not removing it.** A replica that crashes, is
 /// killed, or is restarted keeps its ID and its identity: no removal committed,
 /// so nothing was retired. Reopening durable state under the same ID is the
@@ -27,11 +51,12 @@ use std::fmt;
 ///
 /// This is a stated precondition rather than a checked one, and the kernel says
 /// so rather than implying it. A node cannot recognize an ID it has removed
-/// after log compaction has erased the configuration history that named it, and
-/// keeping a permanent tombstone set for every ID a group ever removed would put
-/// unbounded state under a retention policy the kernel cannot see. Enforcement
-/// across process lifetimes is the deployment's own allocation discipline;
-/// within one, the managed service driver refuses a re-added ID and reports it.
+/// after log compaction has erased the configuration history that named it.
+/// Enforcement across process lifetimes is the deployment's own allocation
+/// discipline; within one, the managed service driver refuses a re-added ID,
+/// reports it, and refuses to *adopt* one — including when the spent ID is the
+/// driver's own, because a committed removal of the local replica spends its
+/// identity exactly as it spends a peer's.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct NodeId(pub u64);
 

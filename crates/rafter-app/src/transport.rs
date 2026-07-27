@@ -74,6 +74,14 @@ pub trait AuthenticatedPeerValidator<G, P> {
     /// committed removal, so "the lifetime of its ID" is bounded and this is not
     /// a promise about a machine, an address, or a socket.
     ///
+    /// A directory that allocates replica identities is also the thing that owes
+    /// [`NodeId`]'s monotonic-allocation contract: within a group, every newly
+    /// admitted ID must exceed every ID ever committed before it. A driver
+    /// derives which identities a removal has spent from that ordering rather
+    /// than from a record of every removal, so a directory that reuses an ID
+    /// below the mark — or fills a gap under it — has its replica refused as
+    /// spent.
+    ///
     /// The principal is a subject name, not a credential instance. Certificates,
     /// keys, and tokens rotate beneath one principal and nothing above this
     /// trait observes that they did; what may not change is which subject a

@@ -4173,6 +4173,11 @@ The driver keeps the set it last published and moves it on two events:
 | `Applied { membership }` — the committed configuration changed | Publish exactly `membership.replica_ids()`, then fence every principal that was in the previous set and is not in this one. Committed removal is the only fact that licenses fencing. |
 | `Rejected { .. }` | Nothing. The change never entered the log. |
 
+> Superseded. `Appended` is now `MembershipEvent::EffectiveChanged` and the two
+> facts are tracked as separate assigned sets rather than one unioned one, because
+> a union can never express a truncation. See
+> [Seventh revision after adoption](#seventh-revision-after-adoption-2026-07-27).
+
 **Publishing at adoption, not only on change.** `new` and `adopt_group`
 publish the group's current membership before serving anything. A driver that
 published only on change would leave the transport's peer set undefined for the
@@ -4688,6 +4693,14 @@ is live code with no public route to it today, and it is pinned by an in-crate
 test that hands the router the event directly. Recording that is the point: the
 arm is not dead, it is waiting for the entry point, and a test that quietly
 skipped it is how this finding was possible.
+
+> Superseded, and this paragraph is where the next finding was written down two
+> revisions before it was made. The unreachability was not a property of the
+> driver, it was a defect in the app layer: an effective membership change is
+> reported whatever moved it, so a follower reaches the widening arm through
+> `deliver`. The in-crate test module is deleted and every clause runs through a
+> public entry point. See
+> [Seventh revision after adoption](#seventh-revision-after-adoption-2026-07-27).
 
 #### 2. The drain runs on the leadership-transfer step, which fix 2 named
 
@@ -5870,6 +5883,368 @@ Each of the four assertions that carry the rule was checked against an
 implementation with the two `retired` reads removed: two integration tests and
 two in-crate tests fail, and the restart control passes — which is what a
 control is for.
+
+### Seventh revision after adoption (2026-07-27)
+
+A third external review took the sixth revision's model as given and asked
+whether the implementation upholds it on every path. It does not, in three
+places, and all three were reproduced before anything was changed. The model
+survives. What did not survive is the claim that one merged membership set, a
+growing retirement set, and a self-exclusion filter could carry it.
+
+#### 1. The membership event stream was incomplete, so the driver was too
+
+`MembershipEvent::Appended` was emitted only when the step carried a local
+membership *request*, the effective configuration moved, **and** the committed
+one stood still. Every peer-message step passes `membership_request = false`.
+
+Three consequences, each verified as a failing test before the fix:
+
+- **A follower never widens.** A replica that learns a joint configuration by
+  replication emitted nothing, so its driver kept authorizing the old set for
+  the whole transition — and the joiner that has to catch up before the change
+  can commit was unauthorized at that follower for exactly as long.
+- **A rollback is invisible.** A new leader truncating an uncommitted addition
+  emitted nothing. Nothing was appended, so a stream built around appends could
+  not express it at all, and the stale joiner stayed authorized for the life of
+  the incarnation.
+- **A change that commits in the step that appends it loses its effective
+  half.** The third clause suppressed the effective event whenever the same step
+  moved the commit index, which is every single-voter configuration change.
+
+The in-crate test module for the router opened by stating the first of these as
+a property of the driver: "the membership branches no public entry point of this
+driver can reach". That was true and it was the defect. The branch passed its
+tests and no follower could reach it.
+
+**Both diffs now stand alone and neither consults the cause.** An effective
+change is reported whenever the effective configuration moved — local request,
+replication, truncation, snapshot install — and a committed change whenever the
+committed one did. Order is effective-then-committed and is load-bearing: a
+consumer may only widen for the first and only narrow for the second, so it has
+to see the widening before the narrowing or it cuts off a joiner the
+configuration in effect still needs.
+
+`Appended` is renamed `EffectiveChanged`. The old name was true of one of the
+four ways the configuration moves and false of the truncation that is the most
+dangerous to miss. Pre-release, zero consumers outside this repository; the
+honest name is worth the rename.
+
+The event's `index`/`term` are documented as an **observation point** rather than
+the location of a configuration entry, because a truncation and a snapshot
+install have no such entry. For an append they do name the entry that carried
+the configuration, since it is the last one; otherwise they name where the log
+now ends. A consumer keeping a peer set current — which is what the event is for
+— needs only the membership.
+
+The committed half was audited and was already complete for every stepping path.
+Two clauses in the new suite pin that rather than assume it: a commit observed on
+a peer step, and a snapshot install that replaces both facts at once.
+
+One completeness gap is stated rather than closed. `RaftGroup::apply_raft_outputs`
+— the advanced path for a caller that steps `PersistedRaftRuntime` itself —
+emits no membership event, because the caller stepped the runtime and the group
+has no configuration to diff against. The transport driver never depends on it:
+both of its constructors read the membership from the runtime directly through
+`publish_adopted_membership` before any recovery output is applied.
+
+#### 2. A retired ID could still become the local node
+
+Two manifestations of one filter, both reproduced:
+
+```rust
+let removed = self.known_members.difference(&members).copied()
+    .filter(|node_id| *node_id != self.node_id)   // <-- both, not one
+    .collect::<Vec<_>>();
+self.pending_fences.extend(removed.iter().copied());
+self.retired.extend(removed);
+```
+
+**A committed removal of the local replica retired nothing.** The driver watched
+the cluster commit it out and recorded neither a fence obligation nor a
+retirement, and went on admitting client writes into a replica no quorum would
+count again.
+
+**`adopt_group` assigned any incoming node ID with no check.** So a driver that
+had watched node 3's removal commit — and installed node 3's fence itself —
+could be handed a group with `node_id = 3` and adopt it, reporting success while
+installing an identity whose principal every replica in the group has
+permanently fenced. And a driver removed as node 1, having forgotten that node 1
+was retired, could adopt fresh node 4 and then be handed a membership naming
+node 1 again with no backstop anywhere.
+
+`an_outstanding_fence_for_the_replica_this_driver_became_is_dropped` encoded the
+first half of this as correct behaviour and is replaced.
+
+#### 3. Retirement state was unbounded, and the argument against it was already written
+
+`retired: BTreeSet<NodeId>` grew with every committed removal for the lifetime of
+the driver. `NodeId`'s own documentation explains why the kernel keeps no
+per-ID tombstones — "unbounded state under a retention policy the kernel cannot
+see" — and the driver had moved that exact structure one layer up without one.
+The promotion rule's resource-bounds requirement applies to a driver as much as
+to a kernel.
+
+#### 4. Two facts, not one union
+
+`known_members` was one set, unioned on every publication and therefore
+monotone. Monotone is wrong in one direction and only one: an effective
+configuration moves *both* ways, and a merged set can never express the
+truncation.
+
+| Field | Is | Assigned from |
+| --- | --- | --- |
+| `effective_members` | the configuration this replica operates under | the effective event stream |
+| `committed_members` | the committed configuration, raw | the committed event stream |
+| `live_committed_members` | the part of it whose identities are unspent | derived at each committed fact |
+| `committed_id_high_water` | the greatest ID ever committed | derived at each committed fact |
+
+Every derivation reads the union of the first two, which is why the effective
+half still cannot narrow past the committed floor:
+
+| Derivation | Rule |
+| --- | --- |
+| peer set | `(effective ∪ committed) − self − spent` |
+| inbound admission | `(effective ∪ committed)` contains it, and it is not spent |
+| retirement | `previous live committed − new live committed`, **no self filter** |
+| `readmitted_retired_peers` | spent identities the union names |
+
+The retirement diff reading the committed stream alone is what gives the
+reviewer's four cases at once. An uncommitted addition widens and spends
+nothing. An uncommitted removal cannot narrow below committed. A rollback
+narrows again and licenses no fence, because the ID was never in a committed
+configuration. Only committed movement retires. And with the self filter gone,
+the local replica is retired by its own removal like anything else.
+
+#### 5. Spent-ness from a high-water mark, and the one place the reviewer's formula is wrong
+
+The review proposed `spent(id) = id <= high_water && !committed_members.contains(id)`,
+with `retired` deleted. The direction is right and it is adopted: monotonic
+allocation is promoted from deployment guidance to a load-bearing contract, so
+every ID ever committed is at or below the mark, and one at or below it that the
+committed configuration does not name is one a removal spent. O(1) state, no
+growth, no retention policy — P2 solved by deletion rather than by a cap.
+
+**The formula as written un-spends an identity, which is the rule the sixth
+revision exists to state.** Read it against a committed re-admission: node 3 is
+removed, mark 3, `spent(3)` true; a later committed configuration names node 3
+again, `committed_members` now contains 3, and `spent(3)` becomes *false*. The
+driver would republish an identity whose principal it had itself fenced and then
+report itself level — precisely the failure
+`a_readmitted_retired_replica_never_asks_for_an_unfence` was written for.
+
+The premise fails, not the derivation. The formula is sound exactly when every
+ID ever committed lies in `[1, high_water]`, which monotonic allocation
+guarantees; a re-admission at or below the mark *violates* that premise, so
+applying the formula across it is applying it outside its domain. The fix is to
+refuse the violating fact rather than absorb it:
+
+```rust
+// The live set is the committed fact minus anything already spent, computed
+// against the state before the assignment. Once spent, always spent.
+let live = committed.iter().copied().filter(|id| !self.is_spent(*id)).collect();
+```
+
+`is_spent` then reads `live_committed_members`, and one extra bounded set — the
+size of the cluster, not the size of the group's history — is the whole cost.
+The raw committed fact is kept beside it because the violation has to stay
+*nameable*: `readmitted_retired_peers` counts spent identities the membership
+names again, and a set that had quietly filtered them out would report zero for
+exactly the case it exists to report.
+
+The mark is `Option<NodeId>` rather than `NodeId`. Before any committed
+configuration is observed there is no mark and nothing is spent, and `NodeId(0)`
+is a legal identity that cannot double as "none".
+
+**The consequence is stated, not hidden.** Allocation gaps below the mark are
+unallocatable: fresh means greater than anything this group has ever committed,
+not merely unused. A group that has committed node 5 can never admit node 3. A
+deployment that allocates non-monotonically has its fresh IDs refused as spent,
+which is fail-closed and deliberate — the alternative reads a violated
+precondition as permission.
+
+#### 6. The local replica's own retirement, and the deferred self-fence
+
+The high-water model decommissions the local replica for free: `node_id` simply
+stops being in the live committed configuration, and `is_spent(self.node_id)`
+answers. No separate record, no separate rule.
+
+| Consequence | Behaviour |
+| --- | --- |
+| client service | refused with a typed cause; the group is not touched |
+| the group | stays until `release_group` — the durable log is still there and the runtime is still live |
+| the protocol | keeps running: tick, deliver, flush, apply |
+| the supervisor's move | release, then adopt a **fresh** identity; re-adopting the removed one is refused |
+
+Stepping down is not the whole lifecycle, and the driver says so rather than
+implying it by refusing everything: a replica on its way out can still receive
+log entries and can still help others, and a driver that stopped stepping could
+not finish the catch-up it may still owe.
+
+**The fence for the old local ID is deferred, not dropped.** It is a real
+obligation — every other replica is fencing that principal — and the one thing
+this driver cannot do is make it while it *is* that replica, because it would
+refuse its own inbound frames. So `flush_pending_fences` skips an entry equal to
+the **current** `node_id` without removing it. After adoption under a fresh ID
+the entry no longer matches, and the flush that adoption already runs discharges
+it like any other. Dropping it, which is what the code did, was the local half of
+forgetting a fence: the driver became something else and never told its link
+layer to stop trusting what it used to be.
+
+#### 7. The adoption gate
+
+```rust
+if state.is_spent(group.node_id()) {
+    return Err(ManagedDriverError::RetiredNodeId { node_id: group.node_id() });
+}
+```
+
+Placed after the group-ID check and before the watermarks, which is before any
+assignment: a partially installed identity is an identity, and the whole point is
+that this one is never installed. `ManagedDriverError` is `#[non_exhaustive]`,
+the variant carries the ID and renders it, and `source()` is `None` like every
+other non-wrapping variant.
+
+Same-ID release and re-adoption with no intervening committed removal stays
+valid, because the ID is still in the live committed configuration and was
+therefore never spent. That is the control, and it is the clause a gate like this
+is most likely to break.
+
+#### 8. The one structure that still holds exact identities
+
+`pending_fences` cannot be derived: an obligation is not discharged until the
+transport accepts it, and no later membership event re-derives it. So it is
+bounded explicitly, by `TransportDriverOptions::max_pending_fences`, validated
+nonzero exactly as `max_pending_waiters` is.
+
+**The bound does not cap the queue, and could not.** A fence obligation comes
+from a committed fact, and a committed fact is not a request — there is nothing
+to refuse and nowhere to push back. Discarding an obligation on overflow would be
+the round-1 forgotten fence with a capacity limit attached as an excuse. So the
+bound decides something the driver *can* decide: when a driver whose link layer
+has stopped accepting admission controls should stop accepting client work. Past
+it, the driver is authorizing replicas the cluster has removed, and adding writes
+to that makes the problem larger.
+
+```rust
+pub enum DriverServiceState {
+    Serving,
+    Decommissioned { node_id: NodeId },
+    FenceBacklog { pending_fences: usize, max_pending_fences: usize },
+}
+```
+
+One enum for both non-serving conditions, in the shape `GroupFatalState` already
+established, read through `TransportRaftDriver::service_state()`. Decommissioning
+outranks a backlog when both hold, because a backlog drains and a removal cannot
+be undone. Clients hear a typed cause through `WriteError::Transport { fate:
+NotAppended, .. }` and `ReadError::Transport`, which is the existing vocabulary
+for a refusal that proposed nothing.
+
+There is no report stream to publish it on: this driver's only stream is the
+group's metrics watch, and a driver-level condition does not belong in a group's
+metrics snapshot. An accessor beside `pending_peer_fences`, `peer_set_is_stale`,
+and `readmitted_retired_peers` is the shape this surface already has.
+
+A local read is refused too, which is worth saying because it looks harmless: it
+proves nothing about any other replica, so refusing it seems like caution. It is
+not. A decommissioned replica is one the cluster has stopped replicating to, so
+answering from its applied state is answering from an unbounded-age snapshot of
+the past — the one way a client could not tell a retired replica from a live one.
+
+#### Blast radius of the seventh revision
+
+| File | Change |
+| --- | --- |
+| [`crates/rafter-app/src/group/membership.rs`](../crates/rafter-app/src/group/membership.rs) | two independent diffs, no cause clause, effective-then-committed order |
+| [`crates/rafter-app/src/membership.rs`](../crates/rafter-app/src/membership.rs) | `Appended` → `EffectiveChanged`; index/term documented as an observation point |
+| [`crates/rafter-app/src/group/types.rs`](../crates/rafter-app/src/group/types.rs) | the report contract's membership paragraph |
+| [`crates/rafter-app/src/transport.rs`](../crates/rafter-app/src/transport.rs) | `principal_for_node` states the monotonic-allocation dependency |
+| [`crates/rafter-service/src/driver/transport/control_plane.rs`](../crates/rafter-service/src/driver/transport/control_plane.rs) | two facts, the spent test, the retirement diff with no filter, the deferred self-fence, the service state |
+| [`crates/rafter-service/src/driver/transport/state.rs`](../crates/rafter-service/src/driver/transport/state.rs) | the four membership fields replace `known_members`/`retired`; `DriverServiceState` |
+| [`crates/rafter-service/src/driver/transport.rs`](../crates/rafter-service/src/driver/transport.rs) | the adoption gate; `service_state`; split at 1060 lines into `bounds.rs` and `health.rs` |
+| `crates/rafter-service/src/driver/transport/{bounds,health}.rs` | new: what a driver refuses to accumulate, and what an operator reads off one |
+| [`crates/rafter-service/src/driver/mapping.rs`](../crates/rafter-service/src/driver/mapping.rs) | `ManagedDriverError::RetiredNodeId`; two `DriverRoutingError` refusals |
+| [`crates/rafter-service/src/driver/transport/waiters.rs`](../crates/rafter-service/src/driver/transport/waiters.rs) | the write and read admission gates |
+| [`crates/rafter-service/src/transport.rs`](../crates/rafter-service/src/transport.rs) | `fence_peer` states that the local replica is not an exception |
+| [`crates/rafter/src/types/id.rs`](../crates/rafter/src/types/id.rs) | monotonic allocation promoted to a contract, with the gap consequence |
+| `crates/rafter-service/src/driver/transport/control_plane/tests.rs` | deleted |
+| `crates/rafter-service/tests/{transport_identity,transport_membership}.rs` | new; `transport_streams.rs` splits along the seam |
+| `crates/rafter-service/tests/support/scripted.rs` | the scripted-membership fixture, shared by three suites |
+| `crates/rafter-app/tests/group_membership_stream.rs` | new: the stream's completeness contract |
+
+Breaking, and each break is named. `MembershipEvent::Appended` is renamed — the
+enum is `#[non_exhaustive]` and has no consumer outside this repository.
+`TransportDriverOptions` gains a field, which is why it is `#[non_exhaustive]`
+with setters. `ManagedDriverError` gains a variant, which is why it is
+`#[non_exhaustive]`. Everything else is additive: one enum, one accessor, one
+setter.
+
+The behavioural change a correct caller sees is the one the review asked for: a
+follower's driver now widens for a replicated configuration change and narrows
+again for a rollback. The changes an incorrect one sees are the adoption
+refusal, the decommissioned refusals, and IDs allocated below the high-water
+mark being treated as spent.
+
+#### Focused-test plan for the seventh revision
+
+In `crates/rafter-app/tests/group_membership_stream.rs` — all seven drive a
+`PeerMessage` or a local request through `RaftGroup::step`:
+
+- `a_replicated_configuration_entry_reports_an_effective_change`,
+  `a_truncated_configuration_reports_the_effective_change_that_undid_it`, and
+  `one_step_that_moves_both_facts_reports_both` — the three suppressed cases.
+- `a_local_request_that_commits_immediately_still_reports_the_effective_change` —
+  the third clause, on the path it silenced.
+- `a_commit_observed_on_a_peer_step_reports_the_committed_fact` and
+  `a_snapshot_install_reports_both_facts` — the `Applied` audit.
+- `a_step_that_moves_no_membership_reports_no_membership_event` — the control.
+  A stream that fired on every step would make "the configuration changed"
+  unreadable.
+
+In `crates/rafter-service/tests/transport_membership.rs`, every one through
+`deliver` or `tick`:
+
+- `a_replicated_addition_widens_this_drivers_peer_set`,
+  `an_overwritten_addition_leaves_the_peer_set_and_the_inbound_check`, and
+  `a_rolled_back_addition_is_never_fenced_and_never_retired` — the reviewer's
+  first four cases, at the boundary that could not reach them before.
+- `a_commit_under_a_later_effective_configuration_keeps_both_facts` — the fifth,
+  driven through three configurations so the composition is exercised rather
+  than asserted.
+- `an_uncommitted_removal_narrows_nothing_and_fences_nobody` and
+  `an_uncommitted_widening_settles_no_fence_and_readmits_no_spent_identity` —
+  the two clauses the deleted in-crate module carried, now reachable.
+
+In `crates/rafter-service/tests/transport_identity.rs`, replacing
+`an_outstanding_fence_for_the_replica_this_driver_became_is_dropped`:
+
+- `adopting_a_spent_node_id_is_refused_and_installs_nothing` — typed refusal, and
+  the next adoption of a fresh ID proves nothing moved.
+- `releasing_and_re_adopting_the_same_id_stays_valid` — the control.
+- `a_committed_removal_of_the_local_replica_decommissions_the_driver` — the state,
+  both client refusals, and that the group and the protocol survive.
+- `the_local_replicas_fence_is_deferred_until_a_fresh_id_is_adopted` — owed across
+  two flushes without being asked for, then discharged by the adoption.
+- `the_retired_local_id_stays_refused_when_a_later_membership_names_it`.
+- `an_id_allocated_into_a_gap_below_the_high_water_mark_is_refused` and
+  `an_addition_that_never_committed_can_be_committed_later` — the two spent-test
+  edges, which are the same rule read from either side.
+- `a_fence_backlog_over_its_bound_refuses_client_work_and_keeps_every_fence` —
+  fill past the bound, assert the typed refusal of both client operations, assert
+  the driver kept flushing, assert no obligation was dropped, then drain one and
+  watch service return.
+- `a_zero_fence_bound_is_refused`.
+
+Mutation check, on the committed implementation:
+
+| Removed | Fails |
+| --- | --- |
+| the two `is_spent` reads (made to answer `false`) | `adopting_a_spent_node_id_is_refused_and_installs_nothing`, `a_committed_removal_of_the_local_replica_decommissions_the_driver`, `the_retired_local_id_stays_refused_when_a_later_membership_names_it`, `an_id_allocated_into_a_gap_below_the_high_water_mark_is_refused`, `a_readmitted_retired_replica_is_refused_and_its_fence_stays_owed`, `a_readmitted_retired_replica_never_asks_for_an_unfence`, `an_uncommitted_widening_settles_no_fence_and_readmits_no_spent_identity` |
+| the deferred self-fence skip (restored to a drop) | `the_local_replicas_fence_is_deferred_until_a_fresh_id_is_adopted` |
+
+The controls pass under both: a restart is still not a retirement, a rolled-back
+addition is still not fenced, and same-ID re-adoption is still valid.
 
 ## Terminal Driver Vocabulary
 

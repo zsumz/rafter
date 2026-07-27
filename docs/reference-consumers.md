@@ -411,8 +411,24 @@ replica's principal. Rafter enforces this within one driver's lifetime and says
 so in `rafter::NodeId`'s own documentation; enforcing it across restarts needs
 a durable record of what has been allocated, and how long to keep one is a
 retention decision — classification 2, the same ground on which the counter's
-group tombstones stayed in the consumer. Monotonic per-group allocation is the
-standard shape and costs a counter.
+group tombstones stayed in the consumer.
+
+**Monotonic per-group allocation is required, not merely recommended.** Every ID
+a group admits must be greater than every ID it has ever committed. That is what
+lets a driver derive which identities a removal has spent from one number rather
+than from a set that grows with every removal for the life of the group — the
+unbounded structure the kernel declines to keep, and no more affordable one layer
+up. The cost of the derivation is that gaps below the mark are unallocatable:
+"fresh" means greater than anything ever committed, not merely unused, so a group
+that has committed node 5 can never admit node 3. A deployment that allocates
+non-monotonically has its fresh IDs refused as spent, which is fail-closed and
+deliberate. A per-group counter costs one number and avoids all of it.
+
+The rule reaches the local replica too. A committed removal of the replica a
+driver is running spends *that* identity, so the driver stops serving clients
+with a typed state, keeps running the protocol until its supervisor releases the
+group, and refuses to be re-adopted under the removed ID. The supervisor's move
+is release, then adopt a fresh one.
 
 **Restarting a replica is not removing it.** A replica that is killed and
 reopened from its own durable state under the same ID was never removed, so
