@@ -482,3 +482,156 @@ fn a_report_discarded_by_a_proposal_verdict_still_owes_its_membership_delta() {
     );
     assert_eq!(voters(&reported[0]), vec![NodeId(1), NodeId(2), NodeId(3)]);
 }
+
+/// Decomposition carries the owed delta, and the rebuild still owes it.
+///
+/// **The boundary a failing step's losslessness could not cross.** A membership-
+/// moving step fails, so the transition is owed; the caller then does what the
+/// decomposition contract tells it to do — take the parts, keep the runtime,
+/// build a new group — and the owed transition is gone. `RaftGroupParts` carried
+/// no mark, so `with_applied_index` seeded a fresh comparison from the runtime it
+/// was handed, and that runtime had already *moved*. The new group's first
+/// comparison read "nothing has changed" and every later one agreed.
+///
+/// The decomposition contract says no protocol effect can be lost by calling
+/// `into_parts`. This is the clause that made that false.
+#[test]
+fn a_rebuild_from_parts_still_owes_a_failed_steps_membership_delta() {
+    let mut group = losslessness_group(
+        RecordingStateMachine::default(),
+        &[1, 2, 3],
+        &[1, 2, 3],
+        [unchanged(&[1, 2, 3], &[1, 2, 3]), (vec![1, 2], vec![1, 2])],
+        [],
+    );
+    arm_granted_read(&mut group);
+    group.state_machine_mut().fail_applied_index = true;
+    group
+        .step(replicated_frame())
+        .expect_err("the state machine refuses to report its applied index");
+
+    let mut parts = group.into_parts();
+    parts.state_machine.fail_applied_index = false;
+    let mut rebuilt = RaftGroup::from_parts(parts, LogIndex::ZERO);
+
+    let owed = rebuilt.drain_membership_events();
+    assert_eq!(
+        owed.len(),
+        2,
+        "the delta the failed step left owed survived decomposition: {owed:?}"
+    );
+    assert_eq!(voters(&owed[0]), vec![NodeId(1), NodeId(2)]);
+    assert!(matches!(owed[0], MembershipEvent::EffectiveChanged { .. }));
+    assert!(matches!(owed[1], MembershipEvent::Applied { .. }));
+    assert!(
+        rebuilt.drain_membership_events().is_empty(),
+        "and the drain advanced the rebuilt group's mark"
+    );
+}
+
+/// The control for the rebuild: a group that owed nothing still owes nothing.
+///
+/// Without it, a `from_parts` that simply re-reported the runtime's whole
+/// configuration would pass the clause above. Pre-existing state is not an event
+/// on either side of a decomposition.
+#[test]
+fn a_rebuild_from_parts_owes_nothing_when_nothing_was_owed() {
+    let mut group = losslessness_group(
+        RecordingStateMachine::default(),
+        &[1, 2, 3],
+        &[1, 2, 3],
+        [(vec![1, 2], vec![1, 2])],
+        [],
+    );
+    let report = group.step(replicated_frame()).expect("the follower steps");
+    assert_eq!(
+        report.membership_events.len(),
+        2,
+        "and the step reported it"
+    );
+
+    let mut rebuilt = RaftGroup::from_parts(group.into_parts(), LogIndex::ZERO);
+    assert!(
+        rebuilt.drain_membership_events().is_empty(),
+        "a reported delta does not come back through decomposition"
+    );
+}
+
+/// The outcome-only proposal helper leaves its membership delta owed.
+///
+/// It discards a whole report by design and documents that it does. What it must
+/// not discard is the mark that report advanced: a caller that never received
+/// the report never received the membership event in it, so the delta is owed
+/// exactly as it is after any other discarded report.
+#[test]
+fn the_outcome_only_proposal_helper_still_owes_its_membership_delta() {
+    let mut group = losslessness_group(
+        RecordingStateMachine::default(),
+        &[1, 2],
+        &[1, 2],
+        [
+            (vec![1, 2, 3], vec![1, 2, 3]),
+            unchanged(&[1, 2, 3], &[1, 2, 3]),
+        ],
+        [vec![RaftOutput::LocalProposalAppended {
+            proposal_id: LocalProposalId(1),
+            index: LogIndex(3),
+            term: Term(1),
+        }]],
+    );
+
+    let begin = group
+        .begin_proposal_outcome(Proposal {
+            local_proposal_id: LocalProposalId(1),
+            client_request_id: None,
+            command: b"command".to_vec(),
+        })
+        .expect("the proposal starts");
+    assert!(matches!(begin, ProposalBegin::Appended { .. }));
+
+    // Through a later step, for the reason `report_after_an_unrelated_step`
+    // gives: a mark that advanced into the discarded report has nothing left.
+    let reported = report_after_an_unrelated_step(&mut group);
+    assert_eq!(
+        reported.len(),
+        2,
+        "the discarded report's membership delta is still owed: {reported:?}"
+    );
+    assert_eq!(voters(&reported[0]), vec![NodeId(1), NodeId(2), NodeId(3)]);
+    assert!(matches!(
+        reported[0],
+        MembershipEvent::EffectiveChanged { .. }
+    ));
+    assert!(matches!(reported[1], MembershipEvent::Applied { .. }));
+}
+
+/// The outcome-only read-barrier helper leaves its membership delta owed.
+///
+/// The same clause on the other outcome-only surface. Both were named as
+/// non-blocking in review; both made the documented mark invariant — every
+/// report discarded before reaching a caller restores the mark — false.
+#[test]
+fn the_outcome_only_read_barrier_helper_still_owes_its_membership_delta() {
+    let mut group = losslessness_group(
+        RecordingStateMachine::default(),
+        &[1, 2],
+        &[1, 2],
+        [
+            (vec![1, 2, 3], vec![1, 2, 3]),
+            unchanged(&[1, 2, 3], &[1, 2, 3]),
+        ],
+        [],
+    );
+
+    group
+        .begin_read_barrier_outcome(read_request(ReadId(1), None))
+        .expect("the barrier starts");
+
+    let reported = report_after_an_unrelated_step(&mut group);
+    assert_eq!(
+        reported.len(),
+        2,
+        "the discarded report's membership delta is still owed: {reported:?}"
+    );
+    assert_eq!(voters(&reported[0]), vec![NodeId(1), NodeId(2), NodeId(3)]);
+}

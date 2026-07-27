@@ -127,10 +127,28 @@ pub enum MembershipEvent<G> {
     },
     /// The configuration the cluster has committed changed.
     ///
-    /// `index` and `term` are the commit index and its term, which is the same
-    /// kind of observation point: a commit is observed at the index it reached,
-    /// and that index names a configuration entry only when the commit stopped
-    /// exactly on one.
+    /// **One of these per configuration the commit index crossed, in index
+    /// order, and not one per step.** A step can commit several configurations
+    /// at once — a replica catching up receives them under a single leader
+    /// commit — and every one of them is a membership the cluster genuinely
+    /// authorized. A consumer that retires identities must see each: a
+    /// configuration that added a replica and a later one that removed it can
+    /// leave the committed membership *identical* across the step, so a
+    /// difference of endpoints reports nothing at all while an identity was
+    /// consumed in the middle.
+    ///
+    /// `index` and `term` name the configuration entry that carried the
+    /// membership, whenever the kernel could name one. Two moves cannot be
+    /// attributed to an entry — a snapshot install, whose boundary configuration
+    /// replaces the state machine, and a group opened over a runtime whose
+    /// commit index had already moved — and those carry the commit index and its
+    /// term as an observation point instead. Either way the events of one report
+    /// are in nondecreasing `index` order.
+    ///
+    /// A snapshot install therefore reports the boundary configuration and
+    /// nothing about the configurations that committed and were superseded below
+    /// it: those are not in the snapshot, and no replica can reconstruct them
+    /// locally. See [`crate::snapshot::SnapshotEvent::Apply`].
     Applied {
         group_id: G,
         index: LogIndex,

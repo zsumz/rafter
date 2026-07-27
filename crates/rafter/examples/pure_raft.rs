@@ -116,7 +116,10 @@ fn handle_outputs(
             Output::LeadershipTransferRejected { reason, .. } => {
                 println!("leadership transfer rejected by {from:?}: {reason:?}");
             }
-            Output::LocalProposalAppended { .. }
+            // This example keeps no peer set and no identity register, so the
+            // committed-configuration announcement has nothing to drive here.
+            Output::ConfigurationCommitted { .. }
+            | Output::LocalProposalAppended { .. }
             | Output::LocalProposalDropped { .. }
             | Output::ReadIndexGranted { .. }
             | Output::ReadIndexRejected { .. }

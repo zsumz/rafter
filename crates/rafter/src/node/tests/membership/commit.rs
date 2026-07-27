@@ -56,7 +56,8 @@ fn prior_term_quorum_candidate_waits_for_current_term_entry() {
     assert_eq!(
         outputs.iter().find_map(|output| match output {
             Output::Apply { index, payload, .. } => Some((*index, payload.as_slice())),
-            Output::LocalProposalAppended { .. }
+            Output::ConfigurationCommitted { .. }
+            | Output::LocalProposalAppended { .. }
             | Output::LocalProposalDropped { .. }
             | Output::Send { .. }
             | Output::ApplySnapshot { .. }
@@ -163,7 +164,8 @@ fn joint_configuration_governs_application_suffix_commit() {
     assert_eq!(
         outputs.iter().find_map(|output| match output {
             Output::Apply { index, payload, .. } => Some((*index, payload.as_slice())),
-            Output::LocalProposalAppended { .. }
+            Output::ConfigurationCommitted { .. }
+            | Output::LocalProposalAppended { .. }
             | Output::LocalProposalDropped { .. }
             | Output::Send { .. }
             | Output::ApplySnapshot { .. }
@@ -207,7 +209,18 @@ fn final_stable_configuration_commits_with_new_majority_after_joint_commit() {
     let outputs = acknowledge(&mut leader, NodeId(4), LogIndex(3));
 
     assert_eq!(leader.commit_index(), LogIndex(3));
-    assert!(outputs.is_empty());
+    // The advance crosses the leadership no-op at 2 and the final stable
+    // configuration at 3, and names the one entry that carries a configuration.
+    // Nothing else is emitted: this leader stays leader and applies no
+    // application entry.
+    assert_eq!(
+        outputs,
+        vec![Output::ConfigurationCommitted {
+            index: LogIndex(3),
+            term: Term(2),
+            configuration: stable_configuration(ConfigurationId(9), &[1, 3, 4]),
+        }]
+    );
 
     let heartbeat_outputs = leader.step(Input::Tick);
     let heartbeat = append_entries_to(&heartbeat_outputs, NodeId(3)).expect("commit heartbeat");

@@ -1,6 +1,7 @@
 use super::{
-    Debug, GroupStepReport, MembershipChange, MembershipEvent, MembershipReportMark,
-    PersistedRaftRuntime, ProposalRejection, RaftGroup, RaftInput, ReplicatedStateMachine,
+    CommittedConfigurationCrossing, Debug, GroupStepReport, LogIndex, MembershipChange,
+    MembershipConfig, MembershipEvent, MembershipReportMark, PersistedRaftRuntime,
+    ProposalRejection, RaftGroup, RaftInput, ReplicatedStateMachine, Term,
 };
 
 impl<G, A, R> RaftGroup<G, A, R>
@@ -88,6 +89,36 @@ where
     /// A report that owes neither fact carries nothing, which is what keeps "the
     /// configuration changed" readable: a consumer republishing an unchanged
     /// peer set every tick cannot tell a real change from noise.
+    ///
+    /// **The committed half is a queue first and a comparison second, and only
+    /// the committed half.** The kernel names every configuration entry the
+    /// commit index crosses, so a step that crossed several reports several — in
+    /// index order, each carrying its own entry's index, term, and membership.
+    /// The comparison then runs against whatever the queue left, and catches the
+    /// committed moves that cross no entry at all: a snapshot install carries a
+    /// boundary configuration and no history, and a group opened over a runtime
+    /// whose commit index already moved has no output to replay.
+    ///
+    /// Sampling the committed membership once per step was the defect. A replica
+    /// catching up receives several configuration entries under one commit floor,
+    /// and if an intermediate one added a replica that a later one removed, the
+    /// sampled value is *identical* before and after — no event, and the identity
+    /// the cluster spent is never spent here. It never even had to be a wide
+    /// window: a leader that commits `+5` and then `−5` while a follower is one
+    /// round behind produces it.
+    ///
+    /// **The effective half stays a comparison, and that asymmetry is
+    /// deliberate.** A committed configuration is a permanent identity fact — it
+    /// authorized replicas and spent identities, and nothing can take it back —
+    /// so every one of them has to be reported even when the endpoints match. An
+    /// effective configuration is a *current* answer to "who may speak", it can
+    /// be truncated back off the log, and an intermediate one that a step both
+    /// entered and left never served an admission decision: no frame was checked
+    /// against it, because the step that produced it had not returned. What a
+    /// consumer needs from the effective half is the configuration in force now,
+    /// which is exactly what the comparison gives it, and reporting transient
+    /// intermediates would ask a link layer to widen for a set that no longer
+    /// exists.
     pub(super) fn record_membership_changes(
         &mut self,
         report: &mut GroupStepReport<G, A::CommandResult>,
@@ -115,6 +146,19 @@ where
             self.reported_membership.effective = effective_membership;
         }
 
+        // Drained before the comparison, so the comparison judges what the queue
+        // left behind rather than the state the step started from. Reported in
+        // index order, which is the order the commit index crossed them.
+        for crossing in std::mem::take(&mut self.reported_membership.crossed) {
+            report.membership_events.push(MembershipEvent::Applied {
+                group_id: self.group_id.clone(),
+                index: crossing.index,
+                term: crossing.term,
+                membership: crossing.membership.clone(),
+            });
+            self.reported_membership.committed = crossing.membership;
+        }
+
         if committed_membership == self.reported_membership.committed {
             return;
         }
@@ -132,7 +176,30 @@ where
         self.reported_membership.committed = committed_membership;
     }
 
-    /// Takes the mark the membership comparison is currently against.
+    /// Queues one committed configuration the kernel named.
+    ///
+    /// Held on the group rather than pushed straight into the report, because the
+    /// report's membership list is ordered effective-then-committed and the
+    /// kernel's outputs arrive before the effective comparison has run. Queueing
+    /// is also what makes the fact survive a step that fails after it: the queue
+    /// is part of the mark, so it is owed on exactly the same terms as the two
+    /// memberships beside it.
+    pub(super) fn record_committed_configuration(
+        &mut self,
+        index: LogIndex,
+        term: Term,
+        membership: MembershipConfig,
+    ) {
+        self.reported_membership
+            .crossed
+            .push(CommittedConfigurationCrossing {
+                index,
+                term,
+                membership,
+            });
+    }
+
+    /// Takes the mark the membership reporting is currently owed against.
     ///
     /// Paired with [`RaftGroup::restore_membership_report_mark`] at every site
     /// that builds a report and then decides it cannot return it.
@@ -140,14 +207,47 @@ where
         self.reported_membership.clone()
     }
 
-    /// Puts back a mark because the report that advanced it is being discarded.
+    /// Puts back everything a report carried, because that report is being
+    /// discarded.
     ///
     /// The one operation that makes "the mark advances when a report is
     /// returned" true rather than approximately true. A report a caller never
-    /// receives reported nothing, so the delta it carried is owed again — and
-    /// restoring the mark taken *before* the report was built restores the whole
-    /// owed delta, including anything an earlier failure had already left owed.
-    pub(super) fn restore_membership_report_mark(&mut self, mark: MembershipReportMark) {
+    /// receives reported nothing, so the delta it carried is owed again.
+    ///
+    /// **Two halves, and the second is why the discarded report is an argument.**
+    /// The two memberships come from `mark`, taken *before* the report was built,
+    /// which restores the whole comparison-derived delta including anything an
+    /// earlier failure had already left owed. The crossing queue cannot come from
+    /// there: the kernel outputs that filled it arrived *after* `mark` was taken,
+    /// so putting back the mark's own queue would drop exactly the committed
+    /// configurations this step discovered. It is rebuilt from the discarded
+    /// report instead, which holds one `Applied` per owed transition in order and
+    /// is therefore a faithful record of what the group was about to hand over.
+    /// Re-reporting it produces the same event sequence: the final comparison
+    /// then finds the committed membership already accounted for and adds
+    /// nothing.
+    pub(super) fn restore_membership_report_mark(
+        &mut self,
+        mark: MembershipReportMark,
+        discarded: &GroupStepReport<G, A::CommandResult>,
+    ) {
         self.reported_membership = mark;
+        self.reported_membership.crossed = discarded
+            .membership_events
+            .iter()
+            .filter_map(|event| match event {
+                MembershipEvent::Applied {
+                    index,
+                    term,
+                    membership,
+                    ..
+                } => Some(CommittedConfigurationCrossing {
+                    index: *index,
+                    term: *term,
+                    membership: membership.clone(),
+                }),
+                _ => None,
+            })
+            .collect();
     }
 }

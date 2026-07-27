@@ -18,8 +18,15 @@ where
     ///
     /// This outcome-only helper intentionally discards co-emitted report
     /// streams. Use [`RaftGroup::begin_proposal`] when callers must observe
-    /// applies, snapshot events, membership events, leadership-transfer
-    /// events, or metrics emitted while starting the proposal.
+    /// applies, snapshot events, leadership-transfer events, or metrics emitted
+    /// while starting the proposal.
+    ///
+    /// **Membership is the one stream it does not discard.** The report it drops
+    /// is a report no caller received, so the membership delta it carried is put
+    /// back and stays owed — the next report, or
+    /// [`RaftGroup::drain_membership_events`], still carries it. Every other
+    /// stream here is genuinely lost, which is why this helper is for callers
+    /// that route no peer traffic and hold no other waiters.
     ///
     /// # Errors
     ///
@@ -33,7 +40,12 @@ where
         &mut self,
         proposal: Proposal<A::Command>,
     ) -> ProposalBeginResult<G, A, R> {
-        Ok(self.begin_proposal(proposal)?.begin)
+        // Taken before the step, because everything below discards a full report
+        // and a report a caller never receives reported nothing.
+        let mark = self.membership_report_mark();
+        let ProposalBeginReport { begin, report } = self.begin_proposal(proposal)?;
+        self.restore_membership_report_mark(mark, &report);
+        Ok(begin)
     }
 
     /// Begins a local tracked proposal and returns the immediate state plus
@@ -68,7 +80,7 @@ where
         let begin = match self.proposal_begin_from_report(local_proposal_id, &report) {
             Ok(begin) => begin,
             Err(error) => {
-                self.restore_membership_report_mark(mark);
+                self.restore_membership_report_mark(mark, &report);
                 return Err(error);
             }
         };
@@ -108,7 +120,7 @@ where
         let mark = self.membership_report_mark();
         let report = self.apply_stepped_outputs(outputs, false, StepReportOptions::default())?;
         if let Err(error) = self.ensure_proposal_batch_lifecycles(&local_proposal_ids, &report) {
-            self.restore_membership_report_mark(mark);
+            self.restore_membership_report_mark(mark, &report);
             return Err(error);
         }
         let mut begins = Vec::with_capacity(local_proposal_ids.len());
@@ -116,7 +128,7 @@ where
             match self.proposal_begin_from_report(local_proposal_id, &report) {
                 Ok(begin) => begins.push(begin),
                 Err(error) => {
-                    self.restore_membership_report_mark(mark);
+                    self.restore_membership_report_mark(mark, &report);
                     return Err(error);
                 }
             }

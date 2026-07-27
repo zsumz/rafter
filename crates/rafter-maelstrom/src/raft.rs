@@ -171,6 +171,21 @@ impl InitializedNode {
                 Output::LeadershipTransferRejected { target, reason } => {
                     eprintln!("leadership transfer to {target} rejected: {reason}");
                 }
+                // Logged rather than acted on: this workload addresses peers
+                // by Maelstrom node name with no admission control, so there is
+                // no peer set to narrow and no identity to retire. The line is
+                // for the membership-change workload's own transcript, where the
+                // interesting question is which configurations actually
+                // committed and in what order.
+                Output::ConfigurationCommitted {
+                    index,
+                    term,
+                    configuration,
+                } => eprintln!(
+                    "configuration committed index={index} term={term} config={} phase={}",
+                    configuration.config_id(),
+                    configuration.phase()
+                ),
                 Output::LocalProposalAppended { .. }
                 | Output::LocalProposalDropped { .. }
                 | Output::StageSnapshotChunk { .. }

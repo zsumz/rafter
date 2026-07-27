@@ -106,7 +106,8 @@ fn learner_receives_log_replication_without_counting_for_commit() {
     oracle_assert_eq!(
         commit_outputs.iter().find_map(|output| match output {
             Output::Apply { index, payload, .. } => Some((*index, payload.as_slice())),
-            Output::LocalProposalAppended { .. }
+            Output::ConfigurationCommitted { .. }
+            | Output::LocalProposalAppended { .. }
             | Output::LocalProposalDropped { .. }
             | Output::Send { .. }
             | Output::ApplySnapshot { .. }

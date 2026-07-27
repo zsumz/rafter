@@ -1,6 +1,6 @@
 //! Commit-index advancement and ordered application output.
 
-use crate::{ConfigurationEntry, LogEntryKind, MembershipConfig};
+use crate::{LogEntryKind, MembershipConfig};
 
 use super::super::{Node, Output, Role};
 use super::tracker::CommitTracker;
@@ -67,9 +67,11 @@ impl Node {
                 LogEntryKind::Application(payload) => Some(payload.clone()),
                 LogEntryKind::Configuration(_) | LogEntryKind::Noop => None,
             };
-            let membership = entry
-                .configuration_entry()
-                .map(ConfigurationEntry::membership_config);
+            // The entry itself, not just the membership it resolves to. The
+            // configuration's own identity travels to the embedder, so a
+            // consumer can tell two configurations apart that happen to name the
+            // same replicas.
+            let configuration = entry.configuration_entry().cloned();
 
             self.volatile.applied_index = index;
             let local_proposal_id = self
@@ -85,7 +87,17 @@ impl Node {
                     payload,
                     local_proposal_id,
                 });
-            } else if let Some(membership) = membership {
+            } else if let Some(configuration) = configuration {
+                // Announced before the step-down it may cause, because the
+                // commit is the fact and the step-down is its consequence: an
+                // embedder reading these in order sees why it lost leadership
+                // after it has seen the configuration that took it away.
+                let membership = configuration.membership_config();
+                outputs.push(Output::ConfigurationCommitted {
+                    index,
+                    term: entry_term,
+                    configuration,
+                });
                 self.step_down_if_removed(&membership, outputs);
             }
         }

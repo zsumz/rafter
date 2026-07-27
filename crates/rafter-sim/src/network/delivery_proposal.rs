@@ -60,6 +60,10 @@ pub(super) fn local_proposal_event(from: NodeId, output: &Output) -> Option<Loca
         | Output::ReadIndexGranted { .. }
         | Output::ReadIndexRejected { .. }
         | Output::ReadIndexCanceled { .. }
+        // A committed configuration carries no local proposal correlation: a
+        // membership change is proposed through the membership inputs, which take
+        // no `LocalProposalId`.
+        | Output::ConfigurationCommitted { .. }
         | Output::Send { .. } => None,
     }
 }

@@ -76,7 +76,9 @@ fn route(
         match output {
             Output::Send { to, message } => inbox.push((from, to, message)),
             Output::Apply { index, payload, .. } => applied.push((from, index, payload)),
-            Output::ApplySnapshot { .. }
+            // A fixed three-node example never reconfigures.
+            Output::ConfigurationCommitted { .. }
+            | Output::ApplySnapshot { .. }
             | Output::SendSnapshotChunk { .. }
             | Output::StageSnapshotChunk { .. }
             | Output::LocalProposalAppended { .. }

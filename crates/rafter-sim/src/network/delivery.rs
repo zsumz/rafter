@@ -176,7 +176,16 @@ impl Cluster {
                     target,
                 });
             }
-            Output::LocalProposalAppended { .. } | Output::LocalProposalDropped { .. } => {}
+            // The reference application already crosses configuration entries:
+            // `record_execution_history` walks the log itself between the old and
+            // new applied indexes and folds every entry kind into
+            // `ReferenceState`, so a committed configuration reaches the AP-02
+            // oracle through the entry rather than through this announcement.
+            // Recording it here as well would witness the same transition twice
+            // and make equal executions compare unequal.
+            Output::ConfigurationCommitted { .. }
+            | Output::LocalProposalAppended { .. }
+            | Output::LocalProposalDropped { .. } => {}
             Output::Send { to, message } => {
                 let envelope = Envelope { from, to, message };
                 emitted.push(envelope.clone());

@@ -201,7 +201,8 @@ pub(super) fn send_targets(outputs: &[Output]) -> Vec<NodeId> {
         .iter()
         .filter_map(|output| match output {
             Output::Send { to, .. } => Some(*to),
-            Output::LocalProposalAppended { .. }
+            Output::ConfigurationCommitted { .. }
+            | Output::LocalProposalAppended { .. }
             | Output::LocalProposalDropped { .. }
             | Output::Apply { .. }
             | Output::ApplySnapshot { .. }
@@ -232,7 +233,8 @@ pub(super) fn append_entries_to(outputs: &[Output], target: NodeId) -> Option<&A
             to,
             message: Message::AppendEntries(request),
         } if *to == target => Some(request),
-        Output::LocalProposalAppended { .. }
+        Output::ConfigurationCommitted { .. }
+        | Output::LocalProposalAppended { .. }
         | Output::LocalProposalDropped { .. }
         | Output::Apply { .. }
         | Output::ApplySnapshot { .. }

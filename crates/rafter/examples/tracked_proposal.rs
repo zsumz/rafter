@@ -169,7 +169,10 @@ fn handle_outputs(
             Output::LeadershipTransferRejected { reason, .. } => {
                 println!("leadership transfer rejected by {from:?}: {reason:?}");
             }
-            Output::ReadIndexGranted { .. }
+            // Configuration entries carry no local proposal correlation, which
+            // is what this example tracks.
+            Output::ConfigurationCommitted { .. }
+            | Output::ReadIndexGranted { .. }
             | Output::ReadIndexRejected { .. }
             | Output::ReadIndexCanceled { .. }
             | Output::LocalProposalDropped { .. }

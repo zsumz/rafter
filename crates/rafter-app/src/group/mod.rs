@@ -46,14 +46,14 @@ mod types;
 mod validation;
 
 pub use types::{
-    GroupFatalState, GroupInput, GroupStepReport, LeadershipTransferEvent, PoisonedWaiters,
-    ProposalBatchBeginReport, ProposalBeginReport, RaftGroup, RaftGroupParts,
+    GroupFatalState, GroupInput, GroupStepReport, LeadershipTransferEvent, MembershipReportMark,
+    PoisonedWaiters, ProposalBatchBeginReport, ProposalBeginReport, RaftGroup, RaftGroupParts,
     ReadBarrierBeginReport, ReadReport, StepReportOptions,
 };
 
 use types::{
-    report_has_proposal_lifecycle, ApplyEntryResult, CompletedQueryRead, GrantedReadIndex,
-    GroupResult, MembershipReportMark, PendingQueryRead, PendingRead,
+    report_has_proposal_lifecycle, ApplyEntryResult, CommittedConfigurationCrossing,
+    CompletedQueryRead, GrantedReadIndex, GroupResult, PendingQueryRead, PendingRead,
     ProposalBatchBeginReportResult, ProposalBeginReportResult, ProposalBeginResult,
     ReadBarrierBeginReportResult, ReadOutcomeResult, ReadReportResult, RuntimeGroupError,
     StepReportResult,

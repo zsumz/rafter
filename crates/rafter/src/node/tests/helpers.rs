@@ -97,17 +97,28 @@ pub(super) fn assert_append_entries(output: &Output, to: NodeId, entry_count: us
     assert_eq!(request.entries.len(), entry_count);
 }
 
+/// Asserts the step sent exactly one frame, and that it is this response.
+///
+/// Counted over the sends rather than over every output, because a frame that
+/// advances the commit index across a configuration entry also announces it —
+/// see [`Output::ConfigurationCommitted`] — and that announcement is not a
+/// frame. The strictness the assertion is here for is "one response and no
+/// other traffic", which is what this states.
 pub(super) fn assert_append_entries_response(
     outputs: &[Output],
     to: NodeId,
     success: bool,
     match_index: LogIndex,
 ) {
-    assert_eq!(outputs.len(), 1);
+    let sends = outputs
+        .iter()
+        .filter(|output| matches!(output, Output::Send { .. }))
+        .collect::<Vec<_>>();
+    assert_eq!(sends.len(), 1);
     let Output::Send {
         to: actual_to,
         message,
-    } = &outputs[0]
+    } = sends[0]
     else {
         panic!("expected append entries response");
     };

@@ -363,6 +363,38 @@ pub(crate) fn driver_over_app(
     )
 }
 
+/// A driver whose validator authorizes replicas its bootstrap configuration does
+/// not name.
+///
+/// Two separate sets because that gap is a real deployment state rather than a
+/// fixture convenience: the directory can authenticate every replica the cluster
+/// might admit, while the configuration this replica opened over names only the
+/// ones admitted so far. A test that needs a replica to *arrive* by replication
+/// — and then be removed again — needs the link layer to have been able to speak
+/// for it the whole time.
+pub(crate) fn driver_over_bootstrap(
+    node_id: u64,
+    bootstrap_peers: &[u64],
+    authorized_peers: &[u64],
+) -> (Driver, QueueTransport) {
+    let transport = QueueTransport::default();
+    let validator = Validator {
+        transport: transport.clone(),
+        authorized: authorized_peers.iter().copied().map(NodeId).collect(),
+        nameable: Nameable::all(),
+    };
+    let group = numbered_group(GROUP, node_id, bootstrap_peers, 3);
+    let driver = TransportRaftDriver::new(
+        group,
+        Vec::new(),
+        transport.clone(),
+        validator,
+        TransportDriverOptions::default(),
+    )
+    .expect("a quiescent group is adoptable");
+    (driver, transport)
+}
+
 /// The state machine every poison fixture wants: one that refuses to apply.
 pub(crate) fn failing_apply() -> KvStateMachine {
     KvStateMachine {

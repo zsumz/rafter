@@ -614,6 +614,15 @@ impl ProcessReplica {
                 Output::LeadershipTransferRejected { target, reason } => {
                     println!("TRANSFER_REJECTED {} {} {reason}", self.node_id.0, target.0);
                 }
+                // Reported on the process's own event channel, beside the
+                // applies, so a reader of the transcript can see which
+                // configurations committed and in what order. This example's
+                // transport addresses peers directly and has no admission
+                // control, so nothing else is derived from it.
+                Output::ConfigurationCommitted { index, term, .. } => println!(
+                    "CONFIGURATION_COMMITTED {} {} {}",
+                    self.node_id.0, index.0, term.0
+                ),
                 Output::LocalProposalAppended { .. }
                 | Output::LocalProposalDropped { .. }
                 | Output::StageSnapshotChunk { .. } => {}

@@ -3,7 +3,7 @@ use super::{
     LeadershipTransferRejection, LocalProposalId, LogIndex, MembershipChange, MembershipConfig,
     MembershipEvent, NodeId, PeerEnvelope, PersistedRaftRuntime, Proposal, ProposalBegin,
     ProposalEvent, RaftGroupMetrics, ReadBarrierRequest, ReadEvent, ReadId, ReadOutcome, ReadProof,
-    ReadProofOutcome, ReplicatedStateMachine, SnapshotEvent,
+    ReadProofOutcome, ReplicatedStateMachine, SnapshotEvent, Term,
 };
 
 /// Fatal health state for a Raft group.
@@ -97,17 +97,50 @@ pub struct RaftGroup<G, A, R> {
     pub(super) reported_membership: MembershipReportMark,
 }
 
-/// The memberships a group's membership comparison is taken against.
+/// One committed configuration this group crossed and has not yet reported.
+///
+/// Queued rather than compared, because a comparison cannot see it. The commit
+/// index can cross several configuration entries in one step, and the two the
+/// comparison reads — the memberships before and after — can be *equal* across
+/// a pair that added a replica and removed it again. The kernel names each
+/// crossing as it happens; this is where the group holds them until a report
+/// carries them out.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct CommittedConfigurationCrossing {
+    /// The configuration entry's own index, not the commit index the step
+    /// reached.
+    pub(super) index: LogIndex,
+    pub(super) term: Term,
+    pub(super) membership: MembershipConfig,
+}
+
+/// What a group's membership reporting is owed against.
+///
+/// Two memberships and a queue. The memberships are the state the effective and
+/// final-committed comparisons are taken against; the queue is the committed
+/// configurations the kernel named that no report has carried yet. Both are
+/// durable across steps and both advance in exactly one place — where a report's
+/// membership events are built.
 ///
 /// Cloned before a report is built and put back when that report is discarded,
-/// which is what keeps a delta owed rather than reported into a value the
-/// caller never received. Every site that builds a report and then decides it
-/// cannot return it takes one of these first; there is no other way to discard
-/// a report without losing what it carried.
+/// which is what keeps a delta owed rather than reported into a value the caller
+/// never received. Every site that builds a report and then decides it cannot
+/// return it takes one of these first; there is no other way to discard a report
+/// without losing what it carried.
+///
+/// **Opaque on purpose.** The fields are private and there is no public
+/// constructor: the only ways to obtain one are
+/// [`RaftGroup::into_parts`] and the only thing to do with one is hand it to
+/// [`RaftGroup::from_parts`]. A caller that could forge one could tell a group it
+/// had already reported a configuration it never reported, which is the same
+/// silent loss this whole mechanism exists to prevent.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) struct MembershipReportMark {
+pub struct MembershipReportMark {
     pub(super) effective: MembershipConfig,
     pub(super) committed: MembershipConfig,
+    /// Committed configurations named by the kernel and not yet reported, in
+    /// the order the commit index crossed them.
+    pub(super) crossed: Vec<CommittedConfigurationCrossing>,
 }
 
 pub(super) type RuntimeGroupError<A, R> =
@@ -277,6 +310,17 @@ pub struct GroupStepReport<G, R> {
     /// group on every step, and one that follows only its own membership calls
     /// is not.
     ///
+    /// **The committed half is a history, not a difference.** One step can
+    /// commit several configurations, and this list carries one `Applied` per
+    /// configuration in index order rather than one for where the step ended. A
+    /// consumer that retires identities has to see the ones in the middle: a
+    /// pair that added a replica and removed it again leaves the endpoints equal,
+    /// so a difference would report nothing while an identity was spent. The
+    /// effective half stays a difference, because an intermediate effective
+    /// configuration inside one step never authorized anything — no frame was
+    /// checked against it — and what a peer set needs is the configuration in
+    /// force now.
+    ///
     /// **This list carries what the group has moved through and not yet
     /// reported, which is not the same as what *this* step moved.** The
     /// comparison is against the memberships as of the last report the group
@@ -346,6 +390,23 @@ pub struct RaftGroupParts<G, A, R> {
     /// Waiters the poison captured, so decomposition can resolve clients the
     /// retired group would never have answered. Empty for a healthy group.
     pub poisoned_waiters: PoisonedWaiters,
+    /// What the retired group's membership reporting was owed against.
+    ///
+    /// **Load-bearing whenever the parts are rebuilt into a group, and the one
+    /// piece of decomposition state a caller cannot reconstruct.** A group
+    /// derives its membership events against what it last *reported*, not
+    /// against what its runtime currently holds, so a group that moved through a
+    /// configuration and failed the step that would have reported it leaves the
+    /// transition owed. Seeding a fresh mark from the rebuilt runtime instead
+    /// would read the moved configuration as the starting point and answer
+    /// "nothing has changed" forever after — the same silent loss a failing step
+    /// used to cause, arriving through decomposition.
+    ///
+    /// Pass it to [`RaftGroup::from_parts`], which is the only thing it is for.
+    /// A caller that reopens the durable stores into a *different* runtime and
+    /// wants the fresh-start behaviour uses [`RaftGroup::with_applied_index`]
+    /// and drops this.
+    pub membership_report_mark: MembershipReportMark,
 }
 
 /// Full-fidelity result of a state-machine read.
@@ -455,6 +516,7 @@ impl<G, A, R> RaftGroup<G, A, R> {
         let reported_membership = MembershipReportMark {
             effective: raft.membership(),
             committed: raft.committed_membership(),
+            crossed: Vec::new(),
         };
         Self {
             group_id,
@@ -584,7 +646,16 @@ impl<G, A, R> RaftGroup<G, A, R> {
     /// slot — an `Option` holding the group is the usual shape.
     ///
     /// Decomposition never steps the runtime, never applies, and never emits
-    /// outputs, so no protocol effect can be lost by calling it. What ends is
+    /// outputs, so no protocol effect can be lost by calling it — and the
+    /// membership delta the group had not yet reported travels with the parts in
+    /// [`RaftGroupParts::membership_report_mark`], so that statement holds for a
+    /// caller that *rebuilds* as well as for one that walks away. It did not:
+    /// the mark used to be dropped here, and a group rebuilt over the same
+    /// runtime seeded a fresh comparison from the configuration that had already
+    /// moved, which made the owed transition unreportable for the life of the new
+    /// incarnation. Rebuild through [`RaftGroup::from_parts`].
+    ///
+    /// What ends is
     /// local waiter tracking: every pending proposal and every reserved read
     /// disappears with the group. A proposal already appended may still commit
     /// and apply under a later incarnation, so a caller that has acknowledged
@@ -628,6 +699,55 @@ impl<G, A, R> RaftGroup<G, A, R> {
             fatal_state: self.fatal_state,
             poison_cause: self.poison_cause,
             poisoned_waiters: self.poisoned_waiters,
+            membership_report_mark: self.reported_membership,
+        }
+    }
+
+    /// Rebuilds a group over parts a previous incarnation handed back.
+    ///
+    /// **The lossless half of decomposition, and the only constructor that is.**
+    /// [`RaftGroup::with_applied_index`] seeds its membership comparison from the
+    /// runtime it is given, which is right for a group opening over durable state
+    /// — pre-existing configuration is not an event — and wrong for a rebuild,
+    /// because the runtime it is handed has already *moved* through whatever the
+    /// retired group had not yet reported. This takes
+    /// [`RaftGroupParts::membership_report_mark`] instead, so a transition a
+    /// failed step left owed is still owed to the new group and arrives on its
+    /// first report or straight out of [`RaftGroup::drain_membership_events`].
+    ///
+    /// `applied_index` is the state machine's durable applied floor, exactly as
+    /// [`RaftGroup::with_applied_index`] takes it. It is not carried in the parts
+    /// because the state machine reports it through
+    /// [`crate::state_machine::ReplicatedStateMachine::applied_index`], which is
+    /// the authority a group never overrides.
+    ///
+    /// The poison state travels with the parts, so a group rebuilt from a
+    /// poisoned one is poisoned. That is deliberate: decomposition is how a
+    /// caller *leaves* poison, and it does so by replacing the runtime or the
+    /// state machine, not by rebuilding the same parts and hoping.
+    ///
+    /// The local ID watermarks travel too, which removes the obligation
+    /// [`RaftGroup::into_parts`] documents for a caller that rebuilds here: the
+    /// new group starts above the retired group's IDs by construction rather
+    /// than by the caller remembering to.
+    #[must_use]
+    pub fn from_parts(parts: RaftGroupParts<G, A, R>, applied_index: LogIndex) -> Self {
+        Self {
+            group_id: parts.group_id,
+            node_id: parts.node_id,
+            raft: parts.runtime,
+            app: parts.state_machine,
+            pending_proposals: BTreeMap::new(),
+            last_seen_local_proposal_id: parts.local_proposal_id_watermark,
+            pending_reads: BTreeMap::new(),
+            pending_query_reads: BTreeMap::new(),
+            completed_query_reads: BTreeMap::new(),
+            last_seen_read_id: parts.read_id_watermark,
+            last_applied_index: applied_index,
+            fatal_state: parts.fatal_state,
+            poison_cause: parts.poison_cause,
+            poisoned_waiters: parts.poisoned_waiters,
+            reported_membership: parts.membership_report_mark,
         }
     }
 }

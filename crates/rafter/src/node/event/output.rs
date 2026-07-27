@@ -5,8 +5,8 @@
 //! grants.
 
 use crate::{
-    LocalProposalId, LogIndex, Message, NodeId, RaftSnapshot, ReadId, SharedPayload,
-    SnapshotChunkSend, StagedSnapshotChunk, Term,
+    ConfigurationEntry, LocalProposalId, LogIndex, Message, NodeId, RaftSnapshot, ReadId,
+    SharedPayload, SnapshotChunkSend, StagedSnapshotChunk, Term,
 };
 
 use super::rejection::{
@@ -67,6 +67,43 @@ pub enum Output {
         term: Term,
         payload: SharedPayload,
         local_proposal_id: Option<LocalProposalId>,
+    },
+    /// The configuration entry at `index` crossed the commit index.
+    ///
+    /// **One output per configuration entry the commit index crossed, in index
+    /// order, and that is the whole reason it exists.** One step can advance the
+    /// commit index across several configuration entries at once — a lagging
+    /// replica catching up receives them in a single `AppendEntries` whose
+    /// leader commit covers all of them — and a consumer that instead sampled
+    /// [`Node::committed_membership`](crate::Node::committed_membership) once
+    /// after the step would see only the last. Every configuration between is a
+    /// membership the cluster genuinely committed: it authorized replicas, and
+    /// the identities it named are spent whether or not any later configuration
+    /// still names them. Sampling loses exactly the ones that lived and died
+    /// inside one step, and loses them silently, because the sampled value can
+    /// be identical before and after.
+    ///
+    /// `index` and `term` name the configuration entry itself rather than the
+    /// commit index the step reached, so the outputs of one step are totally
+    /// ordered by `index` and a consumer can correlate each membership with the
+    /// entry that carried it.
+    ///
+    /// This is a *committed* fact and therefore permanent: unlike the effective
+    /// configuration, which a new leader can truncate back off the log, a
+    /// configuration reported here can never be taken back. Consumers that may
+    /// only narrow a peer set or retire an identity on a committed fact may act
+    /// on each of these.
+    ///
+    /// **A snapshot install emits none of these**, and cannot: a snapshot
+    /// carries only the committed configuration at its boundary, so
+    /// configurations that committed and were superseded below that boundary
+    /// are not reconstructible from it. See
+    /// [`Output::ApplySnapshot`] and
+    /// [`Node::install_local_snapshot`](crate::Node::install_local_snapshot).
+    ConfigurationCommitted {
+        index: LogIndex,
+        term: Term,
+        configuration: ConfigurationEntry,
     },
     /// A snapshot at `snapshot.metadata.last_included_index` replaces the
     /// state machine. The kernel holds no payload bytes: the content is the

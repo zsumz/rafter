@@ -664,6 +664,14 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
     /// lands durably in the store's staging area, and each applied snapshot
     /// promotes the completed staging to the current snapshot before the
     /// durable log is compacted through its boundary.
+    ///
+    /// Deliberately without a wildcard arm. Everything else this step emits is
+    /// released behind the ordinary persistence fence — hard state, log suffix,
+    /// final hard state — and a new output that needed a store write of its own
+    /// would otherwise get none, silently, with no compile error to say so.
+    /// `persistence_contract::runtime_output_persistence_dependency` classifies
+    /// every variant against that fence; this match is where the two that need
+    /// more than the fence are carried out.
     fn persist_snapshot_outputs_for_step(
         &mut self,
         outputs: &[RaftOutput],
@@ -682,7 +690,21 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
                         .compact_prefix_through(snapshot.metadata.last_included_index)
                         .map_err(RaftRuntimeError::LogCompact)?;
                 }
-                _ => {}
+                // A committed configuration is durable in the log entry that
+                // carries it and in the hard state that names the commit index,
+                // both of which this step's fence has already written. There is
+                // no second copy for this runtime to keep.
+                RaftOutput::ConfigurationCommitted { .. }
+                | RaftOutput::SendSnapshotChunk { .. }
+                | RaftOutput::LocalProposalAppended { .. }
+                | RaftOutput::LocalProposalDropped { .. }
+                | RaftOutput::Apply { .. }
+                | RaftOutput::RejectProposal { .. }
+                | RaftOutput::LeadershipTransferRejected { .. }
+                | RaftOutput::ReadIndexGranted { .. }
+                | RaftOutput::ReadIndexRejected { .. }
+                | RaftOutput::ReadIndexCanceled { .. }
+                | RaftOutput::Send { .. } => {}
             }
         }
         Ok(())
@@ -708,6 +730,11 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
     /// Materializes leader chunk directives into wire messages by reading
     /// payload bytes from the snapshot store; unresolvable directives are
     /// dropped like lost messages.
+    ///
+    /// The catch-all arm passes every other output through untouched and in
+    /// place, which is the contract rather than an oversight: kernel output
+    /// order is load-bearing, so this rewrites one variant and must not reorder,
+    /// drop, or reinterpret anything beside it.
     fn resolve_snapshot_chunk_sends(&self, outputs: Vec<RaftOutput>) -> Vec<RaftOutput> {
         if !outputs
             .iter()

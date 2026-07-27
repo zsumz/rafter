@@ -121,7 +121,11 @@ impl KvCluster {
                 Output::LeadershipTransferRejected { target, reason } => {
                     panic!("leadership transfer to {target} rejected: {reason}")
                 }
-                Output::LocalProposalAppended { .. }
+                // The example's cluster is fixed and its queue addresses peers
+                // directly, so there is no peer set to keep level with the
+                // committed configuration.
+                Output::ConfigurationCommitted { .. }
+                | Output::LocalProposalAppended { .. }
                 | Output::LocalProposalDropped { .. }
                 | Output::StageSnapshotChunk { .. } => {}
                 Output::SendSnapshotChunk { .. } => {

@@ -111,7 +111,12 @@ fn runtime_output_persistence_dependency(
         RaftOutput::SendSnapshotChunk { .. } => {
             RuntimeOutputPersistenceDependency::SnapshotChunkResolve
         }
-        RaftOutput::LocalProposalAppended { .. }
+        // The same fence `Apply` sits behind, and for the same reason: a
+        // committed configuration is only committed once the log suffix carrying
+        // its entry and the hard state naming the commit are durable, so a crash
+        // between the two must not have released the announcement.
+        RaftOutput::ConfigurationCommitted { .. }
+        | RaftOutput::LocalProposalAppended { .. }
         | RaftOutput::LocalProposalDropped { .. }
         | RaftOutput::Apply { .. }
         | RaftOutput::RejectProposal { .. }

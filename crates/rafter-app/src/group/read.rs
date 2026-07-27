@@ -48,8 +48,12 @@ where
     ///
     /// This outcome-only helper intentionally discards co-emitted report
     /// streams. Use [`RaftGroup::begin_read_barrier`] when callers must observe
-    /// applies, snapshot events, membership events, leadership-transfer
-    /// events, or metrics emitted while starting the barrier.
+    /// applies, snapshot events, leadership-transfer events, or metrics emitted
+    /// while starting the barrier.
+    ///
+    /// **Membership is the one stream it does not discard**, for the reason
+    /// [`RaftGroup::begin_proposal_outcome`] gives: the delta is put back and
+    /// stays owed rather than being reported into a report no caller received.
     ///
     /// A [`ReadProofOutcome::Pending`] or
     /// [`ReadProofOutcome::FreshnessUnavailable`] result reserves `read_id`
@@ -67,7 +71,10 @@ where
         &mut self,
         request: ReadBarrierRequest<G>,
     ) -> GroupResult<A, R, ReadProofOutcome<G>> {
-        Ok(self.begin_read_barrier(request)?.outcome)
+        let mark = self.membership_report_mark();
+        let ReadBarrierBeginReport { outcome, report } = self.begin_read_barrier(request)?;
+        self.restore_membership_report_mark(mark, &report);
+        Ok(outcome)
     }
 
     /// Begins a read-index barrier and returns its immediate proof outcome plus
@@ -224,12 +231,15 @@ where
     /// and for a retry that consumes an already completed proof. For a
     /// [`ReadRequest::Linearizable`] read that starts a barrier it discards peer
     /// messages, applies, proposal events, other barriers' read events, snapshot
-    /// events, membership events, leadership-transfer events, and metrics emitted
-    /// while the barrier started. A discarded [`ReadEvent::Granted`] destroys the
-    /// only copy of that barrier's proof, and a discarded snapshot chunk directive
-    /// is a lost protocol effect the caller was responsible for delivering. Use
+    /// events, leadership-transfer events, and metrics emitted while the barrier
+    /// started. A discarded [`ReadEvent::Granted`] destroys the only copy of that
+    /// barrier's proof, and a discarded snapshot chunk directive is a lost
+    /// protocol effect the caller was responsible for delivering. Use
     /// [`RaftGroup::read`] unless this group holds no other waiters and the caller
     /// routes no peer traffic.
+    ///
+    /// **Membership is the one stream it does not discard**, for the reason
+    /// [`RaftGroup::begin_proposal_outcome`] gives.
     ///
     /// # Errors
     ///
@@ -238,7 +248,10 @@ where
         &mut self,
         request: ReadRequest<G, A::Query>,
     ) -> ReadOutcomeResult<G, A, R> {
-        Ok(self.read(request)?.outcome)
+        let mark = self.membership_report_mark();
+        let ReadReport { outcome, report } = self.read(request)?;
+        self.restore_membership_report_mark(mark, &report);
+        Ok(outcome)
     }
     pub(super) fn record_rejected_read(
         &mut self,
@@ -434,7 +447,7 @@ where
         let outcome = match self.read_outcome_from_proof_outcome(read_id, query, proof_outcome) {
             Ok(outcome) => outcome,
             Err(error) => {
-                self.restore_membership_report_mark(mark);
+                self.restore_membership_report_mark(mark, &report);
                 return Err(error);
             }
         };

@@ -192,7 +192,7 @@ where
         let report = self.apply_stepped_outputs(outputs, false, options)?;
         if !report_has_proposal_lifecycle(local_proposal_id, &report) {
             self.pending_proposals.remove(&local_proposal_id);
-            self.restore_membership_report_mark(mark);
+            self.restore_membership_report_mark(mark, &report);
             return Err(GroupError::ProposalDidNotStart { local_proposal_id });
         }
         Ok(report)
@@ -211,7 +211,7 @@ where
         let mark = self.membership_report_mark();
         let report = self.apply_stepped_outputs(outputs, false, options)?;
         if let Err(error) = self.ensure_proposal_batch_lifecycles(&local_proposal_ids, &report) {
-            self.restore_membership_report_mark(mark);
+            self.restore_membership_report_mark(mark, &report);
             return Err(error);
         }
         Ok(report)
@@ -454,6 +454,16 @@ where
                     to,
                     chunk,
                 });
+            }
+            RaftOutput::ConfigurationCommitted {
+                index,
+                term,
+                configuration,
+            } => {
+                // Queued, not reported here: the report's membership list is
+                // ordered effective-then-committed, and the effective comparison
+                // has not run yet. See `record_committed_configuration`.
+                self.record_committed_configuration(index, term, configuration.membership_config());
             }
         }
         Ok(())
