@@ -147,6 +147,15 @@ impl QueueTransport {
         self.lock().refuse_fences.insert(node_id, count);
     }
 
+    /// Stops refusing `node_id`'s fence, whatever countdown was left.
+    ///
+    /// The recovery half of [`QueueTransport::refuse_next_fences`], for a test
+    /// that needs the link to keep refusing until an unrelated event and then
+    /// take exactly one fence.
+    pub(crate) fn allow_fences_for(&self, node_id: NodeId) {
+        self.lock().refuse_fences.remove(&node_id);
+    }
+
     /// Every replica this link was *asked* to fence, in order, including the
     /// asks it refused.
     ///

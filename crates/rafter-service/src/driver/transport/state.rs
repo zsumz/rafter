@@ -102,22 +102,67 @@ where
     pub(super) refused_sends: u64,
     pub(super) refused_peer_updates: u64,
     pub(super) refused_non_member_frames: u64,
-    /// What the group currently requires, which is the *desired* half of the
-    /// peer control plane.
+    /// The configuration this replica is operating under, as last reported.
     ///
-    /// The driver's record of what the cluster says, and only that. It advances
-    /// whether or not the link layer took the statements derived from it,
-    /// because a later committed removal has to be computed against the
-    /// membership the cluster had rather than against the last one a transport
-    /// happened to accept.
+    /// **Assigned, never merged.** One of the two membership facts this driver
+    /// tracks, and it is the one that can move in both directions: a
+    /// configuration that appended and did not commit can be truncated back off
+    /// the log by a new leader, and a driver holding a set that only ever grew
+    /// could not express that at all — the replica an overwritten configuration
+    /// named would stay authorized for the life of the incarnation, because
+    /// nothing would ever commit its removal.
     ///
-    /// It is committed ∪ effective by construction — every publisher either
-    /// widens it or narrows it no further than the committed configuration — so
-    /// it names every replica that may legitimately speak to this driver,
-    /// including one joining under a change still in flight. That is what makes
-    /// it usable, less `retired`, as the inbound admission check in
-    /// [`TransportDriverState::is_member`] and not merely as a diff source.
-    pub(super) known_members: BTreeSet<NodeId>,
+    /// It is a widening input and never a narrowing one: the peer set and the
+    /// inbound check take it in union with `committed_members`, so this alone
+    /// can add authorization and never take any away.
+    pub(super) effective_members: BTreeSet<NodeId>,
+    /// The configuration the cluster has committed, as last reported.
+    ///
+    /// The other fact, assigned from its own stream for the same reason. It is
+    /// the only one that licenses narrowing the peer set or fencing what left,
+    /// and it is the only one retirement reads.
+    ///
+    /// Raw, exactly as the cluster reported it, including an identity a
+    /// committed removal already spent — see `live_committed_members`, which is
+    /// the part of it this driver can still honor. Keeping the raw fact is what
+    /// makes a contract violation *nameable*: `readmitted_retired_peers` counts
+    /// spent identities the group's membership names again, and a set that had
+    /// quietly filtered them out would have nothing to count.
+    pub(super) committed_members: BTreeSet<NodeId>,
+    /// The part of the committed configuration whose identities are unspent.
+    ///
+    /// Equal to `committed_members` on every cluster that keeps the single-use
+    /// contract, which is what makes the difference worth storing. A committed
+    /// fact naming an identity a committed removal already spent is not a fact
+    /// about who may speak — `RaftTransport::fence_peer` has no inverse, so the
+    /// principal is gone — and admitting it here would un-spend the ID and
+    /// re-authorize a replica the link layer will refuse forever.
+    ///
+    /// This is what `committed_id_high_water` is compared against, and the two
+    /// together are the whole of retirement: a bounded set the size of the
+    /// cluster, and one scalar.
+    pub(super) live_committed_members: BTreeSet<NodeId>,
+    /// The greatest `NodeId` this driver has ever seen in a committed
+    /// configuration.
+    ///
+    /// The whole of the retirement record, in one word. A `(group, NodeId)` is
+    /// spent by a committed removal, and enumerating spent IDs needs a set that
+    /// grows with every removal the group ever makes — unbounded state under a
+    /// retention policy nobody wrote. Under monotonic allocation it is also
+    /// unnecessary: every ID ever committed is at or below this mark, so an ID
+    /// at or below it that the live committed configuration does not name is
+    /// exactly an ID that has been spent.
+    ///
+    /// `None` before the first committed fact, and that is not the same as
+    /// zero: with no committed configuration observed, nothing has been spent
+    /// and no ID is refusable. `NodeId(0)` is a legal identity like any other,
+    /// so it cannot stand in for "no mark".
+    ///
+    /// The consequence a deployment must hear is that allocation gaps below the
+    /// mark are unallocatable: "fresh" means *greater than anything this group
+    /// has ever committed*, not merely unused. See [`rafter::NodeId`], which
+    /// states the contract this reads.
+    pub(super) committed_id_high_water: Option<NodeId>,
     /// The peer set this driver's transport last *accepted*, or `None` before it
     /// has accepted one.
     ///
@@ -135,37 +180,76 @@ where
     /// Committed removals whose fence the transport has not accepted yet.
     ///
     /// An obligation rather than a derived value, and that is why it is stored.
-    /// `known_members` advances past a removal the moment the cluster commits
-    /// it, so no later membership event re-derives the fence: once the diff has
-    /// been taken, the only record that it was owed is this one. A fence leaves
-    /// the set when [`RaftTransport::fence_peer`] returns `Ok` for it, and for
-    /// no other reason.
+    /// The committed membership advances past a removal the moment the cluster
+    /// commits it, so no later membership event re-derives the fence: once the
+    /// diff has been taken, the only record that it was owed is this one. A
+    /// fence leaves the set when [`RaftTransport::fence_peer`] returns `Ok` for
+    /// it, and for no other reason.
     ///
-    /// Never contains the local node. Fencing self is excluded where the
-    /// obligation is recorded *and* where it is discharged, because a driver's
-    /// node ID can change across an adoption while an obligation is outstanding.
+    /// **It may contain the local node, and that entry is deferred rather than
+    /// dropped.** A committed removal of this replica owes its own link layer
+    /// the same statement every other replica is making, and the only thing this
+    /// driver cannot do is make it while it *is* that replica — fencing itself
+    /// would cut off its own inbound frames. So the flush skips an entry equal
+    /// to the current `node_id` without removing it, and the first adoption
+    /// under a different identity discharges it like any other.
+    ///
+    /// The one structure here that still holds exact identities, and therefore
+    /// the one that needs a bound of its own:
+    /// [`TransportDriverOptions::max_pending_fences`].
     pub(super) pending_fences: BTreeSet<NodeId>,
-    /// Every replica this driver has seen a committed removal for, forever.
-    ///
-    /// A `(group_id, NodeId)` pair is single-use: a committed removal consumes
-    /// the identity, and a replica that returns returns under a fresh one. See
-    /// [`rafter::NodeId`], which states the contract, and
-    /// [`crate::RaftTransport::fence_peer`], which is why it has to hold — a
-    /// fence is permanent for the principal it names and there is no unfence, so
-    /// an ID whose fence has been accepted can never speak again whatever a
-    /// later membership says.
-    ///
-    /// Recorded by the same event that records the fence obligation, and never
-    /// removed for this driver's lifetime. Enforcement across restarts is a
-    /// deployment's own allocation discipline and not something a driver can
-    /// see; enforcement within one is this set.
-    ///
-    /// Excludes the local node, exactly as `pending_fences` does and by the same
-    /// filter. Both are statements this driver holds about its *peers*, and a
-    /// driver that has since become the removed replica holds neither about
-    /// itself.
-    pub(super) retired: BTreeSet<NodeId>,
     pub(super) shutting_down: bool,
+}
+
+/// Why a driver is refusing new client work, if it is.
+///
+/// Two conditions with one shape, because a client asking "may I write" needs
+/// one answer and an operator asking "why not" needs the reason beside it. Both
+/// are states rather than counts, like
+/// [`TransportRaftDriver::pending_peer_fences`] and unlike the refusal counters:
+/// they say what is true now, and both can end.
+///
+/// Neither stops the protocol. A driver in either state still ticks, still
+/// delivers, still flushes its peer control plane, and still applies what
+/// commits — what stops is admitting *new* client operations. A replica that
+/// stopped stepping could not finish the catch-up that ends one of these
+/// conditions, and could not stay a useful follower through the other.
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+#[non_exhaustive]
+pub enum DriverServiceState {
+    /// The driver is serving clients.
+    Serving,
+    /// A committed configuration change removed this driver's own replica.
+    ///
+    /// Terminal for this incarnation and not for the driver. The group stays
+    /// until [`TransportRaftDriver::release_group`] — the durable log is still
+    /// there and the runtime is still live, so a replica that is stepping down
+    /// can still be read from and can still help others catch up — and the
+    /// supervisor's move is release, then adopt a *fresh* identity. Adopting the
+    /// same one back is refused, because the cluster spent it.
+    ///
+    /// Outranks [`DriverServiceState::FenceBacklog`] when both hold: a backlog
+    /// can drain, and a removal cannot be undone.
+    Decommissioned { node_id: NodeId },
+    /// The link layer has left more fence obligations outstanding than
+    /// [`TransportDriverOptions::max_pending_fences`] allows.
+    ///
+    /// The bound does not cap the queue, and could not: a committed fact is not
+    /// a request and cannot be refused, so discarding an obligation on overflow
+    /// would be exactly the forgotten fence this control plane exists to
+    /// prevent, with a capacity limit attached as an excuse. What the bound
+    /// decides is when a driver whose link layer has stopped taking admission
+    /// controls should stop taking client work: past it, this driver is
+    /// authorizing replicas the cluster has removed, and adding writes to that
+    /// is making the problem larger.
+    ///
+    /// It ends by itself. The driver keeps flushing while degraded, and returns
+    /// to [`DriverServiceState::Serving`] as soon as the backlog is back within
+    /// the bound.
+    FenceBacklog {
+        pending_fences: usize,
+        max_pending_fences: usize,
+    },
 }
 
 impl<G, A, R, T, V> DriverShared<G, A, R, T, V>

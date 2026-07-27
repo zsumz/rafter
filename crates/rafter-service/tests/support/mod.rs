@@ -1,5 +1,7 @@
 #![allow(dead_code, unused_imports)]
 
+/// A replica whose two membership facts a test moves by hand.
+pub(crate) mod scripted;
 /// The transport, validator, and cluster the transport-driver suites share.
 pub(crate) mod transport;
 

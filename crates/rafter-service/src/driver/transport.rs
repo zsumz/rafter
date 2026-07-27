@@ -1,6 +1,11 @@
 #![allow(clippy::wildcard_imports)]
 
 //! Managed driver for one local Raft group over an attached transport.
+//!
+//! This file is the driver's lifecycle and its client operations. Two neighbours
+//! carry what an embedder reads rather than calls: [`bounds`] holds what the
+//! driver refuses to accumulate, and [`health`] holds what an operator reads off
+//! a running one.
 
 use std::future::{poll_fn, ready};
 
@@ -10,70 +15,6 @@ use crate::transport::{
 };
 
 use super::*;
-
-/// Bounds on one driver's local work.
-///
-/// Every bound is a refusal rather than an unbounded wait, so a stalled
-/// protocol surfaces as a typed error instead of a hang.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[non_exhaustive]
-pub struct TransportDriverOptions {
-    /// Refuses to enqueue more than this many unresolved client waiters of
-    /// each kind, so a driver whose transport is down fails closed rather than
-    /// growing.
-    ///
-    /// Defaults to 1024. The transport contract already requires bounded
-    /// queues of a transport; a driver that buffered without a bound would
-    /// move the unbounded growth one layer up.
-    ///
-    /// A waiter stops counting the moment it resolves, including when
-    /// [`TransportRaftDriver::abandon_write`] or
-    /// [`TransportRaftDriver::abandon_read`] resolves it, so a caller that stops
-    /// waiting gets its slot back without waiting for the client to poll.
-    pub max_pending_waiters: usize,
-}
-
-impl TransportDriverOptions {
-    /// Returns the shipped defaults.
-    #[must_use]
-    pub const fn new() -> Self {
-        Self {
-            max_pending_waiters: 1024,
-        }
-    }
-
-    /// Sets [`TransportDriverOptions::max_pending_waiters`].
-    ///
-    /// A setter rather than struct-update syntax, because the type is
-    /// `#[non_exhaustive]`: an embedder outside this crate cannot name every
-    /// field, and a later field must not break their construction.
-    #[must_use]
-    pub const fn with_max_pending_waiters(mut self, max_pending_waiters: usize) -> Self {
-        self.max_pending_waiters = max_pending_waiters;
-        self
-    }
-
-    /// Fails closed on a bound that would make an operation impossible.
-    ///
-    /// Zero is meaningless rather than merely small: a driver that admits no
-    /// waiters refuses every write, which is a driver that cannot serve
-    /// anything, discovered at the first request.
-    fn validate(self) -> Result<Self, ManagedDriverError> {
-        if self.max_pending_waiters == 0 {
-            return Err(ManagedDriverError::InvalidOptions {
-                field: "max_pending_waiters",
-                reason: "a driver that admits no waiters cannot serve any operation",
-            });
-        }
-        Ok(self)
-    }
-}
-
-impl Default for TransportDriverOptions {
-    fn default() -> Self {
-        Self::new()
-    }
-}
 
 /// One unresolved write a driver is still holding.
 ///
@@ -107,12 +48,16 @@ pub type AddressedWrite<R> = (
 pub type AddressedRead<G, QR> = (ReadId, DriverFuture<Result<QueryReceipt<G, QR>, ReadError>>);
 
 mod adoption;
+mod bounds;
 mod control_plane;
 mod error;
+mod health;
 mod state;
 mod waiters;
 
+pub use bounds::TransportDriverOptions;
 pub use error::InboundEnvelopeError;
+pub use state::DriverServiceState;
 
 use adoption::{adopted_watermarks, highest, PendingProposals, WaiterGuard};
 use state::{DriverShared, SharedState, StartedRead, StepFailure, TransportDriverState, WaiterId};
@@ -242,10 +187,12 @@ where
                 refused_sends: 0,
                 refused_peer_updates: 0,
                 refused_non_member_frames: 0,
-                known_members: BTreeSet::new(),
+                effective_members: BTreeSet::new(),
+                committed_members: BTreeSet::new(),
+                live_committed_members: BTreeSet::new(),
+                committed_id_high_water: None,
                 published_peers: None,
                 pending_fences: BTreeSet::new(),
-                retired: BTreeSet::new(),
                 shutting_down: false,
             })),
         };
@@ -620,137 +567,6 @@ where
         state.drive_pending_reads()
     }
 
-    /// Returns how many outbound sends the attached transport refused.
-    ///
-    /// Two producers, counted together: a peer frame [`crate::RaftTransport`]
-    /// would not take, and a leader snapshot chunk directive it could not
-    /// resolve and send. Neither is a failure. Raft tolerates drops and the
-    /// protocol re-sends, and the kernel says the same of a chunk directive its
-    /// source cannot serve — the transfer resumes from the follower's
-    /// acknowledged offset — so the driver counts refusals rather than
-    /// propagating them: a write must not fail because one heartbeat could not
-    /// be delivered.
-    ///
-    /// That shared property is why they share a counter, and it is what
-    /// separates both from [`TransportRaftDriver::refused_peer_updates`], which
-    /// counts the one link-layer statement that does *not* repair itself.
-    ///
-    /// The count is how an operator tells a cut link from an idle cluster, and a
-    /// driver that discarded it would leave nothing to tell them apart.
-    #[must_use]
-    pub fn refused_sends(&self) -> u64 {
-        self.inner.lock().refused_sends
-    }
-
-    /// Returns how many peer-control-plane statements this driver could not
-    /// install, cumulatively.
-    ///
-    /// Counted rather than propagated, for the reason a refused send is: a peer
-    /// set that could not be updated is a link-layer condition, and a client's
-    /// write must not fail for one. It is a separate count from
-    /// [`TransportRaftDriver::refused_sends`] because the two do not repair the
-    /// same way — Raft re-sends a dropped frame on its own, and a peer set or a
-    /// fence is re-published only because this driver retries it.
-    ///
-    /// A non-zero value means either the transport refused a publication or a
-    /// fence, or this driver's validator could not name a principal for some
-    /// replica. It counts *attempts* and therefore rises on every retry, which
-    /// makes it a history rather than a health check: a driver that has refused
-    /// nine times and succeeded on the tenth reads the same as one still
-    /// failing. Read [`TransportRaftDriver::pending_peer_fences`] and
-    /// [`TransportRaftDriver::peer_set_is_stale`] for the current state; read
-    /// this to tell a link that has always worked from one that recovered.
-    #[must_use]
-    pub fn refused_peer_updates(&self) -> u64 {
-        self.inner.lock().refused_peer_updates
-    }
-
-    /// Returns how many committed removals this driver has not managed to fence
-    /// yet.
-    ///
-    /// Current state rather than history, and the distinction is the point.
-    /// [`crate::RaftTransport::fence_peer`] is what stops later frames from a
-    /// replica the cluster has removed, and it is allowed to fail — so a
-    /// non-zero value here means that, right now, this driver owes the link
-    /// layer an admission control it has not accepted. It falls to zero when
-    /// every outstanding fence has been accepted, and it is retried at every
-    /// entry point of the driver.
-    ///
-    /// This is the number to alert on. Inbound frames from an unfenced removed
-    /// replica are refused locally in the meantime — see
-    /// [`InboundEnvelopeError::NotInMembership`] — so the window is degraded
-    /// rather than unsafe, but it is a window that does not close by itself if
-    /// the link layer stays refusing.
-    #[must_use]
-    pub fn pending_peer_fences(&self) -> usize {
-        self.inner.lock().pending_fences.len()
-    }
-
-    /// Returns whether the transport's peer set is behind the group's
-    /// membership.
-    ///
-    /// True when the set this driver would publish differs from the last one the
-    /// transport accepted — because a publication was refused, or because the
-    /// validator could not name every replica in it, and no retry has succeeded
-    /// since. It is `true` before the first accepted publication for the same
-    /// reason: nothing has been accepted, so nothing is level.
-    ///
-    /// The peer-set counterpart of
-    /// [`TransportRaftDriver::pending_peer_fences`], and the milder of the two.
-    /// A stale peer set means the link layer authorizes a set the cluster has
-    /// moved on from, which is a liveness and least-privilege concern; an
-    /// unfenced removal is an authorization the cluster explicitly retracted.
-    #[must_use]
-    pub fn peer_set_is_stale(&self) -> bool {
-        self.inner.lock().peer_set_is_stale()
-    }
-
-    /// Returns how many inbound frames this driver refused because its group's
-    /// membership does not name the sender.
-    ///
-    /// The observable half of the fail-closed inbound check
-    /// ([`InboundEnvelopeError::NotInMembership`]). A non-zero value means the
-    /// link layer and the group disagree about who may speak: the validator
-    /// authorized a replica this driver's membership has retired. Read beside
-    /// [`TransportRaftDriver::pending_peer_fences`], it separates the two causes
-    /// — a fence this driver still owes, or a validator that authorizes a
-    /// replica no fence was ever licensed for.
-    #[must_use]
-    pub fn refused_non_member_frames(&self) -> u64 {
-        self.inner.lock().refused_non_member_frames
-    }
-
-    /// Returns how many retired replica identities this group's membership names
-    /// again.
-    ///
-    /// Zero on every cluster that keeps the single-use contract [`NodeId`]
-    /// states: a `(group_id, NodeId)` pair is spent by a committed removal, and
-    /// a replica that returns returns under a fresh ID. A non-zero value means
-    /// that contract was broken — some ID this driver watched a committed
-    /// removal for has been committed back into the membership — and it is the
-    /// only surface that says so, because the kernel keeps no removed-node
-    /// tombstones and cannot refuse the re-addition once compaction has erased
-    /// the history it would need.
-    ///
-    /// The driver's response is to stay refusing. The identity is left out of
-    /// the published peer set, its inbound frames are refused as
-    /// [`InboundEnvelopeError::NotInMembership`], and any fence still owed for
-    /// it stays owed. That leaves the forbidden membership change wedged, which
-    /// is the correct outcome and not a defect to work around: fencing is
-    /// permanent for a principal ([`crate::RaftTransport::fence_peer`] has no
-    /// inverse, by design), so a driver that admitted the replica would be
-    /// promising an authorization no transport can give back. Alert on this and
-    /// fix the identity allocator; nothing here recovers on its own, and nothing
-    /// here attempts to.
-    ///
-    /// Restart is not removal, and does not reach this. A replica killed and
-    /// restarted under the same ID keeps its ID and its principal, and no
-    /// committed removal happened, so nothing was retired.
-    #[must_use]
-    pub fn readmitted_retired_peers(&self) -> usize {
-        self.inner.lock().readmitted_retired_peers()
-    }
-
     /// Retires the running incarnation and returns its group.
     ///
     /// This is the driver-level half of decomposition.
@@ -863,6 +679,16 @@ where
         // error.
         if group.group_id() != &state.group_id {
             return Err(ManagedDriverError::MixedGroups);
+        }
+        // Before the watermarks and before any assignment, because this is the
+        // one refusal that must leave the driver exactly as it was: a partially
+        // installed identity is an identity, and the whole point is that this
+        // one is never installed. Nothing above this line has moved state
+        // either, so the driver is still holding no group when it raises this.
+        if state.is_spent(group.node_id()) {
+            return Err(ManagedDriverError::RetiredNodeId {
+                node_id: group.node_id(),
+            });
         }
         let (next_proposal_id, next_read_id) = adopted_watermarks(&group, PendingProposals::Carry)?;
         state.node_id = group.node_id();

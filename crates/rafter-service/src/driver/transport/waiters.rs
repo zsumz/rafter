@@ -335,6 +335,15 @@ where
                 cause: ErrorCause::new(DriverRoutingError::NoGroup),
             });
         }
+        // After `NoGroup`, because a released driver has no standing to report:
+        // a supervisor holding the group is the more actionable answer. Nothing
+        // has been proposed at this point, so both refusals are `NotAppended`.
+        if let Err(refusal) = self.reject_if_not_serving() {
+            return Err(WriteError::Transport {
+                fate: WriteFate::NotAppended,
+                cause: ErrorCause::new(refusal),
+            });
+        }
         let unresolved = self
             .write_waiters
             .values()
@@ -425,6 +434,14 @@ where
     /// for the reason the write side gives: no barrier was reserved, so there is
     /// no `ReadId` to abandon and `ReadId(0)` named one that never existed. It
     /// covers a local read too, which has no state machine to read either.
+    ///
+    /// The service-state refusal covers both consistency levels for a reason a
+    /// local read makes tempting to skip. A local read answers from this
+    /// replica's own applied state and proves nothing about any other, so it
+    /// looks harmless — but a decommissioned replica is one the cluster has
+    /// stopped replicating to, and answering from its state is answering from a
+    /// snapshot of the past with no bound on how old. Serving it would be the
+    /// one way a client could not tell a retired replica from a live one.
     fn reject_read_before_start(&self, group_id: &G) -> Result<(), ReadError> {
         if self.shutting_down {
             return Err(ReadError::ShuttingDown);
@@ -435,6 +452,11 @@ where
         if self.group.is_none() {
             return Err(ReadError::Transport {
                 cause: ErrorCause::new(DriverRoutingError::NoGroup),
+            });
+        }
+        if let Err(refusal) = self.reject_if_not_serving() {
+            return Err(ReadError::Transport {
+                cause: ErrorCause::new(refusal),
             });
         }
         Ok(())

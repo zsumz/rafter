@@ -57,8 +57,8 @@ pub use in_memory::InMemoryRaftDriver;
 pub use mapping::ManagedDriverError;
 pub use options::{QueryReceipt, ReadOptions, WriteBatchEntry, WriteOptions, WriteReceipt};
 pub use transport::{
-    AddressedRead, AddressedWrite, InboundEnvelopeError, PendingWrite, TransportDriverOptions,
-    TransportRaftDriver,
+    AddressedRead, AddressedWrite, DriverServiceState, InboundEnvelopeError, PendingWrite,
+    TransportDriverOptions, TransportRaftDriver,
 };
 
 use mapping::{

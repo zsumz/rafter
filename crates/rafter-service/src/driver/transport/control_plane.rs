@@ -12,6 +12,17 @@
 //! [`super::state::TransportDriverState`], because the step loop's fields and
 //! these are one struct behind one lock. What moved is every rule that reads
 //! them.
+//!
+//! Every rule here is pinned from outside the crate, through `deliver`, `tick`,
+//! and adoption — `tests/transport_membership.rs` for what the event stream
+//! does to the peer set, `tests/transport_identity.rs` for what a committed
+//! removal does to an identity. This module used to carry its own test file
+//! whose header explained that the widening branch had no public entry point,
+//! and that was true and was the defect: the app layer reported an effective
+//! change only for a step carrying a local membership request, so no follower
+//! could reach the branch its tests were passing. Scripting the router directly
+//! also let those fixtures state membership sequences no correct cluster
+//! produces, and two of them did.
 
 use std::collections::BTreeSet;
 
@@ -32,13 +43,22 @@ use super::state::TransportDriverState;
 ///
 /// So every publisher names what it knows, and
 /// [`TransportDriverState::publish_membership`] derives both answers from it.
+///
+/// Each variant *assigns* the fact it carries rather than merging it into what
+/// was there before. Two facts are tracked separately for exactly this reason: a
+/// single merged set could only ever grow, and a configuration that appended and
+/// was then truncated back off the log would leave the replica it named
+/// authorized forever, because no committed removal would ever arrive to take it
+/// out.
 pub(super) enum MembershipFact {
     /// A configuration that is effective and may still be uncommitted.
     ///
-    /// It may only widen. A replica joining under joint consensus has to be able
-    /// to speak before the change commits, or it can never catch up and the
-    /// change can never commit; and an uncommitted change can still be reverted,
-    /// so nothing may be taken away for it.
+    /// It replaces the effective half and nothing else, so what it can do to the
+    /// published peer set depends on which direction it moved. A replica joining
+    /// under joint consensus has to be able to speak before the change commits,
+    /// or it can never catch up and the change can never commit; a replica the
+    /// change *drops* keeps speaking, because the committed configuration is
+    /// still the floor and this fact cannot narrow past it.
     Effective(BTreeSet<NodeId>),
     /// A committed configuration, and the effective one beside it.
     ///
@@ -69,12 +89,20 @@ where
 {
     /// Keeps the transport's peer set level with the group's membership.
     ///
-    /// `Appended` carries the effective configuration and `Applied` carries the
-    /// committed one — that is how `rafter-app` builds them — so each arm names
-    /// the fact it has and [`TransportDriverState::publish_membership`] decides
-    /// what the fact licenses. The `Applied` arm reads the effective membership
-    /// beside it for the reason [`MembershipFact::Committed`] gives: a change
-    /// committing does not retract a *later* change already appended over it.
+    /// `EffectiveChanged` carries the configuration this replica is operating
+    /// under and `Applied` carries the committed one — that is how `rafter-app`
+    /// builds them — so each arm names the fact it has and
+    /// [`TransportDriverState::publish_membership`] decides what the fact
+    /// licenses. The `Applied` arm reads the effective membership beside it for
+    /// the reason [`MembershipFact::Committed`] gives: a change committing does
+    /// not retract a *later* change already appended over it.
+    ///
+    /// The stream both arms read is complete: `rafter-app` reports an effective
+    /// change whatever moved it — a local request, replication, a truncation, or
+    /// a snapshot install — so this router hears about a follower's joint
+    /// transition and about a new leader taking one back. It did not always, and
+    /// the widening arm was for a while live code no public entry point of this
+    /// driver could reach.
     pub(super) fn route_membership_event(&mut self, event: &MembershipEvent<G>) {
         match event {
             MembershipEvent::EffectiveChanged { membership, .. } => {
@@ -83,10 +111,15 @@ where
             }
             MembershipEvent::Applied { membership, .. } => {
                 let committed = membership.replica_ids().into_iter().collect();
-                // A driver holding no group contributes no widening and still
-                // honors the committed fact: an absent effective membership must
-                // not turn a fence into a silence.
-                let effective = self.effective_members().unwrap_or_default();
+                // The runtime is the authority on what is in effect, and it
+                // agrees with the effective event that preceded this one in the
+                // same report. A driver holding no group keeps what it had
+                // rather than assigning an empty set: an absent effective
+                // membership must not turn a fence into a silence, and must not
+                // narrow anything either.
+                let effective = self
+                    .runtime_effective_members()
+                    .unwrap_or_else(|| self.effective_members.clone());
                 self.publish_membership(MembershipFact::Committed {
                     committed,
                     effective,
@@ -108,75 +141,145 @@ where
     /// dropped one because the other failed would leave a committed-removed
     /// replica able to speak.
     ///
-    /// No caller chooses between them. The set derived is a superset of the
-    /// committed membership, and the replicas fenced are those the driver knew
-    /// before that this superset no longer names, less the local node — so a
-    /// fenced replica is always absent from the committed membership, which is
-    /// the only thing that licenses fencing it. The local exclusion only narrows
-    /// the fence set, so it cannot reach a replica the committed membership
-    /// still names. Both properties are consequences of the derivation below
-    /// rather than obligations on a caller: a caller that supplies
-    /// [`MembershipFact::Effective`] cannot narrow or fence, and one that
-    /// supplies [`MembershipFact::Committed`] cannot narrow past what committed.
+    /// No caller chooses between them. Everything the link layer is told is
+    /// derived from the union of the two membership facts and the spent test
+    /// over it, so a caller that supplies [`MembershipFact::Effective`] cannot
+    /// narrow past what committed and cannot fence anything, and one that
+    /// supplies [`MembershipFact::Committed`] fences exactly the identities that
+    /// left the live committed configuration. Both are consequences of the
+    /// derivation below rather than obligations on a caller.
     ///
     /// **Recording is separate from installing, and that separation is the
     /// contract.** This method derives obligations; it does not decide that they
-    /// were met. `known_members` advances here unconditionally, because it is
-    /// the record of what the *cluster* says and the next committed removal has
-    /// to be computed against the membership the cluster had. The record of what
-    /// the *link layer* took lives in `published_peers` and `pending_fences`, and
-    /// only [`TransportDriverState::flush_peer_control_plane`] moves those — on
-    /// an `Ok` from the transport and on nothing else. A driver with one piece of
-    /// state for both facts forgets a refused fence the instant it advances,
-    /// because there is no later event to re-derive it from: the removal is
-    /// already behind `known_members`.
+    /// were met. The membership facts advance here unconditionally, because they
+    /// are the record of what the *cluster* says and the next committed removal
+    /// has to be computed against the membership the cluster had. The record of
+    /// what the *link layer* took lives in `published_peers` and
+    /// `pending_fences`, and only
+    /// [`TransportDriverState::flush_peer_control_plane`] moves those — on an
+    /// `Ok` from the transport and on nothing else. A driver with one piece of
+    /// state for both forgets a refused fence the instant it advances, because
+    /// there is no later event to re-derive it from: the removal is already
+    /// behind the committed membership.
     ///
-    /// **A committed removal also retires the identity, and nothing un-retires
-    /// it.** `retired` and `pending_fences` take the same replicas from the same
-    /// diff, because they are the two halves of one fact: the fence is what the
-    /// link layer is owed, and the retirement is what the `(group_id, NodeId)`
-    /// pair has become. There is no retraction, in either direction and by any
-    /// fact. A fence is permanent for the principal it names —
-    /// [`RaftTransport::fence_peer`] has no inverse, deliberately — so a
-    /// membership that named a retired replica again would be asking for an
-    /// authorization no transport can give back. Retirement is identity
-    /// consumption rather than obligation bookkeeping, which is why the
-    /// symmetry argument that would license a retraction does not apply: a
-    /// committed fact is strong enough to *create* an obligation and strong
-    /// enough to retract one, and neither strength reaches a `NodeId` that has
-    /// already been spent.
+    /// **Retirement reads the committed stream and only the committed stream.**
+    /// The diff is `previous live committed − new live committed`, with no
+    /// exclusion of any kind — the local node included, which is the point. A
+    /// committed removal of this replica spends this replica's identity exactly
+    /// as it spends a peer's; a driver that filtered itself out of the diff
+    /// observed the cluster remove it and recorded nothing, and could then adopt
+    /// a peer's spent ID as its own with no backstop left anywhere.
+    ///
+    /// Taking the diff from the committed fact and not from the union is what
+    /// closes the opposite window: an addition that appended and was then
+    /// truncated back off the log was never in a committed configuration, so its
+    /// disappearance retires nothing and licenses no fence. Its ID is still
+    /// allocatable, because a reverted change may legitimately be proposed
+    /// again.
+    ///
+    /// **Nothing un-spends an identity.** A committed configuration naming an
+    /// already-spent ID is filtered out of the live set rather than obeyed, so
+    /// the ID stays spent and stays refused. A fence is permanent for the
+    /// principal it names — [`RaftTransport::fence_peer`] has no inverse,
+    /// deliberately — so obeying such a fact would promise an authorization the
+    /// link layer cannot give back. The raw fact is kept beside the live one so
+    /// the violation is countable rather than silently absorbed; see
+    /// [`TransportDriverState::readmitted_retired_peers`].
     fn publish_membership(&mut self, fact: MembershipFact) {
-        let members = match fact {
-            // Union with what is already known, never a replacement: an
-            // uncommitted change may be reverted, so it may add authorization
-            // and may not take any away.
-            MembershipFact::Effective(effective) => {
-                let mut widened = self.known_members.clone();
-                widened.extend(effective);
-                widened
-            }
-            // Union of the two, so the committed half sets the floor the set may
-            // not narrow past and the effective half adds whatever a change in
-            // flight needs on top of it.
+        match fact {
+            // Assigned, not merged. The effective configuration moves in both
+            // directions — a new leader can truncate an uncommitted one back off
+            // the log — and it still cannot narrow the peer set, because every
+            // derivation takes it in union with the committed floor.
+            MembershipFact::Effective(effective) => self.effective_members = effective,
             MembershipFact::Committed {
                 committed,
                 effective,
             } => {
-                let mut members = committed;
-                members.extend(effective);
-                members
+                self.effective_members = effective;
+                self.observe_committed_members(committed);
             }
-        };
-        let removed = self
-            .known_members
-            .difference(&members)
-            .copied()
-            .filter(|node_id| *node_id != self.node_id)
-            .collect::<Vec<_>>();
-        self.pending_fences.extend(removed.iter().copied());
-        self.retired.extend(removed);
-        self.known_members = members;
+        }
         self.flush_peer_control_plane();
+    }
+
+    /// Takes one committed configuration: the retirement diff, the high-water
+    /// mark, and the live set the spent test reads.
+    ///
+    /// Split from [`TransportDriverState::publish_membership`] because it is the
+    /// only place identity is *consumed*, and everything about consumption is
+    /// here: which IDs a removal spends, which a violating fact is refused for,
+    /// and how far allocation has got.
+    fn observe_committed_members(&mut self, committed: BTreeSet<NodeId>) {
+        // Anything the fact names that this driver has already watched leave a
+        // committed configuration. Computed against the state *before* the
+        // assignment, which is what makes it stick: once an ID is spent, every
+        // later fact naming it is filtered the same way.
+        let live = committed
+            .iter()
+            .copied()
+            .filter(|node_id| !self.is_spent(*node_id))
+            .collect::<BTreeSet<_>>();
+        let newly_retired = self
+            .live_committed_members
+            .difference(&live)
+            .copied()
+            .collect::<Vec<_>>();
+        self.pending_fences.extend(newly_retired);
+        // Over the raw fact rather than the live one: an ID the cluster
+        // committed is allocated whether or not this driver will honor it, and a
+        // mark that ignored the violation would leave the ID allocatable again.
+        if let Some(highest) = committed.iter().copied().max() {
+            self.committed_id_high_water = Some(
+                self.committed_id_high_water
+                    .map_or(highest, |mark| mark.max(highest)),
+            );
+        }
+        self.live_committed_members = live;
+        self.committed_members = committed;
+    }
+
+    /// Whether a committed removal has already consumed this `(group, NodeId)`.
+    ///
+    /// Two reads and no set. Under the allocation contract [`rafter::NodeId`]
+    /// states — every newly admitted ID exceeds every ID the group has ever
+    /// committed — the IDs that have ever been committed are exactly those at or
+    /// below `committed_id_high_water`, so one of them that the live committed
+    /// configuration no longer names is one a committed removal spent.
+    ///
+    /// That replaces a set of every removal the driver ever saw, which grew
+    /// without bound over the life of a long-running group and had no retention
+    /// policy — the same unbounded-tombstone structure the kernel declined to
+    /// keep, moved one layer up and no more affordable there.
+    ///
+    /// Before any committed configuration has been observed there is no mark and
+    /// nothing is spent, which is why the mark is an `Option` rather than a
+    /// zero: `NodeId(0)` is a legal identity and cannot double as "none".
+    ///
+    /// The deployment-visible consequence is that an allocation *gap* below the
+    /// mark is unallocatable. That is not a rounding error in the derivation, it
+    /// is the contract said out loud: fresh means greater than anything ever
+    /// committed. A deployment that allocates non-monotonically has its "fresh"
+    /// IDs refused here, which is the fail-closed direction — the alternative
+    /// reads a violated precondition as permission.
+    pub(super) fn is_spent(&self, node_id: NodeId) -> bool {
+        self.committed_id_high_water
+            .is_some_and(|mark| node_id <= mark)
+            && !self.live_committed_members.contains(&node_id)
+    }
+
+    /// Every replica either membership fact names, which is the set the peer set
+    /// and the inbound check are both derived from.
+    ///
+    /// The union is what keeps a joiner able to speak: a replica added by a
+    /// change that has appended and not committed is in the effective half only,
+    /// and it has to be able to catch up or the change can never commit. The
+    /// committed half is the floor the effective one cannot narrow past.
+    fn named_members(&self) -> BTreeSet<NodeId> {
+        self.effective_members
+            .union(&self.committed_members)
+            .copied()
+            .collect()
     }
 
     /// Installs everything the link layer still owes the group, and leaves owed
@@ -289,15 +392,23 @@ where
     /// permanently unfenced — the same forgetting as a refused fence, arriving
     /// through the validator instead of the transport.
     ///
-    /// The local node is excluded here as well as where the obligation is
-    /// recorded, and is dropped rather than skipped. `node_id` changes at
-    /// adoption, so an obligation recorded against a replica that this
-    /// incarnation has since *become* is not a removed peer any more, and a
-    /// driver that fenced it would fence itself.
+    /// **The local node's own fence is deferred, not dropped.** A committed
+    /// removal of this replica owes the link layer the same statement every
+    /// other replica is making about it, and the one thing this driver cannot do
+    /// is make it while it *is* that replica: fencing itself would refuse its
+    /// own inbound frames, and a replica stepping down still has to receive
+    /// enough of the log to be useful until the supervisor lets go of it. So the
+    /// entry is skipped and left in place, matched against the *current*
+    /// `node_id` rather than the one the obligation was recorded under. The
+    /// first adoption of a different identity makes it an ordinary peer
+    /// obligation, and the next flush discharges it.
+    ///
+    /// Dropping it instead — which is what this did — was the local half of
+    /// forgetting a fence: the driver became something else and never told its
+    /// link layer to stop trusting what it used to be.
     fn flush_pending_fences(&mut self) {
         for node_id in self.pending_fences.iter().copied().collect::<Vec<_>>() {
             if node_id == self.node_id {
-                self.pending_fences.remove(&node_id);
                 continue;
             }
             // The obligation holds a `NodeId` and the principal is resolved
@@ -328,22 +439,26 @@ where
     /// The peer set the group currently requires, which is its membership less
     /// the local node and less every identity a committed removal has spent.
     ///
-    /// The `retired` exclusion is the fail-closed reading of a violated
-    /// single-use contract. A `(group_id, NodeId)` pair is retired by a
-    /// committed removal and is never validly re-added, but the kernel keeps no
-    /// tombstones and cannot refuse the re-addition after compaction has erased
-    /// the history it would need — so this driver can be handed a committed
-    /// membership naming a replica whose fence it has already installed. Leaving
-    /// it out of the peer set is the only answer a transport with no unfence can
-    /// carry out: publishing the ID would ask the link layer to authorize a
-    /// principal it has permanently fenced, which is a set no transport can
-    /// honor and a driver that believed it had would report itself level while
-    /// the replica stayed silent.
+    /// The spent exclusion is the fail-closed reading of a violated single-use
+    /// contract. A `(group_id, NodeId)` pair is retired by a committed removal
+    /// and is never validly re-added, but the kernel keeps no tombstones and
+    /// cannot refuse the re-addition after compaction has erased the history it
+    /// would need — so this driver can be handed a committed membership naming a
+    /// replica whose fence it has already installed. Leaving it out of the peer
+    /// set is the only answer a transport with no unfence can carry out:
+    /// publishing the ID would ask the link layer to authorize a principal it
+    /// has permanently fenced, which is a set no transport can honor and a
+    /// driver that believed it had would report itself level while the replica
+    /// stayed silent.
+    ///
+    /// The local node is excluded here rather than stored excluded: a `PeerSet`
+    /// names who may speak *to* this node, and a node is not a peer of itself.
+    /// Derived on each attempt, so an incarnation adopted under a different node
+    /// ID excludes the right replica without anything having to notice.
     fn desired_peers(&self) -> BTreeSet<NodeId> {
-        self.known_members
-            .iter()
-            .copied()
-            .filter(|node_id| *node_id != self.node_id && !self.retired.contains(node_id))
+        self.named_members()
+            .into_iter()
+            .filter(|node_id| *node_id != self.node_id && !self.is_spent(*node_id))
             .collect()
     }
 
@@ -356,32 +471,37 @@ where
     ///
     /// Zero for every cluster that keeps the single-use contract, which is what
     /// makes it worth reading. A non-zero value is one specific violation and
-    /// not a link-layer condition: some replica was committed back in under a
-    /// `NodeId` a committed removal had already retired, and this driver is
-    /// refusing it — out of the peer set, out of the inbound check, and with its
-    /// fence still owed if the link never took it.
+    /// not a link-layer condition: some replica was named again under a `NodeId`
+    /// a committed removal had already spent, and this driver is refusing it —
+    /// out of the peer set, out of the inbound check, and with its fence still
+    /// owed if the link never took it.
+    ///
+    /// Counted over the *raw* membership facts rather than the live ones, which
+    /// is why the raw committed configuration is stored at all: the live set has
+    /// the violating ID filtered out, so counting there would report zero for
+    /// exactly the case this exists to name.
     ///
     /// Current state rather than history, like
     /// [`super::TransportRaftDriver::pending_peer_fences`] and unlike
-    /// `refused_peer_updates`: it falls back to zero only if a later committed
-    /// membership stops naming the retired replica, which no correct deployment
-    /// needs and no incorrect one is helped by.
+    /// `refused_peer_updates`: it falls back to zero only if a later membership
+    /// stops naming the spent replica, which no correct deployment needs and no
+    /// incorrect one is helped by.
     pub(super) fn readmitted_retired_peers(&self) -> usize {
-        self.known_members
-            .iter()
-            .filter(|node_id| self.retired.contains(node_id))
+        self.named_members()
+            .into_iter()
+            .filter(|node_id| self.is_spent(*node_id))
             .count()
     }
 
     /// Whether `node_id` may speak to this driver at all.
     ///
     /// The inbound admission check, and it is deliberately the same set the peer
-    /// set is derived from. `known_members` is committed ∪ effective, so it
-    /// names every replica that may legitimately speak — including one added by
-    /// a change that has appended and not committed, which has to be able to
-    /// speak before the change commits or the change can never commit.
+    /// set is derived from. The union of the two membership facts names every
+    /// replica that may legitimately speak — including one added by a change
+    /// that has appended and not committed, which has to be able to speak before
+    /// the change commits or the change can never commit.
     ///
-    /// Retirement outranks it, and the order is the whole point. A committed
+    /// Spent-ness outranks it, and the order is the whole point. A committed
     /// removal spends the `(group_id, NodeId)` pair, so a later fact naming that
     /// ID is not evidence that the replica may speak again — it is evidence that
     /// the contract was broken, and the frame is refused whatever the fact says.
@@ -389,11 +509,68 @@ where
     /// admit exactly the replica whose principal the transport has permanently
     /// fenced.
     pub(super) fn is_member(&self, node_id: NodeId) -> bool {
-        !self.retired.contains(&node_id) && self.known_members.contains(&node_id)
+        !self.is_spent(node_id) && self.named_members().contains(&node_id)
+    }
+
+    /// Whether a committed removal has spent this driver's own identity.
+    ///
+    /// The local replica is retired by the same fact and the same diff as any
+    /// peer, so this needs no separate record: `node_id` simply stops being in
+    /// the live committed configuration, and the spent test answers.
+    pub(super) fn is_decommissioned(&self) -> bool {
+        self.is_spent(self.node_id)
+    }
+
+    /// Whether the link layer has left more fences owed than the bound allows.
+    fn fence_backlog_is_over_bound(&self) -> bool {
+        self.pending_fences.len() > self.options.max_pending_fences
+    }
+
+    /// Why this driver is refusing new client work, if it is.
+    ///
+    /// Decommissioning is reported ahead of a fence backlog when both hold,
+    /// because the two do not end the same way: a backlog drains and a removal
+    /// does not.
+    pub(super) fn service_state(&self) -> DriverServiceState {
+        if self.is_decommissioned() {
+            return DriverServiceState::Decommissioned {
+                node_id: self.node_id,
+            };
+        }
+        if self.fence_backlog_is_over_bound() {
+            return DriverServiceState::FenceBacklog {
+                pending_fences: self.pending_fences.len(),
+                max_pending_fences: self.options.max_pending_fences,
+            };
+        }
+        DriverServiceState::Serving
+    }
+
+    /// Refuses a client operation this driver's own state says it must not
+    /// start.
+    ///
+    /// Both refusals are `NotAppended`-shaped facts: nothing was proposed, so
+    /// nothing is in flight to be uncertain about. Neither is reported as a
+    /// group failure, because the group is fine — what is wrong is this
+    /// replica's standing in the cluster, or its link layer's.
+    pub(super) fn reject_if_not_serving(&self) -> Result<(), DriverRoutingError> {
+        match self.service_state() {
+            DriverServiceState::Serving => Ok(()),
+            DriverServiceState::Decommissioned { node_id } => {
+                Err(DriverRoutingError::Decommissioned { node_id })
+            }
+            DriverServiceState::FenceBacklog {
+                pending_fences,
+                max_pending_fences,
+            } => Err(DriverRoutingError::FenceBacklog {
+                pending_fences,
+                max_pending_fences,
+            }),
+        }
     }
 
     /// Reads the group's effective membership, or `None` if it holds no group.
-    fn effective_members(&self) -> Option<BTreeSet<NodeId>> {
+    fn runtime_effective_members(&self) -> Option<BTreeSet<NodeId>> {
         self.group.as_ref().map(|group| {
             group
                 .runtime()
@@ -414,26 +591,28 @@ where
     /// the committed membership a rebuilt runtime reports can have advanced past
     /// a removal while the driver held no group, and no `Applied` will ever be
     /// emitted for it because the change committed elsewhere. The driver still
-    /// holds its own `known_members` from before the release, so the difference
-    /// is there to be taken — and taking it is the only thing that makes one
-    /// committed removal mean the same at adoption as it does on a routed event.
+    /// holds its own committed membership from before the release, so the
+    /// difference is there to be taken — and taking it is the only thing that
+    /// makes one committed removal mean the same at adoption as it does on a
+    /// routed event.
     ///
     /// The effective membership travels with it rather than instead of it. A
     /// runtime rebuilt from durable storage can hold an appended-but-uncommitted
     /// change, which makes its effective membership *narrower* than its
-    /// committed one for a removal in flight; publishing that would take
-    /// authorization away for a change that may still revert, with nothing left
-    /// to repair it — no `Applied` fires, because committed never moved, and no
-    /// `Appended` fires, because this driver has no input that carries a
-    /// membership request.
+    /// committed one for a removal in flight; publishing that alone would take
+    /// authorization away for a change that may still revert. The union is what
+    /// keeps both readings correct at once.
     ///
     /// Adoption also discharges whatever the previous incarnation left owed, and
     /// gets that for free rather than by arrangement: publishing runs the flush,
     /// and the obligations are the driver's rather than the group's, so a
     /// release does not cancel them. That is the half a re-derivation cannot
-    /// cover — by the time the driver holds no group, `known_members` has
-    /// already moved past any removal it observed, so the difference this method
-    /// takes is empty and the fence is owed rather than derivable.
+    /// cover — by the time the driver holds no group, its committed membership
+    /// has already moved past any removal it observed, so the difference this
+    /// method takes is empty and the fence is owed rather than derivable. It is
+    /// also where a deferred self-fence is finally made: the entry stops
+    /// matching `node_id` the moment a fresh identity is installed, and the
+    /// flush this runs is the next one.
     ///
     /// A driver holding no group publishes nothing and still owes what it owed.
     /// The early return skips the *derivation*, which needs a runtime; it does
@@ -455,7 +634,3 @@ where
         });
     }
 }
-
-#[cfg(test)]
-#[path = "control_plane/tests.rs"]
-mod tests;

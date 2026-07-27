@@ -102,6 +102,21 @@ pub enum ManagedDriverError {
         field: &'static str,
         reason: &'static str,
     },
+    /// A group was offered for adoption under a node ID a committed removal has
+    /// already spent.
+    ///
+    /// A `(group_id, NodeId)` pair is single-use, and the identity a committed
+    /// removal consumes is consumed for every replica of the group at once —
+    /// including for the driver that watched the removal commit. Adopting it
+    /// would install an identity whose transport principal the rest of the
+    /// cluster has permanently fenced, so the replica would appear to join and
+    /// then never be heard from.
+    ///
+    /// Refused before anything is installed, so the driver still holds no group
+    /// and the supervisor's next move is to allocate a *fresh* ID — greater than
+    /// every ID this group has ever committed — and adopt under that. There is
+    /// no retry that clears this: see [`rafter::NodeId`].
+    RetiredNodeId { node_id: NodeId },
     /// A group operation failed while the driver was driving it.
     ///
     /// The category is the variant and the detail is the preserved cause; there
@@ -164,6 +179,10 @@ impl fmt::Display for ManagedDriverError {
             Self::InvalidOptions { field, reason } => {
                 write!(formatter, "managed driver option {field} is invalid: {reason}")
             }
+            Self::RetiredNodeId { node_id } => write!(
+                formatter,
+                "managed driver cannot adopt {node_id}: a committed removal spent that identity"
+            ),
             Self::Group { .. } => formatter.write_str("managed driver group operation failed"),
         }
     }
@@ -186,7 +205,8 @@ impl Error for ManagedDriverError {
             | Self::ShuttingDown
             | Self::NoGroup
             | Self::GroupAlreadyAdopted
-            | Self::InvalidOptions { .. } => None,
+            | Self::InvalidOptions { .. }
+            | Self::RetiredNodeId { .. } => None,
         }
     }
 }
@@ -229,6 +249,24 @@ pub(super) enum DriverRoutingError {
     /// those variants carry an ID, and an operation that never started has
     /// none.
     NoGroup,
+    /// A committed configuration change removed this driver's own replica, so
+    /// it no longer serves clients.
+    ///
+    /// A refusal like the rest: nothing was proposed. The group stays until the
+    /// supervisor releases it, and the supervisor's move is release, then adopt
+    /// a fresh identity — the removed one is spent.
+    Decommissioned { node_id: NodeId },
+    /// The link layer has left more committed removals unfenced than this
+    /// driver's bound allows.
+    ///
+    /// The obligations are all still held; what is refused is *new* client work.
+    /// A driver past this bound is authorizing replicas the cluster has removed,
+    /// and adding writes to that makes the problem larger rather than smaller.
+    /// It clears itself when the backlog drains.
+    FenceBacklog {
+        pending_fences: usize,
+        max_pending_fences: usize,
+    },
 }
 
 impl fmt::Display for DriverRoutingError {
@@ -250,6 +288,17 @@ impl fmt::Display for DriverRoutingError {
             Self::NoGroup => {
                 formatter.write_str("managed driver has released its group and holds none")
             }
+            Self::Decommissioned { node_id } => write!(
+                formatter,
+                "managed driver is decommissioned: a committed change removed {node_id}"
+            ),
+            Self::FenceBacklog {
+                pending_fences,
+                max_pending_fences,
+            } => write!(
+                formatter,
+                "managed driver owes {pending_fences} peer fences, over its bound of {max_pending_fences}"
+            ),
         }
     }
 }
