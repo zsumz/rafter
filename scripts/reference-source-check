@@ -2,7 +2,7 @@
 # Run the reference-consumer workspace in fast source mode.
 #
 # Usage:
-#   scripts/reference-source-check              # fmt, clippy, and tests
+#   scripts/reference-source-check              # sizes, fmt, clippy, tests, docs
 #   scripts/reference-source-check --print-args # show the dependency overrides
 #   scripts/reference-source-check -- <args>    # extra args for `cargo test`
 #
@@ -104,6 +104,201 @@ if [[ "$print_args" == true ]]; then
 fi
 
 cd "$reference_root"
+
+# Readability gate over this workspace's own sources.
+#
+# It runs ahead of every lane that needs a build, because a file nobody can
+# read should fail before anything compiles, and because it needs no toolchain
+# of its own.
+#
+# The root workspace already has one of these, in
+# `crates/rafter/tests/file_size_guard.rs`, and it is not shareable from here.
+# It is a `#[test]` inside the `rafter` crate: it derives the workspace root
+# from that crate's `CARGO_MANIFEST_DIR`, enumerates `git ls-files -- crates
+# fuzz`, and tiers paths that begin with `crates/`. Running it would make this
+# lane build the root workspace, which is the one thing `reference/` exists not
+# to do -- these consumers resolve published versions, and
+# `fenced-lock/tests/dependency_boundary.rs` fails when a consumer manifest so
+# much as names a checkout path. Widening it in place would mean editing a test
+# under `crates/` so that it measures a workspace Cargo is told to exclude, and
+# it would still only run in the lane that builds the root workspace. So the
+# instrument below is the same shape -- a ratchet target, a soft warning, a
+# hard rejection, and allowlist entries that carry a reason and fail once they
+# are no longer needed -- and only the inventory and the numbers differ.
+#
+# The hard limits are the root workspace's own: 1000 lines for implementation
+# and 1500 for tests, binaries, and examples. A consumer written to be read as
+# an exemplar should not be held looser than the code it is an exemplar of, and
+# until this gate existed it was held to nothing at all -- which is how one
+# store reached 4,128 lines and its sibling 3,193. The ratchet targets are the
+# one place these numbers are deliberately looser than the root workspace's 300
+# and 600: these crates state their durable contracts in the files that
+# implement them, so a target that warned on nearly every file would be a
+# target nobody reads.
+size_target_lib=400
+size_soft_lib=700
+size_hard_lib=1000
+size_target_aux=700
+size_soft_aux=1100
+size_hard_aux=1500
+max_ratchet_warnings_to_print=25
+
+# Files that were already over a hard limit when this gate was added. An entry
+# is a named debt rather than an exemption: a listed file that is no longer over
+# its limit fails this check, so no entry outlives the split that earns its
+# removal. Nothing this workspace's store trees contain is on this list, and
+# nothing new belongs on it -- split the file instead.
+reference_size_allowlist=(
+    "sharded-counter/src/oracle.rs|reference-readability|the counter oracle holds its derivation, its admission proof, and its counterexample search in one module"
+    "sharded-counter/src/types.rs|reference-readability|the counter's whole bounded-newtype vocabulary is one module"
+    "sharded-counter/src/model.rs|reference-readability|the counter state machine and every command it applies are one module"
+    "fenced-lock/tests/durable_crash.rs|reference-readability|the lock store's crash sweep walks every byte boundary of a publication"
+    "ledger/tests/durable_crash.rs|reference-readability|the ledger store's crash sweep walks every byte boundary of an append"
+    "sharded-counter/tests/model_contract.rs|reference-readability|the counter contract suite enumerates every clause of CONTRACT.md in one binary"
+)
+
+# Echoes "<target> <soft> <hard> <label>" for one workspace-relative path.
+# The predicate mirrors the root guard's `is_auxiliary_file`, so a file does not
+# change tier by moving between the two workspaces.
+size_limits_for() {
+    case "$1" in
+        */src/bin/* | */examples/* | */tests/* | */tests.rs | *_test.rs | *_tests.rs | */src/main.rs)
+            echo "${size_target_aux} ${size_soft_aux} ${size_hard_aux} test/example/binary"
+            ;;
+        *)
+            echo "${size_target_lib} ${size_soft_lib} ${size_hard_lib} consumer implementation"
+            ;;
+    esac
+}
+
+# `wc -l` counts newlines, so a file with no trailing newline would measure one
+# line short of what a reader sees. `awk END { print NR }` counts records, which
+# is what the root guard's `.lines().count()` counts.
+size_lines_of() {
+    awk 'END { print NR }' "$1"
+}
+
+check_reference_source_sizes() {
+    local inventory path lines target soft hard label
+    local entry entry_path entry_label entry_reason allow_label allow_reason
+    local ratchet=() warnings=() violations=() files=()
+
+    if ! command -v git >/dev/null 2>&1; then
+        echo "error: git is not on PATH; cannot enumerate this workspace's sources" >&2
+        echo "       refusing to report a readable tree without having measured it" >&2
+        exit 2
+    fi
+    # Tracked files plus anything untracked git would not ignore, which is the
+    # same inventory the root guard takes: a new file is measured before it is
+    # committed, and build output under the ignored `reference/target` is not.
+    if ! inventory="$(git ls-files -z --cached --others --exclude-standard -- . | tr '\0' '\n')"; then
+        echo "error: git ls-files failed while enumerating reference/" >&2
+        exit 2
+    fi
+
+    while IFS= read -r path; do
+        case "$path" in
+            *.rs) ;;
+            *) continue ;;
+        esac
+        [[ -f "$path" ]] || continue
+        files+=("$path")
+    done <<<"$inventory"
+
+    if ((${#files[@]} == 0)); then
+        echo "error: found no Rust sources under reference/; the gate measured nothing" >&2
+        exit 2
+    fi
+
+    # An allowlist entry that names a file this gate never sees, or that carries
+    # no reason, is a claim nobody can check.
+    for entry in ${reference_size_allowlist[@]+"${reference_size_allowlist[@]}"}; do
+        entry_path="${entry%%|*}"
+        entry_reason="${entry##*|}"
+        entry_label="${entry#*|}"
+        entry_label="${entry_label%%|*}"
+        if [[ -z "$entry_label" || -z "$entry_reason" || "$entry_reason" == "$entry_path" ]]; then
+            violations+=("${entry_path}: allowlist entries must carry a tracking label and a reason")
+            continue
+        fi
+        if [[ ! -f "$entry_path" ]]; then
+            violations+=("${entry_path}: allowlist entry names a file that is not in this workspace")
+            continue
+        fi
+        lines="$(size_lines_of "$entry_path")"
+        read -r target soft hard label <<<"$(size_limits_for "$entry_path")"
+        if ((lines <= hard)); then
+            violations+=("${entry_path}:${lines}: allowlist entry is no longer needed; remove it (${entry_reason}, tracking label ${entry_label})")
+        fi
+    done
+
+    for path in "${files[@]}"; do
+        lines="$(size_lines_of "$path")"
+        read -r target soft hard label <<<"$(size_limits_for "$path")"
+
+        allow_label=""
+        allow_reason=""
+        for entry in ${reference_size_allowlist[@]+"${reference_size_allowlist[@]}"}; do
+            if [[ "${entry%%|*}" == "$path" ]]; then
+                allow_reason="${entry##*|}"
+                allow_label="${entry#*|}"
+                allow_label="${allow_label%%|*}"
+                break
+            fi
+        done
+
+        if ((lines > target)); then
+            ratchet+=("${lines}|${path}:${lines}: ${label} file exceeds ratchet target of ${target} lines")
+        fi
+        if ((lines > soft)); then
+            warnings+=("${path}:${lines}: ${label} file exceeds soft limit of ${soft} lines")
+        fi
+        if ((lines <= hard)); then
+            continue
+        fi
+        if [[ -n "$allow_label" ]]; then
+            warnings+=("${path}:${lines}: over hard limit of ${hard} lines, temporarily allowed for ${allow_label} (${allow_reason})")
+        else
+            violations+=("${path}:${lines}: ${label} file exceeds hard limit of ${hard} lines")
+        fi
+    done
+
+    if ((${#ratchet[@]} > 0)); then
+        # Sorted into a variable and then counted out by hand. Piping into
+        # `head` would leave `sort` holding a closed pipe, and under
+        # `set -o pipefail` that failure is the whole gate's exit status.
+        local sorted shown=0 line
+        sorted="$(printf '%s\n' "${ratchet[@]}" | LC_ALL=C sort -t'|' -k1,1nr -k2,2 | cut -d'|' -f2-)"
+        echo "reference file-size ratchet targets (warning-only; ${#ratchet[@]} files over target, showing up to ${max_ratchet_warnings_to_print}):" >&2
+        while IFS= read -r line; do
+            shown=$((shown + 1))
+            if ((shown > max_ratchet_warnings_to_print)); then
+                break
+            fi
+            echo "$line" >&2
+        done <<<"$sorted"
+        if ((${#ratchet[@]} > max_ratchet_warnings_to_print)); then
+            echo "... $((${#ratchet[@]} - max_ratchet_warnings_to_print)) more files over ratchet target omitted" >&2
+        fi
+    fi
+    if ((${#warnings[@]} > 0)); then
+        echo "reference file-size warnings:" >&2
+        printf '%s\n' "${warnings[@]}" >&2
+    fi
+    if ((${#violations[@]} > 0)); then
+        echo "reference file-size violations:" >&2
+        printf '%s\n' "${violations[@]}" >&2
+        echo >&2
+        echo "Split the file along a seam it already has, or add a reviewed allowlist" >&2
+        echo "entry with a tracking label and a reason to $0." >&2
+        exit 1
+    fi
+
+    echo "reference source mode: ${#files[@]} Rust files within their size limits"
+}
+
+echo "reference source mode: file-size gate"
+check_reference_source_sizes
 
 # `reference/Cargo.lock` is intentionally untracked: the source-mode lockfile
 # records patched checkout paths, while package-consumer mode resolves the same

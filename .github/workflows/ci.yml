@@ -779,8 +779,11 @@ jobs:
         with:
           cache-on-failure: true
       - name: Reference consumers in fast source mode
-        # Format, clippy -D warnings, the deterministic suites, and rustdoc,
-        # all against the checkout through the patched publishable set.
+        # The file-size gate, then format, clippy -D warnings, the
+        # deterministic suites, and rustdoc, all against the checkout through
+        # the patched publishable set. The gate runs first because it needs no
+        # build; it is where this workspace gets the readability limits the
+        # root workspace's file_size_guard cannot reach across the exclusion.
         run: scripts/reference-source-check
 
       - name: Durable process suite membership

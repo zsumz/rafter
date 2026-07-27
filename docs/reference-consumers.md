@@ -96,16 +96,25 @@ versioned Rafter dependencies to the checkout. Path overrides belong in the
 development command, not in the canonical consumer manifests.
 
 [`scripts/reference-source-check`](../scripts/reference-source-check) is that
-command. It patches every publishable Rafter crate — the whole set, not only
-the ones a consumer reaches today — then runs the reference workspace's format
-check, `clippy --all-targets -D warnings`, the tests, and
-`cargo doc --no-deps` under `RUSTDOCFLAGS=-D warnings`. A partially patched
-graph would link checkout code against published code from the same workspace,
-and a list derived from what the consumers currently reach goes stale the
-moment one of them takes a new dependency, so the override list is the
-publishable set. The rustdoc build is there because these consumers are read as
-exemplars: a doc comment that cannot build is a defect in the artifact they
-exist to be.
+command. It runs the workspace's file-size gate, then patches every publishable
+Rafter crate — the whole set, not only the ones a consumer reaches today — and
+runs the reference workspace's format check,
+`clippy --all-targets -D warnings`, the tests, and `cargo doc --no-deps` under
+`RUSTDOCFLAGS=-D warnings`. A partially patched graph would link checkout code
+against published code from the same workspace, and a list derived from what
+the consumers currently reach goes stale the moment one of them takes a new
+dependency, so the override list is the publishable set. The rustdoc build is
+there because these consumers are read as exemplars: a doc comment that cannot
+build is a defect in the artifact they exist to be.
+
+The file-size gate is first because it needs no toolchain and no build. It is
+the root workspace's `crates/rafter/tests/file_size_guard.rs` in the one place
+that guard cannot reach: that guard is a `#[test]` in the `rafter` crate and
+enumerates `git ls-files -- crates fuzz`, and running it here would make this
+lane build the root workspace, which is exactly what this workspace's exclusion
+from it exists to prevent. So the shape is shared by copy and only the
+inventory and the numbers differ — the hard limits are the root workspace's
+own, and the script carries the argument for the targets that are not.
 
 `reference/Cargo.lock` is deliberately untracked. Source mode resolves the
 patched crates to checkout paths, and package-consumer mode resolves the same
