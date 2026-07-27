@@ -63,6 +63,31 @@ pub trait AuthenticatedPeerValidator<G, P> {
     /// replica the membership contains authorizes fewer replicas than the
     /// cluster has, which is a quorum-splitting configuration change made by
     /// accident.
+    ///
+    /// # Stability
+    ///
+    /// **A principal is stable for the lifetime of its [`NodeId`].** The mapping
+    /// may be *learned* — a directory that cannot name a replica yet answers
+    /// `None` and answers it later — but once a `node_id` resolves to a
+    /// principal it must keep resolving to that principal for as long as that ID
+    /// exists in the group. A `NodeId` is single-use per group, retired by a
+    /// committed removal, so "the lifetime of its ID" is bounded and this is not
+    /// a promise about a machine, an address, or a socket.
+    ///
+    /// The principal is a subject name, not a credential instance. Certificates,
+    /// keys, and tokens rotate beneath one principal and nothing above this
+    /// trait observes that they did; what may not change is which subject a
+    /// replica *is*. Drivers publish peer sets as sets of replicas and compare
+    /// them as such, so a directory that remapped a live ID to a different
+    /// principal would leave the link layer authorizing the wrong subject with
+    /// every published set still reading as current.
+    ///
+    /// **A removed replica stays resolvable until its fence has been accepted.**
+    /// Fencing is per principal and may be refused, which makes retrying it the
+    /// caller's obligation; a driver holds the obligation as a `NodeId` and asks
+    /// here again at each attempt. A directory that forgot the mapping the
+    /// moment the removal committed would turn a transient link failure into a
+    /// permanently unfenced replica.
     fn principal_for_node(&self, group_id: &G, node_id: NodeId) -> Option<P>;
 
     fn is_authorized_peer(&self, group_id: &G, node_id: NodeId) -> bool;

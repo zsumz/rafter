@@ -163,6 +163,13 @@ pub trait RaftTransport<G>: Send + Sync + 'static {
     /// implementation must treat a repeat of the current set as a no-op rather
     /// than as a reconfiguration.
     ///
+    /// **A set published here never re-authorizes a fenced principal, and an
+    /// implementation must not read one as an unfence.**
+    /// [`RaftTransport::fence_peer`] is permanent, so the two operations do not
+    /// contradict each other and never have to be ordered against each other: a
+    /// driver excludes a fenced replica from every later set it publishes.
+    /// Fencing wins over authorization on any implementation that checks both.
+    ///
     /// # Errors
     ///
     /// Returns the transport implementation's error when peer metadata cannot
@@ -186,6 +193,28 @@ pub trait RaftTransport<G>: Send + Sync + 'static {
     /// Idempotent, for the same reason [`RaftTransport::update_peers`] is:
     /// fencing an already-fenced peer must succeed rather than report a fault,
     /// or a retried fence could never converge.
+    ///
+    /// # A fence is permanent, and there is no unfence
+    ///
+    /// Deliberately. This trait has no inverse of this method and will not
+    /// acquire one, because there is no fact that could license calling it: a
+    /// replica is fenced by a *committed* removal, and a committed removal
+    /// retires the `(group_id, node_id)` pair for good — see [`NodeId`], which
+    /// states the single-use contract. A replica that returns to a group
+    /// returns under a fresh ID with its own principal, and that principal was
+    /// never fenced, so nothing needs unfencing.
+    ///
+    /// So an implementation may treat its fenced set as append-only for the
+    /// lifetime of the group, and callers must assume it does. A membership
+    /// change that names a retired ID again is a violation of the contract above
+    /// rather than a request this boundary can serve; a driver refuses the
+    /// replica locally and reports the violation instead of asking for an
+    /// unfence that does not exist.
+    ///
+    /// **Restarting a replica is not removing it.** A replica killed and
+    /// restarted under the same node ID was never removed, is never fenced, and
+    /// keeps its principal across the restart. Nothing on this boundary changes
+    /// for it.
     ///
     /// # Errors
     ///

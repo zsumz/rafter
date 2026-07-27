@@ -3,6 +3,35 @@
 use std::fmt;
 
 /// Stable Raft node identity used in messages, configuration, and logs.
+///
+/// # An ID is single-use within its group
+///
+/// A `NodeId` names one replica for as long as that replica is a member, and a
+/// **committed removal retires it permanently**. A retired ID is never validly
+/// added back to the same group: a replacement replica — even one serving the
+/// same data, on the same host, from the same directory — joins under a fresh
+/// ID. Allocate IDs monotonically per group and never hand one out twice.
+///
+/// The reason is that a removal is not only a membership edit. Layers above the
+/// kernel bind durable authorization to the ID: a managed driver fences the
+/// removed replica's transport principal, and a fence is permanent for that
+/// principal by design — the transport boundary offers no inverse of it. An ID
+/// added back after its fence has landed names a replica that can never speak
+/// again, so the change appears to commit and the replica silently never
+/// participates.
+///
+/// **Restarting a replica is not removing it.** A replica that crashes, is
+/// killed, or is restarted keeps its ID and its identity: no removal committed,
+/// so nothing was retired. Reopening durable state under the same ID is the
+/// ordinary restart path and stays that way.
+///
+/// This is a stated precondition rather than a checked one, and the kernel says
+/// so rather than implying it. A node cannot recognize an ID it has removed
+/// after log compaction has erased the configuration history that named it, and
+/// keeping a permanent tombstone set for every ID a group ever removed would put
+/// unbounded state under a retention policy the kernel cannot see. Enforcement
+/// across process lifetimes is the deployment's own allocation discipline;
+/// within one, the managed service driver refuses a re-added ID and reports it.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
 pub struct NodeId(pub u64);
 

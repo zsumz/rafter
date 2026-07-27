@@ -31,20 +31,47 @@ pub enum Input {
         payload: Vec<u8>,
     },
     /// Adds a non-voting replica to the stable membership.
+    ///
+    /// `learner_id` must be an ID this group has never used. A [`NodeId`] is
+    /// single-use within its group and a committed removal retires it for good;
+    /// a replacement replica joins under a fresh ID. See [`NodeId`] for why, and
+    /// for what a restart is not.
+    ///
+    /// **The kernel states this and does not check it.** The proposal is
+    /// rejected when the ID is a *current* voter or learner, which is the only
+    /// question the effective membership can answer. Whether it is an ID some
+    /// earlier configuration named and a removal retired is a question about
+    /// history that log compaction is allowed to erase, and keeping a permanent
+    /// tombstone for every ID a long-lived group ever removed would grow without
+    /// bound under a retention policy the kernel cannot see. So this is a
+    /// precondition on the caller. Above the kernel it is enforced where it can
+    /// be: the managed service driver refuses a re-added ID and reports it,
+    /// because the transport fence a removal installed is permanent.
     AddLearner {
         learner_id: NodeId,
     },
     /// Promotes an existing learner through a derived joint configuration.
+    ///
+    /// Admits no new identity: `learner_id` is already a member, so the
+    /// single-use rule on [`Input::AddLearner`] was answered when it joined.
     PromoteLearner {
         learner_id: NodeId,
         promotion_barrier: PromotionBarrier,
     },
     /// Removes a voter through a derived joint configuration.
+    ///
+    /// A committed removal retires `voter_id` permanently; see [`NodeId`].
     RemoveVoter {
         voter_id: NodeId,
     },
     /// Enters joint consensus with the current stable membership as the old
     /// side and `target` as the new side.
+    ///
+    /// Every ID in `target` that the current membership does not already name is
+    /// an admission, and carries the same caller obligation
+    /// [`Input::AddLearner`] states: it must be an ID this group has never used.
+    /// This path checks even less than that one — a target set is taken as
+    /// given — so the obligation is entirely the caller's.
     EnterJoint {
         target: MembershipSet,
         promotion_barriers: Vec<PromotionBarrier>,
@@ -56,6 +83,11 @@ pub enum Input {
     /// learner-only edits commit directly, voter changes enter joint
     /// consensus, and a current joint configuration can only leave to its
     /// recorded new side.
+    ///
+    /// The safe way to admit a voter, and it carries [`Input::EnterJoint`]'s
+    /// obligation for the same reason: an ID in `target` that the current
+    /// membership does not name is a new member, and it must never be one this
+    /// group has already retired.
     ChangeMembership {
         target: MembershipSet,
         promotion_barriers: Vec<PromotionBarrier>,

@@ -56,6 +56,16 @@ pub(crate) struct QueueState {
     sent: VecDeque<PeerEnvelope<u64>>,
     observed: Vec<PeerEnvelope<u64>>,
     cut: bool,
+    /// Every replica this link has been told to fence, and it only grows.
+    ///
+    /// Not a simplification: `RaftTransport::fence_peer` is permanent for the
+    /// principal it names and the trait has no inverse, by design. A fence is
+    /// licensed by a committed removal, a committed removal retires the
+    /// `(group, NodeId)` pair for good, and a replica that returns to a group
+    /// returns under a fresh ID whose principal was never fenced. So a
+    /// production link may hold its fenced set append-only for the life of the
+    /// group, and this one does the same thing rather than a convenient version
+    /// of it. Nothing offers an unfence here because nothing may.
     fenced: BTreeSet<NodeId>,
     /// Every peer set this transport was told to authorize, in order.
     peer_sets: Vec<Vec<Principal>>,
@@ -148,6 +158,16 @@ impl QueueTransport {
             .iter()
             .filter_map(principal_node)
             .collect()
+    }
+
+    /// The same asks, as the principals they were actually made with.
+    ///
+    /// A fence names a principal and never a replica, so this is what the link
+    /// layer heard. It is the only way to see *which* identity a retried fence
+    /// resolved through the directory, which is the property a driver holding
+    /// the obligation as a `NodeId` depends on.
+    pub(crate) fn fence_attempt_principals(&self) -> Vec<Principal> {
+        self.lock().fence_attempts.clone()
     }
 }
 

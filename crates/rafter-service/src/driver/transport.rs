@@ -245,6 +245,7 @@ where
                 known_members: BTreeSet::new(),
                 published_peers: None,
                 pending_fences: BTreeSet::new(),
+                retired: BTreeSet::new(),
                 shutting_down: false,
             })),
         };
@@ -717,6 +718,37 @@ where
     #[must_use]
     pub fn refused_non_member_frames(&self) -> u64 {
         self.inner.lock().refused_non_member_frames
+    }
+
+    /// Returns how many retired replica identities this group's membership names
+    /// again.
+    ///
+    /// Zero on every cluster that keeps the single-use contract [`NodeId`]
+    /// states: a `(group_id, NodeId)` pair is spent by a committed removal, and
+    /// a replica that returns returns under a fresh ID. A non-zero value means
+    /// that contract was broken — some ID this driver watched a committed
+    /// removal for has been committed back into the membership — and it is the
+    /// only surface that says so, because the kernel keeps no removed-node
+    /// tombstones and cannot refuse the re-addition once compaction has erased
+    /// the history it would need.
+    ///
+    /// The driver's response is to stay refusing. The identity is left out of
+    /// the published peer set, its inbound frames are refused as
+    /// [`InboundEnvelopeError::NotInMembership`], and any fence still owed for
+    /// it stays owed. That leaves the forbidden membership change wedged, which
+    /// is the correct outcome and not a defect to work around: fencing is
+    /// permanent for a principal ([`crate::RaftTransport::fence_peer`] has no
+    /// inverse, by design), so a driver that admitted the replica would be
+    /// promising an authorization no transport can give back. Alert on this and
+    /// fix the identity allocator; nothing here recovers on its own, and nothing
+    /// here attempts to.
+    ///
+    /// Restart is not removal, and does not reach this. A replica killed and
+    /// restarted under the same ID keeps its ID and its principal, and no
+    /// committed removal happened, so nothing was retired.
+    #[must_use]
+    pub fn readmitted_retired_peers(&self) -> usize {
+        self.inner.lock().readmitted_retired_peers()
     }
 
     /// Retires the running incarnation and returns its group.

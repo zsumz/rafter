@@ -115,7 +115,7 @@ where
     /// widens it or narrows it no further than the committed configuration — so
     /// it names every replica that may legitimately speak to this driver,
     /// including one joining under a change still in flight. That is what makes
-    /// it usable as the inbound admission check in
+    /// it usable, less `retired`, as the inbound admission check in
     /// [`TransportDriverState::is_member`] and not merely as a diff source.
     pub(super) known_members: BTreeSet<NodeId>,
     /// The peer set this driver's transport last *accepted*, or `None` before it
@@ -145,6 +145,26 @@ where
     /// obligation is recorded *and* where it is discharged, because a driver's
     /// node ID can change across an adoption while an obligation is outstanding.
     pub(super) pending_fences: BTreeSet<NodeId>,
+    /// Every replica this driver has seen a committed removal for, forever.
+    ///
+    /// A `(group_id, NodeId)` pair is single-use: a committed removal consumes
+    /// the identity, and a replica that returns returns under a fresh one. See
+    /// [`rafter::NodeId`], which states the contract, and
+    /// [`crate::RaftTransport::fence_peer`], which is why it has to hold — a
+    /// fence is permanent for the principal it names and there is no unfence, so
+    /// an ID whose fence has been accepted can never speak again whatever a
+    /// later membership says.
+    ///
+    /// Recorded by the same event that records the fence obligation, and never
+    /// removed for this driver's lifetime. Enforcement across restarts is a
+    /// deployment's own allocation discipline and not something a driver can
+    /// see; enforcement within one is this set.
+    ///
+    /// Excludes the local node, exactly as `pending_fences` does and by the same
+    /// filter. Both are statements this driver holds about its *peers*, and a
+    /// driver that has since become the removed replica holds neither about
+    /// itself.
+    pub(super) retired: BTreeSet<NodeId>,
     pub(super) shutting_down: bool,
 }
 

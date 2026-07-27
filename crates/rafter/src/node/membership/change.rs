@@ -21,6 +21,12 @@ impl Node {
             Ok(membership) => membership,
             Err(rejection) => return Self::reject_configuration(rejection),
         };
+        // Currently a member, which is the only half of the admission rule the
+        // effective membership can answer. The other half — that `learner_id` is
+        // not an ID some earlier configuration used and a removal retired — is a
+        // question about history, and compaction is allowed to erase the history
+        // it would need. `Input::AddLearner` states it as the caller's
+        // precondition rather than pretending it is checked here.
         if current_membership.voters().contains(&learner_id)
             || current_membership.learners().contains(&learner_id)
         {

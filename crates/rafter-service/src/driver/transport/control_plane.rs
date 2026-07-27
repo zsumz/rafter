@@ -131,23 +131,29 @@ where
     /// because there is no later event to re-derive it from: the removal is
     /// already behind `known_members`.
     ///
-    /// The retraction rule is the mirror of the licensing rule, and holds for
-    /// the same reason. Only the *committed* half of a `Committed` fact clears an
-    /// outstanding fence, because only a committed fact could have created one. A
-    /// replica the cluster has committed back into the membership is no longer a
-    /// removed peer and must not be fenced; a replica named only by an effective
-    /// configuration is named by a change that may still revert, and a fact too
-    /// weak to create the obligation is too weak to retract it.
+    /// **A committed removal also retires the identity, and nothing un-retires
+    /// it.** `retired` and `pending_fences` take the same replicas from the same
+    /// diff, because they are the two halves of one fact: the fence is what the
+    /// link layer is owed, and the retirement is what the `(group_id, NodeId)`
+    /// pair has become. There is no retraction, in either direction and by any
+    /// fact. A fence is permanent for the principal it names —
+    /// [`RaftTransport::fence_peer`] has no inverse, deliberately — so a
+    /// membership that named a retired replica again would be asking for an
+    /// authorization no transport can give back. Retirement is identity
+    /// consumption rather than obligation bookkeeping, which is why the
+    /// symmetry argument that would license a retraction does not apply: a
+    /// committed fact is strong enough to *create* an obligation and strong
+    /// enough to retract one, and neither strength reaches a `NodeId` that has
+    /// already been spent.
     fn publish_membership(&mut self, fact: MembershipFact) {
-        let (members, committed) = match fact {
+        let members = match fact {
             // Union with what is already known, never a replacement: an
             // uncommitted change may be reverted, so it may add authorization
-            // and may not take any away — and, by the same token, retracts no
-            // fence, which is why it contributes no committed half.
+            // and may not take any away.
             MembershipFact::Effective(effective) => {
                 let mut widened = self.known_members.clone();
                 widened.extend(effective);
-                (widened, BTreeSet::new())
+                widened
             }
             // Union of the two, so the committed half sets the floor the set may
             // not narrow past and the effective half adds whatever a change in
@@ -156,22 +162,19 @@ where
                 committed,
                 effective,
             } => {
-                let mut members = committed.clone();
+                let mut members = committed;
                 members.extend(effective);
-                (members, committed)
+                members
             }
         };
         let removed = self
             .known_members
             .difference(&members)
             .copied()
-            .filter(|node_id| *node_id != self.node_id);
-        self.pending_fences.extend(removed);
-        // Disjoint from the extension above — `removed` is what the union no
-        // longer names and `committed` is contained in it — so this only ever
-        // retracts an obligation an *earlier* fact left owed.
-        self.pending_fences
-            .retain(|node_id| !committed.contains(node_id));
+            .filter(|node_id| *node_id != self.node_id)
+            .collect::<Vec<_>>();
+        self.pending_fences.extend(removed.iter().copied());
+        self.retired.extend(removed);
         self.known_members = members;
         self.flush_peer_control_plane();
     }
@@ -235,6 +238,15 @@ where
     /// node ID excludes the right replica without anything having to notice.
     fn flush_peer_set(&mut self) {
         let desired = self.desired_peers();
+        // `NodeId` sets on both sides, comparing a set of replicas against a
+        // record of the principals the link layer accepted for them, and it is
+        // sound for exactly one reason: a `PeerPrincipal` is stable for the
+        // lifetime of its `NodeId`. `AuthenticatedPeerValidator::principal_for_node`
+        // states that, so a directory cannot move a live ID to a different
+        // principal underneath a published set and leave this comparison
+        // reporting level while the transport authorizes the wrong subject.
+        // Credential rotation happens *beneath* a principal and is invisible
+        // here, which is what makes the stability requirement affordable.
         if self.published_peers.as_ref() == Some(&desired) {
             return;
         }
@@ -288,6 +300,15 @@ where
                 self.pending_fences.remove(&node_id);
                 continue;
             }
+            // The obligation holds a `NodeId` and the principal is resolved
+            // *now*, at each retry, rather than captured when the removal
+            // committed — and that is correct by contract rather than by luck.
+            // `AuthenticatedPeerValidator::principal_for_node` requires a
+            // directory to keep a removed replica's mapping resolvable until its
+            // fence has been accepted, and the mapping it must keep is stable
+            // for the lifetime of that ID. So the principal this resolves is the
+            // one the removal named; there is no later principal for a retired
+            // ID to be moved to, because the ID is retired.
             let Some(principal) = self.validator.principal_for_node(&self.group_id, node_id) else {
                 self.refused_peer_updates = self.refused_peer_updates.saturating_add(1);
                 continue;
@@ -305,12 +326,24 @@ where
     }
 
     /// The peer set the group currently requires, which is its membership less
-    /// the local node.
+    /// the local node and less every identity a committed removal has spent.
+    ///
+    /// The `retired` exclusion is the fail-closed reading of a violated
+    /// single-use contract. A `(group_id, NodeId)` pair is retired by a
+    /// committed removal and is never validly re-added, but the kernel keeps no
+    /// tombstones and cannot refuse the re-addition after compaction has erased
+    /// the history it would need — so this driver can be handed a committed
+    /// membership naming a replica whose fence it has already installed. Leaving
+    /// it out of the peer set is the only answer a transport with no unfence can
+    /// carry out: publishing the ID would ask the link layer to authorize a
+    /// principal it has permanently fenced, which is a set no transport can
+    /// honor and a driver that believed it had would report itself level while
+    /// the replica stayed silent.
     fn desired_peers(&self) -> BTreeSet<NodeId> {
         self.known_members
             .iter()
             .copied()
-            .filter(|node_id| *node_id != self.node_id)
+            .filter(|node_id| *node_id != self.node_id && !self.retired.contains(node_id))
             .collect()
     }
 
@@ -319,15 +352,44 @@ where
         self.published_peers.as_ref() != Some(&self.desired_peers())
     }
 
-    /// Whether this driver's membership names `node_id`.
+    /// How many spent identities the group's membership names again.
+    ///
+    /// Zero for every cluster that keeps the single-use contract, which is what
+    /// makes it worth reading. A non-zero value is one specific violation and
+    /// not a link-layer condition: some replica was committed back in under a
+    /// `NodeId` a committed removal had already retired, and this driver is
+    /// refusing it — out of the peer set, out of the inbound check, and with its
+    /// fence still owed if the link never took it.
+    ///
+    /// Current state rather than history, like
+    /// [`super::TransportRaftDriver::pending_peer_fences`] and unlike
+    /// `refused_peer_updates`: it falls back to zero only if a later committed
+    /// membership stops naming the retired replica, which no correct deployment
+    /// needs and no incorrect one is helped by.
+    pub(super) fn readmitted_retired_peers(&self) -> usize {
+        self.known_members
+            .iter()
+            .filter(|node_id| self.retired.contains(node_id))
+            .count()
+    }
+
+    /// Whether `node_id` may speak to this driver at all.
     ///
     /// The inbound admission check, and it is deliberately the same set the peer
     /// set is derived from. `known_members` is committed ∪ effective, so it
     /// names every replica that may legitimately speak — including one added by
     /// a change that has appended and not committed, which has to be able to
     /// speak before the change commits or the change can never commit.
+    ///
+    /// Retirement outranks it, and the order is the whole point. A committed
+    /// removal spends the `(group_id, NodeId)` pair, so a later fact naming that
+    /// ID is not evidence that the replica may speak again — it is evidence that
+    /// the contract was broken, and the frame is refused whatever the fact says.
+    /// The alternative reads a violated precondition as permission, and would
+    /// admit exactly the replica whose principal the transport has permanently
+    /// fenced.
     pub(super) fn is_member(&self, node_id: NodeId) -> bool {
-        self.known_members.contains(&node_id)
+        !self.retired.contains(&node_id) && self.known_members.contains(&node_id)
     }
 
     /// Reads the group's effective membership, or `None` if it holds no group.

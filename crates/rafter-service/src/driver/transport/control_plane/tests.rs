@@ -359,21 +359,30 @@ fn a_committed_change_does_not_narrow_past_the_membership_in_effect() {
     );
 }
 
-/// A later uncommitted widening does not settle a fence an earlier committed
-/// removal left owed.
+/// A later widening naming the removed replica again settles nothing, and the
+/// replica it names never speaks here again.
 ///
-/// The two facts are not the same class and cannot cancel. A committed removal
-/// is the one thing that licenses a fence; an `Appended` configuration may
-/// still be reverted, which is exactly why it may only widen — and a fact too
-/// weak to *create* an obligation is too weak to retract one. A driver that let
-/// the widening clear it would drop the fence for a removal the cluster
-/// committed, on the strength of a change that may never commit.
+/// Two clauses that used to be one, because the removal does two things at once
+/// and only the first was checked. The fence stays owed: an `Appended`
+/// configuration may still be reverted, so it is too weak to retract an
+/// obligation a committed fact created, and a driver that let it would drop the
+/// fence for a removal the cluster committed on the strength of a change that
+/// may never commit. And node 3 stays refused: the committed removal spent the
+/// `(GROUP, NodeId(3))` pair, so the widening is not a fact about who may speak
+/// — it is a contract violation, visible as one, and refused as one.
+///
+/// The second clause is what the previous shape got wrong rather than merely
+/// omitted. `is_member` consulted `known_members` alone, and the widening puts
+/// node 3 back into `known_members`, so the retired replica could vote here for
+/// as long as its fence was outstanding — through the exact window the fence
+/// exists to close.
+///
 /// The fixture's runtime is a real node whose effective membership is `{1,2}`,
 /// so node 3 reaches this driver's membership only through an append and leaves
 /// it only through a commit — which is what makes both facts scriptable here and
 /// nowhere a public entry point can reach.
 #[test]
-fn an_uncommitted_widening_does_not_settle_a_fence_a_committed_removal_left_owed() {
+fn a_widening_settles_no_fence_and_readmits_no_retired_replica() {
     let (driver, transport) = driver(&[2]);
     transport.refuse_fences_for(NodeId(3));
 
@@ -400,6 +409,10 @@ fn an_uncommitted_widening_does_not_settle_a_fence_a_committed_removal_left_owed
         1,
         "and the driver knows it still owes one"
     );
+    assert!(
+        !driver.inner.lock().is_member(NodeId(3)),
+        "the committed removal retired node 3, so it may not speak even now"
+    );
 
     // A later append names node 3 again, and has not committed.
     driver
@@ -413,6 +426,15 @@ fn an_uncommitted_widening_does_not_settle_a_fence_a_committed_removal_left_owed
         "node 3's fence is still owed: the append that names it again may be \
          reverted, so it retracts nothing"
     );
+    assert!(
+        !driver.inner.lock().is_member(NodeId(3)),
+        "and naming a spent identity again does not un-spend it"
+    );
+    assert_eq!(
+        driver.readmitted_retired_peers(),
+        1,
+        "the violation is observable rather than merely absorbed"
+    );
 
     // The link recovers, and nothing about the membership changes.
     transport.allow_fences_for(NodeId(3));
@@ -424,18 +446,29 @@ fn an_uncommitted_widening_does_not_settle_a_fence_a_committed_removal_left_owed
         "the obligation outlived the widening and was discharged on retry"
     );
     assert_eq!(driver.pending_peer_fences(), 0, "and nothing is owed now");
+    assert!(
+        !driver.inner.lock().is_member(NodeId(3)),
+        "least of all now: the principal is fenced, and there is no unfence"
+    );
 }
 
-/// The mirror clause, and the one that keeps the rule above from being "a fence
-/// is forever": a *committed* membership that names the replica again retracts
-/// the obligation.
+/// A *committed* membership naming the removed replica again settles nothing
+/// either, which is where this contract parts company with the one before it.
 ///
-/// Same class of authority in both directions. A committed removal is the only
-/// fact that licenses a fence, so a committed re-admission is the only fact that
-/// can take the licence back — and it must, because fencing a replica the
-/// cluster has committed back into the membership cuts off a current member.
+/// The rule it replaces read the licensing rule backwards: a committed removal
+/// is the only fact that licenses a fence, so a committed re-admission was the
+/// only fact that could take the licence back. The symmetry is real and the
+/// conclusion does not follow, because a fence is not the only thing a committed
+/// removal does. It also spends the `(GROUP, NodeId(3))` pair, and
+/// `RaftTransport::fence_peer` has no inverse — so a driver that retracted the
+/// obligation would be promising an authorization its own link layer cannot give
+/// back, for an ID that should never have been proposed again.
+///
+/// The forbidden change therefore wedges: node 3 is not published, not admitted,
+/// and its fence is still owed until the link takes it. That is the outcome, and
+/// it is reported rather than repaired.
 #[test]
-fn a_committed_readmission_settles_a_fence_the_removal_left_owed() {
+fn a_committed_readmission_settles_nothing_and_is_reported() {
     let (driver, transport) = driver(&[2]);
     transport.refuse_fences_for(NodeId(3));
 
@@ -451,6 +484,14 @@ fn a_committed_readmission_settles_a_fence_the_removal_left_owed() {
     }
 
     assert_eq!(driver.pending_peer_fences(), 1, "the fence is owed");
+    assert_eq!(
+        driver.readmitted_retired_peers(),
+        0,
+        "nothing is wrong yet: a removal that stays removed violates nothing"
+    );
+    // Node 3 was a legitimate joiner before the removal, so the link layer has
+    // seen it in a set. What follows is about every set published *after*.
+    let published_before = transport.peer_sets().len();
 
     driver
         .inner
@@ -464,16 +505,43 @@ fn a_committed_readmission_settles_a_fence_the_removal_left_owed() {
 
     assert_eq!(
         driver.pending_peer_fences(),
-        0,
-        "node 3 is a committed member again and is not a removed peer"
+        1,
+        "node 3's identity was spent by the removal, so the committed change \
+         that names it again retracts nothing"
+    );
+    assert_eq!(
+        driver.readmitted_retired_peers(),
+        1,
+        "and the violation has one name and one number"
+    );
+    assert!(
+        !driver.inner.lock().is_member(NodeId(3)),
+        "the readmitted replica is still refused inbound"
     );
 
     transport.allow_fences_for(NodeId(3));
     driver.tick().expect("the tick advances the protocol");
 
+    assert_eq!(
+        transport.fenced(),
+        vec![NodeId(3)],
+        "so the retry fences it, which is the whole of the driver's response"
+    );
+    assert_eq!(
+        transport.peer_sets().len(),
+        published_before,
+        "and nothing was published for the readmission: the desired set never \
+         changed, because a retired replica is not in it. peer_sets = {:?}",
+        transport.peer_sets()
+    );
+    assert_eq!(
+        transport.peer_sets().last(),
+        Some(&vec![NodeId(2)]),
+        "the link layer is still holding the set the removal narrowed it to"
+    );
     assert!(
-        transport.fenced().is_empty(),
-        "so no retry fences it: fenced = {:?}",
-        transport.fenced()
+        !driver.peer_set_is_stale(),
+        "and the driver agrees it is level: excluding the retired replica is \
+         the answer, not a publication it is still trying to make"
     );
 }
