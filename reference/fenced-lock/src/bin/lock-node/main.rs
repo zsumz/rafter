@@ -497,6 +497,15 @@ fn serve(
                 drop(reply.send(response));
             }
         }
+        // The shutdown flush has no later entry point to raise it, so the
+        // process says so on its own channel rather than stopping quietly over a
+        // control plane it could not make durable.
+        if let Some(failure) = replica.control_plane_failure() {
+            emit(&format!(
+                "CONTROL_PLANE_UNPERSISTED {} {failure}",
+                config.node_id.0
+            ));
+        }
         (replica.refused_frames(), replica.non_member_frames())
     } else {
         (0, 0)

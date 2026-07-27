@@ -1097,8 +1097,24 @@ fn the_peer_control_plane_checkpoint_is_durable_across_a_restart() {
     let before = std::fs::read_to_string(&checkpoint_path)
         .expect("a serving replica has published its control-plane checkpoint");
     assert!(
-        before.starts_with("rafter-lock-control-plane 1\n"),
+        before.starts_with("rafter-lock-control-plane 2\n"),
         "the file names its own format so a later shape is a refusal: {before:?}"
+    );
+    assert!(
+        before.contains("group 1"),
+        "and names the group it describes, so a process hosting several replicas \
+         cannot cross two files: {before:?}"
+    );
+    assert!(
+        before
+            .lines()
+            .next_back()
+            .is_some_and(|line| line
+                .strip_prefix("crc32 ")
+                .is_some_and(|digits| digits.len() == 8
+                    && digits.chars().all(|digit| digit.is_ascii_hexdigit()))),
+        "and is sealed, so a flipped bit is a refusal rather than a lowered \
+         mark: {before:?}"
     );
     assert!(
         before.contains("high_water 3"),

@@ -540,7 +540,7 @@ pub use damage::{SlotDamage, SlotState};
 pub use domination::SessionProgress;
 pub use error::LockStoreError;
 pub use fault::{FaultPlan, WriteFault};
-pub use format::{SlotIndex, SLOT_HEADER_LEN, SLOT_TRAILER_LEN};
+pub use format::{crc32, SlotIndex, SLOT_HEADER_LEN, SLOT_TRAILER_LEN};
 pub use report::{RecoveryReport, Repair, Reseed};
 
 /// Whether this handle may still publish.

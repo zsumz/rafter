@@ -123,13 +123,21 @@ const CRC32_NIBBLES: [u32; 16] = {
 
 /// CRC-32/IEEE over `bytes`.
 ///
+/// Public because it is this consumer's checksum rather than this store's: the
+/// replica directory holds more than the two slot files, and everything durable
+/// in it should refuse a flipped bit the same way rather than each artifact
+/// inventing its own answer. The process's peer-control-plane checkpoint uses
+/// it. It is an **accidental-corruption check and not an authentication tag**,
+/// exactly as the store's format section says.
+///
 /// Folded a nibble at a time through a sixteen-entry table that is built at
 /// compile time from the polynomial, so the constant a reviewer has to trust is
 /// the polynomial itself rather than 256 pre-computed words.
 /// `checksums_match_the_published_vector` pins the result to the standard check
 /// value, and `checksums_agree_with_an_independently_written_implementation`
 /// compares it against a bit-at-a-time version written the other way round.
-pub(super) fn crc32(bytes: &[u8]) -> u32 {
+#[must_use]
+pub fn crc32(bytes: &[u8]) -> u32 {
     let mut state = 0xFFFF_FFFF_u32;
     for byte in bytes {
         state ^= u32::from(*byte);

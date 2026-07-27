@@ -309,6 +309,41 @@ pub struct Replica {
     /// distinguish "nothing has moved" from "nothing has been written". Without
     /// this a driver whose epoch never left zero would never publish a file.
     checkpoint_written: bool,
+    /// A persistence failure raised by an entry point with no error channel.
+    ///
+    /// `submit`, `query`, `poll_pending`, and `abandon_waiters` can move the
+    /// driver's checkpoint epoch and answer their client with a value rather
+    /// than a `Result`, so a persist failure inside one has nowhere to go. It is
+    /// held here and raised by the next entry point that has an error channel —
+    /// which is at most one pass of the process loop away, because the loop
+    /// reaches `drive_reads` on every pass. Dropping it instead would let a
+    /// replica keep serving with a control plane it can no longer make durable,
+    /// which is the state whose next restart forgets a removal.
+    control_plane_failure: Option<String>,
+}
+
+/// Combines a persistence outcome, a carried persistence failure, and an
+/// operation's own outcome into the one answer an entry point returns.
+///
+/// **The order is the rule and it has three steps.** A persist failure from
+/// *this* call dominates; then a persist failure carried from an entry point
+/// with no error channel of its own; then the operation's own failure; then
+/// `Ok`. Persistence outranks the operation because a replica that cannot make
+/// its control plane durable is one whose next restart forgets a removal, and
+/// that is worse than the step that happened to fail beside it — the step will
+/// be retried by the protocol, and the forgetting will not.
+///
+/// A free function rather than a method so the rule is checkable without a
+/// driver, a directory, and three processes; see the tests beneath it.
+fn combine_outcomes(
+    persisted: Result<(), String>,
+    carried: Option<String>,
+    outcome: Result<(), String>,
+) -> Result<(), String> {
+    match persisted.err().or(carried) {
+        Some(failure) => Err(failure),
+        None => outcome,
+    }
 }
 
 /// Everything opening one replica needs to know.
@@ -456,6 +491,7 @@ impl Replica {
             answers: Vec::new(),
             refused_frames: 0,
             non_member_frames: 0,
+            control_plane_failure: None,
         };
         // The restored checkpoint is written straight back, so the file on disk
         // always describes a driver that has run rather than one that was about
@@ -500,6 +536,46 @@ impl Replica {
         Ok(())
     }
 
+    /// Persists the control plane whatever the operation did, and combines the
+    /// two error channels.
+    ///
+    /// **Finally-style, and that is the whole point.** Every operation that
+    /// reaches the driver can move the checkpoint epoch *before* it fails: a
+    /// `deliver` whose group refuses the step has already routed the membership
+    /// the runtime moved through, and a `tick` that fails has already flushed
+    /// whatever the link layer accepted. An operation that returned early on its
+    /// own failure left that behind unpersisted, so the next restart read a file
+    /// describing a driver that had not run — which is exactly the forgetting the
+    /// checkpoint exists to prevent, arriving through the error path instead of
+    /// through a crash.
+    ///
+    /// The two channels combine in one order: **a persist failure dominates**,
+    /// because a replica that cannot make its control plane durable is one whose
+    /// next restart forgets a removal, and that outranks a step that failed;
+    /// otherwise the operation's own failure; otherwise `Ok`. A failure carried
+    /// from an entry point with no error channel is a persist failure and
+    /// dominates on the same terms.
+    fn finish(&mut self, outcome: Result<(), String>) -> Result<(), String> {
+        let persisted = self
+            .persist_control_plane()
+            .map_err(|error| error.to_string());
+        combine_outcomes(persisted, self.control_plane_failure.take(), outcome)
+    }
+
+    /// The same persistence for an entry point that answers its client with a
+    /// value rather than a `Result`.
+    ///
+    /// The failure is recorded rather than dropped; see
+    /// [`Replica::control_plane_failure`]. The first failure wins, because the
+    /// process is going to stop on it and the first one is the one that explains
+    /// why.
+    fn finish_without_channel(&mut self) {
+        if let Err(error) = self.persist_control_plane() {
+            self.control_plane_failure
+                .get_or_insert_with(|| error.to_string());
+        }
+    }
+
     /// Whether this replica has applied everything it knows to be committed.
     pub const fn is_ready(&self) -> bool {
         self.ready
@@ -534,6 +610,17 @@ impl Replica {
         )
     }
 
+    /// Returns a control-plane persistence failure this replica recorded and has
+    /// not yet raised, if any.
+    ///
+    /// Only the shutdown path reads this. Every other entry point either raises
+    /// the failure itself or is followed within one pass of the process loop by
+    /// one that does; the last flush has no successor, so the process reads it
+    /// here rather than letting it disappear with the replica.
+    pub fn control_plane_failure(&self) -> Option<&str> {
+        self.control_plane_failure.as_deref()
+    }
+
     /// Returns how many inbound frames this replica's validator refused.
     pub const fn refused_frames(&self) -> u64 {
         self.refused_frames
@@ -560,11 +647,10 @@ impl Replica {
     /// Returns an error when the driver refuses the step, which for this
     /// application means the durable backend could not commit a transaction.
     pub fn tick(&mut self) -> Result<(), String> {
-        self.driver.tick().map_err(|error| error.to_string())?;
-        self.persist_control_plane()
-            .map_err(|error| error.to_string())?;
+        let outcome = self.driver.tick().map_err(|error| error.to_string());
+        let finished = self.finish(outcome);
         self.refresh_readiness();
-        Ok(())
+        finished
     }
 
     /// Delivers one peer envelope.
@@ -587,24 +673,28 @@ impl Replica {
     ///
     /// As [`Replica::tick`].
     pub fn deliver(&mut self, envelope: Inbound) -> Result<(), String> {
-        match self.driver.deliver(envelope) {
-            Ok(()) => {}
+        let outcome = match self.driver.deliver(envelope) {
+            Ok(()) => Ok(()),
             Err(InboundEnvelopeError::NotInMembership { .. }) => {
                 self.non_member_frames = self.non_member_frames.saturating_add(1);
+                Ok(())
             }
-            Err(InboundEnvelopeError::Driver { source }) => return Err(source.to_string()),
+            // Fatal, and still persisted: a step that poisoned the group had
+            // already routed whatever membership the runtime moved through, and
+            // that is precisely the fact a restart cannot rebuild.
+            Err(InboundEnvelopeError::Driver { source }) => Err(source.to_string()),
             // `Rejected`, and any refusal a later version adds. Both left the
             // group untouched — a variant that had touched it would be `Driver`
             // — so both are counted as the validator's own work rather than made
             // fatal. `InboundEnvelopeError` is `#[non_exhaustive]`.
             Err(_) => {
                 self.refused_frames = self.refused_frames.saturating_add(1);
+                Ok(())
             }
-        }
-        self.persist_control_plane()
-            .map_err(|error| error.to_string())?;
+        };
+        let finished = self.finish(outcome);
         self.refresh_readiness();
-        Ok(())
+        finished
     }
 
     /// Collects every granted read barrier.
@@ -617,11 +707,13 @@ impl Replica {
     ///
     /// As [`Replica::tick`].
     pub fn drive_reads(&mut self) -> Result<(), String> {
-        self.driver
+        let outcome = self
+            .driver
             .drive_pending_reads()
-            .map_err(|error| error.to_string())?;
+            .map_err(|error| error.to_string());
+        let finished = self.finish(outcome);
         self.refresh_readiness();
-        Ok(())
+        finished
     }
 
     /// Starts one replicated command on behalf of a client.
@@ -638,6 +730,12 @@ impl Replica {
         deadline: Instant,
     ) {
         let started = self.driver.begin_write(command, write_options(&command));
+        // Whatever the write did, and before the early return below: starting a
+        // write steps the group, and a step routes every membership fact the
+        // group had moved through. The refusal path is not exempt — a driver can
+        // refuse a client write *because* a committed removal decommissioned this
+        // replica, which is the one refusal whose cause must survive a restart.
+        self.finish_without_channel();
         let (local_proposal_id, future) = match started {
             Ok(started) => started,
             Err(error) => {
@@ -672,6 +770,10 @@ impl Replica {
         let started = self
             .driver
             .begin_read(LockQuery::GetLock { resource }, ReadOptions::default());
+        // As [`Replica::submit`]: starting a barrier steps the group, and the
+        // refusal path is where a decommissioned replica's own retirement is
+        // observed.
+        self.finish_without_channel();
         let (read_id, future) = match started {
             Ok(started) => started,
             Err(error) => {
@@ -751,6 +853,12 @@ impl Replica {
                 }
             }
         }
+        // Abandoning a waiter reaches the driver, and this replica does not
+        // enumerate which driver calls can flush the peer control plane — it
+        // persists after every one of them. The epoch comparison makes the pass
+        // that moved nothing free, which is what lets the rule be "always"
+        // rather than "where we worked out that it matters".
+        self.finish_without_channel();
     }
 
     fn settle(&mut self, pending: &mut Pending, now: Instant) -> Option<Answer> {
@@ -822,6 +930,10 @@ impl Replica {
     /// proposals, so it must not claim they did not commit. A read takes no
     /// effect, so an abandoned one is terminal rather than unknown.
     pub fn abandon_waiters(&mut self, reason: &str) {
+        // The last chance this incarnation has to make its control plane
+        // durable, and the process is stopping right after: an obligation left
+        // unpersisted here is one the next incarnation never learns about.
+        self.finish_without_channel();
         for (ticket, pending) in std::mem::take(&mut self.pending) {
             self.answers.push(match pending {
                 Pending::Submit { .. } => Answer::Unknown {
@@ -949,4 +1061,50 @@ fn poll_once<T>(future: &mut Pin<Box<dyn Future<Output = T>>>) -> Poll<T> {
     let waker = Waker::noop();
     let mut context = Context::from_waker(waker);
     future.as_mut().poll(&mut context)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::combine_outcomes;
+
+    fn failure(detail: &str) -> Result<(), String> {
+        Err(detail.to_owned())
+    }
+
+    #[test]
+    fn a_persist_failure_outranks_the_operations_own() {
+        assert_eq!(
+            combine_outcomes(failure("persist"), None, failure("operation")),
+            failure("persist")
+        );
+    }
+
+    #[test]
+    fn a_carried_persist_failure_outranks_the_operations_own() {
+        assert_eq!(
+            combine_outcomes(Ok(()), Some("carried".to_owned()), failure("operation")),
+            failure("carried")
+        );
+    }
+
+    #[test]
+    fn this_calls_persist_failure_outranks_a_carried_one() {
+        assert_eq!(
+            combine_outcomes(failure("persist"), Some("carried".to_owned()), Ok(())),
+            failure("persist")
+        );
+    }
+
+    #[test]
+    fn the_operations_failure_survives_a_successful_persist() {
+        assert_eq!(
+            combine_outcomes(Ok(()), None, failure("operation")),
+            failure("operation")
+        );
+    }
+
+    #[test]
+    fn everything_succeeding_is_ok() {
+        assert_eq!(combine_outcomes(Ok(()), None, Ok(())), Ok(()));
+    }
 }
