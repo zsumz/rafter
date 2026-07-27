@@ -157,10 +157,17 @@ pub trait RaftTransport<G>: Send + Sync + 'static {
 
     /// Replaces the authorized transport principals for `group_id`.
     ///
+    /// Idempotent, and may be called with a set the transport already holds. A
+    /// driver retries a refused publication at its next entry point rather than
+    /// waiting for the cluster's next configuration change, so an
+    /// implementation must treat a repeat of the current set as a no-op rather
+    /// than as a reconfiguration.
+    ///
     /// # Errors
     ///
     /// Returns the transport implementation's error when peer metadata cannot
-    /// be updated.
+    /// be updated. A refusal is not final: the driver holds the set it could
+    /// not publish and tries again.
     fn update_peers(
         &self,
         group_id: &G,
@@ -169,10 +176,24 @@ pub trait RaftTransport<G>: Send + Sync + 'static {
 
     /// Fences `peer` for `group_id` so later frames from it are rejected.
     ///
+    /// This is the operation that retires a replica the cluster has committed
+    /// the removal of, and it is allowed to fail — which makes retrying it the
+    /// caller's obligation. A driver that observes a refusal keeps the fence
+    /// outstanding and re-issues it at every later entry point until it is
+    /// accepted, because no later membership event re-derives it: the removal is
+    /// already behind the driver's record of the membership.
+    ///
+    /// Idempotent, for the same reason [`RaftTransport::update_peers`] is:
+    /// fencing an already-fenced peer must succeed rather than report a fault,
+    /// or a retried fence could never converge.
+    ///
     /// # Errors
     ///
     /// Returns the transport implementation's error when the peer cannot be
-    /// fenced.
+    /// fenced. A refusal leaves the driver's own inbound check as the only
+    /// admission control for that replica until a retry is accepted, so an
+    /// implementation that cannot fence should report it rather than swallow
+    /// it.
     fn fence_peer(&self, group_id: &G, peer: Self::PeerPrincipal) -> Result<(), Self::Error>;
 }
 

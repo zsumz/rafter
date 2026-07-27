@@ -134,13 +134,50 @@ where
     pub(super) read_waiters: BTreeMap<ReadId, ReadWaiter<G, A::Query, A::QueryResult>>,
     pub(super) refused_sends: u64,
     pub(super) refused_peer_updates: u64,
-    /// The membership this driver last published to its transport, or tried to.
+    pub(super) refused_non_member_frames: u64,
+    /// What the group currently requires, which is the *desired* half of the
+    /// peer control plane.
     ///
-    /// Kept even when publishing was refused, because it is the driver's record
-    /// of what the group says rather than of what the link layer accepted: a
-    /// later committed removal has to be computed against the membership the
-    /// cluster had, not against the last one a transport happened to take.
+    /// The driver's record of what the cluster says, and only that. It advances
+    /// whether or not the link layer took the statements derived from it,
+    /// because a later committed removal has to be computed against the
+    /// membership the cluster had rather than against the last one a transport
+    /// happened to accept.
+    ///
+    /// It is committed ∪ effective by construction — every publisher either
+    /// widens it or narrows it no further than the committed configuration — so
+    /// it names every replica that may legitimately speak to this driver,
+    /// including one joining under a change still in flight. That is what makes
+    /// it usable as the inbound admission check in
+    /// [`TransportDriverState::is_member`] and not merely as a diff source.
     pub(super) known_members: BTreeSet<NodeId>,
+    /// The peer set this driver's transport last *accepted*, or `None` before it
+    /// has accepted one.
+    ///
+    /// Tracking what the group says and tracking what the link layer took are
+    /// two different facts, and a driver that keeps only the first cannot tell a
+    /// published peer set from a refused one. This is the second, and the
+    /// difference between it and the set derived from `known_members` is the
+    /// whole of the peer-set half's outstanding work.
+    ///
+    /// `None` rather than an empty set for "nothing accepted yet", because an
+    /// empty peer set is a real and publishable statement — a single-voter group
+    /// authorizes no peers — and a driver that could not tell the two apart
+    /// would skip the first publication of exactly that group.
+    pub(super) published_peers: Option<BTreeSet<NodeId>>,
+    /// Committed removals whose fence the transport has not accepted yet.
+    ///
+    /// An obligation rather than a derived value, and that is why it is stored.
+    /// `known_members` advances past a removal the moment the cluster commits
+    /// it, so no later membership event re-derives the fence: once the diff has
+    /// been taken, the only record that it was owed is this one. A fence leaves
+    /// the set when [`RaftTransport::fence_peer`] returns `Ok` for it, and for
+    /// no other reason.
+    ///
+    /// Never contains the local node. Fencing self is excluded where the
+    /// obligation is recorded *and* where it is discharged, because a driver's
+    /// node ID can change across an adoption while an obligation is outstanding.
+    pub(super) pending_fences: BTreeSet<NodeId>,
     pub(super) shutting_down: bool,
 }
 
@@ -516,89 +553,147 @@ where
         }
     }
 
-    /// Publishes one membership to the transport, and fences what the committed
-    /// half of it no longer names.
+    /// Records what one membership fact requires of the link layer, then tries
+    /// to install it.
     ///
-    /// Two statements, derived from one fact, installed in order and
-    /// independently. Publishing the peer set is all or nothing; fencing is per
-    /// replica. Neither may be skipped because the other could not be made,
-    /// which is half the shape of this method: a membership event that both
-    /// narrows the set and licenses a fence installs two admission controls, and
-    /// a driver that dropped one of them because the other failed would leave a
-    /// committed-removed replica able to speak with nothing reporting why.
+    /// Two statements, derived from one fact: which principals the transport may
+    /// authorize, and which it must fence. Neither may be skipped because the
+    /// other could not be made — a membership event that both narrows the set
+    /// and licenses a fence installs two admission controls, and a driver that
+    /// dropped one because the other failed would leave a committed-removed
+    /// replica able to speak.
     ///
-    /// The other half is that no caller chooses between them. The set published
-    /// is a superset of the committed membership, and the replicas fenced are
-    /// those the driver had published before that this superset no longer names,
-    /// less the local node — so a fenced replica is always absent from the
-    /// committed membership, which is the only thing that licenses fencing it.
-    /// The local exclusion only narrows the fence set, so it cannot reach a
-    /// replica the committed membership still names. Both
-    /// properties are consequences of the derivation below rather than
-    /// obligations on a caller, and every publisher therefore reaches them by
-    /// construction: a caller that supplies
+    /// No caller chooses between them. The set derived is a superset of the
+    /// committed membership, and the replicas fenced are those the driver knew
+    /// before that this superset no longer names, less the local node — so a
+    /// fenced replica is always absent from the committed membership, which is
+    /// the only thing that licenses fencing it. The local exclusion only narrows
+    /// the fence set, so it cannot reach a replica the committed membership
+    /// still names. Both properties are consequences of the derivation below
+    /// rather than obligations on a caller: a caller that supplies
     /// [`MembershipFact::Effective`] cannot narrow or fence, and one that
     /// supplies [`MembershipFact::Committed`] cannot narrow past what committed.
+    ///
+    /// **Recording is separate from installing, and that separation is the
+    /// contract.** This method derives obligations; it does not decide that they
+    /// were met. `known_members` advances here unconditionally, because it is
+    /// the record of what the *cluster* says and the next committed removal has
+    /// to be computed against the membership the cluster had. The record of what
+    /// the *link layer* took lives in `published_peers` and `pending_fences`, and
+    /// only [`TransportDriverState::flush_peer_control_plane`] moves those — on
+    /// an `Ok` from the transport and on nothing else. A driver with one piece of
+    /// state for both facts forgets a refused fence the instant it advances,
+    /// because there is no later event to re-derive it from: the removal is
+    /// already behind `known_members`.
+    ///
+    /// The retraction rule is the mirror of the licensing rule, and holds for
+    /// the same reason. Only the *committed* half of a `Committed` fact clears an
+    /// outstanding fence, because only a committed fact could have created one. A
+    /// replica the cluster has committed back into the membership is no longer a
+    /// removed peer and must not be fenced; a replica named only by an effective
+    /// configuration is named by a change that may still revert, and a fact too
+    /// weak to create the obligation is too weak to retract it.
     fn publish_membership(&mut self, fact: MembershipFact) {
-        let members = match fact {
-            // Union with what is already published, never a replacement: an
+        let (members, committed) = match fact {
+            // Union with what is already known, never a replacement: an
             // uncommitted change may be reverted, so it may add authorization
-            // and may not take any away.
+            // and may not take any away — and, by the same token, retracts no
+            // fence, which is why it contributes no committed half.
             MembershipFact::Effective(effective) => {
                 let mut widened = self.known_members.clone();
                 widened.extend(effective);
-                widened
+                (widened, BTreeSet::new())
             }
             // Union of the two, so the committed half sets the floor the set may
             // not narrow past and the effective half adds whatever a change in
             // flight needs on top of it.
             MembershipFact::Committed {
-                mut committed,
+                committed,
                 effective,
             } => {
-                committed.extend(effective);
-                committed
+                let mut members = committed.clone();
+                members.extend(effective);
+                (members, committed)
             }
         };
         let removed = self
             .known_members
             .difference(&members)
             .copied()
-            .filter(|node_id| *node_id != self.node_id)
-            .collect::<Vec<_>>();
-        // Advanced before either half runs, and kept even when publishing is
-        // refused: this is the driver's record of what the group says rather
-        // than of what the link layer accepted, so the next committed removal is
-        // computed against the membership the cluster had.
+            .filter(|node_id| *node_id != self.node_id);
+        self.pending_fences.extend(removed);
+        // Disjoint from the extension above — `removed` is what the union no
+        // longer names and `committed` is contained in it — so this only ever
+        // retracts an obligation an *earlier* fact left owed.
+        self.pending_fences
+            .retain(|node_id| !committed.contains(node_id));
         self.known_members = members;
-        self.update_transport_peers();
-        self.fence_removed_peers(removed);
+        self.flush_peer_control_plane();
     }
 
-    /// Publishes the current membership as a peer set, or publishes nothing.
+    /// Installs everything the link layer still owes the group, and leaves owed
+    /// whatever it refuses.
+    ///
+    /// The retry the transport boundary requires. Both
+    /// [`RaftTransport::update_peers`] and [`RaftTransport::fence_peer`] are
+    /// documented as fallible, which makes retry the caller's obligation — and
+    /// this driver is the caller. Neither statement repairs itself the way a
+    /// dropped frame does: Raft re-sends a lost heartbeat, and nothing
+    /// re-derives a peer set or a fence, because the membership fact that
+    /// licensed them is already behind `known_members`.
+    ///
+    /// Idempotent and cheap when there is nothing owed: a peer set that matches
+    /// what the transport accepted makes no call, and an empty obligation set
+    /// makes no call. That is what lets it run from every entry point rather
+    /// than from a schedule.
+    ///
+    /// **Where it may run.** Every named entry point of the driver — both
+    /// constructors, `tick`, `deliver`, and `drive_pending_reads` — and nowhere
+    /// implicit. It is deliberately not called from `DriverShared::lock`, which
+    /// would put an embedder's transport calls inside every poll of a client
+    /// future, and deliberately not reachable from any `Drop`: reclamation is a
+    /// leaf that never waits for this lock, and a flush is neither. Like every
+    /// other embedder call this driver makes, it runs with the state lock held,
+    /// so a transport that drops a client future inside it reclaims through the
+    /// deferred queue exactly as [`DriverShared::reclaim`] describes.
+    pub(super) fn flush_peer_control_plane(&mut self) {
+        self.flush_peer_set();
+        self.flush_pending_fences();
+    }
+
+    /// Publishes the peer set the group requires, or publishes nothing.
     ///
     /// All or nothing. A membership the validator cannot fully name is not
     /// published at all: a partial peer set authorizes fewer replicas than the
     /// cluster has, which is a quorum-splitting configuration change made by
     /// accident, while leaving the previous set in place is merely stale. That
     /// last clause is true of the peer set and only of the peer set — a fence
-    /// the same event licensed is not stale when it is withheld, it is absent,
+    /// the same fact licensed is not stale when it is withheld, it is absent,
     /// which is why fencing is not part of this decision.
     ///
+    /// Staleness is now bounded rather than merely tolerable, and that is what
+    /// changed. The previous set stays in place until the *next* attempt, and
+    /// the next attempt is the driver's next entry point rather than the
+    /// cluster's next configuration change. `published_peers` is what makes the
+    /// difference observable: it advances only on an accepted publication, so
+    /// "the link layer is behind the group" is a state this driver can see and
+    /// report rather than an event it counted once.
+    ///
     /// Both a principal that cannot be named and a transport refusal are
-    /// counted, because a peer set that never updated does not repair itself the
-    /// way a dropped frame does.
+    /// counted, for the reason they always were, and both now leave the work
+    /// outstanding as well as counted.
     ///
     /// The local replica is not in its own peer set: a `PeerSet` names who may
-    /// speak *to* this node, and a node is not a peer of itself.
-    fn update_transport_peers(&mut self) {
+    /// speak *to* this node, and a node is not a peer of itself. Derived on each
+    /// attempt rather than stored, so an incarnation adopted under a different
+    /// node ID excludes the right replica without anything having to notice.
+    fn flush_peer_set(&mut self) {
+        let desired = self.desired_peers();
+        if self.published_peers.as_ref() == Some(&desired) {
+            return;
+        }
         let mut principals = Vec::new();
-        for node_id in self
-            .known_members
-            .iter()
-            .copied()
-            .filter(|node_id| *node_id != self.node_id)
-        {
+        for node_id in desired.iter().copied() {
             let Some(principal) = self.validator.principal_for_node(&self.group_id, node_id) else {
                 self.refused_peer_updates = self.refused_peer_updates.saturating_add(1);
                 return;
@@ -611,20 +706,42 @@ where
             .is_err()
         {
             self.refused_peer_updates = self.refused_peer_updates.saturating_add(1);
+            return;
         }
+        self.published_peers = Some(desired);
     }
 
-    /// Fences every principal a committed removal took out of the peer set.
+    /// Fences every replica a committed removal left owed, and keeps owing the
+    /// rest.
     ///
     /// Per replica rather than all or nothing, because the two statements have
     /// different shapes. A peer set is one statement about a whole cluster, and
     /// a partial one authorizes a quorum-splitting subset of it. A fence is one
     /// statement about one replica, and fencing three of four removed replicas
-    /// is strictly better than fencing none of them. A replica this deployment
-    /// cannot name is counted like any other peer-set fault: the link layer is
-    /// behind the group, and the count is what says so.
-    fn fence_removed_peers(&mut self, removed: Vec<NodeId>) {
-        for node_id in removed {
+    /// is strictly better than fencing none of them. The set is drained one
+    /// entry at a time for the same reason: one replica's refusal is not
+    /// another's.
+    ///
+    /// A replica this deployment cannot name **stays owed** rather than being
+    /// discarded as counted. `principal_for_node` answering `None` is a
+    /// statement about the directory, not about the cluster: a deployment that
+    /// cannot name a replica today can name it once its directory catches up,
+    /// and the removal it could not act on is exactly as committed either way.
+    /// Dropping the obligation there would make an unnameable removal
+    /// permanently unfenced — the same forgetting as a refused fence, arriving
+    /// through the validator instead of the transport.
+    ///
+    /// The local node is excluded here as well as where the obligation is
+    /// recorded, and is dropped rather than skipped. `node_id` changes at
+    /// adoption, so an obligation recorded against a replica that this
+    /// incarnation has since *become* is not a removed peer any more, and a
+    /// driver that fenced it would fence itself.
+    fn flush_pending_fences(&mut self) {
+        for node_id in self.pending_fences.iter().copied().collect::<Vec<_>>() {
+            if node_id == self.node_id {
+                self.pending_fences.remove(&node_id);
+                continue;
+            }
             let Some(principal) = self.validator.principal_for_node(&self.group_id, node_id) else {
                 self.refused_peer_updates = self.refused_peer_updates.saturating_add(1);
                 continue;
@@ -635,8 +752,36 @@ where
                 .is_err()
             {
                 self.refused_peer_updates = self.refused_peer_updates.saturating_add(1);
+                continue;
             }
+            self.pending_fences.remove(&node_id);
         }
+    }
+
+    /// The peer set the group currently requires, which is its membership less
+    /// the local node.
+    fn desired_peers(&self) -> BTreeSet<NodeId> {
+        self.known_members
+            .iter()
+            .copied()
+            .filter(|node_id| *node_id != self.node_id)
+            .collect()
+    }
+
+    /// Whether the transport's peer set is behind the one the group requires.
+    pub(super) fn peer_set_is_stale(&self) -> bool {
+        self.published_peers.as_ref() != Some(&self.desired_peers())
+    }
+
+    /// Whether this driver's membership names `node_id`.
+    ///
+    /// The inbound admission check, and it is deliberately the same set the peer
+    /// set is derived from. `known_members` is committed ∪ effective, so it
+    /// names every replica that may legitimately speak — including one added by
+    /// a change that has appended and not committed, which has to be able to
+    /// speak before the change commits or the change can never commit.
+    pub(super) fn is_member(&self, node_id: NodeId) -> bool {
+        self.known_members.contains(&node_id)
     }
 
     /// Reads the group's effective membership, or `None` if it holds no group.
@@ -673,6 +818,18 @@ where
     /// to repair it — no `Applied` fires, because committed never moved, and no
     /// `Appended` fires, because this driver has no input that carries a
     /// membership request.
+    ///
+    /// Adoption also discharges whatever the previous incarnation left owed, and
+    /// gets that for free rather than by arrangement: publishing runs the flush,
+    /// and the obligations are the driver's rather than the group's, so a
+    /// release does not cancel them. That is the half a re-derivation cannot
+    /// cover — by the time the driver holds no group, `known_members` has
+    /// already moved past any removal it observed, so the difference this method
+    /// takes is empty and the fence is owed rather than derivable.
+    ///
+    /// A driver holding no group publishes nothing and still owes what it owed.
+    /// The early return skips the *derivation*, which needs a runtime; it does
+    /// not discard obligations, which need only the next entry point.
     pub(super) fn publish_adopted_membership(&mut self) {
         let Some(group) = self.group.as_ref() else {
             return;

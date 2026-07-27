@@ -461,7 +461,7 @@ fn dropping_a_future_inside_a_transport_call_reclaims_it() {
             let validator = Validator {
                 transport: transport.link.clone(),
                 authorized: BTreeSet::from([NodeId(2)]),
-                nameable: None,
+                nameable: Nameable::all(),
             };
             let driver: DropOnSendDriver = TransportRaftDriver::new(
                 numbered_group(GROUP, 1, &[2], 3),

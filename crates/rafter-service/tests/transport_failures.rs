@@ -466,7 +466,7 @@ fn transfer_poison_driver() -> TransferDriver {
     let validator = Validator {
         transport: transport.clone(),
         authorized: BTreeSet::from([NodeId(2)]),
-        nameable: None,
+        nameable: Nameable::all(),
     };
     TransportRaftDriver::new(
         RaftGroup::new(

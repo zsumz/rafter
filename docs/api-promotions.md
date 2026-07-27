@@ -5334,6 +5334,294 @@ assertion:
 `AsyncRaftTransport` needs no test. Its removal is asserted by the workspace
 compiling without it, which is the same evidence that made it removable.
 
+### Fifth revision after adoption (2026-07-27)
+
+A fourth adversarial hunt attacked the membership publisher the revision above
+rewrote, and found that it had fixed *which* statements a fact licenses without
+ever fixing what happens when the link layer refuses one. The derivation is
+correct and the installation was never checked.
+
+The rule this subsection adds is about a distinction the previous four all
+walked past: **tracking what the group says and tracking what the transport
+accepted are two different pieces of state, and a design that keeps only the
+first cannot retry.** The fourth revision's own table enumerated three
+publishers and closed the caller list at both ends — and every one of those
+callers ended in a `saturating_add` on a counter, which is a record that
+something was lost rather than a plan to recover it.
+
+#### 1. The evidence: a committed removal that is forgotten, not deferred
+
+`publish_membership` computed `removed` from the difference against
+`known_members`, advanced `known_members` past it, and only then called
+`update_transport_peers` and `fence_removed_peers`. Both of those can fail.
+The whole of the response was:
+
+```rust
+self.refused_peer_updates = self.refused_peer_updates.saturating_add(1);
+```
+
+The comment above the advance argued that keeping `known_members` moving is
+correct — "this is the driver's record of what the group says rather than of
+what the link layer accepted, so the next committed removal is computed against
+the membership the cluster had" — and that argument is *right*. It is also the
+mechanism of the defect, because the driver had nowhere else to put the other
+fact. Once `known_members` has moved, the removal is not re-derivable: no later
+membership event produces it again, since every later diff is taken against a
+set that already excludes the removed replica.
+
+The two halves fail differently and both were wrong:
+
+- A refused `update_peers` left the transport authorizing a set the cluster had
+  moved on from, until some **unrelated** later configuration change happened to
+  arrive. For a cluster whose membership is stable — which is most of them — that
+  is forever.
+- A refused `fence_peer` was lost outright. `fence_peer` is documented as the
+  operation ensuring later frames from a removed replica are rejected, and it is
+  explicitly allowed to return an error, which makes retrying it the caller's
+  obligation. The caller counted instead.
+
+This does not break Raft log safety under the crash-fault model — a removed
+replica's frames are still term- and index-checked by the kernel, and a removed
+voter is not counted in any quorum the group computes. It breaks the transport
+boundary's *authorization* contract, which is a real contract with a real
+consumer: the peer set is the admission control in the one consumer that adopted
+this driver.
+
+**Two existing tests pinned the forgetting as the contract.**
+`an_unfenceable_removal_is_counted_rather_than_silent` asserted that a committed
+removal the validator could not name is fenced nowhere, counted once, and then
+dropped — and its name says the quiet part: *counted* was offered as the
+alternative to *silent*, when the alternatives that matter are *counted* and
+*done*. `a_committed_removal_is_fenced_even_when_the_peer_set_cannot_be_published`
+asserted an exact refusal count of 2, which any retry necessarily breaks. Both
+documented the wrong contract and are rewritten below rather than worked around.
+
+#### 2. Three pieces of state where there was one
+
+```rust
+/// What the group currently requires.
+known_members: BTreeSet<NodeId>,
+/// The peer set the transport last *accepted*, or `None` before it accepted one.
+published_peers: Option<BTreeSet<NodeId>>,
+/// Committed removals whose fence the transport has not accepted yet.
+pending_fences: BTreeSet<NodeId>,
+```
+
+`known_members` keeps the meaning the fourth revision gave it and its
+derivation is untouched: committed ∪ effective, widened by an `Effective` fact,
+narrowed no further than committed by a `Committed` one. It is what the cluster
+says, and it advances whether or not anything downstream succeeded.
+
+`published_peers` is what the link layer took. `None` rather than an empty set
+for "nothing accepted yet", because an empty peer set is a real and publishable
+statement — a single-voter group authorizes no peers — and a driver that could
+not tell the two apart would skip the first publication of exactly that group.
+
+`pending_fences` is an obligation rather than a derived value, and that is the
+whole reason it is stored: it is precisely the thing no later fact reproduces.
+
+**The retraction rule.** An obligation leaves `pending_fences` when
+`fence_peer` returns `Ok`, and in one other case: a **committed** membership
+that names the replica again. Only the committed half of a `Committed` fact
+retracts, and an `Effective` fact never does. This is the licensing rule read
+backwards, and it holds for the same reason — a committed removal is the only
+fact that licenses a fence, so a committed re-admission is the only fact that
+can take the licence back. An appended-but-uncommitted re-addition may revert,
+and a fact too weak to create the obligation is too weak to retract it. The
+retraction is also necessary rather than merely symmetric: fencing a replica the
+cluster has committed back into the membership cuts off a current member.
+
+The two sets are disjoint by construction where they meet — `removed` is what
+the new union no longer names, and the committed set is contained in that union
+— so recording and retracting in the same call can only ever retract what an
+*earlier* fact left owed.
+
+#### 3. `flush_peer_control_plane`, and where it runs
+
+One method installs whatever the link layer still owes, and leaves owed whatever
+it refuses:
+
+1. If the desired peer set differs from `published_peers`, retry `update_peers`
+   with the **full** desired set. `published_peers` advances only on `Ok`.
+2. Retry every outstanding fence individually. Each leaves `pending_fences` only
+   on its own `Ok`.
+
+The all-or-nothing peer set and the per-replica fence are preserved, with the
+reasons the third and fourth revisions gave. A partial peer set authorizes fewer
+replicas than the cluster has, which is a quorum-splitting configuration change
+made by accident, so a membership the validator cannot fully name is not
+published at all; a fence is one statement about one replica, so fencing three
+of four removed replicas is strictly better than fencing none. What changed is
+the *consequence* of withholding: the peer set's staleness is now bounded by the
+driver's next entry point rather than by the cluster's next configuration
+change, and a withheld fence is owed rather than lost.
+
+A replica the validator cannot name now **stays owed** instead of being counted
+and discarded. `principal_for_node` answering `None` is a statement about the
+deployment's directory, not about the cluster: a directory that cannot name a
+replica today can name it once it catches up, and the removal is exactly as
+committed either way. Discarding there would be the same forgetting as a refused
+fence, arriving through the validator instead of the transport.
+
+The local-node exclusion is applied where the obligation is **discharged** as
+well as where it is recorded, and there it drops the entry rather than skipping
+it. `adopt_group` may install an incarnation under a different node ID, so an
+obligation outstanding across an adoption can name what is now the local node; a
+driver that filtered only at the diff would retry that one forever against a
+link layer that has no such peer.
+
+**Where it runs, which is the enumeration this revision owes.** The flush is
+called from every named entry point and nowhere implicit:
+
+| Site | Why |
+| --- | --- |
+| `publish_membership` | every publisher ends here, so recording and installing stay one call |
+| `TransportRaftDriver::new` | through `publish_adopted_membership` |
+| `TransportRaftDriver::adopt_group` | through `publish_adopted_membership`; this is the site that discharges what a release did not cancel |
+| `TransportRaftDriver::tick` | the embedder's timer, which is what makes retry unattended |
+| `TransportRaftDriver::deliver` | a frame from a replica whose fence is owed is the likeliest moment for the retry to matter |
+| `TransportRaftDriver::drive_pending_reads` | the explicit supervisory surface an embedder calls after each batch of deliveries |
+
+Those are all of them. `new` and `adopt_group` are the only construction and
+adoption variants that exist — there is no separate attach or recover-on-new
+path — and both reach the transport only through `publish_adopted_membership`,
+which is unchanged in what it derives.
+
+**No new public retry method.** The obligations are discharged by surfaces an
+embedder already calls on its own timer, and a `flush()` on the driver would be
+a promoted mechanism with no consumer behind it — the objection the fourth
+revision made when it deleted `AsyncRaftTransport`.
+
+**Drop discipline.** The flush is deliberately *not* called from
+`DriverShared::lock`, which would put an embedder's transport calls inside every
+poll of a client future, and it is not reachable from any `Drop`. `WaiterGuard`
+reclamation stays a `try_lock` leaf that never waits, which is the invariant the
+deferred-reclamation queue exists to protect. Where the flush does run it runs
+with the state lock held — exactly like the `RaftTransport::send` calls
+`route_report` already makes — so a transport that drops a client future inside
+one reclaims through the deferred queue as documented.
+
+#### 4. Metrics: current state beside cumulative history
+
+`refused_peer_updates` counts *attempts* and therefore rises on every retry,
+which makes it a history rather than a health check: a driver that failed nine
+times and succeeded on the tenth reads the same as one still failing. It is kept
+— it is the only thing that distinguishes a link that has always worked from one
+that recovered — and joined by two readings of current state and one of the
+inbound rule:
+
+| Surface | Answers |
+| --- | --- |
+| `pending_peer_fences() -> usize` | how many committed removals this driver still owes the link layer. The number to alert on |
+| `peer_set_is_stale() -> bool` | whether the transport's peer set is behind the group's membership |
+| `refused_non_member_frames() -> u64` | how many inbound frames the fail-closed rule refused |
+
+Accessors on `TransportRaftDriver` rather than fields on a metrics snapshot,
+which is how this driver already exposes `refused_sends` and
+`refused_peer_updates`. `RaftGroupMetrics` is the *group's* kernel-level
+snapshot, published by `rafter-app` and watched through `MetricsWatch`; the
+link layer's health is the driver's own and is not a fact about the group.
+
+#### 5. The inbound path fails closed
+
+After the authenticated principal is mapped to a `NodeId`, `deliver` refuses a
+frame from a replica this driver's membership does not name:
+
+```rust
+if !state.is_member(envelope.from) {
+    return Err(InboundEnvelopeError::NotInMembership { node_id: envelope.from });
+}
+```
+
+This is the backstop that makes a transient control-plane failure a degraded
+window rather than an authorization bypass. `fence_peer` is allowed to fail, so
+between the cluster committing a removal and the transport accepting the fence,
+the validator still authorizes a replica the cluster has retired. In that window
+the driver knows better than its own link layer, and refuses on its own
+authority.
+
+It cannot refuse a legitimate joiner, and that is a property of the set it
+checks rather than a special case. `known_members` is committed ∪ effective by
+construction, so a replica added by a change that has appended and not committed
+is present and its frames are accepted — which they must be, or it can never
+catch up and the change can never commit.
+`a_replica_added_by_an_in_flight_change_may_still_speak` is the test that would
+fail if the check were ever narrowed to the committed set.
+
+`InboundEnvelopeError::NotInMembership` is a new variant rather than a reuse of
+`Rejected`, because the two say different things about a deployment. `Rejected`
+is the link layer's own admission control working. `NotInMembership` is the link
+layer *disagreeing* with the group, which for a removed replica means the fence
+for it has not landed. An operator who cannot tell them apart cannot tell a
+hostile peer from a control plane that is behind. Additive: the enum is
+`#[non_exhaustive]`.
+
+#### Blast radius of the fifth revision
+
+| File | Change |
+| --- | --- |
+| [`crates/rafter-service/src/driver/transport/state.rs`](../crates/rafter-service/src/driver/transport/state.rs) | `published_peers`, `pending_fences`, `refused_non_member_frames`; `publish_membership` records rather than installs; `flush_peer_control_plane`, `flush_peer_set`, `flush_pending_fences`, `desired_peers`, `peer_set_is_stale`, `is_member` replace `update_transport_peers` and `fence_removed_peers` |
+| [`crates/rafter-service/src/driver/transport.rs`](../crates/rafter-service/src/driver/transport.rs) | `InboundEnvelopeError::NotInMembership`; the flush at four entry points; the fail-closed check in `deliver`; three metrics accessors |
+| [`crates/rafter-service/src/transport.rs`](../crates/rafter-service/src/transport.rs) | `update_peers` and `fence_peer` state idempotence and that a refusal is retried by the caller |
+| `crates/rafter-service/src/driver/transport/state/tests.rs` | a link that can refuse a fence; the two retraction-rule tests |
+| `crates/rafter-service/tests/support/transport.rs` | `QueueTransport` gains scripted refusals and `fence_attempts`; `Nameable` makes the directory a shared, learnable state instead of a frozen set |
+| `crates/rafter-service/tests/transport_streams.rs` | six new tests; two rewritten |
+| `crates/rafter-service/tests/{transport_driver,transport_failures,transport_waiters}.rs` | `Nameable::all()` at the `Validator` construction sites |
+
+Not breaking. Every public change is additive: one variant on a
+`#[non_exhaustive]` enum and three accessors. `reference/` needs no adapter
+change and `scripts/reference-source-check` passes unmodified, which is the
+evidence that the surface is additive rather than the claim that it is.
+
+The behavioural changes a correct caller can see are three: a refused peer-set
+publication or fence is retried at the driver's next entry point instead of
+being dropped; a peer set identical to the one the transport already accepted is
+no longer republished; and a frame from a replica the group's membership does
+not name is refused rather than stepped.
+
+#### Focused-test plan for the fifth revision
+
+Every reproduction becomes a regression test with its assertion inverted, over a
+`QueueTransport` that refuses a scripted number of calls and then accepts —
+which is what makes "the driver retried" and "the driver was lucky" different
+observations. In `crates/rafter-service/tests/transport_streams.rs`:
+
+- `a_refused_peer_set_publication_is_retried_without_another_membership_event` —
+  the peer-set half, on a tick that carries no membership change.
+- `a_refused_fence_is_retried_until_the_link_accepts_it` — the fence half, with
+  `pending_peer_fences` asserted *during* the window as well as after it.
+- `a_removed_replica_cannot_speak_while_its_fence_is_pending` — the fail-closed
+  rule, against a link that never accepts the fence.
+- `a_replica_added_by_an_in_flight_change_may_still_speak` — the control for it,
+  and the test that fails if the check is narrowed to the committed set.
+- `control_plane_work_still_owed_survives_release_and_adoption` — the supervisor
+  pattern. Adoption re-derives nothing here, which is the point: the difference
+  it takes is empty, so only carried state can discharge the fence.
+- `an_outstanding_fence_for_the_replica_this_driver_became_is_dropped` — the
+  local-node exclusion at the point of discharge, across an adoption that
+  changes the node ID.
+- `an_unfenceable_removal_stays_owed_until_the_directory_can_name_it` — replaces
+  `an_unfenceable_removal_is_counted_rather_than_silent`. The directory learns
+  the replica's name and the next entry point discharges the fence.
+- `a_committed_removal_is_fenced_even_when_the_peer_set_cannot_be_published` —
+  kept, with its exact refusal count replaced by `peer_set_is_stale` and
+  `pending_peer_fences`. The old assertion was the clearest statement of what
+  this revision changed: it could only be exact because nothing ever retried.
+
+In `crates/rafter-service/src/driver/transport/state/tests.rs`, which stays the
+home of the branches no public entry point reaches:
+
+- `an_uncommitted_widening_does_not_settle_a_fence_a_committed_removal_left_owed`
+  — the `Effective` arm cannot retract.
+- `a_committed_readmission_settles_a_fence_the_removal_left_owed` — the mirror,
+  and what stops the rule above from becoming "a fence is forever". Without it,
+  "an obligation is never retracted" passes every other test here and fences a
+  replica the cluster has committed back into the membership.
+- `an_appended_membership_never_narrows_and_never_fences` — kept, with one
+  clause changed: the append now publishes *nothing*, because the set the
+  transport holds is already the set the group requires. Before the accepted set
+  was tracked, this case published an identical set a second time.
+
 ## Terminal Driver Vocabulary
 
 ### Origin

@@ -59,6 +59,21 @@ pub(crate) struct QueueState {
     fenced: BTreeSet<NodeId>,
     /// Every peer set this transport was told to authorize, in order.
     peer_sets: Vec<Vec<Principal>>,
+    /// How many more `update_peers` calls this link refuses before accepting.
+    ///
+    /// A countdown rather than a flag, because the property under test is
+    /// *retry to success*: a flag can only distinguish "always fails" from
+    /// "always works", and both of those pass a driver that gives up.
+    refuse_peer_updates: usize,
+    /// How many more `fence_peer` calls this link refuses, per replica.
+    ///
+    /// Per replica rather than one counter, because fencing is per replica: a
+    /// shared countdown could not express "the link refuses node 3's fence and
+    /// takes node 4's", which is the distinction the fence half of the control
+    /// plane is built around.
+    refuse_fences: BTreeMap<NodeId, usize>,
+    /// Every `fence_peer` call this link was handed, refused or not.
+    fence_attempts: Vec<Principal>,
     /// The snapshot payloads this link can serve, which is what makes it able
     /// to resolve a chunk directive into a frame.
     snapshots: InMemorySnapshotChunkSource,
@@ -107,6 +122,33 @@ impl QueueTransport {
     pub(crate) fn is_fenced(&self, node_id: NodeId) -> bool {
         self.lock().fenced.contains(&node_id)
     }
+
+    /// Refuses the next `count` peer-set publications, then accepts.
+    ///
+    /// The shape every retry test needs: a link that fails and then stops
+    /// failing, so "the driver retried" and "the driver was lucky" are
+    /// different observations.
+    pub(crate) fn refuse_next_peer_updates(&self, count: usize) {
+        self.lock().refuse_peer_updates = count;
+    }
+
+    /// Refuses the next `count` fences of `node_id`, then accepts.
+    pub(crate) fn refuse_next_fences(&self, node_id: NodeId, count: usize) {
+        self.lock().refuse_fences.insert(node_id, count);
+    }
+
+    /// Every replica this link was *asked* to fence, in order, including the
+    /// asks it refused.
+    ///
+    /// The refused asks are the point: `is_fenced` says whether the fence took,
+    /// and this says whether the driver kept asking.
+    pub(crate) fn fence_attempts(&self) -> Vec<NodeId> {
+        self.lock()
+            .fence_attempts
+            .iter()
+            .filter_map(principal_node)
+            .collect()
+    }
 }
 
 impl RaftTransport<u64> for QueueTransport {
@@ -147,13 +189,29 @@ impl RaftTransport<u64> for QueueTransport {
         _group_id: &u64,
         peers: PeerSet<Self::PeerPrincipal>,
     ) -> Result<(), Self::Error> {
-        self.lock().peer_sets.push(peers.into_peers());
+        let mut state = self.lock();
+        if let Some(remaining) = state.refuse_peer_updates.checked_sub(1) {
+            state.refuse_peer_updates = remaining;
+            return Err(TransportError("this link is refusing peer-set updates"));
+        }
+        state.peer_sets.push(peers.into_peers());
         Ok(())
     }
 
     fn fence_peer(&self, _group_id: &u64, peer: Self::PeerPrincipal) -> Result<(), Self::Error> {
         let node_id = principal_node(&peer).ok_or(TransportError("unknown principal"))?;
-        self.lock().fenced.insert(node_id);
+        let mut state = self.lock();
+        state.fence_attempts.push(peer);
+        if let Some(remaining) = state
+            .refuse_fences
+            .get(&node_id)
+            .copied()
+            .and_then(|count| count.checked_sub(1))
+        {
+            state.refuse_fences.insert(node_id, remaining);
+            return Err(TransportError("this link is refusing fences"));
+        }
+        state.fenced.insert(node_id);
         Ok(())
     }
 }
@@ -167,6 +225,53 @@ pub(crate) fn principal_node(principal: &Principal) -> Option<NodeId> {
         .map(NodeId)
 }
 
+/// Which replicas a deployment's directory can name a principal for.
+///
+/// Shared and mutable, because "cannot name it" is a *state* rather than a
+/// property: a directory that has not learned a replica's identity yet is the
+/// case the restriction models, and the interesting half of that case is the
+/// moment it learns. A frozen set can only show the driver failing.
+#[derive(Clone, Default)]
+pub(crate) struct Nameable {
+    /// `None` means every replica, which is the ordinary case.
+    known: Arc<Mutex<Option<BTreeSet<NodeId>>>>,
+}
+
+impl Nameable {
+    /// A directory that can name every replica.
+    pub(crate) fn all() -> Self {
+        Self::default()
+    }
+
+    /// A directory that can name exactly these replicas.
+    pub(crate) fn only(node_ids: &[NodeId]) -> Self {
+        Self {
+            known: Arc::new(Mutex::new(Some(node_ids.iter().copied().collect()))),
+        }
+    }
+
+    /// Teaches the directory one more replica's identity.
+    pub(crate) fn learn(&self, node_id: NodeId) {
+        if let Some(known) = lock_nameable(&self.known).as_mut() {
+            known.insert(node_id);
+        }
+    }
+
+    fn contains(&self, node_id: NodeId) -> bool {
+        lock_nameable(&self.known)
+            .as_ref()
+            .is_none_or(|known| known.contains(&node_id))
+    }
+}
+
+fn lock_nameable(
+    known: &Arc<Mutex<Option<BTreeSet<NodeId>>>>,
+) -> std::sync::MutexGuard<'_, Option<BTreeSet<NodeId>>> {
+    known
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Maps authenticated principals to replicas, and consults the transport for
 /// fencing so a test can fence through the documented API.
 #[derive(Clone)]
@@ -174,11 +279,7 @@ pub(crate) struct Validator {
     pub(crate) transport: QueueTransport,
     pub(crate) authorized: BTreeSet<NodeId>,
     /// Which replicas this deployment can name a principal for.
-    ///
-    /// `None` means every replica, which is the ordinary case. A test that
-    /// restricts it is modelling a directory that has not learned a new
-    /// replica's identity yet.
-    pub(crate) nameable: Option<BTreeSet<NodeId>>,
+    pub(crate) nameable: Nameable,
 }
 
 impl AuthenticatedPeerValidator<u64, Principal> for Validator {
@@ -192,8 +293,7 @@ impl AuthenticatedPeerValidator<u64, Principal> for Validator {
 
     fn principal_for_node(&self, _group_id: &u64, node_id: NodeId) -> Option<Principal> {
         self.nameable
-            .as_ref()
-            .is_none_or(|nameable| nameable.contains(&node_id))
+            .contains(node_id)
             .then(|| Principal::for_node(node_id))
     }
 
@@ -251,7 +351,7 @@ fn driver_over(
     let validator = Validator {
         transport: transport.clone(),
         authorized: peers.iter().copied().map(NodeId).collect(),
-        nameable: None,
+        nameable: Nameable::all(),
     };
     let driver = TransportRaftDriver::new(group, Vec::new(), transport.clone(), validator, options)
         .expect("a quiescent group is adoptable");

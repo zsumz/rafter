@@ -118,6 +118,17 @@ pub enum InboundEnvelopeError {
     Rejected {
         source: AuthenticatedPeerEnvelopeError,
     },
+    /// The validator authorized the sender and this driver's own membership
+    /// does not name it. The group was not stepped and no state changed.
+    ///
+    /// Separate from [`InboundEnvelopeError::Rejected`] because the two say
+    /// different things about the deployment. `Rejected` is the link layer's own
+    /// admission control working. This one is the link layer *disagreeing* with
+    /// the group — the driver's membership has retired a replica the validator
+    /// still authorizes — which for a removed replica means the fence for it has
+    /// not been accepted yet. An operator who cannot tell them apart cannot tell
+    /// a hostile peer from a control plane that is behind.
+    NotInMembership { node_id: NodeId },
     /// The group step failed after the envelope was accepted.
     Driver { source: ManagedDriverError },
 }
@@ -128,6 +139,11 @@ impl fmt::Display for InboundEnvelopeError {
             Self::Rejected { .. } => {
                 formatter.write_str("inbound peer envelope failed validation and was dropped")
             }
+            Self::NotInMembership { node_id } => write!(
+                formatter,
+                "inbound peer envelope came from node {}, which this group's membership does not name",
+                node_id.0
+            ),
             Self::Driver { .. } => {
                 formatter.write_str("the group step failed after the envelope was accepted")
             }
@@ -139,6 +155,9 @@ impl Error for InboundEnvelopeError {
     fn source(&self) -> Option<&(dyn Error + 'static)> {
         match self {
             Self::Rejected { source } => Some(source),
+            // No source: nothing failed underneath. The driver refused the
+            // frame on its own authority, and the reason is the variant.
+            Self::NotInMembership { .. } => None,
             Self::Driver { source } => Some(source),
         }
     }
@@ -275,7 +294,10 @@ where
                 read_waiters: BTreeMap::new(),
                 refused_sends: 0,
                 refused_peer_updates: 0,
+                refused_non_member_frames: 0,
                 known_members: BTreeSet::new(),
+                published_peers: None,
+                pending_fences: BTreeSet::new(),
                 shutting_down: false,
             })),
         };
@@ -549,24 +571,49 @@ where
     pub fn tick(&self) -> Result<(), ManagedDriverError> {
         let mut state = self.inner.lock();
         state.reject_if_shutting_down()?;
+        // Before the step, so a peer set or a fence the link layer refused
+        // earlier is retried on the embedder's own timer rather than waiting for
+        // the cluster's next configuration change — which may never come.
+        state.flush_peer_control_plane();
         state.step(GroupInput::Tick)
     }
 
     /// Validates one inbound authenticated envelope and steps the group with
     /// it.
     ///
-    /// Validation is [`validate_inbound_peer_envelope`] against this driver's
-    /// validator, and it happens before the group is touched. A frame that
-    /// fails it is refused here, exactly where a production embedder refuses
-    /// it, and the group never sees it. Rejection is not a driver failure: an
-    /// unauthorized or fenced peer sending frames is an expected condition, and
-    /// the caller decides whether to log it, count it, or drop the connection.
+    /// Validation happens in two stages, and they answer different questions.
+    /// [`validate_inbound_peer_envelope`] asks the *validator* whether the link
+    /// layer authenticated this principal as this replica and whether that
+    /// replica is authorized and unfenced. Then this driver asks itself whether
+    /// its own group's membership names the sender at all. Both run before the
+    /// group is touched, exactly where a production embedder refuses a frame,
+    /// and the group never sees one that fails either.
+    ///
+    /// The second stage is the fail-closed half, and it exists because the first
+    /// one can be out of date. [`crate::RaftTransport::fence_peer`] is the
+    /// operation that stops later frames from a removed replica, and it is
+    /// allowed to fail — so between the moment the cluster commits a removal and
+    /// the moment the transport accepts the fence, the validator still
+    /// authorizes a replica the cluster has retired. The driver knows better
+    /// than its own link layer in that window: its membership is committed ∪
+    /// effective, so it can refuse the frame itself rather than let a transient
+    /// control-plane failure become an authorization.
+    ///
+    /// It cannot refuse a legitimate joiner. The membership it checks includes
+    /// the effective configuration, so a replica added by a change that has
+    /// appended and not committed is present and its frames are accepted — which
+    /// it must be, or it can never catch up and the change can never commit.
+    ///
+    /// Rejection is not a driver failure: an unauthorized, fenced, or retired
+    /// peer sending frames is an expected condition, and the caller decides
+    /// whether to log it, count it, or drop the connection.
     ///
     /// # Errors
     ///
-    /// Returns [`InboundEnvelopeError::Rejected`] when validation refuses the
-    /// frame, leaving the group untouched, and [`InboundEnvelopeError::Driver`]
-    /// when the group step itself fails.
+    /// Returns [`InboundEnvelopeError::Rejected`] when the validator refuses the
+    /// frame, [`InboundEnvelopeError::NotInMembership`] when this driver's own
+    /// membership does not name the sender — both leaving the group untouched —
+    /// and [`InboundEnvelopeError::Driver`] when the group step itself fails.
     pub fn deliver(
         &self,
         envelope: AuthenticatedPeerEnvelope<G, T::PeerPrincipal>,
@@ -575,9 +622,18 @@ where
         state
             .reject_if_shutting_down()
             .map_err(|source| InboundEnvelopeError::Driver { source })?;
+        // A delivery is an entry point like a tick, and a frame from a replica
+        // whose fence is owed is the likeliest moment for the retry to matter.
+        state.flush_peer_control_plane();
         let node_id = state.node_id;
         let envelope = validate_inbound_peer_envelope(envelope, node_id, &state.validator)
             .map_err(|source| InboundEnvelopeError::Rejected { source })?;
+        if !state.is_member(envelope.from) {
+            state.refused_non_member_frames = state.refused_non_member_frames.saturating_add(1);
+            return Err(InboundEnvelopeError::NotInMembership {
+                node_id: envelope.from,
+            });
+        }
         state
             .step(GroupInput::PeerMessage { envelope })
             .map_err(|source| InboundEnvelopeError::Driver { source })
@@ -608,6 +664,11 @@ where
     /// rest.
     pub fn drive_pending_reads(&self) -> Result<(), ManagedDriverError> {
         let mut state = self.inner.lock();
+        // The third entry point flushes like the other two. This is the one an
+        // embedder calls after each batch of deliveries, so it is the supervisory
+        // surface a driver whose link layer just recovered is most likely to
+        // reach first.
+        state.flush_peer_control_plane();
         state.drive_pending_reads()
     }
 
@@ -633,21 +694,82 @@ where
         self.inner.lock().refused_sends
     }
 
-    /// Returns how many membership updates this driver could not publish.
+    /// Returns how many peer-control-plane statements this driver could not
+    /// install, cumulatively.
     ///
     /// Counted rather than propagated, for the reason a refused send is: a peer
     /// set that could not be updated is a link-layer condition, and a client's
     /// write must not fail for one. It is a separate count from
     /// [`TransportRaftDriver::refused_sends`] because the two do not repair the
-    /// same way — Raft re-sends a dropped frame, and nothing re-publishes a peer
-    /// set until the membership changes again.
+    /// same way — Raft re-sends a dropped frame on its own, and a peer set or a
+    /// fence is re-published only because this driver retries it.
     ///
-    /// A non-zero value means either the transport refused the update or this
-    /// driver's validator could not name a principal for some replica in the
-    /// membership. Both leave the link layer's peer set behind the group's.
+    /// A non-zero value means either the transport refused a publication or a
+    /// fence, or this driver's validator could not name a principal for some
+    /// replica. It counts *attempts* and therefore rises on every retry, which
+    /// makes it a history rather than a health check: a driver that has refused
+    /// nine times and succeeded on the tenth reads the same as one still
+    /// failing. Read [`TransportRaftDriver::pending_peer_fences`] and
+    /// [`TransportRaftDriver::peer_set_is_stale`] for the current state; read
+    /// this to tell a link that has always worked from one that recovered.
     #[must_use]
     pub fn refused_peer_updates(&self) -> u64 {
         self.inner.lock().refused_peer_updates
+    }
+
+    /// Returns how many committed removals this driver has not managed to fence
+    /// yet.
+    ///
+    /// Current state rather than history, and the distinction is the point.
+    /// [`crate::RaftTransport::fence_peer`] is what stops later frames from a
+    /// replica the cluster has removed, and it is allowed to fail — so a
+    /// non-zero value here means that, right now, this driver owes the link
+    /// layer an admission control it has not accepted. It falls to zero when
+    /// every outstanding fence has been accepted, and it is retried at every
+    /// entry point of the driver.
+    ///
+    /// This is the number to alert on. Inbound frames from an unfenced removed
+    /// replica are refused locally in the meantime — see
+    /// [`InboundEnvelopeError::NotInMembership`] — so the window is degraded
+    /// rather than unsafe, but it is a window that does not close by itself if
+    /// the link layer stays refusing.
+    #[must_use]
+    pub fn pending_peer_fences(&self) -> usize {
+        self.inner.lock().pending_fences.len()
+    }
+
+    /// Returns whether the transport's peer set is behind the group's
+    /// membership.
+    ///
+    /// True when the set this driver would publish differs from the last one the
+    /// transport accepted — because a publication was refused, or because the
+    /// validator could not name every replica in it, and no retry has succeeded
+    /// since. It is `true` before the first accepted publication for the same
+    /// reason: nothing has been accepted, so nothing is level.
+    ///
+    /// The peer-set counterpart of
+    /// [`TransportRaftDriver::pending_peer_fences`], and the milder of the two.
+    /// A stale peer set means the link layer authorizes a set the cluster has
+    /// moved on from, which is a liveness and least-privilege concern; an
+    /// unfenced removal is an authorization the cluster explicitly retracted.
+    #[must_use]
+    pub fn peer_set_is_stale(&self) -> bool {
+        self.inner.lock().peer_set_is_stale()
+    }
+
+    /// Returns how many inbound frames this driver refused because its group's
+    /// membership does not name the sender.
+    ///
+    /// The observable half of the fail-closed inbound check
+    /// ([`InboundEnvelopeError::NotInMembership`]). A non-zero value means the
+    /// link layer and the group disagree about who may speak: the validator
+    /// authorized a replica this driver's membership has retired. Read beside
+    /// [`TransportRaftDriver::pending_peer_fences`], it separates the two causes
+    /// — a fence this driver still owes, or a validator that authorizes a
+    /// replica no fence was ever licensed for.
+    #[must_use]
+    pub fn refused_non_member_frames(&self) -> u64 {
+        self.inner.lock().refused_non_member_frames
     }
 
     /// Retires the running incarnation and returns its group.

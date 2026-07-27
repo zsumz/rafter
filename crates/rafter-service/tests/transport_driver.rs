@@ -746,7 +746,7 @@ fn new_routes_the_recovery_outputs_it_was_given() {
     let validator = Validator {
         transport: transport.clone(),
         authorized: BTreeSet::from([NodeId(2)]),
-        nameable: None,
+        nameable: Nameable::all(),
     };
     let recovery_outputs = vec![RaftOutput::Send {
         to: NodeId(2),
@@ -784,7 +784,7 @@ fn a_zero_bound_is_refused_at_construction() {
     let validator = Validator {
         transport: transport.clone(),
         authorized: BTreeSet::from([NodeId(2)]),
-        nameable: None,
+        nameable: Nameable::all(),
     };
 
     let error = TransportRaftDriver::new(
