@@ -6246,6 +6246,351 @@ Mutation check, on the committed implementation:
 The controls pass under both: a restart is still not a retirement, a rolled-back
 addition is still not fenced, and same-ID re-adoption is still valid.
 
+### Eighth revision after adoption (2026-07-27)
+
+A fourth external review took the seventh revision's model as given and asked
+what happens on the paths *around* the happy one: a step that fails, a process
+that dies, a joiner the cluster takes back, and a consumer that reads the
+driver's refusals. Four findings, all reproduced before anything was changed.
+Three of the four were exactly as reported. One was reported as two facts and is
+three, and one instruction rested on a consumer that does not exist.
+
+#### 1. A membership transition was lost by every failing step
+
+`RaftGroup` derived its membership events by comparing the runtime's
+configuration against a snapshot taken at the top of the step
+(`step_with_options` captured `previous_effective` and `previous_committed` and
+threaded both down through five signatures). The runtime moves its configuration
+*inside* `raft.step` — appending, truncating, committing, installing — and
+everything the group does afterwards can fail: `apply_entries` runs the state
+machine's `apply_batch`, `complete_ready_reads` calls its `applied_index`, and
+the proposal verdict decides whether a report may be returned at all.
+
+On any of those the group returned `Err` with no report while the configuration
+had already moved. The next step then took its snapshot from the moved
+configuration, so the transition was unreportable from that moment on — not
+delayed, *gone*. A committed removal lost that way leaves the consumer's peer set
+wide and its fence unmade for the life of the incarnation, and the removal is the
+only fact that licenses either.
+
+The second half of the same finding: `RaftGroup::apply_raft_outputs` passed
+`membership_context: None`, so the documented raw-output pump could not report a
+configuration move under any circumstances, success included.
+
+**The comparison is now against durable state.** `RaftGroup` retains the two
+memberships as of the last report it *handed back*, and the derivation compares
+against those. The mark advances in exactly one place — where the events are
+placed in a report — so every fallible statement above it leaves the delta owed
+rather than consumed. The per-step plumbing is deleted; the derivation takes no
+argument.
+
+**A report that is built and then discarded advances nothing.** That needs
+saying separately, because the mark is durable and a discarded report would
+otherwise consume it. Five sites build a report and can then refuse to return
+it — `ProposalDidNotStart` on the stepping path and on `begin_proposal`, the
+batch lifecycle verdict on both, and a state-machine read that fails after its
+barrier's step succeeded — and each takes a `MembershipReportMark` before
+building and puts it back on the refusal. Restoring the mark taken *before* the
+report restores the whole owed delta, including anything an earlier failure had
+already left owed.
+
+This closes the membership half of the recorded `ProposalDidNotStart` hole as a
+consequence rather than as a separate fix. The rest of that report's content —
+peer messages, applies, other waiters' events — is still lost on that path and
+stays the separate task.
+
+**`RaftGroup::drain_membership_events` is the error-path companion.** It
+compares, emits, and advances without stepping anything. It is deliberately not
+poison-gated: poison is the state in which a caller most needs to know which
+replicas the cluster last authorized, the derivation touches neither the
+runtime's step path nor the state machine, and a group that will never apply
+again has still moved through whatever its runtime moved through.
+
+**The driver runs it after every stepping outcome, `Err` included.**
+`step_group`, `step_transfer`, `apply_recovery_outputs`, and `attempt_read` each
+reconcile before they return, so the loss window at the transport boundary is
+zero and no later successful step is needed to rescue the fact — which matters
+most exactly when there will not be one, because the group poisoned. On a
+successful step the reconciliation is one comparison that finds nothing: the
+report already carried the delta and the group advanced its own mark handing it
+over.
+
+#### 2. The peer control plane did not survive the process
+
+Every `TransportRaftDriver::new` started with no high-water mark, no live
+committed set, and no fence obligations. The release/adoption tests keep the same
+driver object alive, so they validate in-process replacement and say nothing
+about a crash.
+
+The reviewer's case: committed `{1,2,5}`, node 5 removed, `fence_peer(5)`
+refused, crash. A new process reconstructs committed `{1,2}` and a high-water
+mark of 2 — the fence is never retried, and node 5 is no longer spent, so the
+identity the cluster consumed is allocatable again. Raft cannot re-derive either
+fact: retirement is the *difference* between two committed configurations, a
+restarted process observes only the latest, and compaction erases the
+configuration history below the snapshot boundary.
+
+**`PeerControlPlaneCheckpoint` is a caller-owned durable value**, in the shape
+this repo already uses for everything durable: public fields, `Clone`/`Debug`/
+`Eq`, and no IO anywhere near it. Read it with
+`TransportRaftDriver::control_plane_checkpoint`; hand it back at
+`with_control_plane_checkpoint` or `adopt_group_with_checkpoint`.
+
+**It carries three facts, not the two the review specified, and the third is
+load-bearing.** The instruction named `committed_id_high_water` and
+`pending_fences`. Both are necessary and they are not sufficient, because the
+spent test reads the mark *and* the live committed set together:
+
+```text
+is_spent(n) = n <= high_water && !live_committed_members.contains(n)
+```
+
+A recovered mark of 5 installed beside an empty live set spends every identity at
+or below it — the whole cluster — and the driver refuses every replica it has,
+including its own. The obvious repair is to seed the live set from the adopted
+group's committed configuration instead, and that repair re-opens the seventh
+revision's own finding across a restart: a violating readmission committed while
+this process was down would arrive as an ordinary configuration and *un-spend*
+the identity. Carrying `live_committed_members` makes a restore behave exactly
+like the in-process release-and-re-adopt it stands in for, and it is bounded by
+the size of the cluster. So the checkpoint is three fields and this paragraph is
+why.
+
+`published_peers` is deliberately *not* in it. A new process has a new link layer
+that has accepted nothing, and starting from "nothing accepted" is what forces
+the first republication.
+
+**Order is the contract.** The checkpoint is installed before any membership fact
+is derived from the adopted group, so a recovered mark of 5 beats a reconstructed
+committed set of `{1,2}` rather than losing to it. On adoption it is merged
+rather than assigned — obligations are the union and the mark is the higher of
+the two — because a driver can already owe fences a release did not cancel, and
+it is merged *before* the `RetiredNodeId` gate so a takeover handed a checkpoint
+that spent the offered ID refuses it rather than installing it first.
+
+**Staleness costs exactly the window it closes.** A crash between a change and
+its persistence loses that change and no more. `control_plane_checkpoint_epoch`
+is the persist trigger: a monotone counter that advances on every committed
+configuration that moves the retirement record and every fence the link layer
+accepts, and on nothing else. It is instance-local and starts at zero whatever
+was restored, so a caller records the epoch it last persisted *for that driver*;
+the durable artifact is the checkpoint, never the epoch. An `Eq` comparison
+against the last-persisted checkpoint would also work and costs two set
+comparisons per poll; the counter costs a `u64` load and cannot report equal for
+two different states. The deployment's monotonic `NodeId` allocator remains the
+cross-process backstop, and is the only backstop for a removal committed while no
+driver was running at all.
+
+#### 3. `max_pending_fences` is renamed to what it is
+
+The option's own documentation said the structure it names is not a cap and
+cannot be one — a committed fact is not a request, so there is nothing to refuse
+— while the name promised a bound. It is a *service threshold*: past it the
+driver stops admitting client work, and the backlog keeps growing.
+`fence_backlog_service_threshold` says that, and
+`DriverServiceState::FenceBacklog` carries `service_threshold` rather than
+`max_pending_fences`.
+
+Retention is now stated as the embedder's, with the growth rate said out loud:
+one `NodeId` per committed removal the link layer has not fenced. No quarantine
+state was added, and the reason is that the rename plus the checkpoint is the
+whole resolution: the set is bounded in practice by the number of removals a
+cluster makes, it is now durable rather than lost on restart, and there is no
+correct policy this crate could apply to it — an obligation discarded is an
+authorization the cluster retracted and nobody enforced.
+
+#### 4. A rolled-back local joiner reported `Serving`
+
+`DriverServiceState` derived `Serving` from `!is_spent(self)` alone. A local node
+4 that joined effectively and was then rolled back — a new leader truncating the
+uncommitted addition back off the log, both memberships omitting it, its ID never
+spent because nothing ever committed it — reported `Serving`. It was receiving no
+replication at all, and it answered `ReadConsistency::Local` reads from its own
+applied state on the strength of that: an unboundedly stale view with nothing to
+bound it, and the one case a client cannot tell from a fresh answer.
+
+`DriverServiceState::NotMember { node_id }` is the state, and it is nonterminal
+where `Decommissioned` is permanent. `Serving` now requires
+`!is_spent(self) && (effective ∪ committed).contains(self)` — which is
+`is_member(self)`, the same predicate the inbound check uses. In `NotMember` the
+driver refuses writes and **both** read levels, and keeps ticking and delivering:
+the replica must be able to catch up if the change is re-proposed, and a fresh
+joiner constructed before its addition commits starts here legitimately. It
+clears the moment a configuration names the ID again.
+
+#### 5. `DriverServiceState` becomes a total answer
+
+`Released` and `ShuttingDown` are added. Both used to report `Serving` while
+refusing every client operation, which made the one surface a supervisor polls to
+decide whether to route to a replica say the replica was fine. The order is by
+what a supervisor can still do about it: `ShuttingDown`, then `Released`, then
+`Decommissioned`, then `NotMember`, then `FenceBacklog`, then `Serving`.
+
+#### 6. The refusals are typed rather than rendered
+
+These refusals rode `WriteError::Transport { fate, cause }` with a crate-private
+`DriverRoutingError` inside, which was wrong twice: no transport operation had
+failed, and an external caller could reach the reason only by formatting the
+error and reading the string. The in-tree tests were doing exactly that.
+
+`DriverUnavailableReason` is public, `Copy`, payload-free, and carried by
+dedicated `WriteError::Unavailable` and `ReadError::Unavailable` variants, with
+`WriteErrorKind::Unavailable` and `ReadErrorKind::Unavailable` beside them. It is
+deliberately not merged with `DriverServiceState`: that one is an observation an
+operator polls and carries the detail an investigation needs, and this one is a
+low-cardinality label on a client's error, the same distinction `WriteErrorKind`
+already draws. `DriverUnavailableReason::from_service_state` is the projection
+between them.
+
+**The fate is `NotAppended`, provably.** Every reason is taken before the driver
+hands anything to the group, so the command reached no log and cannot commit
+later; `WriteError::fate` answers it from the variant alone, beside `NotLeader`
+and `Rejected` rather than from a carried field.
+
+`DriverUnavailableReason::ShuttingDown` exists so the projection stays total and
+does not reach a client through either error type: both surfaces answered
+shutdown with a dedicated variant before this enum existed, every consumer
+already matches on it, and one fact with two spellings on one surface is worse
+than a variant that only a rendering reaches.
+
+#### 7. The lock process treated a late frame as fatal
+
+`reference/fenced-lock/src/bin/lock-node/replica.rs` counted and dropped
+`InboundEnvelopeError::Rejected` and returned everything else as a fatal process
+error — including `NotInMembership`, the variant that exists to describe a frame
+the validator authorized and the driver's own membership refused, leaving the
+group untouched. That is the ordinary consequence of a link layer that has not
+caught up with a committed removal, and the process died of it. The in-process
+harness had the same defect and panicked.
+
+All three variants are matched now. `Rejected` and `NotInMembership` are counted
+under separate counters because they diagnose opposite things — the first says
+the outer admission control is working, the second says the control plane is
+running behind the cluster — and the second is published on the process's `LINK`
+line as `non_member_frames`. Only `Driver` is fatal.
+
+#### What was refuted
+
+**The ledger consumer has no driver to fix or to wire.** The review asked for the
+`NotInMembership` fix and the checkpoint persistence in "both reference process
+compositions: fenced-lock AND ledger node binaries". `reference/ledger` depends on
+`rafter`, `rafter-app`, `rafter-runtime`, and `rafter-storage` and deliberately
+not on `rafter-service`; it drives `RaftGroup` directly, which is its acceptance
+value. There is no `TransportRaftDriver`, no `InboundEnvelopeError`, and no
+control plane to checkpoint. `reference/sharded-counter` reaches none of them
+either. Only the fenced lock was changed, and only it could be.
+
+**The raw-pump hole is real but not reachable the way it was described.** The
+finding says the pump "can NEVER report membership movement even on success", and
+that is true of the code. It is not reachable by a caller stepping the runtime
+between construction and the pump, because `RaftGroup` owns its runtime and hands
+out only `&R` — there is no `runtime_mut`. The pump is handed outputs produced
+*before* the group was built, and a group built over a recovered runtime has
+already marked that runtime's configuration as reported, which is correct:
+pre-existing state is not an event. What the fix actually buys is that the pump
+discharges a delta an earlier *failed step* left owed, which is the case both
+shipped drivers reach one line after construction. The regression is written for
+that shape.
+
+#### Blast radius of the eighth revision
+
+| File | Change |
+| --- | --- |
+| [`crates/rafter-app/src/group/types.rs`](../crates/rafter-app/src/group/types.rs) | `reported_membership` and `MembershipReportMark`; `MembershipStepContext` deleted; the constructors take `R: PersistedRaftRuntime` to seed the mark; the report-contract text for `membership_events` |
+| [`crates/rafter-app/src/group/membership.rs`](../crates/rafter-app/src/group/membership.rs) | the derivation compares against the mark and advances it; the mark take/restore pair |
+| [`crates/rafter-app/src/group/output.rs`](../crates/rafter-app/src/group/output.rs) | `drain_membership_events`; the context plumbing collapses to one `bool`; `apply_raft_outputs` reports membership; the two discard sites restore the mark |
+| [`crates/rafter-app/src/group/proposal.rs`](../crates/rafter-app/src/group/proposal.rs), [`read.rs`](../crates/rafter-app/src/group/read.rs) | the remaining three discard sites |
+| [`crates/rafter-service/src/driver/transport/state.rs`](../crates/rafter-service/src/driver/transport/state.rs) | `reconcile_membership` on every stepping outcome; `checkpoint_epoch`; `DriverServiceState` gains three variants |
+| [`crates/rafter-service/src/driver/transport/control_plane.rs`](../crates/rafter-service/src/driver/transport/control_plane.rs) | `PeerControlPlaneCheckpoint`; take/restore; the epoch advance; `service_state` and `reject_if_not_serving` |
+| [`crates/rafter-service/src/driver/transport.rs`](../crates/rafter-service/src/driver/transport.rs) | `with_control_plane_checkpoint` and `adopt_group_with_checkpoint` |
+| [`crates/rafter-service/src/driver/transport/bounds.rs`](../crates/rafter-service/src/driver/transport/bounds.rs) | the rename and its docs |
+| [`crates/rafter-service/src/driver/transport/health.rs`](../crates/rafter-service/src/driver/transport/health.rs) | the checkpoint and epoch accessors |
+| [`crates/rafter-service/src/error.rs`](../crates/rafter-service/src/error.rs) | `DriverUnavailableReason`; the two `Unavailable` variants, kinds, fate, `Display`, `source` |
+| [`crates/rafter-service/src/driver/mapping.rs`](../crates/rafter-service/src/driver/mapping.rs) | `DriverRoutingError` loses the three variants the typed reason replaced |
+| `reference/fenced-lock/src/bin/lock-node/{replica,main,control_plane}.rs` | the three-variant match, the second counter and its `LINK` field, and the durable checkpoint |
+| `reference/fenced-lock/tests/support/{cluster,transport,process}.rs` | the harness drops a non-member frame, can widen a validator past the membership, and names a replica's own directory |
+
+#### Focused-test plan for the eighth revision
+
+New, in `crates/rafter-app/tests/group_membership_losslessness.rs`:
+
+- `a_committed_removal_survives_a_step_that_failed_after_it_moved` and
+  `an_effective_rollback_survives_a_step_that_failed_after_it_moved` — a granted
+  barrier short of an unreachable floor makes `applied_index` run on every step,
+  and the fixture fails it after the configuration moved.
+- `a_committed_removal_survives_a_later_step_that_moved_nothing` — the
+  discriminating clause. A drain taken immediately after the failure is satisfied
+  by a pre-step snapshot too; a *later* step is not.
+- `a_membership_move_survives_a_failing_apply` and
+  `..._a_failing_snapshot_install`.
+- `the_raw_output_pump_discharges_a_membership_delta_a_failed_step_left_owed`.
+- `a_report_discarded_by_a_proposal_verdict_still_owes_its_membership_delta`,
+  through a later step for the same reason.
+- Controls: `a_reported_move_is_not_reported_again` and
+  `construction_owes_no_event_for_the_configuration_it_opened_over`.
+
+New, in `crates/rafter-service/tests/transport_membership.rs`:
+
+- `a_failed_step_still_routes_the_membership_it_moved_through` and
+  `a_failed_step_still_routes_an_effective_rollback` — driven through `deliver`
+  with a state machine that refuses the entry the same step released. Nothing
+  succeeds afterwards; the reconciliation is what installs the peer set and the
+  fence.
+
+New, in `crates/rafter-service/tests/transport_service_state.rs`:
+
+- `a_rolled_back_local_joiner_reports_not_member`,
+  `..._refuses_writes_and_both_read_levels`, `..._still_ticks_and_delivers`,
+  `a_re_proposed_joiner_returns_to_service`,
+  `construction_around_an_unnamed_node_starts_not_member`.
+- `a_shut_down_driver_reports_shutting_down`,
+  `the_service_state_reports_the_most_terminal_condition_that_holds`,
+  `only_serving_projects_to_no_reason`.
+- `a_rebuilt_driver_retries_the_fence_and_keeps_the_identity_spent`,
+  `a_rebuilt_driver_refuses_to_adopt_the_spent_identity`,
+  `a_removed_local_replica_stays_decommissioned_after_a_rebuild` — the driver is
+  *dropped* and a new one built over a fresh transport and a runtime that reports
+  only the surviving configuration.
+- `a_rebuilt_driver_without_a_checkpoint_forgets_the_removal` — the control, which
+  asserts the unsafe behaviour deliberately so that a change quietly re-deriving
+  retirement from elsewhere has to say where it got it.
+- `the_checkpoint_epoch_moves_only_when_the_checkpoint_does`.
+
+Consumer-level:
+
+- `reference/fenced-lock/tests/adapter_cluster.rs`:
+  `a_late_frame_from_an_unnamed_identity_is_dropped_and_the_replica_keeps_serving`.
+- `reference/fenced-lock/tests/process_cluster.rs`:
+  `the_peer_control_plane_checkpoint_is_durable_across_a_restart`.
+
+**Where the restart test landed, and why.** The reviewer's six-step process test
+— commit a removal, refuse its fence, destroy the process, reconstruct, verify
+the retry and the spent identity — cannot be written in the lock's process suite
+without violating the consumer's own contract, which states that its cluster
+performs no membership changes. It is worse than that for the late-frame case:
+the lock's validator derives its authorized set *from* `update_peers`, so the
+validator and the membership cannot disagree in that deployment at all. So the
+restart evidence is at the `rafter-service` integration level, where a driver can
+genuinely be dropped and rebuilt from a checkpoint over a fresh transport; the
+consumer proves that the file is real, is published under the process's own crash
+discipline, names this cluster's configuration and mark, and survives a `SIGKILL`
+and a restart unchanged. The late-frame case is proven in the consumer's
+in-process suite by widening the validator past the membership by hand, which is
+the same two-stage disagreement seen from the deployment's side.
+
+Mutation check, on the committed implementation:
+
+| Neutralized | Fails |
+| --- | --- |
+| the durable mark (re-snapshotted at the top of every step, which is the model this replaced) | `a_committed_removal_survives_a_later_step_that_moved_nothing`, `a_report_discarded_by_a_proposal_verdict_still_owes_its_membership_delta` |
+| `restore_membership_report_mark` (made a no-op) | `a_report_discarded_by_a_proposal_verdict_still_owes_its_membership_delta` |
+| `reconcile_membership` (made a no-op) | `a_failed_step_still_routes_the_membership_it_moved_through`, `a_failed_step_still_routes_an_effective_rollback` |
+| `restore_control_plane_checkpoint` (made a no-op) | `a_rebuilt_driver_retries_the_fence_and_keeps_the_identity_spent`, `a_rebuilt_driver_refuses_to_adopt_the_spent_identity`, `a_removed_local_replica_stays_decommissioned_after_a_rebuild` |
+
+The controls pass under all four: a reported move is still reported once, a
+construction still owes nothing, and a driver without a checkpoint still forgets
+the removal — which is what that control is for.
+
 ## Terminal Driver Vocabulary
 
 ### Origin

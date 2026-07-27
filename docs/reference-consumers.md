@@ -435,6 +435,36 @@ reopened from its own durable state under the same ID was never removed, so
 nothing retires and nothing changes for it. That is the lock's process suite
 working as intended, not an exception to the rule above.
 
+**A production composition persists the driver's peer control plane.** The
+derivation above reads a high-water mark, the live committed set, and the fences
+the link layer has not accepted, and a restarted process can rebuild none of
+them: retirement is the *difference* between two committed configurations, a new
+process observes only the latest, and compaction erases the rest. A process that
+dropped them would stop retrying a refused fence and would let an identity a
+committed removal spent be allocated again — the same window the monotonic
+allocator is the last backstop for. So the composition reads
+`TransportRaftDriver::control_plane_checkpoint`, makes it durable under whatever
+crash discipline it already uses for small metadata, and hands it back at
+`TransportRaftDriver::with_control_plane_checkpoint`. Persist on
+`control_plane_checkpoint_epoch`, which moves on exactly the facts that must not
+be lost; a crash between a change and its persistence loses that change and no
+more.
+
+The fenced lock is where this is wired, and it is wired in the consumer that does
+not need it. Its contract says its cluster performs no membership changes, so its
+checkpoint names one committed set and one mark and never grows an obligation —
+which is the point: a persistence path that exists only in the consumer that
+exercises it is a path nobody has run. What a *removal* costs across a restart is
+proven where a driver can be destroyed and rebuilt at all,
+`crates/rafter-service/tests/transport_service_state.rs`.
+
+**A consumer that drives `rafter-app` directly has no control plane to persist.**
+The ledger is deliberately built on `rafter`, `rafter-app`, `rafter-runtime`, and
+`rafter-storage` and not on `rafter-service`, which is what makes it independent
+acceptance evidence for the app layer. Peer sets, fences, and identity retirement
+are the managed driver's, so none of this section's driver-level obligations
+reach it; its process composition owns the equivalent decisions itself.
+
 ## Verification Lanes
 
 | Lane | Required work | Executed by |
