@@ -142,9 +142,14 @@ fn derived_state_is_valid_after_snapshot_install() {
     )
     .expect("bootstrap state is valid");
 
+    // A local boundary must lie at or below what this node has emitted, so the
+    // recovered committed prefix has to reach the caller before it can be
+    // compacted away.
+    let _ = follower.drain_committed_outputs();
+
     follower
         .install_local_snapshot(snapshot_descriptor(2, 2, 3))
-        .expect("a boundary below the committed index installs");
+        .expect("a boundary at or below the applied index installs");
 
     follower
         .validate_derived_state()

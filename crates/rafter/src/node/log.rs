@@ -5,17 +5,33 @@
 
 use std::{error::Error, fmt};
 
-use crate::{LogEntry, LogIndex, SharedEntries, Term};
+use crate::{CommittedConfiguration, LogEntry, LogIndex, MembershipConfig, SharedEntries, Term};
 
 use super::state::LocalProposalTracker;
 use super::{LocalProposalDropReason, Node, Output};
 
 /// Why a caller-supplied local snapshot descriptor was not installed.
 ///
-/// This enum is exhaustive because a local install is closed over the single
-/// precondition it cannot verify from the descriptor alone.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+/// Every variant is a refusal: the node is exactly as it was before the call,
+/// nothing was compacted, and no output was emitted.
+///
+/// This enum is `#[non_exhaustive]`. It was exhaustive when a local install was
+/// closed over one precondition; it is closed over six, and the set is the
+/// list of facts a descriptor asserts that the local node can check for itself
+/// — which grows as the descriptor carries more.
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[non_exhaustive]
 pub enum LocalSnapshotInstallError {
+    /// The boundary lies strictly below the installed snapshot's boundary.
+    ///
+    /// Installing it would rewind the compacted prefix and replace a newer
+    /// descriptor with an older one. Nothing below the installed boundary is
+    /// retained, so such a descriptor cannot even be checked against the local
+    /// log — this is the refusal, not a term disagreement.
+    BoundaryBelowInstalledSnapshot {
+        snapshot_index: LogIndex,
+        installed_index: LogIndex,
+    },
     /// The descriptor's boundary lies beyond this node's committed prefix.
     ///
     /// Installing it would compact away entries no quorum has accepted and
@@ -24,23 +40,107 @@ pub enum LocalSnapshotInstallError {
         snapshot_index: LogIndex,
         commit_index: LogIndex,
     },
+    /// The boundary is committed, but this node has not applied through it.
+    ///
+    /// Kept distinct from [`Self::BoundaryAheadOfCommit`] because it is a
+    /// different mistake: the entries exist and are committed, but this node
+    /// has never handed them to a state machine, so raising the applied index
+    /// to the boundary would skip them silently and forever. Reachable on a
+    /// node recovered below its committed prefix — see
+    /// [`Node::from_bootstrap_applied_through`](crate::Node::from_bootstrap_applied_through)
+    /// and [`Node::drain_committed_outputs`](crate::Node::drain_committed_outputs).
+    BoundaryAheadOfApplied {
+        snapshot_index: LogIndex,
+        applied_index: LogIndex,
+    },
+    /// The descriptor's boundary term disagrees with the local log.
+    ///
+    /// `local_term` is `None` when this node retains nothing at the boundary.
+    /// On the leader-sent install path a term disagreement means the local
+    /// suffix belongs to another history and is discarded; a *local* descriptor
+    /// carries no such authority, so the same disagreement is caller error.
+    BoundaryTermMismatch {
+        snapshot_index: LogIndex,
+        snapshot_term: Term,
+        local_term: Option<Term>,
+    },
+    /// The descriptor records committed membership the local node does not
+    /// derive at the boundary.
+    ///
+    /// The descriptor outlives the entries it compacts and becomes this node's
+    /// membership of record below the boundary, so a disagreeing copy would
+    /// redefine the voter set out of a local call.
+    CommittedMembershipMismatch {
+        snapshot_index: LogIndex,
+        expected: Box<MembershipConfig>,
+        actual: Box<MembershipConfig>,
+    },
+    /// The descriptor records a committed configuration identity the local node
+    /// does not derive at the boundary.
+    CommittedConfigurationMismatch {
+        snapshot_index: LogIndex,
+        expected: Option<CommittedConfiguration>,
+        actual: Option<CommittedConfiguration>,
+    },
 }
 
 impl fmt::Display for LocalSnapshotInstallError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let Self::BoundaryAheadOfCommit {
-            snapshot_index,
-            commit_index,
-        } = self;
-        write!(
-            formatter,
-            concat!(
-                "local snapshot boundary {snapshot_index} lies beyond the committed ",
-                "index {commit_index}"
+        match self {
+            Self::BoundaryBelowInstalledSnapshot {
+                snapshot_index,
+                installed_index,
+            } => write!(
+                formatter,
+                "local snapshot boundary {snapshot_index} lies below the installed snapshot boundary {installed_index}"
             ),
-            snapshot_index = snapshot_index,
-            commit_index = commit_index,
-        )
+            Self::BoundaryAheadOfCommit {
+                snapshot_index,
+                commit_index,
+            } => write!(
+                formatter,
+                "local snapshot boundary {snapshot_index} lies beyond the committed index {commit_index}"
+            ),
+            Self::BoundaryAheadOfApplied {
+                snapshot_index,
+                applied_index,
+            } => write!(
+                formatter,
+                "local snapshot boundary {snapshot_index} lies beyond the applied index {applied_index}"
+            ),
+            Self::BoundaryTermMismatch {
+                snapshot_index,
+                snapshot_term,
+                local_term: Some(local_term),
+            } => write!(
+                formatter,
+                "local snapshot boundary {snapshot_index} records term {snapshot_term} but the local log holds term {local_term}"
+            ),
+            Self::BoundaryTermMismatch {
+                snapshot_index,
+                snapshot_term,
+                local_term: None,
+            } => write!(
+                formatter,
+                "local snapshot boundary {snapshot_index} records term {snapshot_term} but the local log retains nothing at that index"
+            ),
+            Self::CommittedMembershipMismatch {
+                snapshot_index,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "local snapshot boundary {snapshot_index} records committed membership {actual:?} but the local committed membership is {expected:?}"
+            ),
+            Self::CommittedConfigurationMismatch {
+                snapshot_index,
+                expected,
+                actual,
+            } => write!(
+                formatter,
+                "local snapshot boundary {snapshot_index} records committed configuration {actual:?} but the local committed configuration is {expected:?}"
+            ),
+        }
     }
 }
 
@@ -220,32 +320,89 @@ impl Node {
     /// `DurableRaftNode::compact_log_with_snapshot` in the `rafter-runtime`
     /// crate is the shipped caller, and persists the payload as well.
     ///
-    /// # Precondition
+    /// # Contract
     ///
-    /// The boundary must lie at or below this node's commit index. A local
-    /// descriptor carries no quorum evidence, so a boundary beyond the
-    /// committed prefix would compact away entries that may still be
-    /// overwritten, and this call would be manufacturing commitment from a
-    /// local decision. The leader-sent install path is different in exactly
-    /// that respect — a leader only snapshots committed state, so the
-    /// descriptor it sends *is* commit evidence — and it keeps raising the
-    /// commit index.
+    /// A local descriptor is a claim, not evidence. The leader-sent install
+    /// path can act on a descriptor's word — a leader only snapshots committed
+    /// state, so what it sends *is* commit evidence, and it may raise the
+    /// commit index and discard a suffix whose term disagrees. Nothing about a
+    /// local call carries that authority. So this method checks every claim the
+    /// descriptor makes that the local node can check for itself, and refuses
+    /// the whole call if any of them is false:
     ///
-    /// Within the precondition the applied index is raised to the boundary
-    /// too. That is not an extra assumption: the caller reached this method by
-    /// building an application snapshot at the boundary, so the state machine
-    /// has applied through it by construction.
+    /// 1. The boundary lies **at or above** the installed snapshot boundary.
+    /// 2. The boundary lies **at or below the commit index** — otherwise the
+    ///    call would manufacture commitment out of a local decision.
+    /// 3. The boundary lies **at or below the applied index** — otherwise the
+    ///    call would raise the applied index over committed entries this node
+    ///    has never emitted, and they would never be emitted afterwards.
+    /// 4. The boundary **term matches the local log** at that index — or, at
+    ///    the installed boundary, the installed descriptor's own term.
+    /// 5. The descriptor's committed configuration, **when it carries one**,
+    ///    matches what this node derives at the boundary.
+    ///
+    /// Rule 3 subsumes rule 2, because the applied index never exceeds the
+    /// commit index. They stay separate errors because they are separate
+    /// mistakes, and a caller that hits the first has a safety problem while a
+    /// caller that hits the second has a recovery-ordering one.
+    ///
+    /// # Idempotency at the installed boundary
+    ///
+    /// A boundary **equal** to the installed one is accepted and defined as a
+    /// re-record: the descriptor is stored, and nothing else changes — no entry
+    /// is compacted, no index moves, no output is emitted. Repeating a call
+    /// with the same descriptor therefore leaves this node identical, which is
+    /// what a retry after a partially-completed compaction needs. It is not a
+    /// refusal because the caller may have real work left at that boundary that
+    /// this node cannot see: a composition whose durable log is still behind an
+    /// already-installed boundary repairs it through exactly this call. Rules 4
+    /// and 5 still apply, so the boundary's term and committed configuration
+    /// cannot be rewritten under it, and a boundary strictly *below* the
+    /// installed one is refused — that one would rewind the compacted prefix.
+    ///
+    /// A descriptor with **no** committed configuration is accepted, and this
+    /// node keeps deriving that state locally. The kernel does not synthesize
+    /// the missing copy into the caller's descriptor: the descriptor is what a
+    /// caller persists and streams, and rewriting it here would put this node's
+    /// installed metadata out of step with the bytes stored under it. A
+    /// composition that owns the snapshot store should fill the field in before
+    /// calling — `rafter-runtime`'s compaction API does exactly that.
+    ///
+    /// Within the contract the applied index and commit index are already at or
+    /// above the boundary, so neither moves; the log suffix above the boundary
+    /// always survives, because rule 4 has proven it belongs to this history.
+    /// The returned outputs report local proposals the retained log no longer
+    /// backs, and are ordinarily empty.
     ///
     /// # Errors
     ///
-    /// Returns [`LocalSnapshotInstallError::BoundaryAheadOfCommit`] when the
-    /// descriptor's boundary lies beyond this node's committed prefix. Nothing
-    /// is installed and no log entry is compacted.
+    /// Returns the [`LocalSnapshotInstallError`] naming the first violated rule,
+    /// in the order listed above. On any refusal **nothing is installed, no log
+    /// entry is compacted, no index moves, and no output is emitted**.
     pub fn install_local_snapshot(
         &mut self,
         snapshot: crate::RaftSnapshot,
     ) -> Result<Vec<super::Output>, LocalSnapshotInstallError> {
+        let committed_configuration = self.check_local_snapshot(&snapshot)?;
+        Ok(self
+            .install_snapshot_state_with_committed_configuration(snapshot, committed_configuration))
+    }
+
+    /// Checks every local-install precondition without mutating anything, and
+    /// returns the committed configuration state the install should record.
+    fn check_local_snapshot(
+        &self,
+        snapshot: &crate::RaftSnapshot,
+    ) -> Result<Option<CommittedConfiguration>, LocalSnapshotInstallError> {
         let snapshot_index = snapshot.metadata.last_included_index;
+
+        let installed_index = self.snapshot_index();
+        if snapshot_index < installed_index {
+            return Err(LocalSnapshotInstallError::BoundaryBelowInstalledSnapshot {
+                snapshot_index,
+                installed_index,
+            });
+        }
         let commit_index = self.volatile.commit_index;
         if snapshot_index > commit_index {
             return Err(LocalSnapshotInstallError::BoundaryAheadOfCommit {
@@ -253,9 +410,42 @@ impl Node {
                 commit_index,
             });
         }
+        let applied_index = self.volatile.applied_index;
+        if snapshot_index > applied_index {
+            return Err(LocalSnapshotInstallError::BoundaryAheadOfApplied {
+                snapshot_index,
+                applied_index,
+            });
+        }
+        let snapshot_term = snapshot.metadata.last_included_term;
+        let local_term = self.term_at(snapshot_index);
+        if local_term != Some(snapshot_term) {
+            return Err(LocalSnapshotInstallError::BoundaryTermMismatch {
+                snapshot_index,
+                snapshot_term,
+                local_term,
+            });
+        }
+
         let committed_configuration = self.committed_configuration_state_at(snapshot_index);
-        Ok(self
-            .install_snapshot_state_with_committed_configuration(snapshot, committed_configuration))
+        if let Some(declared) = snapshot.metadata.committed_configuration.as_ref() {
+            let expected_membership = self.membership_at_index(snapshot_index);
+            if declared.membership != expected_membership {
+                return Err(LocalSnapshotInstallError::CommittedMembershipMismatch {
+                    snapshot_index,
+                    expected: Box::new(expected_membership),
+                    actual: Box::new(declared.membership.clone()),
+                });
+            }
+            if declared.configuration != committed_configuration {
+                return Err(LocalSnapshotInstallError::CommittedConfigurationMismatch {
+                    snapshot_index,
+                    expected: committed_configuration,
+                    actual: declared.configuration,
+                });
+            }
+        }
+        Ok(committed_configuration)
     }
 
     pub(super) fn install_snapshot_state(

@@ -7369,6 +7369,162 @@ term first, and it is what
 The variant keeps its coverage; the shape that covers it is narrower and is
 written down here rather than discovered later.
 
+#### Revision after implementation (2026-07-27)
+
+The design above is one rule short of what it argues for, and the shortfall is
+visible in its own closing paragraph. It reasons that the local path may not
+manufacture commitment, enforces exactly that, and leaves four other claims a
+local descriptor makes unchecked. Four probes against the shipped code, all
+through the public API:
+
+```
+PROBE (a) derived state must stay valid after a public API call:
+  "commit index 10 exceeds logical last index 5"
+
+PROBE (b) an older descriptor must not replace a newer installed snapshot
+  left:  RaftSnapshot { last_included_index: LogIndex(3), .. }
+ right:  RaftSnapshot { last_included_index: LogIndex(8), .. }
+
+PROBE (c) applied must not advance past entries the caller was never handed
+  left: LogIndex(2)
+ right: LogIndex(0)
+
+PROBE (d) a local descriptor must not redefine committed membership
+  left:  Stable(MembershipSet { voters: [NodeId(7), NodeId(8), NodeId(9)] })
+ right:  Stable(MembershipSet { voters: [NodeId(1), NodeId(2), NodeId(3)] })
+```
+
+(a) is the sharpest, and it is `Node::validate_derived_state`'s own message: the
+shared install helper discards the log suffix when the boundary term disagrees,
+which is correct for the leader-sent path and leaves the commit index above the
+logical last index when a *local* caller supplies the wrong term. The above
+entry's own reasoning covers this case and stops one step short of it — a
+leader's descriptor is evidence, so acting on a term disagreement is authority
+it has; a local descriptor is a claim, so the same disagreement is caller error.
+
+**Design.** The precondition becomes five rules, all checked before anything
+mutates, all reported through `LocalSnapshotInstallError`:
+
+1. the boundary is at or above the installed snapshot boundary;
+2. it is at or below the commit index (the rule above, unchanged);
+3. it is at or below the applied index;
+4. its term matches the local log at that index;
+5. its committed configuration, when it carries one, matches what the node
+   derives at the boundary.
+
+`install_snapshot_state` is still untouched: the leader-driven path keeps
+discarding a contradicted suffix and raising the commit index, which is what
+makes an installed snapshot commit evidence. Only the local path stops sharing
+that behaviour.
+
+Four decisions inside that, each of which could have gone the other way:
+
+**Rules 2 and 3 stay separate errors even though 3 subsumes 2.** The applied
+index never exceeds the commit index, so rule 3 alone would refuse everything
+rule 2 refuses. They are different mistakes: a boundary beyond the commit index
+manufactures commitment, and a boundary in the applied-to-commit gap skips
+committed entries the node never emitted and never will. Collapsing them would
+make the runtime's `SnapshotAheadOfCommit` report a commit index that is not the
+reason.
+
+**The exact installed boundary is a defined re-record, not a refusal.** The
+first implementation refused it, on the argument that it compacts nothing. The
+runtime falsified that within one test run: `compact_log_through_snapshot` at an
+already-installed boundary is how a composition repairs a durable log still
+behind that boundary — the crash window between snapshot promote and log
+compaction — and the kernel cannot see the work the caller still has to do. So
+the boundary equal to the installed one is accepted, records the descriptor, and
+moves nothing else; repeating a call with the same descriptor leaves the node
+identical. Rules 4 and 5 still apply there, so the boundary's term and committed
+configuration cannot be rewritten under it, and a boundary strictly *below* the
+installed one is refused — that one rewinds the compacted prefix.
+
+**Rule 5 refuses a disagreeing descriptor and does not synthesize a missing
+one.** The descriptor outlives the entries it compacts and becomes the node's
+membership of record below the boundary, which is what probe (d) exploits. But a
+descriptor carrying no committed configuration is accepted and the node keeps
+deriving that state locally, because the kernel filling the field in would put
+its installed metadata out of step with bytes a caller may already have persisted
+under the original descriptor. Filling belongs to whoever owns the snapshot
+store, and `rafter-runtime` does it.
+
+**`LocalSnapshotInstallError` becomes `#[non_exhaustive]`.** Its rustdoc claimed
+exhaustiveness "because a local install is closed over the single precondition it
+cannot verify from the descriptor alone". That justification does not survive the
+count going to five, and the set grows with what a descriptor carries.
+
+**The runtime stops holding a second copy of the rules.** The reviewed shape was
+`validate_local_snapshot_boundary` (commit + term) and the mismatch arms of
+`normalize_local_snapshot_membership` in `rafter-runtime`, checked before any
+write, with the kernel's own check called afterwards on a staged clone and
+documented as unreachable. Two statements of one rule, and they had already
+drifted: the runtime never checked the applied index although
+`compact_log_with_snapshot`'s rustdoc said "committed/applied", and neither layer
+checked the installed boundary. Both duplicates are deleted. The runtime now
+fills missing membership metadata — the one thing the kernel will not do —
+installs into a staged clone *before* persisting, persists, and publishes the
+clone only on success. That order is stronger than the reviewed one in both
+directions: no write happens without the kernel's consent, and no kernel state is
+published ahead of the medium.
+
+`RaftRuntimeError` gains `SnapshotAheadOfApplied`, `SnapshotBelowInstalledBoundary`,
+and `SnapshotRefusedByKernel` (the `#[non_exhaustive]` catch-all, which refuses
+rather than installs). `DurableRaftNode` gains `applied_index`, because
+`SnapshotAheadOfApplied` is a failure a caller must be able to diagnose and the
+runtime exposed no way to observe the index it names.
+
+**What this revises above, and one variant it strands.** The Design block's
+signature and `BoundaryAheadOfCommit` stand. Its "One consequence" paragraph does
+not: it records that `LocalProposalDropReason::SnapshotCovered` survives on the
+narrow path of "a local descriptor whose boundary term contradicts the retained
+entry at that index". Rule 4 closes that path — it is now a refusal — and rules 3
+and 4 together mean a valid local install can no longer drop a tracked proposal
+at all: everything at or below the applied index has already left the tracker via
+apply, and the suffix above the boundary is always retained.
+
+That paragraph predicted the variant would keep its coverage on a narrower shape.
+It does not. Chasing the other install path shows the variant is now unreachable
+from *either* one. `install_snapshot_state` is reached only through
+`adopt_snapshot_term`, which calls `become_follower` whenever the role is not
+already Follower
+([`crates/rafter/src/node/replication/snapshot/receive/mod.rs:12-18`](../crates/rafter/src/node/replication/snapshot/receive/mod.rs)),
+and `become_follower` drains the tracker unconditionally with
+`LeadershipLost`
+([`crates/rafter/src/node/lifecycle.rs:12-13`](../crates/rafter/src/node/lifecycle.rs)).
+Tracked proposals only ever exist on a leader, so a node reaching a leader-sent
+install has already emptied its tracker. `SnapshotCovered` is a live public
+variant with no path that produces it.
+
+That is recorded rather than acted on here. Removing a variant of the public
+`LocalProposalDropReason` is a separate decision from hardening a precondition,
+and it wants its own entry: the argument for keeping it is that
+`replace_log`'s `covered_by_snapshot` branch is a real defence that should not
+become a silent `LeadershipLost`, and the argument for removing it is that a
+promise nothing can deliver is exactly what this section of the document exists
+to strike. `local_snapshot_covering_tracked_proposal_emits_dropped_event` is
+retired with the shape it pinned; the new module asserts the refusal instead.
+
+**Blast radius.** Breaking, pre-1.0. `install_local_snapshot` refuses four cases
+it used to accept and accepts the installed boundary as a re-record; the two
+in-repo call sites are `rafter-runtime`'s compaction APIs, whose public error
+surface gains three variants and loses no existing one.
+`runtime_rejects_local_snapshot_behind_installed_boundary_before_writes` used to
+assert a term mismatch with `local_term: None` for a boundary below the installed
+one — an accurate symptom of the wrong diagnosis — and now asserts
+`SnapshotBelowInstalledBoundary`. Two kernel tests and six runtime tests
+recovered below their committed prefix and compacted through the gap; they drain
+first now, which is the precondition rule 3 states.
+
+**Focused-test plan.**
+[`crates/rafter/src/node/tests/snapshot/install/local.rs`](../crates/rafter/src/node/tests/snapshot/install/local.rs)
+is the new home of the local-install path: ten tests, one per rule plus the
+idempotency outcome, the no-configuration acceptance, the success path, and one
+pinning that the leader-sent install still discards a contradicted suffix. Every
+refusal asserts the whole node is unchanged — snapshot, log, commit, applied,
+committed configuration, committed membership — and `validate_derived_state` is
+asserted on every post-state, because the geometry these rules protect is what it
+checks. Four of the ten fail against the pre-fix code, as the probes above.
+
 ### 2. `leader_replication_progress` reports followers, and says so
 
 The method claims "leader-side replication progress for every effective replica"

@@ -1,10 +1,63 @@
 use super::*;
 use rafter_invariant_test::oracle_assert_eq;
 
+/// The recovery fixture, with its committed prefix drained to the caller.
+///
+/// The fixture restarts at commit 16 over a snapshot boundary at 5, so its
+/// applied index starts at 5: the entries between are committed but have never
+/// been handed to a state machine in this process. Draining them is the
+/// precondition for compacting through 14 or 16 at all — an application cannot
+/// have built a snapshot at a boundary it was never given the entries for —
+/// and the kernel refuses the compaction until it happens. See
+/// `runtime_local_compaction_above_the_applied_index_is_refused` below.
+fn drained_recovery_fixture() -> (
+    DurableRaftNode<InMemoryRaftHardStateStore, InMemoryRaftLogSegment, InMemoryRaftSnapshotStore>,
+    ConfigurationEntry,
+    MembershipSet,
+) {
+    let (mut runtime, stable, new) = super::super::super::dynamic_membership_recovery_fixture();
+    assert_eq!(runtime.applied_index(), LogIndex(5));
+    let _ = runtime.drain_committed_outputs();
+    assert_eq!(runtime.applied_index(), LogIndex(16));
+    (runtime, stable, new)
+}
+
+/// A boundary the recovered node has not applied through is refused before any
+/// write, even though it is committed: the entries in the gap would be skipped
+/// forever, and this runtime never emitted them.
+#[test]
+fn runtime_local_compaction_above_the_applied_index_is_refused() {
+    let (mut runtime, _, _) = super::super::super::dynamic_membership_recovery_fixture();
+    let before_log = runtime.log_segment.replay_entries();
+    let before_snapshot = runtime.snapshot_store.current().cloned();
+
+    oracle_assert_eq!(
+        runtime.compact_log_with_snapshot(PersistedRaftSnapshot {
+            metadata: snapshot_metadata_for_writer(1, 16, 8, 8),
+            application_payload: b"never applied".to_vec(),
+        }),
+        Err(RaftRuntimeError::SnapshotAheadOfApplied {
+            snapshot_index: LogIndex(16),
+            applied_index: LogIndex(5),
+        })
+    );
+    oracle_assert_eq!(runtime.log_segment.replay_entries(), before_log);
+    oracle_assert_eq!(runtime.snapshot_store.current().cloned(), before_snapshot);
+
+    // Draining is what makes the same compaction legitimate.
+    let _ = runtime.drain_committed_outputs();
+    runtime
+        .compact_log_with_snapshot(PersistedRaftSnapshot {
+            metadata: snapshot_metadata_for_writer(1, 16, 8, 8),
+            application_payload: b"applied through sixteen".to_vec(),
+        })
+        .expect("the same boundary compacts once the entries have been emitted");
+    oracle_assert_eq!(runtime.snapshot_index(), LogIndex(16));
+}
+
 #[test]
 fn runtime_local_compaction_fills_committed_dynamic_membership_metadata() {
-    let (mut runtime, _, new_membership) =
-        super::super::super::dynamic_membership_recovery_fixture();
+    let (mut runtime, _, new_membership) = drained_recovery_fixture();
     let expected = MembershipConfig::stable(new_membership);
 
     runtime
@@ -37,7 +90,7 @@ fn runtime_local_compaction_fills_committed_dynamic_membership_metadata() {
 
 #[test]
 fn runtime_local_compaction_rejects_wrong_boundary_term_before_writes() {
-    let (mut runtime, _, _) = super::super::super::dynamic_membership_recovery_fixture();
+    let (mut runtime, _, _) = drained_recovery_fixture();
     let before_log = runtime.log_segment.replay_entries();
     let before_snapshot = runtime.snapshot_store.current().cloned();
 
@@ -58,8 +111,7 @@ fn runtime_local_compaction_rejects_wrong_boundary_term_before_writes() {
 
 #[test]
 fn runtime_local_compaction_rejects_wrong_committed_membership_before_writes() {
-    let (mut runtime, _, new_membership) =
-        super::super::super::dynamic_membership_recovery_fixture();
+    let (mut runtime, _, new_membership) = drained_recovery_fixture();
     let before_log = runtime.log_segment.replay_entries();
     let before_snapshot = runtime.snapshot_store.current().cloned();
     let wrong = MembershipConfig::stable(membership_set(&[1, 2, 3]));
@@ -84,8 +136,7 @@ fn runtime_local_compaction_rejects_wrong_committed_membership_before_writes() {
 
 #[test]
 fn runtime_local_compaction_rejects_wrong_committed_configuration_identity_before_writes() {
-    let (mut runtime, _, new_membership) =
-        super::super::super::dynamic_membership_recovery_fixture();
+    let (mut runtime, _, new_membership) = drained_recovery_fixture();
     let before_log = runtime.log_segment.replay_entries();
     let before_snapshot = runtime.snapshot_store.current().cloned();
     let expected = runtime.committed_configuration_state();
@@ -117,8 +168,7 @@ fn runtime_local_compaction_rejects_wrong_committed_configuration_identity_befor
 
 #[test]
 fn runtime_local_compaction_uses_membership_at_snapshot_boundary() {
-    let (mut runtime, _, new_membership) =
-        super::super::super::dynamic_membership_recovery_fixture();
+    let (mut runtime, _, new_membership) = drained_recovery_fixture();
     let old_membership = MembershipConfig::stable(membership_set(&[1, 2, 3]));
 
     runtime
@@ -144,8 +194,7 @@ fn runtime_local_compaction_uses_membership_at_snapshot_boundary() {
 
 #[test]
 fn runtime_streamed_local_compaction_writes_normalized_membership_metadata() {
-    let (mut runtime, _, new_membership) =
-        super::super::super::dynamic_membership_recovery_fixture();
+    let (mut runtime, _, new_membership) = drained_recovery_fixture();
     let payload = b"streamed dynamic state through stable config".to_vec();
     let original_descriptor =
         RaftSnapshot::from_payload(snapshot_metadata_for_writer(1, 16, 8, 8), &payload);

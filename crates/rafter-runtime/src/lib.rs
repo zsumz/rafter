@@ -345,6 +345,20 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
         self.node.commit_index()
     }
 
+    /// Returns the highest log index this runtime has emitted application
+    /// outputs through.
+    ///
+    /// This is the floor a local compaction may not exceed — see
+    /// [`RaftRuntimeError::SnapshotAheadOfApplied`]. On a node recovered with
+    /// the default applied floor it starts at the snapshot boundary and rises
+    /// as committed entries are emitted, so a restart path that intends to
+    /// compact must drain first, or declare its floor at construction with
+    /// [`DurableRaftNode::with_storage_and_snapshot_store_applied_through`].
+    #[must_use]
+    pub fn applied_index(&self) -> rafter::LogIndex {
+        self.node.applied_index()
+    }
+
     /// Returns the highest log index known to the local Raft kernel.
     #[must_use]
     pub fn last_log_index(&self) -> rafter::LogIndex {
@@ -497,12 +511,16 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
     /// application has a real snapshot payload to transfer to lagging
     /// followers.
     ///
+    /// Because it records an empty payload, calling it at the *already
+    /// installed* boundary is the supported repair for a durable log still
+    /// behind that boundary: the kernel re-records the descriptor and moves
+    /// nothing, and the compaction runs.
+    ///
     /// # Errors
     ///
-    /// Returns [`RaftRuntimeError::SnapshotAheadOfCommit`] when the snapshot
-    /// boundary is ahead of the local committed/applied Raft index, and
-    /// [`RaftRuntimeError::LogCompact`] when storage rejects or cannot persist
-    /// the local compaction.
+    /// As [`Self::compact_log_with_snapshot`] — every boundary rule is the
+    /// kernel's — plus [`RaftRuntimeError::LogCompact`] when storage rejects or
+    /// cannot persist the local compaction.
     pub fn compact_log_through_snapshot(
         &mut self,
         snapshot: &RaftSnapshotMetadata,
@@ -530,14 +548,20 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
     ///
     /// # Errors
     ///
-    /// Returns [`RaftRuntimeError::SnapshotAheadOfCommit`] when the snapshot
-    /// boundary is ahead of the local committed/applied Raft index,
-    /// [`RaftRuntimeError::SnapshotBoundaryTermMismatch`] when the local log or
-    /// current snapshot cannot prove the supplied boundary term,
-    /// [`RaftRuntimeError::SnapshotMembershipMismatch`] when caller-provided
-    /// committed membership metadata disagrees with the local boundary, and a
-    /// fatal persistence error when the snapshot or compaction cannot be
-    /// written.
+    /// Every boundary refusal is the kernel's, rendered through
+    /// [`RaftRuntimeError`]: [`RaftRuntimeError::SnapshotBelowInstalledBoundary`]
+    /// when the boundary does not advance past the installed snapshot,
+    /// [`RaftRuntimeError::SnapshotAheadOfCommit`] when it is ahead of the
+    /// committed prefix, [`RaftRuntimeError::SnapshotAheadOfApplied`] when it is
+    /// committed but this node has not applied through it,
+    /// [`RaftRuntimeError::SnapshotBoundaryTermMismatch`] when the local log
+    /// cannot prove the supplied boundary term, and
+    /// [`RaftRuntimeError::SnapshotMembershipMismatch`] or
+    /// [`RaftRuntimeError::SnapshotCommittedConfigurationMismatch`] when
+    /// caller-provided committed configuration metadata disagrees with the
+    /// local boundary. Nothing is written on any of those. A fatal persistence
+    /// error is returned, and poisons, when the snapshot or the compaction
+    /// cannot be written.
     pub fn compact_log_with_snapshot(
         &mut self,
         mut snapshot: PersistedRaftSnapshot,
@@ -548,21 +572,21 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
             });
         }
 
-        self.validate_local_snapshot_boundary(&snapshot.metadata)?;
-        self.normalize_local_snapshot_membership(&mut snapshot.metadata)?;
-
+        self.fill_local_snapshot_membership(&mut snapshot.metadata);
         let descriptor =
             RaftSnapshot::from_payload(snapshot.metadata.clone(), &snapshot.application_payload);
-        if let Err(error) = self.write_snapshot_and_compact_log(snapshot) {
-            return Err(self.poison(error));
-        }
+        // Ask the kernel first, on a clone: it owns every boundary rule, and a
+        // refusal must leave the durable medium untouched. Persisting only
+        // after it agrees, and publishing the clone only after the persist,
+        // keeps both boundaries — no write without the kernel's consent, and no
+        // published kernel state ahead of the durable medium.
         let mut staged_node = self.node.clone();
-        // `validate_local_snapshot_boundary` above proved the kernel's
-        // precondition, so this cannot refuse; mapping rather than unwrapping
-        // keeps the two statements of one rule from drifting apart.
         staged_node
             .install_local_snapshot(descriptor)
             .map_err(local_snapshot_install_error)?;
+        if let Err(error) = self.write_snapshot_and_compact_log(snapshot) {
+            return Err(self.poison(error));
+        }
         self.node = staged_node;
         Ok(())
     }
@@ -585,13 +609,17 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
                 cause: cause.clone(),
             });
         }
-        self.validate_local_snapshot_boundary(&snapshot.metadata)?;
         let source_snapshot = snapshot.clone();
-        self.normalize_local_snapshot_membership(&mut snapshot.metadata)?;
+        self.fill_local_snapshot_membership(&mut snapshot.metadata);
         let source = OriginalSnapshotChunkSource {
             source,
             snapshot: &source_snapshot,
         };
+
+        let mut staged_node = self.node.clone();
+        staged_node
+            .install_local_snapshot(snapshot.clone())
+            .map_err(local_snapshot_install_error)?;
 
         let boundary_index = snapshot.metadata.last_included_index;
         let written = self
@@ -606,69 +634,29 @@ impl<H: RaftHardStateStore, L: RaftLogSegment, S: RaftSnapshotStore + SnapshotCh
         if let Err(error) = written {
             return Err(self.poison(error));
         }
-        let mut staged_node = self.node.clone();
-        staged_node
-            .install_local_snapshot(snapshot)
-            .map_err(local_snapshot_install_error)?;
         self.node = staged_node;
         Ok(())
     }
 
-    fn normalize_local_snapshot_membership(
-        &self,
-        metadata: &mut RaftSnapshotMetadata,
-    ) -> Result<(), RaftRuntimeError> {
+    /// Records the boundary's committed configuration in a descriptor that
+    /// carries none, so the compacted-away membership survives in the bytes
+    /// this runtime is about to persist.
+    ///
+    /// This only fills a gap. A descriptor that *does* carry the field is left
+    /// exactly as the caller wrote it, and the kernel's install refuses it if it
+    /// disagrees with the local boundary — this crate deliberately keeps no
+    /// second copy of that comparison. Filling is the runtime's to do because
+    /// it owns the snapshot store; the kernel will not rewrite a descriptor a
+    /// caller may already have persisted elsewhere.
+    fn fill_local_snapshot_membership(&self, metadata: &mut RaftSnapshotMetadata) {
+        if metadata.committed_configuration.is_some() {
+            return;
+        }
         let snapshot_index = metadata.last_included_index;
-        let expected_membership = self.node.membership_at_index(snapshot_index);
-        let expected_configuration = self.node.committed_configuration_state_at(snapshot_index);
-        let expected = SnapshotCommittedConfiguration::new(
-            expected_configuration,
-            expected_membership.clone(),
-        );
-        match &metadata.committed_configuration {
-            None => {
-                metadata.committed_configuration = Some(expected);
-                Ok(())
-            }
-            Some(actual) if actual.membership != expected_membership => {
-                Err(RaftRuntimeError::SnapshotMembershipMismatch {
-                    snapshot_index,
-                    expected: Box::new(expected_membership),
-                    actual: Box::new(actual.membership.clone()),
-                })
-            }
-            Some(actual) if actual.configuration != expected_configuration => {
-                Err(RaftRuntimeError::SnapshotCommittedConfigurationMismatch {
-                    snapshot_index,
-                    expected: expected_configuration,
-                    actual: actual.configuration,
-                })
-            }
-            Some(_) => Ok(()),
-        }
-    }
-
-    fn validate_local_snapshot_boundary(
-        &self,
-        metadata: &RaftSnapshotMetadata,
-    ) -> Result<(), RaftRuntimeError> {
-        let snapshot_index = metadata.last_included_index;
-        let commit_index = self.node.commit_index();
-        if snapshot_index > commit_index {
-            return Err(RaftRuntimeError::SnapshotAheadOfCommit {
-                snapshot_index,
-                commit_index,
-            });
-        }
-        let local_term = self.node.term_at_index(snapshot_index);
-        if local_term != Some(metadata.last_included_term) {
-            return Err(RaftRuntimeError::SnapshotBoundaryTermMismatch {
-                snapshot_index,
-                snapshot_term: metadata.last_included_term,
-                local_term,
-            });
-        }
-        Ok(())
+        metadata.committed_configuration = Some(SnapshotCommittedConfiguration::new(
+            self.node.committed_configuration_state_at(snapshot_index),
+            self.node.membership_at_index(snapshot_index),
+        ));
     }
 
     /// Persists snapshot effects in kernel output order: each staged chunk
@@ -916,17 +904,66 @@ fn durable_last_log_index<L: RaftLogSegment>(log_segment: &L) -> LogIndex {
 
 /// Renders the kernel's local-install refusal in this crate's vocabulary.
 ///
-/// The runtime checks the same boundary before it writes anything, so this is
-/// unreachable in practice; it exists so the kernel's rule stays the one that
-/// decides, rather than being duplicated and then diverging.
+/// The kernel is the only place a local boundary is judged; this runtime asks
+/// it first, on a staged clone, and writes nothing until it agrees. So every
+/// refusal a caller sees from the compaction APIs arrives through here, and
+/// this crate keeps no second copy of the rules that could drift from them.
 fn local_snapshot_install_error(error: rafter::LocalSnapshotInstallError) -> RaftRuntimeError {
-    let rafter::LocalSnapshotInstallError::BoundaryAheadOfCommit {
-        snapshot_index,
-        commit_index,
-    } = error;
-    RaftRuntimeError::SnapshotAheadOfCommit {
-        snapshot_index,
-        commit_index,
+    match error {
+        rafter::LocalSnapshotInstallError::BoundaryBelowInstalledSnapshot {
+            snapshot_index,
+            installed_index,
+        } => RaftRuntimeError::SnapshotBelowInstalledBoundary {
+            snapshot_index,
+            installed_index,
+        },
+        rafter::LocalSnapshotInstallError::BoundaryAheadOfCommit {
+            snapshot_index,
+            commit_index,
+        } => RaftRuntimeError::SnapshotAheadOfCommit {
+            snapshot_index,
+            commit_index,
+        },
+        rafter::LocalSnapshotInstallError::BoundaryAheadOfApplied {
+            snapshot_index,
+            applied_index,
+        } => RaftRuntimeError::SnapshotAheadOfApplied {
+            snapshot_index,
+            applied_index,
+        },
+        rafter::LocalSnapshotInstallError::BoundaryTermMismatch {
+            snapshot_index,
+            snapshot_term,
+            local_term,
+        } => RaftRuntimeError::SnapshotBoundaryTermMismatch {
+            snapshot_index,
+            snapshot_term,
+            local_term,
+        },
+        rafter::LocalSnapshotInstallError::CommittedMembershipMismatch {
+            snapshot_index,
+            expected,
+            actual,
+        } => RaftRuntimeError::SnapshotMembershipMismatch {
+            snapshot_index,
+            expected,
+            actual,
+        },
+        rafter::LocalSnapshotInstallError::CommittedConfigurationMismatch {
+            snapshot_index,
+            expected,
+            actual,
+        } => RaftRuntimeError::SnapshotCommittedConfigurationMismatch {
+            snapshot_index,
+            expected,
+            actual,
+        },
+        // `LocalSnapshotInstallError` is `#[non_exhaustive]`: a kernel that
+        // gains a local-install rule must still be refused here rather than
+        // installed, and the rendered kernel error carries the reason.
+        other => RaftRuntimeError::SnapshotRefusedByKernel {
+            reason: other.to_string(),
+        },
     }
 }
 

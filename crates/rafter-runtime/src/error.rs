@@ -32,6 +32,26 @@ pub enum RaftRuntimeError {
         snapshot_index: LogIndex,
         commit_index: LogIndex,
     },
+    /// A local snapshot boundary lies within the committed prefix but above
+    /// what this node has applied, so compacting through it would skip
+    /// committed entries the state machine was never handed.
+    SnapshotAheadOfApplied {
+        snapshot_index: LogIndex,
+        applied_index: LogIndex,
+    },
+    /// A local snapshot boundary lies below the installed snapshot boundary, so
+    /// compacting through it would rewind the compacted prefix and replace a
+    /// newer descriptor with an older one.
+    SnapshotBelowInstalledBoundary {
+        snapshot_index: LogIndex,
+        installed_index: LogIndex,
+    },
+    /// The kernel refused a local snapshot install for a reason this crate
+    /// predates. [`rafter::LocalSnapshotInstallError`] is `#[non_exhaustive]`;
+    /// a rule added there must still refuse here, carrying its own rendering.
+    SnapshotRefusedByKernel {
+        reason: String,
+    },
     SnapshotBoundaryTermMismatch {
         snapshot_index: LogIndex,
         snapshot_term: Term,
@@ -97,12 +117,74 @@ impl fmt::Display for RaftRuntimeError {
                 formatter,
                 "pending Raft snapshot transfer could not be resumed: {error}"
             ),
+            Self::SnapshotAheadOfCommit { .. }
+            | Self::SnapshotAheadOfApplied { .. }
+            | Self::SnapshotBelowInstalledBoundary { .. }
+            | Self::SnapshotRefusedByKernel { .. }
+            | Self::SnapshotBoundaryTermMismatch { .. }
+            | Self::SnapshotMembershipMismatch { .. }
+            | Self::SnapshotCommittedConfigurationMismatch { .. } => {
+                self.fmt_local_snapshot_boundary(formatter)
+            }
+            Self::LogPrefixDiverged { index } => write!(
+                formatter,
+                "persisted Raft log diverges from committed state at index {index}"
+            ),
+            Self::UnsupportedConfigurationEntry { index } => write!(
+                formatter,
+                "Raft log entry at index {index} holds an unsupported configuration entry"
+            ),
+            Self::CompactionAheadOfSnapshot {
+                compacted_through,
+                snapshot_index,
+            } => write!(
+                formatter,
+                "durable Raft log is compacted through index {compacted_through} but the current snapshot only covers index {snapshot_index}"
+            ),
+            Self::LogBehindSnapshotBoundary {
+                segment_next_index,
+                snapshot_index,
+            } => write!(
+                formatter,
+                "durable Raft log can only append at index {segment_next_index}, at or behind the snapshot boundary {snapshot_index}; appending would mislabel entries"
+            ),
+            Self::Poisoned { cause } => write!(
+                formatter,
+                "Raft runtime is poisoned by an earlier fatal error: {cause}"
+            ),
+        }
+    }
+}
+
+impl RaftRuntimeError {
+    /// Renders the local-snapshot boundary refusals, which are one family: the
+    /// kernel's `LocalSnapshotInstallError` rules, in this crate's vocabulary.
+    fn fmt_local_snapshot_boundary(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
             Self::SnapshotAheadOfCommit {
                 snapshot_index,
                 commit_index,
             } => write!(
                 formatter,
                 "Raft snapshot boundary at index {snapshot_index} is ahead of commit index {commit_index}"
+            ),
+            Self::SnapshotAheadOfApplied {
+                snapshot_index,
+                applied_index,
+            } => write!(
+                formatter,
+                "Raft snapshot boundary at index {snapshot_index} is ahead of applied index {applied_index}"
+            ),
+            Self::SnapshotBelowInstalledBoundary {
+                snapshot_index,
+                installed_index,
+            } => write!(
+                formatter,
+                "Raft snapshot boundary at index {snapshot_index} lies below the installed boundary {installed_index}"
+            ),
+            Self::SnapshotRefusedByKernel { reason } => write!(
+                formatter,
+                "Raft snapshot boundary was refused by the kernel: {reason}"
             ),
             Self::SnapshotBoundaryTermMismatch {
                 snapshot_index,
@@ -136,32 +218,9 @@ impl fmt::Display for RaftRuntimeError {
                 formatter,
                 "Raft snapshot boundary at index {snapshot_index} recorded committed configuration {actual:?} but local committed configuration is {expected:?}"
             ),
-            Self::LogPrefixDiverged { index } => write!(
-                formatter,
-                "persisted Raft log diverges from committed state at index {index}"
-            ),
-            Self::UnsupportedConfigurationEntry { index } => write!(
-                formatter,
-                "Raft log entry at index {index} holds an unsupported configuration entry"
-            ),
-            Self::CompactionAheadOfSnapshot {
-                compacted_through,
-                snapshot_index,
-            } => write!(
-                formatter,
-                "durable Raft log is compacted through index {compacted_through} but the current snapshot only covers index {snapshot_index}"
-            ),
-            Self::LogBehindSnapshotBoundary {
-                segment_next_index,
-                snapshot_index,
-            } => write!(
-                formatter,
-                "durable Raft log can only append at index {segment_next_index}, at or behind the snapshot boundary {snapshot_index}; appending would mislabel entries"
-            ),
-            Self::Poisoned { cause } => write!(
-                formatter,
-                "Raft runtime is poisoned by an earlier fatal error: {cause}"
-            ),
+            // Unreachable: `Display` routes only the boundary family here, and
+            // that arm and this match list the same variants.
+            _ => Ok(()),
         }
     }
 }
@@ -178,6 +237,9 @@ impl Error for RaftRuntimeError {
             Self::PendingSnapshotTransferResume(error) => Some(error),
             Self::Poisoned { cause } => Some(cause),
             Self::SnapshotAheadOfCommit { .. }
+            | Self::SnapshotAheadOfApplied { .. }
+            | Self::SnapshotBelowInstalledBoundary { .. }
+            | Self::SnapshotRefusedByKernel { .. }
             | Self::SnapshotBoundaryTermMismatch { .. }
             | Self::SnapshotMembershipMismatch { .. }
             | Self::SnapshotCommittedConfigurationMismatch { .. }
@@ -314,6 +376,9 @@ impl RaftRuntimeFatalError {
             RaftRuntimeError::Bootstrap(_)
             | RaftRuntimeError::PendingSnapshotTransferResume(_)
             | RaftRuntimeError::SnapshotAheadOfCommit { .. }
+            | RaftRuntimeError::SnapshotAheadOfApplied { .. }
+            | RaftRuntimeError::SnapshotBelowInstalledBoundary { .. }
+            | RaftRuntimeError::SnapshotRefusedByKernel { .. }
             | RaftRuntimeError::SnapshotBoundaryTermMismatch { .. }
             | RaftRuntimeError::SnapshotMembershipMismatch { .. }
             | RaftRuntimeError::SnapshotCommittedConfigurationMismatch { .. }

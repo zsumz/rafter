@@ -111,12 +111,14 @@ fn runtime_rejects_local_snapshot_behind_installed_boundary_before_writes() {
     let before_log = runtime.log_segment.clone();
     let before_store = runtime.snapshot_store.clone();
 
+    // The refusal names what is actually wrong. A boundary below the installed
+    // one used to surface as a term mismatch, because nothing is retained down
+    // there to prove a term with — an accurate symptom of the wrong diagnosis.
     oracle_assert_eq!(
         runtime.compact_log_with_snapshot(raft_snapshot(3, 2, 5, b"older local snapshot")),
-        Err(RaftRuntimeError::SnapshotBoundaryTermMismatch {
+        Err(RaftRuntimeError::SnapshotBelowInstalledBoundary {
             snapshot_index: LogIndex(3),
-            snapshot_term: Term(2),
-            local_term: None,
+            installed_index: LogIndex(5),
         })
     );
     oracle_assert_eq!(runtime.snapshot_index(), LogIndex(5));
