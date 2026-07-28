@@ -248,18 +248,20 @@ where
             .lock()
             .restore_control_plane_checkpoint(checkpoint)
             .map_err(|reason| ManagedDriverError::InvalidControlPlaneCheckpoint { reason })?;
-        // **The history, then the endpoint**, which is now a preference rather
-        // than a correctness requirement and is kept for what it still buys.
-        // Each recovery output carries its own transition, so folding one out of
-        // order proves the same removals it would in order; what this order
-        // gives is that the driver's current committed state ends level with the
-        // runtime rather than at the last entry replayed, without depending on
-        // the endpoint being the later position.
+        // **The history, then the endpoint**, which is a preference rather than a
+        // correctness requirement: each recovery output carries its own
+        // transition, so folding one out of order proves the same removals. What
+        // the order buys is a current committed state that ends level with the
+        // runtime rather than at the last entry replayed.
         if !recovery_outputs.is_empty() {
-            driver
-                .inner
-                .lock()
-                .apply_recovery_outputs(recovery_outputs)?;
+            let mut state = driver.inner.lock();
+            state.apply_recovery_outputs(recovery_outputs)?;
+            // A crossing the replay carried can contradict the restored record,
+            // and the routing path has nowhere to return that; this is where it
+            // escapes. See `TransportDriverState::recorded_contradiction`.
+            if let Some(reason) = state.recorded_contradiction() {
+                return Err(ManagedDriverError::InvalidControlPlaneCheckpoint { reason });
+            }
         }
         // Published before the driver serves anything, so the transport's policy
         // is the group's membership from construction onward rather than
@@ -270,8 +272,7 @@ where
         // Fallible, and the failure is the one shape a constructor must not
         // absorb: a durable record and the runtime it was recovered beside,
         // standing at one position and disagreeing about the committed
-        // membership there. Nothing has been published when this refuses, and the
-        // driver being built is dropped rather than returned degraded.
+        // membership there. Nothing has been published when this refuses.
         driver
             .inner
             .lock()
@@ -885,7 +886,8 @@ where
         // apply. The driver records the refusal and stops serving; the supervisor
         // releases and rebuilds.
         let published = state
-            .publish_adopted_membership()
+            .recorded_contradiction()
+            .map_or_else(|| state.publish_adopted_membership(), Err)
             .map_err(|reason| ManagedDriverError::InvalidControlPlaneCheckpoint { reason });
         state.publish_metrics();
         applied.and(published)

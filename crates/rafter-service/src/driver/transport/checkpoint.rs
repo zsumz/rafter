@@ -379,10 +379,10 @@ pub(super) struct IncomingObservation<'a> {
 ///   would be choosing which side to believe with nothing to decide on, and
 ///   merging them would invent a third neither side ever held.
 ///
-/// # What normalization is for
+/// # What normalization is for, and what it deliberately is not
 ///
-/// Both sides are filtered by `spent` and by `proven_removed` *before* the tie is
-/// judged, and each half of that is load-bearing.
+/// **Spent-ness is normalized away before the tie is judged, and the incoming
+/// fact's own removals are not.**
 ///
 /// `spent` is what keeps a **readmission** from reading as corruption. A cluster
 /// that names an already-spent identity again has broken the single-use contract,
@@ -390,16 +390,25 @@ pub(super) struct IncomingObservation<'a> {
 /// violation at `readmitted_retired_peers`. The raw membership a runtime reports
 /// contains the readmitted identity and the held register does not, which is a
 /// difference with a known cause, so it must not be reported as a damaged file.
+/// It is applied to both sides rather than only to the incoming one, which is
+/// what keeps the merge symmetric — and symmetry is a property the checkpoint
+/// join needs, since a supervisor has no correct order to read two peers' records
+/// in.
 ///
-/// `proven_removed` is what keeps a **crossing at the register's own position**
-/// from reading as one. The transition says which identities left; the held state
-/// has either already absorbed them or is about to. Either way the two agree once
-/// the transition is applied to both.
+/// `proven_removed` is not, and the reason is that it cannot discriminate. A
+/// crossing at position `p` carries the committed configuration *at* `p`, and its
+/// removal set is `previous ∖ configuration` — disjoint from that configuration
+/// by construction. Any honest observation at `p` reports the same configuration,
+/// so the removal set is disjoint from the held membership too, and subtracting
+/// it from both sides changes neither. The only pair it can change is one where
+/// the held state names an identity the transition at that very index removed —
+/// a record disagreeing with the kernel's own account of its own index, which is
+/// exactly what this arm exists to refuse. A normalization that fires only on the
+/// case the check exists to catch is a hole with a justification attached.
 ///
-/// The normalization is applied to both sides rather than only to the incoming
-/// one, which is what keeps the merge symmetric — and symmetry is a property the
-/// checkpoint join needs, since a supervisor has no correct order to read two
-/// peers' records in.
+/// The removals themselves are still absorbed: they raise the mark through the
+/// fact's `named` set, and an identity at or below the mark that the membership
+/// does not name is spent. Nothing about a tie loses them.
 ///
 /// # Errors
 ///
@@ -420,8 +429,9 @@ pub(super) fn merge_current_state(
         Ordering::Less => (&held.membership, incoming.membership),
         Ordering::Greater => (incoming.membership, &held.membership),
         Ordering::Equal => {
-            let held_live = live(&held.membership, incoming.proven_removed, spent);
-            let incoming_live = live(incoming.membership, incoming.proven_removed, spent);
+            let nothing = BTreeSet::new();
+            let held_live = live(&held.membership, &nothing, spent);
+            let incoming_live = live(incoming.membership, &nothing, spent);
             if held_live != incoming_live {
                 return Err(ControlPlaneCheckpointError::ContradictoryCurrentState {
                     through: held.through,

@@ -962,6 +962,19 @@ where
         .map(|_| ())
     }
 
+    /// The contradiction this driver recorded while routing, if it recorded one.
+    ///
+    /// **The only way a refusal escapes the routing path.** `route_membership_event`
+    /// has nowhere to return one — it runs from every step outcome, including a
+    /// failing one — so it records instead, and the two entry points that *can*
+    /// refuse ask here once their recovery outputs have been routed. A driver
+    /// that opened over a durable record its own replayed history contradicts
+    /// would be serving from inputs it has already declared untrustworthy.
+    pub(super) fn recorded_contradiction(&self) -> Option<ControlPlaneCheckpointError> {
+        self.contradicted_at
+            .map(|through| ControlPlaneCheckpointError::ContradictoryCurrentState { through })
+    }
+
     /// The endpoint observation and effective membership one runtime reports.
     ///
     /// Shared by the check and the publication so the question asked before an

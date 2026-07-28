@@ -31,7 +31,8 @@ use rafter::{ConfigurationEntry, ConfigurationId, MembershipSet, NodeConfig};
 use rafter_app::group::RaftGroup;
 use rafter_runtime::DurableRaftNode;
 use rafter_service::{
-    CurrentCommittedState, PeerControlPlaneCheckpoint, TransportDriverOptions, TransportRaftDriver,
+    ControlPlaneCheckpointError, CurrentCommittedState, ManagedDriverError,
+    PeerControlPlaneCheckpoint, TransportDriverOptions, TransportRaftDriver,
 };
 use rafter_storage::{
     InMemoryRaftHardStateStore, InMemoryRaftLogSegment, InMemoryRaftSnapshotStore,
@@ -227,6 +228,69 @@ fn adopt_above(
     )
     .expect("a recovered replica opens");
     (driver, transport)
+}
+
+/// The same, returning the refusal rather than panicking on it.
+fn try_adopt_under(
+    checkpoint: PeerControlPlaneCheckpoint<u64>,
+    configurations: [&[u64]; 2],
+) -> Result<Driver, ManagedDriverError> {
+    let (runtime, recovery_outputs) = recovered_runtime(configurations, APPLIED_FLOOR);
+    let transport = QueueTransport::default();
+    let validator = Validator {
+        transport: transport.clone(),
+        authorized: [NodeId(2), NodeId(3), NodeId(5)].into_iter().collect(),
+        nameable: Nameable::all(),
+    };
+    let app = KvStateMachine {
+        applied_index: APPLIED_FLOOR,
+        ..KvStateMachine::default()
+    };
+    TransportRaftDriver::with_control_plane_checkpoint(
+        RaftGroup::with_applied_index(GROUP, NodeId(1), runtime, app, APPLIED_FLOOR),
+        recovery_outputs,
+        transport.clone(),
+        validator,
+        TransportDriverOptions::default(),
+        checkpoint,
+    )
+}
+
+/// A record that disagrees with the kernel's own transition at that transition's
+/// index refuses to open.
+///
+/// **The tie arm, reached by a crossing rather than by a record pair, and the one
+/// place the routing path has to hand a refusal back.** The record says the
+/// committed membership at index 7 is `{1,2,3,5}`; the configuration entry *at*
+/// index 7 says it is `{1,2,3}`, and the crossing that replays it carries the
+/// kernel's own `previous` to prove the transition. Two claims about one
+/// committed configuration, and neither side's spent-ness explains the gap —
+/// node 5 is live in the record, so the record does not spend it.
+///
+/// `route_membership_event` has nowhere to return that, because it runs from
+/// every step outcome including a failing one. It records instead, and the
+/// constructor asks once the replay is done: a driver that opened here would be
+/// serving from inputs it has already declared untrustworthy.
+///
+/// A merge that normalized the comparison by the crossing's own removal set
+/// would let the transition quietly overrule the record, which is the one pair
+/// such a normalization can change — a crossing's removals are disjoint from the
+/// configuration it carries, so on every honest input the term is a no-op and on
+/// this one it is a hole.
+#[test]
+fn a_record_disagreeing_with_a_transition_at_its_own_index_refuses_to_open() {
+    let refused = try_adopt_under(record_at(5, &[1, 2, 3, 5], SECOND_AT), ADMIT_THEN_REMOVE);
+
+    assert!(
+        matches!(
+            refused.as_ref().map(|_| ()),
+            Err(ManagedDriverError::InvalidControlPlaneCheckpoint {
+                reason: ControlPlaneCheckpointError::ContradictoryCurrentState { through }
+            }) if *through == SECOND_AT
+        ),
+        "got {:?}",
+        refused.map(|_| "a driver")
+    );
 }
 
 /// The membership a driver's record calls live.

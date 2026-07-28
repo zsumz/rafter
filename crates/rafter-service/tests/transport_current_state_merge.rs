@@ -254,3 +254,96 @@ fn a_record_and_a_runtime_that_agree_at_one_position_open() {
         "and the link layer was told who may speak"
     );
 }
+
+/// A runtime that contradicts the register mid-flight stops the driver serving
+/// and stops it publishing.
+///
+/// **The live path, which is the one that cannot return a refusal.**
+/// `route_membership_event` runs from every step outcome including a failing one,
+/// so a committed fact that disagrees with the register at the register's own
+/// position has nowhere to be raised — it is recorded, and
+/// [`DriverServiceState::ContradictoryCurrentState`] is how a supervisor hears
+/// about it.
+///
+/// It takes a runtime breaking its own contract to produce, and that is the
+/// honest description of the fixture rather than an apology for it: one commit
+/// index names one committed membership for good, so a *correct* runtime cannot
+/// report two. What the driver must not do is believe the second one. Retiring
+/// node 3 here would be permanent — the floor never falls — and there is nothing
+/// deciding which of the two claims is the true one.
+///
+/// Two things hold afterwards. Client work is refused with a reason that names
+/// the position, and every later entry point's flush publishes nothing: the last
+/// policy the link layer accepted was licensed by inputs that agreed, and no
+/// policy this driver could derive now is.
+#[test]
+fn a_runtime_that_contradicts_the_register_stops_serving_and_stops_publishing() {
+    let runtime = ScriptedMembershipRuntime::for_node_at(NodeId(1), &[1, 2, 3], &[1, 2, 3], AT);
+    let handle = runtime.handle();
+    let (driver, transport) = scripted_driver_with_checkpoint(
+        runtime,
+        Nameable::all(),
+        &[NodeId(2), NodeId(3)],
+        rafter_service::TransportDriverOptions::default(),
+        record(3, &[1, 2, 3]),
+    );
+    assert_eq!(driver.service_state(), DriverServiceState::Serving);
+    let published_before = transport.policies();
+
+    // The committed membership moves and the commit index does not, which is the
+    // pair a correct runtime cannot produce.
+    contradict_committed_in_place(&handle, &[1, 2]);
+    driver.tick().expect("the protocol still advances");
+
+    assert_eq!(
+        driver.service_state(),
+        DriverServiceState::ContradictoryCurrentState { through: AT },
+        "the driver names the position its two inputs disagree at"
+    );
+    assert_eq!(
+        live_of(&driver),
+        ids(&[1, 2, 3]),
+        "and moved nothing: the register is still the last consistent reading"
+    );
+
+    let refused = driver
+        .begin_write(
+            ("key".to_owned(), "value".to_owned()),
+            rafter_service::WriteOptions::default(),
+        )
+        .map(|(id, _future)| id)
+        .expect_err("a driver whose licensing inputs disagree takes no client work");
+    assert!(
+        matches!(
+            refused,
+            WriteError::Unavailable {
+                reason: rafter_service::DriverUnavailableReason::ContradictoryCurrentState
+            }
+        ),
+        "got {refused:?}"
+    );
+
+    // **And the flush stays silent even when something it *could* publish
+    // moves.** A driver that only stopped publishing because nothing changed
+    // would be relying on the accident that the refused fact moved nothing. The
+    // effective configuration widens here — the committed one does not, so the
+    // index is untouched and the fixture stays as dishonest as it already was —
+    // and the peer set that widening would license is withheld with everything
+    // else.
+    change_on_step(&handle, &[1, 2, 3, 4], &[1, 2]);
+    driver.tick().expect("later entry points still run");
+    driver
+        .drive_pending_reads()
+        .expect("and so does the third one");
+    assert!(
+        driver.peer_policy_is_stale(),
+        "the driver knows its link layer is behind what it would otherwise \
+         publish"
+    );
+    assert_eq!(
+        transport.policies(),
+        published_before,
+        "and publishes nothing anyway, because a retirement floor is permanent \
+         and none of the ones derivable here is licensed"
+    );
+}

@@ -176,6 +176,26 @@ pub(crate) fn change_on_step(
     lock_membership(handle).change_on_step = Some((effective.to_vec(), committed.to_vec()));
 }
 
+/// Moves the committed membership *without* advancing the commit index, which is
+/// a runtime breaking its own contract.
+///
+/// **Deliberately dishonest, and the only fixture here that is.** One commit
+/// index names one committed membership for good — [`ScriptedMembership`] says so
+/// and every other helper keeps it — so this produces the pair no correct runtime
+/// can: two claims about the committed configuration at one position. It exists
+/// because the driver's answer to that pair is a behaviour with no other
+/// producer: the routing path cannot return a refusal, so it records one, and
+/// what has to hold afterwards is that the driver stops serving and stops
+/// publishing.
+pub(crate) fn contradict_committed_in_place(
+    handle: &Arc<Mutex<ScriptedMembership>>,
+    committed: &[u64],
+) {
+    let mut state = lock_membership(handle);
+    state.change_on_step = None;
+    state.committed = committed.to_vec();
+}
+
 /// Arms outputs the runtime releases from its next `step`.
 ///
 /// Paired with [`change_on_step`] to script the one shape a per-step membership
