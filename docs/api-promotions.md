@@ -8548,7 +8548,20 @@ than a cursor.
 | `reference/fenced-lock/src/bin/lock-node/control_plane.rs` | format v5; `through`; the v4 refusal argument; the collapsed invariant |
 
 **The detector inventory rotates** with the kernel vocabulary change and is
-reported rather than re-pinned.
+reported rather than re-pinned. `rafter` is one of the two replay targets and the
+fingerprint covers file contents, so `Output::ConfigurationCommitted` gaining a
+field moves it. The shape is unchanged — 77 fixtures, 79 evidence bindings, 2
+targets, before and after — which is what says the inventory rotated rather than
+grew:
+
+```text
+reviewed  c272b24cd5c6db61b577f88eef15dc7691c2f28ad0a008c89c105d1bc44382a4
+found     a2721aae06fdb898640a42fc32d111896b86fbfbe49dd1b3ebeb1dfcaac88d19
+```
+
+`every_profile_replay_inventory_has_the_exact_reviewed_identity` fails until
+`REVIEWED_DETECTOR_REPLAY_INVENTORY_SHA256` is re-pinned, which is a reviewer's
+act rather than an implementer's.
 
 #### Focused-test plan for the thirteenth revision
 
