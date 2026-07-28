@@ -7162,6 +7162,12 @@ The checkpoint, offset included:
 
 The fence set:
 
+*(Table removed in the [fourteenth revision](#fourteenth-revision-after-adoption-2026-07-28)
+along with the mechanism it covered. There is no fence set: retirement is a floor
+published beside the peer set and re-derived from the mark, so every row's
+question — "what does this driver still owe the link layer" — has one answer at
+every lifecycle point. The published-policy table there replaces it.)*
+
 | Path | Behavior | Covered by |
 | --- | --- | --- |
 | fresh `new` | empty | `recommitting_the_same_membership_retires_nothing` |
@@ -8653,6 +8659,417 @@ comparison against the register *is* the removal. Only
 `a_removal_beneath_a_later_record_is_still_spent_and_fenced` exercise the
 inference against a record standing later, which is the case the derivation was
 added for.
+
+### Fourteenth revision after adoption (2026-07-28)
+
+A tenth external review found **the last collapsed distinction in the retirement
+model** and **one merge rule written four times, three of them wrong**. Both P1s
+were reproduced with a failing test before anything changed. This is the largest
+breaking change the transport boundary has taken pre-release, and it is a
+deletion: `RaftTransport::fence_peer` is gone, and with it the obligation ledger
+every revision since the seventh has been repairing.
+
+#### 1. One bit answering two questions
+
+`is_spent(id)` answers **"may this identity ever be admitted again"**. The fence
+derivation read it as **"has this identity's link layer been told"**, and the two
+come apart wherever a driver's *knowledge* of a retirement and its *link layer's*
+knowledge of it have different provenance.
+
+Three histories compressed to that one bit: a fence this driver's link layer
+accepted, a removal this driver never witnessed, and an allocation gap nothing
+ever committed. The reviewer's counterexample separates the first two. Mark 6,
+current `{1,6}` — the honest shape a snapshot-derived record has — and an exact
+committed transition `{1,4} → {1}` replayed beneath it:
+
+- `was_spent(4)` is true before the crossing is folded: `4 ≤ 6` and `4 ∉ {1,6}`.
+- So the `∖ spent` filter guarding the obligation dropped it, and the strongest
+  evidence this system has — the kernel's own transition, computed where the
+  chronology is known — produced **no statement to the link layer at all**.
+
+And this process's link layer is *new*. `published_peers` deliberately does not
+survive a restart, on the stated grounds that a new process has a link layer that
+has accepted nothing. The record said node 4 was retired; nothing had told this
+transport so.
+
+**The join had the same defect one layer up, and it broke order-freedom.** The
+fence output was `fences_a ∪ fences_b ∪ (inferred ∖ (S_a ∪ S_b))`, and that last
+term reads the accumulated spent set to decide a side effect. With records at
+positions 7, 10 and 12:
+
+| order | settled record | retired at the link layer |
+| --- | --- | --- |
+| `(A∨B)∨C` | `{mark 6, @12 {1,6}}` | node 4 |
+| `A∨(B∨C)` | `{mark 6, @12 {1,6}}` | nothing |
+
+Joining B and C first raises the mark to 6, which makes node 4 test as
+already-spent by the time A arrives, and an inference filtered by spent-ness
+derives nothing. **The twelfth revision's order-freedom proof was not wrong; it
+was incomplete.** It proved the spent set order-free and never mentioned the
+second output.
+
+#### 2. The three designs, and why deletion beat both records
+
+The reviewer offered three:
+
+- **(a) A durable fence ledger.** Strengthen `is_fenced_peer` into an
+  authoritative acknowledgement record; every removal is an obligation regardless
+  of spent-ness. This answers the provenance question by *recording* it.
+- **(b) Per-removal fence status in the checkpoint.** The same answer, made
+  durable, and unbounded: one entry per removal for the life of the group.
+- **(c) A transport-level bounded retirement policy.** "Deny every `NodeId` at or
+  below a high-water floor except the current live IDs."
+
+**(c), and the reason is that it does not answer the provenance question — it
+deletes it.** With no per-principal side effect, there is nothing whose
+provenance could be in doubt, every join output is a lattice operation again, and
+order-freedom is restored *by construction* rather than re-proved. That is the
+same move the last four revisions made and the same reason: every fix in this
+entry that survived deleted machinery.
+
+It also fits the model unusually well, which is the reviewer's phrase and is
+worth unpacking. Under the single-use, monotonically-allocated identity contract
+`rafter::NodeId` states, every identity a group has ever committed is at or below
+the greatest one it has committed. So "authorized, plus that greatest identity" is
+a *complete* statement of who may speak and who is retired — one set the size of
+the cluster and one number, with no history behind either.
+
+#### 3. The consequence map, traced
+
+`RaftTransport::update_peers` now carries a `PeerPolicy<P>`: the authorized
+principals beside `retirement_floor: Option<NodeId>`. `PeerSet<P>` is gone.
+`fence_peer` is gone.
+
+**The rule.** A principal in `peers` is authorized. An identity at or below the
+floor whose principal is not in `peers` is **retired**. An identity above the
+floor is merely not authorized yet — a joiner whose addition has not committed
+here, or a replica the deployment has provisioned and the cluster has not
+admitted. Keeping the two apart is what lets a directory derive both
+`is_authorized_peer` and `is_fenced_peer` from one published value, which is what
+preserves round 4's layering: `FencedPeer` is still checked before `is_member`,
+and it still means something a later publication will not repair.
+
+**Publication staleness.** Unchanged in shape and bounded more tightly than
+before. The floor is monotone, so a policy the link layer missed retires *fewer*
+identities and never more; the driver's own inbound membership check refuses the
+retired replica in that window; and `peer_policy_is_stale` reports it as one
+state. An implementation may keep the highest floor it has ever accepted, and
+both shipped implementations do.
+
+**Where the old model denied and the new one admits.** Traced exhaustively,
+because the reviewer asked for it and because one hit is real.
+
+1. **A directory that can name the removed replica but not a live one.**
+   *This is the hit.* A policy is one statement, so a peer set that cannot be
+   published withholds the floor with it; the old model published the fence
+   anyway, per principal. `a_committed_removal_is_withheld_with_the_peer_set_it_travels_with`
+   pins the new behavior and
+   `a_removed_replica_cannot_speak_after_the_publication_was_refused` pins the
+   layer that catches it — and asserts `NotInMembership` specifically, because a
+   test that accepted either refusal would pass whichever layer happened to act.
+
+   **It is a trade rather than a loss.** What arrived is the reverse and commoner
+   case: retirement names no principal, so a directory that has forgotten a
+   replica the moment its removal committed can still retire it
+   (`a_removal_needs_no_principal_of_its_own`). Under (a) or (b) that replica is
+   permanently unfenced. Publishability now depends on exactly the condition the
+   peer set has always had, and on no separate per-removed-principal lookup.
+
+2. **A transport whose fenced set outlives the driver.** `fence_peer` let an
+   implementation hold an append-only fenced set for the life of the *group*; a
+   policy is replaced whole on each publication, so a driver that re-authorized
+   an identity would un-retire it. The driver never does — `desired_peers`
+   filters `is_spent`, which is monotone within an incarnation — and across
+   incarnations the shipped model already assumes a fresh link layer that has
+   accepted nothing. So the layer being given up was never in the shipped model.
+   Recorded rather than hidden: the permanence of a denial is now a property of
+   *the driver's* monotone spent test plus the checkpoint that carries it, not of
+   an append-only set at the transport.
+
+3. **The local replica's deferred fence.** Old: skipped while the driver *was*
+   that replica, made after adoption under a fresh identity. New: the policy
+   retires the local identity the moment its removal commits — and that costs the
+   stepping-down replica nothing, because a policy says who may speak *to* this
+   node and a node is not a peer of itself. Its peers stay authorized and it
+   keeps receiving replication
+   (`the_local_replicas_retirement_needs_no_deferral`). The deferral machinery is
+   deleted, not relocated.
+
+4. **The exact-removal case the reviewer found.** Old: admitted. New: denied by
+   the floor. This is the direction the whole change is for.
+
+**Leaving with the ledger**, each named with its replacement:
+
+| removed | replacement |
+| --- | --- |
+| `RaftTransport::fence_peer` | `update_peers` carrying `PeerPolicy::retirement_floor` |
+| `PeerSet<P>` | `PeerPolicy<P>` |
+| `PeerControlPlaneCheckpoint::pending_fences` | nothing — the floor is a function of the mark |
+| `TransportRaftDriver::pending_peer_fences` | `TransportRaftDriver::peer_policy_is_stale` |
+| `TransportRaftDriver::peer_set_is_stale` | `peer_policy_is_stale` (renamed: the floor can move without the set) |
+| `TransportDriverOptions::fence_backlog_service_threshold` and its setter | nothing — there is no unbounded structure to threshold |
+| `DriverServiceState::FenceBacklog` | `DriverServiceState::ContradictoryCurrentState` |
+| `DriverUnavailableReason::FenceBacklog` | `DriverUnavailableReason::ContradictoryCurrentState` |
+| `ControlPlaneCheckpointError::FenceNamesLiveMember` | nothing — no fence set to contradict |
+| `ControlPlaneCheckpointError::FenceNamesUnspentIdentity` | nothing, same reason |
+| the deferred self-fence | the floor plus the peer set's exclusion of `node_id` |
+| lock format `rafter-lock-control-plane 5` | version 6, without the `fences` line |
+
+**The validator contract shrank.** `principal_for_node` no longer requires a
+directory to keep a removed replica's mapping resolvable, because no
+per-removed-principal call is ever made. `is_fenced_peer` survives and is now
+documented as *policy-derived* rather than recorded, which is what keeps the
+refusal a distinct typed variant while deleting the mechanism behind it.
+
+`is_spent` keeps exactly one job: allocation retirement — the adoption gate,
+readmission refusal, the inbound check, and the `NotMember`/`Decommissioned`
+derivation. It never again suppresses or deduplicates a transport effect.
+
+#### 4. The order-freedom proof, restated and re-proved
+
+Let `S_x` be the spent set of record `x`, `L_x` its live set, and `older`/`newer`
+the two current states ordered by `through`:
+
+```text
+mark     = max(mark_a, mark_b)
+spent    = S_a ∪ S_b
+inferred = older.membership \ newer.membership
+current  = { through: max(through_a, through_b),
+             membership: newer.membership \ inferred \ spent }
+```
+
+There is no fifth line. Every operator is `max`, `∪`, `∖`, or "the later of the
+two, refusing a tie that disagrees", and the three properties now hold of the
+whole operation rather than of the spent set alone:
+
+1. *Symmetric.* Every operator is symmetric in `a` and `b`, and the tie is
+   symmetric precisely because it is refused rather than broken — and because the
+   normalization that decides it is applied to both sides.
+2. *Order-free.* `S_join ⊇ S_a ∪ S_b`; position is `max`, which is associative;
+   the joined membership is the newest observation minus an accumulated spent set,
+   so a third record sees the same newest observation and a spent set that only
+   grew. Idempotent by inspection. **And the join has no other output to be
+   order-free in**, which is the clause the previous proof was missing rather than
+   getting wrong.
+3. *Monotone in spent-ness.* From (2), every identity either side witnessed spent
+   is spent in the join and in every later join.
+
+`three_positioned_records_retire_the_same_identities_in_any_order` permutes three
+records at three distinct positions and asserts **the identities the link layer
+ends up retiring** as well as the settled record. That second assertion is the
+one the previous permutation test could not make: it kept every record at one
+position, so the register's inference never fired.
+
+#### 5. One fallible current-state merge, everywhere
+
+Four sites merged two observations of the committed membership — checkpoint ×
+checkpoint, checkpoint × adopted-runtime endpoint, held state × routed
+`CommittedEndpoint`, held state × register-advancing crossing — and **only the
+first refused a tie**. The other three let the incoming fact win, which is:
+
+- **silently retiring a live replica** when the record names more than the
+  runtime, because the difference becomes a committed removal nothing committed;
+  and
+- **silently raising the floor past a never-committed identity** when the record
+  names less, because the mark rises to cover something the durable record says
+  was never committed.
+
+Both directions are pinned in
+`a_record_and_a_runtime_that_disagree_at_one_position_refuse_to_open`.
+
+They are now one `merge_current_state`. `observe_committed_members`,
+`publish_membership` and `publish_adopted_membership` are fallible;
+`check_adopted_membership` asks the offered runtime the same question **before**
+an adoption installs the group, so a contradiction there joins the refusals that
+leave the driver holding nothing.
+
+**The carve-out is the readmission, and it is a regression rather than a
+footnote.** A cluster that names an already-spent identity again has broken the
+single-use contract, and this driver has always had an answer — refuse the
+replica, count it at `readmitted_retired_peers`. The raw membership a runtime
+reports contains the readmitted identity and the held register does not, so
+without normalization that difference reads as a damaged file and a
+configuration bug becomes a replica that will not start.
+`a_readmitted_spent_identity_is_counted_rather_than_refused` pins it.
+
+**Normalization is by spent-ness and by nothing else**, and that is a deviation
+from the review's own wording, taken on mutation evidence. The instruction was to
+"incorporate the fact's own removal evidence" into the comparison. A crossing at
+position `p` carries the committed configuration *at* `p`, and its removal set is
+`previous ∖ configuration` — disjoint from that configuration by construction,
+therefore disjoint from any honest observation at `p`. So the term changes
+neither side on every honest input, and the only pair it *can* change is a record
+naming an identity the transition at that very index removed: a record
+disagreeing with the kernel's own account of its own index, which is exactly what
+the arm exists to refuse. Neutralizing the term passed the entire suite; a
+normalization that fires only on the case the check is for is a hole with a
+justification attached.
+`a_record_disagreeing_with_a_transition_at_its_own_index_refuses_to_open` fails
+without the deletion.
+
+**The live path.** `route_membership_event` runs from every step outcome
+including a failing one, so it has nowhere to return a refusal to. It records —
+`contradicted_at` — and three things follow: `service_state` reports
+`ContradictoryCurrentState { through }`, outranking both conclusions drawn from
+the membership facts because it says those facts cannot be trusted; the flush
+publishes nothing while it stands, because a retirement floor is permanent and a
+permanent statement issued from contradictory inputs is the one mistake no later
+publication corrects; and both entry points ask `recorded_contradiction` once
+their recovery outputs are routed, so a *replayed* crossing that contradicts the
+restored record refuses to open rather than opening degraded.
+
+The driver keeps ticking and delivering throughout. A replica in this state is
+still a useful follower and still has to be able to catch up; what stops is
+client work and permanent statements.
+
+#### 6. Lock format version 6, and a refusal whose reason is new
+
+The `fences` line is gone. **A version-5 file is refused rather than migrated,
+and this time the mapping was knowable** — which is worth stating plainly,
+because versions 3 and 4 were refused on the opposite grounds. A version-5
+`fences` line named identities its own invariant check required to be at or below
+the mark and absent from the live set, which is exactly the set the floor
+retires; ignoring it would lose nothing.
+
+What refusing protects is the reader. Migrating means accepting a seventh line
+where six are expected, and refusing exactly that is how a partial overwrite of a
+longer record is told from a finished write. Teaching this decoder to skip one
+line it did not expect is teaching it to skip the line that says a write was
+truncated.
+
+#### The lifecycle matrix, re-audited
+
+**Deleted whole: the thirteenth revision's fence-set table.** Ten rows describing
+when an obligation was recorded, deferred, retried and discharged. There is no
+obligation. Nothing replaces the rows one for one, because the question they
+answered — "what does this driver still owe the link layer" — has one answer for
+every cell: whatever `desired_policy()` derives, retried at the next entry point.
+
+**New table — the published policy.** What the link layer holds at each lifecycle
+point, and what refuses a retired replica while it does not.
+
+| lifecycle point | policy published | what refuses meanwhile | test |
+| --- | --- | --- | --- |
+| `new` over empty storage | peers ∪ floor from the bootstrap configuration | nothing to refuse | `membership_reaches_the_transports_peer_set` |
+| `with_control_plane_checkpoint` | the restored mark's floor, before serving | — | `a_rebuilt_driver_retries_the_fence_and_keeps_the_identity_spent` |
+| recovery-output replay | published after each fact that moves the record | the driver's own `is_member` | `a_replayed_removal_reaches_the_same_published_policy` |
+| live `deliver`/`tick` | on every entry point, idempotently | `is_member` while stale | `a_refused_retirement_is_retried_until_the_link_accepts_it` |
+| a step that fails | published anyway — the membership moved | `is_member` | `an_undecodable_entry_does_not_hide_the_configurations_committed_behind_it` |
+| the link refuses | withheld whole, re-derived next entry point | `is_member` | `a_crossed_removal_is_republished_until_the_link_takes_it` |
+| the directory cannot name a live peer | withheld whole, floor included | `is_member` | `a_committed_removal_is_withheld_with_the_peer_set_it_travels_with` |
+| the directory cannot name the *removed* peer | published in full | — | `a_removal_needs_no_principal_of_its_own` |
+| the local replica is removed | published; the local identity is retired at once | — | `the_local_replicas_retirement_needs_no_deferral` |
+| `release_group` | nothing retracted; the previous policy stands | — | `control_plane_work_still_owed_survives_release_and_adoption` |
+| `adopt_group` under a fresh identity | re-derived and republished; the old identity is under the floor | — | `the_local_replicas_retirement_needs_no_deferral` |
+| `shutdown` | nothing published, nothing retracted | — | `a_shut_down_driver_still_reports_what_its_embedder_must_persist` |
+| inputs contradict | **nothing published, at any later entry point** | `is_member` | `a_runtime_that_contradicts_the_register_stops_serving_and_stops_publishing` |
+
+**New table — where two observations meet.** One rule, four callers, and what
+each does with a tie.
+
+| site | proven removals | tie refuses | test |
+| --- | --- | --- | --- |
+| checkpoint × checkpoint | none — a record carries no transition | yes | `two_records_that_disagree_at_one_position_are_refused` |
+| checkpoint × adopted runtime, before installation | none | yes, with no group installed | `adoption_over_a_contradicted_runtime_refuses_and_installs_nothing` |
+| held state × routed endpoint | none | yes, recorded on the live path | `a_runtime_that_contradicts_the_register_stops_serving_and_stops_publishing` |
+| held state × crossing | `previous ∖ configuration` | yes | `a_record_disagreeing_with_a_transition_at_its_own_index_refuses_to_open` |
+
+**Uncovered, and named rather than omitted:**
+
+- **A contradiction discovered after the group is installed by an adoption.**
+  Reachable in principle — `check_adopted_membership` clears the record against
+  the runtime before installation, so only a *recovery output* could introduce
+  one afterwards — and no fixture reaches it, because the pre-install check
+  catches every pair the recovery fixtures can produce. The behavior is the
+  adoption path returning the typed error with the group installed, which is the
+  contract `adopt_group_with_checkpoint` already documents for a failed apply.
+- **A transport that persists its accepted policy across a process.** The shipped
+  model assumes a fresh link layer that has accepted nothing, so nothing here
+  exercises a floor surviving a restart *at the transport*. Both shipped
+  implementations keep the maximum floor they have accepted, which is what makes
+  it safe if one ever does.
+- **A group whose `NodeId` allocation is non-monotonic across a compaction
+  boundary.** Unchanged from the eleventh revision: the mark cannot see below a
+  snapshot boundary, and the deployment's allocator is the only backstop.
+
+#### Blast radius of the fourteenth revision
+
+**Kernel: none.** `crates/rafter/` is untouched, and the detector-replay
+inventory is deliberately not re-pinned.
+
+| file | change |
+| --- | --- |
+| `crates/rafter-service/src/transport.rs` | `PeerSet` → `PeerPolicy`; `fence_peer` deleted; `update_peers` rewritten |
+| `crates/rafter-app/src/transport.rs` | `principal_for_node`'s removed-ID clause deleted; `is_fenced_peer` documented as policy-derived |
+| `crates/rafter-service/src/driver/transport/control_plane.rs` | policy derivation, fallible observation, `flush_peer_policy`, `check_adopted_membership`, `recorded_contradiction`; `flush_pending_fences` and the backlog threshold deleted |
+| `crates/rafter-service/src/driver/transport/checkpoint.rs` | `pending_fences` deleted; `merge_current_state` added; the algebra doc re-proved |
+| `crates/rafter-service/src/driver/transport/state.rs` | `DesiredPeerPolicy`, `published_policy`, `contradicted_at`; `pending_fences` deleted; `DriverServiceState` variant swap |
+| `crates/rafter-service/src/driver/transport/bounds.rs` | the fence-backlog option deleted |
+| `crates/rafter-service/src/driver/transport/health.rs` | `pending_peer_fences` deleted; `peer_set_is_stale` → `peer_policy_is_stale` |
+| `crates/rafter-service/src/driver/transport.rs` | fallible construction and adoption |
+| `crates/rafter-service/src/driver/mapping.rs` | two error variants deleted, one re-documented |
+| `crates/rafter-service/src/error/vocabulary.rs` | `FenceBacklog` → `ContradictoryCurrentState` |
+| `reference/fenced-lock/src/bin/lock-node/peer_link.rs` | `PeerDirectory` holds a floor; `is_fenced_peer` derived |
+| `reference/fenced-lock/src/bin/lock-node/control_plane.rs` | format version 6 |
+| `crates/rafter-service/tests/transport_current_state_merge.rs` | new file — the one merge, all four sites |
+
+#### Focused-test plan for the fourteenth revision
+
+| mechanism | neutralization | fails |
+| --- | --- | --- |
+| the retirement floor | `retirement_floor: None` in `desired_policy` | 43 cases across 8 binaries |
+| the contradiction arm | the incoming fact wins the tie | 5, across all four merge sites: `two_records_that_disagree_at_one_position_are_refused`, `a_record_and_a_runtime_that_disagree_at_one_position_refuse_to_open`, `adoption_over_a_contradicted_runtime_refuses_and_installs_nothing`, `a_record_disagreeing_with_a_transition_at_its_own_index_refuses_to_open`, `a_runtime_that_contradicts_the_register_stops_serving_and_stops_publishing` |
+| spent-normalization of the tie | compare unnormalized | 3: `a_readmitted_spent_identity_is_counted_rather_than_refused`, `a_record_whose_mark_explains_its_omission_is_a_removal`, `the_join_is_order_free_across_three_records` |
+| the tie's *un*-normalization by proven removals | re-add the term | 1: `a_record_disagreeing_with_a_transition_at_its_own_index_refuses_to_open` |
+| absorbing a proven removal at any position | absorb only when the fact is later | 1: `a_removal_is_absorbed_even_when_a_later_record_still_names_it` |
+| withholding the policy while contradicted | delete the guard | 1: `a_runtime_that_contradicts_the_register_stops_serving_and_stops_publishing` |
+| excluding spent identities from the peer set | drop the `is_spent` filter | 6 across 4 binaries |
+
+**Two neutralizations survived the first pass, and both were fixed rather than
+covered.**
+
+The first was the tie's `proven_removed` term, discussed above: it survived
+because it cannot discriminate on honest input, and the response was to delete it
+and add the case that the deletion makes reachable.
+
+The second was the flush guard. It survived because *nothing moves on the error
+path* — `observe_committed_members` computes into locals and assigns only on
+success — so `desired_policy()` was unchanged and the flush made no call anyway.
+Reaching it needed the effective configuration to move *after* the contradiction,
+which the extended fixture now does, and a runtime willing to break its own
+contract, which `contradict_committed_in_place` now models. It is the only
+deliberately dishonest fixture in the scripted support and it is labelled as one:
+a correct runtime cannot report two committed memberships at one commit index, so
+the driver's answer to that pair has no other producer.
+
+**Three near-misses.**
+
+The first: an existing test was retiring a live identity and nothing noticed.
+`adopting_a_new_node_id_under_the_same_group_is_accepted` adopted a single-voter
+group `{2}` into a driver that had been the single voter of `{1}`, at the same
+commit index — two different clusters sharing a group ID. The old reducer let the
+runtime win the tie, so node 1 left the committed membership and the adoption
+quietly spent the identity the previous incarnation served under. The new
+contradiction arm turned it into a refusal, which is how it was found; the
+fixture now adopts a replica of the *same* cluster.
+
+The second: the floor neutralization fails 43 cases across 8 binaries, which
+reads as thorough and is mostly one cause. Almost every one is a committed removal whose retirement the
+link layer is asked about directly. The rows that carry their own weight are
+`an_exact_removal_beneath_a_later_record_still_denies_the_identity` and
+`three_positioned_records_retire_the_same_identities_in_any_order`, which are the
+two the reviewer's counterexamples produced.
+
+The third: `two_records_that_disagree_at_one_position_are_refused` had to be
+rewritten to keep testing anything. Its original pair — held `{1,2,5}` at `p`
+against incoming `{1,2}` at `p`, both with mark 5 — is explained by the incoming
+record's own spent-ness once normalization is applied, so under the new rule it
+is a *removal* rather than a contradiction, and the right answer is to believe
+the witnessed removal. The pair that still contradicts is one where the omitting
+record's mark cannot reach the identity at all, so neither side has an opinion to
+filter with. `a_record_whose_mark_explains_its_omission_is_a_removal` is the
+control that pins the line between them.
+
 
 ## Terminal Driver Vocabulary
 
