@@ -486,7 +486,7 @@ fn a_final_retirement_record_with_no_cursor_is_refused_before_any_transport_call
         matches!(
             refused,
             Err(ManagedDriverError::InvalidControlPlaneCheckpoint {
-                reason: ControlPlaneCheckpointError::CommittedStateWithoutCursor
+                reason: ControlPlaneCheckpointError::CommittedStateWithoutEndpoint
             })
         ),
         "a record that says what it retired and not how far it read is not a \
@@ -505,46 +505,68 @@ fn a_final_retirement_record_with_no_cursor_is_refused_before_any_transport_call
     );
 }
 
-/// A consumer offset with nothing retired beside it is refused too.
+/// A consumer offset with nothing retired beside it is refused too, whichever
+/// offset it is.
 ///
-/// The opposite separation, and the quiet one. The offset says every committed
-/// configuration through index 3 has been folded in, so recovery skips both
-/// crossings — and with no mark and no live set there is nothing they were
+/// The opposite separation, and the quiet one. The offset says the committed
+/// configuration stream has been consumed through index 3, so recovery skips
+/// both crossings — and with no mark and no live set there is nothing they were
 /// folded into. Here the history admits node 5 and removes it again, so the
 /// endpoint carries no trace of it either: absorbed, this record starts a
 /// replica that has forgotten an identity the cluster spent, with no fence owed
 /// and no later fact to re-derive one from.
 ///
-/// Refusing costs nothing, because no driver can produce it: a committed
-/// configuration names at least one replica, so a cursor that advanced raised a
-/// mark in the same call.
+/// **Both offsets are checked, because the two clauses are not the same clause.**
+/// The endpoint one is a biconditional and would catch an orphaned endpoint on
+/// its own; an orphaned *crossing* offset satisfies it vacuously — retirement
+/// state and endpoint offset both absent — and needs a clause of its own.
+///
+/// Refusing costs nothing either way, because no driver can produce them: a
+/// committed configuration names at least one replica, so a fold that advanced
+/// any offset raised a mark in the same call.
 #[test]
 fn a_consumer_offset_with_nothing_retired_beside_it_is_refused() {
-    let mut orphaned_cursor = PeerControlPlaneCheckpoint::empty(GROUP);
-    orphaned_cursor.committed_configuration_through = Some(LogIndex(3));
-
-    let (refused, transport) = try_recover_node_with(
-        NodeId(1),
-        &[NodeId(2), NodeId(3)],
-        orphaned_cursor,
-        ADMIT_THEN_REMOVE,
-    );
-
-    assert!(
-        matches!(
-            refused,
-            Err(ManagedDriverError::InvalidControlPlaneCheckpoint {
-                reason: ControlPlaneCheckpointError::CursorWithoutCommittedState
-            })
+    let cases = [
+        (
+            ControlPlaneCheckpointError::EndpointWithoutCommittedState,
+            true,
         ),
-        "an offset with no retirement record behind it skips the history and \
-         keeps nothing from it: got {:?}",
-        refused.map(|_| "a driver")
-    );
-    assert!(
-        transport.peer_sets().is_empty(),
-        "and nothing was published from a record that installs nothing"
-    );
+        (
+            ControlPlaneCheckpointError::CrossingsWithoutCommittedState,
+            false,
+        ),
+    ];
+
+    for (expected, is_endpoint) in cases {
+        let mut orphaned_offset = PeerControlPlaneCheckpoint::empty(GROUP);
+        if is_endpoint {
+            orphaned_offset.committed_endpoint_through = Some(LogIndex(3));
+        } else {
+            orphaned_offset.committed_crossings_through = Some(LogIndex(3));
+        }
+
+        let (refused, transport) = try_recover_node_with(
+            NodeId(1),
+            &[NodeId(2), NodeId(3)],
+            orphaned_offset,
+            ADMIT_THEN_REMOVE,
+        );
+
+        assert!(
+            matches!(
+                &refused,
+                Err(ManagedDriverError::InvalidControlPlaneCheckpoint { reason })
+                    if *reason == expected
+            ),
+            "an offset with no retirement record behind it skips the history and \
+             keeps nothing from it: got {:?}",
+            refused.map(|_| "a driver")
+        );
+        assert!(
+            transport.peer_sets().is_empty(),
+            "and nothing was published from a record that installs nothing"
+        );
+    }
 }
 
 /// A restart still spends an identity its replayed history admitted and removed.

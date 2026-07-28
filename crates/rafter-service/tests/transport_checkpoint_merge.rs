@@ -42,27 +42,35 @@ const CONSUMED_THROUGH: LogIndex = LogIndex(1);
 
 /// A checkpoint built by hand, the way a durable file hands one back.
 ///
-/// **The offset travels with the retirement record**, because the two are one
-/// record and a driver never writes one without the other. A helper that left it
-/// out would be building a shape the validator now refuses — which is the point
-/// of `a_record_that_separates_the_cursor_from_what_it_retired_is_refused`
+/// **Both offsets travel with the retirement record**, because they are one
+/// record and a driver never writes the state without them. A helper that left
+/// them out would be building a shape the validator now refuses — which is the
+/// point of `a_record_that_separates_an_offset_from_what_it_retired_is_refused`
 /// below, and not something every other case here should be quietly asserting.
 fn checkpoint(mark: Option<u64>, live: &[u64], fences: &[u64]) -> PeerControlPlaneCheckpoint<u64> {
-    checkpoint_through(mark, live, fences, Some(CONSUMED_THROUGH))
+    checkpoint_through(
+        mark,
+        live,
+        fences,
+        Some(CONSUMED_THROUGH),
+        Some(CONSUMED_THROUGH),
+    )
 }
 
-/// The same, with the consumer offset chosen by the caller.
+/// The same, with both consumer offsets chosen by the caller.
 fn checkpoint_through(
     mark: Option<u64>,
     live: &[u64],
     fences: &[u64],
-    through: Option<LogIndex>,
+    crossings: Option<LogIndex>,
+    endpoint: Option<LogIndex>,
 ) -> PeerControlPlaneCheckpoint<u64> {
     let mut checkpoint = PeerControlPlaneCheckpoint::empty(GROUP);
     checkpoint.committed_id_high_water = mark.map(NodeId);
     checkpoint.live_committed_members = ids(live);
     checkpoint.pending_fences = ids(fences);
-    checkpoint.committed_configuration_through = through;
+    checkpoint.committed_crossings_through = crossings;
+    checkpoint.committed_endpoint_through = endpoint;
     checkpoint
 }
 
@@ -438,45 +446,70 @@ fn a_fence_contradicting_a_live_member_is_refused_before_any_transport_call() {
     );
 }
 
-/// A record that separates the cursor from what it retired is refused, both
-/// ways round.
+/// A record that separates an offset from what it retired is refused, every way
+/// round.
 ///
-/// The offset and the retirement record are one record. Each half is
+/// The offsets and the retirement record are one record. Each half is
 /// individually well-formed here — every clause the other cases check still
-/// holds — and the pair is a state no driver produces, because every committed
-/// fact that touches the mark, the live set, or the obligations advances the
+/// holds — and each pair is a state no driver produces, because every committed
+/// fact that touches the mark, the live set, or the obligations advances its own
 /// offset in the same call.
 ///
-/// The two directions fail differently and an operator needs to know which. A
-/// final live set with no offset makes the next recovery re-fold the whole
-/// configuration history against a live set that already reflects it, which
-/// permanently fences the replicas the cluster most recently admitted. An offset
-/// with nothing behind it makes recovery *skip* that history and keep nothing
-/// from it, so every identity those configurations spent becomes allocatable
-/// again with no fence owed.
+/// **The coupling is not symmetric, and stating it as "at least one offset"
+/// would let the dangerous shape through.** Every driver that folded anything
+/// was constructed or adopted, and both entry points publish an endpoint fact
+/// unconditionally — so retirement state implies the *endpoint* offset
+/// specifically, while the crossing offset is genuinely optional beside a full
+/// record. The cases below therefore refuse a crossing offset standing alone
+/// with retirement state, and the case after this one accepts the endpoint-only
+/// record it would otherwise have swept up.
+///
+/// The directions fail differently and an operator needs to know which. A final
+/// live set with no endpoint offset leaves the endpoint fold ungated, so the
+/// next adoption diffs a rebuilt runtime's committed configuration — possibly
+/// *behind*, because a commit index is volatile — against a live set that has
+/// moved past it, and permanently fences everything the newer configurations
+/// added. An offset with nothing behind it makes recovery *skip* that history
+/// and keep nothing from it, so every identity those configurations spent
+/// becomes allocatable again with no fence owed.
 #[test]
-fn a_record_that_separates_the_cursor_from_what_it_retired_is_refused() {
-    let cases: [(PeerControlPlaneCheckpoint<u64>, ControlPlaneCheckpointError); 4] = [
+fn a_record_that_separates_an_offset_from_what_it_retired_is_refused() {
+    let cases: [(PeerControlPlaneCheckpoint<u64>, ControlPlaneCheckpointError); 6] = [
         (
-            checkpoint_through(Some(3), &[1, 2, 3], &[], None),
-            ControlPlaneCheckpointError::CommittedStateWithoutCursor,
+            checkpoint_through(Some(3), &[1, 2, 3], &[], None, None),
+            ControlPlaneCheckpointError::CommittedStateWithoutEndpoint,
         ),
         // A mark and an obligation with no live set is still retirement state,
-        // so it needs an offset like any other.
+        // so it needs an endpoint offset like any other.
         (
-            checkpoint_through(Some(5), &[], &[5], None),
-            ControlPlaneCheckpointError::CommittedStateWithoutCursor,
+            checkpoint_through(Some(5), &[], &[5], None, None),
+            ControlPlaneCheckpointError::CommittedStateWithoutEndpoint,
+        ),
+        // **The shape "at least one offset" would have accepted.** A crossing
+        // offset is not a substitute: no lifecycle produces retirement state
+        // without an endpoint observation, and absorbing this one leaves the
+        // endpoint fold ungated for the very next adoption.
+        (
+            checkpoint_through(Some(3), &[1, 2, 3], &[], Some(LogIndex(3)), None),
+            ControlPlaneCheckpointError::CommittedStateWithoutEndpoint,
         ),
         (
-            checkpoint_through(None, &[], &[], Some(LogIndex(3))),
-            ControlPlaneCheckpointError::CursorWithoutCommittedState,
+            checkpoint_through(None, &[], &[], None, Some(LogIndex(3))),
+            ControlPlaneCheckpointError::EndpointWithoutCommittedState,
+        ),
+        // The same emptiness through the other offset, and it needs its own
+        // clause: with no endpoint offset beside it, the endpoint biconditional
+        // is satisfied by both sides being absent and says nothing about this.
+        (
+            checkpoint_through(None, &[], &[], Some(LogIndex(3)), None),
+            ControlPlaneCheckpointError::CrossingsWithoutCommittedState,
         ),
         // `LogIndex(0)` is a real position rather than an absence, which is why
-        // the offset is an `Option` — so this is the same separation and not a
+        // the offsets are `Option`s — so this is the same separation and not a
         // zero standing in for `None`.
         (
-            checkpoint_through(None, &[], &[], Some(LogIndex(0))),
-            ControlPlaneCheckpointError::CursorWithoutCommittedState,
+            checkpoint_through(None, &[], &[], None, Some(LogIndex(0))),
+            ControlPlaneCheckpointError::EndpointWithoutCommittedState,
         ),
     ];
 
@@ -510,8 +543,13 @@ fn a_record_that_separates_the_cursor_from_what_it_retired_is_refused() {
 /// backwards. Every record this suite feeds back through the join is one a
 /// driver produced, so if the invariant were not maintained by construction the
 /// refusal would be turning away ordinary output rather than damage.
+///
+/// **The endpoint offset is the one that must be there**, and this is where that
+/// half of the derivation is checked against the real lifecycle rather than
+/// argued: adoption publishes an endpoint fact unconditionally, so a driver that
+/// holds a group has one whatever else it has done.
 #[test]
-fn a_driver_that_has_observed_a_configuration_records_both_halves() {
+fn a_driver_that_has_observed_a_configuration_records_the_endpoint_offset() {
     let (driver, _transport) = driver_holding(None, &[1, 2, 3]);
 
     let produced = driver.control_plane_checkpoint();
@@ -520,8 +558,8 @@ fn a_driver_that_has_observed_a_configuration_records_both_halves() {
         "adoption observed a committed configuration, so it raised the mark"
     );
     assert!(
-        produced.committed_configuration_through.is_some(),
-        "and advanced the offset in the same call: {produced:?}"
+        produced.committed_endpoint_through.is_some(),
+        "and advanced the endpoint offset in the same call: {produced:?}"
     );
 
     // And the empty record keeps the other side of the biconditional.
@@ -529,7 +567,49 @@ fn a_driver_that_has_observed_a_configuration_records_both_halves() {
     assert!(empty.committed_id_high_water.is_none());
     assert!(empty.live_committed_members.is_empty());
     assert!(empty.pending_fences.is_empty());
-    assert!(empty.committed_configuration_through.is_none());
+    assert!(empty.committed_crossings_through.is_none());
+    assert!(empty.committed_endpoint_through.is_none());
+}
+
+/// A full retirement record with an endpoint offset and no crossing offset is
+/// accepted.
+///
+/// **The shape the split exists to represent, and the one a symmetric invariant
+/// would have refused.** A process that recovered from a snapshot folded the
+/// boundary configuration at its commit index and no configuration entry at all,
+/// so it honestly has an endpoint offset, a mark, a live set — and nothing to
+/// put in the crossing offset. A first incarnation over a fresh cluster produces
+/// the same shape for the same reason.
+///
+/// Refusing it would make every such process unable to restart, and accepting it
+/// is only safe because the crossing offset it lacks is exactly the one that
+/// must not be invented: leaving it `None` is what lets a later recovery replay
+/// the crossings this record never saw.
+#[test]
+fn an_endpoint_only_record_is_a_record_a_driver_produces() {
+    let (driver, _transport) = driver_holding(Some(3), &[1, 2, 3]);
+    let group = driver.release_group().expect("the driver holds a group");
+
+    driver
+        .adopt_group_with_checkpoint(
+            group,
+            Vec::new(),
+            checkpoint_through(Some(3), &[1, 2, 3], &[], None, Some(LogIndex(9))),
+        )
+        .expect("a snapshot-recovered record has an endpoint and no crossings");
+
+    let settled = driver.control_plane_checkpoint();
+    assert_eq!(
+        settled.committed_endpoint_through,
+        Some(LogIndex(9)),
+        "the endpoint offset joined by max like any other position"
+    );
+    assert_eq!(
+        settled.committed_crossings_through,
+        Some(CONSUMED_THROUGH),
+        "and the crossing offset kept what this driver had earned, because the \
+         incoming record contributed none"
+    );
 }
 
 /// The control: a valid stale record still contributes everything it knows.

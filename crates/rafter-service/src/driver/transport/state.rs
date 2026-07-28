@@ -201,27 +201,54 @@ where
     /// [`super::PeerControlPlaneCheckpoint`] is how the set survives a process
     /// restart.
     pub(super) pending_fences: BTreeSet<NodeId>,
-    /// How far this driver has consumed the committed configuration stream.
+    /// How far this driver has consumed the stream of *exact crossings*.
     ///
-    /// The one field here that names a *position* rather than a state, and the
-    /// reason it has to exist is that committed configurations arrive twice. A
-    /// live cluster delivers each one once, as it commits; a restart delivers a
-    /// whole suffix of them again, because the runtime replays every
-    /// configuration entry between the application's applied floor and the
-    /// durable commit index. The retirement diff beside it is computed against
-    /// the live set as it stands *now*, so a historical configuration folded in
-    /// a second time does not repeat an observation — it reads as a removal of
-    /// everything the configurations above it added.
+    /// One of the two fields here that name a *position* rather than a state,
+    /// and the reason a position has to exist at all is that committed
+    /// configurations arrive twice. A live cluster delivers each one once, as it
+    /// commits; a restart delivers a whole suffix of them again, because the
+    /// runtime replays every configuration entry between the application's
+    /// applied floor and the durable commit index. The retirement diff beside it
+    /// is computed against the live set as it stands *now*, so a historical
+    /// configuration folded in a second time does not repeat an observation — it
+    /// reads as a removal of everything the configurations above it added.
     ///
     /// Ordering the replay before the endpoint is observed is necessary and not
     /// sufficient: the second recovery from the same durable state replays the
     /// same history against a live set the first recovery already advanced.
     /// Idempotence under arbitrary re-replay needs a position.
     ///
-    /// It moves in [`super::control_plane`]'s `observe_committed_members`,
-    /// under the same epoch as the three fields above it, so a checkpoint can
-    /// never carry a retirement record and a stale position for it.
-    pub(super) committed_configuration_through: Option<LogIndex>,
+    /// **This one is advanced and gated only by
+    /// [`super::control_plane::CommittedMembershipSource::Crossing`] facts**, and
+    /// that is the whole of the split. A crossing carries the index of the
+    /// configuration entry it crossed, so consuming it genuinely covers that
+    /// index and a later replay of the same entry is history.
+    pub(super) committed_crossings_through: Option<LogIndex>,
+    /// How far this driver has consumed the stream of *endpoint observations*.
+    ///
+    /// The other position, advanced and gated only by
+    /// [`super::control_plane::CommittedMembershipSource::Endpoint`] facts. An
+    /// endpoint stands at the commit index and covers **nothing beneath
+    /// itself**: the moves that produce one are exactly the moves with no
+    /// history to carry, so its index says where this driver looked and never
+    /// what it consumed on the way.
+    ///
+    /// It still needs a position of its own, and for the original reason: an
+    /// ungated endpoint fold computes a fresh retirement diff between a rebuilt
+    /// runtime's committed configuration and a live set that has moved past it,
+    /// and a commit index is volatile enough for a recovered runtime to report a
+    /// lower one than the incarnation that wrote the checkpoint reached.
+    ///
+    /// **Keeping the two apart is what makes the gate honest.** One position for
+    /// both let an endpoint at commit 10 — produced by a process that recovered
+    /// from a snapshot and had never seen indices 6 or 7 — suppress the real
+    /// crossings another process replayed at 6 and 7. The identity those spent
+    /// was never spent here and its fence was never owed.
+    ///
+    /// Both move in [`super::control_plane`]'s `observe_committed_members`, under
+    /// the same epoch as the three fields above them, so a checkpoint can never
+    /// carry a retirement record and a stale position for it.
+    pub(super) committed_endpoint_through: Option<LogIndex>,
     /// How many times the checkpointable control-plane state has changed.
     ///
     /// The change signal an embedder persists against. Eq over the checkpoint

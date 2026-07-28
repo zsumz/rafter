@@ -27,6 +27,7 @@ use std::collections::BTreeSet;
 use crate::transport::{AuthenticatedPeerValidator, RaftTransport};
 
 use super::super::*;
+use super::control_plane::CommittedMembershipSource;
 use super::state::TransportDriverState;
 
 /// The peer-control-plane state a restarted process cannot re-derive.
@@ -143,11 +144,11 @@ pub struct PeerControlPlaneCheckpoint<G> {
     /// the embedder's, stated at
     /// [`TransportDriverOptions::fence_backlog_service_threshold`].
     pub pending_fences: BTreeSet<NodeId>,
-    /// The log index through which this record has consumed committed
-    /// configuration history, or `None` before it has consumed any.
+    /// The log index through which this record has consumed *exact crossings*,
+    /// or `None` before it has consumed any.
     ///
-    /// **The consumer offset, and the field that makes the other three
-    /// replayable.** The three above are a *state*, and a state restores by
+    /// **A consumer offset, and one of the two fields that make the three above
+    /// replayable.** Those three are a *state*, and a state restores by
     /// assignment. Committed configurations are a *stream*, and a restart
     /// re-delivers a suffix of it: the runtime replays every configuration entry
     /// between the application's applied floor and the durable commit index as
@@ -162,25 +163,79 @@ pub struct PeerControlPlaneCheckpoint<G> {
     /// computed against. A crash during recovery is an ordinary crash, so that
     /// second pass is a state a correct embedder reaches.
     ///
-    /// It moves with the retirement record and never apart from it: every
-    /// committed fact that advances the mark, the live set, or the obligations
-    /// advances this in the same call and under the same epoch, so the two
-    /// cannot be persisted out of step with one another.
-    ///
-    /// **That coupling is validated rather than merely documented**, in both
-    /// directions: `None` here means nothing has been retired, and anything
-    /// retired means this is `Some`. A record that breaks it was not written by
-    /// a driver, and each way of breaking it loses a different half of what this
-    /// type exists for — see
-    /// [`ControlPlaneCheckpointError::CommittedStateWithoutCursor`] and
-    /// [`ControlPlaneCheckpointError::CursorWithoutCommittedState`]. An embedder
-    /// with a format of its own should refuse the same two shapes at its own
-    /// decoder, so the refusal names the file rather than the value.
+    /// **It advances only for a crossing**, which is a configuration entry the
+    /// commit index crossed, carrying that entry's own index — so a record whose
+    /// crossing offset reads *n* has genuinely folded every crossing at or below
+    /// *n*. It may legitimately be `None` beside a full retirement record; see
+    /// the coupling invariant on
+    /// [`PeerControlPlaneCheckpoint::committed_endpoint_through`].
     ///
     /// `None` rather than zero because `LogIndex(0)` is a real position — the
-    /// index before any entry — and "no configuration fact consumed" has to be
+    /// index before any entry — and "no crossing consumed" has to be
     /// distinguishable from "consumed through the bottom of the log".
-    pub committed_configuration_through: Option<LogIndex>,
+    pub committed_crossings_through: Option<LogIndex>,
+    /// The log index at which this record last observed the committed
+    /// configuration directly, or `None` before it has observed one.
+    ///
+    /// The other consumer offset, and the one that covers **nothing beneath
+    /// itself**. An endpoint observation is the committed membership a runtime
+    /// holds, read at its commit index, for a move with no configuration entry
+    /// behind it: a snapshot install, or a group opened over a runtime whose
+    /// commit index had already moved. It still needs gating, because an ungated
+    /// endpoint fold computes a retirement diff between a rebuilt runtime's
+    /// committed configuration and a live set that has moved past it — and a
+    /// commit index is volatile enough for a recovered runtime to report a lower
+    /// one than the incarnation that wrote this record reached.
+    ///
+    /// **One offset used to serve both, and the conflation was a false claim of
+    /// coverage.** A process that recovers from a snapshot at commit 10 honestly
+    /// reports observing the committed membership there, and has no idea what
+    /// committed and was superseded below the boundary — the type says so under
+    /// "What a snapshot cannot give back". Joined into a record whose crossings
+    /// really do sit at 6 and 7, a single `max` offset skipped them as
+    /// already-consumed: the identity a removal at 7 spent was never spent, and
+    /// its fence was never owed. The join's premise — a greater offset means
+    /// everything beneath it is already reduced — is true of a crossing and
+    /// false of an endpoint, so the two positions join independently and an
+    /// endpoint never suppresses a crossing.
+    ///
+    /// # The coupling invariant, and which way it points
+    ///
+    /// Both offsets move with the retirement record and never apart from it:
+    /// every committed fact that advances the mark, the live set, or the
+    /// obligations advances its own offset in the same call and under the same
+    /// epoch. But the two are **not** symmetric, and reading the coupling as
+    /// "retirement state implies at least one offset" is too weak to be safe.
+    /// Derived from what a driver's lifecycle can actually produce:
+    ///
+    /// * Every fold — of either kind — raises the mark, because a committed
+    ///   configuration always names at least one replica
+    ///   ([`rafter::MembershipSet`] refuses an empty voter set). So an offset of
+    ///   either kind implies retirement state.
+    /// * Every driver that folded anything was constructed or adopted, and both
+    ///   entry points publish an endpoint fact *unconditionally* with a group in
+    ///   hand, after any recovery outputs. So retirement state implies an
+    ///   **endpoint** offset specifically.
+    /// * The crossing offset carries no such obligation in the other direction.
+    ///   A first incarnation over a fresh cluster, and a process that recovered
+    ///   from a snapshot, both fold an endpoint and no crossing at all.
+    ///
+    /// Which gives `retired ⟺ endpoint.is_some()` as a biconditional, and
+    /// `crossings.is_some() ⟹ retired` one way only. Written as "at least one
+    /// offset", the invariant would accept a crossing offset beside no endpoint
+    /// — a shape no lifecycle produces, and one whose absorption leaves the
+    /// endpoint fold ungated on the very next adoption, which is where a
+    /// volatile commit index manufactures removals.
+    ///
+    /// **That coupling is validated rather than merely documented.** See
+    /// [`ControlPlaneCheckpointError::CommittedStateWithoutEndpoint`],
+    /// [`ControlPlaneCheckpointError::EndpointWithoutCommittedState`], and
+    /// [`ControlPlaneCheckpointError::CrossingsWithoutCommittedState`]. An
+    /// embedder with a format of its own should refuse the same three shapes at
+    /// its own decoder, so the refusal names the file rather than the value.
+    ///
+    /// `None` rather than zero for the reason the crossing offset is.
+    pub committed_endpoint_through: Option<LogIndex>,
 }
 
 impl<G> PeerControlPlaneCheckpoint<G> {
@@ -202,7 +257,8 @@ impl<G> PeerControlPlaneCheckpoint<G> {
             committed_id_high_water: None,
             live_committed_members: BTreeSet::new(),
             pending_fences: BTreeSet::new(),
-            committed_configuration_through: None,
+            committed_crossings_through: None,
+            committed_endpoint_through: None,
         }
     }
 
@@ -252,27 +308,50 @@ impl<G> PeerControlPlaneCheckpoint<G> {
     /// has no inverse, so unlike a stale peer set that is not something a later
     /// flush corrects.
     ///
-    /// * **The cursor and the retirement record are one record**, so
-    ///   `through == None ⟺ nothing retired`. The field's own documentation
-    ///   already said the two move together and never apart; this is the clause
-    ///   that makes the claim checkable rather than merely stated, and both
-    ///   directions of breaking it are reachable through a damaged or
-    ///   hand-written file.
+    /// * **The offsets and the retirement record are one record, and the two
+    ///   offsets are coupled to it differently.** The asymmetry is derived from
+    ///   the lifecycle rather than assumed, because assuming symmetry here is
+    ///   what makes the clause too weak to be worth having.
     ///
-    ///   The forward direction is the dangerous one and is not subtle: a record
-    ///   holding a final live set with no offset makes recovery replay the whole
-    ///   configuration history against a live set that already reflects it,
-    ///   which fences the replicas the cluster most recently admitted. That is
-    ///   the exact failure the offset was added to close, re-entering through a
-    ///   checkpoint shape instead of through a missing gate.
+    ///   Every fold of either kind raises the mark — a committed configuration
+    ///   always names at least one replica, since [`rafter::MembershipSet`]
+    ///   refuses an empty voter set — so **either offset implies retirement
+    ///   state**. And every driver that folded anything was constructed or
+    ///   adopted, and both entry points publish an endpoint fact
+    ///   unconditionally, with a group in hand, after any recovery outputs — so
+    ///   **retirement state implies the endpoint offset specifically**. The
+    ///   crossing offset has no such converse: a first incarnation over a fresh
+    ///   cluster, and a process that recovered from a snapshot, each fold an
+    ///   endpoint and no crossing at all.
     ///
-    ///   The reverse direction is the quiet one — an offset beside no retirement
-    ///   record skips that history and keeps nothing from it — and it is worth
-    ///   saying why refusing it costs nothing. It is not a producible state: a
-    ///   committed configuration always names at least one replica, because
-    ///   [`rafter::MembershipSet`] refuses an empty voter set, so a driver whose
-    ///   cursor advanced raised its mark in the same call. There is no legitimate
-    ///   record this clause turns away.
+    ///   `retired ⟺ endpoint.is_some()`, and `crossings.is_some() ⟹ retired`.
+    ///   Three shapes are refused and each loses something different:
+    ///
+    ///   - Retirement state with no endpoint offset
+    ///     ([`ControlPlaneCheckpointError::CommittedStateWithoutEndpoint`]) is
+    ///     the dangerous one and is not subtle. It leaves the endpoint fold
+    ///     ungated, so the next adoption computes a fresh retirement diff
+    ///     between a rebuilt runtime's committed configuration and a live set
+    ///     that has already moved past it. A commit index is volatile, so the
+    ///     rebuilt runtime can legitimately be *behind*, and everything the
+    ///     newer configurations added is retired. It is also the shape a
+    ///     migration of an older single-offset file would produce.
+    ///   - An endpoint offset beside no retirement record
+    ///     ([`ControlPlaneCheckpointError::EndpointWithoutCommittedState`]) is
+    ///     the quiet one: recovery skips exactly the history the offset claims
+    ///     and keeps nothing from it, so every identity those configurations
+    ///     spent is allocatable again with no fence owed.
+    ///   - A crossing offset beside no retirement record
+    ///     ([`ControlPlaneCheckpointError::CrossingsWithoutCommittedState`]) is
+    ///     the same loss through the other position, and it needs its own clause
+    ///     rather than falling out of the biconditional: with no endpoint offset
+    ///     beside it the record is silent about retirement, so the endpoint
+    ///     clause alone would let it through.
+    ///
+    ///   None of the three is producible, so refusing costs nothing. The one
+    ///   shape that *is* newly legal — a full retirement record with an endpoint
+    ///   offset and no crossing offset — is exactly the snapshot-recovered
+    ///   process the split exists for, and it is accepted.
     fn validate(&self, group: &G) -> Result<(), ControlPlaneCheckpointError>
     where
         G: Ord,
@@ -280,19 +359,25 @@ impl<G> PeerControlPlaneCheckpoint<G> {
         if &self.group != group {
             return Err(ControlPlaneCheckpointError::ForeignGroup);
         }
-        // **One record, checked as one.** `committed_configuration_through`
-        // documents that it moves with the retirement record and never apart
-        // from it; until this clause existed, nothing enforced it, and both ways
-        // of breaking it were accepted as ordinary input.
+        // **One record, checked as one.** Both offsets document that they move
+        // with the retirement record and never apart from it; until this clause
+        // existed, nothing enforced it, and every way of breaking it was
+        // accepted as ordinary input.
         let retired_something = self.committed_id_high_water.is_some()
             || !self.live_committed_members.is_empty()
             || !self.pending_fences.is_empty();
-        match (self.committed_configuration_through, retired_something) {
-            (None, true) => return Err(ControlPlaneCheckpointError::CommittedStateWithoutCursor),
+        match (self.committed_endpoint_through, retired_something) {
+            (None, true) => return Err(ControlPlaneCheckpointError::CommittedStateWithoutEndpoint),
             (Some(_), false) => {
-                return Err(ControlPlaneCheckpointError::CursorWithoutCommittedState)
+                return Err(ControlPlaneCheckpointError::EndpointWithoutCommittedState)
             }
             (None, false) | (Some(_), true) => {}
+        }
+        // One way only. A crossing offset is optional beside a full retirement
+        // record — that is the snapshot-recovered shape — but it can no more
+        // stand beside an empty one than an endpoint offset can.
+        if self.committed_crossings_through.is_some() && !retired_something {
+            return Err(ControlPlaneCheckpointError::CrossingsWithoutCommittedState);
         }
         for node_id in self.live_committed_members.iter().copied() {
             let Some(mark) = self.committed_id_high_water else {
@@ -347,21 +432,35 @@ where
             committed_id_high_water: self.committed_id_high_water,
             live_committed_members: self.live_committed_members.clone(),
             pending_fences: self.pending_fences.clone(),
-            committed_configuration_through: self.committed_configuration_through,
+            committed_crossings_through: self.committed_crossings_through,
+            committed_endpoint_through: self.committed_endpoint_through,
         }
     }
 
-    /// Whether a committed configuration fact standing at `index` is one this
-    /// driver has already taken.
+    /// The position this driver holds for facts of `source`.
+    ///
+    /// One accessor rather than two call sites choosing a field, because
+    /// choosing the field *is* the decision the split exists to make and a
+    /// caller that picked it inline could pick the other one.
+    const fn committed_position(&self, source: CommittedMembershipSource) -> Option<LogIndex> {
+        match source {
+            CommittedMembershipSource::Crossing => self.committed_crossings_through,
+            CommittedMembershipSource::Endpoint => self.committed_endpoint_through,
+        }
+    }
+
+    /// Whether a committed configuration fact of `source` standing at `index` is
+    /// one this driver has already taken.
     ///
     /// **The gate that makes a replayed stream safe, and it is required rather
     /// than defensive.** A committed configuration is a permanent fact, so a
-    /// driver that has consumed the stream through index *n* has already folded
-    /// every configuration at or below *n* into its mark, its live set, and its
-    /// obligations. Re-folding one is not a harmless repetition: the fold is a
-    /// *difference* against the live set as it stands now, and the live set has
-    /// moved on. A configuration from index 10 recomputed against the state
-    /// index 11 produced reads as a removal of everything index 11 added.
+    /// driver that has consumed the crossing stream through index *n* has
+    /// already folded every crossing at or below *n* into its mark, its live
+    /// set, and its obligations. Re-folding one is not a harmless repetition:
+    /// the fold is a *difference* against the live set as it stands now, and the
+    /// live set has moved on. A configuration from index 10 recomputed against
+    /// the state index 11 produced reads as a removal of everything index 11
+    /// added.
     ///
     /// That is not a corner case, it is what a restart does. The runtime replays
     /// every configuration entry between the application's applied floor and the
@@ -375,26 +474,44 @@ where
     /// against a restored live set that already reflects index 11. Idempotence
     /// under arbitrary re-replay needs a position, not an order.
     ///
-    /// Strictly at-or-below, because the cursor names a fact that was taken
+    /// **Each source is gated by its own position and never by the other's.** An
+    /// endpoint covers nothing beneath itself, so letting one answer for a
+    /// crossing skipped history that had genuinely never been folded — a
+    /// snapshot-recovered record's endpoint at commit 10 suppressed real
+    /// crossings at 6 and 7, and the identity the removal at 7 spent stayed
+    /// unspent. The converse is harmless but equally unearned, so the gate is
+    /// symmetric in construction and asymmetric only in what it costs.
+    ///
+    /// Strictly at-or-below, because a position names a fact that was taken
     /// rather than the next one expected.
-    pub(super) fn committed_configuration_is_replayed(&self, index: LogIndex) -> bool {
-        self.committed_configuration_through
-            .is_some_and(|cursor| index <= cursor)
+    pub(super) fn committed_configuration_is_replayed(
+        &self,
+        index: LogIndex,
+        source: CommittedMembershipSource,
+    ) -> bool {
+        self.committed_position(source)
+            .is_some_and(|position| index <= position)
     }
 
-    /// Moves the cursor to `index`, and reports whether it moved.
+    /// Moves `source`'s position to `index`, and reports whether it moved.
     ///
     /// Monotone, like every other field of the record. The caller folds the
     /// answer into the same epoch decision the mark and the live set feed, so a
-    /// fact that advanced only the cursor still reaches the embedder's next
-    /// persist — a cursor made durable behind its own retirement record would
+    /// fact that advanced only a position still reaches the embedder's next
+    /// persist — a position made durable behind its own retirement record would
     /// replay on the following restart, which is the whole failure this closes.
-    pub(super) fn advance_committed_configuration_cursor(&mut self, index: LogIndex) -> bool {
-        let advanced = self
-            .committed_configuration_through
-            .is_none_or(|cursor| index > cursor);
+    pub(super) fn advance_committed_position(
+        &mut self,
+        index: LogIndex,
+        source: CommittedMembershipSource,
+    ) -> bool {
+        let held = match source {
+            CommittedMembershipSource::Crossing => &mut self.committed_crossings_through,
+            CommittedMembershipSource::Endpoint => &mut self.committed_endpoint_through,
+        };
+        let advanced = held.is_none_or(|position| index > position);
         if advanced {
-            self.committed_configuration_through = Some(index);
+            *held = Some(index);
         }
         advanced
     }
@@ -423,23 +540,37 @@ where
     /// Write `spent_x(n) = n ≤ mark_x ∧ n ∉ live_x`. Then:
     ///
     /// ```text
-    /// mark   = max(mark_a, mark_b)
-    /// fences = fences_a ∪ fences_b
-    /// live   = { n ∈ live_a ∪ live_b : ¬spent_a(n) ∧ ¬spent_b(n) }
-    /// cursor = max(cursor_a, cursor_b)
+    /// mark      = max(mark_a, mark_b)
+    /// fences    = fences_a ∪ fences_b
+    /// live      = { n ∈ live_a ∪ live_b : ¬spent_a(n) ∧ ¬spent_b(n) }
+    /// crossings = max(crossings_a, crossings_b)
+    /// endpoint  = max(endpoint_a, endpoint_b)
     /// ```
     ///
     /// An identity *above* one side's mark is judged only by the side whose mark
     /// covers it, which is what lets a record that never saw an identity avoid
     /// overruling one that did.
     ///
-    /// **The cursor is `max` for the same reason the mark is, and it is sound
-    /// for a reason worth stating.** Skipping a replayed configuration at or
-    /// below the joined cursor is only safe if the joined *state* already
-    /// reflects it — and it does: whichever side held the higher cursor had
-    /// consumed that configuration, its spent-ness is in `S_a ∪ S_b`, and the
-    /// join preserves the whole union. So the side that had not consumed it
-    /// cannot lose anything by the join declining to consume it again.
+    /// **Each position is `max` for the same reason the mark is, and the two are
+    /// taken independently because the premise the `max` rests on is true of
+    /// only one of them.** Skipping a replayed fact at or below the joined
+    /// position is safe exactly when the joined *state* already reflects it. For
+    /// a crossing it does: whichever side held the higher crossing position had
+    /// folded that configuration entry, its spent-ness is in `S_a ∪ S_b`, and
+    /// the join preserves the whole union — so the side that had not consumed it
+    /// loses nothing by the join declining to consume it again.
+    ///
+    /// **For an endpoint the premise is false, and one shared position made the
+    /// proof unsound.** An endpoint stands at a commit index and covers nothing
+    /// beneath itself. A process that recovered from a snapshot at commit 10
+    /// honestly reports `{mark 3, live {1,2,3}, endpoint 10}` having never seen
+    /// the `+5` at index 6 or the `−5` at index 7. Joined under one position,
+    /// `max` carried 10 into the crossing gate, another process's real recovery
+    /// outputs for 6 and 7 were skipped as already-consumed, and node 5 was
+    /// never spent and never fenced. Splitting the position restores the
+    /// premise for the field the argument actually reads: `crossings` is a `max`
+    /// over positions each side *earned* by folding entries, and no endpoint can
+    /// raise it.
     ///
     /// **The three properties, which are what make it safe to apply in any
     /// order.** Let `S_x` be the spent set of `x` and `L_x` its live set.
@@ -471,12 +602,15 @@ where
     /// redundancy.** The proof above says it cannot fail — `fences ⊆ spent` is
     /// preserved by the join, because a fence of `a` is in `S_a`, is at or below
     /// `mark_a ≤ mark_join`, and is excluded from `live_join` by construction.
-    /// The cursor coupling is preserved for the same kind of reason: `through`
-    /// is a `max` and the retirement fields are unions or maxima, so a joined
-    /// record has an offset exactly when one of its sides did, and has
-    /// retirement state exactly when one of its sides did — and each side has
-    /// both or neither, the incoming one by validation and the held one by the
-    /// invariant this driver maintains.
+    /// The coupling invariant is preserved for the same kind of reason: each
+    /// position is a `max` and the retirement fields are unions or maxima, so a
+    /// joined record has an endpoint position exactly when one of its sides did,
+    /// has a crossing position exactly when one of its sides did, and has
+    /// retirement state exactly when one of its sides did. Each side satisfies
+    /// `retired ⟺ endpoint` and `crossings ⟹ retired` — the incoming one by
+    /// validation and the held one by the invariant this driver maintains — and
+    /// both implications are preserved by taking maxima and unions on every
+    /// term.
     ///
     /// The properties are nonetheless *executed* rather than only argued,
     /// because the cost is one pass over a cluster-sized set and the thing being
@@ -515,9 +649,15 @@ where
             (held, None) => held,
             (None, restored) => restored,
         };
-        let committed_configuration_through = held
-            .committed_configuration_through
-            .max(checkpoint.committed_configuration_through);
+        // Independently, and that independence is the fix. A `max` over the two
+        // kinds together let a position nothing had earned gate a fold that had
+        // never run.
+        let committed_crossings_through = held
+            .committed_crossings_through
+            .max(checkpoint.committed_crossings_through);
+        let committed_endpoint_through = held
+            .committed_endpoint_through
+            .max(checkpoint.committed_endpoint_through);
         let mut pending_fences = checkpoint.pending_fences;
         pending_fences.extend(held.pending_fences);
 
@@ -526,14 +666,16 @@ where
             committed_id_high_water,
             live_committed_members,
             pending_fences,
-            committed_configuration_through,
+            committed_crossings_through,
+            committed_endpoint_through,
         };
         joined.validate(&self.group_id)?;
 
         self.committed_id_high_water = joined.committed_id_high_water;
         self.live_committed_members = joined.live_committed_members;
         self.pending_fences = joined.pending_fences;
-        self.committed_configuration_through = joined.committed_configuration_through;
+        self.committed_crossings_through = joined.committed_crossings_through;
+        self.committed_endpoint_through = joined.committed_endpoint_through;
         self.advance_checkpoint_epoch();
         Ok(())
     }

@@ -14,7 +14,8 @@ use std::{
 };
 
 use rafter::{
-    LocalProposalId, LogIndex, NodeId, Output as RaftOutput, ProposalRejection, ReadId, Role,
+    LocalProposalId, LogIndex, MembershipConfig, NodeId, Output as RaftOutput, ProposalRejection,
+    ReadId, Role,
 };
 use rafter_app::{
     error::GroupError,
